@@ -20,7 +20,8 @@ from lies.wiki.layout import WikiLayout
 app = typer.Typer(
     name="lies",
     help="Library of Inconsistent Explanations & Sources — a Karpathy-pattern LLM wiki.",
-    no_args_is_help=True,
+    # No `no_args_is_help=True`: with no subcommand, the callback's REPL runs.
+    # Setting both would suppress the REPL and dump help on bare `lies`.
 )
 console = Console()
 
