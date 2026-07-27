@@ -55,6 +55,23 @@ def _reset_staging(repo: Path) -> None:
         return
 
 
+def _run(repo: Path, *args: str) -> str:
+    result = subprocess.run(["git", *args], cwd=repo, capture_output=True, text=True, check=False)
+    if result.returncode:
+        raise CommitError(result.stderr.strip() or "git command failed")
+    return result.stdout
+
+
+def git_status(repo: Path) -> str:
+    return _run(repo, "status", "--short")
+
+
+def git_log(repo: Path, limit: int = 10) -> str:
+    if not 1 <= limit <= 100:
+        raise ValueError("limit must be between 1 and 100")
+    return _run(repo, "log", f"-{limit}", "--oneline")
+
+
 def atomic_commit(
     repo: Path,
     message: str,

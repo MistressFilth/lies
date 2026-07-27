@@ -73,7 +73,7 @@ def init(
 
 @app.command()
 def ingest(
-    source: str = typer.Argument(..., help="Path, URL, or '-' for stdin."),
+    source: str = typer.Argument(..., help="Path under the wiki raw/ directory."),
     wiki_root: Path = typer.Option(None, "--wiki-root", "-w"),  # noqa: B008
 ) -> None:
     """Ingest a source into the wiki."""
