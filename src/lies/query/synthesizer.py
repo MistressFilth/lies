@@ -19,13 +19,13 @@ fallback contract are the load-bearing parts.
 """
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
 
+from lies.qmd.cli import qmd_query
 from lies.query.index_parser import parse_index_links
 from lies.query.models import SynthesizedAnswer
-from lies.qmd.cli import qmd_query
 from lies.wiki.layout import WikiLayout
 
 DEFAULT_TOP_N = 5
@@ -36,7 +36,7 @@ FALLBACK_REASON_NO_RESULTS = "qmd_no_results"
 FALLBACK_REASON_FAILED = "qmd_failed"
 
 # Qmd search callable signature: (cwd, question, limit) -> list[dict].
-QmdSearchFn = Callable[..., list[dict]]
+QmdSearchFn = Callable[..., list[dict[str, object]]]
 
 
 @dataclass(frozen=True)
@@ -341,7 +341,7 @@ def _qmd_search_dispatch(
     except QmdCommandError as exc:
         raise _QmdOtherFailure(str(exc)) from exc
 
-    qmd_paths = [r["path"] for r in results if isinstance(r, dict) and r.get("path")]
+    qmd_paths = [path for r in results if isinstance(r, dict) and isinstance((path := r.get("path")), str)]
     pages = _resolve_qmd_pages(layout, qmd_paths, top_n)
     if not pages:
         # qmd gave us hits but none of the files are readable — treat as

@@ -3,7 +3,6 @@ from __future__ import annotations
 
 from lies.query.index_parser import parse_index_links
 
-
 SAMPLE = """\
 # Index
 

@@ -52,7 +52,7 @@ def parse_index_links(content: str) -> list[IndexLink]:
 
         if clean.startswith(_URL_PREFIXES):
             continue
-        if clean.startswith("/") or clean.startswith("\\"):
+        if clean.startswith(("/", "\\")):
             # Absolute paths inside the wiki are not expected; skip
             continue
         if not clean.endswith(".md"):
