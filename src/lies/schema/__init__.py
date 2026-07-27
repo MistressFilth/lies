@@ -1,3 +1,3 @@
-from lies.schema.loader import load_schema, SchemaNotFoundError
+from lies.schema.loader import SchemaNotFoundError, load_schema
 
-__all__ = ["load_schema", "SchemaNotFoundError"]
+__all__ = ["SchemaNotFoundError", "load_schema"]
