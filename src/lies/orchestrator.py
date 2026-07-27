@@ -17,7 +17,6 @@ from lies.capabilities import (
     file_system,
     memory,
     planning,
-    shell,
 )
 from lies.config import get_model
 from lies.qmd import QmdMcpClient
@@ -168,11 +167,11 @@ class Orchestrator:
             capabilities=[
                 SubAgents(agents=delegates),
                 code_mode(),
-                memory(),
+                memory(self.wiki_root),
                 planning(),
                 dynamic_workflow(agents=named_agents, max_agent_calls=20),
                 file_system(wiki_root=self.layout.root),
-                shell(allowlist=["qmd", "git"]),
+
                 QmdMcpClient(transport="stdio").as_capability(),
             ],
         )
