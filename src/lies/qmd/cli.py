@@ -1,22 +1,32 @@
 """Thin wrapper around the `qmd` CLI for batch operations.
 
 Use this for: `qmd update`, `qmd status`, `qmd collection add/remove`,
-`qmd ls`. For agent-native search, use the MCP client (`qmd/mcp.py`).
+`qmd ls`, `qmd query`. For agent-native search, use the MCP client
+(`qmd/mcp.py`).
 """
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
 from pathlib import Path
 from typing import Any
 
 
-class QmdNotInstalledError(Exception):
+class QmdError(Exception):
+    """Base class for qmd-related failures."""
+
+
+class QmdNotInstalledError(QmdError):
     """Raised when the `qmd` binary is not found on PATH."""
 
 
-class QmdError(Exception):
-    """Raised when a `qmd` command exits non-zero."""
+class QmdNoResultsError(QmdError):
+    """Raised when `qmd query` returns an empty result set."""
+
+
+class QmdCommandError(QmdError):
+    """Raised when a `qmd query` exits non-zero or returns malformed output."""
 
 
 def _run(args: list[str], cwd: Path, timeout: int = 300) -> subprocess.CompletedProcess[Any]:
@@ -64,3 +74,79 @@ def qmd_ls(cwd: Path, collection: str) -> str:
     if result.returncode != 0:
         raise QmdError(f"qmd ls failed: {result.stderr.strip()}")
     return str(result.stdout)
+
+
+def is_qmd_installed() -> bool:
+    """Return True if `qmd` is on PATH."""
+    return shutil.which("qmd") is not None
+
+
+def qmd_query(
+    cwd: Path,
+    question: str,
+    limit: int = 5,
+    timeout: int = 60,
+) -> list[dict[str, Any]]:
+    """Run `qmd query` and return parsed JSON results.
+
+    Each result is a dict with at least a ``path`` key (the wiki-relative
+    path of the matching page). The synthesizer only consumes ``path``;
+    additional keys are preserved for callers that need scores/snippets.
+
+    Raises:
+        QmdNotInstalledError: If `qmd` is not on PATH.
+        QmdCommandError: If the qmd command exits non-zero or returns
+            malformed output.
+        QmdNoResultsError: If qmd returns an empty result list.
+    """
+    if not is_qmd_installed():
+        raise QmdNotInstalledError("`qmd` not found on PATH")
+
+    try:
+        result = subprocess.run(
+            ["qmd", "query", question, "--limit", str(limit), "--json"],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    except FileNotFoundError as exc:
+        raise QmdNotInstalledError(
+            "`qmd` binary not found at exec time"
+        ) from exc
+    except subprocess.TimeoutExpired as exc:
+        raise QmdCommandError(
+            f"qmd query timed out after {timeout}s"
+        ) from exc
+
+    if result.returncode != 0:
+        raise QmdCommandError(
+            f"qmd query failed (exit {result.returncode}): "
+            f"{result.stderr.strip()}"
+        )
+
+    stdout = result.stdout.strip()
+    if not stdout:
+        raise QmdNoResultsError(
+            f"qmd query returned no results for: {question!r}"
+        )
+
+    try:
+        data = json.loads(stdout)
+    except json.JSONDecodeError as exc:
+        raise QmdCommandError(
+            f"qmd query returned invalid JSON: {exc}"
+        ) from exc
+
+    if not isinstance(data, list):
+        raise QmdCommandError(
+            f"qmd query expected a JSON list, got {type(data).__name__}"
+        )
+
+    if not data:
+        raise QmdNoResultsError(
+            f"qmd query returned no results for: {question!r}"
+        )
+
+    return data

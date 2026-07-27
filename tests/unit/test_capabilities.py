@@ -39,5 +39,13 @@ def test_file_system_returns_capability(tmp_path: Path) -> None:
 
 
 def test_shell_returns_capability() -> None:
-    cap = shell(allowlist=["qmd", "git"])
-    assert cap is not None
+    """Legacy ``shell(allowlist=...)`` is intentionally disabled.
+
+    LIES exposes explicit Python wrappers (``constrained_tools``) instead
+    of giving the model a shell allowlist. The compatibility shim raises
+    so accidental use fails closed.
+    """
+    import pytest
+
+    with pytest.raises(RuntimeError, match="arbitrary shell access is disabled"):
+        shell(allowlist=["qmd", "git"])
