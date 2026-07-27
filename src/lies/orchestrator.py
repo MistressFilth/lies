@@ -8,7 +8,7 @@ from pathlib import Path
 from pydantic_ai import Agent
 
 from lies.agents.indexer import indexer_agent
-from lies.agents.linter import linter_agent
+from lies.agents.linter import LintReport, linter_agent
 from lies.agents.page_writer import page_writer_agent
 from lies.agents.query_synthesizer import query_synthesizer_agent
 from lies.agents.source_reader import source_reader_agent
@@ -133,7 +133,7 @@ def _extract_markdown_links(text: str) -> list[str]:
     return re.findall(r"\]\(([^)]+)\)", text)
 
 
-def _format_lint_markdown(report, layout: WikiLayout) -> str:
+def _format_lint_markdown(report: LintReport, layout: WikiLayout) -> str:
     """Format a ``LintReport`` as markdown for ``wiki/lint-report.md``."""
     by_cat: dict[str, int] = {}
     for f in report.findings:

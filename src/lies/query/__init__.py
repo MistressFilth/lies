@@ -10,12 +10,12 @@ from lies.query.synthesizer import (
 )
 
 __all__ = [
-    "IndexLink",
-    "SynthesizedAnswer",
     "DEFAULT_TOP_N",
     "FALLBACK_REASON_FAILED",
     "FALLBACK_REASON_NO_RESULTS",
     "FALLBACK_REASON_UNAVAILABLE",
+    "IndexLink",
+    "SynthesizedAnswer",
     "parse_index_links",
     "synthesize_answer",
 ]

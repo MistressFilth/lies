@@ -21,8 +21,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-import pytest
-
 from lies.qmd.cli import (
     QmdCommandError,
     QmdNoResultsError,
@@ -37,7 +35,6 @@ from lies.query.synthesizer import (
     synthesize_answer,
 )
 from lies.wiki.layout import WikiLayout
-
 
 # ---------------------------------------------------------------------------
 # Helpers — fake qmd implementations covering each failure mode
@@ -115,7 +112,7 @@ def test_qmd_happy_path_uses_qmd_results(sample_wiki: WikiLayout) -> None:
 
 
 def test_qmd_results_capped_at_top_n(sample_wiki: WikiLayout) -> None:
-    paths = [f"wiki/entities/postgres.md"] * 10  # more than top_n
+    paths = ["wiki/entities/postgres.md"] * 10  # more than top_n
     result = synthesize_answer(
         "anything",
         sample_wiki,
