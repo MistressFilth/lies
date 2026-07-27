@@ -95,7 +95,12 @@ class Orchestrator:
     """
 
     def __init__(self, wiki_root: Path, model: str | None = None) -> None:
-        self.layout = WikiLayout(wiki_root)
+        # Top-level: store wiki_root as a first-class attribute so callers
+        # and tests can inspect the propagated root without reaching through
+        # `self.layout.root`. The layout is the resolved on-disk view of
+        # the same root; they are equal by construction.
+        self.wiki_root: Path = Path(wiki_root).resolve()
+        self.layout = WikiLayout(self.wiki_root)
         self.model = model or get_model()
         self.schema = load_schema(self.layout)
         self._build()
