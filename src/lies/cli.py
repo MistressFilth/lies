@@ -80,8 +80,10 @@ def ingest(
     configure_logging()
     root = _wiki_root_opt(wiki_root)
     orch = Orchestrator(wiki_root=root)
-    command = f"ingest {source}"
-    output = orch.run(command)
+    # Use the host-side ``run_ingest`` entry point so the working tree is
+    # snapshotted and rolled back if anything fails mid-ingest. The plain
+    # ``orch.run`` is reserved for read-only operations.
+    output = orch.run_ingest(source)
     console.print(Markdown(output))
 
 

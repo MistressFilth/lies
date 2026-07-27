@@ -24,13 +24,12 @@ def test_init_creates_wiki(tmp_path: Path) -> None:
 def test_ingest_invokes_orchestrator(tmp_path: Path) -> None:
     with patch("lies.cli.Orchestrator") as MockOrch:
         mock_instance = MockOrch.return_value
-        mock_instance.run.return_value = "ingested ok"
+        mock_instance.run_ingest.return_value = "ingested ok"
         result = runner.invoke(app, ["ingest", "raw/article.md", "--wiki-root", str(tmp_path)])
         assert result.exit_code == 0
         assert "ingested ok" in result.stdout
-        mock_instance.run.assert_called_once()
-        call_arg = mock_instance.run.call_args.args[0]
-        assert "ingest" in call_arg
+        mock_instance.run_ingest.assert_called_once()
+        call_arg = mock_instance.run_ingest.call_args.args[0]
         assert "raw/article.md" in call_arg
 
 
