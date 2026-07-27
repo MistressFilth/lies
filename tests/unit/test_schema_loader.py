@@ -2,9 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
-from lies.schema.loader import load_schema, SchemaNotFoundError
+from lies.schema.loader import load_schema
 from lies.wiki.layout import WikiLayout
 
 

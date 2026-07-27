@@ -7,7 +7,7 @@ requires-python = ">=3.10"
 license = { text = "MIT" }
 dependencies = [
     "pydantic-ai-slim>=2.18",
-    "pydantic-ai-harness",
+    "pydantic-ai-harness[code-mode,dynamic-workflow]",
     "typer>=0.12",
     "logfire",
     "pyyaml",
