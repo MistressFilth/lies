@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from lies.schema.loader import load_schema
+from lies.schema.loader import load_default_schema, load_schema
 from lies.wiki.layout import WikiLayout
 
 
@@ -22,6 +22,13 @@ def test_load_per_wiki_override(tmp_path: Path) -> None:
     layout.schema_path.write_text("# My custom schema\n\n- Pages: foo, bar\n")
     schema = load_schema(layout)
     assert schema == "# My custom schema\n\n- Pages: foo, bar\n"
+
+
+def test_load_default_schema_directly() -> None:
+    schema = load_default_schema()
+    # Should be the same as the default schema used by load_schema
+    assert "Page types" in schema or "page types" in schema
+    assert "ingest" in schema.lower()
 
 
 def test_load_raises_when_no_default() -> None:
