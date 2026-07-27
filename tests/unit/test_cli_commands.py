@@ -36,7 +36,7 @@ def test_ingest_invokes_orchestrator(tmp_path: Path) -> None:
 def test_query_invokes_orchestrator(tmp_path: Path) -> None:
     with patch("lies.cli.Orchestrator") as MockOrch:
         mock_instance = MockOrch.return_value
-        mock_instance.run.return_value = "the answer"
+        mock_instance.run_query.return_value = _StubAnswer("the answer")
         result = runner.invoke(app, ["query", "What is X?", "--wiki-root", str(tmp_path)])
         assert result.exit_code == 0
         assert "the answer" in result.stdout
@@ -45,10 +45,22 @@ def test_query_invokes_orchestrator(tmp_path: Path) -> None:
 def test_lint_invokes_orchestrator(tmp_path: Path) -> None:
     with patch("lies.cli.Orchestrator") as MockOrch:
         mock_instance = MockOrch.return_value
-        mock_instance.run.return_value = "3 findings"
+        mock_instance.run_lint.return_value = "3 findings"
         result = runner.invoke(app, ["lint", "--wiki-root", str(tmp_path)])
         assert result.exit_code == 0
         assert "3 findings" in result.stdout
+
+
+class _StubAnswer:
+    """Minimal stand-in for ``SynthesizedAnswer`` in CLI tests.
+
+    The CLI only reads ``.answer`` from the result, so a tiny stub with
+    that attribute is enough to keep the markdown printer happy without
+    importing the real pydantic dataclass.
+    """
+
+    def __init__(self, answer: str) -> None:
+        self.answer = answer
 
 
 def test_status_invokes_qmd(tmp_path: Path) -> None:

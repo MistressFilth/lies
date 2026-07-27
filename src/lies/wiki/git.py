@@ -20,10 +20,10 @@ class CommitError(Exception):
     """
 
 
-def _run(
+def _run_git(
     args: list[str], repo: Path, *, check: bool = False
 ) -> subprocess.CompletedProcess[str]:
-    """Run a git subprocess, always capturing output as text.
+    """Run a git subprocess with a pre-built arg list.
 
     Centralizes the ``capture_output=True`` / ``text=True`` / ``check=False``
     default and keeps callers focused on semantics.
@@ -49,27 +49,30 @@ def _reset_staging(repo: Path) -> None:
     ``fatal: Failed to resolve 'HEAD' as a valid ref`` -- that is benign and
     means the index is already empty, so the error is swallowed.
     """
-    result = _run(["git", "reset", "HEAD", "--"], repo)
+    result = _run_git(["git", "reset", "HEAD", "--"], repo)
     # In an empty repo there is no HEAD yet; the reset error is benign.
     if result.returncode != 0 and "Failed to resolve 'HEAD'" in (result.stderr or ""):
         return
 
 
-def _run(repo: Path, *args: str) -> str:
-    result = subprocess.run(["git", *args], cwd=repo, capture_output=True, text=True, check=False)
+def _run_git_for_text(repo: Path, *args: str) -> str:
+    """Run a git subprocess with varargs; return stdout or raise CommitError."""
+    result = subprocess.run(
+        ["git", *args], cwd=repo, capture_output=True, text=True, check=False,
+    )
     if result.returncode:
         raise CommitError(result.stderr.strip() or "git command failed")
     return result.stdout
 
 
 def git_status(repo: Path) -> str:
-    return _run(repo, "status", "--short")
+    return _run_git_for_text(repo, "status", "--short")
 
 
 def git_log(repo: Path, limit: int = 10) -> str:
     if not 1 <= limit <= 100:
         raise ValueError("limit must be between 1 and 100")
-    return _run(repo, "log", f"-{limit}", "--oneline")
+    return _run_git_for_text(repo, "log", f"-{limit}", "--oneline")
 
 
 def atomic_commit(
@@ -113,12 +116,12 @@ def atomic_commit(
     try:
         # ---- Stage ----------------------------------------------------------
         if files is not None:
-            add_result = _run(["git", "add", "--", *files], repo)
+            add_result = _run_git(["git", "add", "--", *files], repo)
         else:
             # Stage modifications to all tracked files. Untracked files are
             # left alone; the caller is responsible for creating them and
             # asking explicitly.
-            add_result = _run(["git", "add", "-u"], repo)
+            add_result = _run_git(["git", "add", "-u"], repo)
         if add_result.returncode != 0:
             raise CommitError(f"git add failed: {add_result.stderr.strip()}")
 
@@ -126,7 +129,7 @@ def atomic_commit(
         # Use check=False (and a manual success check) so a probe failure
         # raises CommitError and is funnelled into the rollback path, instead
         # of leaking a CalledProcessError out of atomic_commit.
-        diff_result = _run(["git", "diff", "--cached", "--name-only"], repo)
+        diff_result = _run_git(["git", "diff", "--cached", "--name-only"], repo)
         if diff_result.returncode != 0:
             raise CommitError(
                 f"git diff --cached failed: {diff_result.stderr.strip()}"
@@ -135,12 +138,12 @@ def atomic_commit(
             raise CommitError("nothing to commit")
 
         # ---- Commit --------------------------------------------------------
-        commit_result = _run(["git", "commit", "-m", message], repo)
+        commit_result = _run_git(["git", "commit", "-m", message], repo)
         if commit_result.returncode != 0:
             raise CommitError(f"git commit failed: {commit_result.stderr.strip()}")
 
         # ---- Read SHA -------------------------------------------------------
-        sha_result = _run(["git", "rev-parse", "HEAD"], repo)
+        sha_result = _run_git(["git", "rev-parse", "HEAD"], repo)
         if sha_result.returncode != 0:
             raise CommitError(
                 f"git rev-parse HEAD failed: {sha_result.stderr.strip()}"

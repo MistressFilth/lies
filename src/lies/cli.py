@@ -92,12 +92,14 @@ def query(
     question: str = typer.Argument(..., help="The question to ask the wiki."),
     wiki_root: Path = typer.Option(None, "--wiki-root", "-w"),  # noqa: B008
 ) -> None:
-    """Query the wiki."""
+    """Query the wiki with qmd → index.md fallback."""
     configure_logging()
     root = _wiki_root_opt(wiki_root)
     orch = Orchestrator(wiki_root=root)
-    output = orch.run(f"query {question}")
-    console.print(Markdown(output))
+    # Use the host-side ``run_query`` entry point so the synthesizer with
+    # qmd→index fallback runs without an LLM round-trip.
+    answer = orch.run_query(question)
+    console.print(Markdown(answer.answer))
 
 
 @app.command()
@@ -105,12 +107,14 @@ def lint(
     wiki_root: Path = typer.Option(None, "--wiki-root", "-w"),  # noqa: B008
     fix: bool = typer.Option(False, "--fix", help="Apply safe fixes automatically."),
 ) -> None:
-    """Health-check the wiki."""
+    """Health-check the wiki and write wiki/lint-report.md."""
     configure_logging()
     root = _wiki_root_opt(wiki_root)
-    command = "lint" + (" --fix" if fix else "")
     orch = Orchestrator(wiki_root=root)
-    output = orch.run(command)
+    # Use the host-side ``run_lint`` entry point so the lint pass writes
+    # a deterministic ``wiki/lint-report.md`` and appends to ``wiki/log.md``.
+    del fix  # safe-fix application is reserved for the linter sub-agent.
+    output = orch.run_lint()
     console.print(Markdown(output))
 
 

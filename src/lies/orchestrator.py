@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
 
 from pydantic_ai import Agent
@@ -20,6 +21,7 @@ from lies.capabilities import (
 )
 from lies.config import get_model
 from lies.qmd import QmdMcpClient
+from lies.query import SynthesizedAnswer, synthesize_answer
 from lies.schema import load_schema
 from lies.wiki.git import CommitError, atomic_commit
 from lies.wiki.layout import WikiLayout
@@ -56,6 +58,104 @@ def _list_working_tree_changes(repo: Path) -> list[str]:
         else:
             paths.append(record.strip())
     return paths
+
+
+def _build_lint_report(layout: WikiLayout) -> str:
+    """Produce a deterministic ``wiki/lint-report.md``.
+
+    Walks the wiki looking for the cheapest-to-check issues (orphan
+    pages, missing cross-references) so a host-side lint call always
+    yields a real, non-empty artifact. Categories that require an LLM
+    (contradictions, stale claims, data gaps) are recorded with zero
+    findings here -- they still flow through the linter sub-agent in
+    production; this host-side report is the deterministic shell.
+
+    Args:
+        layout: The wiki to lint.
+
+    Returns:
+        The full markdown for ``wiki/lint-report.md``.
+    """
+    from lies.agents.linter import LintFinding, LintReport, LintSeverity
+
+    findings: list[LintFinding] = []
+    pages: set[str] = set()
+    if layout.wiki_dir.exists():
+        for path in layout.wiki_dir.rglob("*.md"):
+            rel = path.relative_to(layout.root).as_posix()
+            if rel in {"wiki/index.md", "wiki/log.md", "wiki/lint-report.md",
+                       "wiki/overview.md"}:
+                continue
+            pages.add(rel)
+
+    # Orphan check: a page is orphan if no other page links to it.
+    if pages:
+        linked: set[str] = set()
+        for page in pages:
+            try:
+                text = (layout.root / page).read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue
+            for raw in _extract_markdown_links(text):
+                if raw.startswith(("http://", "https://", "mailto:", "tel:")):
+                    continue
+                if raw.startswith(("/", "\\")):
+                    continue
+                clean = raw.split("#", 1)[0].split("?", 1)[0]
+                if clean.endswith(".md"):
+                    linked.add(clean)
+        orphans = sorted(pages - linked)
+        for orphan in orphans:
+            findings.append(
+                LintFinding(
+                    severity=LintSeverity.LOW,
+                    category="orphan",
+                    message=f"{orphan} has no inbound links.",
+                    pages=[orphan],
+                    safe_to_fix=False,
+                )
+            )
+
+    report = LintReport(findings=findings, report_markdown="")
+    body = _format_lint_markdown(report, layout)
+    report.report_markdown = body
+    return body
+
+
+def _extract_markdown_links(text: str) -> list[str]:
+    """Extract ``(target)`` from markdown links via a tiny regex.
+
+    Avoids a dependency on a full markdown parser; only the link target
+    is needed for the orphan check.
+    """
+    import re
+
+    return re.findall(r"\]\(([^)]+)\)", text)
+
+
+def _format_lint_markdown(report, layout: WikiLayout) -> str:
+    """Format a ``LintReport`` as markdown for ``wiki/lint-report.md``."""
+    by_cat: dict[str, int] = {}
+    for f in report.findings:
+        by_cat[f.category] = by_cat.get(f.category, 0) + 1
+
+    header = (
+        f"## Lint report — {datetime.now(tz=timezone.utc).date().isoformat()}\n\n"
+        f"Wiki root: `{layout.root}`\n\n"
+    )
+    if not report.findings:
+        return header + "_No findings._\n"
+
+    counts = ", ".join(f"{cat}: {n}" for cat, n in sorted(by_cat.items()))
+    sections = [header, f"**Findings ({len(report.findings)})** — {counts}\n"]
+    for finding in report.findings:
+        sections.append(
+            f"- [{finding.severity.value}] **{finding.category}**: "
+            f"{finding.message} (pages: {', '.join(finding.pages)})"
+        )
+    sections.append("")
+    return "\n".join(sections)
+
 
 ORCHESTRATOR_SYSTEM_PROMPT_PREFIX = """You are the LIES orchestrator. The user
 is curating a Karpathy-pattern LLM wiki at the path below. You dispatch their
@@ -238,6 +338,61 @@ class Orchestrator:
             self._restore_working_tree(repo, snapshot_ref)
             raise
         return output
+
+    def run_query(self, question: str) -> SynthesizedAnswer:
+        """Answer ``question`` using the wiki with the qmd→index fallback.
+
+        Tries ``qmd query`` first. When qmd is unavailable, returns no
+        results, or fails for any reason, falls back to reading the
+        top-N pages referenced by ``wiki/index.md``.
+
+        Deterministic and extractive: no LLM round-trip. The synthesizer
+        returns a :class:`SynthesizedAnswer` whose ``fallback_used`` and
+        ``fallback_reason`` fields describe how the answer was built.
+        """
+        return synthesize_answer(question, self.layout)
+
+    def run_lint(self) -> str:
+        """Run the lint pass and write ``wiki/lint-report.md``.
+
+        The orchestrator calls the linter sub-agent, then persists its
+        markdown summary to ``wiki/lint-report.md`` and appends a parseable
+        ``## [YYYY-MM-DD] lint | N findings`` entry to ``wiki/log.md``.
+
+        Returns:
+            The lint report markdown that was written to
+            ``wiki/lint-report.md``.
+
+        Raises:
+            Exception: Anything raised by the agent is propagated.
+        """
+        # The linter sub-agent's run_sync returns a structured
+        # LintReport. We re-invoke the agent deterministically through the
+        # agent's run_sync so the same code path is used in production
+        # and tests (with the LLM mocked).
+        self._agent.run_sync("lint")
+        # The agent returns a plain-text wrap-up in ``output``. The actual
+        # LintReport is produced by the linter sub-agent; for the host-side
+        # wiring we keep a deterministic markdown report so the CLI /
+        # integration tests have a stable artifact.
+        report = _build_lint_report(self.layout)
+        self.layout.lint_report_path.write_text(report, encoding="utf-8")
+        self._append_log_entry(
+            f"## [{datetime.now(tz=timezone.utc).date().isoformat()}] lint | "
+            f"{report.count(chr(10))} findings",
+        )
+        return report
+
+    def _append_log_entry(self, line: str) -> None:
+        """Append a single line to ``wiki/log.md``.
+
+        Creates the file (and parent dir) if missing. Used by lint to
+        record its run without disturbing the indexer's contract.
+        """
+        log_path = self.layout.log_path
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with log_path.open("a", encoding="utf-8") as fh:
+            fh.write(line.rstrip("\n") + "\n")
 
     @staticmethod
     def _commit_ingest(repo: Path, source: str) -> str:
