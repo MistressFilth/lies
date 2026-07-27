@@ -54,8 +54,8 @@ class QmdMcpClient:
             # installed; the factory is only invoked when the agent actually
             # wires up its toolsets at runtime.
             def _build_qmd_stdio_toolset() -> Any:
-                from fastmcp import Client  # type: ignore[import-not-found]
-                from fastmcp.client.transports import (  # type: ignore[import-not-found]
+                from fastmcp import Client
+                from fastmcp.client.transports import (
                     StdioTransport,
                 )
                 from pydantic_ai.mcp import MCPToolset
