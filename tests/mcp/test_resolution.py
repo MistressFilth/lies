@@ -75,6 +75,14 @@ def test_safe_page_path_rejects_traversal(tmp_path: Path) -> None:
         _safe_page_path(wiki_root, "../../etc/passwd")
 
 
+def test_safe_page_path_rejects_empty(tmp_path: Path) -> None:
+    """An empty page path is rejected with a structured WikiRootError."""
+    wiki_root = tmp_path
+    (wiki_root / "wiki").mkdir()
+    with pytest.raises(WikiRootError, match="empty"):
+        _safe_page_path(wiki_root, "")
+
+
 def test_safe_page_path_rejects_absolute(tmp_path: Path) -> None:
     """An absolute page path is rejected (must be relative)."""
     wiki_root = tmp_path

@@ -83,11 +83,14 @@ def test_qmd_extra_locked_in_uv_lock() -> None:
     assert "fastmcp" in default_pkg_names, "default dependencies must resolve fastmcp in lock"
     assert "mcp" in default_pkg_names, "default dependencies must resolve mcp in lock"
     metadata = lies_pkg.get("metadata", {})
-    default_metadata = [
-        package
-        for package in metadata.get("requires-dist", [])
-        if package.get("marker") != "extra == 'qmd'"
+    all_requires_dist = list(metadata.get("requires-dist", []))
+    all_req_names = {package["name"] for package in all_requires_dist}
+    assert "fastmcp" in all_req_names, "lies requires-dist missing default fastmcp"
+    assert "mcp" in all_req_names, "lies requires-dist missing default mcp"
+    # No ``requires-dist`` entry should be tagged with the qmd extra marker;
+    # the qmd extra is empty, so MCP deps live under the default extras.
+    qmd_marked = [
+        package["name"] for package in all_requires_dist
+        if package.get("marker") == "extra == 'qmd'"
     ]
-    default_req_names = {package["name"] for package in default_metadata}
-    assert "fastmcp" in default_req_names, "lies requires-dist missing default fastmcp"
-    assert "mcp" in default_req_names, "lies requires-dist missing default mcp"
+    assert qmd_marked == [], f"qmd extra should be empty, got {qmd_marked!r}"
