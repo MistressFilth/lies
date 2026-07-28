@@ -13,7 +13,7 @@ __all__ = ["WikiRootError", "mcp"]
 # still works for the resolution helpers.
 def __getattr__(name: str) -> object:
     if name == "mcp":
-        from lies.mcp.server import mcp  # type: ignore[import-untyped]
+        from lies.mcp.server import mcp
 
         return mcp
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
