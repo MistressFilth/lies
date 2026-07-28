@@ -148,6 +148,13 @@ def lint(wiki_root: str | None = None, fix: bool = False) -> str:
 # ---------------------------------------------------------------------------
 # Resources — raw wiki reads, no LLM round-trip
 # ---------------------------------------------------------------------------
+#
+# Each resource is defined as an ``_impl`` function (takes ``wiki_root``,
+# does the real work) plus a thin zero-argument forwarder that FastMCP
+# registers as the static-resource handler. The forwarder pattern is a
+# FastMCP 3.4.5 constraint: static-resource handlers must be
+# zero-argument. Keeping the impl beside the forwarder lets tests and
+# direct callers exercise the real logic with an explicit ``wiki_root``.
 
 
 def _wiki_status_impl(wiki_root: str | None = None) -> str:
@@ -177,14 +184,13 @@ def _wiki_status_impl(wiki_root: str | None = None) -> str:
 
 @mcp.resource("wiki://status")
 def wiki_status() -> str:
-    """Return qmd status plus the last 10 lines of ``wiki/log.md``."""
+    """qmd status + last 10 log lines.
+
+    Zero-argument forwarder (FastMCP 3.4.5 constraint on static-resource
+    handlers). Real logic in :func:`_wiki_status_impl`; ``wiki_root`` is
+    resolved from the env / cwd there.
+    """
     return _wiki_status_impl()
-
-
-@mcp.resource("wiki://index")
-def wiki_index() -> str:
-    """Return the raw contents of ``wiki/index.md`` (empty string if absent)."""
-    return _wiki_index_impl()
 
 
 def _wiki_index_impl(wiki_root: str | None = None) -> str:
@@ -194,10 +200,15 @@ def _wiki_index_impl(wiki_root: str | None = None) -> str:
     return layout.index_path.read_text(encoding="utf-8")
 
 
-@mcp.resource("wiki://log")
-def wiki_log() -> str:
-    """Return the raw contents of ``wiki/log.md`` (empty string if absent)."""
-    return _wiki_log_impl()
+@mcp.resource("wiki://index")
+def wiki_index() -> str:
+    """Raw contents of ``wiki/index.md`` (empty string if absent).
+
+    Zero-argument forwarder (FastMCP 3.4.5 constraint). Real logic in
+    :func:`_wiki_index_impl`; ``wiki_root`` is resolved from the env /
+    cwd there.
+    """
+    return _wiki_index_impl()
 
 
 def _wiki_log_impl(wiki_root: str | None = None) -> str:
@@ -207,10 +218,15 @@ def _wiki_log_impl(wiki_root: str | None = None) -> str:
     return layout.log_path.read_text(encoding="utf-8")
 
 
-@mcp.resource("wiki://lint-report")
-def wiki_lint_report() -> str:
-    """Return the most recent ``wiki/lint-report.md`` (empty string if absent)."""
-    return _wiki_lint_report_impl()
+@mcp.resource("wiki://log")
+def wiki_log() -> str:
+    """Raw contents of ``wiki/log.md`` (empty string if absent).
+
+    Zero-argument forwarder (FastMCP 3.4.5 constraint). Real logic in
+    :func:`_wiki_log_impl`; ``wiki_root`` is resolved from the env /
+    cwd there.
+    """
+    return _wiki_log_impl()
 
 
 def _wiki_lint_report_impl(wiki_root: str | None = None) -> str:
@@ -218,6 +234,17 @@ def _wiki_lint_report_impl(wiki_root: str | None = None) -> str:
     if not layout.lint_report_path.exists():
         return ""
     return layout.lint_report_path.read_text(encoding="utf-8")
+
+
+@mcp.resource("wiki://lint-report")
+def wiki_lint_report() -> str:
+    """Raw contents of ``wiki/lint-report.md`` (empty string if absent).
+
+    Zero-argument forwarder (FastMCP 3.4.5 constraint). Real logic in
+    :func:`_wiki_lint_report_impl`; ``wiki_root`` is resolved from the
+    env / cwd there.
+    """
+    return _wiki_lint_report_impl()
 
 
 def _wiki_page_impl(path: str, wiki_root: str | None = None) -> str:
@@ -237,7 +264,12 @@ def _wiki_page_impl(path: str, wiki_root: str | None = None) -> str:
 
 @mcp.resource("wiki://page/{path}")
 def wiki_page(path: str) -> str:
-    """Return any markdown page under ``wiki/`` by relative path."""
+    """Raw markdown of any page under ``wiki/`` (relative ``path``).
+
+    Template-resource handler — unlike the static resources above,
+    FastMCP passes ``path`` directly so the forwarder forwards it to
+    :func:`_wiki_page_impl`.
+    """
     return _wiki_page_impl(path)
 
 
