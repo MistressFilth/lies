@@ -29,6 +29,43 @@ uv run lies
 lies> /help
 ```
 
+## Using LIES from Claude Code
+
+LIES ships an MCP server. Register it with Claude Code once and the
+wiki becomes available as tools and resources in any Claude Code
+session:
+
+```bash
+# Register for the current user, defaulting to the current directory as
+# the wiki root:
+claude mcp add --transport stdio lies -- uv run --project . lies mcp
+
+# Pin a specific wiki by setting LIES_WIKI_ROOT:
+claude mcp add --transport stdio --env LIES_WIKI_ROOT=/path/to/my-wiki \
+    lies -- uv run --project /path/to/lies lies mcp
+```
+
+After registration, Claude Code sees these tools:
+
+- `init_wiki(path)` — bootstrap a new wiki.
+- `ingest_source(source, wiki_root?)` — atomic ingest.
+- `query(question, wiki_root?)` — synthesized answer (structured result
+  with `fallback_used` and `fallback_reason`).
+- `lint(wiki_root?)` — health-check the wiki.
+
+…and these resources:
+
+- `wiki://status` — qmd status + last 10 log entries.
+- `wiki://index`, `wiki://log`, `wiki://lint-report` — raw wiki artifacts.
+- `wiki://page/{path}` — any page under `wiki/` (relative path; traversal
+  rejected).
+
+The server also exposes one prompt (`ask_wiki`) for asking the wiki.
+
+Wiki selection: every tool accepts an optional `wiki_root` parameter.
+Resolution chain: explicit `wiki_root` → `LIES_WIKI_ROOT` env → cwd.
+For multi-project workspaces, register one MCP server per wiki.
+
 ## Configuration
 
 Environment variables:
@@ -55,6 +92,10 @@ uv run mypy src/lies
 
 A top-level `Orchestrator` (`src/lies/orchestrator.py`) dispatches user commands
 to five sub-agents via harness's `SubAgents` and `DynamicWorkflow` capabilities:
+
+A `FastMCP` server (`src/lies/mcp/server.py`) exposes the orchestrator's
+operations to MCP-capable hosts (Claude Code, Cursor, etc.) over stdio.
+See "Using LIES from Claude Code" below for the registration command.
 
 - `source-reader` — read a raw source and return a structured extraction
   (claims, entities, concepts, comparisons, summary).
