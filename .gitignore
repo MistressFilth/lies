@@ -1,0 +1,20 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+dist/
+build/
+.coverage
+htmlcov/
+.qmd/
+*.swp
+.DS_Store
+
+# Internal development artifacts (superpowers skill state, design spec, plan).
+# Not part of the public repo; local-only tooling.
+.superpowers/
+docs/superpowers/
+sdd/
