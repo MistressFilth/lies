@@ -10,7 +10,12 @@ bookkeeping.
 
 ## Status
 
-MVP complete. The branch `feat/lies-mvp` is ready to merge to `main`.
+MCP server complete. The branch `feat-lies-mcp` adds a FastMCP-based
+MCP server so Claude Code (and any MCP host) can use LIES as tools and
+resources over stdio. The server exposes four tools (`init_wiki`,
+`ingest_source`, `query`, `lint`), five resources (`wiki://status`,
+`wiki://index`, `wiki://log`, `wiki://lint-report`, `wiki://page/{path}`),
+and one prompt (`ask_wiki`).
 
 ## Quick start
 
