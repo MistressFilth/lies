@@ -53,33 +53,23 @@ def _read_pyproject() -> dict:
 
 
 def test_pyproject_declares_qmd_extra() -> None:
-    """The qmd extra is the supported install path for qmd MCP runtime deps.
-
-    Without it, the stdio MCP capability constructs but tool calls fail with
-    an ImportError for `fastmcp` / `mcp`. The extra makes the install path
-    discoverable and reproducible (via uv.lock).
-    """
-    data = _read_pyproject()
-    extras = data["project"]["optional-dependencies"]
+    """MCP runtime deps are defaults; the empty qmd extra remains for back-compat."""
+    project = _read_pyproject()
+    extras = project["project"]["optional-dependencies"]
     assert "qmd" in extras, "missing `[qmd]` extra in pyproject.toml"
-    qmd_deps = extras["qmd"]
-    # Both fastmcp and mcp must be declared in the qmd extra.
-    assert any(re.match(r"^fastmcp", d) for d in qmd_deps), (
-        "qmd extra must include fastmcp"
+    default_deps = project["project"]["dependencies"]
+    assert any(re.match(r"^fastmcp", d) for d in default_deps), (
+        "fastmcp must be a default dependency"
     )
-    assert any(re.match(r"^mcp", d) for d in qmd_deps), (
-        "qmd extra must include mcp"
+    assert any(re.match(r"^mcp", d) for d in default_deps), (
+        "mcp must be a default dependency"
     )
+    qmd_extra = project["project"]["optional-dependencies"]["qmd"]
+    assert qmd_extra == [], f"qmd extra should be empty, got {qmd_extra!r}"
 
 
 def test_qmd_extra_locked_in_uv_lock() -> None:
-    """The uv.lock file must resolve the qmd extra so installs are reproducible.
-
-    The lock must include both `fastmcp` and `mcp` packages AND the
-    `[[package]]` entry for the project must reference them under the qmd
-    extra (via `optional-dependencies` and `metadata.requires-dist` with
-    `extra == 'qmd'`).
-    """
+    """The lock resolves MCP deps as defaults without qmd extra markers."""
     lock = Path(__file__).resolve().parents[2] / "uv.lock"
     with lock.open("rb") as fh:
         data = tomllib.load(fh)
@@ -89,18 +79,15 @@ def test_qmd_extra_locked_in_uv_lock() -> None:
     assert "mcp" in package_names, "uv.lock is missing mcp"
 
     lies_pkg = next(p for p in data["package"] if p["name"] == "lies")
-    # `optional-dependencies` is the resolved form in uv.lock
-    optional_deps = lies_pkg.get("optional-dependencies", {})
-    assert "qmd" in optional_deps, "lies package missing qmd extra in lock"
-    qmd_pkg_names = {r["name"] for r in optional_deps["qmd"]}
-    assert "fastmcp" in qmd_pkg_names, "qmd extra must resolve fastmcp in lock"
-    assert "mcp" in qmd_pkg_names, "qmd extra must resolve mcp in lock"
-    # `metadata.requires-dist` carries the original specifier with the marker
-    qmd_requires = [
-        r
-        for r in lies_pkg.get("metadata", {}).get("requires-dist", [])
-        if r.get("marker") == "extra == 'qmd'"
+    default_pkg_names = {r["name"] for r in lies_pkg.get("dependencies", [])}
+    assert "fastmcp" in default_pkg_names, "default dependencies must resolve fastmcp in lock"
+    assert "mcp" in default_pkg_names, "default dependencies must resolve mcp in lock"
+    metadata = lies_pkg.get("metadata", {})
+    default_metadata = [
+        package
+        for package in metadata.get("requires-dist", [])
+        if package.get("marker") != "extra == 'qmd'"
     ]
-    qmd_req_names = {r["name"] for r in qmd_requires}
-    assert "fastmcp" in qmd_req_names, "lies requires-dist missing fastmcp[qmd]"
-    assert "mcp" in qmd_req_names, "lies requires-dist missing mcp[qmd]"
+    default_req_names = {package["name"] for package in default_metadata}
+    assert "fastmcp" in default_req_names, "lies requires-dist missing default fastmcp"
+    assert "mcp" in default_req_names, "lies requires-dist missing default mcp"
