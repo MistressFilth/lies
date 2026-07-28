@@ -33,13 +33,15 @@ from lies.schema.loader import load_default_schema
 
 @pytest.fixture(autouse=True)
 def _use_test_model(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Force ``Orchestrator`` to use pydantic_ai's ``TestModel``.
+    """Default ``LIES_MODEL`` to ``"test"`` so ``Orchestrator`` can build.
 
-    The tool bodies construct ``Orchestrator(wiki_root=layout.root)``
-    with no ``model`` argument, so they pick up ``LIES_MODEL`` from the
-    environment. We default it to ``"test"`` so the agent object can
-    be built without the ``anthropic`` provider package installed.
-    Individual tests may still override ``LIES_WIKI_ROOT`` etc.
+    The fixture sets ``LIES_MODEL`` to ``"test"`` for every test in this
+    module so ``Orchestrator(wiki_root=...)`` (which picks up the model
+    from the env) can build the agent without the ``anthropic`` provider
+    package installed. Per-tool tests that exercise real Orchestrator
+    behavior pass ``model="test"`` explicitly so the fixture's env
+    default is overridden in those paths; tests that only need the
+    agent to be constructible rely on the fixture alone.
     """
     monkeypatch.setenv("LIES_MODEL", "test")
 
@@ -140,6 +142,11 @@ def test_ingest_source_returns_agent_output(sample_wiki) -> None:
         )
         return mock.Mock(output="ingested fixture-entity")
 
+    # Throwaway Orchestrator instance just to reach ``type(orch._agent)``:
+    # ``Orchestrator._build`` constructs the pydantic-ai ``Agent`` inside
+    # ``__init__`` so we cannot patch the class without first constructing
+    # one. Patching on the instance's class is equivalent to patching on
+    # ``pydantic_ai.Agent`` for this orchestrator (only one instance).
     with mock.patch.object(type(orch._agent), "run_sync", new=fake_run_sync):
         out = ingest_source(
             "raw/articles/sample-article.md",
@@ -213,6 +220,11 @@ def test_query_maps_empty_fallback_reason_to_none(
     """
     monkeypatch.setenv("LIES_WIKI_ROOT", str(sample_wiki.root))
 
+    # Reach into ``lies.query.synthesizer``'s underscored helpers so the
+    # deterministic qmd-branch tests can simulate "qmd served the query"
+    # without monkeypatching a wider surface. The alternative would be to
+    # expose ``_PageRead`` / ``_QmdUnavailable`` / ``_qmd_search_dispatch``
+    # as public API on the synthesizer module, which is out of scope here.
     from lies.query import synthesizer as q_syn
     from lies.query.synthesizer import _PageRead
 
@@ -243,6 +255,8 @@ def test_query_propagates_fallback_reason(
     """
     monkeypatch.setenv("LIES_WIKI_ROOT", str(sample_wiki.root))
 
+    # See the import block in ``test_query_maps_empty_fallback_reason_to_none``
+    # for why the synthesizer's underscored helpers are reached into here.
     from lies.query import synthesizer as q_syn
     from lies.query.synthesizer import _QmdUnavailable
 
@@ -277,6 +291,9 @@ def test_lint_returns_markdown_report(
     def fake_run_sync(self, prompt: str):  # type: ignore[no-untyped-def]
         return mock.Mock(output="lint done")
 
+    # Throwaway Orchestrator instance just to reach ``type(orch._agent)``;
+    # see the ingest test for why we patch on the instance's class rather
+    # than on ``pydantic_ai.Agent`` directly.
     with mock.patch.object(type(orch._agent), "run_sync", new=fake_run_sync):
         out = lint()
 
