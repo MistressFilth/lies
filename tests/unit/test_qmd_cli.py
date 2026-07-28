@@ -37,9 +37,9 @@ def test_qmd_status_returns_stdout(tmp_path: Path) -> None:
 
 
 def test_qmd_not_installed(tmp_path: Path) -> None:
-    with patch("lies.qmd.cli.shutil.which", return_value=None):
-        with pytest.raises(QmdNotInstalledError):
-            qmd_update(tmp_path)
+    with patch("lies.qmd.cli.shutil.which", return_value=None), \
+         pytest.raises(QmdNotInstalledError):
+        qmd_update(tmp_path)
 
 
 def test_qmd_error(tmp_path: Path) -> None:
