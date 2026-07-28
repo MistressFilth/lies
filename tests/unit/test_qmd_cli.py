@@ -16,7 +16,8 @@ from lies.qmd.cli import (
 
 
 def test_qmd_update_success(tmp_path: Path) -> None:
-    with patch("lies.qmd.cli.subprocess.run") as mock_run:
+    with patch("lies.qmd.cli.shutil.which", return_value="/usr/bin/qmd"), \
+         patch("lies.qmd.cli.subprocess.run") as mock_run:
         mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
         qmd_update(tmp_path)
         mock_run.assert_called_once()
@@ -26,7 +27,8 @@ def test_qmd_update_success(tmp_path: Path) -> None:
 
 
 def test_qmd_status_returns_stdout(tmp_path: Path) -> None:
-    with patch("lies.qmd.cli.subprocess.run") as mock_run:
+    with patch("lies.qmd.cli.shutil.which", return_value="/usr/bin/qmd"), \
+         patch("lies.qmd.cli.subprocess.run") as mock_run:
         mock_run.return_value = subprocess.CompletedProcess(
             args=[], returncode=0, stdout="ok\n", stderr=""
         )
@@ -35,14 +37,14 @@ def test_qmd_status_returns_stdout(tmp_path: Path) -> None:
 
 
 def test_qmd_not_installed(tmp_path: Path) -> None:
-    with patch("lies.qmd.cli.subprocess.run") as mock_run:
-        mock_run.side_effect = FileNotFoundError("qmd not found")
+    with patch("lies.qmd.cli.shutil.which", return_value=None):
         with pytest.raises(QmdNotInstalledError):
             qmd_update(tmp_path)
 
 
 def test_qmd_error(tmp_path: Path) -> None:
-    with patch("lies.qmd.cli.subprocess.run") as mock_run:
+    with patch("lies.qmd.cli.shutil.which", return_value="/usr/bin/qmd"), \
+         patch("lies.qmd.cli.subprocess.run") as mock_run:
         mock_run.return_value = subprocess.CompletedProcess(
             args=[], returncode=1, stdout="", stderr="some error"
         )
@@ -51,7 +53,8 @@ def test_qmd_error(tmp_path: Path) -> None:
 
 
 def test_qmd_collection_add(tmp_path: Path) -> None:
-    with patch("lies.qmd.cli.subprocess.run") as mock_run:
+    with patch("lies.qmd.cli.shutil.which", return_value="/usr/bin/qmd"), \
+         patch("lies.qmd.cli.subprocess.run") as mock_run:
         mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
         qmd_collection_add(tmp_path, tmp_path / "wiki", "mywiki")
         args = mock_run.call_args.args[0]
