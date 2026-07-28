@@ -53,8 +53,11 @@ def init_wiki(path: str) -> str:
     commit. The path must not already contain files.
     """
     target = Path(path).expanduser().resolve()
-    if target.exists() and any(target.iterdir()):
-        raise WikiRootError(f"{target} is not empty")
+    if target.exists():
+        if not target.is_dir():
+            raise WikiRootError(f"{target} is not a directory")
+        if any(target.iterdir()):
+            raise WikiRootError(f"{target} is not empty")
 
     target.mkdir(parents=True, exist_ok=True)
     layout = WikiLayout(target)
