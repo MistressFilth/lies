@@ -12,10 +12,12 @@ from typing import Any
 def memory(wiki_root: object = None) -> Any:
     """Return a configured Memory capability for the orchestrator.
 
-    The memory is namespaced per-wiki so multiple wikis don't collide.
-    The ``wiki_root`` argument is accepted for forward compatibility but
-    not currently used: harness's Memory namespace path-validator
-    rejects absolute paths, so we use a flat ``"lies"`` namespace here.
+    The capability is backed by a flat ``"lies"`` namespace. Multi-wiki
+    namespacing is not currently supported: harness's ``Memory``
+    namespace path-validator rejects absolute paths, so we cannot key
+    the namespace on ``wiki_root``. Two wikis opened against the same
+    LIES install will share memory state. ``wiki_root`` is accepted for
+    forward compatibility but is not used.
     """
     # NOTE: brief shows `from pydantic_ai_harness import Memory`, but
     # `Memory` is exposed under the `memory` subpackage only.
