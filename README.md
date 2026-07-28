@@ -10,9 +10,7 @@ bookkeeping.
 
 ## Status
 
-MVP complete. All 16 implementation tasks landed on `feat/lies-mvp`. The design
-spec is at `docs/superpowers/specs/2026-07-27-lies-design.md`; the
-implementation plan is at `docs/superpowers/plans/2026-07-27-lies-implementation.md`.
+MVP complete. The branch `feat/lies-mvp` is ready to merge to `main`.
 
 ## Quick start
 
@@ -52,9 +50,6 @@ uv run pytest -v
 uv run ruff check src/lies tests
 uv run mypy src/lies
 ```
-
-The CI workflow at `.github/workflows/ci.yml` runs the same three checks on
-every push and pull request.
 
 ## Architecture
 
@@ -103,7 +98,7 @@ CLI commands (`src/lies/cli.py`):
 
 - `lies init <path>` — initialize a new wiki (creates dirs, copies default
   schema, `git init`, initial commit).
-- `lies ingest <source>` — ingest a source (path, URL, or `-` for stdin).
+- `lies ingest <source>` — ingest a local source path.
 - `lies query <question>` — ask a question of the wiki.
 - `lies lint [--fix]` — health-check the wiki; `--fix` applies safe fixes.
 - `lies status` — show qmd status and the last few log entries.
@@ -111,8 +106,6 @@ CLI commands (`src/lies/cli.py`):
 - `lies version` — print the LIES version.
 - `lies` (no subcommand) — enter the REPL (`/ingest`, `/query`, `/lint`,
   `/status`, `/commit`, `/exit`).
-
-For the full design, see `docs/superpowers/specs/2026-07-27-lies-design.md`.
 
 ## License
 
