@@ -1,0 +1,350 @@
+"""Query synthesizer with qmd → wiki/index.md fallback.
+
+Implements the query workflow from the LIES default schema (and the
+Error handling table in the spec):
+
+    1. Search via `qmd query` (hybrid BM25 + vector + rerank).
+    2. Read the top-N pages (default 5).
+    3. Synthesize an answer with inline citations.
+
+Fallback (per spec):
+
+    - `qmd` not installed → fall back to `wiki/index.md` navigation.
+    - `qmd query` returns no results → fall back to `wiki/index.md` scan.
+
+The synthesis here is deterministic / extractive so the fallback path
+is testable without a live LLM. A future task may swap the synthesis
+core for an LLM-backed one; the public function signature and the
+fallback contract are the load-bearing parts.
+"""
+from __future__ import annotations
+
+from collections.abc import Callable
+from dataclasses import dataclass
+from pathlib import Path
+
+from lies.qmd.cli import qmd_query
+from lies.query.index_parser import parse_index_links
+from lies.query.models import SynthesizedAnswer
+from lies.wiki.layout import WikiLayout
+
+DEFAULT_TOP_N = 5
+
+# Reasons the fallback was triggered (also see SynthesizedAnswer docs).
+FALLBACK_REASON_UNAVAILABLE = "qmd_unavailable"
+FALLBACK_REASON_NO_RESULTS = "qmd_no_results"
+FALLBACK_REASON_FAILED = "qmd_failed"
+
+# Qmd search callable signature: (cwd, question, limit) -> list[dict].
+QmdSearchFn = Callable[..., list[dict[str, object]]]
+
+
+@dataclass(frozen=True)
+class _PageRead:
+    """A page read during synthesis."""
+
+    rel_path: str  # wiki-relative, POSIX
+    title: str
+    excerpt: str
+
+
+def synthesize_answer(
+    question: str,
+    layout: WikiLayout,
+    *,
+    top_n: int = DEFAULT_TOP_N,
+    qmd_search: QmdSearchFn = qmd_query,
+) -> SynthesizedAnswer:
+    """Answer `question` using the wiki at `layout`.
+
+    Tries ``qmd_search`` first. On ``QmdNotInstalledError``,
+    ``QmdNoResultsError``, or any other qmd failure, falls back to
+    reading the top-N pages referenced by ``wiki/index.md``.
+
+    Args:
+        question: The user's natural-language question.
+        layout: The wiki to search.
+        top_n: Maximum number of pages to read (default 5, per schema).
+        qmd_search: Injectable search callable. Defaults to
+            :func:`lies.qmd.cli.qmd_query`. Tests pass a stub.
+
+    Returns:
+        A :class:`SynthesizedAnswer` whose ``fallback_used`` and
+        ``fallback_reason`` fields describe how the answer was built.
+    """
+    if not question or not question.strip():
+        return SynthesizedAnswer(answer="(empty question)")
+
+    pages: list[_PageRead] = []
+    fallback_reason = ""
+
+    try:
+        pages = _qmd_search_dispatch(qmd_search, layout, question, top_n)
+    except _QmdUnavailable:
+        fallback_reason = FALLBACK_REASON_UNAVAILABLE
+    except _QmdNoResults:
+        fallback_reason = FALLBACK_REASON_NO_RESULTS
+    except _QmdOtherFailure:
+        fallback_reason = FALLBACK_REASON_FAILED
+
+    if fallback_reason:
+        pages = _read_pages_from_index(layout, top_n=top_n)
+
+    if not pages:
+        return SynthesizedAnswer(
+            answer=_empty_answer(question, fallback_reason),
+            citations=[],
+            pages_read=[],
+            fallback_used=bool(fallback_reason),
+            fallback_reason=fallback_reason,
+        )
+
+    return _build_answer(question, pages, fallback_reason)
+
+
+# ---------------------------------------------------------------------------
+# Internal sentinel exceptions (so the public function catches a narrow set)
+# ---------------------------------------------------------------------------
+
+
+class _QmdUnavailable(Exception):
+    """Sentinel: qmd binary is missing."""
+
+
+class _QmdNoResults(Exception):
+    """Sentinel: qmd returned zero results or paths we couldn't read."""
+
+
+class _QmdOtherFailure(Exception):
+    """Sentinel: qmd exited non-zero / timed out / bad JSON."""
+
+
+# ---------------------------------------------------------------------------
+# Index-driven page reading
+# ---------------------------------------------------------------------------
+
+
+def _read_pages_from_index(layout: WikiLayout, top_n: int) -> list[_PageRead]:
+    """Read the top-N pages referenced by ``wiki/index.md``.
+
+    Only the first ``top_n`` *existing* pages are returned, in index
+    order (which the indexer keeps alphabetical within each section).
+    """
+    if not layout.index_path.exists():
+        return []
+
+    content = layout.index_path.read_text(encoding="utf-8")
+    links = parse_index_links(content)
+
+    pages: list[_PageRead] = []
+    for link in links:
+        if len(pages) >= top_n:
+            break
+        # The index stores paths relative to wiki/, e.g., "entities/postgres.md"
+        page_on_disk = layout.wiki_dir / link.path
+        read = _try_read(page_on_disk, layout, title_override=link.title)
+        if read is not None:
+            pages.append(read)
+    return pages
+
+
+def _resolve_qmd_pages(
+    layout: WikiLayout, qmd_paths: list[str], top_n: int
+) -> list[_PageRead]:
+    """Resolve qmd-returned paths to actual readable pages on disk.
+
+    Defends against path traversal: any returned path that escapes
+    ``layout.root`` is silently dropped.
+    """
+    pages: list[_PageRead] = []
+    for raw in qmd_paths:
+        if len(pages) >= top_n:
+            break
+        candidate = Path(raw)
+        if not candidate.is_absolute():
+            candidate = (layout.root / raw).resolve()
+        try:
+            candidate.relative_to(layout.root)
+        except ValueError:
+            continue
+        read = _try_read(candidate, layout)
+        if read is not None:
+            pages.append(read)
+    return pages
+
+
+def _try_read(
+    path: Path, layout: WikiLayout, *, title_override: str | None = None
+) -> _PageRead | None:
+    """Read a page; return None if missing/unreadable."""
+    if not path.exists() or not path.is_file():
+        return None
+    try:
+        content = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+
+    rel = path.relative_to(layout.root).as_posix()
+    title = title_override or _extract_title(content) or path.stem
+    excerpt = _first_meaningful_paragraph(content)
+    return _PageRead(rel_path=rel, title=title, excerpt=excerpt)
+
+
+def _extract_title(content: str) -> str | None:
+    """Return the first H1 heading text, skipping YAML frontmatter."""
+    in_fm = False
+    seen_fm = False
+    for line in content.splitlines():
+        if not seen_fm and line.strip() == "---":
+            in_fm = not in_fm
+            if not in_fm:
+                seen_fm = True
+            continue
+        if in_fm:
+            continue
+        if line.startswith("# "):
+            return line[2:].strip()
+    return None
+
+
+def _first_meaningful_paragraph(content: str, max_chars: int = 400) -> str:
+    """Return the first non-heading, non-empty paragraph, truncated.
+
+    Skips YAML frontmatter and headings. Concatenates consecutive
+    non-empty lines into a single paragraph, up to ``max_chars``.
+    """
+    in_fm = False
+    seen_fm = False
+    para: list[str] = []
+    for line in content.splitlines():
+        if not seen_fm and line.strip() == "---":
+            in_fm = not in_fm
+            if not in_fm:
+                seen_fm = True
+            continue
+        if in_fm:
+            continue
+        stripped = line.strip()
+        if not stripped:
+            if para:
+                break
+            continue
+        if stripped.startswith("#"):
+            if para:
+                break
+            continue
+        para.append(stripped)
+        if len(" ".join(para)) >= max_chars:
+            break
+    text = " ".join(para).strip()
+    if len(text) > max_chars:
+        text = text[: max_chars - 3].rstrip() + "..."
+    return text
+
+
+# ---------------------------------------------------------------------------
+# Answer assembly
+# ---------------------------------------------------------------------------
+
+
+def _build_answer(
+    question: str, pages: list[_PageRead], fallback_reason: str
+) -> SynthesizedAnswer:
+    """Assemble the final SynthesizedAnswer from the read pages."""
+    citations: list[str] = []
+    page_links: list[str] = []
+    bullets: list[str] = []
+    for page in pages:
+        citations.append(page.rel_path)
+        page_links.append(f"[{page.title}]({page.rel_path})")
+        excerpt = page.excerpt or "(no extractable content)"
+        bullets.append(f"- {page.title} — {excerpt} — [{page.title}]({page.rel_path})")
+
+    if fallback_reason:
+        preamble = (
+            f"_Note: qmd unavailable ({fallback_reason}); "
+            f"answered from `wiki/index.md`._\n\n"
+        )
+    else:
+        preamble = ""
+
+    answer = (
+        f"### {question.strip()}\n\n"
+        f"{preamble}"
+        f"Based on {len(pages)} wiki page(s):\n\n"
+        + "\n".join(bullets)
+    )
+
+    return SynthesizedAnswer(
+        answer=answer,
+        citations=citations,
+        pages_read=citations,
+        fallback_used=bool(fallback_reason),
+        fallback_reason=fallback_reason,
+        page_links=page_links,
+    )
+
+
+def _empty_answer(question: str, fallback_reason: str) -> str:
+    """The 'no pages found' answer body."""
+    if fallback_reason == FALLBACK_REASON_NO_RESULTS:
+        return (
+            f"### {question.strip()}\n\n"
+            "_qmd query returned no results, and `wiki/index.md` "
+            "contains no readable pages._\n\n"
+            "No pages found."
+        )
+    if fallback_reason == FALLBACK_REASON_UNAVAILABLE:
+        return (
+            f"### {question.strip()}\n\n"
+            "_qmd is not installed, and `wiki/index.md` contains no "
+            "readable pages._\n\n"
+            "No pages found."
+        )
+    if fallback_reason == FALLBACK_REASON_FAILED:
+        return (
+            f"### {question.strip()}\n\n"
+            "_qmd query failed, and `wiki/index.md` contains no "
+            "readable pages._\n\n"
+            "No pages found."
+        )
+    return f"### {question.strip()}\n\nNo pages found."
+
+
+# ---------------------------------------------------------------------------
+# Qmd dispatch: translate real qmd exceptions into sentinels
+# ---------------------------------------------------------------------------
+
+
+def _qmd_search_dispatch(
+    fn: QmdSearchFn, layout: WikiLayout, question: str, top_n: int
+) -> list[_PageRead]:
+    """Call ``fn`` and translate its real exceptions into sentinels.
+
+    The public ``synthesize_answer`` only catches the sentinel
+    exceptions above; the real ``lies.qmd.cli`` exception types are
+    mapped to them here so the public surface stays narrow and stable.
+    """
+    # Local imports avoid a circular import at module load time.
+    from lies.qmd.cli import (  # noqa: WPS433
+        QmdCommandError,
+        QmdNoResultsError,
+        QmdNotInstalledError,
+    )
+
+    try:
+        results = fn(layout.root, question, top_n)
+    except QmdNotInstalledError as exc:
+        raise _QmdUnavailable(str(exc)) from exc
+    except QmdNoResultsError as exc:
+        raise _QmdNoResults(str(exc)) from exc
+    except QmdCommandError as exc:
+        raise _QmdOtherFailure(str(exc)) from exc
+
+    qmd_paths = [path for r in results if isinstance(r, dict) and isinstance((path := r.get("path")), str)]
+    pages = _resolve_qmd_pages(layout, qmd_paths, top_n)
+    if not pages:
+        # qmd gave us hits but none of the files are readable — treat as
+        # "no results" so the fallback path runs.
+        raise _QmdNoResults("qmd returned no readable pages")
+    return pages
