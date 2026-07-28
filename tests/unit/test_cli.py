@@ -111,3 +111,43 @@ def test_repl_ignores_blank_lines() -> None:
         result = runner.invoke(app, [], input="\n\n   \n/exit\n")
     assert result.exit_code == 0
     MockOrch.return_value.run.assert_not_called()
+
+
+# Tests for the `mcp` subcommand (Task 5).
+#
+# These verify that `lies mcp` is a registered Typer subcommand that
+# delegates to FastMCP's ``mcp.run(transport="stdio")``. The wiring is
+# exercised by monkeypatching the imported ``mcp`` instance's ``run``
+# method, asserting it is invoked exactly once with the expected kwargs.
+# No real stdio MCP server is spawned inside the test process.
+
+
+def test_version_subcommand() -> None:
+    result = runner.invoke(app, ["version"])
+    assert result.exit_code == 0
+    assert result.stdout.startswith("lies ")
+
+
+def test_config_subcommand() -> None:
+    result = runner.invoke(app, ["config"])
+    assert result.exit_code == 0
+    assert "model:" in result.stdout
+    assert "wiki_root:" in result.stdout
+
+
+def test_mcp_subcommand_is_registered() -> None:
+    """`lies mcp` is a registered subcommand (does not crash with 'no such command')."""
+    result = runner.invoke(app, ["mcp", "--help"])
+    assert result.exit_code == 0
+    assert "mcp" in result.stdout.lower() or "stdio" in result.stdout.lower()
+
+
+def test_mcp_subcommand_invokes_fastmcp_run(monkeypatch) -> None:
+    """`lies mcp` calls mcp.run(transport='stdio') exactly once."""
+    from lies.mcp.server import mcp as _mcp
+
+    calls: list[dict] = []
+    monkeypatch.setattr(_mcp, "run", lambda **kwargs: calls.append(kwargs))
+    result = runner.invoke(app, ["mcp"])
+    assert result.exit_code == 0
+    assert calls == [{"transport": "stdio"}]
