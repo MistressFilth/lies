@@ -40,6 +40,21 @@ def version() -> None:
 
 
 @app.command()
+def mcp() -> None:
+    """Run the LIES MCP server on stdio.
+
+    Spawn this process from any MCP-capable host (Claude Code,
+    Cursor, etc.) to expose LIES tools and resources over the Model
+    Context Protocol. See README "Using LIES from Claude Code" for
+    registration commands.
+    """
+    configure_logging()
+    from lies.mcp.server import mcp as _mcp_server
+
+    _mcp_server.run(transport="stdio")
+
+
+@app.command()
 def config() -> None:
     """Print the current LIES configuration."""
     typer.echo(f"model: {get_model()}")
