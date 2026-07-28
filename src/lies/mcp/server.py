@@ -17,6 +17,7 @@ from lies import __version__
 from lies.mcp.resolution import (
     WikiRootError,
     _resolve_wiki_root,
+    _safe_page_path,
 )
 from lies.orchestrator import Orchestrator
 from lies.query.models import SynthesizedAnswer
@@ -142,3 +143,122 @@ def lint(wiki_root: str | None = None, fix: bool = False) -> str:
     layout = _resolve_wiki_root(wiki_root)
     orch = Orchestrator(wiki_root=layout.root)
     return orch.run_lint()
+
+
+# ---------------------------------------------------------------------------
+# Resources — raw wiki reads, no LLM round-trip
+# ---------------------------------------------------------------------------
+
+
+def _wiki_status_impl(wiki_root: str | None = None) -> str:
+    """Return qmd status plus the last 10 lines of ``wiki/log.md``.
+
+    If qmd is unavailable, the error is embedded in the returned string
+    (resource reads must never fail loudly for a degraded-but-functional
+    state).
+    """
+    layout = _resolve_wiki_root(wiki_root)
+    out = "=== qmd status ===\n"
+    try:
+        from lies.qmd import qmd_status as _qmd_status
+
+        out += _qmd_status(layout.root)
+    except Exception as exc:  # noqa: BLE001 - degraded path must surface, not crash
+        out += f"qmd unavailable: {exc}"
+    out += "\n\n=== last 10 log entries ===\n"
+    if layout.log_path.exists():
+        lines = layout.log_path.read_text(encoding="utf-8").splitlines()
+        for line in lines[-10:]:
+            out += line + "\n"
+    else:
+        out += "(no log yet)\n"
+    return out
+
+
+@mcp.resource("wiki://status")
+def wiki_status() -> str:
+    """Return qmd status plus the last 10 lines of ``wiki/log.md``."""
+    return _wiki_status_impl()
+
+
+@mcp.resource("wiki://index")
+def wiki_index() -> str:
+    """Return the raw contents of ``wiki/index.md`` (empty string if absent)."""
+    return _wiki_index_impl()
+
+
+def _wiki_index_impl(wiki_root: str | None = None) -> str:
+    layout = _resolve_wiki_root(wiki_root)
+    if not layout.index_path.exists():
+        return ""
+    return layout.index_path.read_text(encoding="utf-8")
+
+
+@mcp.resource("wiki://log")
+def wiki_log() -> str:
+    """Return the raw contents of ``wiki/log.md`` (empty string if absent)."""
+    return _wiki_log_impl()
+
+
+def _wiki_log_impl(wiki_root: str | None = None) -> str:
+    layout = _resolve_wiki_root(wiki_root)
+    if not layout.log_path.exists():
+        return ""
+    return layout.log_path.read_text(encoding="utf-8")
+
+
+@mcp.resource("wiki://lint-report")
+def wiki_lint_report() -> str:
+    """Return the most recent ``wiki/lint-report.md`` (empty string if absent)."""
+    return _wiki_lint_report_impl()
+
+
+def _wiki_lint_report_impl(wiki_root: str | None = None) -> str:
+    layout = _resolve_wiki_root(wiki_root)
+    if not layout.lint_report_path.exists():
+        return ""
+    return layout.lint_report_path.read_text(encoding="utf-8")
+
+
+def _wiki_page_impl(path: str, wiki_root: str | None = None) -> str:
+    """Return the raw markdown of any page under ``wiki/``.
+
+    ``path`` is relative to ``<wiki_root>/wiki/``. Absolute paths,
+    ``..`` traversal, and any path that resolves outside the wiki are
+    rejected with ``WikiRootError``. Missing files return ``""``
+    (the resource exists; the page just hasn't been written yet).
+    """
+    layout = _resolve_wiki_root(wiki_root)
+    resolved = _safe_page_path(layout.root, path)
+    if not resolved.exists():
+        return ""
+    return resolved.read_text(encoding="utf-8")
+
+
+@mcp.resource("wiki://page/{path}")
+def wiki_page(path: str) -> str:
+    """Return any markdown page under ``wiki/`` by relative path."""
+    return _wiki_page_impl(path)
+
+
+# ---------------------------------------------------------------------------
+# Prompt — starter template for asking the wiki
+# ---------------------------------------------------------------------------
+
+
+@mcp.prompt
+def ask_wiki(question: str) -> str:
+    """Starter prompt that templates a ``query`` tool invocation.
+
+    The LLM receives this prompt and is expected to call the ``query``
+    tool with the templated question, then synthesize a final answer
+    from the structured result.
+    """
+    return (
+        f"Use the `query` tool to ask the wiki the following question, "
+        f"then answer concisely from the structured result:\n\n"
+        f"  question: {question}\n\n"
+        f"If the result's `fallback_used` is true, mention that the "
+        f"answer came from the index fallback (not qmd search) and "
+        f"include the `fallback_reason`."
+    )
