@@ -13,6 +13,8 @@ dependencies = [
     "pyyaml",
     "python-frontmatter",
     "pydantic>=2.0",
+    "fastmcp>=2.0",
+    "mcp>=1.0",
 ]
 
 [project.optional-dependencies]
@@ -24,17 +26,10 @@ dev = [
     "mypy>=1.10",
     "respx>=0.21",  # for mocking HTTP in tests
 ]
-# `qmd` enables the qmd MCP stdio transport (https://github.com/tobi/qmd#mcp).
-# The default LIES install does not need this: the MCP client constructs
-# without these deps and only fails on the first tool call. Install this
-# extra to enable agent-native hybrid search at runtime:
-#   uv pip install "lies[qmd]"
-#   # or:
-#   uv sync --extra qmd
-qmd = [
-    "fastmcp>=2.0",
-    "mcp>=1.0",
-]
+# `qmd` is now an empty extra retained for back-compat. `fastmcp` and `mcp`
+# are default dependencies as of the MCP server release. Install with
+# `uv sync --extra qmd` continues to work but adds nothing on top of defaults.
+qmd = []
 
 [project.scripts]
 lies = "lies.cli:app"
