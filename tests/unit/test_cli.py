@@ -116,10 +116,10 @@ def test_repl_ignores_blank_lines() -> None:
 # Tests for the `mcp` subcommand (Task 5).
 #
 # These verify that `lies mcp` is a registered Typer subcommand that
-# delegates to FastMCP's ``mcp.run(transport="stdio")``. The
-# `_impl`-style forwarder pattern from `src/lies/mcp/server.py` is
-# mirrored here so the wiring can be exercised without spawning a real
-# stdio MCP server inside the test process.
+# delegates to FastMCP's ``mcp.run(transport="stdio")``. The wiring is
+# exercised by monkeypatching the imported ``mcp`` instance's ``run``
+# method, asserting it is invoked exactly once with the expected kwargs.
+# No real stdio MCP server is spawned inside the test process.
 
 
 def test_version_subcommand() -> None:
