@@ -55,6 +55,10 @@ class WikiCollectionInvalid(WikiMemoryError):
     """The referenced collection is not registered with the service."""
 
 
+class WikiLockBusy(WikiMemoryError):
+    """Another process holds the wiki memory lock."""
+
+
 # --- Collection and evidence -------------------------------------------
 
 

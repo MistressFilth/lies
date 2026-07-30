@@ -9,10 +9,12 @@ condition in the receipt.
 
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import hashlib
 import subprocess
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -25,6 +27,7 @@ from lies.memory.models import (
     PageCreate,
     PageReference,
     PageUpdate,
+    WikiLockBusy,
     WikiPlanInvalid,
     WikiSearchResult,
     WikiWriteConflict,
@@ -46,6 +49,32 @@ _QMD_STALE_PREFIX = "qmd_stale"
 
 def _hash_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+@contextlib.contextmanager
+def _acquire_wiki_flock(lock_path: Path) -> Iterator[None]:
+    """Acquire a non-blocking exclusive flock on ``lock_path``.
+
+    Yields once on success; releases the kernel lock when the file
+    descriptor is closed. Raises :class:`WikiLockBusy` if the lock is
+    already held by another process.
+    """
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    fd = lock_path.open("w", encoding="utf-8")
+    try:
+        try:
+            fcntl.flock(fd.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except (BlockingIOError, OSError) as exc:
+            raise WikiLockBusy(
+                f"wiki memory lock is held by another process: {lock_path}"
+            ) from exc
+        yield
+    finally:
+        try:
+            fcntl.flock(fd.fileno(), fcntl.LOCK_UN)
+        except OSError:
+            pass
+        fd.close()
 
 
 def _read_page(layout: WikiLayout, path: str) -> str | None:
@@ -109,6 +138,16 @@ class WikiMemoryService:
         self._qmd_update = qmd_update
         self._lock = threading.Lock()
         self._known_evidence: set[str] = set()
+
+    def _lock_path(self) -> Path:
+        """Return the cross-process lock file path for this wiki."""
+        return self._layout.root / ".lies" / "memory.lock"
+
+    @contextlib.contextmanager
+    def _acquire_flock(self) -> Iterator[None]:
+        """Acquire the cross-process flock for this wiki."""
+        with _acquire_wiki_flock(self._lock_path()):
+            yield
 
     @property
     def known_evidence(self) -> frozenset[str]:
@@ -222,7 +261,7 @@ class WikiMemoryService:
         working tree back to its pre-apply state. The qmd refresh runs
         after the commit and reports ``qmd_stale`` non-fatally.
         """
-        with self._lock:
+        with self._acquire_flock(), self._lock:
             self.validate_plan(plan)
             if plan.is_noop():
                 return self._empty_receipt()
