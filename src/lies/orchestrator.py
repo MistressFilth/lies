@@ -20,6 +20,14 @@ from lies.capabilities import (
     planning,
 )
 from lies.config import get_model
+from lies.memory.enricher import MemoryEnricherDeps, enricher_agent
+from lies.memory.models import (
+    MemoryReceipt,
+    WikiPlanInvalid,
+    WikiWriteConflict,
+)
+from lies.memory.service import WikiMemoryService
+from lies.memory.tools import WikiMemoryDeps, register_read_tools
 from lies.qmd import QmdMcpClient
 from lies.query import SynthesizedAnswer, synthesize_answer
 from lies.schema import load_schema
@@ -264,6 +272,7 @@ class Orchestrator:
                 wiki_root=self.layout.root
             )
             + self.schema,
+            deps_type=WikiMemoryDeps,
             capabilities=[
                 SubAgents(agents=delegates),
                 code_mode(),
@@ -275,6 +284,9 @@ class Orchestrator:
                 QmdMcpClient(transport="stdio").as_capability(),
             ],
         )
+        self._memory_service = WikiMemoryService(self.layout)
+        self._enricher = enricher_agent(model=self.model)
+        register_read_tools(self._agent)
 
     def run(self, command: str) -> str:
         """Run a user command and return a human-readable result.
@@ -288,6 +300,128 @@ class Orchestrator:
         """
         result = self._agent.run_sync(command)
         return str(result.output)
+
+    def run_with_memory(self, command: str) -> str:
+        """Run a user command with invisible memory enabled.
+
+        Returns the orchestrator's natural-language answer plus a
+        short change receipt when the turn durably updated the wiki.
+        Routine reads and bookkeeping stay out of the response.
+        """
+        try:
+            result = self._agent.run_sync(
+                command, deps=WikiMemoryDeps(layout=self.layout, service=self._memory_service)
+            )
+            answer = str(result.output)
+        except Exception:  # noqa: BLE001 - last-resort graceful degradation
+            return self._answer_without_enrichment(command)
+
+        new_messages: list[object] = getattr(result, "new_messages", list)()
+        pages_read, citations = self._extract_evidence(new_messages)
+        if not self._enrichment_signal(pages_read, citations, command):
+            return answer
+
+        receipt = self._run_enrichment(answer, pages_read, citations)
+        if not receipt.changed_pages and not receipt.errors:
+            return answer
+        return answer + "\n\n" + self._format_receipt(receipt)
+
+    def _extract_evidence(self, messages: list[object]) -> tuple[list[str], list[str]]:
+        pages: set[str] = set()
+        citations: list[str] = []
+        for msg in messages:
+            parts = getattr(msg, "parts", [])
+            for part in parts:
+                tool_name = getattr(part, "tool_name", None)
+                if tool_name in {"wiki_search", "wiki_read"}:
+                    args = getattr(part, "args", None)
+                    if not isinstance(args, dict):
+                        continue
+                    if tool_name == "wiki_read":
+                        for pid in args.get("page_ids", []) or []:
+                            if isinstance(pid, str):
+                                pages.add(pid)
+                    # wiki_search takes a question; no paths to harvest.
+        return sorted(pages), citations
+
+    def _enrichment_signal(
+        self, pages_read: list[str], citations: list[str], command: str
+    ) -> bool:
+        if pages_read:
+            return True
+        if citations:
+            return True
+        # Detect explicit project-source material in the command.
+        lowered = command.lower()
+        for marker in ("raw/", ".md", "wiki/", "http://", "https://"):
+            if marker in lowered:
+                return True
+        return False
+
+    def _run_enrichment(
+        self, answer: str, pages_read: list[str], citations: list[str]
+    ) -> MemoryReceipt:
+        try:
+            plan = self._enricher.run_sync(
+                "Propose a MemoryPlan for the latest turn.",
+                deps=MemoryEnricherDeps(
+                    answer=answer,
+                    pages_read=pages_read,
+                    citations=citations,
+                    evidence_text="\n".join(pages_read + citations),
+                ),
+            ).output
+        except Exception as exc:  # noqa: BLE001 - enricher must not block answers
+            return MemoryReceipt(
+                changed_pages=[],
+                deferred=[f"enricher_failed: {exc!s}"],
+                fallback_used=False,
+                fallback_reason="",
+                errors=[f"enricher_failed: {exc!s}"],
+            )
+        if plan.is_noop():
+            return MemoryReceipt(
+                changed_pages=[],
+                deferred=[],
+                fallback_used=False,
+                fallback_reason="",
+                errors=[],
+            )
+        try:
+            return self._memory_service.apply_plan(plan)
+        except (WikiPlanInvalid, WikiWriteConflict) as exc:
+            return MemoryReceipt(
+                changed_pages=[],
+                deferred=[f"plan_rejected: {exc!s}"],
+                fallback_used=False,
+                fallback_reason="",
+                errors=[f"plan_rejected: {exc!s}"],
+            )
+
+    def _format_receipt(self, receipt: MemoryReceipt) -> str:
+        if not receipt.changed_pages:
+            return f"(memory: {', '.join(receipt.errors) or 'no change'})"
+        lines = ["(memory: durably filed"]
+        for ref in receipt.changed_pages:
+            lines.append(f"  - {ref.op.value}: {ref.path}")
+        if receipt.errors:
+            lines.append("  notes: " + "; ".join(receipt.errors))
+        lines.append(")")
+        return "\n".join(lines)
+
+    def _answer_without_enrichment(self, command: str) -> str:
+        """Return the orchestrator's plain answer without enrichment.
+
+        If the underlying agent run raises -- for example because a
+        downstream tool exhausted its retry budget -- degrade to an
+        empty answer rather than propagating. ``run_with_memory`` is
+        the user-facing entry point and must not raise; callers can
+        still detect emptiness and surface their own diagnostics.
+        """
+        try:
+            return self.run(command)
+        except Exception:  # noqa: BLE001 - last-resort graceful degradation
+            return ""
 
     def run_ingest(self, source: str) -> str:
         """Run an ingest with host-side atomicity and rollback.
