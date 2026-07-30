@@ -68,9 +68,64 @@ def test_acquire_flock_releases_on_exception(git_wiki: WikiLayout) -> None:
         pass
 
 
-def test_gitignore_contains_lock_entry() -> None:
-    text = Path(".gitignore").read_text(encoding="utf-8")
+def test_gitignore_contains_lock_entry(git_wiki: WikiLayout) -> None:
+    """The target wiki's .gitignore contains the lock entry."""
+    service = WikiMemoryService(git_wiki)
+    with service._acquire_flock():
+        pass
+    text = (git_wiki.root / ".gitignore").read_text(encoding="utf-8")
     assert ".lies/memory.lock" in text
+
+
+def test_gitignore_entry_is_idempotent(git_wiki: WikiLayout) -> None:
+    """Calling _acquire_flock twice does not duplicate the entry."""
+    service = WikiMemoryService(git_wiki)
+    with service._acquire_flock():
+        pass
+    text1 = (git_wiki.root / ".gitignore").read_text(encoding="utf-8")
+    with service._acquire_flock():
+        pass
+    text2 = (git_wiki.root / ".gitignore").read_text(encoding="utf-8")
+    assert text1 == text2
+    assert text2.count(".lies/memory.lock") == 1
+
+
+def test_stash_does_not_unlink_held_lock(git_wiki: WikiLayout) -> None:
+    """Regression: ``git stash --include-untracked`` must not unlink the lock.
+
+    Without ``.lies/memory.lock`` in the target wiki's .gitignore, the
+    stash would move the file aside. The kernel flock survives on the
+    orphaned inode, but a concurrent process could then create a new
+    file at the same path and flock the new inode, reopening the race.
+    With the gitignore entry in place, the stash skips the file and
+    the held flock remains effective against a fresh fd on the same
+    path.
+    """
+    service = WikiMemoryService(git_wiki)
+    with service._acquire_flock():
+        lock_path = service._lock_path()
+        assert lock_path.exists()
+
+        result = subprocess.run(
+            ["git", "stash", "push", "--include-untracked", "-m", "test"],
+            cwd=git_wiki.root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 0, f"stash failed: {result.stderr}"
+
+        # The lock file is still on disk (not unlinked into the stash).
+        assert lock_path.exists(), "lock file was unlinked by stash"
+
+        # A fresh fd on the same path still gets EWOULDBLOCK — the
+        # original holder's flock is still effective.
+        probe = lock_path.open("w", encoding="utf-8")
+        try:
+            with pytest.raises(BlockingIOError):
+                fcntl.flock(probe.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        finally:
+            probe.close()
 
 
 def test_wiki_lock_busy_is_wiki_memory_error() -> None:
