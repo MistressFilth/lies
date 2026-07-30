@@ -40,8 +40,6 @@ from lies.wiki.layout import WikiLayout
 _QMD_STALE_PREFIX = "qmd_stale"
 _LOCK = threading.Lock()
 
-_EMPTY_SHA256 = hashlib.sha256(b"").hexdigest()
-
 
 def _hash_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
@@ -52,10 +50,9 @@ def _read_page(layout: WikiLayout, path: str) -> str | None:
 
     Distinguishes "missing file" from "empty file": a missing file
     returns ``None`` (callers map it to the empty-string ``""`` sentinel);
-    an empty file returns ``""`` (which hashes to
-    :data:`_EMPTY_SHA256`). This keeps ``hash_page`` consistent with
-    ``validate_plan``'s hash-mismatch detection, where empty content is
-    a valid baseline rather than a missing-page sentinel.
+    an empty file returns ``""``. This keeps ``hash_page`` consistent
+    with ``validate_plan``'s hash-mismatch detection, where empty
+    content is a valid baseline rather than a missing-page sentinel.
     """
     try:
         resolved = validate_page_path(layout, path)
@@ -122,9 +119,9 @@ class WikiMemoryService:
     def current_state(self, path: str) -> tuple[str, str]:
         """Return ``(sha256, content)`` for the current page state.
 
-        ``sha256`` is :data:`_EMPTY_SHA256` for an empty file and ``""``
-        for a missing file. ``content`` is always the on-disk content
-        (``""`` for empty or missing).
+        ``sha256`` is the SHA-256 of the empty string for an empty file
+        and ``""`` for a missing file. ``content`` is always the
+        on-disk content (``""`` for empty or missing).
         """
         content = _read_page(self._layout, path)
         if content is None:
