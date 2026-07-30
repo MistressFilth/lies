@@ -28,4 +28,5 @@ class SynthesizedAnswer:
     pages_read: list[str] = field(default_factory=list)
     fallback_used: bool = False
     fallback_reason: str = ""
+    changed_pages: list[str] = field(default_factory=list)
     page_links: list[str] = field(default_factory=list)

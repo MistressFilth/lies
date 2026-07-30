@@ -252,10 +252,12 @@ def _build_answer(
 ) -> SynthesizedAnswer:
     """Assemble the final SynthesizedAnswer from the read pages."""
     citations: list[str] = []
+    pages_read: list[str] = []
     page_links: list[str] = []
     bullets: list[str] = []
     for page in pages:
         citations.append(page.rel_path)
+        pages_read.append(page.rel_path)
         page_links.append(f"[{page.title}]({page.rel_path})")
         excerpt = page.excerpt or "(no extractable content)"
         bullets.append(f"- {page.title} — {excerpt} — [{page.title}]({page.rel_path})")
@@ -278,7 +280,7 @@ def _build_answer(
     return SynthesizedAnswer(
         answer=answer,
         citations=citations,
-        pages_read=citations,
+        pages_read=pages_read,
         fallback_used=bool(fallback_reason),
         fallback_reason=fallback_reason,
         page_links=page_links,
