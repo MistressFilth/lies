@@ -104,7 +104,7 @@ def test_repl_no_memory_uses_plain_orchestrator_run() -> None:
     mock_instance.run_with_memory.assert_not_called()
 
 
-def test_repl_respects_wiki_root_env(monkeypatch) -> None:
+def test_repl_respects_wiki_root_env() -> None:
     """The REPL must resolve --wiki-root from env / CLI option."""
     with patch("lies.cli.Orchestrator") as MockOrch:
         result = runner.invoke(
