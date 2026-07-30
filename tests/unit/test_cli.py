@@ -83,14 +83,25 @@ def test_repl_eof_exits_cleanly() -> None:
 
 
 def test_repl_dispatches_free_form_to_orchestrator() -> None:
-    """Anything that isn't a slash-command is forwarded to the orchestrator."""
+    """Free-form commands use invisible memory by default."""
     with patch("lies.cli.Orchestrator") as MockOrch:
         mock_instance = MockOrch.return_value
-        mock_instance.run.return_value = "ok from orchestrator"
+        mock_instance.run_with_memory.return_value = "ok from orchestrator"
         result = runner.invoke(app, [], input="what does my wiki say about X?\n/exit\n")
     assert result.exit_code == 0
-    mock_instance.run.assert_called_once_with("what does my wiki say about X?")
+    mock_instance.run_with_memory.assert_called_once_with("what does my wiki say about X?")
+    mock_instance.run.assert_not_called()
     assert "ok from orchestrator" in result.stdout
+
+
+def test_repl_no_memory_uses_plain_orchestrator_run() -> None:
+    with patch("lies.cli.Orchestrator") as MockOrch:
+        mock_instance = MockOrch.return_value
+        mock_instance.run.return_value = "plain"
+        result = runner.invoke(app, ["--no-memory"], input="hello\n/exit\n")
+    assert result.exit_code == 0
+    mock_instance.run.assert_called_once_with("hello")
+    mock_instance.run_with_memory.assert_not_called()
 
 
 def test_repl_respects_wiki_root_env(monkeypatch) -> None:
