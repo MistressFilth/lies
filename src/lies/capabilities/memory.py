@@ -1,26 +1,19 @@
-"""Memory harness capability.
-
-Provides cross-session continuity: schema state, last-ingested source,
-open lint findings. Per Karpathy: the LLM should "understand what's been
-done recently." Memory makes that durable across CLI invocations.
-"""
+"""Memory harness capability, scoped per-wiki via WikiIdentity."""
 from __future__ import annotations
 
 from typing import Any
 
+from lies.memory.namespace import WikiIdentity
 
-def memory(wiki_root: object = None) -> Any:
-    """Return a configured Memory capability for the orchestrator.
 
-    The capability is backed by a flat ``"lies"`` namespace. Multi-wiki
-    namespacing is not currently supported: harness's ``Memory``
-    namespace path-validator rejects absolute paths, so we cannot key
-    the namespace on ``wiki_root``. Two wikis opened against the same
-    LIES install will share memory state. ``wiki_root`` is accepted for
-    forward compatibility but is not used.
+def memory(wiki_root: object) -> Any:
+    """Return a configured Memory capability keyed by the wiki's identity.
+
+    Two wikis opened against the same LIES install now receive
+    distinct namespaces. ``wiki_root`` is required; the previous
+    shared ``"lies"`` namespace is no longer used.
     """
-    # NOTE: brief shows `from pydantic_ai_harness import Memory`, but
-    # `Memory` is exposed under the `memory` subpackage only.
     from pydantic_ai_harness.memory import Memory
 
-    return Memory(namespace="lies")
+    identity = WikiIdentity.from_root(wiki_root)  # type: ignore[arg-type]
+    return Memory(namespace=identity.namespace)
