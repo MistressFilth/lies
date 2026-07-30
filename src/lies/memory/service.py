@@ -51,6 +51,47 @@ def _hash_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def _ensure_lock_gitignored(lock_path: Path) -> None:
+    """Ensure ``lock_path`` is gitignored in the target wiki.
+
+    Reads ``<wiki_root>/.gitignore`` if it exists; if the file does
+    not contain a non-comment line equal to the lock path relative
+    to the wiki root, appends it on a new line. Creates the file
+    with the line if it is absent. Idempotent — safe to call on
+    every lock attempt and a no-op when the entry is already
+    present.
+
+    This guard closes a race window: without the entry,
+    ``git stash push --include-untracked`` would move the lock
+    file aside. The kernel flock survives on the orphaned inode,
+    but a concurrent process could create a new file at the same
+    path and flock the new inode, reopening the race.
+    """
+    wiki_root = lock_path.parent.parent
+    gitignore_path = wiki_root / ".gitignore"
+    relative_line = lock_path.relative_to(wiki_root).as_posix()
+
+    existing = ""
+    if gitignore_path.exists():
+        try:
+            existing = gitignore_path.read_text(encoding="utf-8")
+        except OSError:
+            existing = ""
+
+    pattern_present = any(
+        line.strip() == relative_line
+        for line in existing.splitlines()
+    )
+    if pattern_present:
+        return
+
+    if existing and not existing.endswith("\n"):
+        existing += "\n"
+    gitignore_path.write_text(
+        existing + relative_line + "\n", encoding="utf-8"
+    )
+
+
 @contextlib.contextmanager
 def _acquire_wiki_flock(lock_path: Path) -> Iterator[None]:
     """Acquire a non-blocking exclusive flock on ``lock_path``.
@@ -58,8 +99,14 @@ def _acquire_wiki_flock(lock_path: Path) -> Iterator[None]:
     Yields once on success; releases the kernel lock when the file
     descriptor is closed. Raises :class:`WikiLockBusy` if the lock is
     already held by another process.
+
+    The lock path is gitignored before the file descriptor is opened
+    so ``git stash push --include-untracked`` (used by
+    ``WikiMemoryService._snapshot_working_tree``) cannot unlink the
+    inode behind a held flock.
     """
     lock_path.parent.mkdir(parents=True, exist_ok=True)
+    _ensure_lock_gitignored(lock_path)
     fd = lock_path.open("w", encoding="utf-8")
     try:
         try:
