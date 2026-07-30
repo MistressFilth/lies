@@ -75,10 +75,18 @@ def validate_frontmatter(frontmatter_dict: dict[str, Any], *, page_type: str) ->
         )
 
 
-def validate_operation_evidence(op: _PlanOperation) -> None:
-    """Validate a single plan operation's evidence and required fields."""
+def validate_operation_evidence(
+    op: _PlanOperation, *, known_references: set[str] | None = None
+) -> None:
+    """Validate evidence against references authenticated during this turn."""
     if not op.evidence:
         raise WikiEvidenceMissing(f"operation on {op.path!r} lacks evidence")
+    if known_references is not None:
+        unknown = [reference for reference in op.evidence if reference not in known_references]
+        if unknown:
+            raise WikiEvidenceMissing(
+                f"operation on {op.path!r} has unknown evidence references: {unknown}"
+            )
     if isinstance(op, PageUpdate) and not op.expected_sha256:
         raise WikiPlanInvalid(f"update on {op.path!r} requires expected_sha256")
     if isinstance(op, EvidenceAppend) and not op.expected_sha256:

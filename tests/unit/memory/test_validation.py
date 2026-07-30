@@ -103,3 +103,21 @@ def test_validate_operation_evidence_append_requires_hash() -> None:
     )
     with pytest.raises(WikiPlanInvalid):
         validate_operation_evidence(op)
+
+
+def test_validate_operation_evidence_rejects_unknown_reference() -> None:
+    op = PageCreate(path="concepts/x.md", content="# X", evidence=["invented"])
+    with pytest.raises(WikiEvidenceMissing, match="unknown evidence"):
+        validate_operation_evidence(op, known_references={"page-1", "wiki/source.md:2-4"})
+
+
+def test_validate_operation_evidence_accepts_page_path_and_line_range() -> None:
+    op = PageCreate(
+        path="concepts/x.md",
+        content="# X",
+        evidence=["wiki/source.md", "wiki/source.md:2-4"],
+    )
+    validate_operation_evidence(
+        op,
+        known_references={"wiki/source.md", "wiki/source.md:2-4"},
+    )

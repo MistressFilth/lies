@@ -26,9 +26,13 @@ from lies.memory.models import (
     PageReference,
     PageUpdate,
     WikiPlanInvalid,
+    WikiSearchResult,
     WikiWriteConflict,
 )
+from lies.memory.retrieval import _path_for_id, read_pages, search_wiki
 from lies.memory.validation import (
+    parse_frontmatter,
+    validate_frontmatter,
     validate_operation_evidence,
     validate_page_path,
     validate_page_type,
@@ -38,7 +42,6 @@ from lies.wiki.git import atomic_commit
 from lies.wiki.layout import WikiLayout
 
 _QMD_STALE_PREFIX = "qmd_stale"
-_LOCK = threading.Lock()
 
 
 def _hash_text(text: str) -> str:
@@ -104,6 +107,58 @@ class WikiMemoryService:
     ) -> None:
         self._layout = layout
         self._qmd_update = qmd_update
+        self._lock = threading.Lock()
+        self._known_evidence: set[str] = set()
+
+    @property
+    def known_evidence(self) -> frozenset[str]:
+        """Evidence references authenticated by this service during the turn."""
+        return frozenset(self._known_evidence)
+
+    def register_evidence(self, references: set[str]) -> None:
+        """Register citation references supplied by another bounded read surface."""
+        self._known_evidence.update(reference for reference in references if reference)
+
+    def search(
+        self,
+        question: str,
+        *,
+        collection_ids: list[str] | None = None,
+        limit: int = 5,
+    ) -> WikiSearchResult:
+        """Search this wiki and authenticate the returned evidence references."""
+
+        collection_id = self._layout.root.name
+        if collection_ids is not None and collection_id not in collection_ids:
+            return WikiSearchResult(
+                query=question,
+                pages=[],
+                truncated=False,
+                fallback_used=False,
+                fallback_reason="collection_filtered",
+            )
+        result = search_wiki(self._layout, question, limit=limit)
+        for page in result.pages:
+            self._known_evidence.update(
+                {
+                    page.page_id,
+                    page.path,
+                    f"{page.path}:{page.line_start}-{page.line_end}",
+                    page.excerpt,
+                }
+            )
+        return result
+
+    def read(self, page_ids: list[str]) -> dict[str, str]:
+        """Read authenticated page IDs through the service retrieval boundary."""
+        from lies.memory.models import WikiPageNotFound
+
+        unknown = [page_id for page_id in page_ids if _path_for_id(self._layout, page_id) is None]
+        if unknown:
+            raise WikiPageNotFound(f"unknown page_ids: {unknown}")
+        bodies = read_pages(self._layout, page_ids)
+        self._known_evidence.update(bodies)
+        return bodies
 
     def hash_page(self, path: str) -> str:
         """Return the sha256 of the current page content, or empty sentinel.
@@ -131,13 +186,24 @@ class WikiMemoryService:
     def validate_plan(self, plan: MemoryPlan) -> None:
         """Validate a plan without applying it. Raises typed errors."""
         for op in plan.operations:
-            validate_operation_evidence(op)
+            validate_operation_evidence(op, known_references=self._known_evidence)
             try:
                 resolved = validate_page_path(self._layout, op.path)
             except WikiPlanInvalid as exc:
                 raise WikiPlanInvalid(str(exc), path=op.path) from exc
             page_type = _page_type_from_dir(resolved.parent.name)
             validate_page_type(page_type)
+            if not isinstance(op, (PageCreate, PageUpdate, EvidenceAppend)):
+                raise WikiPlanInvalid(f"unsupported operation: {op!r}", path=op.path)
+            try:
+                validate_frontmatter(parse_frontmatter(op.content), page_type=page_type)
+            except WikiPlanInvalid as exc:
+                raise WikiPlanInvalid(str(exc), path=op.path) from exc
+            if isinstance(op, PageCreate) and resolved.exists():
+                raise WikiPlanInvalid(
+                    "page already exists; use UPDATE or APPEND",
+                    path=op.path,
+                )
             if isinstance(op, (PageUpdate, EvidenceAppend)):
                 current = _read_page(self._layout, op.path)
                 actual = "" if current is None else _hash_text(current)
@@ -156,7 +222,7 @@ class WikiMemoryService:
         working tree back to its pre-apply state. The qmd refresh runs
         after the commit and reports ``qmd_stale`` non-fatally.
         """
-        with _LOCK:
+        with self._lock:
             self.validate_plan(plan)
             if plan.is_noop():
                 return self._empty_receipt()
@@ -167,16 +233,9 @@ class WikiMemoryService:
             except BaseException:
                 self._restore_working_tree(repo, snapshot_ref)
                 raise
-            # ``_apply_operations`` succeeded; keep its writes and drop
-            # the snapshot. If the commit itself fails, roll the tree
-            # back to the pre-apply state.
-            self._discard_snapshot(repo, snapshot_ref)
             try:
                 files = self._collect_commit_files(plan)
                 if not files:
-                    # Nothing to commit (no candidate files exist on
-                    # disk). Treat as a no-op and roll back any partial
-                    # writes so the wiki is untouched.
                     self._restore_working_tree(repo, snapshot_ref)
                     return self._empty_receipt()
                 atomic_commit(
@@ -187,6 +246,7 @@ class WikiMemoryService:
             except BaseException:
                 self._restore_working_tree(repo, snapshot_ref)
                 raise
+            self._discard_snapshot(repo, snapshot_ref)
             qmd_ok, qmd_msg = self._refresh_qmd()
             return MemoryReceipt(
                 changed_pages=changed,

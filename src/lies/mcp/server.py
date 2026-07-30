@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import subprocess
 from pathlib import Path
+from typing import cast
 
 from fastmcp import FastMCP
 from pydantic import BaseModel
@@ -114,15 +115,20 @@ def ingest_source(source: str, wiki_root: str | None = None) -> str:
 @mcp.tool
 def wiki_search(
     question: str,
+    collection_ids: list[str] | None = None,
     limit: int = 5,
     wiki_root: str | None = None,
 ) -> dict[str, object]:
     """Search the wiki at ``wiki_root`` for project knowledge."""
-    from lies.memory.retrieval import search_wiki
+    from lies.memory.service import WikiMemoryService
 
     layout = _resolve_wiki_root(wiki_root)
-    result = search_wiki(layout, question, limit=limit)
-    return result.model_dump()
+    result = WikiMemoryService(layout).search(
+        question,
+        collection_ids=collection_ids,
+        limit=limit,
+    )
+    return cast(dict[str, object], result.model_dump())
 
 
 @mcp.tool
@@ -131,10 +137,10 @@ def wiki_read(
     wiki_root: str | None = None,
 ) -> dict[str, str]:
     """Read full wiki pages by ID for the wiki at ``wiki_root``."""
-    from lies.memory.retrieval import read_pages
+    from lies.memory.service import WikiMemoryService
 
     layout = _resolve_wiki_root(wiki_root)
-    return read_pages(layout, page_ids)
+    return WikiMemoryService(layout).read(page_ids)
 
 
 # ---------------------------------------------------------------------------

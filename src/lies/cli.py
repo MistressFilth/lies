@@ -159,6 +159,11 @@ def status(
 def main(
     ctx: typer.Context,
     wiki_root: Path = typer.Option(None, "--wiki-root", "-w", envvar="LIES_WIKI_ROOT"),  # noqa: B008
+    no_memory: bool = typer.Option(
+        False,
+        "--no-memory",
+        help="Disable invisible wiki memory for free-form REPL commands.",
+    ),
 ) -> None:
     """REPL mode when no subcommand is given."""
     if ctx.invoked_subcommand is not None:
@@ -196,7 +201,7 @@ def main(
                 typer.echo(f"commit failed: {exc}")
             continue
         # Otherwise, dispatch as a free-form command
-        output = orch.run(line)
+        output = orch.run(line) if no_memory else orch.run_with_memory(line)
         console.print(Markdown(output))
     console.print("\nbye.")
 

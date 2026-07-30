@@ -12,12 +12,10 @@ inject the service per wiki.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 from pydantic_ai import Agent, RunContext
 
-from lies.memory.models import WikiPageNotFound
-from lies.memory.retrieval import _path_for_id, read_pages, search_wiki
 from lies.memory.service import WikiMemoryService
 from lies.wiki.layout import WikiLayout
 
@@ -37,8 +35,8 @@ def wiki_search_tool(
 ) -> dict[str, object]:
     """Search the wiki for project knowledge relevant to ``question``."""
     deps = ctx.deps
-    result = search_wiki(deps.layout, question, limit=limit)
-    return result.model_dump()
+    result = deps.service.search(question, limit=limit)
+    return cast(dict[str, object], result.model_dump())
 
 
 def wiki_read_tool(
@@ -53,13 +51,7 @@ def wiki_read_tool(
     than silently dropped.
     """
     deps = ctx.deps
-    unknown = [pid for pid in page_ids if _path_for_id(deps.layout, pid) is None]
-    if unknown:
-        raise WikiPageNotFound(f"unknown page_ids: {unknown}")
-    try:
-        return read_pages(deps.layout, page_ids)
-    except WikiPageNotFound as exc:
-        raise ValueError(str(exc)) from exc
+    return deps.service.read(page_ids)
 
 
 def register_read_tools(agent: Agent[WikiMemoryDeps, Any]) -> None:
