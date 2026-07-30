@@ -23,6 +23,7 @@ All notable changes to LIES are documented here. The format follows
 - `WikiMemoryService.apply_plan` now passes an explicit `files=[...]` to `atomic_commit` so newly created pages and `wiki/log.md` lines are committed (was using `git add -u`, which dropped untracked files).
 - Failure path now snapshots and restores the dirty tree on commit failure (was leaving partial writes behind).
 - `hash_page` distinguishes missing file (returns `""`) from empty file (returns SHA-256 of empty string).
+- `WikiMemoryService.apply_plan` now acquires a non-blocking cross-process `fcntl.flock` on `<wiki_root>/.lies/memory.lock` before mutating, raising the typed `WikiLockBusy` so concurrent processes cannot corrupt the working tree (was relying on the in-process `threading.Lock` only). `WikiLayout.init` and `WikiMemoryService` both ensure `.lies/memory.lock` is gitignored so `git stash push --include-untracked` (used by snapshot/restore) cannot unlink the inode behind a held flock.
 
 ## [0.1.0] - 2026-07-27
 

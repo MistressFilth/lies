@@ -14,15 +14,19 @@ from lies.memory.models import (
     PageCreate,
     WikiLockBusy,
 )
-from lies.memory.service import WikiMemoryService, _ensure_lock_gitignored
+from lies.memory.service import WikiMemoryService
 from lies.wiki.layout import WikiLayout
 
 
 @pytest.fixture
 def git_wiki(tmp_path: Path) -> WikiLayout:
     root = tmp_path / "wiki"
-    for sub in ("wiki", ".lies", "raw"):
-        (root / sub).mkdir(parents=True)
+    layout = WikiLayout(root)
+    # ``WikiLayout.init`` creates the wiki/, .lies/, raw/ directories
+    # AND ensures ``.lies/memory.lock`` is gitignored — exactly what a
+    # real ``lies init`` produces. Closer to the real bootstrap than
+    # hand-rolling the directory tree.
+    layout.init()
     (root / "wiki" / "concepts").mkdir(parents=True)
     (root / "wiki" / "index.md").write_text("# Index\n", encoding="utf-8")
     subprocess.run(["git", "init", "--initial-branch=main", str(root)], check=True)
@@ -30,12 +34,7 @@ def git_wiki(tmp_path: Path) -> WikiLayout:
     subprocess.run(["git", "config", "user.name", "T"], cwd=root, check=True)
     subprocess.run(["git", "add", "."], cwd=root, check=True)
     subprocess.run(["git", "commit", "-m", "init"], cwd=root, check=True)
-    # The holder subprocess below calls raw ``fcntl.flock`` without
-    # going through ``_acquire_wiki_flock``, so the .gitignore entry
-    # that prevents ``git stash push --include-untracked`` from
-    # unlinking the lock file must be in place before we fork.
-    _ensure_lock_gitignored(root / ".lies" / "memory.lock")
-    return WikiLayout(root)
+    return layout
 
 
 HOLDER_SCRIPT = textwrap.dedent(
