@@ -120,7 +120,7 @@ def _acquire_wiki_flock(lock_path: Path) -> Iterator[None]:
         try:
             fcntl.flock(fd.fileno(), fcntl.LOCK_UN)
         except OSError:
-            pass
+            pass  # LOCK_UN can fail on already-released fd; fd.close() releases the kernel lock as a fallback.
         fd.close()
 
 
