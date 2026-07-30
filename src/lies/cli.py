@@ -64,7 +64,6 @@ def config() -> None:
 @app.command()
 def init(
     path: Path = typer.Argument(..., help="Where to create the new wiki."),  # noqa: B008
-    model: str = typer.Option(None, "--model", "-m", help="Override the default model."),
 ) -> None:
     """Initialize a new LIES wiki at <path>."""
     configure_logging()
