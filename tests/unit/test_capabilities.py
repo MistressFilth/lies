@@ -16,8 +16,8 @@ def test_code_mode_returns_capability() -> None:
     assert cap is not None
 
 
-def test_memory_returns_capability() -> None:
-    cap = memory()
+def test_memory_returns_capability(tmp_path: Path) -> None:
+    cap = memory(tmp_path)
     assert cap is not None
 
 

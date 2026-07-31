@@ -1,6 +1,8 @@
 """Top-level orchestrator that dispatches user commands to sub-agents."""
 from __future__ import annotations
 
+import asyncio
+import json
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
@@ -20,6 +22,10 @@ from lies.capabilities import (
     planning,
 )
 from lies.config import get_model
+from lies.memory.enricher import MemoryEnricherDeps, enricher_agent
+from lies.memory.models import MemoryPlan, MemoryReceipt, WikiWriteConflict
+from lies.memory.service import WikiMemoryService
+from lies.memory.tools import WikiMemoryDeps, register_read_tools
 from lies.qmd import QmdMcpClient
 from lies.query import SynthesizedAnswer, synthesize_answer
 from lies.schema import load_schema
@@ -258,16 +264,18 @@ class Orchestrator:
             for (name, _factory, description), agent in zip(_SUB_AGENT_TABLE, named_agents)
         ]
 
+        self._harness_memory = memory(self.wiki_root)
         self._agent: Agent = Agent(
             self.model,
             system_prompt=ORCHESTRATOR_SYSTEM_PROMPT_PREFIX.format(
                 wiki_root=self.layout.root
             )
             + self.schema,
+            deps_type=WikiMemoryDeps,
             capabilities=[
                 SubAgents(agents=delegates),
                 code_mode(),
-                memory(self.wiki_root),
+                self._harness_memory,
                 planning(),
                 dynamic_workflow(agents=named_agents, max_agent_calls=20),
                 file_system(wiki_root=self.layout.root),
@@ -275,6 +283,9 @@ class Orchestrator:
                 QmdMcpClient(transport="stdio").as_capability(),
             ],
         )
+        self._memory_service = WikiMemoryService(self.layout)
+        self._enricher = enricher_agent(model=self.model)
+        register_read_tools(self._agent)
 
     def run(self, command: str) -> str:
         """Run a user command and return a human-readable result.
@@ -288,6 +299,235 @@ class Orchestrator:
         """
         result = self._agent.run_sync(command)
         return str(result.output)
+
+    def run_with_memory(self, command: str) -> str:
+        """Run a user command with invisible memory enabled.
+
+        Returns the orchestrator's natural-language answer plus a
+        short change receipt when the turn durably updated the wiki.
+        Routine reads and bookkeeping stay out of the response.
+        """
+        try:
+            result = self._agent.run_sync(
+                command, deps=WikiMemoryDeps(layout=self.layout, service=self._memory_service)
+            )
+            answer = str(result.output)
+        except Exception:  # noqa: BLE001 - last-resort graceful degradation
+            self._record_memory_state(
+                last_enrichment_attempt="agent_failed",
+                pending_retry=None,
+                qmd_status="unchanged",
+                request_ref=command,
+            )
+            return self._answer_without_enrichment(command)
+
+        new_messages: list[object] = getattr(result, "new_messages", list)()
+        pages_read, citations = self._extract_evidence(new_messages)
+        if not self._enrichment_signal(pages_read, citations, command):
+            self._record_memory_state(
+                last_enrichment_attempt="skipped",
+                pending_retry=None,
+                qmd_status="unchanged",
+                request_ref=command,
+            )
+            return answer
+
+        receipt = self._run_enrichment(command, answer, pages_read, citations)
+        if not receipt.changed_pages and not receipt.errors:
+            self._record_memory_state(
+                last_enrichment_attempt="noop",
+                pending_retry=None,
+                qmd_status="unchanged",
+                request_ref=command,
+            )
+            return answer
+        return answer + "\n\n" + self._format_receipt(receipt)
+
+    def _extract_evidence(self, messages: list[object]) -> tuple[list[str], list[str]]:
+        pages: set[str] = set()
+        citations: list[str] = []
+        for msg in messages:
+            parts = getattr(msg, "parts", [])
+            for part in parts:
+                tool_name = getattr(part, "tool_name", None)
+                if tool_name in {"wiki_search", "wiki_read"}:
+                    args = getattr(part, "args", None)
+                    if not isinstance(args, dict):
+                        continue
+                    if tool_name == "wiki_read":
+                        for pid in args.get("page_ids", []) or []:
+                            if isinstance(pid, str):
+                                pages.add(pid)
+                    # wiki_search takes a question; no paths to harvest.
+        return sorted(pages), citations
+
+    def _enrichment_signal(
+        self, pages_read: list[str], citations: list[str], command: str
+    ) -> bool:
+        if pages_read:
+            return True
+        if citations:
+            return True
+        # Detect explicit project-source material in the command.
+        lowered = command.lower()
+        for marker in ("raw/", ".md", "wiki/", "http://", "https://"):
+            if marker in lowered:
+                return True
+        return False
+
+    def _run_enrichment(
+        self,
+        user_request: str,
+        answer: str,
+        pages_read: list[str],
+        citations: list[str],
+    ) -> MemoryReceipt:
+        self._memory_service.register_evidence(set(pages_read + citations))
+        metadata: dict[str, dict[str, str]] = {}
+        try:
+            plan = self._generate_memory_plan(
+                user_request,
+                answer,
+                pages_read,
+                citations,
+                metadata,
+            )
+            if plan.is_noop():
+                return self._empty_memory_receipt()
+            try:
+                return self._memory_service.apply_plan(plan)
+            except WikiWriteConflict:
+                for op in plan.operations:
+                    sha256, content = self._memory_service.current_state(op.path)
+                    metadata[op.path] = {"sha256": sha256, "content": content}
+                retry_plan = self._generate_memory_plan(
+                    user_request,
+                    answer,
+                    pages_read,
+                    citations,
+                    metadata,
+                )
+                if retry_plan.is_noop():
+                    return self._empty_memory_receipt()
+                return self._memory_service.apply_plan(retry_plan)
+        except WikiWriteConflict as exc:
+            return MemoryReceipt(
+                changed_pages=[],
+                deferred=[f"plan_rejected: WikiWriteConflict: {exc!s}"],
+                fallback_used=False,
+                fallback_reason="",
+                errors=[f"plan_rejected: WikiWriteConflict: {exc!s}"],
+            )
+        except Exception as exc:  # noqa: BLE001 - persistence never invalidates the answer
+            return MemoryReceipt(
+                changed_pages=[],
+                deferred=[f"enricher_crashed: {exc!s}"],
+                fallback_used=False,
+                fallback_reason="",
+                errors=[f"enricher_crashed: {exc!s}"],
+            )
+
+    def _generate_memory_plan(
+        self,
+        user_request: str,
+        answer: str,
+        pages_read: list[str],
+        citations: list[str],
+        current_page_metadata: dict[str, dict[str, str]],
+    ) -> MemoryPlan:
+        """Ask the enricher for a plan using a complete evidence envelope."""
+        return self._enricher.run_sync(
+            "Propose a MemoryPlan for the latest turn.",
+            deps=MemoryEnricherDeps(
+                user_request=user_request,
+                answer=answer,
+                pages_read=pages_read,
+                citations=citations,
+                evidence_text="\n".join(pages_read + citations),
+                current_page_metadata={
+                    path: dict(values) for path, values in current_page_metadata.items()
+                },
+                active_schema=self.schema,
+            ),
+        ).output
+
+    @staticmethod
+    def _empty_memory_receipt() -> MemoryReceipt:
+        return MemoryReceipt(
+            changed_pages=[],
+            deferred=[],
+            fallback_used=False,
+            fallback_reason="",
+            errors=[],
+        )
+
+    def _format_receipt(self, receipt: MemoryReceipt) -> str:
+        self._record_memory_state(
+            last_enrichment_attempt="completed" if receipt.changed_pages else "failed",
+            pending_retry=receipt.errors or None,
+            qmd_status="stale" if any("qmd_stale" in err for err in receipt.errors) else "current",
+            request_ref="receipt",
+        )
+        if not receipt.changed_pages:
+            return f"(memory: {', '.join(receipt.errors) or 'no change'})"
+        lines = ["(memory: durably filed"]
+        for ref in receipt.changed_pages:
+            lines.append(f"  - {ref.op.value}: {ref.path}")
+        if receipt.errors:
+            lines.append("  notes: " + "; ".join(receipt.errors))
+        lines.append(")")
+        return "\n".join(lines)
+
+    def _record_memory_state(
+        self,
+        *,
+        last_enrichment_attempt: str,
+        pending_retry: object,
+        qmd_status: str,
+        request_ref: str,
+    ) -> None:
+        """Persist operational turn state in the per-wiki Harness Memory store."""
+        commit = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=self.layout.root,
+            capture_output=True,
+            text=True,
+            check=False,
+        ).stdout.strip()
+        state = {
+            "last_enrichment_attempt": last_enrichment_attempt,
+            "pending_retry": pending_retry,
+            "qmd_status": qmd_status,
+            "schema_version": self.schema.splitlines()[0] if self.schema else "unknown",
+            "request_ref": request_ref,
+            "last_commit_sha": commit,
+        }
+        self._harness_memory.operational_state = state
+        path = f"{self._harness_memory.namespace}/{self._harness_memory.agent_name}/MEMORY.md"
+        try:
+            asyncio.run(
+                self._harness_memory.store.write(
+                    path,
+                    json.dumps(state, sort_keys=True),
+                    expected_version=None,
+                )
+            )
+        except Exception:  # noqa: BLE001 - operational bookkeeping is non-fatal
+            return
+
+    def _answer_without_enrichment(self, command: str) -> str:
+        """Return the orchestrator's plain answer without enrichment.
+
+        If the underlying agent run raises -- for example because a
+        downstream tool exhausted its retry budget -- degrade to an
+        empty answer rather than propagating. ``run_with_memory`` is
+        the user-facing entry point and must not raise; callers can
+        still detect emptiness and surface their own diagnostics.
+        """
+        try:
+            return self.run(command)
+        except Exception:  # noqa: BLE001 - last-resort graceful degradation
+            return ""
 
     def run_ingest(self, source: str) -> str:
         """Run an ingest with host-side atomicity and rollback.

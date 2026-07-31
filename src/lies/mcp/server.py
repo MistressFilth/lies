@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import subprocess
 from pathlib import Path
+from typing import cast
 
 from fastmcp import FastMCP
 from pydantic import BaseModel
@@ -38,6 +39,9 @@ class SynthesizedMcpAnswer(BaseModel):
     answer: str
     fallback_used: bool
     fallback_reason: str | None  # None when qmd served the query
+    citations: list[str]
+    pages_read: list[str]
+    changed_pages: list[str]
 
 
 # ---------------------------------------------------------------------------
@@ -104,6 +108,42 @@ def ingest_source(source: str, wiki_root: str | None = None) -> str:
 
 
 # ---------------------------------------------------------------------------
+# wiki_search / wiki_read — direct memory retrieval
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool
+def wiki_search(
+    question: str,
+    collection_ids: list[str] | None = None,
+    limit: int = 5,
+    wiki_root: str | None = None,
+) -> dict[str, object]:
+    """Search the wiki at ``wiki_root`` for project knowledge."""
+    from lies.memory.service import WikiMemoryService
+
+    layout = _resolve_wiki_root(wiki_root)
+    result = WikiMemoryService(layout).search(
+        question,
+        collection_ids=collection_ids,
+        limit=limit,
+    )
+    return cast(dict[str, object], result.model_dump())
+
+
+@mcp.tool
+def wiki_read(
+    page_ids: list[str],
+    wiki_root: str | None = None,
+) -> dict[str, str]:
+    """Read full wiki pages by ID for the wiki at ``wiki_root``."""
+    from lies.memory.service import WikiMemoryService
+
+    layout = _resolve_wiki_root(wiki_root)
+    return WikiMemoryService(layout).read(page_ids)
+
+
+# ---------------------------------------------------------------------------
 # query — extractive answer with structured fallback metadata
 # ---------------------------------------------------------------------------
 
@@ -123,6 +163,9 @@ def query(question: str, wiki_root: str | None = None) -> SynthesizedMcpAnswer:
         answer=ans.answer,
         fallback_used=ans.fallback_used,
         fallback_reason=ans.fallback_reason or None,
+        citations=ans.citations,
+        pages_read=ans.pages_read,
+        changed_pages=ans.changed_pages,
     )
 
 
