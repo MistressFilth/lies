@@ -1,8 +1,17 @@
 """Unit tests for the EnrichmentQueue."""
 from __future__ import annotations
 
+import pytest
+
 from lies.memory.enricher import MemoryEnricherDeps
-from lies.memory.retry import EnrichmentQueue, PendingRetry
+from lies.memory.models import (
+    MemoryPlan,
+    MemoryReceipt,
+    OperationKind,
+    PageCreate,
+    PageReference,
+)
+from lies.memory.retry import DrainResult, EnrichmentQueue, PendingRetry
 
 
 def _deps(answer: str = "stub answer") -> MemoryEnricherDeps:
@@ -36,3 +45,66 @@ def test_pending_retry_carries_deps_and_metadata() -> None:
     assert pending.attempts == 0
     assert pending.last_reason == "WikiLockBusy: held"
     assert pending.enqueued_at_turn == 42
+
+
+def test_drain_empty_queue_returns_zero_result() -> None:
+    queue = EnrichmentQueue()
+    result = queue.drain(
+        enrich_fn=lambda d: MemoryPlan(operations=[], rationale="", evidence=[]),
+        apply_fn=lambda p: MemoryReceipt(),
+    )
+    assert result == DrainResult()
+
+
+def test_drain_applies_plan_and_drops_item() -> None:
+    queue = EnrichmentQueue()
+    queue.enqueue(_deps(), "WikiLockBusy: held", turn=1)
+
+    plan = MemoryPlan(
+        operations=[
+            PageCreate(
+                path="concepts/x.md",
+                content="---\ntitle: X\ntype: concept\n---\n# X\n",
+                evidence=["page-1"],
+            )
+        ],
+        rationale="new",
+        evidence=["page-1"],
+    )
+    receipt = MemoryReceipt(
+        changed_pages=[
+            PageReference(path="concepts/x.md", collection_id="wiki", op=OperationKind.CREATE)
+        ],
+        deferred=[],
+        fallback_used=False,
+        fallback_reason="",
+        errors=[],
+    )
+
+    def enrich_fn(_deps: MemoryEnricherDeps) -> MemoryPlan:
+        return plan
+
+    def apply_fn(applied_plan: MemoryPlan) -> MemoryReceipt:
+        assert applied_plan is plan
+        return receipt
+
+    result = queue.drain(enrich_fn=enrich_fn, apply_fn=apply_fn)
+    assert result.applied == receipt.changed_pages
+    assert result.deferred == []
+    assert result.still_queued == 0
+    assert len(queue) == 0
+
+
+def test_drain_drops_noop_plan_silently() -> None:
+    queue = EnrichmentQueue()
+    queue.enqueue(_deps(), "WikiLockBusy: held", turn=1)
+
+    def enrich_fn(_deps: MemoryEnricherDeps) -> MemoryPlan:
+        return MemoryPlan(operations=[], rationale="nothing", evidence=[])
+
+    def apply_fn(_p: MemoryPlan) -> MemoryReceipt:
+        pytest.fail("apply_fn should not be called for a noop plan")
+
+    result = queue.drain(enrich_fn=enrich_fn, apply_fn=apply_fn)
+    assert result == DrainResult()
+    assert len(queue) == 0
