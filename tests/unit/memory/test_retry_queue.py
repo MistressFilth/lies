@@ -12,6 +12,7 @@ from lies.memory.models import (
     PageReference,
     WikiCommitFailed,
     WikiLockBusy,
+    WikiPlanInvalid,
     WikiWriteConflict,
 )
 from lies.memory.retry import DrainResult, EnrichmentQueue, PendingRetry
@@ -169,3 +170,50 @@ def test_drain_requeues_on_wiki_commit_failed() -> None:
     result = queue.drain(enrich_fn=lambda d: _plan_with_create(), apply_fn=apply_fn)
     assert result.still_queued == 1
     assert queue._items[0].last_reason.startswith("WikiCommitFailed:")  # type: ignore[attr-defined]
+
+
+def test_drain_defers_after_max_attempts() -> None:
+    queue = EnrichmentQueue(max_attempts=3)
+    # Simulate an item that already has 2 attempts
+    queue._items.append(  # type: ignore[attr-defined]
+        PendingRetry(
+            deps=_deps(),
+            attempts=2,
+            last_reason="WikiLockBusy: prior",
+            enqueued_at_turn=1,
+        )
+    )
+
+    def apply_fn(_p: MemoryPlan) -> MemoryReceipt:
+        raise WikiLockBusy("still held")
+
+    result = queue.drain(enrich_fn=lambda d: _plan_with_create(), apply_fn=apply_fn)
+    assert result.still_queued == 0
+    assert result.deferred == ["WikiLockBusy: still held"]
+    assert len(queue) == 0
+
+
+def test_drain_defers_on_terminal_apply_exception() -> None:
+    queue = EnrichmentQueue()
+    queue.enqueue(_deps(), "WikiLockBusy: prior", turn=1)
+
+    def apply_fn(_p: MemoryPlan) -> MemoryReceipt:
+        raise WikiPlanInvalid("page already exists; use UPDATE or APPEND", path="concepts/x.md")
+
+    result = queue.drain(enrich_fn=lambda d: _plan_with_create(), apply_fn=apply_fn)
+    assert result.still_queued == 0
+    assert result.deferred == ["WikiPlanInvalid: page already exists; use UPDATE or APPEND"]
+    assert len(queue) == 0
+
+
+def test_drain_defers_on_enrich_fn_exception() -> None:
+    queue = EnrichmentQueue()
+    queue.enqueue(_deps(), "WikiLockBusy: prior", turn=1)
+
+    def enrich_fn(_d: MemoryEnricherDeps) -> MemoryPlan:
+        raise RuntimeError("model unavailable")
+
+    result = queue.drain(enrich_fn=enrich_fn, apply_fn=lambda p: MemoryReceipt())
+    assert result.still_queued == 0
+    assert result.deferred == ["enricher_crashed: RuntimeError: model unavailable"]
+    assert len(queue) == 0
