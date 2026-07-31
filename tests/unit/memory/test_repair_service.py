@@ -85,7 +85,7 @@ def test_from_repair_plan_maps_append_link_to_page_update(git_wiki: WikiLayout) 
 def test_from_repair_plan_maps_update_index_to_page_update(git_wiki: WikiLayout) -> None:
     plan = RepairPlan(
         operations=[
-            UpdateIndex(path="wiki/index.md", title="X", finding_index=0, pages=[], rationale="orphan", evidence=["f0"]),
+            UpdateIndex(path="wiki/index.md", title="X", finding_index=0, pages=["concepts/x.md"], rationale="orphan", evidence=["f0"]),
         ],
         rationale="r",
         evidence=["f0"],
@@ -168,3 +168,34 @@ def test_apply_repair_plan_rejects_hash_mismatch(git_wiki: WikiLayout) -> None:
     service = WikiMemoryService(git_wiki)
     with pytest.raises(WikiWriteConflict):
         service.apply_repair_plan(plan)
+
+
+def test_apply_repair_plan_update_index_adds_orphan_to_catalog(git_wiki: WikiLayout) -> None:
+    orphan = git_wiki.wiki_dir / "concepts" / "orphan.md"
+    orphan.parent.mkdir(parents=True, exist_ok=True)
+    orphan.write_text(
+        "---\ntitle: Orphan\ntype: concept\n---\n# Orphan\n", encoding="utf-8"
+    )
+    subprocess.run(["git", "add", "."], cwd=git_wiki.root, check=True)
+    subprocess.run(["git", "commit", "-m", "seed"], cwd=git_wiki.root, check=True)
+
+    plan = RepairPlan(
+        operations=[
+            UpdateIndex(
+                path="wiki/index.md",
+                title="Orphan",
+                finding_index=0,
+                pages=["concepts/orphan.md"],
+                rationale="orphan",
+                evidence=["f0"],
+            ),
+        ],
+        rationale="r",
+        evidence=["f0"],
+    )
+    service = WikiMemoryService(git_wiki)
+    receipt = service.apply_repair_plan(plan)
+    assert receipt.changed_pages
+    index_content = git_wiki.index_path.read_text(encoding="utf-8")
+    assert "concepts/orphan.md" in index_content
+    assert "wiki/index.md" not in index_content.rstrip().splitlines()[-1]
