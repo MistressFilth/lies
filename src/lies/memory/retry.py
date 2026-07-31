@@ -144,4 +144,21 @@ class EnrichmentQueue:
                 continue
             self._items.remove(item)
             applied.extend(receipt.changed_pages)
+        self._last_deferred = deferred
         return DrainResult(applied=applied, deferred=deferred, still_queued=len(self._items))
+
+    def format_receipt_lines(self) -> list[str]:
+        """Return one-line strings for items deferred by the last ``drain``.
+
+        Reads the most-recent ``deferred`` list captured on this queue.
+        Use a one-shot pattern: ``drain`` populates ``_last_deferred``;
+        callers format it on the next turn; the list clears once read.
+
+        Returns ``[]`` if nothing was deferred.
+        """
+        if not getattr(self, "_last_deferred", None):
+            return []
+        return [
+            f"(memory: deferred after {self._max_attempts} attempts — {reason})"
+            for reason in self._last_deferred
+        ]

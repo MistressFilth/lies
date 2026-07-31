@@ -217,3 +217,47 @@ def test_drain_defers_on_enrich_fn_exception() -> None:
     assert result.still_queued == 0
     assert result.deferred == ["enricher_crashed: RuntimeError: model unavailable"]
     assert len(queue) == 0
+
+
+def test_format_receipt_lines_empty_when_no_deferred() -> None:
+    queue = EnrichmentQueue()
+    queue.enqueue(_deps(), "WikiLockBusy: held", turn=1)
+    assert queue.format_receipt_lines() == []
+
+
+def test_format_receipt_lines_lists_deferred_reasons() -> None:
+    queue = EnrichmentQueue(max_attempts=3)
+    # Item already at attempts=2; one more transient failure defers it.
+    queue._items.append(  # type: ignore[attr-defined]
+        PendingRetry(
+            deps=_deps(),
+            attempts=2,
+            last_reason="WikiLockBusy: prior",
+            enqueued_at_turn=1,
+        )
+    )
+
+    def apply_fn(_p: MemoryPlan) -> MemoryReceipt:
+        raise WikiLockBusy("still held")
+
+    queue.drain(enrich_fn=lambda d: _plan_with_create(), apply_fn=apply_fn)
+    lines = queue.format_receipt_lines()
+    assert lines == ["(memory: deferred after 3 attempts — WikiLockBusy: still held)"]
+
+
+def test_drain_preserves_fifo_ordering() -> None:
+    queue = EnrichmentQueue()
+    queue.enqueue(_deps(answer="first"), "WikiLockBusy: first", turn=1)
+    queue.enqueue(_deps(answer="second"), "WikiLockBusy: second", turn=2)
+
+    seen_answers: list[str] = []
+
+    def enrich_fn(d: MemoryEnricherDeps) -> MemoryPlan:
+        seen_answers.append(d.answer)
+        return _plan_with_create()
+
+    queue.drain(
+        enrich_fn=enrich_fn,
+        apply_fn=lambda p: MemoryReceipt(),
+    )
+    assert seen_answers == ["first", "second"]
