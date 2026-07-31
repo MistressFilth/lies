@@ -82,6 +82,11 @@ tests/
   `query` response (`citations`, `pages_read`, `changed_pages`).
 - After the answer, a `MemoryEnricher` sub-agent proposes a structured
   `MemoryPlan` only when evidence warrants it.
+- The `EnrichmentQueue` (in `src/lies/memory/retry.py`) is a per-session,
+  in-memory FIFO that retries transient `WikiMemoryService.apply_plan`
+  failures (`WikiLockBusy`, `WikiWriteConflict`, `WikiCommitFailed`) at the
+  start of the next turn. Capped at 3 attempts; deferred items surface as
+  `(memory: deferred after 3 attempts — <reason>)` in the next receipt.
 
 ## Quality gates
 

@@ -173,6 +173,8 @@ concepts, contradictions, crosslinks). It never captures user
 preferences, working decisions, or task history. Source files in
 `raw/` are immutable.
 
+- Transient persistence failures (`WikiLockBusy`, `WikiWriteConflict`, `WikiCommitFailed`) replay automatically on the next turn; receipt surfaces `(memory: queued for retry — <reason>)` immediately and `(memory: deferred after 3 attempts — <reason>)` if the cap is hit.
+
 ## License
 
 MIT.
