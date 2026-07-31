@@ -13,7 +13,14 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 
 from lies.memory.enricher import MemoryEnricherDeps
-from lies.memory.models import MemoryPlan, MemoryReceipt, PageReference
+from lies.memory.models import (
+    MemoryPlan,
+    MemoryReceipt,
+    PageReference,
+    WikiCommitFailed,
+    WikiLockBusy,
+    WikiWriteConflict,
+)
 
 
 @dataclass(frozen=True)
@@ -43,8 +50,9 @@ ApplyFn = Callable[[MemoryPlan], MemoryReceipt]
 
 # Exceptions that warrant another attempt instead of a terminal receipt.
 TRANSIENT_PERSISTENCE_ERRORS: tuple[type[BaseException], ...] = (
-    # Filled in by Task 3; placeholder so the type is importable now.
-    Exception,  # narrowed in Task 3
+    WikiLockBusy,
+    WikiWriteConflict,
+    WikiCommitFailed,
 )
 
 
@@ -87,17 +95,38 @@ class EnrichmentQueue:
     ) -> DrainResult:
         """Walk the FIFO; apply each item; return the aggregate result.
 
-        This task covers the happy path: noop drops silently, success
-        appends to ``applied`` and drops the item. Transient-persistence
-        requeue and cap logic are added in Tasks 3 and 4.
+        Transient persistence errors (WikiLockBusy, WikiWriteConflict,
+        WikiCommitFailed) re-queue the item at the tail with an
+        incremented attempt count. Enricher failures are terminal for
+        that item — they get deferred with ``enricher_crashed:`` reason.
+        Cap-deferred logic lives in Task 4.
         """
         applied: list[PageReference] = []
+        deferred: list[str] = []
         for item in list(self._items):
-            plan = enrich_fn(item.deps)
+            try:
+                plan = enrich_fn(item.deps)
+            except Exception as exc:  # noqa: BLE001 - model failure terminal for this item
+                self._items.remove(item)
+                deferred.append(f"enricher_crashed: {type(exc).__name__}: {exc!s}")
+                continue
             if plan.is_noop():
                 self._items.remove(item)
                 continue
-            receipt = apply_fn(plan)
+            try:
+                receipt = apply_fn(plan)
+            except (WikiLockBusy, WikiWriteConflict, WikiCommitFailed) as exc:
+                self._items.remove(item)
+                reason = f"{type(exc).__name__}: {exc!s}"
+                self._items.append(
+                    PendingRetry(
+                        deps=item.deps,
+                        attempts=item.attempts + 1,
+                        last_reason=reason,
+                        enqueued_at_turn=item.enqueued_at_turn,
+                    )
+                )
+                continue
             self._items.remove(item)
             applied.extend(receipt.changed_pages)
-        return DrainResult(applied=applied, deferred=[], still_queued=len(self._items))
+        return DrainResult(applied=applied, deferred=deferred, still_queued=len(self._items))

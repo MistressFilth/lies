@@ -10,6 +10,9 @@ from lies.memory.models import (
     OperationKind,
     PageCreate,
     PageReference,
+    WikiCommitFailed,
+    WikiLockBusy,
+    WikiWriteConflict,
 )
 from lies.memory.retry import DrainResult, EnrichmentQueue, PendingRetry
 
@@ -108,3 +111,61 @@ def test_drain_drops_noop_plan_silently() -> None:
     result = queue.drain(enrich_fn=enrich_fn, apply_fn=apply_fn)
     assert result == DrainResult()
     assert len(queue) == 0
+
+
+def _plan_with_create() -> MemoryPlan:
+    return MemoryPlan(
+        operations=[
+            PageCreate(
+                path="concepts/x.md",
+                content="---\ntitle: X\ntype: concept\n---\n# X\n",
+                evidence=["page-1"],
+            )
+        ],
+        rationale="new",
+        evidence=["page-1"],
+    )
+
+
+def test_drain_requeues_on_wiki_lock_busy() -> None:
+    queue = EnrichmentQueue(max_attempts=3)
+    queue.enqueue(_deps(), "WikiLockBusy: prior", turn=1)
+
+    def enrich_fn(_d: MemoryEnricherDeps) -> MemoryPlan:
+        return _plan_with_create()
+
+    def apply_fn(_p: MemoryPlan) -> MemoryReceipt:
+        raise WikiLockBusy("wiki memory lock is held by another process")
+
+    result = queue.drain(enrich_fn=enrich_fn, apply_fn=apply_fn)
+    assert result.deferred == []
+    assert result.still_queued == 1
+    assert result.applied == []
+    assert len(queue) == 1
+    item = queue._items[0]  # type: ignore[attr-defined]
+    assert item.attempts == 1
+    assert item.last_reason.startswith("WikiLockBusy:")
+
+
+def test_drain_requeues_on_wiki_write_conflict() -> None:
+    queue = EnrichmentQueue(max_attempts=3)
+    queue.enqueue(_deps(), "WikiLockBusy: prior", turn=1)
+
+    def apply_fn(_p: MemoryPlan) -> MemoryReceipt:
+        raise WikiWriteConflict("hash mismatch for x.md")
+
+    result = queue.drain(enrich_fn=lambda d: _plan_with_create(), apply_fn=apply_fn)
+    assert result.still_queued == 1
+    assert queue._items[0].last_reason.startswith("WikiWriteConflict:")  # type: ignore[attr-defined]
+
+
+def test_drain_requeues_on_wiki_commit_failed() -> None:
+    queue = EnrichmentQueue(max_attempts=3)
+    queue.enqueue(_deps(), "WikiLockBusy: prior", turn=1)
+
+    def apply_fn(_p: MemoryPlan) -> MemoryReceipt:
+        raise WikiCommitFailed("commit failed: non-fast-forward")
+
+    result = queue.drain(enrich_fn=lambda d: _plan_with_create(), apply_fn=apply_fn)
+    assert result.still_queued == 1
+    assert queue._items[0].last_reason.startswith("WikiCommitFailed:")  # type: ignore[attr-defined]
