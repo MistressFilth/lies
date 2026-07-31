@@ -320,7 +320,7 @@ class Orchestrator:
 
         # Drain queued retries before answering the user. Silent on success;
         # surfaces deferred items via format_receipt_lines below.
-        drain_receipt = self._enrichment_queue.drain(
+        self._enrichment_queue.drain(
             enrich_fn=lambda deps: self._enricher.run_sync(
                 "Propose a MemoryPlan for the latest turn.", deps=deps
             ).output,
@@ -350,7 +350,7 @@ class Orchestrator:
                 qmd_status="unchanged",
                 request_ref=command,
             )
-            return self._maybe_add_drain_receipt(answer, drain_receipt)
+            return self._maybe_add_drain_receipt(answer)
 
         receipt = self._run_enrichment(command, answer, pages_read, citations)
         if not receipt.changed_pages and not receipt.errors:
@@ -360,15 +360,12 @@ class Orchestrator:
                 qmd_status="unchanged",
                 request_ref=command,
             )
-            return self._maybe_add_drain_receipt(answer, drain_receipt)
+            return self._maybe_add_drain_receipt(answer)
         base_receipt = self._format_receipt(receipt)
-        return self._maybe_add_drain_receipt(
-            answer + "\n\n" + base_receipt, drain_receipt
-        )
+        return self._maybe_add_drain_receipt(answer + "\n\n" + base_receipt)
 
-    def _maybe_add_drain_receipt(self, answer: str, drain: object) -> str:
+    def _maybe_add_drain_receipt(self, answer: str) -> str:
         """Append deferred-from-drain lines to the user-facing answer."""
-        del drain
         lines = self._enrichment_queue.format_receipt_lines()
         if not lines:
             return answer
