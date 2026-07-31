@@ -17,6 +17,10 @@ import threading
 from collections.abc import Callable, Iterator
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from lies.agents.repair_models import RepairPlan
 
 from lies.memory.index import append_log_entry, rebuild_index
 from lies.memory.models import (
@@ -281,10 +285,11 @@ class WikiMemoryService:
             validate_page_type(page_type)
             if not isinstance(op, (PageCreate, PageUpdate, EvidenceAppend)):
                 raise WikiPlanInvalid(f"unsupported operation: {op!r}", path=op.path)
-            try:
-                validate_frontmatter(parse_frontmatter(op.content), page_type=page_type)
-            except WikiPlanInvalid as exc:
-                raise WikiPlanInvalid(str(exc), path=op.path) from exc
+            if isinstance(op, (PageCreate, PageUpdate)):
+                try:
+                    validate_frontmatter(parse_frontmatter(op.content), page_type=page_type)
+                except WikiPlanInvalid as exc:
+                    raise WikiPlanInvalid(str(exc), path=op.path) from exc
             if isinstance(op, PageCreate) and resolved.exists():
                 raise WikiPlanInvalid(
                     "page already exists; use UPDATE or APPEND",
@@ -341,6 +346,20 @@ class WikiMemoryService:
                 fallback_reason="",
                 errors=[] if qmd_ok else [qmd_msg],
             )
+
+    def apply_repair_plan(self, plan: RepairPlan) -> MemoryReceipt:
+        """Apply a RepairPlan under the same envelope as apply_plan.
+
+        Repair evidence is authenticated before translation so the normal
+        memory validation path accepts the bounded repair findings.
+        """
+        from lies.memory.repair import from_repair_plan
+
+        self.register_evidence(set(plan.evidence))
+        for op in plan.operations:
+            self.register_evidence(set(getattr(op, "evidence", [])))
+        memory_plan = from_repair_plan(plan, layout=self._layout)
+        return self.apply_plan(memory_plan)
 
     def _apply_operations(self, plan: MemoryPlan) -> list[PageReference]:
         changed: list[PageReference] = []
