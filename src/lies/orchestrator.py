@@ -23,7 +23,14 @@ from lies.capabilities import (
 )
 from lies.config import get_model
 from lies.memory.enricher import MemoryEnricherDeps, enricher_agent
-from lies.memory.models import MemoryPlan, MemoryReceipt, WikiWriteConflict
+from lies.memory.models import (
+    MemoryPlan,
+    MemoryReceipt,
+    WikiCommitFailed,
+    WikiLockBusy,
+    WikiWriteConflict,
+)
+from lies.memory.retry import EnrichmentQueue
 from lies.memory.service import WikiMemoryService
 from lies.memory.tools import WikiMemoryDeps, register_read_tools
 from lies.qmd import QmdMcpClient
@@ -284,6 +291,8 @@ class Orchestrator:
             ],
         )
         self._memory_service = WikiMemoryService(self.layout)
+        self._enrichment_queue = EnrichmentQueue(max_attempts=3)
+        self._turn_counter = 0
         self._enricher = enricher_agent(model=self.model)
         register_read_tools(self._agent)
 
@@ -307,6 +316,17 @@ class Orchestrator:
         short change receipt when the turn durably updated the wiki.
         Routine reads and bookkeeping stay out of the response.
         """
+        self._turn_counter += 1
+
+        # Drain queued retries before answering the user. Silent on success;
+        # surfaces deferred items via format_receipt_lines below.
+        self._enrichment_queue.drain(
+            enrich_fn=lambda deps: self._enricher.run_sync(
+                "Propose a MemoryPlan for the latest turn.", deps=deps
+            ).output,
+            apply_fn=self._memory_service.apply_plan,
+        )
+
         try:
             result = self._agent.run_sync(
                 command, deps=WikiMemoryDeps(layout=self.layout, service=self._memory_service)
@@ -330,7 +350,7 @@ class Orchestrator:
                 qmd_status="unchanged",
                 request_ref=command,
             )
-            return answer
+            return self._maybe_add_drain_receipt(answer)
 
         receipt = self._run_enrichment(command, answer, pages_read, citations)
         if not receipt.changed_pages and not receipt.errors:
@@ -340,8 +360,16 @@ class Orchestrator:
                 qmd_status="unchanged",
                 request_ref=command,
             )
+            return self._maybe_add_drain_receipt(answer)
+        base_receipt = self._format_receipt(receipt)
+        return self._maybe_add_drain_receipt(answer + "\n\n" + base_receipt)
+
+    def _maybe_add_drain_receipt(self, answer: str) -> str:
+        """Append deferred-from-drain lines to the user-facing answer."""
+        lines = self._enrichment_queue.format_receipt_lines()
+        if not lines:
             return answer
-        return answer + "\n\n" + self._format_receipt(receipt)
+        return answer + "\n\n" + "\n".join(lines)
 
     def _extract_evidence(self, messages: list[object]) -> tuple[list[str], list[str]]:
         pages: set[str] = set()
@@ -383,41 +411,27 @@ class Orchestrator:
         citations: list[str],
     ) -> MemoryReceipt:
         self._memory_service.register_evidence(set(pages_read + citations))
+        deps = MemoryEnricherDeps(
+            user_request=user_request,
+            answer=answer,
+            pages_read=pages_read,
+            citations=citations,
+            evidence_text="\n".join(pages_read + citations),
+            current_page_metadata={},
+            active_schema=self.schema,
+        )
         metadata: dict[str, dict[str, str]] = {}
         try:
-            plan = self._generate_memory_plan(
-                user_request,
-                answer,
-                pages_read,
-                citations,
-                metadata,
-            )
+            plan = self._generate_memory_plan_from_deps(deps)
             if plan.is_noop():
                 return self._empty_memory_receipt()
-            try:
-                return self._memory_service.apply_plan(plan)
-            except WikiWriteConflict:
-                for op in plan.operations:
-                    sha256, content = self._memory_service.current_state(op.path)
-                    metadata[op.path] = {"sha256": sha256, "content": content}
-                retry_plan = self._generate_memory_plan(
-                    user_request,
-                    answer,
-                    pages_read,
-                    citations,
-                    metadata,
-                )
-                if retry_plan.is_noop():
-                    return self._empty_memory_receipt()
-                return self._memory_service.apply_plan(retry_plan)
+            return self._apply_with_conflict_retry(deps, plan, metadata)
+        except WikiLockBusy as exc:
+            return self._enqueue_and_report(deps, exc)
+        except WikiCommitFailed as exc:
+            return self._enqueue_and_report(deps, exc)
         except WikiWriteConflict as exc:
-            return MemoryReceipt(
-                changed_pages=[],
-                deferred=[f"plan_rejected: WikiWriteConflict: {exc!s}"],
-                fallback_used=False,
-                fallback_reason="",
-                errors=[f"plan_rejected: WikiWriteConflict: {exc!s}"],
-            )
+            return self._enqueue_and_report(deps, exc)
         except Exception as exc:  # noqa: BLE001 - persistence never invalidates the answer
             return MemoryReceipt(
                 changed_pages=[],
@@ -426,6 +440,54 @@ class Orchestrator:
                 fallback_reason="",
                 errors=[f"enricher_crashed: {exc!s}"],
             )
+
+    def _generate_memory_plan_from_deps(
+        self, deps: MemoryEnricherDeps
+    ) -> MemoryPlan:
+        return self._enricher.run_sync(
+            "Propose a MemoryPlan for the latest turn.", deps=deps
+        ).output
+
+    def _apply_with_conflict_retry(
+        self,
+        deps: MemoryEnricherDeps,
+        plan: MemoryPlan,
+        metadata: dict[str, dict[str, str]],
+    ) -> MemoryReceipt:
+        try:
+            return self._memory_service.apply_plan(plan)
+        except WikiWriteConflict:
+            for op in plan.operations:
+                sha256, content = self._memory_service.current_state(op.path)
+                metadata[op.path] = {"sha256": sha256, "content": content}
+            retry_deps = MemoryEnricherDeps(
+                user_request=deps.user_request,
+                answer=deps.answer,
+                pages_read=deps.pages_read,
+                citations=deps.citations,
+                evidence_text=deps.evidence_text,
+                current_page_metadata={
+                    path: dict(values) for path, values in metadata.items()
+                },
+                active_schema=deps.active_schema,
+            )
+            retry_plan = self._generate_memory_plan_from_deps(retry_deps)
+            if retry_plan.is_noop():
+                return self._empty_memory_receipt()
+            return self._memory_service.apply_plan(retry_plan)
+
+    def _enqueue_and_report(
+        self, deps: MemoryEnricherDeps, exc: BaseException
+    ) -> MemoryReceipt:
+        reason = f"{type(exc).__name__}: {exc!s}"
+        self._enrichment_queue.enqueue(deps, reason, self._turn_counter)
+        return MemoryReceipt(
+            changed_pages=[],
+            deferred=[f"queued_for_retry: {reason}"],
+            fallback_used=False,
+            fallback_reason="",
+            errors=[f"queued_for_retry: {reason}"],
+        )
 
     def _generate_memory_plan(
         self,
@@ -461,6 +523,11 @@ class Orchestrator:
             errors=[],
         )
 
+    # Prefix that signals a transient persistence error so the
+    # receipt renderer can emit the spec's "(memory: queued for
+    # retry — <reason>)" line instead of the generic comma-joined form.
+    _QUEUED_RETRY_PREFIX = "queued_for_retry:"
+
     def _format_receipt(self, receipt: MemoryReceipt) -> str:
         self._record_memory_state(
             last_enrichment_attempt="completed" if receipt.changed_pages else "failed",
@@ -468,13 +535,60 @@ class Orchestrator:
             qmd_status="stale" if any("qmd_stale" in err for err in receipt.errors) else "current",
             request_ref="receipt",
         )
+        # Split errors into queued-retry entries (spec formatting) and
+        # anything else (comma-joined in the standard form).
+        queued = [self._queued_reason(err) for err in receipt.errors
+                  if err.startswith(self._QUEUED_RETRY_PREFIX)]
+        other = [err for err in receipt.errors
+                 if not err.startswith(self._QUEUED_RETRY_PREFIX)]
         if not receipt.changed_pages:
-            return f"(memory: {', '.join(receipt.errors) or 'no change'})"
+            return self._format_empty_receipt(queued, other)
+        return self._format_durable_receipt(receipt, queued, other)
+
+    def _queued_reason(self, err: str) -> str:
+        """Strip the internal ``queued_for_retry:`` prefix from an error."""
+        return err[len(self._QUEUED_RETRY_PREFIX):].lstrip()
+
+    def _format_empty_receipt(self, queued: list[str], other: list[str]) -> str:
+        """Format a receipt with no ``changed_pages``.
+
+        - All queued: one ``(memory: queued for retry — <reason>)`` line
+          per queued item (spec format).
+        - Mixed: queued items in spec format, others comma-joined in a
+          single ``(memory: ...)`` line.
+        - No queued, no other: ``(memory: no change)``.
+        """
+        if queued and not other:
+            return "\n".join(
+                f"(memory: queued for retry — {reason})" for reason in queued
+            )
+        if queued and other:
+            head = "\n".join(
+                f"(memory: queued for retry — {reason})" for reason in queued
+            )
+            tail = ", ".join(other)
+            return f"{head}\n(memory: {tail})"
+        return f"(memory: {', '.join(other) or 'no change'})"
+
+    def _format_durable_receipt(
+        self,
+        receipt: MemoryReceipt,
+        queued: list[str],
+        other: list[str],
+    ) -> str:
+        """Format a receipt that durably filed at least one page change.
+
+        The block keeps the existing durably-filed shape and adds a
+        ``  queued for retry: <reason>`` line for each transient error
+        alongside the existing ``  notes:`` line for other errors.
+        """
         lines = ["(memory: durably filed"]
         for ref in receipt.changed_pages:
             lines.append(f"  - {ref.op.value}: {ref.path}")
-        if receipt.errors:
-            lines.append("  notes: " + "; ".join(receipt.errors))
+        for reason in queued:
+            lines.append(f"  queued for retry: {reason}")
+        if other:
+            lines.append("  notes: " + "; ".join(other))
         lines.append(")")
         return "\n".join(lines)
 
