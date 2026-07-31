@@ -97,7 +97,7 @@ def test_conflict_causes_one_fresh_read_and_enrichment_retry(
     assert seen_metadata[1]["concepts/x.md"]["content"] == body
 
 
-def test_second_conflict_is_reported_without_breaking_answer(
+def test_second_conflict_is_queued_for_retry(
     wiki: WikiLayout, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     orch = Orchestrator(wiki_root=wiki.root, model=TestModel())
@@ -124,4 +124,5 @@ def test_second_conflict_is_reported_without_breaking_answer(
         lambda _plan: (_ for _ in ()).throw(WikiWriteConflict("changed twice")),
     )
     receipt = orch._run_enrichment("request", "answer", ["page-1"], [])
-    assert receipt.errors == ["plan_rejected: WikiWriteConflict: changed twice"]
+    assert receipt.errors == ["queued_for_retry: WikiWriteConflict: changed twice"]
+    assert len(orch._enrichment_queue) == 1

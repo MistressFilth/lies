@@ -15,6 +15,7 @@ All notable changes to LIES are documented here. The format follows
 - Per-wiki Harness Memory namespace derived from `WikiIdentity` so two wikis against the same install do not share state.
 - CLI default for free-form REPL commands routes through `Orchestrator.run_with_memory`; `--no-memory` preserves plain `Orchestrator.run`.
 - FastMCP `wiki_search`, `wiki_read`, and expanded `query` response with `citations`, `pages_read`, and `changed_pages`.
+- `EnrichmentQueue` retries transient `WikiMemoryService.apply_plan` failures (`WikiLockBusy`, `WikiWriteConflict`, `WikiCommitFailed`) at the start of the next turn, capped at 3 attempts. Deferred items surface in the next receipt as `(memory: deferred after 3 attempts — <reason>)`. Per-session, in-memory only.
 
 ### Changed
 - `capabilities.memory` now requires a `wiki_root` argument (was optional).
