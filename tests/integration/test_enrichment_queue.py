@@ -118,3 +118,49 @@ def test_queue_is_per_orchestrator_instance(wiki: WikiLayout) -> None:
     orch_a = Orchestrator(wiki_root=wiki.root, model=TestModel())
     orch_b = Orchestrator(wiki_root=wiki.root, model=TestModel())
     assert orch_a._enrichment_queue is not orch_b._enrichment_queue
+
+
+def test_queued_item_becomes_noop_on_reenrichment(wiki: WikiLayout) -> None:
+    """A queued item that produces noop on the next drain drops silently.
+
+    Scenario: a plan is queued for retry. On the next turn, the
+    enricher produces a noop (MemoryPlan with empty operations). The
+    drain should drop the item, leave the queue empty, and emit no
+    errors or deferred lines.
+    """
+    from lies.memory.models import MemoryPlan
+
+    orch = Orchestrator(wiki_root=wiki.root, model=TestModel())
+    orch._memory_service.register_evidence({"page-1"})
+
+    # Enqueue an item by simulating a WikiLockBusy at apply time.
+    with (
+        mock.patch.object(orch, "_generate_memory_plan_from_deps", return_value=_create_plan()),
+        mock.patch.object(
+            orch._memory_service,
+            "apply_plan",
+            side_effect=WikiLockBusy("held"),
+        ),
+    ):
+        orch._turn_counter += 1
+        orch._run_enrichment("ask", "answer", [], [])
+
+    assert len(orch._enrichment_queue) == 1
+
+    # Drain: the enricher now returns a noop plan. The queue should
+    # drop the item silently (no errors, no deferred lines).
+    noop = MemoryPlan(operations=[], rationale="nothing to file", evidence=[])
+    with mock.patch.object(orch, "_generate_memory_plan_from_deps", return_value=noop):
+        orch._turn_counter += 1
+        result = orch._enrichment_queue.drain(
+            enrich_fn=orch._generate_memory_plan_from_deps,
+            apply_fn=orch._memory_service.apply_plan,
+        )
+
+    assert len(orch._enrichment_queue) == 0
+    assert result.still_queued == 0
+    assert result.deferred == []
+    assert result.applied == []
+    assert orch._enrichment_queue.format_receipt_lines() == []
+    # No file was created on disk since the noop plan never applied.
+    assert not (wiki.wiki_dir / "concepts" / "example.md").exists()

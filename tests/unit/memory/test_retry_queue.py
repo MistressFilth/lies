@@ -245,6 +245,47 @@ def test_format_receipt_lines_lists_deferred_reasons() -> None:
     assert lines == ["(memory: deferred after 3 attempts — WikiLockBusy: still held)"]
 
 
+def test_successful_drain_clears_previously_deferred_lines() -> None:
+    """A successful drain overwrites the deferred list (``[]``).
+
+    Overwrite-on-drain means: once ``format_receipt_lines`` has
+    surfaced the deferred items, the next successful drain clears
+    that bookkeeping so the receipt does not re-emit the lines on
+    subsequent turns.
+    """
+    queue = EnrichmentQueue(max_attempts=3)
+    # Item already at attempts=2; one more transient failure defers it.
+    queue._items.append(  # type: ignore[attr-defined]
+        PendingRetry(
+            deps=_deps(),
+            attempts=2,
+            last_reason="WikiLockBusy: prior",
+            enqueued_at_turn=1,
+        )
+    )
+
+    def raising_apply_fn(_p: MemoryPlan) -> MemoryReceipt:
+        raise WikiLockBusy("still held")
+
+    # First drain: item defers. format_receipt_lines returns the
+    # corresponding line.
+    queue.drain(
+        enrich_fn=lambda d: _plan_with_create(),
+        apply_fn=raising_apply_fn,
+    )
+    assert queue.format_receipt_lines() == [
+        "(memory: deferred after 3 attempts — WikiLockBusy: still held)"
+    ]
+
+    # Second drain: the queue is empty (the item is already terminal),
+    # so the deferred list is overwritten with ``[]``.
+    queue.drain(
+        enrich_fn=lambda d: _plan_with_create(),
+        apply_fn=raising_apply_fn,
+    )
+    assert queue.format_receipt_lines() == []
+
+
 def test_drain_preserves_fifo_ordering() -> None:
     queue = EnrichmentQueue()
     queue.enqueue(_deps(answer="first"), "WikiLockBusy: first", turn=1)
