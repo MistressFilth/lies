@@ -9,7 +9,7 @@ persistence.
 from __future__ import annotations
 
 from collections import deque
-from collections.abc import Callable, Iterator
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from lies.memory.enricher import MemoryEnricherDeps
@@ -49,6 +49,9 @@ ApplyFn = Callable[[MemoryPlan], MemoryReceipt]
 
 
 # Exceptions that warrant another attempt instead of a terminal receipt.
+# Single source of truth for the transient persistence list; the drain
+# loop uses this tuple rather than an inline ``except`` so the spec
+# stays easy to keep in sync.
 TRANSIENT_PERSISTENCE_ERRORS: tuple[type[BaseException], ...] = (
     WikiLockBusy,
     WikiWriteConflict,
@@ -85,9 +88,6 @@ class EnrichmentQueue:
     def __len__(self) -> int:
         return len(self._items)
 
-    def __iter__(self) -> Iterator[PendingRetry]:  # pragma: no cover - introspection
-        return iter(self._items)
-
     def drain(
         self,
         *,
@@ -105,11 +105,6 @@ class EnrichmentQueue:
         - apply_fn success → item drops; changed_pages append to
           ``applied``.
         """
-        from lies.memory.models import (
-            WikiCommitFailed,
-            WikiLockBusy,
-            WikiWriteConflict,
-        )
         applied: list[PageReference] = []
         deferred: list[str] = []
         for item in list(self._items):
@@ -124,7 +119,7 @@ class EnrichmentQueue:
                 continue
             try:
                 receipt = apply_fn(plan)
-            except (WikiLockBusy, WikiWriteConflict, WikiCommitFailed) as exc:
+            except TRANSIENT_PERSISTENCE_ERRORS as exc:
                 self._items.remove(item)
                 reason = f"{type(exc).__name__}: {exc!s}"
                 if item.attempts + 1 >= self._max_attempts:
