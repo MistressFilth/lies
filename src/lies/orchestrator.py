@@ -523,6 +523,11 @@ class Orchestrator:
             errors=[],
         )
 
+    # Prefix that signals a transient persistence error so the
+    # receipt renderer can emit the spec's "(memory: queued for
+    # retry — <reason>)" line instead of the generic comma-joined form.
+    _QUEUED_RETRY_PREFIX = "queued_for_retry:"
+
     def _format_receipt(self, receipt: MemoryReceipt) -> str:
         self._record_memory_state(
             last_enrichment_attempt="completed" if receipt.changed_pages else "failed",
@@ -530,13 +535,60 @@ class Orchestrator:
             qmd_status="stale" if any("qmd_stale" in err for err in receipt.errors) else "current",
             request_ref="receipt",
         )
+        # Split errors into queued-retry entries (spec formatting) and
+        # anything else (comma-joined in the standard form).
+        queued = [self._queued_reason(err) for err in receipt.errors
+                  if err.startswith(self._QUEUED_RETRY_PREFIX)]
+        other = [err for err in receipt.errors
+                 if not err.startswith(self._QUEUED_RETRY_PREFIX)]
         if not receipt.changed_pages:
-            return f"(memory: {', '.join(receipt.errors) or 'no change'})"
+            return self._format_empty_receipt(queued, other)
+        return self._format_durable_receipt(receipt, queued, other)
+
+    def _queued_reason(self, err: str) -> str:
+        """Strip the internal ``queued_for_retry:`` prefix from an error."""
+        return err[len(self._QUEUED_RETRY_PREFIX):].lstrip()
+
+    def _format_empty_receipt(self, queued: list[str], other: list[str]) -> str:
+        """Format a receipt with no ``changed_pages``.
+
+        - All queued: one ``(memory: queued for retry — <reason>)`` line
+          per queued item (spec format).
+        - Mixed: queued items in spec format, others comma-joined in a
+          single ``(memory: ...)`` line.
+        - No queued, no other: ``(memory: no change)``.
+        """
+        if queued and not other:
+            return "\n".join(
+                f"(memory: queued for retry — {reason})" for reason in queued
+            )
+        if queued and other:
+            head = "\n".join(
+                f"(memory: queued for retry — {reason})" for reason in queued
+            )
+            tail = ", ".join(other)
+            return f"{head}\n(memory: {tail})"
+        return f"(memory: {', '.join(other) or 'no change'})"
+
+    def _format_durable_receipt(
+        self,
+        receipt: MemoryReceipt,
+        queued: list[str],
+        other: list[str],
+    ) -> str:
+        """Format a receipt that durably filed at least one page change.
+
+        The block keeps the existing durably-filed shape and adds a
+        ``  queued for retry: <reason>`` line for each transient error
+        alongside the existing ``  notes:`` line for other errors.
+        """
         lines = ["(memory: durably filed"]
         for ref in receipt.changed_pages:
             lines.append(f"  - {ref.op.value}: {ref.path}")
-        if receipt.errors:
-            lines.append("  notes: " + "; ".join(receipt.errors))
+        for reason in queued:
+            lines.append(f"  queued for retry: {reason}")
+        if other:
+            lines.append("  notes: " + "; ".join(other))
         lines.append(")")
         return "\n".join(lines)
 
