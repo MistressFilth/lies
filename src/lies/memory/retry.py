@@ -95,18 +95,26 @@ class EnrichmentQueue:
     ) -> DrainResult:
         """Walk the FIFO; apply each item; return the aggregate result.
 
-        Transient persistence errors (WikiLockBusy, WikiWriteConflict,
-        WikiCommitFailed) re-queue the item at the tail with an
-        incremented attempt count. Enricher failures are terminal for
-        that item — they get deferred with ``enricher_crashed:`` reason.
-        Cap-deferred logic lives in Task 4.
+        - enrich_fn failure → item moves to ``deferred`` (terminal).
+        - plan.is_noop() → item drops silently.
+        - apply_fn transient persistence error → re-queue at tail,
+          unless ``attempts + 1 >= max_attempts`` (then ``deferred``).
+        - apply_fn any other error → item moves to ``deferred``
+          (terminal; never retried).
+        - apply_fn success → item drops; changed_pages append to
+          ``applied``.
         """
+        from lies.memory.models import (
+            WikiCommitFailed,
+            WikiLockBusy,
+            WikiWriteConflict,
+        )
         applied: list[PageReference] = []
         deferred: list[str] = []
         for item in list(self._items):
             try:
                 plan = enrich_fn(item.deps)
-            except Exception as exc:  # noqa: BLE001 - model failure terminal for this item
+            except Exception as exc:  # noqa: BLE001 - terminal
                 self._items.remove(item)
                 deferred.append(f"enricher_crashed: {type(exc).__name__}: {exc!s}")
                 continue
@@ -118,14 +126,21 @@ class EnrichmentQueue:
             except (WikiLockBusy, WikiWriteConflict, WikiCommitFailed) as exc:
                 self._items.remove(item)
                 reason = f"{type(exc).__name__}: {exc!s}"
-                self._items.append(
-                    PendingRetry(
-                        deps=item.deps,
-                        attempts=item.attempts + 1,
-                        last_reason=reason,
-                        enqueued_at_turn=item.enqueued_at_turn,
+                if item.attempts + 1 >= self._max_attempts:
+                    deferred.append(reason)
+                else:
+                    self._items.append(
+                        PendingRetry(
+                            deps=item.deps,
+                            attempts=item.attempts + 1,
+                            last_reason=reason,
+                            enqueued_at_turn=item.enqueued_at_turn,
+                        )
                     )
-                )
+                continue
+            except Exception as exc:  # noqa: BLE001 - non-transient: terminal
+                self._items.remove(item)
+                deferred.append(f"{type(exc).__name__}: {exc!s}")
                 continue
             self._items.remove(item)
             applied.extend(receipt.changed_pages)
