@@ -78,3 +78,26 @@ class EnrichmentQueue:
 
     def __iter__(self) -> Iterator[PendingRetry]:  # pragma: no cover - introspection
         return iter(self._items)
+
+    def drain(
+        self,
+        *,
+        enrich_fn: EnrichFn,
+        apply_fn: ApplyFn,
+    ) -> DrainResult:
+        """Walk the FIFO; apply each item; return the aggregate result.
+
+        This task covers the happy path: noop drops silently, success
+        appends to ``applied`` and drops the item. Transient-persistence
+        requeue and cap logic are added in Tasks 3 and 4.
+        """
+        applied: list[PageReference] = []
+        for item in list(self._items):
+            plan = enrich_fn(item.deps)
+            if plan.is_noop():
+                self._items.remove(item)
+                continue
+            receipt = apply_fn(plan)
+            self._items.remove(item)
+            applied.extend(receipt.changed_pages)
+        return DrainResult(applied=applied, deferred=[], still_queued=len(self._items))
