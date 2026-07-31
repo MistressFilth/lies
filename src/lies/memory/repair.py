@@ -91,12 +91,15 @@ def from_repair_plan(
         elif isinstance(op, UpdateIndex):
             if layout is None:
                 raise ValueError("UpdateIndex requires a WikiLayout")
+            if not op.pages:
+                raise ValueError("UpdateIndex requires op.pages to identify the orphan page")
+            target_path = op.pages[0]
             existing = layout.index_path.read_text(encoding="utf-8")
             operations.append(
                 PageUpdate(
-                    path=op.path,
+                    path="wiki/index.md",
                     expected_sha256=_hash_text(existing),
-                    content=_update_index_body(existing, op.title, op.path),
+                    content=_update_index_body(existing, op.title, target_path),
                     evidence=op.evidence,
                 )
             )

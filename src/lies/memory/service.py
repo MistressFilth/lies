@@ -281,11 +281,15 @@ class WikiMemoryService:
                 resolved = validate_page_path(self._layout, op.path)
             except WikiPlanInvalid as exc:
                 raise WikiPlanInvalid(str(exc), path=op.path) from exc
+            is_index = op.path == "wiki/index.md" or resolved == self._layout.index_path
+            if is_index:
+                resolved = self._layout.index_path
             page_type = _page_type_from_dir(resolved.parent.name)
-            validate_page_type(page_type)
+            if not is_index:
+                validate_page_type(page_type)
             if not isinstance(op, (PageCreate, PageUpdate, EvidenceAppend)):
                 raise WikiPlanInvalid(f"unsupported operation: {op!r}", path=op.path)
-            if isinstance(op, (PageCreate, PageUpdate)):
+            if not is_index and isinstance(op, (PageCreate, PageUpdate)):
                 try:
                     validate_frontmatter(parse_frontmatter(op.content), page_type=page_type)
                 except WikiPlanInvalid as exc:
@@ -296,7 +300,11 @@ class WikiMemoryService:
                     path=op.path,
                 )
             if isinstance(op, (PageUpdate, EvidenceAppend)):
-                current = _read_page(self._layout, op.path)
+                current = (
+                    self._layout.index_path.read_text(encoding="utf-8")
+                    if is_index
+                    else _read_page(self._layout, op.path)
+                )
                 actual = "" if current is None else _hash_text(current)
                 if actual != op.expected_sha256:
                     raise WikiWriteConflict(
@@ -365,12 +373,18 @@ class WikiMemoryService:
         changed: list[PageReference] = []
         for op in plan.operations:
             resolved = validate_page_path(self._layout, op.path)
+            if op.path == "wiki/index.md" or resolved == self._layout.index_path:
+                resolved = self._layout.index_path
             resolved.parent.mkdir(parents=True, exist_ok=True)
             if isinstance(op, PageCreate):
                 resolved.write_text(op.content, encoding="utf-8")
                 kind = OperationKind.CREATE
             elif isinstance(op, PageUpdate):
-                existing = _read_page(self._layout, op.path)
+                existing = (
+                    self._layout.index_path.read_text(encoding="utf-8")
+                    if resolved == self._layout.index_path
+                    else _read_page(self._layout, op.path)
+                )
                 actual = "" if existing is None else _hash_text(existing)
                 if actual != op.expected_sha256:
                     raise WikiWriteConflict(f"hash mismatch for {op.path}")
@@ -418,6 +432,8 @@ class WikiMemoryService:
                 resolved = validate_page_path(self._layout, op.path)
             except WikiPlanInvalid:
                 continue  # validate_plan should have rejected this already
+            if op.path == "wiki/index.md" or resolved == self._layout.index_path:
+                resolved = self._layout.index_path
             try:
                 rel = resolved.relative_to(root).as_posix()
             except ValueError:
