@@ -76,3 +76,26 @@ Periodically health-check the wiki. Look for:
 
 Write findings to `wiki/lint-report.md`. Each lint run appends a
 `## [YYYY-MM-DD] lint | N findings` entry to `wiki/log.md`.
+
+## Invisible memory
+
+After every turn, the orchestrator checks whether the main agent
+searched or read the wiki, or whether the user supplied clear
+project source material. When it does, the MemoryEnricher proposes
+a structured `MemoryPlan`; the host validates and applies it
+through `WikiMemoryService` and emits a git commit.
+
+Rules:
+
+- Memory captures only durable project knowledge (facts, source
+  claims, concepts, contradictions, crosslinks). It never captures
+  user preferences, working decisions, or task history.
+- Every operation requires an evidence reference.
+- Updates and appends carry the current page's content hash. A
+  mismatch causes a fresh read and a single enrichment retry.
+- Source files in `raw/` are immutable and never written.
+- Deletions and renames are not part of ordinary-turn memory. They
+  are reserved for explicit maintenance flows.
+- Receipts surface only material page changes, conflicts, or
+  persistence failures. Routine reads and bookkeeping stay
+  silent.
