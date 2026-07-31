@@ -64,6 +64,7 @@ class EnrichmentQueue:
             raise ValueError(f"max_attempts must be >= 1, got {max_attempts}")
         self._items: deque[PendingRetry] = deque()
         self._max_attempts = max_attempts
+        self._last_deferred: list[str] = []  # set by drain(), consumed by format_receipt_lines()
 
     def enqueue(
         self,
@@ -151,12 +152,14 @@ class EnrichmentQueue:
         """Return one-line strings for items deferred by the last ``drain``.
 
         Reads the most-recent ``deferred`` list captured on this queue.
-        Use a one-shot pattern: ``drain`` populates ``_last_deferred``;
-        callers format it on the next turn; the list clears once read.
+        Use an overwrite-on-drain pattern: ``drain`` populates
+        ``_last_deferred`` on every call; a successful drain overwrites
+        the list with ``[]``, so subsequent reads return no lines.
+        Callers format the lines on the next turn.
 
         Returns ``[]`` if nothing was deferred.
         """
-        if not getattr(self, "_last_deferred", None):
+        if not self._last_deferred:
             return []
         return [
             f"(memory: deferred after {self._max_attempts} attempts — {reason})"
