@@ -1,6 +1,7 @@
 import hashlib
 import json
 from pathlib import Path
+from urllib.error import HTTPError
 
 import pytest
 
@@ -29,12 +30,26 @@ def test_web_scraper_prefers_llms_full_txt(monkeypatch: pytest.MonkeyPatch) -> N
 
 
 def test_web_scraper_handles_404(monkeypatch: pytest.MonkeyPatch) -> None:
+    """When both candidates 404, the loop must exhaust and raise ScraperFetchFailed.
+
+    The production code's `except (HTTPError, URLError)` clause is what
+    lets the loop try the second candidate. The mock must raise one of
+    those exceptions so the except clause is exercised; otherwise the
+    test passes by accident because the first exception propagates.
+    """
+    urls_called: list[str] = []
+
     def fake_urlopen(req):
-        raise ScraperFetchFailed(f"404 {req.full_url}")
+        urls_called.append(req.full_url)
+        raise HTTPError(req.full_url, 404, "Not Found", {}, None)
 
     monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
     with pytest.raises(ScraperFetchFailed):
         WebScraper().fetch("https://example.com")
+    assert urls_called == [
+        "https://example.com/llms-full.txt",
+        "https://example.com/llms.txt",
+    ]
 
 
 def test_web_scraper_parse_emits_manifest(tmp_path: Path) -> None:
