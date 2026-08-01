@@ -79,8 +79,8 @@ def _build_lint_report(
     layout: WikiLayout,
     *,
     repair_receipt: RepairReceipt | None = None,
-) -> str:
-    """Produce a deterministic ``wiki/lint-report.md``.
+) -> LintReport:
+    """Produce a deterministic :class:`LintReport` for the host-side lint.
 
     Walks the wiki looking for the cheapest-to-check issues (orphan
     pages, missing cross-references) so a host-side lint call always
@@ -89,11 +89,23 @@ def _build_lint_report(
     findings here -- they still flow through the linter sub-agent in
     production; this host-side report is the deterministic shell.
 
+    Note: this deterministic shell does NOT currently invoke the
+    linter sub-agent (which would emit its own structured findings);
+    it is the source of truth for findings until that integration
+    is completed. The repair agent consumes the structured
+    ``LintReport`` produced here, not a markdown string.
+
     Args:
         layout: The wiki to lint.
         repair_receipt: Optional. When provided, the report includes
             an ``applied`` section describing which repair ops
             succeeded.
+
+    Returns:
+        A :class:`LintReport` whose ``findings`` field carries the
+        structured findings and whose ``report_markdown`` field
+        carries the formatted report (optionally with a repair
+        section appended).
     """
     from lies.agents.linter import LintFinding, LintReport, LintSeverity
 
@@ -131,7 +143,12 @@ def _build_lint_report(
                     category="orphan",
                     message=f"{orphan} has no inbound links.",
                     pages=[orphan],
-                    safe_to_fix=False,
+                    # Orphans are mechanical to fix: the repair agent
+                    # routes them to UpdateIndex (add the page to
+                    # wiki/index.md). safe_to_fix=True lets the
+                    # repair agent's HARD RULE permit the op; the
+                    # default of False would block every orphan.
+                    safe_to_fix=True,
                 )
             )
 
@@ -140,7 +157,7 @@ def _build_lint_report(
     if repair_receipt is not None:
         body += "\n" + _format_repair_section(repair_receipt)
     report.report_markdown = body
-    return body
+    return report
 
 
 def _extract_markdown_links(text: str) -> list[str]:
@@ -770,35 +787,48 @@ class Orchestrator:
             Exception: Anything raised by the agent or the apply path
                 is propagated.
         """
+        # NOTE: the linter sub-agent's structured output is currently
+        # not consumed here; the host-side deterministic shell
+        # (`_build_lint_report`) is the source of truth for findings
+        # in this branch. The call to the linter is preserved so
+        # downstream wiring remains intact, but its return value is
+        # deliberately discarded until the integration is finalized.
         self._agent.run_sync("lint")
         lint_report = _build_lint_report(self.layout)
         repair_receipt: RepairReceipt | None = None
         if apply:
             plan = self._run_repair_agent(lint_report)
             repair_receipt = self._apply_repair_plan(plan)
-        report = _build_lint_report(self.layout, repair_receipt=repair_receipt)
-        self.layout.lint_report_path.write_text(report, encoding="utf-8")
+        final_report = _build_lint_report(self.layout, repair_receipt=repair_receipt)
+        self.layout.lint_report_path.write_text(
+            final_report.report_markdown, encoding="utf-8"
+        )
         self._append_log_entry(
             f"## [{datetime.now(tz=timezone.utc).date().isoformat()}] lint | "
-            f"{report.count(chr(10))} findings"
+            f"{final_report.report_markdown.count(chr(10))} findings"
         )
-        return report
+        return final_report.report_markdown
 
-    def _run_repair_agent(self, lint_report: str) -> RepairPlan:
-        """Invoke the repair agent against the lint report."""
-        from lies.agents.linter import LintReport
-        # Parse the markdown report back into a structured LintReport
-        # via the existing LintReport markdown helper.
-        report_obj = LintReport(findings=[], report_markdown=lint_report)
+    def _run_repair_agent(self, lint_report: LintReport) -> RepairPlan:
+        """Invoke the repair agent against the structured lint report.
+
+        The repair agent's HARD RULE forbids ops on safe_to_fix=False
+        findings, so the ``safe_to_fix`` flags on every finding flow
+        through unchanged. The agent reads the markdown body of
+        every page named in the report (not model-supplied paths) so
+        it can plan the precise edit.
+        """
         page_texts: dict[str, str] = {}
-        for finding in report_obj.findings:
+        for finding in lint_report.findings:
             for page in finding.pages:
                 path = self.layout.wiki_dir / page
                 if path.exists():
                     page_texts[page] = path.read_text(encoding="utf-8")
         return self._repair_agent.run_sync(
             "Propose a RepairPlan for the lint report.",
-            deps=RepairAgentDeps(lint_report=report_obj, page_texts=page_texts),
+            deps=RepairAgentDeps(
+                lint_report=lint_report, page_texts=page_texts
+            ),
         ).output
 
     def _apply_repair_plan(self, plan: RepairPlan) -> RepairReceipt:
