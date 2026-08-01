@@ -146,7 +146,7 @@ CLI commands (`src/lies/cli.py`):
   schema, `git init`, initial commit).
 - `lies ingest <source>` — ingest a local source path.
 - `lies query <question>` — ask a question of the wiki.
-- `lies lint [--fix]` — health-check the wiki; `--fix` applies safe fixes.
+- `lies lint [--fix]` — health-check the wiki; `--fix` applies the repair plan for safe_to_fix findings.
 - `lies status` — show qmd status and the last few log entries.
 - `lies config` — print the active model and wiki root.
 - `lies version` — print the LIES version.

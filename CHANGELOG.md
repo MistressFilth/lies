@@ -6,6 +6,9 @@ All notable changes to LIES are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- `lies lint --fix` (CLI) and `lint(fix=True)` (FastMCP) consume the linter's `LintReport` and apply a structured `RepairPlan` through `WikiMemoryService`, gated by the finding's `safe_to_fix` flag. The 4 primitives (`CreateStub`, `AppendLink`, `UpdateIndex`, `AppendEvidence`) map onto existing memory operations; one atomic commit, one cross-process flock, full rollback on failure. Dry-run is the default.
+
 ## [0.2.0] - 2026-07-29
 
 ### Added
