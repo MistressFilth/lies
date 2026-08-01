@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from lies.etl.telemetry import SyncTelemetry
 
 
@@ -42,3 +44,9 @@ def test_record_error_appends_to_receipt(tmp_path: Path) -> None:
     r = t.receipt()
     assert "budget_exceeded" in r.errors
     assert "qmd_missing" in r.errors
+
+
+def test_record_counters_rejects_unknown_counter(tmp_path: Path) -> None:
+    t = SyncTelemetry("cpython", log_dir=tmp_path)
+    with pytest.raises(ValueError, match="unknown counter"):
+        t.record_counters(bogus=1)
