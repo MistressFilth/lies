@@ -39,3 +39,23 @@ def test_manifest_reads_existing(tmp_path: Path) -> None:
     )
     m = HashManifest(tmp_path, "cpython")
     assert m.compare("a.md", _sha("aaa")) is True
+
+
+def test_snapshot_writes_copy(tmp_path: Path) -> None:
+    m = HashManifest(tmp_path, "cpython")
+    m.update("a.md", _sha("aaa"))
+    m.flush()
+    snap = m.snapshot()
+    assert snap.exists()
+    assert "pre-sync" in snap.name
+
+
+def test_snapshot_then_restore_recovers_state(tmp_path: Path) -> None:
+    m = HashManifest(tmp_path, "cpython")
+    m.update("a.md", _sha("aaa"))
+    m.flush()
+    snap = m.snapshot()
+    m.update("a.md", _sha("bbb"))
+    m.flush()
+    m.restore(snap)
+    assert m.compare("a.md", _sha("aaa")) is True
