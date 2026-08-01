@@ -103,12 +103,16 @@ class RepairPlan(BaseModel):
 
     @model_validator(mode="after")
     def _no_conflicting_ops(self) -> RepairPlan:
-        seen: set[str] = set()
+        seen: dict[str, str] = {}
         for op in self.operations:
             path = op.path  # type: ignore[attr-defined]
-            if path in seen:
+            kind = type(op).__name__
+            prev = seen.get(path)
+            if prev is not None and prev != "AppendLink":
                 raise ValueError(f"multiple operations target the same path: {path}")
-            seen.add(path)
+            if prev is not None and kind != "AppendLink":
+                raise ValueError(f"cannot mix AppendLink with another op on the same path: {path}")
+            seen[path] = kind
         return self
 
 
@@ -118,6 +122,7 @@ class RepairReceipt(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     applied: list[PageReference] = Field(default_factory=list)
+    applied_repair_kinds: list[str] = Field(default_factory=list)
     skipped: list[str] = Field(default_factory=list)
     deferred: list[str] = Field(default_factory=list)
     fallback_used: bool = False
