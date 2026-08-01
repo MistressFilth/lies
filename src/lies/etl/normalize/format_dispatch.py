@@ -7,9 +7,9 @@ class UnknownFormatError(ValueError):
 
 
 def _pandoc_convert(raw: bytes, fmt: str) -> bytes:
-    from lies.etl.normalize.pandoc_daemon import PandocDaemon  # type: ignore[import-untyped]
+    from lies.etl.normalize.pandoc_daemon import PandocDaemon
     with PandocDaemon() as d:
-        return d.convert(raw, fmt)  # type: ignore[no-any-return]
+        return d.convert(raw, fmt)
 
 
 def _pdf_extract(raw: bytes) -> str:
