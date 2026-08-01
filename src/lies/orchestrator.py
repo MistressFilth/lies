@@ -13,6 +13,8 @@ from lies.agents.indexer import indexer_agent
 from lies.agents.linter import LintReport, linter_agent
 from lies.agents.page_writer import page_writer_agent
 from lies.agents.query_synthesizer import query_synthesizer_agent
+from lies.agents.repair import RepairAgentDeps, repair_agent
+from lies.agents.repair_models import RepairPlan, RepairReceipt
 from lies.agents.source_reader import source_reader_agent
 from lies.capabilities import (
     code_mode,
@@ -73,8 +75,12 @@ def _list_working_tree_changes(repo: Path) -> list[str]:
     return paths
 
 
-def _build_lint_report(layout: WikiLayout) -> str:
-    """Produce a deterministic ``wiki/lint-report.md``.
+def _build_lint_report(
+    layout: WikiLayout,
+    *,
+    repair_receipt: RepairReceipt | None = None,
+) -> LintReport:
+    """Produce a deterministic :class:`LintReport` for the host-side lint.
 
     Walks the wiki looking for the cheapest-to-check issues (orphan
     pages, missing cross-references) so a host-side lint call always
@@ -83,11 +89,23 @@ def _build_lint_report(layout: WikiLayout) -> str:
     findings here -- they still flow through the linter sub-agent in
     production; this host-side report is the deterministic shell.
 
+    Note: this deterministic shell does NOT currently invoke the
+    linter sub-agent (which would emit its own structured findings);
+    it is the source of truth for findings until that integration
+    is completed. The repair agent consumes the structured
+    ``LintReport`` produced here, not a markdown string.
+
     Args:
         layout: The wiki to lint.
+        repair_receipt: Optional. When provided, the report includes
+            an ``applied`` section describing which repair ops
+            succeeded.
 
     Returns:
-        The full markdown for ``wiki/lint-report.md``.
+        A :class:`LintReport` whose ``findings`` field carries the
+        structured findings and whose ``report_markdown`` field
+        carries the formatted report (optionally with a repair
+        section appended).
     """
     from lies.agents.linter import LintFinding, LintReport, LintSeverity
 
@@ -125,14 +143,21 @@ def _build_lint_report(layout: WikiLayout) -> str:
                     category="orphan",
                     message=f"{orphan} has no inbound links.",
                     pages=[orphan],
-                    safe_to_fix=False,
+                    # Orphans are mechanical to fix: the repair agent
+                    # routes them to UpdateIndex (add the page to
+                    # wiki/index.md). safe_to_fix=True lets the
+                    # repair agent's HARD RULE permit the op; the
+                    # default of False would block every orphan.
+                    safe_to_fix=True,
                 )
             )
 
     report = LintReport(findings=findings, report_markdown="")
     body = _format_lint_markdown(report, layout)
+    if repair_receipt is not None:
+        body += "\n" + _format_repair_section(repair_receipt)
     report.report_markdown = body
-    return body
+    return report
 
 
 def _extract_markdown_links(text: str) -> list[str]:
@@ -168,6 +193,41 @@ def _format_lint_markdown(report: LintReport, layout: WikiLayout) -> str:
         )
     sections.append("")
     return "\n".join(sections)
+
+
+def _format_repair_section(receipt: RepairReceipt) -> str:
+    """Render the ``applied`` section of ``wiki/lint-report.md``.
+
+    The applied entries use ``receipt.applied_repair_kinds`` (a parallel
+    list of repair op kinds) when present, so callers see the original
+    repair primitive (``append_link``, ``update_index``, ...) instead of
+    the underlying memory operation kind (``update``). Falls back to the
+    memory operation kind for backwards compatibility.
+    """
+    lines = [f"### Applied ({len(receipt.applied)})", ""]
+    if not receipt.applied:
+        lines.append("_No repairs applied._")
+    else:
+        kinds = receipt.applied_repair_kinds
+        for index, ref in enumerate(receipt.applied):
+            kind = kinds[index] if index < len(kinds) else ref.op.value
+            lines.append(f"- applied: {kind} — {ref.path}")
+    lines.append("")
+    lines.append(f"### Skipped ({len(receipt.skipped)})")
+    lines.append("")
+    if receipt.skipped:
+        for reason in receipt.skipped:
+            lines.append(f"- {reason}")
+    else:
+        lines.append("_No findings skipped._")
+    lines.append("")
+    if receipt.errors:
+        lines.append(f"### Errors ({len(receipt.errors)})")
+        lines.append("")
+        for err in receipt.errors:
+            lines.append(f"- {err}")
+        lines.append("")
+    return "\n".join(lines)
 
 
 ORCHESTRATOR_SYSTEM_PROMPT_PREFIX = """You are the LIES orchestrator. The user
@@ -294,6 +354,7 @@ class Orchestrator:
         self._enrichment_queue = EnrichmentQueue(max_attempts=3)
         self._turn_counter = 0
         self._enricher = enricher_agent(model=self.model)
+        self._repair_agent = repair_agent(model=self.model)
         register_read_tools(self._agent)
 
     def run(self, command: str) -> str:
@@ -706,36 +767,104 @@ class Orchestrator:
         """
         return synthesize_answer(question, self.layout)
 
-    def run_lint(self) -> str:
+    def run_lint(self, apply: bool = False) -> str:
         """Run the lint pass and write ``wiki/lint-report.md``.
 
-        The orchestrator calls the linter sub-agent, then persists its
-        markdown summary to ``wiki/lint-report.md`` and appends a parseable
-        ``## [YYYY-MM-DD] lint | N findings`` entry to ``wiki/log.md``.
+        When ``apply=True``, also invokes the repair agent and applies
+        the resulting RepairPlan through ``WikiMemoryService``. The
+        post-apply report shows both the proposed and the applied
+        sections.
+
+        Args:
+            apply: If True, run the repair agent and apply the resulting
+                plan. If False, return the dry-run report only.
 
         Returns:
             The lint report markdown that was written to
             ``wiki/lint-report.md``.
 
         Raises:
-            Exception: Anything raised by the agent is propagated.
+            Exception: Anything raised by the agent or the apply path
+                is propagated.
         """
-        # The linter sub-agent's run_sync returns a structured
-        # LintReport. We re-invoke the agent deterministically through the
-        # agent's run_sync so the same code path is used in production
-        # and tests (with the LLM mocked).
+        # NOTE: the linter sub-agent's structured output is currently
+        # not consumed here; the host-side deterministic shell
+        # (`_build_lint_report`) is the source of truth for findings
+        # in this branch. The call to the linter is preserved so
+        # downstream wiring remains intact, but its return value is
+        # deliberately discarded until the integration is finalized.
         self._agent.run_sync("lint")
-        # The agent returns a plain-text wrap-up in ``output``. The actual
-        # LintReport is produced by the linter sub-agent; for the host-side
-        # wiring we keep a deterministic markdown report so the CLI /
-        # integration tests have a stable artifact.
-        report = _build_lint_report(self.layout)
-        self.layout.lint_report_path.write_text(report, encoding="utf-8")
+        lint_report = _build_lint_report(self.layout)
+        repair_receipt: RepairReceipt | None = None
+        if apply:
+            plan = self._run_repair_agent(lint_report)
+            repair_receipt = self._apply_repair_plan(plan)
+        final_report = _build_lint_report(self.layout, repair_receipt=repair_receipt)
+        self.layout.lint_report_path.write_text(
+            final_report.report_markdown, encoding="utf-8"
+        )
         self._append_log_entry(
             f"## [{datetime.now(tz=timezone.utc).date().isoformat()}] lint | "
-            f"{report.count(chr(10))} findings",
+            f"{final_report.report_markdown.count(chr(10))} findings"
         )
-        return report
+        return final_report.report_markdown
+
+    def _run_repair_agent(self, lint_report: LintReport) -> RepairPlan:
+        """Invoke the repair agent against the structured lint report.
+
+        The repair agent's HARD RULE forbids ops on safe_to_fix=False
+        findings, so the ``safe_to_fix`` flags on every finding flow
+        through unchanged. The agent reads the markdown body of
+        every page named in the report (not model-supplied paths) so
+        it can plan the precise edit.
+        """
+        page_texts: dict[str, str] = {}
+        for finding in lint_report.findings:
+            for page in finding.pages:
+                path = self.layout.wiki_dir / page
+                if path.exists():
+                    page_texts[page] = path.read_text(encoding="utf-8")
+        return self._repair_agent.run_sync(
+            "Propose a RepairPlan for the lint report.",
+            deps=RepairAgentDeps(
+                lint_report=lint_report, page_texts=page_texts
+            ),
+        ).output
+
+    def _apply_repair_plan(self, plan: RepairPlan) -> RepairReceipt:
+        """Apply a RepairPlan through WikiMemoryService and return a receipt."""
+        from lies.agents.repair_models import RepairReceipt as _Receipt
+        if plan.is_noop():
+            return _Receipt(
+                applied=[],
+                applied_repair_kinds=[],
+                skipped=[],
+                deferred=[],
+                errors=[],
+            )
+        try:
+            memory_receipt = self._memory_service.apply_repair_plan(plan)
+        except Exception as exc:  # noqa: BLE001 - capture all apply failures
+            return _Receipt(
+                applied=[],
+                applied_repair_kinds=[],
+                skipped=[],
+                deferred=[f"apply_failed: {type(exc).__name__}: {exc!s}"],
+                errors=[f"apply_failed: {type(exc).__name__}: {exc!s}"],
+            )
+        # Map each successfully applied memory operation back to the
+        # repair op kind that produced it. ``plan.operations`` and
+        # ``memory_receipt.changed_pages`` are paired by construction
+        # (the service applies operations in order and appends a
+        # ``PageReference`` for each), so we use position.
+        kinds = [op.kind.value for op in plan.operations]  # type: ignore[attr-defined]
+        return _Receipt(
+            applied=memory_receipt.changed_pages,
+            applied_repair_kinds=kinds,
+            skipped=[],
+            deferred=[],
+            errors=memory_receipt.errors,
+        )
 
     def _append_log_entry(self, line: str) -> None:
         """Append a single line to ``wiki/log.md``.

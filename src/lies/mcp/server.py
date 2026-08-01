@@ -176,16 +176,10 @@ def query(question: str, wiki_root: str | None = None) -> SynthesizedMcpAnswer:
 
 @mcp.tool
 def lint(wiki_root: str | None = None, fix: bool = False) -> str:
-    """Run the lint pass and write ``wiki/lint-report.md``.
-
-    ``fix`` is accepted for parity with the CLI; safe-fix application
-    is reserved for the linter sub-agent and is not yet exposed over
-    MCP.
-    """
-    del fix  # reserved for future use
+    """Run lint; with fix=True also apply the repair plan."""
     layout = _resolve_wiki_root(wiki_root)
     orch = Orchestrator(wiki_root=layout.root)
-    return orch.run_lint()
+    return orch.run_lint(apply=fix)
 
 
 # ---------------------------------------------------------------------------
