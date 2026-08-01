@@ -27,3 +27,22 @@ def test_budget_exceeded_tokens() -> None:
     b = CostBudget(calls=10, tokens=100)
     with pytest.raises(BudgetExceeded):
         b.spend(tokens=200)
+
+
+def test_negative_cap_rejected() -> None:
+    with pytest.raises(ValueError):
+        CostBudget(calls=-1)
+    with pytest.raises(ValueError):
+        CostBudget(tokens=-1)
+    with pytest.raises(ValueError):
+        CostBudget(calls=-1, tokens=-1)
+
+
+def test_negative_spend_rejected() -> None:
+    b = CostBudget(calls=5, tokens=1000)
+    with pytest.raises(ValueError):
+        b.spend(calls=-1)
+    with pytest.raises(ValueError):
+        b.spend(tokens=-1)
+    with pytest.raises(ValueError):
+        b.spend(calls=-1, tokens=-1)
