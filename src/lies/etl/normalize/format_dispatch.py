@@ -13,8 +13,8 @@ def _pandoc_convert(raw: bytes, fmt: str) -> bytes:
 
 
 def _pdf_extract(raw: bytes) -> str:
-    from lies.etl.normalize.pdf import extract_text  # type: ignore[import-untyped]
-    return extract_text(raw)  # type: ignore[no-any-return]
+    from lies.etl.normalize.pdf import extract_text
+    return extract_text(raw)
 
 
 def dispatch(raw: bytes, source_format: str) -> str:
