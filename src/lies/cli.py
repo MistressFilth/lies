@@ -119,16 +119,15 @@ def query(
 @app.command()
 def lint(
     wiki_root: Path = typer.Option(None, "--wiki-root", "-w"),  # noqa: B008
-    fix: bool = typer.Option(False, "--fix", help="Apply safe fixes automatically."),
+    fix: bool = typer.Option(False, "--fix", help="Apply repair plan for safe_to_fix findings."),
 ) -> None:
-    """Health-check the wiki and write wiki/lint-report.md."""
+    """Run lint; with --fix also apply the repair plan."""
     configure_logging()
     root = _wiki_root_opt(wiki_root)
     orch = Orchestrator(wiki_root=root)
     # Use the host-side ``run_lint`` entry point so the lint pass writes
     # a deterministic ``wiki/lint-report.md`` and appends to ``wiki/log.md``.
-    del fix  # safe-fix application is reserved for the linter sub-agent.
-    output = orch.run_lint()
+    output = orch.run_lint(apply=fix)
     console.print(Markdown(output))
 
 
