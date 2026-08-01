@@ -179,19 +179,31 @@ def _format_lint_markdown(report: LintReport, layout: WikiLayout) -> str:
 
 
 def _format_repair_section(receipt: RepairReceipt) -> str:
-    """Render the ``applied`` section of ``wiki/lint-report.md``."""
+    """Render the ``applied`` section of ``wiki/lint-report.md``.
+
+    The applied entries use ``receipt.applied_repair_kinds`` (a parallel
+    list of repair op kinds) when present, so callers see the original
+    repair primitive (``append_link``, ``update_index``, ...) instead of
+    the underlying memory operation kind (``update``). Falls back to the
+    memory operation kind for backwards compatibility.
+    """
     lines = [f"### Applied ({len(receipt.applied)})", ""]
-    for ref in receipt.applied:
-        lines.append(f"- applied: {ref.op.value} — {ref.path}")
     if not receipt.applied:
         lines.append("_No repairs applied._")
+    else:
+        kinds = receipt.applied_repair_kinds
+        for index, ref in enumerate(receipt.applied):
+            kind = kinds[index] if index < len(kinds) else ref.op.value
+            lines.append(f"- applied: {kind} — {ref.path}")
+    lines.append("")
+    lines.append(f"### Skipped ({len(receipt.skipped)})")
     lines.append("")
     if receipt.skipped:
-        lines.append(f"### Skipped ({len(receipt.skipped)})")
-        lines.append("")
         for reason in receipt.skipped:
             lines.append(f"- {reason}")
-        lines.append("")
+    else:
+        lines.append("_No findings skipped._")
+    lines.append("")
     if receipt.errors:
         lines.append(f"### Errors ({len(receipt.errors)})")
         lines.append("")
@@ -795,6 +807,7 @@ class Orchestrator:
         if plan.is_noop():
             return _Receipt(
                 applied=[],
+                applied_repair_kinds=[],
                 skipped=[],
                 deferred=[],
                 errors=[],
@@ -804,12 +817,20 @@ class Orchestrator:
         except Exception as exc:  # noqa: BLE001 - capture all apply failures
             return _Receipt(
                 applied=[],
+                applied_repair_kinds=[],
                 skipped=[],
                 deferred=[f"apply_failed: {type(exc).__name__}: {exc!s}"],
                 errors=[f"apply_failed: {type(exc).__name__}: {exc!s}"],
             )
+        # Map each successfully applied memory operation back to the
+        # repair op kind that produced it. ``plan.operations`` and
+        # ``memory_receipt.changed_pages`` are paired by construction
+        # (the service applies operations in order and appends a
+        # ``PageReference`` for each), so we use position.
+        kinds = [op.kind.value for op in plan.operations]  # type: ignore[attr-defined]
         return _Receipt(
             applied=memory_receipt.changed_pages,
+            applied_repair_kinds=kinds,
             skipped=[],
             deferred=[],
             errors=memory_receipt.errors,
