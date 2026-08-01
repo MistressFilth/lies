@@ -47,3 +47,15 @@ class HashManifest:
     def flush(self) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._path.write_text(json.dumps(self._data, indent=2), encoding="utf-8")
+
+    def snapshot(self) -> Path:
+        snap_path = self._path.with_name(
+            f"{self._collection}.pre-sync.json"
+        )
+        snap_path.parent.mkdir(parents=True, exist_ok=True)
+        snap_path.write_text(json.dumps(self._data, indent=2), encoding="utf-8")
+        return snap_path
+
+    def restore(self, snapshot: Path) -> None:
+        self._data = json.loads(snapshot.read_text(encoding="utf-8"))
+        self.flush()
