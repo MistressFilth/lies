@@ -85,7 +85,13 @@ class SyncOrchestrator:
                 (d.path, d.content.decode("utf-8", errors="replace"))
                 for d in normalized.parsed_docs
             ]
-            run_write(self.collection, normalized_pairs, manifest=self.manifest, force=self.force)
+            run_write(
+                self.collection,
+                normalized_pairs,
+                manifest=self.manifest,
+                force=self.force,
+                wiki_root=self.wiki_root,
+            )
             self.telemetry.record_counters(bytes_out=normalized.bytes_out)
 
             self._transition(PipelineState.QMD_UPDATE)

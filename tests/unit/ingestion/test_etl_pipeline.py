@@ -88,7 +88,7 @@ def test_pipeline_threads_parsed_docs_from_scrape_to_normalize(tmp_path: Path) -
         return StageResult(success=["x.md"], quarantined=[], skipped=[],
                            parsed_docs=[], bytes_in=10, bytes_out=10)
 
-    def fake_write(c, normalized, *, manifest, force):
+    def fake_write(c, normalized, *, manifest, force, wiki_root):
         return StageResult(success=[], quarantined=[], skipped=[],
                           parsed_docs=[], bytes_in=0, bytes_out=0)
 
@@ -122,8 +122,9 @@ def test_pipeline_threads_force_to_write(tmp_path: Path) -> None:
         return StageResult(success=[], quarantined=[], skipped=[],
                            parsed_docs=[], bytes_in=0, bytes_out=0)
 
-    def fake_write(c, normalized, *, manifest, force):
+    def fake_write(c, normalized, *, manifest, force, wiki_root):
         captured["force"] = force
+        captured["wiki_root"] = wiki_root
         return StageResult(success=[], quarantined=[], skipped=[],
                           parsed_docs=[], bytes_in=0, bytes_out=0)
 
@@ -137,3 +138,40 @@ def test_pipeline_threads_force_to_write(tmp_path: Path) -> None:
          mock.patch("lies.etl.pipeline.run_qmd_update", side_effect=fake_qmd):
         pipeline.run()
     assert captured["force"] is True
+    assert captured["wiki_root"] == tmp_path
+
+
+def test_pipeline_threads_wiki_root_to_write(tmp_path: Path) -> None:
+    """The orchestrator must thread wiki_root into the write stage."""
+    collection = _collection(tmp_path)
+    telemetry = SyncTelemetry(collection.name, tmp_path / "logs")
+    budget = CostBudget()
+    pipeline = SyncOrchestrator(
+        collection=collection, telemetry=telemetry, budget=budget,
+        manifest=mock.Mock(), wiki_root=tmp_path,
+    )
+    captured: dict = {}
+
+    def fake_scrape(c):
+        return StageResult(success=[], quarantined=[], skipped=[],
+                          parsed_docs=[], bytes_in=0, bytes_out=0)
+
+    def fake_normalize(c, docs):
+        return StageResult(success=[], quarantined=[], skipped=[],
+                           parsed_docs=[], bytes_in=0, bytes_out=0)
+
+    def fake_write(c, normalized, *, manifest, force, wiki_root):
+        captured["wiki_root"] = wiki_root
+        return StageResult(success=[], quarantined=[], skipped=[],
+                          parsed_docs=[], bytes_in=0, bytes_out=0)
+
+    def fake_qmd(c):
+        return StageResult(success=[], quarantined=[], skipped=[],
+                          parsed_docs=[], bytes_in=0, bytes_out=0)
+
+    with mock.patch("lies.etl.pipeline.run_scrape", side_effect=fake_scrape), \
+         mock.patch("lies.etl.pipeline.run_normalize", side_effect=fake_normalize), \
+         mock.patch("lies.etl.pipeline.run_write", side_effect=fake_write), \
+         mock.patch("lies.etl.pipeline.run_qmd_update", side_effect=fake_qmd):
+        pipeline.run()
+    assert captured["wiki_root"] == tmp_path
