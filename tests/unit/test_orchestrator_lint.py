@@ -7,6 +7,8 @@ from unittest import mock
 
 import pytest
 
+from lies.agents.linter import LintReport
+from lies.agents.repair import RepairAgentDeps
 from lies.agents.repair_models import (
     CreateStub,
     RepairPlan,
@@ -99,3 +101,90 @@ def test_run_lint_apply_surfaces_errors(orch: Orchestrator) -> None:
          mock.patch.object(orch, "_apply_repair_plan", return_value=fake_receipt):
         report = orch.run_lint(apply=True)
     assert "errors" in report.lower() or "Errors" in report
+
+
+def test_build_lint_report_orphans_are_safe_to_fix(orch: Orchestrator) -> None:
+    """The deterministic host-side shell must mark orphan findings
+    safe_to_fix=True so the repair agent's HARD RULE permits the
+    corresponding UpdateIndex op."""
+    from lies.orchestrator import _build_lint_report
+
+    # Seed an orphan page (no inbound links).
+    orphan = orch.layout.wiki_dir / "concepts" / "orphan.md"
+    orphan.parent.mkdir(parents=True, exist_ok=True)
+    orphan.write_text(
+        "---\ntitle: Orphan\ntype: concept\n---\n# Orphan\n",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "add", "."], cwd=orch.layout.root, check=True)
+    subprocess.run(["git", "commit", "-m", "seed"], cwd=orch.layout.root, check=True)
+
+    report = _build_lint_report(orch.layout)
+    orphans = [f for f in report.findings if f.category == "orphan"]
+    assert orphans, "expected at least one orphan finding"
+    for finding in orphans:
+        assert finding.safe_to_fix is True, (
+            "orphan findings must be safe_to_fix=True so the repair agent "
+            "is permitted to emit an UpdateIndex op"
+        )
+
+
+def test_run_lint_apply_passes_findings_to_repair_agent(orch: Orchestrator) -> None:
+    """The LintReport's safe_to_fix flags flow through to the repair agent
+    via RepairAgentDeps. Orphans are safe_to_fix=True; any other finding
+    (if added by the deterministic shell in future) is False by default."""
+    from lies.orchestrator import _build_lint_report
+
+    # Seed an orphan so the deterministic shell produces a finding.
+    orphan = orch.layout.wiki_dir / "concepts" / "orphan.md"
+    orphan.parent.mkdir(parents=True, exist_ok=True)
+    orphan.write_text(
+        "---\ntitle: Orphan\ntype: concept\n---\n# Orphan\n",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "add", "."], cwd=orch.layout.root, check=True)
+    subprocess.run(["git", "commit", "-m", "seed"], cwd=orch.layout.root, check=True)
+
+    # Sanity check: the deterministic shell produces a safe orphan finding.
+    pre = _build_lint_report(orch.layout)
+    assert any(
+        f.category == "orphan" and f.safe_to_fix is True
+        for f in pre.findings
+    )
+
+    # Capture the RepairAgentDeps the repair agent receives.
+    captured: dict[str, object] = {}
+
+    def fake_repair_agent_run_sync(prompt: str, deps: object = None):  # type: ignore[no-untyped-def]
+        captured["deps"] = deps
+        return mock.Mock(
+            output=RepairPlan(operations=[], rationale="r", evidence=["f0"])
+        )
+
+    with mock.patch.object(type(orch._agent), "run_sync", new=_noop_agent_run_sync), \
+         mock.patch.object(orch._repair_agent, "run_sync", new=fake_repair_agent_run_sync), \
+         mock.patch.object(orch, "_apply_repair_plan", return_value=RepairReceipt(
+             applied=[], skipped=[], deferred=[], errors=[]
+         )):
+        orch.run_lint(apply=True)
+
+    deps = captured.get("deps")
+    assert isinstance(deps, RepairAgentDeps), (
+        f"repair agent must receive RepairAgentDeps, got {type(deps)!r}"
+    )
+    received_report: LintReport = deps.lint_report
+    assert received_report.findings, "repair agent must receive a non-empty LintReport"
+    # Every orphan finding carries safe_to_fix=True.
+    orphan_findings = [f for f in received_report.findings if f.category == "orphan"]
+    assert orphan_findings, "expected at least one orphan finding in the report"
+    for finding in orphan_findings:
+        assert finding.safe_to_fix is True, (
+            f"orphan finding {finding.message!r} must be safe_to_fix=True"
+        )
+    # No finding may have safe_to_fix=None or any non-bool value: the
+    # deterministic shell must always set the flag explicitly.
+    for finding in received_report.findings:
+        assert isinstance(finding.safe_to_fix, bool), (
+            f"finding {finding.message!r} safe_to_fix must be a bool, "
+            f"got {type(finding.safe_to_fix).__name__}"
+        )
