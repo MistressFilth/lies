@@ -88,6 +88,8 @@ tests/
   start of the next turn. Capped at 3 attempts; deferred items surface as
   `(memory: deferred after 3 attempts — <reason>)` in the next receipt.
 
+The lint repair workflow uses a separate `repair_agent` (in `src/lies/agents/repair.py`) that consumes a `LintReport` and emits a structured `RepairPlan`. The orchestrator applies the plan through `WikiMemoryService.apply_repair_plan`, which routes through the same cross-process flock and atomic-commit envelope as memory plans. The 4 primitives (`CreateStub`, `AppendLink`, `UpdateIndex`, `AppendEvidence`) map onto existing memory operations. The agent never emits ops for `safe_to_fix=False` findings; those stay in the report verbatim. The CLI flag is `lies lint --fix`; the FastMCP toggle is `lint(fix=True)`.
+
 ## Quality gates
 
 `make check` runs `lint + typecheck + format`. `make test` runs the full
