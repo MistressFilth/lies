@@ -2,6 +2,8 @@ import os
 import time
 from pathlib import Path
 
+import pytest
+
 from lies.etl.heartbeat import (
     MAX_SYNC_AGE_S,
     Heartbeat,
@@ -63,3 +65,39 @@ def test_acquire_create_lock_release_idempotent(tmp_path: Path) -> None:
     release_create_lock(tmp_path, fd)
     # Calling release again should not raise.
     release_create_lock(tmp_path, fd)
+
+
+def test_acquire_create_lock_recovers_from_orphaned_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A stale ``.lies/sync.lock.create`` (no fd, old mtime) is recovered.
+
+    Simulates a crashed previous acquirer that left the create-lock file
+    behind. The next call must detect the orphan via mtime, unlink it, and
+    succeed in claiming the lock. A fresh lock (recent mtime) is left alone.
+    """
+    (tmp_path / ".lies").mkdir(parents=True)
+    lock_path = tmp_path / ".lies" / "sync.lock.create"
+    lock_path.touch()
+
+    old_mtime = time.time() - MAX_SYNC_AGE_S - 10
+    os.utime(lock_path, (old_mtime, old_mtime))
+
+    fd = acquire_create_lock(tmp_path)
+    try:
+        assert fd is not None, "stale create lock should be reclaimed"
+        # The orphan must be gone — the new fd points at the same inode.
+        assert lock_path.exists()
+    finally:
+        release_create_lock(tmp_path, fd)
+
+    # After release, a fresh lock with a recent mtime must NOT be reclaimed
+    # by another acquirer (it is genuinely held).
+    fd_a = acquire_create_lock(tmp_path)
+    assert fd_a is not None
+    fresh_mtime = time.time()
+    os.utime(lock_path, (fresh_mtime, fresh_mtime))
+    fd_b = acquire_create_lock(tmp_path)
+    assert fd_b is None, "recent create lock must not be reclaimed"
+    release_create_lock(tmp_path, fd_a)
+
