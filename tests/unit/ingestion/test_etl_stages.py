@@ -123,10 +123,11 @@ def test_run_write_respects_force(tmp_path: Path) -> None:
     ac.assert_called_once()
 
 
-def test_run_qmd_update_calls_incremental(tmp_path: Path) -> None:
+def test_run_qmd_update_triggers_full_reindex(tmp_path: Path) -> None:
+    """`qmd update` is always full; the per-collection flag is not honored by qmd."""
     with mock.patch("lies.etl.stages.qmd_update.qmd_update") as q:
         result = run_qmd_update(_collection(tmp_path))
-    q.assert_called_once_with(tmp_path / "raw" / "cpython", collection="cpython")
+    q.assert_called_once_with(tmp_path / "raw" / "cpython")
     assert result.bytes_in == 0
     assert result.success == []
 
