@@ -38,6 +38,25 @@ def test_ingest_delegates_to_sync_collection(tmp_path: Path) -> None:
     assert call_args.args[1] == "cpython"
 
 
+def test_ingest_source_delegates_to_orchestrator(tmp_path: Path) -> None:
+    """`lies ingest_source <source>` delegates to ``Orchestrator.run_ingest``.
+
+    Kept for backward compatibility with the original source-path CLI
+    surface (``lies ingest <source>``).
+    """
+    with patch("lies.cli.Orchestrator") as MockOrch:
+        mock_instance = MockOrch.return_value
+        mock_instance.run_ingest.return_value = "ingested source.md"
+        # Typer auto-translates underscore to hyphen in command names.
+        result = runner.invoke(
+            app, ["ingest-source", "raw/articles/sample-article.md", "--wiki-root", str(tmp_path)]
+        )
+    assert result.exit_code == 0, result.stdout
+    mock_instance.run_ingest.assert_called_once()
+    assert mock_instance.run_ingest.call_args.args[0] == "raw/articles/sample-article.md"
+    assert "ingested source.md" in result.stdout
+
+
 def test_query_invokes_orchestrator(tmp_path: Path) -> None:
     with patch("lies.cli.Orchestrator") as MockOrch:
         mock_instance = MockOrch.return_value

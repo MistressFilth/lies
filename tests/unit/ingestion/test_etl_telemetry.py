@@ -19,8 +19,14 @@ def test_telemetry_records_events(tmp_path: Path) -> None:
 
 def test_receipt_aggregates_counts(tmp_path: Path) -> None:
     t = SyncTelemetry("cpython", log_dir=tmp_path)
-    t.record_counters(docs_total=10, docs_ingested=4, docs_skipped=3,
-                      docs_quarantined=1, bytes_in=2000, bytes_out=1500)
+    t.record_counters(
+        docs_total=10,
+        docs_ingested=4,
+        docs_skipped=3,
+        docs_quarantined=1,
+        bytes_in=2000,
+        bytes_out=1500,
+    )
     t.record_counters(qmd_index_time_ms=120, model_calls=2, model_tokens=300)
     t.record_started("2026-08-01T00:00:00Z")
     t.record_ended("2026-08-01T00:01:00Z")
@@ -50,3 +56,22 @@ def test_record_counters_rejects_unknown_counter(tmp_path: Path) -> None:
     t = SyncTelemetry("cpython", log_dir=tmp_path)
     with pytest.raises(ValueError, match="unknown counter"):
         t.record_counters(bogus=1)
+
+
+def test_context_manager_closes_on_exception(tmp_path: Path) -> None:
+    """`with SyncTelemetry(...) as t:` closes the file even on raise."""
+    with pytest.raises(RuntimeError, match="boom"), SyncTelemetry("cpython", log_dir=tmp_path) as t:
+        t.record_stage("scraping")
+        raise RuntimeError("boom")
+    # File handle is closed; re-opening in append mode works.
+    with SyncTelemetry("cpython", log_dir=tmp_path) as t2:
+        t2.record_stage("normalizing")
+    log = (tmp_path / "cpython.log").read_text(encoding="utf-8")
+    assert "scraping" in log
+    assert "normalizing" in log
+
+
+def test_context_manager_returns_self(tmp_path: Path) -> None:
+    """`with SyncTelemetry(...) as t:` returns the telemetry instance."""
+    with SyncTelemetry("cpython", log_dir=tmp_path) as t:
+        assert isinstance(t, SyncTelemetry)

@@ -5,10 +5,12 @@ from pathlib import Path
 from lies.etl.heartbeat import (
     MAX_SYNC_AGE_S,
     Heartbeat,
+    acquire_create_lock,
     clear_heartbeat,
     heartbeat_is_stale,
     pid_alive,
     read_heartbeat,
+    release_create_lock,
     wait_until_free,  # noqa: F401
     write_heartbeat,
 )
@@ -38,3 +40,26 @@ def test_clear_heartbeat(tmp_path: Path) -> None:
 def test_stale_when_old(tmp_path: Path) -> None:
     h = Heartbeat(pid=os.getpid(), started_at=time.time() - MAX_SYNC_AGE_S - 10, collection="x")
     assert heartbeat_is_stale(h) is True
+
+
+def test_acquire_create_lock_winner_and_loser(tmp_path: Path) -> None:
+    """Two acquire calls: first wins (fd), second loses (None)."""
+    fd1 = acquire_create_lock(tmp_path)
+    assert fd1 is not None and fd1 > 0
+    fd2 = acquire_create_lock(tmp_path)
+    assert fd2 is None
+    release_create_lock(tmp_path, fd1)
+    # After release, a fresh acquire succeeds.
+    fd3 = acquire_create_lock(tmp_path)
+    assert fd3 is not None
+    release_create_lock(tmp_path, fd3)
+
+
+def test_acquire_create_lock_release_idempotent(tmp_path: Path) -> None:
+    """Releasing with fd=None or non-existent file is a no-op."""
+    release_create_lock(tmp_path, None)  # no file to release
+    fd = acquire_create_lock(tmp_path)
+    assert fd is not None
+    release_create_lock(tmp_path, fd)
+    # Calling release again should not raise.
+    release_create_lock(tmp_path, fd)

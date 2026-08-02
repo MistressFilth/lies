@@ -100,6 +100,10 @@ def ingest(
 
     First-time flow (LLM scraper generation) deferred to follow-up.
     Currently behaves like sync for existing collections.
+
+    Errors if the collection YAML is missing; ``sync_helper.sync_collection``
+    does not auto-scaffold a collection from a source path. Use
+    ``ingest_source`` for the legacy single-source ingestion path.
     """
     import os
 
@@ -116,6 +120,26 @@ def ingest(
         sync_collection(wiki_root, collection, force=False)
     finally:
         release_heartbeat(wiki_root)
+
+
+@app.command()
+def ingest_source(
+    source: str = typer.Argument(..., help="Path, URL, or '-' for stdin."),
+    wiki_root: Path = typer.Option(None, "--wiki-root", "-w"),  # noqa: B008
+) -> None:
+    """Atomic ingest of a single source into the wiki at ``wiki_root``.
+
+    Kept for backward compatibility with the original source-path CLI
+    surface (``lies ingest <source>``). Delegates to
+    :meth:`Orchestrator.run_ingest`, which snapshots the working
+    tree, runs the agent, and commits atomically. On any failure the
+    working tree is restored and the exception is re-raised.
+    """
+    configure_logging()
+    root = _wiki_root_opt(wiki_root)
+    orch = Orchestrator(wiki_root=root)
+    output = orch.run_ingest(source)
+    typer.echo(output)
 
 
 @app.command()
@@ -258,7 +282,13 @@ def reindex(
     cleanup: bool = False,
     all: bool = False,
 ) -> None:
-    """Reindex QMD collections."""
+    """Reindex QMD collections.
+
+    ``--reconcile`` syncs each collection (running the full pipeline).
+    ``--embed`` and ``--cleanup`` are currently no-op placeholders
+    pending upstream qmd support; passing them prints a stderr warning
+    but does not fail.
+    """
     import os
 
     from lies.etl.sync_helper import collection_names, sync_collection
@@ -276,10 +306,18 @@ def reindex(
         from lies.qmd.cli import qmd_embed
 
         qmd_embed(wiki_root, force=force)
+        typer.echo(
+            "warning: --embed is a no-op; upstream qmd has no embed subcommand yet.",
+            err=True,
+        )
     if cleanup:
         from lies.qmd.cli import qmd_cleanup
 
         qmd_cleanup(wiki_root)
+        typer.echo(
+            "warning: --cleanup is a no-op; upstream qmd has no cleanup subcommand yet.",
+            err=True,
+        )
 
 
 @app.command()
@@ -303,7 +341,10 @@ def collections(
         c = load_collection(wiki_root, name)
         print(f"name={c.name} source={c.source} tags={c.tags}")
     elif action == "modify" and name:
-        typer.echo(f"modify {name}: in-memory edit (use `lies commit` to persist)")
+        raise typer.BadParameter(
+            f"`lies collections modify {name}` is not implemented yet; "
+            f"edit `<wiki>/.lies/collections/{name}.yaml` by hand for now."
+        )
     else:
         raise typer.BadParameter(f"unknown action: {action}")
 
