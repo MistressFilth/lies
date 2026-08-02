@@ -38,8 +38,11 @@ def run_register(collection: Collection, service: WikiMemoryService) -> StageRes
         .as_posix(),  # type: ignore[arg-type]
     )
     service.register_collection(ref)
+    # No doc was written in this stage — registration is metadata only.
+    # Telemetry consumers count ``len(success)`` for docs written; the
+    # collection name would over-count the run by one.
     return StageResult(
-        success=[collection.name],
+        success=[],
         quarantined=[],
         skipped=[],
         parsed_docs=[],
