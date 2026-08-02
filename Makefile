@@ -74,6 +74,5 @@ worktree-lint: ## Run the seven-invariants worktree layout check.
 	$(PY) scripts/worktree_lint.py $(WORKTREE_LINT_BARE_DIR)
 
 .PHONY: release
-release: check ## Bump version, update CHANGELOG, run checks, push tag.
-	@echo "release: bump + changelog + tag not yet automated; run gates manually." >&2
-	@exit 1
+release: worktree-lint check test ## Bump version, update CHANGELOG, run gates, push tag.
+	$(UV) run python scripts/release.py $(if $(BUMP),--bump $(BUMP),)
