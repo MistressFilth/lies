@@ -6,6 +6,8 @@ All notable changes to LIES are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-08-02
+
 ### Added
 - New `src/lies/builders/` package with `Builder` ABC and `BuilderRegistry`. PDF (`PDFBuilder`, pdfplumber primary, pymupdf fallback), Sphinx (`SphinxBuilder`, includes/excludes/renames on `Collection.config`), HTML (`HTMLBuilder`, pandoc), and Bespoke (`BespokeBuilder`, dispatches by emitted `source_format`) builders. `source_format=liquid` raises `BuilderUnavailable` and per-doc quarantines — deferred to a follow-up.
 - `Collection.config: dict[str, Any]` for builder-specific knobs. Round-trips through YAML.

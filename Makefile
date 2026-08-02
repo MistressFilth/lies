@@ -10,6 +10,9 @@ RUFF_FMT   := $(PY) ruff format $(SRC) $(TESTS)
 MYPY       := $(PY) mypy $(SRC)
 PYTEST     := $(PY) pytest
 
+REPO_ROOT              ?= $(HOME)/code/github/MistressFilth/lies
+WORKTREE_LINT_BARE_DIR ?= $(REPO_ROOT)/lies.git
+
 .DEFAULT_GOAL := help
 
 .PHONY: help
@@ -66,7 +69,10 @@ check: ## Run lint, typecheck, and format.
 	$(MYPY)
 	$(RUFF_FMT)
 
+.PHONY: worktree-lint
+worktree-lint: ## Run the seven-invariants worktree layout check.
+	$(PY) scripts/worktree_lint.py $(WORKTREE_LINT_BARE_DIR)
+
 .PHONY: release
-release: check ## Bump version, update CHANGELOG, run checks, push tag.
-	@echo "release: bump + changelog + tag not yet automated; run gates manually." >&2
-	@exit 1
+release: worktree-lint check test ## Bump version, update CHANGELOG, run gates, push tag.
+	$(UV) run python scripts/release.py $(if $(BUMP),--bump $(BUMP),)
