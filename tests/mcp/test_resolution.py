@@ -1,4 +1,5 @@
 """Tests for lies.mcp.resolution."""
+
 from __future__ import annotations
 
 from pathlib import Path

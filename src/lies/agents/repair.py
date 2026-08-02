@@ -5,6 +5,7 @@ only knows the 4 primitives: CreateStub, AppendLink, UpdateIndex,
 AppendEvidence. Output is a single RepairPlan; noop is the expected
 output when no findings are safe to fix.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass

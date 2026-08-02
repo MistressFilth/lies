@@ -1,6 +1,6 @@
 [project]
 name = "lies"
-version = "0.3.0"
+version = "0.4.0"
 description = "Library of Inconsistent Explanations & Sources — a Karpathy-pattern LLM wiki."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -12,6 +12,7 @@ dependencies = [
     "logfire",
     "pyyaml",
     "python-frontmatter",
+    "pymupdf>=1.24",
     "pydantic>=2.0",
     "fastmcp>=2.0",
     "mcp>=1.0",
@@ -24,7 +25,6 @@ dev = [
     "pytest-mock>=3.12",
     "ruff>=0.5",
     "mypy>=1.10",
-    "respx>=0.21",  # for mocking HTTP in tests
 ]
 # `qmd` is now an empty extra retained for back-compat. `fastmcp` and `mcp`
 # are default dependencies as of the MCP server release. Install with

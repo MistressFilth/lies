@@ -5,6 +5,7 @@ primitives (CreateStub, AppendLink, UpdateIndex, AppendEvidence) map
 1:1 onto existing WikiMemoryService operations. Operations on the
 same path are rejected; the apply-plan envelope is single-commit.
 """
+
 from __future__ import annotations
 
 from enum import Enum
@@ -54,8 +55,7 @@ class AppendLink(_RepairOp):
     def _distinct_paths(self) -> AppendLink:
         if self.target_path == self.append_to:
             raise ValueError(
-                f"AppendLink: target_path must differ from append_to "
-                f"({self.append_to!r})"
+                f"AppendLink: target_path must differ from append_to ({self.append_to!r})"
             )
         return self
 
@@ -74,9 +74,7 @@ class UpdateIndex(_RepairOp):
     @model_validator(mode="after")
     def _path_must_be_index(self) -> UpdateIndex:
         if self.path != "wiki/index.md":
-            raise ValueError(
-                f"UpdateIndex.path must be 'wiki/index.md', got {self.path!r}"
-            )
+            raise ValueError(f"UpdateIndex.path must be 'wiki/index.md', got {self.path!r}")
         return self
 
 

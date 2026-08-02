@@ -1,4 +1,5 @@
 """Models for the query layer."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field

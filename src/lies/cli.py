@@ -1,8 +1,10 @@
 """Typer CLI entrypoint."""
+
 from __future__ import annotations
 
 import subprocess
 from pathlib import Path
+from typing import Annotated
 
 import typer
 from rich.console import Console
@@ -81,24 +83,63 @@ def init(
     subprocess.run(["git", "config", "user.name", "LIES"], cwd=target, check=True)
     # Initial commit
     subprocess.run(["git", "add", "."], cwd=target, check=True)
-    subprocess.run(["git", "commit", "-m", "Initial commit: empty LIES wiki"], cwd=target, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "Initial commit: empty LIES wiki"], cwd=target, check=True
+    )
     typer.echo(f"Initialized wiki at {target}")
 
 
 @app.command()
 def ingest(
-    source: str = typer.Argument(..., help="Path under the wiki raw/ directory."),
+    collection: str,
+    *,
+    source: str | None = None,
+    model: str | None = None,
+) -> None:
+    """Ingest a source into a collection (creates collection if missing).
+
+    First-time flow (LLM scraper generation) deferred to follow-up.
+    Currently behaves like sync for existing collections.
+
+    Errors if the collection YAML is missing; ``sync_helper.sync_collection``
+    does not auto-scaffold a collection from a source path. Use
+    ``ingest_source`` for the legacy single-source ingestion path.
+    """
+    import os
+
+    from lies.etl.sync_helper import (
+        acquire_heartbeat,
+        release_heartbeat,
+        sync_collection,
+    )
+
+    wiki_root = Path(os.environ.get("LIES_WIKI_ROOT", ".")).resolve()
+    if acquire_heartbeat(wiki_root, wait=False, fail_busy=True) is None:
+        raise typer.Exit(code=2)
+    try:
+        sync_collection(wiki_root, collection, force=False)
+    finally:
+        release_heartbeat(wiki_root)
+
+
+@app.command()
+def ingest_source(
+    source: str = typer.Argument(..., help="Path, URL, or '-' for stdin."),
     wiki_root: Path = typer.Option(None, "--wiki-root", "-w"),  # noqa: B008
 ) -> None:
-    """Ingest a source into the wiki."""
+    """Atomic ingest of a single source into the wiki at ``wiki_root``.
+
+    Kept for backward compatibility with the original source-path CLI
+    surface (``lies ingest <source>``). Delegates to
+    :meth:`Orchestrator.run_ingest`, which snapshots the working
+    tree, runs the agent, and commits atomically. On any failure the
+    working tree is restored and the exception is re-raised.
+    """
     configure_logging()
     root = _wiki_root_opt(wiki_root)
     orch = Orchestrator(wiki_root=root)
-    # Use the host-side ``run_ingest`` entry point so the working tree is
-    # snapshotted and rolled back if anything fails mid-ingest. The plain
-    # ``orch.run`` is reserved for read-only operations.
     output = orch.run_ingest(source)
-    console.print(Markdown(output))
+    typer.echo(output)
 
 
 @app.command()
@@ -202,6 +243,110 @@ def main(
         output = orch.run(line) if no_memory else orch.run_with_memory(line)
         console.print(Markdown(output))
     console.print("\nbye.")
+
+
+@app.command()
+def sync(
+    collection: Annotated[str | None, typer.Argument()] = None,
+    *,
+    force: bool = False,
+    wait: bool = False,
+    fail_busy: bool = False,
+) -> None:
+    """Sync one or all collections."""
+    import os
+
+    from lies.etl.sync_helper import (
+        acquire_heartbeat,
+        collection_names,
+        release_heartbeat,
+        sync_collection,
+    )
+
+    wiki_root = Path(os.environ.get("LIES_WIKI_ROOT", ".")).resolve()
+    if acquire_heartbeat(wiki_root, wait=wait, fail_busy=fail_busy) is None:
+        raise typer.Exit(code=2)
+    try:
+        for name in collection_names(wiki_root, collection):
+            sync_collection(wiki_root, name, force=force)
+    finally:
+        release_heartbeat(wiki_root)
+
+
+@app.command()
+def reindex(
+    *,
+    reconcile: bool = False,
+    embed: bool = False,
+    force: bool = False,
+    cleanup: bool = False,
+    all: bool = False,
+) -> None:
+    """Reindex QMD collections.
+
+    ``--reconcile`` syncs each collection (running the full pipeline).
+    ``--embed`` and ``--cleanup`` are currently no-op placeholders
+    pending upstream qmd support; passing them prints a stderr warning
+    but does not fail.
+    """
+    import os
+
+    from lies.etl.sync_helper import collection_names, sync_collection
+
+    if all:
+        reconcile, embed, cleanup = True, True, True
+    if force and not embed:
+        raise typer.BadParameter("--force requires --embed")
+
+    wiki_root = Path(os.environ.get("LIES_WIKI_ROOT", ".")).resolve()
+    if reconcile:
+        for name in collection_names(wiki_root, None):
+            sync_collection(wiki_root, name, force=False)
+    if embed:
+        from lies.qmd.cli import qmd_embed
+
+        qmd_embed(wiki_root, force=force)
+        typer.echo(
+            "warning: --embed is a no-op; upstream qmd has no embed subcommand yet.",
+            err=True,
+        )
+    if cleanup:
+        from lies.qmd.cli import qmd_cleanup
+
+        qmd_cleanup(wiki_root)
+        typer.echo(
+            "warning: --cleanup is a no-op; upstream qmd has no cleanup subcommand yet.",
+            err=True,
+        )
+
+
+@app.command()
+def collections(
+    action: Annotated[str, typer.Argument()],
+    name: Annotated[str | None, typer.Argument()] = None,
+    *,
+    tag: str | None = None,
+) -> None:
+    """Inspect and modify collection configurations."""
+    import os
+
+    from lies.collections.record import load_collection
+
+    wiki_root = Path(os.environ.get("LIES_WIKI_ROOT", ".")).resolve()
+    cfg_dir = wiki_root / ".lies" / "collections"
+    if action == "list":
+        for p in sorted(cfg_dir.glob("*.yaml")):
+            print(p.stem)
+    elif action == "show" and name:
+        c = load_collection(wiki_root, name)
+        print(f"name={c.name} source={c.source} tags={c.tags}")
+    elif action == "modify" and name:
+        raise typer.BadParameter(
+            f"`lies collections modify {name}` is not implemented yet; "
+            f"edit `<wiki>/.lies/collections/{name}.yaml` by hand for now."
+        )
+    else:
+        raise typer.BadParameter(f"unknown action: {action}")
 
 
 if __name__ == "__main__":

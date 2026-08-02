@@ -1,4 +1,5 @@
 """Unit tests for the RepairPlan data models."""
+
 from __future__ import annotations
 
 import pytest
@@ -22,7 +23,9 @@ def test_repair_plan_is_noop_when_empty() -> None:
 
 def test_create_stub_requires_evidence() -> None:
     with pytest.raises(ValidationError):
-        CreateStub(path="concepts/x.md", title="X", finding_index=0, pages=[], rationale="", evidence=[])
+        CreateStub(
+            path="concepts/x.md", title="X", finding_index=0, pages=[], rationale="", evidence=[]
+        )
 
 
 def test_append_link_requires_distinct_paths() -> None:
@@ -66,8 +69,22 @@ def test_append_evidence_requires_hash() -> None:
 def test_repair_plan_rejects_two_ops_on_same_path() -> None:
     plan = RepairPlan(
         operations=[
-            CreateStub(path="concepts/x.md", title="X", finding_index=0, pages=[], rationale="a", evidence=["e1"]),
-            UpdateIndex(path="wiki/index.md", title="X", finding_index=1, pages=[], rationale="b", evidence=["e1"]),
+            CreateStub(
+                path="concepts/x.md",
+                title="X",
+                finding_index=0,
+                pages=[],
+                rationale="a",
+                evidence=["e1"],
+            ),
+            UpdateIndex(
+                path="wiki/index.md",
+                title="X",
+                finding_index=1,
+                pages=[],
+                rationale="b",
+                evidence=["e1"],
+            ),
         ],
         rationale="two ops",
         evidence=["e1"],
@@ -76,8 +93,22 @@ def test_repair_plan_rejects_two_ops_on_same_path() -> None:
     with pytest.raises(ValidationError):
         RepairPlan(
             operations=[
-                CreateStub(path="concepts/x.md", title="X", finding_index=0, pages=[], rationale="a", evidence=["e1"]),
-                CreateStub(path="concepts/x.md", title="Y", finding_index=1, pages=[], rationale="b", evidence=["e1"]),
+                CreateStub(
+                    path="concepts/x.md",
+                    title="X",
+                    finding_index=0,
+                    pages=[],
+                    rationale="a",
+                    evidence=["e1"],
+                ),
+                CreateStub(
+                    path="concepts/x.md",
+                    title="Y",
+                    finding_index=1,
+                    pages=[],
+                    rationale="b",
+                    evidence=["e1"],
+                ),
             ],
             rationale="dup",
             evidence=["e1"],
@@ -87,7 +118,14 @@ def test_repair_plan_rejects_two_ops_on_same_path() -> None:
 def test_repair_plan_is_frozen() -> None:
     plan = RepairPlan(
         operations=[
-            CreateStub(path="concepts/x.md", title="X", finding_index=0, pages=[], rationale="a", evidence=["e1"]),
+            CreateStub(
+                path="concepts/x.md",
+                title="X",
+                finding_index=0,
+                pages=[],
+                rationale="a",
+                evidence=["e1"],
+            ),
         ],
         rationale="r",
         evidence=["e1"],

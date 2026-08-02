@@ -34,9 +34,7 @@ def wiki(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         ),
         encoding="utf-8",
     )
-    (root / "wiki" / "index.md").write_text(
-        "- [X](concepts/x.md)\n", encoding="utf-8"
-    )
+    (root / "wiki" / "index.md").write_text("- [X](concepts/x.md)\n", encoding="utf-8")
     subprocess.run(["git", "init", "--initial-branch=main", str(root)], check=True)
     subprocess.run(["git", "config", "user.email", "t@e.com"], cwd=root, check=True)
     subprocess.run(["git", "config", "user.name", "T"], cwd=root, check=True)

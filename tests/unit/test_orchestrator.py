@@ -94,19 +94,13 @@ def test_wiki_root_propagates_to_file_system_capability(wiki_root: Path) -> None
     # list). Find the FileSystem among them.
     root_cap = orch._agent.root_capability  # type: ignore[attr-defined]
     caps = getattr(root_cap, "capabilities", [])
-    fs_caps = [
-        c
-        for c in caps
-        if getattr(c, "__class__", type(c)).__name__ == "FileSystem"
-    ]
+    fs_caps = [c for c in caps if getattr(c, "__class__", type(c)).__name__ == "FileSystem"]
     assert fs_caps, "expected a FileSystem capability in the orchestrator"
     # FileSystem stores the root under various names depending on the
     # harness version; check the obvious ones.
     fs = fs_caps[0]
     root = (
-        getattr(fs, "root", None)
-        or getattr(fs, "root_dir", None)
-        or getattr(fs, "wiki_root", None)
+        getattr(fs, "root", None) or getattr(fs, "root_dir", None) or getattr(fs, "wiki_root", None)
     )
     assert root == orch.wiki_root, (
         f"file_system capability root ({root!r}) does not match "
@@ -194,9 +188,7 @@ def git_wiki(wiki_root: Path) -> Path:
         capture_output=True,
     )
     (wiki_root / "initial.txt").write_text("init")
-    subprocess.run(
-        ["git", "add", "."], cwd=wiki_root, check=True, capture_output=True
-    )
+    subprocess.run(["git", "add", "."], cwd=wiki_root, check=True, capture_output=True)
     subprocess.run(
         ["git", "commit", "-m", "initial"],
         cwd=wiki_root,
@@ -251,291 +243,156 @@ def _working_tree_files(repo: Path) -> dict[str, str | None]:
     return files
 
 
-def test_run_ingest_commits_atomically_on_success(git_wiki: Path) -> None:
-    """A successful run_ingest leaves exactly one new commit on the wiki."""
-    orch = Orchestrator(wiki_root=git_wiki, model="test")
+def test_run_ingest_delegates_and_returns_ingested_string(git_wiki: Path) -> None:
+    """A successful run_ingest delegates to sync_collection and returns the
+    wrapper's documented ``"ingested {source}"`` string.
 
-    pre_log = _log_lines(git_wiki)
-
-    # Simulate the agent writing a wiki page mid-ingest. TestModel returns
-    # a plain text response without invoking any tools, so we patch the
-    # agent's run_sync to also drop a file into the working tree.
-    def fake_run_sync(self, prompt: str):  # type: ignore[no-untyped-def]
-        # Drop a new wiki page as the agent "would" have done.
-        (git_wiki / "wiki" / "new-entity.md").parent.mkdir(
-            parents=True, exist_ok=True
-        )
-        (git_wiki / "wiki" / "new-entity.md").write_text("# New Entity\n")
-        return mock.Mock(output="ingested ok")
-
-    with mock.patch.object(type(orch._agent), "run_sync", new=fake_run_sync):
-        result = orch.run_ingest("raw/some-source.md")
-
-    assert result == "ingested ok"
-    post_log = _log_lines(git_wiki)
-    # Exactly one new commit was added.
-    assert len(post_log) == len(pre_log) + 1
-    new_commit = post_log[0]  # git log prints newest-first
-    assert new_commit != pre_log[0]  # newest commit is different
-    # The new commit's message matches the ingest convention.
-    sha, _, msg = new_commit.partition(" ")
-    assert msg.startswith(("ingest:", "ingest "))
-    # The new entity file is in the commit.
-    show = subprocess.run(
-        ["git", "show", "--name-only", "--pretty=format:", sha],
-        cwd=git_wiki,
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    assert "wiki/new-entity.md" in show.stdout
-    # No leftover stash entries -- the snapshot was discarded on success.
-    stash = subprocess.run(
-        ["git", "stash", "list"],
-        cwd=git_wiki,
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    assert stash.stdout.strip() == ""
-
-
-def test_run_ingest_rolls_back_on_agent_exception(git_wiki: Path) -> None:
-    """If the agent raises mid-ingest, the wiki working tree is restored.
-
-    This is the headline test for Finding 3. The agent is injected with a
-    mid-ingest failure: it writes a partial page, then raises. After
-    ``run_ingest`` propagates the exception, the wiki must be byte-identical
-    to its pre-ingest state (no committed changes, no uncommitted changes,
-    no leftover stash entries).
+    The atomic commit, working-tree snapshot/rollback, and stash handling
+    moved to :func:`lies.etl.sync_helper.sync_collection` (Task 27). The
+    wrapper's only job is to delegate and return the back-compat string;
+    this test pins that contract.
     """
     orch = Orchestrator(wiki_root=git_wiki, model="test")
-    pre_log = _log_lines(git_wiki)
-    pre_files = _working_tree_files(git_wiki)
+
+    with mock.patch("lies.etl.sync_helper.sync_collection") as m:
+        result = orch.run_ingest("raw/some-source.md")
+
+    # Wrapper returned the documented back-compat string.
+    assert result == "ingested raw/some-source.md"
+    # sync_collection was called once with (wiki_root, source.stem, force=False).
+    m.assert_called_once()
+    args, kwargs = m.call_args
+    assert args[0] == git_wiki
+    assert args[1] == "some-source"
+    assert kwargs == {"force": False}
+
+
+def test_run_ingest_propagates_sync_collection_exception(git_wiki: Path) -> None:
+    """If sync_collection raises, run_ingest propagates the exception.
+
+    The wrapper is intentionally a thin shim — it does no rollback of its
+    own. Rollback is sync_collection's responsibility. The wrapper
+    contract is: whatever sync_collection raises, run_ingest raises.
+    """
+    orch = Orchestrator(wiki_root=git_wiki, model="test")
 
     class IngestFailure(RuntimeError):
-        """Simulates a sub-agent crashing partway through the ingest."""
-
-    def fake_run_sync(self, prompt: str):  # type: ignore[no-untyped-def]
-        # Drop a partial page as the agent "would" have done before crashing.
-        (git_wiki / "wiki" / "partial-page.md").write_text(
-            "# Partial page (would crash)\n"
-        )
-        raise IngestFailure("source-reader hit a malformed URL")
+        """Simulates sync_collection crashing mid-pipeline."""
 
     with (
-        mock.patch.object(type(orch._agent), "run_sync", new=fake_run_sync),
+        mock.patch(
+            "lies.etl.sync_helper.sync_collection",
+            side_effect=IngestFailure("source-reader hit a malformed URL"),
+        ),
         pytest.raises(IngestFailure, match="malformed URL"),
     ):
         orch.run_ingest("raw/broken-source.md")
 
-    # No new commit was created.
-    post_log = _log_lines(git_wiki)
-    assert post_log == pre_log
-    # No uncommitted files left behind.
-    post_files = _working_tree_files(git_wiki)
-    assert post_files == pre_files
-    # The partial file the agent wrote is gone.
-    assert not (git_wiki / "wiki" / "partial-page.md").exists()
-    # No leftover stash entries.
-    stash = subprocess.run(
-        ["git", "stash", "list"],
-        cwd=git_wiki,
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    assert stash.stdout.strip() == ""
 
+def test_run_ingest_propagates_keyboard_interrupt(git_wiki: Path) -> None:
+    """A ``KeyboardInterrupt`` from sync_collection propagates verbatim.
 
-def test_run_ingest_rolls_back_on_keyboard_interrupt(git_wiki: Path) -> None:
-    """A ``KeyboardInterrupt`` during the agent call is also rolled back.
-
-    ``run_ingest`` uses ``except BaseException`` so Ctrl-C is treated as
-    a failure and the working tree is restored. This is the safety
-    contract for a long-running REPL ingest: a user interrupt cannot
-    leave the wiki half-modified.
+    The wrapper does not swallow ``BaseException``; user interrupts
+    during the underlying sync surface to the caller.
     """
     orch = Orchestrator(wiki_root=git_wiki, model="test")
-    pre_log = _log_lines(git_wiki)
-
-    def fake_run_sync(self, prompt: str):  # type: ignore[no-untyped-def]
-        (git_wiki / "wiki" / "interrupted-page.md").write_text(
-            "# Interrupted\n"
-        )
-        raise KeyboardInterrupt()
 
     with (
-        mock.patch.object(type(orch._agent), "run_sync", new=fake_run_sync),
+        mock.patch(
+            "lies.etl.sync_helper.sync_collection",
+            side_effect=KeyboardInterrupt(),
+        ),
         pytest.raises(KeyboardInterrupt),
     ):
         orch.run_ingest("raw/source.md")
 
-    # No new commits, no leftover file, no leftover stash.
-    assert _log_lines(git_wiki) == pre_log
-    assert not (git_wiki / "wiki" / "interrupted-page.md").exists()
-    stash = subprocess.run(
-        ["git", "stash", "list"],
-        cwd=git_wiki,
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    assert stash.stdout.strip() == ""
 
+def test_run_ingest_propagates_commit_error(git_wiki: Path) -> None:
+    """A ``CommitError`` raised inside sync_collection propagates verbatim.
 
-def test_run_ingest_rolls_back_when_commit_fails(git_wiki: Path) -> None:
-    """If atomic_commit fails after the agent succeeds, the wiki is still
-    rolled back.
-
-    The agent's edits are not visible to the caller: no new commit, no
-    uncommitted changes, no leftover stash.
+    The wrapper does not catch downstream errors; the caller observes
+    the same ``CommitError`` sync_collection raised. The atomic-commit
+    rollback path lives inside ``SyncOrchestrator.run``.
     """
     orch = Orchestrator(wiki_root=git_wiki, model="test")
-    pre_log = _log_lines(git_wiki)
-
-    def fake_run_sync(self, prompt: str):  # type: ignore[no-untyped-def]
-        (git_wiki / "wiki" / "orphan-page.md").write_text("# Orphan\n")
-        return mock.Mock(output="agent done")
-
-    # Patch atomic_commit so it raises CommitError on the post-agent step.
-    # The import is local to Orchestrator.run_ingest, so we patch the
-    # symbol in the orchestrator module's namespace.
-    def boom(*_args, **_kwargs):  # type: ignore[no-untyped-def]
-        raise CommitError("simulated post-ingest commit failure")
 
     with (
-        mock.patch.object(type(orch._agent), "run_sync", new=fake_run_sync),
-        mock.patch("lies.orchestrator.atomic_commit", side_effect=boom),
+        mock.patch(
+            "lies.etl.sync_helper.sync_collection",
+            side_effect=CommitError("simulated post-ingest commit failure"),
+        ),
         pytest.raises(CommitError, match="simulated post-ingest commit"),
     ):
         orch.run_ingest("raw/some-source.md")
 
-    # The agent's edits are gone, no new commit, no leftover stash.
-    assert _log_lines(git_wiki) == pre_log
-    assert not (git_wiki / "wiki" / "orphan-page.md").exists()
-    stash = subprocess.run(
-        ["git", "stash", "list"],
-        cwd=git_wiki,
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    assert stash.stdout.strip() == ""
 
-
-def test_run_ingest_preserves_pre_existing_dirty_state_on_failure(
+def test_run_ingest_propagates_sync_failure_with_pre_existing_dirty_state(
     git_wiki: Path,
 ) -> None:
-    """If the wiki was already dirty when ``run_ingest`` was called, that
-    dirty state is preserved on the failure path.
+    """sync_collection raises → wrapper re-raises; the wrapper itself
+    never touches the working tree.
 
-    The rollback restores the working tree to *exactly* what it was before
-    the call, including any uncommitted changes the user had.
+    The wrapper contract is "delegate + return string". Any rollback or
+    dirty-state preservation is sync_collection's concern. This test
+    asserts the wrapper does not interfere with the user's pre-existing
+    dirty state on the failure path: when sync_collection raises, the
+    exception propagates and the wrapper has not mutated anything.
     """
-    # Pre-state: a tracked file with a user edit.
+    # Pre-state: a tracked file with a user edit (real dirty state).
     (git_wiki / "initial.txt").write_text("user in-progress edit")
     (git_wiki / "user-notes.md").write_text("# WIP\n")
 
     orch = Orchestrator(wiki_root=git_wiki, model="test")
     pre_initial = (git_wiki / "initial.txt").read_text()
     pre_notes = (git_wiki / "user-notes.md").read_text()
-    pre_log = _log_lines(git_wiki)
-
-    def fake_run_sync(self, prompt: str):  # type: ignore[no-untyped-def]
-        # The agent's "edits" -- a brand-new file and a tracked file change.
-        (git_wiki / "wiki" / "agent-entity.md").write_text("# Agent\n")
-        (git_wiki / "initial.txt").write_text("agent overwrote this")
-        raise RuntimeError("agent crashed mid-ingest")
 
     with (
-        mock.patch.object(type(orch._agent), "run_sync", new=fake_run_sync),
-        pytest.raises(RuntimeError, match="agent crashed"),
+        mock.patch(
+            "lies.etl.sync_helper.sync_collection",
+            side_effect=RuntimeError("sync crashed mid-ingest"),
+        ),
+        pytest.raises(RuntimeError, match="sync crashed"),
     ):
         orch.run_ingest("raw/source.md")
 
-    # The agent's edits are gone; the user's pre-existing dirty state is back.
+    # The wrapper itself did not touch the user's dirty state.
     assert (git_wiki / "initial.txt").read_text() == pre_initial
     assert (git_wiki / "user-notes.md").read_text() == pre_notes
-    assert not (git_wiki / "wiki" / "agent-entity.md").exists()
-    # No new commits.
-    assert _log_lines(git_wiki) == pre_log
-    # No leftover stash.
-    stash = subprocess.run(
-        ["git", "stash", "list"],
-        cwd=git_wiki,
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    assert stash.stdout.strip() == ""
 
 
-def test_run_ingest_success_discards_pre_existing_stash(
+def test_run_ingest_success_returns_ingested_string(
     git_wiki: Path,
 ) -> None:
-    """On the success path, pre-existing dirty state is intentionally
-    discarded: an ingest is an atomic, all-or-nothing operation.
+    """On the success path, the wrapper returns ``"ingested {source}"``.
 
-    The snapshot's job is to enable rollback; once the ingest commits
-    cleanly, the snapshot is no longer needed and is dropped. This is
-    the documented contract: callers who want their dirty changes kept
-    should commit them before calling ``run_ingest``.
+    The wrapper does no git bookkeeping itself; sync_collection owns the
+    snapshot/commit/discard logic. This test pins the wrapper's success
+    contract only: delegation + the documented return string.
     """
     (git_wiki / "user-notes.md").write_text("# WIP\n")
     orch = Orchestrator(wiki_root=git_wiki, model="test")
 
-    def fake_run_sync(self, prompt: str):  # type: ignore[no-untyped-def]
-        (git_wiki / "wiki" / "fresh-page.md").write_text("# Fresh\n")
-        return mock.Mock(output="ok")
-
-    with mock.patch.object(type(orch._agent), "run_sync", new=fake_run_sync):
+    with mock.patch("lies.etl.sync_helper.sync_collection") as m:
         result = orch.run_ingest("raw/source.md")
 
-    assert result == "ok"
-    # The new page is committed; the user's WIP is gone.
-    assert (git_wiki / "wiki" / "fresh-page.md").exists()
-    assert not (git_wiki / "user-notes.md").exists()
-    stash = subprocess.run(
-        ["git", "stash", "list"],
-        cwd=git_wiki,
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    assert stash.stdout.strip() == ""
+    assert result == "ingested raw/source.md"
+    m.assert_called_once()
 
 
-def test_run_ingest_on_clean_wiki_with_no_agent_writes(
-    git_wiki: Path,
-) -> None:
-    """If the agent returns without writing any files, run_ingest still
-    completes cleanly (no commit, no rollback) and propagates the agent's
-    text output.
+def test_run_ingest_propagates_nothing_to_commit_error(git_wiki: Path) -> None:
+    """A ``CommitError("nothing to commit")`` from sync_collection propagates.
 
-    This pins the "agent decided there was nothing to do" path. atomic_commit
-    raises CommitError("nothing to commit") which is propagated -- the
-    caller sees the error and the wiki is unchanged.
+    sync_collection may decide there is nothing to do (no files changed)
+    and raise CommitError; the wrapper surfaces that verbatim so the
+    caller can distinguish "no-op" from "real failure".
     """
     orch = Orchestrator(wiki_root=git_wiki, model="test")
-    pre_log = _log_lines(git_wiki)
-
-    def fake_run_sync(self, prompt: str):  # type: ignore[no-untyped-def]
-        return mock.Mock(output="nothing to ingest")
 
     with (
-        mock.patch.object(type(orch._agent), "run_sync", new=fake_run_sync),
+        mock.patch(
+            "lies.etl.sync_helper.sync_collection",
+            side_effect=CommitError("nothing to commit"),
+        ),
         pytest.raises(CommitError, match="nothing to commit"),
     ):
         orch.run_ingest("raw/empty-source.md")
-
-    # No new commit was created; the wiki is byte-identical.
-    assert _log_lines(git_wiki) == pre_log
-    stash = subprocess.run(
-        ["git", "stash", "list"],
-        cwd=git_wiki,
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    assert stash.stdout.strip() == ""

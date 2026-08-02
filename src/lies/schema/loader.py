@@ -1,4 +1,5 @@
 """Load the schema for a wiki: per-wiki override or default."""
+
 from __future__ import annotations
 
 from importlib import resources
@@ -20,7 +21,9 @@ def load_default_schema() -> str:
         SchemaNotFoundError: If the bundled default schema cannot be located.
     """
     try:
-        return resources.files("lies.schema").joinpath("default_schema.md").read_text(encoding="utf-8")
+        return (
+            resources.files("lies.schema").joinpath("default_schema.md").read_text(encoding="utf-8")
+        )
     except (FileNotFoundError, ModuleNotFoundError) as exc:
         raise SchemaNotFoundError(
             "Default schema not found in package (expected lies.schema.default_schema.md)"

@@ -1,4 +1,5 @@
 """End-to-end tests for the EnrichmentQueue integration."""
+
 from __future__ import annotations
 
 import subprocess

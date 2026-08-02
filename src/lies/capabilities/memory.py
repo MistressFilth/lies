@@ -1,4 +1,5 @@
 """Memory harness capability, scoped per-wiki via WikiIdentity."""
+
 from __future__ import annotations
 
 from typing import Any

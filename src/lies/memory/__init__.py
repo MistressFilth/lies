@@ -1,4 +1,5 @@
 """Invisible wiki memory package."""
+
 from lies.memory.enricher import MemoryEnricherDeps, enricher_agent
 from lies.memory.namespace import WikiIdentity, memory_namespace
 from lies.memory.retry import DrainResult, EnrichmentQueue, PendingRetry

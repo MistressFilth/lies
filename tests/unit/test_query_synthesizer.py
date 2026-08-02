@@ -16,6 +16,7 @@ The qmd dependency is injected so each test can simulate one of the
 failure modes (unavailable, no results, command error, success) without
 touching the filesystem outside ``tmp_path``.
 """
+
 from __future__ import annotations
 
 from pathlib import Path

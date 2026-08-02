@@ -1,4 +1,5 @@
 """Unit tests for the orchestrator's lint apply path."""
+
 from __future__ import annotations
 
 import subprocess
@@ -41,8 +42,10 @@ def _noop_agent_run_sync(self, prompt: str):  # type: ignore[no-untyped-def]
 
 
 def test_run_lint_default_does_not_invoke_repair_agent(orch: Orchestrator) -> None:
-    with mock.patch.object(type(orch._agent), "run_sync", new=_noop_agent_run_sync), \
-         mock.patch.object(orch, "_run_repair_agent") as mock_repair:
+    with (
+        mock.patch.object(type(orch._agent), "run_sync", new=_noop_agent_run_sync),
+        mock.patch.object(orch, "_run_repair_agent") as mock_repair,
+    ):
         report = orch.run_lint()
     assert isinstance(report, str)
     mock_repair.assert_not_called()
@@ -51,7 +54,14 @@ def test_run_lint_default_does_not_invoke_repair_agent(orch: Orchestrator) -> No
 def test_run_lint_apply_invokes_repair_agent(orch: Orchestrator) -> None:
     fake_plan = RepairPlan(
         operations=[
-            CreateStub(path="concepts/x.md", title="X", finding_index=0, pages=[], rationale="new", evidence=["f0"]),
+            CreateStub(
+                path="concepts/x.md",
+                title="X",
+                finding_index=0,
+                pages=[],
+                rationale="new",
+                evidence=["f0"],
+            ),
         ],
         rationale="r",
         evidence=["f0"],
@@ -64,9 +74,11 @@ def test_run_lint_apply_invokes_repair_agent(orch: Orchestrator) -> None:
         deferred=[],
         errors=[],
     )
-    with mock.patch.object(type(orch._agent), "run_sync", new=_noop_agent_run_sync), \
-         mock.patch.object(orch, "_run_repair_agent", return_value=fake_plan) as mock_repair, \
-         mock.patch.object(orch, "_apply_repair_plan", return_value=fake_receipt) as mock_apply:
+    with (
+        mock.patch.object(type(orch._agent), "run_sync", new=_noop_agent_run_sync),
+        mock.patch.object(orch, "_run_repair_agent", return_value=fake_plan) as mock_repair,
+        mock.patch.object(orch, "_apply_repair_plan", return_value=fake_receipt) as mock_apply,
+    ):
         report = orch.run_lint(apply=True)
     mock_repair.assert_called_once()
     mock_apply.assert_called_once_with(fake_plan)
@@ -81,9 +93,11 @@ def test_run_lint_apply_records_skipped_findings(orch: Orchestrator) -> None:
         deferred=[],
         errors=[],
     )
-    with mock.patch.object(type(orch._agent), "run_sync", new=_noop_agent_run_sync), \
-         mock.patch.object(orch, "_run_repair_agent", return_value=fake_plan), \
-         mock.patch.object(orch, "_apply_repair_plan", return_value=fake_receipt):
+    with (
+        mock.patch.object(type(orch._agent), "run_sync", new=_noop_agent_run_sync),
+        mock.patch.object(orch, "_run_repair_agent", return_value=fake_plan),
+        mock.patch.object(orch, "_apply_repair_plan", return_value=fake_receipt),
+    ):
         report = orch.run_lint(apply=True)
     assert "skipped" in report.lower() or "Skipped" in report
 
@@ -96,9 +110,11 @@ def test_run_lint_apply_surfaces_errors(orch: Orchestrator) -> None:
         deferred=[],
         errors=["repair_agent_failed"],
     )
-    with mock.patch.object(type(orch._agent), "run_sync", new=_noop_agent_run_sync), \
-         mock.patch.object(orch, "_run_repair_agent", return_value=fake_plan), \
-         mock.patch.object(orch, "_apply_repair_plan", return_value=fake_receipt):
+    with (
+        mock.patch.object(type(orch._agent), "run_sync", new=_noop_agent_run_sync),
+        mock.patch.object(orch, "_run_repair_agent", return_value=fake_plan),
+        mock.patch.object(orch, "_apply_repair_plan", return_value=fake_receipt),
+    ):
         report = orch.run_lint(apply=True)
     assert "errors" in report.lower() or "Errors" in report
 
@@ -147,25 +163,24 @@ def test_run_lint_apply_passes_findings_to_repair_agent(orch: Orchestrator) -> N
 
     # Sanity check: the deterministic shell produces a safe orphan finding.
     pre = _build_lint_report(orch.layout)
-    assert any(
-        f.category == "orphan" and f.safe_to_fix is True
-        for f in pre.findings
-    )
+    assert any(f.category == "orphan" and f.safe_to_fix is True for f in pre.findings)
 
     # Capture the RepairAgentDeps the repair agent receives.
     captured: dict[str, object] = {}
 
     def fake_repair_agent_run_sync(prompt: str, deps: object = None):  # type: ignore[no-untyped-def]
         captured["deps"] = deps
-        return mock.Mock(
-            output=RepairPlan(operations=[], rationale="r", evidence=["f0"])
-        )
+        return mock.Mock(output=RepairPlan(operations=[], rationale="r", evidence=["f0"]))
 
-    with mock.patch.object(type(orch._agent), "run_sync", new=_noop_agent_run_sync), \
-         mock.patch.object(orch._repair_agent, "run_sync", new=fake_repair_agent_run_sync), \
-         mock.patch.object(orch, "_apply_repair_plan", return_value=RepairReceipt(
-             applied=[], skipped=[], deferred=[], errors=[]
-         )):
+    with (
+        mock.patch.object(type(orch._agent), "run_sync", new=_noop_agent_run_sync),
+        mock.patch.object(orch._repair_agent, "run_sync", new=fake_repair_agent_run_sync),
+        mock.patch.object(
+            orch,
+            "_apply_repair_plan",
+            return_value=RepairReceipt(applied=[], skipped=[], deferred=[], errors=[]),
+        ),
+    ):
         orch.run_lint(apply=True)
 
     deps = captured.get("deps")
