@@ -89,7 +89,7 @@ def throwaway_repo(tmp_path: Path) -> tuple[Path, Path]:
 
 
 def test_release_pipeline_bumps_to_0_1_0(throwaway_repo: tuple[Path, Path]) -> None:
-    _bare, work = throwaway_repo
+    _, work = throwaway_repo
     # Seed a feat commit so bump detection picks "minor".
     (work / "newfile.txt").write_text("x", encoding="utf-8")
     _git(work, "add", "newfile.txt")
@@ -131,6 +131,8 @@ def test_release_pipeline_bumps_to_0_1_0(throwaway_repo: tuple[Path, Path]) -> N
     assert "v0.1.0" in tags
 
     # Push was called (intercepted by the wrapper)
-    push_calls = push_log.read_text(encoding="utf-8") if push_log.exists() else ""
-    assert "origin" in push_calls
-    assert "v0.1.0" in push_calls
+    push_log_contents = push_log.read_text(encoding="utf-8") if push_log.exists() else ""
+    assert any(
+        "push" in line and "origin" in line and "v0.1.0" in line
+        for line in push_log_contents.splitlines()
+    )
