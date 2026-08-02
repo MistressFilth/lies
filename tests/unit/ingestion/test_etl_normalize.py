@@ -1,7 +1,74 @@
+from datetime import datetime, timezone
+from unittest import mock
+
 import pytest
 
+from lies.collections.record import Collection
 from lies.etl.normalize.format_dispatch import UnknownFormatError, dispatch
 from lies.etl.normalize.obsidian import apply
+from lies.etl.stages.normalize import run_normalize
+from lies.scrapers.base import ParsedDoc
+
+
+def _collection(tmp_path) -> Collection:
+    return Collection(
+        name="x",
+        path=tmp_path,
+        source="",
+        tags=[],
+        scraper_cmd=None,
+        doc_path=None,
+        mapper_model=None,
+        language=None,
+        version="1.0.0",
+        created_at=datetime.now(tz=timezone.utc),
+        updated_at=datetime.now(tz=timezone.utc),
+        config={},
+    )
+
+
+def test_normalize_dispatches_sphinx_via_builder(tmp_path) -> None:
+    """Sphinx-format docs route through SphinxBuilder.build via the registry."""
+    (tmp_path / "src").mkdir(parents=True)
+    (tmp_path / "src" / "index.rst").write_text("Title\n=====\n", encoding="utf-8")
+    c = _collection(tmp_path)
+    docs = [
+        ParsedDoc(
+            path="index.rst",
+            content=b"unused",
+            source_sha256="h",
+            source_format="sphinx",
+        )
+    ]
+    with mock.patch(
+        "lies.builders.sphinx.SphinxBuilder.build",
+        return_value=[
+            ParsedDoc(
+                path="index.md",
+                content=b"# Title\n",
+                source_sha256="h2",
+                source_format="markdown",
+            )
+        ],
+    ):
+        result = run_normalize(c, docs)
+    assert result.success == ["index.md"]
+    assert result.quarantined == []
+
+
+def test_normalize_quarantines_builder_unavailable(tmp_path) -> None:
+    """Liquid format has no builder; falls through to format_dispatch and quarantines."""
+    c = _collection(tmp_path)
+    docs = [
+        ParsedDoc(
+            path="x.liquid",
+            content=b"{% if x %}",
+            source_sha256="h",
+            source_format="liquid",
+        )
+    ]
+    result = run_normalize(c, docs)
+    assert any("liquid" in reason for _, reason in result.quarantined)
 
 
 def test_dispatch_markdown_passthrough() -> None:
