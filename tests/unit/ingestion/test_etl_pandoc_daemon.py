@@ -5,39 +5,36 @@ import pytest
 from lies.etl.normalize.pandoc_daemon import PandocDaemon
 
 
-def test_daemon_starts_on_first_convert(monkeypatch: pytest.MonkeyPatch) -> None:
-    started: list[bool] = []
-    fake_proc = mock.Mock()
-    fake_proc.stdin = mock.Mock()
-    fake_proc.stdout = mock.Mock()
-    fake_proc.stdout.read.return_value = b"# ok"
-    fake_proc.poll.return_value = None
+def test_daemon_starts_fresh_process_for_each_convert(monkeypatch: pytest.MonkeyPatch) -> None:
+    started: list[mock.Mock] = []
 
     def fake_popen(*a, **kw):
-        started.append(True)
+        fake_proc = mock.Mock()
+        fake_proc.communicate.return_value = (f"# {len(started)}".encode(), b"")
+        fake_proc.returncode = 0
+        fake_proc.poll.return_value = 0
+        started.append(fake_proc)
         return fake_proc
 
     monkeypatch.setattr("subprocess.Popen", fake_popen)
     d = PandocDaemon()
-    out = d.convert(b"<h1>x</h1>", "html")
-    assert out == b"# ok"
-    assert started == [True]
-    fake_proc.stdin.write.assert_called_once()
-    fake_proc.stdin.close.assert_called_once()
+    assert d.convert(b"<h1>x</h1>", "html") == b"# 0"
+    assert d.convert(b"<h1>y</h1>", "html") == b"# 1"
+    assert len(started) == 2
+    started[0].communicate.assert_called_once_with(input=b"<h1>x</h1>")
+    started[1].communicate.assert_called_once_with(input=b"<h1>y</h1>")
 
 
 def test_daemon_restarts_on_crash(monkeypatch: pytest.MonkeyPatch) -> None:
     crash = mock.Mock()
     crash.poll.return_value = 1
-    crash.stdin = mock.Mock()
-    crash.stdout = mock.Mock()
-    crash.stdout.read.return_value = b""
+    crash.returncode = 1
+    crash.communicate.return_value = (b"", b"pandoc failed")
 
     ok = mock.Mock()
-    ok.poll.return_value = None
-    ok.stdin = mock.Mock()
-    ok.stdout = mock.Mock()
-    ok.stdout.read.return_value = b"good"
+    ok.poll.return_value = 0
+    ok.returncode = 0
+    ok.communicate.return_value = (b"good", b"")
 
     popen_calls: list[mock.Mock] = []
 

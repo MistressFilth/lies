@@ -1,60 +1,62 @@
 from __future__ import annotations
 
-"""Long-running pandoc subprocess with persistent stdin.
+"""Single-shot pandoc conversion wrapper.
 
-Each ``convert()`` call writes its input to the daemon's stdin and
-closes stdin (signaling end-of-input to pandoc), then reads stdout
-fully. Pandoc flushes the converted output and waits for the next
-input. The daemon process is reused across calls. Restarts on crash.
+Pandoc uses EOF to delimit one document on stdin and does not provide a
+length-prefixed framing protocol for multiple documents. Each ``convert``
+call therefore starts a fresh subprocess, sends one document with
+``communicate()``, and waits for that process to exit. The ``PandocDaemon``
+name and ``idle_timeout_s`` argument remain for API compatibility; there is
+no persistent process or idle timeout. A failed process is retried once.
 """
+
 import subprocess
 import threading
-import time
-
-_IDLE_TIMEOUT_S = 60
 
 
 class PandocDaemon:
-    def __init__(self, idle_timeout_s: int = _IDLE_TIMEOUT_S) -> None:
+    """Run one isolated pandoc subprocess per conversion.
+
+    This compatibility name is retained for callers of the original API,
+    but conversions are intentionally single-shot because closing stdin is
+    the only reliable input boundary supported by the pandoc CLI.
+    """
+
+    def __init__(self, idle_timeout_s: int = 60) -> None:
+        # Keep the argument for compatibility with existing callers. A
+        # single-shot process has no idle lifetime to manage.
         self._idle_timeout_s = idle_timeout_s
         self._proc: subprocess.Popen[bytes] | None = None
-        self._last_used: float = 0.0
         self._lock = threading.Lock()
 
-    def _start(self) -> None:
+    def _start(self, from_format: str) -> None:
         self._proc = subprocess.Popen(
-            ["pandoc", "--from=html", "--to=gfm", "--wrap=none"],
+            ["pandoc", f"--from={from_format}", "--to=gfm", "--wrap=none"],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
 
     def convert(self, input_bytes: bytes, from_format: str) -> bytes:
-        """Write input, close stdin (flush), read stdout fully.
-
-        On crash (post-read ``poll()`` returns non-None), restart the
-        daemon and retry once. Returns the last successful answer.
-        """
+        """Convert one document in a fresh subprocess, retrying once on failure."""
         with self._lock:
             out = b""
             for _attempt in range(2):
-                if self._proc is None or self._proc.poll() is not None:
-                    self._start()
+                self._start(from_format)
                 assert self._proc is not None
-                assert self._proc.stdin is not None and self._proc.stdout is not None
-                self._proc.stdin.write(input_bytes)
-                self._proc.stdin.flush()
-                self._proc.stdin.close()
-                out = bytes(self._proc.stdout.read())
-                self._last_used = time.monotonic()
-                if self._proc.poll() is None:
-                    return out
+                stdout, _stderr = self._proc.communicate(input=input_bytes)
+                out = bytes(stdout)
+                if self._proc.returncode == 0:
+                    break
+            self._proc = None
             return out
 
     def is_alive(self) -> bool:
+        """Return whether a conversion subprocess is currently running."""
         return self._proc is not None and self._proc.poll() is None
 
     def shutdown(self) -> None:
+        """Terminate an in-flight conversion, if one exists."""
         with self._lock:
             if self._proc is not None and self._proc.poll() is None:
                 self._proc.terminate()
