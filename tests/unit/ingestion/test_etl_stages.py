@@ -4,6 +4,7 @@ from unittest import mock
 
 from lies.collections.record import Collection
 from lies.etl.stages.normalize import run_normalize
+from lies.etl.stages.qmd_update import run_qmd_update
 from lies.etl.stages.scrape import run_scrape
 from lies.etl.stages.write import run_write
 from lies.scrapers.base import ParsedDoc
@@ -120,3 +121,17 @@ def test_run_write_respects_force(tmp_path: Path) -> None:
     assert result.success == ["x.md"]
     assert result.skipped == []
     ac.assert_called_once()
+
+
+def test_run_qmd_update_calls_incremental(tmp_path: Path) -> None:
+    with mock.patch("lies.etl.stages.qmd_update.qmd_update") as q:
+        result = run_qmd_update(_collection(tmp_path))
+    q.assert_called_once_with(tmp_path / "raw" / "cpython", collection="cpython")
+    assert result.bytes_in == 0
+    assert result.success == []
+
+
+def test_run_qmd_update_swallows_qmd_failure(tmp_path: Path) -> None:
+    with mock.patch("lies.etl.stages.qmd_update.qmd_update", side_effect=RuntimeError("qmd missing")):
+        result = run_qmd_update(_collection(tmp_path))
+    assert result.bytes_in == 0  # no-op recorded

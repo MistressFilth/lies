@@ -46,9 +46,17 @@ def _run(args: list[str], cwd: Path, timeout: int = 300) -> subprocess.Completed
         raise QmdNotInstalledError("`qmd` not found on PATH") from exc
 
 
-def qmd_update(cwd: Path) -> None:
-    """Reindex the qmd collections under `cwd`."""
-    result = _run(["update"], cwd=cwd)
+def qmd_update(cwd: Path, *, collection: str | None = None) -> None:
+    """Reindex the qmd collections under `cwd`.
+
+    If ``collection`` is provided, target that specific collection
+    (incremental update). Otherwise, reindex all collections under
+    ``cwd``.
+    """
+    args = ["update"]
+    if collection is not None:
+        args += ["--collection", collection]
+    result = _run(args, cwd=cwd)
     if result.returncode != 0:
         raise QmdError(f"qmd update failed: {result.stderr.strip()}")
 
