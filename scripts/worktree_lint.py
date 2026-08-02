@@ -43,6 +43,8 @@ def lint(bare_dir: Path) -> list[str]:
         )
 
     for wt in worktrees:
+        if "bare" in wt:
+            continue
         wt_path = Path(wt.get("worktree", ""))
         if not wt_path:
             continue
