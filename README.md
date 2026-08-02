@@ -144,7 +144,11 @@ CLI commands (`src/lies/cli.py`):
 
 - `lies init <path>` — initialize a new wiki (creates dirs, copies default
   schema, `git init`, initial commit).
-- `lies ingest <source>` — ingest a local source path.
+- `lies ingest <collection>` — sync an existing collection (first-time
+  LLM scraper generation is deferred).
+- `lies ingest-source <source>` — ingest a local source path. The legacy
+  source-path CLI surface; delegates to `Orchestrator.run_ingest` for
+  host-side atomicity and rollback.
 - `lies query <question>` — ask a question of the wiki.
 - `lies lint [--fix]` — health-check the wiki; `--fix` applies the repair plan for safe_to_fix findings.
 - `lies status` — show qmd status and the last few log entries.

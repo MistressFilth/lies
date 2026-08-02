@@ -1,10 +1,13 @@
 """Per-sync telemetry — NDJSON log + typed recorders + receipt aggregation."""
+
 from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+
+from typing_extensions import Self
 
 
 @dataclass(frozen=True)
@@ -31,9 +34,15 @@ class SyncTelemetry:
         self._log_path.parent.mkdir(parents=True, exist_ok=True)
         self._fh = self._log_path.open("a", encoding="utf-8")
         self._counts: dict[str, int] = {
-            "docs_total": 0, "docs_ingested": 0, "docs_skipped": 0,
-            "docs_quarantined": 0, "bytes_in": 0, "bytes_out": 0,
-            "qmd_index_time_ms": 0, "model_calls": 0, "model_tokens": 0,
+            "docs_total": 0,
+            "docs_ingested": 0,
+            "docs_skipped": 0,
+            "docs_quarantined": 0,
+            "bytes_in": 0,
+            "bytes_out": 0,
+            "qmd_index_time_ms": 0,
+            "model_calls": 0,
+            "model_tokens": 0,
         }
         self._started_at: datetime | None = None
         self._ended_at: datetime | None = None
@@ -76,3 +85,9 @@ class SyncTelemetry:
 
     def close(self) -> None:
         self._fh.close()
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+        self.close()
