@@ -117,3 +117,57 @@ def test_save_then_load_roundtrip(wiki: Path, tmp_path: Path) -> None:
     loaded = load_collection(wiki, "vuejs")
 
     assert loaded.tags == ["vue"]
+
+
+def test_collection_round_trips_config(tmp_path: Path) -> None:
+    from datetime import datetime, timezone
+
+    from lies.collections.record import Collection, load_collection, save_collection
+
+    now = datetime.now(tz=timezone.utc)
+    c = Collection(
+        name="htmx",
+        path=tmp_path / "raw" / "htmx",
+        source="https://github.com/bigskysoftware/htmx",
+        tags=["docs"],
+        scraper_cmd=None,
+        doc_path=None,
+        mapper_model=None,
+        language="en",
+        version="1.0.0",
+        created_at=now,
+        updated_at=now,
+        config={"sphinx_includes": ["docs/**/*.rst"], "sphinx_excludes": ["_templates/**"]},
+    )
+    save_collection(tmp_path, c)
+    loaded = load_collection(tmp_path, "htmx")
+    assert loaded.config == {
+        "sphinx_includes": ["docs/**/*.rst"],
+        "sphinx_excludes": ["_templates/**"],
+    }
+
+
+def test_collection_config_defaults_to_empty_dict(tmp_path: Path) -> None:
+    from datetime import datetime, timezone
+
+    from lies.collections.record import load_collection
+
+    # Build a minimal Collection, then write a YAML that omits the config field.
+    payload = {
+        "name": "no_cfg",
+        "path": str(tmp_path / "raw" / "no_cfg"),
+        "source": "",
+        "tags": [],
+        "scraper_cmd": None,
+        "doc_path": None,
+        "mapper_model": None,
+        "language": None,
+        "version": "1.0.0",
+        "created_at": datetime.now(tz=timezone.utc).isoformat(),
+        "updated_at": datetime.now(tz=timezone.utc).isoformat(),
+    }
+    cfg_dir = tmp_path / ".lies" / "collections"
+    cfg_dir.mkdir(parents=True)
+    (cfg_dir / "no_cfg.yaml").write_text(yaml.safe_dump(payload, sort_keys=True), encoding="utf-8")
+    loaded = load_collection(tmp_path, "no_cfg")
+    assert loaded.config == {}
