@@ -37,9 +37,32 @@ def test_conformant_single_worktree(monkeypatch: pytest.MonkeyPatch, tmp_path: P
             "branch refs/heads/main",
         ]
     )
-    monkeypatch.setattr("subprocess.check_output", lambda *a, **k: output.encode())
+
+    def fake_check_output(args: list[str], **kwargs: object) -> bytes:
+        if "worktree" in args:
+            return output.encode()
+        if "branch.main.merge" in args:
+            return b"refs/heads/main\n"
+        if "branch.main.remote" in args:
+            return b"origin\n"
+        if "remote.origin.url" in args:
+            return b"https://github.com/o/r.git\n"
+        if "remote.origin.fetch" in args:
+            return b"+refs/heads/*:refs/heads/*\n"
+        return b""
+
+    monkeypatch.setattr("subprocess.check_output", fake_check_output)
     violations = lint(bare)
     assert violations == []
+
+
+def test_bare_name_mismatch_violation(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A bare repository without the ``.git`` suffix fails invariant one."""
+    bare = tmp_path / "lies"
+    monkeypatch.setattr("subprocess.check_output", lambda *a, **k: b"")
+    violations = lint(bare)
+    assert any("invariant 1" in violation for violation in violations)
+    assert any("{name}.git pattern" in violation for violation in violations)
 
 
 def test_dir_branch_mismatch_violation(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -126,7 +149,7 @@ def test_fetch_refspec_must_be_direct(monkeypatch: pytest.MonkeyPatch, tmp_path:
     )
 
     def fake_check_output(args: list[str], **kwargs: object) -> bytes:
-        if "config" in args and "--get" in args:
+        if any("config" in a for a in args) and any("--get" in a for a in args):
             return b"+refs/heads/*:refs/remotes/origin/*\n"
         return porcelain.encode()
 
@@ -152,9 +175,9 @@ def test_upstream_mismatch_violation(monkeypatch: pytest.MonkeyPatch, tmp_path: 
     )
 
     def fake_check_output(args: list[str], **kwargs: object) -> bytes:
-        if "config" in args and "--get-regexp" in args:
+        if any("config" in a for a in args) and any("--get-regexp" in a for a in args):
             return config_output
-        if "config" in args and "--get" in args:
+        if any("config" in a for a in args) and any("--get" in a for a in args):
             return b"+refs/heads/*:refs/heads/*\n"
         return porcelain.encode()
 
