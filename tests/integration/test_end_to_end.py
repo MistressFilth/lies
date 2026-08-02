@@ -113,49 +113,29 @@ def test_orchestrator_constructs(wiki_copy: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_run_ingest_writes_artifacts_and_one_commit(wiki_copy: Path) -> None:
-    """A successful ingest leaves exactly one new commit with the new page.
+def test_run_ingest_delegates_to_sync_helper(wiki_copy: Path) -> None:
+    """``Orchestrator.run_ingest`` delegates to sync_collection and
+    returns the documented ``"ingested {source}"`` string.
 
-    This is the load-bearing part of the contract: an ingest is
-    all-or-nothing. The wiki never appears half-ingested.
+    The atomic git commit, working-tree snapshot/rollback, and stash
+    handling moved to ``sync_helper.sync_collection`` (Task 27). The
+    wrapper's job is just delegation + the back-compat return string.
+    The real SyncOrchestrator behavior is covered by
+    ``tests/integration/test_sync_collection.py``.
     """
     orch = Orchestrator(wiki_root=wiki_copy, model="test")
-    pre_log = _log_lines(wiki_copy)
-    pre_count = len(pre_log)
 
-    def fake_run_sync(self, prompt: str):  # type: ignore[no-untyped-def]
-        # Mimic page-writer + indexer dropping artifacts into the wiki.
-        page = wiki_copy / "wiki" / "entities" / "fixture-entity.md"
-        page.parent.mkdir(parents=True, exist_ok=True)
-        page.write_text(
-            "---\ntitle: Fixture\ntype: entity\n---\n# Fixture\n",
-            encoding="utf-8",
-        )
-        return mock.Mock(output="ingested fixture-entity")
-
-    with mock.patch.object(type(orch._agent), "run_sync", new=fake_run_sync):
+    with mock.patch("lies.etl.sync_helper.sync_collection") as m:
         result = orch.run_ingest("raw/articles/sample-article.md")
 
-    assert result == "ingested fixture-entity"
-
-    # Exactly one new commit.
-    post_log = _log_lines(wiki_copy)
-    assert len(post_log) == pre_count + 1
-    new_sha, _, new_msg = post_log[0].partition(" ")
-    assert new_msg.startswith("ingest")
-
-    # The new artifact is recorded in the new commit.
-    touched = _git_show_files(wiki_copy, new_sha)
-    assert any(p.endswith("entities/fixture-entity.md") for p in touched), (
-        f"fixture-entity.md not in commit; got {touched!r}"
-    )
-
-    # No leftover stash.
-    stash = subprocess.run(
-        ["git", "stash", "list"],
-        cwd=wiki_copy, capture_output=True, text=True, check=True,
-    )
-    assert stash.stdout.strip() == ""
+    # Wrapper returned the documented back-compat string.
+    assert result == "ingested raw/articles/sample-article.md"
+    # sync_collection was called once with the right args.
+    m.assert_called_once()
+    args, kwargs = m.call_args
+    assert args[0] == wiki_copy
+    assert args[1] == "sample-article"  # Path(source).stem strips dir + .md
+    assert kwargs == {"force": False}
 
 
 # ---------------------------------------------------------------------------
