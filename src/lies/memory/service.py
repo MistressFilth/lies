@@ -31,6 +31,7 @@ from lies.memory.models import (
     PageCreate,
     PageReference,
     PageUpdate,
+    WikiCollectionRef,
     WikiLockBusy,
     WikiPlanInvalid,
     WikiSearchResult,
@@ -182,6 +183,7 @@ class WikiMemoryService:
         self._qmd_update = qmd_update
         self._lock = threading.Lock()
         self._known_evidence: set[str] = set()
+        self._registered: dict[str, WikiCollectionRef] = {}
 
     def _lock_path(self) -> Path:
         """Return the cross-process lock file path for this wiki."""
@@ -201,6 +203,16 @@ class WikiMemoryService:
     def register_evidence(self, references: set[str]) -> None:
         """Register citation references supplied by another bounded read surface."""
         self._known_evidence.update(reference for reference in references if reference)
+
+    def register_collection(self, ref: WikiCollectionRef) -> None:
+        """Idempotent in-memory registration. v1 has no on-disk registry."""
+        self._registered[ref.collection_id] = ref
+
+    def is_registered(self, collection_id: str) -> bool:
+        return collection_id in self._registered
+
+    def registered_collections(self) -> list[WikiCollectionRef]:
+        return list(self._registered.values())
 
     def search(
         self,
