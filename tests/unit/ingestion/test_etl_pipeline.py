@@ -289,15 +289,23 @@ def test_pipeline_runs_register_stage(tmp_path: Path, monkeypatch: pytest.Monkey
         wiki_root=wiki_root,
     )
     # Stub each stage to keep the test focused on the new state transition.
-    with mock.patch("lies.etl.pipeline.run_scrape") as m_scrape, \
-         mock.patch("lies.etl.pipeline.run_normalize") as m_normalize, \
-         mock.patch("lies.etl.pipeline.run_write") as m_write, \
-         mock.patch("lies.etl.pipeline.run_register") as m_register, \
-         mock.patch("lies.etl.pipeline.run_qmd_update") as m_qmd:
+    with (
+        mock.patch("lies.etl.pipeline.run_scrape") as m_scrape,
+        mock.patch("lies.etl.pipeline.run_normalize") as m_normalize,
+        mock.patch("lies.etl.pipeline.run_write") as m_write,
+        mock.patch("lies.etl.pipeline.run_register") as m_register,
+        mock.patch("lies.etl.pipeline.run_qmd_update") as m_qmd,
+    ):
         m_scrape.return_value = StageResult(success=[], quarantined=[], skipped=[], parsed_docs=[])
-        m_normalize.return_value = StageResult(success=[], quarantined=[], skipped=[], parsed_docs=[])
-        m_write.return_value = StageResult(success=[], quarantined=[], skipped=[], parsed_docs=[])
-        m_register.return_value = StageResult(success=[], quarantined=[], skipped=[], parsed_docs=[])
+        m_normalize.return_value = StageResult(
+            success=[], quarantined=[], skipped=[], parsed_docs=[]
+        )
+        m_write.return_value = StageResult(
+            success=["x.md"], quarantined=[], skipped=[], parsed_docs=[]
+        )
+        m_register.return_value = StageResult(
+            success=[], quarantined=[], skipped=[], parsed_docs=[]
+        )
         orch.run()
     m_register.assert_called_once_with(c, orch._service)
     m_qmd.assert_called_once_with(c)

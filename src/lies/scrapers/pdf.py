@@ -1,7 +1,8 @@
-"""PDFScraper — fetches a PDF document and parses pages into markdown chunks.
+"""PDFScraper — fetches a PDF document as builder input.
 
-Text extraction via ``pymupdf``. Pages with no extractable text are
-left to the normalize stage's OCR fallback.
+The scraper preserves the fetched bytes and labels them ``pdf``. The
+NORMALIZE stage hands those bytes to ``PDFBuilder``, which performs
+page-level text extraction and emits markdown documents.
 """
 
 from __future__ import annotations
@@ -9,8 +10,6 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
-
-import pymupdf
 
 from lies.scrapers.base import BaseScraper, ParsedDoc
 from lies.scrapers.errors import ScraperFetchFailed
@@ -24,20 +23,15 @@ class PDFScraper(BaseScraper):
         return path.read_bytes()
 
     def parse(self, raw: bytes) -> list[ParsedDoc]:
-        doc = pymupdf.open(stream=raw, filetype="pdf")  # type: ignore[no-untyped-call]
-        docs: list[ParsedDoc] = []
-        for i, page in enumerate(doc):  # type: ignore[var-annotated,arg-type]
-            text = page.get_text() or ""
-            content = text.encode("utf-8")
-            docs.append(
-                ParsedDoc(
-                    path=f"page-{i:04d}.md",
-                    content=content,
-                    source_sha256=hashlib.sha256(content).hexdigest(),
-                    source_format="pdf",
-                )
+        """Return the fetched PDF unchanged for ``PDFBuilder``."""
+        return [
+            ParsedDoc(
+                path="source.pdf",
+                content=raw,
+                source_sha256=hashlib.sha256(raw).hexdigest(),
+                source_format="pdf",
             )
-        return docs
+        ]
 
     def emit_manifest(self, docs: list[ParsedDoc], raw_dir: Path) -> Path:
         raw_dir.mkdir(parents=True, exist_ok=True)
