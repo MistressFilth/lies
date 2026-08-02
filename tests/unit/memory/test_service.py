@@ -390,6 +390,12 @@ def test_search_filters_single_collection_and_registers_evidence(
     assert filtered.pages == []
 
 
+def test_service_locks_are_per_instance(git_wiki: WikiLayout) -> None:
+    first = WikiMemoryService(git_wiki)
+    second = WikiMemoryService(git_wiki)
+    assert first._lock is not second._lock
+
+
 def test_register_collection_is_idempotent(tmp_path) -> None:
     from pathlib import PurePosixPath
 
