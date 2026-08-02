@@ -71,6 +71,46 @@ Wiki selection: every tool accepts an optional `wiki_root` parameter.
 Resolution chain: explicit `wiki_root` → `LIES_WIKI_ROOT` env → cwd.
 For multi-project workspaces, register one MCP server per wiki.
 
+## Source collection builders
+
+LIES can ingest PDF, Sphinx, HTML, and bespoke source corpora. Three
+formats are first-class; a fourth (`liquid`) is reserved for future
+work and currently quarantines per-doc.
+
+Add a collection by hand or use the LLM-driven author:
+
+```bash
+# Hand-written YAML.
+$EDITOR .lies/collections/htmx.yaml
+uv run lies sync htmx
+
+# LLM-driven: the agent asks one question at a time.
+uv run lies collections new htmx \
+    --source https://github.com/bigskysoftware/htmx/tree/master/www/content \
+    --prompt "the curated htmx docs at www/content, drop _templates and examples"
+# Review the YAML on stdout, then re-run with --apply to write it.
+uv run lies collections new htmx --source <url> --prompt "..." --apply
+uv run lies sync htmx
+```
+
+For htmx-class messy corpora, the agent may also propose a
+`scraper_cmd` pointing at a Python module outside the repo that
+implements `BaseScraper`. Drop the module anywhere on `PYTHONPATH`
+and reference it as `module:attr` or `path.py:attr`.
+
+After the first successful sync, the collection's
+`WikiCollectionRef` is registered with `WikiMemoryService` for this
+wiki root. Inspect with:
+
+```bash
+uv run lies collections show htmx
+# name=htmx source=https://... tags=['docs']
+# status: registered
+```
+
+Re-runs are idempotent. The registry is in-memory only; restart
+loses it; the next `sync` re-registers.
+
 ## Configuration
 
 Environment variables:
