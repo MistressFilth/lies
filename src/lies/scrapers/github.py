@@ -1,4 +1,5 @@
 """GitHubScraper — clones repo (sparse or full) and parses markdown files."""
+
 from __future__ import annotations
 
 import hashlib

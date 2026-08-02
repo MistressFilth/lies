@@ -65,7 +65,9 @@ def test_github_scraper_parse_markdown_and_rst() -> None:
 def test_github_scraper_parse_emits_manifest(tmp_path: Path) -> None:
     s = GitHubScraper()
     docs = [
-        ParsedDoc(path="README.md", content=b"# x", source_sha256=_sha("# x"), source_format="markdown"),
+        ParsedDoc(
+            path="README.md", content=b"# x", source_sha256=_sha("# x"), source_format="markdown"
+        ),
     ]
     out = s.emit_manifest(docs, tmp_path)
     assert out.exists()

@@ -1,4 +1,5 @@
 """Per-sync model-call and token budget enforcement."""
+
 from __future__ import annotations
 
 from lies.etl.errors import BudgetExceeded

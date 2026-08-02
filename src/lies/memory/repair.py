@@ -6,6 +6,7 @@ PageUpdate / EvidenceAppend memory operations. apply_repair_plan then
 flows through the same flock, atomic_commit, and qmd refresh envelope
 as apply_plan.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -47,9 +48,7 @@ def _stub_body(title: str) -> str:
     )
 
 
-def _append_link_body(
-    existing: str, link_text: str, target_path: str, anchor: str = ""
-) -> str:
+def _append_link_body(existing: str, link_text: str, target_path: str, anchor: str = "") -> str:
     """Append a markdown link to the end of existing page content."""
     anchor_part = f"#{anchor}" if anchor else ""
     link = f"[{link_text}]({target_path}{anchor_part})"
@@ -83,9 +82,7 @@ def _ensure_frontmatter_type(content: str, page_type: str) -> str:
     return dumped
 
 
-def _merge_append_links(
-    layout: WikiLayout, append_to: str, links: list[AppendLink]
-) -> PageUpdate:
+def _merge_append_links(layout: WikiLayout, append_to: str, links: list[AppendLink]) -> PageUpdate:
     """Combine multiple AppendLinks targeting ``append_to`` into one PageUpdate.
 
     The repair plan allows several AppendLinks on the same target page;
@@ -110,9 +107,7 @@ def _merge_append_links(
     )
 
 
-def _map_non_append_op(
-    op: _RepairOp, layout: WikiLayout | None
-) -> _PlanOperation:
+def _map_non_append_op(op: _RepairOp, layout: WikiLayout | None) -> _PlanOperation:
     """Translate a non-AppendLink repair op into its MemoryPlan equivalent."""
     if isinstance(op, CreateStub):
         return PageCreate(
@@ -124,9 +119,7 @@ def _map_non_append_op(
         if layout is None:
             raise ValueError("UpdateIndex requires a WikiLayout")
         if not op.pages:
-            raise ValueError(
-                "UpdateIndex requires op.pages to identify the orphan page"
-            )
+            raise ValueError("UpdateIndex requires op.pages to identify the orphan page")
         target_path = op.pages[0]
         existing = layout.index_path.read_text(encoding="utf-8")
         return PageUpdate(
@@ -145,9 +138,7 @@ def _map_non_append_op(
     raise TypeError(f"unsupported repair op: {op!r}")
 
 
-def from_repair_plan(
-    plan: RepairPlan, layout: WikiLayout | None = None
-) -> MemoryPlan:
+def from_repair_plan(plan: RepairPlan, layout: WikiLayout | None = None) -> MemoryPlan:
     """Map a RepairPlan to a MemoryPlan.
 
     ``layout`` is required for operations that derive replacement content

@@ -29,9 +29,7 @@ def indexed_wiki(tmp_path: Path) -> WikiLayout:
         ),
         encoding="utf-8",
     )
-    (root / "wiki" / "index.md").write_text(
-        "- [MVC](concepts/mvc.md)\n", encoding="utf-8"
-    )
+    (root / "wiki" / "index.md").write_text("- [MVC](concepts/mvc.md)\n", encoding="utf-8")
     return WikiLayout(root)
 
 
@@ -89,6 +87,7 @@ def test_search_wiki_marks_truncated_when_more_than_limit(
         return [{"path": p, "score": 1.0 - 0.01 * i} for i, p in enumerate(paths)]
 
     from lies import qmd
+
     monkeypatch.setattr(qmd.cli, "qmd_query", fake_query)
     result = search_wiki(indexed_wiki, "topic", limit=3)
     assert result.truncated is True

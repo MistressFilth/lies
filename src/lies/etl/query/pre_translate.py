@@ -1,4 +1,5 @@
 """Structured intent for query translation."""
+
 from __future__ import annotations
 
 import re
@@ -29,9 +30,7 @@ def pre_translate(question: str, *, model: object, budget: CostBudget) -> Struct
     Otherwise invokes the model (budget-tracked) and parses structured
     output.
     """
-    noop = StructuredIntent(
-        collection_filter=[], tag_filter=[], exclude_terms=[], body=question
-    )
+    noop = StructuredIntent(collection_filter=[], tag_filter=[], exclude_terms=[], body=question)
     if not _looks_like_query(question):
         return noop
     budget.spend(calls=1)

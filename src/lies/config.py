@@ -1,4 +1,5 @@
 """Runtime configuration: env vars, model selection, paths."""
+
 from __future__ import annotations
 
 import os

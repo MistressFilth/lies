@@ -1,4 +1,5 @@
 """SCRAPING stage — fetch + parse + emit manifest."""
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
@@ -21,7 +22,9 @@ def run_scrape(collection: Collection) -> StageResult:
     scraper.emit_manifest(docs, raw_dir)
     return StageResult(
         success=[d.path for d in docs],
-        quarantined=[], skipped=[],
+        quarantined=[],
+        skipped=[],
         parsed_docs=docs,
-        bytes_in=len(raw), bytes_out=0,
+        bytes_in=len(raw),
+        bytes_out=0,
     )

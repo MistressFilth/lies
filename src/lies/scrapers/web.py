@@ -4,6 +4,7 @@ Playwright escalation: when static fetch returns empty / 4xx / JS-only
 content, the scraper invokes ``playwright`` MCP tools (provided as
 callbacks) to render the page.
 """
+
 from __future__ import annotations
 
 import hashlib

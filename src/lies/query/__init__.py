@@ -1,4 +1,5 @@
 """Query layer: index parsing and synthesizer with qmd fallback."""
+
 from lies.query.index_parser import IndexLink, parse_index_links
 from lies.query.models import SynthesizedAnswer
 from lies.query.synthesizer import (

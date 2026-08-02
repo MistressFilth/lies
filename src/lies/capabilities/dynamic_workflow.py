@@ -4,6 +4,7 @@ Model writes one Python script that orchestrates sub-agents via
 `asyncio.gather`; the entire tree runs in one tool call. This is what
 enables the "touch 15 files in one pass" Karpathy describes.
 """
+
 from __future__ import annotations
 
 from typing import Any

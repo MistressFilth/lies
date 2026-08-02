@@ -4,6 +4,7 @@
 a stable index body. ``append_log_entry`` records one parseable
 ``## [YYYY-MM-DD] <op> | <title>`` line per memory operation.
 """
+
 from __future__ import annotations
 
 import re
@@ -50,9 +51,7 @@ def _discover_pages(layout: WikiLayout) -> dict[str, list[tuple[str, str, str]]]
         name = match.group("name")
         page_type = _page_type_dir(path)
         normalized_type = (
-            page_type[:-3] + "y"
-            if page_type.endswith("ies")
-            else page_type.removesuffix("s")
+            page_type[:-3] + "y" if page_type.endswith("ies") else page_type.removesuffix("s")
         )
         if page_type not in ALLOWED_PAGE_TYPES and normalized_type not in ALLOWED_PAGE_TYPES:
             continue

@@ -17,6 +17,7 @@ is testable without a live LLM. A future task may swap the synthesis
 core for an LLM-backed one; the public function signature and the
 fallback contract are the load-bearing parts.
 """
+
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -148,9 +149,7 @@ def _read_pages_from_index(layout: WikiLayout, top_n: int) -> list[_PageRead]:
     return pages
 
 
-def _resolve_qmd_pages(
-    layout: WikiLayout, qmd_paths: list[str], top_n: int
-) -> list[_PageRead]:
+def _resolve_qmd_pages(layout: WikiLayout, qmd_paths: list[str], top_n: int) -> list[_PageRead]:
     """Resolve qmd-returned paths to actual readable pages on disk.
 
     Defends against path traversal: any returned path that escapes
@@ -247,9 +246,7 @@ def _first_meaningful_paragraph(content: str, max_chars: int = 400) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _build_answer(
-    question: str, pages: list[_PageRead], fallback_reason: str
-) -> SynthesizedAnswer:
+def _build_answer(question: str, pages: list[_PageRead], fallback_reason: str) -> SynthesizedAnswer:
     """Assemble the final SynthesizedAnswer from the read pages."""
     citations: list[str] = []
     pages_read: list[str] = []
@@ -264,8 +261,7 @@ def _build_answer(
 
     if fallback_reason:
         preamble = (
-            f"_Note: qmd unavailable ({fallback_reason}); "
-            f"answered from `wiki/index.md`._\n\n"
+            f"_Note: qmd unavailable ({fallback_reason}); answered from `wiki/index.md`._\n\n"
         )
     else:
         preamble = ""
@@ -273,8 +269,7 @@ def _build_answer(
     answer = (
         f"### {question.strip()}\n\n"
         f"{preamble}"
-        f"Based on {len(pages)} wiki page(s):\n\n"
-        + "\n".join(bullets)
+        f"Based on {len(pages)} wiki page(s):\n\n" + "\n".join(bullets)
     )
 
     return SynthesizedAnswer(
@@ -343,7 +338,9 @@ def _qmd_search_dispatch(
     except QmdCommandError as exc:
         raise _QmdOtherFailure(str(exc)) from exc
 
-    qmd_paths = [path for r in results if isinstance(r, dict) and isinstance((path := r.get("path")), str)]
+    qmd_paths = [
+        path for r in results if isinstance(r, dict) and isinstance((path := r.get("path")), str)
+    ]
     pages = _resolve_qmd_pages(layout, qmd_paths, top_n)
     if not pages:
         # qmd gave us hits but none of the files are readable — treat as

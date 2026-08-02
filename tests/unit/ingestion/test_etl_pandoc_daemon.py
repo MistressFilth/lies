@@ -12,9 +12,11 @@ def test_daemon_starts_on_first_convert(monkeypatch: pytest.MonkeyPatch) -> None
     fake_proc.stdout = mock.Mock()
     fake_proc.stdout.read.return_value = b"# ok"
     fake_proc.poll.return_value = None
+
     def fake_popen(*a, **kw):
         started.append(True)
         return fake_proc
+
     monkeypatch.setattr("subprocess.Popen", fake_popen)
     d = PandocDaemon()
     out = d.convert(b"<h1>x</h1>", "html")
@@ -38,10 +40,12 @@ def test_daemon_restarts_on_crash(monkeypatch: pytest.MonkeyPatch) -> None:
     ok.stdout.read.return_value = b"good"
 
     popen_calls: list[mock.Mock] = []
+
     def fake_popen(*a, **kw):
         proc = crash if not popen_calls else ok
         popen_calls.append(proc)
         return proc
+
     monkeypatch.setattr("subprocess.Popen", fake_popen)
     d = PandocDaemon()
     d.convert(b"x", "html")

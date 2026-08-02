@@ -24,7 +24,9 @@ class PandocDaemon:
     def _start(self) -> None:
         self._proc = subprocess.Popen(
             ["pandoc", "--from=html", "--to=gfm", "--wrap=none"],
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
         )
 
     def convert(self, input_bytes: bytes, from_format: str) -> bytes:

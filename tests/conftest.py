@@ -1,4 +1,5 @@
 """Shared pytest fixtures."""
+
 from __future__ import annotations
 
 import os
@@ -33,22 +34,32 @@ def sample_wiki(tmp_path: Path) -> WikiLayout:
     shutil.copytree(FIXTURE_WIKI, target)
     subprocess.run(
         ["git", "init", "--initial-branch=main", str(target)],
-        check=True, capture_output=True,
+        check=True,
+        capture_output=True,
     )
     subprocess.run(
         ["git", "config", "user.email", "test@example.com"],
-        cwd=target, check=True, capture_output=True,
+        cwd=target,
+        check=True,
+        capture_output=True,
     )
     subprocess.run(
         ["git", "config", "user.name", "Test"],
-        cwd=target, check=True, capture_output=True,
+        cwd=target,
+        check=True,
+        capture_output=True,
     )
     subprocess.run(
-        ["git", "add", "."], cwd=target, check=True, capture_output=True,
+        ["git", "add", "."],
+        cwd=target,
+        check=True,
+        capture_output=True,
     )
     subprocess.run(
         ["git", "commit", "-m", "fixture"],
-        cwd=target, check=True, capture_output=True,
+        cwd=target,
+        check=True,
+        capture_output=True,
     )
     return WikiLayout(target)
 
@@ -63,15 +74,20 @@ def empty_wiki(tmp_path: Path) -> WikiLayout:
     (target / ".lies").mkdir()
     subprocess.run(
         ["git", "init", "--initial-branch=main", str(target)],
-        check=True, capture_output=True,
+        check=True,
+        capture_output=True,
     )
     subprocess.run(
         ["git", "config", "user.email", "test@example.com"],
-        cwd=target, check=True, capture_output=True,
+        cwd=target,
+        check=True,
+        capture_output=True,
     )
     subprocess.run(
         ["git", "config", "user.name", "Test"],
-        cwd=target, check=True, capture_output=True,
+        cwd=target,
+        check=True,
+        capture_output=True,
     )
     return WikiLayout(target)
 
@@ -100,21 +116,31 @@ def wiki_with_missing_pages(tmp_path: Path) -> WikiLayout:
     )
     subprocess.run(
         ["git", "init", "--initial-branch=main", str(target)],
-        check=True, capture_output=True,
+        check=True,
+        capture_output=True,
     )
     subprocess.run(
         ["git", "config", "user.email", "test@example.com"],
-        cwd=target, check=True, capture_output=True,
+        cwd=target,
+        check=True,
+        capture_output=True,
     )
     subprocess.run(
         ["git", "config", "user.name", "Test"],
-        cwd=target, check=True, capture_output=True,
+        cwd=target,
+        check=True,
+        capture_output=True,
     )
     subprocess.run(
-        ["git", "add", "."], cwd=target, check=True, capture_output=True,
+        ["git", "add", "."],
+        cwd=target,
+        check=True,
+        capture_output=True,
     )
     subprocess.run(
         ["git", "commit", "-m", "fixture"],
-        cwd=target, check=True, capture_output=True,
+        cwd=target,
+        check=True,
+        capture_output=True,
     )
     return WikiLayout(target)

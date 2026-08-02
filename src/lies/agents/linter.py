@@ -4,6 +4,7 @@ Walks the wiki looking for: contradictions, stale claims, orphans, missing
 pages, missing cross-references, data gaps. Outputs a structured report and
 a markdown summary.
 """
+
 from __future__ import annotations
 
 from enum import Enum

@@ -15,8 +15,12 @@ def _collection(tmp_path: Path) -> Collection:
         name="cpython",
         path=tmp_path / "raw" / "cpython",
         source="https://example.com",
-        tags=[], scraper_cmd=None, doc_path=None,
-        mapper_model=None, language=None, version="1.0.0",
+        tags=[],
+        scraper_cmd=None,
+        doc_path=None,
+        mapper_model=None,
+        language=None,
+        version="1.0.0",
         created_at=datetime(2026, 8, 1, tzinfo=timezone.utc),
         updated_at=datetime(2026, 8, 1, tzinfo=timezone.utc),
     )
@@ -44,9 +48,15 @@ def test_run_scrape_invokes_pick_scraper(tmp_path: Path) -> None:
 
 
 def test_run_normalize_dispatches_and_applies_obsidian(tmp_path: Path) -> None:
-    fake_doc = ParsedDoc(path="x.md", content=b"# Hello", source_sha256="abc", source_format="markdown")
-    with mock.patch("lies.etl.stages.normalize.format_dispatch.dispatch", return_value="# Hello"), \
-         mock.patch("lies.etl.stages.normalize.obsidian.apply", side_effect=lambda m, **kw: m) as obs:
+    fake_doc = ParsedDoc(
+        path="x.md", content=b"# Hello", source_sha256="abc", source_format="markdown"
+    )
+    with (
+        mock.patch("lies.etl.stages.normalize.format_dispatch.dispatch", return_value="# Hello"),
+        mock.patch(
+            "lies.etl.stages.normalize.obsidian.apply", side_effect=lambda m, **kw: m
+        ) as obs,
+    ):
         result = run_normalize(_collection(tmp_path), [fake_doc])
     assert result.success == ["x.md"]
     obs.assert_called_once()
@@ -56,6 +66,7 @@ def test_run_normalize_dispatches_and_applies_obsidian(tmp_path: Path) -> None:
 
 def test_run_normalize_quarantines_unknown_format(tmp_path: Path) -> None:
     from lies.etl.normalize.format_dispatch import UnknownFormatError
+
     fake_doc = ParsedDoc(path="bad.xyz", content=b"x", source_sha256="abc", source_format="weird")
     with mock.patch(
         "lies.etl.stages.normalize.format_dispatch.dispatch",
@@ -70,8 +81,13 @@ def test_run_write_atomic_commits_new_files(tmp_path: Path) -> None:
     manifest = mock.Mock()
     manifest.compare.return_value = False  # fresh manifest: no prior entries
     with mock.patch("lies.etl.stages.write.atomic_commit") as ac:
-        result = run_write(_collection(tmp_path), fake_normalized,
-                           manifest=manifest, wiki_root=tmp_path, force=False)
+        result = run_write(
+            _collection(tmp_path),
+            fake_normalized,
+            manifest=manifest,
+            wiki_root=tmp_path,
+            force=False,
+        )
     assert result.success == ["x.md"]
     ac.assert_called_once()
     written = tmp_path / "wiki" / "x.md"
@@ -84,8 +100,13 @@ def test_run_write_writes_under_wiki_root(tmp_path: Path) -> None:
     manifest = mock.Mock()
     manifest.compare.return_value = False
     with mock.patch("lies.etl.stages.write.atomic_commit"):
-        run_write(_collection(tmp_path), fake_normalized,
-                  manifest=manifest, wiki_root=tmp_path, force=False)
+        run_write(
+            _collection(tmp_path),
+            fake_normalized,
+            manifest=manifest,
+            wiki_root=tmp_path,
+            force=False,
+        )
     assert (tmp_path / "wiki" / "concepts" / "example.md").exists()
 
 
@@ -94,8 +115,13 @@ def test_run_write_skips_unchanged(tmp_path: Path) -> None:
     manifest.compare.return_value = True
     fake_normalized = [("x.md", "# body")]
     with mock.patch("lies.etl.stages.write.atomic_commit") as ac:
-        result = run_write(_collection(tmp_path), fake_normalized,
-                           manifest=manifest, wiki_root=tmp_path, force=False)
+        result = run_write(
+            _collection(tmp_path),
+            fake_normalized,
+            manifest=manifest,
+            wiki_root=tmp_path,
+            force=False,
+        )
     assert result.skipped == ["x.md"]
     ac.assert_not_called()
 
@@ -104,10 +130,17 @@ def test_run_write_quarantines_on_oserror(tmp_path: Path) -> None:
     fake_normalized = [("x.md", "# body")]
     manifest = mock.Mock()
     manifest.compare.return_value = False
-    with mock.patch("lies.etl.stages.write.atomic_commit"), \
-         mock.patch("builtins.open", side_effect=OSError("disk full")):
-        result = run_write(_collection(tmp_path), fake_normalized,
-                           manifest=manifest, wiki_root=tmp_path, force=False)
+    with (
+        mock.patch("lies.etl.stages.write.atomic_commit"),
+        mock.patch("builtins.open", side_effect=OSError("disk full")),
+    ):
+        result = run_write(
+            _collection(tmp_path),
+            fake_normalized,
+            manifest=manifest,
+            wiki_root=tmp_path,
+            force=False,
+        )
     assert result.quarantined == [("x.md", "disk full")]
 
 
@@ -116,8 +149,13 @@ def test_run_write_respects_force(tmp_path: Path) -> None:
     manifest.compare.return_value = True
     fake_normalized = [("x.md", "# body")]
     with mock.patch("lies.etl.stages.write.atomic_commit") as ac:
-        result = run_write(_collection(tmp_path), fake_normalized,
-                           manifest=manifest, wiki_root=tmp_path, force=True)
+        result = run_write(
+            _collection(tmp_path),
+            fake_normalized,
+            manifest=manifest,
+            wiki_root=tmp_path,
+            force=True,
+        )
     assert result.success == ["x.md"]
     assert result.skipped == []
     ac.assert_called_once()
@@ -133,6 +171,8 @@ def test_run_qmd_update_triggers_full_reindex(tmp_path: Path) -> None:
 
 
 def test_run_qmd_update_swallows_qmd_failure(tmp_path: Path) -> None:
-    with mock.patch("lies.etl.stages.qmd_update.qmd_update", side_effect=RuntimeError("qmd missing")):
+    with mock.patch(
+        "lies.etl.stages.qmd_update.qmd_update", side_effect=RuntimeError("qmd missing")
+    ):
         result = run_qmd_update(_collection(tmp_path))
     assert result.bytes_in == 0  # no-op recorded

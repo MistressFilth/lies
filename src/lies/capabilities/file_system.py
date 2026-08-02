@@ -1,4 +1,5 @@
 """File system harness capability, scoped to the wiki root."""
+
 from __future__ import annotations
 
 from pathlib import Path

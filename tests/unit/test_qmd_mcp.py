@@ -61,9 +61,7 @@ def test_pyproject_declares_qmd_extra() -> None:
     assert any(re.match(r"^fastmcp", d) for d in default_deps), (
         "fastmcp must be a default dependency"
     )
-    assert any(re.match(r"^mcp", d) for d in default_deps), (
-        "mcp must be a default dependency"
-    )
+    assert any(re.match(r"^mcp", d) for d in default_deps), "mcp must be a default dependency"
     qmd_extra = project["project"]["optional-dependencies"]["qmd"]
     assert qmd_extra == [], f"qmd extra should be empty, got {qmd_extra!r}"
 
@@ -90,7 +88,8 @@ def test_qmd_extra_locked_in_uv_lock() -> None:
     # No ``requires-dist`` entry should be tagged with the qmd extra marker;
     # the qmd extra is empty, so MCP deps live under the default extras.
     qmd_marked = [
-        package["name"] for package in all_requires_dist
+        package["name"]
+        for package in all_requires_dist
         if package.get("marker") == "extra == 'qmd'"
     ]
     assert qmd_marked == [], f"qmd extra should be empty, got {qmd_marked!r}"

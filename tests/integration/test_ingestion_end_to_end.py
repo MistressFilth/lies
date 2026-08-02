@@ -1,6 +1,6 @@
 import subprocess
-import unittest.mock as mock
 from pathlib import Path
+from unittest import mock
 
 import pytest
 import yaml
@@ -8,13 +8,16 @@ from typer.testing import CliRunner
 
 from lies.cli import app
 
-
 pytestmark = pytest.mark.integration
 
 
 def _git_init(path: Path) -> None:
-    subprocess.run(["git", "init", "--initial-branch=main", str(path)], check=True, capture_output=True)
-    subprocess.run(["git", "config", "user.email", "t@e.com"], cwd=path, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "init", "--initial-branch=main", str(path)], check=True, capture_output=True
+    )
+    subprocess.run(
+        ["git", "config", "user.email", "t@e.com"], cwd=path, check=True, capture_output=True
+    )
     subprocess.run(["git", "config", "user.name", "T"], cwd=path, check=True, capture_output=True)
     subprocess.run(["git", "add", "."], cwd=path, check=True, capture_output=True)
     subprocess.run(["git", "commit", "-m", "init"], cwd=path, check=True, capture_output=True)
@@ -39,7 +42,9 @@ def test_full_pipeline_idempotent(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
         "created_at": "2026-08-01T00:00:00Z",
         "updated_at": "2026-08-01T00:00:00Z",
     }
-    (wiki / ".lies" / "collections" / "sample.yaml").write_text(yaml.safe_dump(cfg), encoding="utf-8")
+    (wiki / ".lies" / "collections" / "sample.yaml").write_text(
+        yaml.safe_dump(cfg), encoding="utf-8"
+    )
 
     _git_init(wiki)
     monkeypatch.setenv("LIES_WIKI_ROOT", str(wiki))

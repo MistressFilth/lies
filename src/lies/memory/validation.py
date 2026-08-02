@@ -4,6 +4,7 @@ The validators never touch the filesystem beyond resolving candidate
 paths. They raise typed errors so the service and enricher can fail
 plans with the same code paths.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -70,9 +71,7 @@ def validate_frontmatter(frontmatter_dict: dict[str, Any], *, page_type: str) ->
         raise WikiPlanInvalid("overview frontmatter requires title")
     declared = frontmatter_dict.get("type")
     if declared is None or str(declared) != page_type:
-        raise WikiPlanInvalid(
-            f"frontmatter type missing or does not match page_type {page_type!r}"
-        )
+        raise WikiPlanInvalid(f"frontmatter type missing or does not match page_type {page_type!r}")
 
 
 def validate_operation_evidence(

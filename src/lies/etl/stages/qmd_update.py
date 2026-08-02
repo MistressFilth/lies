@@ -11,6 +11,7 @@ not invalidate the wiki git commit that already succeeded. We swallow
 every exception so the pipeline proceeds; the next sync retries the
 refresh.
 """
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING

@@ -1,6 +1,7 @@
 """End-to-end smoke test: boot the FastMCP server in-process and
 exercise the public surface through a real Client round-trip.
 """
+
 from __future__ import annotations
 
 from unittest import mock
@@ -42,8 +43,10 @@ async def test_query_tool_round_trip(
     def fake_run_query(self, question: str) -> SynthesizedAnswer:
         return fake_answer
 
-    with mock.patch.object(Orchestrator, "_build", lambda self: None), \
-         mock.patch.object(Orchestrator, "run_query", new=fake_run_query):
+    with (
+        mock.patch.object(Orchestrator, "_build", lambda self: None),
+        mock.patch.object(Orchestrator, "run_query", new=fake_run_query),
+    ):
         result = await client.call_tool(
             "query",
             {"question": "What is MVCC?", "wiki_root": str(sample_wiki.root)},

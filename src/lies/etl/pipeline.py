@@ -4,6 +4,7 @@ StageResult carries ``parsed_docs: list[ParsedDoc]`` so the
 NORMALIZING stage receives the actual document objects the SCRAPE
 stage produced (paths alone are insufficient for normalization).
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -73,7 +74,8 @@ class SyncOrchestrator:
             self._transition(PipelineState.SCRAPING)
             scraped = run_scrape(self.collection)
             self.telemetry.record_counters(
-                docs_total=len(scraped.success), bytes_in=scraped.bytes_in,
+                docs_total=len(scraped.success),
+                bytes_in=scraped.bytes_in,
             )
 
             self._transition(PipelineState.NORMALIZING)

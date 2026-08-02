@@ -1,4 +1,5 @@
 """Atomic git commit helpers for the wiki."""
+
 from __future__ import annotations
 
 import subprocess
@@ -58,7 +59,11 @@ def _reset_staging(repo: Path) -> None:
 def _run_git_for_text(repo: Path, *args: str) -> str:
     """Run a git subprocess with varargs; return stdout or raise CommitError."""
     result = subprocess.run(
-        ["git", *args], cwd=repo, capture_output=True, text=True, check=False,
+        ["git", *args],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=False,
     )
     if result.returncode:
         raise CommitError(result.stderr.strip() or "git command failed")
@@ -131,9 +136,7 @@ def atomic_commit(
         # of leaking a CalledProcessError out of atomic_commit.
         diff_result = _run_git(["git", "diff", "--cached", "--name-only"], repo)
         if diff_result.returncode != 0:
-            raise CommitError(
-                f"git diff --cached failed: {diff_result.stderr.strip()}"
-            )
+            raise CommitError(f"git diff --cached failed: {diff_result.stderr.strip()}")
         if not diff_result.stdout.strip():
             raise CommitError("nothing to commit")
 
@@ -145,9 +148,7 @@ def atomic_commit(
         # ---- Read SHA -------------------------------------------------------
         sha_result = _run_git(["git", "rev-parse", "HEAD"], repo)
         if sha_result.returncode != 0:
-            raise CommitError(
-                f"git rev-parse HEAD failed: {sha_result.stderr.strip()}"
-            )
+            raise CommitError(f"git rev-parse HEAD failed: {sha_result.stderr.strip()}")
         return sha_result.stdout.strip()
 
     except CommitError:

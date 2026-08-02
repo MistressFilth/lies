@@ -1,4 +1,5 @@
 """Unit tests for the cross-process flock on the wiki memory lock file."""
+
 from __future__ import annotations
 
 import fcntl

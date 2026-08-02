@@ -1,4 +1,5 @@
 """Assert the FastMCP server registers exactly the documented surface."""
+
 from __future__ import annotations
 
 import pytest

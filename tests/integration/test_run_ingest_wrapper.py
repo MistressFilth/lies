@@ -4,6 +4,7 @@ Task 27 replaces the legacy agent-based ingest path with a thin
 wrapper around ``sync_helper.sync_collection``. The wrapper still
 returns ``"ingested {source}"`` to keep callers compiling.
 """
+
 from __future__ import annotations
 
 from pathlib import Path

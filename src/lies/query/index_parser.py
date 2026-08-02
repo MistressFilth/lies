@@ -5,6 +5,7 @@ markdown links to every page, grouped by page type. This module is the
 substrate for the qmd-fallback path: when qmd is unavailable or returns
 no results, we parse the index and read the top-N referenced pages.
 """
+
 from __future__ import annotations
 
 import re

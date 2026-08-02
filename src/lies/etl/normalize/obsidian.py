@@ -1,4 +1,5 @@
 """Apply Obsidian conventions: frontmatter + tags + WikiLinks."""
+
 from __future__ import annotations
 
 from typing import Any

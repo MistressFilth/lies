@@ -53,7 +53,9 @@ def test_web_scraper_handles_404(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_web_scraper_parse_emits_manifest(tmp_path: Path) -> None:
-    docs = [ParsedDoc(path="x.md", content=b"# x", source_sha256=_sha("# x"), source_format="markdown")]
+    docs = [
+        ParsedDoc(path="x.md", content=b"# x", source_sha256=_sha("# x"), source_format="markdown")
+    ]
     out = WebScraper().emit_manifest(docs, tmp_path)
     assert json.loads(out.read_text(encoding="utf-8"))["files"][0]["path"] == "x.md"
 

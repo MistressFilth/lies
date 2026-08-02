@@ -6,6 +6,7 @@ When ``WikiMemoryService.apply_plan`` raises a transient error
 the next turn. Per-session, in-memory only. No daemon, no disk
 persistence.
 """
+
 from __future__ import annotations
 
 from collections import deque

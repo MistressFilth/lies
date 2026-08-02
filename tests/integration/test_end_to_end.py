@@ -15,6 +15,7 @@ The agent's LLM is mocked so the round-trip is deterministic. The
 underlying ``_agent.run_sync`` is patched to drop a wiki page (mimicking
 the page-writer + indexer sub-agents writing artifacts).
 """
+
 from __future__ import annotations
 
 import shutil
@@ -50,18 +51,27 @@ def wiki_copy(tmp_path: Path) -> Path:
     )
     subprocess.run(
         ["git", "config", "user.email", "test@example.com"],
-        cwd=target, check=True, capture_output=True,
+        cwd=target,
+        check=True,
+        capture_output=True,
     )
     subprocess.run(
         ["git", "config", "user.name", "Test"],
-        cwd=target, check=True, capture_output=True,
+        cwd=target,
+        check=True,
+        capture_output=True,
     )
     subprocess.run(
-        ["git", "add", "."], cwd=target, check=True, capture_output=True,
+        ["git", "add", "."],
+        cwd=target,
+        check=True,
+        capture_output=True,
     )
     subprocess.run(
         ["git", "commit", "-m", "fixture"],
-        cwd=target, check=True, capture_output=True,
+        cwd=target,
+        check=True,
+        capture_output=True,
     )
     return target
 
@@ -70,7 +80,10 @@ def _log_lines(repo: Path) -> list[str]:
     """Return ``[<sha> <subject>, ...]`` newest-first."""
     result = subprocess.run(
         ["git", "log", "--pretty=%H %s"],
-        cwd=repo, capture_output=True, text=True, check=True,
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=True,
     )
     return result.stdout.splitlines()
 
@@ -79,7 +92,10 @@ def _git_show_files(repo: Path, sha: str) -> list[str]:
     """Return the list of files changed in ``sha``."""
     result = subprocess.run(
         ["git", "show", "--name-only", "--pretty=format:", sha],
-        cwd=repo, capture_output=True, text=True, check=True,
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=True,
     )
     return [line for line in result.stdout.splitlines() if line.strip()]
 
@@ -183,10 +199,9 @@ def test_synthesizer_reads_index_pages(wiki_copy: Path) -> None:
     assert answer.fallback_reason == "qmd_unavailable"
     # The index lists Postgres + MySQL entities; the synthesizer reads
     # the top-N pages referenced from index.md and cites them.
-    assert any(
-        "entities/postgres.md" in c or "entities/mysql.md" in c
-        for c in answer.citations
-    ), f"expected entity citations, got {answer.citations!r}"
+    assert any("entities/postgres.md" in c or "entities/mysql.md" in c for c in answer.citations), (
+        f"expected entity citations, got {answer.citations!r}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -215,10 +230,9 @@ def test_run_lint_writes_lint_report_and_appends_log(wiki_copy: Path) -> None:
     log_text = layout.log_path.read_text(encoding="utf-8")
     assert "lint" in log_text
     # The entry is parseable: starts with `## [<date>] lint | N findings`.
-    assert any(
-        line.startswith("## [") and " lint " in line
-        for line in log_text.splitlines()
-    ), f"no parseable lint log entry; got:\n{log_text!r}"
+    assert any(line.startswith("## [") and " lint " in line for line in log_text.splitlines()), (
+        f"no parseable lint log entry; got:\n{log_text!r}"
+    )
 
 
 def test_run_lint_detects_orphan_pages(wiki_copy: Path) -> None:
@@ -250,5 +264,6 @@ def test_qmd_update_raises_cleanly_when_not_installed(wiki_copy: Path) -> None:
     if shutil.which("qmd") is not None:
         pytest.skip("qmd is installed; skipping not-installed test")
     from lies.qmd import qmd_update
+
     with pytest.raises(QmdNotInstalledError):
         qmd_update(wiki_copy)
