@@ -55,7 +55,28 @@ def test_record_error_appends_to_receipt(tmp_path: Path) -> None:
 def test_record_counters_rejects_unknown_counter(tmp_path: Path) -> None:
     t = SyncTelemetry("cpython", log_dir=tmp_path)
     with pytest.raises(ValueError, match="unknown counter"):
-        t.record_counters(bogus=1)
+        t.record_counter("bogus", 1)
+
+
+def test_record_counter_accumulates_in_place(tmp_path: Path) -> None:
+    """``record_counter`` is additive across stages.
+
+    The pipeline runs through SCRAPE → NORMALIZE → WRITE; each stage may
+    see ``bytes_in`` independently. The receipt must reflect the total
+    seen across stages, not the value of the last call.
+    """
+    t = SyncTelemetry("cpython", log_dir=tmp_path)
+    t.record_counter("bytes_in", 100)
+    t.record_counter("bytes_in", 250)
+    t.record_counter("docs_total", 5)
+    r = t.receipt()
+    assert r.bytes_in == 350
+    assert r.docs_total == 5
+    events = [json.loads(line) for line in (tmp_path / "cpython.log").read_text().splitlines()]
+    # Two counter events were recorded for bytes_in; the per-call value
+    # is what landed, not the cumulative total.
+    bytes_in_events = [e for e in events if e["kind"] == "counters" and e["name"] == "bytes_in"]
+    assert [e["delta"] for e in bytes_in_events] == [100, 250]
 
 
 def test_context_manager_closes_on_exception(tmp_path: Path) -> None:

@@ -71,30 +71,32 @@ class SyncOrchestrator:
 
     def run(self) -> None:
         try:
+            self.telemetry.record_started(datetime.now(tz=timezone.utc).isoformat())
             self._transition(PipelineState.SCRAPING)
             scraped = run_scrape(self.collection)
-            self.telemetry.record_counters(
-                docs_total=len(scraped.success),
-                bytes_in=scraped.bytes_in,
-            )
+            self.telemetry.record_counter("docs_total", len(scraped.success))
+            self.telemetry.record_counter("bytes_in", scraped.bytes_in)
 
             self._transition(PipelineState.NORMALIZING)
             normalized = run_normalize(self.collection, scraped.parsed_docs)
-            self.telemetry.record_counters(docs_quarantined=len(normalized.quarantined))
+            self.telemetry.record_counter("docs_quarantined", len(normalized.quarantined))
+            self.telemetry.record_counter("bytes_in", normalized.bytes_in)
 
             self._transition(PipelineState.WRITING)
             normalized_pairs = [
                 (d.path, d.content.decode("utf-8", errors="replace"))
                 for d in normalized.parsed_docs
             ]
-            run_write(
+            written = run_write(
                 self.collection,
                 normalized_pairs,
                 manifest=self.manifest,
                 force=self.force,
                 wiki_root=self.wiki_root,
             )
-            self.telemetry.record_counters(bytes_out=normalized.bytes_out)
+            self.telemetry.record_counter(
+                "bytes_out", written.bytes_out or normalized.bytes_out
+            )
 
             self._transition(PipelineState.QMD_UPDATE)
             run_qmd_update(self.collection)
