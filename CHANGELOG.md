@@ -17,7 +17,7 @@ All notable changes to LIES are documented here. The format follows
 - Per-sync telemetry writes an NDJSON log alongside a parsable `SyncReceipt`; `CostBudget` caps each sync at 10 LLM calls and 500k tokens with explicit `record_counters` rejection of unknown counter names.
 - Cross-process busy detection via a heartbeat file at `<wiki_root>/.lies/sync.lock` with stale-recovery on missed heartbeats; the lock file is gitignored and protected with an atomic `O_CREAT | O_EXCL` create on a sibling `.lies/sync.lock.create` to close the TOCTOU race.
 - Pre-translate `StructuredIntent` plus a `qmd_syntax.translate` shim so the agent can pre-translate natural-language queries against the qmd surface before sending them to `qmd_query`.
-- Pandoc daemon with persistent stdin and per-call `stdin.close()` to flush markdown conversions; PDF extraction via `pymupdf` (`extract_text` plus `extract_text_ocr`).
+- Single-shot Pandoc conversion wrapper that starts a fresh subprocess for each document because EOF is the CLI's only input boundary; PDF extraction via `pymupdf` (`extract_text` plus `extract_text_ocr`).
 - New runtime dependencies: `pymupdf>=1.24`, `ahocorasick_rs>=0.5`, `beautifulsoup4>=4.12`. New dev dependencies: `vcrpy>=6.0`, `pytest-snapshot>=0.9`, `freezegun>=1.5`.
 
 ### Fixed
