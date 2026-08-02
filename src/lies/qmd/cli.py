@@ -46,17 +46,15 @@ def _run(args: list[str], cwd: Path, timeout: int = 300) -> subprocess.Completed
         raise QmdNotInstalledError("`qmd` not found on PATH") from exc
 
 
-def qmd_update(cwd: Path, *, collection: str | None = None) -> None:
-    """Reindex the qmd collections under `cwd`.
+def qmd_update(cwd: Path) -> None:
+    """Run ``qmd update`` in ``cwd``.
 
-    If ``collection`` is provided, target that specific collection
-    (incremental update). Otherwise, reindex all collections under
-    ``cwd``.
+    ``qmd update`` reindexes every collection registered under ``cwd``;
+    it has no per-collection flag (only ``--pull``). Callers that want
+    a per-collection refresh must filter at the qmd config layer, not
+    via this CLI.
     """
-    args = ["update"]
-    if collection is not None:
-        args += ["--collection", collection]
-    result = _run(args, cwd=cwd)
+    result = _run(["update"], cwd=cwd)
     if result.returncode != 0:
         raise QmdError(f"qmd update failed: {result.stderr.strip()}")
 
