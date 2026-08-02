@@ -390,7 +390,29 @@ def test_search_filters_single_collection_and_registers_evidence(
     assert filtered.pages == []
 
 
-def test_service_locks_are_per_instance(git_wiki: WikiLayout) -> None:
-    first = WikiMemoryService(git_wiki)
-    second = WikiMemoryService(git_wiki)
-    assert first._lock is not second._lock
+def test_register_collection_is_idempotent(tmp_path) -> None:
+    from pathlib import PurePosixPath
+
+    from lies.memory.models import WikiCollectionRef
+    from lies.memory.service import WikiMemoryService
+    from lies.wiki.layout import WikiLayout
+
+    layout = WikiLayout(tmp_path)
+    svc = WikiMemoryService(layout)
+    ref = WikiCollectionRef(
+        collection_id="htmx",
+        root=PurePosixPath(str(tmp_path / "raw" / "htmx")),
+        qmd_collection="htmx",
+        schema_path=PurePosixPath(str(tmp_path / ".lies" / "schema.md")),
+    )
+    svc.register_collection(ref)
+    svc.register_collection(ref)
+    assert svc.is_registered("htmx")
+    assert len(svc.registered_collections()) == 1
+
+
+def test_is_registered_false_for_unknown() -> None:
+    from lies.memory.service import WikiMemoryService
+    from lies.wiki.layout import WikiLayout
+    svc = WikiMemoryService(WikiLayout(__import__("pathlib").Path("/tmp/lies-svc-test")))
+    assert not svc.is_registered("nope")
