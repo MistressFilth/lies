@@ -338,8 +338,22 @@ def collections(
         for p in sorted(cfg_dir.glob("*.yaml")):
             print(p.stem)
     elif action == "show" and name:
+        from lies.memory.service import WikiMemoryService
+        from lies.wiki.layout import WikiLayout
+
         c = load_collection(wiki_root, name)
         print(f"name={c.name} source={c.source} tags={c.tags}")
+        # The CLI doesn't know whether sync has run in this process;
+        # an empty registry means the in-process WikiMemoryService for
+        # this wiki root has not registered any collection yet.
+        layout = WikiLayout(wiki_root)
+        svc = WikiMemoryService(layout)
+        registered = svc.registered_collections()
+        ref = next(
+            (r for r in registered if r.collection_id == name),
+            None,
+        )
+        print(f"status: {'registered' if ref else 'pending'}")
     elif action == "modify" and name:
         raise typer.BadParameter(
             f"`lies collections modify {name}` is not implemented yet; "
