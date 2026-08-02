@@ -103,10 +103,11 @@ class SyncOrchestrator:
             self.telemetry.record_counter("bytes_out", written.bytes_out or normalized.bytes_out)
 
             self._transition(PipelineState.REGISTERING)
-            try:
-                run_register(self.collection, self._service)
-            except Exception:  # noqa: BLE001
-                self.telemetry.record_error("registration_failed")
+            if written.success or written.skipped:
+                try:
+                    run_register(self.collection, self._service)
+                except Exception:  # noqa: BLE001
+                    self.telemetry.record_error("registration_failed")
 
             self._transition(PipelineState.QMD_UPDATE)
             run_qmd_update(self.collection)

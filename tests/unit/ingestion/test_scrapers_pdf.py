@@ -1,7 +1,6 @@
 import hashlib
 import json
 from pathlib import Path
-from unittest import mock
 
 import pytest
 
@@ -26,13 +25,13 @@ def test_pdf_scraper_fetch_missing_raises(tmp_path: Path) -> None:
         PDFScraper().fetch(tmp_path / "missing.pdf")
 
 
-def test_pdf_scraper_parse_uses_pymupdf(tmp_path: Path) -> None:
-    fake_doc = mock.Mock()
-    fake_doc.__iter__ = mock.Mock(return_value=iter([mock.Mock(get_text=lambda: "page 1")]))
-    with mock.patch("pymupdf.open", return_value=fake_doc):
-        docs = PDFScraper().parse(b"%PDF-fake")
+def test_pdf_scraper_parse_preserves_source_bytes_for_builder() -> None:
+    raw = b"%PDF-fake"
+    docs = PDFScraper().parse(raw)
     assert len(docs) == 1
-    assert b"page 1" in docs[0].content
+    assert docs[0].path == "source.pdf"
+    assert docs[0].content == raw
+    assert docs[0].source_format == "pdf"
 
 
 def test_pdf_scraper_emits_manifest(tmp_path: Path) -> None:
