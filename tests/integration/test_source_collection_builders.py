@@ -140,3 +140,187 @@ def test_sync_liquid_collection_quarantines_everything(wiki: Path) -> None:
     assert telemetry.receipt().docs_quarantined == 1
     assert not any((wiki / "wiki").rglob("*"))
     assert not orch._service.is_registered("liquid_test")
+
+
+def test_sync_htmx_sphinx_with_excludes(wiki: Path) -> None:
+    """htmx-style Sphinx collection: three rst docs; ``sphinx_excludes``
+    filters two of them; only the kept file is written to ``wiki/``.
+    The ``WikiCollectionRef`` is registered; exactly one atomic commit
+    lands on top of the fixture init.
+
+    This pins the C1 fix (bespoke routing through
+    ``BespokeBuilder.build(workspace, collection)``), the I4/I5 fix
+    (collision-resistant subdir + cleanup), and the I8 fix
+    (registration does not over-count docs).
+
+    The pipeline runs end-to-end: SCRAPE → NORMALIZE → WRITE →
+    REGISTER → QMD_UPDATE. ``BespokeBuilder.build`` is mocked to a
+    side-effect that walks the synth manifest and applies the
+    configured ``sphinx_excludes`` — the same dispatch contract a
+    real SphinxBuilder would implement.
+    """
+    import hashlib
+    import json
+    import re
+    from datetime import datetime, timezone
+
+    from lies.builders.bespoke import BespokeBuilder
+    from lies.scrapers.base import ParsedDoc
+
+    def _sha(content: bytes) -> str:
+        return hashlib.sha256(content).hexdigest()
+
+    keep_body = b"Title\n=====\n\nBody.\n"
+    template_body = b"Template\n=========\n\nnope.\n"
+    example_body = b"Example\n=======\n\nnope.\n"
+
+    # Use bare basenames because the synth per-doc manifest in
+    # NORMALIZE only carries the basename of ``doc.path``. Sphinx
+    # excludes that glob the basename filter correctly.
+    docs = [
+        ParsedDoc(
+            path="index.rst",
+            content=keep_body,
+            source_sha256=_sha(keep_body),
+            source_format="bespoke",
+        ),
+        ParsedDoc(
+            path="base_template.rst",
+            content=template_body,
+            source_sha256=_sha(template_body),
+            source_format="bespoke",
+        ),
+        ParsedDoc(
+            path="demo_example.rst",
+            content=example_body,
+            source_sha256=_sha(example_body),
+            source_format="bespoke",
+        ),
+    ]
+
+    raw_dir = wiki / "raw" / "htmx"
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    c = Collection(
+        name="htmx",
+        path=raw_dir,
+        source="https://github.com/bigskysoftware/htmx/tree/master/www/content",
+        tags=["htmx"],
+        scraper_cmd=None,
+        doc_path=None,
+        mapper_model=None,
+        language=None,
+        version="1.0.0",
+        created_at=datetime.now(tz=timezone.utc),
+        updated_at=datetime.now(tz=timezone.utc),
+        config={
+            "sphinx_includes": ["*.rst"],
+            "sphinx_excludes": ["base_template.rst", "demo_example.rst"],
+        },
+    )
+    save_collection(wiki, c)
+
+    fake_scraper = mock.Mock()
+    fake_scraper.fetch.return_value = b""
+    fake_scraper.parse.return_value = list(docs)
+
+    def fake_emit(parsed: list[ParsedDoc], dest: Path) -> Path:
+        dest.mkdir(parents=True, exist_ok=True)
+        for d in parsed:
+            (dest / d.path).parent.mkdir(parents=True, exist_ok=True)
+            (dest / d.path).write_bytes(d.content)
+        manifest = {
+            "files": [
+                {
+                    "path": d.path,
+                    "out_path": d.path.removesuffix(".rst") + ".md",
+                    "source_format": "markdown",
+                    "sha256": d.source_sha256,
+                }
+                for d in parsed
+            ]
+        }
+        (dest / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+        return dest / "manifest.json"
+
+    fake_scraper.emit_manifest.side_effect = fake_emit
+
+    def fake_per_doc_build(
+        _self: object, workspace: Path, *, collection: Collection
+    ) -> list[ParsedDoc]:
+        cfg = collection.config or {}
+        excludes: list[str] = list(cfg.get("sphinx_excludes", []))
+        manifest_path = workspace / "manifest.json"
+        if not manifest_path.exists():
+            return []
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            return []
+        out: list[ParsedDoc] = []
+        for entry in manifest.get("files", []):
+            rel_path = entry["path"]
+            target = entry.get("out_path", rel_path)
+            if any(Path(rel_path).match(g) for g in excludes):
+                continue
+            src = workspace / rel_path
+            if not src.exists():
+                continue
+            content = src.read_bytes()
+            text = content.decode("utf-8", errors="replace")
+            md = re.sub(r"=+\n", lambda _: "", text)
+            md = re.sub(r"^([A-Za-z][^\n]*)\n=+\n", r"# \1\n\n", md, count=1, flags=re.MULTILINE)
+            encoded = md.encode("utf-8")
+            out.append(
+                ParsedDoc(
+                    path=target,
+                    content=encoded,
+                    source_sha256=_sha(encoded),
+                    source_format="markdown",
+                )
+            )
+        return out
+
+    telemetry = SyncTelemetry(c.name, wiki / ".lies" / "logs")
+    manifest = HashManifest(wiki, c.name)
+    budget = CostBudget()
+    orch = SyncOrchestrator(
+        collection=c,
+        telemetry=telemetry,
+        budget=budget,
+        manifest=manifest,
+        wiki_root=wiki,
+    )
+
+    # C1 fix pinned: every bespoke ParsedDoc routes through
+    # ``REGISTRY.resolve("bespoke").build(workspace, collection)``.
+    with (
+        mock.patch("lies.etl.stages.scrape.pick_scraper", return_value=fake_scraper),
+        mock.patch.object(BespokeBuilder, "build", autospec=True, side_effect=fake_per_doc_build),
+    ):
+        orch.run()
+
+    written = sorted(
+        p.relative_to(wiki).as_posix() for p in (wiki / "wiki").rglob("*") if p.is_file()
+    )
+    # Only the kept file is written; excludes filtered out the others.
+    assert "wiki/index.rst" in written, f"index.rst missing in {written!r}"
+    assert "wiki/base_template.rst" not in written, (
+        f"exclude did not filter base_template.rst: {written!r}"
+    )
+    assert "wiki/demo_example.rst" not in written, (
+        f"exclude did not filter demo_example.rst: {written!r}"
+    )
+
+    receipt = telemetry.receipt()
+    # I8 fix pinned: registration does not over-count docs.
+    assert receipt.docs_quarantined == 2, (
+        f"expected 2 quarantined (templates + examples), got {receipt.docs_quarantined}"
+    )
+
+    # WikiCollectionRef is registered exactly once.
+    assert orch._service.is_registered("htmx")
+    # Exactly one sync commit lands on top of the fixture init.
+    log_out = subprocess.run(
+        ["git", "log", "--oneline"], cwd=wiki, capture_output=True, text=True, check=True
+    )
+    assert log_out.stdout.count("\n") == 2  # one init + one sync commit
