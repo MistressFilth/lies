@@ -34,14 +34,9 @@ def _materialize(workspace: Path, fmt: str, raw: bytes) -> None:
         (workspace / "source.pdf").write_bytes(raw)
     elif fmt == "html":
         (workspace / "source.html").write_bytes(raw)
-    elif fmt in ("rst", "sphinx"):
+    elif fmt == "sphinx":
         (workspace / "src").mkdir(parents=True, exist_ok=True)
         (workspace / "src" / "index.rst").write_bytes(raw)
-    elif fmt == "markdown":
-        (workspace / "source.md").write_bytes(raw)
-    else:
-        # Bespoke and unknown: leave it to the BespokeBuilder manifest.
-        (workspace / "source.bin").write_bytes(raw)
 
 
 def _doc_title(doc: ParsedDoc) -> str:
@@ -89,6 +84,28 @@ def run_normalize(collection: Collection, docs: list[ParsedDoc]) -> StageResult:
                             source_format="markdown",
                         )
                     )
+                continue
+            if doc.source_format == "bespoke":
+                # Bespoke scrapers already produced markdown; run the
+                # Obsidian frontmatter pass and emit without re-conversion.
+                markdown = doc.content.decode("utf-8", errors="replace")
+                wiki_markdown = obsidian.apply(
+                    markdown,
+                    frontmatter={
+                        "title": _doc_title(doc),
+                        "collection": collection.name,
+                        "tags": collection.tags,
+                    },
+                )
+                success.append(doc.path)
+                out_docs.append(
+                    ParsedDoc(
+                        path=doc.path,
+                        content=wiki_markdown.encode("utf-8"),
+                        source_sha256=doc.source_sha256,
+                        source_format=doc.source_format,
+                    )
+                )
                 continue
             markdown = format_dispatch.dispatch(doc.content, doc.source_format)
             wiki_markdown = obsidian.apply(

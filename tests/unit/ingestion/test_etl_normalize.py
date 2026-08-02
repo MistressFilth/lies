@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from datetime import datetime, timezone
 from unittest import mock
 
@@ -29,8 +31,6 @@ def _collection(tmp_path) -> Collection:
 
 def test_normalize_dispatches_sphinx_via_builder(tmp_path) -> None:
     """Sphinx-format docs route through SphinxBuilder.build via the registry."""
-    (tmp_path / "src").mkdir(parents=True)
-    (tmp_path / "src" / "index.rst").write_text("Title\n=====\n", encoding="utf-8")
     c = _collection(tmp_path)
     docs = [
         ParsedDoc(
@@ -69,6 +69,44 @@ def test_normalize_quarantines_builder_unavailable(tmp_path) -> None:
     ]
     result = run_normalize(c, docs)
     assert any("liquid" in reason for _, reason in result.quarantined)
+
+
+def test_normalize_passes_bespoke_through(tmp_path) -> None:
+    """Bespoke docs come from a bespoke scraper already in markdown; apply
+    frontmatter only and emit with source_format preserved."""
+    c = Collection(
+        name="mycoll",
+        path=tmp_path,
+        source="",
+        tags=["topic"],
+        scraper_cmd=None,
+        doc_path=None,
+        mapper_model=None,
+        language=None,
+        version="1.0.0",
+        created_at=datetime.now(tz=timezone.utc),
+        updated_at=datetime.now(tz=timezone.utc),
+        config={},
+    )
+    docs = [
+        ParsedDoc(
+            path="custom.md",
+            content=b"# already markdown\n",
+            source_sha256="h",
+            source_format="bespoke",
+        )
+    ]
+    result = run_normalize(c, docs)
+    assert result.quarantined == []
+    assert result.success == ["custom.md"]
+    assert len(result.parsed_docs) == 1
+    out = result.parsed_docs[0]
+    assert out.source_format == "bespoke"
+    assert out.path == "custom.md"
+    decoded = out.content.decode("utf-8")
+    assert "mycoll" in decoded
+    assert "collection: mycoll" in decoded
+    assert "# already markdown" in decoded
 
 
 def test_dispatch_markdown_passthrough() -> None:
