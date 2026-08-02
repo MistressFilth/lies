@@ -19,6 +19,10 @@ htmlcov/
 .lies/sync.lock
 .lies/sync.lock.create
 .lies/sync.lock.fd
+.lies/hashes/
+.lies/poison/
+.lies/logs/
+.lies/collections/
 .superpowers/
 docs/superpowers/
 sdd/
