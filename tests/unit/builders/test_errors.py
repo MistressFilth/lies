@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from lies.builders.errors import (
     BuilderError,
     BuilderFetchFailed,
