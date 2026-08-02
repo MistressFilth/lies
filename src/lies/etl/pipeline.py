@@ -19,6 +19,7 @@ from lies.etl.cost import CostBudget
 from lies.etl.errors import BudgetExceeded
 from lies.etl.stages.normalize import run_normalize
 from lies.etl.stages.qmd_update import run_qmd_update
+from lies.etl.stages.register import run_register
 from lies.etl.stages.scrape import run_scrape
 from lies.etl.stages.write import run_write
 from lies.etl.telemetry import SyncTelemetry
@@ -32,6 +33,7 @@ class PipelineState(str, Enum):
     SCRAPING = "scraping"
     NORMALIZING = "normalizing"
     WRITING = "writing"
+    REGISTERING = "registering"
     QMD_UPDATE = "qmd_update"
     FAILED = "failed"
 
@@ -64,6 +66,10 @@ class SyncOrchestrator:
         self.wiki_root = wiki_root
         self.force = force
         self.state = PipelineState.IDLE
+        from lies.memory.service import WikiMemoryService
+        from lies.wiki.layout import WikiLayout
+
+        self._service = WikiMemoryService(WikiLayout(wiki_root))
 
     def _transition(self, target: PipelineState) -> None:
         self.telemetry.record_stage(self.state.value, next_state=target.value)
@@ -95,6 +101,12 @@ class SyncOrchestrator:
                 wiki_root=self.wiki_root,
             )
             self.telemetry.record_counter("bytes_out", written.bytes_out or normalized.bytes_out)
+
+            self._transition(PipelineState.REGISTERING)
+            try:
+                run_register(self.collection, self._service)
+            except Exception:  # noqa: BLE001
+                self.telemetry.record_error("registration_failed")
 
             self._transition(PipelineState.QMD_UPDATE)
             run_qmd_update(self.collection)

@@ -2,4 +2,4 @@
 
 from __future__ import annotations
 
-__all__ = ["run_normalize", "run_qmd_update", "run_scrape", "run_write"]
+__all__ = ["run_normalize", "run_qmd_update", "run_register", "run_scrape", "run_write"]

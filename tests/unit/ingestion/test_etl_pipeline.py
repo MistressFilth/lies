@@ -254,3 +254,50 @@ def test_pipeline_threads_wiki_root_to_write(tmp_path: Path) -> None:
     ):
         pipeline.run()
     assert captured["wiki_root"] == tmp_path
+
+
+def test_pipeline_runs_register_stage(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """After WRITE and before QMD_UPDATE, the pipeline calls WikiMemoryService.register_collection."""
+    wiki_root = tmp_path
+    (wiki_root / "wiki").mkdir(parents=True, exist_ok=True)
+    (wiki_root / "raw").mkdir(parents=True, exist_ok=True)
+    (wiki_root / ".lies" / "collections").mkdir(parents=True, exist_ok=True)
+    c = Collection(
+        name="reg_test",
+        path=wiki_root / "raw" / "reg_test",
+        source="",
+        tags=[],
+        scraper_cmd=None,
+        doc_path=None,
+        mapper_model=None,
+        language=None,
+        version="1.0.0",
+        created_at=datetime.now(tz=timezone.utc),
+        updated_at=datetime.now(tz=timezone.utc),
+        config={},
+    )
+    telemetry = SyncTelemetry(c.name, wiki_root / "logs")
+    from lies.collections.hash_manifest import HashManifest
+
+    manifest = HashManifest(wiki_root, c.name)
+    budget = CostBudget()
+    orch = SyncOrchestrator(
+        collection=c,
+        telemetry=telemetry,
+        budget=budget,
+        manifest=manifest,
+        wiki_root=wiki_root,
+    )
+    # Stub each stage to keep the test focused on the new state transition.
+    with mock.patch("lies.etl.pipeline.run_scrape") as m_scrape, \
+         mock.patch("lies.etl.pipeline.run_normalize") as m_normalize, \
+         mock.patch("lies.etl.pipeline.run_write") as m_write, \
+         mock.patch("lies.etl.pipeline.run_register") as m_register, \
+         mock.patch("lies.etl.pipeline.run_qmd_update") as m_qmd:
+        m_scrape.return_value = StageResult(success=[], quarantined=[], skipped=[], parsed_docs=[])
+        m_normalize.return_value = StageResult(success=[], quarantined=[], skipped=[], parsed_docs=[])
+        m_write.return_value = StageResult(success=[], quarantined=[], skipped=[], parsed_docs=[])
+        m_register.return_value = StageResult(success=[], quarantined=[], skipped=[], parsed_docs=[])
+        orch.run()
+    m_register.assert_called_once_with(c, orch._service)
+    m_qmd.assert_called_once_with(c)
