@@ -55,12 +55,27 @@ class SyncTelemetry:
     def record_stage(self, stage: str, **extras: object) -> None:
         self._write({"collection": self._collection, "kind": "stage", "stage": stage, **extras})
 
+    def record_counter(self, name: str, value: int) -> None:
+        """Add ``value`` to the named counter (accumulates across calls).
+
+        Each call is logged as its own ``{"kind": "counters", "name", "delta"}``
+        event so the per-stage contribution is visible. The receipt
+        aggregation still reads from the in-memory totals.
+        """
+        if name not in self._counts:
+            raise ValueError(f"unknown counter: {name}")
+        self._counts[name] += int(value)
+        self._write({
+            "collection": self._collection,
+            "kind": "counters",
+            "name": name,
+            "delta": int(value),
+        })
+
     def record_counters(self, **fields: int) -> None:
+        """Add each named field to its counter (legacy batch API)."""
         for key, val in fields.items():
-            if key not in self._counts:
-                raise ValueError(f"unknown counter: {key}")
-            self._counts[key] = int(val)
-        self._write({"collection": self._collection, "kind": "counters", **fields})
+            self.record_counter(key, int(val))
 
     def record_started(self, iso_ts: str) -> None:
         self._started_at = datetime.fromisoformat(iso_ts.replace("Z", "+00:00"))
