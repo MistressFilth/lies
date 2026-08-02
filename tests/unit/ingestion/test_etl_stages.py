@@ -1,6 +1,9 @@
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest import mock
+
+import pytest
 
 from lies.collections.record import Collection
 from lies.etl.stages.normalize import run_normalize
@@ -176,3 +179,65 @@ def test_run_qmd_update_swallows_qmd_failure(tmp_path: Path) -> None:
     ):
         result = run_qmd_update(_collection(tmp_path))
     assert result.bytes_in == 0  # no-op recorded
+
+
+def test_scrape_uses_bespoke_scraper_via_scraper_cmd(tmp_path: Path) -> None:
+    """When Collection.scraper_cmd is set, run_scrape imports and uses it."""
+    # Create a module file that defines a BaseScraper subclass.
+    mod_path = tmp_path / "bespoke_scraper.py"
+    mod_path.write_text(
+        "from lies.scrapers.base import BaseScraper, ParsedDoc\n"
+        "class _B(BaseScraper):\n"
+        "    def fetch(self, source):\n"
+        "        return b''\n"
+        "    def parse(self, raw):\n"
+        "        return [ParsedDoc(path='x.md', content=b'hi', source_sha256='h', source_format='markdown')]\n"
+        "    def emit_manifest(self, docs, raw_dir):\n"
+        "        (raw_dir / 'x.md').write_bytes(b'hi')\n"
+        "        return raw_dir / 'x.md'\n"
+        "SCRAPER = _B()\n",
+        encoding="utf-8",
+    )
+    sys.path.insert(0, str(tmp_path))
+    try:
+        c = Collection(
+            name="bespoke",
+            path=tmp_path / "raw" / "bespoke",
+            source="",
+            tags=[],
+            scraper_cmd=f"{mod_path}:SCRAPER",
+            doc_path=None,
+            mapper_model=None,
+            language=None,
+            version="1.0.0",
+            created_at=datetime.now(tz=timezone.utc),
+            updated_at=datetime.now(tz=timezone.utc),
+            config={},
+        )
+        result = run_scrape(c)
+        assert result.success == ["x.md"]
+        assert result.parsed_docs[0].path == "x.md"
+    finally:
+        sys.path.pop(0)
+        sys.modules.pop("bespoke_scraper", None)
+
+
+def test_scrape_scraper_cmd_import_failure_raises_scraper_unavailable(tmp_path: Path) -> None:
+    from lies.scrapers.errors import ScraperUnavailable
+
+    c = Collection(
+        name="missing",
+        path=tmp_path,
+        source="",
+        tags=[],
+        scraper_cmd="nonexistent.module:thing",
+        doc_path=None,
+        mapper_model=None,
+        language=None,
+        version="1.0.0",
+        created_at=datetime.now(tz=timezone.utc),
+        updated_at=datetime.now(tz=timezone.utc),
+        config={},
+    )
+    with pytest.raises(ScraperUnavailable):
+        run_scrape(c)
