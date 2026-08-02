@@ -72,7 +72,6 @@ class CollectionAuthorDeps(BaseModel):
     actual contents of the corpus.
     """
 
-    model_config = {"arbitrary_types_allowed": True}
     manifest: list[dict[str, Any]]
 
 
