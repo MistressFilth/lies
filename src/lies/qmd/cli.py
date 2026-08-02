@@ -4,6 +4,7 @@ Use this for: `qmd update`, `qmd status`, `qmd collection add/remove`,
 `qmd ls`, `qmd query`. For agent-native search, use the MCP client
 (`qmd/mcp.py`).
 """
+
 from __future__ import annotations
 
 import json
@@ -87,6 +88,24 @@ def is_qmd_installed() -> bool:
     return shutil.which("qmd") is not None
 
 
+def qmd_embed(cwd: Path, *, force: bool = False) -> None:
+    """Re-run the embedding model on existing chunks.
+
+    Not yet implemented; the upstream qmd CLI exposes no ``embed``
+    subcommand, so this is a placeholder. Callers should treat it as
+    a no-op until the embed/cleanup stages land.
+    """
+    return
+
+
+def qmd_cleanup(cwd: Path) -> None:
+    """Remove orphan chunks not referenced by any collection.
+
+    Not yet implemented; placeholder. See ``qmd_embed``.
+    """
+    return
+
+
 def qmd_query(
     cwd: Path,
     question: str,
@@ -118,41 +137,28 @@ def qmd_query(
             check=False,
         )
     except FileNotFoundError as exc:
-        raise QmdNotInstalledError(
-            "`qmd` binary not found at exec time"
-        ) from exc
+        raise QmdNotInstalledError("`qmd` binary not found at exec time") from exc
     except subprocess.TimeoutExpired as exc:
-        raise QmdCommandError(
-            f"qmd query timed out after {timeout}s"
-        ) from exc
+        raise QmdCommandError(f"qmd query timed out after {timeout}s") from exc
 
     if result.returncode != 0:
         raise QmdCommandError(
-            f"qmd query failed (exit {result.returncode}): "
-            f"{result.stderr.strip()}"
+            f"qmd query failed (exit {result.returncode}): {result.stderr.strip()}"
         )
 
     stdout = result.stdout.strip()
     if not stdout:
-        raise QmdNoResultsError(
-            f"qmd query returned no results for: {question!r}"
-        )
+        raise QmdNoResultsError(f"qmd query returned no results for: {question!r}")
 
     try:
         data = json.loads(stdout)
     except json.JSONDecodeError as exc:
-        raise QmdCommandError(
-            f"qmd query returned invalid JSON: {exc}"
-        ) from exc
+        raise QmdCommandError(f"qmd query returned invalid JSON: {exc}") from exc
 
     if not isinstance(data, list):
-        raise QmdCommandError(
-            f"qmd query expected a JSON list, got {type(data).__name__}"
-        )
+        raise QmdCommandError(f"qmd query expected a JSON list, got {type(data).__name__}")
 
     if not data:
-        raise QmdNoResultsError(
-            f"qmd query returned no results for: {question!r}"
-        )
+        raise QmdNoResultsError(f"qmd query returned no results for: {question!r}")
 
     return data
