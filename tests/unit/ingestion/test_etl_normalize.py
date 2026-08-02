@@ -75,8 +75,6 @@ def test_normalize_routes_bespoke_through_builder(tmp_path) -> None:
     """Bespoke docs route through ``BespokeBuilder.build`` like every other
     registered builder; the returned docs are post-processed with Obsidian
     frontmatter and emitted as markdown."""
-    import json
-
     from lies.builders.bespoke import BespokeBuilder
 
     c = Collection(
