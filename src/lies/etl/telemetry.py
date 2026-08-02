@@ -65,12 +65,14 @@ class SyncTelemetry:
         if name not in self._counts:
             raise ValueError(f"unknown counter: {name}")
         self._counts[name] += int(value)
-        self._write({
-            "collection": self._collection,
-            "kind": "counters",
-            "name": name,
-            "delta": int(value),
-        })
+        self._write(
+            {
+                "collection": self._collection,
+                "kind": "counters",
+                "name": name,
+                "delta": int(value),
+            }
+        )
 
     def record_counters(self, **fields: int) -> None:
         """Add each named field to its counter (legacy batch API)."""
