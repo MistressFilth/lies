@@ -50,16 +50,15 @@ def detect_bump(commits: list[str]) -> str:
 
 # ---------- version parsing + rewriting ----------
 
-_VERSION_RE = re.compile(r"(\d+)\.(\d+)\.(\d+)")
-
 # Python's stdlib `re` requires fixed-width look-behind assertions. Keep the
 # surrounding assignment in a capture group so spacing remains flexible while
 # the version itself is still the only substituted text.
 _PYPROJECT_VERSION_RE = re.compile(
     r'(?m)^(?P<prefix>\s*version\s*=\s*")(?P<version>\d+\.\d+\.\d+)(?P<suffix>")'
 )
+# Anchor on `__version__` (not line start) so indented definitions still match.
 _INIT_VERSION_RE = re.compile(
-    r'(?m)^(?P<prefix>\s*__version__\s*=\s*")(?P<version>\d+\.\d+\.\d+)(?P<suffix>")'
+    r'(?m)(?P<prefix>\b__version__\s*=\s*")(?P<version>\d+\.\d+\.\d+)(?P<suffix>")'
 )
 
 
@@ -99,6 +98,8 @@ def rewrite_version(pyproject_text: str, init_text: str, new_version: str) -> tu
         init_text,
         count=1,
     )
+    if new_py == pyproject_text or new_init == init_text:
+        raise ValueError(f"failed to rewrite version to {new_version}")
     return new_py, new_init
 
 
@@ -132,17 +133,13 @@ def split_changelog(changelog_text: str, new_version: str, today: str) -> str:
 # ---------- CLI ----------
 
 
-def _run(args: list[str], *, cwd: Path | None = None) -> str:
-    """Run a command and return stdout. Empty string on narrow command failure."""
-    try:
-        result = subprocess.check_output(args, cwd=cwd, stderr=subprocess.STDOUT)
-        return result.decode("utf-8")
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        return ""
-
-
 def _preflight() -> None:
-    """Assert release preconditions. Raises SystemExit on failure."""
+    """Assert release preconditions.
+
+    Raises SystemExit on a failed precondition. Propagates
+    ``subprocess.CalledProcessError`` if a git invocation itself fails
+    (e.g. binary missing, network error mid-fetch).
+    """
     status = subprocess.check_output(["git", "status", "--porcelain"]).decode("utf-8")
     if status.strip():
         print("release: working tree dirty; commit or stash first", file=sys.stderr)
@@ -155,15 +152,38 @@ def _preflight() -> None:
     if branch != "main":
         print(f"release: on branch {branch!r}; release only runs on main", file=sys.stderr)
         sys.exit(3)
+    try:
+        subprocess.check_call(
+            ["git", "fetch", "origin", "main"], stderr=subprocess.DEVNULL
+        )
+    except subprocess.CalledProcessError as exc:
+        print(f"release: git fetch failed: {exc}", file=sys.stderr)
+        sys.exit(4)
+    local = subprocess.check_output(["git", "rev-parse", "HEAD"]).decode("utf-8").strip()
+    remote = (
+        subprocess.check_output(["git", "rev-parse", "origin/main"])
+        .decode("utf-8")
+        .strip()
+    )
+    if local != remote:
+        print(
+            "release: local main is not in sync with origin/main; pull or push first",
+            file=sys.stderr,
+        )
+        sys.exit(5)
 
 
 def _collect_commits_since(last_tag: str) -> list[str]:
-    """Return commit subjects + bodies since `last_tag` (or all if empty)."""
+    """Return commit subjects + bodies since `last_tag` (or all if empty).
+
+    Uses ``-z`` so git terminates each record with a NUL byte; this
+    avoids delimiter collisions with any text in commit bodies.
+    """
     range_arg = f"{last_tag}..HEAD" if last_tag else "HEAD"
     log = subprocess.check_output(
-        ["git", "log", range_arg, "--pretty=format:%s%n%b---END---"]
+        ["git", "log", range_arg, "-z", "--pretty=format:%s%n%b%x00"]
     ).decode("utf-8")
-    return [c.strip() for c in log.split("---END---") if c.strip()]
+    return [c.strip() for c in log.split("\x00") if c.strip()]
 
 
 def _last_tag() -> str:

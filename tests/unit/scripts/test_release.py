@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import subprocess
 import sys
 from pathlib import Path
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "scripts"))
 
 from release import (  # noqa: I001
+    _preflight,
     detect_bump,
     parse_version,
     rewrite_version,
@@ -59,6 +63,15 @@ def test_parse_version_returns_current_versions() -> None:
     assert init_v == "0.4.0"
 
 
+def test_parse_version_finds_indented_definition() -> None:
+    """A leading-indent (not line-start) ``__version__`` still matches."""
+    pyproject = '[project]\nversion = "0.4.0"\n'
+    init_file = 'class _Meta:\n    __version__ = "0.4.0"\n'
+    py_v, init_v = parse_version(pyproject, init_file)
+    assert py_v == "0.4.0"
+    assert init_v == "0.4.0"
+
+
 # ---------- rewrite_version ----------
 
 
@@ -68,6 +81,14 @@ def test_rewrite_version_updates_both_surfaces() -> None:
     new_py, new_init = rewrite_version(pyproject, init_file, "0.5.0")
     assert '"0.5.0"' in new_py
     assert '"0.5.0"' in new_init
+
+
+def test_rewrite_version_raises_when_no_change() -> None:
+    """Passing the current version raises ValueError (no-op rejected)."""
+    pyproject = '[project]\nversion = "0.4.0"\n'
+    init_file = '__version__ = "0.4.0"\n'
+    with pytest.raises(ValueError, match="failed to rewrite version"):
+        rewrite_version(pyproject, init_file, "0.4.0")
 
 
 # ---------- split_changelog ----------
@@ -106,3 +127,112 @@ def test_split_changelog_idempotent_when_no_unreleased_entries(tmp_path: Path) -
     result = split_changelog(original, "0.4.0", "2026-08-02")
     # Idempotent: just append the new heading below the empty Unreleased
     assert "## [0.4.0] - 2026-08-02" in result
+
+
+# ---------- _preflight (upstream sync) ----------
+
+
+def _stub_check_output(mapping: dict[tuple[str, ...], str]) -> object:
+    """Return a check_output stub that maps argv tuples to stdout strings."""
+
+    def stub(args: list[str], *args_: object, **kwargs: object) -> bytes:
+        if tuple(args) in mapping:
+            return mapping[tuple(args)].encode("utf-8")
+        # Allow fetch-style calls and other unmodeled calls to be ignored.
+        return b""
+
+    return stub
+
+
+def _stub_check_call(calls: list[list[str]], raises: bool = False) -> object:
+    """Return a check_call stub that records calls and optionally raises."""
+
+    def stub(args: list[str], *args_: object, **kwargs: object) -> int:
+        calls.append(list(args))
+        if raises:
+            raise subprocess.CalledProcessError(1, args)
+        return 0
+
+    return stub
+
+
+def test_preflight_passes_when_local_matches_remote(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Local HEAD == origin/main: preflight exits cleanly."""
+    import release as _release
+
+    sha = "a" * 40
+    monkeypatch.setattr(
+        _release.subprocess,
+        "check_output",
+        _stub_check_output(
+            {
+                ("git", "status", "--porcelain"): "",
+                ("git", "rev-parse", "--abbrev-ref", "HEAD"): "main",
+                ("git", "rev-parse", "HEAD"): sha,
+                ("git", "rev-parse", "origin/main"): sha,
+            }
+        ),
+    )
+    calls: list[list[str]] = []
+    monkeypatch.setattr(_release.subprocess, "check_call", _stub_check_call(calls))
+    _preflight()  # must not raise
+    assert ["git", "fetch", "origin", "main"] in calls
+
+
+def test_preflight_exits_5_when_local_diverges_from_remote(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Local HEAD != origin/main: preflight exits with code 5."""
+    import release as _release
+
+    monkeypatch.setattr(
+        _release.subprocess,
+        "check_output",
+        _stub_check_output(
+            {
+                ("git", "status", "--porcelain"): "",
+                ("git", "rev-parse", "--abbrev-ref", "HEAD"): "main",
+                ("git", "rev-parse", "HEAD"): "a" * 40,
+                ("git", "rev-parse", "origin/main"): "b" * 40,
+            }
+        ),
+    )
+    calls: list[list[str]] = []
+    monkeypatch.setattr(_release.subprocess, "check_call", _stub_check_call(calls))
+    with pytest.raises(SystemExit) as excinfo:
+        _preflight()
+    assert excinfo.value.code == 5
+    captured = capsys.readouterr()
+    assert "not in sync" in captured.err
+
+
+def test_preflight_exits_4_when_fetch_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A failing `git fetch` exits with code 4."""
+    import release as _release
+
+    monkeypatch.setattr(
+        _release.subprocess,
+        "check_output",
+        _stub_check_output(
+            {
+                ("git", "status", "--porcelain"): "",
+                ("git", "rev-parse", "--abbrev-ref", "HEAD"): "main",
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        _release.subprocess,
+        "check_call",
+        _stub_check_call([], raises=True),
+    )
+    with pytest.raises(SystemExit) as excinfo:
+        _preflight()
+    assert excinfo.value.code == 4
+    captured = capsys.readouterr()
+    assert "git fetch failed" in captured.err
