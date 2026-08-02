@@ -179,6 +179,29 @@ preferences, working decisions, or task history. Source files in
 
 - Transient persistence failures (`WikiLockBusy`, `WikiWriteConflict`, `WikiCommitFailed`) replay automatically on the next turn; receipt surfaces `(memory: queued for retry — <reason>)` immediately and `(memory: deferred after 3 attempts — <reason>)` if the cap is hit.
 
+## Parsing and Ingestion
+
+LIES includes a state-machine ETL pipeline for ingesting documentation
+sources into the wiki. The pipeline is independent of `WikiMemoryService`
+(bulk writes go through `atomic_commit` directly) and runs as four
+stages:
+
+1. **SCRAPE** — fetch + parse + manifest emit.
+2. **NORMALIZE** — format dispatch + Obsidian convention apply.
+3. **WRITE** — hash compare + atomic_commit (skips unchanged docs).
+4. **QMD_UPDATE** — incremental qmd update per collection.
+
+Commands:
+
+- `lies sync <collection>` — re-ingest changed docs only (`--force` for full).
+- `lies ingest <collection>` — bootstrap a collection (existing or new).
+- `lies reindex` — reconcile / embed / cleanup flags.
+- `lies collections list|show|modify` — manage collection configs.
+
+See `docs/superpowers/plans/2026-08-01-parsing-and-ingestion-plan.md`
+for the implementation plan and `2026-08-01-parsing-and-ingestion-design.md`
+for the design spec.
+
 ## License
 
 MIT.
