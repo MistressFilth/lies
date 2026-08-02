@@ -4,6 +4,7 @@ Produces a :class:`MemoryPlan` from a bounded evidence envelope. The
 enricher never mutates the filesystem directly; the host validates
 and applies the plan through :class:`WikiMemoryService`.
 """
+
 from __future__ import annotations
 
 import json

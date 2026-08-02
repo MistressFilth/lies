@@ -20,6 +20,7 @@ For stdio the qmd binary is launched as `qmd mcp` through a FastMCP
 
 See https://github.com/tobi/qmd#mcp for the qmd MCP surface.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass

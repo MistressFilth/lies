@@ -21,16 +21,40 @@ def test_init_creates_wiki(tmp_path: Path) -> None:
         assert (tmp_path / ".lies" / "schema.md").exists()
 
 
-def test_ingest_invokes_orchestrator(tmp_path: Path) -> None:
+def test_ingest_delegates_to_sync_collection(tmp_path: Path) -> None:
+    """`lies ingest <collection>` delegates to ``sync_helper.sync_collection``.
+
+    The collection-aware ingest reuses the sync pipeline for existing
+    collections; the first-time LLM scraper generation is deferred to
+    a follow-up task.
+    """
+    from lies.etl import sync_helper
+
+    with patch.object(sync_helper, "sync_collection") as mock_sync:
+        result = runner.invoke(app, ["ingest", "cpython"])
+    assert result.exit_code == 0
+    mock_sync.assert_called_once()
+    call_args = mock_sync.call_args
+    assert call_args.args[1] == "cpython"
+
+
+def test_ingest_source_delegates_to_orchestrator(tmp_path: Path) -> None:
+    """`lies ingest_source <source>` delegates to ``Orchestrator.run_ingest``.
+
+    Kept for backward compatibility with the original source-path CLI
+    surface (``lies ingest <source>``).
+    """
     with patch("lies.cli.Orchestrator") as MockOrch:
         mock_instance = MockOrch.return_value
-        mock_instance.run_ingest.return_value = "ingested ok"
-        result = runner.invoke(app, ["ingest", "raw/article.md", "--wiki-root", str(tmp_path)])
-        assert result.exit_code == 0
-        assert "ingested ok" in result.stdout
-        mock_instance.run_ingest.assert_called_once()
-        call_arg = mock_instance.run_ingest.call_args.args[0]
-        assert "raw/article.md" in call_arg
+        mock_instance.run_ingest.return_value = "ingested source.md"
+        # Typer auto-translates underscore to hyphen in command names.
+        result = runner.invoke(
+            app, ["ingest-source", "raw/articles/sample-article.md", "--wiki-root", str(tmp_path)]
+        )
+    assert result.exit_code == 0, result.stdout
+    mock_instance.run_ingest.assert_called_once()
+    assert mock_instance.run_ingest.call_args.args[0] == "raw/articles/sample-article.md"
+    assert "ingested source.md" in result.stdout
 
 
 def test_query_invokes_orchestrator(tmp_path: Path) -> None:

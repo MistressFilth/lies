@@ -8,6 +8,7 @@ is mocked so no real LLM call is made — same pattern as
 ``Orchestrator.run_lint`` methods are NOT mocked, so the
 tool-to-orchestrator delegation is exercised end-to-end.
 """
+
 from __future__ import annotations
 
 import shutil
@@ -55,7 +56,10 @@ def _log_lines(repo: Path) -> list[str]:
     """Return ``[<sha> <subject>, ...]`` newest-first."""
     result = subprocess.run(
         ["git", "log", "--pretty=%H %s"],
-        cwd=repo, capture_output=True, text=True, check=True,
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=True,
     )
     return result.stdout.splitlines()
 
@@ -64,7 +68,10 @@ def _git_show_files(repo: Path, sha: str) -> list[str]:
     """Return the list of files changed in ``sha``."""
     result = subprocess.run(
         ["git", "show", "--name-only", "--pretty=format:", sha],
-        cwd=repo, capture_output=True, text=True, check=True,
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=True,
     )
     return [line for line in result.stdout.splitlines() if line.strip()]
 
@@ -85,9 +92,7 @@ def test_init_wiki_creates_wiki_structure(tmp_path: Path) -> None:
     assert (target / ".lies").is_dir()
     assert (target / ".lies" / "schema.md").is_file()
     # Schema contents match the bundled default exactly.
-    assert (target / ".lies" / "schema.md").read_text(
-        encoding="utf-8"
-    ) == load_default_schema()
+    assert (target / ".lies" / "schema.md").read_text(encoding="utf-8") == load_default_schema()
     # Git is initialized and has at least the initial commit.
     assert (target / ".git").exists()
     log = _log_lines(target)
@@ -122,54 +127,30 @@ def test_init_wiki_rejects_existing_file(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_ingest_source_returns_agent_output(sample_wiki) -> None:
-    """ingest_source delegates to Orchestrator.run_ingest end-to-end.
+def test_ingest_source_returns_ingested_string(sample_wiki) -> None:
+    """ingest_source → Orchestrator.run_ingest → sync_collection.
 
-    Mocks only the agent's ``run_sync`` (mimicking the page-writer +
-    indexer sub-agents writing artifacts) so the real Orchestrator
-    runs. Asserts the new atomic commit contains the artifact.
+    Mocks sync_collection so the real MCP → Orchestrator delegation is
+    exercised. Asserts the MCP tool returns the wrapper's documented
+    back-compat string. The atomic commit + stash bookkeeping lives in
+    SyncOrchestrator (covered by ``tests/integration/test_sync_collection.py``).
     """
-    orch = Orchestrator(wiki_root=sample_wiki.root, model="test")
-    pre_log = _log_lines(sample_wiki.root)
-
-    def fake_run_sync(self, prompt: str):  # type: ignore[no-untyped-def]
-        # Mimic page-writer + indexer dropping artifacts into the wiki.
-        page = sample_wiki.root / "wiki" / "entities" / "fixture-entity.md"
-        page.parent.mkdir(parents=True, exist_ok=True)
-        page.write_text(
-            "---\ntitle: Fixture\ntype: entity\n---\n# Fixture\n",
-            encoding="utf-8",
-        )
-        return mock.Mock(output="ingested fixture-entity")
-
-    # Throwaway Orchestrator instance just to reach ``type(orch._agent)``:
-    # ``Orchestrator._build`` constructs the pydantic-ai ``Agent`` inside
-    # ``__init__`` so we cannot patch the class without first constructing
-    # one. Patching on the instance's class is equivalent to patching on
-    # ``pydantic_ai.Agent`` for this orchestrator (only one instance).
-    with mock.patch.object(type(orch._agent), "run_sync", new=fake_run_sync):
+    # The Orchestrator instance is constructed inside ``ingest_source``
+    # (the MCP tool); we only assert on the delegation + return value.
+    with mock.patch("lies.etl.sync_helper.sync_collection") as m:
         out = ingest_source(
             "raw/articles/sample-article.md",
             wiki_root=str(sample_wiki.root),
         )
 
-    assert out == "ingested fixture-entity"
-
-    # Real Orchestrator ran: exactly one new commit with the new page.
-    post_log = _log_lines(sample_wiki.root)
-    assert len(post_log) == len(pre_log) + 1
-    new_sha, _, new_msg = post_log[0].partition(" ")
-    assert new_msg.startswith("ingest")
-    touched = _git_show_files(sample_wiki.root, new_sha)
-    assert any(p.endswith("entities/fixture-entity.md") for p in touched), (
-        f"fixture-entity.md not in commit; got {touched!r}"
-    )
-
-    # The artifact on disk matches what the agent claimed to write.
-    on_disk = (sample_wiki.root / "wiki" / "entities" / "fixture-entity.md").read_text(
-        encoding="utf-8"
-    )
-    assert "Fixture" in on_disk
+    # MCP tool returns the wrapper's documented back-compat string.
+    assert out == "ingested raw/articles/sample-article.md"
+    # sync_collection was called with (wiki_root, source.stem, force=False).
+    m.assert_called_once()
+    args, kwargs = m.call_args
+    assert args[0] == sample_wiki.root
+    assert args[1] == "sample-article"
+    assert kwargs == {"force": False}
 
 
 # ---------------------------------------------------------------------------
@@ -178,7 +159,8 @@ def test_ingest_source_returns_agent_output(sample_wiki) -> None:
 
 
 def test_query_returns_synthesized_mcp_answer(
-    sample_wiki, monkeypatch: pytest.MonkeyPatch,
+    sample_wiki,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """query returns a SynthesizedMcpAnswer with the right three fields.
 
@@ -204,7 +186,8 @@ def test_query_returns_synthesized_mcp_answer(
 
 
 def test_query_maps_empty_fallback_reason_to_none(
-    sample_wiki, monkeypatch: pytest.MonkeyPatch,
+    sample_wiki,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """When qmd serves the query, ``fallback_reason`` becomes ``None``.
 
@@ -230,11 +213,13 @@ def test_query_maps_empty_fallback_reason_to_none(
 
     def fake_dispatch(fn, layout, question, top_n):  # type: ignore[no-untyped-def]
         # Pretend qmd returned one readable hit.
-        return [_PageRead(
-            rel_path="entities/postgres.md",
-            title="Postgres",
-            excerpt="PostgreSQL uses MVCC.",
-        )]
+        return [
+            _PageRead(
+                rel_path="entities/postgres.md",
+                title="Postgres",
+                excerpt="PostgreSQL uses MVCC.",
+            )
+        ]
 
     with mock.patch.object(q_syn, "_qmd_search_dispatch", new=fake_dispatch):
         result = query("What is MVCC?")
@@ -245,7 +230,8 @@ def test_query_maps_empty_fallback_reason_to_none(
 
 
 def test_query_propagates_fallback_reason(
-    sample_wiki, monkeypatch: pytest.MonkeyPatch,
+    sample_wiki,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """When qmd is unavailable, fallback_used and fallback_reason surface.
 
@@ -276,7 +262,8 @@ def test_query_propagates_fallback_reason(
 
 
 def test_lint_returns_markdown_report(
-    sample_wiki, monkeypatch: pytest.MonkeyPatch,
+    sample_wiki,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """lint delegates to Orchestrator.run_lint end-to-end.
 
@@ -307,10 +294,9 @@ def test_lint_returns_markdown_report(
     # Artifact 2: log.md has a parseable lint entry.
     log_text = layout.log_path.read_text(encoding="utf-8")
     assert "lint" in log_text
-    assert any(
-        line.startswith("## [") and " lint " in line
-        for line in log_text.splitlines()
-    ), f"no parseable lint log entry; got:\n{log_text!r}"
+    assert any(line.startswith("## [") and " lint " in line for line in log_text.splitlines()), (
+        f"no parseable lint log entry; got:\n{log_text!r}"
+    )
 
 
 # ---------------------------------------------------------------------------

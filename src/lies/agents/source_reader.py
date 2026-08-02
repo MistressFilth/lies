@@ -1,4 +1,5 @@
 """source-reader sub-agent: read raw sources, return structured extraction."""
+
 from __future__ import annotations
 
 from collections.abc import Callable

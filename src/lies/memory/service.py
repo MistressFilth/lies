@@ -82,18 +82,13 @@ def _ensure_lock_gitignored(lock_path: Path) -> None:
         except OSError:
             existing = ""
 
-    pattern_present = any(
-        line.strip() == relative_line
-        for line in existing.splitlines()
-    )
+    pattern_present = any(line.strip() == relative_line for line in existing.splitlines())
     if pattern_present:
         return
 
     if existing and not existing.endswith("\n"):
         existing += "\n"
-    gitignore_path.write_text(
-        existing + relative_line + "\n", encoding="utf-8"
-    )
+    gitignore_path.write_text(existing + relative_line + "\n", encoding="utf-8")
 
 
 @contextlib.contextmanager
@@ -116,9 +111,7 @@ def _acquire_wiki_flock(lock_path: Path) -> Iterator[None]:
         try:
             fcntl.flock(fd.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except (BlockingIOError, OSError) as exc:
-            raise WikiLockBusy(
-                f"wiki memory lock is held by another process: {lock_path}"
-            ) from exc
+            raise WikiLockBusy(f"wiki memory lock is held by another process: {lock_path}") from exc
         yield
     finally:
         try:

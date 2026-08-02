@@ -3,11 +3,13 @@
 Re-exports the FastMCP server instance and the WikiRootError exception
 class for tool implementations.
 """
+
 from __future__ import annotations
 
 from lies.mcp.resolution import WikiRootError
 
 __all__ = ["WikiRootError", "mcp"]
+
 
 # Imported lazily so importing the package without FastMCP installed
 # still works for the resolution helpers.

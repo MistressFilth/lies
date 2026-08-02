@@ -144,7 +144,11 @@ CLI commands (`src/lies/cli.py`):
 
 - `lies init <path>` — initialize a new wiki (creates dirs, copies default
   schema, `git init`, initial commit).
-- `lies ingest <source>` — ingest a local source path.
+- `lies ingest <collection>` — sync an existing collection (first-time
+  LLM scraper generation is deferred).
+- `lies ingest-source <source>` — ingest a local source path. The legacy
+  source-path CLI surface; delegates to `Orchestrator.run_ingest` for
+  host-side atomicity and rollback.
 - `lies query <question>` — ask a question of the wiki.
 - `lies lint [--fix]` — health-check the wiki; `--fix` applies the repair plan for safe_to_fix findings.
 - `lies status` — show qmd status and the last few log entries.
@@ -174,6 +178,29 @@ preferences, working decisions, or task history. Source files in
 `raw/` are immutable.
 
 - Transient persistence failures (`WikiLockBusy`, `WikiWriteConflict`, `WikiCommitFailed`) replay automatically on the next turn; receipt surfaces `(memory: queued for retry — <reason>)` immediately and `(memory: deferred after 3 attempts — <reason>)` if the cap is hit.
+
+## Parsing and Ingestion
+
+LIES includes a state-machine ETL pipeline for ingesting documentation
+sources into the wiki. The pipeline is independent of `WikiMemoryService`
+(bulk writes go through `atomic_commit` directly) and runs as four
+stages:
+
+1. **SCRAPE** — fetch + parse + manifest emit.
+2. **NORMALIZE** — format dispatch + Obsidian convention apply.
+3. **WRITE** — hash compare + atomic_commit (skips unchanged docs).
+4. **QMD_UPDATE** — incremental qmd update per collection.
+
+Commands:
+
+- `lies sync <collection>` — re-ingest changed docs only (`--force` for full).
+- `lies ingest <collection>` — bootstrap a collection (existing or new).
+- `lies reindex` — reconcile / embed / cleanup flags.
+- `lies collections list|show|modify` — manage collection configs.
+
+See `docs/superpowers/plans/2026-08-01-parsing-and-ingestion-plan.md`
+for the implementation plan and `2026-08-01-parsing-and-ingestion-design.md`
+for the design spec.
 
 ## License
 

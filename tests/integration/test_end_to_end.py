@@ -15,6 +15,7 @@ The agent's LLM is mocked so the round-trip is deterministic. The
 underlying ``_agent.run_sync`` is patched to drop a wiki page (mimicking
 the page-writer + indexer sub-agents writing artifacts).
 """
+
 from __future__ import annotations
 
 import shutil
@@ -50,18 +51,27 @@ def wiki_copy(tmp_path: Path) -> Path:
     )
     subprocess.run(
         ["git", "config", "user.email", "test@example.com"],
-        cwd=target, check=True, capture_output=True,
+        cwd=target,
+        check=True,
+        capture_output=True,
     )
     subprocess.run(
         ["git", "config", "user.name", "Test"],
-        cwd=target, check=True, capture_output=True,
+        cwd=target,
+        check=True,
+        capture_output=True,
     )
     subprocess.run(
-        ["git", "add", "."], cwd=target, check=True, capture_output=True,
+        ["git", "add", "."],
+        cwd=target,
+        check=True,
+        capture_output=True,
     )
     subprocess.run(
         ["git", "commit", "-m", "fixture"],
-        cwd=target, check=True, capture_output=True,
+        cwd=target,
+        check=True,
+        capture_output=True,
     )
     return target
 
@@ -70,7 +80,10 @@ def _log_lines(repo: Path) -> list[str]:
     """Return ``[<sha> <subject>, ...]`` newest-first."""
     result = subprocess.run(
         ["git", "log", "--pretty=%H %s"],
-        cwd=repo, capture_output=True, text=True, check=True,
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=True,
     )
     return result.stdout.splitlines()
 
@@ -79,7 +92,10 @@ def _git_show_files(repo: Path, sha: str) -> list[str]:
     """Return the list of files changed in ``sha``."""
     result = subprocess.run(
         ["git", "show", "--name-only", "--pretty=format:", sha],
-        cwd=repo, capture_output=True, text=True, check=True,
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=True,
     )
     return [line for line in result.stdout.splitlines() if line.strip()]
 
@@ -113,49 +129,29 @@ def test_orchestrator_constructs(wiki_copy: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_run_ingest_writes_artifacts_and_one_commit(wiki_copy: Path) -> None:
-    """A successful ingest leaves exactly one new commit with the new page.
+def test_run_ingest_delegates_to_sync_helper(wiki_copy: Path) -> None:
+    """``Orchestrator.run_ingest`` delegates to sync_collection and
+    returns the documented ``"ingested {source}"`` string.
 
-    This is the load-bearing part of the contract: an ingest is
-    all-or-nothing. The wiki never appears half-ingested.
+    The atomic git commit, working-tree snapshot/rollback, and stash
+    handling moved to ``sync_helper.sync_collection`` (Task 27). The
+    wrapper's job is just delegation + the back-compat return string.
+    The real SyncOrchestrator behavior is covered by
+    ``tests/integration/test_sync_collection.py``.
     """
     orch = Orchestrator(wiki_root=wiki_copy, model="test")
-    pre_log = _log_lines(wiki_copy)
-    pre_count = len(pre_log)
 
-    def fake_run_sync(self, prompt: str):  # type: ignore[no-untyped-def]
-        # Mimic page-writer + indexer dropping artifacts into the wiki.
-        page = wiki_copy / "wiki" / "entities" / "fixture-entity.md"
-        page.parent.mkdir(parents=True, exist_ok=True)
-        page.write_text(
-            "---\ntitle: Fixture\ntype: entity\n---\n# Fixture\n",
-            encoding="utf-8",
-        )
-        return mock.Mock(output="ingested fixture-entity")
-
-    with mock.patch.object(type(orch._agent), "run_sync", new=fake_run_sync):
+    with mock.patch("lies.etl.sync_helper.sync_collection") as m:
         result = orch.run_ingest("raw/articles/sample-article.md")
 
-    assert result == "ingested fixture-entity"
-
-    # Exactly one new commit.
-    post_log = _log_lines(wiki_copy)
-    assert len(post_log) == pre_count + 1
-    new_sha, _, new_msg = post_log[0].partition(" ")
-    assert new_msg.startswith("ingest")
-
-    # The new artifact is recorded in the new commit.
-    touched = _git_show_files(wiki_copy, new_sha)
-    assert any(p.endswith("entities/fixture-entity.md") for p in touched), (
-        f"fixture-entity.md not in commit; got {touched!r}"
-    )
-
-    # No leftover stash.
-    stash = subprocess.run(
-        ["git", "stash", "list"],
-        cwd=wiki_copy, capture_output=True, text=True, check=True,
-    )
-    assert stash.stdout.strip() == ""
+    # Wrapper returned the documented back-compat string.
+    assert result == "ingested raw/articles/sample-article.md"
+    # sync_collection was called once with the right args.
+    m.assert_called_once()
+    args, kwargs = m.call_args
+    assert args[0] == wiki_copy
+    assert args[1] == "sample-article"  # Path(source).stem strips dir + .md
+    assert kwargs == {"force": False}
 
 
 # ---------------------------------------------------------------------------
@@ -203,10 +199,9 @@ def test_synthesizer_reads_index_pages(wiki_copy: Path) -> None:
     assert answer.fallback_reason == "qmd_unavailable"
     # The index lists Postgres + MySQL entities; the synthesizer reads
     # the top-N pages referenced from index.md and cites them.
-    assert any(
-        "entities/postgres.md" in c or "entities/mysql.md" in c
-        for c in answer.citations
-    ), f"expected entity citations, got {answer.citations!r}"
+    assert any("entities/postgres.md" in c or "entities/mysql.md" in c for c in answer.citations), (
+        f"expected entity citations, got {answer.citations!r}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -235,10 +230,9 @@ def test_run_lint_writes_lint_report_and_appends_log(wiki_copy: Path) -> None:
     log_text = layout.log_path.read_text(encoding="utf-8")
     assert "lint" in log_text
     # The entry is parseable: starts with `## [<date>] lint | N findings`.
-    assert any(
-        line.startswith("## [") and " lint " in line
-        for line in log_text.splitlines()
-    ), f"no parseable lint log entry; got:\n{log_text!r}"
+    assert any(line.startswith("## [") and " lint " in line for line in log_text.splitlines()), (
+        f"no parseable lint log entry; got:\n{log_text!r}"
+    )
 
 
 def test_run_lint_detects_orphan_pages(wiki_copy: Path) -> None:
@@ -270,5 +264,6 @@ def test_qmd_update_raises_cleanly_when_not_installed(wiki_copy: Path) -> None:
     if shutil.which("qmd") is not None:
         pytest.skip("qmd is installed; skipping not-installed test")
     from lies.qmd import qmd_update
+
     with pytest.raises(QmdNotInstalledError):
         qmd_update(wiki_copy)

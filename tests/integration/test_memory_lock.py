@@ -1,4 +1,5 @@
 """Cross-process contention test for the wiki memory flock."""
+
 from __future__ import annotations
 
 import subprocess
@@ -79,9 +80,7 @@ def test_apply_plan_raises_wiki_lock_busy_when_other_process_holds_lock(
             operations=[
                 PageCreate(
                     path="concepts/example.md",
-                    content=(
-                        "---\ntitle: Example\ntype: concept\n---\n# Example\n"
-                    ),
+                    content=("---\ntitle: Example\ntype: concept\n---\n# Example\n"),
                     evidence=["page-1"],
                 )
             ],
@@ -120,9 +119,7 @@ def test_apply_plan_succeeds_after_other_process_releases_lock(
             operations=[
                 PageCreate(
                     path="concepts/example.md",
-                    content=(
-                        "---\ntitle: Example\ntype: concept\n---\n# Example\n"
-                    ),
+                    content=("---\ntitle: Example\ntype: concept\n---\n# Example\n"),
                     evidence=["page-1"],
                 )
             ],

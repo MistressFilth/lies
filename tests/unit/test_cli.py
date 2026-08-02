@@ -107,9 +107,7 @@ def test_repl_no_memory_uses_plain_orchestrator_run() -> None:
 def test_repl_respects_wiki_root_env() -> None:
     """The REPL must resolve --wiki-root from env / CLI option."""
     with patch("lies.cli.Orchestrator") as MockOrch:
-        result = runner.invoke(
-            app, ["--wiki-root", "/tmp/from-flag"], input="/exit\n"
-        )
+        result = runner.invoke(app, ["--wiki-root", "/tmp/from-flag"], input="/exit\n")
     assert result.exit_code == 0
     # The orchestrator must have been constructed with the resolved wiki root
     call_kwargs = MockOrch.call_args.kwargs

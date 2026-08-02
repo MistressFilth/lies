@@ -4,6 +4,7 @@ Breaks a complex task (e.g., "ingest this source, which touches 15
 pages") into an ordered plan of sub-steps. The orchestrator uses this
 to decide what to do, in what order, before invoking DynamicWorkflow.
 """
+
 from __future__ import annotations
 
 from typing import Any

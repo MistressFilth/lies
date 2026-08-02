@@ -1,4 +1,5 @@
 """Unit tests for the repair_agent structured output."""
+
 from __future__ import annotations
 
 from pydantic_ai.models.test import TestModel
@@ -27,9 +28,7 @@ def test_repair_agent_emits_noop_for_empty_report() -> None:
         rationale="no safe-to-fix findings",
         evidence=["findings_present"],
     )
-    agent = repair_agent(
-        model=TestModel(custom_output_args=noop_plan.model_dump())
-    )
+    agent = repair_agent(model=TestModel(custom_output_args=noop_plan.model_dump()))
     deps = RepairAgentDeps(
         lint_report=LintReport(findings=[], report_markdown=""),
         page_texts={},
@@ -51,6 +50,7 @@ def test_repair_agent_prompts_safe_to_fix_respected() -> None:
     plan from the prompt's instructions; verify the prompt instructs the
     agent to refuse."""
     from lies.agents.repair import REPAIR_AGENT_SYSTEM_PROMPT
+
     assert "safe_to_fix" in REPAIR_AGENT_SYSTEM_PROMPT
     assert "False" in REPAIR_AGENT_SYSTEM_PROMPT or "false" in REPAIR_AGENT_SYSTEM_PROMPT
 
@@ -69,6 +69,7 @@ def test_repair_agent_uses_repair_plan_output_type() -> None:
     """The agent's output_type is RepairPlan."""
 
     from lies.agents.repair_models import RepairPlan
+
     agent = repair_agent(model=TestModel())
     assert agent.output_type is RepairPlan
 
@@ -76,4 +77,5 @@ def test_repair_agent_uses_repair_plan_output_type() -> None:
 def test_repair_agent_module_exports_repair_agent() -> None:
     """agents/__init__ re-exports repair_agent."""
     from lies.agents import repair_agent as imported
+
     assert imported is repair_agent

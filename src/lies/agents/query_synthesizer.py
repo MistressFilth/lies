@@ -1,4 +1,5 @@
 """query-synthesizer sub-agent: turn qmd search results into a cited answer."""
+
 from __future__ import annotations
 
 from pydantic import BaseModel

@@ -37,7 +37,9 @@ def test_source_reader_registers_read_file_tool() -> None:
 def test_read_file_tool_returns_content(markdown_source: Path) -> None:
     """The `read_file` tool returns the file's UTF-8 contents."""
     # ctx is unused by the tool; pass None to bypass RunContext construction.
-    content = asyncio.run(read_file(None, str(markdown_source), str(markdown_source.parents[1] / "raw")))  # type: ignore[arg-type]
+    content = asyncio.run(
+        read_file(None, str(markdown_source), str(markdown_source.parents[1] / "raw"))
+    )  # type: ignore[arg-type]
     assert content.startswith("# Postgres MVCC")
     assert "MVCC" in content
 

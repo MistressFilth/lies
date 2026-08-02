@@ -9,6 +9,7 @@ The main agent receives two read-only tools:
 Both tools depend on :class:`WikiMemoryDeps` so the orchestrator can
 inject the service per wiki.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass

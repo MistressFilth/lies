@@ -5,6 +5,7 @@ existing ``Orchestrator`` API; resources read raw markdown via
 ``WikiLayout``. See ``docs/superpowers/specs/2026-07-27-lies-mcp-design.md``
 for the full surface.
 """
+
 from __future__ import annotations
 
 import subprocess
@@ -74,16 +75,19 @@ def init_wiki(path: str) -> str:
     )
     subprocess.run(
         ["git", "config", "user.email", "lies@local"],
-        cwd=target, check=True,
+        cwd=target,
+        check=True,
     )
     subprocess.run(
         ["git", "config", "user.name", "LIES"],
-        cwd=target, check=True,
+        cwd=target,
+        check=True,
     )
     subprocess.run(["git", "add", "."], cwd=target, check=True)
     subprocess.run(
         ["git", "commit", "-m", "Initial commit: empty LIES wiki"],
-        cwd=target, check=True,
+        cwd=target,
+        check=True,
     )
     return f"Initialized LIES wiki at {target} (v{__version__})"
 
