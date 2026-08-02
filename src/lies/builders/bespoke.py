@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 from pathlib import Path
 
 from lies.builders.base import REGISTRY, Builder, BuilderRegistry
@@ -38,7 +39,6 @@ class BespokeBuilder(Builder):
             src_path = workspace / entry["path"]
             emitted = entry["source_format"]
             target = entry.get("out_path", entry["path"])
-            sha_hint = entry.get("sha256", "")
             if not src_path.exists():
                 continue
             content = src_path.read_bytes()
@@ -60,20 +60,26 @@ class BespokeBuilder(Builder):
                     ParsedDoc(
                         path=target,
                         content=content,
-                        source_sha256=sha_actual or sha_hint,
+                        source_sha256=sha_actual,
                         source_format=emitted,
                     )
                 )
                 continue
-            sub = workspace / f".sub-{hash(src_path)}"
-            sub.mkdir(exist_ok=True)
-            (sub / ("source." + _ext_for(emitted))).write_bytes(content)
-            sub_docs = builder.build(sub, collection=collection)
+            sub_token = hashlib.sha256(str(src_path).encode("utf-8")).hexdigest()[:12]
+            sub = workspace / f".sub-{sub_token}"
+            try:
+                sub.mkdir(exist_ok=True)
+                (sub / ("source." + _ext_for(emitted))).write_bytes(content)
+                sub_docs = builder.build(sub, collection=collection)
+            finally:
+                shutil.rmtree(sub, ignore_errors=True)
             for d in sub_docs:
                 if len(sub_docs) == 1:
-                    out_path = target
+                    out_path = d.path
                 else:
-                    out_path = f"{target.rsplit('/', 1)[0]}/{d.path.rsplit('/', 1)[-1]}"
+                    parent = target.rsplit("/", 1)[0] if "/" in target else ""
+                    filename = d.path.rsplit("/", 1)[-1]
+                    out_path = f"{parent}/{filename}" if parent else filename
                 out.append(
                     ParsedDoc(
                         path=out_path,
