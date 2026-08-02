@@ -94,9 +94,7 @@ class SyncOrchestrator:
                 force=self.force,
                 wiki_root=self.wiki_root,
             )
-            self.telemetry.record_counter(
-                "bytes_out", written.bytes_out or normalized.bytes_out
-            )
+            self.telemetry.record_counter("bytes_out", written.bytes_out or normalized.bytes_out)
 
             self._transition(PipelineState.QMD_UPDATE)
             run_qmd_update(self.collection)

@@ -100,4 +100,3 @@ def test_acquire_create_lock_recovers_from_orphaned_lock(
     fd_b = acquire_create_lock(tmp_path)
     assert fd_b is None, "recent create lock must not be reclaimed"
     release_create_lock(tmp_path, fd_a)
-
