@@ -705,54 +705,15 @@ class Orchestrator:
             return ""
 
     def run_ingest(self, source: str) -> str:
-        """Run an ingest with host-side atomicity and rollback.
+        """Backward-compatible wrapper. Delegates to SyncOrchestrator.
 
-        The orchestrator snapshots the wiki's working tree before invoking
-        the agent, runs the ingest, then commits the result as a single
-        atomic commit. If anything goes wrong -- the agent raises, the
-        commit fails, or even an interrupt arrives -- the working tree
-        is restored to its pre-ingest state and the exception is re-raised.
-
-        The wiki never appears half-ingested to the caller: either the
-        ingest commits cleanly with one new commit, or the wiki is exactly
-        as it was before the call.
-
-        Args:
-            source: Path, URL, or '-' for stdin. Forwarded to the agent as
-                ``"ingest {source}"``.
-
-        Returns:
-            The orchestrator's natural-language report of the ingest.
-
-        Raises:
-            Exception: Anything raised by the agent is re-raised after the
-                wiki is restored to its pre-ingest state. ``CommitError``
-                from the host-side commit step is also re-raised after
-                rollback, and the working tree is restored even if the
-                commit itself fails.
+        To be deleted in a follow-up release once CLI and tests migrate.
         """
-        repo = self.wiki_root
-        snapshot_ref = self._snapshot_working_tree(repo)
-        try:
-            output = self._agent.run_sync(f"ingest {source}").output
-            output = str(output)
-        except BaseException:
-            # The agent raised (or was interrupted). Roll the working tree
-            # back to the pre-ingest snapshot before propagating.
-            self._restore_working_tree(repo, snapshot_ref)
-            raise
+        from lies.etl.sync_helper import sync_collection
 
-        # Agent succeeded. Drop the snapshot (we want to keep the agent's
-        # changes) and commit them atomically. If the commit itself fails,
-        # restore the pre-ingest state -- the wiki should never be left
-        # with a half-applied ingest.
-        self._discard_snapshot(repo, snapshot_ref)
-        try:
-            self._commit_ingest(repo, source)
-        except BaseException:
-            self._restore_working_tree(repo, snapshot_ref)
-            raise
-        return output
+        collection_name = Path(source).stem
+        sync_collection(self.layout.root, collection_name, force=False)
+        return f"ingested {source}"
 
     def run_query(self, question: str) -> SynthesizedAnswer:
         """Answer ``question`` using the wiki with the qmd→index fallback.
