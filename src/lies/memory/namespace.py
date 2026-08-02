@@ -12,6 +12,7 @@ We derive the namespace from a short hash of the resolved wiki root
 path. Two wikis at the same path always produce the same namespace;
 two different paths produce different namespaces.
 """
+
 from __future__ import annotations
 
 import hashlib

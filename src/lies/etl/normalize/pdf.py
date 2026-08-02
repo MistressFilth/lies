@@ -1,4 +1,5 @@
 """PDF text extraction (pymupdf) + OCR fallback (tesseract)."""
+
 from __future__ import annotations
 
 import subprocess
@@ -24,7 +25,9 @@ def extract_text_ocr(pdf_bytes: bytes) -> str:
         png_bytes = pix.tobytes("png")
         proc = subprocess.run(
             ["tesseract", "stdin", "stdout"],
-            input=png_bytes, capture_output=True, check=True,
+            input=png_bytes,
+            capture_output=True,
+            check=True,
         )
         parts.append(proc.stdout.decode("utf-8", errors="replace"))
     return "\n\n".join(parts)

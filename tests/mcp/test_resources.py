@@ -1,4 +1,5 @@
 """Tests for the LIES MCP server resources, page template, and prompt."""
+
 from __future__ import annotations
 
 import pytest
@@ -46,7 +47,9 @@ def test_wiki_log_returns_raw_markdown(sample_wiki, monkeypatch: pytest.MonkeyPa
     assert isinstance(out, str)
 
 
-def test_wiki_lint_report_missing_returns_empty_string(sample_wiki, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_wiki_lint_report_missing_returns_empty_string(
+    sample_wiki, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """When no lint has run yet, the resource returns '' (not 404)."""
     monkeypatch.setenv("LIES_WIKI_ROOT", str(sample_wiki.root))
     # Remove the report if it exists from a prior test.
@@ -75,7 +78,9 @@ def test_wiki_page_rejects_absolute(sample_wiki, monkeypatch: pytest.MonkeyPatch
         wiki_page("/etc/passwd")
 
 
-def test_wiki_page_returns_empty_for_missing_file(sample_wiki, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_wiki_page_returns_empty_for_missing_file(
+    sample_wiki, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """A page path that resolves cleanly under wiki/ but doesn't exist returns ''."""
     monkeypatch.setenv("LIES_WIKI_ROOT", str(sample_wiki.root))
     out = wiki_page("entities/does-not-exist.md")

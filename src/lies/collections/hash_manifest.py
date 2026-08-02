@@ -3,6 +3,7 @@
 Stored at ``<wiki>/.lies/hashes/<collection>.json``. Compare on
 ingest decides whether a doc is skipped (hash unchanged) or rewritten.
 """
+
 from __future__ import annotations
 
 import json
@@ -20,8 +21,11 @@ class HashManifest:
         self._data: dict[str, str] = self._load()
 
     def _manifest_path(self) -> Path:
-        return self._wiki_root / ".lies" / _HASH_DIR / _MANIFEST_FILENAME.format(
-            collection=self._collection
+        return (
+            self._wiki_root
+            / ".lies"
+            / _HASH_DIR
+            / _MANIFEST_FILENAME.format(collection=self._collection)
         )
 
     def _load(self) -> dict[str, str]:
@@ -49,9 +53,7 @@ class HashManifest:
         self._path.write_text(json.dumps(self._data, indent=2), encoding="utf-8")
 
     def snapshot(self) -> Path:
-        snap_path = self._path.with_name(
-            f"{self._collection}.pre-sync.json"
-        )
+        snap_path = self._path.with_name(f"{self._collection}.pre-sync.json")
         snap_path.parent.mkdir(parents=True, exist_ok=True)
         snap_path.write_text(json.dumps(self._data, indent=2), encoding="utf-8")
         return snap_path

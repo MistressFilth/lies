@@ -1,4 +1,5 @@
 """indexer sub-agent: maintain wiki/index.md and wiki/log.md."""
+
 from __future__ import annotations
 
 from datetime import date

@@ -4,6 +4,7 @@ Target paths are computed under ``<wiki_root>/wiki/<path>`` (NOT
 CWD-relative). Per-doc OSError on write moves the source to
 ``.lies/poison/<collection>/<path>`` and continues the batch.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -63,6 +64,9 @@ def run_write(
         )
 
     return StageResult(
-        success=success, quarantined=quarantined, skipped=skipped,
-        bytes_in=0, bytes_out=bytes_out,
+        success=success,
+        quarantined=quarantined,
+        skipped=skipped,
+        bytes_in=0,
+        bytes_out=bytes_out,
     )

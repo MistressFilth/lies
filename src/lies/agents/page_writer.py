@@ -1,4 +1,5 @@
 """page-writer sub-agent: create or update wiki pages per the schema."""
+
 from __future__ import annotations
 
 from enum import Enum

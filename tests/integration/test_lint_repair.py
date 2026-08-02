@@ -1,4 +1,5 @@
 """End-to-end tests for the lint repair workflow."""
+
 from __future__ import annotations
 
 import subprocess
@@ -57,15 +58,41 @@ def test_apply_three_append_links(wiki: WikiLayout) -> None:
     orch = Orchestrator(wiki_root=wiki.root, model=TestModel())
     plan = RepairPlan(
         operations=[
-            AppendLink(target_path="concepts/b.md", link_text="B", append_to="concepts/a.md", finding_index=0, pages=["concepts/a.md"], rationale="xref", evidence=["f0"]),
-            AppendLink(target_path="concepts/c.md", link_text="C", append_to="concepts/a.md", finding_index=1, pages=["concepts/a.md"], rationale="xref", evidence=["f1"]),
-            AppendLink(target_path="concepts/a.md", link_text="A", append_to="concepts/b.md", finding_index=2, pages=["concepts/b.md"], rationale="xref", evidence=["f2"]),
+            AppendLink(
+                target_path="concepts/b.md",
+                link_text="B",
+                append_to="concepts/a.md",
+                finding_index=0,
+                pages=["concepts/a.md"],
+                rationale="xref",
+                evidence=["f0"],
+            ),
+            AppendLink(
+                target_path="concepts/c.md",
+                link_text="C",
+                append_to="concepts/a.md",
+                finding_index=1,
+                pages=["concepts/a.md"],
+                rationale="xref",
+                evidence=["f1"],
+            ),
+            AppendLink(
+                target_path="concepts/a.md",
+                link_text="A",
+                append_to="concepts/b.md",
+                finding_index=2,
+                pages=["concepts/b.md"],
+                rationale="xref",
+                evidence=["f2"],
+            ),
         ],
         rationale="three xrefs",
         evidence=["f0", "f1", "f2"],
     )
-    with mock.patch.object(type(orch._agent), "run_sync", new=_noop_agent_run_sync), \
-         mock.patch.object(orch, "_run_repair_agent", return_value=plan):
+    with (
+        mock.patch.object(type(orch._agent), "run_sync", new=_noop_agent_run_sync),
+        mock.patch.object(orch, "_run_repair_agent", return_value=plan),
+    ):
         report = orch.run_lint(apply=True)
 
     assert "Applied" in report
@@ -116,8 +143,10 @@ def test_apply_interleaved_append_links(wiki: WikiLayout) -> None:
         rationale="interleaved",
         evidence=["f0", "f1", "f2"],
     )
-    with mock.patch.object(type(orch._agent), "run_sync", new=_noop_agent_run_sync), \
-         mock.patch.object(orch, "_run_repair_agent", return_value=plan):
+    with (
+        mock.patch.object(type(orch._agent), "run_sync", new=_noop_agent_run_sync),
+        mock.patch.object(orch, "_run_repair_agent", return_value=plan),
+    ):
         report = orch.run_lint(apply=True)
 
     assert "Applied" in report
@@ -148,8 +177,10 @@ def test_apply_skips_contradiction(wiki: WikiLayout) -> None:
         rationale="index orphan",
         evidence=["f0"],
     )
-    with mock.patch.object(type(orch._agent), "run_sync", new=_noop_agent_run_sync), \
-         mock.patch.object(orch, "_run_repair_agent", return_value=plan):
+    with (
+        mock.patch.object(type(orch._agent), "run_sync", new=_noop_agent_run_sync),
+        mock.patch.object(orch, "_run_repair_agent", return_value=plan),
+    ):
         report = orch.run_lint(apply=True)
 
     assert "Applied" in report
@@ -192,13 +223,22 @@ def test_apply_fails_when_lock_held(wiki: WikiLayout, tmp_path: Path) -> None:
         orch = Orchestrator(wiki_root=wiki.root, model=TestModel())
         plan = RepairPlan(
             operations=[
-                CreateStub(path="concepts/x.md", title="X", finding_index=0, pages=[], rationale="new", evidence=["f0"]),
+                CreateStub(
+                    path="concepts/x.md",
+                    title="X",
+                    finding_index=0,
+                    pages=[],
+                    rationale="new",
+                    evidence=["f0"],
+                ),
             ],
             rationale="r",
             evidence=["f0"],
         )
-        with mock.patch.object(type(orch._agent), "run_sync", new=_noop_agent_run_sync), \
-             mock.patch.object(orch, "_run_repair_agent", return_value=plan):
+        with (
+            mock.patch.object(type(orch._agent), "run_sync", new=_noop_agent_run_sync),
+            mock.patch.object(orch, "_run_repair_agent", return_value=plan),
+        ):
             report = orch.run_lint(apply=True)
 
         assert "Errors" in report or "errors" in report
@@ -218,13 +258,23 @@ def test_apply_receipt_in_lint_report(wiki: WikiLayout) -> None:
     orch = Orchestrator(wiki_root=wiki.root, model=TestModel())
     plan = RepairPlan(
         operations=[
-            AppendLink(target_path="concepts/b.md", link_text="B", append_to="concepts/a.md", finding_index=0, pages=["concepts/a.md"], rationale="xref", evidence=["f0"]),
+            AppendLink(
+                target_path="concepts/b.md",
+                link_text="B",
+                append_to="concepts/a.md",
+                finding_index=0,
+                pages=["concepts/a.md"],
+                rationale="xref",
+                evidence=["f0"],
+            ),
         ],
         rationale="r",
         evidence=["f0"],
     )
-    with mock.patch.object(type(orch._agent), "run_sync", new=_noop_agent_run_sync), \
-         mock.patch.object(orch, "_run_repair_agent", return_value=plan):
+    with (
+        mock.patch.object(type(orch._agent), "run_sync", new=_noop_agent_run_sync),
+        mock.patch.object(orch, "_run_repair_agent", return_value=plan),
+    ):
         orch.run_lint(apply=True)
 
     report = wiki.lint_report_path.read_text(encoding="utf-8")

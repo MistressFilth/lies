@@ -9,6 +9,7 @@ This package exposes two surfaces:
 * `lies.qmd.mcp` — connection config for the qmd MCP server, used by
   pydantic-ai agents for native tool calling.
 """
+
 from lies.qmd.cli import (
     QmdCommandError,
     QmdError,

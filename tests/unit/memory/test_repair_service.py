@@ -1,4 +1,5 @@
 """Unit tests for the apply_repair_plan service method."""
+
 from __future__ import annotations
 
 import subprocess
@@ -43,7 +44,14 @@ def git_wiki(tmp_path: Path) -> WikiLayout:
 def test_from_repair_plan_maps_create_stub_to_page_create() -> None:
     plan = RepairPlan(
         operations=[
-            CreateStub(path="concepts/new.md", title="New", finding_index=0, pages=[], rationale="new", evidence=["f0"]),
+            CreateStub(
+                path="concepts/new.md",
+                title="New",
+                finding_index=0,
+                pages=[],
+                rationale="new",
+                evidence=["f0"],
+            ),
         ],
         rationale="r",
         evidence=["f0"],
@@ -85,7 +93,14 @@ def test_from_repair_plan_maps_append_link_to_page_update(git_wiki: WikiLayout) 
 def test_from_repair_plan_maps_update_index_to_page_update(git_wiki: WikiLayout) -> None:
     plan = RepairPlan(
         operations=[
-            UpdateIndex(path="wiki/index.md", title="X", finding_index=0, pages=["concepts/x.md"], rationale="orphan", evidence=["f0"]),
+            UpdateIndex(
+                path="wiki/index.md",
+                title="X",
+                finding_index=0,
+                pages=["concepts/x.md"],
+                rationale="orphan",
+                evidence=["f0"],
+            ),
         ],
         rationale="r",
         evidence=["f0"],
@@ -121,7 +136,14 @@ def test_from_repair_plan_maps_append_evidence_to_evidence_append() -> None:
 def test_apply_repair_plan_creates_stub_page(git_wiki: WikiLayout) -> None:
     plan = RepairPlan(
         operations=[
-            CreateStub(path="concepts/example.md", title="Example", finding_index=0, pages=[], rationale="new", evidence=["f0"]),
+            CreateStub(
+                path="concepts/example.md",
+                title="Example",
+                finding_index=0,
+                pages=[],
+                rationale="new",
+                evidence=["f0"],
+            ),
         ],
         rationale="r",
         evidence=["f0"],
@@ -135,7 +157,14 @@ def test_apply_repair_plan_creates_stub_page(git_wiki: WikiLayout) -> None:
 def test_apply_repair_plan_rejects_path_escape(git_wiki: WikiLayout) -> None:
     plan = RepairPlan(
         operations=[
-            CreateStub(path="../outside.md", title="Outside", finding_index=0, pages=[], rationale="escape", evidence=["f0"]),
+            CreateStub(
+                path="../outside.md",
+                title="Outside",
+                finding_index=0,
+                pages=[],
+                rationale="escape",
+                evidence=["f0"],
+            ),
         ],
         rationale="r",
         evidence=["f0"],
@@ -173,9 +202,7 @@ def test_apply_repair_plan_rejects_hash_mismatch(git_wiki: WikiLayout) -> None:
 def test_apply_repair_plan_update_index_adds_orphan_to_catalog(git_wiki: WikiLayout) -> None:
     orphan = git_wiki.wiki_dir / "concepts" / "orphan.md"
     orphan.parent.mkdir(parents=True, exist_ok=True)
-    orphan.write_text(
-        "---\ntitle: Orphan\ntype: concept\n---\n# Orphan\n", encoding="utf-8"
-    )
+    orphan.write_text("---\ntitle: Orphan\ntype: concept\n---\n# Orphan\n", encoding="utf-8")
     subprocess.run(["git", "add", "."], cwd=git_wiki.root, check=True)
     subprocess.run(["git", "commit", "-m", "seed"], cwd=git_wiki.root, check=True)
 

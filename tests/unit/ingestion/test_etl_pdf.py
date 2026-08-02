@@ -19,7 +19,9 @@ def test_extract_text_ocr_calls_tesseract(monkeypatch: pytest.MonkeyPatch) -> No
     fake_pix.tobytes = mock.Mock(return_value=b"\x89PNG")
     fake_page.get_pixmap = mock.Mock(return_value=fake_pix)
     fake_doc.__iter__ = mock.Mock(return_value=iter([fake_page]))
-    monkeypatch.setattr("subprocess.run", lambda *a, **kw: mock.Mock(returncode=0, stdout=b"ocr text"))
+    monkeypatch.setattr(
+        "subprocess.run", lambda *a, **kw: mock.Mock(returncode=0, stdout=b"ocr text")
+    )
     with mock.patch("pymupdf.open", return_value=fake_doc):
         out = extract_text_ocr(b"%PDF")
     assert "ocr text" in out

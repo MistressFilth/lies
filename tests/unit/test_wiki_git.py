@@ -277,9 +277,7 @@ def test_atomic_commit_rolls_back_partial_staging_from_failing_add(
         mock.patch.object(wiki_git.subprocess, "run", side_effect=fake_run),
         pytest.raises(CommitError, match="git add failed"),
     ):
-        atomic_commit(
-            git_wiki, "bad", files=["real.txt", "ghost.txt"]
-        )
+        atomic_commit(git_wiki, "bad", files=["real.txt", "ghost.txt"])
 
     # Even though real.txt was partially staged before the failure, the
     # rollback clears it.

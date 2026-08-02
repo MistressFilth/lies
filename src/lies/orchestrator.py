@@ -1,4 +1,5 @@
 """Top-level orchestrator that dispatches user commands to sub-agents."""
+
 from __future__ import annotations
 
 import asyncio
@@ -114,8 +115,7 @@ def _build_lint_report(
     if layout.wiki_dir.exists():
         for path in layout.wiki_dir.rglob("*.md"):
             rel = path.relative_to(layout.root).as_posix()
-            if rel in {"wiki/index.md", "wiki/log.md", "wiki/lint-report.md",
-                       "wiki/overview.md"}:
+            if rel in {"wiki/index.md", "wiki/log.md", "wiki/lint-report.md", "wiki/overview.md"}:
                 continue
             pages.add(rel)
 
@@ -334,9 +334,7 @@ class Orchestrator:
         self._harness_memory = memory(self.wiki_root)
         self._agent: Agent = Agent(
             self.model,
-            system_prompt=ORCHESTRATOR_SYSTEM_PROMPT_PREFIX.format(
-                wiki_root=self.layout.root
-            )
+            system_prompt=ORCHESTRATOR_SYSTEM_PROMPT_PREFIX.format(wiki_root=self.layout.root)
             + self.schema,
             deps_type=WikiMemoryDeps,
             capabilities=[
@@ -346,7 +344,6 @@ class Orchestrator:
                 planning(),
                 dynamic_workflow(agents=named_agents, max_agent_calls=20),
                 file_system(wiki_root=self.layout.root),
-
                 QmdMcpClient(transport="stdio").as_capability(),
             ],
         )
@@ -382,9 +379,11 @@ class Orchestrator:
         # Drain queued retries before answering the user. Silent on success;
         # surfaces deferred items via format_receipt_lines below.
         self._enrichment_queue.drain(
-            enrich_fn=lambda deps: self._enricher.run_sync(
-                "Propose a MemoryPlan for the latest turn.", deps=deps
-            ).output,
+            enrich_fn=lambda deps: (
+                self._enricher.run_sync(
+                    "Propose a MemoryPlan for the latest turn.", deps=deps
+                ).output
+            ),
             apply_fn=self._memory_service.apply_plan,
         )
 
@@ -450,9 +449,7 @@ class Orchestrator:
                     # wiki_search takes a question; no paths to harvest.
         return sorted(pages), citations
 
-    def _enrichment_signal(
-        self, pages_read: list[str], citations: list[str], command: str
-    ) -> bool:
+    def _enrichment_signal(self, pages_read: list[str], citations: list[str], command: str) -> bool:
         if pages_read:
             return True
         if citations:
@@ -502,9 +499,7 @@ class Orchestrator:
                 errors=[f"enricher_crashed: {exc!s}"],
             )
 
-    def _generate_memory_plan_from_deps(
-        self, deps: MemoryEnricherDeps
-    ) -> MemoryPlan:
+    def _generate_memory_plan_from_deps(self, deps: MemoryEnricherDeps) -> MemoryPlan:
         return self._enricher.run_sync(
             "Propose a MemoryPlan for the latest turn.", deps=deps
         ).output
@@ -527,9 +522,7 @@ class Orchestrator:
                 pages_read=deps.pages_read,
                 citations=deps.citations,
                 evidence_text=deps.evidence_text,
-                current_page_metadata={
-                    path: dict(values) for path, values in metadata.items()
-                },
+                current_page_metadata={path: dict(values) for path, values in metadata.items()},
                 active_schema=deps.active_schema,
             )
             retry_plan = self._generate_memory_plan_from_deps(retry_deps)
@@ -537,9 +530,7 @@ class Orchestrator:
                 return self._empty_memory_receipt()
             return self._memory_service.apply_plan(retry_plan)
 
-    def _enqueue_and_report(
-        self, deps: MemoryEnricherDeps, exc: BaseException
-    ) -> MemoryReceipt:
+    def _enqueue_and_report(self, deps: MemoryEnricherDeps, exc: BaseException) -> MemoryReceipt:
         reason = f"{type(exc).__name__}: {exc!s}"
         self._enrichment_queue.enqueue(deps, reason, self._turn_counter)
         return MemoryReceipt(
@@ -598,17 +589,19 @@ class Orchestrator:
         )
         # Split errors into queued-retry entries (spec formatting) and
         # anything else (comma-joined in the standard form).
-        queued = [self._queued_reason(err) for err in receipt.errors
-                  if err.startswith(self._QUEUED_RETRY_PREFIX)]
-        other = [err for err in receipt.errors
-                 if not err.startswith(self._QUEUED_RETRY_PREFIX)]
+        queued = [
+            self._queued_reason(err)
+            for err in receipt.errors
+            if err.startswith(self._QUEUED_RETRY_PREFIX)
+        ]
+        other = [err for err in receipt.errors if not err.startswith(self._QUEUED_RETRY_PREFIX)]
         if not receipt.changed_pages:
             return self._format_empty_receipt(queued, other)
         return self._format_durable_receipt(receipt, queued, other)
 
     def _queued_reason(self, err: str) -> str:
         """Strip the internal ``queued_for_retry:`` prefix from an error."""
-        return err[len(self._QUEUED_RETRY_PREFIX):].lstrip()
+        return err[len(self._QUEUED_RETRY_PREFIX) :].lstrip()
 
     def _format_empty_receipt(self, queued: list[str], other: list[str]) -> str:
         """Format a receipt with no ``changed_pages``.
@@ -620,13 +613,9 @@ class Orchestrator:
         - No queued, no other: ``(memory: no change)``.
         """
         if queued and not other:
-            return "\n".join(
-                f"(memory: queued for retry — {reason})" for reason in queued
-            )
+            return "\n".join(f"(memory: queued for retry — {reason})" for reason in queued)
         if queued and other:
-            head = "\n".join(
-                f"(memory: queued for retry — {reason})" for reason in queued
-            )
+            head = "\n".join(f"(memory: queued for retry — {reason})" for reason in queued)
             tail = ", ".join(other)
             return f"{head}\n(memory: {tail})"
         return f"(memory: {', '.join(other) or 'no change'})"
@@ -761,9 +750,7 @@ class Orchestrator:
             plan = self._run_repair_agent(lint_report)
             repair_receipt = self._apply_repair_plan(plan)
         final_report = _build_lint_report(self.layout, repair_receipt=repair_receipt)
-        self.layout.lint_report_path.write_text(
-            final_report.report_markdown, encoding="utf-8"
-        )
+        self.layout.lint_report_path.write_text(final_report.report_markdown, encoding="utf-8")
         self._append_log_entry(
             f"## [{datetime.now(tz=timezone.utc).date().isoformat()}] lint | "
             f"{final_report.report_markdown.count(chr(10))} findings"
@@ -787,14 +774,13 @@ class Orchestrator:
                     page_texts[page] = path.read_text(encoding="utf-8")
         return self._repair_agent.run_sync(
             "Propose a RepairPlan for the lint report.",
-            deps=RepairAgentDeps(
-                lint_report=lint_report, page_texts=page_texts
-            ),
+            deps=RepairAgentDeps(lint_report=lint_report, page_texts=page_texts),
         ).output
 
     def _apply_repair_plan(self, plan: RepairPlan) -> RepairReceipt:
         """Apply a RepairPlan through WikiMemoryService and return a receipt."""
         from lies.agents.repair_models import RepairReceipt as _Receipt
+
         if plan.is_noop():
             return _Receipt(
                 applied=[],
@@ -886,9 +872,7 @@ class Orchestrator:
             check=False,
         )
         if result.returncode != 0:
-            raise RuntimeError(
-                f"failed to snapshot working tree: {result.stderr.strip()}"
-            )
+            raise RuntimeError(f"failed to snapshot working tree: {result.stderr.strip()}")
         # ``git stash push`` is silent when there is nothing to stash. Detect
         # that case and return the clean-tree sentinel.
         if "No local changes to save" in result.stdout:

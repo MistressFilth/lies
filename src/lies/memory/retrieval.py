@@ -5,6 +5,7 @@ unavailable, returns no results, or fails. Page reads accept the
 ``page_id`` values produced by a prior search, never model-supplied
 filesystem paths.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -125,9 +126,7 @@ def _from_qmd(
     return (evidences[:limit], truncated, "")
 
 
-def _from_index(
-    layout: WikiLayout, question: str, limit: int
-) -> list[WikiEvidence]:
+def _from_index(layout: WikiLayout, question: str, limit: int) -> list[WikiEvidence]:
     if not layout.index_path.exists():
         return []
     content = layout.index_path.read_text(encoding="utf-8")

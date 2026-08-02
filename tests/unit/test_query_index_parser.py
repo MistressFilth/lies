@@ -1,4 +1,5 @@
 """Tests for the wiki/index.md markdown link parser."""
+
 from __future__ import annotations
 
 from lies.query.index_parser import parse_index_links
@@ -85,9 +86,6 @@ def test_parse_handles_no_links() -> None:
 
 
 def test_parse_handles_inline_links_in_paragraphs() -> None:
-    sample = (
-        "See [Foo](entities/foo.md) for the overview and "
-        "[Bar](entities/bar.md) for details.\n"
-    )
+    sample = "See [Foo](entities/foo.md) for the overview and [Bar](entities/bar.md) for details.\n"
     links = parse_index_links(sample)
     assert [l.title for l in links] == ["Foo", "Bar"]

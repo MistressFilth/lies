@@ -11,6 +11,7 @@ directory to contain a `wiki/` or `.lies/` subdirectory. Pass
 `require_wiki=False` from `init_wiki` since the path is bootstrapped,
 not pre-existing.
 """
+
 from __future__ import annotations
 
 import os
@@ -54,9 +55,7 @@ def _resolve_wiki_root(
         has_wiki = (path / "wiki").is_dir()
         has_lies = (path / ".lies").is_dir()
         if not (has_wiki or has_lies):
-            raise WikiRootError(
-                f"wiki root has no wiki layout (no wiki/ or .lies/): {path}"
-            )
+            raise WikiRootError(f"wiki root has no wiki layout (no wiki/ or .lies/): {path}")
 
     return WikiLayout(path)
 
@@ -84,8 +83,6 @@ def _safe_page_path(wiki_root: Path, page: str) -> Path:
     try:
         resolved.relative_to(wiki_dir)
     except ValueError as exc:
-        raise WikiRootError(
-            f"page path escapes wiki root: {page}"
-        ) from exc
+        raise WikiRootError(f"page path escapes wiki root: {page}") from exc
 
     return resolved

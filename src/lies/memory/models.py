@@ -4,6 +4,7 @@ The models are the public contract used by the Pydantic AI read tools,
 the MemoryEnricher structured output, the WikiMemoryService, and the
 FastMCP adapter.
 """
+
 from __future__ import annotations
 
 from enum import Enum

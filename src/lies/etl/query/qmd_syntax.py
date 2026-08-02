@@ -1,4 +1,5 @@
 """Deterministic translation of StructuredIntent to QMD query syntax."""
+
 from __future__ import annotations
 
 from lies.etl.query.pre_translate import StructuredIntent

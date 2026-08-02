@@ -8,6 +8,7 @@ is mocked so no real LLM call is made — same pattern as
 ``Orchestrator.run_lint`` methods are NOT mocked, so the
 tool-to-orchestrator delegation is exercised end-to-end.
 """
+
 from __future__ import annotations
 
 import shutil
@@ -55,7 +56,10 @@ def _log_lines(repo: Path) -> list[str]:
     """Return ``[<sha> <subject>, ...]`` newest-first."""
     result = subprocess.run(
         ["git", "log", "--pretty=%H %s"],
-        cwd=repo, capture_output=True, text=True, check=True,
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=True,
     )
     return result.stdout.splitlines()
 
@@ -64,7 +68,10 @@ def _git_show_files(repo: Path, sha: str) -> list[str]:
     """Return the list of files changed in ``sha``."""
     result = subprocess.run(
         ["git", "show", "--name-only", "--pretty=format:", sha],
-        cwd=repo, capture_output=True, text=True, check=True,
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=True,
     )
     return [line for line in result.stdout.splitlines() if line.strip()]
 
@@ -85,9 +92,7 @@ def test_init_wiki_creates_wiki_structure(tmp_path: Path) -> None:
     assert (target / ".lies").is_dir()
     assert (target / ".lies" / "schema.md").is_file()
     # Schema contents match the bundled default exactly.
-    assert (target / ".lies" / "schema.md").read_text(
-        encoding="utf-8"
-    ) == load_default_schema()
+    assert (target / ".lies" / "schema.md").read_text(encoding="utf-8") == load_default_schema()
     # Git is initialized and has at least the initial commit.
     assert (target / ".git").exists()
     log = _log_lines(target)
@@ -154,7 +159,8 @@ def test_ingest_source_returns_ingested_string(sample_wiki) -> None:
 
 
 def test_query_returns_synthesized_mcp_answer(
-    sample_wiki, monkeypatch: pytest.MonkeyPatch,
+    sample_wiki,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """query returns a SynthesizedMcpAnswer with the right three fields.
 
@@ -180,7 +186,8 @@ def test_query_returns_synthesized_mcp_answer(
 
 
 def test_query_maps_empty_fallback_reason_to_none(
-    sample_wiki, monkeypatch: pytest.MonkeyPatch,
+    sample_wiki,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """When qmd serves the query, ``fallback_reason`` becomes ``None``.
 
@@ -206,11 +213,13 @@ def test_query_maps_empty_fallback_reason_to_none(
 
     def fake_dispatch(fn, layout, question, top_n):  # type: ignore[no-untyped-def]
         # Pretend qmd returned one readable hit.
-        return [_PageRead(
-            rel_path="entities/postgres.md",
-            title="Postgres",
-            excerpt="PostgreSQL uses MVCC.",
-        )]
+        return [
+            _PageRead(
+                rel_path="entities/postgres.md",
+                title="Postgres",
+                excerpt="PostgreSQL uses MVCC.",
+            )
+        ]
 
     with mock.patch.object(q_syn, "_qmd_search_dispatch", new=fake_dispatch):
         result = query("What is MVCC?")
@@ -221,7 +230,8 @@ def test_query_maps_empty_fallback_reason_to_none(
 
 
 def test_query_propagates_fallback_reason(
-    sample_wiki, monkeypatch: pytest.MonkeyPatch,
+    sample_wiki,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """When qmd is unavailable, fallback_used and fallback_reason surface.
 
@@ -252,7 +262,8 @@ def test_query_propagates_fallback_reason(
 
 
 def test_lint_returns_markdown_report(
-    sample_wiki, monkeypatch: pytest.MonkeyPatch,
+    sample_wiki,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """lint delegates to Orchestrator.run_lint end-to-end.
 
@@ -283,10 +294,9 @@ def test_lint_returns_markdown_report(
     # Artifact 2: log.md has a parseable lint entry.
     log_text = layout.log_path.read_text(encoding="utf-8")
     assert "lint" in log_text
-    assert any(
-        line.startswith("## [") and " lint " in line
-        for line in log_text.splitlines()
-    ), f"no parseable lint log entry; got:\n{log_text!r}"
+    assert any(line.startswith("## [") and " lint " in line for line in log_text.splitlines()), (
+        f"no parseable lint log entry; got:\n{log_text!r}"
+    )
 
 
 # ---------------------------------------------------------------------------

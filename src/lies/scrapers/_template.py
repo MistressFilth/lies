@@ -1,4 +1,5 @@
 """Scraper template for LLM-driven scraper generation."""
+
 from __future__ import annotations
 
 from lies.scrapers.base import BaseScraper
@@ -15,4 +16,3 @@ class GeneratedScraper(BaseScraper):
 
     def emit_manifest(self, docs, raw_dir):  # type: ignore[no-untyped-def]
         pass
-

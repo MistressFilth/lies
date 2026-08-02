@@ -1,4 +1,5 @@
 """Unit tests for the orchestrator's EnrichmentQueue integration."""
+
 from __future__ import annotations
 
 import subprocess
@@ -49,18 +50,17 @@ def test_run_enrichment_enqueues_on_wiki_lock_busy(orchestrator: Orchestrator) -
         evidence=["page-1"],
     )
 
-    with mock.patch.object(
-        orchestrator, "_generate_memory_plan_from_deps", return_value=plan
-    ), mock.patch.object(
-        orchestrator._memory_service,
-        "apply_plan",
-        side_effect=WikiLockBusy("wiki memory lock is held by another process"),
+    with (
+        mock.patch.object(orchestrator, "_generate_memory_plan_from_deps", return_value=plan),
+        mock.patch.object(
+            orchestrator._memory_service,
+            "apply_plan",
+            side_effect=WikiLockBusy("wiki memory lock is held by another process"),
+        ),
     ):
         receipt = orchestrator._run_enrichment("ask", "answer", [], [])
 
-    assert receipt.errors and receipt.errors[0].startswith(
-        "queued_for_retry: WikiLockBusy:"
-    )
+    assert receipt.errors and receipt.errors[0].startswith("queued_for_retry: WikiLockBusy:")
     assert len(orchestrator._enrichment_queue) == 1
     queued = orchestrator._enrichment_queue._items[0]  # type: ignore[attr-defined]
     assert isinstance(queued.deps, MemoryEnricherDeps)
@@ -103,9 +103,7 @@ def test_format_receipt_renders_queued_alongside_durable_changes(
 
     receipt = MemoryReceipt(
         changed_pages=[
-            PageReference(
-                path="concepts/x.md", collection_id="wiki", op=OperationKind.CREATE
-            )
+            PageReference(path="concepts/x.md", collection_id="wiki", op=OperationKind.CREATE)
         ],
         deferred=[],
         fallback_used=False,

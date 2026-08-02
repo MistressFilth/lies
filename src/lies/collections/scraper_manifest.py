@@ -4,6 +4,7 @@ Stored at ``<wiki>/raw/<collection>/manifest.json``. Consumed by
 the SCRAPE stage to enumerate docs and verify integrity before
 normalize.
 """
+
 from __future__ import annotations
 
 import json

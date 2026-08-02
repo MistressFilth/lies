@@ -4,6 +4,7 @@ Failed docs are copied (not moved) to
 ``<wiki>/.lies/poison/<collection>/<path>`` along with a sidecar
 ``.reason`` file.
 """
+
 from __future__ import annotations
 
 import shutil

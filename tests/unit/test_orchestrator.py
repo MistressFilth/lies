@@ -94,19 +94,13 @@ def test_wiki_root_propagates_to_file_system_capability(wiki_root: Path) -> None
     # list). Find the FileSystem among them.
     root_cap = orch._agent.root_capability  # type: ignore[attr-defined]
     caps = getattr(root_cap, "capabilities", [])
-    fs_caps = [
-        c
-        for c in caps
-        if getattr(c, "__class__", type(c)).__name__ == "FileSystem"
-    ]
+    fs_caps = [c for c in caps if getattr(c, "__class__", type(c)).__name__ == "FileSystem"]
     assert fs_caps, "expected a FileSystem capability in the orchestrator"
     # FileSystem stores the root under various names depending on the
     # harness version; check the obvious ones.
     fs = fs_caps[0]
     root = (
-        getattr(fs, "root", None)
-        or getattr(fs, "root_dir", None)
-        or getattr(fs, "wiki_root", None)
+        getattr(fs, "root", None) or getattr(fs, "root_dir", None) or getattr(fs, "wiki_root", None)
     )
     assert root == orch.wiki_root, (
         f"file_system capability root ({root!r}) does not match "
@@ -194,9 +188,7 @@ def git_wiki(wiki_root: Path) -> Path:
         capture_output=True,
     )
     (wiki_root / "initial.txt").write_text("init")
-    subprocess.run(
-        ["git", "add", "."], cwd=wiki_root, check=True, capture_output=True
-    )
+    subprocess.run(["git", "add", "."], cwd=wiki_root, check=True, capture_output=True)
     subprocess.run(
         ["git", "commit", "-m", "initial"],
         cwd=wiki_root,

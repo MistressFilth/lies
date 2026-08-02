@@ -36,6 +36,8 @@ def test_pdf_scraper_parse_uses_pymupdf(tmp_path: Path) -> None:
 
 
 def test_pdf_scraper_emits_manifest(tmp_path: Path) -> None:
-    docs = [ParsedDoc(path="x.md", content=b"# x", source_sha256=_sha("# x"), source_format="markdown")]
+    docs = [
+        ParsedDoc(path="x.md", content=b"# x", source_sha256=_sha("# x"), source_format="markdown")
+    ]
     out = PDFScraper().emit_manifest(docs, tmp_path)
     assert json.loads(out.read_text(encoding="utf-8"))["files"]

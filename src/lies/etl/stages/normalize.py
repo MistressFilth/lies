@@ -4,6 +4,7 @@ Emits parsed_docs as a list of ParsedDoc with content replaced by the
 post-normalize markdown (utf-8 encoded). Downstream stages consume
 this list.
 """
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
@@ -37,18 +38,23 @@ def run_normalize(collection: Collection, docs: list[ParsedDoc]) -> StageResult:
                 },
             )
             success.append(doc.path)
-            out_docs.append(ParsedDoc(
-                path=doc.path,
-                content=wiki_markdown.encode("utf-8"),
-                source_sha256=doc.source_sha256,
-                source_format=doc.source_format,
-            ))
+            out_docs.append(
+                ParsedDoc(
+                    path=doc.path,
+                    content=wiki_markdown.encode("utf-8"),
+                    source_sha256=doc.source_sha256,
+                    source_format=doc.source_format,
+                )
+            )
         except UnknownFormatError as exc:
             quarantined.append((doc.path, str(exc)))
         except Exception as exc:  # noqa: BLE001 - quarantine is the catch-all
             quarantined.append((doc.path, f"normalize failed: {exc}"))
     return StageResult(
-        success=success, quarantined=quarantined, skipped=[],
+        success=success,
+        quarantined=quarantined,
+        skipped=[],
         parsed_docs=out_docs,
-        bytes_in=bytes_in, bytes_out=0,
+        bytes_in=bytes_in,
+        bytes_out=0,
     )

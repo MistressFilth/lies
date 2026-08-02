@@ -3,6 +3,7 @@
 Text extraction via ``pymupdf``. Pages with no extractable text are
 left to the normalize stage's OCR fallback.
 """
+
 from __future__ import annotations
 
 import hashlib
