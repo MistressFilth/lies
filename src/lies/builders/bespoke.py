@@ -12,6 +12,7 @@ walks the manifest:
 - Otherwise (e.g. ``liquid``), pass the doc through unchanged; the
   NORMALIZE stage quarantines it.
 """
+
 from __future__ import annotations
 
 import hashlib

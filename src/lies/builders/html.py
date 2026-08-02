@@ -4,6 +4,7 @@ Reads ``<workspace>/source.html`` and converts to markdown via the
 existing pandoc wrapper. Emits a single :class:`ParsedDoc` at
 ``index.md``.
 """
+
 from __future__ import annotations
 
 import hashlib

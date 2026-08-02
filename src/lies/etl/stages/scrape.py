@@ -26,9 +26,7 @@ if TYPE_CHECKING:
 def _load_bespoke_scraper(scraper_cmd: str) -> BaseScraper:
     """Resolve ``module:attr`` or ``path.py:attr`` to a BaseScraper."""
     if ":" not in scraper_cmd:
-        raise ScraperUnavailable(
-            f"scraper_cmd must be 'module:attr', got: {scraper_cmd!r}"
-        )
+        raise ScraperUnavailable(f"scraper_cmd must be 'module:attr', got: {scraper_cmd!r}")
     target, attr = scraper_cmd.rsplit(":", 1)
     if target.endswith(".py") and Path(target).exists():
         spec = importlib.util.spec_from_file_location(f"lies_bespoke_{attr}", target)
@@ -39,26 +37,19 @@ def _load_bespoke_scraper(scraper_cmd: str) -> BaseScraper:
         try:
             spec.loader.exec_module(module)
         except Exception as exc:
-            raise ScraperUnavailable(
-                f"could not import scraper module: {target}: {exc}"
-            ) from exc
+            raise ScraperUnavailable(f"could not import scraper module: {target}: {exc}") from exc
     else:
         try:
             module = importlib.import_module(target)
         except Exception as exc:
-            raise ScraperUnavailable(
-                f"could not import scraper module: {target}: {exc}"
-            ) from exc
+            raise ScraperUnavailable(f"could not import scraper module: {target}: {exc}") from exc
     try:
         scraper = getattr(module, attr)
     except AttributeError as exc:
-        raise ScraperUnavailable(
-            f"scraper module {target!r} has no attribute {attr!r}"
-        ) from exc
+        raise ScraperUnavailable(f"scraper module {target!r} has no attribute {attr!r}") from exc
     if not isinstance(scraper, BaseScraper):
         raise ScraperUnavailable(
-            f"scraper {scraper_cmd!r} resolved to {type(scraper).__name__}, "
-            f"expected BaseScraper"
+            f"scraper {scraper_cmd!r} resolved to {type(scraper).__name__}, expected BaseScraper"
         )
     return scraper
 

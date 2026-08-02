@@ -420,5 +420,6 @@ def test_register_collection_is_idempotent(tmp_path) -> None:
 def test_is_registered_false_for_unknown() -> None:
     from lies.memory.service import WikiMemoryService
     from lies.wiki.layout import WikiLayout
+
     svc = WikiMemoryService(WikiLayout(__import__("pathlib").Path("/tmp/lies-svc-test")))
     assert not svc.is_registered("nope")

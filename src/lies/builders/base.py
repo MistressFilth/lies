@@ -11,6 +11,7 @@ string to a builder instance. ``REGISTRY`` is the module-level
 singleton populated by the format-specific builder modules and
 read by the NORMALIZE stage.
 """
+
 from __future__ import annotations
 
 import hashlib

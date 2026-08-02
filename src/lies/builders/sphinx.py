@@ -11,6 +11,7 @@ Each kept file goes through the pandoc wrapper. Output
 ``ParsedDoc.path`` is the rename target or the original relpath
 with the ``.rst`` extension replaced by ``.md``.
 """
+
 from __future__ import annotations
 
 import hashlib

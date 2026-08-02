@@ -5,6 +5,7 @@ on empty result (table-only or scanned), fall back to
 ``pymupdf.Page.get_text()``. One ``ParsedDoc`` per page with
 ``path="pages/page-NNNN.md"`` and ``source_format="markdown"``.
 """
+
 from __future__ import annotations
 
 import hashlib
