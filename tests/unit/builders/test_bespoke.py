@@ -56,7 +56,12 @@ def test_bespoke_passes_through_unknown_format(tmp_path: Path, collection: Colle
     (tmp_path / "page.liquid").write_text("a", encoding="utf-8")
     (tmp_path / "manifest.json").write_text(json.dumps({
         "files": [
-            {"path": "page.liquid", "out_path": "page.liquid", "source_format": "liquid", "sha256": "h1"},
+            {
+                "path": "page.liquid",
+                "out_path": "page.liquid",
+                "source_format": "liquid",
+                "sha256": "h1",
+            },
         ]
     }), encoding="utf-8")
     reg = BuilderRegistry()

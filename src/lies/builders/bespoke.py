@@ -69,9 +69,13 @@ class BespokeBuilder(Builder):
             (sub / ("source." + _ext_for(emitted))).write_bytes(content)
             sub_docs = builder.build(sub, collection=collection)
             for d in sub_docs:
+                if len(sub_docs) == 1:
+                    out_path = target
+                else:
+                    out_path = f"{target.rsplit('/', 1)[0]}/{d.path.rsplit('/', 1)[-1]}"
                 out.append(
                     ParsedDoc(
-                        path=target if len(sub_docs) == 1 else f"{target.rsplit('/', 1)[0]}/{d.path.rsplit('/', 1)[-1]}",
+                        path=out_path,
                         content=d.content,
                         source_sha256=d.source_sha256,
                         source_format="markdown",
