@@ -8,9 +8,10 @@ primary key and must not contain QMD operator characters.
 from __future__ import annotations
 
 import re
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 import yaml  # type: ignore[import-untyped]
 
@@ -39,6 +40,7 @@ class Collection:
     version: str
     created_at: datetime
     updated_at: datetime
+    config: dict[str, Any] = field(default_factory=dict)
 
     def qmd_name(self) -> str:
         """Return the collection name used by QMD."""
@@ -88,6 +90,7 @@ def load_collection(wiki_root: Path, name: str) -> Collection:
             version=payload["version"],
             created_at=_parse_dt(payload["created_at"]),
             updated_at=_parse_dt(payload["updated_at"]),
+            config=payload.get("config") or {},
         )
     except KeyError as exc:
         raise CollectionConfigInvalid(f"missing field {exc} in {config_path}") from exc
