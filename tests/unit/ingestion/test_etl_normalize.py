@@ -71,9 +71,14 @@ def test_normalize_quarantines_builder_unavailable(tmp_path) -> None:
     assert any("liquid" in reason for _, reason in result.quarantined)
 
 
-def test_normalize_passes_bespoke_through(tmp_path) -> None:
-    """Bespoke docs come from a bespoke scraper already in markdown; apply
-    frontmatter only and emit with source_format preserved."""
+def test_normalize_routes_bespoke_through_builder(tmp_path) -> None:
+    """Bespoke docs route through ``BespokeBuilder.build`` like every other
+    registered builder; the returned docs are post-processed with Obsidian
+    frontmatter and emitted as markdown."""
+    import json
+
+    from lies.builders.bespoke import BespokeBuilder
+
     c = Collection(
         name="mycoll",
         path=tmp_path,
@@ -96,12 +101,23 @@ def test_normalize_passes_bespoke_through(tmp_path) -> None:
             source_format="bespoke",
         )
     ]
-    result = run_normalize(c, docs)
+    fake_returned = [
+        ParsedDoc(
+            path="custom.md",
+            content=b"# already markdown\n",
+            source_sha256="h",
+            source_format="markdown",
+        )
+    ]
+    with mock.patch.object(BespokeBuilder, "build", return_value=fake_returned) as mock_build:
+        result = run_normalize(c, docs)
+    assert mock_build.called
     assert result.quarantined == []
     assert result.success == ["custom.md"]
     assert len(result.parsed_docs) == 1
     out = result.parsed_docs[0]
-    assert out.source_format == "bespoke"
+    # After routing through the builder, the emitted doc is markdown.
+    assert out.source_format == "markdown"
     assert out.path == "custom.md"
     decoded = out.content.decode("utf-8")
     assert "mycoll" in decoded

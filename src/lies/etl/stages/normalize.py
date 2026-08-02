@@ -13,6 +13,7 @@ this list.
 
 from __future__ import annotations
 
+import json
 import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -39,6 +40,30 @@ def _materialize(workspace: Path, fmt: str, raw: bytes) -> None:
         (workspace / "src" / "index.rst").write_bytes(raw)
 
 
+def _materialize_bespoke(workspace: Path, doc: ParsedDoc) -> None:
+    """Materialize a synthetic manifest + body file for a bespoke doc.
+
+    The bespoke builder walks ``<workspace>/manifest.json`` and reads
+    ``<workspace>/<entry.path>`` for each entry. We synthesize a
+    single-entry manifest pointing at the per-doc body so the builder
+    behaves identically to a scraper that pre-wrote both files.
+    """
+    workspace.mkdir(parents=True, exist_ok=True)
+    body_name = doc.path.rsplit("/", 1)[-1] or "body.md"
+    (workspace / body_name).write_bytes(doc.content)
+    manifest = {
+        "files": [
+            {
+                "path": body_name,
+                "out_path": doc.path,
+                "source_format": "markdown",
+                "sha256": doc.source_sha256,
+            }
+        ]
+    }
+    (workspace / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+
 def _doc_title(doc: ParsedDoc) -> str:
     return doc.path.rsplit("/", 1)[-1].rsplit(".", 1)[0]
 
@@ -53,13 +78,13 @@ def run_normalize(collection: Collection, docs: list[ParsedDoc]) -> StageResult:
     for doc in docs:
         bytes_in += len(doc.content)
         try:
-            if doc.source_format in REGISTRY.formats() and doc.source_format not in {
-                "markdown",
-                "bespoke",
-            }:
+            if doc.source_format in REGISTRY.formats() and doc.source_format != "markdown":
                 with tempfile.TemporaryDirectory() as td:
                     workspace = Path(td)
-                    _materialize(workspace, doc.source_format, doc.content)
+                    if doc.source_format == "bespoke":
+                        _materialize_bespoke(workspace, doc)
+                    else:
+                        _materialize(workspace, doc.source_format, doc.content)
                     built = REGISTRY.resolve(doc.source_format).build(
                         workspace, collection=collection
                     )
@@ -84,28 +109,6 @@ def run_normalize(collection: Collection, docs: list[ParsedDoc]) -> StageResult:
                             source_format="markdown",
                         )
                     )
-                continue
-            if doc.source_format == "bespoke":
-                # Bespoke scrapers already produced markdown; run the
-                # Obsidian frontmatter pass and emit without re-conversion.
-                markdown = doc.content.decode("utf-8", errors="replace")
-                wiki_markdown = obsidian.apply(
-                    markdown,
-                    frontmatter={
-                        "title": _doc_title(doc),
-                        "collection": collection.name,
-                        "tags": collection.tags,
-                    },
-                )
-                success.append(doc.path)
-                out_docs.append(
-                    ParsedDoc(
-                        path=doc.path,
-                        content=wiki_markdown.encode("utf-8"),
-                        source_sha256=doc.source_sha256,
-                        source_format=doc.source_format,
-                    )
-                )
                 continue
             markdown = format_dispatch.dispatch(doc.content, doc.source_format)
             wiki_markdown = obsidian.apply(
