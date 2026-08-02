@@ -5,6 +5,7 @@ from unittest import mock
 from lies.collections.record import Collection
 from lies.etl.stages.normalize import run_normalize
 from lies.etl.stages.scrape import run_scrape
+from lies.etl.stages.write import run_write
 from lies.scrapers.base import ParsedDoc
 
 
@@ -61,3 +62,61 @@ def test_run_normalize_quarantines_unknown_format(tmp_path: Path) -> None:
     ):
         result = run_normalize(_collection(tmp_path), [fake_doc])
     assert result.quarantined == [("bad.xyz", "nope")]
+
+
+def test_run_write_atomic_commits_new_files(tmp_path: Path) -> None:
+    fake_normalized = [("x.md", "# body")]
+    manifest = mock.Mock()
+    manifest.compare.return_value = False  # fresh manifest: no prior entries
+    with mock.patch("lies.etl.stages.write.atomic_commit") as ac:
+        result = run_write(_collection(tmp_path), fake_normalized,
+                           manifest=manifest, wiki_root=tmp_path, force=False)
+    assert result.success == ["x.md"]
+    ac.assert_called_once()
+    written = tmp_path / "wiki" / "x.md"
+    assert written.exists()
+
+
+def test_run_write_writes_under_wiki_root(tmp_path: Path) -> None:
+    """Target path is wiki_root/wiki/<path>, not CWD-relative."""
+    fake_normalized = [("concepts/example.md", "# body")]
+    manifest = mock.Mock()
+    manifest.compare.return_value = False
+    with mock.patch("lies.etl.stages.write.atomic_commit"):
+        run_write(_collection(tmp_path), fake_normalized,
+                  manifest=manifest, wiki_root=tmp_path, force=False)
+    assert (tmp_path / "wiki" / "concepts" / "example.md").exists()
+
+
+def test_run_write_skips_unchanged(tmp_path: Path) -> None:
+    manifest = mock.Mock()
+    manifest.compare.return_value = True
+    fake_normalized = [("x.md", "# body")]
+    with mock.patch("lies.etl.stages.write.atomic_commit") as ac:
+        result = run_write(_collection(tmp_path), fake_normalized,
+                           manifest=manifest, wiki_root=tmp_path, force=False)
+    assert result.skipped == ["x.md"]
+    ac.assert_not_called()
+
+
+def test_run_write_quarantines_on_oserror(tmp_path: Path) -> None:
+    fake_normalized = [("x.md", "# body")]
+    manifest = mock.Mock()
+    manifest.compare.return_value = False
+    with mock.patch("lies.etl.stages.write.atomic_commit"), \
+         mock.patch("builtins.open", side_effect=OSError("disk full")):
+        result = run_write(_collection(tmp_path), fake_normalized,
+                           manifest=manifest, wiki_root=tmp_path, force=False)
+    assert result.quarantined == [("x.md", "disk full")]
+
+
+def test_run_write_respects_force(tmp_path: Path) -> None:
+    manifest = mock.Mock()
+    manifest.compare.return_value = True
+    fake_normalized = [("x.md", "# body")]
+    with mock.patch("lies.etl.stages.write.atomic_commit") as ac:
+        result = run_write(_collection(tmp_path), fake_normalized,
+                           manifest=manifest, wiki_root=tmp_path, force=True)
+    assert result.success == ["x.md"]
+    assert result.skipped == []
+    ac.assert_called_once()
