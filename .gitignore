@@ -26,3 +26,7 @@ htmlcov/
 .superpowers/
 docs/superpowers/
 sdd/
+
+# Per-repo LLM agent memory (per-machine, not shared) and Claude Code local settings.
+AGENTS.local.md
+.claude/settings.local.json
