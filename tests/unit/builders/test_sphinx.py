@@ -51,9 +51,7 @@ def seeded_workspace(tmp_path: Path) -> Path:
     return ws
 
 
-def test_sphinx_builder_walks_includes_only(
-    collection_factory, seeded_workspace: Path
-) -> None:
+def test_sphinx_builder_walks_includes_only(collection_factory, seeded_workspace: Path) -> None:
     collection = collection_factory(
         {
             "sphinx_includes": ["**/*.rst"],

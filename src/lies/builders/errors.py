@@ -4,6 +4,7 @@ All builders raise a subclass of :class:`BuilderError` so the
 NORMALIZE stage can quarantine per-doc failures without
 collapsing the whole sync.
 """
+
 from __future__ import annotations
 
 

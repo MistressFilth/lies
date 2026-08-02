@@ -5,6 +5,7 @@ a ``WikiCollectionRef`` and registers it on the in-memory
 ``WikiMemoryService``. Failure is non-fatal: the wiki commit already
 happened, and the next sync re-attempts the registration.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -32,7 +33,9 @@ def run_register(collection: Collection, service: WikiMemoryService) -> StageRes
         collection_id=collection.name,
         root=Path(collection.path).resolve().as_posix(),  # type: ignore[arg-type]
         qmd_collection=collection.qmd_name(),
-        schema_path=(Path(collection.path).parent.parent / ".lies" / "schema.md").resolve().as_posix(),  # type: ignore[arg-type]
+        schema_path=(Path(collection.path).parent.parent / ".lies" / "schema.md")
+        .resolve()
+        .as_posix(),  # type: ignore[arg-type]
     )
     service.register_collection(ref)
     return StageResult(

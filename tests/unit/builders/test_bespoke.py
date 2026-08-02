@@ -34,12 +34,27 @@ def test_bespoke_routes_to_registered_builder(tmp_path: Path, collection: Collec
     # Two files: one rst (will be converted by a fake), one markdown (passthrough).
     (tmp_path / "page.rst").write_text("a", encoding="utf-8")
     (tmp_path / "raw.md").write_text("z", encoding="utf-8")
-    (tmp_path / "manifest.json").write_text(json.dumps({
-        "files": [
-            {"path": "page.rst", "out_path": "page.md", "source_format": "rst", "sha256": "h1"},
-            {"path": "raw.md", "out_path": "raw.md", "source_format": "markdown", "sha256": "h2"},
-        ]
-    }), encoding="utf-8")
+    (tmp_path / "manifest.json").write_text(
+        json.dumps(
+            {
+                "files": [
+                    {
+                        "path": "page.rst",
+                        "out_path": "page.md",
+                        "source_format": "rst",
+                        "sha256": "h1",
+                    },
+                    {
+                        "path": "raw.md",
+                        "out_path": "raw.md",
+                        "source_format": "markdown",
+                        "sha256": "h2",
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
     reg = BuilderRegistry()
     fake_rst = mock.Mock()
     fake_rst.build.return_value = []  # irrelevant for this test
@@ -54,16 +69,21 @@ def test_bespoke_routes_to_registered_builder(tmp_path: Path, collection: Collec
 
 def test_bespoke_passes_through_unknown_format(tmp_path: Path, collection: Collection) -> None:
     (tmp_path / "page.liquid").write_text("a", encoding="utf-8")
-    (tmp_path / "manifest.json").write_text(json.dumps({
-        "files": [
+    (tmp_path / "manifest.json").write_text(
+        json.dumps(
             {
-                "path": "page.liquid",
-                "out_path": "page.liquid",
-                "source_format": "liquid",
-                "sha256": "h1",
-            },
-        ]
-    }), encoding="utf-8")
+                "files": [
+                    {
+                        "path": "page.liquid",
+                        "out_path": "page.liquid",
+                        "source_format": "liquid",
+                        "sha256": "h1",
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
     reg = BuilderRegistry()
     docs = BespokeBuilder(registry=reg).build(tmp_path, collection=collection)
     assert len(docs) == 1
