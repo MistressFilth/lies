@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import subprocess
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any, cast
 
 import typer
 from rich.console import Console
@@ -15,6 +15,7 @@ from lies.config import get_model, get_wiki_root
 from lies.orchestrator import Orchestrator
 from lies.qmd import qmd_status
 from lies.schema.loader import load_default_schema
+from lies.scrapers.base import pick_scraper
 from lies.utils.logging import configure_logging
 from lies.wiki.git import atomic_commit
 from lies.wiki.layout import WikiLayout
@@ -326,11 +327,23 @@ def collections(
     name: Annotated[str | None, typer.Argument()] = None,
     *,
     tag: str | None = None,
+    source: str | None = None,
+    prompt: str | None = None,
+    apply: bool = False,
 ) -> None:
-    """Inspect and modify collection configurations."""
+    """Inspect, modify, and author collection configurations."""
+    import json
     import os
+    from datetime import datetime, timezone
 
-    from lies.collections.record import load_collection
+    import yaml  # type: ignore[import-untyped]
+    from rich.prompt import Prompt
+
+    from lies.collections.record import (
+        Collection,
+        load_collection,
+        save_collection,
+    )
 
     wiki_root = Path(os.environ.get("LIES_WIKI_ROOT", ".")).resolve()
     cfg_dir = wiki_root / ".lies" / "collections"
@@ -359,6 +372,95 @@ def collections(
             f"`lies collections modify {name}` is not implemented yet; "
             f"edit `<wiki>/.lies/collections/{name}.yaml` by hand for now."
         )
+    elif action == "new" and name:
+        # Import the agent inside the branch so that tests can mock
+        # ``lies.agents.collection_author.collection_author_agent`` at
+        # the source module. Module-level imports would freeze the
+        # reference before the mock applies.
+        from lies.agents.collection_author import (
+            AuthorProposal as _AuthorProposal,
+        )
+        from lies.agents.collection_author import (
+            AuthorQuestion as _AuthorQuestion,
+        )
+        from lies.agents.collection_author import (
+            CollectionAuthorDeps as _AuthorDeps,
+        )
+        from lies.agents.collection_author import (
+            collection_author_agent as _factory,
+        )
+
+        if not source or not prompt:
+            raise typer.BadParameter("collections new requires --source and --prompt")
+        # Manifest-only fetch (no body). The scraper's emit_manifest
+        # expects a list of ParsedDoc; an empty list produces an empty
+        # manifest, which is fine — the agent uses it to ask format
+        # questions and the user supplies the rest.
+        scraper = pick_scraper(source)
+        scratch_dir = wiki_root / ".lies" / "scratch"
+        manifest_path = scraper.emit_manifest([], scratch_dir)
+        manifest: list[dict[str, object]] = []
+        if manifest_path and manifest_path.exists():
+            data = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest = list(data.get("files", []))
+        agent = _factory()
+        history: list[object] = []
+        deps = _AuthorDeps(manifest=manifest)
+        while True:
+            # ``message_history`` expects a typed Sequence of model
+            # messages; we accept arbitrary user-prompt injections from
+            # the rich-prompt loop, so cast to Any at the boundary.
+            result = agent.run_sync(
+                prompt,
+                deps=deps,
+                message_history=cast(Any, history),
+            )
+            history.append(result.new_messages())
+            out = result.output
+            if isinstance(out, _AuthorQuestion):
+                if out.options:
+                    answer = Prompt.ask(
+                        out.prompt,
+                        choices=out.options,
+                        default=out.default or out.options[0],
+                    )
+                elif out.default is not None:
+                    answer = Prompt.ask(out.prompt, default=out.default)
+                else:
+                    answer = Prompt.ask(out.prompt)
+                history.append({"role": "user", "content": f"{out.id}: {answer}"})
+                continue
+            if isinstance(out, _AuthorProposal):
+                typer.echo(yaml.safe_dump(out.collection, sort_keys=True))
+                if apply:
+                    now = datetime.now(tz=timezone.utc)
+                    payload = dict(out.collection)
+                    payload.setdefault("name", name)
+                    payload.setdefault("path", str(wiki_root / "raw" / name))
+                    payload.setdefault("created_at", now)
+                    payload.setdefault("updated_at", now)
+                    # The agent may emit ISO strings; coerce to datetime
+                    # so Collection's typed fields and save_collection's
+                    # .isoformat() call work either way.
+                    created = payload.get("created_at")
+                    updated = payload.get("updated_at")
+                    if isinstance(created, str):
+                        payload["created_at"] = datetime.fromisoformat(
+                            created.replace("Z", "+00:00")
+                        )
+                    if isinstance(updated, str):
+                        payload["updated_at"] = datetime.fromisoformat(
+                            updated.replace("Z", "+00:00")
+                        )
+                    payload["path"] = Path(payload["path"])
+                    doc_path = payload.get("doc_path")
+                    if doc_path is not None:
+                        payload["doc_path"] = Path(doc_path)
+                    collection = Collection(**payload)
+                    save_collection(wiki_root, collection)
+                    typer.echo(f"wrote {cfg_dir / (name + '.yaml')}")
+                return
+            raise typer.BadParameter("agent returned unexpected output")
     else:
         raise typer.BadParameter(f"unknown action: {action}")
 
