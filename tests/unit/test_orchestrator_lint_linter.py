@@ -7,8 +7,17 @@ from pathlib import Path
 from unittest import mock
 
 import pytest
+from pydantic_ai.models.test import TestModel
+from pydantic_ai.tools import RunContext
 
-from lies.agents.linter import LintDeps, LintFinding, LintReport, LintSeverity
+from lies.agents.linter import (
+    LintDeps,
+    LintFinding,
+    LintReport,
+    LintSeverity,
+    _build_linter_prompt,
+    linter_agent,
+)
 from lies.orchestrator import Orchestrator
 
 
@@ -99,3 +108,54 @@ def test_call_linter_returns_empty_on_failure(orch: Orchestrator) -> None:
     assert fallback is not None
     assert "RuntimeError" in fallback
     assert "model offline" in fallback
+
+
+def test_build_linter_prompt_includes_page_texts() -> None:
+    """The linter's system-prompt callable must render every page's body
+    into the prompt the model sees. Without this, pydantic-ai deps are
+    only host-side ``RunContext`` data and the model has no way to
+    read the wiki.
+    """
+    deps = LintDeps(
+        page_texts={
+            "concepts/alpha.md": "---\ntitle: Alpha\n---\n# Alpha\n\nbody-A\n",
+            "concepts/beta.md": "---\ntitle: Beta\n---\n# Beta\n\nbody-B\n",
+        },
+        wiki_root="/tmp/wiki",
+    )
+    # The callable accepts a RunContext; build a synthetic one with just
+    # the deps attribute the callable reads.
+    ctx = RunContext(
+        deps=deps,
+        model=TestModel(),
+        usage=None,  # type: ignore[arg-type]
+        prompt="lint",
+    )
+    prompt = _build_linter_prompt(ctx)
+    # Static instructions preserved.
+    assert "contradiction" in prompt
+    # Wiki root surfaced for reference.
+    assert "/tmp/wiki" in prompt
+    # Both page paths and bodies rendered.
+    assert "concepts/alpha.md" in prompt
+    assert "body-A" in prompt
+    assert "concepts/beta.md" in prompt
+    assert "body-B" in prompt
+
+
+def test_linter_agent_registers_dynamic_system_prompt() -> None:
+    """The linter agent must register ``_build_linter_prompt`` as a
+    system-prompt callable so pydantic-ai renders deps into the prompt
+    at run time. Without the registration, the model only sees the
+    static prompt + the user message and cannot read any page.
+    """
+    agent: object = linter_agent(model=TestModel())
+    # pydantic-ai stores system-prompt callables on the agent under
+    # ``_system_prompt_functions`` (mutable list). Assert the linter's
+    # callable is registered.
+    sp_funcs = getattr(agent, "_system_prompt_functions", [])
+    registered = [getattr(f, "function", f) for f in sp_funcs]
+    assert _build_linter_prompt in registered, (
+        f"_build_linter_prompt must be registered as a system-prompt callable, "
+        f"got {[type(f).__name__ for f in registered]}"
+    )

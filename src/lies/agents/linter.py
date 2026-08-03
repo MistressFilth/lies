@@ -12,6 +12,7 @@ from enum import Enum
 
 from pydantic import BaseModel
 from pydantic_ai import Agent
+from pydantic_ai.tools import RunContext
 
 from lies.agents.base import make_sub_agent
 
@@ -99,16 +100,42 @@ whether to apply fixes.
 """
 
 
+def _build_linter_prompt(ctx: RunContext[LintDeps]) -> str:
+    """Render the page-text corpus into the linter's system prompt.
+
+    Pydantic-ai deps are ``RunContext`` data — they are NOT
+    auto-serialized into model messages. A static ``system_prompt``
+    alone leaves the LLM unable to read any wiki page, so the model
+    can only hallucinate or return an empty report. This callable
+    extends ``LINTER_SYSTEM_PROMPT`` with the actual page corpus so
+    the model can read every wiki page directly.
+
+    Page paths are emitted with a ``--- <path> ---`` separator so the
+    LLM can attribute claims to specific pages, and so unit tests can
+    assert the corpus reached the prompt.
+    """
+    parts: list[str] = [LINTER_SYSTEM_PROMPT]
+    if ctx.deps.wiki_root:
+        parts.append(f"\nWiki root: {ctx.deps.wiki_root}")
+    for path, text in ctx.deps.page_texts.items():
+        parts.append(f"\n--- {path} ---\n{text}")
+    return "\n".join(parts)
+
+
 def linter_agent(model: str = "anthropic:claude-opus-4-7") -> Agent[LintDeps, LintReport]:
     """Construct the linter sub-agent.
 
     Carries ``LintDeps`` so the orchestrator can pre-supply every wiki
-    page's markdown body. The LLM reads pages from ``deps.page_texts``;
-    it does not need tool calls to walk the filesystem.
+    page's markdown body. ``_build_linter_prompt`` is registered as a
+    ``system_prompt`` callable so the page corpus is rendered into the
+    prompt at run time — a static ``system_prompt`` alone would leave
+    the model unable to read any page.
     """
-    return make_sub_agent(
+    agent: Agent[LintDeps, LintReport] = make_sub_agent(
         model=model,
         output_type=LintReport,
         deps_type=LintDeps,
         system_prompt=LINTER_SYSTEM_PROMPT,
     )
+    agent.system_prompt(_build_linter_prompt)
+    return agent
