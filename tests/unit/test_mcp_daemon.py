@@ -67,6 +67,20 @@ def test_write_leaves_no_temp_file(tmp_path: Path) -> None:
     assert leftovers == []
 
 
+def test_write_removes_temp_file_when_replace_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def _fail_replace(_src: Path, _dst: Path) -> None:
+        raise OSError("replace failed")
+
+    monkeypatch.setattr(daemon.os, "replace", _fail_replace)
+
+    with pytest.raises(OSError, match="replace failed"):
+        daemon.write_record(tmp_path, _record())
+
+    assert not (tmp_path / ".lies" / "mcp.pid.tmp").exists()
+
+
 def test_clear_record_is_idempotent(tmp_path: Path) -> None:
     daemon.write_record(tmp_path, _record())
     daemon.clear_record(tmp_path)
@@ -82,7 +96,14 @@ def test_process_alive_for_missing_pid() -> None:
     assert daemon.process_alive(999_999_999) is False
 
 
-def test_is_stale_false_for_live_pid() -> None:
+def test_is_stale_true_for_live_non_daemon_pid() -> None:
+    assert daemon.is_stale(_record(pid=os.getpid())) is True
+
+
+def test_is_stale_falls_back_to_liveness_when_proc_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(daemon, "_daemon_cmdline_matches", lambda _pid: None)
     assert daemon.is_stale(_record(pid=os.getpid())) is False
 
 
@@ -93,6 +114,11 @@ def test_is_stale_true_for_dead_pid() -> None:
 def test_daemon_url_uses_mount_path() -> None:
     url = daemon.daemon_url(_record(host="127.0.0.1", port=9001))
     assert url == f"http://127.0.0.1:9001{daemon.MCP_PATH}"
+
+
+def test_daemon_url_brackets_ipv6_loopback() -> None:
+    url = daemon.daemon_url(_record(host="::1", port=9001))
+    assert url == f"http://[::1]:9001{daemon.MCP_PATH}"
 
 
 def test_already_running_carries_the_record() -> None:
@@ -136,6 +162,25 @@ def test_tail_log_missing_file_is_empty(tmp_path: Path) -> None:
     assert daemon.tail_log(tmp_path, 5) == []
 
 
+@pytest.mark.parametrize("host", ["127.0.0.1", "localhost", "::1", "127.0.0.2"])
+def test_loopback_hosts_are_accepted(host: str) -> None:
+    daemon.require_loopback_host(host)
+
+
+def test_spawn_rejects_non_loopback_before_acquiring_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def _unexpected_lock(*_args: object, **_kwargs: object) -> None:
+        pytest.fail("spawn_daemon acquired the create lock for a rejected host")
+
+    monkeypatch.setattr(daemon, "acquire_create_lock", _unexpected_lock)
+
+    with pytest.raises(daemon.NonLoopbackBind, match="0.0.0.0"):
+        daemon.spawn_daemon(tmp_path, host="0.0.0.0")
+
+    assert not (tmp_path / ".lies").exists()
+
+
 def test_spawn_raises_when_port_occupied(tmp_path: Path) -> None:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as held:
         held.bind(("127.0.0.1", 0))
@@ -145,7 +190,10 @@ def test_spawn_raises_when_port_occupied(tmp_path: Path) -> None:
             daemon.spawn_daemon(tmp_path, host="127.0.0.1", port=port, timeout=1.0)
 
 
-def test_spawn_raises_already_running_for_live_record(tmp_path: Path) -> None:
+def test_spawn_raises_already_running_for_live_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(daemon, "_daemon_cmdline_matches", lambda _pid: True)
     daemon.write_record(tmp_path, _record(pid=os.getpid()))
     with pytest.raises(daemon.DaemonAlreadyRunning) as caught:
         daemon.spawn_daemon(tmp_path, timeout=1.0)
@@ -199,7 +247,9 @@ def test_stop_clears_a_stale_record(tmp_path: Path) -> None:
 
 
 def test_stop_terminates_a_cooperative_child(tmp_path: Path) -> None:
-    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    proc = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(60)", "lies.cli", "_serve"]
+    )
     daemon.write_record(tmp_path, _record(pid=proc.pid))
     try:
         result = daemon.stop_daemon(tmp_path, grace=5.0)
@@ -220,7 +270,7 @@ def test_stop_escalates_to_sigkill(tmp_path: Path) -> None:
         f"open({str(ready_marker)!r}, 'w').close();"
         "time.sleep(60)"
     )
-    proc = subprocess.Popen([sys.executable, "-c", script])
+    proc = subprocess.Popen([sys.executable, "-c", script, "lies.cli", "_serve"])
     # Block until the child has installed the SIG_IGN handler. Without
     # this handshake the parent's SIGTERM can land first and the test
     # races — the child would exit from the default SIGTERM action
@@ -268,7 +318,10 @@ def test_status_reports_stopped_without_a_record(tmp_path: Path) -> None:
     assert status.log == daemon.log_path(tmp_path)
 
 
-def test_status_reports_running_for_a_live_record(tmp_path: Path) -> None:
+def test_status_reports_running_for_a_live_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(daemon, "_daemon_cmdline_matches", lambda _pid: True)
     daemon.write_record(tmp_path, _record(pid=os.getpid(), port=9002))
     status = daemon.daemon_status(tmp_path)
     assert status.running is True
@@ -289,8 +342,11 @@ def test_status_reports_stale_for_a_dead_pid(tmp_path: Path) -> None:
     assert daemon.read_record(tmp_path) is not None
 
 
-def test_status_clamps_negative_uptime_to_zero(tmp_path: Path) -> None:
+def test_status_clamps_negative_uptime_to_zero(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """A record with a future ``started_at`` reports uptime >= 0, not negative."""
+    monkeypatch.setattr(daemon, "_daemon_cmdline_matches", lambda _pid: True)
     future = datetime.now(timezone.utc) + timedelta(hours=1)
     daemon.write_record(tmp_path, _record(pid=os.getpid(), started_at=future))
     status = daemon.daemon_status(tmp_path)

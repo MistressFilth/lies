@@ -77,6 +77,10 @@ def qmd_daemon_state() -> QmdState:
     except OSError as exc:
         return QmdState(True, False, None, f"qmd status failed: {exc}")
 
+    if proc.returncode != 0:
+        stderr = (proc.stderr or "").strip()
+        first = stderr.splitlines()[0] if stderr else "no stderr"
+        return QmdState(True, False, None, f"qmd status exited {proc.returncode}: {first}")
     match = _MCP_LINE.search(proc.stdout or "")
     if match is None:
         return QmdState(True, False, None, "qmd daemon not running")

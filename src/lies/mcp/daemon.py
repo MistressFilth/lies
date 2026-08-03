@@ -16,6 +16,7 @@ clean stop.
 
 from __future__ import annotations
 
+import ipaddress
 import os
 import signal as signal_module
 import socket
@@ -67,6 +68,10 @@ class DaemonAlreadyRunning(DaemonError):
 
 class DaemonBusy(DaemonError):
     """Another lifecycle operation holds the create-lock for this wiki."""
+
+
+class NonLoopbackBind(DaemonError):
+    """The daemon cannot bind remotely without an authentication layer."""
 
 
 class PortUnavailable(DaemonError):
@@ -133,8 +138,15 @@ def write_record(wiki_root: Path, rec: PidRecord) -> None:
     path = pid_path(wiki_root)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f"{path.name}.tmp")
-    tmp.write_text(rec.model_dump_json(), encoding="utf-8")
-    os.replace(tmp, path)
+    try:
+        tmp.write_text(rec.model_dump_json(), encoding="utf-8")
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
 
 
 def clear_record(wiki_root: Path) -> None:
@@ -162,14 +174,51 @@ def process_alive(pid: int) -> bool:
     return True
 
 
+def _daemon_cmdline_matches(pid: int) -> bool | None:
+    """Identify a spawned LIES daemon from its procfs command line.
+
+    ``None`` means procfs could not be inspected, so callers must fall
+    back to liveness-only behavior for portability.
+    """
+    try:
+        cmdline = Path(f"/proc/{pid}/cmdline").read_bytes()
+    except (FileNotFoundError, PermissionError, OSError):
+        return None
+    return b"lies.cli" in cmdline and b"_serve" in cmdline
+
+
 def is_stale(rec: PidRecord) -> bool:
-    """Return True when the record exists but its process does not."""
-    return not process_alive(rec.pid)
+    """Return True when the record's process is dead or not this daemon."""
+    if not process_alive(rec.pid):
+        return True
+    identity = _daemon_cmdline_matches(rec.pid)
+    return identity is False
 
 
 def daemon_url(rec: PidRecord) -> str:
     """Return the streamable-http URL an MCP host should register."""
-    return f"http://{rec.host}:{rec.port}{MCP_PATH}"
+    try:
+        address = ipaddress.ip_address(rec.host)
+    except ValueError:
+        address = None
+    host = f"[{rec.host}]" if address is not None and address.version == 6 else rec.host
+    return f"http://{host}:{rec.port}{MCP_PATH}"
+
+
+def require_loopback_host(host: str) -> None:
+    """Reject bind hosts that can expose the unauthenticated daemon."""
+    if host.lower() == "localhost":
+        return
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        address = None
+    if address is not None and address.is_loopback:
+        return
+    raise NonLoopbackBind(
+        f"refusing non-loopback bind host {host!r}: the LIES MCP daemon has no authentication; "
+        "put a reverse proxy in front if you need remote access"
+    )
 
 
 def port_free(host: str, port: int) -> bool:
@@ -178,7 +227,12 @@ def port_free(host: str, port: int) -> bool:
     Probed before spawning so a non-LIES process squatting the port
     surfaces as a clear error rather than a confusing readiness timeout.
     """
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        address = None
+    family = socket.AF_INET6 if address is not None and address.version == 6 else socket.AF_INET
+    with socket.socket(family, socket.SOCK_STREAM) as sock:
         try:
             sock.bind((host, port))
         except OSError:
@@ -249,13 +303,15 @@ def spawn_daemon(
 ) -> PidRecord:
     """Start a detached streamable-http daemon and return its record.
 
-    Raises :class:`DaemonAlreadyRunning` when a live daemon owns this
-    wiki root, :class:`DaemonBusy` on create-lock contention,
-    :class:`PortUnavailable` when the address is occupied, and
-    :class:`DaemonStartFailed` when the child dies or never accepts a
-    connection. The record is written only after the readiness gate
-    passes, so ``up`` never reports success for a dead child.
+    Raises :class:`NonLoopbackBind` before any lifecycle state is touched,
+    :class:`DaemonAlreadyRunning` when a live daemon owns this wiki root,
+    :class:`DaemonBusy` on create-lock contention, :class:`PortUnavailable`
+    when the address is occupied, and :class:`DaemonStartFailed` when the
+    child dies or never accepts a connection. The record is written only
+    after the readiness gate passes, so ``up`` never reports success for a
+    dead child.
     """
+    require_loopback_host(host)
     lock = create_lock_path(wiki_root)
     fd = acquire_create_lock(lock, max_age_s=CREATE_LOCK_MAX_AGE_S)
     if fd is None:
@@ -265,7 +321,8 @@ def spawn_daemon(
         if existing is not None:
             if not is_stale(existing):
                 raise DaemonAlreadyRunning(
-                    f"daemon already running at {daemon_url(existing)} (pid {existing.pid})",
+                    f"lies mcp daemon already running at {daemon_url(existing)} "
+                    f"(pid {existing.pid})",
                     record=existing,
                 )
             clear_record(wiki_root)

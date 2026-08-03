@@ -26,9 +26,11 @@ Documents
 """
 
 
-def _completed(stdout: str = "", returncode: int = 0) -> subprocess.CompletedProcess[str]:
+def _completed(
+    stdout: str = "", returncode: int = 0, stderr: str = ""
+) -> subprocess.CompletedProcess[str]:
     return subprocess.CompletedProcess(
-        args=["qmd"], returncode=returncode, stdout=stdout, stderr=""
+        args=["qmd"], returncode=returncode, stdout=stdout, stderr=stderr
     )
 
 
@@ -57,6 +59,22 @@ def test_state_reports_stopped_without_mcp_line(monkeypatch: pytest.MonkeyPatch)
     state = qmd_daemon.qmd_daemon_state()
     assert state.running is False
     assert state.pid is None
+
+
+def test_state_reports_nonzero_exit_and_stderr(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(qmd_daemon.shutil, "which", lambda _name: "/usr/bin/qmd")
+    monkeypatch.setattr(
+        qmd_daemon.subprocess,
+        "run",
+        lambda *a, **k: _completed(
+            _STATUS_STOPPED, returncode=3, stderr="database is locked\nretry later\n"
+        ),
+    )
+
+    state = qmd_daemon.qmd_daemon_state()
+
+    assert state.running is False
+    assert state.detail == "qmd status exited 3: database is locked"
 
 
 def test_state_when_not_installed(monkeypatch: pytest.MonkeyPatch) -> None:

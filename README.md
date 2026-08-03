@@ -62,10 +62,11 @@ lies mcp status                  # pid, URL, uptime, log path
 lies mcp down                    # stop it
 ```
 
-`lies mcp up` binds `127.0.0.1:8737` by default; pass `--host` / `--port`
-to override, which is how you run a daemon for a second wiki. The daemon
-is per-wiki — its pidfile lives at `<wiki>/.lies/mcp.pid` and its output
-goes to `<wiki>/.lies/mcp.log`.
+`lies mcp up` binds `127.0.0.1:8737` by default. Pass `--port` to
+run a daemon for a second wiki; `--host` may select another loopback
+address such as `localhost`, `::1`, or any address in `127.0.0.0/8`.
+The daemon is per-wiki — its pidfile lives at `<wiki>/.lies/mcp.pid` and
+its output goes to `<wiki>/.lies/mcp.log`.
 
 `lies mcp down` only stops daemons that `up` recorded. Servers a host
 spawned on stdio are left alone, so stopping the daemon never kills a
@@ -84,8 +85,9 @@ fixed port, one index shared across every wiki and any other tool using
 it — so stopping it would break sessions LIES knows nothing about. Use
 `qmd mcp stop` yourself if you really want it down.
 
-The daemon binds loopback and has no authentication. Do not expose it
-beyond `127.0.0.1`.
+The daemon has no authentication, so `up` and the internal `_serve`
+command refuse non-loopback bind hosts. Put an authenticated reverse
+proxy in front if remote access is required.
 
 After registration, Claude Code sees these tools:
 

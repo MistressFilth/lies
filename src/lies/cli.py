@@ -92,6 +92,11 @@ def _serve(
     Invoked only by ``lies mcp up`` through a re-exec. Not part of the
     supported surface; use ``up`` instead.
     """
+    try:
+        daemon.require_loopback_host(host)
+    except daemon.NonLoopbackBind as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
     configure_logging()
     from lies.mcp.server import mcp as _mcp_server
 
@@ -124,7 +129,7 @@ def up(
         for line in daemon.tail_log(root, 20):
             typer.echo(line, err=True)
         raise typer.Exit(code=1) from exc
-    except (daemon.PortUnavailable, daemon.DaemonBusy) as exc:
+    except (daemon.NonLoopbackBind, daemon.PortUnavailable, daemon.DaemonBusy) as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=1) from exc
     typer.echo(f"lies mcp daemon running at {daemon.daemon_url(rec)} (pid {rec.pid})")

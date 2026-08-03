@@ -313,6 +313,19 @@ def test_serve_runs_http_transport(monkeypatch) -> None:
     assert calls == [{"transport": "http", "host": "127.0.0.1", "port": 9100}]
 
 
+def test_serve_rejects_non_loopback_host(monkeypatch) -> None:
+    from lies.mcp.server import mcp as _mcp
+
+    calls: list[dict] = []
+    monkeypatch.setattr(_mcp, "run", lambda **kwargs: calls.append(kwargs))
+
+    result = runner.invoke(app, ["mcp", "_serve", "--host", "0.0.0.0", "--port", "9100"])
+
+    assert result.exit_code == 1
+    assert "has no authentication" in result.stderr
+    assert calls == []
+
+
 def test_up_prints_url_on_success(monkeypatch, tmp_path) -> None:
     from datetime import datetime, timezone
 
@@ -349,13 +362,34 @@ def test_up_is_idempotent_when_already_running(monkeypatch, tmp_path) -> None:
         version="0.5.0",
     )
 
+    message = f"lies mcp daemon already running at {daemon.daemon_url(rec)} (pid {rec.pid})"
+
     def _raise(*args: object, **kwargs: object) -> None:
-        raise daemon.DaemonAlreadyRunning("already running", record=rec)
+        raise daemon.DaemonAlreadyRunning(message, record=rec)
 
     monkeypatch.setattr(daemon, "spawn_daemon", _raise)
     result = runner.invoke(app, ["mcp", "up", "--wiki-root", str(tmp_path)])
     assert result.exit_code == 0
+    assert result.stdout.startswith("lies mcp daemon")
     assert "already running" in result.stdout
+
+
+def test_up_exits_1_on_non_loopback_host(monkeypatch, tmp_path) -> None:
+    from lies.mcp import daemon
+
+    calls: list[str] = []
+
+    def _raise(*args: object, **kwargs: object) -> None:
+        calls.append("spawn")
+        raise daemon.NonLoopbackBind("refusing host '0.0.0.0': daemon has no authentication")
+
+    monkeypatch.setattr(daemon, "spawn_daemon", _raise)
+
+    result = runner.invoke(app, ["mcp", "up", "--host", "0.0.0.0", "--wiki-root", str(tmp_path)])
+
+    assert result.exit_code == 1
+    assert "has no authentication" in result.stderr
+    assert calls == ["spawn"]
 
 
 def test_up_exits_1_on_port_conflict(monkeypatch, tmp_path) -> None:

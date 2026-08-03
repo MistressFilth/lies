@@ -39,6 +39,9 @@ All notable changes to LIES are documented here. The format follows
   created before this release.
 
 ### Changed
+- The unauthenticated MCP daemon now refuses non-loopback bind hosts in
+  both `lies mcp up` and the internal `_serve` command; remote access
+  requires an authenticated reverse proxy.
 - CI and local hooks now run the Makefile-backed Ruff, ty, formatting, and full test gates.
 - README now carries repository status, CI badge, development commands, and required project links.
 - Pinned GitHub Actions to `actions/checkout@v7`, `actions/setup-python@v7`, and `astral-sh/setup-uv@v9`; workflow fetches full history for compliance checks.
