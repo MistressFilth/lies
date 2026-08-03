@@ -484,21 +484,6 @@ _SUB_AGENT_TABLE: tuple[tuple[str, object, str], ...] = (
 )
 
 
-def _dedup_key(category: str, pages: list[str]) -> tuple[str, frozenset[str]]:
-    """Normalize a finding to a dedup key.
-
-    Page paths are normalized to a ``frozenset`` with any leading
-    ``wiki/`` prefix stripped so the same finding produced by the
-    shell (which prefixes ``wiki/``) and the LLM (which omits it)
-    collides. The message is intentionally NOT part of the key: for
-    mechanical categories the message is fully determined by the page
-    set; including it would split shell and LLM duplicates that
-    differ only in how the path is rendered in prose.
-    """
-    normalized = frozenset(p.removeprefix("wiki/") for p in pages)
-    return category, normalized
-
-
 def merge_lint_reports(
     shell: LintReport,
     llm: LintReport,
@@ -507,19 +492,20 @@ def merge_lint_reports(
 ) -> tuple[LintReport, str | None]:
     """Union ``shell`` and ``llm`` findings with dedup.
 
-    Dedup key is ``(category, normalized_pages)``. Shell entries win
-    on collision so the deterministic shell's ``safe_to_fix``
-    semantics are preserved for mechanical categories. LLM-only
-    categories (``contradiction``, ``stale``, ``data_gap``) have no
-    shell entries by construction and pass through.
+    Dedup key is ``(category, frozenset(pages), message)``. Shell
+    entries win on collision so the deterministic shell's
+    ``safe_to_fix`` semantics are preserved for mechanical
+    categories. LLM-only categories (``contradiction``, ``stale``,
+    ``data_gap``) have no shell entries by construction and pass
+    through.
 
     Returns the merged ``LintReport`` and the propagated
     ``llm_fallback_reason`` (the caller renders the final markdown).
     """
-    seen: set[tuple[str, frozenset[str]]] = set()
+    seen: set[tuple[str, frozenset[str], str]] = set()
     merged: list[LintFinding] = []
     for finding in [*shell.findings, *llm.findings]:
-        key = _dedup_key(finding.category, finding.pages)
+        key = (finding.category, frozenset(finding.pages), finding.message)
         if key in seen:
             continue
         seen.add(key)

@@ -271,7 +271,7 @@ def test_run_lint_dedup_collapses_duplicate_orphan(orch: Orchestrator) -> None:
     llm_orphan = LintFinding(
         severity=LintSeverity.LOW,
         category="orphan",
-        message="concepts/orphan.md has no inbound links.",
+        message="wiki/concepts/orphan.md has no inbound links.",
         pages=["wiki/concepts/orphan.md"],
         safe_to_fix=False,
     )
