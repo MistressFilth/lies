@@ -14,7 +14,6 @@ from lies.agents.repair_models import (
     AppendLink,
     CreateStub,
     RepairPlan,
-    RepairReceipt,
     UpdateIndex,
 )
 from lies.orchestrator import Orchestrator
@@ -332,15 +331,29 @@ def orch(tmp_path: Path) -> Orchestrator:
 
 
 def test_run_lint_end_to_end_with_linter_categories(orch: Orchestrator) -> None:
-    """End-to-end: cross-mentions + missing source + orphan + LLM contradiction.
+    """End-to-end: real merge + real repair flow against the fixture wiki.
 
-    Seed two pages that mention each other's titles without linking
-    (cross-mentions), one page that cites a non-existent source
-    (missing source), and one orphan page (no inbound links). Mock
-    the linter sub-agent to add one contradiction finding. The merged
-    report must carry all four categories, and ``apply=True`` must
-    route the safe-to-fix findings through the repair flow while
-    leaving the contradiction surfaced as a finding (never auto-fixed).
+    Seeds cross-mention pages (alpha, beta), one missing source, one
+    orphan (lonely). Mocks the linter sub-agent to add one
+    contradiction finding (``safe_to_fix=False``). Then mocks ONLY
+    the repair agent's outer LLM dispatch (instance-level) to return
+    a ``RepairPlan`` with one ``UpdateIndex`` for the orphan and one
+    ``AppendLink`` for a missing_xref — both safe-to-fix.
+
+    Everything else is real:
+    - ``_build_lint_report`` walks the fixture wiki;
+    - ``_call_linter`` is mocked at the orchestrator boundary (returns
+      the contradiction);
+    - ``_run_repair_agent`` reads page texts, calls the real
+      repair-agent dispatch (mocked at instance level), and unwraps
+      ``.output``;
+    - ``_apply_repair_plan`` goes through ``WikiMemoryService`` —
+      flock, snapshot, write, atomic_commit, qmd refresh;
+    - ``_render_lint_report`` writes ``wiki/lint-report.md``.
+
+    The contradiction is surfaced as a finding in the body but is
+    never in the ``### Applied`` section (because
+    ``safe_to_fix=False`` and the repair plan excludes it).
     """
     from lies.agents.linter import LintFinding, LintReport, LintSeverity
 
@@ -375,32 +388,88 @@ def test_run_lint_end_to_end_with_linter_categories(orch: Orchestrator) -> None:
         report_markdown="",
     )
 
-    fake_plan = RepairPlan(operations=[], rationale="noop for safe findings", evidence=["f0"])
-    fake_receipt = RepairReceipt(applied=[], skipped=[], deferred=[], errors=[])
+    real_plan = RepairPlan(
+        operations=[
+            UpdateIndex(
+                path="wiki/index.md",
+                title="Lonely",
+                finding_index=0,
+                pages=["concepts/lonely.md"],
+                rationale="orphan -> catalog entry",
+                evidence=["f0"],
+            ),
+            AppendLink(
+                target_path="concepts/beta.md",
+                link_text="Beta",
+                append_to="concepts/alpha.md",
+                finding_index=1,
+                pages=["concepts/alpha.md"],
+                rationale="missing_xref alpha->beta",
+                evidence=["f1"],
+            ),
+        ],
+        rationale="index orphan + cross-link alpha",
+        evidence=["f0", "f1"],
+    )
 
     with (
-        mock.patch.object(type(orch._agent), "run_sync", return_value=mock.Mock(output="ok")),
         mock.patch.object(orch, "_call_linter", return_value=(llm_contradiction, None)),
-        mock.patch.object(orch, "_run_repair_agent", return_value=fake_plan),
-        mock.patch.object(orch, "_apply_repair_plan", return_value=fake_receipt),
+        mock.patch.object(
+            orch._repair_agent,
+            "run_sync",
+            return_value=mock.Mock(output=real_plan),
+        ),
     ):
         report_md = orch.run_lint(apply=True)
 
-    # All four categories present in the merged report.
+    # All four categories present in the merged report body.
     for cat in ("orphan", "missing_xref", "missing_page", "contradiction"):
         assert cat in report_md, f"missing category {cat!r} in lint report"
 
+    # The safe ops were applied through the real apply path:
+    # the repair section must list both op kinds.
+    assert "### Applied" in report_md
+    assert "update_index" in report_md
+    assert "append_link" in report_md
+
+    # The contradiction finding is surfaced (it's in the body), but
+    # ``safe_to_fix=False`` means it must never appear in the Applied
+    # section. The Applied section is bounded by the next ``###``
+    # header (Skipped / Errors / Sources).
+    applied_section = report_md.split("### Applied", 1)[1].split("###", 1)[0]
+    assert "contradiction" not in applied_section, (
+        "contradiction (safe_to_fix=False) must not appear in the Applied section"
+    )
+
+    # Side-effects of the real apply path: the index was rebuilt with
+    # Lonely in the catalog (the Apply envelope re-runs ``rebuild_index``
+    # so the link is rewritten into the catalog format with the
+    # ``wiki/`` prefix), and alpha.md got a cross-link to beta via the
+    # real ``_merge_append_links`` rewrite.
+    index_text = (base / "index.md").read_text(encoding="utf-8")
+    assert "[Lonely]" in index_text
+    assert "concepts/lonely.md" in index_text
+    alpha_text = (base / "concepts" / "alpha.md").read_text(encoding="utf-8")
+    assert "[Beta](concepts/beta.md)" in alpha_text
+
 
 def test_run_lint_end_to_end_linter_unavailable(orch: Orchestrator) -> None:
-    """LLM unavailable; final report carries shell findings plus fallback line.
+    """Real ``_call_linter`` catches a raised ``run_sync`` and falls back.
 
-    Seed one orphan page. Mock ``_call_linter`` to return an empty
-    ``LintReport`` paired with a non-None fallback reason. The merged
-    report must carry the shell's orphan finding AND the ``- fallback:``
-    line so the reader can see the LLM path degraded gracefully.
+    Drops the ``_call_linter`` mock and patches the underlying
+    ``_linter_agent.run_sync`` with a ``side_effect`` that raises
+    ``RuntimeError("model offline")``. Instance-level patching (not
+    class-level) means the orchestrator's main ``_agent`` and any
+    other sub-agents are unaffected — only the linter's dispatch is
+    stubbed.
+
+    The real ``_call_linter`` exception handler converts the raised
+    exception into the fallback tuple. The real merge, the real
+    ``_render_lint_report``, the real file writes to
+    ``wiki/lint-report.md``, and the real log append all run. The
+    shell's orphan finding survives in the merged report and the
+    ``### Sources`` footer must carry the formatted fallback line.
     """
-    from lies.agents.linter import LintReport
-
     base = orch.layout.wiki_dir
     (base / "concepts").mkdir(exist_ok=True)
     (base / "concepts" / "lonely.md").write_text(
@@ -410,19 +479,18 @@ def test_run_lint_end_to_end_linter_unavailable(orch: Orchestrator) -> None:
     subprocess.run(["git", "add", "."], cwd=orch.layout.root, check=True)
     subprocess.run(["git", "commit", "-m", "seed"], cwd=orch.layout.root, check=True)
 
-    with (
-        mock.patch.object(type(orch._agent), "run_sync", return_value=mock.Mock(output="ok")),
-        mock.patch.object(
-            orch,
-            "_call_linter",
-            return_value=(
-                LintReport(findings=[], report_markdown=""),
-                "RuntimeError: model offline",
-            ),
-        ),
-        mock.patch.object(orch, "_run_repair_agent"),
+    with mock.patch.object(
+        orch._linter_agent,
+        "run_sync",
+        side_effect=RuntimeError("model offline"),
     ):
         report_md = orch.run_lint()
 
+    # Shell findings still appear in the merged report body.
     assert "orphan" in report_md.lower()
-    assert "fallback" in report_md.lower()
+
+    # The fallback line in the Sources footer is the proof that the
+    # raised ``RuntimeError`` was caught by ``_call_linter`` and
+    # converted into the fallback tuple. ``_call_linter`` formats it
+    # as ``f"{type(exc).__name__}: {exc}"`` → ``RuntimeError: model offline``.
+    assert "fallback: RuntimeError: model offline" in report_md
