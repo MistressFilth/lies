@@ -6,6 +6,15 @@ All notable changes to LIES are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+- CI and local hooks now run the Makefile-backed Ruff, ty, formatting, and full test gates.
+- README now carries repository status, CI badge, development commands, and required project links.
+
+### Fixed
+- Removed stale mypy commands and configuration after the repository moved to ty.
+- Added the MIT license declared by package metadata.
+- Registered the integration-test pytest marker so full-suite runs emit no unknown-marker warning.
+
 ## [0.4.0] - 2026-08-02
 
 ### Added

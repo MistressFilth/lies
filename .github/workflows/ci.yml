@@ -6,20 +6,17 @@ on:
   pull_request:
 
 jobs:
-  test:
+  check:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - name: Install uv
-        run: pip install uv
-      - name: Install dependencies
-        run: uv sync --all-extras
-      - name: Lint (ruff)
-        run: uv run ruff check src/lies tests
-      - name: Type-check (mypy)
-        run: uv run mypy src/lies
-      - name: Run tests
-        run: uv run pytest -v
+      - run: uv sync --all-extras
+      - run: make check
+      - run: git diff --exit-code
+      - run: make test

@@ -1,5 +1,7 @@
 # LIES
 
+[![CI](https://github.com/MistressFilth/lies/actions/workflows/ci.yml/badge.svg)](https://github.com/MistressFilth/lies/actions/workflows/ci.yml)
+
 **Library of Inconsistent Explanations & Sources**
 
 A Karpathy-pattern LLM wiki — a `pydantic-ai`-harness agent that maintains a
@@ -10,12 +12,9 @@ bookkeeping.
 
 ## Status
 
-MCP server complete. The branch `feat-lies-mcp` adds a FastMCP-based
-MCP server so Claude Code (and any MCP host) can use LIES as tools and
-resources over stdio. The server exposes four tools (`init_wiki`,
-`ingest_source`, `query`, `lint`), five resources (`wiki://status`,
-`wiki://index`, `wiki://log`, `wiki://lint-report`, `wiki://page/{path}`),
-and one prompt (`ask_wiki`).
+MCP server, invisible wiki memory, collection sync, source builders, and safe
+lint repair are available on `main`. Claude Code and other MCP hosts can use
+the stdio server documented below.
 
 ## Quick start
 
@@ -127,10 +126,9 @@ invocation. `lies config` prints the active model and wiki root.
 ## Development
 
 ```bash
-uv sync --all-extras
-uv run pytest -v
-uv run ruff check src/lies tests
-uv run mypy src/lies
+make init
+make check
+make test
 ```
 
 ## Architecture
@@ -140,7 +138,7 @@ to five sub-agents via harness's `SubAgents` and `DynamicWorkflow` capabilities:
 
 A `FastMCP` server (`src/lies/mcp/server.py`) exposes the orchestrator's
 operations to MCP-capable hosts (Claude Code, Cursor, etc.) over stdio.
-See "Using LIES from Claude Code" below for the registration command.
+See "Using LIES from Claude Code" above for the registration command.
 
 - `source-reader` — read a raw source and return a structured extraction
   (claims, entities, concepts, comparisons, summary).
@@ -244,4 +242,10 @@ for the design spec.
 
 ## License
 
-MIT.
+[MIT](LICENSE).
+
+## Project links
+
+- [Changelog](CHANGELOG.md)
+- [Agent instructions](AGENTS.md)
+- [License](LICENSE)
