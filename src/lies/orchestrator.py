@@ -11,7 +11,7 @@ from pathlib import Path
 from pydantic_ai import Agent
 
 from lies.agents.indexer import indexer_agent
-from lies.agents.linter import LintReport, linter_agent
+from lies.agents.linter import LintFinding, LintReport, linter_agent
 from lies.agents.page_writer import page_writer_agent
 from lies.agents.query_synthesizer import query_synthesizer_agent
 from lies.agents.repair import RepairAgentDeps, repair_agent
@@ -286,6 +286,35 @@ _SUB_AGENT_TABLE: tuple[tuple[str, object, str], ...] = (
         ),
     ),
 )
+
+
+def merge_lint_reports(
+    shell: LintReport,
+    llm: LintReport,
+    *,
+    llm_fallback_reason: str | None = None,
+) -> tuple[LintReport, str | None]:
+    """Union ``shell`` and ``llm`` findings with dedup.
+
+    Dedup key is ``(category, frozenset(pages), message)``. Shell
+    entries win on collision so the deterministic shell's
+    ``safe_to_fix`` semantics are preserved for mechanical
+    categories. LLM-only categories (``contradiction``, ``stale``,
+    ``data_gap``) have no shell entries by construction and pass
+    through.
+
+    Returns the merged ``LintReport`` and the propagated
+    ``llm_fallback_reason`` (the caller renders the final markdown).
+    """
+    seen: set[tuple[str, frozenset[str], str]] = set()
+    merged: list[LintFinding] = []
+    for finding in [*shell.findings, *llm.findings]:
+        key = (finding.category, frozenset(finding.pages), finding.message)
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(finding)
+    return LintReport(findings=merged, report_markdown=""), llm_fallback_reason
 
 
 class Orchestrator:
