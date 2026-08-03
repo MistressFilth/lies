@@ -74,8 +74,38 @@ def _initialize(url: str) -> dict:
         },
         method="POST",
     )
-    with urllib.request.urlopen(request, timeout=10) as response:
-        return {"status": response.status, "body": response.read().decode("utf-8")}
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            return {"status": response.status, "body": response.read().decode("utf-8")}
+    except urllib.error.HTTPError as exc:
+        # A non-2xx is still a response. Return it so the status
+        # assertion reports the real code instead of a raised traceback.
+        return {"status": exc.code, "body": exc.read().decode("utf-8", errors="replace")}
+    except urllib.error.URLError as exc:
+        raise AssertionError(f"nothing answered at {url}: {exc.reason}") from exc
+
+
+def _decode_jsonrpc(body: str) -> dict:
+    """Decode the JSON-RPC message out of a bare-JSON or SSE response body.
+
+    FastMCP's streamable-http transport answers with `text/event-stream`
+    when the client accepts it, so the payload arrives framed as
+    ``data: {...}`` rather than as bare JSON. Both shapes carry the same
+    message; this returns it either way.
+    """
+    try:
+        return json.loads(body)
+    except json.JSONDecodeError:
+        pass
+    for line in body.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("data:"):
+            continue
+        try:
+            return json.loads(stripped[len("data:") :].strip())
+        except json.JSONDecodeError:
+            continue
+    raise AssertionError(f"no JSON-RPC payload in response body: {body!r}")
 
 
 def test_full_lifecycle(wiki: Path, port: int) -> None:
@@ -92,8 +122,14 @@ def test_full_lifecycle(wiki: Path, port: int) -> None:
     assert daemon.process_alive(record.pid) is True
 
     handshake = _initialize(daemon.daemon_url(record))
-    assert handshake["status"] == 200
-    assert "lies" in handshake["body"]
+    assert handshake["status"] == 200, handshake["body"]
+    message = _decode_jsonrpc(handshake["body"])
+    assert "error" not in message, f"initialize returned an error: {message.get('error')}"
+    assert "result" in message, f"initialize returned no result: {message}"
+    server_info = message["result"].get("serverInfo", {})
+    assert server_info.get("name") == "lies", (
+        f"handshake did not come from the lies server: {server_info}"
+    )
 
     status_result = runner.invoke(app, ["mcp", "status", "--wiki-root", str(wiki)])
     assert status_result.exit_code == 0
@@ -130,7 +166,12 @@ def test_down_leaves_the_qmd_daemon_running(wiki: Path, port: int) -> None:
 
     before = qmd_daemon_state()
     if not before.installed:
-        pytest.skip("qmd is not installed")
+        pytest.skip("qmd is not installed; there is no shared daemon to protect")
+    if not before.running or before.pid is None:
+        pytest.skip(
+            "qmd is installed but not running; with no pid captured up front, "
+            "comparing daemon identity across up/down would prove nothing"
+        )
 
     up_result = runner.invoke(
         app, ["mcp", "up", "--wiki-root", str(wiki), "--port", str(port), "--timeout", "30"]
@@ -139,13 +180,18 @@ def test_down_leaves_the_qmd_daemon_running(wiki: Path, port: int) -> None:
 
     started = qmd_daemon_state()
     assert started.running is True
+    assert started.pid == before.pid, (
+        f"up recycled the shared qmd daemon instead of reusing it: {before.pid} -> {started.pid}"
+    )
 
     down_result = runner.invoke(app, ["mcp", "down", "--wiki-root", str(wiki)])
     assert down_result.exit_code == 0
 
     after = qmd_daemon_state()
     assert after.running is True
-    assert after.pid == started.pid
+    assert after.pid == before.pid, (
+        f"down disturbed the shared qmd daemon: {before.pid} -> {after.pid}"
+    )
 
 
 def test_up_fails_cleanly_when_port_is_taken(wiki: Path, port: int) -> None:
@@ -158,11 +204,33 @@ def test_up_fails_cleanly_when_port_is_taken(wiki: Path, port: int) -> None:
 
 
 def test_daemon_artifacts_are_gitignored(wiki: Path, port: int) -> None:
+    """`up` adds the three daemon entries to `.gitignore`.
+
+    `WikiLayout.init` already writes them, so asserting them on a freshly
+    initialized wiki would pass even if `up` dropped its own
+    `ensure_daemon_gitignored` call. Stripping the lines first is what
+    makes this a test of `up`.
+    """
+    gitignore = wiki / ".gitignore"
+    entries = (".lies/mcp.pid", ".lies/mcp.pid.create", ".lies/mcp.log")
+
+    kept = [
+        line
+        for line in gitignore.read_text(encoding="utf-8").splitlines()
+        if line.strip() not in entries
+    ]
+    gitignore.write_text("".join(f"{line}\n" for line in kept), encoding="utf-8")
+    stripped = {line.strip() for line in gitignore.read_text(encoding="utf-8").splitlines()}
+    assert not stripped & set(entries)
+
     result = runner.invoke(
         app, ["mcp", "up", "--wiki-root", str(wiki), "--port", str(port), "--timeout", "30"]
     )
     assert result.exit_code == 0, result.output
-    body = (wiki / ".gitignore").read_text(encoding="utf-8")
-    assert ".lies/mcp.pid" in body
-    assert ".lies/mcp.pid.create" in body
-    assert ".lies/mcp.log" in body
+
+    # Compared line by line: `.lies/mcp.pid` is a substring of
+    # `.lies/mcp.pid.create`, so a substring check would pass on two of
+    # the three entries even if only the create-lock line came back.
+    restored = {line.strip() for line in gitignore.read_text(encoding="utf-8").splitlines()}
+    for entry in entries:
+        assert entry in restored, f"up did not restore {entry}: {sorted(restored)}"
