@@ -152,6 +152,43 @@ def test_missing_xref_links_to_third_page_still_flags(wiki: Path) -> None:
     assert b_to_a[0].safe_to_fix is True
 
 
+def test_missing_page_nonexistent_source(wiki: Path) -> None:
+    _write(
+        wiki,
+        "wiki/concepts/a.md",
+        "---\ntitle: A\ntype: concept\nsources:\n  - raw/missing.md\n---\n# A\n",
+    )
+    subprocess.run(["git", "commit", "-m", "seed"], cwd=wiki, check=True)
+
+    report = _build_lint_report(_layout(wiki))
+    missing = [f for f in report.findings if f.category == "missing_page"]
+    assert len(missing) == 1
+    assert missing[0].safe_to_fix is False
+    assert "raw/missing.md" in missing[0].message
+
+
+def test_missing_page_ignores_existing_sources(wiki: Path) -> None:
+    (wiki / "raw").mkdir(exist_ok=True)
+    (wiki / "raw" / "present.md").write_text("present", encoding="utf-8")
+    _write(
+        wiki,
+        "wiki/concepts/a.md",
+        "---\ntitle: A\ntype: concept\nsources:\n  - raw/present.md\n---\n# A\n",
+    )
+    subprocess.run(["git", "commit", "-m", "seed"], cwd=wiki, check=True)
+
+    report = _build_lint_report(_layout(wiki))
+    assert all(f.category != "missing_page" for f in report.findings)
+
+
+def test_shell_emits_no_data_gap(wiki: Path) -> None:
+    """data_gap stays LLM-only; deterministic shell never emits it."""
+    _write(wiki, "wiki/concepts/a.md", "---\ntitle: A\ntype: concept\n---\n# A\n")
+    subprocess.run(["git", "commit", "-m", "seed"], cwd=wiki, check=True)
+    report = _build_lint_report(_layout(wiki))
+    assert all(f.category != "data_gap" for f in report.findings)
+
+
 def _layout(wiki_root: Path):  # type: ignore[no-untyped-def]
     from lies.wiki.layout import WikiLayout
 

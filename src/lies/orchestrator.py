@@ -233,6 +233,25 @@ def _build_lint_report(
                     )
                 )
 
+    # missing_page: frontmatter `sources:` lists a path that does not exist.
+    for page in pages:
+        try:
+            text = (layout.root / page).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        for source in _extract_frontmatter_sources(text):
+            resolved = (layout.root / source).resolve()
+            if not resolved.exists():
+                findings.append(
+                    LintFinding(
+                        severity=LintSeverity.LOW,
+                        category="missing_page",
+                        message=f"{page} cites {source} which is not present",
+                        pages=[page],
+                        safe_to_fix=False,
+                    )
+                )
+
     report = LintReport(findings=findings, report_markdown="")
     body = _format_lint_markdown(report, layout)
     if repair_receipt is not None:
@@ -315,6 +334,29 @@ def _strip_frontmatter(text: str) -> str:
     rest = text[end + 4 :]
     rest = rest.removeprefix("\n")
     return rest
+
+
+def _extract_frontmatter_sources(text: str) -> list[str]:
+    """Return the ``sources:`` list from YAML frontmatter (empty if missing/malformed)."""
+    if not text.startswith("---"):
+        return []
+    end = text.find("\n---", 3)
+    if end == -1:
+        return []
+    block = text[3:end]
+    lines = block.splitlines()
+    sources: list[str] = []
+    in_sources = False
+    for line in lines:
+        if in_sources:
+            stripped = line.strip()
+            if stripped.startswith("- "):
+                sources.append(stripped[2:].strip().strip('"').strip("'"))
+            elif stripped and not stripped.startswith("-"):
+                in_sources = False
+        elif line.startswith("sources:"):
+            in_sources = True
+    return sources
 
 
 def _format_lint_markdown(report: LintReport, layout: WikiLayout) -> str:
