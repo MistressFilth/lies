@@ -267,6 +267,15 @@ def _extract_local_md_links(text: str, source_page_path: str, wiki_root: Path) -
     relative targets against ``source_page_path``'s directory first,
     then the wiki directory (see ``_resolve_link_target``).
 
+    Containment: only targets that resolve under ``wiki/`` are kept.
+    A link like ``../../somewhere/else.md`` from inside
+    ``wiki/concepts/a.md`` can resolve to ``somewhere/else.md`` — a
+    sibling of the ``wiki/`` directory that lands inside
+    ``wiki_root`` but not inside the wiki itself. Without the
+    containment check, ``resolved.removeprefix("wiki/")`` would yield
+    ``somewhere/else.md`` and corrupt the ``pages``-set comparison
+    used by the orphan and missing_xref heuristics.
+
     Returns the set in the same wiki-dir-relative convention used by
     the shell findings' ``pages`` field, so callers can compare
     resolved links directly against the ``pages`` set without a
@@ -287,6 +296,9 @@ def _extract_local_md_links(text: str, source_page_path: str, wiki_root: Path) -
         # ``wiki/`` and strip it from the result.
         resolved = _resolve_link_target(f"wiki/{source_page_path}", clean, wiki_root)
         if resolved is None:
+            continue
+        # Containment: must live under wiki/, not just under wiki_root.
+        if not resolved.startswith("wiki/"):
             continue
         targets.add(resolved.removeprefix("wiki/"))
     return targets

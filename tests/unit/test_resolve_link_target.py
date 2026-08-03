@@ -83,3 +83,38 @@ def test_returns_none_for_non_md_target(tmp_path: Path) -> None:
     (root / "wiki" / "concepts" / "beta.txt").write_text("not markdown\n", encoding="utf-8")
     resolved = _resolve_link_target("wiki/concepts/alpha.md", "beta.txt", root)
     assert resolved is None
+
+
+def test_extract_local_md_links_skips_target_outside_wiki(tmp_path: Path) -> None:
+    """A link that resolves to a sibling of ``wiki/`` (e.g. ``../docs/x.md``
+    from inside ``wiki/concepts/a.md``) must NOT show up in the helper's
+    output. Without the containment check, the resolved path
+    ``docs/x.md`` would strip the ``wiki/`` prefix and collide with the
+    real wiki page key ``wiki/concepts/x.md``, producing false
+    orphan/missing_xref suppressions.
+
+    Regression for the outside-wiki containment bug: links that escape
+    the wiki directory via ``..`` traversal are not local wiki links.
+    """
+    from lies.orchestrator import _extract_local_md_links
+
+    root = _seed_wiki(tmp_path)
+    (root / "wiki" / "concepts" / "alpha.md").write_text(
+        "---\ntitle: Alpha\ntype: concept\n---\n# Alpha\n\nSee [Outside](../../docs/escaped.md).\n",
+        encoding="utf-8",
+    )
+    # Create the target outside the wiki directory but inside the repo.
+    (root / "docs").mkdir(parents=True, exist_ok=True)
+    (root / "docs" / "escaped.md").write_text(
+        "---\ntitle: Escaped\n---\n# Escaped\n",
+        encoding="utf-8",
+    )
+    targets = _extract_local_md_links(
+        (root / "wiki" / "concepts" / "alpha.md").read_text(encoding="utf-8"),
+        "concepts/alpha.md",
+        root,
+    )
+    assert "docs/escaped.md" not in targets, (
+        f"helper must skip targets outside wiki/, got {targets!r}"
+    )
+    assert targets == set()
