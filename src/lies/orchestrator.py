@@ -188,6 +188,18 @@ def _build_lint_report(
             page_links[page] = targets
 
         body_cache: dict[str, str] = {}
+        # Resolve each page's raw link targets to wiki-relative paths
+        # once, so the per-pair comparison can check "did this page
+        # link to that specific other page" without re-walking the
+        # resolution rules. Targets that don't resolve are dropped.
+        resolved_links: dict[str, set[str]] = {}
+        for page, raws in page_links.items():
+            resolved_links[page] = {
+                resolved
+                for raw in raws
+                if (resolved := _resolve_link_target(page, raw, layout.root))
+            }
+
         for page, title in unique_titles.items():
             other_pages = [p for p, t in unique_titles.items() if t != title]
             if not other_pages:
@@ -199,14 +211,17 @@ def _build_lint_report(
             except (OSError, UnicodeDecodeError):
                 continue
             body_lower = body.lower()
-            # If the page carries any cross-reference link at all, skip
-            # it: the heuristic only flags pages that mention another
-            # page's title while having no markdown links to speak of.
-            if page_links.get(page):
-                continue
+            page_targets = resolved_links.get(page, set())
             for other in other_pages:
                 other_title = unique_titles[other]
                 if other_title.lower() not in body_lower:
+                    continue
+                # Target-specific check: only suppress the finding if
+                # this page actually links to *this specific other
+                # page*. A page that has cross-references but to
+                # different pages still gets flagged for mentioning
+                # the title without linking to it.
+                if other in page_targets:
                     continue
                 findings.append(
                     LintFinding(
@@ -235,6 +250,40 @@ def _extract_markdown_links(text: str) -> list[str]:
     import re
 
     return re.findall(r"\]\(([^)]+)\)", text)
+
+
+def _resolve_link_target(source_page_path: str, raw_target: str, wiki_root: Path) -> str | None:
+    """Resolve a bare markdown link target to a wiki-relative path.
+
+    Tries resolving relative to the source page's directory first,
+    then relative to the wiki root, and returns the first
+    wiki-relative ``.md`` path that lands inside ``wiki_root``.
+    Returns ``None`` when neither interpretation lands inside the
+    wiki or the result is not a ``.md`` file.
+
+    Examples (wiki root = ``/tmp/wiki``):
+
+    - ``wiki/concepts/a.md`` -> ``b.md`` -> ``wiki/concepts/b.md``
+    - ``wiki/concepts/a.md`` -> ``concepts/b.md`` -> ``wiki/concepts/b.md``
+    - ``wiki/concepts/a.md`` -> ``../concepts/b.md`` -> ``wiki/concepts/b.md``
+    - ``wiki/overview.md`` -> ``b.md`` -> ``wiki/b.md`` (NOT ``wiki/concepts/b.md``)
+    """
+    wiki_root_resolved = wiki_root.resolve()
+    # Source page's directory, absolute.
+    source_dir = (wiki_root / source_page_path).parent.resolve()
+    for base in (source_dir, wiki_root_resolved):
+        try:
+            candidate = (base / raw_target).resolve()
+        except OSError:
+            continue
+        try:
+            relative = candidate.relative_to(wiki_root_resolved)
+        except ValueError:
+            continue
+        result = relative.as_posix()
+        if result.endswith(".md"):
+            return result
+    return None
 
 
 def _extract_frontmatter_title(text: str) -> str | None:
