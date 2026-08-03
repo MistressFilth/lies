@@ -491,6 +491,59 @@ def test_run_lint_end_to_end_with_linter_categories(orch: Orchestrator) -> None:
     assert "[Beta](concepts/beta.md)" in alpha_text
 
 
+def test_run_lint_repair_agent_receives_shell_page_texts(orch: Orchestrator) -> None:
+    """Shell findings carry wiki-dir-relative paths so ``RepairAgentDeps.page_texts``
+    is populated for every shell finding's referenced page.
+
+    Regression for the path-convention mismatch where shell findings
+    emitted repo-root-relative ``wiki/concepts/a.md`` paths and the
+    repair agent's ``layout.wiki_dir / page`` lookup landed on
+    ``wiki/wiki/concepts/a.md`` (a non-existent file), silently
+    breaking the repair plan synthesis.
+    """
+    from lies.agents.repair import RepairAgentDeps
+
+    base = orch.layout.wiki_dir
+    (base / "concepts").mkdir(exist_ok=True)
+    (base / "concepts" / "alpha.md").write_text(
+        "---\ntitle: Alpha\ntype: concept\n---\n# Alpha\n\nSee Beta for more.\n",
+        encoding="utf-8",
+    )
+    (base / "concepts" / "beta.md").write_text(
+        "---\ntitle: Beta\ntype: concept\n---\n# Beta\n\ndetails.\n",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "add", "."], cwd=orch.layout.root, check=True)
+    subprocess.run(["git", "commit", "-m", "seed"], cwd=orch.layout.root, check=True)
+
+    captured: dict[str, object] = {}
+
+    def fake_repair_agent_run_sync(
+        prompt: str, deps: RepairAgentDeps | None = None, **_kwargs: object
+    ):  # type: ignore[no-untyped-def]
+        captured["deps"] = deps
+        return mock.Mock(output=RepairPlan(operations=[], rationale="noop", evidence=["f0"]))
+
+    with (
+        mock.patch.object(orch, "_call_linter", return_value=(LintReport(findings=[], report_markdown=""), None)),
+        mock.patch.object(
+            orch._repair_agent, "run_sync", side_effect=fake_repair_agent_run_sync
+        ),
+    ):
+        orch.run_lint(apply=True)
+
+    deps = captured.get("deps")
+    assert isinstance(deps, RepairAgentDeps)
+    # Every page the shell findings reference must appear in page_texts
+    # with the real file contents (not an empty string from a mis-resolved path).
+    assert deps.page_texts, f"page_texts must be populated for shell findings, got {deps.page_texts!r}"
+    for path, body in deps.page_texts.items():
+        assert body, f"page_texts[{path!r}] must carry real content, got empty string"
+        assert "Alpha" in body or "Beta" in body, (
+            f"page_texts[{path!r}] must be the actual wiki page content, got {body!r}"
+        )
+
+
 def test_run_lint_end_to_end_linter_unavailable(orch: Orchestrator) -> None:
     """Real ``_call_linter`` catches a raised ``run_sync`` and falls back.
 

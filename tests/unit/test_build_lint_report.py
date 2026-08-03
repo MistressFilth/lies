@@ -57,7 +57,7 @@ def test_missing_xref_two_pages_mention_each_other(wiki: Path) -> None:
     assert len(xrefs) == 1
     finding = xrefs[0]
     assert finding.safe_to_fix is True
-    assert "wiki/concepts/a.md" in finding.pages or "wiki/concepts/b.md" in finding.pages
+    assert "concepts/a.md" in finding.pages or "concepts/b.md" in finding.pages
 
 
 def test_missing_xref_ignores_already_linked(wiki: Path) -> None:
@@ -138,7 +138,7 @@ def test_missing_xref_links_to_third_page_still_flags(wiki: Path) -> None:
     a_to_b = [
         f
         for f in xrefs
-        if f.pages[0] == "wiki/concepts/a.md" and f.pages[1] == "wiki/concepts/b.md"
+        if f.pages[0] == "concepts/a.md" and f.pages[1] == "concepts/b.md"
     ]
     assert a_to_b, "expected a missing_xref finding for A mentioning B (link goes to C, not B)"
     assert a_to_b[0].safe_to_fix is True
@@ -146,7 +146,7 @@ def test_missing_xref_links_to_third_page_still_flags(wiki: Path) -> None:
     b_to_a = [
         f
         for f in xrefs
-        if f.pages[0] == "wiki/concepts/b.md" and f.pages[1] == "wiki/concepts/a.md"
+        if f.pages[0] == "concepts/b.md" and f.pages[1] == "concepts/a.md"
     ]
     assert b_to_a, "expected a missing_xref finding for B mentioning A without any link"
     assert b_to_a[0].safe_to_fix is True

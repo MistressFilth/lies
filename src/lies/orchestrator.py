@@ -111,11 +111,17 @@ def _build_lint_report(
     from lies.agents.linter import LintFinding, LintReport, LintSeverity
 
     findings: list[LintFinding] = []
+    # ``pages`` holds wiki-dir-relative paths (e.g. ``concepts/a.md``)
+    # so the repair agent's ``layout.wiki_dir / page`` lookup lands
+    # on the real file. Without this convention, ``_run_repair_agent``
+    # would resolve ``layout.wiki_dir / "wiki/concepts/a.md"`` and find
+    # nothing (the page lives at ``wiki/concepts/a.md``, not
+    # ``wiki/wiki/concepts/a.md``).
     pages: set[str] = set()
     if layout.wiki_dir.exists():
         for path in layout.wiki_dir.rglob("*.md"):
-            rel = path.relative_to(layout.root).as_posix()
-            if rel in {"wiki/index.md", "wiki/log.md", "wiki/lint-report.md", "wiki/overview.md"}:
+            rel = path.relative_to(layout.wiki_dir).as_posix()
+            if rel in {"index.md", "log.md", "lint-report.md", "overview.md"}:
                 continue
             pages.add(rel)
 
@@ -124,7 +130,7 @@ def _build_lint_report(
         linked: set[str] = set()
         for page in pages:
             try:
-                text = (layout.root / page).read_text(encoding="utf-8")
+                text = (layout.wiki_dir / page).read_text(encoding="utf-8")
             except (OSError, UnicodeDecodeError):
                 continue
             for raw in _extract_markdown_links(text):
@@ -158,7 +164,7 @@ def _build_lint_report(
         titles: dict[str, str] = {}
         for page in pages:
             try:
-                text = (layout.root / page).read_text(encoding="utf-8")
+                text = (layout.wiki_dir / page).read_text(encoding="utf-8")
             except (OSError, UnicodeDecodeError):
                 continue
             title = _extract_frontmatter_title(text)
@@ -173,7 +179,7 @@ def _build_lint_report(
         page_links: dict[str, set[str]] = {}
         for page in pages:
             try:
-                text = (layout.root / page).read_text(encoding="utf-8")
+                text = (layout.wiki_dir / page).read_text(encoding="utf-8")
             except (OSError, UnicodeDecodeError):
                 continue
             targets: set[str] = set()
@@ -192,12 +198,18 @@ def _build_lint_report(
         # once, so the per-pair comparison can check "did this page
         # link to that specific other page" without re-walking the
         # resolution rules. Targets that don't resolve are dropped.
+        # ``_resolve_link_target`` expects repo-root-relative
+        # ``source_page_path``; prepend ``wiki/`` here so the
+        # wiki-dir-relative ``pages`` set lines up with the helper's
+        # contract. The resolved targets come back repo-root-relative;
+        # we strip the ``wiki/`` prefix to keep them in the same
+        # convention as ``pages`` for the comparison below.
         resolved_links: dict[str, set[str]] = {}
         for page, raws in page_links.items():
             resolved_links[page] = {
-                resolved
+                resolved.removeprefix("wiki/")
                 for raw in raws
-                if (resolved := _resolve_link_target(page, raw, layout.root))
+                if (resolved := _resolve_link_target(f"wiki/{page}", raw, layout.root))
             }
 
         for page, title in unique_titles.items():
@@ -206,7 +218,7 @@ def _build_lint_report(
                 continue
             try:
                 body = body_cache.setdefault(
-                    page, _strip_frontmatter((layout.root / page).read_text(encoding="utf-8"))
+                    page, _strip_frontmatter((layout.wiki_dir / page).read_text(encoding="utf-8"))
                 )
             except (OSError, UnicodeDecodeError):
                 continue
@@ -236,7 +248,7 @@ def _build_lint_report(
     # missing_page: frontmatter `sources:` lists a path that does not exist.
     for page in pages:
         try:
-            text = (layout.root / page).read_text(encoding="utf-8")
+            text = (layout.wiki_dir / page).read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError):
             continue
         for source in _extract_frontmatter_sources(text):
