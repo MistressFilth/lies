@@ -14,8 +14,8 @@ def test_ci_uses_required_check_context_and_make_targets() -> None:
     assert set(workflow["jobs"]) == {"check"}
     steps = workflow["jobs"]["check"]["steps"]
     actions = {step.get("uses", "") for step in steps}
-    assert "actions/checkout@de0facbc364238e5cd8370b5f9717b07302a3f59" in actions
-    assert "actions/setup-python@a26af69de4e07de1c11a8b91a4a46a39e3e5b2c3" in actions
+    assert "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1" in actions
+    assert "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97" in actions
     assert "astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9" in actions
     commands = [step.get("run", "") for step in steps]
     assert "uv sync --all-extras" in commands
