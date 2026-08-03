@@ -336,7 +336,7 @@ def test_main_tags_without_rewrite_when_surfaces_pre_staged(
     assert (tmp_path / "CHANGELOG.md").read_text(encoding="utf-8") == changelog_text
     # No rewrites were applied — the file-modifying `git add -A` still runs
     # but it stages the same content (no diff to record).
-    assert ["git", "commit", "-m", "chore(release): v0.4.0"] in calls
+    assert ["git", "commit", "--allow-empty", "-m", "chore(release): v0.4.0"] in calls
     assert ["git", "tag", "-a", "v0.4.0", "-m", "Release v0.4.0"] in calls
     assert ["git", "push", "origin", "main", "v0.4.0"] in calls
     # Operator-facing message reflects the idempotent path.
