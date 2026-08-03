@@ -9,6 +9,8 @@ All notable changes to LIES are documented here. The format follows
 ### Changed
 - CI and local hooks now run the Makefile-backed Ruff, ty, formatting, and full test gates.
 - README now carries repository status, CI badge, development commands, and required project links.
+- Pinned GitHub Actions to `actions/checkout@v7`, `actions/setup-python@v7`, and `astral-sh/setup-uv@v9`; workflow fetches full history for compliance checks.
+- `AGENTS.md` references now point to project notes for the internal design and plan documents.
 
 ### Fixed
 - Removed stale mypy commands and configuration after the repository moved to ty.
