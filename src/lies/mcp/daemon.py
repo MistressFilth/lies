@@ -17,10 +17,21 @@ clean stop.
 from __future__ import annotations
 
 import os
-from datetime import datetime
+import socket
+import subprocess
+import sys
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 from pydantic import BaseModel, ValidationError
+
+from lies import __version__
+from lies.utils.exclusive import (
+    acquire_create_lock,
+    ensure_gitignored,
+    release_create_lock,
+)
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8737
@@ -157,3 +168,150 @@ def is_stale(rec: PidRecord) -> bool:
 def daemon_url(rec: PidRecord) -> str:
     """Return the streamable-http URL an MCP host should register."""
     return f"http://{rec.host}:{rec.port}{MCP_PATH}"
+
+
+def port_free(host: str, port: int) -> bool:
+    """Return True if ``(host, port)`` can be bound right now.
+
+    Probed before spawning so a non-LIES process squatting the port
+    surfaces as a clear error rather than a confusing readiness timeout.
+    """
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        try:
+            sock.bind((host, port))
+        except OSError:
+            return False
+    return True
+
+
+def ensure_daemon_gitignored(wiki_root: Path) -> None:
+    """Gitignore the pidfile, its create-lock, and the daemon log.
+
+    Called on every ``up`` so wikis created before this feature pick the
+    entries up too.
+    """
+    for path in (pid_path(wiki_root), create_lock_path(wiki_root), log_path(wiki_root)):
+        ensure_gitignored(path, wiki_root=wiki_root)
+
+
+def tail_log(wiki_root: Path, lines: int = 20) -> list[str]:
+    """Return the last ``lines`` lines of the daemon log, or ``[]``."""
+    try:
+        body = log_path(wiki_root).read_text(encoding="utf-8", errors="replace")
+    except (FileNotFoundError, OSError):
+        return []
+    return body.splitlines()[-lines:]
+
+
+def _wait_until_accepting(
+    host: str, port: int, proc: subprocess.Popen[bytes], timeout: float
+) -> None:
+    """Block until the child accepts a connection, or raise.
+
+    Polls the child's exit status alongside the socket so an immediate
+    crash fails fast instead of burning the whole timeout.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        code = proc.poll()
+        if code is not None:
+            raise DaemonStartFailed(f"daemon exited with code {code} before accepting connections")
+        try:
+            with socket.create_connection((host, port), timeout=0.5):
+                return
+        except OSError:
+            time.sleep(0.05)
+    raise DaemonStartFailed(
+        f"daemon did not accept a connection on {host}:{port} within {timeout:g}s"
+    )
+
+
+def _kill_now(proc: subprocess.Popen[bytes]) -> None:
+    """SIGKILL the child and reap it, ignoring an already-dead process."""
+    try:
+        proc.kill()
+    except (ProcessLookupError, OSError):
+        return
+    try:
+        proc.wait(timeout=2.0)
+    except subprocess.TimeoutExpired:
+        pass
+
+
+def spawn_daemon(
+    wiki_root: Path,
+    *,
+    host: str = DEFAULT_HOST,
+    port: int = DEFAULT_PORT,
+    timeout: float = 10.0,
+) -> PidRecord:
+    """Start a detached streamable-http daemon and return its record.
+
+    Raises :class:`DaemonAlreadyRunning` when a live daemon owns this
+    wiki root, :class:`DaemonBusy` on create-lock contention,
+    :class:`PortUnavailable` when the address is occupied, and
+    :class:`DaemonStartFailed` when the child dies or never accepts a
+    connection. The record is written only after the readiness gate
+    passes, so ``up`` never reports success for a dead child.
+    """
+    lock = create_lock_path(wiki_root)
+    fd = acquire_create_lock(lock, max_age_s=CREATE_LOCK_MAX_AGE_S)
+    if fd is None:
+        raise DaemonBusy(f"another lies mcp lifecycle operation is in progress: {lock}")
+    try:
+        existing = read_record(wiki_root)
+        if existing is not None:
+            if not is_stale(existing):
+                raise DaemonAlreadyRunning(
+                    f"daemon already running at {daemon_url(existing)} (pid {existing.pid})",
+                    record=existing,
+                )
+            clear_record(wiki_root)
+
+        if not port_free(host, port):
+            raise PortUnavailable(f"{host}:{port} is already in use")
+
+        ensure_daemon_gitignored(wiki_root)
+        log = log_path(wiki_root)
+        log.parent.mkdir(parents=True, exist_ok=True)
+
+        with log.open("ab") as log_fd:
+            proc = subprocess.Popen(
+                [
+                    sys.executable,
+                    "-m",
+                    "lies.cli",
+                    "mcp",
+                    "_serve",
+                    "--host",
+                    host,
+                    "--port",
+                    str(port),
+                ],
+                stdin=subprocess.DEVNULL,
+                stdout=log_fd,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+                cwd=str(wiki_root),
+                env={**os.environ, "LIES_WIKI_ROOT": str(wiki_root)},
+            )
+
+        try:
+            _wait_until_accepting(host, port, proc, timeout)
+        except DaemonStartFailed:
+            _kill_now(proc)
+            raise
+
+        rec = PidRecord(
+            pid=proc.pid,
+            host=host,
+            port=port,
+            transport="http",
+            started_at=datetime.now(timezone.utc),
+            wiki_root=str(wiki_root),
+            version=__version__,
+        )
+        write_record(wiki_root, rec)
+        return rec
+    finally:
+        release_create_lock(lock, fd)
