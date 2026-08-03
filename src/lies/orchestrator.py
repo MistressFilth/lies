@@ -133,14 +133,7 @@ def _build_lint_report(
                 text = (layout.wiki_dir / page).read_text(encoding="utf-8")
             except (OSError, UnicodeDecodeError):
                 continue
-            for raw in _extract_markdown_links(text):
-                if raw.startswith(("http://", "https://", "mailto:", "tel:")):
-                    continue
-                if raw.startswith(("/", "\\")):
-                    continue
-                clean = raw.split("#", 1)[0].split("?", 1)[0]
-                if clean.endswith(".md"):
-                    linked.add(clean)
+            linked.update(_extract_local_md_links(text, page, layout.root))
         orphans = sorted(pages - linked)
         for orphan in orphans:
             findings.append(
@@ -176,42 +169,19 @@ def _build_lint_report(
             title_counts[title] = title_counts.get(title, 0) + 1
         unique_titles = {p: t for p, t in titles.items() if title_counts[t] == 1}
 
+        # Each page's resolved local ``.md`` links in wiki-dir-relative
+        # convention (same as ``pages``). The shared helper ensures
+        # orphan and missing_xref see the same link semantics — including
+        # the existing-only filter (I1) and the wiki-dir fallback.
         page_links: dict[str, set[str]] = {}
         for page in pages:
             try:
                 text = (layout.wiki_dir / page).read_text(encoding="utf-8")
             except (OSError, UnicodeDecodeError):
                 continue
-            targets: set[str] = set()
-            for raw in _extract_markdown_links(text):
-                if raw.startswith(("http://", "https://", "mailto:", "tel:")):
-                    continue
-                if raw.startswith(("/", "\\")):
-                    continue
-                clean = raw.split("#", 1)[0].split("?", 1)[0]
-                if clean.endswith(".md"):
-                    targets.add(clean)
-            page_links[page] = targets
+            page_links[page] = _extract_local_md_links(text, page, layout.root)
 
         body_cache: dict[str, str] = {}
-        # Resolve each page's raw link targets to wiki-relative paths
-        # once, so the per-pair comparison can check "did this page
-        # link to that specific other page" without re-walking the
-        # resolution rules. Targets that don't resolve are dropped.
-        # ``_resolve_link_target`` expects repo-root-relative
-        # ``source_page_path``; prepend ``wiki/`` here so the
-        # wiki-dir-relative ``pages`` set lines up with the helper's
-        # contract. The resolved targets come back repo-root-relative;
-        # we strip the ``wiki/`` prefix to keep them in the same
-        # convention as ``pages`` for the comparison below.
-        resolved_links: dict[str, set[str]] = {}
-        for page, raws in page_links.items():
-            resolved_links[page] = {
-                resolved.removeprefix("wiki/")
-                for raw in raws
-                if (resolved := _resolve_link_target(f"wiki/{page}", raw, layout.root))
-            }
-
         for page, title in unique_titles.items():
             other_pages = [p for p, t in unique_titles.items() if t != title]
             if not other_pages:
@@ -223,7 +193,7 @@ def _build_lint_report(
             except (OSError, UnicodeDecodeError):
                 continue
             body_lower = body.lower()
-            page_targets = resolved_links.get(page, set())
+            page_targets = page_links.get(page, set())
             for other in other_pages:
                 other_title = unique_titles[other]
                 if other_title.lower() not in body_lower:
@@ -281,6 +251,45 @@ def _extract_markdown_links(text: str) -> list[str]:
     import re
 
     return re.findall(r"\]\(([^)]+)\)", text)
+
+
+def _extract_local_md_links(text: str, source_page_path: str, wiki_root: Path) -> set[str]:
+    """Return the canonical wiki-dir-relative ``.md`` targets of every
+    markdown link in ``text``.
+
+    Filters out:
+    - URL schemes (``http://``, ``https://``, ``mailto:``, ``tel:``)
+    - Absolute paths (rooted at ``/`` or ``\\``)
+    - Non-``.md`` targets
+    - Targets whose resolved path does not exist on disk
+
+    Strips URL fragments and query strings before resolving. Resolves
+    relative targets against ``source_page_path``'s directory first,
+    then the wiki directory (see ``_resolve_link_target``).
+
+    Returns the set in the same wiki-dir-relative convention used by
+    the shell findings' ``pages`` field, so callers can compare
+    resolved links directly against the ``pages`` set without a
+    ``wiki/`` prefix dance.
+    """
+    targets: set[str] = set()
+    for raw in _extract_markdown_links(text):
+        if raw.startswith(("http://", "https://", "mailto:", "tel:")):
+            continue
+        if raw.startswith(("/", "\\")):
+            continue
+        clean = raw.split("#", 1)[0].split("?", 1)[0]
+        if not clean.endswith(".md"):
+            continue
+        # ``_resolve_link_target`` expects repo-root-relative
+        # ``source_page_path``; ``source_page_path`` here is
+        # wiki-dir-relative per the I2 normalization, so prepend
+        # ``wiki/`` and strip it from the result.
+        resolved = _resolve_link_target(f"wiki/{source_page_path}", clean, wiki_root)
+        if resolved is None:
+            continue
+        targets.add(resolved.removeprefix("wiki/"))
+    return targets
 
 
 def _resolve_link_target(source_page_path: str, raw_target: str, wiki_root: Path) -> str | None:
