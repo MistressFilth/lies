@@ -9,6 +9,7 @@ from unittest import mock
 import pytest
 from pydantic_ai.models.test import TestModel
 
+from lies.agents.linter import LintReport
 from lies.agents.repair_models import (
     AppendLink,
     CreateStub,
@@ -92,6 +93,9 @@ def test_apply_three_append_links(wiki: WikiLayout) -> None:
     )
     with (
         mock.patch.object(type(orch._agent), "run_sync", new=_noop_agent_run_sync),
+        mock.patch.object(
+            orch, "_call_linter", return_value=(LintReport(findings=[], report_markdown=""), None)
+        ),
         mock.patch.object(orch, "_run_repair_agent", return_value=plan),
     ):
         report = orch.run_lint(apply=True)
@@ -146,6 +150,9 @@ def test_apply_interleaved_append_links(wiki: WikiLayout) -> None:
     )
     with (
         mock.patch.object(type(orch._agent), "run_sync", new=_noop_agent_run_sync),
+        mock.patch.object(
+            orch, "_call_linter", return_value=(LintReport(findings=[], report_markdown=""), None)
+        ),
         mock.patch.object(orch, "_run_repair_agent", return_value=plan),
     ):
         report = orch.run_lint(apply=True)
@@ -180,6 +187,9 @@ def test_apply_skips_contradiction(wiki: WikiLayout) -> None:
     )
     with (
         mock.patch.object(type(orch._agent), "run_sync", new=_noop_agent_run_sync),
+        mock.patch.object(
+            orch, "_call_linter", return_value=(LintReport(findings=[], report_markdown=""), None)
+        ),
         mock.patch.object(orch, "_run_repair_agent", return_value=plan),
     ):
         report = orch.run_lint(apply=True)
@@ -238,6 +248,11 @@ def test_apply_fails_when_lock_held(wiki: WikiLayout, tmp_path: Path) -> None:
         )
         with (
             mock.patch.object(type(orch._agent), "run_sync", new=_noop_agent_run_sync),
+            mock.patch.object(
+                orch,
+                "_call_linter",
+                return_value=(LintReport(findings=[], report_markdown=""), None),
+            ),
             mock.patch.object(orch, "_run_repair_agent", return_value=plan),
         ):
             report = orch.run_lint(apply=True)
@@ -274,6 +289,9 @@ def test_apply_receipt_in_lint_report(wiki: WikiLayout) -> None:
     )
     with (
         mock.patch.object(type(orch._agent), "run_sync", new=_noop_agent_run_sync),
+        mock.patch.object(
+            orch, "_call_linter", return_value=(LintReport(findings=[], report_markdown=""), None)
+        ),
         mock.patch.object(orch, "_run_repair_agent", return_value=plan),
     ):
         orch.run_lint(apply=True)

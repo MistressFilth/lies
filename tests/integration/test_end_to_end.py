@@ -25,6 +25,7 @@ from unittest import mock
 
 import pytest
 
+from lies.agents.linter import LintReport
 from lies.orchestrator import Orchestrator
 from lies.qmd.cli import QmdNotInstalledError
 from lies.query import synthesize_answer
@@ -216,7 +217,12 @@ def test_run_lint_writes_lint_report_and_appends_log(wiki_copy: Path) -> None:
     def fake_run_sync(self, prompt: str):  # type: ignore[no-untyped-def]
         return mock.Mock(output="lint done")
 
-    with mock.patch.object(type(orch._agent), "run_sync", new=fake_run_sync):
+    with (
+        mock.patch.object(type(orch._agent), "run_sync", new=fake_run_sync),
+        mock.patch.object(
+            orch, "_call_linter", return_value=(LintReport(findings=[], report_markdown=""), None)
+        ),
+    ):
         report_md = orch.run_lint()
 
     layout = WikiLayout(wiki_copy)
@@ -247,7 +253,12 @@ def test_run_lint_detects_orphan_pages(wiki_copy: Path) -> None:
     def fake_run_sync(self, prompt: str):  # type: ignore[no-untyped-def]
         return mock.Mock(output="lint done")
 
-    with mock.patch.object(type(orch._agent), "run_sync", new=fake_run_sync):
+    with (
+        mock.patch.object(type(orch._agent), "run_sync", new=fake_run_sync),
+        mock.patch.object(
+            orch, "_call_linter", return_value=(LintReport(findings=[], report_markdown=""), None)
+        ),
+    ):
         report_md = orch.run_lint()
 
     assert "orphan" in report_md
