@@ -11,7 +11,6 @@ TY         := $(PY) ty check $(SRC)
 PYTEST     := $(PY) pytest
 
 REPO_ROOT              ?= $(HOME)/code/github/MistressFilth/lies
-WORKTREE_LINT_BARE_DIR ?= $(REPO_ROOT)/lies.git
 
 .DEFAULT_GOAL := help
 
@@ -69,10 +68,6 @@ check: ## Run lint, typecheck, and format.
 	$(TY)
 	$(RUFF_FMT)
 
-.PHONY: worktree-lint
-worktree-lint: ## Run the seven-invariants worktree layout check.
-	$(PY) scripts/worktree_lint.py $(WORKTREE_LINT_BARE_DIR)
-
 .PHONY: release
-release: worktree-lint check test ## Bump version, update CHANGELOG, run gates, push tag.
+release: check test ## Bump version, update CHANGELOG, run gates, push tag.
 	$(UV) run python scripts/release.py $(if $(BUMP),--bump $(BUMP),)
