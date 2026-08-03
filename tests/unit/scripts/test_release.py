@@ -236,3 +236,88 @@ def test_preflight_exits_4_when_fetch_fails(
     assert excinfo.value.code == 4
     captured = capsys.readouterr()
     assert "git fetch failed" in captured.err
+
+
+# ---------- main() — idempotent pre-staged release ----------
+
+
+def test_main_tags_without_rewrite_when_surfaces_pre_staged(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Operator pre-staged 0.4.0 in pyproject, __init__, and CHANGELOG.
+
+    `main()` should detect this and only commit/tag/push v0.4.0 — not
+    rewrite any version surface or split the CHANGELOG a second time.
+    """
+    import release as _release
+
+    # Lay out a fake repo root in tmp_path with surfaces already at 0.4.0
+    # and a CHANGELOG that already has the dated [0.4.0] heading.
+    pyproject_text = '[project]\nname = "lies"\nversion = "0.4.0"\n'
+    init_text = '__version__ = "0.4.0"\n'
+    changelog_text = (
+        "# Changelog\n\n## [Unreleased]\n\n## [0.4.0] - 2026-08-02\n\n## [0.2.0] - 2026-07-29\n"
+    )
+    (tmp_path / "pyproject.toml").write_text(pyproject_text, encoding="utf-8")
+    (tmp_path / "src" / "lies").mkdir(parents=True)
+    (tmp_path / "src" / "lies" / "__init__.py").write_text(init_text, encoding="utf-8")
+    (tmp_path / "CHANGELOG.md").write_text(changelog_text, encoding="utf-8")
+
+    sha = "a" * 40
+
+    def fake_check_output(args: list[str], *args_: object, **kwargs: object) -> bytes:
+        key = tuple(args)
+        mapping: dict[tuple[str, ...], bytes | Exception] = {
+            ("git", "status", "--porcelain"): b"",
+            ("git", "rev-parse", "--abbrev-ref", "HEAD"): b"main",
+            ("git", "rev-parse", "HEAD"): sha.encode("utf-8"),
+            ("git", "rev-parse", "origin/main"): sha.encode("utf-8"),
+            ("git", "rev-parse", "--show-toplevel"): str(tmp_path).encode("utf-8"),
+            # One minor-bump commit since no tags exist; surfaces are pre-staged.
+            ("git", "log", "HEAD", "-z", "--pretty=format:%s%n%b%x00"): (
+                b"feat: pre-staged release\x00"
+            ),
+        }
+        if key in mapping:
+            value = mapping[key]
+            if isinstance(value, Exception):
+                raise value
+            return value
+        return b""
+
+    # `git describe --tags --abbrev=0` must raise so `_last_tag` returns "".
+    def fake_check_output_with_describe_raise(
+        args: list[str], *args_: object, **kwargs: object
+    ) -> bytes:
+        if tuple(args) == ("git", "describe", "--tags", "--abbrev=0"):
+            raise subprocess.CalledProcessError(128, args)
+        return fake_check_output(args, *args_, **kwargs)
+
+    calls: list[list[str]] = []
+
+    def fake_check_call(args: list[str], *args_: object, **kwargs: object) -> int:
+        calls.append(list(args))
+        return 0
+
+    monkeypatch.setattr(_release.subprocess, "check_output", fake_check_output_with_describe_raise)
+    monkeypatch.setattr(_release.subprocess, "check_call", fake_check_call)
+    # argparse in main() reads sys.argv; default to a bare invocation.
+    monkeypatch.setattr(sys, "argv", ["release.py"])
+
+    rc = _release.main()
+
+    captured = capsys.readouterr()
+    assert rc == 0, f"main() returned {rc}; stdout={captured.out!r} stderr={captured.err!r}"
+    # Surfaces are untouched: pyproject, init, and CHANGELOG all unchanged.
+    assert (tmp_path / "pyproject.toml").read_text(encoding="utf-8") == pyproject_text
+    assert (tmp_path / "src" / "lies" / "__init__.py").read_text(encoding="utf-8") == init_text
+    assert (tmp_path / "CHANGELOG.md").read_text(encoding="utf-8") == changelog_text
+    # No rewrites were applied — the file-modifying `git add -A` still runs
+    # but it stages the same content (no diff to record).
+    assert ["git", "commit", "-m", "chore(release): v0.4.0"] in calls
+    assert ["git", "tag", "-a", "v0.4.0", "-m", "Release v0.4.0"] in calls
+    assert ["git", "push", "origin", "main", "v0.4.0"] in calls
+    # Operator-facing message reflects the idempotent path.
+    assert "already staged" in captured.out or "tagging only" in captured.out

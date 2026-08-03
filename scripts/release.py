@@ -252,24 +252,40 @@ def main() -> int:
         print("release: --dry-run set; no changes written")
         return 0
 
-    # Rewrite version surfaces if needed.
-    if target_version != current_version:
-        new_py, new_init = rewrite_version(pyproject_text, init_text, target_version)
-        pyproject_path.write_text(new_py, encoding="utf-8")
-        init_path.write_text(new_init, encoding="utf-8")
-
-    # Split CHANGELOG.
-    today = _dt.datetime.now(tz=_dt.timezone.utc).date().isoformat()
+    # Detect idempotent pre-staged release: CHANGELOG already carries a
+    # dated [current_version] heading. The operator prepared the surfaces
+    # by hand; we just tag the existing version without rewriting.
     changelog_text = changelog_path.read_text(encoding="utf-8")
-    new_changelog = split_changelog(changelog_text, target_version, today)
-    changelog_path.write_text(new_changelog, encoding="utf-8")
+    already_released = (
+        f"## [{current_version}] - " in changelog_text
+        or f"## [{current_version}] -" in changelog_text  # date may be empty
+    )
+    if already_released:
+        print(
+            f"release: {current_version} already staged in CHANGELOG; tagging only"
+        )
+    else:
+        # Rewrite version surfaces if needed.
+        if target_version != current_version:
+            new_py, new_init = rewrite_version(
+                pyproject_text, init_text, target_version
+            )
+            pyproject_path.write_text(new_py, encoding="utf-8")
+            init_path.write_text(new_init, encoding="utf-8")
+        # Split CHANGELOG.
+        today = _dt.datetime.now(tz=_dt.timezone.utc).date().isoformat()
+        changelog_text = changelog_path.read_text(encoding="utf-8")
+        new_changelog = split_changelog(changelog_text, target_version, today)
+        changelog_path.write_text(new_changelog, encoding="utf-8")
 
-    # Commit.
+    # Commit, tag, push. When pre-staged, use current_version (the
+    # operator's intent), not the auto-detected target.
+    tag_version = current_version if already_released else target_version
     subprocess.check_call(["git", "add", "-A"])
-    subprocess.check_call(["git", "commit", "-m", f"chore(release): v{target_version}"])
+    subprocess.check_call(["git", "commit", "-m", f"chore(release): v{tag_version}"])
 
     # Tag.
-    tag = f"v{target_version}"
+    tag = f"v{tag_version}"
     subprocess.check_call(["git", "tag", "-a", tag, "-m", f"Release {tag}"])
 
     # Push.
