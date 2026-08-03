@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from pydantic_ai import Agent
+from pydantic_ai.tools import RunContext
 
 from lies.agents.linter import LintReport
 from lies.agents.repair_models import RepairPlan
@@ -52,12 +53,41 @@ class RepairAgentDeps:
     page_texts: dict[str, str]
 
 
+def _build_repair_prompt(ctx: RunContext[RepairAgentDeps]) -> str:
+    """Render the LintReport + page corpus into the repair agent's prompt.
+
+    Pydantic-ai deps are ``RunContext`` data, not auto-serialized
+    into model messages. A static ``system_prompt`` alone leaves the
+    model without access to the lint findings or the page bodies it
+    needs to plan against. This callable extends
+    ``REPAIR_AGENT_SYSTEM_PROMPT`` with the structured lint report
+    and every safe-to-fix finding's page text so the model can emit
+    precise edits with the right ``expected_sha256`` and the right
+    cross-link targets.
+    """
+    parts: list[str] = [
+        REPAIR_AGENT_SYSTEM_PROMPT,
+        "\nLint report findings (JSON):\n" + ctx.deps.lint_report.model_dump_json(indent=2),
+    ]
+    for path, text in ctx.deps.page_texts.items():
+        parts.append(f"\n--- {path} ---\n{text}")
+    return "\n".join(parts)
+
+
 def repair_agent(model: Any | None = None) -> Agent[RepairAgentDeps, RepairPlan]:
-    """Construct the structured-output repair agent."""
+    """Construct the structured-output repair agent.
+
+    Registers ``_build_repair_prompt`` as a system-prompt callable so
+    pydantic-ai renders the lint report and page corpus into the
+    prompt at run time. A static ``system_prompt`` alone leaves the
+    model unable to see ``RepairAgentDeps``.
+    """
     resolved: Any = model if model is not None else "anthropic:claude-sonnet-4-6"
-    return Agent(
+    agent = Agent(
         resolved,
         deps_type=RepairAgentDeps,
         output_type=RepairPlan,
         system_prompt=REPAIR_AGENT_SYSTEM_PROMPT,
     )
+    agent.system_prompt(_build_repair_prompt)
+    return agent
