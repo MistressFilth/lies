@@ -5,7 +5,7 @@ import socket
 import subprocess
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -213,12 +213,27 @@ def test_stop_terminates_a_cooperative_child(tmp_path: Path) -> None:
 
 def test_stop_escalates_to_sigkill(tmp_path: Path) -> None:
     """A child that ignores SIGTERM is killed after the grace period."""
-    script = "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(60)"
+    ready_marker = tmp_path / "handler_ready"
+    script = (
+        "import signal, sys, time;"
+        f"signal.signal(signal.SIGTERM, signal.SIG_IGN);"
+        f"open({str(ready_marker)!r}, 'w').close();"
+        "time.sleep(60)"
+    )
     proc = subprocess.Popen([sys.executable, "-c", script])
-    # Wait for the child to install the SIG_IGN handler before we
-    # signal it; otherwise the default SIGTERM action terminates it
-    # before the handler is in place and the test races.
-    time.sleep(0.3)
+    # Block until the child has installed the SIG_IGN handler. Without
+    # this handshake the parent's SIGTERM can land first and the test
+    # races — the child would exit from the default SIGTERM action
+    # before its handler is in place.
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline:
+        if ready_marker.exists():
+            break
+        time.sleep(0.01)
+    else:
+        proc.kill()
+        proc.wait(timeout=5)
+        pytest.fail("child never installed its SIGTERM handler within 5s")
     daemon.write_record(tmp_path, _record(pid=proc.pid))
     try:
         result = daemon.stop_daemon(tmp_path, grace=1.0)
@@ -269,3 +284,16 @@ def test_status_reports_stale_for_a_dead_pid(tmp_path: Path) -> None:
     assert status.running is False
     assert status.stale is True
     assert status.record is not None
+    # Read-only: status reports a stale record as stale and does NOT
+    # clear it; only ``down`` may mutate the pidfile.
+    assert daemon.read_record(tmp_path) is not None
+
+
+def test_status_clamps_negative_uptime_to_zero(tmp_path: Path) -> None:
+    """A record with a future ``started_at`` reports uptime >= 0, not negative."""
+    future = datetime.now(timezone.utc) + timedelta(hours=1)
+    daemon.write_record(tmp_path, _record(pid=os.getpid(), started_at=future))
+    status = daemon.daemon_status(tmp_path)
+    assert status.running is True
+    assert status.uptime_s is not None
+    assert status.uptime_s == 0.0

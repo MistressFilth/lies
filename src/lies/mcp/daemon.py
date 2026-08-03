@@ -350,10 +350,9 @@ def _wait_for_exit(pid: int, timeout: float) -> bool:
 
     ``os.kill(pid, 0)`` succeeds for zombies on Linux, so a process we
     signalled that exits cleanly lingers as a zombie until the parent
-    reaps it. ``os.waitpid(pid, WNOHANG)`` reaps it in that case and is
-    a no-op (``ChildProcessError``) when ``pid`` is not our child — the
-    real daemon's parent is init after ``up`` exits, so the no-op path
-    is what production takes.
+    reaps it. ``_pid_alive`` reads ``/proc/<pid>/stat`` to detect that
+    state without reaping — :func:`process_alive` alone would spin
+    forever on a zombie.
     """
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -364,14 +363,25 @@ def _wait_for_exit(pid: int, timeout: float) -> bool:
 
 
 def _pid_alive(pid: int) -> bool:
-    """Return True when ``pid`` is still a live process (not a zombie child of us)."""
+    """Return True when ``pid`` is still a live, non-zombie process.
+
+    Reads ``/proc/<pid>/stat`` for the kernel's process-state field.
+    State ``Z`` (zombie) is treated as dead; anything else is treated
+    as live. When procfs is unreadable (missing, restricted, or this
+    isn't Linux) the function falls back to :func:`process_alive` so
+    the call still works — it just won't catch zombies in that case.
+    """
     try:
-        reaped_pid, _ = os.waitpid(pid, os.WNOHANG)
-    except ChildProcessError:
+        raw = Path(f"/proc/{pid}/stat").read_text(encoding="ascii", errors="replace")
+    except (FileNotFoundError, PermissionError, OSError):
         return process_alive(pid)
-    if reaped_pid == pid:
-        return False
-    return process_alive(pid)
+    end = raw.rfind(")")
+    if end == -1 or end + 2 >= len(raw):
+        return process_alive(pid)
+    state = raw[end + 2 : end + 3]
+    if not state:
+        return process_alive(pid)
+    return state != "Z"
 
 
 def stop_daemon(wiki_root: Path, *, grace: float = 10.0) -> StopResult:
@@ -435,7 +445,11 @@ def daemon_status(wiki_root: Path) -> StatusResult:
         )
     if is_stale(rec):
         return StatusResult(running=False, record=rec, stale=True, url=None, uptime_s=None, log=log)
-    uptime = (datetime.now(timezone.utc) - rec.started_at).total_seconds()
+    raw_uptime = (datetime.now(timezone.utc) - rec.started_at).total_seconds()
+    # A hand-edited or clock-skewed record can carry a future
+    # ``started_at``; clamp at zero rather than report a negative
+    # duration that no caller can make sense of.
+    uptime = max(0.0, raw_uptime)
     return StatusResult(
         running=True,
         record=rec,
