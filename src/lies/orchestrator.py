@@ -24,7 +24,7 @@ from lies.capabilities import (
     memory,
     planning,
 )
-from lies.config import get_model
+from lies.config import get_model, get_qmd_transport, get_qmd_url
 from lies.memory.enricher import MemoryEnricherDeps, enricher_agent
 from lies.memory.models import (
     MemoryPlan,
@@ -344,7 +344,7 @@ class Orchestrator:
                 planning(),
                 dynamic_workflow(agents=named_agents, max_agent_calls=20),
                 file_system(wiki_root=self.layout.root),
-                QmdMcpClient(transport="stdio").as_capability(),
+                QmdMcpClient(transport=get_qmd_transport(), url=get_qmd_url()).as_capability(),
             ],
         )
         self._memory_service = WikiMemoryService(self.layout)

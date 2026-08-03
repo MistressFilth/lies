@@ -24,14 +24,23 @@ def test_orchestrator_constructs(wiki_root: Path) -> None:
     assert orch is not None
 
 
-def test_orchestrator_runs_with_test_model(wiki_root: Path) -> None:
+def test_orchestrator_runs_with_test_model(
+    wiki_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """The orchestrator's underlying agent is mocked via TestModel.
 
     TestModel is configured with `call_tools=[]` so it returns a plain text
     response instead of trying to invoke the orchestrator's many tools
     (delegate_task, run_workflow, run_code, etc.) -- which would loop on
     invalid workflow scripts.
+
+    The default `transport="http"` registers qmd's tools as native MCP
+    tools, which TestModel rejects (``UserError: TestModel does not
+    support built-in tools``). Opt out via ``LIES_QMD_TRANSPORT=stdio``
+    so the capability builds a local toolset instead -- the test only
+    exercises agent plumbing, not the qmd transport.
     """
+    monkeypatch.setenv("LIES_QMD_TRANSPORT", "stdio")
     orch = Orchestrator(wiki_root=wiki_root, model="test")
     with orch._agent.override(model=TestModel(call_tools=[], custom_output_text="lint ok")):
         result = orch.run("lint")
@@ -396,3 +405,28 @@ def test_run_ingest_propagates_nothing_to_commit_error(git_wiki: Path) -> None:
         pytest.raises(CommitError, match="nothing to commit"),
     ):
         orch.run_ingest("raw/empty-source.md")
+
+
+def test_orchestrator_uses_qmd_http_transport(
+    wiki_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The agent reaches qmd through the daemon, not a per-agent subprocess."""
+    from lies.qmd import mcp as qmd_mcp
+
+    built: list[dict] = []
+    original = qmd_mcp.QmdMcpClient
+
+    class _Recording(original):  # type: ignore[misc, valid-type]
+        def __init__(self, **kwargs):  # type: ignore[no-untyped-def]
+            built.append(kwargs)
+            super().__init__(**kwargs)
+
+    monkeypatch.setattr(qmd_mcp, "QmdMcpClient", _Recording)
+    monkeypatch.setattr("lies.orchestrator.QmdMcpClient", _Recording)
+    monkeypatch.delenv("LIES_QMD_TRANSPORT", raising=False)
+    monkeypatch.delenv("LIES_QMD_URL", raising=False)
+
+    Orchestrator(wiki_root=wiki_root, model="test")
+    assert built, "QmdMcpClient was not constructed by the orchestrator"
+    assert built[0]["transport"] == "http"
+    assert built[0]["url"] == "http://127.0.0.1:8181"
