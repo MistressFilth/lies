@@ -6,10 +6,16 @@ All notable changes to LIES are documented here. The format follows
 
 ## [Unreleased]
 
+### Removed
+- `scripts/worktree_lint.py` and the `make worktree-lint` target; the seven-invariants checker is a tool that asserted user-scope rule adherence.
+- `tests/unit/test_repository_metadata.py` and its pytest-marker, GitHub-Actions SHA, and mypy-absence assertions.
+- `make release` no longer runs `worktree-lint` as a prerequisite.
+- CI workflow no longer fetches full git history (`fetch-depth: 0`); the only consumer was the dropped compliance test.
+
 ### Changed
 - CI and local hooks now run the Makefile-backed Ruff, ty, formatting, and full test gates.
 - README now carries repository status, CI badge, development commands, and required project links.
-- Pinned GitHub Actions to `actions/checkout@v7`, `actions/setup-python@v7`, and `astral-sh/setup-uv@v9`; workflow fetches full history for compliance checks.
+- Pinned GitHub Actions to commit SHAs (`actions/checkout@3d3c42e…`, `actions/setup-python@5fda3b9…`, `astral-sh/setup-uv@c771a70e…`).
 - `AGENTS.md` references now point to project notes for the internal design and plan documents.
 
 ### Fixed
