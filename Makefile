@@ -22,11 +22,11 @@ help: ## Show this help.
 
 .PHONY: init
 init: ## Set up environment from scratch (uv sync).
-	$(UV) sync
+	$(UV) sync --extra dev
 
 .PHONY: sync
 sync: ## Update environment to match current config.
-	$(UV) sync
+	$(UV) sync --extra dev
 
 .PHONY: unit-test
 unit-test: ## Run unit tests only.
