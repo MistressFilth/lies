@@ -49,6 +49,44 @@ claude mcp add --transport stdio --env LIES_WIKI_ROOT=/path/to/my-wiki \
     lies -- uv run --project /path/to/lies lies mcp
 ```
 
+The stdio form above spawns one server per host session and is the right
+default for single-session use.
+
+To keep a warm server running independently of any host, run it as a
+daemon:
+
+```bash
+lies mcp up                      # detached; prints the URL
+claude mcp add --transport http lies http://127.0.0.1:8737/mcp
+lies mcp status                  # pid, URL, uptime, log path
+lies mcp down                    # stop it
+```
+
+`lies mcp up` binds `127.0.0.1:8737` by default; pass `--host` / `--port`
+to override, which is how you run a daemon for a second wiki. The daemon
+is per-wiki — its pidfile lives at `<wiki>/.lies/mcp.pid` and its output
+goes to `<wiki>/.lies/mcp.log`.
+
+`lies mcp down` only stops daemons that `up` recorded. Servers a host
+spawned on stdio are left alone, so stopping the daemon never kills a
+live Claude Code session.
+
+`lies mcp start` runs the stdio server in the foreground — the explicit
+spelling of bare `lies mcp`, which is unchanged.
+
+`lies mcp up` also ensures qmd's own MCP daemon is running, and the
+agent's search routes through it. qmd is optional: if it is not
+installed or fails to start, the LIES daemon still comes up with a
+warning, and search runs degraded. Pass `--no-qmd` to skip the step.
+
+`lies mcp down` never stops qmd. That daemon is machine-global — one
+fixed port, one index shared across every wiki and any other tool using
+it — so stopping it would break sessions LIES knows nothing about. Use
+`qmd mcp stop` yourself if you really want it down.
+
+The daemon binds loopback and has no authentication. Do not expose it
+beyond `127.0.0.1`.
+
 After registration, Claude Code sees these tools:
 
 - `init_wiki(path)` — bootstrap a new wiki.
@@ -119,6 +157,9 @@ Environment variables:
 - `LIES_LOG_LEVEL` — stdlib log level when logfire is inactive (default: `INFO`)
 - `LOGFIRE_TOKEN` — if set, logfire is configured for observability and
   `pydantic-ai` is instrumented
+- `LIES_QMD_TRANSPORT` — how the agent reaches qmd: `http` (default, uses
+  the qmd daemon) or `stdio` (spawns a `qmd` process per agent)
+- `LIES_QMD_URL` — qmd daemon URL (default: `http://127.0.0.1:8181`)
 
 Most commands accept `--wiki-root` / `-w` to override the wiki root for one
 invocation. `lies config` prints the active model and wiki root.
@@ -189,6 +230,8 @@ CLI commands (`src/lies/cli.py`):
   host-side atomicity and rollback.
 - `lies query <question>` — ask a question of the wiki.
 - `lies lint [--fix]` — health-check the wiki; `--fix` applies the repair plan for safe_to_fix findings.
+- `lies mcp` / `lies mcp start` — run the MCP server on stdio.
+- `lies mcp up` / `down` / `status` — manage the detached http MCP daemon.
 - `lies status` — show qmd status and the last few log entries.
 - `lies config` — print the active model and wiki root.
 - `lies version` — print the LIES version.

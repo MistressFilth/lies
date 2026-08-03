@@ -6,6 +6,38 @@ All notable changes to LIES are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- `lies mcp up` starts a detached streamable-http MCP daemon for the wiki
+  (default `127.0.0.1:8737`, `--host` / `--port` / `--timeout` to override).
+  The parent re-execs a hidden `_serve` subcommand in a new session, waits
+  for the port to accept a connection, and only then writes
+  `<wiki>/.lies/mcp.pid` — a reported success always means a live server.
+- `lies mcp up` also ensures qmd's own daemon via the idempotent
+  `qmd mcp --http --daemon`. qmd is a search backend, not a prerequisite:
+  if it is missing or fails to start, the LIES daemon still comes up and a
+  single warning goes to stderr. `--no-qmd` skips the step.
+- The agent's qmd search now routes through that daemon instead of
+  spawning a `qmd` subprocess per agent. Configured by
+  `LIES_QMD_TRANSPORT` (default `http`, set `stdio` to opt out) and
+  `LIES_QMD_URL` (default `http://127.0.0.1:8181`).
+- `lies mcp down` stops the pidfile-tracked daemon, escalating SIGTERM to
+  SIGKILL after `--grace` seconds. Stdio servers spawned by an MCP host are
+  never touched, and qmd's daemon is never touched at all — it is
+  machine-global and shared with other wikis and tools. A missing or stale
+  record is a successful no-op.
+- `lies mcp start` runs the server on stdio in the foreground. Bare
+  `lies mcp` is unchanged and still does the same thing, so every
+  already-registered MCP host keeps working.
+- `lies mcp status` reports pid, URL, uptime, and log path, exiting 0 when
+  running and 1 when stopped or stale (the `systemctl is-active`
+  convention).
+- `src/lies/utils/exclusive.py` holds the shared `O_CREAT | O_EXCL`
+  create-lock and gitignore guard, extracted from `etl/heartbeat.py` and
+  `memory/service.py`. Both call sites keep their original signatures.
+- `WikiLayout.init` now gitignores `.lies/mcp.pid`, `.lies/mcp.pid.create`,
+  and `.lies/mcp.log`; `lies mcp up` ensures the same entries for wikis
+  created before this release.
+
 ### Changed
 - CI and local hooks now run the Makefile-backed Ruff, ty, formatting, and full test gates.
 - README now carries repository status, CI badge, development commands, and required project links.
