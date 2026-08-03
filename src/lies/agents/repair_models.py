@@ -103,7 +103,7 @@ class RepairPlan(BaseModel):
     def _no_conflicting_ops(self) -> RepairPlan:
         seen: dict[str, str] = {}
         for op in self.operations:
-            path = op.path  # type: ignore[attr-defined]
+            path = op.path  # type: ignore[attr-defined]  # ty: ignore[unresolved-attribute]
             kind = type(op).__name__
             prev = seen.get(path)
             if prev is not None and prev != "AppendLink":

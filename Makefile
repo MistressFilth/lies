@@ -7,7 +7,7 @@ SRC        := src/lies
 TESTS      := tests
 RUFF_LINT  := $(PY) ruff check $(SRC) $(TESTS)
 RUFF_FMT   := $(PY) ruff format $(SRC) $(TESTS)
-MYPY       := $(PY) mypy $(SRC)
+TY         := $(PY) ty check $(SRC)
 PYTEST     := $(PY) pytest
 
 REPO_ROOT              ?= $(HOME)/code/github/MistressFilth/lies
@@ -47,7 +47,7 @@ test: ## Run all tests (unit + features/integration).
 .PHONY: clean
 clean: ## Remove caches and build artifacts.
 	rm -rf \
-		.pytest_cache .mypy_cache .ruff_cache \
+		.pytest_cache .ty_cache .ruff_cache \
 		__pycache__ */__pycache__ */*/__pycache__ */*/*/__pycache__ \
 		dist build *.egg-info */*.egg-info */*/*.egg-info
 
@@ -56,8 +56,8 @@ lint: ## Run ruff check on src and tests.
 	$(RUFF_LINT)
 
 .PHONY: typecheck
-typecheck: ## Run mypy on src.
-	$(MYPY)
+typecheck: ## Run ty on src.
+	$(TY)
 
 .PHONY: format
 format: ## Run ruff format (may auto-edit).
@@ -66,7 +66,7 @@ format: ## Run ruff format (may auto-edit).
 .PHONY: check
 check: ## Run lint, typecheck, and format.
 	$(RUFF_LINT)
-	$(MYPY)
+	$(TY)
 	$(RUFF_FMT)
 
 .PHONY: worktree-lint

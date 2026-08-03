@@ -16,5 +16,5 @@ def memory(wiki_root: object) -> Any:
     """
     from pydantic_ai_harness.memory import Memory
 
-    identity = WikiIdentity.from_root(wiki_root)  # type: ignore[arg-type]
+    identity = WikiIdentity.from_root(wiki_root)  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
     return Memory(namespace=identity.namespace)
