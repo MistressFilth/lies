@@ -569,6 +569,7 @@ class Orchestrator:
         self._turn_counter = 0
         self._enricher = enricher_agent(model=self.model)
         self._repair_agent = repair_agent(model=self.model)
+        self._linter_agent = linter_agent(model=self.model)
         register_read_tools(self._agent)
 
     def run(self, command: str) -> str:
@@ -993,6 +994,27 @@ class Orchestrator:
             "Propose a RepairPlan for the lint report.",
             deps=RepairAgentDeps(lint_report=lint_report, page_texts=page_texts),
         ).output
+
+    def _call_linter(self) -> tuple[LintReport, str | None]:
+        """Invoke the linter sub-agent; return (report, fallback_reason).
+
+        On any exception, logs at WARNING and returns an empty
+        ``LintReport`` with a non-None ``fallback_reason``. The
+        deterministic shell is the safety net; the user sees the
+        fallback line in ``wiki/lint-report.md``.
+        """
+        import logging
+
+        try:
+            result = self._linter_agent.run_sync("lint")
+        except Exception as exc:  # noqa: BLE001 - broad catch; shell is the safety net
+            logging.getLogger(__name__).warning(
+                "linter_agent failed; falling back to deterministic shell: %s: %s",
+                type(exc).__name__,
+                exc,
+            )
+            return LintReport(findings=[], report_markdown=""), f"{type(exc).__name__}: {exc}"
+        return result.output, None
 
     def _apply_repair_plan(self, plan: RepairPlan) -> RepairReceipt:
         """Apply a RepairPlan through WikiMemoryService and return a receipt."""
