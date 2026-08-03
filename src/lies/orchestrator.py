@@ -152,6 +152,72 @@ def _build_lint_report(
                 )
             )
 
+    # missing_xref: A mentions B's title in body text but does not link to B.
+    # Heuristic only; skips title collisions to avoid false positives.
+    if pages:
+        titles: dict[str, str] = {}
+        for page in pages:
+            try:
+                text = (layout.root / page).read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue
+            title = _extract_frontmatter_title(text)
+            if title:
+                titles[page] = title
+        # Skip ambiguous titles: any title shared by 2+ pages is ignored.
+        title_counts: dict[str, int] = {}
+        for title in titles.values():
+            title_counts[title] = title_counts.get(title, 0) + 1
+        unique_titles = {p: t for p, t in titles.items() if title_counts[t] == 1}
+
+        page_links: dict[str, set[str]] = {}
+        for page in pages:
+            try:
+                text = (layout.root / page).read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue
+            targets: set[str] = set()
+            for raw in _extract_markdown_links(text):
+                if raw.startswith(("http://", "https://", "mailto:", "tel:")):
+                    continue
+                if raw.startswith(("/", "\\")):
+                    continue
+                clean = raw.split("#", 1)[0].split("?", 1)[0]
+                if clean.endswith(".md"):
+                    targets.add(clean)
+            page_links[page] = targets
+
+        body_cache: dict[str, str] = {}
+        for page, title in unique_titles.items():
+            other_pages = [p for p, t in unique_titles.items() if t != title]
+            if not other_pages:
+                continue
+            try:
+                body = body_cache.setdefault(
+                    page, _strip_frontmatter((layout.root / page).read_text(encoding="utf-8"))
+                )
+            except (OSError, UnicodeDecodeError):
+                continue
+            body_lower = body.lower()
+            # If the page carries any cross-reference link at all, skip
+            # it: the heuristic only flags pages that mention another
+            # page's title while having no markdown links to speak of.
+            if page_links.get(page):
+                continue
+            for other in other_pages:
+                other_title = unique_titles[other]
+                if other_title.lower() not in body_lower:
+                    continue
+                findings.append(
+                    LintFinding(
+                        severity=LintSeverity.MEDIUM,
+                        category="missing_xref",
+                        message=f"{page} mentions {other_title} without a cross-reference",
+                        pages=[page, other],
+                        safe_to_fix=True,
+                    )
+                )
+
     report = LintReport(findings=findings, report_markdown="")
     body = _format_lint_markdown(report, layout)
     if repair_receipt is not None:
@@ -169,6 +235,37 @@ def _extract_markdown_links(text: str) -> list[str]:
     import re
 
     return re.findall(r"\]\(([^)]+)\)", text)
+
+
+def _extract_frontmatter_title(text: str) -> str | None:
+    """Return the ``title:`` value from YAML frontmatter, or None."""
+    import re
+
+    if not text.startswith("---"):
+        return None
+    end = text.find("\n---", 3)
+    if end == -1:
+        return None
+    block = text[3:end]
+    match = re.search(r"^title:\s*(.+?)\s*$", block, re.MULTILINE)
+    if not match:
+        return None
+    title = match.group(1).strip()
+    if title.startswith(('"', "'")) and title.endswith(('"', "'")):
+        title = title[1:-1]
+    return title or None
+
+
+def _strip_frontmatter(text: str) -> str:
+    """Strip the leading YAML frontmatter block (if any) and return the body."""
+    if not text.startswith("---"):
+        return text
+    end = text.find("\n---", 3)
+    if end == -1:
+        return text
+    rest = text[end + 4 :]
+    rest = rest.removeprefix("\n")
+    return rest
 
 
 def _format_lint_markdown(report: LintReport, layout: WikiLayout) -> str:
