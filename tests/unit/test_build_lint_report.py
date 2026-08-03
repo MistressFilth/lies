@@ -135,19 +135,11 @@ def test_missing_xref_links_to_third_page_still_flags(wiki: Path) -> None:
         f"B mentions A without any link), got {len(xrefs)}: {[f.message for f in xrefs]}"
     )
     # A→B finding: page references both A and B with A first.
-    a_to_b = [
-        f
-        for f in xrefs
-        if f.pages[0] == "concepts/a.md" and f.pages[1] == "concepts/b.md"
-    ]
+    a_to_b = [f for f in xrefs if f.pages[0] == "concepts/a.md" and f.pages[1] == "concepts/b.md"]
     assert a_to_b, "expected a missing_xref finding for A mentioning B (link goes to C, not B)"
     assert a_to_b[0].safe_to_fix is True
     # B→A finding: page references both B and A with B first.
-    b_to_a = [
-        f
-        for f in xrefs
-        if f.pages[0] == "concepts/b.md" and f.pages[1] == "concepts/a.md"
-    ]
+    b_to_a = [f for f in xrefs if f.pages[0] == "concepts/b.md" and f.pages[1] == "concepts/a.md"]
     assert b_to_a, "expected a missing_xref finding for B mentioning A without any link"
     assert b_to_a[0].safe_to_fix is True
 

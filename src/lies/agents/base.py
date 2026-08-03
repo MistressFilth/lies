@@ -35,11 +35,16 @@ def make_sub_agent(
     ``LintDeps`` that pre-supplies the wiki's page texts) so the LLM
     can operate without tool calls. Defaults to ``None`` (no deps) to
     preserve the original single-agent signature.
+
+    The return type stays ``Agent[Any, T]`` (deps widened to ``Any``)
+    so call sites that pass ``deps_type=None`` still type-check
+    without narrowing. Callers that need the precise deps type should
+    annotate the local binding.
     """
-    return Agent(
+    return Agent(  # type: ignore[call-overload]
         model,
         output_type=output_type,
         system_prompt=SUB_AGENT_SYSTEM_PROMPT_PREFIX + system_prompt,
         tools=tools or [],
-        deps_type=deps_type,
+        deps_type=deps_type if deps_type is not None else object,
     )

@@ -525,10 +525,10 @@ def test_run_lint_repair_agent_receives_shell_page_texts(orch: Orchestrator) -> 
         return mock.Mock(output=RepairPlan(operations=[], rationale="noop", evidence=["f0"]))
 
     with (
-        mock.patch.object(orch, "_call_linter", return_value=(LintReport(findings=[], report_markdown=""), None)),
         mock.patch.object(
-            orch._repair_agent, "run_sync", side_effect=fake_repair_agent_run_sync
+            orch, "_call_linter", return_value=(LintReport(findings=[], report_markdown=""), None)
         ),
+        mock.patch.object(orch._repair_agent, "run_sync", side_effect=fake_repair_agent_run_sync),
     ):
         orch.run_lint(apply=True)
 
@@ -536,7 +536,9 @@ def test_run_lint_repair_agent_receives_shell_page_texts(orch: Orchestrator) -> 
     assert isinstance(deps, RepairAgentDeps)
     # Every page the shell findings reference must appear in page_texts
     # with the real file contents (not an empty string from a mis-resolved path).
-    assert deps.page_texts, f"page_texts must be populated for shell findings, got {deps.page_texts!r}"
+    assert deps.page_texts, (
+        f"page_texts must be populated for shell findings, got {deps.page_texts!r}"
+    )
     for path, body in deps.page_texts.items():
         assert body, f"page_texts[{path!r}] must carry real content, got empty string"
         assert "Alpha" in body or "Beta" in body, (
