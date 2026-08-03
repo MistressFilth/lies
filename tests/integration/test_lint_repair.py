@@ -338,7 +338,11 @@ def test_run_lint_end_to_end_with_linter_categories(orch: Orchestrator) -> None:
     contradiction finding (``safe_to_fix=False``). Then mocks ONLY
     the repair agent's outer LLM dispatch (instance-level) to return
     a ``RepairPlan`` with one ``UpdateIndex`` for the orphan and one
-    ``AppendLink`` for a missing_xref — both safe-to-fix.
+    ``AppendLink`` for a missing_xref — both safe-to-fix. The mock
+    captures the ``RepairAgentDeps`` it received so the test can
+    assert the safety filter at both ends: the contradiction reached
+    the repair agent with ``safe_to_fix=False``, and the returned
+    plan has no op referencing the contradiction finding.
 
     Everything else is real:
     - ``_build_lint_report`` walks the fixture wiki;
@@ -350,12 +354,9 @@ def test_run_lint_end_to_end_with_linter_categories(orch: Orchestrator) -> None:
     - ``_apply_repair_plan`` goes through ``WikiMemoryService`` —
       flock, snapshot, write, atomic_commit, qmd refresh;
     - ``_render_lint_report`` writes ``wiki/lint-report.md``.
-
-    The contradiction is surfaced as a finding in the body but is
-    never in the ``### Applied`` section (because
-    ``safe_to_fix=False`` and the repair plan excludes it).
     """
     from lies.agents.linter import LintFinding, LintReport, LintSeverity
+    from lies.agents.repair import RepairAgentDeps
 
     base = orch.layout.wiki_dir
     (base / "concepts").mkdir(exist_ok=True)
@@ -412,38 +413,75 @@ def test_run_lint_end_to_end_with_linter_categories(orch: Orchestrator) -> None:
         evidence=["f0", "f1"],
     )
 
+    captured: dict[str, object] = {}
+
+    def fake_repair_agent_run_sync(
+        prompt: str, deps: RepairAgentDeps | None = None, **_kwargs: object
+    ):  # type: ignore[no-untyped-def]
+        captured["deps"] = deps
+        return mock.Mock(output=real_plan)
+
     with (
         mock.patch.object(orch, "_call_linter", return_value=(llm_contradiction, None)),
         mock.patch.object(
             orch._repair_agent,
             "run_sync",
-            return_value=mock.Mock(output=real_plan),
+            side_effect=fake_repair_agent_run_sync,
         ),
     ):
         report_md = orch.run_lint(apply=True)
 
-    # All four categories present in the merged report body.
+    # --- Safety filter: input side ----------------------------------
+    # The merged lint report reached the repair agent with the
+    # contradiction flagged unsafe. This proves the safety metadata
+    # flowed through the merge envelope into the repair dispatch.
+    deps = captured.get("deps")
+    assert isinstance(deps, RepairAgentDeps), (
+        f"repair agent must receive RepairAgentDeps, got {type(deps)!r}"
+    )
+    deps_report: LintReport = deps.lint_report
+    contradiction_findings = [f for f in deps_report.findings if f.category == "contradiction"]
+    assert contradiction_findings, "contradiction finding must reach the repair agent"
+    assert contradiction_findings[0].safe_to_fix is False, (
+        "contradiction finding must be safe_to_fix=False for the HARD RULE"
+    )
+
+    # --- Safety filter: output side ---------------------------------
+    # The plan the agent returned contains no op referencing the
+    # contradiction finding. In production the HARD RULE forbids ops
+    # on ``safe_to_fix=False`` findings; here the mock returns a plan
+    # the rule would have permitted, and the test pins down which
+    # ``finding_index`` is the contradiction's slot in the merged
+    # report (shell findings come first, so it's the last index).
+    contradiction_index = next(
+        i for i, f in enumerate(deps_report.findings) if f.category == "contradiction"
+    )
+    for op in real_plan.operations:
+        assert op.finding_index != contradiction_index, (
+            f"plan op {type(op).__name__} targets the contradiction finding "
+            f"(index={contradiction_index}) — safety filter broken"
+        )
+
+    # --- Render: all four categories present in the body -----------
     for cat in ("orphan", "missing_xref", "missing_page", "contradiction"):
         assert cat in report_md, f"missing category {cat!r} in lint report"
 
-    # The safe ops were applied through the real apply path:
-    # the repair section must list both op kinds.
-    assert "### Applied" in report_md
-    assert "update_index" in report_md
-    assert "append_link" in report_md
-
-    # The contradiction finding is surfaced (it's in the body), but
-    # ``safe_to_fix=False`` means it must never appear in the Applied
-    # section. The Applied section is bounded by the next ``###``
-    # header (Skipped / Errors / Sources).
-    applied_section = report_md.split("### Applied", 1)[1].split("###", 1)[0]
+    # --- Render: applied section is section-scoped -----------------
+    # Slice the markdown between ``### Applied`` and ``### Sources``
+    # so a stray word elsewhere in the report cannot satisfy the
+    # check. ``### Sources`` is the right boundary because it always
+    # closes the repair section (the report ends there).
+    applied_section = report_md.split("### Applied", 1)[1].split("### Sources", 1)[0]
+    assert "update_index" in applied_section
+    assert "append_link" in applied_section
+    # The contradiction is in the body but not in the Applied section.
     assert "contradiction" not in applied_section, (
         "contradiction (safe_to_fix=False) must not appear in the Applied section"
     )
 
-    # Side-effects of the real apply path: the index was rebuilt with
-    # Lonely in the catalog (the Apply envelope re-runs ``rebuild_index``
-    # so the link is rewritten into the catalog format with the
+    # --- Side effects of the real apply path -----------------------
+    # The index was rebuilt by the apply envelope's ``rebuild_index``
+    # step (so the link is rewritten into the catalog format with the
     # ``wiki/`` prefix), and alpha.md got a cross-link to beta via the
     # real ``_merge_append_links`` rewrite.
     index_text = (base / "index.md").read_text(encoding="utf-8")
