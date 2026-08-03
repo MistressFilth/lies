@@ -7,6 +7,7 @@ a markdown summary.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from enum import Enum
 
 from pydantic import BaseModel
@@ -38,8 +39,29 @@ class LintReport(BaseModel):
     report_markdown: str
 
 
-LINTER_SYSTEM_PROMPT = """Your job is to health-check a LIES wiki. You walk
-every page in `wiki/` and look for problems.
+@dataclass
+class LintDeps:
+    """Dependencies the linter sub-agent needs to actually look at the wiki.
+
+    ``page_texts`` is a wiki-dir-relative path → markdown body map. The
+    orchestrator collects this in ``_call_linter`` so the LLM can read
+    every page without needing tool calls. ``wiki_root`` is the absolute
+    path to the repo root (where ``.git`` lives) for reference in
+    findings' ``pages`` field — the LLM is told to emit paths in the
+    same wiki-dir-relative convention as the page text keys so they
+    dedup cleanly against the deterministic shell's findings.
+    """
+
+    page_texts: dict[str, str]
+    wiki_root: str
+
+
+LINTER_SYSTEM_PROMPT = """Your job is to health-check a LIES wiki.
+
+**Inputs:** the markdown body of every wiki page is provided in your
+dependencies (keyed by wiki-dir-relative path, e.g. ``concepts/alpha.md``).
+You have NO tool calls — read the page text from the dependencies
+directly. Do not try to call tools or read the filesystem.
 
 **Categories** (use these exact strings):
 
@@ -61,7 +83,9 @@ For each finding, return a `LintFinding` with:
   MEDIUM (stale, missing_xref), LOW (orphans, missing_page for minor things)
 - `category`: one of the strings above
 - `message`: a one-sentence description
-- `pages`: list of wiki-relative paths involved
+- `pages`: list of wiki-dir-relative paths (e.g. ``concepts/alpha.md``,
+  NO ``wiki/`` prefix) so the deterministic shell's findings dedup
+  cleanly against yours
 - `safe_to_fix`: True if the fix is mechanical and reversible (add a cross-ref,
   create a stub page); False if it requires human judgment (resolve a
   contradiction, evaluate evidence)
@@ -75,10 +99,16 @@ whether to apply fixes.
 """
 
 
-def linter_agent(model: str = "anthropic:claude-opus-4-7") -> Agent[None, LintReport]:
-    """Construct the linter sub-agent."""
+def linter_agent(model: str = "anthropic:claude-opus-4-7") -> Agent[LintDeps, LintReport]:
+    """Construct the linter sub-agent.
+
+    Carries ``LintDeps`` so the orchestrator can pre-supply every wiki
+    page's markdown body. The LLM reads pages from ``deps.page_texts``;
+    it does not need tool calls to walk the filesystem.
+    """
     return make_sub_agent(
         model=model,
         output_type=LintReport,
+        deps_type=LintDeps,
         system_prompt=LINTER_SYSTEM_PROMPT,
     )

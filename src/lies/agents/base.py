@@ -19,6 +19,7 @@ wiki structure is:
 
 
 T = TypeVar("T", bound=BaseModel)
+D = TypeVar("D")
 
 
 def make_sub_agent(
@@ -26,11 +27,19 @@ def make_sub_agent(
     output_type: type[T],
     system_prompt: str,
     tools: list[Any] | None = None,
-) -> Agent[None, T]:
-    """Construct a pydantic-ai sub-agent with the LIES system prompt prefix."""
+    deps_type: type[D] | None = None,
+) -> Agent[Any, T]:
+    """Construct a pydantic-ai sub-agent with the LIES system prompt prefix.
+
+    ``deps_type`` lets a sub-agent carry dependencies (e.g. a typed
+    ``LintDeps`` that pre-supplies the wiki's page texts) so the LLM
+    can operate without tool calls. Defaults to ``None`` (no deps) to
+    preserve the original single-agent signature.
+    """
     return Agent(
         model,
         output_type=output_type,
         system_prompt=SUB_AGENT_SYSTEM_PROMPT_PREFIX + system_prompt,
         tools=tools or [],
+        deps_type=deps_type,
     )

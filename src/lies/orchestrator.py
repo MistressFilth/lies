@@ -1025,6 +1025,11 @@ class Orchestrator:
     def _call_linter(self) -> tuple[LintReport, str | None]:
         """Invoke the linter sub-agent; return (report, fallback_reason).
 
+        Collects the wiki's page texts up front and passes them via
+        ``LintDeps`` so the LLM can read every page without tool
+        calls. Page paths are wiki-dir-relative so they dedup cleanly
+        against the deterministic shell's findings.
+
         On any exception, logs at WARNING and returns an empty
         ``LintReport`` with a non-None ``fallback_reason``. The
         deterministic shell is the safety net; the user sees the
@@ -1032,8 +1037,21 @@ class Orchestrator:
         """
         import logging
 
+        from lies.agents.linter import LintDeps
+
+        page_texts: dict[str, str] = {}
+        if self.layout.wiki_dir.exists():
+            for path in self.layout.wiki_dir.rglob("*.md"):
+                rel = path.relative_to(self.layout.wiki_dir).as_posix()
+                if rel in {"index.md", "log.md", "lint-report.md", "overview.md"}:
+                    continue
+                try:
+                    page_texts[rel] = path.read_text(encoding="utf-8")
+                except (OSError, UnicodeDecodeError):
+                    continue
+        deps = LintDeps(page_texts=page_texts, wiki_root=str(self.layout.root))
         try:
-            result = self._linter_agent.run_sync("lint")
+            result = self._linter_agent.run_sync("lint", deps=deps)
         except Exception as exc:  # noqa: BLE001 - broad catch; shell is the safety net
             logging.getLogger(__name__).warning(
                 "linter_agent failed; falling back to deterministic shell: %s: %s",

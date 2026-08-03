@@ -570,11 +570,10 @@ def test_run_lint_end_to_end_linter_unavailable(orch: Orchestrator) -> None:
     subprocess.run(["git", "add", "."], cwd=orch.layout.root, check=True)
     subprocess.run(["git", "commit", "-m", "seed"], cwd=orch.layout.root, check=True)
 
-    with mock.patch.object(
-        orch._linter_agent,
-        "run_sync",
-        side_effect=RuntimeError("model offline"),
-    ):
+    def fake_run_sync(prompt: str, deps: object = None, **_kwargs: object):  # type: ignore[no-untyped-def]
+        raise RuntimeError("model offline")
+
+    with mock.patch.object(orch._linter_agent, "run_sync", side_effect=fake_run_sync):
         report_md = orch.run_lint()
 
     # Shell findings still appear in the merged report body.
