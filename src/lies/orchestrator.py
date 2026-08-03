@@ -275,22 +275,40 @@ def _resolve_link_target(source_page_path: str, raw_target: str, wiki_root: Path
     """Resolve a bare markdown link target to a wiki-relative path.
 
     Tries resolving relative to the source page's directory first,
-    then relative to the wiki root, and returns the first
-    wiki-relative ``.md`` path that lands inside ``wiki_root``.
-    Returns ``None`` when neither interpretation lands inside the
-    wiki or the result is not a ``.md`` file.
+    then relative to the wiki directory itself, and returns the
+    first wiki-relative ``.md`` path that both lands inside
+    ``wiki_root`` AND points at a file that exists on disk. Returns
+    ``None`` when no candidate lands inside the wiki, the result is
+    not a ``.md`` file, or no candidate exists.
+
+    ``wiki_root`` is the repository root (the parent of the ``wiki/``
+    directory), and ``source_page_path`` is a repo-root-relative
+    path like ``wiki/concepts/a.md``. The wiki-directory fallback
+    therefore prepends ``wiki/`` to ``raw_target`` so a link written
+    as ``[Beta](concepts/beta.md)`` from inside ``wiki/concepts/``
+    resolves to ``wiki/concepts/beta.md`` (the standard layout),
+    not to ``<repo_root>/concepts/beta.md`` (a non-existent
+    sibling of the ``wiki/`` directory).
+
+    The "must exist" check fixes the false-positive bug where a
+    source-relative candidate like ``wiki/concepts/concepts/beta.md``
+    is syntactically a valid ``.md`` path inside the wiki but
+    doesn't exist on disk; without the check it shadowed the
+    correct wiki-dir fallback ``wiki/concepts/beta.md``.
 
     Examples (wiki root = ``/tmp/wiki``):
 
-    - ``wiki/concepts/a.md`` -> ``b.md`` -> ``wiki/concepts/b.md``
-    - ``wiki/concepts/a.md`` -> ``concepts/b.md`` -> ``wiki/concepts/b.md``
-    - ``wiki/concepts/a.md`` -> ``../concepts/b.md`` -> ``wiki/concepts/b.md``
-    - ``wiki/overview.md`` -> ``b.md`` -> ``wiki/b.md`` (NOT ``wiki/concepts/b.md``)
+    - ``wiki/concepts/a.md`` -> ``b.md`` (exists) -> ``wiki/concepts/b.md``
+    - ``wiki/concepts/a.md`` -> ``concepts/b.md`` (exists) -> ``wiki/concepts/b.md``
+    - ``wiki/concepts/a.md`` -> ``concepts/b.md`` (only ``wiki/concepts/b.md`` exists) -> ``wiki/concepts/b.md``
+    - ``wiki/concepts/a.md`` -> ``b.md`` (no match anywhere) -> ``None``
+    - ``wiki/overview.md`` -> ``b.md`` (exists only under concepts) -> ``None``
     """
     wiki_root_resolved = wiki_root.resolve()
+    wiki_dir = (wiki_root / "wiki").resolve()
     # Source page's directory, absolute.
     source_dir = (wiki_root / source_page_path).parent.resolve()
-    for base in (source_dir, wiki_root_resolved):
+    for base in (source_dir, wiki_dir):
         try:
             candidate = (base / raw_target).resolve()
         except OSError:
@@ -300,8 +318,11 @@ def _resolve_link_target(source_page_path: str, raw_target: str, wiki_root: Path
         except ValueError:
             continue
         result = relative.as_posix()
-        if result.endswith(".md"):
-            return result
+        if not result.endswith(".md"):
+            continue
+        if not candidate.exists():
+            continue
+        return result
     return None
 
 
