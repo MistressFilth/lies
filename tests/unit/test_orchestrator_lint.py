@@ -44,6 +44,9 @@ def _noop_agent_run_sync(self, prompt: str):  # type: ignore[no-untyped-def]
 def test_run_lint_default_does_not_invoke_repair_agent(orch: Orchestrator) -> None:
     with (
         mock.patch.object(type(orch._agent), "run_sync", new=_noop_agent_run_sync),
+        mock.patch.object(
+            orch, "_call_linter", return_value=(LintReport(findings=[], report_markdown=""), None)
+        ),
         mock.patch.object(orch, "_run_repair_agent") as mock_repair,
     ):
         report = orch.run_lint()
@@ -76,6 +79,9 @@ def test_run_lint_apply_invokes_repair_agent(orch: Orchestrator) -> None:
     )
     with (
         mock.patch.object(type(orch._agent), "run_sync", new=_noop_agent_run_sync),
+        mock.patch.object(
+            orch, "_call_linter", return_value=(LintReport(findings=[], report_markdown=""), None)
+        ),
         mock.patch.object(orch, "_run_repair_agent", return_value=fake_plan) as mock_repair,
         mock.patch.object(orch, "_apply_repair_plan", return_value=fake_receipt) as mock_apply,
     ):
@@ -95,6 +101,9 @@ def test_run_lint_apply_records_skipped_findings(orch: Orchestrator) -> None:
     )
     with (
         mock.patch.object(type(orch._agent), "run_sync", new=_noop_agent_run_sync),
+        mock.patch.object(
+            orch, "_call_linter", return_value=(LintReport(findings=[], report_markdown=""), None)
+        ),
         mock.patch.object(orch, "_run_repair_agent", return_value=fake_plan),
         mock.patch.object(orch, "_apply_repair_plan", return_value=fake_receipt),
     ):
@@ -112,6 +121,9 @@ def test_run_lint_apply_surfaces_errors(orch: Orchestrator) -> None:
     )
     with (
         mock.patch.object(type(orch._agent), "run_sync", new=_noop_agent_run_sync),
+        mock.patch.object(
+            orch, "_call_linter", return_value=(LintReport(findings=[], report_markdown=""), None)
+        ),
         mock.patch.object(orch, "_run_repair_agent", return_value=fake_plan),
         mock.patch.object(orch, "_apply_repair_plan", return_value=fake_receipt),
     ):
@@ -174,6 +186,9 @@ def test_run_lint_apply_passes_findings_to_repair_agent(orch: Orchestrator) -> N
 
     with (
         mock.patch.object(type(orch._agent), "run_sync", new=_noop_agent_run_sync),
+        mock.patch.object(
+            orch, "_call_linter", return_value=(LintReport(findings=[], report_markdown=""), None)
+        ),
         mock.patch.object(orch._repair_agent, "run_sync", new=fake_repair_agent_run_sync),
         mock.patch.object(
             orch,
@@ -221,7 +236,6 @@ def test_run_lint_uses_linter_agent_output(orch: Orchestrator) -> None:
         report_markdown="",
     )
     with (
-        mock.patch.object(type(orch._agent), "run_sync", return_value=mock.Mock(output="ok")),
         mock.patch.object(orch, "_call_linter", return_value=(llm_report, None)),
         mock.patch.object(orch, "_run_repair_agent"),
     ):
@@ -231,7 +245,6 @@ def test_run_lint_uses_linter_agent_output(orch: Orchestrator) -> None:
 
 def test_run_lint_falls_back_to_shell_on_linter_failure(orch: Orchestrator) -> None:
     with (
-        mock.patch.object(type(orch._agent), "run_sync", return_value=mock.Mock(output="ok")),
         mock.patch.object(
             orch, "_call_linter", return_value=(LintReport(findings=[], report_markdown=""), "boom")
         ),
@@ -249,7 +262,6 @@ def test_run_lint_llm_empty_findings_keeps_shell_findings(orch: Orchestrator) ->
     subprocess.run(["git", "commit", "-m", "seed"], cwd=orch.layout.root, check=True)
 
     with (
-        mock.patch.object(type(orch._agent), "run_sync", return_value=mock.Mock(output="ok")),
         mock.patch.object(
             orch, "_call_linter", return_value=(LintReport(findings=[], report_markdown=""), None)
         ),
@@ -278,7 +290,6 @@ def test_run_lint_dedup_collapses_duplicate_orphan(orch: Orchestrator) -> None:
     llm_report = LintReport(findings=[llm_orphan], report_markdown="")
 
     with (
-        mock.patch.object(type(orch._agent), "run_sync", return_value=mock.Mock(output="ok")),
         mock.patch.object(orch, "_call_linter", return_value=(llm_report, None)),
         mock.patch.object(orch, "_run_repair_agent"),
     ):
@@ -314,7 +325,6 @@ def test_run_lint_apply_uses_merged_findings(orch: Orchestrator) -> None:
         return mock.Mock(output=RepairPlan(operations=[], rationale="noop", evidence=["f0"]))
 
     with (
-        mock.patch.object(type(orch._agent), "run_sync", return_value=mock.Mock(output="ok")),
         mock.patch.object(orch, "_call_linter", return_value=(llm_report, None)),
         mock.patch.object(orch._repair_agent, "run_sync", new=fake_repair),
         mock.patch.object(

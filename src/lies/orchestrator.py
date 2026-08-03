@@ -947,8 +947,6 @@ class Orchestrator:
         """Run deterministic and LLM lint, merge findings, and write report."""
         shell_report = _build_lint_report(self.layout)
         llm_report, fallback_reason = self._call_linter()
-        if not isinstance(llm_report, LintReport):
-            llm_report = LintReport(findings=[], report_markdown="")
         merged_report, fallback_reason = merge_lint_reports(
             shell_report, llm_report, llm_fallback_reason=fallback_reason
         )
