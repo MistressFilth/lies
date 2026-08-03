@@ -64,7 +64,12 @@ def _build_repair_prompt(ctx: RunContext[RepairAgentDeps]) -> str:
     and every safe-to-fix finding's page text so the model can emit
     precise edits with the right ``expected_sha256`` and the right
     cross-link targets.
+
+    Defensive against ``ctx.deps is None`` for callers that don't
+    pass deps: in that case, return the static prompt alone.
     """
+    if ctx.deps is None:
+        return REPAIR_AGENT_SYSTEM_PROMPT
     parts: list[str] = [
         REPAIR_AGENT_SYSTEM_PROMPT,
         "\nLint report findings (JSON):\n" + ctx.deps.lint_report.model_dump_json(indent=2),

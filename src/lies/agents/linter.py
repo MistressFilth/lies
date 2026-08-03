@@ -110,11 +110,17 @@ def _build_linter_prompt(ctx: RunContext[LintDeps]) -> str:
     extends ``LINTER_SYSTEM_PROMPT`` with the actual page corpus so
     the model can read every wiki page directly.
 
+    Defensive against ``ctx.deps is None`` for callers that don't
+    pass deps (e.g. legacy unit tests driving the agent directly):
+    in that case, return the static prompt alone.
+
     Page paths are emitted with a ``--- <path> ---`` separator so the
     LLM can attribute claims to specific pages, and so unit tests can
     assert the corpus reached the prompt.
     """
     parts: list[str] = [LINTER_SYSTEM_PROMPT]
+    if ctx.deps is None:
+        return parts[0]
     if ctx.deps.wiki_root:
         parts.append(f"\nWiki root: {ctx.deps.wiki_root}")
     for path, text in ctx.deps.page_texts.items():
