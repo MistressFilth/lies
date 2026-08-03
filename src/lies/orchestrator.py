@@ -321,7 +321,7 @@ class Orchestrator:
         # don't set a name; the orchestrator owns the namespace.
         named_agents: list[Agent] = []
         for name, factory, _description in _SUB_AGENT_TABLE:
-            agent = factory(model=self.model)  # type: ignore[operator]
+            agent = factory(model=self.model)  # type: ignore[operator]  # ty: ignore[call-non-callable]
             agent.name = name
             named_agents.append(agent)
 
@@ -804,7 +804,7 @@ class Orchestrator:
         # ``memory_receipt.changed_pages`` are paired by construction
         # (the service applies operations in order and appends a
         # ``PageReference`` for each), so we use position.
-        kinds = [op.kind.value for op in plan.operations]  # type: ignore[attr-defined]
+        kinds = [op.kind.value for op in plan.operations]  # type: ignore[attr-defined]  # ty: ignore[unresolved-attribute]
         return _Receipt(
             applied=memory_receipt.changed_pages,
             applied_repair_kinds=kinds,

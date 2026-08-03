@@ -25,7 +25,7 @@ dev = [
     "pytest-asyncio>=0.23",
     "pytest-mock>=3.12",
     "ruff>=0.5",
-    "mypy>=1.10",
+    "ty>=0.0.65",
 ]
 # `qmd` is now an empty extra retained for back-compat. `fastmcp` and `mcp`
 # are default dependencies as of the MCP server release. Install with
