@@ -341,3 +341,155 @@ def test_main_tags_without_rewrite_when_surfaces_pre_staged(
     assert ["git", "push", "origin", "main", "v0.4.0"] in calls
     # Operator-facing message reflects the idempotent path.
     assert "already staged" in captured.out or "tagging only" in captured.out
+    # --allow-empty is gated on the idempotent pre-staged path; assert it
+    # is present here and not present in the auto-bump path (next test).
+    assert ["git", "commit", "--allow-empty", "-m", "chore(release): v0.4.0"] in calls
+
+
+def test_main_omits_allow_empty_on_auto_bump_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Auto-bump (non-idempotent) path: --allow-empty must NOT be present.
+
+    Without the pre-staged CHANGELOG heading, the script rewrites
+    surfaces and splits the CHANGELOG. The resulting commit must have
+    a real diff; --allow-empty would mask a future bug that silently
+    produces no diff.
+    """
+    import release as _release
+
+    # Surfaces still at 0.3.0; CHANGELOG has only [Unreleased] and a
+    # prior [0.2.0] heading — no pre-staged [0.3.0] entry.
+    pyproject_text = '[project]\nname = "lies"\nversion = "0.3.0"\n'
+    init_text = '__version__ = "0.3.0"\n'
+    changelog_text = (
+        "# Changelog\n\n## [Unreleased]\n\n### Added\n- New feature\n\n## [0.2.0] - 2026-07-29\n"
+    )
+    (tmp_path / "pyproject.toml").write_text(pyproject_text, encoding="utf-8")
+    (tmp_path / "src" / "lies").mkdir(parents=True)
+    (tmp_path / "src" / "lies" / "__init__.py").write_text(init_text, encoding="utf-8")
+    (tmp_path / "CHANGELOG.md").write_text(changelog_text, encoding="utf-8")
+
+    sha = "a" * 40
+
+    def fake_check_output(args: list[str], *args_: object, **kwargs: object) -> bytes:
+        key = tuple(args)
+        mapping: dict[tuple[str, ...], bytes | Exception] = {
+            ("git", "status", "--porcelain"): b"",
+            ("git", "rev-parse", "--abbrev-ref", "HEAD"): b"main",
+            ("git", "rev-parse", "HEAD"): sha.encode("utf-8"),
+            ("git", "ls-remote", "origin", "main"): (f"{sha}\trefs/heads/main\n".encode()),
+            ("git", "rev-parse", "--show-toplevel"): str(tmp_path).encode("utf-8"),
+            ("git", "log", "HEAD", "-z", "--pretty=format:%s%n%b%x00"): (b"feat: new endpoint\x00"),
+        }
+        if key in mapping:
+            value = mapping[key]
+            if isinstance(value, Exception):
+                raise value
+            return value
+        return b""
+
+    def fake_check_output_with_describe_raise(
+        args: list[str], *args_: object, **kwargs: object
+    ) -> bytes:
+        if tuple(args) == ("git", "describe", "--tags", "--abbrev=0"):
+            raise subprocess.CalledProcessError(128, args)
+        return fake_check_output(args, *args_, **kwargs)
+
+    calls: list[list[str]] = []
+
+    def fake_check_call(args: list[str], *args_: object, **kwargs: object) -> int:
+        calls.append(list(args))
+        return 0
+
+    monkeypatch.setattr(_release.subprocess, "check_output", fake_check_output_with_describe_raise)
+    monkeypatch.setattr(_release.subprocess, "check_call", fake_check_call)
+    monkeypatch.setattr(sys, "argv", ["release.py"])
+
+    rc = _release.main()
+    assert rc == 0
+
+    commit_calls = [c for c in calls if c and c[0] == "git" and c[1] == "commit"]
+    assert commit_calls, "expected at least one git commit call"
+    for commit_call in commit_calls:
+        # --allow-empty is reserved for the idempotent path; never present
+        # when the script auto-bumps because the rewrite produces a real
+        # diff and the script should fail loudly if it does not.
+        assert "--allow-empty" not in commit_call, (
+            f"--allow-empty must not be used on the auto-bump path: {commit_call!r}"
+        )
+
+
+def test_main_returns_8_when_tag_already_exists(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Pre-check: an existing v0.4.0 tag causes main() to return 8 with a
+    structured message and no raw CalledProcessError.
+    """
+    import release as _release
+
+    # Pre-staged surfaces so the script reaches the commit/tag block.
+    pyproject_text = '[project]\nname = "lies"\nversion = "0.4.0"\n'
+    init_text = '__version__ = "0.4.0"\n'
+    changelog_text = (
+        "# Changelog\n\n## [Unreleased]\n\n## [0.4.0] - 2026-08-02\n\n## [0.2.0] - 2026-07-29\n"
+    )
+    (tmp_path / "pyproject.toml").write_text(pyproject_text, encoding="utf-8")
+    (tmp_path / "src" / "lies").mkdir(parents=True)
+    (tmp_path / "src" / "lies" / "__init__.py").write_text(init_text, encoding="utf-8")
+    (tmp_path / "CHANGELOG.md").write_text(changelog_text, encoding="utf-8")
+
+    sha = "a" * 40
+
+    def fake_check_output(args: list[str], *args_: object, **kwargs: object) -> bytes:
+        key = tuple(args)
+        mapping: dict[tuple[str, ...], bytes | Exception] = {
+            ("git", "status", "--porcelain"): b"",
+            ("git", "rev-parse", "--abbrev-ref", "HEAD"): b"main",
+            ("git", "rev-parse", "HEAD"): sha.encode("utf-8"),
+            ("git", "ls-remote", "origin", "main"): (f"{sha}\trefs/heads/main\n".encode()),
+            ("git", "rev-parse", "--show-toplevel"): str(tmp_path).encode("utf-8"),
+            ("git", "log", "HEAD", "-z", "--pretty=format:%s%n%b%x00"): (
+                b"feat: pre-staged release\x00"
+            ),
+            # The pre-check `git tag --list v0.4.0` returns the existing tag.
+            ("git", "tag", "--list", "v0.4.0"): b"v0.4.0\n",
+        }
+        if key in mapping:
+            value = mapping[key]
+            if isinstance(value, Exception):
+                raise value
+            return value
+        return b""
+
+    def fake_check_output_with_describe_raise(
+        args: list[str], *args_: object, **kwargs: object
+    ) -> bytes:
+        if tuple(args) == ("git", "describe", "--tags", "--abbrev=0"):
+            raise subprocess.CalledProcessError(128, args)
+        return fake_check_output(args, *args_, **kwargs)
+
+    calls: list[list[str]] = []
+
+    def fake_check_call(args: list[str], *args_: object, **kwargs: object) -> int:
+        calls.append(list(args))
+        return 0
+
+    monkeypatch.setattr(_release.subprocess, "check_output", fake_check_output_with_describe_raise)
+    monkeypatch.setattr(_release.subprocess, "check_call", fake_check_call)
+    monkeypatch.setattr(sys, "argv", ["release.py"])
+
+    # Must NOT raise; must return 8.
+    rc = _release.main()
+    assert rc == 8, f"main() returned {rc}; expected 8 for existing tag"
+    captured = capsys.readouterr()
+    # Structured stderr message per the spec's error table.
+    assert "v0.4.0 exists" in captured.err
+    assert "BUMP=" in captured.err
+    # The pre-check must short-circuit before the tag is created.
+    assert ["git", "tag", "-a", "v0.4.0", "-m", "Release v0.4.0"] not in calls
+    # The commit does run (idempotent path), but no tag creation follows.
+    assert ["git", "commit", "--allow-empty", "-m", "chore(release): v0.4.0"] in calls
