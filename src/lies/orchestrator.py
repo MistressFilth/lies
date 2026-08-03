@@ -383,15 +383,30 @@ def _format_lint_markdown(report: LintReport, layout: WikiLayout) -> str:
     return "\n".join(sections)
 
 
-def _format_repair_section(receipt: RepairReceipt) -> str:
-    """Render the ``applied`` section of ``wiki/lint-report.md``.
+def _render_lint_report(
+    report: LintReport,
+    *,
+    layout: WikiLayout,
+    repair_receipt: RepairReceipt | None,
+    shell_count: int,
+    llm_count: int,
+    llm_fallback_reason: str | None,
+) -> str:
+    """Render ``report`` plus repair and source sections as markdown."""
+    body = _format_lint_markdown(report, layout)
+    if repair_receipt is not None:
+        body += "\n" + _format_repair_section(repair_receipt)
+    sources = (
+        "### Sources\n\n"
+        f"- deterministic shell: {shell_count} findings\n"
+        f"- linter_agent: {llm_count} findings"
+    )
+    if llm_fallback_reason is not None:
+        sources += f"\n- fallback: {llm_fallback_reason}"
+    return body + "\n" + sources + "\n"
 
-    The applied entries use ``receipt.applied_repair_kinds`` (a parallel
-    list of repair op kinds) when present, so callers see the original
-    repair primitive (``append_link``, ``update_index``, ...) instead of
-    the underlying memory operation kind (``update``). Falls back to the
-    memory operation kind for backwards compatibility.
-    """
+
+def _format_repair_section(receipt: RepairReceipt) -> str:
     lines = [f"### Applied ({len(receipt.applied)})", ""]
     if not receipt.applied:
         lines.append("_No repairs applied._")
@@ -400,21 +415,14 @@ def _format_repair_section(receipt: RepairReceipt) -> str:
         for index, ref in enumerate(receipt.applied):
             kind = kinds[index] if index < len(kinds) else ref.op.value
             lines.append(f"- applied: {kind} — {ref.path}")
-    lines.append("")
-    lines.append(f"### Skipped ({len(receipt.skipped)})")
-    lines.append("")
+    lines.extend(["", f"### Skipped ({len(receipt.skipped)})", ""])
     if receipt.skipped:
-        for reason in receipt.skipped:
-            lines.append(f"- {reason}")
+        lines.extend(f"- {reason}" for reason in receipt.skipped)
     else:
         lines.append("_No findings skipped._")
-    lines.append("")
     if receipt.errors:
-        lines.append(f"### Errors ({len(receipt.errors)})")
-        lines.append("")
-        for err in receipt.errors:
-            lines.append(f"- {err}")
-        lines.append("")
+        lines.extend(["", f"### Errors ({len(receipt.errors)})", ""])
+        lines.extend(f"- {err}" for err in receipt.errors)
     return "\n".join(lines)
 
 
@@ -476,6 +484,21 @@ _SUB_AGENT_TABLE: tuple[tuple[str, object, str], ...] = (
 )
 
 
+def _dedup_key(category: str, pages: list[str]) -> tuple[str, frozenset[str]]:
+    """Normalize a finding to a dedup key.
+
+    Page paths are normalized to a ``frozenset`` with any leading
+    ``wiki/`` prefix stripped so the same finding produced by the
+    shell (which prefixes ``wiki/``) and the LLM (which omits it)
+    collides. The message is intentionally NOT part of the key: for
+    mechanical categories the message is fully determined by the page
+    set; including it would split shell and LLM duplicates that
+    differ only in how the path is rendered in prose.
+    """
+    normalized = frozenset(p.removeprefix("wiki/") for p in pages)
+    return category, normalized
+
+
 def merge_lint_reports(
     shell: LintReport,
     llm: LintReport,
@@ -484,20 +507,19 @@ def merge_lint_reports(
 ) -> tuple[LintReport, str | None]:
     """Union ``shell`` and ``llm`` findings with dedup.
 
-    Dedup key is ``(category, frozenset(pages), message)``. Shell
-    entries win on collision so the deterministic shell's
-    ``safe_to_fix`` semantics are preserved for mechanical
-    categories. LLM-only categories (``contradiction``, ``stale``,
-    ``data_gap``) have no shell entries by construction and pass
-    through.
+    Dedup key is ``(category, normalized_pages)``. Shell entries win
+    on collision so the deterministic shell's ``safe_to_fix``
+    semantics are preserved for mechanical categories. LLM-only
+    categories (``contradiction``, ``stale``, ``data_gap``) have no
+    shell entries by construction and pass through.
 
     Returns the merged ``LintReport`` and the propagated
     ``llm_fallback_reason`` (the caller renders the final markdown).
     """
-    seen: set[tuple[str, frozenset[str], str]] = set()
+    seen: set[tuple[str, frozenset[str]]] = set()
     merged: list[LintFinding] = []
     for finding in [*shell.findings, *llm.findings]:
-        key = (finding.category, frozenset(finding.pages), finding.message)
+        key = _dedup_key(finding.category, finding.pages)
         if key in seen:
             continue
         seen.add(key)
@@ -936,44 +958,32 @@ class Orchestrator:
         return synthesize_answer(question, self.layout)
 
     def run_lint(self, apply: bool = False) -> str:
-        """Run the lint pass and write ``wiki/lint-report.md``.
-
-        When ``apply=True``, also invokes the repair agent and applies
-        the resulting RepairPlan through ``WikiMemoryService``. The
-        post-apply report shows both the proposed and the applied
-        sections.
-
-        Args:
-            apply: If True, run the repair agent and apply the resulting
-                plan. If False, return the dry-run report only.
-
-        Returns:
-            The lint report markdown that was written to
-            ``wiki/lint-report.md``.
-
-        Raises:
-            Exception: Anything raised by the agent or the apply path
-                is propagated.
-        """
-        # NOTE: the linter sub-agent's structured output is currently
-        # not consumed here; the host-side deterministic shell
-        # (`_build_lint_report`) is the source of truth for findings
-        # in this branch. The call to the linter is preserved so
-        # downstream wiring remains intact, but its return value is
-        # deliberately discarded until the integration is finalized.
-        self._agent.run_sync("lint")
-        lint_report = _build_lint_report(self.layout)
+        """Run deterministic and LLM lint, merge findings, and write report."""
+        shell_report = _build_lint_report(self.layout)
+        llm_report, fallback_reason = self._call_linter()
+        if not isinstance(llm_report, LintReport):
+            llm_report = LintReport(findings=[], report_markdown="")
+        merged_report, fallback_reason = merge_lint_reports(
+            shell_report, llm_report, llm_fallback_reason=fallback_reason
+        )
         repair_receipt: RepairReceipt | None = None
         if apply:
-            plan = self._run_repair_agent(lint_report)
+            plan = self._run_repair_agent(merged_report)
             repair_receipt = self._apply_repair_plan(plan)
-        final_report = _build_lint_report(self.layout, repair_receipt=repair_receipt)
-        self.layout.lint_report_path.write_text(final_report.report_markdown, encoding="utf-8")
+        final_md = _render_lint_report(
+            merged_report,
+            layout=self.layout,
+            repair_receipt=repair_receipt,
+            shell_count=len(shell_report.findings),
+            llm_count=len(llm_report.findings),
+            llm_fallback_reason=fallback_reason,
+        )
+        self.layout.lint_report_path.write_text(final_md, encoding="utf-8")
         self._append_log_entry(
             f"## [{datetime.now(tz=timezone.utc).date().isoformat()}] lint | "
-            f"{final_report.report_markdown.count(chr(10))} findings"
+            f"{final_md.count(chr(10))} findings"
         )
-        return final_report.report_markdown
+        return final_md
 
     def _run_repair_agent(self, lint_report: LintReport) -> RepairPlan:
         """Invoke the repair agent against the structured lint report.
