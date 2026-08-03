@@ -4,6 +4,7 @@ import os
 import socket
 import subprocess
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -181,3 +182,90 @@ def test_spawn_raises_busy_when_create_lock_held(tmp_path: Path) -> None:
             daemon.spawn_daemon(tmp_path, timeout=1.0)
     finally:
         release_create_lock(lock, fd)
+
+
+def test_stop_with_no_record_is_a_noop(tmp_path: Path) -> None:
+    result = daemon.stop_daemon(tmp_path)
+    assert result.action == "none"
+    assert result.pid is None
+
+
+def test_stop_clears_a_stale_record(tmp_path: Path) -> None:
+    daemon.write_record(tmp_path, _record(pid=999_999_999))
+    result = daemon.stop_daemon(tmp_path)
+    assert result.action == "cleared_stale"
+    assert result.pid == 999_999_999
+    assert daemon.read_record(tmp_path) is None
+
+
+def test_stop_terminates_a_cooperative_child(tmp_path: Path) -> None:
+    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    daemon.write_record(tmp_path, _record(pid=proc.pid))
+    try:
+        result = daemon.stop_daemon(tmp_path, grace=5.0)
+        assert result.action == "stopped"
+        assert result.signal == "SIGTERM"
+        assert daemon.read_record(tmp_path) is None
+    finally:
+        proc.kill()
+        proc.wait(timeout=5)
+
+
+def test_stop_escalates_to_sigkill(tmp_path: Path) -> None:
+    """A child that ignores SIGTERM is killed after the grace period."""
+    script = "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(60)"
+    proc = subprocess.Popen([sys.executable, "-c", script])
+    # Wait for the child to install the SIG_IGN handler before we
+    # signal it; otherwise the default SIGTERM action terminates it
+    # before the handler is in place and the test races.
+    time.sleep(0.3)
+    daemon.write_record(tmp_path, _record(pid=proc.pid))
+    try:
+        result = daemon.stop_daemon(tmp_path, grace=1.0)
+        assert result.action == "stopped"
+        assert result.signal == "SIGKILL"
+        assert daemon.read_record(tmp_path) is None
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+        proc.wait(timeout=5)
+
+
+def test_stop_raises_busy_when_create_lock_held(tmp_path: Path) -> None:
+    from lies.utils.exclusive import acquire_create_lock, release_create_lock
+
+    lock = daemon.create_lock_path(tmp_path)
+    fd = acquire_create_lock(lock, max_age_s=daemon.CREATE_LOCK_MAX_AGE_S)
+    try:
+        with pytest.raises(daemon.DaemonBusy):
+            daemon.stop_daemon(tmp_path)
+    finally:
+        release_create_lock(lock, fd)
+
+
+def test_status_reports_stopped_without_a_record(tmp_path: Path) -> None:
+    status = daemon.daemon_status(tmp_path)
+    assert status.running is False
+    assert status.stale is False
+    assert status.record is None
+    assert status.url is None
+    assert status.uptime_s is None
+    assert status.log == daemon.log_path(tmp_path)
+
+
+def test_status_reports_running_for_a_live_record(tmp_path: Path) -> None:
+    daemon.write_record(tmp_path, _record(pid=os.getpid(), port=9002))
+    status = daemon.daemon_status(tmp_path)
+    assert status.running is True
+    assert status.stale is False
+    assert status.url == f"http://127.0.0.1:9002{daemon.MCP_PATH}"
+    assert status.uptime_s is not None
+    assert status.uptime_s >= 0
+
+
+def test_status_reports_stale_for_a_dead_pid(tmp_path: Path) -> None:
+    daemon.write_record(tmp_path, _record(pid=999_999_999))
+    status = daemon.daemon_status(tmp_path)
+    assert status.running is False
+    assert status.stale is True
+    assert status.record is not None

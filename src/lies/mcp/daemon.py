@@ -17,10 +17,12 @@ clean stop.
 from __future__ import annotations
 
 import os
+import signal as signal_module
 import socket
 import subprocess
 import sys
 import time
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -315,3 +317,130 @@ def spawn_daemon(
         return rec
     finally:
         release_create_lock(lock, fd)
+
+
+@dataclass(frozen=True)
+class StopResult:
+    """Outcome of :func:`stop_daemon`.
+
+    ``action`` is ``"stopped"`` when a live process was signalled,
+    ``"cleared_stale"`` when only a dead record was removed, and
+    ``"none"`` when there was nothing to do.
+    """
+
+    action: str
+    pid: int | None
+    signal: str | None
+
+
+@dataclass(frozen=True)
+class StatusResult:
+    """Outcome of :func:`daemon_status`."""
+
+    running: bool
+    record: PidRecord | None
+    stale: bool
+    url: str | None
+    uptime_s: float | None
+    log: Path
+
+
+def _wait_for_exit(pid: int, timeout: float) -> bool:
+    """Poll until ``pid`` disappears. Return True if it did.
+
+    ``os.kill(pid, 0)`` succeeds for zombies on Linux, so a process we
+    signalled that exits cleanly lingers as a zombie until the parent
+    reaps it. ``os.waitpid(pid, WNOHANG)`` reaps it in that case and is
+    a no-op (``ChildProcessError``) when ``pid`` is not our child — the
+    real daemon's parent is init after ``up`` exits, so the no-op path
+    is what production takes.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if not _pid_alive(pid):
+            return True
+        time.sleep(0.1)
+    return not _pid_alive(pid)
+
+
+def _pid_alive(pid: int) -> bool:
+    """Return True when ``pid`` is still a live process (not a zombie child of us)."""
+    try:
+        reaped_pid, _ = os.waitpid(pid, os.WNOHANG)
+    except ChildProcessError:
+        return process_alive(pid)
+    if reaped_pid == pid:
+        return False
+    return process_alive(pid)
+
+
+def stop_daemon(wiki_root: Path, *, grace: float = 10.0) -> StopResult:
+    """Stop the tracked daemon, escalating SIGTERM to SIGKILL.
+
+    Only pidfile-tracked daemons are touched — never the stdio servers
+    an MCP host spawned as its own children.
+
+    Raises :class:`DaemonBusy` on create-lock contention and
+    :class:`DaemonStopFailed` if the process survives SIGKILL. A missing
+    or stale record is a successful no-op, not an error.
+    """
+    lock = create_lock_path(wiki_root)
+    fd = acquire_create_lock(lock, max_age_s=CREATE_LOCK_MAX_AGE_S)
+    if fd is None:
+        raise DaemonBusy(f"another lies mcp lifecycle operation is in progress: {lock}")
+    try:
+        rec = read_record(wiki_root)
+        if rec is None:
+            return StopResult(action="none", pid=None, signal=None)
+        if is_stale(rec):
+            clear_record(wiki_root)
+            return StopResult(action="cleared_stale", pid=rec.pid, signal=None)
+
+        try:
+            os.kill(rec.pid, signal_module.SIGTERM)
+        except ProcessLookupError:
+            # Exited between the staleness check and the signal.
+            clear_record(wiki_root)
+            return StopResult(action="cleared_stale", pid=rec.pid, signal=None)
+
+        if _wait_for_exit(rec.pid, grace):
+            clear_record(wiki_root)
+            return StopResult(action="stopped", pid=rec.pid, signal="SIGTERM")
+
+        try:
+            os.kill(rec.pid, signal_module.SIGKILL)
+        except ProcessLookupError:
+            clear_record(wiki_root)
+            return StopResult(action="stopped", pid=rec.pid, signal="SIGTERM")
+
+        if not _wait_for_exit(rec.pid, 2.0):
+            raise DaemonStopFailed(f"pid {rec.pid} survived SIGKILL")
+        clear_record(wiki_root)
+        return StopResult(action="stopped", pid=rec.pid, signal="SIGKILL")
+    finally:
+        release_create_lock(lock, fd)
+
+
+def daemon_status(wiki_root: Path) -> StatusResult:
+    """Report whether a tracked daemon is running for ``wiki_root``.
+
+    Read-only: a stale record is reported as stale, not cleared. Only
+    ``down`` mutates the record.
+    """
+    log = log_path(wiki_root)
+    rec = read_record(wiki_root)
+    if rec is None:
+        return StatusResult(
+            running=False, record=None, stale=False, url=None, uptime_s=None, log=log
+        )
+    if is_stale(rec):
+        return StatusResult(running=False, record=rec, stale=True, url=None, uptime_s=None, log=log)
+    uptime = (datetime.now(timezone.utc) - rec.started_at).total_seconds()
+    return StatusResult(
+        running=True,
+        record=rec,
+        stale=False,
+        url=daemon_url(rec),
+        uptime_s=uptime,
+        log=log,
+    )
