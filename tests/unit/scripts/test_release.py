@@ -132,13 +132,24 @@ def test_split_changelog_idempotent_when_no_unreleased_entries(tmp_path: Path) -
 # ---------- _preflight (upstream sync) ----------
 
 
-def _stub_check_output(mapping: dict[tuple[str, ...], str]) -> object:
-    """Return a check_output stub that maps argv tuples to stdout strings."""
+def _stub_check_output(
+    mapping: dict[tuple[str, ...], str | Exception],
+) -> object:
+    """Return a check_output stub that maps argv tuples to stdout strings.
+
+    Values in ``mapping`` are either a string to return as stdout bytes,
+    or an ``Exception`` instance to raise when the argv matches.
+    Unmodeled argv tuples return empty stdout (no-op).
+    """
 
     def stub(args: list[str], *args_: object, **kwargs: object) -> bytes:
-        if tuple(args) in mapping:
-            return mapping[tuple(args)].encode("utf-8")
-        # Allow fetch-style calls and other unmodeled calls to be ignored.
+        key = tuple(args)
+        if key in mapping:
+            value = mapping[key]
+            if isinstance(value, Exception):
+                raise value
+            return value.encode("utf-8")
+        # Allow unmodeled calls to be ignored.
         return b""
 
     return stub
@@ -170,15 +181,18 @@ def test_preflight_passes_when_local_matches_remote(
             {
                 ("git", "status", "--porcelain"): "",
                 ("git", "rev-parse", "--abbrev-ref", "HEAD"): "main",
+                ("git", "ls-remote", "origin", "main"): f"{sha}\trefs/heads/main\n",
                 ("git", "rev-parse", "HEAD"): sha,
-                ("git", "rev-parse", "origin/main"): sha,
             }
         ),
     )
     calls: list[list[str]] = []
     monkeypatch.setattr(_release.subprocess, "check_call", _stub_check_call(calls))
     _preflight()  # must not raise
-    assert ["git", "fetch", "origin", "main"] in calls
+    # Preflight must NOT call `git fetch` (would fail when main is checked
+    # out under a direct fetch refspec). It uses `git ls-remote` instead.
+    assert ["git", "fetch", "origin", "main"] not in calls
+    assert calls == []
 
 
 def test_preflight_exits_5_when_local_diverges_from_remote(
@@ -195,8 +209,8 @@ def test_preflight_exits_5_when_local_diverges_from_remote(
             {
                 ("git", "status", "--porcelain"): "",
                 ("git", "rev-parse", "--abbrev-ref", "HEAD"): "main",
+                ("git", "ls-remote", "origin", "main"): (f"{'b' * 40}\trefs/heads/main\n"),
                 ("git", "rev-parse", "HEAD"): "a" * 40,
-                ("git", "rev-parse", "origin/main"): "b" * 40,
             }
         ),
     )
@@ -209,11 +223,11 @@ def test_preflight_exits_5_when_local_diverges_from_remote(
     assert "not in sync" in captured.err
 
 
-def test_preflight_exits_4_when_fetch_fails(
+def test_preflight_exits_4_when_ls_remote_fails(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """A failing `git fetch` exits with code 4."""
+    """A failing `git ls-remote` exits with code 4."""
     import release as _release
 
     monkeypatch.setattr(
@@ -223,19 +237,25 @@ def test_preflight_exits_4_when_fetch_fails(
             {
                 ("git", "status", "--porcelain"): "",
                 ("git", "rev-parse", "--abbrev-ref", "HEAD"): "main",
+                (
+                    "git",
+                    "ls-remote",
+                    "origin",
+                    "main",
+                ): subprocess.CalledProcessError(128, ["git", "ls-remote", "origin", "main"]),
             }
         ),
     )
-    monkeypatch.setattr(
-        _release.subprocess,
-        "check_call",
-        _stub_check_call([], raises=True),
-    )
+    calls: list[list[str]] = []
+    monkeypatch.setattr(_release.subprocess, "check_call", _stub_check_call(calls))
     with pytest.raises(SystemExit) as excinfo:
         _preflight()
     assert excinfo.value.code == 4
     captured = capsys.readouterr()
-    assert "git fetch failed" in captured.err
+    assert "git ls-remote failed" in captured.err
+    # check_call must never be invoked for fetch (avoids the checked-out
+    # branch refspec conflict entirely).
+    assert ["git", "fetch", "origin", "main"] not in calls
 
 
 # ---------- main() — idempotent pre-staged release ----------
@@ -273,7 +293,7 @@ def test_main_tags_without_rewrite_when_surfaces_pre_staged(
             ("git", "status", "--porcelain"): b"",
             ("git", "rev-parse", "--abbrev-ref", "HEAD"): b"main",
             ("git", "rev-parse", "HEAD"): sha.encode("utf-8"),
-            ("git", "rev-parse", "origin/main"): sha.encode("utf-8"),
+            ("git", "ls-remote", "origin", "main"): (f"{sha}\trefs/heads/main\n".encode()),
             ("git", "rev-parse", "--show-toplevel"): str(tmp_path).encode("utf-8"),
             # One minor-bump commit since no tags exist; surfaces are pre-staged.
             ("git", "log", "HEAD", "-z", "--pretty=format:%s%n%b%x00"): (
