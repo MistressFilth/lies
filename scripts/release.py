@@ -291,7 +291,7 @@ def main() -> int:
     # operator's intent), not the auto-detected target.
     tag_version = current_version if already_released else target_version
     subprocess.check_call(["git", "add", "-A"])
-    subprocess.check_call(["git", "commit", "-m", f"chore(release): v{tag_version}"])
+    subprocess.check_call(["git", "commit", "--allow-empty", "-m", f"chore(release): v{tag_version}"])
 
     # Tag.
     tag = f"v{tag_version}"
