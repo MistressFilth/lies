@@ -152,20 +152,29 @@ def _preflight() -> None:
     if branch != "main":
         print(f"release: on branch {branch!r}; release only runs on main", file=sys.stderr)
         sys.exit(3)
+    # Query the remote HEAD without touching local refs. This repo uses a
+    # direct fetch refspec (+refs/heads/*:refs/heads/*); `git fetch origin
+    # main` would try to update local refs/heads/main, which is checked
+    # out and rejected with "refusing to fetch into checked-out branch".
+    # `git ls-remote` only queries the remote and never updates local refs.
     try:
-        subprocess.check_call(
-            ["git", "fetch", "origin", "main"], stderr=subprocess.DEVNULL
+        ls_remote = subprocess.check_output(
+            ["git", "ls-remote", "origin", "main"], stderr=subprocess.STDOUT
         )
     except subprocess.CalledProcessError as exc:
-        print(f"release: git fetch failed: {exc}", file=sys.stderr)
+        print(f"release: git ls-remote failed: {exc}", file=sys.stderr)
+        sys.exit(4)
+    remote_sha = ""
+    for line in ls_remote.decode("utf-8").splitlines():
+        head, _, _ = line.partition("\t")
+        if head:
+            remote_sha = head
+            break
+    if not remote_sha:
+        print("release: git ls-remote returned no SHA for origin/main", file=sys.stderr)
         sys.exit(4)
     local = subprocess.check_output(["git", "rev-parse", "HEAD"]).decode("utf-8").strip()
-    remote = (
-        subprocess.check_output(["git", "rev-parse", "origin/main"])
-        .decode("utf-8")
-        .strip()
-    )
-    if local != remote:
+    if local != remote_sha:
         print(
             "release: local main is not in sync with origin/main; pull or push first",
             file=sys.stderr,
