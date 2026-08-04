@@ -6,20 +6,71 @@ All notable changes to LIES are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- `lies mcp up` starts a detached streamable-http MCP daemon for the wiki
+  (default `127.0.0.1:8737`, `--host` / `--port` / `--timeout` to override).
+  The parent re-execs a hidden `_serve` subcommand in a new session, waits
+  for the port to accept a connection, and only then writes
+  `<wiki>/.lies/mcp.pid` — a reported success always means a live server.
+- `lies mcp up` also ensures qmd's own daemon via the idempotent
+  `qmd mcp --http --daemon`. qmd is a search backend, not a prerequisite:
+  if it is missing or fails to start, the LIES daemon still comes up and a
+  single warning goes to stderr. `--no-qmd` skips the step.
+- The agent's qmd search now routes through that daemon instead of
+  spawning a `qmd` subprocess per agent. Configured by
+  `LIES_QMD_TRANSPORT` (default `http`, set `stdio` to opt out) and
+  `LIES_QMD_URL` (default `http://127.0.0.1:8181`).
+- `lies mcp down` stops the pidfile-tracked daemon, escalating SIGTERM to
+  SIGKILL after `--grace` seconds. Stdio servers spawned by an MCP host are
+  never touched, and qmd's daemon is never touched at all — it is
+  machine-global and shared with other wikis and tools. A missing or stale
+  record is a successful no-op.
+- `lies mcp start` runs the server on stdio in the foreground. Bare
+  `lies mcp` is unchanged and still does the same thing, so every
+  already-registered MCP host keeps working.
+- `lies mcp status` reports pid, URL, uptime, and log path, exiting 0 when
+  running and 1 when stopped or stale (the `systemctl is-active`
+  convention).
+- `src/lies/utils/exclusive.py` holds the shared `O_CREAT | O_EXCL`
+  create-lock and gitignore guard, extracted from `etl/heartbeat.py` and
+  `memory/service.py`. Both call sites keep their original signatures.
+- `WikiLayout.init` now gitignores `.lies/mcp.pid`, `.lies/mcp.pid.create`,
+  and `.lies/mcp.log`; `lies mcp up` ensures the same entries for wikis
+  created before this release.
+
+### Changed
+- The unauthenticated MCP daemon now refuses non-loopback bind hosts in
+  both `lies mcp up` and the internal `_serve` command; remote access
+  requires an authenticated reverse proxy.
+- `lies lint` and `lies lint --fix` now see all six lint categories
+  (contradiction, stale, orphan, missing_page, missing_xref, data_gap).
+  The linter sub-agent's structured `LintReport` flows through
+  `Orchestrator.run_lint` and is union'd with the deterministic host
+  shell; the LLM is the source for the LLM-only categories and the
+  shell remains the safety net when no model key is available. The
+  deterministic shell also gained `missing_xref` and `missing_page`
+  checks so an offline lint still finds the mechanical categories.
+- CI and local hooks now run the Makefile-backed Ruff, ty, formatting, and full test gates.
+- README now carries repository status, CI badge, development commands, and required project links.
+- Pinned GitHub Actions to commit SHAs (`actions/checkout@3d3c42e…`, `actions/setup-python@5fda3b9…`, `astral-sh/setup-uv@c771a70e…`).
+- `AGENTS.md` references now point to project notes for the internal design and plan documents.
+
 ### Removed
 - `scripts/worktree_lint.py` and the `make worktree-lint` target; the seven-invariants checker is a tool that asserted user-scope rule adherence.
 - `tests/unit/test_repository_metadata.py` and its pytest-marker, GitHub-Actions SHA, and mypy-absence assertions.
 - `make release` no longer runs `worktree-lint` as a prerequisite.
 - CI workflow no longer fetches full git history (`fetch-depth: 0`); the only consumer was the dropped compliance test.
 
-### Changed
-- `lies lint` and `lies lint --fix` now see all six lint categories (contradiction, stale, orphan, missing_page, missing_xref, data_gap). The linter sub-agent's structured `LintReport` flows through `Orchestrator.run_lint` and is union'd with the deterministic host shell; the LLM is the source for the LLM-only categories and the shell remains the safety net when no model key is available. The deterministic shell also gained `missing_xref` and `missing_page` checks so an offline lint still finds the mechanical categories.
-- CI and local hooks now run the Makefile-backed Ruff, ty, formatting, and full test gates.
-- README now carries repository status, CI badge, development commands, and required project links.
-- Pinned GitHub Actions to commit SHAs (`actions/checkout@3d3c42e…`, `actions/setup-python@5fda3b9…`, `astral-sh/setup-uv@c771a70e…`).
-- `AGENTS.md` references now point to project notes for the internal design and plan documents.
-
 ### Fixed
+- Agent's qmd search now degrades gracefully when the qmd daemon is
+  unreachable. `QmdCapability` probes the daemon on every turn via
+  `qmd_daemon_reachable`; reachable -> native `MCP(url=..., native=True,
+  local=False)`, unreachable -> `MCP(local=factory)` whose factory returns
+  an `MCPToolset` over the in-process `QmdFallbackMcp` server. Every
+  fallback search result carries `degraded: True` plus a `fallback_reason`,
+  and one stderr warning names the URL, the consequence, and the fix
+  (`LIES_QMD_URL` or `qmd mcp --http --daemon`). `LIES_QMD_TRANSPORT=stdio`
+  and the host `lies query` path are unchanged.
 - Removed stale mypy commands and configuration after the repository moved to ty.
 - Added the MIT license declared by package metadata.
 - Registered the integration-test pytest marker so full-suite runs emit no unknown-marker warning.

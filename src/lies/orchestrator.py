@@ -24,7 +24,7 @@ from lies.capabilities import (
     memory,
     planning,
 )
-from lies.config import get_model
+from lies.config import get_model, get_qmd_transport, get_qmd_url
 from lies.memory.enricher import MemoryEnricherDeps, enricher_agent
 from lies.memory.models import (
     MemoryPlan,
@@ -36,7 +36,7 @@ from lies.memory.models import (
 from lies.memory.retry import EnrichmentQueue
 from lies.memory.service import WikiMemoryService
 from lies.memory.tools import WikiMemoryDeps, register_read_tools
-from lies.qmd import QmdMcpClient
+from lies.qmd import QmdCapability
 from lies.query import SynthesizedAnswer, synthesize_answer
 from lies.schema import load_schema
 from lies.wiki.git import CommitError, atomic_commit
@@ -623,7 +623,11 @@ class Orchestrator:
                 planning(),
                 dynamic_workflow(agents=named_agents, max_agent_calls=20),
                 file_system(wiki_root=self.layout.root),
-                QmdMcpClient(transport="stdio").as_capability(),
+                QmdCapability(
+                    transport=get_qmd_transport(),
+                    url=get_qmd_url(),
+                    wiki_root=self.layout,
+                ).as_capability(),
             ],
         )
         self._memory_service = WikiMemoryService(self.layout)

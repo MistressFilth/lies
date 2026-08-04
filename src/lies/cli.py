@@ -12,7 +12,9 @@ from rich.markdown import Markdown
 
 from lies import __version__
 from lies.config import get_model, get_wiki_root
+from lies.mcp import daemon
 from lies.orchestrator import Orchestrator
+from lies.qmd import daemon as qmd_daemon
 from lies.qmd import qmd_status
 from lies.schema.loader import load_default_schema
 from lies.scrapers.base import pick_scraper
@@ -42,19 +44,162 @@ def version() -> None:
     typer.echo(f"lies {__version__}")
 
 
-@app.command()
-def mcp() -> None:
-    """Run the LIES MCP server on stdio.
+mcp_app = typer.Typer(
+    name="mcp",
+    help="Run the MCP server on stdio, or manage the http daemon.",
+)
+app.add_typer(mcp_app, name="mcp")
 
-    Spawn this process from any MCP-capable host (Claude Code,
-    Cursor, etc.) to expose LIES tools and resources over the Model
-    Context Protocol. See README "Using LIES from Claude Code" for
-    registration commands.
-    """
+
+def _run_stdio() -> None:
+    """Run the FastMCP server on stdio in the foreground."""
     configure_logging()
     from lies.mcp.server import mcp as _mcp_server
 
     _mcp_server.run(transport="stdio")
+
+
+@mcp_app.callback(invoke_without_command=True)
+def mcp_main(ctx: typer.Context) -> None:
+    """Run the LIES MCP server on stdio.
+
+    Spawn this process from any MCP-capable host (Claude Code, Cursor,
+    etc.) to expose LIES tools and resources over the Model Context
+    Protocol. See README "Using LIES from Claude Code" for registration
+    commands.
+
+    Bare ``lies mcp`` keeps running stdio for backward compatibility —
+    every already-registered host invokes it that way. ``lies mcp start``
+    is the explicit spelling of the same thing.
+    """
+    if ctx.invoked_subcommand is None:
+        _run_stdio()
+
+
+@mcp_app.command()
+def start() -> None:
+    """Run the MCP server on stdio in the foreground (same as bare `lies mcp`)."""
+    _run_stdio()
+
+
+@mcp_app.command(name="_serve", hidden=True)
+def _serve(
+    host: str = daemon.DEFAULT_HOST,
+    port: int = daemon.DEFAULT_PORT,
+) -> None:
+    """Internal: run the MCP server on streamable-http in the foreground.
+
+    Invoked only by ``lies mcp up`` through a re-exec. Not part of the
+    supported surface; use ``up`` instead.
+    """
+    try:
+        daemon.require_loopback_host(host)
+    except daemon.NonLoopbackBind as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    configure_logging()
+    from lies.mcp.server import mcp as _mcp_server
+
+    _mcp_server.run(transport="http", host=host, port=port)
+
+
+@mcp_app.command()
+def up(
+    host: str = daemon.DEFAULT_HOST,
+    port: int = daemon.DEFAULT_PORT,
+    timeout: float = typer.Option(10.0, help="Seconds to wait for the port to accept."),
+    no_qmd: bool = typer.Option(False, "--no-qmd", help="Skip ensuring qmd's daemon."),
+    wiki_root: Path = typer.Option(None, "--wiki-root", "-w"),  # noqa: B008
+) -> None:
+    """Start a detached streamable-http MCP daemon for this wiki.
+
+    Also ensures qmd's own daemon is running. qmd is a search backend,
+    not a prerequisite: if it cannot be started the LIES daemon still
+    comes up and a single warning goes to stderr.
+    """
+    configure_logging()
+    root = _wiki_root_opt(wiki_root)
+    try:
+        rec = daemon.spawn_daemon(root, host=host, port=port, timeout=timeout)
+    except daemon.DaemonAlreadyRunning as exc:
+        typer.echo(str(exc))
+        return
+    except daemon.DaemonStartFailed as exc:
+        typer.echo(f"error: {exc}", err=True)
+        for line in daemon.tail_log(root, 20):
+            typer.echo(line, err=True)
+        raise typer.Exit(code=1) from exc
+    except (daemon.NonLoopbackBind, daemon.PortUnavailable, daemon.DaemonBusy) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(f"lies mcp daemon running at {daemon.daemon_url(rec)} (pid {rec.pid})")
+
+    if no_qmd:
+        return
+    qmd_state = qmd_daemon.ensure_qmd_daemon()
+    if qmd_state.running:
+        typer.echo(qmd_state.detail)
+    else:
+        typer.echo(f"warning: {qmd_state.detail}", err=True)
+
+
+@mcp_app.command()
+def down(
+    grace: float = typer.Option(10.0, help="Seconds to wait after SIGTERM before SIGKILL."),
+    wiki_root: Path = typer.Option(None, "--wiki-root", "-w"),  # noqa: B008
+) -> None:
+    """Stop the MCP daemon tracked for this wiki.
+
+    Only pidfile-tracked daemons are stopped. Stdio servers spawned by an
+    MCP host are never touched, and qmd's daemon is never touched at all:
+    it is machine-global and shared with other wikis and tools.
+    """
+    configure_logging()
+    root = _wiki_root_opt(wiki_root)
+    try:
+        result = daemon.stop_daemon(root, grace=grace)
+    except (daemon.DaemonBusy, daemon.DaemonStopFailed) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    if result.action == "none":
+        typer.echo("no daemon running")
+    elif result.action == "cleared_stale":
+        typer.echo(f"cleared stale pidfile for pid {result.pid}")
+    else:
+        typer.echo(f"stopped daemon pid {result.pid} ({result.signal})")
+
+
+@mcp_app.command(name="status")
+def _mcp_status(
+    wiki_root: Path = typer.Option(None, "--wiki-root", "-w"),  # noqa: B008
+) -> None:
+    """Report whether an MCP daemon is running for this wiki.
+
+    Exit code follows the ``systemctl is-active`` convention: 0 when
+    running, 1 when stopped or stale, so shell callers can branch on it.
+    """
+    configure_logging()
+    root = _wiki_root_opt(wiki_root)
+    result = daemon.daemon_status(root)
+    qmd_state = qmd_daemon.qmd_daemon_state()
+    if result.running and result.record is not None:
+        uptime = int(result.uptime_s or 0)
+        typer.echo("status:  running")
+        typer.echo(f"pid:     {result.record.pid}")
+        typer.echo(f"url:     {result.url}")
+        typer.echo(f"uptime:  {uptime}s")
+        typer.echo(f"log:     {result.log}")
+        typer.echo(f"qmd:     {qmd_state.detail}")
+        return
+    if result.stale and result.record is not None:
+        typer.echo(f"status:  stopped (stale pidfile for pid {result.record.pid})")
+        typer.echo(f"log:     {result.log}")
+        typer.echo(f"qmd:     {qmd_state.detail}")
+        raise typer.Exit(code=1)
+    typer.echo("status:  stopped")
+    typer.echo(f"log:     {result.log}")
+    typer.echo(f"qmd:     {qmd_state.detail}")
+    raise typer.Exit(code=1)
 
 
 @app.command()
