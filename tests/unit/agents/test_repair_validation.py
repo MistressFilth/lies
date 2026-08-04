@@ -23,6 +23,10 @@ class _FakeLayout:
     def __init__(self, root: Path) -> None:
         self.wiki_dir = root / "wiki"
 
+    @property
+    def index_path(self) -> Path:
+        return self.wiki_dir / "index.md"
+
 
 @pytest.fixture
 def wiki_root(tmp_path: Path) -> _FakeLayout:
@@ -263,3 +267,83 @@ def test_validate_plan_rejects_append_evidence_on_missing_path(wiki_root: _FakeL
     ]
     with pytest.raises(WikiPlanInvalid, match=r"AppendEvidence: path .* does not exist"):
         validate_plan(plan, wiki_root, findings)  # type: ignore[arg-type]
+
+
+def test_validate_plan_accepts_safe_create_stub_with_no_drops(wiki_root: _FakeLayout) -> None:
+    from lies.agents.repair_models import CreateStub
+
+    plan = RepairPlan(
+        operations=[
+            CreateStub(
+                path="concepts/brand-new.md",
+                title="Brand New",
+                finding_index=0,
+                pages=["concepts/brand-new.md"],
+                rationale="y",
+                evidence=["f0"],
+            ),
+        ],
+        rationale="r",
+        evidence=["f0"],
+    )
+    findings = [
+        LintFinding(
+            severity=LintSeverity.LOW,
+            category="missing_page",
+            message="m",
+            pages=["concepts/brand-new.md"],
+            safe_to_fix=True,
+        ),
+    ]
+    result = validate_plan(plan, wiki_root, findings)  # type: ignore[arg-type]
+    assert isinstance(result, ValidatedRepairPlan)
+    assert result.dropped_ops == ()
+    assert result.plan is plan
+    assert result.plan.operations == plan.operations
+
+
+def test_validate_plan_drops_redundant_update_index(wiki_root: _FakeLayout) -> None:
+    from lies.agents.repair_models import CreateStub, UpdateIndex
+
+    # Seed an index that already lists the orphan.
+    (wiki_root.wiki_dir / "concepts").mkdir(parents=True, exist_ok=True)
+    (wiki_root.wiki_dir / "index.md").write_text(
+        "# Index\n- [Already](concepts/already.md)\n", encoding="utf-8"
+    )
+
+    plan = RepairPlan(
+        operations=[
+            UpdateIndex(
+                path="wiki/index.md",
+                title="Already",
+                finding_index=0,
+                pages=["concepts/already.md"],
+                rationale="x",
+                evidence=["f0"],
+            ),
+            CreateStub(
+                path="concepts/brand-new.md",
+                title="Brand New",
+                finding_index=0,
+                pages=["concepts/brand-new.md"],
+                rationale="y",
+                evidence=["f0"],
+            ),
+        ],
+        rationale="r",
+        evidence=["f0"],
+    )
+    findings = [
+        LintFinding(
+            severity=LintSeverity.LOW,
+            category="orphan",
+            message="m",
+            pages=["concepts/already.md", "concepts/brand-new.md"],
+            safe_to_fix=True,
+        ),
+    ]
+    result = validate_plan(plan, wiki_root, findings)  # type: ignore[arg-type]
+    assert result.dropped_ops == (0,)
+    assert len(result.plan.operations) == 1
+    assert isinstance(result.plan.operations[0], CreateStub)
+    assert result.plan.operations[0].path == "concepts/brand-new.md"

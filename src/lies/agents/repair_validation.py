@@ -13,7 +13,9 @@ operations and records the original indices in ``dropped_ops``.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
+from pathlib import Path
 
 from lies.agents.linter import LintFinding
 from lies.agents.repair_models import (
@@ -21,9 +23,29 @@ from lies.agents.repair_models import (
     AppendLink,
     CreateStub,
     RepairPlan,
+    UpdateIndex,
 )
 from lies.memory.validation import validate_page_path
 from lies.wiki.layout import WikiLayout
+
+
+def _index_listed_paths(index_path: Path) -> set[str]:
+    """Return the set of wiki-dir-relative paths already in ``index_path``.
+
+    Parses the catalog body line by line; any ``[Title](path)`` link
+    whose target is a relative path (no scheme) is counted as listed.
+    """
+    listed: set[str] = set()
+    if not index_path.exists():
+        return listed
+    pattern = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
+    for line in index_path.read_text(encoding="utf-8").splitlines():
+        for match in pattern.finditer(line):
+            target = match.group(2).strip()
+            if "://" in target or target.startswith("#"):
+                continue
+            listed.add(target)
+    return listed
 
 
 @dataclass(frozen=True)
@@ -108,4 +130,26 @@ def validate_plan(
                 )
         # UpdateIndex is handled by rule 5 below.
 
-    return ValidatedRepairPlan(plan=plan, dropped_ops=())
+    # Rule 5: drop redundant UpdateIndex ops.
+    listed = _index_listed_paths(layout.index_path)
+    kept: list = []
+    dropped: list[int] = []
+    for index, op in enumerate(plan.operations):
+        if isinstance(op, UpdateIndex) and op.pages and op.pages[0] in listed:
+            dropped.append(index)
+            continue
+        kept.append(op)
+
+    if dropped == list(range(len(plan.operations))):
+        # All ops were redundant; the plan is a noop. Keep the plan
+        # shell so downstream callers see a valid object.
+        filtered_plan = plan.model_copy(update={"operations": []})
+    elif dropped:
+        filtered_plan = plan.model_copy(update={"operations": kept})
+    else:
+        filtered_plan = plan
+
+    return ValidatedRepairPlan(
+        plan=filtered_plan,
+        dropped_ops=tuple(dropped),
+    )
