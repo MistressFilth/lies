@@ -50,6 +50,9 @@ def _noop_agent_run_sync(self, prompt: str):  # type: ignore[no-untyped-def]
 
 def test_apply_three_append_links(wiki: WikiLayout) -> None:
     """Lint finds 3 missing-xref; --fix applies 3 append_links; single commit."""
+    from lies.agents.linter import LintFinding, LintReport, LintSeverity
+    from lies.orchestrator import _build_lint_report
+
     _seed_page(wiki, "concepts/a.md", "---\ntitle: A\n---\n# A\n")
     _seed_page(wiki, "concepts/b.md", "---\ntitle: B\n---\n# B\n")
     _seed_page(wiki, "concepts/c.md", "---\ntitle: C\n---\n# C\n")
@@ -57,6 +60,35 @@ def test_apply_three_append_links(wiki: WikiLayout) -> None:
     subprocess.run(["git", "commit", "-m", "seed"], cwd=wiki.root, check=True)
 
     orch = Orchestrator(wiki_root=wiki.root, model=TestModel())
+    # Three missing-xref findings the plan will reference. The host
+    # (mentioner) appears first in ``pages``; the plan's AppendLink
+    # carries only the host, which intersects the finding pages.
+    shell_report = LintReport(
+        findings=[
+            LintFinding(
+                severity=LintSeverity.MEDIUM,
+                category="missing_xref",
+                message="a mentions B without a cross-reference",
+                pages=["concepts/a.md", "concepts/b.md"],
+                safe_to_fix=True,
+            ),
+            LintFinding(
+                severity=LintSeverity.MEDIUM,
+                category="missing_xref",
+                message="a mentions C without a cross-reference",
+                pages=["concepts/a.md", "concepts/c.md"],
+                safe_to_fix=True,
+            ),
+            LintFinding(
+                severity=LintSeverity.MEDIUM,
+                category="missing_xref",
+                message="b mentions A without a cross-reference",
+                pages=["concepts/b.md", "concepts/a.md"],
+                safe_to_fix=True,
+            ),
+        ],
+        report_markdown="",
+    )
     plan = RepairPlan(
         operations=[
             AppendLink(
@@ -96,6 +128,9 @@ def test_apply_three_append_links(wiki: WikiLayout) -> None:
             orch, "_call_linter", return_value=(LintReport(findings=[], report_markdown=""), None)
         ),
         mock.patch.object(orch, "_run_repair_agent", return_value=plan),
+        mock.patch(
+            _build_lint_report.__module__ + "._build_lint_report", return_value=shell_report
+        ),
     ):
         report = orch.run_lint(apply=True)
 
@@ -107,6 +142,9 @@ def test_apply_three_append_links(wiki: WikiLayout) -> None:
 
 def test_apply_interleaved_append_links(wiki: WikiLayout) -> None:
     """Multiple AppendLinks to the same path interspersed with other ops apply successfully."""
+    from lies.agents.linter import LintFinding, LintReport, LintSeverity
+    from lies.orchestrator import _build_lint_report
+
     _seed_page(wiki, "concepts/a.md", "---\ntitle: A\ntype: concept\n---\n# A\n")
     _seed_page(wiki, "concepts/b.md", "---\ntitle: B\ntype: concept\n---\n# B\n")
     _seed_page(wiki, "concepts/c.md", "---\ntitle: C\ntype: concept\n---\n# C\n")
@@ -114,6 +152,32 @@ def test_apply_interleaved_append_links(wiki: WikiLayout) -> None:
     subprocess.run(["git", "commit", "-m", "seed"], cwd=wiki.root, check=True)
 
     orch = Orchestrator(wiki_root=wiki.root, model=TestModel())
+    shell_report = LintReport(
+        findings=[
+            LintFinding(
+                severity=LintSeverity.MEDIUM,
+                category="missing_xref",
+                message="a mentions B without a cross-reference",
+                pages=["concepts/a.md", "concepts/b.md"],
+                safe_to_fix=True,
+            ),
+            LintFinding(
+                severity=LintSeverity.LOW,
+                category="missing_page",
+                message="missing concepts/new.md",
+                pages=["concepts/a.md"],
+                safe_to_fix=True,
+            ),
+            LintFinding(
+                severity=LintSeverity.MEDIUM,
+                category="missing_xref",
+                message="a mentions C without a cross-reference",
+                pages=["concepts/a.md", "concepts/c.md"],
+                safe_to_fix=True,
+            ),
+        ],
+        report_markdown="",
+    )
     # First AppendLink on a.md, then CreateStub on concepts/new.md, then another AppendLink on a.md.
     plan = RepairPlan(
         operations=[
@@ -130,7 +194,7 @@ def test_apply_interleaved_append_links(wiki: WikiLayout) -> None:
                 path="concepts/new.md",
                 title="New",
                 finding_index=1,
-                pages=[],
+                pages=["concepts/a.md"],
                 rationale="new",
                 evidence=["f1"],
             ),
@@ -153,6 +217,9 @@ def test_apply_interleaved_append_links(wiki: WikiLayout) -> None:
             orch, "_call_linter", return_value=(LintReport(findings=[], report_markdown=""), None)
         ),
         mock.patch.object(orch, "_run_repair_agent", return_value=plan),
+        mock.patch(
+            _build_lint_report.__module__ + "._build_lint_report", return_value=shell_report
+        ),
     ):
         report = orch.run_lint(apply=True)
 
@@ -237,13 +304,33 @@ def test_apply_fails_when_lock_held(wiki: WikiLayout, tmp_path: Path) -> None:
                     path="concepts/x.md",
                     title="X",
                     finding_index=0,
-                    pages=[],
+                    pages=["concepts/x.md"],
                     rationale="new",
                     evidence=["f0"],
                 ),
             ],
             rationale="r",
             evidence=["f0"],
+        )
+        # Seed one deterministic shell finding matching the plan's
+        # ``finding_index``/``pages`` so the structural validator's
+        # rule 1 (bounds) and rule 3 (page intersection) both pass.
+        # Without this the plan is rejected before the flock attempt
+        # and the test stops exercising the cross-process lock.
+        from lies.agents.linter import LintFinding, LintReport, LintSeverity
+        from lies.orchestrator import _build_lint_report
+
+        shell_report = LintReport(
+            findings=[
+                LintFinding(
+                    severity=LintSeverity.LOW,
+                    category="missing_page",
+                    message="missing concepts/x.md",
+                    pages=["concepts/x.md"],
+                    safe_to_fix=True,
+                ),
+            ],
+            report_markdown="",
         )
         with (
             mock.patch.object(type(orch._agent), "run_sync", new=_noop_agent_run_sync),
@@ -253,6 +340,10 @@ def test_apply_fails_when_lock_held(wiki: WikiLayout, tmp_path: Path) -> None:
                 return_value=(LintReport(findings=[], report_markdown=""), None),
             ),
             mock.patch.object(orch, "_run_repair_agent", return_value=plan),
+            mock.patch(
+                _build_lint_report.__module__ + "._build_lint_report",
+                return_value=shell_report,
+            ),
         ):
             report = orch.run_lint(apply=True)
 
@@ -345,7 +436,11 @@ def test_run_lint_end_to_end_with_linter_categories(orch: Orchestrator) -> None:
     plan has no op referencing the contradiction finding.
 
     Everything else is real:
-    - ``_build_lint_report`` walks the fixture wiki;
+    - ``_build_lint_report`` is mocked to return a controlled report
+      so the test plan can reference known findings (the validator
+      requires ``op.pages`` to intersect the referenced finding's
+      pages; the real shell's findings would not line up with the
+      plan's hand-written indices);
     - ``_call_linter`` is mocked at the orchestrator boundary (returns
       the contradiction);
     - ``_run_repair_agent`` reads page texts, calls the real
@@ -357,6 +452,7 @@ def test_run_lint_end_to_end_with_linter_categories(orch: Orchestrator) -> None:
     """
     from lies.agents.linter import LintFinding, LintReport, LintSeverity
     from lies.agents.repair import RepairAgentDeps
+    from lies.orchestrator import _build_lint_report
 
     base = orch.layout.wiki_dir
     (base / "concepts").mkdir(exist_ok=True)
@@ -375,6 +471,37 @@ def test_run_lint_end_to_end_with_linter_categories(orch: Orchestrator) -> None:
     )
     subprocess.run(["git", "add", "."], cwd=orch.layout.root, check=True)
     subprocess.run(["git", "commit", "-m", "seed"], cwd=orch.layout.root, check=True)
+
+    # Shell produces an orphan finding for lonely plus a missing_xref
+    # alpha→beta and a missing_page for the raw/missing.md source, so
+    # the plan's UpdateIndex (finding 0) and AppendLink (finding 1)
+    # reference real, controlled findings.
+    shell_report = LintReport(
+        findings=[
+            LintFinding(
+                severity=LintSeverity.LOW,
+                category="orphan",
+                message="concepts/lonely.md has no inbound links.",
+                pages=["concepts/lonely.md"],
+                safe_to_fix=True,
+            ),
+            LintFinding(
+                severity=LintSeverity.MEDIUM,
+                category="missing_xref",
+                message="alpha mentions Beta without a cross-reference",
+                pages=["concepts/alpha.md", "concepts/beta.md"],
+                safe_to_fix=True,
+            ),
+            LintFinding(
+                severity=LintSeverity.LOW,
+                category="missing_page",
+                message="alpha references raw/missing.md which does not exist",
+                pages=["concepts/alpha.md"],
+                safe_to_fix=False,
+            ),
+        ],
+        report_markdown="",
+    )
 
     llm_contradiction = LintReport(
         findings=[
@@ -422,6 +549,9 @@ def test_run_lint_end_to_end_with_linter_categories(orch: Orchestrator) -> None:
         return mock.Mock(output=real_plan)
 
     with (
+        mock.patch(
+            _build_lint_report.__module__ + "._build_lint_report", return_value=shell_report
+        ),
         mock.patch.object(orch, "_call_linter", return_value=(llm_contradiction, None)),
         mock.patch.object(
             orch._repair_agent,
