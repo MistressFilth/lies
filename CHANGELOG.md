@@ -48,6 +48,15 @@ All notable changes to LIES are documented here. The format follows
 - `AGENTS.md` references now point to project notes for the internal design and plan documents.
 
 ### Fixed
+- Agent's qmd search now degrades gracefully when the qmd daemon is
+  unreachable. `QmdCapability` probes the daemon on every turn via
+  `qmd_daemon_reachable`; reachable -> native `MCP(url=..., native=True,
+  local=False)`, unreachable -> `MCP(local=factory)` whose factory returns
+  an `MCPToolset` over the in-process `QmdFallbackMcp` server. Every
+  fallback search result carries `degraded: True` plus a `fallback_reason`,
+  and one stderr warning names the URL, the consequence, and the fix
+  (`LIES_QMD_URL` or `qmd mcp --http --daemon`). `LIES_QMD_TRANSPORT=stdio`
+  and the host `lies query` path are unchanged.
 - Removed stale mypy commands and configuration after the repository moved to ty.
 - Added the MIT license declared by package metadata.
 - Registered the integration-test pytest marker so full-suite runs emit no unknown-marker warning.

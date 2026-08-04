@@ -80,6 +80,14 @@ agent's search routes through it. qmd is optional: if it is not
 installed or fails to start, the LIES daemon still comes up with a
 warning, and search runs degraded. Pass `--no-qmd` to skip the step.
 
+When the daemon is unreachable mid-session, `QmdCapability` falls back to
+an in-process FastMCP server that uses the same `wiki/index.md` path the
+host `query` tool already used, prints a single stderr warning naming the
+URL and the fix (`LIES_QMD_URL` or `qmd mcp --http --daemon`), and tags
+every search result with `degraded: True` so the model knows the search
+was not qmd-backed. Set `LIES_QMD_TRANSPORT=stdio` to opt back into a
+`qmd mcp` subprocess per agent.
+
 `lies mcp down` never stops qmd. That daemon is machine-global — one
 fixed port, one index shared across every wiki and any other tool using
 it — so stopping it would break sessions LIES knows nothing about. Use
