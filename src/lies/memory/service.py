@@ -46,6 +46,7 @@ from lies.memory.validation import (
     validate_page_type,
 )
 from lies.qmd.cli import qmd_update
+from lies.utils.exclusive import ensure_gitignored
 from lies.wiki.git import atomic_commit
 from lies.wiki.layout import WikiLayout
 
@@ -59,37 +60,12 @@ def _hash_text(text: str) -> str:
 def _ensure_lock_gitignored(lock_path: Path) -> None:
     """Ensure ``lock_path`` is gitignored in the target wiki.
 
-    Reads ``<wiki_root>/.gitignore`` if it exists; if the file does
-    not contain a non-comment line equal to the lock path relative
-    to the wiki root, appends it on a new line. Creates the file
-    with the line if it is absent. Idempotent — safe to call on
-    every lock attempt and a no-op when the entry is already
-    present.
-
-    This guard closes a race window: without the entry,
-    ``git stash push --include-untracked`` would move the lock
-    file aside. The kernel flock survives on the orphaned inode,
-    but a concurrent process could create a new file at the same
-    path and flock the new inode, reopening the race.
+    Thin wrapper over :func:`lies.utils.exclusive.ensure_gitignored`,
+    kept under this name because ``wiki/layout.py`` imports it directly.
+    ``lock_path`` is always ``<wiki_root>/.lies/<name>``, so the wiki
+    root is two parents up.
     """
-    wiki_root = lock_path.parent.parent
-    gitignore_path = wiki_root / ".gitignore"
-    relative_line = lock_path.relative_to(wiki_root).as_posix()
-
-    existing = ""
-    if gitignore_path.exists():
-        try:
-            existing = gitignore_path.read_text(encoding="utf-8")
-        except OSError:
-            existing = ""
-
-    pattern_present = any(line.strip() == relative_line for line in existing.splitlines())
-    if pattern_present:
-        return
-
-    if existing and not existing.endswith("\n"):
-        existing += "\n"
-    gitignore_path.write_text(existing + relative_line + "\n", encoding="utf-8")
+    ensure_gitignored(lock_path, wiki_root=lock_path.parent.parent)
 
 
 @contextlib.contextmanager

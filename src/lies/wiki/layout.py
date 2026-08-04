@@ -82,14 +82,17 @@ class WikiLayout:
         """Initialize the wiki directory structure (does NOT create a git repo).
 
         Caller is responsible for `git init` separately. Also ensures
-        ``<root>/.gitignore`` contains ``.lies/memory.lock`` so
+        ``<root>/.gitignore`` covers ``.lies/memory.lock`` so
         ``git stash push --include-untracked`` never unlinks the
-        inode behind a held cross-process flock.
+        inode behind a held cross-process flock, plus the MCP daemon's
+        pidfile, create-lock, and log.
         """
         for directory in (self.raw_dir, self.wiki_dir, self.lies_dir):
             directory.mkdir(parents=True, exist_ok=True)
-        # Lazy import to avoid a circular dependency: service.py imports
+        # Lazy imports to avoid a circular dependency: service.py imports
         # WikiLayout at module scope.
+        from lies.mcp.daemon import ensure_daemon_gitignored
         from lies.memory.service import _ensure_lock_gitignored
 
         _ensure_lock_gitignored(self.root / ".lies" / "memory.lock")
+        ensure_daemon_gitignored(self.root)

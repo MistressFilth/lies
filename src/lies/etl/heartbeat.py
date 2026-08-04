@@ -29,6 +29,9 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from lies.utils.exclusive import acquire_create_lock as _acquire_create_lock
+from lies.utils.exclusive import release_create_lock as _release_create_lock
+
 MAX_SYNC_AGE_S = 3600
 _MAX_CREATE_LOCK_AGE_S = MAX_SYNC_AGE_S
 _HEARTBEAT_NAME = "sync.lock"
@@ -59,65 +62,20 @@ def pid_alive(pid: int) -> bool:
 
 
 def acquire_create_lock(wiki_root: Path) -> int | None:
-    """Atomically create the sibling lock file. Returns the fd on win.
+    """Atomically create ``.lies/sync.lock.create``. Returns the fd on win.
 
-    On contention (the file already exists) returns ``None``. The fd
-    is left open so the OS holds the inode reference; the caller is
-    expected to close it via :func:`release_create_lock`.
-
-    ``O_EXCL`` makes the create atomic: the OS guarantees exactly one
-    process sees success. Without this, two processes can both
-    observe "no lock" between read and write.
-
-    Orphan recovery
-    ---------------
-
-    If the create-lock file already exists but its mtime is older than
-    ``_MAX_CREATE_LOCK_AGE_S`` (e.g. the previous acquirer crashed
-    before :func:`release_create_lock` could unlink it), the orphan is
-    unlinked and the create is retried. The window is intentionally the
-    same as :data:`MAX_SYNC_AGE_S` so a single threshold governs the
-    "this is stale" decision across heartbeat and create-lock.
+    Thin wrapper over :func:`lies.utils.exclusive.acquire_create_lock`,
+    supplying this module's path and recovery window. The window is
+    intentionally the same as :data:`MAX_SYNC_AGE_S` so a single
+    threshold governs the "this is stale" decision across the heartbeat
+    and its create-lock.
     """
-    path = _create_lock_path(wiki_root)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
-    except FileExistsError:
-        if _create_lock_is_orphaned(path):
-            try:
-                os.unlink(path)
-            except FileNotFoundError:
-                pass
-            try:
-                return os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
-            except FileExistsError:
-                return None
-        return None
-    return fd
-
-
-def _create_lock_is_orphaned(path: Path) -> bool:
-    """Return True if ``path`` exists and is older than the recovery window."""
-    try:
-        stat = path.stat()
-    except FileNotFoundError:
-        return False
-    age = time.time() - stat.st_mtime
-    return age > _MAX_CREATE_LOCK_AGE_S
+    return _acquire_create_lock(_create_lock_path(wiki_root), max_age_s=_MAX_CREATE_LOCK_AGE_S)
 
 
 def release_create_lock(wiki_root: Path, fd: int | None) -> None:
     """Close the fd (if any) and unlink the lock file."""
-    if fd is not None:
-        try:
-            os.close(fd)
-        except OSError:
-            pass
-    try:
-        _create_lock_path(wiki_root).unlink()
-    except FileNotFoundError:
-        pass
+    _release_create_lock(_create_lock_path(wiki_root), fd)
 
 
 def write_heartbeat(wiki_root: Path, heartbeat: Heartbeat) -> None:

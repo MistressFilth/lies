@@ -63,3 +63,14 @@ def test_layout_page_paths(wiki_root: Path) -> None:
     layout = WikiLayout(wiki_root)
     page = layout.page_path("entities", "alice")
     assert page == wiki_root / "wiki" / "entities" / "alice.md"
+
+
+def test_init_gitignores_daemon_artifacts(tmp_path: Path) -> None:
+    from lies.wiki.layout import WikiLayout
+
+    WikiLayout(tmp_path).init()
+    body = (tmp_path / ".gitignore").read_text(encoding="utf-8")
+    assert ".lies/memory.lock" in body
+    assert ".lies/mcp.pid" in body
+    assert ".lies/mcp.pid.create" in body
+    assert ".lies/mcp.log" in body

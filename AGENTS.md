@@ -45,12 +45,15 @@ src/lies/
 ├── mcp/             # FastMCP server (src/lies/mcp/server.py) — thin adapter
 │                    # around WikiMemoryService; tools: init_wiki, ingest_source,
 │                    # query, lint, wiki_search, wiki_read
+│   └── daemon.py    # pidfile lifecycle for `lies mcp up/down/status`
 ├── memory/          # invisible-memory layer (see below)
 ├── orchestrator.py  # top-level Orchestrator; owns cross-cutting capabilities
 ├── qmd/             # qmd CLI + MCP adapters
+│   └── daemon.py    # ensure/inspect qmd's own daemon (never stops it)
 ├── query/           # index.md parser + answer synthesizer
 ├── schema/          # default schema + loader
-├── utils/           # logging, shell helpers
+├── utils/           # logging, shell helpers, exclusive.py (create-lock +
+│                    # gitignore guard shared by heartbeat and mcp daemon)
 └── wiki/            # git + layout primitives
 ```
 
