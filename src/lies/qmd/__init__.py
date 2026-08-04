@@ -10,6 +10,7 @@ This package exposes two surfaces:
   pydantic-ai agents for native tool calling.
 """
 
+from lies.qmd.capability import QmdCapability
 from lies.qmd.cli import (
     QmdCommandError,
     QmdError,
@@ -25,6 +26,7 @@ from lies.qmd.cli import (
 from lies.qmd.mcp import QmdMcpClient
 
 __all__ = [
+    "QmdCapability",
     "QmdCommandError",
     "QmdError",
     "QmdMcpClient",

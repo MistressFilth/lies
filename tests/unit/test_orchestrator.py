@@ -410,23 +410,23 @@ def test_run_ingest_propagates_nothing_to_commit_error(git_wiki: Path) -> None:
 def test_orchestrator_uses_qmd_http_transport(
     wiki_root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The agent reaches qmd through the daemon, not a per-agent subprocess."""
-    from lies.qmd import mcp as qmd_mcp
+    """The orchestrator registers a QmdCapability with http transport."""
+    from lies.qmd import capability as qmd_capability
+    from lies.qmd.capability import QmdCapability
 
     built: list[dict] = []
-    original = qmd_mcp.QmdMcpClient
+    original_init = QmdCapability.__init__
 
-    class _Recording(original):  # type: ignore[misc, valid-type]
-        def __init__(self, **kwargs):  # type: ignore[no-untyped-def]
-            built.append(kwargs)
-            super().__init__(**kwargs)
+    def _recording_init(self, **kwargs):  # type: ignore[no-untyped-def]
+        built.append(kwargs)
+        original_init(self, **kwargs)
 
-    monkeypatch.setattr(qmd_mcp, "QmdMcpClient", _Recording)
-    monkeypatch.setattr("lies.orchestrator.QmdMcpClient", _Recording)
+    monkeypatch.setattr(qmd_capability.QmdCapability, "__init__", _recording_init)
+    monkeypatch.setattr("lies.qmd.capability.qmd_daemon_reachable", lambda url, timeout=0.5: True)
     monkeypatch.delenv("LIES_QMD_TRANSPORT", raising=False)
     monkeypatch.delenv("LIES_QMD_URL", raising=False)
 
     Orchestrator(wiki_root=wiki_root, model="test")
-    assert built, "QmdMcpClient was not constructed by the orchestrator"
+    assert built, "QmdCapability was not constructed"
     assert built[0]["transport"] == "http"
     assert built[0]["url"] == "http://127.0.0.1:8181"
