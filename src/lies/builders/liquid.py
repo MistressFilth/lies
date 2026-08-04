@@ -12,7 +12,10 @@ render`` or any other renderer as a Python callable.
 
 from __future__ import annotations
 
+import hashlib
 import importlib
+import importlib.util
+import sys
 from collections.abc import Callable
 from pathlib import Path
 
@@ -36,11 +39,31 @@ def _resolve_render_cmd(spec: str) -> RenderCmd:
             "liquid",
             f"render_cmd must be module:attr, got {spec!r}",
         )
-    mod_name, attr_path = spec.split(":", 1)
-    try:
-        module = importlib.import_module(mod_name)
-    except Exception as exc:  # ImportError, ModuleNotFoundError, SyntaxError
-        raise BuilderFetchFailed("liquid", f"cannot import {mod_name!r}: {exc}") from exc
+    mod_name, attr_path = spec.rsplit(":", 1)
+    if "." not in mod_name and "/" not in mod_name:
+        raise BuilderFetchFailed(
+            "liquid",
+            f"render_cmd module must be dotted or path: {spec!r}",
+        )
+    if mod_name.endswith(".py") and Path(mod_name).exists():
+        module_spec = importlib.util.spec_from_file_location(
+            f"lies_liquid_render_{attr_path}", mod_name
+        )
+        if module_spec is None or module_spec.loader is None:
+            raise BuilderFetchFailed("liquid", f"cannot load spec from {mod_name!r}")
+        module = importlib.util.module_from_spec(module_spec)
+        sys.modules[module_spec.name] = module
+        try:
+            module_spec.loader.exec_module(module)
+        except Exception as exc:
+            raise BuilderFetchFailed(
+                "liquid", f"cannot import render module {mod_name!r}: {exc}"
+            ) from exc
+    else:
+        try:
+            module = importlib.import_module(mod_name)
+        except Exception as exc:  # ImportError, ModuleNotFoundError, SyntaxError
+            raise BuilderFetchFailed("liquid", f"cannot import {mod_name!r}: {exc}") from exc
     target = getattr(module, attr_path, None)
     if not callable(target):
         raise BuilderFetchFailed(
@@ -55,18 +78,19 @@ def _read_source(workspace: Path) -> bytes:
     for name in ("source.liquid", "source.html"):
         path = workspace / name
         if path.exists():
-            return path.read_bytes()
+            try:
+                return path.read_bytes()
+            except OSError as exc:
+                raise BuilderFetchFailed(
+                    "liquid", f"cannot read source file {path}: {exc}"
+                ) from exc
     raise BuilderFetchFailed(
         "liquid",
         f"source.liquid or source.html missing at {workspace}",
     )
 
 
-def _render_html(
-    source: bytes,
-    collection: Collection,
-    workspace: Path,
-) -> bytes:
+def _render_html(source: bytes, collection: Collection) -> bytes:
     """Render Liquid to HTML via the configured render_cmd (or passthrough)."""
     config = collection.config or {}
     spec = config.get("render_cmd")
@@ -98,13 +122,13 @@ class LiquidBuilder(Builder):
 
     def build(self, workspace: Path, *, collection: Collection) -> list[ParsedDoc]:
         source = _read_source(workspace)
-        html = _render_html(source, collection, workspace)
+        html = _render_html(source, collection)
         md = _convert_html_to_markdown(html)
         return [
             ParsedDoc(
                 path="index.md",
                 content=md,
-                source_sha256=__import__("hashlib").sha256(md).hexdigest(),
+                source_sha256=hashlib.sha256(md).hexdigest(),
                 source_format="markdown",
             )
         ]
