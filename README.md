@@ -120,9 +120,9 @@ For multi-project workspaces, register one MCP server per wiki.
 
 ## Source collection builders
 
-LIES can ingest PDF, Sphinx, HTML, and bespoke source corpora. Three
-formats are first-class; a fourth (`liquid`) is reserved for future
-work and currently quarantines per-doc.
+LIES can ingest PDF, Sphinx, HTML, Liquid, and bespoke source corpora.
+All four named formats are first-class; bespoke dispatches user-provided
+scrapers for other formats.
 
 Add a collection by hand or use the LLM-driven author:
 
