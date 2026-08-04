@@ -72,6 +72,8 @@ All notable changes to LIES are documented here. The format follows
 ### Fixed
 - `LiquidBuilder` now rejects empty pandoc output so failed conversions
   quarantine the document instead of emitting an empty page.
+- Path-based Liquid `render_cmd` modules are now reused across builds so
+  module-level renderer caches and state survive multiple documents.
 - Agent's qmd search now degrades gracefully when the qmd daemon is
   unreachable. `QmdCapability` probes the daemon on every turn via
   `qmd_daemon_reachable`; reachable -> native `MCP(url=..., native=True,

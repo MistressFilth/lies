@@ -51,14 +51,16 @@ def _resolve_render_cmd(spec: str) -> RenderCmd:
         )
         if module_spec is None or module_spec.loader is None:
             raise BuilderFetchFailed("liquid", f"cannot load spec from {mod_name!r}")
-        module = importlib.util.module_from_spec(module_spec)
-        sys.modules[module_spec.name] = module
-        try:
-            module_spec.loader.exec_module(module)
-        except Exception as exc:
-            raise BuilderFetchFailed(
-                "liquid", f"cannot import render module {mod_name!r}: {exc}"
-            ) from exc
+        module = sys.modules.get(module_spec.name)
+        if module is None:
+            module = importlib.util.module_from_spec(module_spec)
+            sys.modules[module_spec.name] = module
+            try:
+                module_spec.loader.exec_module(module)
+            except Exception as exc:
+                raise BuilderFetchFailed(
+                    "liquid", f"cannot import render module {mod_name!r}: {exc}"
+                ) from exc
     else:
         try:
             module = importlib.import_module(mod_name)

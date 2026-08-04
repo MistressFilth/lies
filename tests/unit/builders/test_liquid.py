@@ -67,6 +67,28 @@ def test_path_render_cmd_is_invoked_and_converted(tmp_path: Path) -> None:
     assert docs[0].content == b"rendered markdown"
 
 
+def test_path_render_cmd_preserves_state_across_builds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fixture = Path(__file__).parents[2] / "fixtures" / "liquid_path_stub.py"
+    module_name = "lies_liquid_render_render"
+    monkeypatch.delitem(sys.modules, module_name, raising=False)
+    template = b"{{ product.title }}"
+    context = {"product": {"title": "Hat"}}
+    (tmp_path / "source.liquid").write_bytes(template)
+    collection = _collection(
+        tmp_path,
+        config={"render_cmd": f"{fixture}:render", "context": context},
+    )
+
+    builder = LiquidBuilder()
+    builder.build(tmp_path, collection=collection)
+    builder.build(tmp_path, collection=collection)
+
+    loaded_module = sys.modules[module_name]
+    assert loaded_module.calls == [(template, context), (template, context)]
+
+
 def test_resolve_render_cmd_rejects_missing_colon() -> None:
     with pytest.raises(BuilderFetchFailed, match="module:attr"):
         _resolve_render_cmd("tests.fixtures.liquid_stub")
