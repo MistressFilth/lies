@@ -129,3 +129,57 @@ def test_liquid_builder_reads_source_html(tmp_path: Path) -> None:
     docs = LiquidBuilder().build(workspace, collection=_collection(tmp_path))
     assert len(docs) == 1
     assert "Pre-rendered" in docs[0].content.decode("utf-8")
+
+
+def test_liquid_builder_uses_render_cmd(tmp_path: Path) -> None:
+    """render_cmd renders Liquid to HTML before pandoc."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    (workspace / "source.liquid").write_bytes(b"<h1>{{ title }}</h1>")
+    collection = _collection(
+        tmp_path,
+        config={
+            "render_cmd": "tests.fixtures.liquid_stub:render",
+            "context": {"title": "Hello"},
+        },
+    )
+
+    docs = LiquidBuilder().build(workspace, collection=collection)
+
+    assert len(docs) == 1
+    md = docs[0].content.decode("utf-8")
+    # The stub wraps the source in <html><body>...</body></html>; pandoc
+    # emits the inner markup as markdown. The literal "{{ title }}" is
+    # inside the wrappers, so the rendered HTML contains it.
+    assert "{{ title }}" in md
+
+
+def test_liquid_builder_renderer_failure_quarantines(tmp_path: Path) -> None:
+    """Renderer exception → BuilderFetchFailed for upstream quarantine."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    (workspace / "source.liquid").write_bytes(b"<h1>x</h1>")
+
+    # Point at a callable that raises.
+    collection = _collection(
+        tmp_path,
+        config={"render_cmd": "tests.fixtures.liquid_stub:raise_render"},
+    )
+
+    with pytest.raises(BuilderFetchFailed, match="render_cmd"):
+        LiquidBuilder().build(workspace, collection=collection)
+
+
+def test_liquid_builder_non_bytes_return_quarantines(tmp_path: Path) -> None:
+    """Renderer returns non-bytes → BuilderFetchFailed."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    (workspace / "source.liquid").write_bytes(b"<h1>x</h1>")
+
+    collection = _collection(
+        tmp_path,
+        config={"render_cmd": "tests.fixtures.liquid_stub:string_render"},
+    )
+
+    with pytest.raises(BuilderFetchFailed, match="must return bytes"):
+        LiquidBuilder().build(workspace, collection=collection)

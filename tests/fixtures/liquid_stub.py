@@ -19,3 +19,13 @@ def render(template_bytes: bytes, context: dict) -> bytes:
     """
     body = template_bytes.decode("utf-8", errors="replace")
     return f"<html><body>{body}</body></html>".encode()
+
+
+def raise_render(template_bytes: bytes, context: dict) -> bytes:
+    """Always fails; used to test quarantine behaviour."""
+    raise RuntimeError("simulated renderer failure")
+
+
+def string_render(template_bytes: bytes, context: dict) -> str:
+    """Returns a non-bytes value; should be rejected."""
+    return "<html>nope</html>"
