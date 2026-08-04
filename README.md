@@ -239,7 +239,7 @@ CLI commands (`src/lies/cli.py`):
   source-path CLI surface; delegates to `Orchestrator.run_ingest` for
   host-side atomicity and rollback.
 - `lies query <question>` — ask a question of the wiki.
-- `lies lint [--fix]` — health-check the wiki; `--fix` applies the repair plan for safe_to_fix findings.
+- `lies lint [--fix]` — health-check the wiki (`--fix` applies the repair plan for safe_to_fix findings). Findings span six categories; LLM-backed categories are skipped with a `Sources` line when no model key is configured.
 - `lies mcp` / `lies mcp start` — run the MCP server on stdio.
 - `lies mcp up` / `down` / `status` — manage the detached http MCP daemon.
 - `lies status` — show qmd status and the last few log entries.

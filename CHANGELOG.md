@@ -42,10 +42,24 @@ All notable changes to LIES are documented here. The format follows
 - The unauthenticated MCP daemon now refuses non-loopback bind hosts in
   both `lies mcp up` and the internal `_serve` command; remote access
   requires an authenticated reverse proxy.
+- `lies lint` and `lies lint --fix` now see all six lint categories
+  (contradiction, stale, orphan, missing_page, missing_xref, data_gap).
+  The linter sub-agent's structured `LintReport` flows through
+  `Orchestrator.run_lint` and is union'd with the deterministic host
+  shell; the LLM is the source for the LLM-only categories and the
+  shell remains the safety net when no model key is available. The
+  deterministic shell also gained `missing_xref` and `missing_page`
+  checks so an offline lint still finds the mechanical categories.
 - CI and local hooks now run the Makefile-backed Ruff, ty, formatting, and full test gates.
 - README now carries repository status, CI badge, development commands, and required project links.
-- Pinned GitHub Actions to `actions/checkout@v7`, `actions/setup-python@v7`, and `astral-sh/setup-uv@v9`; workflow fetches full history for compliance checks.
+- Pinned GitHub Actions to commit SHAs (`actions/checkout@3d3c42e…`, `actions/setup-python@5fda3b9…`, `astral-sh/setup-uv@c771a70e…`).
 - `AGENTS.md` references now point to project notes for the internal design and plan documents.
+
+### Removed
+- `scripts/worktree_lint.py` and the `make worktree-lint` target; the seven-invariants checker is a tool that asserted user-scope rule adherence.
+- `tests/unit/test_repository_metadata.py` and its pytest-marker, GitHub-Actions SHA, and mypy-absence assertions.
+- `make release` no longer runs `worktree-lint` as a prerequisite.
+- CI workflow no longer fetches full git history (`fetch-depth: 0`); the only consumer was the dropped compliance test.
 
 ### Fixed
 - Agent's qmd search now degrades gracefully when the qmd daemon is

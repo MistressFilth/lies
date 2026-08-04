@@ -93,6 +93,8 @@ tests/
 
 The lint repair workflow uses a separate `repair_agent` (in `src/lies/agents/repair.py`) that consumes a `LintReport` and emits a structured `RepairPlan`. The orchestrator applies the plan through `WikiMemoryService.apply_repair_plan`, which routes through the same cross-process flock and atomic-commit envelope as memory plans. The 4 primitives (`CreateStub`, `AppendLink`, `UpdateIndex`, `AppendEvidence`) map onto existing memory operations. The agent never emits ops for `safe_to_fix=False` findings; those stay in the report verbatim. The CLI flag is `lies lint --fix`; the FastMCP toggle is `lint(fix=True)`.
 
+The lint pass composes the deterministic shell (`_build_lint_report`, covering orphan + missing_xref + missing_page) with the linter sub-agent's structured `LintReport` (covering contradiction + stale + data_gap + its own mechanical findings). `merge_lint_reports` unions the two with a `(category, pages, message)` dedup key; the shell wins on collision so the deterministic `safe_to_fix` semantics for mechanical categories are preserved. The LLM sub-agent is fail-soft; when it raises, the shell's findings still reach the repair agent.
+
 ## Quality gates
 
 `make check` runs `lint + typecheck + format`. `make test` runs the full

@@ -8,6 +8,7 @@ from unittest import mock
 
 import pytest
 
+from lies.agents.linter import LintReport
 from lies.agents.repair_models import CreateStub, RepairPlan
 from lies.mcp.server import lint
 from lies.orchestrator import Orchestrator
@@ -50,7 +51,15 @@ def _no_agent_run_sync() -> mock._patch:
 
 
 def test_lint_default_does_not_apply(wiki: WikiLayout) -> None:
-    with _no_agent_run_sync(), mock.patch.object(Orchestrator, "_run_repair_agent") as mock_repair:
+    with (
+        _no_agent_run_sync(),
+        mock.patch.object(
+            Orchestrator,
+            "_call_linter",
+            return_value=(LintReport(findings=[], report_markdown=""), None),
+        ),
+        mock.patch.object(Orchestrator, "_run_repair_agent") as mock_repair,
+    ):
         report = lint(wiki_root=str(wiki.root))
     assert isinstance(report, str)
     mock_repair.assert_not_called()
@@ -73,6 +82,11 @@ def test_lint_fix_true_invokes_repair(wiki: WikiLayout) -> None:
     )
     with (
         _no_agent_run_sync(),
+        mock.patch.object(
+            Orchestrator,
+            "_call_linter",
+            return_value=(LintReport(findings=[], report_markdown=""), None),
+        ),
         mock.patch.object(Orchestrator, "_run_repair_agent", return_value=plan),
         mock.patch.object(
             Orchestrator,
@@ -91,7 +105,15 @@ def test_lint_fix_true_invokes_repair(wiki: WikiLayout) -> None:
 
 
 def test_lint_fix_false_matches_default(wiki: WikiLayout) -> None:
-    with _no_agent_run_sync(), mock.patch.object(Orchestrator, "_run_repair_agent") as mock_repair:
+    with (
+        _no_agent_run_sync(),
+        mock.patch.object(
+            Orchestrator,
+            "_call_linter",
+            return_value=(LintReport(findings=[], report_markdown=""), None),
+        ),
+        mock.patch.object(Orchestrator, "_run_repair_agent") as mock_repair,
+    ):
         report = lint(wiki_root=str(wiki.root), fix=False)
     mock_repair.assert_not_called()
     assert isinstance(report, str)
