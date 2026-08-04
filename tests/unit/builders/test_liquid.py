@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -100,3 +101,31 @@ def test_source_read_oserror_is_wrapped(tmp_path: Path) -> None:
         pytest.raises(BuilderFetchFailed, match="cannot read"),
     ):
         LiquidBuilder().build(tmp_path, collection=_collection(tmp_path))
+
+
+def test_liquid_builder_passthrough(tmp_path: Path) -> None:
+    """No render_cmd → source treated as already-rendered HTML."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    (workspace / "source.liquid").write_bytes(b"<html><body><h1>Hello</h1></body></html>")
+    collection = _collection(tmp_path)  # no render_cmd
+
+    docs = LiquidBuilder().build(workspace, collection=collection)
+
+    assert len(docs) == 1
+    doc = docs[0]
+    assert doc.path == "index.md"
+    assert doc.source_format == "markdown"
+    md = doc.content.decode("utf-8")
+    assert "Hello" in md
+    assert doc.source_sha256 == hashlib.sha256(doc.content).hexdigest()
+
+
+def test_liquid_builder_reads_source_html(tmp_path: Path) -> None:
+    """Pre-rendered source.html is also accepted."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    (workspace / "source.html").write_bytes(b"<html><body><p>Pre-rendered</p></body></html>")
+    docs = LiquidBuilder().build(workspace, collection=_collection(tmp_path))
+    assert len(docs) == 1
+    assert "Pre-rendered" in docs[0].content.decode("utf-8")
