@@ -145,6 +145,34 @@ For htmx-class messy corpora, the agent may also propose a
 implements `BaseScraper`. Drop the module anywhere on `PYTHONPATH`
 and reference it as `module:attr` or `path.py:attr`.
 
+### Liquid sources
+
+`source_format=liquid` enables per-file Liquid template conversion.
+LIES reads `source.liquid`, optionally renders it via a Python callable
+referenced from `Collection.config["render_cmd"]`, then converts the
+HTML to Markdown via pandoc.
+
+```yaml
+# <wiki>/.lies/collections/liquid-theme.yaml
+name: liquid-theme
+source: ./raw/themes/dawn
+source_format: liquid
+config:
+  render_cmd: my_package.shopify_render:render
+  context:
+    shop:
+      name: "Test Shop"
+```
+
+The `render_cmd` follows the same `module:attr` import path as
+`scraper_cmd`. `importlib` loads it at sync time. The callable signature
+is `(template_bytes: bytes, context: dict) -> bytes` (returns HTML).
+
+If `render_cmd` is omitted, the source file is passed through to
+pandoc unchanged. Liquid tags are preserved as HTML in the rendered
+markdown. This is the zero-config path for collections that already
+deliver pre-rendered HTML.
+
 After the first successful sync, the collection's
 `WikiCollectionRef` is registered with `WikiMemoryService` for this
 wiki root. Inspect with:

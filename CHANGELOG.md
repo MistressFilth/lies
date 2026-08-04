@@ -7,6 +7,14 @@ All notable changes to LIES are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- `LiquidBuilder` for `source_format=liquid` collections. Pluggable
+  `Collection.config["render_cmd"]` (`module:attr` import path, mirrors
+  `scraper_cmd`) renders Liquid → HTML; the existing pandoc path
+  converts the HTML to markdown. When `render_cmd` is omitted, the
+  source is passed through unchanged (treated as already-rendered
+  HTML). Per-doc quarantine on render failure mirrors `PDFBuilder`.
+  Sets the slot reserved by the 2026-08-01 source-collection-builders
+  spec.
 - `lies mcp up` starts a detached streamable-http MCP daemon for the wiki
   (default `127.0.0.1:8737`, `--host` / `--port` / `--timeout` to override).
   The parent re-execs a hidden `_serve` subcommand in a new session, waits
