@@ -716,3 +716,158 @@ def test_run_lint_end_to_end_linter_unavailable(orch: Orchestrator) -> None:
     # converted into the fallback tuple. ``_call_linter`` formats it
     # as ``f"{type(exc).__name__}: {exc}"`` → ``RuntimeError: model offline``.
     assert "fallback: RuntimeError: model offline" in report_md
+
+
+# ---------------------------------------------------------------------------
+# Task 6: rejection and drop paths for the repair plan validator.
+# ---------------------------------------------------------------------------
+
+
+def test_apply_rejects_plan_with_unsafe_finding(wiki: WikiLayout) -> None:
+    """Repair agent emits a CreateStub for a safe_to_fix=False finding; --fix rejects."""
+    from lies.agents.linter import LintFinding, LintReport, LintSeverity
+    from lies.orchestrator import _build_lint_report
+
+    _seed_page(wiki, "concepts/a.md", "---\ntitle: A\n---\n# A\n")
+    subprocess.run(["git", "add", "."], cwd=wiki.root, check=True)
+    subprocess.run(["git", "commit", "-m", "seed"], cwd=wiki.root, check=True)
+
+    orch = Orchestrator(wiki_root=wiki.root, model=TestModel())
+    # A contradiction finding: safe_to_fix=False, but the plan still
+    # emits a CreateStub. The structural validator must catch it.
+    findings = [
+        LintFinding(
+            severity=LintSeverity.HIGH,
+            category="contradiction",
+            message="x",
+            pages=["concepts/a.md"],
+            safe_to_fix=False,
+        ),
+    ]
+    plan = RepairPlan(
+        operations=[
+            CreateStub(
+                path="concepts/new.md",
+                title="New",
+                finding_index=0,
+                pages=["concepts/a.md"],
+                rationale="r",
+                evidence=["f0"],
+            ),
+        ],
+        rationale="r",
+        evidence=["f0"],
+    )
+    # Shell returns no findings so finding_index=0 in the merged
+    # report is the contradiction (safe_to_fix=False); without this,
+    # the real shell's orphan for concepts/a.md would occupy index 0
+    # and rule 2 would let the CreateStub through.
+    empty_shell = LintReport(findings=[], report_markdown="")
+    with (
+        mock.patch.object(type(orch._agent), "run_sync", new=_noop_agent_run_sync),
+        mock.patch(_build_lint_report.__module__ + "._build_lint_report", return_value=empty_shell),
+        mock.patch.object(
+            orch,
+            "_call_linter",
+            return_value=(LintReport(findings=findings, report_markdown=""), None),
+        ),
+        mock.patch.object(orch, "_run_repair_agent", return_value=plan),
+    ):
+        report = orch.run_lint(apply=True)
+
+    assert "plan rejected" in report
+    assert "safe_to_fix is False" in report
+    assert not (wiki.wiki_dir / "concepts" / "new.md").exists()
+    # No commit beyond the seed (fixture init + test seed = 2 lines).
+    log = subprocess.run(
+        ["git", "log", "--oneline"], cwd=wiki.root, check=True, capture_output=True, text=True
+    ).stdout
+    assert log.count("\n") == 2  # init + seed only; the rejected plan added no commit
+
+
+def test_apply_drops_redundant_update_index(wiki: WikiLayout) -> None:
+    """Repair agent emits an UpdateIndex for a page already in the index; --fix drops it."""
+    _seed_page(wiki, "concepts/lonely.md", "---\ntitle: Lonely\n---\n# Lonely\n")
+    # Pre-seed the index with the orphan so the op is redundant.
+    (wiki.wiki_dir / "index.md").write_text(
+        "# Index\n- [Lonely](concepts/lonely.md)\n", encoding="utf-8"
+    )
+    subprocess.run(["git", "add", "."], cwd=wiki.root, check=True)
+    subprocess.run(["git", "commit", "-m", "seed"], cwd=wiki.root, check=True)
+
+    orch = Orchestrator(wiki_root=wiki.root, model=TestModel())
+    plan = RepairPlan(
+        operations=[
+            UpdateIndex(
+                path="wiki/index.md",
+                title="Lonely",
+                finding_index=0,
+                pages=["concepts/lonely.md"],
+                rationale="orphan",
+                evidence=["f0"],
+            ),
+        ],
+        rationale="r",
+        evidence=["f0"],
+    )
+    with (
+        mock.patch.object(type(orch._agent), "run_sync", new=_noop_agent_run_sync),
+        mock.patch.object(
+            orch, "_call_linter", return_value=(LintReport(findings=[], report_markdown=""), None)
+        ),
+        mock.patch.object(orch, "_run_repair_agent", return_value=plan),
+    ):
+        report = orch.run_lint(apply=True)
+
+    assert "Skipped (redundant)" in report
+    assert "redundant-index" in report
+    # The op was dropped, so the receipt has no applied entries.
+    assert "Applied (0)" in report
+
+
+def test_apply_partial_plan_rejects_whole_plan(wiki: WikiLayout) -> None:
+    """One bad op in a multi-op plan rejects everything; wiki state is unchanged."""
+    _seed_page(wiki, "concepts/a.md", "---\ntitle: A\n---\n# A\n")
+    _seed_page(wiki, "concepts/b.md", "---\ntitle: B\n---\n# B\n")
+    subprocess.run(["git", "add", "."], cwd=wiki.root, check=True)
+    subprocess.run(["git", "commit", "-m", "seed"], cwd=wiki.root, check=True)
+
+    orch = Orchestrator(wiki_root=wiki.root, model=TestModel())
+    # First AppendLink is fine; second AppendLink targets a missing page.
+    plan = RepairPlan(
+        operations=[
+            AppendLink(
+                target_path="concepts/b.md",
+                link_text="B",
+                append_to="concepts/a.md",
+                finding_index=0,
+                pages=["concepts/a.md"],
+                rationale="x",
+                evidence=["f0"],
+            ),
+            AppendLink(
+                target_path="concepts/ghost.md",
+                link_text="Ghost",
+                append_to="concepts/a.md",
+                finding_index=0,
+                pages=["concepts/a.md"],
+                rationale="x",
+                evidence=["f0"],
+            ),
+        ],
+        rationale="r",
+        evidence=["f0"],
+    )
+    with (
+        mock.patch.object(type(orch._agent), "run_sync", new=_noop_agent_run_sync),
+        mock.patch.object(
+            orch, "_call_linter", return_value=(LintReport(findings=[], report_markdown=""), None)
+        ),
+        mock.patch.object(orch, "_run_repair_agent", return_value=plan),
+    ):
+        report = orch.run_lint(apply=True)
+
+    assert "plan rejected" in report
+    # The first op never wrote anything because the whole plan was rejected.
+    a_content = (wiki.wiki_dir / "concepts" / "a.md").read_text(encoding="utf-8")
+    assert "[B]" not in a_content
