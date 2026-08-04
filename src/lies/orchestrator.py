@@ -1131,15 +1131,13 @@ class Orchestrator:
         post-drop ``plan.operations`` to keep its positional pairing
         with ``memory_receipt.changed_pages``.
         """
-        from lies.agents.repair_models import RepairReceipt as _Receipt
-
         plan = validated.plan
         if plan.is_noop():
             skipped_drops = [
                 f"redundant-index: op #{idx} already in wiki/index.md"
                 for idx in validated.dropped_ops
             ]
-            return _Receipt(
+            return RepairReceipt(
                 applied=[],
                 applied_repair_kinds=[],
                 skipped=skipped_drops,
@@ -1149,7 +1147,7 @@ class Orchestrator:
         try:
             memory_receipt = self._memory_service.apply_repair_plan(plan)
         except Exception as exc:  # noqa: BLE001 - capture all apply failures
-            return _Receipt(
+            return RepairReceipt(
                 applied=[],
                 applied_repair_kinds=[],
                 skipped=[
@@ -1166,7 +1164,7 @@ class Orchestrator:
         skipped_drops = [
             f"redundant-index: op #{idx} already in wiki/index.md" for idx in validated.dropped_ops
         ]
-        return _Receipt(
+        return RepairReceipt(
             applied=memory_receipt.changed_pages,
             applied_repair_kinds=kinds,
             skipped=skipped_drops,

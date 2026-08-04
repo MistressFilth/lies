@@ -75,6 +75,16 @@ All notable changes to LIES are documented here. The format follows
 - Added the MIT license declared by package metadata.
 - Registered the integration-test pytest marker so full-suite runs emit no unknown-marker warning.
 
+## [0.5.1] - 2026-08-03
+
+### Added
+- `validate_plan(plan, layout, findings)` in `src/lies/agents/repair_validation.py`. Catches `finding_index` out of range, ops against `safe_to_fix=False` findings, ops whose `pages` set does not intersect the referenced finding's pages, per-op filesystem checks (`CreateStub` on existing path, `AppendLink` to a missing `target_path` or `append_to`, `AppendEvidence` on a missing path), and silently drops redundant `UpdateIndex` operations. Atomic rejection (raises `WikiPlanInvalid`) for rules 1-4; the dropped-op indices surface as `redundant-index` entries in `RepairReceipt.skipped`.
+
+### Changed
+- `Orchestrator.run_lint(apply=True)` now calls `validate_plan` between the repair agent and `apply_repair_plan`. `WikiPlanInvalid` is mapped to a `RepairReceipt` with `errors=[...]` so the existing `_format_repair_section` surfaces the rejection.
+- `Orchestrator._apply_repair_plan` accepts a `ValidatedRepairPlan` and rebuilds `applied_repair_kinds` from the post-drop `plan.operations` to keep its positional pairing with `memory_receipt.changed_pages`.
+- `_format_repair_section` adds a `### Skipped (redundant)` block when the receipt's `skipped` list contains `redundant-index` entries.
+
 ## [0.4.0] - 2026-08-02
 
 ### Added
