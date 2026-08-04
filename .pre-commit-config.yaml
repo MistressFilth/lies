@@ -7,14 +7,12 @@ repos:
         files: ^((src/lies|tests|scripts)/|pyproject\.toml$)
       - id: ruff-format
         files: ^((src/lies|tests|scripts)/|pyproject\.toml$)
+  - repo: https://github.com/astral-sh/ty-pre-commit
+    rev: v0.0.66
+    hooks:
+      - id: ty
   - repo: local
     hooks:
-      - id: typecheck
-        name: make typecheck
-        entry: uv run make typecheck
-        language: system
-        pass_filenames: false
-        stages: [pre-commit]
       - id: test
         name: make test
         entry: uv run make test
