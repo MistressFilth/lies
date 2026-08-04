@@ -188,7 +188,7 @@ CLI commands (`src/lies/cli.py`):
   source-path CLI surface; delegates to `Orchestrator.run_ingest` for
   host-side atomicity and rollback.
 - `lies query <question>` — ask a question of the wiki.
-- `lies lint [--fix]` — health-check the wiki; `--fix` applies the repair plan for safe_to_fix findings.
+- `lies lint [--fix]` — health-check the wiki (`--fix` applies the repair plan for safe_to_fix findings). Findings span six categories; LLM-backed categories are skipped with a `Sources` line when no model key is configured.
 - `lies status` — show qmd status and the last few log entries.
 - `lies config` — print the active model and wiki root.
 - `lies version` — print the LIES version.

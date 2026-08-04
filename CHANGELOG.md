@@ -13,6 +13,7 @@ All notable changes to LIES are documented here. The format follows
 - CI workflow no longer fetches full git history (`fetch-depth: 0`); the only consumer was the dropped compliance test.
 
 ### Changed
+- `lies lint` and `lies lint --fix` now see all six lint categories (contradiction, stale, orphan, missing_page, missing_xref, data_gap). The linter sub-agent's structured `LintReport` flows through `Orchestrator.run_lint` and is union'd with the deterministic host shell; the LLM is the source for the LLM-only categories and the shell remains the safety net when no model key is available. The deterministic shell also gained `missing_xref` and `missing_page` checks so an offline lint still finds the mechanical categories.
 - CI and local hooks now run the Makefile-backed Ruff, ty, formatting, and full test gates.
 - README now carries repository status, CI badge, development commands, and required project links.
 - Pinned GitHub Actions to commit SHAs (`actions/checkout@3d3c42e…`, `actions/setup-python@5fda3b9…`, `astral-sh/setup-uv@c771a70e…`).

@@ -19,6 +19,7 @@ from unittest import mock
 import pytest
 
 from lies import __version__
+from lies.agents.linter import LintReport
 from lies.mcp.resolution import WikiRootError
 from lies.mcp.server import (
     SynthesizedMcpAnswer,
@@ -280,8 +281,17 @@ def test_lint_returns_markdown_report(
 
     # Throwaway Orchestrator instance just to reach ``type(orch._agent)``;
     # see the ingest test for why we patch on the instance's class rather
-    # than on ``pydantic_ai.Agent`` directly.
-    with mock.patch.object(type(orch._agent), "run_sync", new=fake_run_sync):
+    # than on ``pydantic_ai.Agent`` directly. The MCP ``lint`` tool
+    # constructs a fresh ``Orchestrator`` internally, so ``_call_linter``
+    # must be patched at the class level to reach that instance.
+    with (
+        mock.patch.object(type(orch._agent), "run_sync", new=fake_run_sync),
+        mock.patch.object(
+            Orchestrator,
+            "_call_linter",
+            return_value=(LintReport(findings=[], report_markdown=""), None),
+        ),
+    ):
         out = lint()
 
     layout = sample_wiki

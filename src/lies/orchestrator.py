@@ -11,7 +11,7 @@ from pathlib import Path
 from pydantic_ai import Agent
 
 from lies.agents.indexer import indexer_agent
-from lies.agents.linter import LintReport, linter_agent
+from lies.agents.linter import LintFinding, LintReport, linter_agent
 from lies.agents.page_writer import page_writer_agent
 from lies.agents.query_synthesizer import query_synthesizer_agent
 from lies.agents.repair import RepairAgentDeps, repair_agent
@@ -111,11 +111,17 @@ def _build_lint_report(
     from lies.agents.linter import LintFinding, LintReport, LintSeverity
 
     findings: list[LintFinding] = []
+    # ``pages`` holds wiki-dir-relative paths (e.g. ``concepts/a.md``)
+    # so the repair agent's ``layout.wiki_dir / page`` lookup lands
+    # on the real file. Without this convention, ``_run_repair_agent``
+    # would resolve ``layout.wiki_dir / "wiki/concepts/a.md"`` and find
+    # nothing (the page lives at ``wiki/concepts/a.md``, not
+    # ``wiki/wiki/concepts/a.md``).
     pages: set[str] = set()
     if layout.wiki_dir.exists():
         for path in layout.wiki_dir.rglob("*.md"):
-            rel = path.relative_to(layout.root).as_posix()
-            if rel in {"wiki/index.md", "wiki/log.md", "wiki/lint-report.md", "wiki/overview.md"}:
+            rel = path.relative_to(layout.wiki_dir).as_posix()
+            if rel in {"index.md", "log.md", "lint-report.md", "overview.md"}:
                 continue
             pages.add(rel)
 
@@ -124,17 +130,10 @@ def _build_lint_report(
         linked: set[str] = set()
         for page in pages:
             try:
-                text = (layout.root / page).read_text(encoding="utf-8")
+                text = (layout.wiki_dir / page).read_text(encoding="utf-8")
             except (OSError, UnicodeDecodeError):
                 continue
-            for raw in _extract_markdown_links(text):
-                if raw.startswith(("http://", "https://", "mailto:", "tel:")):
-                    continue
-                if raw.startswith(("/", "\\")):
-                    continue
-                clean = raw.split("#", 1)[0].split("?", 1)[0]
-                if clean.endswith(".md"):
-                    linked.add(clean)
+            linked.update(_extract_local_md_links(text, page, layout.root))
         orphans = sorted(pages - linked)
         for orphan in orphans:
             findings.append(
@@ -151,6 +150,89 @@ def _build_lint_report(
                     safe_to_fix=True,
                 )
             )
+
+    # missing_xref: A mentions B's title in body text but does not link to B.
+    # Heuristic only; skips title collisions to avoid false positives.
+    if pages:
+        titles: dict[str, str] = {}
+        for page in pages:
+            try:
+                text = (layout.wiki_dir / page).read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue
+            title = _extract_frontmatter_title(text)
+            if title:
+                titles[page] = title
+        # Skip ambiguous titles: any title shared by 2+ pages is ignored.
+        title_counts: dict[str, int] = {}
+        for title in titles.values():
+            title_counts[title] = title_counts.get(title, 0) + 1
+        unique_titles = {p: t for p, t in titles.items() if title_counts[t] == 1}
+
+        # Each page's resolved local ``.md`` links in wiki-dir-relative
+        # convention (same as ``pages``). The shared helper ensures
+        # orphan and missing_xref see the same link semantics — including
+        # the existing-only filter (I1) and the wiki-dir fallback.
+        page_links: dict[str, set[str]] = {}
+        for page in pages:
+            try:
+                text = (layout.wiki_dir / page).read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue
+            page_links[page] = _extract_local_md_links(text, page, layout.root)
+
+        body_cache: dict[str, str] = {}
+        for page, title in unique_titles.items():
+            other_pages = [p for p, t in unique_titles.items() if t != title]
+            if not other_pages:
+                continue
+            try:
+                body = body_cache.setdefault(
+                    page, _strip_frontmatter((layout.wiki_dir / page).read_text(encoding="utf-8"))
+                )
+            except (OSError, UnicodeDecodeError):
+                continue
+            body_lower = body.lower()
+            page_targets = page_links.get(page, set())
+            for other in other_pages:
+                other_title = unique_titles[other]
+                if other_title.lower() not in body_lower:
+                    continue
+                # Target-specific check: only suppress the finding if
+                # this page actually links to *this specific other
+                # page*. A page that has cross-references but to
+                # different pages still gets flagged for mentioning
+                # the title without linking to it.
+                if other in page_targets:
+                    continue
+                findings.append(
+                    LintFinding(
+                        severity=LintSeverity.MEDIUM,
+                        category="missing_xref",
+                        message=f"{page} mentions {other_title} without a cross-reference",
+                        pages=[page, other],
+                        safe_to_fix=True,
+                    )
+                )
+
+    # missing_page: frontmatter `sources:` lists a path that does not exist.
+    for page in pages:
+        try:
+            text = (layout.wiki_dir / page).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        for source in _extract_frontmatter_sources(text):
+            resolved = (layout.root / source).resolve()
+            if not resolved.exists():
+                findings.append(
+                    LintFinding(
+                        severity=LintSeverity.LOW,
+                        category="missing_page",
+                        message=f"{page} cites {source} which is not present",
+                        pages=[page],
+                        safe_to_fix=False,
+                    )
+                )
 
     report = LintReport(findings=findings, report_markdown="")
     body = _format_lint_markdown(report, layout)
@@ -169,6 +251,166 @@ def _extract_markdown_links(text: str) -> list[str]:
     import re
 
     return re.findall(r"\]\(([^)]+)\)", text)
+
+
+def _extract_local_md_links(text: str, source_page_path: str, wiki_root: Path) -> set[str]:
+    """Return the canonical wiki-dir-relative ``.md`` targets of every
+    markdown link in ``text``.
+
+    Filters out:
+    - URL schemes (``http://``, ``https://``, ``mailto:``, ``tel:``)
+    - Absolute paths (rooted at ``/`` or ``\\``)
+    - Non-``.md`` targets
+    - Targets whose resolved path does not exist on disk
+
+    Strips URL fragments and query strings before resolving. Resolves
+    relative targets against ``source_page_path``'s directory first,
+    then the wiki directory (see ``_resolve_link_target``).
+
+    Containment: only targets that resolve under ``wiki/`` are kept.
+    A link like ``../../somewhere/else.md`` from inside
+    ``wiki/concepts/a.md`` can resolve to ``somewhere/else.md`` — a
+    sibling of the ``wiki/`` directory that lands inside
+    ``wiki_root`` but not inside the wiki itself. Without the
+    containment check, ``resolved.removeprefix("wiki/")`` would yield
+    ``somewhere/else.md`` and corrupt the ``pages``-set comparison
+    used by the orphan and missing_xref heuristics.
+
+    Returns the set in the same wiki-dir-relative convention used by
+    the shell findings' ``pages`` field, so callers can compare
+    resolved links directly against the ``pages`` set without a
+    ``wiki/`` prefix dance.
+    """
+    targets: set[str] = set()
+    for raw in _extract_markdown_links(text):
+        if raw.startswith(("http://", "https://", "mailto:", "tel:")):
+            continue
+        if raw.startswith(("/", "\\")):
+            continue
+        clean = raw.split("#", 1)[0].split("?", 1)[0]
+        if not clean.endswith(".md"):
+            continue
+        # ``_resolve_link_target`` expects repo-root-relative
+        # ``source_page_path``; ``source_page_path`` here is
+        # wiki-dir-relative per the I2 normalization, so prepend
+        # ``wiki/`` and strip it from the result.
+        resolved = _resolve_link_target(f"wiki/{source_page_path}", clean, wiki_root)
+        if resolved is None:
+            continue
+        # Containment: must live under wiki/, not just under wiki_root.
+        if not resolved.startswith("wiki/"):
+            continue
+        targets.add(resolved.removeprefix("wiki/"))
+    return targets
+
+
+def _resolve_link_target(source_page_path: str, raw_target: str, wiki_root: Path) -> str | None:
+    """Resolve a bare markdown link target to a wiki-relative path.
+
+    Tries resolving relative to the source page's directory first,
+    then relative to the wiki directory itself, and returns the
+    first wiki-relative ``.md`` path that both lands inside
+    ``wiki_root`` AND points at a file that exists on disk. Returns
+    ``None`` when no candidate lands inside the wiki, the result is
+    not a ``.md`` file, or no candidate exists.
+
+    ``wiki_root`` is the repository root (the parent of the ``wiki/``
+    directory), and ``source_page_path`` is a repo-root-relative
+    path like ``wiki/concepts/a.md``. The wiki-directory fallback
+    therefore prepends ``wiki/`` to ``raw_target`` so a link written
+    as ``[Beta](concepts/beta.md)`` from inside ``wiki/concepts/``
+    resolves to ``wiki/concepts/beta.md`` (the standard layout),
+    not to ``<repo_root>/concepts/beta.md`` (a non-existent
+    sibling of the ``wiki/`` directory).
+
+    The "must exist" check fixes the false-positive bug where a
+    source-relative candidate like ``wiki/concepts/concepts/beta.md``
+    is syntactically a valid ``.md`` path inside the wiki but
+    doesn't exist on disk; without the check it shadowed the
+    correct wiki-dir fallback ``wiki/concepts/beta.md``.
+
+    Examples (wiki root = ``/tmp/wiki``):
+
+    - ``wiki/concepts/a.md`` -> ``b.md`` (exists) -> ``wiki/concepts/b.md``
+    - ``wiki/concepts/a.md`` -> ``concepts/b.md`` (exists) -> ``wiki/concepts/b.md``
+    - ``wiki/concepts/a.md`` -> ``concepts/b.md`` (only ``wiki/concepts/b.md`` exists) -> ``wiki/concepts/b.md``
+    - ``wiki/concepts/a.md`` -> ``b.md`` (no match anywhere) -> ``None``
+    - ``wiki/overview.md`` -> ``b.md`` (exists only under concepts) -> ``None``
+    """
+    wiki_root_resolved = wiki_root.resolve()
+    wiki_dir = (wiki_root / "wiki").resolve()
+    # Source page's directory, absolute.
+    source_dir = (wiki_root / source_page_path).parent.resolve()
+    for base in (source_dir, wiki_dir):
+        try:
+            candidate = (base / raw_target).resolve()
+        except OSError:
+            continue
+        try:
+            relative = candidate.relative_to(wiki_root_resolved)
+        except ValueError:
+            continue
+        result = relative.as_posix()
+        if not result.endswith(".md"):
+            continue
+        if not candidate.exists():
+            continue
+        return result
+    return None
+
+
+def _extract_frontmatter_title(text: str) -> str | None:
+    """Return the ``title:`` value from YAML frontmatter, or None."""
+    import re
+
+    if not text.startswith("---"):
+        return None
+    end = text.find("\n---", 3)
+    if end == -1:
+        return None
+    block = text[3:end]
+    match = re.search(r"^title:\s*(.+?)\s*$", block, re.MULTILINE)
+    if not match:
+        return None
+    title = match.group(1).strip()
+    if title.startswith(('"', "'")) and title.endswith(('"', "'")):
+        title = title[1:-1]
+    return title or None
+
+
+def _strip_frontmatter(text: str) -> str:
+    """Strip the leading YAML frontmatter block (if any) and return the body."""
+    if not text.startswith("---"):
+        return text
+    end = text.find("\n---", 3)
+    if end == -1:
+        return text
+    rest = text[end + 4 :]
+    rest = rest.removeprefix("\n")
+    return rest
+
+
+def _extract_frontmatter_sources(text: str) -> list[str]:
+    """Return the ``sources:`` list from YAML frontmatter (empty if missing/malformed)."""
+    if not text.startswith("---"):
+        return []
+    end = text.find("\n---", 3)
+    if end == -1:
+        return []
+    block = text[3:end]
+    lines = block.splitlines()
+    sources: list[str] = []
+    in_sources = False
+    for line in lines:
+        if in_sources:
+            stripped = line.strip()
+            if stripped.startswith("- "):
+                sources.append(stripped[2:].strip().strip('"').strip("'"))
+            elif stripped and not stripped.startswith("-"):
+                in_sources = False
+        elif line.startswith("sources:"):
+            in_sources = True
+    return sources
 
 
 def _format_lint_markdown(report: LintReport, layout: WikiLayout) -> str:
@@ -195,15 +437,30 @@ def _format_lint_markdown(report: LintReport, layout: WikiLayout) -> str:
     return "\n".join(sections)
 
 
-def _format_repair_section(receipt: RepairReceipt) -> str:
-    """Render the ``applied`` section of ``wiki/lint-report.md``.
+def _render_lint_report(
+    report: LintReport,
+    *,
+    layout: WikiLayout,
+    repair_receipt: RepairReceipt | None,
+    shell_count: int,
+    llm_count: int,
+    llm_fallback_reason: str | None,
+) -> str:
+    """Render ``report`` plus repair and source sections as markdown."""
+    body = _format_lint_markdown(report, layout)
+    if repair_receipt is not None:
+        body += "\n" + _format_repair_section(repair_receipt)
+    sources = (
+        "### Sources\n\n"
+        f"- deterministic shell: {shell_count} findings\n"
+        f"- linter_agent: {llm_count} findings"
+    )
+    if llm_fallback_reason is not None:
+        sources += f"\n- fallback: {llm_fallback_reason}"
+    return body + "\n" + sources + "\n"
 
-    The applied entries use ``receipt.applied_repair_kinds`` (a parallel
-    list of repair op kinds) when present, so callers see the original
-    repair primitive (``append_link``, ``update_index``, ...) instead of
-    the underlying memory operation kind (``update``). Falls back to the
-    memory operation kind for backwards compatibility.
-    """
+
+def _format_repair_section(receipt: RepairReceipt) -> str:
     lines = [f"### Applied ({len(receipt.applied)})", ""]
     if not receipt.applied:
         lines.append("_No repairs applied._")
@@ -212,21 +469,14 @@ def _format_repair_section(receipt: RepairReceipt) -> str:
         for index, ref in enumerate(receipt.applied):
             kind = kinds[index] if index < len(kinds) else ref.op.value
             lines.append(f"- applied: {kind} — {ref.path}")
-    lines.append("")
-    lines.append(f"### Skipped ({len(receipt.skipped)})")
-    lines.append("")
+    lines.extend(["", f"### Skipped ({len(receipt.skipped)})", ""])
     if receipt.skipped:
-        for reason in receipt.skipped:
-            lines.append(f"- {reason}")
+        lines.extend(f"- {reason}" for reason in receipt.skipped)
     else:
         lines.append("_No findings skipped._")
-    lines.append("")
     if receipt.errors:
-        lines.append(f"### Errors ({len(receipt.errors)})")
-        lines.append("")
-        for err in receipt.errors:
-            lines.append(f"- {err}")
-        lines.append("")
+        lines.extend(["", f"### Errors ({len(receipt.errors)})", ""])
+        lines.extend(f"- {err}" for err in receipt.errors)
     return "\n".join(lines)
 
 
@@ -286,6 +536,35 @@ _SUB_AGENT_TABLE: tuple[tuple[str, object, str], ...] = (
         ),
     ),
 )
+
+
+def merge_lint_reports(
+    shell: LintReport,
+    llm: LintReport,
+    *,
+    llm_fallback_reason: str | None = None,
+) -> tuple[LintReport, str | None]:
+    """Union ``shell`` and ``llm`` findings with dedup.
+
+    Dedup key is ``(category, frozenset(pages), message)``. Shell
+    entries win on collision so the deterministic shell's
+    ``safe_to_fix`` semantics are preserved for mechanical
+    categories. LLM-only categories (``contradiction``, ``stale``,
+    ``data_gap``) have no shell entries by construction and pass
+    through.
+
+    Returns the merged ``LintReport`` and the propagated
+    ``llm_fallback_reason`` (the caller renders the final markdown).
+    """
+    seen: set[tuple[str, frozenset[str], str]] = set()
+    merged: list[LintFinding] = []
+    for finding in [*shell.findings, *llm.findings]:
+        key = (finding.category, frozenset(finding.pages), finding.message)
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(finding)
+    return LintReport(findings=merged, report_markdown=""), llm_fallback_reason
 
 
 class Orchestrator:
@@ -352,6 +631,7 @@ class Orchestrator:
         self._turn_counter = 0
         self._enricher = enricher_agent(model=self.model)
         self._repair_agent = repair_agent(model=self.model)
+        self._linter_agent = linter_agent(model=self.model)
         register_read_tools(self._agent)
 
     def run(self, command: str) -> str:
@@ -718,44 +998,30 @@ class Orchestrator:
         return synthesize_answer(question, self.layout)
 
     def run_lint(self, apply: bool = False) -> str:
-        """Run the lint pass and write ``wiki/lint-report.md``.
-
-        When ``apply=True``, also invokes the repair agent and applies
-        the resulting RepairPlan through ``WikiMemoryService``. The
-        post-apply report shows both the proposed and the applied
-        sections.
-
-        Args:
-            apply: If True, run the repair agent and apply the resulting
-                plan. If False, return the dry-run report only.
-
-        Returns:
-            The lint report markdown that was written to
-            ``wiki/lint-report.md``.
-
-        Raises:
-            Exception: Anything raised by the agent or the apply path
-                is propagated.
-        """
-        # NOTE: the linter sub-agent's structured output is currently
-        # not consumed here; the host-side deterministic shell
-        # (`_build_lint_report`) is the source of truth for findings
-        # in this branch. The call to the linter is preserved so
-        # downstream wiring remains intact, but its return value is
-        # deliberately discarded until the integration is finalized.
-        self._agent.run_sync("lint")
-        lint_report = _build_lint_report(self.layout)
+        """Run deterministic and LLM lint, merge findings, and write report."""
+        shell_report = _build_lint_report(self.layout)
+        llm_report, fallback_reason = self._call_linter()
+        merged_report, fallback_reason = merge_lint_reports(
+            shell_report, llm_report, llm_fallback_reason=fallback_reason
+        )
         repair_receipt: RepairReceipt | None = None
         if apply:
-            plan = self._run_repair_agent(lint_report)
+            plan = self._run_repair_agent(merged_report)
             repair_receipt = self._apply_repair_plan(plan)
-        final_report = _build_lint_report(self.layout, repair_receipt=repair_receipt)
-        self.layout.lint_report_path.write_text(final_report.report_markdown, encoding="utf-8")
+        final_md = _render_lint_report(
+            merged_report,
+            layout=self.layout,
+            repair_receipt=repair_receipt,
+            shell_count=len(shell_report.findings),
+            llm_count=len(llm_report.findings),
+            llm_fallback_reason=fallback_reason,
+        )
+        self.layout.lint_report_path.write_text(final_md, encoding="utf-8")
         self._append_log_entry(
             f"## [{datetime.now(tz=timezone.utc).date().isoformat()}] lint | "
-            f"{final_report.report_markdown.count(chr(10))} findings"
+            f"{final_md.count(chr(10))} findings"
         )
-        return final_report.report_markdown
+        return final_md
 
     def _run_repair_agent(self, lint_report: LintReport) -> RepairPlan:
         """Invoke the repair agent against the structured lint report.
@@ -776,6 +1042,45 @@ class Orchestrator:
             "Propose a RepairPlan for the lint report.",
             deps=RepairAgentDeps(lint_report=lint_report, page_texts=page_texts),
         ).output
+
+    def _call_linter(self) -> tuple[LintReport, str | None]:
+        """Invoke the linter sub-agent; return (report, fallback_reason).
+
+        Collects the wiki's page texts up front and passes them via
+        ``LintDeps`` so the LLM can read every page without tool
+        calls. Page paths are wiki-dir-relative so they dedup cleanly
+        against the deterministic shell's findings.
+
+        On any exception, logs at WARNING and returns an empty
+        ``LintReport`` with a non-None ``fallback_reason``. The
+        deterministic shell is the safety net; the user sees the
+        fallback line in ``wiki/lint-report.md``.
+        """
+        import logging
+
+        from lies.agents.linter import LintDeps
+
+        page_texts: dict[str, str] = {}
+        if self.layout.wiki_dir.exists():
+            for path in self.layout.wiki_dir.rglob("*.md"):
+                rel = path.relative_to(self.layout.wiki_dir).as_posix()
+                if rel in {"index.md", "log.md", "lint-report.md", "overview.md"}:
+                    continue
+                try:
+                    page_texts[rel] = path.read_text(encoding="utf-8")
+                except (OSError, UnicodeDecodeError):
+                    continue
+        deps = LintDeps(page_texts=page_texts, wiki_root=str(self.layout.root))
+        try:
+            result = self._linter_agent.run_sync("lint", deps=deps)
+        except Exception as exc:  # noqa: BLE001 - broad catch; shell is the safety net
+            logging.getLogger(__name__).warning(
+                "linter_agent failed; falling back to deterministic shell: %s: %s",
+                type(exc).__name__,
+                exc,
+            )
+            return LintReport(findings=[], report_markdown=""), f"{type(exc).__name__}: {exc}"
+        return result.output, None
 
     def _apply_repair_plan(self, plan: RepairPlan) -> RepairReceipt:
         """Apply a RepairPlan through WikiMemoryService and return a receipt."""

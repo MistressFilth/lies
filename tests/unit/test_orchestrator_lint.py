@@ -44,6 +44,9 @@ def _noop_agent_run_sync(self, prompt: str):  # type: ignore[no-untyped-def]
 def test_run_lint_default_does_not_invoke_repair_agent(orch: Orchestrator) -> None:
     with (
         mock.patch.object(type(orch._agent), "run_sync", new=_noop_agent_run_sync),
+        mock.patch.object(
+            orch, "_call_linter", return_value=(LintReport(findings=[], report_markdown=""), None)
+        ),
         mock.patch.object(orch, "_run_repair_agent") as mock_repair,
     ):
         report = orch.run_lint()
@@ -76,6 +79,9 @@ def test_run_lint_apply_invokes_repair_agent(orch: Orchestrator) -> None:
     )
     with (
         mock.patch.object(type(orch._agent), "run_sync", new=_noop_agent_run_sync),
+        mock.patch.object(
+            orch, "_call_linter", return_value=(LintReport(findings=[], report_markdown=""), None)
+        ),
         mock.patch.object(orch, "_run_repair_agent", return_value=fake_plan) as mock_repair,
         mock.patch.object(orch, "_apply_repair_plan", return_value=fake_receipt) as mock_apply,
     ):
@@ -95,6 +101,9 @@ def test_run_lint_apply_records_skipped_findings(orch: Orchestrator) -> None:
     )
     with (
         mock.patch.object(type(orch._agent), "run_sync", new=_noop_agent_run_sync),
+        mock.patch.object(
+            orch, "_call_linter", return_value=(LintReport(findings=[], report_markdown=""), None)
+        ),
         mock.patch.object(orch, "_run_repair_agent", return_value=fake_plan),
         mock.patch.object(orch, "_apply_repair_plan", return_value=fake_receipt),
     ):
@@ -112,6 +121,9 @@ def test_run_lint_apply_surfaces_errors(orch: Orchestrator) -> None:
     )
     with (
         mock.patch.object(type(orch._agent), "run_sync", new=_noop_agent_run_sync),
+        mock.patch.object(
+            orch, "_call_linter", return_value=(LintReport(findings=[], report_markdown=""), None)
+        ),
         mock.patch.object(orch, "_run_repair_agent", return_value=fake_plan),
         mock.patch.object(orch, "_apply_repair_plan", return_value=fake_receipt),
     ):
@@ -174,6 +186,9 @@ def test_run_lint_apply_passes_findings_to_repair_agent(orch: Orchestrator) -> N
 
     with (
         mock.patch.object(type(orch._agent), "run_sync", new=_noop_agent_run_sync),
+        mock.patch.object(
+            orch, "_call_linter", return_value=(LintReport(findings=[], report_markdown=""), None)
+        ),
         mock.patch.object(orch._repair_agent, "run_sync", new=fake_repair_agent_run_sync),
         mock.patch.object(
             orch,
@@ -203,3 +218,125 @@ def test_run_lint_apply_passes_findings_to_repair_agent(orch: Orchestrator) -> N
             f"finding {finding.message!r} safe_to_fix must be a bool, "
             f"got {type(finding.safe_to_fix).__name__}"
         )
+
+
+def test_run_lint_uses_linter_agent_output(orch: Orchestrator) -> None:
+    from lies.agents.linter import LintFinding, LintSeverity
+
+    llm_report = LintReport(
+        findings=[
+            LintFinding(
+                severity=LintSeverity.HIGH,
+                category="contradiction",
+                message="a vs b",
+                pages=["wiki/a.md", "wiki/b.md"],
+                safe_to_fix=False,
+            )
+        ],
+        report_markdown="",
+    )
+    with (
+        mock.patch.object(orch, "_call_linter", return_value=(llm_report, None)),
+        mock.patch.object(orch, "_run_repair_agent"),
+    ):
+        report_md = orch.run_lint()
+    assert "contradiction" in report_md
+
+
+def test_run_lint_falls_back_to_shell_on_linter_failure(orch: Orchestrator) -> None:
+    with (
+        mock.patch.object(
+            orch, "_call_linter", return_value=(LintReport(findings=[], report_markdown=""), "boom")
+        ),
+        mock.patch.object(orch, "_run_repair_agent"),
+    ):
+        report_md = orch.run_lint()
+    assert "fallback" in report_md.lower() or "boom" in report_md
+
+
+def test_run_lint_llm_empty_findings_keeps_shell_findings(orch: Orchestrator) -> None:
+    orphan = orch.layout.wiki_dir / "concepts" / "orphan.md"
+    orphan.parent.mkdir(parents=True, exist_ok=True)
+    orphan.write_text("---\ntitle: Orphan\ntype: concept\n---\n# Orphan\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=orch.layout.root, check=True)
+    subprocess.run(["git", "commit", "-m", "seed"], cwd=orch.layout.root, check=True)
+
+    with (
+        mock.patch.object(
+            orch, "_call_linter", return_value=(LintReport(findings=[], report_markdown=""), None)
+        ),
+        mock.patch.object(orch, "_run_repair_agent"),
+    ):
+        report_md = orch.run_lint()
+    assert "orphan" in report_md.lower()
+
+
+def test_run_lint_dedup_collapses_duplicate_orphan(orch: Orchestrator) -> None:
+    from lies.agents.linter import LintFinding, LintSeverity
+
+    orphan = orch.layout.wiki_dir / "concepts" / "orphan.md"
+    orphan.parent.mkdir(parents=True, exist_ok=True)
+    orphan.write_text("---\ntitle: Orphan\ntype: concept\n---\n# Orphan\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=orch.layout.root, check=True)
+    subprocess.run(["git", "commit", "-m", "seed"], cwd=orch.layout.root, check=True)
+
+    llm_orphan = LintFinding(
+        severity=LintSeverity.LOW,
+        category="orphan",
+        message="concepts/orphan.md has no inbound links.",
+        pages=["concepts/orphan.md"],
+        safe_to_fix=False,
+    )
+    llm_report = LintReport(findings=[llm_orphan], report_markdown="")
+
+    with (
+        mock.patch.object(orch, "_call_linter", return_value=(llm_report, None)),
+        mock.patch.object(orch, "_run_repair_agent"),
+    ):
+        report_md = orch.run_lint()
+    # Single occurrence; the LLM's safe_to_fix=False must NOT override the shell's True.
+    assert report_md.count("concepts/orphan.md has no inbound links.") == 1
+    assert "applied" not in report_md.lower()  # dry-run path
+    # The merged report's orphan entry keeps safe_to_fix=True; visible by absence of skipped contradiction line.
+
+
+def test_run_lint_apply_uses_merged_findings(orch: Orchestrator) -> None:
+    from lies.agents.linter import LintFinding, LintSeverity
+
+    orphan = orch.layout.wiki_dir / "concepts" / "orphan.md"
+    orphan.parent.mkdir(parents=True, exist_ok=True)
+    orphan.write_text("---\ntitle: Orphan\ntype: concept\n---\n# Orphan\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=orch.layout.root, check=True)
+    subprocess.run(["git", "commit", "-m", "seed"], cwd=orch.layout.root, check=True)
+
+    llm_contradiction = LintFinding(
+        severity=LintSeverity.HIGH,
+        category="contradiction",
+        message="a vs b",
+        pages=["wiki/a.md", "wiki/b.md"],
+        safe_to_fix=False,
+    )
+    llm_report = LintReport(findings=[llm_contradiction], report_markdown="")
+
+    captured: dict[str, object] = {}
+
+    def fake_repair(prompt, deps=None, **_kwargs):  # type: ignore[no-untyped-def]
+        captured["deps"] = deps
+        return mock.Mock(output=RepairPlan(operations=[], rationale="noop", evidence=["f0"]))
+
+    with (
+        mock.patch.object(orch, "_call_linter", return_value=(llm_report, None)),
+        mock.patch.object(orch._repair_agent, "run_sync", new=fake_repair),
+        mock.patch.object(
+            orch,
+            "_apply_repair_plan",
+            return_value=RepairReceipt(applied=[], skipped=[], deferred=[], errors=[]),
+        ),
+    ):
+        orch.run_lint(apply=True)
+
+    deps = captured.get("deps")
+    assert isinstance(deps, RepairAgentDeps)
+    categories = {f.category for f in deps.lint_report.findings}
+    assert "orphan" in categories
+    assert "contradiction" in categories
