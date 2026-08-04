@@ -1,6 +1,6 @@
 [project]
 name = "lies"
-version = "0.5.1"
+version = "0.6.0"
 description = "Library of Inconsistent Explanations & Sources — a Karpathy-pattern LLM wiki."
 readme = "README.md"
 requires-python = ">=3.10"
