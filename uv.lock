@@ -912,6 +912,7 @@ dev = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "identify" },
     { name = "pre-commit" },
 ]
 
@@ -937,7 +938,10 @@ requires-dist = [
 provides-extras = ["dev", "qmd"]
 
 [package.metadata.requires-dev]
-dev = [{ name = "pre-commit", specifier = ">=4.6.1" }]
+dev = [
+    { name = "identify", specifier = ">=2.6.19" },
+    { name = "pre-commit", specifier = ">=4.6.1" },
+]
 
 [[package]]
 name = "logfire"
