@@ -9,6 +9,7 @@ from unittest import mock
 import pytest
 from pydantic_ai.models.test import TestModel
 
+from lies.agents.linter import LintReport
 from lies.agents.repair_models import (
     AppendLink,
     CreateStub,
@@ -91,6 +92,9 @@ def test_apply_three_append_links(wiki: WikiLayout) -> None:
     )
     with (
         mock.patch.object(type(orch._agent), "run_sync", new=_noop_agent_run_sync),
+        mock.patch.object(
+            orch, "_call_linter", return_value=(LintReport(findings=[], report_markdown=""), None)
+        ),
         mock.patch.object(orch, "_run_repair_agent", return_value=plan),
     ):
         report = orch.run_lint(apply=True)
@@ -145,6 +149,9 @@ def test_apply_interleaved_append_links(wiki: WikiLayout) -> None:
     )
     with (
         mock.patch.object(type(orch._agent), "run_sync", new=_noop_agent_run_sync),
+        mock.patch.object(
+            orch, "_call_linter", return_value=(LintReport(findings=[], report_markdown=""), None)
+        ),
         mock.patch.object(orch, "_run_repair_agent", return_value=plan),
     ):
         report = orch.run_lint(apply=True)
@@ -179,6 +186,9 @@ def test_apply_skips_contradiction(wiki: WikiLayout) -> None:
     )
     with (
         mock.patch.object(type(orch._agent), "run_sync", new=_noop_agent_run_sync),
+        mock.patch.object(
+            orch, "_call_linter", return_value=(LintReport(findings=[], report_markdown=""), None)
+        ),
         mock.patch.object(orch, "_run_repair_agent", return_value=plan),
     ):
         report = orch.run_lint(apply=True)
@@ -237,6 +247,11 @@ def test_apply_fails_when_lock_held(wiki: WikiLayout, tmp_path: Path) -> None:
         )
         with (
             mock.patch.object(type(orch._agent), "run_sync", new=_noop_agent_run_sync),
+            mock.patch.object(
+                orch,
+                "_call_linter",
+                return_value=(LintReport(findings=[], report_markdown=""), None),
+            ),
             mock.patch.object(orch, "_run_repair_agent", return_value=plan),
         ):
             report = orch.run_lint(apply=True)
@@ -273,6 +288,9 @@ def test_apply_receipt_in_lint_report(wiki: WikiLayout) -> None:
     )
     with (
         mock.patch.object(type(orch._agent), "run_sync", new=_noop_agent_run_sync),
+        mock.patch.object(
+            orch, "_call_linter", return_value=(LintReport(findings=[], report_markdown=""), None)
+        ),
         mock.patch.object(orch, "_run_repair_agent", return_value=plan),
     ):
         orch.run_lint(apply=True)
@@ -281,3 +299,290 @@ def test_apply_receipt_in_lint_report(wiki: WikiLayout) -> None:
     assert "Applied" in report
     assert "append_link" in report
     assert "concepts/a.md" in report
+
+
+# ---------------------------------------------------------------------------
+# Task 6: end-to-end coverage for the merged multi-category lint report.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def orch(tmp_path: Path) -> Orchestrator:
+    """A bare orchestrator fixture local to this file.
+
+    Mirrors the fixture in ``tests/unit/test_orchestrator_lint.py``: a
+    fresh wiki root with a stub ``index.md`` and ``schema.md``, an
+    initial git commit, and an ``Orchestrator`` bound to it. Tests in
+    this file that need to mutate the wiki tree should take this
+    fixture rather than constructing ``Orchestrator`` inline, so the
+    fixture is the single source of truth for the harness bootstrap.
+    """
+    root = tmp_path / "wiki"
+    for sub in ("wiki", ".lies", "raw"):
+        (root / sub).mkdir(parents=True)
+    (root / "wiki" / "index.md").write_text("# Index\n", encoding="utf-8")
+    (root / ".lies" / "schema.md").write_text("## Page types\n- concept\n", encoding="utf-8")
+    subprocess.run(["git", "init", "--initial-branch=main", str(root)], check=True)
+    subprocess.run(["git", "config", "user.email", "t@e.com"], cwd=root, check=True)
+    subprocess.run(["git", "config", "user.name", "T"], cwd=root, check=True)
+    subprocess.run(["git", "add", "."], cwd=root, check=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=root, check=True)
+    return Orchestrator(wiki_root=root, model="test")
+
+
+def test_run_lint_end_to_end_with_linter_categories(orch: Orchestrator) -> None:
+    """End-to-end: real merge + real repair flow against the fixture wiki.
+
+    Seeds cross-mention pages (alpha, beta), one missing source, one
+    orphan (lonely). Mocks the linter sub-agent to add one
+    contradiction finding (``safe_to_fix=False``). Then mocks ONLY
+    the repair agent's outer LLM dispatch (instance-level) to return
+    a ``RepairPlan`` with one ``UpdateIndex`` for the orphan and one
+    ``AppendLink`` for a missing_xref — both safe-to-fix. The mock
+    captures the ``RepairAgentDeps`` it received so the test can
+    assert the safety filter at both ends: the contradiction reached
+    the repair agent with ``safe_to_fix=False``, and the returned
+    plan has no op referencing the contradiction finding.
+
+    Everything else is real:
+    - ``_build_lint_report`` walks the fixture wiki;
+    - ``_call_linter`` is mocked at the orchestrator boundary (returns
+      the contradiction);
+    - ``_run_repair_agent`` reads page texts, calls the real
+      repair-agent dispatch (mocked at instance level), and unwraps
+      ``.output``;
+    - ``_apply_repair_plan`` goes through ``WikiMemoryService`` —
+      flock, snapshot, write, atomic_commit, qmd refresh;
+    - ``_render_lint_report`` writes ``wiki/lint-report.md``.
+    """
+    from lies.agents.linter import LintFinding, LintReport, LintSeverity
+    from lies.agents.repair import RepairAgentDeps
+
+    base = orch.layout.wiki_dir
+    (base / "concepts").mkdir(exist_ok=True)
+    (base / "concepts" / "alpha.md").write_text(
+        "---\ntitle: Alpha\ntype: concept\nsources:\n  - raw/missing.md\n---\n"
+        "# Alpha\n\nSee Beta for more.\n",
+        encoding="utf-8",
+    )
+    (base / "concepts" / "beta.md").write_text(
+        "---\ntitle: Beta\ntype: concept\n---\n# Beta\n\nAlpha covers the basics.\n",
+        encoding="utf-8",
+    )
+    (base / "concepts" / "lonely.md").write_text(
+        "---\ntitle: Lonely\ntype: concept\n---\n# Lonely\n",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "add", "."], cwd=orch.layout.root, check=True)
+    subprocess.run(["git", "commit", "-m", "seed"], cwd=orch.layout.root, check=True)
+
+    llm_contradiction = LintReport(
+        findings=[
+            LintFinding(
+                severity=LintSeverity.HIGH,
+                category="contradiction",
+                message="alpha vs beta disagree",
+                pages=["wiki/concepts/alpha.md", "wiki/concepts/beta.md"],
+                safe_to_fix=False,
+            )
+        ],
+        report_markdown="",
+    )
+
+    real_plan = RepairPlan(
+        operations=[
+            UpdateIndex(
+                path="wiki/index.md",
+                title="Lonely",
+                finding_index=0,
+                pages=["concepts/lonely.md"],
+                rationale="orphan -> catalog entry",
+                evidence=["f0"],
+            ),
+            AppendLink(
+                target_path="concepts/beta.md",
+                link_text="Beta",
+                append_to="concepts/alpha.md",
+                finding_index=1,
+                pages=["concepts/alpha.md"],
+                rationale="missing_xref alpha->beta",
+                evidence=["f1"],
+            ),
+        ],
+        rationale="index orphan + cross-link alpha",
+        evidence=["f0", "f1"],
+    )
+
+    captured: dict[str, object] = {}
+
+    def fake_repair_agent_run_sync(
+        prompt: str, deps: RepairAgentDeps | None = None, **_kwargs: object
+    ):  # type: ignore[no-untyped-def]
+        captured["deps"] = deps
+        return mock.Mock(output=real_plan)
+
+    with (
+        mock.patch.object(orch, "_call_linter", return_value=(llm_contradiction, None)),
+        mock.patch.object(
+            orch._repair_agent,
+            "run_sync",
+            side_effect=fake_repair_agent_run_sync,
+        ),
+    ):
+        report_md = orch.run_lint(apply=True)
+
+    # --- Safety filter: input side ----------------------------------
+    # The merged lint report reached the repair agent with the
+    # contradiction flagged unsafe. This proves the safety metadata
+    # flowed through the merge envelope into the repair dispatch.
+    deps = captured.get("deps")
+    assert isinstance(deps, RepairAgentDeps), (
+        f"repair agent must receive RepairAgentDeps, got {type(deps)!r}"
+    )
+    deps_report: LintReport = deps.lint_report
+    contradiction_findings = [f for f in deps_report.findings if f.category == "contradiction"]
+    assert contradiction_findings, "contradiction finding must reach the repair agent"
+    assert contradiction_findings[0].safe_to_fix is False, (
+        "contradiction finding must be safe_to_fix=False for the HARD RULE"
+    )
+
+    # --- Safety filter: output side ---------------------------------
+    # The plan the agent returned contains no op referencing the
+    # contradiction finding. In production the HARD RULE forbids ops
+    # on ``safe_to_fix=False`` findings; here the mock returns a plan
+    # the rule would have permitted, and the test pins down which
+    # ``finding_index`` is the contradiction's slot in the merged
+    # report (shell findings come first, so it's the last index).
+    contradiction_index = next(
+        i for i, f in enumerate(deps_report.findings) if f.category == "contradiction"
+    )
+    for op in real_plan.operations:
+        assert op.finding_index != contradiction_index, (
+            f"plan op {type(op).__name__} targets the contradiction finding "
+            f"(index={contradiction_index}) — safety filter broken"
+        )
+
+    # --- Render: all four categories present in the body -----------
+    for cat in ("orphan", "missing_xref", "missing_page", "contradiction"):
+        assert cat in report_md, f"missing category {cat!r} in lint report"
+
+    # --- Render: applied section is section-scoped -----------------
+    # Slice the markdown between ``### Applied`` and ``### Sources``
+    # so a stray word elsewhere in the report cannot satisfy the
+    # check. ``### Sources`` is the right boundary because it always
+    # closes the repair section (the report ends there).
+    applied_section = report_md.split("### Applied", 1)[1].split("### Sources", 1)[0]
+    assert "update_index" in applied_section
+    assert "append_link" in applied_section
+    # The contradiction is in the body but not in the Applied section.
+    assert "contradiction" not in applied_section, (
+        "contradiction (safe_to_fix=False) must not appear in the Applied section"
+    )
+
+    # --- Side effects of the real apply path -----------------------
+    # The index was rebuilt by the apply envelope's ``rebuild_index``
+    # step (so the link is rewritten into the catalog format with the
+    # ``wiki/`` prefix), and alpha.md got a cross-link to beta via the
+    # real ``_merge_append_links`` rewrite.
+    index_text = (base / "index.md").read_text(encoding="utf-8")
+    assert "[Lonely]" in index_text
+    assert "concepts/lonely.md" in index_text
+    alpha_text = (base / "concepts" / "alpha.md").read_text(encoding="utf-8")
+    assert "[Beta](concepts/beta.md)" in alpha_text
+
+
+def test_run_lint_repair_agent_receives_shell_page_texts(orch: Orchestrator) -> None:
+    """Shell findings carry wiki-dir-relative paths so ``RepairAgentDeps.page_texts``
+    is populated for every shell finding's referenced page.
+
+    Regression for the path-convention mismatch where shell findings
+    emitted repo-root-relative ``wiki/concepts/a.md`` paths and the
+    repair agent's ``layout.wiki_dir / page`` lookup landed on
+    ``wiki/wiki/concepts/a.md`` (a non-existent file), silently
+    breaking the repair plan synthesis.
+    """
+    from lies.agents.repair import RepairAgentDeps
+
+    base = orch.layout.wiki_dir
+    (base / "concepts").mkdir(exist_ok=True)
+    (base / "concepts" / "alpha.md").write_text(
+        "---\ntitle: Alpha\ntype: concept\n---\n# Alpha\n\nSee Beta for more.\n",
+        encoding="utf-8",
+    )
+    (base / "concepts" / "beta.md").write_text(
+        "---\ntitle: Beta\ntype: concept\n---\n# Beta\n\ndetails.\n",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "add", "."], cwd=orch.layout.root, check=True)
+    subprocess.run(["git", "commit", "-m", "seed"], cwd=orch.layout.root, check=True)
+
+    captured: dict[str, object] = {}
+
+    def fake_repair_agent_run_sync(
+        prompt: str, deps: RepairAgentDeps | None = None, **_kwargs: object
+    ):  # type: ignore[no-untyped-def]
+        captured["deps"] = deps
+        return mock.Mock(output=RepairPlan(operations=[], rationale="noop", evidence=["f0"]))
+
+    with (
+        mock.patch.object(
+            orch, "_call_linter", return_value=(LintReport(findings=[], report_markdown=""), None)
+        ),
+        mock.patch.object(orch._repair_agent, "run_sync", side_effect=fake_repair_agent_run_sync),
+    ):
+        orch.run_lint(apply=True)
+
+    deps = captured.get("deps")
+    assert isinstance(deps, RepairAgentDeps)
+    # Every page the shell findings reference must appear in page_texts
+    # with the real file contents (not an empty string from a mis-resolved path).
+    assert deps.page_texts, (
+        f"page_texts must be populated for shell findings, got {deps.page_texts!r}"
+    )
+    for path, body in deps.page_texts.items():
+        assert body, f"page_texts[{path!r}] must carry real content, got empty string"
+        assert "Alpha" in body or "Beta" in body, (
+            f"page_texts[{path!r}] must be the actual wiki page content, got {body!r}"
+        )
+
+
+def test_run_lint_end_to_end_linter_unavailable(orch: Orchestrator) -> None:
+    """Real ``_call_linter`` catches a raised ``run_sync`` and falls back.
+
+    Drops the ``_call_linter`` mock and patches the underlying
+    ``_linter_agent.run_sync`` with a ``side_effect`` that raises
+    ``RuntimeError("model offline")``. Instance-level patching (not
+    class-level) means the orchestrator's main ``_agent`` and any
+    other sub-agents are unaffected — only the linter's dispatch is
+    stubbed.
+
+    The real ``_call_linter`` exception handler converts the raised
+    exception into the fallback tuple. The real merge, the real
+    ``_render_lint_report``, the real file writes to
+    ``wiki/lint-report.md``, and the real log append all run. The
+    shell's orphan finding survives in the merged report and the
+    ``### Sources`` footer must carry the formatted fallback line.
+    """
+    base = orch.layout.wiki_dir
+    (base / "concepts").mkdir(exist_ok=True)
+    (base / "concepts" / "lonely.md").write_text(
+        "---\ntitle: Lonely\ntype: concept\n---\n# Lonely\n",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "add", "."], cwd=orch.layout.root, check=True)
+    subprocess.run(["git", "commit", "-m", "seed"], cwd=orch.layout.root, check=True)
+
+    def fake_run_sync(prompt: str, deps: object = None, **_kwargs: object):  # type: ignore[no-untyped-def]
+        raise RuntimeError("model offline")
+
+    with mock.patch.object(orch._linter_agent, "run_sync", side_effect=fake_run_sync):
+        report_md = orch.run_lint()
+
+    # Shell findings still appear in the merged report body.
+    assert "orphan" in report_md.lower()
+
+    # The fallback line in the Sources footer is the proof that the
+    # raised ``RuntimeError`` was caught by ``_call_linter`` and
+    # converted into the fallback tuple. ``_call_linter`` formats it
+    # as ``f"{type(exc).__name__}: {exc}"`` → ``RuntimeError: model offline``.
+    assert "fallback: RuntimeError: model offline" in report_md
