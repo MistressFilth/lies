@@ -39,14 +39,28 @@ def validate_plan(
     layout: WikiLayout,
     findings: list[LintFinding],
 ) -> ValidatedRepairPlan:
-    """Validate ``plan`` against the wiki layout and the lint findings.
+    """Validate ``plan`` against the wiki layout and the lint findings."""
+    from lies.memory.models import WikiPlanInvalid
 
-    See module docstring for the rules. Returns a
-    :class:`ValidatedRepairPlan`; raises :class:`WikiPlanInvalid` on any
-    rule 1-4 violation.
-    """
     if not plan.operations:
         return ValidatedRepairPlan(plan=plan, dropped_ops=())
-    # Validation rules are wired in subsequent tasks; this skeleton
-    # returns the plan unchanged so the empty-operations test passes.
+
+    for op in plan.operations:
+        finding_index = op.finding_index
+        # Rule 1: bounds check.
+        if not (0 <= finding_index < len(findings)):
+            raise WikiPlanInvalid(
+                f"op {type(op).__name__} finding_index {finding_index} out of range "
+                f"({len(findings)} findings)",
+                path=getattr(op, "path", None),
+            )
+        # Rule 2: safety check.
+        finding = findings[finding_index]
+        if not finding.safe_to_fix:
+            raise WikiPlanInvalid(
+                f"op {type(op).__name__} targets finding {finding_index} "
+                f"({finding.category}) whose safe_to_fix is False",
+                path=getattr(op, "path", None),
+            )
+
     return ValidatedRepairPlan(plan=plan, dropped_ops=())
