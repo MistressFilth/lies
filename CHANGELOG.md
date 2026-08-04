@@ -70,6 +70,8 @@ All notable changes to LIES are documented here. The format follows
 - CI workflow no longer fetches full git history (`fetch-depth: 0`); the only consumer was the dropped compliance test.
 
 ### Fixed
+- `LiquidBuilder` now rejects empty pandoc output so failed conversions
+  quarantine the document instead of emitting an empty page.
 - Agent's qmd search now degrades gracefully when the qmd daemon is
   unreachable. `QmdCapability` probes the daemon on every turn via
   `qmd_daemon_reachable`; reachable -> native `MCP(url=..., native=True,

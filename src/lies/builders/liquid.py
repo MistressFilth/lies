@@ -112,9 +112,12 @@ def _render_html(source: bytes, collection: Collection) -> bytes:
 
 def _convert_html_to_markdown(html: bytes) -> bytes:
     try:
-        return PandocDaemon().convert(html, "html")
+        markdown = PandocDaemon().convert(html, "html")
     except Exception as exc:
         raise BuilderFetchFailed("pandoc", str(exc)) from exc
+    if not markdown:
+        raise BuilderFetchFailed("pandoc", "conversion produced no output")
+    return markdown
 
 
 class LiquidBuilder(Builder):

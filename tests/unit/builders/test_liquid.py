@@ -103,6 +103,23 @@ def test_source_read_oserror_is_wrapped(tmp_path: Path) -> None:
         LiquidBuilder().build(tmp_path, collection=_collection(tmp_path))
 
 
+def test_liquid_builder_pandoc_nonzero_exit_quarantines(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Exhausted pandoc retries surface as BuilderFetchFailed."""
+    pandoc = tmp_path / "pandoc"
+    pandoc.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    pandoc.chmod(0o755)
+    monkeypatch.setenv("PATH", str(tmp_path))
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    (workspace / "source.html").write_bytes(b"<h1>never converted</h1>")
+
+    with pytest.raises(BuilderFetchFailed, match="pandoc"):
+        LiquidBuilder().build(workspace, collection=_collection(tmp_path))
+
+
 def test_liquid_builder_passthrough(tmp_path: Path) -> None:
     """No render_cmd → source treated as already-rendered HTML."""
     workspace = tmp_path / "ws"
