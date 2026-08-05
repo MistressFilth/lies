@@ -12,6 +12,7 @@ from rich.markdown import Markdown
 from lies import __version__, xdg
 from lies.config import get_model
 from lies.mcp import daemon
+from lies.mcp.resolution import resolve_wiki
 from lies.orchestrator import Orchestrator
 from lies.qmd import daemon as qmd_daemon
 from lies.qmd import qmd_status
@@ -27,19 +28,6 @@ app = typer.Typer(
     # Setting both would suppress the REPL and dump help on bare `lies`.
 )
 console = Console()
-
-
-def _wiki_root_opt(wiki_root: Path | None) -> Path:
-    """Resolve the --wiki-root option, defaulting to env or cwd."""
-    from lies.config import get_wiki_name
-    from lies.wiki.wiki import Wiki
-
-    if wiki_root is not None:
-        return wiki_root.resolve()
-    # TODO(migrate): --wiki-root support is being replaced by --name in Task 8.
-    # Fall back to the LIES_WIKI_NAME-driven data root so the CLI stays
-    # importable while the rest of the flag migration lands.
-    return Wiki.data_root_for(get_wiki_name())
 
 
 @app.command()
@@ -113,7 +101,7 @@ def up(
     port: int = daemon.DEFAULT_PORT,
     timeout: float = typer.Option(10.0, help="Seconds to wait for the port to accept."),
     no_qmd: bool = typer.Option(False, "--no-qmd", help="Skip ensuring qmd's daemon."),
-    wiki_root: Path = typer.Option(None, "--wiki-root", "-w"),  # noqa: B008
+    name: str | None = typer.Option(None, "--name", envvar="LIES_WIKI_NAME"),
 ) -> None:
     """Start a detached streamable-http MCP daemon for this wiki.
 
@@ -122,15 +110,15 @@ def up(
     comes up and a single warning goes to stderr.
     """
     configure_logging()
-    root = _wiki_root_opt(wiki_root)
+    wiki = resolve_wiki(name)
     try:
-        rec = daemon.spawn_daemon(root, host=host, port=port, timeout=timeout)
+        rec = daemon.spawn_daemon(wiki.data_root, host=host, port=port, timeout=timeout)
     except daemon.DaemonAlreadyRunning as exc:
         typer.echo(str(exc))
         return
     except daemon.DaemonStartFailed as exc:
         typer.echo(f"error: {exc}", err=True)
-        for line in daemon.tail_log(root, 20):
+        for line in daemon.tail_log(wiki.data_root, 20):
             typer.echo(line, err=True)
         raise typer.Exit(code=1) from exc
     except (daemon.NonLoopbackBind, daemon.PortUnavailable, daemon.DaemonBusy) as exc:
@@ -150,7 +138,7 @@ def up(
 @mcp_app.command()
 def down(
     grace: float = typer.Option(10.0, help="Seconds to wait after SIGTERM before SIGKILL."),
-    wiki_root: Path = typer.Option(None, "--wiki-root", "-w"),  # noqa: B008
+    name: str | None = typer.Option(None, "--name", envvar="LIES_WIKI_NAME"),
 ) -> None:
     """Stop the MCP daemon tracked for this wiki.
 
@@ -159,9 +147,9 @@ def down(
     it is machine-global and shared with other wikis and tools.
     """
     configure_logging()
-    root = _wiki_root_opt(wiki_root)
+    wiki = resolve_wiki(name)
     try:
-        result = daemon.stop_daemon(root, grace=grace)
+        result = daemon.stop_daemon(wiki.data_root, grace=grace)
     except (daemon.DaemonBusy, daemon.DaemonStopFailed) as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=1) from exc
@@ -175,7 +163,7 @@ def down(
 
 @mcp_app.command(name="status")
 def _mcp_status(
-    wiki_root: Path = typer.Option(None, "--wiki-root", "-w"),  # noqa: B008
+    name: str | None = typer.Option(None, "--name", envvar="LIES_WIKI_NAME"),
 ) -> None:
     """Report whether an MCP daemon is running for this wiki.
 
@@ -183,8 +171,8 @@ def _mcp_status(
     running, 1 when stopped or stale, so shell callers can branch on it.
     """
     configure_logging()
-    root = _wiki_root_opt(wiki_root)
-    result = daemon.daemon_status(root)
+    wiki = resolve_wiki(name)
+    result = daemon.daemon_status(wiki.data_root)
     qmd_state = qmd_daemon.qmd_daemon_state()
     if result.running and result.record is not None:
         uptime = int(result.uptime_s or 0)
@@ -210,10 +198,9 @@ def _mcp_status(
 def config() -> None:
     """Print the current LIES configuration."""
     from lies.config import get_wiki_name
-    from lies.wiki.wiki import Wiki
 
     typer.echo(f"model: {get_model()}")
-    typer.echo(f"wiki_root: {Wiki.data_root_for(get_wiki_name())}")
+    typer.echo(f"wiki: {get_wiki_name()}")
 
 
 @app.command()
@@ -255,6 +242,7 @@ def ingest(
     *,
     source: str | None = None,
     model: str | None = None,
+    name: str | None = typer.Option(None, "--name", envvar="LIES_WIKI_NAME"),
 ) -> None:
     """Ingest a source into a collection (creates collection if missing).
 
@@ -265,29 +253,27 @@ def ingest(
     does not auto-scaffold a collection from a source path. Use
     ``ingest_source`` for the legacy single-source ingestion path.
     """
-    import os
-
     from lies.etl.sync_helper import (
         acquire_heartbeat,
         release_heartbeat,
         sync_collection,
     )
 
-    wiki_root = Path(os.environ.get("LIES_WIKI_ROOT", ".")).resolve()
-    if acquire_heartbeat(wiki_root, wait=False, fail_busy=True) is None:
+    wiki = resolve_wiki(name)
+    if acquire_heartbeat(wiki.data_root, wait=False, fail_busy=True) is None:
         raise typer.Exit(code=2)
     try:
-        sync_collection(wiki_root, collection, force=False)
+        sync_collection(wiki.data_root, collection, force=False)
     finally:
-        release_heartbeat(wiki_root)
+        release_heartbeat(wiki.data_root)
 
 
 @app.command()
 def ingest_source(
     source: str = typer.Argument(..., help="Path, URL, or '-' for stdin."),
-    wiki_root: Path = typer.Option(None, "--wiki-root", "-w"),  # noqa: B008
+    name: str | None = typer.Option(None, "--name", envvar="LIES_WIKI_NAME"),
 ) -> None:
-    """Atomic ingest of a single source into the wiki at ``wiki_root``.
+    """Atomic ingest of a single source into the wiki identified by ``name``.
 
     Kept for backward compatibility with the original source-path CLI
     surface (``lies ingest <source>``). Delegates to
@@ -296,8 +282,8 @@ def ingest_source(
     working tree is restored and the exception is re-raised.
     """
     configure_logging()
-    root = _wiki_root_opt(wiki_root)
-    orch = Orchestrator(wiki_root=root)
+    wiki = resolve_wiki(name)
+    orch = Orchestrator(wiki_root=wiki.data_root)
     output = orch.run_ingest(source)
     typer.echo(output)
 
@@ -305,12 +291,12 @@ def ingest_source(
 @app.command()
 def query(
     question: str = typer.Argument(..., help="The question to ask the wiki."),
-    wiki_root: Path = typer.Option(None, "--wiki-root", "-w"),  # noqa: B008
+    name: str | None = typer.Option(None, "--name", envvar="LIES_WIKI_NAME"),
 ) -> None:
     """Query the wiki with qmd → index.md fallback."""
     configure_logging()
-    root = _wiki_root_opt(wiki_root)
-    orch = Orchestrator(wiki_root=root)
+    wiki = resolve_wiki(name)
+    orch = Orchestrator(wiki_root=wiki.data_root)
     # Use the host-side ``run_query`` entry point so the synthesizer with
     # qmd→index fallback runs without an LLM round-trip.
     answer = orch.run_query(question)
@@ -319,13 +305,13 @@ def query(
 
 @app.command()
 def lint(
-    wiki_root: Path = typer.Option(None, "--wiki-root", "-w"),  # noqa: B008
+    name: str | None = typer.Option(None, "--name", envvar="LIES_WIKI_NAME"),
     fix: bool = typer.Option(False, "--fix", help="Apply repair plan for safe_to_fix findings."),
 ) -> None:
     """Run lint; with --fix also apply the repair plan."""
     configure_logging()
-    root = _wiki_root_opt(wiki_root)
-    orch = Orchestrator(wiki_root=root)
+    wiki = resolve_wiki(name)
+    orch = Orchestrator(wiki_root=wiki.data_root)
     # Use the host-side ``run_lint`` entry point so the lint pass writes
     # a deterministic ``wiki/lint-report.md`` and appends to ``wiki/log.md``.
     output = orch.run_lint(apply=fix)
@@ -334,11 +320,12 @@ def lint(
 
 @app.command()
 def status(
-    wiki_root: Path = typer.Option(None, "--wiki-root", "-w"),  # noqa: B008
+    name: str | None = typer.Option(None, "--name", envvar="LIES_WIKI_NAME"),
 ) -> None:
     """Show qmd status and the last few log entries."""
     configure_logging()
-    root = _wiki_root_opt(wiki_root)
+    wiki = resolve_wiki(name)
+    root = wiki.data_root
     layout = WikiLayout(root)
     typer.echo("=== qmd status ===")
     try:
@@ -358,7 +345,7 @@ def status(
 @app.callback(invoke_without_command=True)
 def main(
     ctx: typer.Context,
-    wiki_root: Path = typer.Option(None, "--wiki-root", "-w", envvar="LIES_WIKI_ROOT"),  # noqa: B008
+    name: str | None = typer.Option(None, "--name", envvar="LIES_WIKI_NAME"),
     no_memory: bool = typer.Option(
         False,
         "--no-memory",
@@ -369,8 +356,8 @@ def main(
     if ctx.invoked_subcommand is not None:
         return
     configure_logging()
-    root = _wiki_root_opt(wiki_root)
-    orch = Orchestrator(wiki_root=root)
+    wiki = resolve_wiki(name)
+    orch = Orchestrator(wiki_root=wiki.data_root)
     console.print("[bold]LIES REPL[/bold] — type /help for commands, /exit to leave.")
     while True:
         try:
@@ -395,7 +382,7 @@ def main(
             continue
         if line == "/commit":
             try:
-                sha = atomic_commit(root, "manual commit")
+                sha = atomic_commit(wiki.data_root, "manual commit")
                 typer.echo(f"committed {sha[:8]}")
             except Exception as exc:  # noqa: BLE001 - commit failures must not crash the REPL
                 typer.echo(f"commit failed: {exc}")
@@ -413,10 +400,9 @@ def sync(
     force: bool = False,
     wait: bool = False,
     fail_busy: bool = False,
+    name: str | None = typer.Option(None, "--name", envvar="LIES_WIKI_NAME"),
 ) -> None:
     """Sync one or all collections."""
-    import os
-
     from lies.etl.sync_helper import (
         acquire_heartbeat,
         collection_names,
@@ -424,14 +410,14 @@ def sync(
         sync_collection,
     )
 
-    wiki_root = Path(os.environ.get("LIES_WIKI_ROOT", ".")).resolve()
-    if acquire_heartbeat(wiki_root, wait=wait, fail_busy=fail_busy) is None:
+    wiki = resolve_wiki(name)
+    if acquire_heartbeat(wiki.data_root, wait=wait, fail_busy=fail_busy) is None:
         raise typer.Exit(code=2)
     try:
-        for name in collection_names(wiki_root, collection):
-            sync_collection(wiki_root, name, force=force)
+        for coll_name in collection_names(wiki.data_root, collection):
+            sync_collection(wiki.data_root, coll_name, force=force)
     finally:
-        release_heartbeat(wiki_root)
+        release_heartbeat(wiki.data_root)
 
 
 @app.command()
@@ -442,6 +428,7 @@ def reindex(
     force: bool = False,
     cleanup: bool = False,
     all: bool = False,
+    name: str | None = typer.Option(None, "--name", envvar="LIES_WIKI_NAME"),
 ) -> None:
     """Reindex QMD collections.
 
@@ -450,8 +437,6 @@ def reindex(
     pending upstream qmd support; passing them prints a stderr warning
     but does not fail.
     """
-    import os
-
     from lies.etl.sync_helper import collection_names, sync_collection
 
     if all:
@@ -459,14 +444,14 @@ def reindex(
     if force and not embed:
         raise typer.BadParameter("--force requires --embed")
 
-    wiki_root = Path(os.environ.get("LIES_WIKI_ROOT", ".")).resolve()
+    wiki = resolve_wiki(name)
     if reconcile:
-        for name in collection_names(wiki_root, None):
-            sync_collection(wiki_root, name, force=False)
+        for coll_name in collection_names(wiki.data_root, None):
+            sync_collection(wiki.data_root, coll_name, force=False)
     if embed:
         from lies.qmd.cli import qmd_embed
 
-        qmd_embed(wiki_root, force=force)
+        qmd_embed(wiki.data_root, force=force)
         typer.echo(
             "warning: --embed is a no-op; upstream qmd has no embed subcommand yet.",
             err=True,
@@ -474,7 +459,7 @@ def reindex(
     if cleanup:
         from lies.qmd.cli import qmd_cleanup
 
-        qmd_cleanup(wiki_root)
+        qmd_cleanup(wiki.data_root)
         typer.echo(
             "warning: --cleanup is a no-op; upstream qmd has no cleanup subcommand yet.",
             err=True,
@@ -490,10 +475,10 @@ def collections(
     source: str | None = None,
     prompt: str | None = None,
     apply: bool = False,
+    wiki_name: str | None = typer.Option(None, "--name", envvar="LIES_WIKI_NAME"),
 ) -> None:
     """Inspect, modify, and author collection configurations."""
     import json
-    import os
     from datetime import datetime, timezone
 
     import yaml  # type: ignore[import-untyped]
@@ -505,8 +490,9 @@ def collections(
         save_collection,
     )
 
-    wiki_root = Path(os.environ.get("LIES_WIKI_ROOT", ".")).resolve()
-    cfg_dir = wiki_root / ".lies" / "collections"
+    wiki = resolve_wiki(wiki_name)
+    wiki_root = wiki.data_root
+    cfg_dir = wiki.collections_dir
     if action == "list":
         for p in sorted(cfg_dir.glob("*.yaml")):
             print(p.stem)
@@ -557,7 +543,7 @@ def collections(
         # manifest, which is fine — the agent uses it to ask format
         # questions and the user supplies the rest.
         scraper = pick_scraper(source)
-        scratch_dir = wiki_root / ".lies" / "scratch"
+        scratch_dir = wiki.scratch_dir
         manifest_path = scraper.emit_manifest([], scratch_dir)
         manifest: list[dict[str, object]] = []
         if manifest_path and manifest_path.exists():
