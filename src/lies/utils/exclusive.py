@@ -1,8 +1,4 @@
-"""Cross-process exclusive-create lock and gitignore guard.
-
-Both primitives originally lived inline in ``etl/heartbeat.py`` and
-``memory/service.py``. They are TOCTOU-sensitive, so exactly one
-implementation is kept here and the original call sites delegate.
+"""Cross-process exclusive-create lock.
 
 ``acquire_create_lock`` closes the read-then-write race on any state
 file: the caller reads state, decides, then writes — two processes can
@@ -65,34 +61,3 @@ def release_create_lock(path: Path, fd: int | None) -> None:
         path.unlink()
     except FileNotFoundError:
         pass
-
-
-def ensure_gitignored(path: Path, *, wiki_root: Path) -> None:
-    """Ensure ``path`` is listed in ``<wiki_root>/.gitignore``.
-
-    Appends the wiki-relative path on its own line if no non-comment
-    line already equals it. Creates ``.gitignore`` when absent.
-    Idempotent — safe on every call.
-
-    This closes a race window for lock files: without the entry,
-    ``git stash push --include-untracked`` moves the lock file aside.
-    A kernel flock survives on the orphaned inode, but a concurrent
-    process can then create a new file at the same path and lock the
-    new inode, reopening the race.
-    """
-    gitignore_path = wiki_root / ".gitignore"
-    relative_line = path.relative_to(wiki_root).as_posix()
-
-    existing = ""
-    if gitignore_path.exists():
-        try:
-            existing = gitignore_path.read_text(encoding="utf-8")
-        except OSError:
-            existing = ""
-
-    if any(line.strip() == relative_line for line in existing.splitlines()):
-        return
-
-    if existing and not existing.endswith("\n"):
-        existing += "\n"
-    gitignore_path.write_text(existing + relative_line + "\n", encoding="utf-8")

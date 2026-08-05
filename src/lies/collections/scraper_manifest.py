@@ -1,8 +1,7 @@
 """Scraper manifest — file list + content hashes from the scraper.
 
-Stored at ``<wiki>/raw/<collection>/manifest.json``. Consumed by
-the SCRAPE stage to enumerate docs and verify integrity before
-normalize.
+Stored under the wiki's XDG cache root. Consumed by the SCRAPE stage to
+enumerate docs and verify integrity before normalize.
 """
 
 from __future__ import annotations
@@ -10,8 +9,12 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from lies.collections.errors import CollectionConfigInvalid
+
+if TYPE_CHECKING:
+    from lies.wiki.wiki import Wiki
 
 _MANIFEST_NAME = "manifest.json"
 
@@ -22,14 +25,23 @@ class FileEntry:
     sha256: str
 
 
+def _manifest_dir(wiki: Wiki, name: str) -> Path:
+    return wiki.cache_root / "collections" / name
+
+
+def _manifest_path(wiki: Wiki, name: str) -> Path:
+    return _manifest_dir(wiki, name) / _MANIFEST_NAME
+
+
 class ScraperManifest:
     @staticmethod
-    def _manifest_path(raw_dir: Path) -> Path:
-        return raw_dir / _MANIFEST_NAME
+    def manifest_dir(wiki: Wiki, name: str) -> Path:
+        """Return the on-disk directory holding the manifest for ``name``."""
+        return _manifest_dir(wiki, name)
 
     @staticmethod
-    def read(raw_dir: Path) -> list[FileEntry]:
-        p = ScraperManifest._manifest_path(raw_dir)
+    def read(wiki: Wiki, name: str) -> list[FileEntry]:
+        p = _manifest_path(wiki, name)
         if not p.exists():
             return []
         try:
@@ -39,9 +51,10 @@ class ScraperManifest:
         return [FileEntry(path=e["path"], sha256=e["sha256"]) for e in payload["files"]]
 
     @staticmethod
-    def write(raw_dir: Path, entries: list[FileEntry]) -> Path:
-        raw_dir.mkdir(parents=True, exist_ok=True)
-        p = ScraperManifest._manifest_path(raw_dir)
+    def write(wiki: Wiki, name: str, entries: list[FileEntry]) -> Path:
+        manifest_dir = _manifest_dir(wiki, name)
+        manifest_dir.mkdir(parents=True, exist_ok=True)
+        p = manifest_dir / _MANIFEST_NAME
         payload = {"files": [{"path": e.path, "sha256": e.sha256} for e in entries]}
         p.write_text(json.dumps(payload, indent=2), encoding="utf-8")
         return p

@@ -16,9 +16,11 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
+from lies import xdg
 from lies.cli import app
 from lies.mcp import daemon
 from lies.wiki.layout import WikiLayout
+from lies.wiki.wiki import Wiki
 
 pytestmark = pytest.mark.integration
 
@@ -32,9 +34,31 @@ def _free_port() -> int:
 
 
 @pytest.fixture
-def wiki(tmp_path: Path) -> Path:
-    WikiLayout(tmp_path).init()
-    return tmp_path
+def wiki(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Wiki:
+    """Build a Wiki whose XDG roots all live under ``tmp_path``.
+
+    The daemon's pidfile and log are now under
+    ``$XDG_RUNTIME_DIR/lies/<wiki>`` and ``$XDG_STATE_HOME/lies/<wiki>``
+    respectively. Pointing all five role roots at ``tmp_path`` keeps the
+    test self-contained: nothing leaks outside the fixture's sandbox.
+    """
+    monkeypatch.setenv("LIES_XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setenv("LIES_XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("LIES_XDG_CACHE_HOME", str(tmp_path / "cache"))
+    monkeypatch.setenv("LIES_XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setenv("LIES_XDG_RUNTIME_DIR", str(tmp_path / "runtime"))
+    name = "test"
+    data_root = Wiki.data_root_for(name)
+    wiki = Wiki(
+        name=name,
+        data_root=data_root,
+        config_root=xdg.config_home() / "lies" / name,
+        cache_root=xdg.cache_home() / "lies" / name,
+        state_root=xdg.state_home() / "lies" / name,
+        runtime_root=xdg.runtime_dir_for(name),
+    )
+    WikiLayout(wiki.data_root).init()
+    return wiki
 
 
 @pytest.fixture
@@ -43,7 +67,7 @@ def port() -> int:
 
 
 @pytest.fixture(autouse=True)
-def _always_stop(wiki: Path):
+def _always_stop(wiki: Wiki):
     yield
     try:
         daemon.stop_daemon(wiki, grace=3.0)
@@ -108,9 +132,10 @@ def _decode_jsonrpc(body: str) -> dict:
     raise AssertionError(f"no JSON-RPC payload in response body: {body!r}")
 
 
-def test_full_lifecycle(wiki: Path, port: int) -> None:
+def test_full_lifecycle(wiki: Wiki, port: int) -> None:
     up_result = runner.invoke(
-        app, ["mcp", "up", "--wiki-root", str(wiki), "--port", str(port), "--timeout", "30"]
+        app,
+        ["mcp", "up", "--name", wiki.name, "--port", str(port), "--timeout", "30"],
     )
     assert up_result.exit_code == 0, up_result.output
     assert str(port) in up_result.stdout
@@ -131,32 +156,32 @@ def test_full_lifecycle(wiki: Path, port: int) -> None:
         f"handshake did not come from the lies server: {server_info}"
     )
 
-    status_result = runner.invoke(app, ["mcp", "status", "--wiki-root", str(wiki)])
+    status_result = runner.invoke(app, ["mcp", "status", "--name", wiki.name])
     assert status_result.exit_code == 0
     assert "running" in status_result.stdout
     assert str(record.pid) in status_result.stdout
 
-    second_up = runner.invoke(app, ["mcp", "up", "--wiki-root", str(wiki), "--port", str(port)])
+    second_up = runner.invoke(app, ["mcp", "up", "--name", wiki.name, "--port", str(port)])
     assert second_up.exit_code == 0
     assert "already running" in second_up.stdout
     assert daemon.read_record(wiki) is not None
     assert daemon.read_record(wiki).pid == record.pid  # type: ignore[union-attr]
 
-    down_result = runner.invoke(app, ["mcp", "down", "--wiki-root", str(wiki)])
+    down_result = runner.invoke(app, ["mcp", "down", "--name", wiki.name])
     assert down_result.exit_code == 0
     assert str(record.pid) in down_result.stdout
     assert daemon.read_record(wiki) is None
 
-    stopped = runner.invoke(app, ["mcp", "status", "--wiki-root", str(wiki)])
+    stopped = runner.invoke(app, ["mcp", "status", "--name", wiki.name])
     assert stopped.exit_code == 1
     assert "stopped" in stopped.stdout
 
-    second_down = runner.invoke(app, ["mcp", "down", "--wiki-root", str(wiki)])
+    second_down = runner.invoke(app, ["mcp", "down", "--name", wiki.name])
     assert second_down.exit_code == 0
     assert "no daemon running" in second_down.stdout
 
 
-def test_down_leaves_the_qmd_daemon_running(wiki: Path, port: int) -> None:
+def test_down_leaves_the_qmd_daemon_running(wiki: Wiki, port: int) -> None:
     """qmd is machine-global and shared — `down` must never take it with it.
 
     This is the one behavior that can damage state outside the wiki, so it
@@ -174,7 +199,8 @@ def test_down_leaves_the_qmd_daemon_running(wiki: Path, port: int) -> None:
         )
 
     up_result = runner.invoke(
-        app, ["mcp", "up", "--wiki-root", str(wiki), "--port", str(port), "--timeout", "30"]
+        app,
+        ["mcp", "up", "--name", wiki.name, "--port", str(port), "--timeout", "30"],
     )
     assert up_result.exit_code == 0, up_result.output
 
@@ -184,7 +210,7 @@ def test_down_leaves_the_qmd_daemon_running(wiki: Path, port: int) -> None:
         f"up recycled the shared qmd daemon instead of reusing it: {before.pid} -> {started.pid}"
     )
 
-    down_result = runner.invoke(app, ["mcp", "down", "--wiki-root", str(wiki)])
+    down_result = runner.invoke(app, ["mcp", "down", "--name", wiki.name])
     assert down_result.exit_code == 0
 
     after = qmd_daemon_state()
@@ -194,43 +220,10 @@ def test_down_leaves_the_qmd_daemon_running(wiki: Path, port: int) -> None:
     )
 
 
-def test_up_fails_cleanly_when_port_is_taken(wiki: Path, port: int) -> None:
+def test_up_fails_cleanly_when_port_is_taken(wiki: Wiki, port: int) -> None:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as held:
         held.bind(("127.0.0.1", port))
         held.listen(1)
-        result = runner.invoke(app, ["mcp", "up", "--wiki-root", str(wiki), "--port", str(port)])
+        result = runner.invoke(app, ["mcp", "up", "--name", wiki.name, "--port", str(port)])
     assert result.exit_code == 1
     assert daemon.read_record(wiki) is None
-
-
-def test_daemon_artifacts_are_gitignored(wiki: Path, port: int) -> None:
-    """`up` adds the three daemon entries to `.gitignore`.
-
-    `WikiLayout.init` already writes them, so asserting them on a freshly
-    initialized wiki would pass even if `up` dropped its own
-    `ensure_daemon_gitignored` call. Stripping the lines first is what
-    makes this a test of `up`.
-    """
-    gitignore = wiki / ".gitignore"
-    entries = (".lies/mcp.pid", ".lies/mcp.pid.create", ".lies/mcp.log")
-
-    kept = [
-        line
-        for line in gitignore.read_text(encoding="utf-8").splitlines()
-        if line.strip() not in entries
-    ]
-    gitignore.write_text("".join(f"{line}\n" for line in kept), encoding="utf-8")
-    stripped = {line.strip() for line in gitignore.read_text(encoding="utf-8").splitlines()}
-    assert not stripped & set(entries)
-
-    result = runner.invoke(
-        app, ["mcp", "up", "--wiki-root", str(wiki), "--port", str(port), "--timeout", "30"]
-    )
-    assert result.exit_code == 0, result.output
-
-    # Compared line by line: `.lies/mcp.pid` is a substring of
-    # `.lies/mcp.pid.create`, so a substring check would pass on two of
-    # the three entries even if only the create-lock line came back.
-    restored = {line.strip() for line in gitignore.read_text(encoding="utf-8").splitlines()}
-    for entry in entries:
-        assert entry in restored, f"up did not restore {entry}: {sorted(restored)}"

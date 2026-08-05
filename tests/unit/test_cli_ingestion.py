@@ -12,8 +12,16 @@ from typer.testing import CliRunner
 
 from lies.cli import app
 from lies.etl.heartbeat import Heartbeat
+from lies.wiki.wiki import Wiki
 
 runner = CliRunner()
+
+
+def _use_default_wiki(monkeypatch: pytest.MonkeyPatch) -> str:
+    """Switch the CLI to the XDG-default wiki and pre-register its data_root."""
+    monkeypatch.setenv("LIES_WIKI_NAME", "default")
+    Wiki.data_root_for("default").mkdir(parents=True, exist_ok=True)
+    return "default"
 
 
 def test_sync_help() -> None:
@@ -23,8 +31,7 @@ def test_sync_help() -> None:
 
 
 def test_sync_exits_busy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("LIES_WIKI_ROOT", str(tmp_path))
-    (tmp_path / ".lies").mkdir()
+    _use_default_wiki(monkeypatch)
     # Simulate a live, non-stale heartbeat (current pid, just started).
     # `acquire_heartbeat` reads it, sees it's busy, and exits with code 2.
     busy = Heartbeat(pid=os.getpid(), started_at=time.time(), collection="other")
@@ -38,8 +45,7 @@ def test_sync_exits_busy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Non
 
 def test_reindex_embed_warns_noop(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """`lies reindex --embed` exits 0 but emits a stderr warning."""
-    monkeypatch.setenv("LIES_WIKI_ROOT", str(tmp_path))
-    (tmp_path / ".lies").mkdir()
+    _use_default_wiki(monkeypatch)
 
     result = runner.invoke(app, ["reindex", "--embed"])
     assert result.exit_code == 0
@@ -48,8 +54,7 @@ def test_reindex_embed_warns_noop(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
 
 def test_reindex_cleanup_warns_noop(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """`lies reindex --cleanup` exits 0 but emits a stderr warning."""
-    monkeypatch.setenv("LIES_WIKI_ROOT", str(tmp_path))
-    (tmp_path / ".lies").mkdir()
+    _use_default_wiki(monkeypatch)
 
     result = runner.invoke(app, ["reindex", "--cleanup"])
     assert result.exit_code == 0
@@ -58,8 +63,7 @@ def test_reindex_cleanup_warns_noop(tmp_path: Path, monkeypatch: pytest.MonkeyPa
 
 def test_reindex_reconcile_does_not_warn(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """`lies reindex --reconcile` does not emit the no-op warning."""
-    monkeypatch.setenv("LIES_WIKI_ROOT", str(tmp_path))
-    (tmp_path / ".lies" / "collections").mkdir(parents=True)
+    _use_default_wiki(monkeypatch)
 
     # No collections to sync; just verify the no-op warning does not appear.
     with (

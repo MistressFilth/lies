@@ -1,7 +1,6 @@
 """Collection record and YAML config persistence.
 
-A collection describes one documentation source. Configs live in
-``<wiki>/.lies/collections/<name>.yaml``. The ``name`` field is the
+Configs live in the wiki's XDG config directory. The ``name`` field is the
 primary key and must not contain QMD operator characters.
 """
 
@@ -11,7 +10,7 @@ import re
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import yaml  # type: ignore[import-untyped]
 
@@ -21,7 +20,9 @@ from lies.collections.errors import (
     CollectionNotFound,
 )
 
-CONFIG_DIR_NAME = "collections"
+if TYPE_CHECKING:
+    from lies.wiki.wiki import Wiki
+
 _OPERATOR_CHARS_RE = re.compile(r"[+&|\-]")
 
 
@@ -51,9 +52,10 @@ class Collection:
         if _OPERATOR_CHARS_RE.search(self.name):
             raise CollectionNameRejected(self.name)
 
-
-def _config_dir(wiki_root: Path) -> Path:
-    return wiki_root / ".lies" / CONFIG_DIR_NAME
+    @staticmethod
+    def config_path(wiki: Wiki, name: str) -> Path:
+        """Return the on-disk YAML path for a collection under ``wiki``."""
+        return wiki.collections_dir / f"{name}.yaml"
 
 
 def _parse_dt(value: object) -> datetime:
@@ -64,9 +66,13 @@ def _parse_dt(value: object) -> datetime:
     raise CollectionConfigInvalid(f"invalid datetime: {value!r}")
 
 
-def load_collection(wiki_root: Path, name: str) -> Collection:
-    """Load and validate a collection config from ``wiki_root``."""
-    config_path = _config_dir(wiki_root) / f"{name}.yaml"
+def load_collection(wiki: Wiki, name: str) -> Collection:
+    """Load and validate a collection config from ``wiki``."""
+    from lies.wiki.wiki import Wiki
+
+    if not isinstance(wiki, Wiki):
+        raise TypeError("load_collection requires a Wiki instance")
+    config_path = Collection.config_path(wiki, name)
     if not config_path.exists():
         raise CollectionNotFound(f"collection {name!r} not found at {config_path}")
 
@@ -100,12 +106,16 @@ def load_collection(wiki_root: Path, name: str) -> Collection:
 
 
 def save_collection(
-    wiki_root: Path,
+    wiki: Wiki,
     collection: Collection,
     *,
     in_memory_only: bool = False,
 ) -> None:
-    """Validate and save a collection config under ``wiki_root``."""
+    """Validate and save a collection config under ``wiki``."""
+    from lies.wiki.wiki import Wiki
+
+    if not isinstance(wiki, Wiki):
+        raise TypeError("save_collection requires a Wiki instance")
     collection.rejects_operator_chars()
     payload = asdict(collection)
     payload["path"] = str(collection.path)
@@ -115,6 +125,6 @@ def save_collection(
     if in_memory_only:
         return
 
-    config_path = _config_dir(wiki_root) / f"{collection.name}.yaml"
+    config_path = Collection.config_path(wiki, collection.name)
     config_path.parent.mkdir(parents=True, exist_ok=True)
     config_path.write_text(yaml.safe_dump(payload, sort_keys=True), encoding="utf-8")

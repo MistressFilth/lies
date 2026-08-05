@@ -8,18 +8,42 @@ from unittest import mock
 
 import pytest
 
+from lies import xdg
 from lies.collections.record import Collection
 from lies.etl.cost import CostBudget
 from lies.etl.errors import BudgetExceeded
 from lies.etl.pipeline import PipelineState, StageResult, SyncOrchestrator
 from lies.etl.telemetry import SyncTelemetry
 from lies.scrapers.base import ParsedDoc
+from lies.wiki.wiki import Wiki
 
 
-def _collection(tmp_path: Path) -> Collection:
+@pytest.fixture
+def wiki(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Wiki:
+    """A Wiki with all five XDG roots under ``tmp_path`` so tests are hermetic."""
+    monkeypatch.setenv("LIES_XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setenv("LIES_XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("LIES_XDG_CACHE_HOME", str(tmp_path / "cache"))
+    monkeypatch.setenv("LIES_XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setenv("LIES_XDG_RUNTIME_DIR", str(tmp_path / "runtime"))
+    name = "test"
+    wiki = Wiki(
+        name=name,
+        data_root=Wiki.data_root_for(name),
+        config_root=xdg.config_home() / "lies" / name,
+        cache_root=xdg.cache_home() / "lies" / name,
+        state_root=xdg.state_home() / "lies" / name,
+        runtime_root=xdg.runtime_dir_for(name),
+    )
+    wiki.data_root.mkdir(parents=True, exist_ok=True)
+    wiki.state_root.mkdir(parents=True, exist_ok=True)
+    return wiki
+
+
+def _collection(wiki: Wiki) -> Collection:
     return Collection(
         name="cpython",
-        path=tmp_path / "raw" / "cpython",
+        path=wiki.data_root / "raw" / "cpython",
         source="https://example.com",
         tags=[],
         scraper_cmd=None,
@@ -32,16 +56,16 @@ def _collection(tmp_path: Path) -> Collection:
     )
 
 
-def test_pipeline_runs_all_states(tmp_path: Path) -> None:
-    collection = _collection(tmp_path)
-    telemetry = SyncTelemetry(collection.name, tmp_path / "logs")
+def test_pipeline_runs_all_states(wiki: Wiki) -> None:
+    collection = _collection(wiki)
+    telemetry = SyncTelemetry(wiki, collection.name)
     budget = CostBudget()
     pipeline = SyncOrchestrator(
         collection=collection,
         telemetry=telemetry,
         budget=budget,
+        wiki=wiki,
         manifest=mock.Mock(),
-        wiki_root=tmp_path,
     )
     fake_docs = [
         ParsedDoc(path="x.md", content=b"# hi", source_sha256="abc", source_format="markdown")
@@ -91,17 +115,17 @@ def test_pipeline_runs_all_states(tmp_path: Path) -> None:
     assert pipeline.state == PipelineState.IDLE
 
 
-def test_pipeline_rolls_back_on_budget_exceeded(tmp_path: Path) -> None:
-    collection = _collection(tmp_path)
-    telemetry = SyncTelemetry(collection.name, tmp_path / "logs")
+def test_pipeline_rolls_back_on_budget_exceeded(wiki: Wiki) -> None:
+    collection = _collection(wiki)
+    telemetry = SyncTelemetry(wiki, collection.name)
     budget = CostBudget(calls=0, tokens=10_000)
     manifest = mock.Mock()
     pipeline = SyncOrchestrator(
         collection=collection,
         telemetry=telemetry,
         budget=budget,
+        wiki=wiki,
         manifest=manifest,
-        wiki_root=tmp_path,
     )
     with (
         mock.patch("lies.etl.pipeline.run_scrape", side_effect=BudgetExceeded((1, 0), (0, 10_000))),
@@ -111,24 +135,24 @@ def test_pipeline_rolls_back_on_budget_exceeded(tmp_path: Path) -> None:
     manifest.restore.assert_called_once()
 
 
-def test_pipeline_threads_parsed_docs_from_scrape_to_normalize(tmp_path: Path) -> None:
+def test_pipeline_threads_parsed_docs_from_scrape_to_normalize(wiki: Wiki) -> None:
     """Scrape returns parsed_docs; orchestrator passes them to normalize."""
-    collection = _collection(tmp_path)
-    telemetry = SyncTelemetry(collection.name, tmp_path / "logs")
+    collection = _collection(wiki)
+    telemetry = SyncTelemetry(wiki, collection.name)
     budget = CostBudget()
     pipeline = SyncOrchestrator(
         collection=collection,
         telemetry=telemetry,
         budget=budget,
+        wiki=wiki,
         manifest=mock.Mock(),
-        wiki_root=tmp_path,
     )
     fake_docs = [
         ParsedDoc(path="x.md", content=b"# hi", source_sha256="abc", source_format="markdown")
     ]
     captured: dict = {}
 
-    def fake_scrape(c):
+    def fake_scrape(wiki, c):
         return StageResult(
             success=["x.md"],
             quarantined=[],
@@ -138,18 +162,18 @@ def test_pipeline_threads_parsed_docs_from_scrape_to_normalize(tmp_path: Path) -
             bytes_out=0,
         )
 
-    def fake_normalize(c, docs):
+    def fake_normalize(wiki, c, docs):
         captured["docs"] = docs
         return StageResult(
             success=["x.md"], quarantined=[], skipped=[], parsed_docs=[], bytes_in=10, bytes_out=10
         )
 
-    def fake_write(c, normalized, *, manifest, force, wiki_root):
+    def fake_write(wiki, c, normalized, *, manifest, force):
         return StageResult(
             success=[], quarantined=[], skipped=[], parsed_docs=[], bytes_in=0, bytes_out=0
         )
 
-    def fake_qmd(c):
+    def fake_qmd(wiki, c):
         return StageResult(
             success=[], quarantined=[], skipped=[], parsed_docs=[], bytes_in=0, bytes_out=0
         )
@@ -164,38 +188,38 @@ def test_pipeline_threads_parsed_docs_from_scrape_to_normalize(tmp_path: Path) -
     assert captured["docs"] is fake_docs
 
 
-def test_pipeline_threads_force_to_write(tmp_path: Path) -> None:
-    collection = _collection(tmp_path)
-    telemetry = SyncTelemetry(collection.name, tmp_path / "logs")
+def test_pipeline_threads_force_to_write(wiki: Wiki) -> None:
+    collection = _collection(wiki)
+    telemetry = SyncTelemetry(wiki, collection.name)
     budget = CostBudget()
     pipeline = SyncOrchestrator(
         collection=collection,
         telemetry=telemetry,
         budget=budget,
+        wiki=wiki,
         manifest=mock.Mock(),
-        wiki_root=tmp_path,
         force=True,
     )
     captured: dict = {}
 
-    def fake_scrape(c):
+    def fake_scrape(wiki, c):
         return StageResult(
             success=[], quarantined=[], skipped=[], parsed_docs=[], bytes_in=0, bytes_out=0
         )
 
-    def fake_normalize(c, docs):
+    def fake_normalize(wiki, c, docs):
         return StageResult(
             success=[], quarantined=[], skipped=[], parsed_docs=[], bytes_in=0, bytes_out=0
         )
 
-    def fake_write(c, normalized, *, manifest, force, wiki_root):
+    def fake_write(wiki, c, normalized, *, manifest, force):
         captured["force"] = force
-        captured["wiki_root"] = wiki_root
+        captured["wiki"] = wiki
         return StageResult(
             success=[], quarantined=[], skipped=[], parsed_docs=[], bytes_in=0, bytes_out=0
         )
 
-    def fake_qmd(c):
+    def fake_qmd(wiki, c):
         return StageResult(
             success=[], quarantined=[], skipped=[], parsed_docs=[], bytes_in=0, bytes_out=0
         )
@@ -208,40 +232,40 @@ def test_pipeline_threads_force_to_write(tmp_path: Path) -> None:
     ):
         pipeline.run()
     assert captured["force"] is True
-    assert captured["wiki_root"] == tmp_path
+    assert captured["wiki"].data_root == wiki.data_root
 
 
-def test_pipeline_threads_wiki_root_to_write(tmp_path: Path) -> None:
-    """The orchestrator must thread wiki_root into the write stage."""
-    collection = _collection(tmp_path)
-    telemetry = SyncTelemetry(collection.name, tmp_path / "logs")
+def test_pipeline_threads_wiki_to_write(wiki: Wiki) -> None:
+    """The orchestrator must thread a Wiki into the write stage."""
+    collection = _collection(wiki)
+    telemetry = SyncTelemetry(wiki, collection.name)
     budget = CostBudget()
     pipeline = SyncOrchestrator(
         collection=collection,
         telemetry=telemetry,
         budget=budget,
+        wiki=wiki,
         manifest=mock.Mock(),
-        wiki_root=tmp_path,
     )
     captured: dict = {}
 
-    def fake_scrape(c):
+    def fake_scrape(wiki, c):
         return StageResult(
             success=[], quarantined=[], skipped=[], parsed_docs=[], bytes_in=0, bytes_out=0
         )
 
-    def fake_normalize(c, docs):
+    def fake_normalize(wiki, c, docs):
         return StageResult(
             success=[], quarantined=[], skipped=[], parsed_docs=[], bytes_in=0, bytes_out=0
         )
 
-    def fake_write(c, normalized, *, manifest, force, wiki_root):
-        captured["wiki_root"] = wiki_root
+    def fake_write(wiki, c, normalized, *, manifest, force):
+        captured["wiki_root"] = wiki.data_root
         return StageResult(
             success=[], quarantined=[], skipped=[], parsed_docs=[], bytes_in=0, bytes_out=0
         )
 
-    def fake_qmd(c):
+    def fake_qmd(wiki, c):
         return StageResult(
             success=[], quarantined=[], skipped=[], parsed_docs=[], bytes_in=0, bytes_out=0
         )
@@ -253,18 +277,18 @@ def test_pipeline_threads_wiki_root_to_write(tmp_path: Path) -> None:
         mock.patch("lies.etl.pipeline.run_qmd_update", side_effect=fake_qmd),
     ):
         pipeline.run()
-    assert captured["wiki_root"] == tmp_path
+    assert captured["wiki_root"] == wiki.data_root
 
 
-def test_pipeline_runs_register_stage(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_pipeline_runs_register_stage(wiki: Wiki, monkeypatch: pytest.MonkeyPatch) -> None:
     """After WRITE and before QMD_UPDATE, the pipeline calls WikiMemoryService.register_collection."""
-    wiki_root = tmp_path
-    (wiki_root / "wiki").mkdir(parents=True, exist_ok=True)
-    (wiki_root / "raw").mkdir(parents=True, exist_ok=True)
-    (wiki_root / ".lies" / "collections").mkdir(parents=True, exist_ok=True)
+    wiki.data_root.mkdir(parents=True, exist_ok=True)
+    (wiki.data_root / "wiki").mkdir(parents=True, exist_ok=True)
+    (wiki.data_root / "raw").mkdir(parents=True, exist_ok=True)
+    (wiki.collections_dir).mkdir(parents=True, exist_ok=True)
     c = Collection(
         name="reg_test",
-        path=wiki_root / "raw" / "reg_test",
+        path=wiki.data_root / "raw" / "reg_test",
         source="",
         tags=[],
         scraper_cmd=None,
@@ -276,17 +300,17 @@ def test_pipeline_runs_register_stage(tmp_path: Path, monkeypatch: pytest.Monkey
         updated_at=datetime.now(tz=timezone.utc),
         config={},
     )
-    telemetry = SyncTelemetry(c.name, wiki_root / "logs")
+    telemetry = SyncTelemetry(wiki, c.name)
     from lies.collections.hash_manifest import HashManifest
 
-    manifest = HashManifest(wiki_root, c.name)
+    manifest = HashManifest(wiki, c.name)
     budget = CostBudget()
     orch = SyncOrchestrator(
         collection=c,
         telemetry=telemetry,
         budget=budget,
+        wiki=wiki,
         manifest=manifest,
-        wiki_root=wiki_root,
     )
     # Stub each stage to keep the test focused on the new state transition.
     with (
@@ -307,5 +331,10 @@ def test_pipeline_runs_register_stage(tmp_path: Path, monkeypatch: pytest.Monkey
             success=[], quarantined=[], skipped=[], parsed_docs=[]
         )
         orch.run()
-    m_register.assert_called_once_with(c, orch._service)
-    m_qmd.assert_called_once_with(c)
+    m_register.assert_called_once()
+    args, _ = m_register.call_args
+    assert args[1] is c
+    assert args[2] is orch._service
+    m_qmd.assert_called_once()
+    qmd_args, _ = m_qmd.call_args
+    assert qmd_args[1] is c

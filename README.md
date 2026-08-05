@@ -20,8 +20,8 @@ the stdio server documented below.
 
 ```bash
 uv sync
-uv run lies init ./my-wiki
-uv run lies ingest ./my-wiki/raw/articles/some-article.md
+uv run lies init my-research
+uv run lies ingest my-research htmx
 uv run lies query "What do my sources say about X?"
 uv run lies lint
 ```
@@ -40,12 +40,11 @@ wiki becomes available as tools and resources in any Claude Code
 session:
 
 ```bash
-# Register for the current user, defaulting to the current directory as
-# the wiki root:
+# Register for the current user, defaulting to wiki name "default":
 claude mcp add --transport stdio lies -- uv run --project . lies mcp
 
-# Pin a specific wiki by setting LIES_WIKI_ROOT:
-claude mcp add --transport stdio --env LIES_WIKI_ROOT=/path/to/my-wiki \
+# Pin a specific wiki by setting LIES_WIKI_NAME:
+claude mcp add --transport stdio --env LIES_WIKI_NAME=my-research \
     lies -- uv run --project /path/to/lies lies mcp
 ```
 
@@ -65,8 +64,9 @@ lies mcp down                    # stop it
 `lies mcp up` binds `127.0.0.1:8737` by default. Pass `--port` to
 run a daemon for a second wiki; `--host` may select another loopback
 address such as `localhost`, `::1`, or any address in `127.0.0.0/8`.
-The daemon is per-wiki — its pidfile lives at `<wiki>/.lies/mcp.pid` and
-its output goes to `<wiki>/.lies/mcp.log`.
+The daemon is per-wiki — its pidfile lives at
+`$XDG_RUNTIME_DIR/lies/<name>/mcp.pid` and its output goes to
+`$XDG_STATE_HOME/lies/<name>/mcp.log`.
 
 `lies mcp down` only stops daemons that `up` recorded. Servers a host
 spawned on stdio are left alone, so stopping the daemon never kills a
@@ -99,11 +99,12 @@ proxy in front if remote access is required.
 
 After registration, Claude Code sees these tools:
 
-- `init_wiki(path)` — bootstrap a new wiki.
-- `ingest_source(source, wiki_root?)` — atomic ingest.
-- `query(question, wiki_root?)` — synthesized answer (structured result
+- `init_wiki(name)` — bootstrap a new wiki by name (creates XDG role-routed dirs).
+- `ingest_source(collection, name?)` — atomic ingest.
+- `query(question, name?)` — synthesized answer (structured result
   with `fallback_used` and `fallback_reason`).
-- `lint(wiki_root?)` — health-check the wiki.
+- `lint(name?)` — health-check the wiki.
+- `migrate_xdg(legacy_path, name)` — one-shot bridge from legacy `<wiki>/.lies/` to XDG.
 
 …and these resources:
 
@@ -114,8 +115,8 @@ After registration, Claude Code sees these tools:
 
 The server also exposes one prompt (`ask_wiki`) for asking the wiki.
 
-Wiki selection: every tool accepts an optional `wiki_root` parameter.
-Resolution chain: explicit `wiki_root` → `LIES_WIKI_ROOT` env → cwd.
+Wiki selection: every tool accepts an optional `name` parameter.
+Resolution chain: explicit `name` → `LIES_WIKI_NAME` env → `default`.
 For multi-project workspaces, register one MCP server per wiki.
 
 ## Source collection builders
@@ -127,9 +128,9 @@ scrapers for other formats.
 Add a collection by hand or use the LLM-driven author:
 
 ```bash
-# Hand-written YAML.
-$EDITOR .lies/collections/htmx.yaml
-uv run lies sync htmx
+# Hand-written YAML (path printed by `lies collections path <name>`).
+$EDITOR "$(uv run lies collections path htmx)"
+uv run lies sync my-research htmx
 
 # LLM-driven: the agent asks one question at a time.
 uv run lies collections new htmx \
@@ -137,7 +138,7 @@ uv run lies collections new htmx \
     --prompt "the curated htmx docs at www/content, drop _templates and examples"
 # Review the YAML on stdout, then re-run with --apply to write it.
 uv run lies collections new htmx --source <url> --prompt "..." --apply
-uv run lies sync htmx
+uv run lies sync my-research htmx
 ```
 
 For htmx-class messy corpora, the agent may also propose a
@@ -191,16 +192,22 @@ loses it; the next `sync` re-registers.
 Environment variables:
 
 - `LIES_MODEL` — model identifier (default: `anthropic:claude-opus-4-7`)
-- `LIES_WIKI_ROOT` — wiki root path (default: cwd)
+- `LIES_WIKI_NAME` — wiki name (default: `default`); resolved under
+  `$XDG_DATA_HOME/lies/<name>/`
 - `LIES_LOG_LEVEL` — stdlib log level when logfire is inactive (default: `INFO`)
 - `LOGFIRE_TOKEN` — if set, logfire is configured for observability and
   `pydantic-ai` is instrumented
 - `LIES_QMD_TRANSPORT` — how the agent reaches qmd: `http` (default, uses
   the qmd daemon) or `stdio` (spawns a `qmd` process per agent)
 - `LIES_QMD_URL` — qmd daemon URL (default: `http://127.0.0.1:8181`)
+- `LIES_XDG_DATA_HOME` — overrides `$XDG_DATA_HOME` for LIES
+- `LIES_XDG_CONFIG_HOME` — overrides `$XDG_CONFIG_HOME` for LIES
+- `LIES_XDG_RUNTIME_DIR` — overrides `$XDG_RUNTIME_DIR` for LIES
+- `LIES_XDG_STATE_HOME` — overrides `$XDG_STATE_HOME` for LIES
+- `LIES_XDG_CACHE_HOME` — overrides `$XDG_CACHE_HOME` for LIES
 
-Most commands accept `--wiki-root` / `-w` to override the wiki root for one
-invocation. `lies config` prints the active model and wiki root.
+Most commands accept `--name` to override the wiki name for one
+invocation. `lies config` prints the active model and wiki name.
 
 ## Development
 
@@ -243,24 +250,35 @@ The orchestrator owns cross-cutting `pydantic-ai-harness` capabilities:
 `qmd` provides hybrid search (BM25 + vector + rerank) via MCP (primary) and CLI
 shell-out (for `qmd update` after ingest and `qmd status` for diagnostics).
 
-The wiki is a git repository on disk:
+The wiki is a git repository on disk, rooted under
+`$XDG_DATA_HOME/lies/<name>/` by default:
 
 ```
-my-wiki/
-├── raw/                 # immutable sources (the human curates these)
-├── wiki/                # LLM-owned markdown
-│   ├── index.md         # catalog of pages
-│   ├── log.md           # append-only log
-│   ├── overview.md
-│   └── <page-type>/<name>.md
-└── .lies/
-    └── schema.md        # per-wiki schema override (optional)
+$XDG_DATA_HOME/lies/<name>/     # wiki content root
+├── raw/                        # immutable sources (the human curates these)
+└── wiki/                       # LLM-owned markdown
+    ├── index.md                # catalog of pages
+    ├── log.md                  # append-only log
+    ├── overview.md
+    └── <page-type>/<name>.md
+
+$XDG_CONFIG_HOME/lies/<name>/   # per-wiki configuration
+└── schema.md                   # per-wiki schema override (optional)
+
+$XDG_RUNTIME_DIR/lies/<name>/   # transient runtime state (locks, pidfile)
+
+$XDG_STATE_HOME/lies/<name>/    # logs/scratch/poison
+└── mcp.log
+
+$XDG_CACHE_HOME/lies/<name>/    # hashes/manifests
 ```
 
 CLI commands (`src/lies/cli.py`):
 
-- `lies init <path>` — initialize a new wiki (creates dirs, copies default
-  schema, `git init`, initial commit).
+- `lies init <name>` — initialize a new wiki by name (creates all five
+  role-routed XDG directories, copies default schema, `git init`, initial commit).
+- `lies migrate-xdg <legacy-path> --name <name>` — one-shot bridge from
+  legacy `<path>/.lies/` to XDG role-routed directories.
 - `lies ingest <collection>` — sync an existing collection (first-time
   LLM scraper generation is deferred).
 - `lies ingest-source <source>` — ingest a local source path. The legacy
@@ -271,7 +289,7 @@ CLI commands (`src/lies/cli.py`):
 - `lies mcp` / `lies mcp start` — run the MCP server on stdio.
 - `lies mcp up` / `down` / `status` — manage the detached http MCP daemon.
 - `lies status` — show qmd status and the last few log entries.
-- `lies config` — print the active model and wiki root.
+- `lies config` — print the active model and wiki name.
 - `lies version` — print the LIES version.
 - `lies` (no subcommand) — enter the REPL (`/ingest`, `/query`, `/lint`,
   `/status`, `/commit`, `/exit`).

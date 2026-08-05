@@ -23,7 +23,7 @@ def test_stdio_transport_uses_local_toolset(wiki_root: Path) -> None:
     from pydantic_ai.tools import Tool
 
     layout = WikiLayout(wiki_root)
-    cap = QmdCapability(transport="stdio", wiki_root=layout).as_capability()
+    cap = QmdCapability(transport="stdio", wiki=layout).as_capability()
     assert isinstance(cap, MCP)
     # ``native`` is left at its default (``False``) for the stdio branch.
     assert cap.native is False
@@ -43,9 +43,7 @@ def test_http_capability_advertises_native_when_daemon_reachable(
 
     layout = WikiLayout(wiki_root)
     monkeypatch.setattr("lies.qmd.capability.qmd_daemon_reachable", lambda url, timeout=0.5: True)
-    cap = QmdCapability(
-        transport="http", url="http://127.0.0.1:8181", wiki_root=layout
-    ).as_capability()
+    cap = QmdCapability(transport="http", url="http://127.0.0.1:8181", wiki=layout).as_capability()
     assert isinstance(cap, MCP)
     assert cap.url == "http://127.0.0.1:8181"
     # pydantic-ai turns ``native=True`` into an ``MCPServerTool`` instance;
@@ -66,9 +64,7 @@ def test_http_capability_uses_local_when_daemon_unreachable(
 
     layout = WikiLayout(wiki_root)
     monkeypatch.setattr("lies.qmd.capability.qmd_daemon_reachable", lambda url, timeout=0.5: False)
-    cap = QmdCapability(
-        transport="http", url="http://127.0.0.1:8181", wiki_root=layout
-    ).as_capability()
+    cap = QmdCapability(transport="http", url="http://127.0.0.1:8181", wiki=layout).as_capability()
     captured = capsys.readouterr()
     assert "qmd daemon unreachable" in captured.err
     assert "127.0.0.1:8181" in captured.err
@@ -90,9 +86,7 @@ def test_local_factory_yields_an_mcptoolset_over_fallback(
 
     layout = WikiLayout(wiki_root)
     monkeypatch.setattr("lies.qmd.capability.qmd_daemon_reachable", lambda url, timeout=0.5: False)
-    cap = QmdCapability(
-        transport="http", url="http://127.0.0.1:8181", wiki_root=layout
-    ).as_capability()
+    cap = QmdCapability(transport="http", url="http://127.0.0.1:8181", wiki=layout).as_capability()
     # ``cap.local`` is a ``Tool`` that wraps the raw factory. Reach the
     # factory via ``cap.local.function`` (no-arg invocation — the factory
     # does not take a ``RunContext``) and assert it returns an
@@ -117,7 +111,7 @@ def test_per_call_recovery_after_daemon_returns(
         "lies.qmd.capability.qmd_daemon_reachable",
         lambda url, timeout=0.5: next(probes),
     )
-    cap_ctor = QmdCapability(transport="http", url="http://127.0.0.1:8181", wiki_root=layout)
+    cap_ctor = QmdCapability(transport="http", url="http://127.0.0.1:8181", wiki=layout)
     first = cap_ctor.as_capability()
     assert first.native is False
     second = cap_ctor.as_capability()
@@ -127,4 +121,4 @@ def test_per_call_recovery_after_daemon_returns(
 def test_unknown_transport_raises(wiki_root: Path) -> None:
     layout = WikiLayout(wiki_root)
     with pytest.raises(ValueError, match="Unknown transport"):
-        QmdCapability(transport="bogus", wiki_root=layout)
+        QmdCapability(transport="bogus", wiki=layout)

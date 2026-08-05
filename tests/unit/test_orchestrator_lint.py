@@ -20,21 +20,24 @@ from lies.memory.models import (
     PageReference,
 )
 from lies.orchestrator import Orchestrator
+from tests.conftest import make_wiki
 
 
 @pytest.fixture
-def orch(tmp_path: Path) -> Orchestrator:
+def orch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Orchestrator:
     root = tmp_path / "wiki"
-    for sub in ("wiki", ".lies", "raw"):
+    for sub in ("wiki", "raw"):
         (root / sub).mkdir(parents=True)
     (root / "wiki" / "index.md").write_text("# Index\n", encoding="utf-8")
-    (root / ".lies" / "schema.md").write_text("## Page types\n- concept\n", encoding="utf-8")
+    wiki = make_wiki(name="lint", data_root=root)
+    wiki.config_root.mkdir(parents=True, exist_ok=True)
+    (wiki.config_root / "schema.md").write_text("## Page types\n- concept\n", encoding="utf-8")
     subprocess.run(["git", "init", "--initial-branch=main", str(root)], check=True)
     subprocess.run(["git", "config", "user.email", "t@e.com"], cwd=root, check=True)
     subprocess.run(["git", "config", "user.name", "T"], cwd=root, check=True)
     subprocess.run(["git", "add", "."], cwd=root, check=True)
     subprocess.run(["git", "commit", "-m", "init"], cwd=root, check=True)
-    return Orchestrator(wiki_root=root, model="test")
+    return Orchestrator(wiki=wiki, model="test")
 
 
 def _noop_agent_run_sync(self, prompt: str):  # type: ignore[no-untyped-def]
@@ -153,16 +156,16 @@ def test_build_lint_report_orphans_are_safe_to_fix(orch: Orchestrator) -> None:
     from lies.orchestrator import _build_lint_report
 
     # Seed an orphan page (no inbound links).
-    orphan = orch.layout.wiki_dir / "concepts" / "orphan.md"
+    orphan = orch.wiki.wiki_dir / "concepts" / "orphan.md"
     orphan.parent.mkdir(parents=True, exist_ok=True)
     orphan.write_text(
         "---\ntitle: Orphan\ntype: concept\n---\n# Orphan\n",
         encoding="utf-8",
     )
-    subprocess.run(["git", "add", "."], cwd=orch.layout.root, check=True)
-    subprocess.run(["git", "commit", "-m", "seed"], cwd=orch.layout.root, check=True)
+    subprocess.run(["git", "add", "."], cwd=orch.wiki.data_root, check=True)
+    subprocess.run(["git", "commit", "-m", "seed"], cwd=orch.wiki.data_root, check=True)
 
-    report = _build_lint_report(orch.layout)
+    report = _build_lint_report(orch.wiki)
     orphans = [f for f in report.findings if f.category == "orphan"]
     assert orphans, "expected at least one orphan finding"
     for finding in orphans:
@@ -179,17 +182,17 @@ def test_run_lint_apply_passes_findings_to_repair_agent(orch: Orchestrator) -> N
     from lies.orchestrator import _build_lint_report
 
     # Seed an orphan so the deterministic shell produces a finding.
-    orphan = orch.layout.wiki_dir / "concepts" / "orphan.md"
+    orphan = orch.wiki.wiki_dir / "concepts" / "orphan.md"
     orphan.parent.mkdir(parents=True, exist_ok=True)
     orphan.write_text(
         "---\ntitle: Orphan\ntype: concept\n---\n# Orphan\n",
         encoding="utf-8",
     )
-    subprocess.run(["git", "add", "."], cwd=orch.layout.root, check=True)
-    subprocess.run(["git", "commit", "-m", "seed"], cwd=orch.layout.root, check=True)
+    subprocess.run(["git", "add", "."], cwd=orch.wiki.data_root, check=True)
+    subprocess.run(["git", "commit", "-m", "seed"], cwd=orch.wiki.data_root, check=True)
 
     # Sanity check: the deterministic shell produces a safe orphan finding.
-    pre = _build_lint_report(orch.layout)
+    pre = _build_lint_report(orch.wiki)
     assert any(f.category == "orphan" and f.safe_to_fix is True for f in pre.findings)
 
     # Capture the RepairAgentDeps the repair agent receives.
@@ -270,11 +273,11 @@ def test_run_lint_falls_back_to_shell_on_linter_failure(orch: Orchestrator) -> N
 
 
 def test_run_lint_llm_empty_findings_keeps_shell_findings(orch: Orchestrator) -> None:
-    orphan = orch.layout.wiki_dir / "concepts" / "orphan.md"
+    orphan = orch.wiki.wiki_dir / "concepts" / "orphan.md"
     orphan.parent.mkdir(parents=True, exist_ok=True)
     orphan.write_text("---\ntitle: Orphan\ntype: concept\n---\n# Orphan\n", encoding="utf-8")
-    subprocess.run(["git", "add", "."], cwd=orch.layout.root, check=True)
-    subprocess.run(["git", "commit", "-m", "seed"], cwd=orch.layout.root, check=True)
+    subprocess.run(["git", "add", "."], cwd=orch.wiki.data_root, check=True)
+    subprocess.run(["git", "commit", "-m", "seed"], cwd=orch.wiki.data_root, check=True)
 
     with (
         mock.patch.object(
@@ -289,11 +292,11 @@ def test_run_lint_llm_empty_findings_keeps_shell_findings(orch: Orchestrator) ->
 def test_run_lint_dedup_collapses_duplicate_orphan(orch: Orchestrator) -> None:
     from lies.agents.linter import LintFinding, LintSeverity
 
-    orphan = orch.layout.wiki_dir / "concepts" / "orphan.md"
+    orphan = orch.wiki.wiki_dir / "concepts" / "orphan.md"
     orphan.parent.mkdir(parents=True, exist_ok=True)
     orphan.write_text("---\ntitle: Orphan\ntype: concept\n---\n# Orphan\n", encoding="utf-8")
-    subprocess.run(["git", "add", "."], cwd=orch.layout.root, check=True)
-    subprocess.run(["git", "commit", "-m", "seed"], cwd=orch.layout.root, check=True)
+    subprocess.run(["git", "add", "."], cwd=orch.wiki.data_root, check=True)
+    subprocess.run(["git", "commit", "-m", "seed"], cwd=orch.wiki.data_root, check=True)
 
     llm_orphan = LintFinding(
         severity=LintSeverity.LOW,
@@ -318,11 +321,11 @@ def test_run_lint_dedup_collapses_duplicate_orphan(orch: Orchestrator) -> None:
 def test_run_lint_apply_uses_merged_findings(orch: Orchestrator) -> None:
     from lies.agents.linter import LintFinding, LintSeverity
 
-    orphan = orch.layout.wiki_dir / "concepts" / "orphan.md"
+    orphan = orch.wiki.wiki_dir / "concepts" / "orphan.md"
     orphan.parent.mkdir(parents=True, exist_ok=True)
     orphan.write_text("---\ntitle: Orphan\ntype: concept\n---\n# Orphan\n", encoding="utf-8")
-    subprocess.run(["git", "add", "."], cwd=orch.layout.root, check=True)
-    subprocess.run(["git", "commit", "-m", "seed"], cwd=orch.layout.root, check=True)
+    subprocess.run(["git", "add", "."], cwd=orch.wiki.data_root, check=True)
+    subprocess.run(["git", "commit", "-m", "seed"], cwd=orch.wiki.data_root, check=True)
 
     llm_contradiction = LintFinding(
         severity=LintSeverity.HIGH,

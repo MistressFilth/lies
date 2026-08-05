@@ -2,8 +2,9 @@
 
 A bespoke scraper (``Collection.scraper_cmd``) is responsible for
 fetching and possibly converting. Its output is a
-``<workspace>/manifest.json`` file plus the doc bodies. This builder
-walks the manifest:
+``<workspace>/manifest.json`` file plus the doc bodies. The manifest
+is routed to ``wiki.cache_root / "collections" / <name> / "manifest.json"``
+under the XDG cache root. This builder walks the manifest:
 
 - If ``source_format`` is ``markdown``, the doc is already converted;
   pass through unchanged.

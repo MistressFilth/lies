@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from lies.memory.validation import ALLOWED_PAGE_TYPES, parse_frontmatter
-from lies.wiki.layout import WikiLayout
+from lies.wiki.wiki import Wiki
 
 _PAGE_FILENAME_RE = re.compile(r"^(?P<name>.+)\.md$")
 
@@ -31,13 +31,13 @@ def _page_title_from_frontmatter(content: str, fallback: str) -> str:
     return fallback
 
 
-def _discover_pages(layout: WikiLayout) -> dict[str, list[tuple[str, str, str]]]:
+def _discover_pages(wiki: Wiki) -> dict[str, list[tuple[str, str, str]]]:
     """Return a mapping of page_type -> [(title, path_posix, name)]."""
     grouped: dict[str, list[tuple[str, str, str]]] = defaultdict(list)
-    if not layout.wiki_dir.exists():
+    if not wiki.wiki_dir.exists():
         return grouped
-    for path in sorted(layout.wiki_dir.rglob("*.md")):
-        rel = path.relative_to(layout.root).as_posix()
+    for path in sorted(wiki.wiki_dir.rglob("*.md")):
+        rel = path.relative_to(wiki.data_root).as_posix()
         if rel in {
             "wiki/index.md",
             "wiki/log.md",
@@ -67,9 +67,9 @@ def _discover_pages(layout: WikiLayout) -> dict[str, list[tuple[str, str, str]]]
     return grouped
 
 
-def rebuild_index(layout: WikiLayout) -> str:
+def rebuild_index(wiki: Wiki) -> str:
     """Rebuild ``wiki/index.md`` and return its body."""
-    grouped = _discover_pages(layout)
+    grouped = _discover_pages(wiki)
     today = datetime.now(timezone.utc).date().isoformat()
     lines = [
         "# Index",
@@ -86,12 +86,12 @@ def rebuild_index(layout: WikiLayout) -> str:
             lines.append(f"- [{title}]({rel}) — `{name}`")
         lines.append("")
     body = "\n".join(lines)
-    layout.wiki_dir.mkdir(parents=True, exist_ok=True)
-    layout.index_path.write_text(body, encoding="utf-8")
+    wiki.wiki_dir.mkdir(parents=True, exist_ok=True)
+    (wiki.wiki_dir / "index.md").write_text(body, encoding="utf-8")
     return body
 
 
-def append_log_entry(layout: WikiLayout, line: str) -> None:
+def append_log_entry(wiki: Wiki, line: str) -> None:
     """Append a single parseable line to ``wiki/log.md``."""
     today = datetime.now(timezone.utc).date().isoformat()
     timestamped = line.rstrip("\n")
@@ -99,6 +99,6 @@ def append_log_entry(layout: WikiLayout, line: str) -> None:
         timestamped = timestamped.replace("{date}", today)
     if not timestamped.startswith("## "):
         timestamped = f"## [{today}] {timestamped}"
-    layout.wiki_dir.mkdir(parents=True, exist_ok=True)
-    with layout.log_path.open("a", encoding="utf-8") as fh:
+    wiki.wiki_dir.mkdir(parents=True, exist_ok=True)
+    with (wiki.wiki_dir / "log.md").open("a", encoding="utf-8") as fh:
         fh.write(timestamped.rstrip() + "\n")

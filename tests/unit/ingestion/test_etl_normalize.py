@@ -10,6 +10,21 @@ from lies.etl.normalize.format_dispatch import UnknownFormatError, dispatch
 from lies.etl.normalize.obsidian import apply
 from lies.etl.stages.normalize import run_normalize
 from lies.scrapers.base import ParsedDoc
+from lies.wiki.wiki import Wiki
+
+
+def _wiki(tmp_path) -> Wiki:
+    wiki = Wiki(
+        name="x",
+        data_root=tmp_path,
+        config_root=tmp_path,
+        cache_root=tmp_path,
+        state_root=tmp_path,
+        runtime_root=tmp_path,
+    )
+    wiki.raw_dir.mkdir(parents=True, exist_ok=True)
+    wiki.scratch_dir.mkdir(parents=True, exist_ok=True)
+    return wiki
 
 
 def _collection(tmp_path) -> Collection:
@@ -51,7 +66,7 @@ def test_normalize_dispatches_sphinx_via_builder(tmp_path) -> None:
             )
         ],
     ):
-        result = run_normalize(c, docs)
+        result = run_normalize(_wiki(tmp_path), c, docs)
     assert result.success == ["index.md"]
     assert result.quarantined == []
 
@@ -67,7 +82,7 @@ def test_normalize_quarantines_builder_unavailable(tmp_path) -> None:
             source_format="liquid",
         )
     ]
-    result = run_normalize(c, docs)
+    result = run_normalize(_wiki(tmp_path), c, docs)
     assert any("liquid" in reason for _, reason in result.quarantined)
 
 
@@ -108,7 +123,7 @@ def test_normalize_routes_bespoke_through_builder(tmp_path) -> None:
         )
     ]
     with mock.patch.object(BespokeBuilder, "build", return_value=fake_returned) as mock_build:
-        result = run_normalize(c, docs)
+        result = run_normalize(_wiki(tmp_path), c, docs)
     assert mock_build.called
     assert result.quarantined == []
     assert result.success == ["custom.md"]

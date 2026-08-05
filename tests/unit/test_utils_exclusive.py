@@ -4,11 +4,8 @@ import os
 import time
 from pathlib import Path
 
-from lies.utils.exclusive import (
-    acquire_create_lock,
-    ensure_gitignored,
-    release_create_lock,
-)
+from lies.utils import exclusive
+from lies.utils.exclusive import acquire_create_lock, release_create_lock
 
 
 def test_acquire_returns_fd_when_free(tmp_path: Path) -> None:
@@ -62,20 +59,6 @@ def test_release_tolerates_none_fd_and_missing_file(tmp_path: Path) -> None:
     release_create_lock(tmp_path / "absent", None)
 
 
-def test_ensure_gitignored_creates_file(tmp_path: Path) -> None:
-    target = tmp_path / ".lies" / "mcp.pid"
-    ensure_gitignored(target, wiki_root=tmp_path)
-    assert (tmp_path / ".gitignore").read_text(encoding="utf-8") == ".lies/mcp.pid\n"
-
-
-def test_ensure_gitignored_is_idempotent(tmp_path: Path) -> None:
-    target = tmp_path / ".lies" / "mcp.pid"
-    ensure_gitignored(target, wiki_root=tmp_path)
-    ensure_gitignored(target, wiki_root=tmp_path)
-    assert (tmp_path / ".gitignore").read_text(encoding="utf-8").count("mcp.pid") == 1
-
-
-def test_ensure_gitignored_appends_newline_when_missing(tmp_path: Path) -> None:
-    (tmp_path / ".gitignore").write_text("existing", encoding="utf-8")
-    ensure_gitignored(tmp_path / ".lies" / "mcp.pid", wiki_root=tmp_path)
-    assert (tmp_path / ".gitignore").read_text(encoding="utf-8") == "existing\n.lies/mcp.pid\n"
+def test_ensure_gitignored_removed() -> None:
+    """The gitignore guard has been replaced by XDG runtime paths."""
+    assert not hasattr(exclusive, "ensure_gitignored")

@@ -18,14 +18,14 @@ from typing import Any, cast
 from pydantic_ai import Agent, RunContext
 
 from lies.memory.service import WikiMemoryService
-from lies.wiki.layout import WikiLayout
+from lies.wiki.wiki import Wiki
 
 
 @dataclass
 class WikiMemoryDeps:
     """Per-run dependencies for the main agent's wiki read tools."""
 
-    layout: WikiLayout
+    wiki: Wiki
     service: WikiMemoryService
 
 

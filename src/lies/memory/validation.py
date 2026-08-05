@@ -20,18 +20,18 @@ from lies.memory.models import (
     WikiPlanInvalid,
     _PlanOperation,
 )
-from lies.wiki.layout import WikiLayout
+from lies.wiki.wiki import Wiki
 
 ALLOWED_PAGE_TYPES: frozenset[str] = frozenset(
     {"overview", "entity", "concept", "comparison", "source"}
 )
 
 
-def validate_page_path(layout: WikiLayout, path: str) -> Path:
-    """Resolve ``path`` against ``<layout.wiki_dir>`` and reject escapes.
+def validate_page_path(wiki: Wiki, path: str) -> Path:
+    """Resolve ``path`` against ``<wiki.wiki_dir>`` and reject escapes.
 
     Rejects absolute paths, ``..`` traversal, raw source access, and
-    any path that resolves outside ``layout.wiki_dir``.
+    any path that resolves outside ``wiki.wiki_dir``.
     """
     if not path:
         raise WikiPlanInvalid("page path is empty")
@@ -40,9 +40,9 @@ def validate_page_path(layout: WikiLayout, path: str) -> Path:
         raise WikiPlanInvalid(f"page path must be relative: {path}")
     if any(part == ".." for part in candidate.parts):
         raise WikiPlanInvalid(f"page path contains '..': {path}")
-    resolved = (layout.wiki_dir / candidate).resolve()
+    resolved = (wiki.wiki_dir / candidate).resolve()
     try:
-        resolved.relative_to(layout.wiki_dir.resolve())
+        resolved.relative_to(wiki.wiki_dir.resolve())
     except ValueError as exc:
         raise WikiPlanInvalid(f"page path escapes wiki/: {path}") from exc
     if ".." in resolved.parts:

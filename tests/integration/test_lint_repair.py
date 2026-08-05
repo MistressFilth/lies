@@ -17,17 +17,20 @@ from lies.agents.repair_models import (
     UpdateIndex,
 )
 from lies.orchestrator import Orchestrator
-from lies.wiki.layout import WikiLayout
+from lies.wiki.wiki import Wiki
+from tests.conftest import make_wiki
 
 
 @pytest.fixture
-def wiki(tmp_path: Path) -> WikiLayout:
+def wiki(tmp_path: Path) -> Wiki:
     root = tmp_path / "wiki"
-    for sub in ("wiki", ".lies", "raw"):
+    for sub in ("wiki", "raw"):
         (root / sub).mkdir(parents=True)
     (root / "wiki" / "concepts").mkdir(parents=True)
     (root / "wiki" / "index.md").write_text("# Index\n", encoding="utf-8")
-    (root / ".lies" / "schema.md").write_text(
+    w = make_wiki(name="lint-repair", data_root=root)
+    w.config_root.mkdir(parents=True, exist_ok=True)
+    (w.config_root / "schema.md").write_text(
         "## Page types\n- concept\n- entity\n", encoding="utf-8"
     )
     subprocess.run(["git", "init", "--initial-branch=main", str(root)], check=True)
@@ -35,10 +38,10 @@ def wiki(tmp_path: Path) -> WikiLayout:
     subprocess.run(["git", "config", "user.name", "T"], cwd=root, check=True)
     subprocess.run(["git", "add", "."], cwd=root, check=True)
     subprocess.run(["git", "commit", "-m", "init"], cwd=root, check=True)
-    return WikiLayout(root)
+    return w
 
 
-def _seed_page(wiki: WikiLayout, path: str, body: str) -> None:
+def _seed_page(wiki: Wiki, path: str, body: str) -> None:
     target = wiki.wiki_dir / path
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(body, encoding="utf-8")
@@ -48,7 +51,7 @@ def _noop_agent_run_sync(self, prompt: str):  # type: ignore[no-untyped-def]
     return mock.Mock(output="lint done")
 
 
-def test_apply_three_append_links(wiki: WikiLayout) -> None:
+def test_apply_three_append_links(wiki: Wiki) -> None:
     """Lint finds 3 missing-xref; --fix applies 3 append_links; single commit."""
     from lies.agents.linter import LintFinding, LintReport, LintSeverity
     from lies.orchestrator import _build_lint_report
@@ -56,10 +59,10 @@ def test_apply_three_append_links(wiki: WikiLayout) -> None:
     _seed_page(wiki, "concepts/a.md", "---\ntitle: A\n---\n# A\n")
     _seed_page(wiki, "concepts/b.md", "---\ntitle: B\n---\n# B\n")
     _seed_page(wiki, "concepts/c.md", "---\ntitle: C\n---\n# C\n")
-    subprocess.run(["git", "add", "."], cwd=wiki.root, check=True)
-    subprocess.run(["git", "commit", "-m", "seed"], cwd=wiki.root, check=True)
+    subprocess.run(["git", "add", "."], cwd=wiki.data_root, check=True)
+    subprocess.run(["git", "commit", "-m", "seed"], cwd=wiki.data_root, check=True)
 
-    orch = Orchestrator(wiki_root=wiki.root, model=TestModel())
+    orch = Orchestrator(wiki=wiki, model=TestModel())
     # Three missing-xref findings the plan will reference. The host
     # (mentioner) appears first in ``pages``; the plan's AppendLink
     # carries only the host, which intersects the finding pages.
@@ -140,7 +143,7 @@ def test_apply_three_append_links(wiki: WikiLayout) -> None:
     assert (wiki.wiki_dir / "concepts" / "b.md").read_text(encoding="utf-8").count("[A]") == 1
 
 
-def test_apply_interleaved_append_links(wiki: WikiLayout) -> None:
+def test_apply_interleaved_append_links(wiki: Wiki) -> None:
     """Multiple AppendLinks to the same path interspersed with other ops apply successfully."""
     from lies.agents.linter import LintFinding, LintReport, LintSeverity
     from lies.orchestrator import _build_lint_report
@@ -148,10 +151,10 @@ def test_apply_interleaved_append_links(wiki: WikiLayout) -> None:
     _seed_page(wiki, "concepts/a.md", "---\ntitle: A\ntype: concept\n---\n# A\n")
     _seed_page(wiki, "concepts/b.md", "---\ntitle: B\ntype: concept\n---\n# B\n")
     _seed_page(wiki, "concepts/c.md", "---\ntitle: C\ntype: concept\n---\n# C\n")
-    subprocess.run(["git", "add", "."], cwd=wiki.root, check=True)
-    subprocess.run(["git", "commit", "-m", "seed"], cwd=wiki.root, check=True)
+    subprocess.run(["git", "add", "."], cwd=wiki.data_root, check=True)
+    subprocess.run(["git", "commit", "-m", "seed"], cwd=wiki.data_root, check=True)
 
-    orch = Orchestrator(wiki_root=wiki.root, model=TestModel())
+    orch = Orchestrator(wiki=wiki, model=TestModel())
     shell_report = LintReport(
         findings=[
             LintFinding(
@@ -230,13 +233,13 @@ def test_apply_interleaved_append_links(wiki: WikiLayout) -> None:
     assert (wiki.wiki_dir / "concepts" / "new.md").exists()
 
 
-def test_apply_skips_contradiction(wiki: WikiLayout) -> None:
+def test_apply_skips_contradiction(wiki: Wiki) -> None:
     """Lint finds 1 orphan + 1 contradiction; --fix applies the orphan, skips the contradiction."""
     _seed_page(wiki, "concepts/orphan.md", "---\ntitle: Orphan\n---\n# Orphan\n")
-    subprocess.run(["git", "add", "."], cwd=wiki.root, check=True)
-    subprocess.run(["git", "commit", "-m", "seed"], cwd=wiki.root, check=True)
+    subprocess.run(["git", "add", "."], cwd=wiki.data_root, check=True)
+    subprocess.run(["git", "commit", "-m", "seed"], cwd=wiki.data_root, check=True)
 
-    orch = Orchestrator(wiki_root=wiki.root, model=TestModel())
+    orch = Orchestrator(wiki=wiki, model=TestModel())
     plan = RepairPlan(
         operations=[
             UpdateIndex(
@@ -266,13 +269,13 @@ def test_apply_skips_contradiction(wiki: WikiLayout) -> None:
     assert "Orphan" in (wiki.wiki_dir / "index.md").read_text(encoding="utf-8")
 
 
-def test_apply_fails_when_lock_held(wiki: WikiLayout, tmp_path: Path) -> None:
+def test_apply_fails_when_lock_held(wiki: Wiki, tmp_path: Path) -> None:
     """Cross-process flock blocks the apply; wiki is unchanged."""
     import sys
     import textwrap
     import time
 
-    lock_path = wiki.root / ".lies" / "memory.lock"
+    lock_path = wiki.memory_lock_path
     ready = tmp_path / "holder.ready"
     holder_script = textwrap.dedent(
         """
@@ -297,7 +300,7 @@ def test_apply_fails_when_lock_held(wiki: WikiLayout, tmp_path: Path) -> None:
                 pytest.fail("holder did not signal ready in time")
             time.sleep(0.05)
 
-        orch = Orchestrator(wiki_root=wiki.root, model=TestModel())
+        orch = Orchestrator(wiki=wiki, model=TestModel())
         plan = RepairPlan(
             operations=[
                 CreateStub(
@@ -354,14 +357,14 @@ def test_apply_fails_when_lock_held(wiki: WikiLayout, tmp_path: Path) -> None:
         holder.wait(timeout=5)
 
 
-def test_apply_receipt_in_lint_report(wiki: WikiLayout) -> None:
+def test_apply_receipt_in_lint_report(wiki: Wiki) -> None:
     """The post-apply wiki/lint-report.md shows per-finding bullets."""
     _seed_page(wiki, "concepts/a.md", "---\ntitle: A\n---\n# A\n")
     _seed_page(wiki, "concepts/b.md", "---\ntitle: B\n---\n# B\n")
-    subprocess.run(["git", "add", "."], cwd=wiki.root, check=True)
-    subprocess.run(["git", "commit", "-m", "seed"], cwd=wiki.root, check=True)
+    subprocess.run(["git", "add", "."], cwd=wiki.data_root, check=True)
+    subprocess.run(["git", "commit", "-m", "seed"], cwd=wiki.data_root, check=True)
 
-    orch = Orchestrator(wiki_root=wiki.root, model=TestModel())
+    orch = Orchestrator(wiki=wiki, model=TestModel())
     plan = RepairPlan(
         operations=[
             AppendLink(
@@ -386,7 +389,7 @@ def test_apply_receipt_in_lint_report(wiki: WikiLayout) -> None:
     ):
         orch.run_lint(apply=True)
 
-    report = wiki.lint_report_path.read_text(encoding="utf-8")
+    report = (wiki.wiki_dir / "lint-report.md").read_text(encoding="utf-8")
     assert "Applied" in report
     assert "append_link" in report
     assert "concepts/a.md" in report
@@ -409,16 +412,18 @@ def orch(tmp_path: Path) -> Orchestrator:
     fixture is the single source of truth for the harness bootstrap.
     """
     root = tmp_path / "wiki"
-    for sub in ("wiki", ".lies", "raw"):
+    for sub in ("wiki", "raw"):
         (root / sub).mkdir(parents=True)
     (root / "wiki" / "index.md").write_text("# Index\n", encoding="utf-8")
-    (root / ".lies" / "schema.md").write_text("## Page types\n- concept\n", encoding="utf-8")
+    w = make_wiki(name="lint-multi", data_root=root)
+    w.config_root.mkdir(parents=True, exist_ok=True)
+    (w.config_root / "schema.md").write_text("## Page types\n- concept\n", encoding="utf-8")
     subprocess.run(["git", "init", "--initial-branch=main", str(root)], check=True)
     subprocess.run(["git", "config", "user.email", "t@e.com"], cwd=root, check=True)
     subprocess.run(["git", "config", "user.name", "T"], cwd=root, check=True)
     subprocess.run(["git", "add", "."], cwd=root, check=True)
     subprocess.run(["git", "commit", "-m", "init"], cwd=root, check=True)
-    return Orchestrator(wiki_root=root, model="test")
+    return Orchestrator(wiki=w, model="test")
 
 
 def test_run_lint_end_to_end_with_linter_categories(orch: Orchestrator) -> None:
@@ -454,7 +459,7 @@ def test_run_lint_end_to_end_with_linter_categories(orch: Orchestrator) -> None:
     from lies.agents.repair import RepairAgentDeps
     from lies.orchestrator import _build_lint_report
 
-    base = orch.layout.wiki_dir
+    base = orch.wiki.wiki_dir
     (base / "concepts").mkdir(exist_ok=True)
     (base / "concepts" / "alpha.md").write_text(
         "---\ntitle: Alpha\ntype: concept\nsources:\n  - raw/missing.md\n---\n"
@@ -469,8 +474,8 @@ def test_run_lint_end_to_end_with_linter_categories(orch: Orchestrator) -> None:
         "---\ntitle: Lonely\ntype: concept\n---\n# Lonely\n",
         encoding="utf-8",
     )
-    subprocess.run(["git", "add", "."], cwd=orch.layout.root, check=True)
-    subprocess.run(["git", "commit", "-m", "seed"], cwd=orch.layout.root, check=True)
+    subprocess.run(["git", "add", "."], cwd=orch.wiki.data_root, check=True)
+    subprocess.run(["git", "commit", "-m", "seed"], cwd=orch.wiki.data_root, check=True)
 
     # Shell produces an orphan finding for lonely plus a missing_xref
     # alpha→beta and a missing_page for the raw/missing.md source, so
@@ -633,7 +638,7 @@ def test_run_lint_repair_agent_receives_shell_page_texts(orch: Orchestrator) -> 
     """
     from lies.agents.repair import RepairAgentDeps
 
-    base = orch.layout.wiki_dir
+    base = orch.wiki.wiki_dir
     (base / "concepts").mkdir(exist_ok=True)
     (base / "concepts" / "alpha.md").write_text(
         "---\ntitle: Alpha\ntype: concept\n---\n# Alpha\n\nSee Beta for more.\n",
@@ -643,8 +648,8 @@ def test_run_lint_repair_agent_receives_shell_page_texts(orch: Orchestrator) -> 
         "---\ntitle: Beta\ntype: concept\n---\n# Beta\n\ndetails.\n",
         encoding="utf-8",
     )
-    subprocess.run(["git", "add", "."], cwd=orch.layout.root, check=True)
-    subprocess.run(["git", "commit", "-m", "seed"], cwd=orch.layout.root, check=True)
+    subprocess.run(["git", "add", "."], cwd=orch.wiki.data_root, check=True)
+    subprocess.run(["git", "commit", "-m", "seed"], cwd=orch.wiki.data_root, check=True)
 
     captured: dict[str, object] = {}
 
@@ -693,14 +698,14 @@ def test_run_lint_end_to_end_linter_unavailable(orch: Orchestrator) -> None:
     shell's orphan finding survives in the merged report and the
     ``### Sources`` footer must carry the formatted fallback line.
     """
-    base = orch.layout.wiki_dir
+    base = orch.wiki.wiki_dir
     (base / "concepts").mkdir(exist_ok=True)
     (base / "concepts" / "lonely.md").write_text(
         "---\ntitle: Lonely\ntype: concept\n---\n# Lonely\n",
         encoding="utf-8",
     )
-    subprocess.run(["git", "add", "."], cwd=orch.layout.root, check=True)
-    subprocess.run(["git", "commit", "-m", "seed"], cwd=orch.layout.root, check=True)
+    subprocess.run(["git", "add", "."], cwd=orch.wiki.data_root, check=True)
+    subprocess.run(["git", "commit", "-m", "seed"], cwd=orch.wiki.data_root, check=True)
 
     def fake_run_sync(prompt: str, deps: object = None, **_kwargs: object):  # type: ignore[no-untyped-def]
         raise RuntimeError("model offline")
@@ -723,16 +728,16 @@ def test_run_lint_end_to_end_linter_unavailable(orch: Orchestrator) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_apply_rejects_plan_with_unsafe_finding(wiki: WikiLayout) -> None:
+def test_apply_rejects_plan_with_unsafe_finding(wiki: Wiki) -> None:
     """Repair agent emits a CreateStub for a safe_to_fix=False finding; --fix rejects."""
     from lies.agents.linter import LintFinding, LintReport, LintSeverity
     from lies.orchestrator import _build_lint_report
 
     _seed_page(wiki, "concepts/a.md", "---\ntitle: A\n---\n# A\n")
-    subprocess.run(["git", "add", "."], cwd=wiki.root, check=True)
-    subprocess.run(["git", "commit", "-m", "seed"], cwd=wiki.root, check=True)
+    subprocess.run(["git", "add", "."], cwd=wiki.data_root, check=True)
+    subprocess.run(["git", "commit", "-m", "seed"], cwd=wiki.data_root, check=True)
 
-    orch = Orchestrator(wiki_root=wiki.root, model=TestModel())
+    orch = Orchestrator(wiki=wiki, model=TestModel())
     # A contradiction finding: safe_to_fix=False, but the plan still
     # emits a CreateStub. The structural validator must catch it.
     findings = [
@@ -780,22 +785,22 @@ def test_apply_rejects_plan_with_unsafe_finding(wiki: WikiLayout) -> None:
     assert not (wiki.wiki_dir / "concepts" / "new.md").exists()
     # No commit beyond the seed (fixture init + test seed = 2 lines).
     log = subprocess.run(
-        ["git", "log", "--oneline"], cwd=wiki.root, check=True, capture_output=True, text=True
+        ["git", "log", "--oneline"], cwd=wiki.data_root, check=True, capture_output=True, text=True
     ).stdout
     assert log.count("\n") == 2  # init + seed only; the rejected plan added no commit
 
 
-def test_apply_drops_redundant_update_index(wiki: WikiLayout) -> None:
+def test_apply_drops_redundant_update_index(wiki: Wiki) -> None:
     """Repair agent emits an UpdateIndex for a page already in the index; --fix drops it."""
     _seed_page(wiki, "concepts/lonely.md", "---\ntitle: Lonely\n---\n# Lonely\n")
     # Pre-seed the index with the orphan so the op is redundant.
     (wiki.wiki_dir / "index.md").write_text(
         "# Index\n- [Lonely](concepts/lonely.md)\n", encoding="utf-8"
     )
-    subprocess.run(["git", "add", "."], cwd=wiki.root, check=True)
-    subprocess.run(["git", "commit", "-m", "seed"], cwd=wiki.root, check=True)
+    subprocess.run(["git", "add", "."], cwd=wiki.data_root, check=True)
+    subprocess.run(["git", "commit", "-m", "seed"], cwd=wiki.data_root, check=True)
 
-    orch = Orchestrator(wiki_root=wiki.root, model=TestModel())
+    orch = Orchestrator(wiki=wiki, model=TestModel())
     plan = RepairPlan(
         operations=[
             UpdateIndex(
@@ -825,14 +830,14 @@ def test_apply_drops_redundant_update_index(wiki: WikiLayout) -> None:
     assert "Applied (0)" in report
 
 
-def test_apply_partial_plan_rejects_whole_plan(wiki: WikiLayout) -> None:
+def test_apply_partial_plan_rejects_whole_plan(wiki: Wiki) -> None:
     """One bad op in a multi-op plan rejects everything; wiki state is unchanged."""
     _seed_page(wiki, "concepts/a.md", "---\ntitle: A\n---\n# A\n")
     _seed_page(wiki, "concepts/b.md", "---\ntitle: B\n---\n# B\n")
-    subprocess.run(["git", "add", "."], cwd=wiki.root, check=True)
-    subprocess.run(["git", "commit", "-m", "seed"], cwd=wiki.root, check=True)
+    subprocess.run(["git", "add", "."], cwd=wiki.data_root, check=True)
+    subprocess.run(["git", "commit", "-m", "seed"], cwd=wiki.data_root, check=True)
 
-    orch = Orchestrator(wiki_root=wiki.root, model=TestModel())
+    orch = Orchestrator(wiki=wiki, model=TestModel())
     # First AppendLink is fine; second AppendLink targets a missing page.
     plan = RepairPlan(
         operations=[

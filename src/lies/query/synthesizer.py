@@ -27,7 +27,7 @@ from pathlib import Path
 from lies.qmd.cli import qmd_query
 from lies.query.index_parser import parse_index_links
 from lies.query.models import SynthesizedAnswer
-from lies.wiki.layout import WikiLayout
+from lies.wiki.wiki import Wiki
 
 DEFAULT_TOP_N = 5
 
@@ -51,12 +51,12 @@ class _PageRead:
 
 def synthesize_answer(
     question: str,
-    layout: WikiLayout,
+    wiki: Wiki,
     *,
     top_n: int = DEFAULT_TOP_N,
     qmd_search: QmdSearchFn = qmd_query,
 ) -> SynthesizedAnswer:
-    """Answer `question` using the wiki at `layout`.
+    """Answer `question` using the wiki at `wiki`.
 
     Tries ``qmd_search`` first. On ``QmdNotInstalledError``,
     ``QmdNoResultsError``, or any other qmd failure, falls back to
@@ -64,7 +64,7 @@ def synthesize_answer(
 
     Args:
         question: The user's natural-language question.
-        layout: The wiki to search.
+        wiki: The wiki to search.
         top_n: Maximum number of pages to read (default 5, per schema).
         qmd_search: Injectable search callable. Defaults to
             :func:`lies.qmd.cli.qmd_query`. Tests pass a stub.
@@ -80,7 +80,7 @@ def synthesize_answer(
     fallback_reason = ""
 
     try:
-        pages = _qmd_search_dispatch(qmd_search, layout, question, top_n)
+        pages = _qmd_search_dispatch(qmd_search, wiki, question, top_n)
     except _QmdUnavailable:
         fallback_reason = FALLBACK_REASON_UNAVAILABLE
     except _QmdNoResults:
@@ -89,7 +89,7 @@ def synthesize_answer(
         fallback_reason = FALLBACK_REASON_FAILED
 
     if fallback_reason:
-        pages = _read_pages_from_index(layout, top_n=top_n)
+        pages = _read_pages_from_index(wiki, top_n=top_n)
 
     if not pages:
         return SynthesizedAnswer(
@@ -125,16 +125,16 @@ class _QmdOtherFailure(Exception):
 # ---------------------------------------------------------------------------
 
 
-def _read_pages_from_index(layout: WikiLayout, top_n: int) -> list[_PageRead]:
+def _read_pages_from_index(wiki: Wiki, top_n: int) -> list[_PageRead]:
     """Read the top-N pages referenced by ``wiki/index.md``.
 
     Only the first ``top_n`` *existing* pages are returned, in index
     order (which the indexer keeps alphabetical within each section).
     """
-    if not layout.index_path.exists():
+    if not (wiki.wiki_dir / "index.md").exists():
         return []
 
-    content = layout.index_path.read_text(encoding="utf-8")
+    content = (wiki.wiki_dir / "index.md").read_text(encoding="utf-8")
     links = parse_index_links(content)
 
     pages: list[_PageRead] = []
@@ -142,18 +142,18 @@ def _read_pages_from_index(layout: WikiLayout, top_n: int) -> list[_PageRead]:
         if len(pages) >= top_n:
             break
         # The index stores paths relative to wiki/, e.g., "entities/postgres.md"
-        page_on_disk = layout.wiki_dir / link.path
-        read = _try_read(page_on_disk, layout, title_override=link.title)
+        page_on_disk = wiki.wiki_dir / link.path
+        read = _try_read(page_on_disk, wiki, title_override=link.title)
         if read is not None:
             pages.append(read)
     return pages
 
 
-def _resolve_qmd_pages(layout: WikiLayout, qmd_paths: list[str], top_n: int) -> list[_PageRead]:
+def _resolve_qmd_pages(wiki: Wiki, qmd_paths: list[str], top_n: int) -> list[_PageRead]:
     """Resolve qmd-returned paths to actual readable pages on disk.
 
     Defends against path traversal: any returned path that escapes
-    ``layout.root`` is silently dropped.
+    ``wiki.data_root`` is silently dropped.
     """
     pages: list[_PageRead] = []
     for raw in qmd_paths:
@@ -161,20 +161,18 @@ def _resolve_qmd_pages(layout: WikiLayout, qmd_paths: list[str], top_n: int) -> 
             break
         candidate = Path(raw)
         if not candidate.is_absolute():
-            candidate = (layout.root / raw).resolve()
+            candidate = (wiki.data_root / raw).resolve()
         try:
-            candidate.relative_to(layout.root)
+            candidate.relative_to(wiki.data_root)
         except ValueError:
             continue
-        read = _try_read(candidate, layout)
+        read = _try_read(candidate, wiki)
         if read is not None:
             pages.append(read)
     return pages
 
 
-def _try_read(
-    path: Path, layout: WikiLayout, *, title_override: str | None = None
-) -> _PageRead | None:
+def _try_read(path: Path, wiki: Wiki, *, title_override: str | None = None) -> _PageRead | None:
     """Read a page; return None if missing/unreadable."""
     if not path.exists() or not path.is_file():
         return None
@@ -183,7 +181,7 @@ def _try_read(
     except (OSError, UnicodeDecodeError):
         return None
 
-    rel = path.relative_to(layout.root).as_posix()
+    rel = path.relative_to(wiki.data_root).as_posix()
     title = title_override or _extract_title(content) or path.stem
     excerpt = _first_meaningful_paragraph(content)
     return _PageRead(rel_path=rel, title=title, excerpt=excerpt)
@@ -313,9 +311,7 @@ def _empty_answer(question: str, fallback_reason: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _qmd_search_dispatch(
-    fn: QmdSearchFn, layout: WikiLayout, question: str, top_n: int
-) -> list[_PageRead]:
+def _qmd_search_dispatch(fn: QmdSearchFn, wiki: Wiki, question: str, top_n: int) -> list[_PageRead]:
     """Call ``fn`` and translate its real exceptions into sentinels.
 
     The public ``synthesize_answer`` only catches the sentinel
@@ -330,7 +326,7 @@ def _qmd_search_dispatch(
     )
 
     try:
-        results = fn(layout.root, question, top_n)
+        results = fn(wiki.data_root, question, top_n)
     except QmdNotInstalledError as exc:
         raise _QmdUnavailable(str(exc)) from exc
     except QmdNoResultsError as exc:
@@ -341,7 +337,7 @@ def _qmd_search_dispatch(
     qmd_paths = [
         path for r in results if isinstance(r, dict) and isinstance((path := r.get("path")), str)
     ]
-    pages = _resolve_qmd_pages(layout, qmd_paths, top_n)
+    pages = _resolve_qmd_pages(wiki, qmd_paths, top_n)
     if not pages:
         # qmd gave us hits but none of the files are readable — treat as
         # "no results" so the fallback path runs.

@@ -10,7 +10,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 from lies.collections.hash_manifest import HashManifest
@@ -23,6 +22,7 @@ from lies.etl.stages.register import run_register
 from lies.etl.stages.scrape import run_scrape
 from lies.etl.stages.write import run_write
 from lies.etl.telemetry import SyncTelemetry
+from lies.wiki.wiki import Wiki
 
 if TYPE_CHECKING:
     from lies.scrapers.base import ParsedDoc
@@ -52,39 +52,39 @@ class SyncOrchestrator:
     def __init__(
         self,
         *,
+        wiki: Wiki,
         collection: Collection,
         telemetry: SyncTelemetry,
         budget: CostBudget,
         manifest: HashManifest,
-        wiki_root: Path,
         force: bool = False,
     ) -> None:
+        self.wiki = wiki
         self.collection = collection
         self.telemetry = telemetry
         self.budget = budget
         self.manifest = manifest
-        self.wiki_root = wiki_root
         self.force = force
         self.state = PipelineState.IDLE
         from lies.memory.service import WikiMemoryService
-        from lies.wiki.layout import WikiLayout
 
-        self._service = WikiMemoryService(WikiLayout(wiki_root))
+        self._service = WikiMemoryService(wiki)
 
     def _transition(self, target: PipelineState) -> None:
         self.telemetry.record_stage(self.state.value, next_state=target.value)
         self.state = target
 
     def run(self) -> None:
+        wiki = self.wiki
         try:
             self.telemetry.record_started(datetime.now(tz=timezone.utc).isoformat())
             self._transition(PipelineState.SCRAPING)
-            scraped = run_scrape(self.collection)
+            scraped = run_scrape(wiki, self.collection)
             self.telemetry.record_counter("docs_total", len(scraped.success))
             self.telemetry.record_counter("bytes_in", scraped.bytes_in)
 
             self._transition(PipelineState.NORMALIZING)
-            normalized = run_normalize(self.collection, scraped.parsed_docs)
+            normalized = run_normalize(wiki, self.collection, scraped.parsed_docs)
             self.telemetry.record_counter("docs_quarantined", len(normalized.quarantined))
             self.telemetry.record_counter("bytes_in", normalized.bytes_in)
 
@@ -94,23 +94,23 @@ class SyncOrchestrator:
                 for d in normalized.parsed_docs
             ]
             written = run_write(
+                wiki,
                 self.collection,
                 normalized_pairs,
                 manifest=self.manifest,
                 force=self.force,
-                wiki_root=self.wiki_root,
             )
             self.telemetry.record_counter("bytes_out", written.bytes_out or normalized.bytes_out)
 
             self._transition(PipelineState.REGISTERING)
             if written.success or written.skipped:
                 try:
-                    run_register(self.collection, self._service)
+                    run_register(wiki, self.collection, self._service)
                 except Exception:  # noqa: BLE001
                     self.telemetry.record_error("registration_failed")
 
             self._transition(PipelineState.QMD_UPDATE)
-            run_qmd_update(self.collection)
+            run_qmd_update(wiki, self.collection)
 
             self._transition(PipelineState.IDLE)
             self.telemetry.record_ended(datetime.now(tz=timezone.utc).isoformat())

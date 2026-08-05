@@ -11,23 +11,26 @@ from lies.collections.errors import (
     CollectionNameRejected,
     CollectionNotFound,
 )
-from lies.collections.record import (
-    CONFIG_DIR_NAME,
-    Collection,
-    load_collection,
-    save_collection,
-)
+from lies.collections.record import Collection, load_collection, save_collection
+from lies.wiki.wiki import Wiki
 
 
-@pytest.fixture
-def wiki(tmp_path: Path) -> Path:
-    config_dir = tmp_path / ".lies" / CONFIG_DIR_NAME
-    config_dir.mkdir(parents=True)
-    return tmp_path
+def _wiki(tmp_path: Path) -> Wiki:
+    wiki = Wiki(
+        name="test",
+        data_root=tmp_path / "data",
+        config_root=tmp_path / "config",
+        cache_root=tmp_path / "cache",
+        state_root=tmp_path / "state",
+        runtime_root=tmp_path / "runtime",
+    )
+    wiki.config_root.mkdir(parents=True, exist_ok=True)
+    wiki.collections_dir.mkdir(parents=True, exist_ok=True)
+    return wiki
 
 
-def _write(wiki: Path, name: str, payload: dict[str, object]) -> None:
-    path = wiki / ".lies" / CONFIG_DIR_NAME / f"{name}.yaml"
+def _write(wiki: Wiki, name: str, payload: dict[str, object]) -> None:
+    path = Collection.config_path(wiki, name)
     path.write_text(yaml.safe_dump(payload), encoding="utf-8")
 
 
@@ -47,7 +50,8 @@ def _good(name: str = "cpython") -> dict[str, object]:
     }
 
 
-def test_collection_loads_valid_config(wiki: Path) -> None:
+def test_collection_loads_valid_config(tmp_path: Path) -> None:
+    wiki = _wiki(tmp_path)
     _write(wiki, "cpython", _good())
 
     collection = load_collection(wiki, "cpython")
@@ -58,7 +62,8 @@ def test_collection_loads_valid_config(wiki: Path) -> None:
 
 
 @pytest.mark.parametrize("operator", ["+", "&", "|", "-"])
-def test_collection_rejects_operator_chars(wiki: Path, operator: str) -> None:
+def test_collection_rejects_operator_chars(tmp_path: Path, operator: str) -> None:
+    wiki = _wiki(tmp_path)
     name = f"bad{operator}name"
     _write(wiki, name, _good(name))
 
@@ -66,13 +71,15 @@ def test_collection_rejects_operator_chars(wiki: Path, operator: str) -> None:
         load_collection(wiki, name)
 
 
-def test_collection_not_found(wiki: Path) -> None:
+def test_collection_not_found(tmp_path: Path) -> None:
+    wiki = _wiki(tmp_path)
     with pytest.raises(CollectionNotFound):
         load_collection(wiki, "missing")
 
 
-def test_collection_invalid_yaml(wiki: Path) -> None:
-    (wiki / ".lies" / CONFIG_DIR_NAME / "broken.yaml").write_text(
+def test_collection_invalid_yaml(tmp_path: Path) -> None:
+    wiki = _wiki(tmp_path)
+    (Collection.config_path(wiki, "broken").parent / "broken.yaml").write_text(
         "name: [\nbroken", encoding="utf-8"
     )
 
@@ -98,7 +105,8 @@ def test_collection_qmd_name_matches_name() -> None:
     assert collection.qmd_name() == "cpython"
 
 
-def test_save_then_load_roundtrip(wiki: Path, tmp_path: Path) -> None:
+def test_save_then_load_roundtrip(tmp_path: Path) -> None:
+    wiki = _wiki(tmp_path)
     collection = Collection(
         name="vuejs",
         path=tmp_path / "raw" / "vuejs",
@@ -124,6 +132,7 @@ def test_collection_round_trips_config(tmp_path: Path) -> None:
 
     from lies.collections.record import Collection, load_collection, save_collection
 
+    wiki = _wiki(tmp_path)
     now = datetime.now(tz=timezone.utc)
     c = Collection(
         name="htmx",
@@ -139,8 +148,8 @@ def test_collection_round_trips_config(tmp_path: Path) -> None:
         updated_at=now,
         config={"sphinx_includes": ["docs/**/*.rst"], "sphinx_excludes": ["_templates/**"]},
     )
-    save_collection(tmp_path, c)
-    loaded = load_collection(tmp_path, "htmx")
+    save_collection(wiki, c)
+    loaded = load_collection(wiki, "htmx")
     assert loaded.config == {
         "sphinx_includes": ["docs/**/*.rst"],
         "sphinx_excludes": ["_templates/**"],
@@ -152,6 +161,7 @@ def test_collection_config_defaults_to_empty_dict(tmp_path: Path) -> None:
 
     from lies.collections.record import load_collection
 
+    wiki = _wiki(tmp_path)
     # Build a minimal Collection, then write a YAML that omits the config field.
     payload = {
         "name": "no_cfg",
@@ -166,8 +176,8 @@ def test_collection_config_defaults_to_empty_dict(tmp_path: Path) -> None:
         "created_at": datetime.now(tz=timezone.utc).isoformat(),
         "updated_at": datetime.now(tz=timezone.utc).isoformat(),
     }
-    cfg_dir = tmp_path / ".lies" / "collections"
-    cfg_dir.mkdir(parents=True)
+    cfg_dir = wiki.collections_dir
+    cfg_dir.mkdir(parents=True, exist_ok=True)
     (cfg_dir / "no_cfg.yaml").write_text(yaml.safe_dump(payload, sort_keys=True), encoding="utf-8")
-    loaded = load_collection(tmp_path, "no_cfg")
+    loaded = load_collection(wiki, "no_cfg")
     assert loaded.config == {}

@@ -26,7 +26,7 @@ from lies.agents.repair_models import (
     UpdateIndex,
 )
 from lies.memory.validation import validate_page_path
-from lies.wiki.layout import WikiLayout
+from lies.wiki.wiki import Wiki
 
 
 def _index_listed_paths(index_path: Path) -> set[str]:
@@ -64,7 +64,7 @@ class ValidatedRepairPlan:
 
 def validate_plan(
     plan: RepairPlan,
-    layout: WikiLayout,
+    wiki: Wiki,
     findings: list[LintFinding],
 ) -> ValidatedRepairPlan:
     """Validate ``plan`` against the wiki layout and the lint findings."""
@@ -101,28 +101,28 @@ def validate_plan(
             )
         # Rule 4: per-op filesystem checks.
         if isinstance(op, CreateStub):
-            resolved = validate_page_path(layout, op.path)
+            resolved = validate_page_path(wiki, op.path)
             if resolved.exists():
                 raise WikiPlanInvalid(
                     f"CreateStub: path {op.path!r} already exists",
                     path=op.path,
                 )
         elif isinstance(op, AppendLink):
-            target = validate_page_path(layout, op.target_path)
+            target = validate_page_path(wiki, op.target_path)
             if not target.exists():
                 raise WikiPlanInvalid(
                     f"AppendLink: target_path {op.target_path!r} does not exist; "
                     f"use CreateStub instead",
                     path=op.target_path,
                 )
-            host = validate_page_path(layout, op.append_to)
+            host = validate_page_path(wiki, op.append_to)
             if not host.exists():
                 raise WikiPlanInvalid(
                     f"AppendLink: append_to {op.append_to!r} does not exist",
                     path=op.append_to,
                 )
         elif isinstance(op, AppendEvidence):
-            resolved = validate_page_path(layout, op.path)
+            resolved = validate_page_path(wiki, op.path)
             if not resolved.exists():
                 raise WikiPlanInvalid(
                     f"AppendEvidence: path {op.path!r} does not exist",
@@ -131,7 +131,7 @@ def validate_plan(
         # UpdateIndex is handled by rule 5 below.
 
     # Rule 5: drop redundant UpdateIndex ops.
-    listed = _index_listed_paths(layout.index_path)
+    listed = _index_listed_paths(wiki.wiki_dir / "index.md")
     kept: list = []
     dropped: list[int] = []
     for index, op in enumerate(plan.operations):

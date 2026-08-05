@@ -1,32 +1,36 @@
 """Hash manifest — per-collection doc-path → sha256 map.
 
-Stored at ``<wiki>/.lies/hashes/<collection>.json``. Compare on
-ingest decides whether a doc is skipped (hash unchanged) or rewritten.
+Stored in the wiki's XDG cache directory. Compare on ingest decides
+whether a doc is skipped (hash unchanged) or rewritten.
 """
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-_HASH_DIR = "hashes"
+if TYPE_CHECKING:
+    from lies.wiki.wiki import Wiki
+
 _MANIFEST_FILENAME = "{collection}.json"
 
 
 class HashManifest:
-    def __init__(self, wiki_root: Path, collection: str) -> None:
-        self._wiki_root = wiki_root
+    def __init__(self, wiki: Wiki, collection: str) -> None:
+        from lies.wiki.wiki import Wiki
+
+        if not isinstance(wiki, Wiki):
+            raise TypeError("HashManifest requires a Wiki instance")
+        self._wiki = wiki
         self._collection = collection
-        self._path = self._manifest_path()
+        self._path = wiki.hashes_dir / _MANIFEST_FILENAME.format(collection=collection)
         self._data: dict[str, str] = self._load()
 
-    def _manifest_path(self) -> Path:
-        return (
-            self._wiki_root
-            / ".lies"
-            / _HASH_DIR
-            / _MANIFEST_FILENAME.format(collection=self._collection)
-        )
+    @property
+    def path(self) -> Path:
+        """The on-disk path the manifest reads from and writes to."""
+        return self._path
 
     def _load(self) -> dict[str, str]:
         if not self._path.exists():
@@ -53,7 +57,7 @@ class HashManifest:
         self._path.write_text(json.dumps(self._data, indent=2), encoding="utf-8")
 
     def snapshot(self) -> Path:
-        snap_path = self._path.with_name(f"{self._collection}.pre-sync.json")
+        snap_path = self._wiki.hashes_dir / f"{self._collection}.pre-sync.json"
         snap_path.parent.mkdir(parents=True, exist_ok=True)
         snap_path.write_text(json.dumps(self._data, indent=2), encoding="utf-8")
         return snap_path

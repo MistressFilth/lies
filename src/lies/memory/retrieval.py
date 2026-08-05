@@ -24,7 +24,7 @@ from lies.qmd.cli import (
     QmdNotInstalledError,
 )
 from lies.query.index_parser import parse_index_links
-from lies.wiki.layout import WikiLayout
+from lies.wiki.wiki import Wiki
 
 _QMD_FALLBACK_UNAVAILABLE = "qmd_unavailable"
 _QMD_FALLBACK_NO_RESULTS = "qmd_no_results"
@@ -58,8 +58,8 @@ def _line_range_for_excerpt(content: str, excerpt: str) -> tuple[int, int]:
     return (0, max(len(lines) - 1, 0))
 
 
-def _read_page_content(layout: WikiLayout, path: str) -> str:
-    resolved = validate_page_path(layout, path)
+def _read_page_content(wiki: Wiki, path: str) -> str:
+    resolved = validate_page_path(wiki, path)
     if not resolved.exists():
         return ""
     try:
@@ -69,13 +69,13 @@ def _read_page_content(layout: WikiLayout, path: str) -> str:
 
 
 def _from_qmd(
-    layout: WikiLayout,
+    wiki: Wiki,
     question: str,
     limit: int,
     qmd_search: Callable[..., list[dict[str, object]]],
 ) -> tuple[list[WikiEvidence], bool, str]:
     try:
-        results = qmd_search(layout.root, question, limit + 1)
+        results = qmd_search(wiki.data_root, question, limit + 1)
     except QmdNotInstalledError:
         return ([], True, _QMD_FALLBACK_UNAVAILABLE)
     except QmdNoResultsError:
@@ -90,15 +90,15 @@ def _from_qmd(
             continue
         candidate = Path(raw_path)
         if not candidate.is_absolute():
-            candidate = (layout.root / raw_path).resolve()
+            candidate = (wiki.data_root / raw_path).resolve()
         # Compute the path relative to ``wiki_dir`` so it matches the
         # convention used by ``validate_page_path`` and the index parser.
         try:
-            wiki_rel = candidate.relative_to(layout.wiki_dir).as_posix()
+            wiki_rel = candidate.relative_to(wiki.wiki_dir).as_posix()
         except ValueError:
             continue
         try:
-            validate_page_path(layout, wiki_rel)
+            validate_page_path(wiki, wiki_rel)
         except Exception:  # noqa: BLE001, S112 - rejection is the point
             continue
         score_raw = item.get("score", 0.0)
@@ -106,14 +106,14 @@ def _from_qmd(
             score = float(score_raw)
         else:
             score = 0.0
-        content = _read_page_content(layout, wiki_rel)
+        content = _read_page_content(wiki, wiki_rel)
         excerpt = _excerpt(content)
         start, end = _line_range_for_excerpt(content, excerpt)
         evidences.append(
             WikiEvidence(
                 page_id=_page_id_for(wiki_rel),
                 path=wiki_rel,
-                collection_id=layout.root.name,
+                collection_id=wiki.name,
                 excerpt=excerpt,
                 line_start=start,
                 line_end=end,
@@ -126,15 +126,16 @@ def _from_qmd(
     return (evidences[:limit], truncated, "")
 
 
-def _from_index(layout: WikiLayout, question: str, limit: int) -> list[WikiEvidence]:
-    if not layout.index_path.exists():
+def _from_index(wiki: Wiki, question: str, limit: int) -> list[WikiEvidence]:
+    index_path = wiki.wiki_dir / "index.md"
+    if not index_path.exists():
         return []
-    content = layout.index_path.read_text(encoding="utf-8")
+    content = index_path.read_text(encoding="utf-8")
     links = parse_index_links(content)
     query_terms = {token.lower() for token in re.findall(r"\w+", question)}
     evidences: list[WikiEvidence] = []
     for link in links:
-        body = _read_page_content(layout, link.path)
+        body = _read_page_content(wiki, link.path)
         if not body:
             continue
         haystack = (link.title + " " + body).lower()
@@ -146,7 +147,7 @@ def _from_index(layout: WikiLayout, question: str, limit: int) -> list[WikiEvide
             WikiEvidence(
                 page_id=_page_id_for(link.path),
                 path=link.path,
-                collection_id=layout.root.name,
+                collection_id=wiki.name,
                 excerpt=excerpt,
                 line_start=start,
                 line_end=end,
@@ -159,7 +160,7 @@ def _from_index(layout: WikiLayout, question: str, limit: int) -> list[WikiEvide
 
 
 def search_wiki(
-    layout: WikiLayout,
+    wiki: Wiki,
     question: str,
     *,
     limit: int = 5,
@@ -180,9 +181,9 @@ def search_wiki(
             fallback_used=True,
             fallback_reason="empty_query",
         )
-    evidences, truncated, fallback_reason = _from_qmd(layout, question, limit, qmd_search)
+    evidences, truncated, fallback_reason = _from_qmd(wiki, question, limit, qmd_search)
     if not evidences:
-        evidences = _from_index(layout, question, limit)
+        evidences = _from_index(wiki, question, limit)
     return WikiSearchResult(
         query=question,
         pages=evidences,
@@ -192,7 +193,7 @@ def search_wiki(
     )
 
 
-def read_pages(layout: WikiLayout, page_ids: list[str]) -> dict[str, str]:
+def read_pages(wiki: Wiki, page_ids: list[str]) -> dict[str, str]:
     """Read full page markdown for the given page IDs.
 
     Page IDs are the values returned by :func:`search_wiki`. Unknown
@@ -206,16 +207,16 @@ def read_pages(layout: WikiLayout, page_ids: list[str]) -> dict[str, str]:
         # The page id encodes the path; we recompute the id->path map
         # by scanning the wiki for the matching id. This keeps the
         # service free of model-supplied filesystem paths.
-        path = _path_for_id(layout, page_id)
+        path = _path_for_id(wiki, page_id)
         if path is None:
             continue
-        bodies[page_id] = _read_page_content(layout, path)
+        bodies[page_id] = _read_page_content(wiki, path)
     return bodies
 
 
-def _path_for_id(layout: WikiLayout, page_id: str) -> str | None:
-    for path in sorted(layout.wiki_dir.rglob("*.md")):
-        rel = path.relative_to(layout.wiki_dir).as_posix()
+def _path_for_id(wiki: Wiki, page_id: str) -> str | None:
+    for path in sorted(wiki.wiki_dir.rglob("*.md")):
+        rel = path.relative_to(wiki.wiki_dir).as_posix()
         if rel in {"index.md", "log.md", "overview.md", "lint-report.md"}:
             continue
         if _page_id_for(rel) == page_id:

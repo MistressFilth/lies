@@ -1,14 +1,11 @@
 """MCP server package.
 
-Re-exports the FastMCP server instance and the WikiRootError exception
-class for tool implementations.
+Re-exports the FastMCP server instance for tool implementations.
 """
 
 from __future__ import annotations
 
-from lies.mcp.resolution import WikiRootError
-
-__all__ = ["WikiRootError", "mcp"]
+__all__ = ["mcp"]
 
 
 # Imported lazily so importing the package without FastMCP installed

@@ -11,21 +11,24 @@ from pathlib import Path
 from unittest import mock
 
 from lies.orchestrator import Orchestrator
+from tests.conftest import make_wiki
 
 
 def test_run_ingest_delegates_to_sync_collection(tmp_path: Path) -> None:
-    o = Orchestrator(wiki_root=tmp_path, model="test")
+    wiki = make_wiki(name="ingest-1", data_root=tmp_path)
+    o = Orchestrator(wiki=wiki, model="test")
     with mock.patch("lies.etl.sync_helper.sync_collection") as m:
         o.run_ingest("source.md")
     m.assert_called_once()
     args, kwargs = m.call_args
-    assert args[0] == tmp_path
+    assert args[0] is o.wiki
     assert args[1] == "source"
     assert kwargs == {"force": False}
 
 
 def test_run_ingest_preserves_existing_return_type(tmp_path: Path) -> None:
-    o = Orchestrator(wiki_root=tmp_path, model="test")
+    wiki = make_wiki(name="ingest-2", data_root=tmp_path)
+    o = Orchestrator(wiki=wiki, model="test")
     with mock.patch("lies.etl.sync_helper.sync_collection"):
         result = o.run_ingest("source.md")
     assert result == "ingested source.md"
@@ -33,7 +36,8 @@ def test_run_ingest_preserves_existing_return_type(tmp_path: Path) -> None:
 
 def test_run_ingest_derives_collection_name_from_stem(tmp_path: Path) -> None:
     """The collection name is the source's filename stem, not the full path."""
-    o = Orchestrator(wiki_root=tmp_path, model="test")
+    wiki = make_wiki(name="ingest-3", data_root=tmp_path)
+    o = Orchestrator(wiki=wiki, model="test")
     with mock.patch("lies.etl.sync_helper.sync_collection") as m:
         o.run_ingest("raw/articles/sample-article.md")
     args, _ = m.call_args

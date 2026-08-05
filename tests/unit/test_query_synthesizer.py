@@ -35,7 +35,7 @@ from lies.query.synthesizer import (
     FALLBACK_REASON_UNAVAILABLE,
     synthesize_answer,
 )
-from lies.wiki.layout import WikiLayout
+from lies.wiki.wiki import Wiki
 
 # ---------------------------------------------------------------------------
 # Helpers — fake qmd implementations covering each failure mode
@@ -73,7 +73,7 @@ def _qmd_empty_list(cwd: Path, question: str, top_n: int) -> list[dict[str, Any]
 # ---------------------------------------------------------------------------
 
 
-def test_empty_question_returns_marker(sample_wiki: WikiLayout) -> None:
+def test_empty_question_returns_marker(sample_wiki: Wiki) -> None:
     result = synthesize_answer("", sample_wiki)
     assert isinstance(result, SynthesizedAnswer)
     assert "empty question" in result.answer.lower()
@@ -81,7 +81,7 @@ def test_empty_question_returns_marker(sample_wiki: WikiLayout) -> None:
     assert result.citations == []
 
 
-def test_whitespace_only_question_returns_marker(sample_wiki: WikiLayout) -> None:
+def test_whitespace_only_question_returns_marker(sample_wiki: Wiki) -> None:
     result = synthesize_answer("   \n  ", sample_wiki)
     assert "empty question" in result.answer.lower()
 
@@ -91,7 +91,7 @@ def test_whitespace_only_question_returns_marker(sample_wiki: WikiLayout) -> Non
 # ---------------------------------------------------------------------------
 
 
-def test_qmd_happy_path_uses_qmd_results(sample_wiki: WikiLayout) -> None:
+def test_qmd_happy_path_uses_qmd_results(sample_wiki: Wiki) -> None:
     paths = ["wiki/entities/postgres.md", "wiki/concepts/mvcc.md"]
     result = synthesize_answer(
         "How does MVCC work?",
@@ -112,7 +112,7 @@ def test_qmd_happy_path_uses_qmd_results(sample_wiki: WikiLayout) -> None:
         assert link in result.answer
 
 
-def test_qmd_results_capped_at_top_n(sample_wiki: WikiLayout) -> None:
+def test_qmd_results_capped_at_top_n(sample_wiki: Wiki) -> None:
     paths = ["wiki/entities/postgres.md"] * 10  # more than top_n
     result = synthesize_answer(
         "anything",
@@ -124,7 +124,7 @@ def test_qmd_results_capped_at_top_n(sample_wiki: WikiLayout) -> None:
     assert len(result.citations) == 2
 
 
-def test_qmd_returns_unreadable_paths_triggers_fallback(sample_wiki: WikiLayout) -> None:
+def test_qmd_returns_unreadable_paths_triggers_fallback(sample_wiki: Wiki) -> None:
     """qmd returned paths but none of them exist on disk → fallback."""
     paths = ["wiki/does-not-exist.md", "wiki/also-missing.md"]
     result = synthesize_answer(
@@ -140,7 +140,7 @@ def test_qmd_returns_unreadable_paths_triggers_fallback(sample_wiki: WikiLayout)
     assert "wiki/entities/postgres.md" in result.citations
 
 
-def test_qmd_path_traversal_is_dropped(sample_wiki: WikiLayout) -> None:
+def test_qmd_path_traversal_is_dropped(sample_wiki: Wiki) -> None:
     """Defense in depth: paths that escape the wiki root are skipped.
 
     With nothing readable from qmd, the fallback runs.
@@ -162,7 +162,7 @@ def test_qmd_path_traversal_is_dropped(sample_wiki: WikiLayout) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_qmd_unavailable_falls_back_to_index(sample_wiki: WikiLayout) -> None:
+def test_qmd_unavailable_falls_back_to_index(sample_wiki: Wiki) -> None:
     result = synthesize_answer(
         "anything",
         sample_wiki,
@@ -183,7 +183,7 @@ def test_qmd_unavailable_falls_back_to_index(sample_wiki: WikiLayout) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_qmd_no_results_falls_back_to_index(sample_wiki: WikiLayout) -> None:
+def test_qmd_no_results_falls_back_to_index(sample_wiki: Wiki) -> None:
     result = synthesize_answer(
         "anything",
         sample_wiki,
@@ -195,7 +195,7 @@ def test_qmd_no_results_falls_back_to_index(sample_wiki: WikiLayout) -> None:
     assert "qmd_no_results" in result.answer
 
 
-def test_qmd_empty_list_falls_back_to_index(sample_wiki: WikiLayout) -> None:
+def test_qmd_empty_list_falls_back_to_index(sample_wiki: Wiki) -> None:
     """Edge case: qmd returns [] instead of raising."""
     result = synthesize_answer(
         "anything",
@@ -211,7 +211,7 @@ def test_qmd_empty_list_falls_back_to_index(sample_wiki: WikiLayout) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_qmd_command_error_falls_back_to_index(sample_wiki: WikiLayout) -> None:
+def test_qmd_command_error_falls_back_to_index(sample_wiki: Wiki) -> None:
     result = synthesize_answer(
         "anything",
         sample_wiki,
@@ -229,7 +229,7 @@ def test_qmd_command_error_falls_back_to_index(sample_wiki: WikiLayout) -> None:
 
 
 def test_fallback_with_missing_index_returns_empty_answer(
-    empty_wiki: WikiLayout,
+    empty_wiki: Wiki,
 ) -> None:
     result = synthesize_answer(
         "anything",
@@ -244,7 +244,7 @@ def test_fallback_with_missing_index_returns_empty_answer(
 
 
 def test_no_results_with_missing_index_returns_empty_answer(
-    empty_wiki: WikiLayout,
+    empty_wiki: Wiki,
 ) -> None:
     result = synthesize_answer(
         "anything",
@@ -257,7 +257,7 @@ def test_no_results_with_missing_index_returns_empty_answer(
 
 
 def test_command_failure_with_missing_index_returns_empty_answer(
-    empty_wiki: WikiLayout,
+    empty_wiki: Wiki,
 ) -> None:
     result = synthesize_answer(
         "anything",
@@ -275,7 +275,7 @@ def test_command_failure_with_missing_index_returns_empty_answer(
 
 
 def test_fallback_skips_missing_pages_silently(
-    wiki_with_missing_pages: WikiLayout,
+    wiki_with_missing_pages: Wiki,
 ) -> None:
     result = synthesize_answer(
         "anything",
@@ -292,7 +292,7 @@ def test_fallback_skips_missing_pages_silently(
 # ---------------------------------------------------------------------------
 
 
-def test_fallback_respects_top_n(sample_wiki: WikiLayout) -> None:
+def test_fallback_respects_top_n(sample_wiki: Wiki) -> None:
     result = synthesize_answer(
         "anything",
         sample_wiki,
@@ -309,7 +309,7 @@ def test_fallback_respects_top_n(sample_wiki: WikiLayout) -> None:
     ]
 
 
-def test_default_top_n_is_five(sample_wiki: WikiLayout) -> None:
+def test_default_top_n_is_five(sample_wiki: Wiki) -> None:
     """The default top-N should match the schema's default of 5."""
     assert DEFAULT_TOP_N == 5
 
@@ -317,18 +317,20 @@ def test_default_top_n_is_five(sample_wiki: WikiLayout) -> None:
 def test_fallback_with_six_pages_only_reads_five(
     tmp_path: Path,
 ) -> None:
-    layout = WikiLayout(tmp_path)
-    layout.wiki_dir.mkdir(parents=True)
+    from tests.conftest import make_wiki
+
+    wiki = make_wiki(name="six-pages", data_root=tmp_path)
+    wiki.wiki_dir.mkdir(parents=True)
     links = "\n".join(f"- [P{i}](entities/p{i}.md)" for i in range(6))
-    layout.index_path.write_text(f"# Index\n\n{links}\n", encoding="utf-8")
+    (wiki.wiki_dir / "index.md").write_text(f"# Index\n\n{links}\n", encoding="utf-8")
     for i in range(6):
-        path = layout.wiki_dir / "entities" / f"p{i}.md"
+        path = wiki.wiki_dir / "entities" / f"p{i}.md"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(f"# P{i}\n\nContent for page {i}.\n", encoding="utf-8")
 
     result = synthesize_answer(
         "anything",
-        layout,
+        wiki,
         qmd_search=_qmd_unavailable,
     )
     assert result.fallback_used is True
@@ -340,7 +342,7 @@ def test_fallback_with_six_pages_only_reads_five(
 # ---------------------------------------------------------------------------
 
 
-def test_citations_are_wiki_relative_paths(sample_wiki: WikiLayout) -> None:
+def test_citations_are_wiki_relative_paths(sample_wiki: Wiki) -> None:
     result = synthesize_answer(
         "anything",
         sample_wiki,
@@ -352,7 +354,7 @@ def test_citations_are_wiki_relative_paths(sample_wiki: WikiLayout) -> None:
         assert citation.endswith(".md")
 
 
-def test_page_links_markdown_format(sample_wiki: WikiLayout) -> None:
+def test_page_links_markdown_format(sample_wiki: Wiki) -> None:
     result = synthesize_answer(
         "anything",
         sample_wiki,
@@ -365,7 +367,7 @@ def test_page_links_markdown_format(sample_wiki: WikiLayout) -> None:
         assert link.endswith(")")
 
 
-def test_answer_body_includes_question(sample_wiki: WikiLayout) -> None:
+def test_answer_body_includes_question(sample_wiki: Wiki) -> None:
     result = synthesize_answer(
         "How does Postgres do concurrency?",
         sample_wiki,
@@ -374,7 +376,7 @@ def test_answer_body_includes_question(sample_wiki: WikiLayout) -> None:
     assert "How does Postgres do concurrency?" in result.answer
 
 
-def test_answer_body_omits_fallback_note_on_happy_path(sample_wiki: WikiLayout) -> None:
+def test_answer_body_omits_fallback_note_on_happy_path(sample_wiki: Wiki) -> None:
     result = synthesize_answer(
         "anything",
         sample_wiki,
@@ -384,7 +386,7 @@ def test_answer_body_omits_fallback_note_on_happy_path(sample_wiki: WikiLayout) 
     assert "qmd unavailable" not in result.answer.lower()
 
 
-def test_answer_body_includes_excerpt(sample_wiki: WikiLayout) -> None:
+def test_answer_body_includes_excerpt(sample_wiki: Wiki) -> None:
     """At least one excerpt from a real page should appear in the answer."""
     result = synthesize_answer(
         "anything",
@@ -401,7 +403,7 @@ def test_answer_body_includes_excerpt(sample_wiki: WikiLayout) -> None:
 
 
 def test_pages_with_yaml_frontmatter_are_read_correctly(
-    sample_wiki: WikiLayout,
+    sample_wiki: Wiki,
 ) -> None:
     """Frontmatter at the top of a page must not become the excerpt."""
     result = synthesize_answer(
