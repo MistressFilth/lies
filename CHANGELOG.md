@@ -7,6 +7,9 @@ All notable changes to LIES are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- LIES now follows the [XDG Base Directory Specification](https://specifications.freedesktop.org/basedir/latest/). Wiki content lives under `$XDG_DATA_HOME/lies/<name>/`; configuration under `$XDG_CONFIG_HOME/lies/<name>/`; runtime locks under `$XDG_RUNTIME_DIR/lies/<name>/`; logs/scratch/poison under `$XDG_STATE_HOME/lies/<name>/`; hashes/manifests under `$XDG_CACHE_HOME/lies/<name>/`. Override any root with `LIES_XDG_<NAME>`.
+- `lies init <name>` — name-based initialization (no path argument). Creates all five role-routed XDG directories and `git init` the wiki root.
+- `lies migrate-xdg <legacy-path> --name <name>` — one-shot migration of legacy `<path>/.lies/` into XDG role-routed directories. Idempotent; refuses on byte-mismatched conflicts.
 - `lies mcp up` starts a detached streamable-http MCP daemon for the wiki
   (default `127.0.0.1:8737`, `--host` / `--port` / `--timeout` to override).
   The parent re-execs a hidden `_serve` subcommand in a new session, waits
@@ -39,6 +42,8 @@ All notable changes to LIES are documented here. The format follows
   created before this release.
 
 ### Changed
+- CLI flag `--wiki-root`/`-w` replaced by `--name` on every command. Default wiki name `default` (set `LIES_WIKI_NAME` to override).
+- Wiki identity is a name (basename), not a path. Wikis are looked up under `$XDG_DATA_HOME/lies/<name>/`. Wiki roots elsewhere require migrating via `lies migrate-xdg` (or creating fresh via `lies init <name>`).
 - The unauthenticated MCP daemon now refuses non-loopback bind hosts in
   both `lies mcp up` and the internal `_serve` command; remote access
   requires an authenticated reverse proxy.
@@ -56,6 +61,10 @@ All notable changes to LIES are documented here. The format follows
 - `AGENTS.md` references now point to project notes for the internal design and plan documents.
 
 ### Removed
+- `LIES_WIKI_ROOT` environment variable. Set `LIES_WIKI_NAME` instead.
+- The `<wiki>/.lies/` directory. All state (locks, pid, log, schema, collections, hashes, telemetry, poison) routes to role-specific XDG directories.
+- `WikiLayout.lies_dir`, `WikiLayout.schema_path`, `WikiLayout.memory_lock_path`, and all other `.lies/...` accessors. Use `Wiki` accessors instead.
+- `utils.exclusive.ensure_gitignored` (no `.lies/` to gitignore).
 - `scripts/worktree_lint.py` and the `make worktree-lint` target; the seven-invariants checker is a tool that asserted user-scope rule adherence.
 - `tests/unit/test_repository_metadata.py` and its pytest-marker, GitHub-Actions SHA, and mypy-absence assertions.
 - `make release` no longer runs `worktree-lint` as a prerequisite.
