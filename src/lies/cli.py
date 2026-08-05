@@ -196,7 +196,14 @@ def _mcp_status(
 
 @app.command()
 def migrate_xdg(legacy_path: Path, name: str, force: bool = False) -> None:
-    """Migrate a legacy ``.lies/`` wiki into XDG role-routed dirs."""
+    """Migrate a legacy ``.lies/`` wiki into XDG role-routed dirs.
+
+    With ``--force``, conflicting source files (destination has
+    byte-mismatched content) are *quarantined* to
+    ``<legacy_path>/.xdg-migration-conflicts/`` rather than dropped; the
+    destination file is left untouched. Conflicts abort the migration by
+    default so the caller can resolve them.
+    """
     from lies.migrate import migrate_wiki
 
     result = migrate_wiki(legacy_path, name=name, force=force)
@@ -206,7 +213,8 @@ def migrate_xdg(legacy_path: Path, name: str, force: bool = False) -> None:
         typer.echo(f"wiki '{name}' already migrated (no-op)")
     typer.echo(
         f"copied={len(result.copied)} skipped={len(result.skipped)} "
-        f"conflicts={len(result.conflicts)}"
+        f"conflicts={len(result.conflicts)} "
+        f"quarantined={len(result.quarantined)}"
     )
 
 

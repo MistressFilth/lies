@@ -134,3 +134,71 @@ def test_migrate_noop_when_lies_dir_missing(tmp_path: Path) -> None:
     result = migrate_wiki(empty_legacy, name="migrated", **_xdg_kwargs(tmp_path))
     assert not result.removed_legacy
     assert not result.copied
+
+
+def test_migrate_raises_when_legacy_path_is_a_file(tmp_path: Path) -> None:
+    """``legacy_path`` is a file (e.g. user pointed at the wrong path)
+    -> ``NotADirectoryError`` instead of a silent empty success."""
+    file_path = tmp_path / "not-a-directory"
+    file_path.write_text("oops")
+    with pytest.raises(NotADirectoryError, match="must be a directory"):
+        migrate_wiki(file_path, name="migrated", **_xdg_kwargs(tmp_path))
+
+
+def test_migrate_force_quarantines_conflicting_sources(tmp_path: Path) -> None:
+    """``--force`` preserves conflicting source bytes at
+    ``<legacy_path>/.xdg-migration-conflicts/`` instead of silently
+    dropping them. The legacy ``.lies/`` directory is still removed and
+    the destination file is left untouched."""
+    legacy = _copy_legacy(tmp_path)
+    kwargs = _xdg_kwargs(tmp_path)
+    target = kwargs["xdg_config_home"] / "lies" / "migrated" / "schema.md"
+    target.parent.mkdir(parents=True)
+    target.write_text("DESTINATION CONTENT")
+    original_legacy_bytes = (legacy / ".lies" / "schema.md").read_bytes()
+
+    result = migrate_wiki(legacy, name="migrated", force=True, **kwargs)
+
+    # Conflict is recorded on the result for the caller's audit trail.
+    assert result.conflicts
+    # The legacy source is preserved at the quarantine path.
+    backup_root = legacy / ".xdg-migration-conflicts"
+    assert backup_root.is_dir(), (
+        f"quarantine dir must survive rmtree of .lies/, missing: {backup_root}"
+    )
+    backup = backup_root / "schema.md"
+    assert backup.is_file(), f"quarantined schema.md missing: {backup}"
+    assert backup.read_bytes() == original_legacy_bytes
+    # ``result.quarantined`` matches the backup paths on disk.
+    assert any(q[1] == backup for q in result.quarantined)
+    # Destination byte content is unchanged (legacy destination wins).
+    assert target.read_text() == "DESTINATION CONTENT"
+    # Legacy .lies/ is gone, marker is in place.
+    assert not (legacy / ".lies").exists()
+    assert (legacy / ".xdg-migrated").exists()
+    assert result.removed_legacy
+
+
+def test_migrate_force_quarantines_multiple_conflicts(tmp_path: Path) -> None:
+    """Multiple conflicts all get quarantined with the right relative paths."""
+    legacy = _copy_legacy(tmp_path)
+    kwargs = _xdg_kwargs(tmp_path)
+    schema_dst = kwargs["xdg_config_home"] / "lies" / "migrated" / "schema.md"
+    foo_dst = (
+        kwargs["xdg_config_home"] / "lies" / "migrated" / "collections" / "foo.yaml"
+    )
+    schema_dst.parent.mkdir(parents=True)
+    schema_dst.write_text("WRONG schema")
+    foo_dst.parent.mkdir(parents=True)
+    foo_dst.write_text("WRONG foo")
+
+    result = migrate_wiki(legacy, name="migrated", force=True, **kwargs)
+
+    assert len(result.conflicts) == 2
+    backup_root = legacy / ".xdg-migration-conflicts"
+    assert (backup_root / "schema.md").is_file()
+    assert (backup_root / "collections" / "foo.yaml").is_file()
+    # Destinations unchanged.
+    assert schema_dst.read_text() == "WRONG schema"
+    assert foo_dst.read_text() == "WRONG foo"
+    assert result.removed_legacy

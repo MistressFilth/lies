@@ -19,6 +19,7 @@ class MigrationResult:
     copied: list[Path] = field(default_factory=list)
     skipped: list[Path] = field(default_factory=list)
     conflicts: list[tuple[Path, Path]] = field(default_factory=list)
+    quarantined: list[tuple[Path, Path]] = field(default_factory=list)
     removed_legacy: bool = False
 
 
@@ -27,7 +28,7 @@ class MigrationConflict(Exception):
         self.conflicts = conflicts
         super().__init__(
             f"migration aborted; {len(conflicts)} conflict(s); "
-            "resolve manually or rerun with --force to overwrite."
+            "resolve manually or rerun with --force to quarantine."
         )
 
 
@@ -35,7 +36,9 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _copy_or_skip_or_conflict(src: Path, dst: Path, result: MigrationResult) -> None:
+def _copy_or_skip_or_conflict(
+    src: Path, dst: Path, result: MigrationResult
+) -> None:
     if not dst.exists():
         dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(src, dst)
@@ -45,6 +48,25 @@ def _copy_or_skip_or_conflict(src: Path, dst: Path, result: MigrationResult) -> 
         result.skipped.append(dst)
         return
     result.conflicts.append((src, dst))
+
+
+def _quarantine_conflict(
+    src: Path, legacy_lies: Path, backup_root: Path, result: MigrationResult
+) -> None:
+    """Copy a conflicting ``src`` into ``<backup_root>/<rel>``.
+
+    ``backup_root`` is the directory that will survive the rmtree of
+    ``legacy_lies``; the caller picks it. The relative path under
+    ``legacy_lies`` is preserved so the caller can recover the original
+    by reading ``<backup_root>/<rel>`` after the migration completes.
+    The destination file at the wiki root is left untouched (the legacy
+    destination wins).
+    """
+    rel = src.relative_to(legacy_lies)
+    backup = backup_root / rel
+    backup.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(src, backup)
+    result.quarantined.append((src, backup))
 
 
 def migrate_wiki(
@@ -64,13 +86,26 @@ def migrate_wiki(
     the legacy path. Git history is preserved when ``<legacy_path>/.git/``
     exists; a fresh repo is initialised otherwise.
 
+    Conflict semantics: a *conflict* is a destination file that already
+    exists and whose bytes do not match the source. By default, a single
+    conflict aborts the migration so the caller can resolve it. With
+    ``force=True``, the legacy source is *quarantined* — copied to
+    ``<legacy_path>/.xdg-migration-conflicts/<rel>`` so the original
+    bytes are recoverable after the legacy ``.lies/`` directory is
+    removed. The destination file is left untouched.
+
     Raises:
+        NotADirectoryError: ``legacy_path`` exists but is not a directory.
         WikiAlreadyExists: A wiki with this name already lives at the
             destination ``data_root`` (e.g. ``lies init <name>`` ran first).
         MigrationConflict: Destination files exist with byte-mismatched
             content and ``force=False``.
     """
     validate_name(name)
+    if legacy_path.exists() and not legacy_path.is_dir():
+        raise NotADirectoryError(
+            f"legacy_path must be a directory, got file: {legacy_path}"
+        )
     legacy_lies = legacy_path / ".lies"
     marker = legacy_path / ".xdg-migrated"
     if marker.exists():
@@ -195,7 +230,15 @@ def migrate_wiki(
     if result.conflicts and not force:
         raise MigrationConflict(result.conflicts)
 
-    # 5. Remove legacy .lies/, write marker.
+    # 5. With --force, quarantine conflicting source files before removing
+    # the legacy ``.lies/`` directory so the original bytes remain
+    # recoverable from ``<legacy_path>/.xdg-migration-conflicts/``.
+    if result.conflicts and force:
+        backup_root = legacy_path / ".xdg-migration-conflicts"
+        for src, _dst in result.conflicts:
+            _quarantine_conflict(src, legacy_lies, backup_root, result)
+
+    # 6. Remove legacy .lies/, write marker.
     shutil.rmtree(legacy_lies)
     marker.write_text(f"migrated to {wiki.data_root}\n", encoding="utf-8")
     result.removed_legacy = True
