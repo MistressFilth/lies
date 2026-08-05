@@ -23,7 +23,7 @@ class WikiLayout:
         return self.root / "wiki"
 
     def init(self) -> None:
-        """Create raw/, wiki/; ensure data_root exists."""
+        """Create ``raw/`` and ``wiki/`` under ``root``."""
         self.root.mkdir(parents=True, exist_ok=True)
         self.raw_dir.mkdir(parents=True, exist_ok=True)
         self.wiki_dir.mkdir(parents=True, exist_ok=True)
