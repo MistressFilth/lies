@@ -6,13 +6,13 @@ import pytest
 
 from lies.memory.models import WikiSearchResult
 from lies.memory.retrieval import read_pages, search_wiki
-from lies.wiki.layout import WikiLayout
+from tests.conftest import make_wiki
 
 
 @pytest.fixture
-def indexed_wiki(tmp_path: Path) -> WikiLayout:
+def indexed_wiki(tmp_path: Path):
     root = tmp_path / "wiki"
-    for sub in ("wiki", ".lies", "raw"):
+    for sub in ("wiki", "raw"):
         (root / sub).mkdir(parents=True)
     (root / "wiki" / "concepts").mkdir(parents=True)
     (root / "wiki" / "concepts" / "mvc.md").write_text(
@@ -30,11 +30,11 @@ def indexed_wiki(tmp_path: Path) -> WikiLayout:
         encoding="utf-8",
     )
     (root / "wiki" / "index.md").write_text("- [MVC](concepts/mvc.md)\n", encoding="utf-8")
-    return WikiLayout(root)
+    return make_wiki(name="retrieval-test", data_root=root)
 
 
 def test_search_wiki_falls_back_to_index_when_qmd_missing(
-    indexed_wiki: WikiLayout, monkeypatch: pytest.MonkeyPatch
+    indexed_wiki, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from lies import qmd
 
@@ -53,14 +53,14 @@ def test_search_wiki_falls_back_to_index_when_qmd_missing(
 
 
 def test_search_wiki_uses_qmd_when_available(
-    indexed_wiki: WikiLayout, monkeypatch: pytest.MonkeyPatch
+    indexed_wiki, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from lies import qmd
 
     def fake_query(_cwd: Path, _q: str, _limit: int) -> list[dict[str, object]]:
         return [
             {
-                "path": str(indexed_wiki.root / "wiki" / "concepts" / "mvc.md"),
+                "path": str(indexed_wiki.data_root / "wiki" / "concepts" / "mvc.md"),
                 "score": 0.9,
             }
         ]
@@ -72,7 +72,7 @@ def test_search_wiki_uses_qmd_when_available(
 
 
 def test_search_wiki_marks_truncated_when_more_than_limit(
-    indexed_wiki: WikiLayout, monkeypatch: pytest.MonkeyPatch
+    indexed_wiki, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     for i in range(8):
         (indexed_wiki.wiki_dir / "concepts" / f"topic_{i}.md").write_text(
@@ -94,12 +94,12 @@ def test_search_wiki_marks_truncated_when_more_than_limit(
     assert len(result.pages) == 3
 
 
-def test_read_pages_returns_content_for_ids(indexed_wiki: WikiLayout) -> None:
+def test_read_pages_returns_content_for_ids(indexed_wiki) -> None:
     # Construct a search to assign page IDs.
     def fake_query(_cwd: Path, _q: str, _limit: int) -> list[dict[str, object]]:
         return [
             {
-                "path": str(indexed_wiki.root / "wiki" / "concepts" / "mvc.md"),
+                "path": str(indexed_wiki.data_root / "wiki" / "concepts" / "mvc.md"),
                 "score": 0.9,
             }
         ]
@@ -118,6 +118,6 @@ def test_read_pages_returns_content_for_ids(indexed_wiki: WikiLayout) -> None:
     assert "Model-View-Controller" in bodies[page_id]
 
 
-def test_read_pages_missing_id_returns_empty(indexed_wiki: WikiLayout) -> None:
+def test_read_pages_missing_id_returns_empty(indexed_wiki) -> None:
     bodies = read_pages(indexed_wiki, ["not-a-real-id"])
     assert bodies == {}

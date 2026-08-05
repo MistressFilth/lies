@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -7,6 +8,7 @@ from typer.testing import CliRunner
 
 from lies import __version__
 from lies.cli import app
+from lies.wiki.wiki import Wiki
 
 runner = CliRunner()
 
@@ -21,16 +23,16 @@ def test_config_command_defaults() -> None:
     result = runner.invoke(app, ["config"])
     assert result.exit_code == 0
     assert "anthropic:claude-opus-4-7" in result.stdout
-    assert "wiki_root" in result.stdout
+    assert "wiki:" in result.stdout
 
 
 def test_config_command_overrides(monkeypatch) -> None:
     monkeypatch.setenv("LIES_MODEL", "anthropic:claude-sonnet-5")
-    monkeypatch.setenv("LIES_WIKI_ROOT", "/tmp/wiki")
+    monkeypatch.setenv("LIES_WIKI_NAME", "wiki")
     result = runner.invoke(app, ["config"])
     assert result.exit_code == 0
     assert "anthropic:claude-sonnet-5" in result.stdout
-    assert "/tmp/wiki" in result.stdout
+    assert "wiki: wiki" in result.stdout
 
 
 # Smoke tests for the REPL (`lies` with no subcommand).
@@ -105,14 +107,17 @@ def test_repl_no_memory_uses_plain_orchestrator_run() -> None:
     mock_instance.run_with_memory.assert_not_called()
 
 
-def test_repl_respects_wiki_root_env() -> None:
-    """The REPL must resolve --wiki-root from env / CLI option."""
+def test_repl_respects_wiki_name_env(monkeypatch) -> None:
+    """The REPL must resolve `--name` from the CLI flag and pass a Wiki to the orchestrator."""
+    name = "from-flag"
+    monkeypatch.setenv("LIES_WIKI_NAME", name)
+    Wiki.data_root_for(name).mkdir(parents=True, exist_ok=True)
     with patch("lies.cli.Orchestrator") as MockOrch:
-        result = runner.invoke(app, ["--wiki-root", "/tmp/from-flag"], input="/exit\n")
+        result = runner.invoke(app, ["--name", name], input="/exit\n")
     assert result.exit_code == 0
-    # The orchestrator must have been constructed with the resolved wiki root
-    call_kwargs = MockOrch.call_args.kwargs
-    assert str(call_kwargs["wiki_root"]) == "/tmp/from-flag"
+    # The REPL constructs the orchestrator positionally: Orchestrator(wiki).
+    positional, _ = MockOrch.call_args
+    assert positional[0].name == name
 
 
 def test_repl_ignores_blank_lines() -> None:
@@ -142,7 +147,7 @@ def test_config_subcommand() -> None:
     result = runner.invoke(app, ["config"])
     assert result.exit_code == 0
     assert "model:" in result.stdout
-    assert "wiki_root:" in result.stdout
+    assert "wiki:" in result.stdout
 
 
 def test_mcp_subcommand_is_registered() -> None:
@@ -182,15 +187,24 @@ def _stub_qmd(monkeypatch):
     )
     monkeypatch.setattr(qmd_daemon, "ensure_qmd_daemon", lambda **kwargs: state)
     monkeypatch.setattr(qmd_daemon, "qmd_daemon_state", lambda: state)
+    # Pre-register the default wiki so REPL tests don't trip WikiNotRegistered.
+    Wiki.data_root_for("default").mkdir(parents=True, exist_ok=True)
     return state
 
 
-def test_up_ensures_the_qmd_daemon(monkeypatch, tmp_path) -> None:
+def _register_wiki(name: str) -> None:
+    """Pre-create a wiki's data_root so `Wiki.require(name)` succeeds."""
+    Wiki.data_root_for(name).mkdir(parents=True, exist_ok=True)
+
+
+def test_up_ensures_the_qmd_daemon(monkeypatch, tmp_path: Path) -> None:
     from datetime import datetime, timezone
 
     from lies.mcp import daemon
     from lies.qmd import daemon as qmd_daemon
 
+    name = "cli-up-qmd"
+    _register_wiki(name)
     rec = daemon.PidRecord(
         pid=1,
         host="127.0.0.1",
@@ -209,17 +223,19 @@ def test_up_ensures_the_qmd_daemon(monkeypatch, tmp_path) -> None:
             calls.append(1) or qmd_daemon.QmdState(True, True, 42, "qmd daemon running (pid 42)")
         ),
     )
-    result = runner.invoke(app, ["mcp", "up", "--wiki-root", str(tmp_path)])
+    result = runner.invoke(app, ["mcp", "up", "--name", name])
     assert result.exit_code == 0
     assert calls == [1]
 
 
-def test_up_skips_qmd_with_no_qmd_flag(monkeypatch, tmp_path) -> None:
+def test_up_skips_qmd_with_no_qmd_flag(monkeypatch, tmp_path: Path) -> None:
     from datetime import datetime, timezone
 
     from lies.mcp import daemon
     from lies.qmd import daemon as qmd_daemon
 
+    name = "cli-up-no-qmd"
+    _register_wiki(name)
     rec = daemon.PidRecord(
         pid=1,
         host="127.0.0.1",
@@ -232,18 +248,20 @@ def test_up_skips_qmd_with_no_qmd_flag(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(daemon, "spawn_daemon", lambda *a, **k: rec)
     calls: list[int] = []
     monkeypatch.setattr(qmd_daemon, "ensure_qmd_daemon", lambda **k: calls.append(1))
-    result = runner.invoke(app, ["mcp", "up", "--no-qmd", "--wiki-root", str(tmp_path)])
+    result = runner.invoke(app, ["mcp", "up", "--no-qmd", "--name", name])
     assert result.exit_code == 0
     assert calls == []
 
 
-def test_up_succeeds_when_qmd_is_unavailable(monkeypatch, tmp_path) -> None:
+def test_up_succeeds_when_qmd_is_unavailable(monkeypatch, tmp_path: Path) -> None:
     """qmd is a search backend, not a prerequisite."""
     from datetime import datetime, timezone
 
     from lies.mcp import daemon
     from lies.qmd import daemon as qmd_daemon
 
+    name = "cli-up-no-qmd-runtime"
+    _register_wiki(name)
     rec = daemon.PidRecord(
         pid=1,
         host="127.0.0.1",
@@ -259,17 +277,19 @@ def test_up_succeeds_when_qmd_is_unavailable(monkeypatch, tmp_path) -> None:
         "ensure_qmd_daemon",
         lambda **k: qmd_daemon.QmdState(False, False, None, "qmd is not installed"),
     )
-    result = runner.invoke(app, ["mcp", "up", "--wiki-root", str(tmp_path)])
+    result = runner.invoke(app, ["mcp", "up", "--name", name])
     assert result.exit_code == 0
     combined = result.output + (result.stderr if result.stderr_bytes else "")
     assert "not installed" in combined
 
 
-def test_down_never_touches_qmd(monkeypatch, tmp_path) -> None:
+def test_down_never_touches_qmd(monkeypatch, tmp_path: Path) -> None:
     """The one behavior protecting a shared, machine-global resource."""
     from lies.mcp import daemon
     from lies.qmd import daemon as qmd_daemon
 
+    name = "cli-down"
+    _register_wiki(name)
     monkeypatch.setattr(
         daemon,
         "stop_daemon",
@@ -280,7 +300,7 @@ def test_down_never_touches_qmd(monkeypatch, tmp_path) -> None:
         raise AssertionError("down must never invoke qmd lifecycle functions")
 
     monkeypatch.setattr(qmd_daemon, "ensure_qmd_daemon", _explode)
-    result = runner.invoke(app, ["mcp", "down", "--wiki-root", str(tmp_path)])
+    result = runner.invoke(app, ["mcp", "down", "--name", name])
     assert result.exit_code == 0
 
 
@@ -326,11 +346,13 @@ def test_serve_rejects_non_loopback_host(monkeypatch) -> None:
     assert calls == []
 
 
-def test_up_prints_url_on_success(monkeypatch, tmp_path) -> None:
+def test_up_prints_url_on_success(monkeypatch, tmp_path: Path) -> None:
     from datetime import datetime, timezone
 
     from lies.mcp import daemon
 
+    name = "cli-up-print-url"
+    _register_wiki(name)
     rec = daemon.PidRecord(
         pid=4242,
         host="127.0.0.1",
@@ -341,17 +363,19 @@ def test_up_prints_url_on_success(monkeypatch, tmp_path) -> None:
         version="0.5.0",
     )
     monkeypatch.setattr(daemon, "spawn_daemon", lambda *a, **k: rec)
-    result = runner.invoke(app, ["mcp", "up", "--wiki-root", str(tmp_path)])
+    result = runner.invoke(app, ["mcp", "up", "--name", name])
     assert result.exit_code == 0
     assert "4242" in result.stdout
     assert daemon.MCP_PATH in result.stdout
 
 
-def test_up_is_idempotent_when_already_running(monkeypatch, tmp_path) -> None:
+def test_up_is_idempotent_when_already_running(monkeypatch, tmp_path: Path) -> None:
     from datetime import datetime, timezone
 
     from lies.mcp import daemon
 
+    name = "cli-up-already"
+    _register_wiki(name)
     rec = daemon.PidRecord(
         pid=7,
         host="127.0.0.1",
@@ -368,15 +392,17 @@ def test_up_is_idempotent_when_already_running(monkeypatch, tmp_path) -> None:
         raise daemon.DaemonAlreadyRunning(message, record=rec)
 
     monkeypatch.setattr(daemon, "spawn_daemon", _raise)
-    result = runner.invoke(app, ["mcp", "up", "--wiki-root", str(tmp_path)])
+    result = runner.invoke(app, ["mcp", "up", "--name", name])
     assert result.exit_code == 0
     assert result.stdout.startswith("lies mcp daemon")
     assert "already running" in result.stdout
 
 
-def test_up_exits_1_on_non_loopback_host(monkeypatch, tmp_path) -> None:
+def test_up_exits_1_on_non_loopback_host(monkeypatch, tmp_path: Path) -> None:
     from lies.mcp import daemon
 
+    name = "cli-up-non-loopback"
+    _register_wiki(name)
     calls: list[str] = []
 
     def _raise(*args: object, **kwargs: object) -> None:
@@ -385,91 +411,105 @@ def test_up_exits_1_on_non_loopback_host(monkeypatch, tmp_path) -> None:
 
     monkeypatch.setattr(daemon, "spawn_daemon", _raise)
 
-    result = runner.invoke(app, ["mcp", "up", "--host", "0.0.0.0", "--wiki-root", str(tmp_path)])
+    result = runner.invoke(app, ["mcp", "up", "--host", "0.0.0.0", "--name", name])
 
     assert result.exit_code == 1
     assert "has no authentication" in result.stderr
     assert calls == ["spawn"]
 
 
-def test_up_exits_1_on_port_conflict(monkeypatch, tmp_path) -> None:
+def test_up_exits_1_on_port_conflict(monkeypatch, tmp_path: Path) -> None:
     from lies.mcp import daemon
+
+    name = "cli-up-port"
+    _register_wiki(name)
 
     def _raise(*args: object, **kwargs: object) -> None:
         raise daemon.PortUnavailable("127.0.0.1:8737 is already in use")
 
     monkeypatch.setattr(daemon, "spawn_daemon", _raise)
-    result = runner.invoke(app, ["mcp", "up", "--wiki-root", str(tmp_path)])
+    result = runner.invoke(app, ["mcp", "up", "--name", name])
     assert result.exit_code == 1
 
 
-def test_up_tails_the_log_on_start_failure(monkeypatch, tmp_path) -> None:
+def test_up_tails_the_log_on_start_failure(monkeypatch, tmp_path: Path) -> None:
     from lies.mcp import daemon
+
+    name = "cli-up-tail-log"
+    _register_wiki(name)
 
     def _raise(*args: object, **kwargs: object) -> None:
         raise daemon.DaemonStartFailed("daemon exited with code 3")
 
     monkeypatch.setattr(daemon, "spawn_daemon", _raise)
     monkeypatch.setattr(daemon, "tail_log", lambda *a, **k: ["ImportError: boom"])
-    result = runner.invoke(app, ["mcp", "up", "--wiki-root", str(tmp_path)])
+    result = runner.invoke(app, ["mcp", "up", "--name", name])
     assert result.exit_code == 1
     # Click 8.2 split stderr out of `.output`; tolerate either arrangement.
     combined = result.output + (result.stderr if result.stderr_bytes else "")
     assert "ImportError: boom" in combined
 
 
-def test_down_exits_0_when_nothing_running(monkeypatch, tmp_path) -> None:
+def test_down_exits_0_when_nothing_running(monkeypatch, tmp_path: Path) -> None:
     from lies.mcp import daemon
 
+    name = "cli-down-nothing"
+    _register_wiki(name)
     monkeypatch.setattr(
         daemon,
         "stop_daemon",
         lambda *a, **k: daemon.StopResult(action="none", pid=None, signal=None),
     )
-    result = runner.invoke(app, ["mcp", "down", "--wiki-root", str(tmp_path)])
+    result = runner.invoke(app, ["mcp", "down", "--name", name])
     assert result.exit_code == 0
     assert "no daemon running" in result.stdout
 
 
-def test_down_reports_the_signal(monkeypatch, tmp_path) -> None:
+def test_down_reports_the_signal(monkeypatch, tmp_path: Path) -> None:
     from lies.mcp import daemon
 
+    name = "cli-down-signal"
+    _register_wiki(name)
     monkeypatch.setattr(
         daemon,
         "stop_daemon",
         lambda *a, **k: daemon.StopResult(action="stopped", pid=99, signal="SIGTERM"),
     )
-    result = runner.invoke(app, ["mcp", "down", "--wiki-root", str(tmp_path)])
+    result = runner.invoke(app, ["mcp", "down", "--name", name])
     assert result.exit_code == 0
     assert "99" in result.stdout
     assert "SIGTERM" in result.stdout
 
 
-def test_status_exits_1_when_stopped(monkeypatch, tmp_path) -> None:
+def test_status_exits_1_when_stopped(monkeypatch, tmp_path: Path) -> None:
     from lies.mcp import daemon
 
-    monkeypatch.setattr(
-        daemon,
-        "daemon_status",
-        lambda root: daemon.StatusResult(
+    name = "cli-status-stopped"
+    _register_wiki(name)
+
+    def _status(_wiki):
+        return daemon.StatusResult(
             running=False,
             record=None,
             stale=False,
             url=None,
             uptime_s=None,
             log=tmp_path / ".lies" / "mcp.log",
-        ),
-    )
-    result = runner.invoke(app, ["mcp", "status", "--wiki-root", str(tmp_path)])
+        )
+
+    monkeypatch.setattr(daemon, "daemon_status", _status)
+    result = runner.invoke(app, ["mcp", "status", "--name", name])
     assert result.exit_code == 1
     assert "stopped" in result.stdout
 
 
-def test_status_exits_0_when_running(monkeypatch, tmp_path) -> None:
+def test_status_exits_0_when_running(monkeypatch, tmp_path: Path) -> None:
     from datetime import datetime, timezone
 
     from lies.mcp import daemon
 
+    name = "cli-status-running"
+    _register_wiki(name)
     rec = daemon.PidRecord(
         pid=55,
         host="127.0.0.1",
@@ -479,19 +519,19 @@ def test_status_exits_0_when_running(monkeypatch, tmp_path) -> None:
         wiki_root=str(tmp_path),
         version="0.5.0",
     )
-    monkeypatch.setattr(
-        daemon,
-        "daemon_status",
-        lambda root: daemon.StatusResult(
+
+    def _status(_wiki):
+        return daemon.StatusResult(
             running=True,
             record=rec,
             stale=False,
             url=daemon.daemon_url(rec),
             uptime_s=12.5,
             log=tmp_path / ".lies" / "mcp.log",
-        ),
-    )
-    result = runner.invoke(app, ["mcp", "status", "--wiki-root", str(tmp_path)])
+        )
+
+    monkeypatch.setattr(daemon, "daemon_status", _status)
+    result = runner.invoke(app, ["mcp", "status", "--name", name])
     assert result.exit_code == 0
     assert "running" in result.stdout
     assert "55" in result.stdout
