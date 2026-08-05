@@ -63,16 +63,20 @@ def state_home() -> Path:
 
 
 def runtime_dir() -> Path:
-    """Per-system runtime dir. mkdir if XDG_RUNTIME_DIR is set but path missing.
-    Falls back to <state_home>/run/ if XDG_RUNTIME_DIR is unset entirely."""
-    explicit = os.environ.get("XDG_RUNTIME_DIR")
-    if explicit:
-        path = Path(explicit).expanduser()
-        path.mkdir(parents=True, exist_ok=True)
-        return path
+    """Per-system runtime dir.
+
+    Reads ``LIES_XDG_RUNTIME_DIR`` first (LIES-specific override), falls
+    back to ``XDG_RUNTIME_DIR`` (spec env var, mkdir if missing), then to
+    ``<state_home>/run`` when neither is set.
+    """
     lies_override = os.environ.get("LIES_XDG_RUNTIME_DIR")
     if lies_override:
         path = Path(lies_override).expanduser()
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+    explicit = os.environ.get("XDG_RUNTIME_DIR")
+    if explicit:
+        path = Path(explicit).expanduser()
         path.mkdir(parents=True, exist_ok=True)
         return path
     return state_home() / "run"

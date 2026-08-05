@@ -63,3 +63,17 @@ def test_xdg_root_precedence_lies_over_spec(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setenv("LIES_XDG_CACHE_HOME", "/lies/cache")
     monkeypatch.setenv("XDG_CACHE_HOME", "/xdg/cache")
     assert xdg._xdg_root("XDG_CACHE_HOME", "/default") == Path("/lies/cache")
+
+
+def test_runtime_dir_uses_lies_override(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("LIES_XDG_RUNTIME_DIR", str(tmp_path / "lies-runtime"))
+    assert xdg.runtime_dir() == tmp_path / "lies-runtime"
+    assert (tmp_path / "lies-runtime").is_dir()
+
+
+def test_lies_xdg_runtime_dir_wins_over_xdg_runtime_dir(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("LIES_XDG_RUNTIME_DIR", str(tmp_path / "lies-runtime"))
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "xdg-runtime"))
+    assert xdg.runtime_dir() == tmp_path / "lies-runtime"
