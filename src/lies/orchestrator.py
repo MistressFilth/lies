@@ -492,7 +492,7 @@ ORCHESTRATOR_SYSTEM_PROMPT_PREFIX = """You are the LIES orchestrator. The user
 is curating a Karpathy-pattern LLM wiki at the path below. You dispatch their
 commands to specialized sub-agents and return results.
 
-Wiki root: {wiki_root}
+Wiki root: {wiki}
 
 The schema for this wiki:
 

@@ -8,9 +8,40 @@ from pathlib import Path
 
 import pytest
 
-from lies.wiki.layout import WikiLayout
+from lies.wiki.wiki import Wiki
 
 FIXTURE_WIKI = Path(__file__).parent / "fixtures" / "sample-wiki"
+
+
+def make_wiki(name: str, data_root: Path) -> Wiki:
+    """Build a Wiki rooted at ``data_root`` with all five role roots set.
+
+    The conftest autouse fixture redirects the five ``XDG_*`` env vars to
+    ``tmp_path/xdg/<role>/``. This factory takes a caller-supplied
+    ``data_root`` (usually ``tmp_path / "wiki"``) and computes the other
+    four role roots from the corresponding XDG env vars so the resulting
+    Wiki is internally consistent and matches what `lies init` would have
+    produced.
+    """
+    import os
+
+    data_home = Path(os.environ["XDG_DATA_HOME"])
+    config_home = Path(os.environ["XDG_CONFIG_HOME"])
+    cache_home = Path(os.environ["XDG_CACHE_HOME"])
+    state_home = Path(os.environ["XDG_STATE_HOME"])
+    runtime_dir = os.environ.get("XDG_RUNTIME_DIR")
+    if runtime_dir:
+        runtime_root = Path(runtime_dir) / "lies" / name
+    else:
+        runtime_root = state_home / "run" / "lies" / name
+    return Wiki(
+        name=name,
+        data_root=data_root,
+        config_root=config_home / "lies" / name,
+        cache_root=cache_home / "lies" / name,
+        state_root=state_home / "lies" / name,
+        runtime_root=runtime_root,
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -63,10 +94,10 @@ def _isolated_xdg(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
 
 
 @pytest.fixture
-def sample_wiki(tmp_path: Path) -> WikiLayout:
+def sample_wiki(tmp_path: Path) -> Wiki:
     """A copy of the sample fixture wiki initialised as a git working tree.
 
-    Returns the :class:`WikiLayout` rooted at the tmp copy so tests can
+    Returns the :class:`Wiki` rooted at the tmp copy so tests can
     call ``synthesize_answer`` (and other wiki-scoped APIs) against a
     real on-disk corpus.
     """
@@ -101,17 +132,16 @@ def sample_wiki(tmp_path: Path) -> WikiLayout:
         check=True,
         capture_output=True,
     )
-    return WikiLayout(target)
+    return make_wiki(name="sample", data_root=target)
 
 
 @pytest.fixture
-def empty_wiki(tmp_path: Path) -> WikiLayout:
+def empty_wiki(tmp_path: Path) -> Wiki:
     """An empty wiki (no ``wiki/index.md``) so fallback has nothing to read."""
     target = tmp_path / "wiki"
     target.mkdir()
     (target / "raw").mkdir()
     (target / "wiki").mkdir()
-    (target / ".lies").mkdir()
     subprocess.run(
         ["git", "init", "--initial-branch=main", str(target)],
         check=True,
@@ -129,11 +159,11 @@ def empty_wiki(tmp_path: Path) -> WikiLayout:
         check=True,
         capture_output=True,
     )
-    return WikiLayout(target)
+    return make_wiki(name="empty", data_root=target)
 
 
 @pytest.fixture
-def wiki_with_missing_pages(tmp_path: Path) -> WikiLayout:
+def wiki_with_missing_pages(tmp_path: Path) -> Wiki:
     """A wiki whose ``wiki/index.md`` references pages that don't exist on disk.
 
     Three references: two ghosts (``ghost-1.md``, ``ghost-2.md``) and one
@@ -183,4 +213,4 @@ def wiki_with_missing_pages(tmp_path: Path) -> WikiLayout:
         check=True,
         capture_output=True,
     )
-    return WikiLayout(target)
+    return make_wiki(name="with-missing", data_root=target)
