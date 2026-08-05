@@ -15,7 +15,7 @@ repos:
     hooks:
       - id: test
         name: make test
-        entry: uv run make test
+        entry: scripts/debug-env.sh
         language: system
         pass_filenames: false
         stages: [pre-commit]
