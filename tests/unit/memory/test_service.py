@@ -13,7 +13,9 @@ from lies.memory.models import (
     WikiWriteConflict,
 )
 from lies.memory.service import WikiMemoryService
-from lies.wiki.layout import WikiLayout
+from lies.wiki.wiki import Wiki
+
+from tests.conftest import make_wiki
 
 
 def _git_init(root: Path) -> None:
@@ -33,22 +35,24 @@ def _git_init(root: Path) -> None:
 
 
 @pytest.fixture
-def git_wiki(tmp_path: Path) -> WikiLayout:
+def git_wiki(tmp_path: Path) -> Wiki:
     root = tmp_path / "wiki"
-    for sub in ("wiki", ".lies", "raw"):
+    for sub in ("wiki", "raw"):
         (root / sub).mkdir(parents=True)
-    (root / "wiki" / "concepts").mkdir(parents=True)
-    (root / "wiki" / "index.md").write_text("# Index\n", encoding="utf-8")
+    wiki = make_wiki(name="service", data_root=root)
+    wiki.config_root.mkdir(parents=True, exist_ok=True)
+    (wiki.wiki_dir / "concepts").mkdir(parents=True)
+    (wiki.wiki_dir / "index.md").write_text("# Index\n", encoding="utf-8")
     _git_init(root)
-    return WikiLayout(root)
+    return wiki
 
 
 def _sha(content: str) -> str:
     return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 
-def test_apply_plan_creates_page(git_wiki: WikiLayout) -> None:
-    service = WikiMemoryService(git_wiki)
+def test_apply_plan_creates_page(git_wiki: Wiki) -> None:
+    service = WikiMemoryService(wiki=git_wiki)
     service.register_evidence({"page-1"})
     plan = MemoryPlan(
         operations=[
@@ -66,11 +70,11 @@ def test_apply_plan_creates_page(git_wiki: WikiLayout) -> None:
     assert (git_wiki.wiki_dir / "concepts" / "example.md").exists()
 
 
-def test_apply_plan_updates_page_with_matching_hash(git_wiki: WikiLayout) -> None:
+def test_apply_plan_updates_page_with_matching_hash(git_wiki: Wiki) -> None:
     path = git_wiki.wiki_dir / "concepts" / "x.md"
     body = "---\ntitle: X\ntype: concept\n---\n# X\n"
     path.write_text(body, encoding="utf-8")
-    _git_init(git_wiki.root)
+    _git_init(git_wiki.data_root)
     plan = MemoryPlan(
         operations=[
             PageUpdate(
@@ -83,17 +87,17 @@ def test_apply_plan_updates_page_with_matching_hash(git_wiki: WikiLayout) -> Non
         rationale="extend",
         evidence=["page-1"],
     )
-    service = WikiMemoryService(git_wiki)
+    service = WikiMemoryService(wiki=git_wiki)
     service.register_evidence({"page-1"})
     receipt = service.apply_plan(plan)
     assert receipt.changed_pages
     assert "New section" in path.read_text(encoding="utf-8")
 
 
-def test_apply_plan_rejects_hash_mismatch(git_wiki: WikiLayout) -> None:
+def test_apply_plan_rejects_hash_mismatch(git_wiki: Wiki) -> None:
     path = git_wiki.wiki_dir / "concepts" / "x.md"
     path.write_text("---\ntitle: X\ntype: concept\n---\n# X\n", encoding="utf-8")
-    _git_init(git_wiki.root)
+    _git_init(git_wiki.data_root)
     plan = MemoryPlan(
         operations=[
             PageUpdate(
@@ -106,13 +110,13 @@ def test_apply_plan_rejects_hash_mismatch(git_wiki: WikiLayout) -> None:
         rationale="bad hash",
         evidence=["page-1"],
     )
-    service = WikiMemoryService(git_wiki)
+    service = WikiMemoryService(wiki=git_wiki)
     service.register_evidence({"page-1"})
     with pytest.raises(WikiWriteConflict):
         service.apply_plan(plan)
 
 
-def test_apply_plan_rejects_path_escape(git_wiki: WikiLayout) -> None:
+def test_apply_plan_rejects_path_escape(git_wiki: Wiki) -> None:
     plan = MemoryPlan(
         operations=[
             PageCreate(
@@ -124,14 +128,14 @@ def test_apply_plan_rejects_path_escape(git_wiki: WikiLayout) -> None:
         rationale="escape",
         evidence=["page-1"],
     )
-    service = WikiMemoryService(git_wiki)
+    service = WikiMemoryService(wiki=git_wiki)
     service.register_evidence({"page-1"})
     with pytest.raises(WikiPlanInvalid):
         service.apply_plan(plan)
 
 
 def test_apply_plan_rolls_back_on_qmd_failure(
-    git_wiki: WikiLayout, monkeypatch: pytest.MonkeyPatch
+    git_wiki: Wiki, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     plan = MemoryPlan(
         operations=[
@@ -148,7 +152,7 @@ def test_apply_plan_rolls_back_on_qmd_failure(
     def broken_update(_cwd: Path) -> None:
         raise RuntimeError("qmd unavailable")
 
-    service = WikiMemoryService(git_wiki, qmd_update=broken_update)
+    service = WikiMemoryService(wiki=git_wiki, qmd_update=broken_update)
     service.register_evidence({"page-1"})
     receipt = service.apply_plan(plan)
     assert any("qmd_stale" in err for err in receipt.errors)
@@ -156,7 +160,7 @@ def test_apply_plan_rolls_back_on_qmd_failure(
     assert (git_wiki.wiki_dir / "concepts" / "example.md").exists()
 
 
-def test_apply_plan_logs_operation(git_wiki: WikiLayout) -> None:
+def test_apply_plan_logs_operation(git_wiki: Wiki) -> None:
     plan = MemoryPlan(
         operations=[
             PageCreate(
@@ -168,10 +172,10 @@ def test_apply_plan_logs_operation(git_wiki: WikiLayout) -> None:
         rationale="new",
         evidence=["page-1"],
     )
-    service = WikiMemoryService(git_wiki)
+    service = WikiMemoryService(wiki=git_wiki)
     service.register_evidence({"page-1"})
     service.apply_plan(plan)
-    log = git_wiki.log_path.read_text(encoding="utf-8")
+    log = (git_wiki.wiki_dir / "log.md").read_text(encoding="utf-8")
     assert "concepts/example.md" in log
 
 
@@ -188,7 +192,7 @@ def _commit_changed_files(repo: Path) -> list[str]:
 
 
 def test_apply_plan_commit_includes_new_page_index_and_log(
-    git_wiki: WikiLayout,
+    git_wiki: Wiki,
 ) -> None:
     """Atomic commit must include the new page, index.md, and log.md.
 
@@ -197,7 +201,7 @@ def test_apply_plan_commit_includes_new_page_index_and_log(
     (newly created pages, a freshly written ``wiki/log.md``) would be
     silently skipped. The service must enumerate the files explicitly.
     """
-    service = WikiMemoryService(git_wiki)
+    service = WikiMemoryService(wiki=git_wiki)
     service.register_evidence({"page-1"})
     plan = MemoryPlan(
         operations=[
@@ -211,14 +215,14 @@ def test_apply_plan_commit_includes_new_page_index_and_log(
         evidence=["page-1"],
     )
     service.apply_plan(plan)
-    changed = set(_commit_changed_files(git_wiki.root))
+    changed = set(_commit_changed_files(git_wiki.data_root))
     assert "wiki/concepts/example.md" in changed
     assert "wiki/index.md" in changed
     assert "wiki/log.md" in changed
 
 
 def test_apply_plan_rolls_back_writes_on_apply_failure(
-    git_wiki: WikiLayout, monkeypatch: pytest.MonkeyPatch
+    git_wiki: Wiki, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A failure inside ``_apply_operations`` must roll back all writes.
 
@@ -247,8 +251,8 @@ def test_apply_plan_rolls_back_writes_on_apply_failure(
         # op: write a page, write the log, then raise.
         page_path.parent.mkdir(parents=True, exist_ok=True)
         page_path.write_text("partial", encoding="utf-8")
-        git_wiki.log_path.parent.mkdir(parents=True, exist_ok=True)
-        git_wiki.log_path.write_text(
+        (git_wiki.wiki_dir / "log.md").parent.mkdir(parents=True, exist_ok=True)
+        (git_wiki.wiki_dir / "log.md").write_text(
             "## partial log entry from the simulated failure\n",
             encoding="utf-8",
         )
@@ -256,7 +260,7 @@ def test_apply_plan_rolls_back_writes_on_apply_failure(
 
     monkeypatch.setattr(_Svc, "_apply_operations", fail_after_partial_writes)
 
-    service = WikiMemoryService(git_wiki)
+    service = WikiMemoryService(wiki=git_wiki)
     service.register_evidence({"page-1"})
     with pytest.raises(WikiWriteConflict):
         service.apply_plan(plan)
@@ -264,13 +268,13 @@ def test_apply_plan_rolls_back_writes_on_apply_failure(
     # The page written by the simulated partial apply must be gone.
     assert not page_path.exists()
     # The log line written by the simulated partial apply must be gone.
-    log = git_wiki.log_path.read_text(encoding="utf-8") if git_wiki.log_path.exists() else ""
+    log = (git_wiki.wiki_dir / "log.md").read_text(encoding="utf-8") if (git_wiki.wiki_dir / "log.md").exists() else ""
     assert "rollback-on-hash-mismatch" not in log
     assert "memory" not in log
     # No new commit should have been created on the failure path.
     head_sha = subprocess.run(
         ["git", "rev-parse", "HEAD"],
-        cwd=git_wiki.root,
+        cwd=git_wiki.data_root,
         capture_output=True,
         text=True,
         check=True,
@@ -279,7 +283,7 @@ def test_apply_plan_rolls_back_writes_on_apply_failure(
 
 
 def test_hash_page_empty_file_hashes_empty_string(
-    git_wiki: WikiLayout,
+    git_wiki: Wiki,
 ) -> None:
     """An existing empty page hashes to SHA-256 of the empty string.
 
@@ -292,26 +296,26 @@ def test_hash_page_empty_file_hashes_empty_string(
     page.parent.mkdir(parents=True, exist_ok=True)
     page.write_text("", encoding="utf-8")
 
-    service = WikiMemoryService(git_wiki)
+    service = WikiMemoryService(wiki=git_wiki)
     service.register_evidence({"page-1"})
     assert service.hash_page("concepts/empty.md") == hashlib.sha256(b"").hexdigest()
 
 
 def test_hash_page_missing_file_returns_empty_sentinel(
-    git_wiki: WikiLayout,
+    git_wiki: Wiki,
 ) -> None:
     """A missing file still returns ``""`` (the missing-page sentinel)."""
-    service = WikiMemoryService(git_wiki)
+    service = WikiMemoryService(wiki=git_wiki)
     service.register_evidence({"page-1"})
     assert service.hash_page("concepts/does-not-exist.md") == ""
 
 
 def test_apply_plan_restores_dirty_tree_when_commit_fails(
-    git_wiki: WikiLayout, monkeypatch: pytest.MonkeyPatch
+    git_wiki: Wiki, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    dirty = git_wiki.root / "notes.txt"
+    dirty = git_wiki.data_root / "notes.txt"
     dirty.write_text("keep me", encoding="utf-8")
-    service = WikiMemoryService(git_wiki)
+    service = WikiMemoryService(wiki=git_wiki)
     service.register_evidence({"page-1"})
     plan = MemoryPlan(
         operations=[
@@ -335,10 +339,10 @@ def test_apply_plan_restores_dirty_tree_when_commit_fails(
     assert not (git_wiki.wiki_dir / "concepts" / "new.md").exists()
 
 
-def test_validate_plan_rejects_create_collision(git_wiki: WikiLayout) -> None:
+def test_validate_plan_rejects_create_collision(git_wiki: Wiki) -> None:
     page = git_wiki.wiki_dir / "concepts" / "existing.md"
     page.write_text("---\ntitle: Existing\ntype: concept\n---\n", encoding="utf-8")
-    service = WikiMemoryService(git_wiki)
+    service = WikiMemoryService(wiki=git_wiki)
     service.register_evidence({"page-1"})
     service.register_evidence({"page-1"})
     plan = MemoryPlan(
@@ -356,8 +360,8 @@ def test_validate_plan_rejects_create_collision(git_wiki: WikiLayout) -> None:
         service.validate_plan(plan)
 
 
-def test_validate_plan_rejects_frontmatter_type_mismatch(git_wiki: WikiLayout) -> None:
-    service = WikiMemoryService(git_wiki)
+def test_validate_plan_rejects_frontmatter_type_mismatch(git_wiki: Wiki) -> None:
+    service = WikiMemoryService(wiki=git_wiki)
     service.register_evidence({"page-1"})
     service.register_evidence({"page-1"})
     plan = MemoryPlan(
@@ -376,40 +380,45 @@ def test_validate_plan_rejects_frontmatter_type_mismatch(git_wiki: WikiLayout) -
 
 
 def test_search_filters_single_collection_and_registers_evidence(
-    git_wiki: WikiLayout, monkeypatch: pytest.MonkeyPatch
+    git_wiki: Wiki, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     page = git_wiki.wiki_dir / "concepts" / "x.md"
     page.write_text("---\ntitle: X\ntype: concept\n---\n# X\nEvidence.\n", encoding="utf-8")
-    git_wiki.index_path.write_text("- [X](concepts/x.md)\n", encoding="utf-8")
-    service = WikiMemoryService(git_wiki)
+    (git_wiki.wiki_dir / "index.md").write_text("- [X](concepts/x.md)\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "lies.qmd.cli.qmd_query",
+        lambda *a, **kw: [{"path": "concepts/x.md", "score": 1.0}],
+    )
+    service = WikiMemoryService(wiki=git_wiki)
     service.register_evidence({"page-1"})
-    result = service.search("X", collection_ids=[git_wiki.root.name])
+    result = service.search("X", collection_ids=[git_wiki.name])
     assert result.pages
     assert service.known_evidence
     filtered = service.search("X", collection_ids=["other"])
     assert filtered.pages == []
 
 
-def test_service_locks_are_per_instance(git_wiki: WikiLayout) -> None:
-    first = WikiMemoryService(git_wiki)
-    second = WikiMemoryService(git_wiki)
+def test_service_locks_are_per_instance(git_wiki: Wiki) -> None:
+    first = WikiMemoryService(wiki=git_wiki)
+    second = WikiMemoryService(wiki=git_wiki)
     assert first._lock is not second._lock
 
 
 def test_register_collection_is_idempotent(tmp_path) -> None:
+    import pathlib
     from pathlib import PurePosixPath
 
     from lies.memory.models import WikiCollectionRef
     from lies.memory.service import WikiMemoryService
-    from lies.wiki.layout import WikiLayout
+    from lies.wiki.wiki import Wiki
 
-    layout = WikiLayout(tmp_path)
-    svc = WikiMemoryService(layout)
+    wiki = make_wiki(name="register", data_root=tmp_path)
+    svc = WikiMemoryService(wiki=wiki)
     ref = WikiCollectionRef(
         collection_id="htmx",
         root=PurePosixPath(str(tmp_path / "raw" / "htmx")),
         qmd_collection="htmx",
-        schema_path=PurePosixPath(str(tmp_path / ".lies" / "schema.md")),
+        schema_path=PurePosixPath(str(wiki.schema_path)),
     )
     svc.register_collection(ref)
     svc.register_collection(ref)
@@ -418,8 +427,13 @@ def test_register_collection_is_idempotent(tmp_path) -> None:
 
 
 def test_is_registered_false_for_unknown() -> None:
-    from lies.memory.service import WikiMemoryService
-    from lies.wiki.layout import WikiLayout
+    import pathlib
 
-    svc = WikiMemoryService(WikiLayout(__import__("pathlib").Path("/tmp/lies-svc-test")))
+    from lies.memory.service import WikiMemoryService
+    from lies.wiki.wiki import Wiki
+
+    wiki = make_wiki(
+        name="unknown", data_root=pathlib.Path("/tmp/lies-svc-test")
+    )
+    svc = WikiMemoryService(wiki=wiki)
     assert not svc.is_registered("nope")
