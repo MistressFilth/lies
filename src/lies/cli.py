@@ -491,7 +491,6 @@ def collections(
     )
 
     wiki = resolve_wiki(wiki_name)
-    wiki_root = wiki.data_root
     cfg_dir = wiki.collections_dir
     if action == "list":
         for p in sorted(cfg_dir.glob("*.yaml")):
@@ -500,12 +499,12 @@ def collections(
         from lies.memory.service import WikiMemoryService
         from lies.wiki.layout import WikiLayout
 
-        c = load_collection(wiki_root, name)
+        c = load_collection(wiki, name)
         print(f"name={c.name} source={c.source} tags={c.tags}")
         # The CLI doesn't know whether sync has run in this process;
         # an empty registry means the in-process WikiMemoryService for
         # this wiki root has not registered any collection yet.
-        layout = WikiLayout(wiki_root)
+        layout = WikiLayout(wiki.data_root)
         svc = WikiMemoryService(layout)
         registered = svc.registered_collections()
         ref = next(
@@ -516,7 +515,7 @@ def collections(
     elif action == "modify" and name:
         raise typer.BadParameter(
             f"`lies collections modify {name}` is not implemented yet; "
-            f"edit `<wiki>/.lies/collections/{name}.yaml` by hand for now."
+            f"edit `{cfg_dir}/{name}.yaml` by hand for now."
         )
     elif action == "new" and name:
         # Import the agent inside the branch so that tests can mock
@@ -582,7 +581,7 @@ def collections(
                     now = datetime.now(tz=timezone.utc)
                     payload = dict(out.collection)
                     payload.setdefault("name", name)
-                    payload.setdefault("path", str(wiki_root / "raw" / name))
+                    payload.setdefault("path", str(wiki.data_root / "raw" / name))
                     payload.setdefault("created_at", now)
                     payload.setdefault("updated_at", now)
                     # The agent may emit ISO strings; coerce to datetime
@@ -603,7 +602,7 @@ def collections(
                     if doc_path is not None:
                         payload["doc_path"] = Path(doc_path)
                     collection = Collection(**payload)
-                    save_collection(wiki_root, collection)
+                    save_collection(wiki, collection)
                     typer.echo(f"wrote {cfg_dir / (name + '.yaml')}")
                 return
             raise typer.BadParameter("agent returned unexpected output")

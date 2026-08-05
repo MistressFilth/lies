@@ -66,7 +66,6 @@ def test_pipeline_runs_all_states(wiki: Wiki) -> None:
         budget=budget,
         wiki=wiki,
         manifest=mock.Mock(),
-        
     )
     fake_docs = [
         ParsedDoc(path="x.md", content=b"# hi", source_sha256="abc", source_format="markdown")
@@ -127,7 +126,6 @@ def test_pipeline_rolls_back_on_budget_exceeded(wiki: Wiki) -> None:
         budget=budget,
         wiki=wiki,
         manifest=manifest,
-        
     )
     with (
         mock.patch("lies.etl.pipeline.run_scrape", side_effect=BudgetExceeded((1, 0), (0, 10_000))),
@@ -148,7 +146,6 @@ def test_pipeline_threads_parsed_docs_from_scrape_to_normalize(wiki: Wiki) -> No
         budget=budget,
         wiki=wiki,
         manifest=mock.Mock(),
-        
     )
     fake_docs = [
         ParsedDoc(path="x.md", content=b"# hi", source_sha256="abc", source_format="markdown")
@@ -201,7 +198,6 @@ def test_pipeline_threads_force_to_write(wiki: Wiki) -> None:
         budget=budget,
         wiki=wiki,
         manifest=mock.Mock(),
-        
         force=True,
     )
     captured: dict = {}
@@ -250,7 +246,6 @@ def test_pipeline_threads_wiki_to_write(wiki: Wiki) -> None:
         budget=budget,
         wiki=wiki,
         manifest=mock.Mock(),
-        
     )
     captured: dict = {}
 
@@ -308,7 +303,7 @@ def test_pipeline_runs_register_stage(wiki: Wiki, monkeypatch: pytest.MonkeyPatc
     telemetry = SyncTelemetry(wiki, c.name)
     from lies.collections.hash_manifest import HashManifest
 
-    manifest = HashManifest(wiki.data_root, c.name)
+    manifest = HashManifest(wiki, c.name)
     budget = CostBudget()
     orch = SyncOrchestrator(
         collection=c,
@@ -316,7 +311,6 @@ def test_pipeline_runs_register_stage(wiki: Wiki, monkeypatch: pytest.MonkeyPatc
         budget=budget,
         wiki=wiki,
         manifest=manifest,
-        
     )
     # Stub each stage to keep the test focused on the new state transition.
     with (

@@ -119,10 +119,10 @@ def sync_collection(
     scraper generation flow that was promised in the original docstring
     is deferred.
     """
-    collection: Collection = load_collection(wiki.data_root, name)
+    collection: Collection = load_collection(wiki, name)
     with SyncTelemetry(wiki, name) as telemetry:
         budget = CostBudget()
-        manifest = HashManifest(wiki.data_root, name)
+        manifest = HashManifest(wiki, name)
         pipeline = SyncOrchestrator(
             wiki=wiki,
             collection=collection,

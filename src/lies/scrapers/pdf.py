@@ -3,6 +3,10 @@
 The scraper preserves the fetched bytes and labels them ``pdf``. The
 NORMALIZE stage hands those bytes to ``PDFBuilder``, which performs
 page-level text extraction and emits markdown documents.
+
+``emit_manifest`` writes to the raw workspace; the SCRAPE stage routes
+the manifest to ``wiki.cache_root / "collections" / <name> / "manifest.json"``
+under the XDG cache root.
 """
 
 from __future__ import annotations
