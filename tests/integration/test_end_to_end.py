@@ -30,7 +30,7 @@ from lies.orchestrator import Orchestrator
 from lies.qmd.cli import QmdNotInstalledError
 from lies.query import synthesize_answer
 from lies.schema import load_schema
-from lies.wiki.layout import WikiLayout
+from tests.conftest import make_wiki
 
 FIXTURE = Path(__file__).parent.parent / "fixtures" / "sample-wiki"
 
@@ -107,22 +107,23 @@ def _git_show_files(repo: Path, sha: str) -> list[str]:
 
 
 def test_layout_resolves(wiki_copy: Path) -> None:
-    layout = WikiLayout(wiki_copy)
-    assert layout.is_git_repo() is True
-    assert layout.index_path.exists()
-    assert layout.log_path.exists()
+    wiki = make_wiki(name="sample", data_root=wiki_copy)
+    assert (wiki_copy / ".git").exists()
+    assert (wiki.wiki_dir / "index.md").exists()
+    assert (wiki.wiki_dir / "log.md").exists()
 
 
 def test_schema_loads(wiki_copy: Path) -> None:
-    layout = WikiLayout(wiki_copy)
-    schema = load_schema(layout)
+    wiki = make_wiki(name="sample", data_root=wiki_copy)
+    schema = load_schema(wiki)
     assert "Page types" in schema or "page types" in schema
 
 
 def test_orchestrator_constructs(wiki_copy: Path) -> None:
-    orch = Orchestrator(wiki_root=wiki_copy, model="test")
+    wiki = make_wiki(name="sample", data_root=wiki_copy)
+    orch = Orchestrator(wiki=wiki, model="test")
     assert orch is not None
-    assert orch.wiki_root == wiki_copy.resolve()
+    assert orch.wiki.data_root == wiki_copy.resolve()
 
 
 # ---------------------------------------------------------------------------
@@ -140,7 +141,8 @@ def test_run_ingest_delegates_to_sync_helper(wiki_copy: Path) -> None:
     The real SyncOrchestrator behavior is covered by
     ``tests/integration/test_sync_collection.py``.
     """
-    orch = Orchestrator(wiki_root=wiki_copy, model="test")
+    wiki = make_wiki(name="sample", data_root=wiki_copy)
+    orch = Orchestrator(wiki=wiki, model="test")
 
     with mock.patch("lies.etl.sync_helper.sync_collection") as m:
         result = orch.run_ingest("raw/articles/sample-article.md")
@@ -150,7 +152,7 @@ def test_run_ingest_delegates_to_sync_helper(wiki_copy: Path) -> None:
     # sync_collection was called once with the right args.
     m.assert_called_once()
     args, kwargs = m.call_args
-    assert args[0] == wiki_copy
+    assert args[0] is wiki
     assert args[1] == "sample-article"  # Path(source).stem strips dir + .md
     assert kwargs == {"force": False}
 
@@ -166,7 +168,8 @@ def test_run_query_falls_back_to_index_when_qmd_unavailable(
     """Query with no qmd installed reads from wiki/index.md and returns a
     SynthesizedAnswer whose fallback fields are populated correctly.
     """
-    orch = Orchestrator(wiki_root=wiki_copy, model="test")
+    wiki = make_wiki(name="sample", data_root=wiki_copy)
+    orch = Orchestrator(wiki=wiki, model="test")
     answer = orch.run_query("How does Postgres handle concurrency?")
 
     if shutil.which("qmd") is None:
@@ -186,14 +189,14 @@ def test_run_query_falls_back_to_index_when_qmd_unavailable(
 
 def test_synthesizer_reads_index_pages(wiki_copy: Path) -> None:
     """Direct call to ``synthesize_answer`` exercises the index-driven path."""
-    layout = WikiLayout(wiki_copy)
+    wiki = make_wiki(name="sample", data_root=wiki_copy)
 
     def boom(*_args, **_kwargs):  # type: ignore[no-untyped-def]
         raise QmdNotInstalledError("simulated: qmd unavailable")
 
     answer = synthesize_answer(
         "What is MVCC?",
-        layout,
+        wiki,
         qmd_search=boom,
     )
     assert answer.fallback_used is True
@@ -212,7 +215,8 @@ def test_synthesizer_reads_index_pages(wiki_copy: Path) -> None:
 
 def test_run_lint_writes_lint_report_and_appends_log(wiki_copy: Path) -> None:
     """Lint writes a real artifact to wiki/lint-report.md and a log entry."""
-    orch = Orchestrator(wiki_root=wiki_copy, model="test")
+    wiki = make_wiki(name="sample", data_root=wiki_copy)
+    orch = Orchestrator(wiki=wiki, model="test")
 
     def fake_run_sync(self, prompt: str):  # type: ignore[no-untyped-def]
         return mock.Mock(output="lint done")
@@ -225,15 +229,15 @@ def test_run_lint_writes_lint_report_and_appends_log(wiki_copy: Path) -> None:
     ):
         report_md = orch.run_lint()
 
-    layout = WikiLayout(wiki_copy)
+    lint_report_path = wiki.wiki_dir / "lint-report.md"
     # Artifact 1: lint-report.md exists and has the expected header.
-    assert layout.lint_report_path.exists()
-    on_disk = layout.lint_report_path.read_text(encoding="utf-8")
+    assert lint_report_path.exists()
+    on_disk = lint_report_path.read_text(encoding="utf-8")
     assert "Lint report" in on_disk
     assert on_disk == report_md
 
     # Artifact 2: log.md has a new "lint" entry.
-    log_text = layout.log_path.read_text(encoding="utf-8")
+    log_text = (wiki.wiki_dir / "log.md").read_text(encoding="utf-8")
     assert "lint" in log_text
     # The entry is parseable: starts with `## [<date>] lint | N findings`.
     assert any(line.startswith("## [") and " lint " in line for line in log_text.splitlines()), (
@@ -248,7 +252,8 @@ def test_run_lint_detects_orphan_pages(wiki_copy: Path) -> None:
     orphan = wiki_copy / "wiki" / "entities" / "orphan-page.md"
     orphan.write_text("# Orphan\n\nNo inbound links.\n", encoding="utf-8")
 
-    orch = Orchestrator(wiki_root=wiki_copy, model="test")
+    wiki = make_wiki(name="sample", data_root=wiki_copy)
+    orch = Orchestrator(wiki=wiki, model="test")
 
     def fake_run_sync(self, prompt: str):  # type: ignore[no-untyped-def]
         return mock.Mock(output="lint done")

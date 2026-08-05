@@ -46,26 +46,14 @@ from lies.memory.validation import (
     validate_page_type,
 )
 from lies.qmd.cli import qmd_update
-from lies.utils.exclusive import ensure_gitignored
 from lies.wiki.git import atomic_commit
-from lies.wiki.layout import WikiLayout
+from lies.wiki.wiki import Wiki
 
 _QMD_STALE_PREFIX = "qmd_stale"
 
 
 def _hash_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
-
-
-def _ensure_lock_gitignored(lock_path: Path) -> None:
-    """Ensure ``lock_path`` is gitignored in the target wiki.
-
-    Thin wrapper over :func:`lies.utils.exclusive.ensure_gitignored`,
-    kept under this name because ``wiki/layout.py`` imports it directly.
-    ``lock_path`` is always ``<wiki_root>/.lies/<name>``, so the wiki
-    root is two parents up.
-    """
-    ensure_gitignored(lock_path, wiki_root=lock_path.parent.parent)
 
 
 @contextlib.contextmanager
@@ -76,13 +64,10 @@ def _acquire_wiki_flock(lock_path: Path) -> Iterator[None]:
     descriptor is closed. Raises :class:`WikiLockBusy` if the lock is
     already held by another process.
 
-    The lock path is gitignored before the file descriptor is opened
-    so ``git stash push --include-untracked`` (used by
-    ``WikiMemoryService._snapshot_working_tree``) cannot unlink the
-    inode behind a held flock.
+    The lock path lives under ``$XDG_RUNTIME_DIR`` rather than the
+    wiki's data root, so no gitignore coordination is needed.
     """
     lock_path.parent.mkdir(parents=True, exist_ok=True)
-    _ensure_lock_gitignored(lock_path)
     fd = lock_path.open("w", encoding="utf-8")
     try:
         try:
@@ -98,17 +83,17 @@ def _acquire_wiki_flock(lock_path: Path) -> Iterator[None]:
         fd.close()
 
 
-def _read_page(layout: WikiLayout, path: str) -> str | None:
+def _read_page(wiki: Wiki, path: str) -> str | None:
     """Read page content; return ``None`` if the file does not exist.
 
     Distinguishes "missing file" from "empty file": a missing file
     returns ``None`` (callers map it to the empty-string ``""`` sentinel);
     an empty file returns ``""``. This keeps ``hash_page`` consistent
-    with ``validate_plan``'s hash-mismatch detection, where empty
+    with ``apply_plan``'s hash-mismatch detection, where empty
     content is a valid baseline rather than a missing-page sentinel.
     """
     try:
-        resolved = validate_page_path(layout, path)
+        resolved = validate_page_path(wiki, path)
     except WikiPlanInvalid:
         return None
     if not resolved.exists():
@@ -147,15 +132,15 @@ def _run_git(
 
 
 class WikiMemoryService:
-    """Apply validated memory plans to the wiki at ``layout``."""
+    """Apply validated memory plans to ``wiki``."""
 
     def __init__(
         self,
-        layout: WikiLayout,
+        wiki: Wiki,
         *,
         qmd_update: Callable[[Path], None] = qmd_update,
     ) -> None:
-        self._layout = layout
+        self._wiki = wiki
         self._qmd_update = qmd_update
         self._lock = threading.Lock()
         self._known_evidence: set[str] = set()
@@ -163,7 +148,7 @@ class WikiMemoryService:
 
     def _lock_path(self) -> Path:
         """Return the cross-process lock file path for this wiki."""
-        return self._layout.root / ".lies" / "memory.lock"
+        return self._wiki.memory_lock_path
 
     @contextlib.contextmanager
     def _acquire_flock(self) -> Iterator[None]:
@@ -199,7 +184,7 @@ class WikiMemoryService:
     ) -> WikiSearchResult:
         """Search this wiki and authenticate the returned evidence references."""
 
-        collection_id = self._layout.root.name
+        collection_id = self._wiki.name
         if collection_ids is not None and collection_id not in collection_ids:
             return WikiSearchResult(
                 query=question,
@@ -208,7 +193,7 @@ class WikiMemoryService:
                 fallback_used=False,
                 fallback_reason="collection_filtered",
             )
-        result = search_wiki(self._layout, question, limit=limit)
+        result = search_wiki(self._wiki, question, limit=limit)
         for page in result.pages:
             self._known_evidence.update(
                 {
@@ -224,10 +209,10 @@ class WikiMemoryService:
         """Read authenticated page IDs through the service retrieval boundary."""
         from lies.memory.models import WikiPageNotFound
 
-        unknown = [page_id for page_id in page_ids if _path_for_id(self._layout, page_id) is None]
+        unknown = [page_id for page_id in page_ids if _path_for_id(self._wiki, page_id) is None]
         if unknown:
             raise WikiPageNotFound(f"unknown page_ids: {unknown}")
-        bodies = read_pages(self._layout, page_ids)
+        bodies = read_pages(self._wiki, page_ids)
         self._known_evidence.update(bodies)
         return bodies
 
@@ -237,7 +222,7 @@ class WikiMemoryService:
         A missing file returns the empty string ``""`` (sentinel);
         an empty file returns the SHA-256 of the empty string.
         """
-        content = _read_page(self._layout, path)
+        content = _read_page(self._wiki, path)
         if content is None:
             return ""
         return _hash_text(content)
@@ -249,7 +234,7 @@ class WikiMemoryService:
         and ``""`` for a missing file. ``content`` is always the
         on-disk content (``""`` for empty or missing).
         """
-        content = _read_page(self._layout, path)
+        content = _read_page(self._wiki, path)
         if content is None:
             return ("", "")
         return (_hash_text(content), content)
@@ -259,12 +244,12 @@ class WikiMemoryService:
         for op in plan.operations:
             validate_operation_evidence(op, known_references=self._known_evidence)
             try:
-                resolved = validate_page_path(self._layout, op.path)
+                resolved = validate_page_path(self._wiki, op.path)
             except WikiPlanInvalid as exc:
                 raise WikiPlanInvalid(str(exc), path=op.path) from exc
-            is_index = op.path == "wiki/index.md" or resolved == self._layout.index_path
+            is_index = op.path == "wiki/index.md" or resolved == self._wiki.wiki_dir / "index.md"
             if is_index:
-                resolved = self._layout.index_path
+                resolved = self._wiki.wiki_dir / "index.md"
             page_type = _page_type_from_dir(resolved.parent.name)
             if not is_index:
                 validate_page_type(page_type)
@@ -281,10 +266,11 @@ class WikiMemoryService:
                     path=op.path,
                 )
             if isinstance(op, (PageUpdate, EvidenceAppend)):
+                index_path = self._wiki.wiki_dir / "index.md"
                 current = (
-                    self._layout.index_path.read_text(encoding="utf-8")
+                    index_path.read_text(encoding="utf-8")
                     if is_index
-                    else _read_page(self._layout, op.path)
+                    else _read_page(self._wiki, op.path)
                 )
                 actual = "" if current is None else _hash_text(current)
                 if actual != op.expected_sha256:
@@ -306,7 +292,7 @@ class WikiMemoryService:
             self.validate_plan(plan)
             if plan.is_noop():
                 return self._empty_receipt()
-            repo = self._layout.root
+            repo = self._wiki.data_root
             snapshot_ref = self._snapshot_working_tree(repo)
             try:
                 changed = self._apply_operations(plan)
@@ -319,7 +305,7 @@ class WikiMemoryService:
                     self._restore_working_tree(repo, snapshot_ref)
                     return self._empty_receipt()
                 atomic_commit(
-                    self._layout.root,
+                    self._wiki.data_root,
                     f"memory: {plan.rationale}",
                     files=files,
                 )
@@ -347,24 +333,25 @@ class WikiMemoryService:
         self.register_evidence(set(plan.evidence))
         for op in plan.operations:
             self.register_evidence(set(getattr(op, "evidence", [])))
-        memory_plan = from_repair_plan(plan, layout=self._layout)
+        memory_plan = from_repair_plan(plan, wiki=self._wiki)
         return self.apply_plan(memory_plan)
 
     def _apply_operations(self, plan: MemoryPlan) -> list[PageReference]:
         changed: list[PageReference] = []
+        index_path = self._wiki.wiki_dir / "index.md"
         for op in plan.operations:
-            resolved = validate_page_path(self._layout, op.path)
-            if op.path == "wiki/index.md" or resolved == self._layout.index_path:
-                resolved = self._layout.index_path
+            resolved = validate_page_path(self._wiki, op.path)
+            if op.path == "wiki/index.md" or resolved == index_path:
+                resolved = index_path
             resolved.parent.mkdir(parents=True, exist_ok=True)
             if isinstance(op, PageCreate):
                 resolved.write_text(op.content, encoding="utf-8")
                 kind = OperationKind.CREATE
             elif isinstance(op, PageUpdate):
                 existing = (
-                    self._layout.index_path.read_text(encoding="utf-8")
-                    if resolved == self._layout.index_path
-                    else _read_page(self._layout, op.path)
+                    index_path.read_text(encoding="utf-8")
+                    if resolved == index_path
+                    else _read_page(self._wiki, op.path)
                 )
                 actual = "" if existing is None else _hash_text(existing)
                 if actual != op.expected_sha256:
@@ -372,7 +359,7 @@ class WikiMemoryService:
                 resolved.write_text(op.content, encoding="utf-8")
                 kind = OperationKind.UPDATE
             elif isinstance(op, EvidenceAppend):
-                existing = _read_page(self._layout, op.path)
+                existing = _read_page(self._wiki, op.path)
                 actual = "" if existing is None else _hash_text(existing)
                 if actual != op.expected_sha256:
                     raise WikiWriteConflict(f"hash mismatch for {op.path}")
@@ -384,14 +371,14 @@ class WikiMemoryService:
             changed.append(
                 PageReference(
                     path=op.path,
-                    collection_id=self._layout.root.name,
+                    collection_id=self._wiki.name,
                     op=kind,
                 )
             )
-        rebuild_index(self._layout)
+        rebuild_index(self._wiki)
         for op in plan.operations:
             append_log_entry(
-                self._layout,
+                self._wiki,
                 f"## [{datetime.now(tz=timezone.utc).date().isoformat()}] "
                 f"memory | {op.kind.value} | {op.path}",
             )
@@ -406,15 +393,16 @@ class WikiMemoryService:
         pass an empty list to ``atomic_commit``. Returns a sorted,
         de-duplicated list of repo-relative POSIX paths.
         """
-        root = self._layout.root
+        root = self._wiki.data_root
+        index_path = self._wiki.wiki_dir / "index.md"
         candidates: set[str] = set()
         for op in plan.operations:
             try:
-                resolved = validate_page_path(self._layout, op.path)
+                resolved = validate_page_path(self._wiki, op.path)
             except WikiPlanInvalid:
                 continue  # validate_plan should have rejected this already
-            if op.path == "wiki/index.md" or resolved == self._layout.index_path:
-                resolved = self._layout.index_path
+            if op.path == "wiki/index.md" or resolved == index_path:
+                resolved = index_path
             try:
                 rel = resolved.relative_to(root).as_posix()
             except ValueError:
@@ -426,13 +414,13 @@ class WikiMemoryService:
 
     def _restore_index(self) -> None:
         try:
-            rebuild_index(self._layout)
+            rebuild_index(self._wiki)
         except OSError:
             pass
 
     def _refresh_qmd(self) -> tuple[bool, str]:
         try:
-            self._qmd_update(self._layout.root)
+            self._qmd_update(self._wiki.data_root)
         except Exception as exc:  # noqa: BLE001 - report, do not roll back git
             # We deliberately do not roll back the git commit; the
             # wiki is correct. The caller decides whether to retry.

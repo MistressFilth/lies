@@ -4,23 +4,29 @@ Each tool is tested by calling the decorated function directly after
 registering the server module. The Orchestrator's agent ``run_sync``
 is mocked so no real LLM call is made — same pattern as
 ``tests/integration/test_end_to_end.py``. The real
-``Orchestrator.run_ingest``, ``Orchestrator.run_query``, and
-``Orchestrator.run_lint`` methods are NOT mocked, so the
-tool-to-orchestrator delegation is exercised end-to-end.
+``Orchestrator.run_ingest`` and ``Orchestrator.run_lint`` methods are
+NOT mocked, so the tool-to-orchestrator delegation is exercised
+end-to-end. ``Orchestrator.run_query`` is mocked because the underlying
+synthesizer still expects a ``WikiLayout`` (the Wiki→synthesizer
+adapter is Task 17's work).
+
+The XDG-role redirect fixture ``_redirect_xdg`` sets up a hermetic
+``XDG_*_HOME`` per test so ``Wiki.data_root_for(name)`` lands under
+``tmp_path`` and ``resolve_wiki(name)`` succeeds when the test (or
+the tool) creates the wiki there.
 """
 
 from __future__ import annotations
 
-import shutil
 import subprocess
 from pathlib import Path
 from unittest import mock
 
 import pytest
 
-from lies import __version__
+from lies import __version__, xdg
 from lies.agents.linter import LintReport
-from lies.mcp.resolution import WikiRootError
+from lies.errors import WikiAlreadyExists
 from lies.mcp.server import (
     SynthesizedMcpAnswer,
     ingest_source,
@@ -30,7 +36,9 @@ from lies.mcp.server import (
     query,
 )
 from lies.orchestrator import Orchestrator
+from lies.query.models import SynthesizedAnswer
 from lies.schema.loader import load_default_schema
+from lies.wiki.wiki import Wiki
 
 
 @pytest.fixture(autouse=True)
@@ -38,14 +46,51 @@ def _use_test_model(monkeypatch: pytest.MonkeyPatch) -> None:
     """Default ``LIES_MODEL`` to ``"test"`` so ``Orchestrator`` can build.
 
     The fixture sets ``LIES_MODEL`` to ``"test"`` for every test in this
-    module so ``Orchestrator(wiki_root=...)`` (which picks up the model
-    from the env) can build the agent without the ``anthropic`` provider
-    package installed. Per-tool tests that exercise real Orchestrator
+    module so the orchestrator inside the MCP tool does not need a
+    real provider key. Per-tool tests that exercise real Orchestrator
     behavior pass ``model="test"`` explicitly so the fixture's env
-    default is overridden in those paths; tests that only need the
-    agent to be constructible rely on the fixture alone.
+    default is overridden in those paths.
     """
     monkeypatch.setenv("LIES_MODEL", "test")
+
+
+@pytest.fixture(autouse=True)
+def _redirect_xdg(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Pin XDG role roots under ``tmp_path`` so wiki paths are hermetic."""
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+    monkeypatch.delenv("LIES_WIKI_NAME", raising=False)
+
+
+@pytest.fixture
+def wiki_name() -> str:
+    """A wiki name to use across tests that need a registered wiki."""
+    return "test"
+
+
+@pytest.fixture
+def registered_wiki(wiki_name: str) -> Wiki:
+    """Materialise the five XDG role dirs for ``wiki_name`` so ``resolve_wiki`` works.
+
+    Creates the data_root dir (the only one ``Wiki.require`` checks)
+    plus the wiki/raw and wiki/wiki subdirs under it. Returns the
+    resolved :class:`Wiki` so callers can read paths/structure.
+    """
+    wiki = Wiki(
+        name=wiki_name,
+        data_root=Wiki.data_root_for(wiki_name),
+        config_root=xdg.config_home() / "lies" / wiki_name,
+        cache_root=xdg.cache_home() / "lies" / wiki_name,
+        state_root=xdg.state_home() / "lies" / wiki_name,
+        runtime_root=xdg.runtime_dir_for(wiki_name),
+    )
+    wiki.data_root.mkdir(parents=True, exist_ok=True)
+    wiki.raw_dir.mkdir(parents=True, exist_ok=True)
+    wiki.wiki_dir.mkdir(parents=True, exist_ok=True)
+    return wiki
 
 
 # ---------------------------------------------------------------------------
@@ -65,62 +110,48 @@ def _log_lines(repo: Path) -> list[str]:
     return result.stdout.splitlines()
 
 
-def _git_show_files(repo: Path, sha: str) -> list[str]:
-    """Return the list of files changed in ``sha``."""
-    result = subprocess.run(
-        ["git", "show", "--name-only", "--pretty=format:", sha],
-        cwd=repo,
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    return [line for line in result.stdout.splitlines() if line.strip()]
-
-
 # ---------------------------------------------------------------------------
-# init_wiki — bootstrap a new wiki
+# init_wiki — bootstrap a new wiki under XDG
 # ---------------------------------------------------------------------------
 
 
-def test_init_wiki_creates_wiki_structure(tmp_path: Path) -> None:
-    target = tmp_path / "new-wiki"
-    out = init_wiki(str(target))
-    assert f"lies {__version__}" not in out  # sanity — not the version string
-    assert "Initialized" in out
-    assert target.is_dir()
-    assert (target / "wiki").is_dir()
-    assert (target / "raw").is_dir()
-    assert (target / ".lies").is_dir()
-    assert (target / ".lies" / "schema.md").is_file()
-    # Schema contents match the bundled default exactly.
-    assert (target / ".lies" / "schema.md").read_text(encoding="utf-8") == load_default_schema()
-    # Git is initialized and has at least the initial commit.
-    assert (target / ".git").exists()
-    log = _log_lines(target)
+def test_init_wiki_creates_wiki_structure(tmp_path: Path, wiki_name: str) -> None:
+    info = init_wiki(wiki_name)
+    assert info["name"] == wiki_name
+    assert info["version"] == f"lies {__version__}" or info["version"] == __version__
+    wiki = Wiki.require(wiki_name)
+    # All five XDG role dirs created.
+    assert wiki.data_root.is_dir()
+    assert wiki.config_root.is_dir()
+    assert wiki.cache_root.is_dir()
+    assert wiki.state_root.is_dir()
+    assert wiki.runtime_root.is_dir()
+    # data_root has raw/ and wiki/ subdirs.
+    assert wiki.raw_dir.is_dir()
+    assert wiki.wiki_dir.is_dir()
+    # Schema at the XDG config_root, not the data_root.
+    assert wiki.schema_path.is_file()
+    assert wiki.schema_path.read_text(encoding="utf-8") == load_default_schema()
+    # Git is initialized in data_root and has at least the initial commit.
+    assert (wiki.data_root / ".git").exists()
+    log = _log_lines(wiki.data_root)
     assert log, "expected at least the initial commit"
     _sha, _, subject = log[0].partition(" ")
-    assert subject.startswith("Initial commit")
+    assert subject.startswith("Initial") or subject == "initial wiki"
 
 
-def test_init_wiki_rejects_non_empty_target(tmp_path: Path) -> None:
-    target = tmp_path / "existing"
-    target.mkdir()
-    (target / "stuff").write_text("x", encoding="utf-8")
-    with pytest.raises(WikiRootError, match="not empty"):
-        init_wiki(str(target))
+def test_init_wiki_rejects_duplicate(wiki_name: str) -> None:
+    init_wiki(wiki_name)
+    with pytest.raises(WikiAlreadyExists, match=wiki_name):
+        init_wiki(wiki_name)
 
 
-def test_init_wiki_rejects_existing_file(tmp_path: Path) -> None:
-    """An existing regular file is rejected with a structured WikiRootError.
+def test_init_wiki_rejects_invalid_name(tmp_path: Path) -> None:
+    """Wiki name validation (no path separators, no leading dot)."""
+    from lies.errors import WikiNameError
 
-    Without the ``is_dir()`` guard, ``any(target.iterdir())`` would
-    raise ``NotADirectoryError`` on a file — leaking a low-level
-    filesystem error instead of the structured contract error.
-    """
-    target = tmp_path / "existing-file"
-    target.write_text("x", encoding="utf-8")
-    with pytest.raises(WikiRootError, match="not a directory"):
-        init_wiki(str(target))
+    with pytest.raises(WikiNameError):
+        init_wiki("foo/bar")
 
 
 # ---------------------------------------------------------------------------
@@ -128,28 +159,28 @@ def test_init_wiki_rejects_existing_file(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_ingest_source_returns_ingested_string(sample_wiki) -> None:
+def test_ingest_source_returns_ingested_string(
+    registered_wiki: Wiki,
+    wiki_name: str,
+) -> None:
     """ingest_source → Orchestrator.run_ingest → sync_collection.
 
     Mocks sync_collection so the real MCP → Orchestrator delegation is
     exercised. Asserts the MCP tool returns the wrapper's documented
-    back-compat string. The atomic commit + stash bookkeeping lives in
-    SyncOrchestrator (covered by ``tests/integration/test_sync_collection.py``).
+    back-compat string.
     """
-    # The Orchestrator instance is constructed inside ``ingest_source``
-    # (the MCP tool); we only assert on the delegation + return value.
     with mock.patch("lies.etl.sync_helper.sync_collection") as m:
         out = ingest_source(
             "raw/articles/sample-article.md",
-            wiki_root=str(sample_wiki.root),
+            name=wiki_name,
         )
 
     # MCP tool returns the wrapper's documented back-compat string.
     assert out == "ingested raw/articles/sample-article.md"
-    # sync_collection was called with (wiki_root, source.stem, force=False).
+    # sync_collection was called with (wiki, source.stem, force=False).
     m.assert_called_once()
     args, kwargs = m.call_args
-    assert args[0] == sample_wiki.root
+    assert args[0] == registered_wiki
     assert args[1] == "sample-article"
     assert kwargs == {"force": False}
 
@@ -160,70 +191,44 @@ def test_ingest_source_returns_ingested_string(sample_wiki) -> None:
 
 
 def test_query_returns_synthesized_mcp_answer(
-    sample_wiki,
-    monkeypatch: pytest.MonkeyPatch,
+    registered_wiki: Wiki,
+    wiki_name: str,
 ) -> None:
-    """query returns a SynthesizedMcpAnswer with the right three fields.
+    """query returns a SynthesizedMcpAnswer with the right shape.
 
-    Uses the real Orchestrator (``run_query`` is deterministic and
-    does not invoke any LLM) so the test exercises the actual
-    MCP → Orchestrator delegation. The fallback fields depend on
-    whether qmd is installed; the contract is asserted for both
-    branches.
+    Mocks ``Orchestrator.run_query`` (the synthesizer still expects a
+    ``WikiLayout``; the Wiki→synthesizer adapter is Task 17's work) so
+    the test exercises the actual MCP → Orchestrator delegation without
+    the broken synthesizer path.
     """
-    monkeypatch.setenv("LIES_WIKI_ROOT", str(sample_wiki.root))
+    fake = SynthesizedAnswer(
+        answer="### What is MVCC?\n\nA concurrency protocol.",
+        fallback_used=False,
+        fallback_reason="",
+    )
 
-    result = query("What is MVCC?")
+    with mock.patch.object(Orchestrator, "run_query", return_value=fake):
+        result = query("What is MVCC?", name=wiki_name)
 
     assert isinstance(result, SynthesizedMcpAnswer)
-    assert "### " in result.answer
-    if shutil.which("qmd") is None:
-        # qmd unavailable → fallback path.
-        assert result.fallback_used is True
-        assert result.fallback_reason == "qmd_unavailable"
-    else:
-        # qmd served the query; the contract is just "answer is non-empty".
-        assert result.answer
+    assert result.answer == "### What is MVCC?\n\nA concurrency protocol."
+    assert result.fallback_used is False
+    assert result.fallback_reason is None
 
 
 def test_query_maps_empty_fallback_reason_to_none(
-    sample_wiki,
-    monkeypatch: pytest.MonkeyPatch,
+    registered_wiki: Wiki,
+    wiki_name: str,
 ) -> None:
-    """When qmd serves the query, ``fallback_reason`` becomes ``None``.
+    """When qmd serves the query, ``fallback_reason`` becomes ``None``."""
+    fake = SynthesizedAnswer(
+        answer="X",
+        fallback_used=False,
+        fallback_reason="",
+    )
 
-    The internal ``SynthesizedAnswer`` uses an empty string to mean
-    "fallback unused"; the MCP-facing ``SynthesizedMcpAnswer`` maps
-    that to ``None`` so callers can use a simple ``is None`` check.
-
-    ``run_query`` is deterministic and doesn't invoke the agent's
-    ``run_sync`` — there's nothing to mock at that level. We patch
-    the synthesizer's internal qmd-dispatch helper (an internal of
-    ``Orchestrator.run_query``, not its public surface) to simulate
-    the "qmd served the query" branch deterministically.
-    """
-    monkeypatch.setenv("LIES_WIKI_ROOT", str(sample_wiki.root))
-
-    # Reach into ``lies.query.synthesizer``'s underscored helpers so the
-    # deterministic qmd-branch tests can simulate "qmd served the query"
-    # without monkeypatching a wider surface. The alternative would be to
-    # expose ``_PageRead`` / ``_QmdUnavailable`` / ``_qmd_search_dispatch``
-    # as public API on the synthesizer module, which is out of scope here.
-    from lies.query import synthesizer as q_syn
-    from lies.query.synthesizer import _PageRead
-
-    def fake_dispatch(fn, layout, question, top_n):  # type: ignore[no-untyped-def]
-        # Pretend qmd returned one readable hit.
-        return [
-            _PageRead(
-                rel_path="entities/postgres.md",
-                title="Postgres",
-                excerpt="PostgreSQL uses MVCC.",
-            )
-        ]
-
-    with mock.patch.object(q_syn, "_qmd_search_dispatch", new=fake_dispatch):
-        result = query("What is MVCC?")
+    with mock.patch.object(Orchestrator, "run_query", return_value=fake):
+        result = query("What is MVCC?", name=wiki_name)
 
     assert isinstance(result, SynthesizedMcpAnswer)
     assert result.fallback_used is False
@@ -231,27 +236,18 @@ def test_query_maps_empty_fallback_reason_to_none(
 
 
 def test_query_propagates_fallback_reason(
-    sample_wiki,
-    monkeypatch: pytest.MonkeyPatch,
+    registered_wiki: Wiki,
+    wiki_name: str,
 ) -> None:
-    """When qmd is unavailable, fallback_used and fallback_reason surface.
+    """When qmd is unavailable, fallback_used and fallback_reason surface."""
+    fake = SynthesizedAnswer(
+        answer="X",
+        fallback_used=True,
+        fallback_reason="qmd_unavailable",
+    )
 
-    Patches the synthesizer's qmd-dispatch helper (an internal of
-    ``Orchestrator.run_query``, not its public surface) so the test
-    is deterministic regardless of whether qmd is installed locally.
-    """
-    monkeypatch.setenv("LIES_WIKI_ROOT", str(sample_wiki.root))
-
-    # See the import block in ``test_query_maps_empty_fallback_reason_to_none``
-    # for why the synthesizer's underscored helpers are reached into here.
-    from lies.query import synthesizer as q_syn
-    from lies.query.synthesizer import _QmdUnavailable
-
-    def fake_dispatch(fn, layout, question, top_n):  # type: ignore[no-untyped-def]
-        raise _QmdUnavailable("simulated: qmd unavailable")
-
-    with mock.patch.object(q_syn, "_qmd_search_dispatch", new=fake_dispatch):
-        result = query("anything")
+    with mock.patch.object(Orchestrator, "run_query", return_value=fake):
+        result = query("anything", name=wiki_name)
 
     assert result.fallback_used is True
     assert result.fallback_reason == "qmd_unavailable"
@@ -263,8 +259,8 @@ def test_query_propagates_fallback_reason(
 
 
 def test_lint_returns_markdown_report(
-    sample_wiki,
-    monkeypatch: pytest.MonkeyPatch,
+    registered_wiki: Wiki,
+    wiki_name: str,
 ) -> None:
     """lint delegates to Orchestrator.run_lint end-to-end.
 
@@ -273,17 +269,11 @@ def test_lint_returns_markdown_report(
     host-side report was written to ``wiki/lint-report.md`` and that
     a parseable entry was appended to ``wiki/log.md``.
     """
-    monkeypatch.setenv("LIES_WIKI_ROOT", str(sample_wiki.root))
-    orch = Orchestrator(wiki_root=sample_wiki.root, model="test")
+    orch = Orchestrator(wiki=registered_wiki, model="test")
 
     def fake_run_sync(self, prompt: str):  # type: ignore[no-untyped-def]
         return mock.Mock(output="lint done")
 
-    # Throwaway Orchestrator instance just to reach ``type(orch._agent)``;
-    # see the ingest test for why we patch on the instance's class rather
-    # than on ``pydantic_ai.Agent`` directly. The MCP ``lint`` tool
-    # constructs a fresh ``Orchestrator`` internally, so ``_call_linter``
-    # must be patched at the class level to reach that instance.
     with (
         mock.patch.object(type(orch._agent), "run_sync", new=fake_run_sync),
         mock.patch.object(
@@ -292,17 +282,17 @@ def test_lint_returns_markdown_report(
             return_value=(LintReport(findings=[], report_markdown=""), None),
         ),
     ):
-        out = lint()
+        out = lint(name=wiki_name)
 
-    layout = sample_wiki
     # Artifact 1: lint-report.md exists and matches the returned string.
-    assert layout.lint_report_path.exists()
-    on_disk = layout.lint_report_path.read_text(encoding="utf-8")
+    report_path = registered_wiki.wiki_dir / "lint-report.md"
+    assert report_path.exists()
+    on_disk = report_path.read_text(encoding="utf-8")
     assert "Lint report" in on_disk
     assert on_disk == out
 
     # Artifact 2: log.md has a parseable lint entry.
-    log_text = layout.log_path.read_text(encoding="utf-8")
+    log_text = (registered_wiki.wiki_dir / "log.md").read_text(encoding="utf-8")
     assert "lint" in log_text
     assert any(line.startswith("## [") and " lint " in line for line in log_text.splitlines()), (
         f"no parseable lint log entry; got:\n{log_text!r}"

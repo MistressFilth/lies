@@ -4,6 +4,9 @@ exercise the public surface through a real Client round-trip.
 
 from __future__ import annotations
 
+import shutil
+import subprocess
+from pathlib import Path
 from unittest import mock
 
 import pytest
@@ -12,6 +15,9 @@ from fastmcp import Client
 from lies.mcp.server import mcp
 from lies.orchestrator import Orchestrator
 from lies.query.models import SynthesizedAnswer
+from lies.wiki.wiki import Wiki
+
+FIXTURE = Path(__file__).parent.parent / "fixtures" / "sample-wiki"
 
 
 @pytest.fixture
@@ -20,14 +26,49 @@ async def client() -> Client:
         yield c
 
 
+@pytest.fixture
+def sample_wiki(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Wiki:
+    """Copy the sample fixture wiki to the XDG data root and return its
+    ``Wiki`` handle.
+
+    The MCP server resolves wikis by name through ``Wiki.require``, which
+    checks ``Wiki.data_root_for(name).exists()`` under the autouse
+    XDG isolation. So the wiki must live at
+    ``$XDG_DATA_HOME/lies/<name>/``.
+    """
+    name = "sample"
+    target = Wiki.data_root_for(name)
+    target.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(FIXTURE, target, dirs_exist_ok=True)
+    subprocess.run(
+        ["git", "init", "--initial-branch=main", str(target)],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"],
+        cwd=target,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Test"],
+        cwd=target,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(["git", "add", "."], cwd=target, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "fixture"], cwd=target, check=True, capture_output=True)
+    monkeypatch.setenv("LIES_WIKI_NAME", name)
+    return Wiki.require(name)
+
+
 async def test_query_tool_round_trip(
     client: Client,
-    sample_wiki,
+    sample_wiki: Wiki,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A real ``call_tool`` to ``query`` returns a structured result."""
-    monkeypatch.setenv("LIES_WIKI_ROOT", str(sample_wiki.root))
-
     fake_answer = SynthesizedAnswer(
         answer="### What is MVCC?\n\nA concurrency protocol.",
         fallback_used=False,
@@ -49,7 +90,7 @@ async def test_query_tool_round_trip(
     ):
         result = await client.call_tool(
             "query",
-            {"question": "What is MVCC?", "wiki_root": str(sample_wiki.root)},
+            {"question": "What is MVCC?", "name": "sample"},
         )
 
     # FastMCP returns a CallResult with .structured_content for pydantic outputs.

@@ -3,6 +3,10 @@
 Playwright escalation: when static fetch returns empty / 4xx / JS-only
 content, the scraper invokes ``playwright`` MCP tools (provided as
 callbacks) to render the page.
+
+``emit_manifest`` writes to the raw workspace; the SCRAPE stage routes
+the manifest to ``wiki.cache_root / "collections" / <name> / "manifest.json"``
+under the XDG cache root.
 """
 
 from __future__ import annotations

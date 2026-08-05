@@ -4,8 +4,9 @@
 dispatch; this module owns everything about the daemon's on-disk
 record and process lifecycle.
 
-The daemon is per-wiki: its pidfile lives under that wiki's ``.lies/``,
-so two wikis can each run one (the second passes ``--port``).
+The daemon is per-wiki: its pidfile lives under that wiki's XDG
+runtime directory (``$XDG_RUNTIME_DIR/lies/<wiki>/mcp.pid``), so two
+wikis can each run one (the second passes ``--port``).
 
 Ownership rule: only the parent that ran ``up`` writes the pidfile, and
 only ``down`` clears it. The child never touches it. A crashed daemon
@@ -30,11 +31,8 @@ from pathlib import Path
 from pydantic import BaseModel, ValidationError
 
 from lies import __version__
-from lies.utils.exclusive import (
-    acquire_create_lock,
-    ensure_gitignored,
-    release_create_lock,
-)
+from lies.utils.exclusive import acquire_create_lock, release_create_lock
+from lies.wiki.wiki import Wiki
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8737
@@ -45,17 +43,13 @@ DEFAULT_PORT = 8737
 MCP_PATH = "/mcp"
 CREATE_LOCK_MAX_AGE_S = 60.0
 
-_PID_NAME = "mcp.pid"
-_CREATE_LOCK_NAME = "mcp.pid.create"
-_LOG_NAME = "mcp.log"
-
 
 class DaemonError(Exception):
     """Base class for every daemon lifecycle failure."""
 
 
 class DaemonAlreadyRunning(DaemonError):
-    """A live daemon already owns this wiki root.
+    """A live daemon already owns this wiki.
 
     Carries the existing record so the caller can report its URL
     instead of re-deriving one.
@@ -103,26 +97,26 @@ class PidRecord(BaseModel):
     version: str
 
 
-def pid_path(wiki_root: Path) -> Path:
-    return wiki_root / ".lies" / _PID_NAME
+def pid_path(wiki: Wiki) -> Path:
+    return wiki.mcp_pid_path
 
 
-def create_lock_path(wiki_root: Path) -> Path:
-    return wiki_root / ".lies" / _CREATE_LOCK_NAME
+def create_lock_path(wiki: Wiki) -> Path:
+    return wiki.mcp_create_lock_path
 
 
-def log_path(wiki_root: Path) -> Path:
-    return wiki_root / ".lies" / _LOG_NAME
+def log_path(wiki: Wiki) -> Path:
+    return wiki.mcp_log_path
 
 
-def read_record(wiki_root: Path) -> PidRecord | None:
+def read_record(wiki: Wiki) -> PidRecord | None:
     """Return the record, or ``None`` when missing, unreadable, or corrupt.
 
     A truncated or schema-mismatched pidfile is treated as absent rather
     than raising. A daemon that crashed mid-write must not wedge every
     subsequent ``up``.
     """
-    path = pid_path(wiki_root)
+    path = pid_path(wiki)
     try:
         raw = path.read_text(encoding="utf-8")
     except (FileNotFoundError, OSError):
@@ -133,9 +127,9 @@ def read_record(wiki_root: Path) -> PidRecord | None:
         return None
 
 
-def write_record(wiki_root: Path, rec: PidRecord) -> None:
+def write_record(wiki: Wiki, rec: PidRecord) -> None:
     """Write the record atomically (temp file plus ``os.replace``)."""
-    path = pid_path(wiki_root)
+    path = pid_path(wiki)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f"{path.name}.tmp")
     try:
@@ -149,10 +143,10 @@ def write_record(wiki_root: Path, rec: PidRecord) -> None:
         raise
 
 
-def clear_record(wiki_root: Path) -> None:
+def clear_record(wiki: Wiki) -> None:
     """Remove the record. Idempotent."""
     try:
-        pid_path(wiki_root).unlink()
+        pid_path(wiki).unlink()
     except FileNotFoundError:
         pass
 
@@ -240,20 +234,10 @@ def port_free(host: str, port: int) -> bool:
     return True
 
 
-def ensure_daemon_gitignored(wiki_root: Path) -> None:
-    """Gitignore the pidfile, its create-lock, and the daemon log.
-
-    Called on every ``up`` so wikis created before this feature pick the
-    entries up too.
-    """
-    for path in (pid_path(wiki_root), create_lock_path(wiki_root), log_path(wiki_root)):
-        ensure_gitignored(path, wiki_root=wiki_root)
-
-
-def tail_log(wiki_root: Path, lines: int = 20) -> list[str]:
+def tail_log(wiki: Wiki, lines: int = 20) -> list[str]:
     """Return the last ``lines`` lines of the daemon log, or ``[]``."""
     try:
-        body = log_path(wiki_root).read_text(encoding="utf-8", errors="replace")
+        body = log_path(wiki).read_text(encoding="utf-8", errors="replace")
     except (FileNotFoundError, OSError):
         return []
     return body.splitlines()[-lines:]
@@ -295,7 +279,7 @@ def _kill_now(proc: subprocess.Popen[bytes]) -> None:
 
 
 def spawn_daemon(
-    wiki_root: Path,
+    wiki: Wiki,
     *,
     host: str = DEFAULT_HOST,
     port: int = DEFAULT_PORT,
@@ -304,7 +288,7 @@ def spawn_daemon(
     """Start a detached streamable-http daemon and return its record.
 
     Raises :class:`NonLoopbackBind` before any lifecycle state is touched,
-    :class:`DaemonAlreadyRunning` when a live daemon owns this wiki root,
+    :class:`DaemonAlreadyRunning` when a live daemon owns this wiki,
     :class:`DaemonBusy` on create-lock contention, :class:`PortUnavailable`
     when the address is occupied, and :class:`DaemonStartFailed` when the
     child dies or never accepts a connection. The record is written only
@@ -312,12 +296,12 @@ def spawn_daemon(
     dead child.
     """
     require_loopback_host(host)
-    lock = create_lock_path(wiki_root)
+    lock = create_lock_path(wiki)
     fd = acquire_create_lock(lock, max_age_s=CREATE_LOCK_MAX_AGE_S)
     if fd is None:
         raise DaemonBusy(f"another lies mcp lifecycle operation is in progress: {lock}")
     try:
-        existing = read_record(wiki_root)
+        existing = read_record(wiki)
         if existing is not None:
             if not is_stale(existing):
                 raise DaemonAlreadyRunning(
@@ -325,13 +309,12 @@ def spawn_daemon(
                     f"(pid {existing.pid})",
                     record=existing,
                 )
-            clear_record(wiki_root)
+            clear_record(wiki)
 
         if not port_free(host, port):
             raise PortUnavailable(f"{host}:{port} is already in use")
 
-        ensure_daemon_gitignored(wiki_root)
-        log = log_path(wiki_root)
+        log = log_path(wiki)
         log.parent.mkdir(parents=True, exist_ok=True)
 
         with log.open("ab") as log_fd:
@@ -351,8 +334,8 @@ def spawn_daemon(
                 stdout=log_fd,
                 stderr=subprocess.STDOUT,
                 start_new_session=True,
-                cwd=str(wiki_root),
-                env={**os.environ, "LIES_WIKI_ROOT": str(wiki_root)},
+                cwd=str(wiki.data_root),
+                env={**os.environ, "LIES_WIKI_NAME": wiki.name},
             )
 
         try:
@@ -367,10 +350,10 @@ def spawn_daemon(
             port=port,
             transport="http",
             started_at=datetime.now(timezone.utc),
-            wiki_root=str(wiki_root),
+            wiki_root=str(wiki.data_root),
             version=__version__,
         )
-        write_record(wiki_root, rec)
+        write_record(wiki, rec)
         return rec
     finally:
         release_create_lock(lock, fd)
@@ -441,7 +424,7 @@ def _pid_alive(pid: int) -> bool:
     return state != "Z"
 
 
-def stop_daemon(wiki_root: Path, *, grace: float = 10.0) -> StopResult:
+def stop_daemon(wiki: Wiki, *, grace: float = 10.0) -> StopResult:
     """Stop the tracked daemon, escalating SIGTERM to SIGKILL.
 
     Only pidfile-tracked daemons are touched — never the stdio servers
@@ -451,51 +434,51 @@ def stop_daemon(wiki_root: Path, *, grace: float = 10.0) -> StopResult:
     :class:`DaemonStopFailed` if the process survives SIGKILL. A missing
     or stale record is a successful no-op, not an error.
     """
-    lock = create_lock_path(wiki_root)
+    lock = create_lock_path(wiki)
     fd = acquire_create_lock(lock, max_age_s=CREATE_LOCK_MAX_AGE_S)
     if fd is None:
         raise DaemonBusy(f"another lies mcp lifecycle operation is in progress: {lock}")
     try:
-        rec = read_record(wiki_root)
+        rec = read_record(wiki)
         if rec is None:
             return StopResult(action="none", pid=None, signal=None)
         if is_stale(rec):
-            clear_record(wiki_root)
+            clear_record(wiki)
             return StopResult(action="cleared_stale", pid=rec.pid, signal=None)
 
         try:
             os.kill(rec.pid, signal_module.SIGTERM)
         except ProcessLookupError:
             # Exited between the staleness check and the signal.
-            clear_record(wiki_root)
+            clear_record(wiki)
             return StopResult(action="cleared_stale", pid=rec.pid, signal=None)
 
         if _wait_for_exit(rec.pid, grace):
-            clear_record(wiki_root)
+            clear_record(wiki)
             return StopResult(action="stopped", pid=rec.pid, signal="SIGTERM")
 
         try:
             os.kill(rec.pid, signal_module.SIGKILL)
         except ProcessLookupError:
-            clear_record(wiki_root)
+            clear_record(wiki)
             return StopResult(action="stopped", pid=rec.pid, signal="SIGTERM")
 
         if not _wait_for_exit(rec.pid, 2.0):
             raise DaemonStopFailed(f"pid {rec.pid} survived SIGKILL")
-        clear_record(wiki_root)
+        clear_record(wiki)
         return StopResult(action="stopped", pid=rec.pid, signal="SIGKILL")
     finally:
         release_create_lock(lock, fd)
 
 
-def daemon_status(wiki_root: Path) -> StatusResult:
-    """Report whether a tracked daemon is running for ``wiki_root``.
+def daemon_status(wiki: Wiki) -> StatusResult:
+    """Report whether a tracked daemon is running for ``wiki``.
 
     Read-only: a stale record is reported as stale, not cleared. Only
     ``down`` mutates the record.
     """
-    log = log_path(wiki_root)
-    rec = read_record(wiki_root)
+    log = log_path(wiki)
+    rec = read_record(wiki)
     if rec is None:
         return StatusResult(
             running=False, record=None, stale=False, url=None, uptime_s=None, log=log

@@ -1,9 +1,9 @@
 """Cross-process sync heartbeat for busy detection.
 
-A single sync run writes ``<wiki>/.lies/sync.lock`` with its PID,
-start time, and collection. A subsequent run reads the file and
-treats it as busy unless the PID is dead or the heartbeat is older
-than ``MAX_SYNC_AGE_S`` (stale-recovery for crashes).
+A single sync run writes ``$XDG_RUNTIME_DIR/lies/<wiki>/sync.lock``
+with its PID, start time, and collection. A subsequent run reads the
+file and treats it as busy unless the PID is dead or the heartbeat is
+older than ``MAX_SYNC_AGE_S`` (stale-recovery for crashes).
 
 Concurrency safety
 ------------------
@@ -12,13 +12,13 @@ Concurrency safety
 read-then-write of the same path — two processes can both observe
 "no lock" and both win. To prevent that, :func:`acquire_create_lock`
 takes an atomic ``O_CREAT | O_EXCL`` create on a sibling
-``.lies/sync.lock.create``. Only the process that wins the create
-is allowed to write the heartbeat; everyone else sees the busy
-state and bails out (or waits, depending on policy). The lock file
-is unlinked in :func:`release_create_lock`.
+``sync.lock.create``. Only the process that wins the create is allowed
+to write the heartbeat; everyone else sees the busy state and bails
+out (or waits, depending on policy). The lock file is unlinked in
+:func:`release_create_lock`.
 
 This mirrors the cross-process ``fcntl.flock`` pattern already used
-by ``WikiMemoryService`` (which guards ``.lies/memory.lock``).
+by ``WikiMemoryService`` (which guards ``memory.lock``).
 """
 
 from __future__ import annotations
@@ -27,15 +27,13 @@ import json
 import os
 import time
 from dataclasses import dataclass
-from pathlib import Path
 
 from lies.utils.exclusive import acquire_create_lock as _acquire_create_lock
 from lies.utils.exclusive import release_create_lock as _release_create_lock
+from lies.wiki.wiki import Wiki
 
 MAX_SYNC_AGE_S = 3600
 _MAX_CREATE_LOCK_AGE_S = MAX_SYNC_AGE_S
-_HEARTBEAT_NAME = "sync.lock"
-_CREATE_LOCK_NAME = "sync.lock.create"
 
 
 @dataclass(frozen=True)
@@ -43,14 +41,6 @@ class Heartbeat:
     pid: int
     started_at: float
     collection: str
-
-
-def _heartbeat_path(wiki_root: Path) -> Path:
-    return wiki_root / ".lies" / _HEARTBEAT_NAME
-
-
-def _create_lock_path(wiki_root: Path) -> Path:
-    return wiki_root / ".lies" / _CREATE_LOCK_NAME
 
 
 def pid_alive(pid: int) -> bool:
@@ -61,25 +51,26 @@ def pid_alive(pid: int) -> bool:
         return False
 
 
-def acquire_create_lock(wiki_root: Path) -> int | None:
-    """Atomically create ``.lies/sync.lock.create``. Returns the fd on win.
+def acquire_create_lock(wiki: Wiki) -> int | None:
+    """Atomically create ``$XDG_RUNTIME_DIR/lies/<wiki>/sync.lock.create``.
 
-    Thin wrapper over :func:`lies.utils.exclusive.acquire_create_lock`,
-    supplying this module's path and recovery window. The window is
-    intentionally the same as :data:`MAX_SYNC_AGE_S` so a single
-    threshold governs the "this is stale" decision across the heartbeat
-    and its create-lock.
+    Returns the fd on win. Thin wrapper over
+    :func:`lies.utils.exclusive.acquire_create_lock`, supplying this
+    module's path and recovery window. The window is intentionally
+    the same as :data:`MAX_SYNC_AGE_S` so a single threshold governs
+    the "this is stale" decision across the heartbeat and its
+    create-lock.
     """
-    return _acquire_create_lock(_create_lock_path(wiki_root), max_age_s=_MAX_CREATE_LOCK_AGE_S)
+    return _acquire_create_lock(wiki.sync_create_lock_path, max_age_s=_MAX_CREATE_LOCK_AGE_S)
 
 
-def release_create_lock(wiki_root: Path, fd: int | None) -> None:
+def release_create_lock(wiki: Wiki, fd: int | None) -> None:
     """Close the fd (if any) and unlink the lock file."""
-    _release_create_lock(_create_lock_path(wiki_root), fd)
+    _release_create_lock(wiki.sync_create_lock_path, fd)
 
 
-def write_heartbeat(wiki_root: Path, heartbeat: Heartbeat) -> None:
-    p = _heartbeat_path(wiki_root)
+def write_heartbeat(wiki: Wiki, heartbeat: Heartbeat) -> None:
+    p = wiki.sync_lock_path
     p.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "pid": heartbeat.pid,
@@ -89,8 +80,8 @@ def write_heartbeat(wiki_root: Path, heartbeat: Heartbeat) -> None:
     p.write_text(json.dumps(payload), encoding="utf-8")
 
 
-def read_heartbeat(wiki_root: Path) -> Heartbeat | None:
-    p = _heartbeat_path(wiki_root)
+def read_heartbeat(wiki: Wiki) -> Heartbeat | None:
+    p = wiki.sync_lock_path
     if not p.exists():
         return None
     try:
@@ -104,8 +95,8 @@ def read_heartbeat(wiki_root: Path) -> Heartbeat | None:
     )
 
 
-def clear_heartbeat(wiki_root: Path) -> None:
-    p = _heartbeat_path(wiki_root)
+def clear_heartbeat(wiki: Wiki) -> None:
+    p = wiki.sync_lock_path
     if p.exists():
         p.unlink()
 
@@ -117,9 +108,9 @@ def heartbeat_is_stale(heartbeat: Heartbeat) -> bool:
     return age > MAX_SYNC_AGE_S
 
 
-def wait_until_free(wiki_root: Path, *, poll_interval_s: float = 1.0) -> None:
+def wait_until_free(wiki: Wiki, *, poll_interval_s: float = 1.0) -> None:
     while True:
-        h = read_heartbeat(wiki_root)
+        h = read_heartbeat(wiki)
         if h is None or heartbeat_is_stale(h):
             return
         time.sleep(poll_interval_s)

@@ -5,9 +5,10 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from datetime import datetime
-from pathlib import Path
 
 from typing_extensions import Self
+
+from lies.wiki.wiki import Wiki
 
 
 @dataclass(frozen=True)
@@ -28,9 +29,10 @@ class SyncReceipt:
 
 
 class SyncTelemetry:
-    def __init__(self, collection: str, log_dir: Path) -> None:
+    def __init__(self, wiki: Wiki, collection: str) -> None:
+        self._wiki = wiki
         self._collection = collection
-        self._log_path = log_dir / f"{collection}.log"
+        self._log_path = wiki.logs_dir / f"{collection}.log"
         self._log_path.parent.mkdir(parents=True, exist_ok=True)
         self._fh = self._log_path.open("a", encoding="utf-8")
         self._counts: dict[str, int] = {

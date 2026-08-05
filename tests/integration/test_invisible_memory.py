@@ -7,17 +7,20 @@ from pydantic_ai.models.test import TestModel
 from lies.memory.enricher import MemoryEnricherDeps
 from lies.memory.models import MemoryPlan, PageUpdate, WikiWriteConflict
 from lies.orchestrator import Orchestrator
-from lies.wiki.layout import WikiLayout
+from lies.wiki.wiki import Wiki
+from tests.conftest import make_wiki
 
 
 @pytest.fixture
-def wiki(tmp_path: Path) -> WikiLayout:
+def wiki(tmp_path: Path) -> Wiki:
     root = tmp_path / "wiki"
-    for sub in ("wiki", ".lies", "raw"):
+    for sub in ("wiki", "raw"):
         (root / sub).mkdir(parents=True)
     (root / "wiki" / "concepts").mkdir(parents=True)
     (root / "wiki" / "index.md").write_text("# Index\n", encoding="utf-8")
-    (root / ".lies" / "schema.md").write_text(
+    w = make_wiki(name="inv-mem", data_root=root)
+    w.config_root.mkdir(parents=True, exist_ok=True)
+    (w.config_root / "schema.md").write_text(
         "## Page types\n- overview\n- entity\n- concept\n- comparison\n- source\n",
         encoding="utf-8",
     )
@@ -28,11 +31,11 @@ def wiki(tmp_path: Path) -> WikiLayout:
     subprocess.run(["git", "config", "user.name", "T"], cwd=root, check=True)
     subprocess.run(["git", "add", "."], cwd=root, check=True)
     subprocess.run(["git", "commit", "-m", "init"], cwd=root, check=True)
-    return WikiLayout(root)
+    return w
 
 
-def test_run_with_memory_skips_unrelated_turn(wiki: WikiLayout) -> None:
-    orch = Orchestrator(wiki_root=wiki.root, model=TestModel())
+def test_run_with_memory_skips_unrelated_turn(wiki: Wiki) -> None:
+    orch = Orchestrator(wiki=wiki, model=TestModel())
     answer = orch.run_with_memory("Hello there.")
     assert isinstance(answer, str)
     log_path = wiki.wiki_dir / "log.md"
@@ -47,8 +50,8 @@ def test_run_with_memory_skips_unrelated_turn(wiki: WikiLayout) -> None:
     }
 
 
-def test_run_with_memory_persists_new_page_on_relevant_turn(wiki: WikiLayout) -> None:
-    orch = Orchestrator(wiki_root=wiki.root, model=TestModel())
+def test_run_with_memory_persists_new_page_on_relevant_turn(wiki: Wiki) -> None:
+    orch = Orchestrator(wiki=wiki, model=TestModel())
     answer = orch.run_with_memory("Read raw/articles/intro.md and tell me about it")
     # The default TestModel returns an empty structured answer; we
     # assert that the orchestrator completed without error and the
@@ -58,12 +61,12 @@ def test_run_with_memory_persists_new_page_on_relevant_turn(wiki: WikiLayout) ->
 
 
 def test_conflict_causes_one_fresh_read_and_enrichment_retry(
-    wiki: WikiLayout, monkeypatch: pytest.MonkeyPatch
+    wiki: Wiki, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     page = wiki.wiki_dir / "concepts" / "x.md"
     body = "---\ntitle: X\ntype: concept\n---\n# X\n"
     page.write_text(body, encoding="utf-8")
-    orch = Orchestrator(wiki_root=wiki.root, model=TestModel())
+    orch = Orchestrator(wiki=wiki, model=TestModel())
     plans = [
         MemoryPlan(
             operations=[
@@ -98,10 +101,8 @@ def test_conflict_causes_one_fresh_read_and_enrichment_retry(
     assert seen_metadata[1]["concepts/x.md"]["content"] == body
 
 
-def test_second_conflict_is_queued_for_retry(
-    wiki: WikiLayout, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    orch = Orchestrator(wiki_root=wiki.root, model=TestModel())
+def test_second_conflict_is_queued_for_retry(wiki: Wiki, monkeypatch: pytest.MonkeyPatch) -> None:
+    orch = Orchestrator(wiki=wiki, model=TestModel())
     plan = MemoryPlan(
         operations=[
             PageUpdate(

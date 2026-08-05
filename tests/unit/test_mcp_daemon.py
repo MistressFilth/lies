@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from lies.mcp import daemon
+from tests.conftest import make_wiki
 
 
 def _record(**overrides: object) -> daemon.PidRecord:
@@ -27,16 +28,23 @@ def _record(**overrides: object) -> daemon.PidRecord:
     return daemon.PidRecord(**base)  # type: ignore[arg-type]
 
 
-def test_paths_live_under_dot_lies(tmp_path: Path) -> None:
-    assert daemon.pid_path(tmp_path) == tmp_path / ".lies" / "mcp.pid"
-    assert daemon.create_lock_path(tmp_path) == tmp_path / ".lies" / "mcp.pid.create"
-    assert daemon.log_path(tmp_path) == tmp_path / ".lies" / "mcp.log"
+def _wiki(tmp_path: Path):
+    """Build a Wiki whose role-routed paths land under tmp_path."""
+    return make_wiki(name="daemon-test", data_root=tmp_path)
+
+
+def test_paths_live_under_runtime_and_state_roles(tmp_path: Path) -> None:
+    wiki = _wiki(tmp_path)
+    assert daemon.pid_path(wiki) == wiki.mcp_pid_path
+    assert daemon.create_lock_path(wiki) == wiki.mcp_create_lock_path
+    assert daemon.log_path(wiki) == wiki.mcp_log_path
 
 
 def test_write_then_read_round_trips(tmp_path: Path) -> None:
-    rec = _record()
-    daemon.write_record(tmp_path, rec)
-    loaded = daemon.read_record(tmp_path)
+    wiki = _wiki(tmp_path)
+    rec = _record(wiki_root=str(wiki.data_root))
+    daemon.write_record(wiki, rec)
+    loaded = daemon.read_record(wiki)
     assert loaded is not None
     assert loaded.pid == rec.pid
     assert loaded.port == 8737
@@ -44,26 +52,32 @@ def test_write_then_read_round_trips(tmp_path: Path) -> None:
 
 
 def test_read_missing_returns_none(tmp_path: Path) -> None:
-    assert daemon.read_record(tmp_path) is None
+    wiki = _wiki(tmp_path)
+    assert daemon.read_record(wiki) is None
 
 
 def test_read_corrupt_returns_none(tmp_path: Path) -> None:
-    path = daemon.pid_path(tmp_path)
+    wiki = _wiki(tmp_path)
+    path = daemon.pid_path(wiki)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text('{"pid": 1, "port":', encoding="utf-8")
-    assert daemon.read_record(tmp_path) is None
+    assert daemon.read_record(wiki) is None
 
 
 def test_read_wrong_schema_returns_none(tmp_path: Path) -> None:
-    path = daemon.pid_path(tmp_path)
+    wiki = _wiki(tmp_path)
+    path = daemon.pid_path(wiki)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text('{"totally": "different"}', encoding="utf-8")
-    assert daemon.read_record(tmp_path) is None
+    assert daemon.read_record(wiki) is None
 
 
 def test_write_leaves_no_temp_file(tmp_path: Path) -> None:
-    daemon.write_record(tmp_path, _record())
-    leftovers = [p.name for p in (tmp_path / ".lies").iterdir() if p.name != "mcp.pid"]
+    wiki = _wiki(tmp_path)
+    daemon.write_record(wiki, _record())
+    leftovers = [
+        p.name for p in wiki.mcp_pid_path.parent.iterdir() if p.name != wiki.mcp_pid_path.name
+    ]
     assert leftovers == []
 
 
@@ -75,17 +89,20 @@ def test_write_removes_temp_file_when_replace_fails(
 
     monkeypatch.setattr(daemon.os, "replace", _fail_replace)
 
+    wiki = _wiki(tmp_path)
     with pytest.raises(OSError, match="replace failed"):
-        daemon.write_record(tmp_path, _record())
+        daemon.write_record(wiki, _record())
 
-    assert not (tmp_path / ".lies" / "mcp.pid.tmp").exists()
+    tmp_file = wiki.mcp_pid_path.with_suffix(wiki.mcp_pid_path.suffix + ".tmp")
+    assert not tmp_file.exists()
 
 
 def test_clear_record_is_idempotent(tmp_path: Path) -> None:
-    daemon.write_record(tmp_path, _record())
-    daemon.clear_record(tmp_path)
-    daemon.clear_record(tmp_path)
-    assert daemon.read_record(tmp_path) is None
+    wiki = _wiki(tmp_path)
+    daemon.write_record(wiki, _record())
+    daemon.clear_record(wiki)
+    daemon.clear_record(wiki)
+    assert daemon.read_record(wiki) is None
 
 
 def test_process_alive_for_self() -> None:
@@ -143,23 +160,17 @@ def test_port_free_false_when_bound() -> None:
         assert daemon.port_free("127.0.0.1", port) is False
 
 
-def test_ensure_daemon_gitignored_lists_all_three(tmp_path: Path) -> None:
-    daemon.ensure_daemon_gitignored(tmp_path)
-    body = (tmp_path / ".gitignore").read_text(encoding="utf-8")
-    assert ".lies/mcp.pid\n" in body
-    assert ".lies/mcp.pid.create\n" in body
-    assert ".lies/mcp.log\n" in body
-
-
 def test_tail_log_returns_last_lines(tmp_path: Path) -> None:
-    log = daemon.log_path(tmp_path)
+    wiki = _wiki(tmp_path)
+    log = daemon.log_path(wiki)
     log.parent.mkdir(parents=True, exist_ok=True)
     log.write_text("\n".join(f"line {i}" for i in range(50)), encoding="utf-8")
-    assert daemon.tail_log(tmp_path, 3) == ["line 47", "line 48", "line 49"]
+    assert daemon.tail_log(wiki, 3) == ["line 47", "line 48", "line 49"]
 
 
 def test_tail_log_missing_file_is_empty(tmp_path: Path) -> None:
-    assert daemon.tail_log(tmp_path, 5) == []
+    wiki = _wiki(tmp_path)
+    assert daemon.tail_log(wiki, 5) == []
 
 
 @pytest.mark.parametrize("host", ["127.0.0.1", "localhost", "::1", "127.0.0.2"])
@@ -175,28 +186,34 @@ def test_spawn_rejects_non_loopback_before_acquiring_lock(
 
     monkeypatch.setattr(daemon, "acquire_create_lock", _unexpected_lock)
 
+    wiki = _wiki(tmp_path)
     with pytest.raises(daemon.NonLoopbackBind, match="0.0.0.0"):
-        daemon.spawn_daemon(tmp_path, host="0.0.0.0")
+        daemon.spawn_daemon(wiki, host="0.0.0.0")
 
-    assert not (tmp_path / ".lies").exists()
+    # XDG: spawning with a non-loopback host must not materialise any
+    # runtime/state directories on disk.
+    assert not wiki.runtime_root.exists()
+    assert not wiki.state_root.exists()
 
 
 def test_spawn_raises_when_port_occupied(tmp_path: Path) -> None:
+    wiki = _wiki(tmp_path)
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as held:
         held.bind(("127.0.0.1", 0))
         held.listen(1)
         port = held.getsockname()[1]
         with pytest.raises(daemon.PortUnavailable):
-            daemon.spawn_daemon(tmp_path, host="127.0.0.1", port=port, timeout=1.0)
+            daemon.spawn_daemon(wiki, host="127.0.0.1", port=port, timeout=1.0)
 
 
 def test_spawn_raises_already_running_for_live_record(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    wiki = _wiki(tmp_path)
     monkeypatch.setattr(daemon, "_daemon_cmdline_matches", lambda _pid: True)
-    daemon.write_record(tmp_path, _record(pid=os.getpid()))
+    daemon.write_record(wiki, _record(pid=os.getpid()))
     with pytest.raises(daemon.DaemonAlreadyRunning) as caught:
-        daemon.spawn_daemon(tmp_path, timeout=1.0)
+        daemon.spawn_daemon(wiki, timeout=1.0)
     assert caught.value.record.pid == os.getpid()
 
 
@@ -204,7 +221,8 @@ def test_spawn_reclaims_stale_record_then_fails_on_child(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A stale record is cleared, not treated as a live daemon."""
-    daemon.write_record(tmp_path, _record(pid=999_999_999))
+    wiki = _wiki(tmp_path)
+    daemon.write_record(wiki, _record(pid=999_999_999))
 
     # Capture the real Popen before monkeypatching; the helper below
     # would otherwise recurse into itself because daemon.subprocess is
@@ -216,46 +234,50 @@ def test_spawn_reclaims_stale_record_then_fails_on_child(
 
     monkeypatch.setattr(daemon.subprocess, "Popen", _instant_exit)
     with pytest.raises(daemon.DaemonStartFailed):
-        daemon.spawn_daemon(tmp_path, port=8739, timeout=3.0)
-    assert daemon.read_record(tmp_path) is None
+        daemon.spawn_daemon(wiki, port=8739, timeout=3.0)
+    assert daemon.read_record(wiki) is None
 
 
 def test_spawn_raises_busy_when_create_lock_held(tmp_path: Path) -> None:
     from lies.utils.exclusive import acquire_create_lock, release_create_lock
 
-    lock = daemon.create_lock_path(tmp_path)
+    wiki = _wiki(tmp_path)
+    lock = daemon.create_lock_path(wiki)
     fd = acquire_create_lock(lock, max_age_s=daemon.CREATE_LOCK_MAX_AGE_S)
     try:
         with pytest.raises(daemon.DaemonBusy):
-            daemon.spawn_daemon(tmp_path, timeout=1.0)
+            daemon.spawn_daemon(wiki, timeout=1.0)
     finally:
         release_create_lock(lock, fd)
 
 
 def test_stop_with_no_record_is_a_noop(tmp_path: Path) -> None:
-    result = daemon.stop_daemon(tmp_path)
+    wiki = _wiki(tmp_path)
+    result = daemon.stop_daemon(wiki)
     assert result.action == "none"
     assert result.pid is None
 
 
 def test_stop_clears_a_stale_record(tmp_path: Path) -> None:
-    daemon.write_record(tmp_path, _record(pid=999_999_999))
-    result = daemon.stop_daemon(tmp_path)
+    wiki = _wiki(tmp_path)
+    daemon.write_record(wiki, _record(pid=999_999_999))
+    result = daemon.stop_daemon(wiki)
     assert result.action == "cleared_stale"
     assert result.pid == 999_999_999
-    assert daemon.read_record(tmp_path) is None
+    assert daemon.read_record(wiki) is None
 
 
 def test_stop_terminates_a_cooperative_child(tmp_path: Path) -> None:
+    wiki = _wiki(tmp_path)
     proc = subprocess.Popen(
         [sys.executable, "-c", "import time; time.sleep(60)", "lies.cli", "_serve"]
     )
-    daemon.write_record(tmp_path, _record(pid=proc.pid))
+    daemon.write_record(wiki, _record(pid=proc.pid))
     try:
-        result = daemon.stop_daemon(tmp_path, grace=5.0)
+        result = daemon.stop_daemon(wiki, grace=5.0)
         assert result.action == "stopped"
         assert result.signal == "SIGTERM"
-        assert daemon.read_record(tmp_path) is None
+        assert daemon.read_record(wiki) is None
     finally:
         proc.kill()
         proc.wait(timeout=5)
@@ -263,7 +285,9 @@ def test_stop_terminates_a_cooperative_child(tmp_path: Path) -> None:
 
 def test_stop_escalates_to_sigkill(tmp_path: Path) -> None:
     """A child that ignores SIGTERM is killed after the grace period."""
-    ready_marker = tmp_path / "handler_ready"
+    wiki = _wiki(tmp_path)
+    ready_marker = wiki.runtime_root / "handler_ready"
+    ready_marker.parent.mkdir(parents=True, exist_ok=True)
     script = (
         "import signal, sys, time;"
         f"signal.signal(signal.SIGTERM, signal.SIG_IGN);"
@@ -284,12 +308,12 @@ def test_stop_escalates_to_sigkill(tmp_path: Path) -> None:
         proc.kill()
         proc.wait(timeout=5)
         pytest.fail("child never installed its SIGTERM handler within 5s")
-    daemon.write_record(tmp_path, _record(pid=proc.pid))
+    daemon.write_record(wiki, _record(pid=proc.pid))
     try:
-        result = daemon.stop_daemon(tmp_path, grace=1.0)
+        result = daemon.stop_daemon(wiki, grace=1.0)
         assert result.action == "stopped"
         assert result.signal == "SIGKILL"
-        assert daemon.read_record(tmp_path) is None
+        assert daemon.read_record(wiki) is None
     finally:
         if proc.poll() is None:
             proc.kill()
@@ -299,31 +323,34 @@ def test_stop_escalates_to_sigkill(tmp_path: Path) -> None:
 def test_stop_raises_busy_when_create_lock_held(tmp_path: Path) -> None:
     from lies.utils.exclusive import acquire_create_lock, release_create_lock
 
-    lock = daemon.create_lock_path(tmp_path)
+    wiki = _wiki(tmp_path)
+    lock = daemon.create_lock_path(wiki)
     fd = acquire_create_lock(lock, max_age_s=daemon.CREATE_LOCK_MAX_AGE_S)
     try:
         with pytest.raises(daemon.DaemonBusy):
-            daemon.stop_daemon(tmp_path)
+            daemon.stop_daemon(wiki)
     finally:
         release_create_lock(lock, fd)
 
 
 def test_status_reports_stopped_without_a_record(tmp_path: Path) -> None:
-    status = daemon.daemon_status(tmp_path)
+    wiki = _wiki(tmp_path)
+    status = daemon.daemon_status(wiki)
     assert status.running is False
     assert status.stale is False
     assert status.record is None
     assert status.url is None
     assert status.uptime_s is None
-    assert status.log == daemon.log_path(tmp_path)
+    assert status.log == daemon.log_path(wiki)
 
 
 def test_status_reports_running_for_a_live_record(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    wiki = _wiki(tmp_path)
     monkeypatch.setattr(daemon, "_daemon_cmdline_matches", lambda _pid: True)
-    daemon.write_record(tmp_path, _record(pid=os.getpid(), port=9002))
-    status = daemon.daemon_status(tmp_path)
+    daemon.write_record(wiki, _record(pid=os.getpid(), port=9002))
+    status = daemon.daemon_status(wiki)
     assert status.running is True
     assert status.stale is False
     assert status.url == f"http://127.0.0.1:9002{daemon.MCP_PATH}"
@@ -332,24 +359,26 @@ def test_status_reports_running_for_a_live_record(
 
 
 def test_status_reports_stale_for_a_dead_pid(tmp_path: Path) -> None:
-    daemon.write_record(tmp_path, _record(pid=999_999_999))
-    status = daemon.daemon_status(tmp_path)
+    wiki = _wiki(tmp_path)
+    daemon.write_record(wiki, _record(pid=999_999_999))
+    status = daemon.daemon_status(wiki)
     assert status.running is False
     assert status.stale is True
     assert status.record is not None
     # Read-only: status reports a stale record as stale and does NOT
     # clear it; only ``down`` may mutate the pidfile.
-    assert daemon.read_record(tmp_path) is not None
+    assert daemon.read_record(wiki) is not None
 
 
 def test_status_clamps_negative_uptime_to_zero(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A record with a future ``started_at`` reports uptime >= 0, not negative."""
+    wiki = _wiki(tmp_path)
     monkeypatch.setattr(daemon, "_daemon_cmdline_matches", lambda _pid: True)
     future = datetime.now(timezone.utc) + timedelta(hours=1)
-    daemon.write_record(tmp_path, _record(pid=os.getpid(), started_at=future))
-    status = daemon.daemon_status(tmp_path)
+    daemon.write_record(wiki, _record(pid=os.getpid(), started_at=future))
+    status = daemon.daemon_status(wiki)
     assert status.running is True
     assert status.uptime_s is not None
     assert status.uptime_s == 0.0

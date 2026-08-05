@@ -1,31 +1,30 @@
 """WRITING stage — hash compare + atomic_commit per batch.
 
-Target paths are computed under ``<wiki_root>/wiki/<path>`` (NOT
-CWD-relative). Per-doc OSError on write moves the source to
-``.lies/poison/<collection>/<path>`` and continues the batch.
+Target paths are computed under ``wiki.wiki_dir``. Per-doc OSError on
+write moves the source to the wiki's poison_root and continues the batch.
 """
 
 from __future__ import annotations
 
 import hashlib
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 from lies.collections.hash_manifest import HashManifest
 from lies.collections.record import Collection
 from lies.etl.quarantine import quarantine as move_to_poison
 from lies.wiki.git import atomic_commit
+from lies.wiki.wiki import Wiki
 
 if TYPE_CHECKING:
     from lies.etl.pipeline import StageResult
 
 
 def run_write(
+    wiki: Wiki,
     collection: Collection,
     normalized: list[tuple[str, str]],
     *,
     manifest: HashManifest,
-    wiki_root: Path,
     force: bool = False,
 ) -> StageResult:
     from lies.etl.pipeline import StageResult
@@ -41,24 +40,24 @@ def run_write(
         if not force and manifest.compare(path, sha):
             skipped.append(path)
             continue
-        target = wiki_root / "wiki" / path
+        target = wiki.wiki_dir / path
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
             with open(target, "w", encoding="utf-8") as f:
                 f.write(markdown)
         except OSError as exc:
             quarantined.append((path, str(exc)))
-            move_to_poison(wiki_root, collection.name, path, str(exc))
+            move_to_poison(wiki, collection.name, path, str(exc))
             continue
         manifest.update(path, sha)
-        files.append(str(target.relative_to(wiki_root)))
+        files.append(str(target.relative_to(wiki.data_root)))
         bytes_out += len(markdown.encode("utf-8"))
         success.append(path)
 
     if files:
         manifest.flush()
         atomic_commit(
-            wiki_root,
+            wiki.data_root,
             f"sync: {collection.name} +{len(success)} -{len(quarantined)} ~{len(skipped)}",
             files=files,
         )

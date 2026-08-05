@@ -3,7 +3,7 @@
 This is the default schema for a LIES wiki. It tells the agent how to
 organize, ingest, query, and lint the wiki. Per Karpathy: "you and the
 LLM co-evolve [the schema] over time." Copy this file to
-`<wiki>/.lies/schema.md` and edit as your wiki matures.
+`<wiki config directory>/schema.md` and edit this file as your wiki matures.
 
 ## Page types
 

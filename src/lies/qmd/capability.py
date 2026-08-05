@@ -25,7 +25,7 @@ from pydantic_ai.capabilities import MCP
 from lies.qmd.health import qmd_daemon_reachable
 
 if TYPE_CHECKING:
-    from lies.wiki.layout import WikiLayout
+    from lies.wiki.wiki import Wiki
 
 
 _DEFAULT_TIMEOUT_S = 0.5
@@ -36,17 +36,17 @@ class QmdCapability:
 
     def __init__(
         self,
+        wiki: Wiki,
         *,
         transport: str,
         url: str = "http://127.0.0.1:8181",
-        wiki_root: WikiLayout,
         timeout: float = _DEFAULT_TIMEOUT_S,
     ) -> None:
         if transport not in {"stdio", "http"}:
             raise ValueError(f"Unknown transport: {transport}")
         self._transport = transport
         self._url = url
-        self._wiki_root = wiki_root
+        self._wiki = wiki
         self._timeout = timeout
 
     def as_capability(self) -> MCP:
@@ -54,7 +54,7 @@ class QmdCapability:
             return _build_stdio_mcp()
         if not qmd_daemon_reachable(self._url, timeout=self._timeout):
             _warn_degraded(self._url)
-            return _build_fallback_mcp(self._wiki_root)
+            return _build_fallback_mcp(self._wiki)
         return _build_native_mcp(self._url)
 
 
@@ -69,13 +69,13 @@ def _build_native_mcp(url: str) -> MCP:
     )
 
 
-def _build_fallback_mcp(layout: WikiLayout) -> MCP:
+def _build_fallback_mcp(wiki: Wiki) -> MCP:
     """MCP(local=factory) — agent sees the in-process FastMCP fallback."""
 
     def _factory() -> Any:
         from lies.qmd.mcp_fallback import QmdFallbackMcp
 
-        server = QmdFallbackMcp(layout)
+        server = QmdFallbackMcp(wiki)
         return server.as_toolset()
 
     return MCP(

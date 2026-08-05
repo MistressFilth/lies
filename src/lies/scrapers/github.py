@@ -1,4 +1,9 @@
-"""GitHubScraper — clones repo (sparse or full) and parses markdown files."""
+"""GitHubScraper — clones repo (sparse or full) and parses markdown files.
+
+``emit_manifest`` writes to the raw workspace; the SCRAPE stage routes
+the manifest to ``wiki.cache_root / "collections" / <name> / "manifest.json"``
+under the XDG cache root.
+"""
 
 from __future__ import annotations
 

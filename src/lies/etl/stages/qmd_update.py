@@ -18,16 +18,17 @@ from typing import TYPE_CHECKING
 
 from lies.collections.record import Collection
 from lies.qmd.cli import qmd_update
+from lies.wiki.wiki import Wiki
 
 if TYPE_CHECKING:
     from lies.etl.pipeline import StageResult
 
 
-def run_qmd_update(collection: Collection) -> StageResult:
+def run_qmd_update(wiki: Wiki, collection: Collection) -> StageResult:
     from lies.etl.pipeline import StageResult
 
     try:
-        qmd_update(collection.path)
+        qmd_update(wiki.raw_dir / collection.name)
     except Exception:  # noqa: BLE001, S110 - qmd is derived; refresh failure must not break the pipeline
         pass
     return StageResult(success=[], quarantined=[], skipped=[], bytes_in=0, bytes_out=0)

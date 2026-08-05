@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import importlib
 import importlib.util
+import shutil
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -18,6 +19,7 @@ from typing import TYPE_CHECKING
 from lies.collections.record import Collection
 from lies.scrapers.base import BaseScraper, pick_scraper
 from lies.scrapers.errors import ScraperUnavailable
+from lies.wiki.wiki import Wiki
 
 if TYPE_CHECKING:
     from lies.etl.pipeline import StageResult
@@ -60,15 +62,31 @@ def _resolve_scraper(collection: Collection) -> BaseScraper:
     return pick_scraper(collection.source)
 
 
-def run_scrape(collection: Collection) -> StageResult:
+def run_scrape(wiki: Wiki, collection: Collection) -> StageResult:
     from lies.etl.pipeline import StageResult
 
     scraper = _resolve_scraper(collection)
     raw = scraper.fetch(collection.source)
-    docs = scraper.parse(raw)
-    raw_dir = collection.path
+    raw_dir = wiki.raw_dir / collection.name
     raw_dir.mkdir(parents=True, exist_ok=True)
-    scraper.emit_manifest(docs, raw_dir)
+    emitted_manifest = scraper.emit_manifest(docs := scraper.parse(raw), raw_dir)
+
+    # Scrapers still receive the raw directory so bespoke implementations can
+    # emit their source files there. Keep the manifest beside the other cache
+    # artifacts instead of leaving derived state in the wiki data repository.
+    manifest_path = wiki.cache_root / "collections" / collection.name / "manifest.json"
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    if emitted_manifest.exists():
+        if emitted_manifest.resolve() != manifest_path.resolve():
+            shutil.copyfile(emitted_manifest, manifest_path)
+            emitted_manifest.unlink()
+    else:
+        # When a scraper does not emit a manifest (e.g., bespoke raw
+        # sources), make sure the canonical location exists so downstream
+        # consumers can rely on the path.
+        manifest_path.parent.mkdir(parents=True, exist_ok=True)
+        if not manifest_path.exists():
+            manifest_path.write_text('{"files": []}', encoding="utf-8")
     return StageResult(
         success=[d.path for d in docs],
         quarantined=[],
