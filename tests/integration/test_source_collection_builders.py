@@ -14,6 +14,7 @@ from lies.etl.cost import CostBudget
 from lies.etl.pipeline import SyncOrchestrator
 from lies.etl.telemetry import SyncTelemetry
 from lies.wiki.wiki import Wiki
+from tests.conftest import make_wiki
 
 
 def _git_init(root: Path) -> None:
@@ -36,23 +37,15 @@ def _git_init(root: Path) -> None:
 @pytest.fixture
 def wiki(tmp_path: Path) -> Wiki:
     """Path-style wiki for stages tests + a Wiki wrapper for SyncTelemetry."""
-    root = tmp_path
-    for sub in ("wiki", ".lies", "raw"):
+    root = tmp_path / "wiki"
+    for sub in ("wiki", "raw"):
         (root / sub).mkdir(parents=True, exist_ok=True)
-    (root / ".lies" / "collections").mkdir(parents=True, exist_ok=True)
-    (root / ".lies" / "collections" / ".gitkeep").write_text("", encoding="utf-8")
+    # Seed at least one tracked file (outside wiki.wiki_dir) so the
+    # initial commit is non-empty without populating the wiki content
+    # directory itself.
+    (root / "seed.txt").write_text("init\n", encoding="utf-8")
     _git_init(root)
-    # Wrap the on-disk layout in a Wiki so SyncTelemetry can resolve
-    # logs_dir / state_root via the XDG accessors. Stages still take
-    # wiki.data_root as a Path, so the underlying fixture is unchanged.
-    return Wiki(
-        name=root.name or "test",
-        data_root=root,
-        config_root=root / ".lies",
-        cache_root=root,
-        state_root=root,
-        runtime_root=root / ".lies",
-    )
+    return make_wiki(name="sync", data_root=root)
 
 
 def _make_pdf(path: Path, text: str) -> None:
@@ -81,16 +74,16 @@ def test_sync_pdf_collection_registers_ref(wiki: Wiki) -> None:
         updated_at=datetime.now(tz=timezone.utc),
         config={},
     )
-    save_collection(wiki.data_root, c)
+    save_collection(wiki, c)
     telemetry = SyncTelemetry(wiki, c.name)
-    manifest = HashManifest(wiki.data_root, c.name)
+    manifest = HashManifest(wiki, c.name)
     budget = CostBudget()
     orch = SyncOrchestrator(
+        wiki=wiki,
         collection=c,
         telemetry=telemetry,
         budget=budget,
         manifest=manifest,
-        wiki_root=wiki.data_root,
     )
     orch.run()
     assert orch._service.is_registered("manual")
@@ -122,16 +115,16 @@ def test_sync_liquid_collection_quarantines_everything(wiki: Wiki) -> None:
         updated_at=datetime.now(tz=timezone.utc),
         config={},
     )
-    save_collection(wiki.data_root, c)
+    save_collection(wiki, c)
     telemetry = SyncTelemetry(wiki, c.name)
-    manifest = HashManifest(wiki.data_root, c.name)
+    manifest = HashManifest(wiki, c.name)
     budget = CostBudget()
     orch = SyncOrchestrator(
+        wiki=wiki,
         collection=c,
         telemetry=telemetry,
         budget=budget,
         manifest=manifest,
-        wiki_root=wiki.data_root,
     )
     # Mock pick_scraper to return a scraper whose parse() yields a liquid ParsedDoc.
     from lies.scrapers.base import ParsedDoc
@@ -229,7 +222,7 @@ def test_sync_htmx_sphinx_with_excludes(wiki: Wiki) -> None:
             "sphinx_excludes": ["base_template.rst", "demo_example.rst"],
         },
     )
-    save_collection(wiki.data_root, c)
+    save_collection(wiki, c)
 
     fake_scraper = mock.Mock()
     fake_scraper.fetch.return_value = b""
@@ -293,14 +286,14 @@ def test_sync_htmx_sphinx_with_excludes(wiki: Wiki) -> None:
         return out
 
     telemetry = SyncTelemetry(wiki, c.name)
-    manifest = HashManifest(wiki.data_root, c.name)
+    manifest = HashManifest(wiki, c.name)
     budget = CostBudget()
     orch = SyncOrchestrator(
+        wiki=wiki,
         collection=c,
         telemetry=telemetry,
         budget=budget,
         manifest=manifest,
-        wiki_root=wiki.data_root,
     )
 
     # C1 fix pinned: every bespoke ParsedDoc routes through

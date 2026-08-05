@@ -11,16 +11,19 @@ from pydantic_ai.models.test import TestModel
 
 from lies.memory.models import MemoryPlan, PageCreate, WikiLockBusy
 from lies.orchestrator import Orchestrator
-from lies.wiki.layout import WikiLayout
+from lies.wiki.wiki import Wiki
+from tests.conftest import make_wiki
 
 
 @pytest.fixture
-def wiki(tmp_path: Path) -> WikiLayout:
+def wiki(tmp_path: Path) -> Wiki:
     root = tmp_path / "wiki"
-    for sub in ("wiki", ".lies", "raw"):
+    for sub in ("wiki", "raw"):
         (root / sub).mkdir(parents=True)
     (root / "wiki" / "index.md").write_text("# Index\n", encoding="utf-8")
-    (root / ".lies" / "schema.md").write_text(
+    w = make_wiki(name="enrich", data_root=root)
+    w.config_root.mkdir(parents=True, exist_ok=True)
+    (w.config_root / "schema.md").write_text(
         "## Page types\n- concept\n- entity\n", encoding="utf-8"
     )
     subprocess.run(["git", "init", "--initial-branch=main", str(root)], check=True)
@@ -28,7 +31,7 @@ def wiki(tmp_path: Path) -> WikiLayout:
     subprocess.run(["git", "config", "user.name", "T"], cwd=root, check=True)
     subprocess.run(["git", "add", "."], cwd=root, check=True)
     subprocess.run(["git", "commit", "-m", "init"], cwd=root, check=True)
-    return WikiLayout(root)
+    return w
 
 
 def _create_plan() -> MemoryPlan:
@@ -45,8 +48,8 @@ def _create_plan() -> MemoryPlan:
     )
 
 
-def test_queued_retry_succeeds_on_next_turn(wiki: WikiLayout) -> None:
-    orch = Orchestrator(wiki_root=wiki.root, model=TestModel())
+def test_queued_retry_succeeds_on_next_turn(wiki: Wiki) -> None:
+    orch = Orchestrator(wiki=wiki, model=TestModel())
     orch._memory_service.register_evidence({"page-1"})
     call_count = {"n": 0}
 
@@ -89,8 +92,8 @@ def test_queued_retry_succeeds_on_next_turn(wiki: WikiLayout) -> None:
     assert (wiki.wiki_dir / "concepts" / "example.md").exists()
 
 
-def test_queued_retry_hits_cap_after_three_failures(wiki: WikiLayout) -> None:
-    orch = Orchestrator(wiki_root=wiki.root, model=TestModel())
+def test_queued_retry_hits_cap_after_three_failures(wiki: Wiki) -> None:
+    orch = Orchestrator(wiki=wiki, model=TestModel())
     orch._memory_service.register_evidence({"page-1"})
 
     def always_locked(plan: MemoryPlan) -> object:
@@ -115,13 +118,13 @@ def test_queued_retry_hits_cap_after_three_failures(wiki: WikiLayout) -> None:
     assert "deferred after 3 attempts" in lines[0]
 
 
-def test_queue_is_per_orchestrator_instance(wiki: WikiLayout) -> None:
-    orch_a = Orchestrator(wiki_root=wiki.root, model=TestModel())
-    orch_b = Orchestrator(wiki_root=wiki.root, model=TestModel())
+def test_queue_is_per_orchestrator_instance(wiki: Wiki) -> None:
+    orch_a = Orchestrator(wiki=wiki, model=TestModel())
+    orch_b = Orchestrator(wiki=wiki, model=TestModel())
     assert orch_a._enrichment_queue is not orch_b._enrichment_queue
 
 
-def test_queued_item_becomes_noop_on_reenrichment(wiki: WikiLayout) -> None:
+def test_queued_item_becomes_noop_on_reenrichment(wiki: Wiki) -> None:
     """A queued item that produces noop on the next drain drops silently.
 
     Scenario: a plan is queued for retry. On the next turn, the
@@ -131,7 +134,7 @@ def test_queued_item_becomes_noop_on_reenrichment(wiki: WikiLayout) -> None:
     """
     from lies.memory.models import MemoryPlan
 
-    orch = Orchestrator(wiki_root=wiki.root, model=TestModel())
+    orch = Orchestrator(wiki=wiki, model=TestModel())
     orch._memory_service.register_evidence({"page-1"})
 
     # Enqueue an item by simulating a WikiLockBusy at apply time.

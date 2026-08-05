@@ -52,9 +52,7 @@ def test_search_wiki_falls_back_to_index_when_qmd_missing(
     assert result.pages[0].path.endswith("concepts/mvc.md")
 
 
-def test_search_wiki_uses_qmd_when_available(
-    indexed_wiki, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_search_wiki_uses_qmd_when_available(indexed_wiki, monkeypatch: pytest.MonkeyPatch) -> None:
     from lies import qmd
 
     def fake_query(_cwd: Path, _q: str, _limit: int) -> list[dict[str, object]]:

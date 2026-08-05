@@ -75,7 +75,9 @@ def test_read_wrong_schema_returns_none(tmp_path: Path) -> None:
 def test_write_leaves_no_temp_file(tmp_path: Path) -> None:
     wiki = _wiki(tmp_path)
     daemon.write_record(wiki, _record())
-    leftovers = [p.name for p in wiki.mcp_pid_path.parent.iterdir() if p.name != wiki.mcp_pid_path.name]
+    leftovers = [
+        p.name for p in wiki.mcp_pid_path.parent.iterdir() if p.name != wiki.mcp_pid_path.name
+    ]
     assert leftovers == []
 
 
