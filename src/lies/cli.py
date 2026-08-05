@@ -112,13 +112,13 @@ def up(
     configure_logging()
     wiki = resolve_wiki(name)
     try:
-        rec = daemon.spawn_daemon(wiki.data_root, host=host, port=port, timeout=timeout)
+        rec = daemon.spawn_daemon(wiki, host=host, port=port, timeout=timeout)
     except daemon.DaemonAlreadyRunning as exc:
         typer.echo(str(exc))
         return
     except daemon.DaemonStartFailed as exc:
         typer.echo(f"error: {exc}", err=True)
-        for line in daemon.tail_log(wiki.data_root, 20):
+        for line in daemon.tail_log(wiki, 20):
             typer.echo(line, err=True)
         raise typer.Exit(code=1) from exc
     except (daemon.NonLoopbackBind, daemon.PortUnavailable, daemon.DaemonBusy) as exc:
@@ -149,7 +149,7 @@ def down(
     configure_logging()
     wiki = resolve_wiki(name)
     try:
-        result = daemon.stop_daemon(wiki.data_root, grace=grace)
+        result = daemon.stop_daemon(wiki, grace=grace)
     except (daemon.DaemonBusy, daemon.DaemonStopFailed) as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=1) from exc
@@ -172,7 +172,7 @@ def _mcp_status(
     """
     configure_logging()
     wiki = resolve_wiki(name)
-    result = daemon.daemon_status(wiki.data_root)
+    result = daemon.daemon_status(wiki)
     qmd_state = qmd_daemon.qmd_daemon_state()
     if result.running and result.record is not None:
         uptime = int(result.uptime_s or 0)
