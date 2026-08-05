@@ -11,6 +11,23 @@ from lies.etl.stages.qmd_update import run_qmd_update
 from lies.etl.stages.scrape import run_scrape
 from lies.etl.stages.write import run_write
 from lies.scrapers.base import ParsedDoc
+from lies.wiki.wiki import Wiki
+
+
+def _wiki(tmp_path: Path) -> Wiki:
+    wiki = Wiki(
+        name="cpython",
+        data_root=tmp_path,
+        config_root=tmp_path,
+        cache_root=tmp_path,
+        state_root=tmp_path,
+        runtime_root=tmp_path,
+    )
+    wiki.raw_dir.mkdir(parents=True, exist_ok=True)
+    wiki.wiki_dir.mkdir(parents=True, exist_ok=True)
+    wiki.scratch_dir.mkdir(parents=True, exist_ok=True)
+    wiki.cache_root.mkdir(parents=True, exist_ok=True)
+    return wiki
 
 
 def _collection(tmp_path: Path) -> Collection:
@@ -38,13 +55,17 @@ def test_run_scrape_invokes_pick_scraper(tmp_path: Path) -> None:
     fake_scraper.parse.return_value = fake_docs
     fake_scraper.emit_manifest.return_value = tmp_path / "raw" / "cpython" / "manifest.json"
     collection = _collection(tmp_path)
+    wiki = _wiki(tmp_path)
     with mock.patch("lies.etl.stages.scrape.pick_scraper", return_value=fake_scraper) as mock_pick:
-        result = run_scrape(collection)
+        result = run_scrape(wiki, collection)
     mock_pick.assert_called_once_with(collection.source)
     fake_scraper.fetch.assert_called_once_with(collection.source)
     fake_scraper.parse.assert_called_once_with(b"# hello")
-    fake_scraper.emit_manifest.assert_called_once_with(fake_docs, collection.path)
-    assert collection.path.is_dir()
+    fake_scraper.emit_manifest.assert_called_once_with(
+        fake_docs, wiki.raw_dir / collection.name
+    )
+    assert (wiki.raw_dir / collection.name).is_dir()
+    assert (wiki.cache_root / "collections" / collection.name / "manifest.json").exists()
     assert result.success == ["x.md"]
     assert result.parsed_docs == fake_docs
     assert result.bytes_in == len(b"# hello")
@@ -60,7 +81,7 @@ def test_run_normalize_dispatches_and_applies_obsidian(tmp_path: Path) -> None:
             "lies.etl.stages.normalize.obsidian.apply", side_effect=lambda m, **kw: m
         ) as obs,
     ):
-        result = run_normalize(_collection(tmp_path), [fake_doc])
+        result = run_normalize(_wiki(tmp_path), _collection(tmp_path), [fake_doc])
     assert result.success == ["x.md"]
     obs.assert_called_once()
     # normalize stage emits parsed_docs carrying the markdown
@@ -75,7 +96,7 @@ def test_run_normalize_quarantines_unknown_format(tmp_path: Path) -> None:
         "lies.etl.stages.normalize.format_dispatch.dispatch",
         side_effect=UnknownFormatError("nope"),
     ):
-        result = run_normalize(_collection(tmp_path), [fake_doc])
+        result = run_normalize(_wiki(tmp_path), _collection(tmp_path), [fake_doc])
     assert result.quarantined == [("bad.xyz", "nope")]
 
 
@@ -85,10 +106,10 @@ def test_run_write_atomic_commits_new_files(tmp_path: Path) -> None:
     manifest.compare.return_value = False  # fresh manifest: no prior entries
     with mock.patch("lies.etl.stages.write.atomic_commit") as ac:
         result = run_write(
+            _wiki(tmp_path),
             _collection(tmp_path),
             fake_normalized,
             manifest=manifest,
-            wiki_root=tmp_path,
             force=False,
         )
     assert result.success == ["x.md"]
@@ -98,16 +119,16 @@ def test_run_write_atomic_commits_new_files(tmp_path: Path) -> None:
 
 
 def test_run_write_writes_under_wiki_root(tmp_path: Path) -> None:
-    """Target path is wiki_root/wiki/<path>, not CWD-relative."""
+    """Target path is wiki.wiki_dir/<path>, not CWD-relative."""
     fake_normalized = [("concepts/example.md", "# body")]
     manifest = mock.Mock()
     manifest.compare.return_value = False
     with mock.patch("lies.etl.stages.write.atomic_commit"):
         run_write(
+            _wiki(tmp_path),
             _collection(tmp_path),
             fake_normalized,
             manifest=manifest,
-            wiki_root=tmp_path,
             force=False,
         )
     assert (tmp_path / "wiki" / "concepts" / "example.md").exists()
@@ -119,10 +140,10 @@ def test_run_write_skips_unchanged(tmp_path: Path) -> None:
     fake_normalized = [("x.md", "# body")]
     with mock.patch("lies.etl.stages.write.atomic_commit") as ac:
         result = run_write(
+            _wiki(tmp_path),
             _collection(tmp_path),
             fake_normalized,
             manifest=manifest,
-            wiki_root=tmp_path,
             force=False,
         )
     assert result.skipped == ["x.md"]
@@ -138,10 +159,10 @@ def test_run_write_quarantines_on_oserror(tmp_path: Path) -> None:
         mock.patch("builtins.open", side_effect=OSError("disk full")),
     ):
         result = run_write(
+            _wiki(tmp_path),
             _collection(tmp_path),
             fake_normalized,
             manifest=manifest,
-            wiki_root=tmp_path,
             force=False,
         )
     assert result.quarantined == [("x.md", "disk full")]
@@ -153,10 +174,10 @@ def test_run_write_respects_force(tmp_path: Path) -> None:
     fake_normalized = [("x.md", "# body")]
     with mock.patch("lies.etl.stages.write.atomic_commit") as ac:
         result = run_write(
+            _wiki(tmp_path),
             _collection(tmp_path),
             fake_normalized,
             manifest=manifest,
-            wiki_root=tmp_path,
             force=True,
         )
     assert result.success == ["x.md"]
@@ -167,7 +188,7 @@ def test_run_write_respects_force(tmp_path: Path) -> None:
 def test_run_qmd_update_triggers_full_reindex(tmp_path: Path) -> None:
     """`qmd update` is always full; the per-collection flag is not honored by qmd."""
     with mock.patch("lies.etl.stages.qmd_update.qmd_update") as q:
-        result = run_qmd_update(_collection(tmp_path))
+        result = run_qmd_update(_wiki(tmp_path), _collection(tmp_path))
     q.assert_called_once_with(tmp_path / "raw" / "cpython")
     assert result.bytes_in == 0
     assert result.success == []
@@ -177,7 +198,7 @@ def test_run_qmd_update_swallows_qmd_failure(tmp_path: Path) -> None:
     with mock.patch(
         "lies.etl.stages.qmd_update.qmd_update", side_effect=RuntimeError("qmd missing")
     ):
-        result = run_qmd_update(_collection(tmp_path))
+        result = run_qmd_update(_wiki(tmp_path), _collection(tmp_path))
     assert result.bytes_in == 0  # no-op recorded
 
 
@@ -194,7 +215,7 @@ def test_scrape_uses_bespoke_scraper_via_scraper_cmd(tmp_path: Path) -> None:
         "        return [ParsedDoc(path='x.md', content=b'hi', source_sha256='h', source_format='markdown')]\n"
         "    def emit_manifest(self, docs, raw_dir):\n"
         "        (raw_dir / 'x.md').write_bytes(b'hi')\n"
-        "        return raw_dir / 'x.md'\n"
+        "        return raw_dir / 'manifest.json'\n"
         "SCRAPER = _B()\n",
         encoding="utf-8",
     )
@@ -214,7 +235,7 @@ def test_scrape_uses_bespoke_scraper_via_scraper_cmd(tmp_path: Path) -> None:
             updated_at=datetime.now(tz=timezone.utc),
             config={},
         )
-        result = run_scrape(c)
+        result = run_scrape(_wiki(tmp_path), c)
         assert result.success == ["x.md"]
         assert result.parsed_docs[0].path == "x.md"
     finally:
@@ -240,4 +261,4 @@ def test_scrape_scraper_cmd_import_failure_raises_scraper_unavailable(tmp_path: 
         config={},
     )
     with pytest.raises(ScraperUnavailable):
-        run_scrape(c)
+        run_scrape(_wiki(tmp_path), c)

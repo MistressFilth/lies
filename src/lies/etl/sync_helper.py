@@ -124,11 +124,11 @@ def sync_collection(
         budget = CostBudget()
         manifest = HashManifest(wiki.data_root, name)
         pipeline = SyncOrchestrator(
+            wiki=wiki,
             collection=collection,
             telemetry=telemetry,
             budget=budget,
             manifest=manifest,
-            wiki_root=wiki.data_root,
             force=force,
         )
         pipeline.run()

@@ -64,8 +64,9 @@ def test_pipeline_runs_all_states(wiki: Wiki) -> None:
         collection=collection,
         telemetry=telemetry,
         budget=budget,
+        wiki=wiki,
         manifest=mock.Mock(),
-        wiki_root=wiki.data_root,
+        
     )
     fake_docs = [
         ParsedDoc(path="x.md", content=b"# hi", source_sha256="abc", source_format="markdown")
@@ -124,8 +125,9 @@ def test_pipeline_rolls_back_on_budget_exceeded(wiki: Wiki) -> None:
         collection=collection,
         telemetry=telemetry,
         budget=budget,
+        wiki=wiki,
         manifest=manifest,
-        wiki_root=wiki.data_root,
+        
     )
     with (
         mock.patch("lies.etl.pipeline.run_scrape", side_effect=BudgetExceeded((1, 0), (0, 10_000))),
@@ -144,15 +146,16 @@ def test_pipeline_threads_parsed_docs_from_scrape_to_normalize(wiki: Wiki) -> No
         collection=collection,
         telemetry=telemetry,
         budget=budget,
+        wiki=wiki,
         manifest=mock.Mock(),
-        wiki_root=wiki.data_root,
+        
     )
     fake_docs = [
         ParsedDoc(path="x.md", content=b"# hi", source_sha256="abc", source_format="markdown")
     ]
     captured: dict = {}
 
-    def fake_scrape(c):
+    def fake_scrape(wiki, c):
         return StageResult(
             success=["x.md"],
             quarantined=[],
@@ -162,18 +165,18 @@ def test_pipeline_threads_parsed_docs_from_scrape_to_normalize(wiki: Wiki) -> No
             bytes_out=0,
         )
 
-    def fake_normalize(c, docs):
+    def fake_normalize(wiki, c, docs):
         captured["docs"] = docs
         return StageResult(
             success=["x.md"], quarantined=[], skipped=[], parsed_docs=[], bytes_in=10, bytes_out=10
         )
 
-    def fake_write(c, normalized, *, manifest, force, wiki_root):
+    def fake_write(wiki, c, normalized, *, manifest, force):
         return StageResult(
             success=[], quarantined=[], skipped=[], parsed_docs=[], bytes_in=0, bytes_out=0
         )
 
-    def fake_qmd(c):
+    def fake_qmd(wiki, c):
         return StageResult(
             success=[], quarantined=[], skipped=[], parsed_docs=[], bytes_in=0, bytes_out=0
         )
@@ -196,30 +199,31 @@ def test_pipeline_threads_force_to_write(wiki: Wiki) -> None:
         collection=collection,
         telemetry=telemetry,
         budget=budget,
+        wiki=wiki,
         manifest=mock.Mock(),
-        wiki_root=wiki.data_root,
+        
         force=True,
     )
     captured: dict = {}
 
-    def fake_scrape(c):
+    def fake_scrape(wiki, c):
         return StageResult(
             success=[], quarantined=[], skipped=[], parsed_docs=[], bytes_in=0, bytes_out=0
         )
 
-    def fake_normalize(c, docs):
+    def fake_normalize(wiki, c, docs):
         return StageResult(
             success=[], quarantined=[], skipped=[], parsed_docs=[], bytes_in=0, bytes_out=0
         )
 
-    def fake_write(c, normalized, *, manifest, force, wiki_root):
+    def fake_write(wiki, c, normalized, *, manifest, force):
         captured["force"] = force
-        captured["wiki_root"] = wiki_root
+        captured["wiki"] = wiki
         return StageResult(
             success=[], quarantined=[], skipped=[], parsed_docs=[], bytes_in=0, bytes_out=0
         )
 
-    def fake_qmd(c):
+    def fake_qmd(wiki, c):
         return StageResult(
             success=[], quarantined=[], skipped=[], parsed_docs=[], bytes_in=0, bytes_out=0
         )
@@ -232,11 +236,11 @@ def test_pipeline_threads_force_to_write(wiki: Wiki) -> None:
     ):
         pipeline.run()
     assert captured["force"] is True
-    assert captured["wiki_root"] == wiki.data_root
+    assert captured["wiki"].data_root == wiki.data_root
 
 
-def test_pipeline_threads_wiki_root_to_write(wiki: Wiki) -> None:
-    """The orchestrator must thread wiki_root into the write stage."""
+def test_pipeline_threads_wiki_to_write(wiki: Wiki) -> None:
+    """The orchestrator must thread a Wiki into the write stage."""
     collection = _collection(wiki)
     telemetry = SyncTelemetry(wiki, collection.name)
     budget = CostBudget()
@@ -244,28 +248,29 @@ def test_pipeline_threads_wiki_root_to_write(wiki: Wiki) -> None:
         collection=collection,
         telemetry=telemetry,
         budget=budget,
+        wiki=wiki,
         manifest=mock.Mock(),
-        wiki_root=wiki.data_root,
+        
     )
     captured: dict = {}
 
-    def fake_scrape(c):
+    def fake_scrape(wiki, c):
         return StageResult(
             success=[], quarantined=[], skipped=[], parsed_docs=[], bytes_in=0, bytes_out=0
         )
 
-    def fake_normalize(c, docs):
+    def fake_normalize(wiki, c, docs):
         return StageResult(
             success=[], quarantined=[], skipped=[], parsed_docs=[], bytes_in=0, bytes_out=0
         )
 
-    def fake_write(c, normalized, *, manifest, force, wiki_root):
-        captured["wiki_root"] = wiki_root
+    def fake_write(wiki, c, normalized, *, manifest, force):
+        captured["wiki_root"] = wiki.data_root
         return StageResult(
             success=[], quarantined=[], skipped=[], parsed_docs=[], bytes_in=0, bytes_out=0
         )
 
-    def fake_qmd(c):
+    def fake_qmd(wiki, c):
         return StageResult(
             success=[], quarantined=[], skipped=[], parsed_docs=[], bytes_in=0, bytes_out=0
         )
@@ -309,8 +314,9 @@ def test_pipeline_runs_register_stage(wiki: Wiki, monkeypatch: pytest.MonkeyPatc
         collection=c,
         telemetry=telemetry,
         budget=budget,
+        wiki=wiki,
         manifest=manifest,
-        wiki_root=wiki.data_root,
+        
     )
     # Stub each stage to keep the test focused on the new state transition.
     with (
@@ -331,5 +337,10 @@ def test_pipeline_runs_register_stage(wiki: Wiki, monkeypatch: pytest.MonkeyPatc
             success=[], quarantined=[], skipped=[], parsed_docs=[]
         )
         orch.run()
-    m_register.assert_called_once_with(c, orch._service)
-    m_qmd.assert_called_once_with(c)
+    m_register.assert_called_once()
+    args, _ = m_register.call_args
+    assert args[1] is c
+    assert args[2] is orch._service
+    m_qmd.assert_called_once()
+    qmd_args, _ = m_qmd.call_args
+    assert qmd_args[1] is c

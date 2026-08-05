@@ -24,6 +24,7 @@ from lies.collections.record import Collection
 from lies.etl.normalize import format_dispatch, obsidian
 from lies.etl.normalize.format_dispatch import UnknownFormatError
 from lies.scrapers.base import ParsedDoc
+from lies.wiki.wiki import Wiki
 
 if TYPE_CHECKING:
     from lies.etl.pipeline import StageResult
@@ -68,18 +69,19 @@ def _doc_title(doc: ParsedDoc) -> str:
     return doc.path.rsplit("/", 1)[-1].rsplit(".", 1)[0]
 
 
-def run_normalize(collection: Collection, docs: list[ParsedDoc]) -> StageResult:
+def run_normalize(wiki: Wiki, collection: Collection, docs: list[ParsedDoc]) -> StageResult:
     from lies.etl.pipeline import StageResult
 
     success: list[str] = []
     quarantined: list[tuple[str, str]] = []
     bytes_in = 0
     out_docs: list[ParsedDoc] = []
+    wiki.scratch_dir.mkdir(parents=True, exist_ok=True)
     for doc in docs:
         bytes_in += len(doc.content)
         try:
             if doc.source_format in REGISTRY.formats() and doc.source_format != "markdown":
-                with tempfile.TemporaryDirectory() as td:
+                with tempfile.TemporaryDirectory(dir=wiki.scratch_dir) as td:
                     workspace = Path(td)
                     if doc.source_format == "bespoke":
                         _materialize_bespoke(workspace, doc)
