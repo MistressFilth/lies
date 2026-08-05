@@ -8,8 +8,12 @@ from unittest import mock
 import pytest
 
 from lies.builders.base import BuilderRegistry, PassThroughBuilder
-from lies.builders.bespoke import BespokeBuilder
+from lies.builders.bespoke import BespokeBuilder, _ext_for
 from lies.collections.record import Collection
+
+
+def test_ext_for_liquid() -> None:
+    assert _ext_for("liquid") == "liquid"
 
 
 @pytest.fixture

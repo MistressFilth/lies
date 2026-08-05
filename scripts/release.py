@@ -270,15 +270,11 @@ def main() -> int:
         or f"## [{current_version}] -" in changelog_text  # date may be empty
     )
     if already_released:
-        print(
-            f"release: {current_version} already staged in CHANGELOG; tagging only"
-        )
+        print(f"release: {current_version} already staged in CHANGELOG; tagging only")
     else:
         # Rewrite version surfaces if needed.
         if target_version != current_version:
-            new_py, new_init = rewrite_version(
-                pyproject_text, init_text, target_version
-            )
+            new_py, new_init = rewrite_version(pyproject_text, init_text, target_version)
             pyproject_path.write_text(new_py, encoding="utf-8")
             init_path.write_text(new_init, encoding="utf-8")
         # Split CHANGELOG.
@@ -301,9 +297,7 @@ def main() -> int:
 
     # Tag.
     tag = f"v{tag_version}"
-    existing_tags = (
-        subprocess.check_output(["git", "tag", "--list", tag]).decode("utf-8").strip()
-    )
+    existing_tags = subprocess.check_output(["git", "tag", "--list", tag]).decode("utf-8").strip()
     if existing_tags:
         print(
             f"release: {tag} exists; delete first or use BUMP= to bump further",
