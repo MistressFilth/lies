@@ -13,6 +13,7 @@ from lies.collections.record import Collection, save_collection
 from lies.etl.cost import CostBudget
 from lies.etl.pipeline import SyncOrchestrator
 from lies.etl.telemetry import SyncTelemetry
+from lies.wiki.wiki import Wiki
 
 
 def _git_init(root: Path) -> None:
@@ -33,14 +34,25 @@ def _git_init(root: Path) -> None:
 
 
 @pytest.fixture
-def wiki(tmp_path: Path) -> Path:
+def wiki(tmp_path: Path) -> Wiki:
+    """Path-style wiki for stages tests + a Wiki wrapper for SyncTelemetry."""
     root = tmp_path
     for sub in ("wiki", ".lies", "raw"):
         (root / sub).mkdir(parents=True, exist_ok=True)
     (root / ".lies" / "collections").mkdir(parents=True, exist_ok=True)
     (root / ".lies" / "collections" / ".gitkeep").write_text("", encoding="utf-8")
     _git_init(root)
-    return root
+    # Wrap the on-disk layout in a Wiki so SyncTelemetry can resolve
+    # logs_dir / state_root via the XDG accessors. Stages still take
+    # wiki.data_root as a Path, so the underlying fixture is unchanged.
+    return Wiki(
+        name=root.name or "test",
+        data_root=root,
+        config_root=root / ".lies",
+        cache_root=root,
+        state_root=root,
+        runtime_root=root / ".lies",
+    )
 
 
 def _make_pdf(path: Path, text: str) -> None:
@@ -51,8 +63,8 @@ def _make_pdf(path: Path, text: str) -> None:
     doc.close()
 
 
-def test_sync_pdf_collection_registers_ref(wiki: Path) -> None:
-    pdf = wiki / "raw" / "manual.pdf"
+def test_sync_pdf_collection_registers_ref(wiki: Wiki) -> None:
+    pdf = wiki.data_root / "raw" / "manual.pdf"
     pdf.parent.mkdir(parents=True, exist_ok=True)
     _make_pdf(pdf, "the quick brown fox")
     c = Collection(
@@ -69,31 +81,31 @@ def test_sync_pdf_collection_registers_ref(wiki: Path) -> None:
         updated_at=datetime.now(tz=timezone.utc),
         config={},
     )
-    save_collection(wiki, c)
-    telemetry = SyncTelemetry(c.name, wiki / ".lies" / "logs")
-    manifest = HashManifest(wiki, c.name)
+    save_collection(wiki.data_root, c)
+    telemetry = SyncTelemetry(wiki, c.name)
+    manifest = HashManifest(wiki.data_root, c.name)
     budget = CostBudget()
     orch = SyncOrchestrator(
         collection=c,
         telemetry=telemetry,
         budget=budget,
         manifest=manifest,
-        wiki_root=wiki,
+        wiki_root=wiki.data_root,
     )
     orch.run()
     assert orch._service.is_registered("manual")
-    page = wiki / "wiki" / "pages" / "page-0001.md"
+    page = wiki.data_root / "wiki" / "pages" / "page-0001.md"
     assert "the quick brown fox" in page.read_text(encoding="utf-8")
     # Wiki commit should have happened.
     log = subprocess.run(
-        ["git", "log", "--oneline"], cwd=wiki, capture_output=True, text=True, check=True
+        ["git", "log", "--oneline"], cwd=wiki.data_root, capture_output=True, text=True, check=True
     )
     assert "init" in log.stdout
     assert "sync" in log.stdout
 
 
-def test_sync_liquid_collection_quarantines_everything(wiki: Path) -> None:
-    liquid = wiki / "raw" / "page.liquid"
+def test_sync_liquid_collection_quarantines_everything(wiki: Wiki) -> None:
+    liquid = wiki.data_root / "raw" / "page.liquid"
     liquid.parent.mkdir(parents=True, exist_ok=True)
     liquid.write_text("{% if x %}", encoding="utf-8")
     c = Collection(
@@ -110,16 +122,16 @@ def test_sync_liquid_collection_quarantines_everything(wiki: Path) -> None:
         updated_at=datetime.now(tz=timezone.utc),
         config={},
     )
-    save_collection(wiki, c)
-    telemetry = SyncTelemetry(c.name, wiki / ".lies" / "logs")
-    manifest = HashManifest(wiki, c.name)
+    save_collection(wiki.data_root, c)
+    telemetry = SyncTelemetry(wiki, c.name)
+    manifest = HashManifest(wiki.data_root, c.name)
     budget = CostBudget()
     orch = SyncOrchestrator(
         collection=c,
         telemetry=telemetry,
         budget=budget,
         manifest=manifest,
-        wiki_root=wiki,
+        wiki_root=wiki.data_root,
     )
     # Mock pick_scraper to return a scraper whose parse() yields a liquid ParsedDoc.
     from lies.scrapers.base import ParsedDoc
@@ -138,11 +150,11 @@ def test_sync_liquid_collection_quarantines_everything(wiki: Path) -> None:
     with mock.patch("lies.etl.stages.scrape.pick_scraper", return_value=fake_scraper):
         orch.run()
     assert telemetry.receipt().docs_quarantined == 1
-    assert not any((wiki / "wiki").rglob("*"))
+    assert not any((wiki.data_root / "wiki").rglob("*"))
     assert not orch._service.is_registered("liquid_test")
 
 
-def test_sync_htmx_sphinx_with_excludes(wiki: Path) -> None:
+def test_sync_htmx_sphinx_with_excludes(wiki: Wiki) -> None:
     """htmx-style Sphinx collection: three rst docs; ``sphinx_excludes``
     filters two of them; only the kept file is written to ``wiki/``.
     The ``WikiCollectionRef`` is registered; exactly one atomic commit
@@ -198,7 +210,7 @@ def test_sync_htmx_sphinx_with_excludes(wiki: Path) -> None:
         ),
     ]
 
-    raw_dir = wiki / "raw" / "htmx"
+    raw_dir = wiki.data_root / "raw" / "htmx"
     raw_dir.mkdir(parents=True, exist_ok=True)
     c = Collection(
         name="htmx",
@@ -217,7 +229,7 @@ def test_sync_htmx_sphinx_with_excludes(wiki: Path) -> None:
             "sphinx_excludes": ["base_template.rst", "demo_example.rst"],
         },
     )
-    save_collection(wiki, c)
+    save_collection(wiki.data_root, c)
 
     fake_scraper = mock.Mock()
     fake_scraper.fetch.return_value = b""
@@ -280,15 +292,15 @@ def test_sync_htmx_sphinx_with_excludes(wiki: Path) -> None:
             )
         return out
 
-    telemetry = SyncTelemetry(c.name, wiki / ".lies" / "logs")
-    manifest = HashManifest(wiki, c.name)
+    telemetry = SyncTelemetry(wiki, c.name)
+    manifest = HashManifest(wiki.data_root, c.name)
     budget = CostBudget()
     orch = SyncOrchestrator(
         collection=c,
         telemetry=telemetry,
         budget=budget,
         manifest=manifest,
-        wiki_root=wiki,
+        wiki_root=wiki.data_root,
     )
 
     # C1 fix pinned: every bespoke ParsedDoc routes through
@@ -300,7 +312,9 @@ def test_sync_htmx_sphinx_with_excludes(wiki: Path) -> None:
         orch.run()
 
     written = sorted(
-        p.relative_to(wiki).as_posix() for p in (wiki / "wiki").rglob("*") if p.is_file()
+        p.relative_to(wiki.data_root).as_posix()
+        for p in (wiki.data_root / "wiki").rglob("*")
+        if p.is_file()
     )
     # Only the kept file is written; excludes filtered out the others.
     assert "wiki/index.rst" in written, f"index.rst missing in {written!r}"
@@ -321,6 +335,6 @@ def test_sync_htmx_sphinx_with_excludes(wiki: Path) -> None:
     assert orch._service.is_registered("htmx")
     # Exactly one sync commit lands on top of the fixture init.
     log_out = subprocess.run(
-        ["git", "log", "--oneline"], cwd=wiki, capture_output=True, text=True, check=True
+        ["git", "log", "--oneline"], cwd=wiki.data_root, capture_output=True, text=True, check=True
     )
     assert log_out.stdout.count("\n") == 2  # one init + one sync commit

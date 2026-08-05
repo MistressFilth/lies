@@ -1,8 +1,8 @@
 """WRITING stage — hash compare + atomic_commit per batch.
 
 Target paths are computed under ``<wiki_root>/wiki/<path>`` (NOT
-CWD-relative). Per-doc OSError on write moves the source to
-``.lies/poison/<collection>/<path>`` and continues the batch.
+CWD-relative). Per-doc OSError on write moves the source to the
+wiki's poison_root and continues the batch.
 """
 
 from __future__ import annotations
@@ -15,6 +15,7 @@ from lies.collections.hash_manifest import HashManifest
 from lies.collections.record import Collection
 from lies.etl.quarantine import quarantine as move_to_poison
 from lies.wiki.git import atomic_commit
+from lies.wiki.wiki import Wiki
 
 if TYPE_CHECKING:
     from lies.etl.pipeline import StageResult
@@ -29,6 +30,20 @@ def run_write(
     force: bool = False,
 ) -> StageResult:
     from lies.etl.pipeline import StageResult
+
+    # The stages still take wiki_root as a Path; quarantine moved to
+    # Wiki-based accessors in Task 11. Construct a Wiki on demand with
+    # wiki_root serving every role so the state_root poison layout is
+    # honored without an extra xdg lookup.
+    name = wiki_root.name or "test"
+    wiki = Wiki(
+        name=name,
+        data_root=wiki_root,
+        config_root=wiki_root,
+        cache_root=wiki_root,
+        state_root=wiki_root,
+        runtime_root=wiki_root,
+    )
 
     success: list[str] = []
     skipped: list[str] = []
@@ -48,7 +63,7 @@ def run_write(
                 f.write(markdown)
         except OSError as exc:
             quarantined.append((path, str(exc)))
-            move_to_poison(wiki_root, collection.name, path, str(exc))
+            move_to_poison(wiki, collection.name, path, str(exc))
             continue
         manifest.update(path, sha)
         files.append(str(target.relative_to(wiki_root)))

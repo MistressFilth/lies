@@ -26,31 +26,32 @@ from lies.etl.heartbeat import (
 )
 from lies.etl.pipeline import SyncOrchestrator
 from lies.etl.telemetry import SyncTelemetry
+from lies.wiki.wiki import Wiki
 
 
-def acquire_heartbeat(wiki_root: Path, *, wait: bool, fail_busy: bool) -> Heartbeat | None:
+def acquire_heartbeat(wiki: Wiki, *, wait: bool, fail_busy: bool) -> Heartbeat | None:
     """Returns the heartbeat if one was successfully claimed; None if busy.
 
     Concurrency: takes an atomic ``O_CREAT | O_EXCL`` create on
-    ``.lies/sync.lock.create`` *before* reading or writing the
-    heartbeat file. Two processes racing on ``acquire_heartbeat``
-    cannot both succeed; the loser observes ``None`` (or waits, if
-    ``wait=True``).
+    ``$XDG_RUNTIME_DIR/lies/<wiki>/sync.lock.create`` *before*
+    reading or writing the heartbeat file. Two processes racing on
+    ``acquire_heartbeat`` cannot both succeed; the loser observes
+    ``None`` (or waits, if ``wait=True``).
 
     Caller is responsible for invoking :func:`release_heartbeat`
     afterwards, which closes the create-lock fd and unlinks the lock
     file as well as clearing the heartbeat.
     """
-    fd = acquire_create_lock(wiki_root)
+    fd = acquire_create_lock(wiki)
     if fd is None:
         # Another process already holds the create lock.
-        hb = read_heartbeat(wiki_root)
+        hb = read_heartbeat(wiki)
         if hb and not heartbeat_is_stale(hb):
             if fail_busy or not wait:
                 return None
-            wait_until_free(wiki_root)
+            wait_until_free(wiki)
             # Retry the create after the holder releases.
-            fd = acquire_create_lock(wiki_root)
+            fd = acquire_create_lock(wiki)
             if fd is None:
                 return None
         else:
@@ -58,32 +59,32 @@ def acquire_heartbeat(wiki_root: Path, *, wait: bool, fail_busy: bool) -> Heartb
             # a concurrent acquirer; treat as busy.
             if fail_busy or not wait:
                 return None
-            wait_until_free(wiki_root)
-            fd = acquire_create_lock(wiki_root)
+            wait_until_free(wiki)
+            fd = acquire_create_lock(wiki)
             if fd is None:
                 return None
     # We hold the create lock; the heartbeat file is now safe to write.
-    hb = read_heartbeat(wiki_root)
+    hb = read_heartbeat(wiki)
     if hb and not heartbeat_is_stale(hb):
         # Lost a race after the wait released; close the fd and bail.
-        release_create_lock(wiki_root, fd)
+        release_create_lock(wiki, fd)
         return None
     h = Heartbeat(pid=os.getpid(), started_at=time.time(), collection="*")
-    write_heartbeat(wiki_root, h)
+    write_heartbeat(wiki, h)
     # Persist the fd so release_heartbeat can close + unlink.
-    _heartbeat_fd_path(wiki_root).write_text(str(fd), encoding="utf-8")
+    _heartbeat_fd_path(wiki).write_text(str(fd), encoding="utf-8")
     return h
 
 
-def _heartbeat_fd_path(wiki_root: Path) -> Path:
+def _heartbeat_fd_path(wiki: Wiki) -> Path:
     """Sidecar file holding the create-lock fd for the active heartbeat."""
-    return wiki_root / ".lies" / "sync.lock.fd"
+    return wiki.sync_fd_path
 
 
-def release_heartbeat(wiki_root: Path) -> None:
+def release_heartbeat(wiki: Wiki) -> None:
     """Clear the heartbeat and release the atomic create lock."""
-    clear_heartbeat(wiki_root)
-    fd_path = _heartbeat_fd_path(wiki_root)
+    clear_heartbeat(wiki)
+    fd_path = _heartbeat_fd_path(wiki)
     fd: int | None = None
     if fd_path.exists():
         try:
@@ -94,39 +95,40 @@ def release_heartbeat(wiki_root: Path) -> None:
             fd_path.unlink()
         except FileNotFoundError:
             pass
-    release_create_lock(wiki_root, fd)
+    release_create_lock(wiki, fd)
 
 
-def collection_names(wiki_root: Path, only: str | None) -> list[str]:
+def collection_names(wiki: Wiki, only: str | None) -> list[str]:
     if only:
         return [only]
-    cfg_dir = wiki_root / ".lies" / "collections"
+    cfg_dir = wiki.collections_dir
     return sorted(p.stem for p in cfg_dir.glob("*.yaml"))
 
 
 def sync_collection(
-    wiki_root: Path,
+    wiki: Wiki,
     name: str,
     *,
     force: bool = False,
 ) -> None:
     """Run SyncOrchestrator for a single collection.
 
-    Errors if ``<wiki>/.lies/collections/<name>.yaml`` does not exist;
-    use ``sync_helper.bootstrap_collection`` (or write the YAML by
-    hand) before calling. The first-time LLM scraper generation flow
-    that was promised in the original docstring is deferred.
+    Errors if the collection YAML is missing from
+    ``wiki.collections_dir``; use ``sync_helper.bootstrap_collection``
+    (or write the YAML by hand) before calling. The first-time LLM
+    scraper generation flow that was promised in the original docstring
+    is deferred.
     """
-    collection: Collection = load_collection(wiki_root, name)
-    with SyncTelemetry(name, wiki_root / ".lies" / "logs") as telemetry:
+    collection: Collection = load_collection(wiki.data_root, name)
+    with SyncTelemetry(wiki, name) as telemetry:
         budget = CostBudget()
-        manifest = HashManifest(wiki_root, name)
+        manifest = HashManifest(wiki.data_root, name)
         pipeline = SyncOrchestrator(
             collection=collection,
             telemetry=telemetry,
             budget=budget,
             manifest=manifest,
-            wiki_root=wiki_root,
+            wiki_root=wiki.data_root,
             force=force,
         )
         pipeline.run()

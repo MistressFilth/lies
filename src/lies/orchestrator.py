@@ -991,9 +991,26 @@ class Orchestrator:
         To be deleted in a follow-up release once CLI and tests migrate.
         """
         from lies.etl.sync_helper import sync_collection
+        from lies.wiki.wiki import Wiki
 
         collection_name = Path(source).stem
-        sync_collection(self.layout.root, collection_name, force=False)
+        # Orchestrator still takes wiki_root as a Path; sync_collection
+        # moved to Wiki-based accessors in Task 11. Reuse wiki_root for
+        # every role so the XDG lookups (which may try to mkdir on a
+        # privileged path) are skipped. The state_root alias routes
+        # quarantine and telemetry to ``<wiki_root>/poison`` and
+        # ``<wiki_root>/logs`` respectively — both legacy locations
+        # this backward-compat shim keeps honoring.
+        root = self.layout.root
+        wiki = Wiki(
+            name=root.name or "test",
+            data_root=root,
+            config_root=root,
+            cache_root=root,
+            state_root=root,
+            runtime_root=root,
+        )
+        sync_collection(wiki, collection_name, force=False)
         return f"ingested {source}"
 
     def run_query(self, question: str) -> SynthesizedAnswer:

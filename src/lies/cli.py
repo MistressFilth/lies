@@ -260,12 +260,12 @@ def ingest(
     )
 
     wiki = resolve_wiki(name)
-    if acquire_heartbeat(wiki.data_root, wait=False, fail_busy=True) is None:
+    if acquire_heartbeat(wiki, wait=False, fail_busy=True) is None:
         raise typer.Exit(code=2)
     try:
-        sync_collection(wiki.data_root, collection, force=False)
+        sync_collection(wiki, collection, force=False)
     finally:
-        release_heartbeat(wiki.data_root)
+        release_heartbeat(wiki)
 
 
 @app.command()
@@ -411,13 +411,13 @@ def sync(
     )
 
     wiki = resolve_wiki(name)
-    if acquire_heartbeat(wiki.data_root, wait=wait, fail_busy=fail_busy) is None:
+    if acquire_heartbeat(wiki, wait=wait, fail_busy=fail_busy) is None:
         raise typer.Exit(code=2)
     try:
-        for coll_name in collection_names(wiki.data_root, collection):
-            sync_collection(wiki.data_root, coll_name, force=force)
+        for coll_name in collection_names(wiki, collection):
+            sync_collection(wiki, coll_name, force=force)
     finally:
-        release_heartbeat(wiki.data_root)
+        release_heartbeat(wiki)
 
 
 @app.command()
@@ -446,8 +446,8 @@ def reindex(
 
     wiki = resolve_wiki(name)
     if reconcile:
-        for coll_name in collection_names(wiki.data_root, None):
-            sync_collection(wiki.data_root, coll_name, force=False)
+        for coll_name in collection_names(wiki, None):
+            sync_collection(wiki, coll_name, force=False)
     if embed:
         from lies.qmd.cli import qmd_embed
 
