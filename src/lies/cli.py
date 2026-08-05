@@ -246,6 +246,8 @@ def init(name: str) -> None:
         wiki.runtime_root,
     ):
         root.mkdir(parents=True, exist_ok=True)
+    # Known subdirs under config_root — ready for users to drop YAMLs in.
+    wiki.collections_dir.mkdir(parents=True, exist_ok=True)
     WikiLayout(wiki.data_root).init()
     copy_default_schema(wiki.schema_path)
     git_init_initial(wiki.data_root)
