@@ -31,7 +31,7 @@ from lies.memory.models import (
     _PlanOperation,
 )
 from lies.memory.service import _page_type_from_dir
-from lies.wiki.layout import WikiLayout
+from lies.wiki.wiki import Wiki
 
 
 def _stub_body(title: str) -> str:
@@ -82,7 +82,7 @@ def _ensure_frontmatter_type(content: str, page_type: str) -> str:
     return dumped
 
 
-def _merge_append_links(layout: WikiLayout, append_to: str, links: list[AppendLink]) -> PageUpdate:
+def _merge_append_links(wiki: Wiki, append_to: str, links: list[AppendLink]) -> PageUpdate:
     """Combine multiple AppendLinks targeting ``append_to`` into one PageUpdate.
 
     The repair plan allows several AppendLinks on the same target page;
@@ -92,7 +92,7 @@ def _merge_append_links(layout: WikiLayout, append_to: str, links: list[AppendLi
     emit one operation with the original page's content hash as its
     expected_sha256.
     """
-    existing = (layout.wiki_dir / append_to).read_text(encoding="utf-8")
+    existing = (wiki.wiki_dir / append_to).read_text(encoding="utf-8")
     page_type = _page_type_from_dir(Path(append_to).parent.name)
     content = existing
     for link in links:
@@ -107,7 +107,7 @@ def _merge_append_links(layout: WikiLayout, append_to: str, links: list[AppendLi
     )
 
 
-def _map_non_append_op(op: _RepairOp, layout: WikiLayout | None) -> _PlanOperation:
+def _map_non_append_op(op: _RepairOp, wiki: Wiki | None) -> _PlanOperation:
     """Translate a non-AppendLink repair op into its MemoryPlan equivalent."""
     if isinstance(op, CreateStub):
         return PageCreate(
@@ -116,12 +116,12 @@ def _map_non_append_op(op: _RepairOp, layout: WikiLayout | None) -> _PlanOperati
             evidence=op.evidence,
         )
     if isinstance(op, UpdateIndex):
-        if layout is None:
-            raise ValueError("UpdateIndex requires a WikiLayout")
+        if wiki is None:
+            raise ValueError("UpdateIndex requires a Wiki")
         if not op.pages:
             raise ValueError("UpdateIndex requires op.pages to identify the orphan page")
         target_path = op.pages[0]
-        existing = layout.index_path.read_text(encoding="utf-8")
+        existing = (wiki.wiki_dir / "index.md").read_text(encoding="utf-8")
         return PageUpdate(
             path="wiki/index.md",
             expected_sha256=_hash_text(existing),
@@ -138,10 +138,10 @@ def _map_non_append_op(op: _RepairOp, layout: WikiLayout | None) -> _PlanOperati
     raise TypeError(f"unsupported repair op: {op!r}")
 
 
-def from_repair_plan(plan: RepairPlan, layout: WikiLayout | None = None) -> MemoryPlan:
+def from_repair_plan(plan: RepairPlan, wiki: Wiki | None = None) -> MemoryPlan:
     """Map a RepairPlan to a MemoryPlan.
 
-    ``layout`` is required for operations that derive replacement content
+    ``wiki`` is required for operations that derive replacement content
     from an existing page (AppendLink and UpdateIndex).
 
     Multiple ``AppendLink`` operations that target the same page are
@@ -167,12 +167,12 @@ def from_repair_plan(plan: RepairPlan, layout: WikiLayout | None = None) -> Memo
             non_append_ops.append(op)
 
     for op in non_append_ops:
-        operations.append(_map_non_append_op(op, layout))
+        operations.append(_map_non_append_op(op, wiki))
 
     for path, links in append_groups.items():
-        if layout is None:
-            raise ValueError("AppendLink requires a WikiLayout")
-        operations.append(_merge_append_links(layout, path, links))
+        if wiki is None:
+            raise ValueError("AppendLink requires a Wiki")
+        operations.append(_merge_append_links(wiki, path, links))
 
     return MemoryPlan(
         operations=operations,

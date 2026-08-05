@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from lies import xdg
 from lies.memory.models import (
     MemoryPlan,
     PageCreate,
@@ -17,25 +18,45 @@ from lies.memory.models import (
 )
 from lies.memory.service import WikiMemoryService
 from lies.wiki.layout import WikiLayout
+from lies.wiki.wiki import Wiki
 
 
 @pytest.fixture
-def git_wiki(tmp_path: Path) -> WikiLayout:
-    root = tmp_path / "wiki"
-    layout = WikiLayout(root)
-    # ``WikiLayout.init`` creates the wiki/, .lies/, raw/ directories
-    # AND ensures ``.lies/memory.lock`` is gitignored — exactly what a
-    # real ``lies init`` produces. Closer to the real bootstrap than
-    # hand-rolling the directory tree.
-    layout.init()
-    (root / "wiki" / "concepts").mkdir(parents=True)
-    (root / "wiki" / "index.md").write_text("# Index\n", encoding="utf-8")
-    subprocess.run(["git", "init", "--initial-branch=main", str(root)], check=True)
-    subprocess.run(["git", "config", "user.email", "t@e.com"], cwd=root, check=True)
-    subprocess.run(["git", "config", "user.name", "T"], cwd=root, check=True)
-    subprocess.run(["git", "add", "."], cwd=root, check=True)
-    subprocess.run(["git", "commit", "-m", "init"], cwd=root, check=True)
-    return layout
+def git_wiki(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Wiki:
+    """Build a Wiki rooted in ``tmp_path`` with all five XDG roots under it.
+
+    Matches the unit-test fixture so the integration test exercises the
+    XDG runtime path (``$XDG_RUNTIME_DIR/lies/<wiki>/memory.lock``) the
+    way ``lies init`` would produce it after the migration.
+    """
+    monkeypatch.setenv("LIES_XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setenv("LIES_XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("LIES_XDG_CACHE_HOME", str(tmp_path / "cache"))
+    monkeypatch.setenv("LIES_XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setenv("LIES_XDG_RUNTIME_DIR", str(tmp_path / "runtime"))
+    name = "test"
+    data_root = Wiki.data_root_for(name)
+    wiki = Wiki(
+        name=name,
+        data_root=data_root,
+        config_root=xdg.config_home() / "lies" / name,
+        cache_root=xdg.cache_home() / "lies" / name,
+        state_root=xdg.state_home() / "lies" / name,
+        runtime_root=xdg.runtime_dir_for(name),
+    )
+    layout = WikiLayout(wiki.data_root)
+    layout.root.mkdir(parents=True, exist_ok=True)
+    layout.raw_dir.mkdir(parents=True, exist_ok=True)
+    layout.wiki_dir.mkdir(parents=True, exist_ok=True)
+    (layout.wiki_dir / "concepts").mkdir(parents=True, exist_ok=True)
+    (layout.wiki_dir / "index.md").write_text("# Index\n", encoding="utf-8")
+    wiki.runtime_root.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["git", "init", "--initial-branch=main", str(layout.root)], check=True)
+    subprocess.run(["git", "config", "user.email", "t@e.com"], cwd=layout.root, check=True)
+    subprocess.run(["git", "config", "user.name", "T"], cwd=layout.root, check=True)
+    subprocess.run(["git", "add", "."], cwd=layout.root, check=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=layout.root, check=True)
+    return wiki
 
 
 HOLDER_SCRIPT = textwrap.dedent(
@@ -63,9 +84,9 @@ def _wait_for_holder(ready_marker: Path, *, timeout: float = 10.0) -> None:
 
 
 def test_apply_plan_raises_wiki_lock_busy_when_other_process_holds_lock(
-    git_wiki: WikiLayout, tmp_path: Path
+    git_wiki: Wiki, tmp_path: Path
 ) -> None:
-    lock_path = git_wiki.root / ".lies" / "memory.lock"
+    lock_path = git_wiki.memory_lock_path
     ready_marker = tmp_path / "holder.ready"
 
     holder = subprocess.Popen(
@@ -98,9 +119,9 @@ def test_apply_plan_raises_wiki_lock_busy_when_other_process_holds_lock(
 
 
 def test_apply_plan_succeeds_after_other_process_releases_lock(
-    git_wiki: WikiLayout, tmp_path: Path
+    git_wiki: Wiki, tmp_path: Path
 ) -> None:
-    lock_path = git_wiki.root / ".lies" / "memory.lock"
+    lock_path = git_wiki.memory_lock_path
     ready_marker = tmp_path / "holder.ready"
 
     holder = subprocess.Popen(
