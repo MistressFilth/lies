@@ -31,9 +31,7 @@ def orch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Orchestrator:
     (root / "wiki" / "index.md").write_text("# Index\n", encoding="utf-8")
     wiki = make_wiki(name="lint", data_root=root)
     wiki.config_root.mkdir(parents=True, exist_ok=True)
-    (wiki.config_root / "schema.md").write_text(
-        "## Page types\n- concept\n", encoding="utf-8"
-    )
+    (wiki.config_root / "schema.md").write_text("## Page types\n- concept\n", encoding="utf-8")
     subprocess.run(["git", "init", "--initial-branch=main", str(root)], check=True)
     subprocess.run(["git", "config", "user.email", "t@e.com"], cwd=root, check=True)
     subprocess.run(["git", "config", "user.name", "T"], cwd=root, check=True)

@@ -267,7 +267,11 @@ def test_apply_plan_rolls_back_writes_on_apply_failure(
     # The page written by the simulated partial apply must be gone.
     assert not page_path.exists()
     # The log line written by the simulated partial apply must be gone.
-    log = (git_wiki.wiki_dir / "log.md").read_text(encoding="utf-8") if (git_wiki.wiki_dir / "log.md").exists() else ""
+    log = (
+        (git_wiki.wiki_dir / "log.md").read_text(encoding="utf-8")
+        if (git_wiki.wiki_dir / "log.md").exists()
+        else ""
+    )
     assert "rollback-on-hash-mismatch" not in log
     assert "memory" not in log
     # No new commit should have been created on the failure path.
@@ -428,8 +432,6 @@ def test_is_registered_false_for_unknown() -> None:
 
     from lies.memory.service import WikiMemoryService
 
-    wiki = make_wiki(
-        name="unknown", data_root=pathlib.Path("/tmp/lies-svc-test")
-    )
+    wiki = make_wiki(name="unknown", data_root=pathlib.Path("/tmp/lies-svc-test"))
     svc = WikiMemoryService(wiki=wiki)
     assert not svc.is_registered("nope")

@@ -36,9 +36,7 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _copy_or_skip_or_conflict(
-    src: Path, dst: Path, result: MigrationResult
-) -> None:
+def _copy_or_skip_or_conflict(src: Path, dst: Path, result: MigrationResult) -> None:
     if not dst.exists():
         dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(src, dst)
@@ -103,9 +101,7 @@ def migrate_wiki(
     """
     validate_name(name)
     if legacy_path.exists() and not legacy_path.is_dir():
-        raise NotADirectoryError(
-            f"legacy_path must be a directory, got file: {legacy_path}"
-        )
+        raise NotADirectoryError(f"legacy_path must be a directory, got file: {legacy_path}")
     legacy_lies = legacy_path / ".lies"
     marker = legacy_path / ".xdg-migrated"
     if marker.exists():

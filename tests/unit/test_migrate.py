@@ -184,9 +184,7 @@ def test_migrate_force_quarantines_multiple_conflicts(tmp_path: Path) -> None:
     legacy = _copy_legacy(tmp_path)
     kwargs = _xdg_kwargs(tmp_path)
     schema_dst = kwargs["xdg_config_home"] / "lies" / "migrated" / "schema.md"
-    foo_dst = (
-        kwargs["xdg_config_home"] / "lies" / "migrated" / "collections" / "foo.yaml"
-    )
+    foo_dst = kwargs["xdg_config_home"] / "lies" / "migrated" / "collections" / "foo.yaml"
     schema_dst.parent.mkdir(parents=True)
     schema_dst.write_text("WRONG schema")
     foo_dst.parent.mkdir(parents=True)
