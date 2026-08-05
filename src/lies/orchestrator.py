@@ -595,7 +595,7 @@ class Orchestrator:
         # schema for this wiki lives at ``self.wiki.schema_path``.
         self.wiki = wiki
         self.model = model or get_model()
-        self.schema = load_schema(self.wiki)  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]  # load_schema accepts WikiLayout; Wiki has schema_path
+        self.schema = load_schema(self.wiki)
         self._build()
 
     def _build(self) -> None:

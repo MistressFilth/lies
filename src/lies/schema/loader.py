@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from importlib import resources
 
-from lies.wiki.layout import WikiLayout
+from lies.wiki.wiki import Wiki
 
 
 class SchemaNotFoundError(Exception):
@@ -30,16 +30,17 @@ def load_default_schema() -> str:
         ) from exc
 
 
-def load_schema(layout: WikiLayout) -> str:
-    """Return the schema markdown for the wiki at `layout`.
+def load_schema(wiki: Wiki) -> str:
+    """Return the schema markdown for ``wiki``.
 
     Resolution order:
-    1. `<wiki>/.lies/schema.md` (per-wiki override)
-    2. `src/lies/schema/default_schema.md` (default, shipped with LIES)
+    1. ``wiki.schema_path`` (per-wiki override, under
+       ``$XDG_CONFIG_HOME/lies/<name>/schema.md``)
+    2. ``src/lies/schema/default_schema.md`` (default, shipped with LIES)
 
     Returns:
         The schema markdown text.
     """
-    if layout.schema_path.exists():
-        return layout.schema_path.read_text(encoding="utf-8")
+    if wiki.schema_path.exists():
+        return wiki.schema_path.read_text(encoding="utf-8")
     return load_default_schema()

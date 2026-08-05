@@ -113,9 +113,21 @@ def test_layout_resolves(wiki_copy: Path) -> None:
     assert layout.log_path.exists()
 
 
-def test_schema_loads(wiki_copy: Path) -> None:
-    layout = WikiLayout(wiki_copy)
-    schema = load_schema(layout)
+def test_schema_loads(wiki_copy: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from lies import xdg
+    from lies.wiki.wiki import Wiki
+
+    monkeypatch.setenv("LIES_XDG_RUNTIME_DIR", str(tmp_path / "runtime"))
+    name = "sample"
+    wiki = Wiki(
+        name=name,
+        data_root=wiki_copy,
+        config_root=xdg.config_home() / "lies" / name,
+        cache_root=xdg.cache_home() / "lies" / name,
+        state_root=xdg.state_home() / "lies" / name,
+        runtime_root=xdg.runtime_dir_for(name),
+    )
+    schema = load_schema(wiki)
     assert "Page types" in schema or "page types" in schema
 
 
