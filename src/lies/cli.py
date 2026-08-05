@@ -195,6 +195,22 @@ def _mcp_status(
 
 
 @app.command()
+def migrate_xdg(legacy_path: Path, name: str, force: bool = False) -> None:
+    """Migrate a legacy ``.lies/`` wiki into XDG role-routed dirs."""
+    from lies.migrate import migrate_wiki
+
+    result = migrate_wiki(legacy_path, name=name, force=force)
+    if result.removed_legacy:
+        typer.echo(f"migrated wiki '{name}' from {legacy_path}")
+    elif result.skipped:
+        typer.echo(f"wiki '{name}' already migrated (no-op)")
+    typer.echo(
+        f"copied={len(result.copied)} skipped={len(result.skipped)} "
+        f"conflicts={len(result.conflicts)}"
+    )
+
+
+@app.command()
 def config() -> None:
     """Print the current LIES configuration."""
     from lies.config import get_wiki_name
