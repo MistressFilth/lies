@@ -620,7 +620,7 @@ class Orchestrator:
         self._harness_memory = memory(self.wiki.data_root)
         self._agent: Agent = Agent(
             self.model,
-            system_prompt=ORCHESTRATOR_SYSTEM_PROMPT_PREFIX.format(wiki_root=self.wiki.data_root)
+            system_prompt=ORCHESTRATOR_SYSTEM_PROMPT_PREFIX.format(wiki=self.wiki.data_root)
             + self.schema,
             deps_type=WikiMemoryDeps,
             capabilities=[
@@ -633,7 +633,7 @@ class Orchestrator:
                 QmdCapability(
                     transport=get_qmd_transport(),
                     url=get_qmd_url(),
-                    wiki_root=self.wiki,  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]  # QmdCapability accepts WikiLayout; Wiki has data_root
+                    wiki=self.wiki,
                 ).as_capability(),
             ],
         )
@@ -681,7 +681,7 @@ class Orchestrator:
         try:
             result = self._agent.run_sync(
                 command,
-                deps=WikiMemoryDeps(layout=self.wiki, service=self._memory_service),  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
+                deps=WikiMemoryDeps(wiki=self.wiki, service=self._memory_service),
             )
             answer = str(result.output)
         except Exception:  # noqa: BLE001 - last-resort graceful degradation
@@ -1015,7 +1015,7 @@ class Orchestrator:
         returns a :class:`SynthesizedAnswer` whose ``fallback_used`` and
         ``fallback_reason`` fields describe how the answer was built.
         """
-        return synthesize_answer(question, self.wiki)  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
+        return synthesize_answer(question, self.wiki)
 
     def run_lint(self, apply: bool = False) -> str:
         """Run deterministic and LLM lint, merge findings, and write report."""
@@ -1076,7 +1076,7 @@ class Orchestrator:
         defaults as the noop path.
         """
         try:
-            validated = validate_plan(plan, self.wiki, findings)  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
+            validated = validate_plan(plan, self.wiki, findings)
         except WikiPlanInvalid as exc:
             return RepairReceipt(
                 applied=[],

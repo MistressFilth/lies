@@ -61,9 +61,7 @@ def test_run_scrape_invokes_pick_scraper(tmp_path: Path) -> None:
     mock_pick.assert_called_once_with(collection.source)
     fake_scraper.fetch.assert_called_once_with(collection.source)
     fake_scraper.parse.assert_called_once_with(b"# hello")
-    fake_scraper.emit_manifest.assert_called_once_with(
-        fake_docs, wiki.raw_dir / collection.name
-    )
+    fake_scraper.emit_manifest.assert_called_once_with(fake_docs, wiki.raw_dir / collection.name)
     assert (wiki.raw_dir / collection.name).is_dir()
     assert (wiki.cache_root / "collections" / collection.name / "manifest.json").exists()
     assert result.success == ["x.md"]

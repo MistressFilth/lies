@@ -63,7 +63,13 @@ def test_full_pipeline_idempotent(
         state_root=xdg.state_home() / "lies" / name,
         runtime_root=xdg.runtime_dir_for(name),
     )
-    for root in (wiki.data_root, wiki.config_root, wiki.cache_root, wiki.state_root, wiki.runtime_root):
+    for root in (
+        wiki.data_root,
+        wiki.config_root,
+        wiki.cache_root,
+        wiki.state_root,
+        wiki.runtime_root,
+    ):
         root.mkdir(parents=True, exist_ok=True)
     wiki.raw_dir.mkdir(parents=True, exist_ok=True)
     wiki.wiki_dir.mkdir(parents=True, exist_ok=True)

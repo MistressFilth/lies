@@ -27,7 +27,7 @@ if TYPE_CHECKING:
     from pydantic_ai.mcp import MCPToolset
 
     from lies.memory.service import WikiMemoryService
-    from lies.wiki.layout import WikiLayout
+    from lies.wiki.wiki import Wiki
 
 
 _FALLBACK_TOOL_NAMES = ("wiki_search", "wiki_read")
@@ -50,8 +50,8 @@ class _DegradedSearchResult(BaseModel):
 class QmdFallbackMcp:
     """In-process FastMCP server that fronts :class:`WikiMemoryService`."""
 
-    def __init__(self, layout: WikiLayout) -> None:
-        self._layout = layout
+    def __init__(self, wiki: Wiki) -> None:
+        self._wiki = wiki
         self._server: FastMCP | None = None
         self._toolset: MCPToolset[None] | None = None
 
@@ -92,7 +92,7 @@ class QmdFallbackMcp:
     def _make_service(self) -> WikiMemoryService:
         from lies.memory.service import WikiMemoryService
 
-        return WikiMemoryService(self._layout)
+        return WikiMemoryService(self._wiki)
 
     # Direct call surface for tests — match the tool implementation
     # byte-for-byte so the tests do not need the async MCP client.

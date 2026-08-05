@@ -60,7 +60,7 @@ def test_wiki_search_tool_returns_evidence(wiki: WikiLayout) -> None:
     from lies.memory.tools import wiki_search_tool
 
     service = WikiMemoryService(wiki)
-    deps = WikiMemoryDeps(layout=wiki, service=service)
+    deps = WikiMemoryDeps(wiki=wiki, service=service)
     ctx = _build_ctx(deps)
     result = wiki_search_tool(ctx, "X", 5)
     assert result["pages"]
@@ -71,7 +71,7 @@ def test_wiki_read_tool_rejects_unknown_id(wiki: WikiLayout) -> None:
     from lies.memory.tools import wiki_read_tool
 
     service = WikiMemoryService(wiki)
-    deps = WikiMemoryDeps(layout=wiki, service=service)
+    deps = WikiMemoryDeps(wiki=wiki, service=service)
     ctx = _build_ctx(deps)
     with pytest.raises(WikiPageNotFound):
         wiki_read_tool(ctx, ["not-a-real-id"])

@@ -283,7 +283,7 @@ def ingest_source(
     """
     configure_logging()
     wiki = resolve_wiki(name)
-    orch = Orchestrator(wiki_root=wiki.data_root)
+    orch = Orchestrator(wiki)
     output = orch.run_ingest(source)
     typer.echo(output)
 
@@ -296,7 +296,7 @@ def query(
     """Query the wiki with qmd → index.md fallback."""
     configure_logging()
     wiki = resolve_wiki(name)
-    orch = Orchestrator(wiki_root=wiki.data_root)
+    orch = Orchestrator(wiki)
     # Use the host-side ``run_query`` entry point so the synthesizer with
     # qmd→index fallback runs without an LLM round-trip.
     answer = orch.run_query(question)
@@ -311,7 +311,7 @@ def lint(
     """Run lint; with --fix also apply the repair plan."""
     configure_logging()
     wiki = resolve_wiki(name)
-    orch = Orchestrator(wiki_root=wiki.data_root)
+    orch = Orchestrator(wiki)
     # Use the host-side ``run_lint`` entry point so the lint pass writes
     # a deterministic ``wiki/lint-report.md`` and appends to ``wiki/log.md``.
     output = orch.run_lint(apply=fix)
@@ -357,7 +357,7 @@ def main(
         return
     configure_logging()
     wiki = resolve_wiki(name)
-    orch = Orchestrator(wiki_root=wiki.data_root)
+    orch = Orchestrator(wiki)
     console.print("[bold]LIES REPL[/bold] — type /help for commands, /exit to leave.")
     while True:
         try:
@@ -497,15 +497,13 @@ def collections(
             print(p.stem)
     elif action == "show" and name:
         from lies.memory.service import WikiMemoryService
-        from lies.wiki.layout import WikiLayout
 
         c = load_collection(wiki, name)
         print(f"name={c.name} source={c.source} tags={c.tags}")
         # The CLI doesn't know whether sync has run in this process;
         # an empty registry means the in-process WikiMemoryService for
         # this wiki root has not registered any collection yet.
-        layout = WikiLayout(wiki.data_root)
-        svc = WikiMemoryService(layout)
+        svc = WikiMemoryService(wiki)
         registered = svc.registered_collections()
         ref = next(
             (r for r in registered if r.collection_id == name),
