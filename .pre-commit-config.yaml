@@ -15,7 +15,11 @@ repos:
     hooks:
       - id: test
         name: make test
-        entry: scripts/debug-env.sh
+        # Strip pre-commit's GIT_DIR / GIT_INDEX_FILE so git's upward
+        # auto-discovery works inside test fixtures that init their own
+        # repos in tmp dirs. Without this, `git rev-parse --show-toplevel`
+        # in those fixtures returns the cwd instead of walking up.
+        entry: env -u GIT_DIR -u GIT_INDEX_FILE -u GIT_WORK_TREE -u GIT_COMMON_DIR uv run make test
         language: system
         pass_filenames: false
         stages: [pre-commit]

@@ -20,6 +20,4 @@ jobs:
         with:
           python-version: "3.11"
       - run: uv sync --all-extras
-      - run: make check
-      - run: git diff --exit-code
-      - run: make test
+      - run: uv run pre-commit run --all-files
