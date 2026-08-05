@@ -16,6 +16,7 @@ from lies.agents.page_writer import page_writer_agent
 from lies.agents.query_synthesizer import query_synthesizer_agent
 from lies.agents.repair import RepairAgentDeps, repair_agent
 from lies.agents.repair_models import RepairPlan, RepairReceipt
+from lies.agents.repair_validation import ValidatedRepairPlan, validate_plan
 from lies.agents.source_reader import source_reader_agent
 from lies.capabilities import (
     code_mode,
@@ -31,6 +32,7 @@ from lies.memory.models import (
     MemoryReceipt,
     WikiCommitFailed,
     WikiLockBusy,
+    WikiPlanInvalid,
     WikiWriteConflict,
 )
 from lies.memory.retry import EnrichmentQueue
@@ -471,7 +473,13 @@ def _format_repair_section(receipt: RepairReceipt) -> str:
             lines.append(f"- applied: {kind} — {ref.path}")
     lines.extend(["", f"### Skipped ({len(receipt.skipped)})", ""])
     if receipt.skipped:
-        lines.extend(f"- {reason}" for reason in receipt.skipped)
+        redundant = [s for s in receipt.skipped if s.startswith("redundant-index:")]
+        other = [s for s in receipt.skipped if not s.startswith("redundant-index:")]
+        if other:
+            lines.extend(f"- {reason}" for reason in other)
+        if redundant:
+            lines.extend(["", f"### Skipped (redundant) ({len(redundant)})", ""])
+            lines.extend(f"- {reason}" for reason in redundant)
     else:
         lines.append("_No findings skipped._")
     if receipt.errors:
@@ -1011,7 +1019,7 @@ class Orchestrator:
         repair_receipt: RepairReceipt | None = None
         if apply:
             plan = self._run_repair_agent(merged_report)
-            repair_receipt = self._apply_repair_plan(plan)
+            repair_receipt = self._validate_and_apply_repair_plan(plan, merged_report.findings)
         final_md = _render_lint_report(
             merged_report,
             layout=self.layout,
@@ -1046,6 +1054,32 @@ class Orchestrator:
             "Propose a RepairPlan for the lint report.",
             deps=RepairAgentDeps(lint_report=lint_report, page_texts=page_texts),
         ).output
+
+    def _validate_and_apply_repair_plan(
+        self, plan: RepairPlan, findings: list[LintFinding]
+    ) -> RepairReceipt:
+        """Validate ``plan`` and dispatch to ``_apply_repair_plan``.
+
+        ``WikiPlanInvalid`` is mapped to a ``RepairReceipt`` with
+        ``errors=[...]`` so the existing ``_format_repair_section``
+        surfaces the rejection without re-raising through the
+        orchestrator. The receipt is constructed with empty
+        ``applied``/``skipped`` lists and the same ``fallback_used``
+        defaults as the noop path.
+        """
+        try:
+            validated = validate_plan(plan, self.layout, findings)
+        except WikiPlanInvalid as exc:
+            return RepairReceipt(
+                applied=[],
+                applied_repair_kinds=[],
+                skipped=[],
+                deferred=[],
+                fallback_used=False,
+                fallback_reason="",
+                errors=[f"plan rejected: {exc}"],
+            )
+        return self._apply_repair_plan(validated)
 
     def _call_linter(self) -> tuple[LintReport, str | None]:
         """Invoke the linter sub-agent; return (report, fallback_reason).
@@ -1086,38 +1120,54 @@ class Orchestrator:
             return LintReport(findings=[], report_markdown=""), f"{type(exc).__name__}: {exc}"
         return result.output, None
 
-    def _apply_repair_plan(self, plan: RepairPlan) -> RepairReceipt:
-        """Apply a RepairPlan through WikiMemoryService and return a receipt."""
-        from lies.agents.repair_models import RepairReceipt as _Receipt
+    def _apply_repair_plan(self, validated: ValidatedRepairPlan) -> RepairReceipt:
+        """Apply a validated repair plan and return a receipt.
 
+        ``ValidatedRepairPlan.dropped_ops`` records the original
+        indices of any redundant ``UpdateIndex`` operations the
+        validator filtered. Those become ``skipped`` entries on the
+        receipt so the user can see why the op was dropped, and the
+        ``applied_repair_kinds`` list is rebuilt from the
+        post-drop ``plan.operations`` to keep its positional pairing
+        with ``memory_receipt.changed_pages``.
+        """
+        plan = validated.plan
         if plan.is_noop():
-            return _Receipt(
+            skipped_drops = [
+                f"redundant-index: op #{idx} already in wiki/index.md"
+                for idx in validated.dropped_ops
+            ]
+            return RepairReceipt(
                 applied=[],
                 applied_repair_kinds=[],
-                skipped=[],
+                skipped=skipped_drops,
                 deferred=[],
                 errors=[],
             )
         try:
             memory_receipt = self._memory_service.apply_repair_plan(plan)
         except Exception as exc:  # noqa: BLE001 - capture all apply failures
-            return _Receipt(
+            return RepairReceipt(
                 applied=[],
                 applied_repair_kinds=[],
-                skipped=[],
+                skipped=[
+                    f"redundant-index: op #{idx} already in wiki/index.md"
+                    for idx in validated.dropped_ops
+                ],
                 deferred=[f"apply_failed: {type(exc).__name__}: {exc!s}"],
                 errors=[f"apply_failed: {type(exc).__name__}: {exc!s}"],
             )
-        # Map each successfully applied memory operation back to the
-        # repair op kind that produced it. ``plan.operations`` and
-        # ``memory_receipt.changed_pages`` are paired by construction
-        # (the service applies operations in order and appends a
-        # ``PageReference`` for each), so we use position.
-        kinds = [op.kind.value for op in plan.operations]  # type: ignore[attr-defined]  # ty: ignore[unresolved-attribute]
-        return _Receipt(
+        kinds = [
+            op.kind.value  # type: ignore[attr-defined]  # ty: ignore[unresolved-attribute]
+            for op in plan.operations
+        ]
+        skipped_drops = [
+            f"redundant-index: op #{idx} already in wiki/index.md" for idx in validated.dropped_ops
+        ]
+        return RepairReceipt(
             applied=memory_receipt.changed_pages,
             applied_repair_kinds=kinds,
-            skipped=[],
+            skipped=skipped_drops,
             deferred=[],
             errors=memory_receipt.errors,
         )

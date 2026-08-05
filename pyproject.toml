@@ -1,6 +1,6 @@
 [project]
 name = "lies"
-version = "0.5.1"
+version = "0.6.0"
 description = "Library of Inconsistent Explanations & Sources — a Karpathy-pattern LLM wiki."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -53,3 +53,12 @@ markers = [
 [tool.ruff]
 line-length = 100
 target-version = "py310"
+
+[tool.ty.src]
+include = ["src/lies"]
+
+[dependency-groups]
+dev = [
+    "identify>=2.6.19",
+    "pre-commit>=4.6.1",
+]

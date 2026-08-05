@@ -55,13 +55,23 @@ def test_run_lint_default_does_not_invoke_repair_agent(orch: Orchestrator) -> No
 
 
 def test_run_lint_apply_invokes_repair_agent(orch: Orchestrator) -> None:
+    from lies.agents.linter import LintFinding, LintSeverity
+    from lies.agents.repair_validation import ValidatedRepairPlan
+
+    fake_finding = LintFinding(
+        severity=LintSeverity.LOW,
+        category="missing_page",
+        message="missing x",
+        pages=["concepts/x.md"],
+        safe_to_fix=True,
+    )
     fake_plan = RepairPlan(
         operations=[
             CreateStub(
                 path="concepts/x.md",
                 title="X",
                 finding_index=0,
-                pages=[],
+                pages=["concepts/x.md"],
                 rationale="new",
                 evidence=["f0"],
             ),
@@ -80,14 +90,19 @@ def test_run_lint_apply_invokes_repair_agent(orch: Orchestrator) -> None:
     with (
         mock.patch.object(type(orch._agent), "run_sync", new=_noop_agent_run_sync),
         mock.patch.object(
-            orch, "_call_linter", return_value=(LintReport(findings=[], report_markdown=""), None)
+            orch,
+            "_call_linter",
+            return_value=(LintReport(findings=[fake_finding], report_markdown=""), None),
         ),
         mock.patch.object(orch, "_run_repair_agent", return_value=fake_plan) as mock_repair,
         mock.patch.object(orch, "_apply_repair_plan", return_value=fake_receipt) as mock_apply,
     ):
         report = orch.run_lint(apply=True)
     mock_repair.assert_called_once()
-    mock_apply.assert_called_once_with(fake_plan)
+    assert mock_apply.call_count == 1
+    call_arg = mock_apply.call_args[0][0]
+    assert isinstance(call_arg, ValidatedRepairPlan)
+    assert call_arg.plan is fake_plan
     assert "applied" in report.lower() or "Applied" in report
 
 

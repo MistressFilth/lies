@@ -7,6 +7,14 @@ All notable changes to LIES are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- `LiquidBuilder` for `source_format=liquid` collections. Pluggable
+  `Collection.config["render_cmd"]` (`module:attr` import path, mirrors
+  `scraper_cmd`) renders Liquid → HTML; the existing pandoc path
+  converts the HTML to markdown. When `render_cmd` is omitted, the
+  source is passed through unchanged (treated as already-rendered
+  HTML). Per-doc quarantine on render failure mirrors `PDFBuilder`.
+  Sets the slot reserved by the 2026-08-01 source-collection-builders
+  spec.
 - `lies mcp up` starts a detached streamable-http MCP daemon for the wiki
   (default `127.0.0.1:8737`, `--host` / `--port` / `--timeout` to override).
   The parent re-execs a hidden `_serve` subcommand in a new session, waits
@@ -62,6 +70,10 @@ All notable changes to LIES are documented here. The format follows
 - CI workflow no longer fetches full git history (`fetch-depth: 0`); the only consumer was the dropped compliance test.
 
 ### Fixed
+- `LiquidBuilder` now rejects empty pandoc output so failed conversions
+  quarantine the document instead of emitting an empty page.
+- Path-based Liquid `render_cmd` modules are now reused across builds so
+  module-level renderer caches and state survive multiple documents.
 - Agent's qmd search now degrades gracefully when the qmd daemon is
   unreachable. `QmdCapability` probes the daemon on every turn via
   `qmd_daemon_reachable`; reachable -> native `MCP(url=..., native=True,
@@ -74,6 +86,16 @@ All notable changes to LIES are documented here. The format follows
 - Removed stale mypy commands and configuration after the repository moved to ty.
 - Added the MIT license declared by package metadata.
 - Registered the integration-test pytest marker so full-suite runs emit no unknown-marker warning.
+
+## [0.5.1] - 2026-08-03
+
+### Added
+- `validate_plan(plan, layout, findings)` in `src/lies/agents/repair_validation.py`. Catches `finding_index` out of range, ops against `safe_to_fix=False` findings, ops whose `pages` set does not intersect the referenced finding's pages, per-op filesystem checks (`CreateStub` on existing path, `AppendLink` to a missing `target_path` or `append_to`, `AppendEvidence` on a missing path), and silently drops redundant `UpdateIndex` operations. Atomic rejection (raises `WikiPlanInvalid`) for rules 1-4; the dropped-op indices surface as `redundant-index` entries in `RepairReceipt.skipped`.
+
+### Changed
+- `Orchestrator.run_lint(apply=True)` now calls `validate_plan` between the repair agent and `apply_repair_plan`. `WikiPlanInvalid` is mapped to a `RepairReceipt` with `errors=[...]` so the existing `_format_repair_section` surfaces the rejection.
+- `Orchestrator._apply_repair_plan` accepts a `ValidatedRepairPlan` and rebuilds `applied_repair_kinds` from the post-drop `plan.operations` to keep its positional pairing with `memory_receipt.changed_pages`.
+- `_format_repair_section` adds a `### Skipped (redundant)` block when the receipt's `skipped` list contains `redundant-index` entries.
 
 ## [0.4.0] - 2026-08-02
 
