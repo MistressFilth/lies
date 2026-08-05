@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import subprocess
 from pathlib import Path
 from typing import Annotated, Any, cast
 
@@ -10,13 +9,12 @@ import typer
 from rich.console import Console
 from rich.markdown import Markdown
 
-from lies import __version__
-from lies.config import get_model, get_wiki_root
+from lies import __version__, xdg
+from lies.config import get_model
 from lies.mcp import daemon
 from lies.orchestrator import Orchestrator
 from lies.qmd import daemon as qmd_daemon
 from lies.qmd import qmd_status
-from lies.schema.loader import load_default_schema
 from lies.scrapers.base import pick_scraper
 from lies.utils.logging import configure_logging
 from lies.wiki.git import atomic_commit
@@ -33,9 +31,15 @@ console = Console()
 
 def _wiki_root_opt(wiki_root: Path | None) -> Path:
     """Resolve the --wiki-root option, defaulting to env or cwd."""
+    from lies.config import get_wiki_name
+    from lies.wiki.wiki import Wiki
+
     if wiki_root is not None:
         return wiki_root.resolve()
-    return get_wiki_root()
+    # TODO(migrate): --wiki-root support is being replaced by --name in Task 8.
+    # Fall back to the LIES_WIKI_NAME-driven data root so the CLI stays
+    # importable while the rest of the flag migration lands.
+    return Wiki.data_root_for(get_wiki_name())
 
 
 @app.command()
@@ -205,34 +209,44 @@ def _mcp_status(
 @app.command()
 def config() -> None:
     """Print the current LIES configuration."""
+    from lies.config import get_wiki_name
+    from lies.wiki.wiki import Wiki
+
     typer.echo(f"model: {get_model()}")
-    typer.echo(f"wiki_root: {get_wiki_root()}")
+    typer.echo(f"wiki_root: {Wiki.data_root_for(get_wiki_name())}")
 
 
 @app.command()
-def init(
-    path: Path = typer.Argument(..., help="Where to create the new wiki."),  # noqa: B008
-) -> None:
-    """Initialize a new LIES wiki at <path>."""
-    configure_logging()
-    target = path.resolve()
-    if target.exists() and any(target.iterdir()):
-        raise typer.BadParameter(f"{target} is not empty")
-    target.mkdir(parents=True, exist_ok=True)
-    layout = WikiLayout(target)
-    layout.init()
-    # Copy default schema to .lies/schema.md so the user can edit
-    layout.schema_path.write_text(load_default_schema(), encoding="utf-8")
-    # Initialize git
-    subprocess.run(["git", "init", "--initial-branch=main", str(target)], check=True)
-    subprocess.run(["git", "config", "user.email", "lies@local"], cwd=target, check=True)
-    subprocess.run(["git", "config", "user.name", "LIES"], cwd=target, check=True)
-    # Initial commit
-    subprocess.run(["git", "add", "."], cwd=target, check=True)
-    subprocess.run(
-        ["git", "commit", "-m", "Initial commit: empty LIES wiki"], cwd=target, check=True
+def init(name: str) -> None:
+    """Initialize a new wiki under XDG_DATA_HOME."""
+    from lies.errors import WikiAlreadyExists
+    from lies.wiki.layout import WikiLayout, copy_default_schema, git_init_initial
+    from lies.wiki.wiki import Wiki
+
+    wiki = Wiki(
+        name=name,
+        data_root=Wiki.data_root_for(name),
+        config_root=xdg.config_home() / "lies" / name,
+        cache_root=xdg.cache_home() / "lies" / name,
+        state_root=xdg.state_home() / "lies" / name,
+        runtime_root=xdg.runtime_dir_for(name),
     )
-    typer.echo(f"Initialized wiki at {target}")
+    if wiki.data_root.exists():
+        typer.echo(f"error: {WikiAlreadyExists(name, wiki.data_root)}", err=True)
+        raise typer.Exit(code=1)
+    # All five role roots
+    for root in (
+        wiki.data_root,
+        wiki.config_root,
+        wiki.cache_root,
+        wiki.state_root,
+        wiki.runtime_root,
+    ):
+        root.mkdir(parents=True, exist_ok=True)
+    WikiLayout(wiki.data_root).init()
+    copy_default_schema(wiki.schema_path)
+    git_init_initial(wiki.data_root)
+    typer.echo(f"initialized wiki '{name}' at {wiki.data_root}")
 
 
 @app.command()
@@ -332,8 +346,9 @@ def status(
     except Exception as exc:  # noqa: BLE001 - qmd failures must not crash the CLI
         typer.echo(f"qmd unavailable: {exc}")
     typer.echo("\n=== last 10 log entries ===")
-    if layout.log_path.exists():
-        lines = layout.log_path.read_text().splitlines()
+    log_path = layout.wiki_dir / "log.md"
+    if log_path.exists():
+        lines = log_path.read_text().splitlines()
         for line in lines[-10:]:
             typer.echo(line)
     else:
