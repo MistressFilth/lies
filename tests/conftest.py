@@ -25,7 +25,10 @@ def make_wiki(name: str, data_root: Path) -> Wiki:
     """
     import os
 
-    data_home = Path(os.environ["XDG_DATA_HOME"])
+    # ``data_home`` is read so the env var participates in test isolation
+    # (its absence would silently fall through to the real home dir); we
+    # accept the explicit unused assignment for that sanity check.
+    data_home = Path(os.environ["XDG_DATA_HOME"])  # noqa: F841
     config_home = Path(os.environ["XDG_CONFIG_HOME"])
     cache_home = Path(os.environ["XDG_CACHE_HOME"])
     state_home = Path(os.environ["XDG_STATE_HOME"])

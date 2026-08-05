@@ -6,7 +6,6 @@ import pytest
 
 from lies.qmd.mcp_fallback import QmdFallbackMcp
 from lies.wiki.wiki import Wiki
-
 from tests.conftest import make_wiki
 
 

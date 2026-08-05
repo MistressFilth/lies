@@ -14,7 +14,6 @@ from lies.memory.models import (
 )
 from lies.memory.service import WikiMemoryService
 from lies.wiki.wiki import Wiki
-
 from tests.conftest import make_wiki
 
 
@@ -405,12 +404,10 @@ def test_service_locks_are_per_instance(git_wiki: Wiki) -> None:
 
 
 def test_register_collection_is_idempotent(tmp_path) -> None:
-    import pathlib
     from pathlib import PurePosixPath
 
     from lies.memory.models import WikiCollectionRef
     from lies.memory.service import WikiMemoryService
-    from lies.wiki.wiki import Wiki
 
     wiki = make_wiki(name="register", data_root=tmp_path)
     svc = WikiMemoryService(wiki=wiki)
@@ -430,7 +427,6 @@ def test_is_registered_false_for_unknown() -> None:
     import pathlib
 
     from lies.memory.service import WikiMemoryService
-    from lies.wiki.wiki import Wiki
 
     wiki = make_wiki(
         name="unknown", data_root=pathlib.Path("/tmp/lies-svc-test")

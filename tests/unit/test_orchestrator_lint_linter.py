@@ -19,21 +19,26 @@ from lies.agents.linter import (
     linter_agent,
 )
 from lies.orchestrator import Orchestrator
+from tests.conftest import make_wiki
 
 
 @pytest.fixture
 def orch(tmp_path: Path) -> Orchestrator:
     root = tmp_path / "wiki"
-    for sub in ("wiki", ".lies", "raw"):
+    for sub in ("wiki", "raw"):
         (root / sub).mkdir(parents=True)
     (root / "wiki" / "index.md").write_text("# Index\n", encoding="utf-8")
-    (root / ".lies" / "schema.md").write_text("## Page types\n- concept\n", encoding="utf-8")
+    wiki = make_wiki(name="linter", data_root=root)
+    wiki.config_root.mkdir(parents=True, exist_ok=True)
+    (wiki.config_root / "schema.md").write_text(
+        "## Page types\n- concept\n", encoding="utf-8"
+    )
     subprocess.run(["git", "init", "--initial-branch=main", str(root)], check=True)
     subprocess.run(["git", "config", "user.email", "t@e.com"], cwd=root, check=True)
     subprocess.run(["git", "config", "user.name", "T"], cwd=root, check=True)
     subprocess.run(["git", "add", "."], cwd=root, check=True)
     subprocess.run(["git", "commit", "-m", "init"], cwd=root, check=True)
-    return Orchestrator(wiki_root=root, model="test")
+    return Orchestrator(wiki=wiki, model="test")
 
 
 def _contradiction_report() -> LintReport:
@@ -73,13 +78,13 @@ def test_call_linter_passes_page_texts_in_deps(orch: Orchestrator) -> None:
     so the LLM can read the wiki without tool calls.
     """
     # Seed a page so the wiki has something to read.
-    (orch.layout.wiki_dir / "concepts").mkdir(exist_ok=True)
-    (orch.layout.wiki_dir / "concepts" / "alpha.md").write_text(
+    (orch.wiki.wiki_dir / "concepts").mkdir(exist_ok=True)
+    (orch.wiki.wiki_dir / "concepts" / "alpha.md").write_text(
         "---\ntitle: Alpha\ntype: concept\n---\n# Alpha\nbody\n",
         encoding="utf-8",
     )
-    subprocess.run(["git", "add", "."], cwd=orch.layout.root, check=True)
-    subprocess.run(["git", "commit", "-m", "seed"], cwd=orch.layout.root, check=True)
+    subprocess.run(["git", "add", "."], cwd=orch.wiki.data_root, check=True)
+    subprocess.run(["git", "commit", "-m", "seed"], cwd=orch.wiki.data_root, check=True)
 
     captured: dict[str, object] = {}
 
@@ -96,7 +101,7 @@ def test_call_linter_passes_page_texts_in_deps(orch: Orchestrator) -> None:
         f"page_texts must include wiki-dir-relative alpha.md, got {sorted(deps.page_texts)!r}"
     )
     assert "body" in deps.page_texts["concepts/alpha.md"]
-    assert deps.wiki_root == str(orch.layout.root)
+    assert deps.wiki_root == str(orch.wiki.data_root)
 
 
 def test_call_linter_returns_empty_on_failure(orch: Orchestrator) -> None:

@@ -13,15 +13,18 @@ from lies.memory.enricher import MemoryEnricherDeps
 from lies.memory.models import MemoryPlan, PageCreate, WikiLockBusy
 from lies.memory.retry import EnrichmentQueue
 from lies.orchestrator import Orchestrator
+from tests.conftest import make_wiki
 
 
 @pytest.fixture
 def orchestrator(tmp_path: Path) -> Orchestrator:
     root = tmp_path / "wiki"
-    for sub in ("wiki", ".lies", "raw"):
+    for sub in ("wiki", "raw"):
         (root / sub).mkdir(parents=True)
     (root / "wiki" / "index.md").write_text("# Index\n", encoding="utf-8")
-    (root / ".lies" / "schema.md").write_text(
+    wiki = make_wiki(name="queue", data_root=root)
+    wiki.config_root.mkdir(parents=True, exist_ok=True)
+    (wiki.config_root / "schema.md").write_text(
         "## Page types\n- concept\n- entity\n", encoding="utf-8"
     )
     subprocess.run(["git", "init", "--initial-branch=main", str(root)], check=True)
@@ -29,7 +32,7 @@ def orchestrator(tmp_path: Path) -> Orchestrator:
     subprocess.run(["git", "config", "user.name", "T"], cwd=root, check=True)
     subprocess.run(["git", "add", "."], cwd=root, check=True)
     subprocess.run(["git", "commit", "-m", "init"], cwd=root, check=True)
-    return Orchestrator(wiki_root=root, model=TestModel())
+    return Orchestrator(wiki=wiki, model=TestModel())
 
 
 def test_orchestrator_instantiates_enrichment_queue(orchestrator: Orchestrator) -> None:
