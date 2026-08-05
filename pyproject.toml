@@ -56,7 +56,6 @@ target-version = "py310"
 
 [tool.ty.src]
 include = ["src/lies"]
-exclude = ["tests"]
 
 [dependency-groups]
 dev = [
