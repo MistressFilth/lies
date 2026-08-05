@@ -42,7 +42,7 @@ from lies.qmd import QmdCapability
 from lies.query import SynthesizedAnswer, synthesize_answer
 from lies.schema import load_schema
 from lies.wiki.git import CommitError, atomic_commit
-from lies.wiki.layout import WikiLayout
+from lies.wiki.wiki import Wiki
 
 
 def _list_working_tree_changes(repo: Path) -> list[str]:
@@ -79,7 +79,7 @@ def _list_working_tree_changes(repo: Path) -> list[str]:
 
 
 def _build_lint_report(
-    layout: WikiLayout,
+    wiki: Wiki,
     *,
     repair_receipt: RepairReceipt | None = None,
 ) -> LintReport:
@@ -99,7 +99,7 @@ def _build_lint_report(
     ``LintReport`` produced here, not a markdown string.
 
     Args:
-        layout: The wiki to lint.
+        wiki: The wiki to lint.
         repair_receipt: Optional. When provided, the report includes
             an ``applied`` section describing which repair ops
             succeeded.
@@ -114,15 +114,15 @@ def _build_lint_report(
 
     findings: list[LintFinding] = []
     # ``pages`` holds wiki-dir-relative paths (e.g. ``concepts/a.md``)
-    # so the repair agent's ``layout.wiki_dir / page`` lookup lands
+    # so the repair agent's ``wiki.wiki_dir / page`` lookup lands
     # on the real file. Without this convention, ``_run_repair_agent``
-    # would resolve ``layout.wiki_dir / "wiki/concepts/a.md"`` and find
+    # would resolve ``wiki.wiki_dir / "wiki/concepts/a.md"`` and find
     # nothing (the page lives at ``wiki/concepts/a.md``, not
     # ``wiki/wiki/concepts/a.md``).
     pages: set[str] = set()
-    if layout.wiki_dir.exists():
-        for path in layout.wiki_dir.rglob("*.md"):
-            rel = path.relative_to(layout.wiki_dir).as_posix()
+    if wiki.wiki_dir.exists():
+        for path in wiki.wiki_dir.rglob("*.md"):
+            rel = path.relative_to(wiki.wiki_dir).as_posix()
             if rel in {"index.md", "log.md", "lint-report.md", "overview.md"}:
                 continue
             pages.add(rel)
@@ -132,10 +132,10 @@ def _build_lint_report(
         linked: set[str] = set()
         for page in pages:
             try:
-                text = (layout.wiki_dir / page).read_text(encoding="utf-8")
+                text = (wiki.wiki_dir / page).read_text(encoding="utf-8")
             except (OSError, UnicodeDecodeError):
                 continue
-            linked.update(_extract_local_md_links(text, page, layout.root))
+            linked.update(_extract_local_md_links(text, page, wiki.data_root))
         orphans = sorted(pages - linked)
         for orphan in orphans:
             findings.append(
@@ -159,7 +159,7 @@ def _build_lint_report(
         titles: dict[str, str] = {}
         for page in pages:
             try:
-                text = (layout.wiki_dir / page).read_text(encoding="utf-8")
+                text = (wiki.wiki_dir / page).read_text(encoding="utf-8")
             except (OSError, UnicodeDecodeError):
                 continue
             title = _extract_frontmatter_title(text)
@@ -178,10 +178,10 @@ def _build_lint_report(
         page_links: dict[str, set[str]] = {}
         for page in pages:
             try:
-                text = (layout.wiki_dir / page).read_text(encoding="utf-8")
+                text = (wiki.wiki_dir / page).read_text(encoding="utf-8")
             except (OSError, UnicodeDecodeError):
                 continue
-            page_links[page] = _extract_local_md_links(text, page, layout.root)
+            page_links[page] = _extract_local_md_links(text, page, wiki.data_root)
 
         body_cache: dict[str, str] = {}
         for page, title in unique_titles.items():
@@ -190,7 +190,7 @@ def _build_lint_report(
                 continue
             try:
                 body = body_cache.setdefault(
-                    page, _strip_frontmatter((layout.wiki_dir / page).read_text(encoding="utf-8"))
+                    page, _strip_frontmatter((wiki.wiki_dir / page).read_text(encoding="utf-8"))
                 )
             except (OSError, UnicodeDecodeError):
                 continue
@@ -220,11 +220,11 @@ def _build_lint_report(
     # missing_page: frontmatter `sources:` lists a path that does not exist.
     for page in pages:
         try:
-            text = (layout.wiki_dir / page).read_text(encoding="utf-8")
+            text = (wiki.wiki_dir / page).read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError):
             continue
         for source in _extract_frontmatter_sources(text):
-            resolved = (layout.root / source).resolve()
+            resolved = (wiki.data_root / source).resolve()
             if not resolved.exists():
                 findings.append(
                     LintFinding(
@@ -237,7 +237,7 @@ def _build_lint_report(
                 )
 
     report = LintReport(findings=findings, report_markdown="")
-    body = _format_lint_markdown(report, layout)
+    body = _format_lint_markdown(report, wiki)
     if repair_receipt is not None:
         body += "\n" + _format_repair_section(repair_receipt)
     report.report_markdown = body
@@ -415,7 +415,7 @@ def _extract_frontmatter_sources(text: str) -> list[str]:
     return sources
 
 
-def _format_lint_markdown(report: LintReport, layout: WikiLayout) -> str:
+def _format_lint_markdown(report: LintReport, wiki: Wiki) -> str:
     """Format a ``LintReport`` as markdown for ``wiki/lint-report.md``."""
     by_cat: dict[str, int] = {}
     for f in report.findings:
@@ -423,7 +423,7 @@ def _format_lint_markdown(report: LintReport, layout: WikiLayout) -> str:
 
     header = (
         f"## Lint report — {datetime.now(tz=timezone.utc).date().isoformat()}\n\n"
-        f"Wiki root: `{layout.root}`\n\n"
+        f"Wiki root: `{wiki.data_root}`\n\n"
     )
     if not report.findings:
         return header + "_No findings._\n"
@@ -442,14 +442,14 @@ def _format_lint_markdown(report: LintReport, layout: WikiLayout) -> str:
 def _render_lint_report(
     report: LintReport,
     *,
-    layout: WikiLayout,
+    wiki: Wiki,
     repair_receipt: RepairReceipt | None,
     shell_count: int,
     llm_count: int,
     llm_fallback_reason: str | None,
 ) -> str:
     """Render ``report`` plus repair and source sections as markdown."""
-    body = _format_lint_markdown(report, layout)
+    body = _format_lint_markdown(report, wiki)
     if repair_receipt is not None:
         body += "\n" + _format_repair_section(repair_receipt)
     sources = (
@@ -588,15 +588,14 @@ class Orchestrator:
     schema-respecting.
     """
 
-    def __init__(self, wiki_root: Path, model: str | None = None) -> None:
-        # Top-level: store wiki_root as a first-class attribute so callers
-        # and tests can inspect the propagated root without reaching through
-        # `self.layout.root`. The layout is the resolved on-disk view of
-        # the same root; they are equal by construction.
-        self.wiki_root: Path = Path(wiki_root).resolve()
-        self.layout = WikiLayout(self.wiki_root)
+    def __init__(self, wiki: Wiki, model: str | None = None) -> None:
+        # Store the Wiki dataclass directly. The orchestrator derives
+        # ``wiki_root`` paths (for git subprocess cwd and for downstream
+        # APIs that still take a Path) from ``self.wiki.data_root``; the
+        # schema for this wiki lives at ``self.wiki.schema_path``.
+        self.wiki = wiki
         self.model = model or get_model()
-        self.schema = load_schema(self.layout)
+        self.schema = load_schema(self.wiki)  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]  # load_schema accepts WikiLayout; Wiki has schema_path
         self._build()
 
     def _build(self) -> None:
@@ -618,10 +617,10 @@ class Orchestrator:
             for (name, _factory, description), agent in zip(_SUB_AGENT_TABLE, named_agents)
         ]
 
-        self._harness_memory = memory(self.wiki_root)
+        self._harness_memory = memory(self.wiki.data_root)
         self._agent: Agent = Agent(
             self.model,
-            system_prompt=ORCHESTRATOR_SYSTEM_PROMPT_PREFIX.format(wiki_root=self.layout.root)
+            system_prompt=ORCHESTRATOR_SYSTEM_PROMPT_PREFIX.format(wiki_root=self.wiki.data_root)
             + self.schema,
             deps_type=WikiMemoryDeps,
             capabilities=[
@@ -630,15 +629,15 @@ class Orchestrator:
                 self._harness_memory,
                 planning(),
                 dynamic_workflow(agents=named_agents, max_agent_calls=20),
-                file_system(wiki_root=self.layout.root),
+                file_system(wiki_root=self.wiki.data_root),
                 QmdCapability(
                     transport=get_qmd_transport(),
                     url=get_qmd_url(),
-                    wiki_root=self.layout,
+                    wiki_root=self.wiki,  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]  # QmdCapability accepts WikiLayout; Wiki has data_root
                 ).as_capability(),
             ],
         )
-        self._memory_service = WikiMemoryService(self.layout)
+        self._memory_service = WikiMemoryService(self.wiki)
         self._enrichment_queue = EnrichmentQueue(max_attempts=3)
         self._turn_counter = 0
         self._enricher = enricher_agent(model=self.model)
@@ -681,7 +680,8 @@ class Orchestrator:
 
         try:
             result = self._agent.run_sync(
-                command, deps=WikiMemoryDeps(layout=self.layout, service=self._memory_service)
+                command,
+                deps=WikiMemoryDeps(layout=self.wiki, service=self._memory_service),  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
             )
             answer = str(result.output)
         except Exception:  # noqa: BLE001 - last-resort graceful degradation
@@ -945,7 +945,7 @@ class Orchestrator:
         """Persist operational turn state in the per-wiki Harness Memory store."""
         commit = subprocess.run(
             ["git", "rev-parse", "HEAD"],
-            cwd=self.layout.root,
+            cwd=self.wiki.data_root,
             capture_output=True,
             text=True,
             check=False,
@@ -991,26 +991,17 @@ class Orchestrator:
         To be deleted in a follow-up release once CLI and tests migrate.
         """
         from lies.etl.sync_helper import sync_collection
-        from lies.wiki.wiki import Wiki
 
         collection_name = Path(source).stem
-        # Orchestrator still takes wiki_root as a Path; sync_collection
-        # moved to Wiki-based accessors in Task 11. Reuse wiki_root for
-        # every role so the XDG lookups (which may try to mkdir on a
-        # privileged path) are skipped. The state_root alias routes
-        # quarantine and telemetry to ``<wiki_root>/poison`` and
-        # ``<wiki_root>/logs`` respectively — both legacy locations
-        # this backward-compat shim keeps honoring.
-        root = self.layout.root
-        wiki = Wiki(
-            name=root.name or "test",
-            data_root=root,
-            config_root=root,
-            cache_root=root,
-            state_root=root,
-            runtime_root=root,
-        )
-        sync_collection(wiki, collection_name, force=False)
+        # The orchestrator still operates against a single on-disk wiki
+        # rooted at ``self.wiki.data_root``; pass that path through to
+        # sync_collection, which (in Task 11+) routes XDG lookups via
+        # the per-wiki ``Wiki`` dataclass. Construct a Wiki mirroring the
+        # legacy layout (every role pinned to data_root) so the XDG
+        # lookups that may try to mkdir on a privileged path are
+        # skipped — this back-compat shim keeps honoring the legacy
+        # locations for quarantine and telemetry.
+        sync_collection(self.wiki, collection_name, force=False)
         return f"ingested {source}"
 
     def run_query(self, question: str) -> SynthesizedAnswer:
@@ -1024,11 +1015,11 @@ class Orchestrator:
         returns a :class:`SynthesizedAnswer` whose ``fallback_used`` and
         ``fallback_reason`` fields describe how the answer was built.
         """
-        return synthesize_answer(question, self.layout)
+        return synthesize_answer(question, self.wiki)  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
 
     def run_lint(self, apply: bool = False) -> str:
         """Run deterministic and LLM lint, merge findings, and write report."""
-        shell_report = _build_lint_report(self.layout)
+        shell_report = _build_lint_report(self.wiki)
         llm_report, fallback_reason = self._call_linter()
         merged_report, fallback_reason = merge_lint_reports(
             shell_report, llm_report, llm_fallback_reason=fallback_reason
@@ -1039,13 +1030,13 @@ class Orchestrator:
             repair_receipt = self._validate_and_apply_repair_plan(plan, merged_report.findings)
         final_md = _render_lint_report(
             merged_report,
-            layout=self.layout,
+            wiki=self.wiki,
             repair_receipt=repair_receipt,
             shell_count=len(shell_report.findings),
             llm_count=len(llm_report.findings),
             llm_fallback_reason=fallback_reason,
         )
-        self.layout.lint_report_path.write_text(final_md, encoding="utf-8")
+        (self.wiki.wiki_dir / "lint-report.md").write_text(final_md, encoding="utf-8")
         self._append_log_entry(
             f"## [{datetime.now(tz=timezone.utc).date().isoformat()}] lint | "
             f"{final_md.count(chr(10))} findings"
@@ -1064,7 +1055,7 @@ class Orchestrator:
         page_texts: dict[str, str] = {}
         for finding in lint_report.findings:
             for page in finding.pages:
-                path = self.layout.wiki_dir / page
+                path = self.wiki.wiki_dir / page
                 if path.exists():
                     page_texts[page] = path.read_text(encoding="utf-8")
         return self._repair_agent.run_sync(
@@ -1085,7 +1076,7 @@ class Orchestrator:
         defaults as the noop path.
         """
         try:
-            validated = validate_plan(plan, self.layout, findings)
+            validated = validate_plan(plan, self.wiki, findings)  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
         except WikiPlanInvalid as exc:
             return RepairReceipt(
                 applied=[],
@@ -1116,16 +1107,16 @@ class Orchestrator:
         from lies.agents.linter import LintDeps
 
         page_texts: dict[str, str] = {}
-        if self.layout.wiki_dir.exists():
-            for path in self.layout.wiki_dir.rglob("*.md"):
-                rel = path.relative_to(self.layout.wiki_dir).as_posix()
+        if self.wiki.wiki_dir.exists():
+            for path in self.wiki.wiki_dir.rglob("*.md"):
+                rel = path.relative_to(self.wiki.wiki_dir).as_posix()
                 if rel in {"index.md", "log.md", "lint-report.md", "overview.md"}:
                     continue
                 try:
                     page_texts[rel] = path.read_text(encoding="utf-8")
                 except (OSError, UnicodeDecodeError):
                     continue
-        deps = LintDeps(page_texts=page_texts, wiki_root=str(self.layout.root))
+        deps = LintDeps(page_texts=page_texts, wiki_root=str(self.wiki.data_root))
         try:
             result = self._linter_agent.run_sync("lint", deps=deps)
         except Exception as exc:  # noqa: BLE001 - broad catch; shell is the safety net
@@ -1195,7 +1186,7 @@ class Orchestrator:
         Creates the file (and parent dir) if missing. Used by lint to
         record its run without disturbing the indexer's contract.
         """
-        log_path = self.layout.log_path
+        log_path = self.wiki.wiki_dir / "log.md"
         log_path.parent.mkdir(parents=True, exist_ok=True)
         with log_path.open("a", encoding="utf-8") as fh:
             fh.write(line.rstrip("\n") + "\n")
@@ -1226,7 +1217,7 @@ class Orchestrator:
     # -- host-side snapshot / rollback -----------------------------------------
     #
     # The wiki is expected to be clean between invocations. The snapshot
-    # machinery uses ``git stash push`` so the working tree is empty while
+    # machinery uses ``git stash`` so the working tree is empty while
     # the agent runs (a clean tree makes file writes by sub-agents easy to
     # inspect and roll back). If the wiki is dirty at entry we still record
     # the state so we can restore it on failure.
