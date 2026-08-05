@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -15,11 +14,52 @@ FIXTURE_WIKI = Path(__file__).parent / "fixtures" / "sample-wiki"
 
 
 @pytest.fixture(autouse=True)
-def reset_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Ensure each test starts with a clean LIES_* env."""
-    for key in list(os.environ):
-        if key.startswith("LIES_"):
-            monkeypatch.delenv(key, raising=False)
+def _isolated_xdg(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Reset LIES / XDG env and redirect all XDG roots to tmp_path.
+
+    Each test starts with a clean slate: every ``LIES_*``, ``LIES_XDG_*``,
+    and ``XDG_*`` variable is removed, and the five XDG base directories
+    are redirected to ``tmp_path/xdg/<role>/``. The wiki and pipeline
+    code resolves its storage through these roots, so per-test isolation
+    prevents tests from leaking state into the developer's real
+    ``~/.local/share/lies`` etc.
+
+    Also strips ``GIT_DIR`` from the environment. Pre-commit (and the
+    bare-repo-with-worktrees layout) sets ``GIT_DIR`` to the parent
+    worktree's gitdir when invoking ``git commit``; ``subprocess.run`` in
+    tests inherits that, so ``git rev-parse --show-toplevel`` resolves
+    to the worktree instead of the fresh tmp dir and breaks tests that
+    assert the tmp dir is *not* a git repo. Clearing it here means the
+    test subprocess sees the tmp dir's git state directly.
+    """
+    for key in [
+        "LIES_MODEL",
+        "LIES_WIKI_NAME",
+        "LIES_WIKI_ROOT",
+        "LIES_QMD_TRANSPORT",
+        "LIES_QMD_URL",
+        "LIES_LOG_LEVEL",
+        "LIES_XDG_DATA_HOME",
+        "LIES_XDG_CONFIG_HOME",
+        "LIES_XDG_CACHE_HOME",
+        "LIES_XDG_STATE_HOME",
+        "LIES_XDG_RUNTIME_DIR",
+        "XDG_DATA_HOME",
+        "XDG_CONFIG_HOME",
+        "XDG_CACHE_HOME",
+        "XDG_STATE_HOME",
+        "XDG_RUNTIME_DIR",
+        "GIT_DIR",
+    ]:
+        monkeypatch.delenv(key, raising=False)
+    xdg_root = tmp_path / "xdg"
+    for sub in ("data", "config", "cache", "state", "runtime"):
+        (xdg_root / sub).mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("XDG_DATA_HOME", str(xdg_root / "data"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg_root / "config"))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(xdg_root / "cache"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(xdg_root / "state"))
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(xdg_root / "runtime"))
 
 
 @pytest.fixture
