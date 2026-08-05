@@ -11,6 +11,14 @@ All notable changes to LIES are documented here. The format follows
 - `lies init <name>` — name-based initialization (no path argument). Creates all five role-routed XDG directories and `git init` the wiki root.
 - `lies migrate-xdg <legacy-path> --name <name>` — one-shot migration of legacy `<path>/.lies/` into XDG role-routed directories. Idempotent; refuses on byte-mismatched conflicts.
 - `lies migrate-xdg ... --force` now *quarantines* the conflicting source files at `<legacy-path>/.xdg-migration-conflicts/<rel>` instead of silently dropping them; the destination file is left untouched.
+- `LiquidBuilder` for `source_format=liquid` collections. Pluggable
+  `Collection.config["render_cmd"]` (`module:attr` import path, mirrors
+  `scraper_cmd`) renders Liquid → HTML; the existing pandoc path
+  converts the HTML to markdown. When `render_cmd` is omitted, the
+  source is passed through unchanged (treated as already-rendered
+  HTML). Per-doc quarantine on render failure mirrors `PDFBuilder`.
+  Sets the slot reserved by the 2026-08-01 source-collection-builders
+  spec.
 - `lies mcp up` starts a detached streamable-http MCP daemon for the wiki
   (default `127.0.0.1:8737`, `--host` / `--port` / `--timeout` to override).
   The parent re-execs a hidden `_serve` subcommand in a new session, waits
@@ -72,6 +80,10 @@ All notable changes to LIES are documented here. The format follows
 - CI workflow no longer fetches full git history (`fetch-depth: 0`); the only consumer was the dropped compliance test.
 
 ### Fixed
+- `LiquidBuilder` now rejects empty pandoc output so failed conversions
+  quarantine the document instead of emitting an empty page.
+- Path-based Liquid `render_cmd` modules are now reused across builds so
+  module-level renderer caches and state survive multiple documents.
 - Agent's qmd search now degrades gracefully when the qmd daemon is
   unreachable. `QmdCapability` probes the daemon on every turn via
   `qmd_daemon_reachable`; reachable -> native `MCP(url=..., native=True,

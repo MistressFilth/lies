@@ -93,7 +93,13 @@ class BespokeBuilder(Builder):
 
 
 def _ext_for(fmt: str) -> str:
-    return {"rst": "rst", "html": "html", "pdf": "pdf", "sphinx": "rst"}.get(fmt, "txt")
+    return {
+        "rst": "rst",
+        "html": "html",
+        "pdf": "pdf",
+        "sphinx": "rst",
+        "liquid": "liquid",
+    }.get(fmt, "txt")
 
 
 REGISTRY.register("bespoke", BespokeBuilder())

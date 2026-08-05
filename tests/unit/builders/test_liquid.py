@@ -1,0 +1,224 @@
+"""Liquid source builder tests."""
+
+from __future__ import annotations
+
+import hashlib
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+from unittest import mock
+
+import pytest
+
+from lies.builders.errors import BuilderFetchFailed
+from lies.builders.liquid import LiquidBuilder, _resolve_render_cmd
+from lies.collections.record import Collection
+
+
+def _collection(tmp_path: Path, *, config: dict | None = None) -> Collection:
+    now = datetime.now(tz=timezone.utc)
+    return Collection(
+        name="liquid-test",
+        path=tmp_path,
+        source="",
+        tags=[],
+        scraper_cmd=None,
+        doc_path=None,
+        mapper_model=None,
+        language=None,
+        version="1.0.0",
+        created_at=now,
+        updated_at=now,
+        config=config or {},
+    )
+
+
+def test_resolve_render_cmd_loads_module_attr(monkeypatch: pytest.MonkeyPatch) -> None:
+    """_resolve_render_cmd returns the callable at module:attr."""
+    from tests.fixtures import liquid_stub
+
+    fn = _resolve_render_cmd("tests.fixtures.liquid_stub:render")
+    assert fn is liquid_stub.render
+
+
+def test_path_render_cmd_is_invoked_and_converted(tmp_path: Path) -> None:
+    fixture = Path(__file__).parents[2] / "fixtures" / "liquid_path_stub.py"
+    template = b"{{ product.title }}"
+    context = {"product": {"title": "Hat"}}
+    (tmp_path / "source.liquid").write_bytes(template)
+    collection = _collection(
+        tmp_path,
+        config={"render_cmd": f"{fixture}:render", "context": context},
+    )
+
+    fn = _resolve_render_cmd(f"{fixture}:render")
+    loaded_module = sys.modules[fn.__module__]
+    assert fn is loaded_module.render
+
+    with mock.patch(
+        "lies.builders.liquid.PandocDaemon.convert",
+        return_value=b"rendered markdown",
+    ) as convert:
+        docs = LiquidBuilder().build(tmp_path, collection=collection)
+
+    loaded_module = sys.modules[fn.__module__]
+    assert loaded_module.calls == [(template, context)]
+    convert.assert_called_once_with(b"<html><body>rendered from path</body></html>", "html")
+    assert docs[0].content == b"rendered markdown"
+
+
+def test_path_render_cmd_preserves_state_across_builds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fixture = Path(__file__).parents[2] / "fixtures" / "liquid_path_stub.py"
+    module_name = "lies_liquid_render_render"
+    monkeypatch.delitem(sys.modules, module_name, raising=False)
+    template = b"{{ product.title }}"
+    context = {"product": {"title": "Hat"}}
+    (tmp_path / "source.liquid").write_bytes(template)
+    collection = _collection(
+        tmp_path,
+        config={"render_cmd": f"{fixture}:render", "context": context},
+    )
+
+    builder = LiquidBuilder()
+    builder.build(tmp_path, collection=collection)
+    builder.build(tmp_path, collection=collection)
+
+    loaded_module = sys.modules[module_name]
+    assert loaded_module.calls == [(template, context), (template, context)]
+
+
+def test_resolve_render_cmd_rejects_missing_colon() -> None:
+    with pytest.raises(BuilderFetchFailed, match="module:attr"):
+        _resolve_render_cmd("tests.fixtures.liquid_stub")
+
+
+def test_resolve_render_cmd_rejects_bare_module() -> None:
+    with pytest.raises(BuilderFetchFailed, match="must be dotted or path"):
+        _resolve_render_cmd("does_not_exist:render")
+
+
+def test_resolve_render_cmd_rejects_missing_module() -> None:
+    with pytest.raises(BuilderFetchFailed, match="cannot import"):
+        _resolve_render_cmd("does.not.exist:render")
+
+
+def test_resolve_render_cmd_rejects_non_callable_attr() -> None:
+    with pytest.raises(BuilderFetchFailed, match="not callable"):
+        _resolve_render_cmd("tests.fixtures.liquid_stub:NOT_A_THING")
+
+
+def test_resolve_render_cmd_rejects_non_callable_value() -> None:
+    """Attribute exists but is not callable (e.g. an int)."""
+    with pytest.raises(BuilderFetchFailed, match="not callable"):
+        _resolve_render_cmd("tests.fixtures.liquid_stub:NON_CALLABLE")
+
+
+def test_source_read_oserror_is_wrapped(tmp_path: Path) -> None:
+    source = tmp_path / "source.liquid"
+    source.touch()
+    with (
+        mock.patch.object(Path, "read_bytes", side_effect=PermissionError("denied")),
+        pytest.raises(BuilderFetchFailed, match="cannot read"),
+    ):
+        LiquidBuilder().build(tmp_path, collection=_collection(tmp_path))
+
+
+def test_liquid_builder_pandoc_nonzero_exit_quarantines(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Exhausted pandoc retries surface as BuilderFetchFailed."""
+    pandoc = tmp_path / "pandoc"
+    pandoc.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    pandoc.chmod(0o755)
+    monkeypatch.setenv("PATH", str(tmp_path))
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    (workspace / "source.html").write_bytes(b"<h1>never converted</h1>")
+
+    with pytest.raises(BuilderFetchFailed, match="pandoc"):
+        LiquidBuilder().build(workspace, collection=_collection(tmp_path))
+
+
+def test_liquid_builder_passthrough(tmp_path: Path) -> None:
+    """No render_cmd → source treated as already-rendered HTML."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    (workspace / "source.liquid").write_bytes(b"<html><body><h1>Hello</h1></body></html>")
+    collection = _collection(tmp_path)  # no render_cmd
+
+    docs = LiquidBuilder().build(workspace, collection=collection)
+
+    assert len(docs) == 1
+    doc = docs[0]
+    assert doc.path == "index.md"
+    assert doc.source_format == "markdown"
+    md = doc.content.decode("utf-8")
+    assert "Hello" in md
+    assert doc.source_sha256 == hashlib.sha256(doc.content).hexdigest()
+
+
+def test_liquid_builder_reads_source_html(tmp_path: Path) -> None:
+    """Pre-rendered source.html is also accepted."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    (workspace / "source.html").write_bytes(b"<html><body><p>Pre-rendered</p></body></html>")
+    docs = LiquidBuilder().build(workspace, collection=_collection(tmp_path))
+    assert len(docs) == 1
+    assert "Pre-rendered" in docs[0].content.decode("utf-8")
+
+
+def test_liquid_builder_uses_render_cmd(tmp_path: Path) -> None:
+    """render_cmd renders Liquid to HTML before pandoc."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    (workspace / "source.liquid").write_bytes(b"<h1>{{ title }}</h1>")
+    collection = _collection(
+        tmp_path,
+        config={
+            "render_cmd": "tests.fixtures.liquid_stub:render",
+            "context": {"title": "Hello"},
+        },
+    )
+
+    docs = LiquidBuilder().build(workspace, collection=collection)
+
+    assert len(docs) == 1
+    md = docs[0].content.decode("utf-8")
+    # The stub wraps the source in <html><body>...</body></html>; pandoc
+    # emits the inner markup as markdown. The literal "{{ title }}" is
+    # inside the wrappers, so the rendered HTML contains it.
+    assert "{{ title }}" in md
+
+
+def test_liquid_builder_renderer_failure_quarantines(tmp_path: Path) -> None:
+    """Renderer exception → BuilderFetchFailed for upstream quarantine."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    (workspace / "source.liquid").write_bytes(b"<h1>x</h1>")
+
+    # Point at a callable that raises.
+    collection = _collection(
+        tmp_path,
+        config={"render_cmd": "tests.fixtures.liquid_stub:raise_render"},
+    )
+
+    with pytest.raises(BuilderFetchFailed, match="render_cmd"):
+        LiquidBuilder().build(workspace, collection=collection)
+
+
+def test_liquid_builder_non_bytes_return_quarantines(tmp_path: Path) -> None:
+    """Renderer returns non-bytes → BuilderFetchFailed."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    (workspace / "source.liquid").write_bytes(b"<h1>x</h1>")
+
+    collection = _collection(
+        tmp_path,
+        config={"render_cmd": "tests.fixtures.liquid_stub:string_render"},
+    )
+
+    with pytest.raises(BuilderFetchFailed, match="must return bytes"):
+        LiquidBuilder().build(workspace, collection=collection)
