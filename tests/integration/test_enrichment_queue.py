@@ -12,7 +12,7 @@ from pydantic_ai.models.test import TestModel
 from lies.memory.models import MemoryPlan, PageCreate, WikiLockBusy
 from lies.orchestrator import Orchestrator
 from lies.wiki.wiki import Wiki
-from tests.conftest import make_wiki
+from tests.conftest import make_wiki, models_for_tests
 
 
 @pytest.fixture
@@ -49,7 +49,7 @@ def _create_plan() -> MemoryPlan:
 
 
 def test_queued_retry_succeeds_on_next_turn(wiki: Wiki) -> None:
-    orch = Orchestrator(wiki=wiki, model=TestModel())
+    orch = Orchestrator(wiki=wiki, models=models_for_tests(TestModel()))
     orch._memory_service.register_evidence({"page-1"})
     call_count = {"n": 0}
 
@@ -93,7 +93,7 @@ def test_queued_retry_succeeds_on_next_turn(wiki: Wiki) -> None:
 
 
 def test_queued_retry_hits_cap_after_three_failures(wiki: Wiki) -> None:
-    orch = Orchestrator(wiki=wiki, model=TestModel())
+    orch = Orchestrator(wiki=wiki, models=models_for_tests(TestModel()))
     orch._memory_service.register_evidence({"page-1"})
 
     def always_locked(plan: MemoryPlan) -> object:
@@ -119,8 +119,8 @@ def test_queued_retry_hits_cap_after_three_failures(wiki: Wiki) -> None:
 
 
 def test_queue_is_per_orchestrator_instance(wiki: Wiki) -> None:
-    orch_a = Orchestrator(wiki=wiki, model=TestModel())
-    orch_b = Orchestrator(wiki=wiki, model=TestModel())
+    orch_a = Orchestrator(wiki=wiki, models=models_for_tests(TestModel()))
+    orch_b = Orchestrator(wiki=wiki, models=models_for_tests(TestModel()))
     assert orch_a._enrichment_queue is not orch_b._enrichment_queue
 
 
@@ -134,7 +134,7 @@ def test_queued_item_becomes_noop_on_reenrichment(wiki: Wiki) -> None:
     """
     from lies.memory.models import MemoryPlan
 
-    orch = Orchestrator(wiki=wiki, model=TestModel())
+    orch = Orchestrator(wiki=wiki, models=models_for_tests(TestModel()))
     orch._memory_service.register_evidence({"page-1"})
 
     # Enqueue an item by simulating a WikiLockBusy at apply time.

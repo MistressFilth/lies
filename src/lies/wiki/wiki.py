@@ -58,6 +58,15 @@ class Wiki:
         return self.config_root / "collections"
 
     @property
+    def providers_path(self) -> Path:
+        """Path to user-level ``providers.toml``.
+
+        This file is intentionally user-level (not per-wiki). All wikis share
+        one providers catalog; per-wiki model overrides are not supported.
+        """
+        return xdg.config_home() / "lies" / "providers.toml"
+
+    @property
     def hashes_dir(self) -> Path:
         return self.cache_root / "hashes"
 

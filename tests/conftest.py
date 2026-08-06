@@ -47,6 +47,20 @@ def make_wiki(name: str, data_root: Path) -> Wiki:
     )
 
 
+def models_for_tests(value: object) -> dict[str, object]:
+    """Build an ``Orchestrator(models=...)`` dict mapping every roster entry to ``value``.
+
+    Tests that need a single model for every agent call this helper so
+    the existing ``Orchestrator(wiki=wiki, model=X)`` test sites can be
+    rewritten in one line as ``Orchestrator(wiki=wiki, models=models_for_tests(X))``.
+    The orchestrator's per-agent ``Model | str`` parameter type accepts
+    any value that pydantic-ai's ``Agent`` accepts, including ``TestModel()``.
+    """
+    from lies.providers import AGENT_ROSTER
+
+    return {name: value for name in AGENT_ROSTER}
+
+
 @pytest.fixture(autouse=True)
 def _isolated_xdg(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Reset LIES / XDG env and redirect all XDG roots to tmp_path.

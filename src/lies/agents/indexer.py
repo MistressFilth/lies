@@ -6,6 +6,7 @@ from datetime import date
 
 from pydantic import BaseModel
 from pydantic_ai import Agent
+from pydantic_ai.models import Model
 
 from lies.agents.base import make_sub_agent
 
@@ -51,7 +52,7 @@ Rules:
 """
 
 
-def indexer_agent(model: str = "anthropic:claude-opus-4-7") -> Agent[None, IndexerResult]:
+def indexer_agent(model: Model | str = "anthropic:claude-opus-4-7") -> Agent[None, IndexerResult]:
     """Construct the indexer sub-agent."""
     return make_sub_agent(
         model=model,

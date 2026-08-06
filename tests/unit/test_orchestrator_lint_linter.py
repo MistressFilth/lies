@@ -19,7 +19,7 @@ from lies.agents.linter import (
     linter_agent,
 )
 from lies.orchestrator import Orchestrator
-from tests.conftest import make_wiki
+from tests.conftest import make_wiki, models_for_tests
 
 
 @pytest.fixture
@@ -36,7 +36,7 @@ def orch(tmp_path: Path) -> Orchestrator:
     subprocess.run(["git", "config", "user.name", "T"], cwd=root, check=True)
     subprocess.run(["git", "add", "."], cwd=root, check=True)
     subprocess.run(["git", "commit", "-m", "init"], cwd=root, check=True)
-    return Orchestrator(wiki=wiki, model="test")
+    return Orchestrator(wiki=wiki, models=models_for_tests("test"))
 
 
 def _contradiction_report() -> LintReport:

@@ -13,7 +13,7 @@ from lies.memory.enricher import MemoryEnricherDeps
 from lies.memory.models import MemoryPlan, PageCreate, WikiLockBusy
 from lies.memory.retry import EnrichmentQueue
 from lies.orchestrator import Orchestrator
-from tests.conftest import make_wiki
+from tests.conftest import make_wiki, models_for_tests
 
 
 @pytest.fixture
@@ -32,7 +32,7 @@ def orchestrator(tmp_path: Path) -> Orchestrator:
     subprocess.run(["git", "config", "user.name", "T"], cwd=root, check=True)
     subprocess.run(["git", "add", "."], cwd=root, check=True)
     subprocess.run(["git", "commit", "-m", "init"], cwd=root, check=True)
-    return Orchestrator(wiki=wiki, model=TestModel())
+    return Orchestrator(wiki=wiki, models=models_for_tests(TestModel()))
 
 
 def test_orchestrator_instantiates_enrichment_queue(orchestrator: Orchestrator) -> None:

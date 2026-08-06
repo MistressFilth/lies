@@ -39,19 +39,25 @@ from lies.orchestrator import Orchestrator
 from lies.query.models import SynthesizedAnswer
 from lies.schema.loader import load_default_schema
 from lies.wiki.wiki import Wiki
+from tests.conftest import models_for_tests
 
 
 @pytest.fixture(autouse=True)
 def _use_test_model(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Default ``LIES_MODEL`` to ``"test"`` so ``Orchestrator`` can build.
+    """Default every agent's model env override to ``"test"`` so the
+    orchestrator can build without a real provider key.
 
-    The fixture sets ``LIES_MODEL`` to ``"test"`` for every test in this
-    module so the orchestrator inside the MCP tool does not need a
-    real provider key. Per-tool tests that exercise real Orchestrator
-    behavior pass ``model="test"`` explicitly so the fixture's env
-    default is overridden in those paths.
+    The orchestrator now resolves per-agent models from
+    ``LIES_<AGENT>_MODEL`` env overrides (one var per ``AGENT_ROSTER``
+    entry), so this fixture sets every roster entry's override to the
+    placeholder ``"test"`` string. Per-tool tests that exercise real
+    Orchestrator behavior pass ``models_for_tests("test")`` explicitly
+    so the fixture's env default is overridden in those paths.
     """
-    monkeypatch.setenv("LIES_MODEL", "test")
+    from lies.providers import AGENT_ROSTER
+
+    for name in AGENT_ROSTER:
+        monkeypatch.setenv(f"LIES_{name.upper()}_MODEL", "test")
 
 
 @pytest.fixture(autouse=True)
@@ -269,7 +275,7 @@ def test_lint_returns_markdown_report(
     host-side report was written to ``wiki/lint-report.md`` and that
     a parseable entry was appended to ``wiki/log.md``.
     """
-    orch = Orchestrator(wiki=registered_wiki, model="test")
+    orch = Orchestrator(wiki=registered_wiki, models=models_for_tests("test"))
 
     def fake_run_sync(self, prompt: str):  # type: ignore[no-untyped-def]
         return mock.Mock(output="lint done")

@@ -9,9 +9,9 @@ output when no findings are safe to fix.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
 
 from pydantic_ai import Agent
+from pydantic_ai.models import Model
 from pydantic_ai.tools import RunContext
 
 from lies.agents.linter import LintReport
@@ -79,7 +79,7 @@ def _build_repair_prompt(ctx: RunContext[RepairAgentDeps]) -> str:
     return "\n".join(parts)
 
 
-def repair_agent(model: Any | None = None) -> Agent[RepairAgentDeps, RepairPlan]:
+def repair_agent(model: Model | str | None = None) -> Agent[RepairAgentDeps, RepairPlan]:
     """Construct the structured-output repair agent.
 
     Registers ``_build_repair_prompt`` as a system-prompt callable so
@@ -87,7 +87,7 @@ def repair_agent(model: Any | None = None) -> Agent[RepairAgentDeps, RepairPlan]
     prompt at run time. A static ``system_prompt`` alone leaves the
     model unable to see ``RepairAgentDeps``.
     """
-    resolved: Any = model if model is not None else "anthropic:claude-sonnet-4-6"
+    resolved: Model | str = model if model is not None else "anthropic:claude-sonnet-4-6"
     agent = Agent(
         resolved,
         deps_type=RepairAgentDeps,
