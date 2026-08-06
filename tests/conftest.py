@@ -81,7 +81,6 @@ def _isolated_xdg(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     test subprocess sees the tmp dir's git state directly.
     """
     for key in [
-        "LIES_MODEL",
         "LIES_WIKI_NAME",
         "LIES_WIKI_ROOT",
         "LIES_QMD_TRANSPORT",

@@ -191,7 +191,6 @@ loses it; the next `sync` re-registers.
 
 Environment variables:
 
-- `LIES_MODEL` — model identifier (default: `anthropic:claude-opus-4-7`)
 - `LIES_WIKI_NAME` — wiki name (default: `default`); resolved under
   `$XDG_DATA_HOME/lies/<name>/`
 - `LIES_LOG_LEVEL` — stdlib log level when logfire is inactive (default: `INFO`)
