@@ -50,6 +50,7 @@ def _resolve_default_models(wiki: Wiki) -> dict[str, Model | str]:
     """Load user-level providers.toml and resolve one model per AGENT_ROSTER entry."""
     from lies.providers import (
         AGENT_ROSTER,
+        env_override,
         load_providers_config,
         resolve_model,
     )
@@ -59,8 +60,6 @@ def _resolve_default_models(wiki: Wiki) -> dict[str, Model | str]:
         # No TOML — every agent gets default_model, or the env var override.
         fallback: dict[str, Model | str] = {}
         for name in AGENT_ROSTER:
-            from lies.providers.env import env_override
-
             override = env_override(name)
             fallback[name] = override or "anthropic:claude-opus-4-7"
         return fallback

@@ -240,11 +240,17 @@ def config_cmd(
     width = max(len(agent_name) for agent_name in AGENT_ROSTER)
     for agent_name in AGENT_ROSTER:
         try:
-            resolve_model(agent_name, cfg)
+            resolved = resolve_model(agent_name, cfg)
         except ProviderConfigError as exc:
             typer.echo(f"  {agent_name.ljust(width)}  (unresolved: {exc})")
             continue
-        typer.echo(f"  {agent_name.ljust(width)}  {cfg.agents[agent_name]}")
+        if isinstance(resolved, str):
+            typer.echo(f"  {agent_name.ljust(width)}  {resolved}")
+        else:
+            # Resolved into a Model instance (custom anthropic_compatible
+            # provider); show the TOML string the user wrote -- which is
+            # the model identifier, not the constructed client.
+            typer.echo(f"  {agent_name.ljust(width)}  {cfg.agents[agent_name]}")
 
 
 @app.command()
