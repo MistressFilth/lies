@@ -8,6 +8,7 @@ from typing import Any
 
 from pydantic import BaseModel
 from pydantic_ai import Agent, RunContext
+from pydantic_ai.models import Model
 
 from lies.agents.base import make_sub_agent
 
@@ -73,7 +74,7 @@ readable; tests and wiki pages are intentionally out of scope.
 
 
 def source_reader_agent(
-    model: str = "anthropic:claude-opus-4-7",
+    model: Model | str = "anthropic:claude-opus-4-7",
     tools: list[Callable[..., Any]] | None = None,
 ) -> Agent[None, SourceExtraction]:
     """Construct the source-reader sub-agent."""

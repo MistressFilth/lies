@@ -9,9 +9,9 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from typing import Any
 
 from pydantic_ai import Agent, RunContext
+from pydantic_ai.models import Model
 
 from lies.memory.models import MemoryPlan
 
@@ -60,9 +60,9 @@ def _evidence_instructions(ctx: RunContext[MemoryEnricherDeps]) -> str:
     return "Evidence envelope (JSON):\n" + json.dumps(envelope, indent=2, sort_keys=True)
 
 
-def enricher_agent(model: Any | None = None) -> Agent[MemoryEnricherDeps, MemoryPlan]:
+def enricher_agent(model: Model | str | None = None) -> Agent[MemoryEnricherDeps, MemoryPlan]:
     """Construct the structured-output MemoryEnricher agent."""
-    resolved: Any = model if model is not None else "anthropic:claude-opus-4-7"
+    resolved: Model | str = model if model is not None else "anthropic:claude-opus-4-7"
     agent = Agent(
         resolved,
         deps_type=MemoryEnricherDeps,

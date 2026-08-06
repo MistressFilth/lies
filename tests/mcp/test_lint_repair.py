@@ -13,13 +13,22 @@ from lies.agents.repair_models import CreateStub, RepairPlan
 from lies.mcp.server import lint
 from lies.orchestrator import Orchestrator
 from lies.wiki.wiki import Wiki
-from tests.conftest import make_wiki
+from tests.conftest import make_wiki, models_for_tests
 
 
 @pytest.fixture(autouse=True)
 def mock_lies_model(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Default ``LIES_MODEL`` to ``"test"`` so ``Orchestrator`` can build."""
-    monkeypatch.setenv("LIES_MODEL", "test")
+    """Default every agent's model env override to ``"test"`` so the
+    orchestrator can build without a real provider key.
+
+    The orchestrator resolves per-agent models from
+    ``LIES_<AGENT>_MODEL`` env overrides, so this fixture sets every
+    roster entry's override to the placeholder ``"test"`` string.
+    """
+    from lies.providers import AGENT_ROSTER
+
+    for name in AGENT_ROSTER:
+        monkeypatch.setenv(f"LIES_{name.upper()}_MODEL", "test")
 
 
 WIKI_NAME = "lint-mcp"
@@ -58,7 +67,7 @@ def _no_agent_run_sync() -> mock._patch:
     """
     throwaway = Orchestrator(
         wiki=make_wiki(name="throwaway", data_root=Path.cwd()),
-        model="test",
+        models=models_for_tests("test"),
     )
     return mock.patch.object(
         type(throwaway._agent), "run_sync", return_value=mock.Mock(output="lint done")

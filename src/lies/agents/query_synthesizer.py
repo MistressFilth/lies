@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel
 from pydantic_ai import Agent
+from pydantic_ai.models import Model
 
 from lies.agents.base import make_sub_agent
 
@@ -48,7 +49,9 @@ Return a `QueryAnswer` with:
 """
 
 
-def query_synthesizer_agent(model: str = "anthropic:claude-opus-4-7") -> Agent[None, QueryAnswer]:
+def query_synthesizer_agent(
+    model: Model | str = "anthropic:claude-opus-4-7",
+) -> Agent[None, QueryAnswer]:
     """Construct the query-synthesizer sub-agent."""
     return make_sub_agent(
         model=model,

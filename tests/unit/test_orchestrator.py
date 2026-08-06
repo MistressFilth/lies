@@ -9,7 +9,7 @@ from pydantic_ai.models.test import TestModel
 
 from lies.orchestrator import Orchestrator
 from lies.wiki.git import CommitError
-from tests.conftest import make_wiki
+from tests.conftest import make_wiki, models_for_tests
 
 
 @pytest.fixture
@@ -20,7 +20,7 @@ def wiki_root(tmp_path: Path):
 
 
 def test_orchestrator_constructs(wiki_root: Path) -> None:
-    orch = Orchestrator(wiki=wiki_root, model="test")
+    orch = Orchestrator(wiki=wiki_root, models=models_for_tests("test"))
     assert orch is not None
 
 
@@ -41,7 +41,7 @@ def test_orchestrator_runs_with_test_model(
     exercises agent plumbing, not the qmd transport.
     """
     monkeypatch.setenv("LIES_QMD_TRANSPORT", "stdio")
-    orch = Orchestrator(wiki=wiki_root, model="test")
+    orch = Orchestrator(wiki=wiki_root, models=models_for_tests("test"))
     with orch._agent.override(model=TestModel(call_tools=[], custom_output_text="lint ok")):
         result = orch.run("lint")
     assert isinstance(result, str)
@@ -62,7 +62,7 @@ def test_orchestrator_runs_with_test_model(
 def test_wiki_is_top_level_attribute(wiki_root: Path) -> None:
     """`orch.wiki` must be set from the constructor argument as the Wiki
     dataclass, exposing the post-XDG role-routed paths."""
-    orch = Orchestrator(wiki=wiki_root, model="test")
+    orch = Orchestrator(wiki=wiki_root, models=models_for_tests("test"))
     assert orch.wiki is wiki_root
     assert orch.wiki.data_root == wiki_root.data_root
 
@@ -73,7 +73,7 @@ def test_wiki_data_root_propagates_to_system_prompt(wiki_root: Path) -> None:
     Sub-agents and tool calls rely on this for path scoping and
     path-aware reasoning.
     """
-    orch = Orchestrator(wiki=wiki_root, model="test")
+    orch = Orchestrator(wiki=wiki_root, models=models_for_tests("test"))
     prompt = orch._agent._system_prompts[0]  # type: ignore[attr-defined]
     assert str(orch.wiki.data_root) in prompt
     assert "Wiki root:" in prompt
@@ -85,7 +85,7 @@ def test_wiki_data_root_propagates_to_file_system_capability(wiki_root: Path) ->
     This is the security boundary that prevents the agent from
     reading or writing outside the wiki.
     """
-    orch = Orchestrator(wiki=wiki_root, model="test")
+    orch = Orchestrator(wiki=wiki_root, models=models_for_tests("test"))
 
     # pydantic-ai-harness stores the per-agent capabilities under
     # `agent.root_capability` (a CombinedCapability with a `capabilities`
@@ -128,7 +128,7 @@ def test_wiki_data_root_resolution_handles_relative_paths(tmp_path: Path) -> Non
     try:
         os.chdir(cwd)
         rel_wiki = make_wiki(name="relative", data_root=cwd / rel)
-        orch = Orchestrator(wiki=rel_wiki, model="test")
+        orch = Orchestrator(wiki=rel_wiki, models=models_for_tests("test"))
     finally:
         os.chdir(old_cwd)
 
@@ -212,7 +212,7 @@ def test_run_ingest_delegates_and_returns_ingested_string(git_wiki) -> None:
     wrapper's only job is to delegate and return the back-compat string;
     this test pins that contract.
     """
-    orch = Orchestrator(wiki=git_wiki, model="test")
+    orch = Orchestrator(wiki=git_wiki, models=models_for_tests("test"))
 
     with mock.patch("lies.etl.sync_helper.sync_collection") as m:
         result = orch.run_ingest("raw/some-source.md")
@@ -234,7 +234,7 @@ def test_run_ingest_propagates_sync_collection_exception(git_wiki) -> None:
     own. Rollback is sync_collection's responsibility. The wrapper
     contract is: whatever sync_collection raises, run_ingest raises.
     """
-    orch = Orchestrator(wiki=git_wiki, model="test")
+    orch = Orchestrator(wiki=git_wiki, models=models_for_tests("test"))
 
     class IngestFailure(RuntimeError):
         """Simulates sync_collection crashing mid-pipeline."""
@@ -255,7 +255,7 @@ def test_run_ingest_propagates_keyboard_interrupt(git_wiki) -> None:
     The wrapper does not swallow ``BaseException``; user interrupts
     during the underlying sync surface to the caller.
     """
-    orch = Orchestrator(wiki=git_wiki, model="test")
+    orch = Orchestrator(wiki=git_wiki, models=models_for_tests("test"))
 
     with (
         mock.patch(
@@ -274,7 +274,7 @@ def test_run_ingest_propagates_commit_error(git_wiki) -> None:
     the same ``CommitError`` sync_collection raised. The atomic-commit
     rollback path lives inside ``SyncOrchestrator.run``.
     """
-    orch = Orchestrator(wiki=git_wiki, model="test")
+    orch = Orchestrator(wiki=git_wiki, models=models_for_tests("test"))
 
     with (
         mock.patch(
@@ -303,7 +303,7 @@ def test_run_ingest_propagates_sync_failure_with_pre_existing_dirty_state(
     (data_root / "initial.txt").write_text("user in-progress edit")
     (data_root / "user-notes.md").write_text("# WIP\n")
 
-    orch = Orchestrator(wiki=git_wiki, model="test")
+    orch = Orchestrator(wiki=git_wiki, models=models_for_tests("test"))
     pre_initial = (data_root / "initial.txt").read_text()
     pre_notes = (data_root / "user-notes.md").read_text()
 
@@ -332,7 +332,7 @@ def test_run_ingest_success_returns_ingested_string(
     """
     data_root = git_wiki.data_root
     (data_root / "user-notes.md").write_text("# WIP\n")
-    orch = Orchestrator(wiki=git_wiki, model="test")
+    orch = Orchestrator(wiki=git_wiki, models=models_for_tests("test"))
 
     with mock.patch("lies.etl.sync_helper.sync_collection") as m:
         result = orch.run_ingest("raw/source.md")
@@ -348,7 +348,7 @@ def test_run_ingest_propagates_nothing_to_commit_error(git_wiki) -> None:
     and raise CommitError; the wrapper surfaces that verbatim so the
     caller can distinguish "no-op" from "real failure".
     """
-    orch = Orchestrator(wiki=git_wiki, model="test")
+    orch = Orchestrator(wiki=git_wiki, models=models_for_tests("test"))
 
     with (
         mock.patch(
@@ -379,7 +379,7 @@ def test_orchestrator_uses_qmd_http_transport(
     monkeypatch.delenv("LIES_QMD_TRANSPORT", raising=False)
     monkeypatch.delenv("LIES_QMD_URL", raising=False)
 
-    orch = Orchestrator(wiki=wiki_root, model="test")
+    orch = Orchestrator(wiki=wiki_root, models=models_for_tests("test"))
     assert built, "QmdCapability was not constructed"
     assert built[0]["transport"] == "http"
     assert built[0]["url"] == "http://127.0.0.1:8181"

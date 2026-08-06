@@ -10,7 +10,6 @@ from lies import config
 @pytest.fixture(autouse=True)
 def _clear_env(monkeypatch: pytest.MonkeyPatch) -> None:
     for k in [
-        "LIES_MODEL",
         "LIES_WIKI_NAME",
         "LIES_WIKI_ROOT",
         "LIES_QMD_TRANSPORT",
@@ -28,15 +27,6 @@ def _clear_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "XDG_RUNTIME_DIR",
     ]:
         monkeypatch.delenv(k, raising=False)
-
-
-def test_get_model_default() -> None:
-    assert config.get_model() == "anthropic:claude-opus-4-7"
-
-
-def test_get_model_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("LIES_MODEL", "anthropic:claude-sonnet-4-5")
-    assert config.get_model() == "anthropic:claude-sonnet-4-5"
 
 
 def test_get_wiki_name_default() -> None:

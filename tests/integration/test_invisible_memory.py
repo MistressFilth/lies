@@ -8,7 +8,7 @@ from lies.memory.enricher import MemoryEnricherDeps
 from lies.memory.models import MemoryPlan, PageUpdate, WikiWriteConflict
 from lies.orchestrator import Orchestrator
 from lies.wiki.wiki import Wiki
-from tests.conftest import make_wiki
+from tests.conftest import make_wiki, models_for_tests
 
 
 @pytest.fixture
@@ -35,7 +35,7 @@ def wiki(tmp_path: Path) -> Wiki:
 
 
 def test_run_with_memory_skips_unrelated_turn(wiki: Wiki) -> None:
-    orch = Orchestrator(wiki=wiki, model=TestModel())
+    orch = Orchestrator(wiki=wiki, models=models_for_tests(TestModel()))
     answer = orch.run_with_memory("Hello there.")
     assert isinstance(answer, str)
     log_path = wiki.wiki_dir / "log.md"
@@ -51,7 +51,7 @@ def test_run_with_memory_skips_unrelated_turn(wiki: Wiki) -> None:
 
 
 def test_run_with_memory_persists_new_page_on_relevant_turn(wiki: Wiki) -> None:
-    orch = Orchestrator(wiki=wiki, model=TestModel())
+    orch = Orchestrator(wiki=wiki, models=models_for_tests(TestModel()))
     answer = orch.run_with_memory("Read raw/articles/intro.md and tell me about it")
     # The default TestModel returns an empty structured answer; we
     # assert that the orchestrator completed without error and the
@@ -66,7 +66,7 @@ def test_conflict_causes_one_fresh_read_and_enrichment_retry(
     page = wiki.wiki_dir / "concepts" / "x.md"
     body = "---\ntitle: X\ntype: concept\n---\n# X\n"
     page.write_text(body, encoding="utf-8")
-    orch = Orchestrator(wiki=wiki, model=TestModel())
+    orch = Orchestrator(wiki=wiki, models=models_for_tests(TestModel()))
     plans = [
         MemoryPlan(
             operations=[
@@ -102,7 +102,7 @@ def test_conflict_causes_one_fresh_read_and_enrichment_retry(
 
 
 def test_second_conflict_is_queued_for_retry(wiki: Wiki, monkeypatch: pytest.MonkeyPatch) -> None:
-    orch = Orchestrator(wiki=wiki, model=TestModel())
+    orch = Orchestrator(wiki=wiki, models=models_for_tests(TestModel()))
     plan = MemoryPlan(
         operations=[
             PageUpdate(

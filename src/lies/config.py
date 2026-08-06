@@ -7,14 +7,9 @@ from pathlib import Path
 
 from lies import xdg
 
-DEFAULT_MODEL = "anthropic:claude-opus-4-7"
 DEFAULT_QMD_TRANSPORT = "http"
 DEFAULT_QMD_URL = "http://127.0.0.1:8181"
 DEFAULT_WIKI_NAME = "default"
-
-
-def get_model() -> str:
-    return os.environ.get("LIES_MODEL", DEFAULT_MODEL)
 
 
 def get_wiki_name() -> str:

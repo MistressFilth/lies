@@ -11,6 +11,10 @@ repos:
     rev: v0.0.66
     hooks:
       - id: ty
+        # `--frozen` is a `uv` global flag passed to `uv check` so the hook
+        # does not auto-regenerate `uv.lock` on every commit (a stale lock
+        # would otherwise be silently rewritten, masking version bumps).
+        args: ["--frozen"]
   - repo: local
     hooks:
       - id: test

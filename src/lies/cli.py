@@ -10,10 +10,10 @@ from rich.console import Console
 from rich.markdown import Markdown
 
 from lies import __version__, xdg
-from lies.config import get_model
 from lies.mcp import daemon
 from lies.mcp.resolution import resolve_wiki
 from lies.orchestrator import Orchestrator
+from lies.providers import ProviderConfigError
 from lies.qmd import daemon as qmd_daemon
 from lies.qmd import qmd_status
 from lies.scrapers.base import pick_scraper
@@ -218,13 +218,39 @@ def migrate_xdg(legacy_path: Path, name: str, force: bool = False) -> None:
     )
 
 
-@app.command()
-def config() -> None:
-    """Print the current LIES configuration."""
-    from lies.config import get_wiki_name
+@app.command(name="config")
+def config_cmd(
+    name: str = typer.Option("default", "--name", "-n", envvar="LIES_WIKI_NAME"),
+) -> None:
+    """Print active model + wiki name + per-agent model assignments."""
+    from lies.providers import AGENT_ROSTER, load_providers_config, resolve_model
+    from lies.wiki.wiki import Wiki
 
-    typer.echo(f"model: {get_model()}")
-    typer.echo(f"wiki: {get_wiki_name()}")
+    wiki = Wiki.require(name)
+    typer.echo(f"wiki: {wiki.name}")
+
+    cfg = load_providers_config(wiki.providers_path)
+    if cfg is None:
+        typer.echo(f"model: (no providers.toml at {wiki.providers_path})")
+        typer.echo("agent models: (none configured)")
+        return
+
+    typer.echo(f"model: {cfg.default_model}")
+    typer.echo("agent models:")
+    width = max(len(agent_name) for agent_name in AGENT_ROSTER)
+    for agent_name in AGENT_ROSTER:
+        try:
+            resolved = resolve_model(agent_name, cfg)
+        except ProviderConfigError as exc:
+            typer.echo(f"  {agent_name.ljust(width)}  (unresolved: {exc})")
+            continue
+        if isinstance(resolved, str):
+            typer.echo(f"  {agent_name.ljust(width)}  {resolved}")
+        else:
+            # Resolved into a Model instance (custom anthropic_compatible
+            # provider); show the TOML string the user wrote -- which is
+            # the model identifier, not the constructed client.
+            typer.echo(f"  {agent_name.ljust(width)}  {cfg.agents[agent_name]}")
 
 
 @app.command()

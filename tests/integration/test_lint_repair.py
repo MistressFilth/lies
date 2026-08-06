@@ -18,7 +18,7 @@ from lies.agents.repair_models import (
 )
 from lies.orchestrator import Orchestrator
 from lies.wiki.wiki import Wiki
-from tests.conftest import make_wiki
+from tests.conftest import make_wiki, models_for_tests
 
 
 @pytest.fixture
@@ -62,7 +62,7 @@ def test_apply_three_append_links(wiki: Wiki) -> None:
     subprocess.run(["git", "add", "."], cwd=wiki.data_root, check=True)
     subprocess.run(["git", "commit", "-m", "seed"], cwd=wiki.data_root, check=True)
 
-    orch = Orchestrator(wiki=wiki, model=TestModel())
+    orch = Orchestrator(wiki=wiki, models=models_for_tests(TestModel()))
     # Three missing-xref findings the plan will reference. The host
     # (mentioner) appears first in ``pages``; the plan's AppendLink
     # carries only the host, which intersects the finding pages.
@@ -154,7 +154,7 @@ def test_apply_interleaved_append_links(wiki: Wiki) -> None:
     subprocess.run(["git", "add", "."], cwd=wiki.data_root, check=True)
     subprocess.run(["git", "commit", "-m", "seed"], cwd=wiki.data_root, check=True)
 
-    orch = Orchestrator(wiki=wiki, model=TestModel())
+    orch = Orchestrator(wiki=wiki, models=models_for_tests(TestModel()))
     shell_report = LintReport(
         findings=[
             LintFinding(
@@ -239,7 +239,7 @@ def test_apply_skips_contradiction(wiki: Wiki) -> None:
     subprocess.run(["git", "add", "."], cwd=wiki.data_root, check=True)
     subprocess.run(["git", "commit", "-m", "seed"], cwd=wiki.data_root, check=True)
 
-    orch = Orchestrator(wiki=wiki, model=TestModel())
+    orch = Orchestrator(wiki=wiki, models=models_for_tests(TestModel()))
     plan = RepairPlan(
         operations=[
             UpdateIndex(
@@ -300,7 +300,7 @@ def test_apply_fails_when_lock_held(wiki: Wiki, tmp_path: Path) -> None:
                 pytest.fail("holder did not signal ready in time")
             time.sleep(0.05)
 
-        orch = Orchestrator(wiki=wiki, model=TestModel())
+        orch = Orchestrator(wiki=wiki, models=models_for_tests(TestModel()))
         plan = RepairPlan(
             operations=[
                 CreateStub(
@@ -364,7 +364,7 @@ def test_apply_receipt_in_lint_report(wiki: Wiki) -> None:
     subprocess.run(["git", "add", "."], cwd=wiki.data_root, check=True)
     subprocess.run(["git", "commit", "-m", "seed"], cwd=wiki.data_root, check=True)
 
-    orch = Orchestrator(wiki=wiki, model=TestModel())
+    orch = Orchestrator(wiki=wiki, models=models_for_tests(TestModel()))
     plan = RepairPlan(
         operations=[
             AppendLink(
@@ -423,7 +423,7 @@ def orch(tmp_path: Path) -> Orchestrator:
     subprocess.run(["git", "config", "user.name", "T"], cwd=root, check=True)
     subprocess.run(["git", "add", "."], cwd=root, check=True)
     subprocess.run(["git", "commit", "-m", "init"], cwd=root, check=True)
-    return Orchestrator(wiki=w, model="test")
+    return Orchestrator(wiki=w, models=models_for_tests("test"))
 
 
 def test_run_lint_end_to_end_with_linter_categories(orch: Orchestrator) -> None:
@@ -737,7 +737,7 @@ def test_apply_rejects_plan_with_unsafe_finding(wiki: Wiki) -> None:
     subprocess.run(["git", "add", "."], cwd=wiki.data_root, check=True)
     subprocess.run(["git", "commit", "-m", "seed"], cwd=wiki.data_root, check=True)
 
-    orch = Orchestrator(wiki=wiki, model=TestModel())
+    orch = Orchestrator(wiki=wiki, models=models_for_tests(TestModel()))
     # A contradiction finding: safe_to_fix=False, but the plan still
     # emits a CreateStub. The structural validator must catch it.
     findings = [
@@ -800,7 +800,7 @@ def test_apply_drops_redundant_update_index(wiki: Wiki) -> None:
     subprocess.run(["git", "add", "."], cwd=wiki.data_root, check=True)
     subprocess.run(["git", "commit", "-m", "seed"], cwd=wiki.data_root, check=True)
 
-    orch = Orchestrator(wiki=wiki, model=TestModel())
+    orch = Orchestrator(wiki=wiki, models=models_for_tests(TestModel()))
     plan = RepairPlan(
         operations=[
             UpdateIndex(
@@ -837,7 +837,7 @@ def test_apply_partial_plan_rejects_whole_plan(wiki: Wiki) -> None:
     subprocess.run(["git", "add", "."], cwd=wiki.data_root, check=True)
     subprocess.run(["git", "commit", "-m", "seed"], cwd=wiki.data_root, check=True)
 
-    orch = Orchestrator(wiki=wiki, model=TestModel())
+    orch = Orchestrator(wiki=wiki, models=models_for_tests(TestModel()))
     # First AppendLink is fine; second AppendLink targets a missing page.
     plan = RepairPlan(
         operations=[
