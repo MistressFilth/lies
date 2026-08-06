@@ -49,9 +49,16 @@ All notable changes to LIES are documented here. The format follows
 - `WikiLayout.init` now gitignores `.lies/mcp.pid`, `.lies/mcp.pid.create`,
   and `.lies/mcp.log`; `lies mcp up` ensures the same entries for wikis
   created before this release.
+- `$XDG_CONFIG_HOME/lies/providers.toml` for declaring providers and per-agent model assignments. TOML format with `[providers.<name>]` (anthropic or anthropic_compatible) and `[agents]` sections. Missing entries for agents in `AGENT_ROSTER` raise `ProviderConfigError` at config load.
+- `minimax` provider example wired against `https://api.minimax.io/anthropic` for Anthropic-compatible inference. MiniMax clients are constructed directly via `AnthropicModel` + `AnthropicProvider` (pydantic-ai 2.18 has no public model-registry API).
+- `LIES_<AGENT>_MODEL` env var precedence: a non-empty value for any agent in `AGENT_ROSTER` overrides the TOML `[agents]` entry. Useful for one-off model swaps without editing the config file.
+- `lies config` now lists every agent in `AGENT_ROSTER` with its resolved model (string for built-in `anthropic:` prefixes, `AnthropicModel` for custom).
+- Missing `providers.toml` is non-fatal: every agent falls back to the previous default (`anthropic:claude-opus-4-7`) and a single stderr warning names the expected path.
 
 ### Changed
 - CLI flag `--wiki-root`/`-w` replaced by `--name` on every command. Default wiki name `default` (set `LIES_WIKI_NAME` to override).
+- Orchestrator construction no longer reads `LIES_MODEL`. It loads user-level `providers.toml` (or every agent falls back to `anthropic:claude-opus-4-7` when the file is missing) and resolves one `Model | str` per agent.
+- Agent factory signatures (`source_reader_agent`, `page_writer_agent`, `indexer_agent`, `linter_agent`, `query_synthesizer_agent`, `repair_agent`, `enricher_agent`) now accept `model: Model | str` instead of `model: str`.
 - Wiki identity is a name (basename), not a path. Wikis are looked up under `$XDG_DATA_HOME/lies/<name>/`. Wiki roots elsewhere require migrating via `lies migrate-xdg` (or creating fresh via `lies init <name>`).
 - The unauthenticated MCP daemon now refuses non-loopback bind hosts in
   both `lies mcp up` and the internal `_serve` command; remote access
@@ -78,6 +85,8 @@ All notable changes to LIES are documented here. The format follows
 - `tests/unit/test_repository_metadata.py` and its pytest-marker, GitHub-Actions SHA, and mypy-absence assertions.
 - `make release` no longer runs `worktree-lint` as a prerequisite.
 - CI workflow no longer fetches full git history (`fetch-depth: 0`); the only consumer was the dropped compliance test.
+- `LIES_MODEL` env var. Set per-agent env vars (`LIES_ORCHESTRATOR_MODEL`, etc.) or edit `providers.toml` instead.
+- `lies.config.get_model` and the `LIES_MODEL` constant in `src/lies/config.py`.
 
 ### Fixed
 - `LiquidBuilder` now rejects empty pandoc output so failed conversions

@@ -191,7 +191,6 @@ loses it; the next `sync` re-registers.
 
 Environment variables:
 
-- `LIES_MODEL` — model identifier (default: `anthropic:claude-opus-4-7`)
 - `LIES_WIKI_NAME` — wiki name (default: `default`); resolved under
   `$XDG_DATA_HOME/lies/<name>/`
 - `LIES_LOG_LEVEL` — stdlib log level when logfire is inactive (default: `INFO`)
@@ -205,9 +204,36 @@ Environment variables:
 - `LIES_XDG_RUNTIME_DIR` — overrides `$XDG_RUNTIME_DIR` for LIES
 - `LIES_XDG_STATE_HOME` — overrides `$XDG_STATE_HOME` for LIES
 - `LIES_XDG_CACHE_HOME` — overrides `$XDG_CACHE_HOME` for LIES
+- `LIES_ORCHESTRATOR_MODEL`, `LIES_SOURCE_READER_MODEL`, `LIES_PAGE_WRITER_MODEL`, `LIES_INDEXER_MODEL`, `LIES_LINTER_MODEL`, `LIES_QUERY_SYNTHESIZER_MODEL`, `LIES_ENRICHER_MODEL`, `LIES_REPAIR_MODEL` — per-agent model override. Non-empty value beats `providers.toml`.
 
 Most commands accept `--name` to override the wiki name for one
 invocation. `lies config` prints the active model and wiki name.
+
+### Provider and model configuration
+
+LIES reads `$XDG_CONFIG_HOME/lies/providers.toml` at orchestrator construction. The file declares one or more providers and assigns a model to each agent:
+
+```toml
+[providers.anthropic]
+type = "anthropic"
+api_key_env = "ANTHROPIC_API_KEY"
+
+[providers.minimax]
+type = "anthropic_compatible"
+base_url = "https://api.minimax.io/anthropic"
+api_key_env = "MINIMAX_API_KEY"
+
+default_model = "anthropic:claude-opus-4-7"
+
+[agents]
+orchestrator = "anthropic:claude-opus-4-7"
+source_reader = "minimax:MiniMax-M3"
+# ... one entry per agent in AGENT_ROSTER.
+```
+
+`type = "anthropic"` resolves through pydantic-ai's built-in provider. `type = "anthropic_compatible"` constructs an `AnthropicModel` directly with a custom `AsyncAnthropic(base_url=..., api_key=...)`.
+
+`lies config` prints every agent and its resolved model. Missing `providers.toml` is non-fatal — every agent falls back to `default_model` and a warning names the expected path.
 
 ## Development
 

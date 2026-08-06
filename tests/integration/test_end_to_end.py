@@ -30,7 +30,7 @@ from lies.orchestrator import Orchestrator
 from lies.qmd.cli import QmdNotInstalledError
 from lies.query import synthesize_answer
 from lies.schema import load_schema
-from tests.conftest import make_wiki
+from tests.conftest import make_wiki, models_for_tests
 
 FIXTURE = Path(__file__).parent.parent / "fixtures" / "sample-wiki"
 
@@ -121,7 +121,7 @@ def test_schema_loads(wiki_copy: Path) -> None:
 
 def test_orchestrator_constructs(wiki_copy: Path) -> None:
     wiki = make_wiki(name="sample", data_root=wiki_copy)
-    orch = Orchestrator(wiki=wiki, model="test")
+    orch = Orchestrator(wiki=wiki, models=models_for_tests("test"))
     assert orch is not None
     assert orch.wiki.data_root == wiki_copy.resolve()
 
@@ -142,7 +142,7 @@ def test_run_ingest_delegates_to_sync_helper(wiki_copy: Path) -> None:
     ``tests/integration/test_sync_collection.py``.
     """
     wiki = make_wiki(name="sample", data_root=wiki_copy)
-    orch = Orchestrator(wiki=wiki, model="test")
+    orch = Orchestrator(wiki=wiki, models=models_for_tests("test"))
 
     with mock.patch("lies.etl.sync_helper.sync_collection") as m:
         result = orch.run_ingest("raw/articles/sample-article.md")
@@ -169,7 +169,7 @@ def test_run_query_falls_back_to_index_when_qmd_unavailable(
     SynthesizedAnswer whose fallback fields are populated correctly.
     """
     wiki = make_wiki(name="sample", data_root=wiki_copy)
-    orch = Orchestrator(wiki=wiki, model="test")
+    orch = Orchestrator(wiki=wiki, models=models_for_tests("test"))
     answer = orch.run_query("How does Postgres handle concurrency?")
 
     if shutil.which("qmd") is None:
@@ -216,7 +216,7 @@ def test_synthesizer_reads_index_pages(wiki_copy: Path) -> None:
 def test_run_lint_writes_lint_report_and_appends_log(wiki_copy: Path) -> None:
     """Lint writes a real artifact to wiki/lint-report.md and a log entry."""
     wiki = make_wiki(name="sample", data_root=wiki_copy)
-    orch = Orchestrator(wiki=wiki, model="test")
+    orch = Orchestrator(wiki=wiki, models=models_for_tests("test"))
 
     def fake_run_sync(self, prompt: str):  # type: ignore[no-untyped-def]
         return mock.Mock(output="lint done")
@@ -253,7 +253,7 @@ def test_run_lint_detects_orphan_pages(wiki_copy: Path) -> None:
     orphan.write_text("# Orphan\n\nNo inbound links.\n", encoding="utf-8")
 
     wiki = make_wiki(name="sample", data_root=wiki_copy)
-    orch = Orchestrator(wiki=wiki, model="test")
+    orch = Orchestrator(wiki=wiki, models=models_for_tests("test"))
 
     def fake_run_sync(self, prompt: str):  # type: ignore[no-untyped-def]
         return mock.Mock(output="lint done")

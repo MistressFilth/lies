@@ -6,6 +6,7 @@ from typing import Any, TypeVar
 
 from pydantic import BaseModel
 from pydantic_ai import Agent
+from pydantic_ai.models import Model
 
 SUB_AGENT_SYSTEM_PROMPT_PREFIX = """You are a LIES wiki sub-agent. You operate
 inside a Karpathy-pattern LLM wiki. The user is curating a knowledge base over
@@ -23,7 +24,7 @@ D = TypeVar("D")
 
 
 def make_sub_agent(
-    model: str,
+    model: Model | str,
     output_type: type[T],
     system_prompt: str,
     tools: list[Any] | None = None,

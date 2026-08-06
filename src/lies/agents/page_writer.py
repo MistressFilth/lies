@@ -7,6 +7,7 @@ from pathlib import Path
 
 from pydantic import BaseModel
 from pydantic_ai import Agent
+from pydantic_ai.models import Model
 
 from lies.agents.base import SUB_AGENT_SYSTEM_PROMPT_PREFIX
 
@@ -56,7 +57,9 @@ Rules:
 """
 
 
-def page_writer_agent(model: str = "anthropic:claude-opus-4-7") -> Agent[None, list[PageDiff]]:
+def page_writer_agent(
+    model: Model | str = "anthropic:claude-opus-4-7",
+) -> Agent[None, list[PageDiff]]:
     """Construct the page-writer sub-agent."""
     return Agent(
         model,

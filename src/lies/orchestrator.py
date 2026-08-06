@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from pydantic_ai import Agent
+from pydantic_ai.models import Model
 
 from lies.agents.indexer import indexer_agent
 from lies.agents.linter import LintFinding, LintReport, linter_agent
@@ -25,7 +26,7 @@ from lies.capabilities import (
     memory,
     planning,
 )
-from lies.config import get_model, get_qmd_transport, get_qmd_url
+from lies.config import get_qmd_transport, get_qmd_url
 from lies.memory.enricher import MemoryEnricherDeps, enricher_agent
 from lies.memory.models import (
     MemoryPlan,
@@ -43,6 +44,30 @@ from lies.query import SynthesizedAnswer, synthesize_answer
 from lies.schema import load_schema
 from lies.wiki.git import CommitError, atomic_commit
 from lies.wiki.wiki import Wiki
+
+
+def _resolve_default_models(wiki: Wiki) -> dict[str, Model | str]:
+    """Load user-level providers.toml and resolve one model per AGENT_ROSTER entry."""
+    from lies.providers import (
+        AGENT_ROSTER,
+        env_override,
+        load_providers_config,
+        resolve_model,
+    )
+
+    config = load_providers_config(wiki.providers_path)
+    if config is None:
+        # No TOML — every agent gets default_model, or the env var override.
+        fallback: dict[str, Model | str] = {}
+        for name in AGENT_ROSTER:
+            override = env_override(name)
+            fallback[name] = override or "anthropic:claude-opus-4-7"
+        return fallback
+
+    resolved: dict[str, Model | str] = {}
+    for name in AGENT_ROSTER:
+        resolved[name] = resolve_model(name, config)
+    return resolved
 
 
 def _list_working_tree_changes(repo: Path) -> list[str]:
@@ -588,13 +613,17 @@ class Orchestrator:
     schema-respecting.
     """
 
-    def __init__(self, wiki: Wiki, model: str | None = None) -> None:
+    def __init__(
+        self,
+        wiki: Wiki,
+        models: dict[str, Model | str] | None = None,
+    ) -> None:
         # Store the Wiki dataclass directly. The orchestrator derives
         # ``wiki_root`` paths (for git subprocess cwd and for downstream
         # APIs that still take a Path) from ``self.wiki.data_root``; the
         # schema for this wiki lives at ``self.wiki.schema_path``.
         self.wiki = wiki
-        self.model = model or get_model()
+        self.models = models if models is not None else _resolve_default_models(wiki)
         self.schema = load_schema(self.wiki)
         self._build()
 
@@ -607,7 +636,7 @@ class Orchestrator:
         # don't set a name; the orchestrator owns the namespace.
         named_agents: list[Agent] = []
         for name, factory, _description in _SUB_AGENT_TABLE:
-            agent = factory(model=self.model)  # type: ignore[operator]  # ty: ignore[call-non-callable]
+            agent = factory(model=self.models[name])  # type: ignore[operator]  # ty: ignore[call-non-callable]
             agent.name = name
             named_agents.append(agent)
 
@@ -619,7 +648,7 @@ class Orchestrator:
 
         self._harness_memory = memory(self.wiki.data_root)
         self._agent: Agent = Agent(
-            self.model,
+            self.models["orchestrator"],
             system_prompt=ORCHESTRATOR_SYSTEM_PROMPT_PREFIX.format(wiki=self.wiki.data_root)
             + self.schema,
             deps_type=WikiMemoryDeps,
@@ -640,9 +669,9 @@ class Orchestrator:
         self._memory_service = WikiMemoryService(self.wiki)
         self._enrichment_queue = EnrichmentQueue(max_attempts=3)
         self._turn_counter = 0
-        self._enricher = enricher_agent(model=self.model)
-        self._repair_agent = repair_agent(model=self.model)
-        self._linter_agent = linter_agent(model=self.model)
+        self._enricher = enricher_agent(model=self.models["enricher"])
+        self._repair_agent = repair_agent(model=self.models["repair"])
+        self._linter_agent = linter_agent(model=self.models["linter"])
         register_read_tools(self._agent)
 
     def run(self, command: str) -> str:

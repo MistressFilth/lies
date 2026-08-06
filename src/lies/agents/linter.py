@@ -12,6 +12,7 @@ from enum import Enum
 
 from pydantic import BaseModel
 from pydantic_ai import Agent
+from pydantic_ai.models import Model
 from pydantic_ai.tools import RunContext
 
 from lies.agents.base import make_sub_agent
@@ -128,7 +129,7 @@ def _build_linter_prompt(ctx: RunContext[LintDeps]) -> str:
     return "\n".join(parts)
 
 
-def linter_agent(model: str = "anthropic:claude-opus-4-7") -> Agent[LintDeps, LintReport]:
+def linter_agent(model: Model | str = "anthropic:claude-opus-4-7") -> Agent[LintDeps, LintReport]:
     """Construct the linter sub-agent.
 
     Carries ``LintDeps`` so the orchestrator can pre-supply every wiki
