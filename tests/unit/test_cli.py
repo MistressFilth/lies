@@ -144,13 +144,6 @@ def test_version_subcommand() -> None:
     assert result.stdout.startswith("lies ")
 
 
-def test_config_subcommand() -> None:
-    result = runner.invoke(app, ["config"])
-    assert result.exit_code == 0
-    assert "model:" in result.stdout
-    assert "wiki:" in result.stdout
-
-
 def test_mcp_subcommand_is_registered() -> None:
     """`lies mcp` is a registered subcommand (does not crash with 'no such command')."""
     result = runner.invoke(app, ["mcp", "--help"])

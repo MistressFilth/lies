@@ -7,6 +7,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from pydantic_ai.models import Model
 
 from lies.wiki.wiki import Wiki
 
@@ -47,7 +48,7 @@ def make_wiki(name: str, data_root: Path) -> Wiki:
     )
 
 
-def models_for_tests(value: object) -> dict[str, object]:
+def models_for_tests(value: Model | str) -> dict[str, Model | str]:
     """Build an ``Orchestrator(models=...)`` dict mapping every roster entry to ``value``.
 
     Tests that need a single model for every agent call this helper so
