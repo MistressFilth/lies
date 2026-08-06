@@ -80,3 +80,14 @@ def test_resolves_anthropic_model_for_custom(wiki: Wiki) -> None:
 
     orch = Orchestrator(wiki=wiki)
     assert isinstance(orch.models["source_reader"], AnthropicModel)
+
+
+def test_linter_env_override_beats_toml(wiki: Wiki, monkeypatch: pytest.MonkeyPatch) -> None:
+    """``LIES_LINTER_MODEL`` wins over the ``linter =`` value in providers.toml."""
+    from lies.orchestrator import Orchestrator
+
+    # The fixture writes `linter = "anthropic:claude-opus-4-7"`; this
+    # env override should win for the linter entry only.
+    monkeypatch.setenv("LIES_LINTER_MODEL", "anthropic:claude-haiku-4-5")
+    orch = Orchestrator(wiki=wiki)
+    assert orch.models["linter"] == "anthropic:claude-haiku-4-5"
