@@ -22,17 +22,18 @@ def test_version_command() -> None:
 def test_config_command_defaults() -> None:
     result = runner.invoke(app, ["config"])
     assert result.exit_code == 0
-    assert "anthropic:claude-opus-4-7" in result.stdout
-    assert "wiki:" in result.stdout
+    assert "wiki: default" in result.stdout
+    assert "(no providers.toml" in result.stdout
+    assert "agent models: (none configured)" in result.stdout
 
 
-def test_config_command_overrides(monkeypatch) -> None:
-    monkeypatch.setenv("LIES_MODEL", "anthropic:claude-sonnet-5")
+def test_config_command_overrides(monkeypatch, tmp_path) -> None:
+    Wiki.data_root_for("wiki").mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("LIES_WIKI_NAME", "wiki")
     result = runner.invoke(app, ["config"])
     assert result.exit_code == 0
-    assert "anthropic:claude-sonnet-5" in result.stdout
     assert "wiki: wiki" in result.stdout
+    assert "(no providers.toml" in result.stdout
 
 
 # Smoke tests for the REPL (`lies` with no subcommand).
