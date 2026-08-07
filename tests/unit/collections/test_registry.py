@@ -137,3 +137,19 @@ def test_save_cleans_temp_on_failure(tmp_path: Path, monkeypatch) -> None:
     with pytest.raises(RegistryWriteFailed):
         Registry.save(wiki, Registry(collections={"x": _ref("x")}))
     assert not (wiki.registry_path.with_suffix(".json.tmp")).exists()
+
+
+def test_merge_unions_by_collection_id() -> None:
+    a = Registry(collections={"x": _ref("x"), "shared": _ref("shared")})
+    b = Registry(collections={"y": _ref("y"), "shared": _ref("shared")})
+    merged = Registry.merge(a, b)
+    assert set(merged.collections.keys()) == {"x", "y", "shared"}
+    # Last-arg wins on collisions so callers can layer writes deterministically.
+    assert merged.collections["shared"] is b.collections["shared"]
+
+
+def test_merge_with_empty_registry_keeps_other_side() -> None:
+    a = Registry(collections={"x": _ref("x")})
+    b = Registry(collections={})
+    assert set(Registry.merge(a, b).collections.keys()) == {"x"}
+    assert set(Registry.merge(b, a).collections.keys()) == {"x"}

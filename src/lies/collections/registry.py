@@ -116,3 +116,10 @@ class Registry:
             if isinstance(exc, OSError):
                 raise RegistryWriteFailed(path, str(exc)) from exc
             raise
+
+    @staticmethod
+    def merge(a: Registry, b: Registry) -> Registry:
+        """Return the union of two registries; ``b`` wins on ``collection_id`` collision."""
+        merged: dict[str, WikiCollectionRef] = dict(a.collections)
+        merged.update(b.collections)
+        return Registry(collections=merged)
