@@ -153,3 +153,22 @@ def test_merge_with_empty_registry_keeps_other_side() -> None:
     b = Registry(collections={})
     assert set(Registry.merge(a, b).collections.keys()) == {"x"}
     assert set(Registry.merge(b, a).collections.keys()) == {"x"}
+
+
+def test_filter_stale_drops_entries_with_missing_yaml(tmp_path: Path) -> None:
+    wiki = _wiki(tmp_path)
+    wiki.collections_dir.mkdir(parents=True, exist_ok=True)
+    (wiki.collections_dir / "alive.yaml").write_text("name: alive\n", encoding="utf-8")
+    reg = Registry(collections={"alive": _ref("alive"), "ghost": _ref("ghost")})
+    live = Registry.filter_stale(reg, wiki)
+    assert set(live.collections.keys()) == {"alive"}
+
+
+def test_filter_stale_keeps_all_when_all_yamls_exist(tmp_path: Path) -> None:
+    wiki = _wiki(tmp_path)
+    wiki.collections_dir.mkdir(parents=True, exist_ok=True)
+    for cid in ("a", "b"):
+        (wiki.collections_dir / f"{cid}.yaml").write_text(f"name: {cid}\n", encoding="utf-8")
+    reg = Registry(collections={"a": _ref("a"), "b": _ref("b")})
+    live = Registry.filter_stale(reg, wiki)
+    assert set(live.collections.keys()) == {"a", "b"}

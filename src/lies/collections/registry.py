@@ -123,3 +123,13 @@ class Registry:
         merged: dict[str, WikiCollectionRef] = dict(a.collections)
         merged.update(b.collections)
         return Registry(collections=merged)
+
+    @staticmethod
+    def filter_stale(registry: Registry, wiki) -> Registry:
+        """Drop entries whose ``<id>.yaml`` is missing under ``wiki.collections_dir``."""
+        kept = {
+            cid: ref
+            for cid, ref in registry.collections.items()
+            if (wiki.collections_dir / f"{cid}.yaml").exists()
+        }
+        return Registry(collections=kept)
