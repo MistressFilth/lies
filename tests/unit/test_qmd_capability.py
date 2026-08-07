@@ -84,9 +84,11 @@ def test_local_factory_yields_an_mcptoolset_over_fallback(
     from pydantic_ai.mcp import MCPToolset
     from pydantic_ai.tools import Tool
 
-    layout = WikiLayout(wiki_root)
+    from tests.conftest import make_wiki
+
+    wiki = make_wiki(name="capability-fallback", data_root=wiki_root)
     monkeypatch.setattr("lies.qmd.capability.qmd_daemon_reachable", lambda url, timeout=0.5: False)
-    cap = QmdCapability(transport="http", url="http://127.0.0.1:8181", wiki=layout).as_capability()
+    cap = QmdCapability(transport="http", url="http://127.0.0.1:8181", wiki=wiki).as_capability()
     # ``cap.local`` is a ``Tool`` that wraps the raw factory. Reach the
     # factory via ``cap.local.function`` (no-arg invocation — the factory
     # does not take a ``RunContext``) and assert it returns an
