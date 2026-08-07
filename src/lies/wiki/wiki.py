@@ -99,6 +99,11 @@ class Wiki:
         return self.runtime_root / "sync.lock.fd"
 
     @property
+    def registry_path(self) -> Path:
+        """Path to the per-wiki collection registry JSON."""
+        return self.state_root / "registry.json"
+
+    @property
     def mcp_pid_path(self) -> Path:
         return self.runtime_root / "mcp.pid"
 
