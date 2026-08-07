@@ -496,3 +496,87 @@ def test_init_filters_stale_entries(tmp_path) -> None:
     assert svc.is_registered("alive")
     assert not svc.is_registered("ghost")
     assert {r.collection_id for r in svc.registered_collections()} == {"alive"}
+
+
+def test_register_collection_persists_to_disk(tmp_path) -> None:
+    from pathlib import PurePosixPath
+
+    from lies.memory.models import WikiCollectionRef
+    from lies.memory.service import WikiMemoryService
+
+    wiki = make_wiki(name="persist", data_root=tmp_path / "wiki")
+    wiki.collections_dir.mkdir(parents=True, exist_ok=True)
+    (wiki.collections_dir / "c1.yaml").write_text("name: c1\n", encoding="utf-8")
+    svc = WikiMemoryService(wiki=wiki)
+    ref = WikiCollectionRef(
+        collection_id="c1",
+        root=PurePosixPath("/raw/c1"),
+        qmd_collection="c1",
+        schema_path=PurePosixPath(str(wiki.schema_path)),
+    )
+    svc.register_collection(ref)
+    # Fresh service instance sees the registration.
+    svc2 = WikiMemoryService(wiki=wiki)
+    assert svc2.is_registered("c1")
+
+
+def test_register_collection_idempotent_on_disk(tmp_path) -> None:
+    from pathlib import PurePosixPath
+
+    from lies.collections.registry import Registry
+    from lies.memory.models import WikiCollectionRef
+    from lies.memory.service import WikiMemoryService
+
+    wiki = make_wiki(name="idem", data_root=tmp_path / "wiki")
+    wiki.collections_dir.mkdir(parents=True, exist_ok=True)
+    (wiki.collections_dir / "c1.yaml").write_text("name: c1\n", encoding="utf-8")
+    svc = WikiMemoryService(wiki=wiki)
+    ref = WikiCollectionRef(
+        collection_id="c1",
+        root=PurePosixPath("/raw/c1"),
+        qmd_collection="c1",
+        schema_path=PurePosixPath(str(wiki.schema_path)),
+    )
+    svc.register_collection(ref)
+    svc.register_collection(ref)
+    on_disk = Registry.load(wiki)
+    assert len(on_disk.collections) == 1
+
+
+def test_register_collection_preserves_other_entries_on_disk(tmp_path) -> None:
+    """Read-merge-write union: an in-memory register must not clobber other writers."""
+    from pathlib import PurePosixPath
+
+    from lies.collections.registry import Registry
+    from lies.memory.models import WikiCollectionRef
+    from lies.memory.service import WikiMemoryService
+
+    wiki = make_wiki(name="union", data_root=tmp_path / "wiki")
+    wiki.registry_path.parent.mkdir(parents=True, exist_ok=True)
+    wiki.collections_dir.mkdir(parents=True, exist_ok=True)
+    (wiki.collections_dir / "other.yaml").write_text("name: other\n", encoding="utf-8")
+    (wiki.collections_dir / "new.yaml").write_text("name: new\n", encoding="utf-8")
+    Registry.save(
+        wiki,
+        Registry(
+            collections={
+                "other": WikiCollectionRef(
+                    collection_id="other",
+                    root=PurePosixPath("/raw/other"),
+                    qmd_collection="other",
+                    schema_path=PurePosixPath(str(wiki.schema_path)),
+                )
+            }
+        ),
+    )
+    svc = WikiMemoryService(wiki=wiki)  # loads "other"
+    svc.register_collection(
+        WikiCollectionRef(
+            collection_id="new",
+            root=PurePosixPath("/raw/new"),
+            qmd_collection="new",
+            schema_path=PurePosixPath(str(wiki.schema_path)),
+        )
+    )
+    on_disk = Registry.load(wiki)
+    assert set(on_disk.collections.keys()) == {"other", "new"}

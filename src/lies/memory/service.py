@@ -169,8 +169,19 @@ class WikiMemoryService:
         self._known_evidence.update(reference for reference in references if reference)
 
     def register_collection(self, ref: WikiCollectionRef) -> None:
-        """Idempotent in-memory registration. v1 has no on-disk registry."""
+        """Register ``ref`` in memory and on disk.
+
+        Idempotent in-memory and on-disk: read-merge-write under
+        atomic temp+rename. Failure to persist raises
+        :class:`RegistryWriteFailed`; the in-memory dict is still
+        updated before the write so the current process sees the
+        registration immediately.
+        """
         self._registered[ref.collection_id] = ref
+        on_disk = Registry.load(self._wiki)
+        merged = Registry.merge(on_disk, Registry(collections=dict(self._registered)))
+        live = Registry.filter_stale(merged, self._wiki)
+        Registry.save(self._wiki, live)
 
     def is_registered(self, collection_id: str) -> bool:
         return collection_id in self._registered
