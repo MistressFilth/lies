@@ -87,3 +87,53 @@ def test_load_rejects_missing_version_field(tmp_path: Path) -> None:
     wiki.registry_path.write_text(json.dumps({"collections": {}}), encoding="utf-8")
     with pytest.raises(RegistryVersionUnsupported):
         Registry.load(wiki)
+
+
+def test_save_then_load_roundtrips(tmp_path: Path) -> None:
+    wiki = _wiki(tmp_path)
+    reg = Registry(
+        collections={"htmx": _ref("htmx"), "lask": _ref("lask")},
+    )
+    Registry.save(wiki, reg)
+    loaded = Registry.load(wiki)
+    assert loaded.collections.keys() == {"htmx", "lask"}
+
+
+def test_save_writes_to_temp_then_renames(tmp_path: Path) -> None:
+    wiki = _wiki(tmp_path)
+    reg = Registry(collections={"htmx": _ref("htmx")})
+    Registry.save(wiki, reg)
+    # No temp file should linger after a successful save.
+    assert not (wiki.registry_path.with_suffix(".json.tmp")).exists()
+    # Final file is the canonical JSON.
+    payload = json.loads(wiki.registry_path.read_text(encoding="utf-8"))
+    assert payload["version"] == 1
+    assert "htmx" in payload["collections"]
+
+
+def test_save_creates_parent_directory(tmp_path: Path) -> None:
+    wiki = _wiki(tmp_path)
+    assert not wiki.registry_path.parent.exists()
+    Registry.save(wiki, Registry(collections={"x": _ref("x")}))
+    assert wiki.registry_path.exists()
+
+
+def test_save_replaces_existing_file_atomically(tmp_path: Path) -> None:
+    wiki = _wiki(tmp_path)
+    Registry.save(wiki, Registry(collections={"old": _ref("old")}))
+    Registry.save(wiki, Registry(collections={"new": _ref("new")}))
+    loaded = Registry.load(wiki)
+    assert set(loaded.collections.keys()) == {"new"}
+
+
+def test_save_cleans_temp_on_failure(tmp_path: Path, monkeypatch) -> None:
+    wiki = _wiki(tmp_path)
+    monkeypatch.setattr(
+        "os.replace",
+        lambda *_a, **_k: (_ for _ in ()).throw(OSError("boom")),
+    )
+    from lies.collections.errors import RegistryWriteFailed
+
+    with pytest.raises(RegistryWriteFailed):
+        Registry.save(wiki, Registry(collections={"x": _ref("x")}))
+    assert not (wiki.registry_path.with_suffix(".json.tmp")).exists()

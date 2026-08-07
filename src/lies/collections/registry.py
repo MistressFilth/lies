@@ -22,7 +22,9 @@ possible.
 
 from __future__ import annotations
 
+import contextlib
 import json
+import os
 from dataclasses import dataclass
 from typing import Literal
 
@@ -81,3 +83,36 @@ class Registry:
             except (TypeError, ValueError) as exc:
                 raise RegistryCorrupt(path, f"entry {cid!r} invalid: {exc}") from exc
         return Registry(collections=collections)
+
+    @staticmethod
+    def save(wiki, registry: Registry) -> None:
+        """Atomically write ``registry`` to ``wiki.registry_path``.
+
+        Writes to ``<path>.tmp`` first, then ``os.replace`` for
+        POSIX-atomic swap on the same filesystem. Cleans up the temp
+        file on any failure before re-raising.
+        """
+        from lies.collections.errors import RegistryWriteFailed
+
+        path = wiki.registry_path
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "version": registry.version,
+            "collections": {
+                cid: ref.model_dump(mode="json") for cid, ref in registry.collections.items()
+            },
+        }
+        try:
+            with tmp.open("w", encoding="utf-8") as fh:
+                json.dump(payload, fh, sort_keys=True)
+                fh.flush()
+                if hasattr(os, "fsync"):
+                    os.fsync(fh.fileno())
+            os.replace(tmp, path)
+        except BaseException as exc:
+            with contextlib.suppress(OSError):
+                tmp.unlink()
+            if isinstance(exc, OSError):
+                raise RegistryWriteFailed(path, str(exc)) from exc
+            raise
