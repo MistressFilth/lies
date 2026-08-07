@@ -51,6 +51,8 @@ class Registry:
         Missing or empty file returns a fresh registry. Corrupt JSON
         or unknown version raises a typed error.
         """
+        # ``wiki`` intentionally untyped: ``lies.wiki.wiki`` is the
+        # downstream consumer and importing it here creates a cycle.
         path = wiki.registry_path
         if not path.exists():
             return Registry(collections={})
@@ -67,7 +69,8 @@ class Registry:
         if not isinstance(payload, dict):
             raise RegistryCorrupt(path, "root must be a JSON object")
         version = payload.get("version")
-        if not isinstance(version, int):
+        # bool is an int subclass; reject it explicitly.
+        if not isinstance(version, int) or isinstance(version, bool):
             raise RegistryVersionUnsupported(path, found=-1, supported=_SUPPORTED_VERSION)
         if version > _SUPPORTED_VERSION:
             raise RegistryVersionUnsupported(path, found=version, supported=_SUPPORTED_VERSION)
@@ -91,6 +94,11 @@ class Registry:
         Writes to ``<path>.tmp`` first, then ``os.replace`` for
         POSIX-atomic swap on the same filesystem. Cleans up the temp
         file on any failure before re-raising.
+
+        Parent-directory fsync is intentionally omitted: the next
+        register rebuilds the truth, so a power-loss between
+        ``os.replace`` and the directory-entry fsync costs at most one
+        registration.
         """
         from lies.collections.errors import RegistryWriteFailed
 
@@ -126,7 +134,10 @@ class Registry:
 
     @staticmethod
     def filter_stale(registry: Registry, wiki) -> Registry:
-        """Drop entries whose ``<id>.yaml`` is missing under ``wiki.collections_dir``."""
+        """Drop entries whose ``<id>.yaml`` is missing under ``wiki.collections_dir``.
+
+        ``wiki`` intentionally untyped: see ``Registry.load``.
+        """
         kept = {
             cid: ref
             for cid, ref in registry.collections.items()

@@ -89,6 +89,17 @@ def test_load_rejects_missing_version_field(tmp_path: Path) -> None:
         Registry.load(wiki)
 
 
+def test_load_rejects_bool_version(tmp_path: Path) -> None:
+    """``True``/``False`` are ``int`` subclasses in Python; reject explicitly."""
+    wiki = _wiki(tmp_path)
+    wiki.registry_path.parent.mkdir(parents=True, exist_ok=True)
+    wiki.registry_path.write_text(
+        json.dumps({"version": True, "collections": {}}), encoding="utf-8"
+    )
+    with pytest.raises(RegistryVersionUnsupported):
+        Registry.load(wiki)
+
+
 def test_save_then_load_roundtrips(tmp_path: Path) -> None:
     wiki = _wiki(tmp_path)
     reg = Registry(

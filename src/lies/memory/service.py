@@ -22,7 +22,6 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from lies.agents.repair_models import RepairPlan
 
-from lies.collections.registry import Registry
 from lies.memory.index import append_log_entry, rebuild_index
 from lies.memory.models import (
     EvidenceAppend,
@@ -145,6 +144,13 @@ class WikiMemoryService:
         self._qmd_update = qmd_update
         self._lock = threading.Lock()
         self._known_evidence: set[str] = set()
+        # Local import: ``lies.collections.registry`` re-exports through
+        # ``lies.collections.__init__`` which imports this module's
+        # ``WikiMemoryService`` via ``lies.memory.__init__`` — keeping the
+        # import at module scope creates a cycle when test files load the
+        # registry module in isolation.
+        from lies.collections.registry import Registry
+
         on_disk = Registry.load(wiki)
         live = Registry.filter_stale(on_disk, wiki)
         self._registered: dict[str, WikiCollectionRef] = dict(live.collections)
@@ -177,6 +183,9 @@ class WikiMemoryService:
         updated before the write so the current process sees the
         registration immediately.
         """
+        # Local import: see ``__init__`` for the cycle rationale.
+        from lies.collections.registry import Registry
+
         self._registered[ref.collection_id] = ref
         on_disk = Registry.load(self._wiki)
         merged = Registry.merge(on_disk, Registry(collections=dict(self._registered)))
