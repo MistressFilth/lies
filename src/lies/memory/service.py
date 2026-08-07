@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from lies.agents.repair_models import RepairPlan
 
+from lies.collections.registry import Registry
 from lies.memory.index import append_log_entry, rebuild_index
 from lies.memory.models import (
     EvidenceAppend,
@@ -144,7 +145,9 @@ class WikiMemoryService:
         self._qmd_update = qmd_update
         self._lock = threading.Lock()
         self._known_evidence: set[str] = set()
-        self._registered: dict[str, WikiCollectionRef] = {}
+        on_disk = Registry.load(wiki)
+        live = Registry.filter_stale(on_disk, wiki)
+        self._registered: dict[str, WikiCollectionRef] = dict(live.collections)
 
     def _lock_path(self) -> Path:
         """Return the cross-process lock file path for this wiki."""

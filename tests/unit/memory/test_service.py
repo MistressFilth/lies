@@ -1,7 +1,7 @@
 # tests/unit/memory/test_service.py
 import hashlib
 import subprocess
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 
@@ -408,8 +408,6 @@ def test_service_locks_are_per_instance(git_wiki: Wiki) -> None:
 
 
 def test_register_collection_is_idempotent(tmp_path) -> None:
-    from pathlib import PurePosixPath
-
     from lies.memory.models import WikiCollectionRef
     from lies.memory.service import WikiMemoryService
 
@@ -435,3 +433,66 @@ def test_is_registered_false_for_unknown() -> None:
     wiki = make_wiki(name="unknown", data_root=pathlib.Path("/tmp/lies-svc-test"))
     svc = WikiMemoryService(wiki=wiki)
     assert not svc.is_registered("nope")
+
+
+def test_init_hydrates_registered_from_disk(tmp_path) -> None:
+    from lies.collections.registry import Registry
+    from lies.memory.models import WikiCollectionRef
+    from lies.memory.service import WikiMemoryService
+
+    wiki = make_wiki(name="hyd", data_root=tmp_path / "wiki")
+    wiki.registry_path.parent.mkdir(parents=True, exist_ok=True)
+    Registry.save(
+        wiki,
+        Registry(
+            collections={
+                "htmx": WikiCollectionRef(
+                    collection_id="htmx",
+                    root=PurePosixPath("/raw/htmx"),
+                    qmd_collection="htmx",
+                    schema_path=PurePosixPath(str(wiki.schema_path)),
+                )
+            }
+        ),
+    )
+    wiki.collections_dir.mkdir(parents=True, exist_ok=True)
+    (wiki.collections_dir / "htmx.yaml").write_text("name: htmx\n", encoding="utf-8")
+    svc = WikiMemoryService(wiki=wiki)
+    assert svc.is_registered("htmx")
+    assert len(svc.registered_collections()) == 1
+
+
+def test_init_filters_stale_entries(tmp_path) -> None:
+    from pathlib import PurePosixPath
+
+    from lies.collections.registry import Registry
+    from lies.memory.models import WikiCollectionRef
+    from lies.memory.service import WikiMemoryService
+
+    wiki = make_wiki(name="stale", data_root=tmp_path / "wiki")
+    wiki.registry_path.parent.mkdir(parents=True, exist_ok=True)
+    Registry.save(
+        wiki,
+        Registry(
+            collections={
+                "alive": WikiCollectionRef(
+                    collection_id="alive",
+                    root=PurePosixPath("/raw/alive"),
+                    qmd_collection="alive",
+                    schema_path=PurePosixPath(str(wiki.schema_path)),
+                ),
+                "ghost": WikiCollectionRef(
+                    collection_id="ghost",
+                    root=PurePosixPath("/raw/ghost"),
+                    qmd_collection="ghost",
+                    schema_path=PurePosixPath(str(wiki.schema_path)),
+                ),
+            }
+        ),
+    )
+    wiki.collections_dir.mkdir(parents=True, exist_ok=True)
+    (wiki.collections_dir / "alive.yaml").write_text("name: alive\n", encoding="utf-8")
+    svc = WikiMemoryService(wiki=wiki)
+    assert svc.is_registered("alive")
+    assert not svc.is_registered("ghost")
+    assert {r.collection_id for r in svc.registered_collections()} == {"alive"}
