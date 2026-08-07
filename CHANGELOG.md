@@ -105,6 +105,7 @@ All notable changes to LIES are documented here. The format follows
 - Removed stale mypy commands and configuration after the repository moved to ty.
 - Added the MIT license declared by package metadata.
 - Registered the integration-test pytest marker so full-suite runs emit no unknown-marker warning.
+- `WikiMemoryService.register_collection` now persists to `$XDG_STATE_HOME/lies/<name>/registry.json` so the registration survives process boundaries. `lies collections show` is truthful across processes; the ETL `REGISTERING` stage no longer silently re-registers on every sync. Stale entries (whose `collections/<id>.yaml` is missing) are dropped at load and never persisted. Writes are atomic via temp+rename; concurrent registers union rather than overwrite.
 
 ## [0.5.1] - 2026-08-03
 
