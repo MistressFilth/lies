@@ -476,46 +476,18 @@ def sync(
 def reindex(
     *,
     reconcile: bool = False,
-    embed: bool = False,
-    force: bool = False,
-    cleanup: bool = False,
-    all: bool = False,
     name: str | None = typer.Option(None, "--name", envvar="LIES_WIKI_NAME"),
 ) -> None:
     """Reindex QMD collections.
 
     ``--reconcile`` syncs each collection (running the full pipeline).
-    ``--embed`` and ``--cleanup`` are currently no-op placeholders
-    pending upstream qmd support; passing them prints a stderr warning
-    but does not fail.
     """
     from lies.etl.sync_helper import collection_names, sync_collection
-
-    if all:
-        reconcile, embed, cleanup = True, True, True
-    if force and not embed:
-        raise typer.BadParameter("--force requires --embed")
 
     wiki = resolve_wiki(name)
     if reconcile:
         for coll_name in collection_names(wiki, None):
             sync_collection(wiki, coll_name, force=False)
-    if embed:
-        from lies.qmd.cli import qmd_embed
-
-        qmd_embed(wiki.data_root, force=force)
-        typer.echo(
-            "warning: --embed is a no-op; upstream qmd has no embed subcommand yet.",
-            err=True,
-        )
-    if cleanup:
-        from lies.qmd.cli import qmd_cleanup
-
-        qmd_cleanup(wiki.data_root)
-        typer.echo(
-            "warning: --cleanup is a no-op; upstream qmd has no cleanup subcommand yet.",
-            err=True,
-        )
 
 
 @app.command()
