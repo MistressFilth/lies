@@ -11,10 +11,9 @@ import sys
 import textwrap
 from pathlib import Path, PurePosixPath
 
-from lies.memory.service import WikiMemoryService  # noqa: F401 - referenced from child_script
+from lies.memory.service import WikiMemoryService  # noqa: F401 - cycle-break; see module-level comment
 from lies.collections.registry import Registry
 from lies.memory.models import WikiCollectionRef
-from lies.wiki.wiki import Wiki  # noqa: F401 - referenced from child_script
 from tests.conftest import make_wiki
 
 
