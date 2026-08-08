@@ -53,10 +53,12 @@ def test_reindex_reconcile_runs_sync_collection(
     with (
         mock.patch("lies.etl.sync_helper.collection_names", return_value=coll_names),
         mock.patch("lies.etl.sync_helper.sync_collection") as mock_sync,
+        mock.patch("lies.cli.WikiLinkResolver.build") as mock_resolver_build,
     ):
         result = runner.invoke(app, ["reindex", "--reconcile"])
     assert result.exit_code == 0
     assert mock_sync.call_count == len(coll_names)
+    assert mock_resolver_build.called
     assert "--embed is a no-op" not in (result.stderr or "")
     assert "--cleanup is a no-op" not in (result.stderr or "")
 
