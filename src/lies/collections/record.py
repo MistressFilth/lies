@@ -111,7 +111,14 @@ def save_collection(
     *,
     in_memory_only: bool = False,
 ) -> None:
-    """Validate and save a collection config under ``wiki``."""
+    """Validate and save a collection config under ``wiki``.
+
+    Writes atomically: payload is dumped to ``<config_path>.tmp`` next
+    to the target, fsync'd, then ``os.replace``d into place. On any
+    ``OSError`` the tmp file is removed and ``CollectionWriteFailed``
+    is raised. With ``in_memory_only=True``, no IO occurs (used by
+    callers that only want validation + the dataclass-shaped payload).
+    """
     from lies.wiki.wiki import Wiki
 
     if not isinstance(wiki, Wiki):
@@ -127,4 +134,22 @@ def save_collection(
 
     config_path = Collection.config_path(wiki, collection.name)
     config_path.parent.mkdir(parents=True, exist_ok=True)
-    config_path.write_text(yaml.safe_dump(payload, sort_keys=True), encoding="utf-8")
+    tmp = config_path.with_suffix(config_path.suffix + ".tmp")
+    import contextlib
+    import os
+
+    from lies.collections.errors import CollectionWriteFailed
+
+    try:
+        with tmp.open("w", encoding="utf-8") as fh:
+            yaml.safe_dump(payload, fh, sort_keys=True)
+            fh.flush()
+            if hasattr(os, "fsync"):
+                os.fsync(fh.fileno())
+        os.replace(tmp, config_path)
+    except BaseException as exc:
+        with contextlib.suppress(OSError):
+            tmp.unlink()
+        if isinstance(exc, OSError):
+            raise CollectionWriteFailed(config_path, str(exc)) from exc
+        raise
