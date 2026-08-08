@@ -20,6 +20,7 @@ from lies.scrapers.base import pick_scraper
 from lies.utils.logging import configure_logging
 from lies.wiki.git import atomic_commit
 from lies.wiki.layout import WikiLayout
+from lies.wikilinks import WikiLinkCorpusMissing, WikiLinkResolver
 
 app = typer.Typer(
     name="lies",
@@ -363,10 +364,15 @@ def lint(
     """Run lint; with --fix also apply the repair plan."""
     configure_logging()
     wiki = resolve_wiki(name)
+    try:
+        resolver = WikiLinkResolver.build((wiki.wiki_dir, wiki.raw_dir))
+    except WikiLinkCorpusMissing:
+        typer.echo(f"error: no wiki/ or raw/ directory under {wiki.data_root}", err=True)
+        raise typer.Exit(code=2) from None
     orch = Orchestrator(wiki)
     # Use the host-side ``run_lint`` entry point so the lint pass writes
     # a deterministic ``wiki/lint-report.md`` and appends to ``wiki/log.md``.
-    output = orch.run_lint(apply=fix)
+    output = orch.run_lint(apply=fix, resolver=resolver)
     console.print(Markdown(output))
 
 
@@ -480,14 +486,19 @@ def reindex(
 ) -> None:
     """Reindex QMD collections.
 
-    ``--reconcile`` syncs each collection (running the full pipeline).
+    ``--reconcile`` syncs each collection (running the full pipeline) and
+    rebuilds the in-memory wikilink corpus for downstream consumers.
     """
     from lies.etl.sync_helper import collection_names, sync_collection
+    from lies.wikilinks import WikiLinkResolver
 
     wiki = resolve_wiki(name)
     if reconcile:
         for coll_name in collection_names(wiki, None):
             sync_collection(wiki, coll_name, force=False)
+        # Spec: reindex rebuilds the corpus. No in-process consumer today
+        # (YAGNI); held for the lifetime of this process.
+        WikiLinkResolver.build((wiki.wiki_dir, wiki.raw_dir))
 
 
 @app.command()
