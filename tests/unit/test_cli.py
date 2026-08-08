@@ -1,13 +1,15 @@
 from __future__ import annotations
 
-from pathlib import Path
+from datetime import datetime, timezone
+from pathlib import Path, PurePosixPath
 from unittest.mock import patch
 
 import pytest
 from typer.testing import CliRunner
 
-from lies import __version__
+from lies import __version__, xdg
 from lies.cli import app
+from lies.collections.record import Collection, load_collection, save_collection
 from lies.wiki.wiki import Wiki
 
 runner = CliRunner()
@@ -529,3 +531,176 @@ def test_status_exits_0_when_running(monkeypatch, tmp_path: Path) -> None:
     assert result.exit_code == 0
     assert "running" in result.stdout
     assert "55" in result.stdout
+
+
+# Tests for `lies collections modify` (Task 3).
+#
+# The `modify` subcommand accepts either `--from-file PATH` (a YAML
+# patch) or `--set KEY=VALUE` (one or more). Both flags are mutually
+# exclusive; at least one is required. The fixture mirrors the pattern
+# in `tests/unit/test_cli_collections_show.py`: it sets
+# `LIES_WIKI_NAME` and the LIES-specific XDG overrides so the test's
+# `_seed_collection` and the CLI's `resolve_wiki` agree on the same
+# wiki root under `tmp_path`.
+
+
+def _combined_output(result) -> str:
+    """Click 8.2+ splits stderr from `.output`; tolerate either layout."""
+    return result.output + (result.stderr if result.stderr_bytes else "")
+
+
+@pytest.fixture
+def wiki(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Wiki:
+    name = "modify"
+    monkeypatch.setenv("LIES_WIKI_NAME", name)
+    monkeypatch.setenv("LIES_XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setenv("LIES_XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("LIES_XDG_CACHE_HOME", str(tmp_path / "cache"))
+    monkeypatch.setenv("LIES_XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setenv("LIES_XDG_RUNTIME_DIR", str(tmp_path / "runtime"))
+    wiki = Wiki(
+        name=name,
+        data_root=xdg.data_home() / "lies" / name,
+        config_root=xdg.config_home() / "lies" / name,
+        cache_root=xdg.cache_home() / "lies" / name,
+        state_root=xdg.state_home() / "lies" / name,
+        runtime_root=xdg.runtime_dir_for(name),
+    )
+    wiki.data_root.mkdir(parents=True, exist_ok=True)
+    wiki.collections_dir.mkdir(parents=True, exist_ok=True)
+    return wiki
+
+
+def _seed_collection(wiki_obj: Wiki, name: str) -> Collection:
+    save_collection(
+        wiki_obj,
+        Collection(
+            name=name,
+            path=PurePosixPath(f"/raw/{name}"),
+            source="https://old.example.com",
+            tags=["old"],
+            scraper_cmd=None,
+            doc_path=None,
+            mapper_model=None,
+            language=None,
+            version="1",
+            created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            updated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            config={},
+        ),
+    )
+    return load_collection(wiki_obj, name)
+
+
+def test_modify_set_tags_comma_split(wiki: Wiki) -> None:
+    _seed_collection(wiki, "alpha")
+    result = runner.invoke(
+        app,
+        ["collections", "modify", "alpha", "--set", "tags=stdlib,core"],
+    )
+    assert result.exit_code == 0, result.output
+    loaded = load_collection(wiki, "alpha")
+    assert loaded.tags == ["stdlib", "core"]
+
+
+def test_modify_set_config_dotted(wiki: Wiki) -> None:
+    _seed_collection(wiki, "alpha")
+    result = runner.invoke(
+        app,
+        ["collections", "modify", "alpha", "--set", "config.render_cmd=foo"],
+    )
+    assert result.exit_code == 0, result.output
+    loaded = load_collection(wiki, "alpha")
+    assert loaded.config == {"render_cmd": "foo"}
+
+
+def test_modify_set_rejects_unknown_key(wiki: Wiki) -> None:
+    _seed_collection(wiki, "alpha")
+    result = runner.invoke(
+        app,
+        ["collections", "modify", "alpha", "--set", "path=foo"],
+    )
+    assert result.exit_code != 0
+    assert "not editable" in _combined_output(result)
+
+
+def test_modify_set_and_from_file_conflict(wiki: Wiki, tmp_path: Path) -> None:
+    _seed_collection(wiki, "alpha")
+    patch = tmp_path / "p.yaml"
+    patch.write_text("tags: []\n", encoding="utf-8")
+    result = runner.invoke(
+        app,
+        [
+            "collections",
+            "modify",
+            "alpha",
+            "--from-file",
+            str(patch),
+            "--set",
+            "tags=foo",
+        ],
+    )
+    assert result.exit_code != 0
+    assert "not both" in _combined_output(result)
+
+
+def test_modify_no_flags_errors(wiki: Wiki) -> None:
+    _seed_collection(wiki, "alpha")
+    result = runner.invoke(app, ["collections", "modify", "alpha"])
+    assert result.exit_code != 0
+    assert "requires" in _combined_output(result)
+
+
+def test_modify_from_file_applies_editable_fields(wiki: Wiki, tmp_path: Path) -> None:
+    _seed_collection(wiki, "alpha")
+    patch = tmp_path / "p.yaml"
+    patch.write_text(
+        "tags: [stdlib, core]\nlanguage: en\nconfig:\n  render_cmd: foo\n",
+        encoding="utf-8",
+    )
+    result = runner.invoke(
+        app,
+        ["collections", "modify", "alpha", "--from-file", str(patch)],
+    )
+    assert result.exit_code == 0, result.output
+    loaded = load_collection(wiki, "alpha")
+    assert loaded.tags == ["stdlib", "core"]
+    assert loaded.language == "en"
+    assert loaded.config == {"render_cmd": "foo"}
+    assert loaded.created_at == datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+
+def test_modify_from_file_rejects_name_field(wiki: Wiki, tmp_path: Path) -> None:
+    _seed_collection(wiki, "alpha")
+    patch = tmp_path / "p.yaml"
+    patch.write_text("name: other\n", encoding="utf-8")
+    result = runner.invoke(
+        app,
+        ["collections", "modify", "alpha", "--from-file", str(patch)],
+    )
+    assert result.exit_code != 0
+    assert "name" in _combined_output(result)
+
+
+def test_modify_from_file_rejects_invalid_yaml(wiki: Wiki, tmp_path: Path) -> None:
+    _seed_collection(wiki, "alpha")
+    patch = tmp_path / "p.yaml"
+    patch.write_text("not: a: mapping: at: all", encoding="utf-8")
+    result = runner.invoke(
+        app,
+        ["collections", "modify", "alpha", "--from-file", str(patch)],
+    )
+    assert result.exit_code != 0
+    combined = _combined_output(result)
+    assert "invalid YAML" in combined or "mapping" in combined
+
+
+def test_modify_from_file_not_found(wiki: Wiki, tmp_path: Path) -> None:
+    _seed_collection(wiki, "alpha")
+    patch = tmp_path / "missing.yaml"
+    result = runner.invoke(
+        app,
+        ["collections", "modify", "alpha", "--from-file", str(patch)],
+    )
+    assert result.exit_code != 0
+    assert "not found" in _combined_output(result)
