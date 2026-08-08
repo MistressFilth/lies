@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 import warnings
 from pathlib import Path
 
@@ -214,3 +215,29 @@ class TestResolverUsesAhoCorasick:
         dict_only._aho = None  # Force the dict path.
         for key in ["alpha", "first", "uno", "beta", "gamma"]:
             assert r.resolve(key) == dict_only.resolve(key)
+
+
+class TestResolverImportFallback:
+    def test_resolves_correctly_without_ahocorasick(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When ahocorasick_rs import raises ImportError, build() succeeds and
+        resolve() still returns correct results via the dict fallback."""
+        # Force the import inside build() to fail.
+        monkeypatch.setitem(
+            sys.modules,
+            "ahocorasick_rs",
+            None,  # causes ImportError on `import ahocorasick_rs`
+        )
+
+        wiki = tmp_path / "wiki"
+        wiki.mkdir()
+        _write_page(wiki, "alpha.md", "---\ntitle: First\n---\n")
+        _write_page(wiki, "beta.md", "# Beta\n")
+
+        r = WikiLinkResolver.build((wiki,))
+        assert r._aho is None
+        assert r.resolve("alpha") == (wiki / "alpha.md").resolve()
+        assert r.resolve("First") == (wiki / "alpha.md").resolve()
+        assert r.resolve("beta") == (wiki / "beta.md").resolve()
+        assert r.resolve("missing") is None
