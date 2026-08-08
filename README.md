@@ -193,6 +193,7 @@ Environment variables:
 
 - `LIES_WIKI_NAME` — wiki name (default: `default`); resolved under
   `$XDG_DATA_HOME/lies/<name>/`
+- `LIES_LANG` — wiki language; resolves to `en` when unset. Read before any per-wiki `lies.toml`.
 - `LIES_LOG_LEVEL` — stdlib log level when logfire is inactive (default: `INFO`)
 - `LOGFIRE_TOKEN` — if set, logfire is configured for observability and
   `pydantic-ai` is instrumented
