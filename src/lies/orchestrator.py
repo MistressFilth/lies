@@ -44,6 +44,8 @@ from lies.query import SynthesizedAnswer, synthesize_answer
 from lies.schema import load_schema
 from lies.wiki.git import CommitError, atomic_commit
 from lies.wiki.wiki import Wiki
+from lies.wikilinks import WikiLinkResolver
+from lies.wikilinks import extract_wikilinks as _extract_wikilinks
 
 
 def _resolve_default_models(wiki: Wiki) -> dict[str, Model | str]:
@@ -107,6 +109,7 @@ def _build_lint_report(
     wiki: Wiki,
     *,
     repair_receipt: RepairReceipt | None = None,
+    resolver: WikiLinkResolver | None = None,
 ) -> LintReport:
     """Produce a deterministic :class:`LintReport` for the host-side lint.
 
@@ -257,6 +260,26 @@ def _build_lint_report(
                         category="missing_page",
                         message=f"{page} cites {source} which is not present",
                         pages=[page],
+                        safe_to_fix=False,
+                    )
+                )
+
+    # Wikilink resolution: emits missing_page for [[target]] with no corpus match.
+    if resolver is None:
+        resolver = WikiLinkResolver.build((wiki.wiki_dir, wiki.raw_dir))
+    for page in pages:
+        try:
+            text = (wiki.wiki_dir / page).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        for raw_target in _extract_wikilinks(text):
+            if resolver.resolve(raw_target) is None:
+                findings.append(
+                    LintFinding(
+                        severity=LintSeverity.LOW,
+                        category="missing_page",
+                        pages=[page],
+                        message=f"{page} has wikilink target '{raw_target}' with no matching page",
                         safe_to_fix=False,
                     )
                 )
@@ -1046,9 +1069,9 @@ class Orchestrator:
         """
         return synthesize_answer(question, self.wiki)
 
-    def run_lint(self, apply: bool = False) -> str:
+    def run_lint(self, apply: bool = False, *, resolver: WikiLinkResolver | None = None) -> str:
         """Run deterministic and LLM lint, merge findings, and write report."""
-        shell_report = _build_lint_report(self.wiki)
+        shell_report = _build_lint_report(self.wiki, resolver=resolver)
         llm_report, fallback_reason = self._call_linter()
         merged_report, fallback_reason = merge_lint_reports(
             shell_report, llm_report, llm_fallback_reason=fallback_reason

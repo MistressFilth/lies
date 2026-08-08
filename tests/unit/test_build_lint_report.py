@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from lies.orchestrator import _build_lint_report
+from lies.wikilinks import WikiLinkResolver
 from tests.conftest import make_wiki
 
 
@@ -189,3 +190,93 @@ def test_shell_emits_no_data_gap(wiki) -> None:
     subprocess.run(["git", "commit", "-m", "seed"], cwd=wiki.data_root, check=True)
     report = _build_lint_report(wiki)
     assert all(f.category != "data_gap" for f in report.findings)
+
+
+def _wikilink_resolver(wiki) -> WikiLinkResolver:
+    """Build a resolver over wiki/ + raw/ for the lint-report test fixture."""
+    return WikiLinkResolver.build((wiki.wiki_dir, wiki.raw_dir))
+
+
+def test_wikilink_resolved_no_finding(wiki) -> None:
+    """[[Page]] that resolves via the corpus emits no missing_page finding."""
+    _write(
+        wiki, "wiki/concepts/a.md", "---\ntitle: Alpha\n---\n# Alpha\n\nSee [[Beta]] for details.\n"
+    )
+    _write(wiki, "wiki/concepts/b.md", "---\ntitle: Beta\n---\n# Beta\n")
+    subprocess.run(["git", "commit", "-m", "seed"], cwd=wiki.data_root, check=True)
+
+    resolver = _wikilink_resolver(wiki)
+    report = _build_lint_report(wiki, resolver=resolver)
+    missing_pages = [f for f in report.findings if f.category == "missing_page"]
+    assert missing_pages == []
+
+
+def test_wikilink_broken_emits_missing_page(wiki) -> None:
+    """[[Broken]] that doesn't resolve emits a missing_page finding."""
+    _write(
+        wiki,
+        "wiki/concepts/a.md",
+        "---\ntitle: Alpha\n---\n# Alpha\n\nSee [[Broken]] for details.\n",
+    )
+    subprocess.run(["git", "commit", "-m", "seed"], cwd=wiki.data_root, check=True)
+
+    resolver = _wikilink_resolver(wiki)
+    report = _build_lint_report(wiki, resolver=resolver)
+    missing_pages = [f for f in report.findings if f.category == "missing_page"]
+    assert len(missing_pages) == 1
+    finding = missing_pages[0]
+    assert "concepts/a.md" in finding.pages
+    assert "Broken" in finding.message
+
+
+def test_wikilink_inside_code_block_ignored(wiki) -> None:
+    """Wikilink syntax inside a fenced code block does not flag."""
+    _write(
+        wiki,
+        "wiki/concepts/a.md",
+        "---\ntitle: Alpha\n---\n# Alpha\n\n```\n[[Broken]]\n```\n",
+    )
+    subprocess.run(["git", "commit", "-m", "seed"], cwd=wiki.data_root, check=True)
+
+    resolver = _wikilink_resolver(wiki)
+    report = _build_lint_report(wiki, resolver=resolver)
+    missing_pages = [f for f in report.findings if f.category == "missing_page"]
+    assert missing_pages == []
+
+
+def test_wikilink_mixed_with_markdown_link(wiki) -> None:
+    """Markdown and wikilink on one page are classified independently."""
+    _write(
+        wiki,
+        "wiki/concepts/a.md",
+        "---\ntitle: Alpha\n---\n# Alpha\n\nSee [Beta](b.md) and [[Beta]] and [[Broken]].\n",
+    )
+    _write(wiki, "wiki/concepts/b.md", "---\ntitle: Beta\n---\n# Beta\n")
+    subprocess.run(["git", "commit", "-m", "seed"], cwd=wiki.data_root, check=True)
+
+    resolver = _wikilink_resolver(wiki)
+    report = _build_lint_report(wiki, resolver=resolver)
+    missing_pages = [f for f in report.findings if f.category == "missing_page"]
+    # Only [[Broken]] flags; [[Beta]] and [Beta](b.md) both resolve.
+    assert len(missing_pages) == 1
+    assert "Broken" in missing_pages[0].message
+
+
+def test_empty_corpus_flags_every_wikilink(wiki) -> None:
+    """Empty corpus → every wikilink flagged as missing_page."""
+    _write(
+        wiki,
+        "wiki/concepts/a.md",
+        "---\ntitle: Alpha\n---\n# Alpha\n\n[[Beta]] [[Gamma]]\n",
+    )
+    subprocess.run(["git", "commit", "-m", "seed"], cwd=wiki.data_root, check=True)
+
+    resolver = WikiLinkResolver.build((wiki.wiki_dir, wiki.raw_dir))
+    # Sanity: corpus has alpha.md but not Beta.md nor Gamma.md, so only
+    # [[Beta]] and [[Gamma]] flag.
+    report = _build_lint_report(wiki, resolver=resolver)
+    missing_pages = [f for f in report.findings if f.category == "missing_page"]
+    flagged = sorted(f.message for f in missing_pages)
+    assert len(flagged) == 2
+    assert any("Beta" in m for m in flagged)
+    assert any("Gamma" in m for m in flagged)
