@@ -2,13 +2,6 @@
 
 <!-- 1-3 sentences. What does this PR do, and why? -->
 
-## Spec & Plan
-
-<!-- Link the design spec and implementation plan. If this is a small fix, write "No spec or plan — ad-hoc fix." -->
-
-- Spec: `path/to/spec.md`
-- Plan: `path/to/plan.md`
-
 ## Adjudicated deviations from the plan
 
 <!-- If mid-execution you changed something the plan called out, surface it here. The reviewer's job is to catch this; the PR's job is to make it cheap. -->
