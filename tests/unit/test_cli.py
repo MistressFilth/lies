@@ -704,3 +704,31 @@ def test_modify_from_file_not_found(wiki: Wiki, tmp_path: Path) -> None:
     )
     assert result.exit_code != 0
     assert "not found" in _combined_output(result)
+
+
+# Task 7: `lies lint` must build a WikiLinkResolver and pass it to the
+# orchestrator. When neither wiki/ nor raw/ exists under the wiki's
+# data_root, the resolver raises WikiLinkCorpusMissing; the CLI must
+# surface that as exit code 2 with a clear error message.
+
+
+def test_lint_missing_roots_errors_with_exit_2(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """lies lint exits 2 with a clear error when neither wiki/ nor raw/ exists."""
+    from lies.cli import app
+    from tests.conftest import make_wiki
+
+    root = tmp_path / "wiki"
+    root.mkdir()  # data root exists, but wiki/ + raw/ inside it do NOT.
+    wiki = make_wiki(name="lint-missing", data_root=root)
+
+    from lies import cli as cli_mod
+
+    monkeypatch.setattr(cli_mod, "resolve_wiki", lambda name=None: wiki)
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["lint"], catch_exceptions=False)
+    assert result.exit_code == 2
+    # Click 8.2+ splits stderr from `.output`; use `result.stderr` directly.
+    assert "no wiki/ or raw/ directory" in result.stderr
