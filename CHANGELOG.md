@@ -87,6 +87,7 @@ All notable changes to LIES are documented here. The format follows
 - CI workflow no longer fetches full git history (`fetch-depth: 0`); the only consumer was the dropped compliance test.
 - `LIES_MODEL` env var. Set per-agent env vars (`LIES_ORCHESTRATOR_MODEL`, etc.) or edit `providers.toml` instead.
 - `lies.config.get_model` and the `LIES_MODEL` constant in `src/lies/config.py`.
+- The `lies reindex --embed`, `--cleanup`, `--force`, and `--all` flags, plus the underlying `qmd_embed`/`qmd_cleanup` library stubs. Upstream `qmd` exposes no embed or cleanup subcommand, and the flags existed only as no-op placeholders that printed a stderr warning. `lies reindex --reconcile` remains. Note: this is technically a SemVer-major removal of documented CLI surface; the version bump is held at patch (0.7.1) per maintainer directive — operators scripting the removed flags will see a typer exit-code-2 "no such option" error.
 
 ### Fixed
 - `LiquidBuilder` now rejects empty pandoc output so failed conversions
