@@ -20,6 +20,7 @@ from lies.scrapers.base import pick_scraper
 from lies.utils.logging import configure_logging
 from lies.wiki.git import atomic_commit
 from lies.wiki.layout import WikiLayout
+from lies.wiki_settings import resolve_language
 from lies.wikilinks import WikiLinkCorpusMissing, WikiLinkResolver
 
 app = typer.Typer(
@@ -229,6 +230,7 @@ def config_cmd(
 
     wiki = Wiki.require(name)
     typer.echo(f"wiki: {wiki.name}")
+    typer.echo(f"language: {resolve_language(wiki)}")
 
     cfg = load_providers_config(wiki.providers_path)
     if cfg is None:
@@ -537,6 +539,7 @@ def collections(
 
         c = load_collection(wiki, name)
         print(f"name={c.name} source={c.source} tags={c.tags}")
+        typer.echo(f"language: {resolve_language(wiki, c)}")
         # The CLI doesn't know whether sync has run in this process;
         # an empty registry means the in-process WikiMemoryService for
         # this wiki root has not registered any collection yet.
