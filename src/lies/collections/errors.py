@@ -54,3 +54,12 @@ class RegistryWriteFailed(Exception):
         super().__init__(f"failed to write registry at {path}: {reason}")
         self.path = path
         self.reason = reason
+
+
+class CollectionWriteFailed(Exception):
+    """Raised when an atomic write to a collection YAML config fails."""
+
+    def __init__(self, path: Path, message: str) -> None:
+        self.path = path
+        self.message = message
+        super().__init__(f"failed to write {path}: {message}")

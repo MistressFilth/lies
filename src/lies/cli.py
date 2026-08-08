@@ -499,6 +499,8 @@ def collections(
     source: str | None = None,
     prompt: str | None = None,
     apply: bool = False,
+    from_file: Path | None = typer.Option(None, "--from-file"),  # noqa: B008
+    set_: list[str] | None = typer.Option(None, "--set"),  # noqa: B008
     wiki_name: str | None = typer.Option(None, "--name", envvar="LIES_WIKI_NAME"),
 ) -> None:
     """Inspect, modify, and author collection configurations."""
@@ -535,10 +537,91 @@ def collections(
         )
         print(f"status: {'registered' if ref else 'pending'}")
     elif action == "modify" and name:
-        raise typer.BadParameter(
-            f"`lies collections modify {name}` is not implemented yet; "
-            f"edit `{cfg_dir}/{name}.yaml` by hand for now."
-        )
+        from dataclasses import replace as _dc_replace
+
+        if from_file is not None and set_:
+            raise typer.BadParameter("modify accepts --from-file or --set, not both")
+        if from_file is None and not set_:
+            raise typer.BadParameter("modify requires --from-file or --set")
+
+        existing = load_collection(wiki, name)
+
+        editable_top = {
+            "source",
+            "tags",
+            "scraper_cmd",
+            "doc_path",
+            "mapper_model",
+            "language",
+            "config",
+        }
+
+        updates: dict[str, object] = {}
+
+        if from_file is not None:
+            if not from_file.exists():
+                raise typer.BadParameter(f"file not found: {from_file}")
+            try:
+                payload = yaml.safe_load(from_file.read_text(encoding="utf-8"))
+            except yaml.YAMLError as exc:
+                raise typer.BadParameter(f"invalid YAML in {from_file}: {exc}") from exc
+            if not isinstance(payload, dict):
+                raise typer.BadParameter("--from-file root must be a mapping")
+            reserved = {"name", "path", "version", "created_at", "updated_at"}
+            for k in payload:
+                if k in reserved:
+                    raise typer.BadParameter(f"--from-file cannot set {k!r}; reserved")
+                if k not in editable_top:
+                    raise typer.BadParameter(
+                        f"--from-file key {k!r} not editable; allowed: {sorted(editable_top)}"
+                    )
+            if "doc_path" in payload and payload["doc_path"] is not None:
+                payload["doc_path"] = Path(payload["doc_path"])
+            if "tags" in payload:
+                payload["tags"] = list(payload["tags"])
+            if "config" in payload and payload["config"] is None:
+                payload["config"] = {}
+            updates.update(payload)
+
+        if set_:
+            for raw in set_:
+                if "=" not in raw:
+                    raise typer.BadParameter(f"--set expects KEY=VALUE, got {raw!r}")
+                key, value = raw.split("=", 1)
+                key = key.strip()
+                value = value.strip()
+                if key.startswith("config."):
+                    sub = key.split(".", 1)[1]
+                    if not sub:
+                        raise typer.BadParameter(f"--set {key!r}: empty subkey")
+                    cfg_src = updates.get("config")
+                    cfg = (
+                        dict(cast("dict[str, Any]", cfg_src)) if cfg_src else dict(existing.config)
+                    )
+                    cfg[sub] = value
+                    updates["config"] = cfg
+                    continue
+                if key not in editable_top:
+                    raise typer.BadParameter(
+                        f"key {key!r} not editable; allowed: {sorted(editable_top)}"
+                    )
+                if key == "tags":
+                    parts = [p.strip() for p in value.split(",")]
+                    parts = [p for p in parts if p]
+                    if not parts:
+                        raise typer.BadParameter("tags value cannot be empty")
+                    updates["tags"] = parts
+                elif key == "doc_path":
+                    if not value:
+                        raise typer.BadParameter("doc_path cannot be empty")
+                    updates["doc_path"] = Path(value)
+                else:
+                    updates[key] = value
+
+        updates["updated_at"] = datetime.now(tz=timezone.utc)
+        new = _dc_replace(existing, **updates)
+        save_collection(wiki, new)
+        typer.echo(f"updated {Collection.config_path(wiki, name)}")
     elif action == "new" and name:
         # Import the agent inside the branch so that tests can mock
         # ``lies.agents.collection_author.collection_author_agent`` at
