@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING
 import tomllib
 
 if TYPE_CHECKING:
+    from lies.collections.record import Collection
     from lies.wiki.wiki import Wiki
 
 
@@ -95,3 +96,15 @@ class WikiSettings:
             )
             return cls(language=DEFAULT_LANGUAGE)
         return cls(language=stripped)
+
+
+def resolve_language(wiki: Wiki, collection: Collection | None = None) -> str:
+    """Return the effective language for ``wiki``.
+
+    When ``collection`` is provided AND its ``language`` field is set
+    (i.e. non-None), the collection value wins. Otherwise the
+    wiki-global (resolved from env > toml > default) is returned.
+    """
+    if collection is not None and collection.language is not None:
+        return collection.language
+    return WikiSettings.load(wiki).language

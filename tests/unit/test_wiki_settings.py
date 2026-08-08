@@ -7,7 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from lies.wiki_settings import DEFAULT_LANGUAGE, WikiSettings
+from lies.collections.record import Collection
+from lies.wiki_settings import DEFAULT_LANGUAGE, WikiSettings, resolve_language
 from tests.conftest import make_wiki
 
 
@@ -111,3 +112,48 @@ class TestWikiSettingsLoad:
     def test_default_fallback(self, wiki, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("LIES_LANG", raising=False)
         assert WikiSettings.load(wiki).language == DEFAULT_LANGUAGE
+
+
+def _make_collection(wiki, name: str = "test-coll", language: str | None = None) -> Collection:
+    """Build a minimal Collection for resolve_language tests."""
+    from datetime import datetime, timezone
+
+    return Collection(
+        name=name,
+        path=wiki.collections_dir / name,
+        source="https://example.com",
+        tags=[],
+        scraper_cmd=None,
+        doc_path=None,
+        mapper_model=None,
+        language=language,
+        version="0.0.0",
+        created_at=datetime.now(tz=timezone.utc),
+        updated_at=datetime.now(tz=timezone.utc),
+    )
+
+
+class TestResolveLanguage:
+    def test_wiki_global_when_no_collection(self, wiki, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("LIES_LANG", "fr")
+        assert resolve_language(wiki) == "fr"
+
+    def test_collection_override_wins(self, wiki, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("LIES_LANG", "fr")
+        coll = _make_collection(wiki, language="de")
+        assert resolve_language(wiki, coll) == "de"
+
+    def test_collection_none_falls_back_to_wiki_global(
+        self, wiki, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("LIES_LANG", "fr")
+        coll = _make_collection(wiki, language=None)
+        assert resolve_language(wiki, coll) == "fr"
+
+    def test_collection_empty_string_normalized_falls_back(
+        self, wiki, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Collection loader normalizes empty/whitespace to None; resolver falls back."""
+        monkeypatch.setenv("LIES_LANG", "fr")
+        coll = _make_collection(wiki, language=None)  # normalized upstream
+        assert resolve_language(wiki, coll) == "fr"
