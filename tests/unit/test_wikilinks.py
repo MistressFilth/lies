@@ -192,3 +192,25 @@ class TestResolverUsesAhoCorasick:
         assert r.resolve("foo") == (wiki / "foo.md").resolve()
         # Regression: the longer key resolves to its own page, not None.
         assert r.resolve("foobar") == (wiki / "foobar.md").resolve()
+
+    def test_aho_backed_results_match_dict(self, tmp_path: Path) -> None:
+        """When ahocorasick_rs is installed, AC-backed resolve() returns the same
+        results as dict-backed resolve() for the same corpus."""
+        import ahocorasick_rs  # type: ignore[import-not-found]  # noqa: F401
+
+        wiki = tmp_path / "wiki"
+        wiki.mkdir()
+        _write_page(wiki, "alpha.md", "---\ntitle: First\naliases: [uno]\n---\n")
+        _write_page(wiki, "beta.md", "# Beta\n")
+        _write_page(wiki, "gamma/sub.md", "# Sub\n")
+
+        r = WikiLinkResolver.build((wiki,))
+
+        # Sanity: AC actually got built.
+        assert r._aho is not None, "ahocorasick_rs is installed; AC should be built"
+
+        # All dict-resolvable keys resolve identically through AC.
+        dict_only = WikiLinkResolver.build((wiki,))
+        dict_only._aho = None  # Force the dict path.
+        for key in ["alpha", "first", "uno", "beta", "gamma"]:
+            assert r.resolve(key) == dict_only.resolve(key)
