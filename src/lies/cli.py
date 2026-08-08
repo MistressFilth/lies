@@ -226,9 +226,8 @@ def config_cmd(
 ) -> None:
     """Print active model + wiki name + per-agent model assignments."""
     from lies.providers import AGENT_ROSTER, load_providers_config, resolve_model
-    from lies.wiki.wiki import Wiki
 
-    wiki = Wiki.require(name)
+    wiki = resolve_wiki(name)
     typer.echo(f"wiki: {wiki.name}")
     typer.echo(f"language: {resolve_language(wiki)}")
 
