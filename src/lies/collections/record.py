@@ -84,6 +84,16 @@ def load_collection(wiki: Wiki, name: str) -> Collection:
         raise CollectionConfigInvalid(f"config root must be a mapping: {config_path}")
 
     try:
+        raw_lang = payload.get("language")
+        if raw_lang is None:
+            language: str | None = None
+        elif isinstance(raw_lang, str):
+            stripped = raw_lang.strip()
+            language = stripped if stripped else None
+        else:
+            raise CollectionConfigInvalid(
+                f"language must be a string, got {type(raw_lang).__name__}"
+            )
         collection = Collection(
             name=payload["name"],
             path=Path(payload["path"]),
@@ -92,7 +102,7 @@ def load_collection(wiki: Wiki, name: str) -> Collection:
             scraper_cmd=payload.get("scraper_cmd"),
             doc_path=Path(payload["doc_path"]) if payload.get("doc_path") else None,
             mapper_model=payload.get("mapper_model"),
-            language=payload.get("language"),
+            language=language,
             version=payload["version"],
             created_at=_parse_dt(payload["created_at"]),
             updated_at=_parse_dt(payload["updated_at"]),
