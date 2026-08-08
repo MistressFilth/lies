@@ -168,3 +168,27 @@ class TestResolverBuildAndResolveDict:
         wiki.mkdir()
         r = WikiLinkResolver.build((wiki,))
         assert r.resolve("anything") is None
+
+
+class TestResolverUsesAhoCorasick:
+    """Regression tests for the Aho-Corasick path of ``WikiLinkResolver.resolve``.
+
+    The automaton's ``find_matches_as_strings`` defaults to ``overlapping=False``,
+    which suppresses longer matches in favor of the leftmost shorter one. When
+    the corpus has both ``foo`` and ``foobar`` as keys, resolving ``foobar``
+    must still return the ``foobar.md`` path — the spec's longest-wins guarantee.
+    """
+
+    def test_prefix_overlapping_keys_longest_wins(self, tmp_path: Path) -> None:
+        wiki = tmp_path / "wiki"
+        wiki.mkdir()
+        _write_page(wiki, "foo.md", "# Foo\n")
+        _write_page(wiki, "foobar.md", "# Foobar\n")
+
+        r = WikiLinkResolver.build((wiki,))
+        # Sanity: both keys are present in the corpus.
+        assert set(r._keys.keys()) == {"foo", "foobar"}
+        # The shorter key resolves normally.
+        assert r.resolve("foo") == (wiki / "foo.md").resolve()
+        # Regression: the longer key resolves to its own page, not None.
+        assert r.resolve("foobar") == (wiki / "foobar.md").resolve()

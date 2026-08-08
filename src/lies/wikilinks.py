@@ -190,7 +190,12 @@ class WikiLinkResolver:
         if self._aho is not None:
             # ahocorasick_rs reports every occurrence of a pattern as a
             # substring of the haystack; we only accept exact matches.
-            for match in self._aho.find_matches_as_strings(key):
+            # ``overlapping=True`` is required so that, when both ``foo`` and
+            # ``foobar`` are keys, resolving ``foobar`` reports the longer
+            # ``foobar`` match in addition to the leftmost ``foo`` match. The
+            # default non-overlapping scan suppresses the longer match, which
+            # would violate the spec's longest-wins guarantee.
+            for match in self._aho.find_matches_as_strings(key, overlapping=True):
                 if match == key:
                     return self._keys.get(key)
             return None
