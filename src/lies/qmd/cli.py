@@ -88,24 +88,6 @@ def is_qmd_installed() -> bool:
     return shutil.which("qmd") is not None
 
 
-def qmd_embed(cwd: Path, *, force: bool = False) -> None:
-    """Re-run the embedding model on existing chunks.
-
-    Not yet implemented; the upstream qmd CLI exposes no ``embed``
-    subcommand, so this is a placeholder. Callers should treat it as
-    a no-op until the embed/cleanup stages land.
-    """
-    return
-
-
-def qmd_cleanup(cwd: Path) -> None:
-    """Remove orphan chunks not referenced by any collection.
-
-    Not yet implemented; placeholder. See ``qmd_embed``.
-    """
-    return
-
-
 def qmd_query(
     cwd: Path,
     question: str,

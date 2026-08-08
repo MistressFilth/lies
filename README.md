@@ -358,7 +358,7 @@ Commands:
 
 - `lies sync <collection>` — re-ingest changed docs only (`--force` for full).
 - `lies ingest <collection>` — bootstrap a collection (existing or new).
-- `lies reindex` — reconcile / embed / cleanup flags.
+- `lies reindex --reconcile` — sync each collection.
 - `lies collections list|show|modify` — manage collection configs.
 
 See `docs/superpowers/plans/2026-08-01-parsing-and-ingestion-plan.md`
