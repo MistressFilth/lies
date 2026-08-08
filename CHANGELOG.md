@@ -75,6 +75,15 @@ All notable changes to LIES are documented here. The format follows
 - README now carries repository status, CI badge, development commands, and required project links.
 - Pinned GitHub Actions to commit SHAs (`actions/checkout@3d3c42e…`, `actions/setup-python@5fda3b9…`, `astral-sh/setup-uv@c771a70e…`).
 - `AGENTS.md` references now point to project notes for the internal design and plan documents.
+- `lies collections modify <name>` now edits a collection record and
+  writes immediately to the wiki's collections config directory
+  (`<config_root>/collections/<name>.yaml`). New flags: `--from-file PATH`
+  (whole-record YAML) and `--set KEY=VALUE` (one-off tweaks; dotted keys
+  support `config.<subkey>`). The documented "in-memory edit; persists
+  via `lies commit`" surface is dropped — `lies commit` is not planned.
+- `save_collection` writes atomically via sibling tmp + `os.replace` +
+  fsync (mirrors `Registry.save`). New typed error `CollectionWriteFailed`
+  raised on IO failure.
 
 ### Removed
 - `LIES_WIKI_ROOT` environment variable. Set `LIES_WIKI_NAME` instead.
@@ -87,7 +96,7 @@ All notable changes to LIES are documented here. The format follows
 - CI workflow no longer fetches full git history (`fetch-depth: 0`); the only consumer was the dropped compliance test.
 - `LIES_MODEL` env var. Set per-agent env vars (`LIES_ORCHESTRATOR_MODEL`, etc.) or edit `providers.toml` instead.
 - `lies.config.get_model` and the `LIES_MODEL` constant in `src/lies/config.py`.
-- The `lies reindex --embed`, `--cleanup`, `--force`, and `--all` flags, plus the underlying `qmd_embed`/`qmd_cleanup` library stubs. Upstream `qmd` exposes no embed or cleanup subcommand, and the flags existed only as no-op placeholders that printed a stderr warning. `lies reindex --reconcile` remains. Note: this is technically a SemVer-major removal of documented CLI surface; the version bump is held at patch (0.7.1) per maintainer directive — operators scripting the removed flags will see a typer exit-code-2 "no such option" error.
+- The `lies reindex --embed`, `--cleanup`, `--force`, and `--all` flags, plus the underlying `qmd_embed`/`qmd_cleanup` library stubs. Upstream `qmd` exposes no embed or cleanup subcommand, and the flags existed only as no-op placeholders that printed a stderr warning. `lies reindex --reconcile` remains. Note: this is technically a SemVer-major removal of documented CLI surface; it ships in the 0.8.0 minor bump rather than a SemVer-major, per maintainer directive — operators scripting the removed flags will see a typer exit-code-2 "no such option" error.
 
 ### Fixed
 - `LiquidBuilder` now rejects empty pandoc output so failed conversions
