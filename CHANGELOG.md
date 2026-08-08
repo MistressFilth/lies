@@ -75,6 +75,15 @@ All notable changes to LIES are documented here. The format follows
 - README now carries repository status, CI badge, development commands, and required project links.
 - Pinned GitHub Actions to commit SHAs (`actions/checkout@3d3c42e…`, `actions/setup-python@5fda3b9…`, `astral-sh/setup-uv@c771a70e…`).
 - `AGENTS.md` references now point to project notes for the internal design and plan documents.
+- `lies collections modify <name>` now edits a collection record and
+  writes immediately to `<wiki>/.lies/collections/<name>.yaml`. New
+  flags: `--from-file PATH` (whole-record YAML) and `--set KEY=VALUE`
+  (one-off tweaks; dotted keys support `config.<subkey>`). The
+  documented "in-memory edit; persists via `lies commit`" surface is
+  dropped — `lies commit` is not planned.
+- `save_collection` writes atomically via sibling tmp + `os.replace` +
+  fsync (mirrors `Registry.save`). New typed error `CollectionWriteFailed`
+  raised on IO failure.
 
 ### Removed
 - `LIES_WIKI_ROOT` environment variable. Set `LIES_WIKI_NAME` instead.
