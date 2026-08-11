@@ -732,3 +732,66 @@ def test_lint_missing_roots_errors_with_exit_2(
     assert result.exit_code == 2
     # Click 8.2+ splits stderr from `.output`; use `result.stderr` directly.
     assert "no wiki/ or raw/ directory" in result.stderr
+
+
+# Task 4: `lies config` and `lies collections show` must surface the
+# resolved language. `lies config` reads ``resolve_language(wiki)``;
+# `lies collections show <name>` reads ``resolve_language(wiki, coll)``
+# so per-collection overrides win.
+
+
+def test_lies_config_includes_language(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """``lies config`` output includes ``language: <resolved>``."""
+    from typer.testing import CliRunner
+
+    from lies.cli import app
+    from tests.conftest import make_wiki
+
+    root = tmp_path / "wiki"
+    root.mkdir()
+    wiki = make_wiki(name="config-lang-test", data_root=root)
+
+    from lies import cli as cli_mod
+
+    monkeypatch.setattr(cli_mod, "resolve_wiki", lambda name=None: wiki)
+    monkeypatch.setenv("LIES_LANG", "ja")
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["config"], catch_exceptions=False)
+    assert result.exit_code == 0
+    assert "language: ja" in result.stdout
+
+
+def test_lies_collections_show_includes_effective_language(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """``lies collections show <name>`` output includes effective language."""
+    from typer.testing import CliRunner
+
+    from lies.cli import app
+    from tests.conftest import make_wiki
+
+    root = tmp_path / "wiki"
+    root.mkdir()
+    wiki = make_wiki(name="show-lang-test", data_root=root)
+
+    # Seed a collection YAML with a per-collection language override.
+    yaml_path = wiki.collections_dir / "demo.yaml"
+    yaml_path.parent.mkdir(parents=True, exist_ok=True)
+    yaml_path.write_text(
+        "name: demo\npath: /tmp/demo\nsource: https://example.com\n"
+        "tags: []\nscraper_cmd: null\ndoc_path: null\nmapper_model: null\n"
+        "language: de\nversion: 0.0.0\ncreated_at: 2026-01-01T00:00:00Z\n"
+        "updated_at: 2026-01-01T00:00:00Z\nconfig: {}\n",
+        encoding="utf-8",
+    )
+
+    from lies import cli as cli_mod
+
+    monkeypatch.setattr(cli_mod, "resolve_wiki", lambda name=None: wiki)
+    monkeypatch.setenv("LIES_LANG", "fr")
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["collections", "show", "demo"], catch_exceptions=False)
+    assert result.exit_code == 0
+    assert "language: de" in result.stdout  # collection overrides wiki-global

@@ -7,6 +7,7 @@ All notable changes to LIES are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- `lies config` and `lies collections show <name>` now surface the resolved effective language for the wiki. Resolution chain: `LIES_LANG` env var (highest priority) → `$XDG_CONFIG_HOME/lies/<name>/lies.toml` `[settings].lang` → default `en`. Per-collection `language` (set on the collection YAML) overrides wiki-global. Invalid values produce a stderr warning + defaults; no fatal errors.
 - Aho-Corasick (`ahocorasick_rs`) resolves `[[WikiLink]]` targets against a
   corpus rebuilt from `wiki/` + `raw/` on every `lies lint` and
   `lies reindex`. Case-insensitive; basename, frontmatter `title`, and
