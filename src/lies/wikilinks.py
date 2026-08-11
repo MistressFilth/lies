@@ -1,9 +1,8 @@
 """WikiLink extraction and resolution.
 
-Distinct from QMD (semantic search). Uses an Aho-Corasick automaton over
-a corpus of wiki-page identifiers (filename stem, frontmatter title,
-frontmatter aliases) to resolve ``[[WikiLink]]`` targets and detect
-broken links.
+Distinct from QMD (semantic search). Resolves ``[[WikiLink]]`` targets
+against an in-memory dict of wiki-page identifiers (filename stem,
+frontmatter title, frontmatter aliases) and detects broken links.
 """
 
 from __future__ import annotations
@@ -108,7 +107,7 @@ def _collect_keys(fm: Any, stem: str) -> tuple[str, ...]:
 
 
 class WikiLinkResolver:
-    """Aho-Corasick-backed (with dict fallback) ``[[WikiLink]]`` resolver."""
+    """Dict-backed ``[[WikiLink]]`` resolver."""
 
     _keys: dict[str, Path]
 
@@ -145,7 +144,7 @@ class WikiLinkResolver:
                 f"neither {roots[0]} nor {roots[1] if len(roots) > 1 else '<none>'} exists"
             )
 
-        # Build the dict + automaton.
+        # Build the dict.
         resolver = cls()
         for page in pages:
             for key in page.basenames:
