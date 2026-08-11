@@ -8,12 +8,6 @@ All notable changes to LIES are documented here. The format follows
 
 ### Added
 - `lies config` and `lies collections show <name>` now surface the resolved effective language for the wiki. Resolution chain: `LIES_LANG` env var (highest priority) → `$XDG_CONFIG_HOME/lies/<name>/lies.toml` `[settings].lang` → default `en`. Per-collection `language` (set on the collection YAML) overrides wiki-global. Invalid values produce a stderr warning + defaults; no fatal errors.
-- Aho-Corasick (`ahocorasick_rs`) resolves `[[WikiLink]]` targets against a
-  corpus rebuilt from `wiki/` + `raw/` on every `lies lint` and
-  `lies reindex`. Case-insensitive; basename, frontmatter `title`, and
-  `aliases` are all valid keys. Broken wikilinks surface as `missing_page`
-  findings alongside the existing markdown-link variant. Embeds and block
-  references are out of scope (documented).
 - LIES now follows the [XDG Base Directory Specification](https://specifications.freedesktop.org/basedir/latest/). Wiki content lives under `$XDG_DATA_HOME/lies/<name>/`; configuration under `$XDG_CONFIG_HOME/lies/<name>/`; runtime locks under `$XDG_RUNTIME_DIR/lies/<name>/`; logs/scratch/poison under `$XDG_STATE_HOME/lies/<name>/`; hashes/manifests under `$XDG_CACHE_HOME/lies/<name>/`. Override any root with `LIES_XDG_<NAME>`.
 - `lies init <name>` — name-based initialization (no path argument). Creates all five role-routed XDG directories and `git init` the wiki root.
 - `lies migrate-xdg <legacy-path> --name <name>` — one-shot migration of legacy `<path>/.lies/` into XDG role-routed directories. Idempotent; refuses on byte-mismatched conflicts.
