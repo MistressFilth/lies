@@ -111,11 +111,9 @@ class WikiLinkResolver:
     """Aho-Corasick-backed (with dict fallback) ``[[WikiLink]]`` resolver."""
 
     _keys: dict[str, Path]
-    _aho: Any  # ahocorasick_rs.AhoCorasick | None when the dep is missing
 
     def __init__(self) -> None:
         self._keys = {}
-        self._aho = None
 
     @classmethod
     def build(cls, roots: tuple[Path, ...]) -> WikiLinkResolver:
@@ -159,19 +157,6 @@ class WikiLinkResolver:
                     )
                 resolver._keys[key] = page.path
 
-        # Try to build the Aho-Corasick automaton.
-        try:
-            import ahocorasick_rs  # type: ignore[import-not-found]
-
-            keys_list = sorted(resolver._keys.keys())
-            resolver._aho = ahocorasick_rs.AhoCorasick(keys_list)
-            log.debug("wikilink: built Aho-Corasick automaton with %d keys", len(keys_list))
-        except ImportError:
-            log.info(
-                "wikilink: ahocorasick_rs not installed; using linear lookup "
-                "(slower on large wikis)"
-            )
-
         if not resolver._keys:
             log.warning("wikilink: corpus empty; all [[wikilinks]] will be flagged missing_page")
 
@@ -186,17 +171,5 @@ class WikiLinkResolver:
             target = target[: target.rfind(".")]
         key = target.lower()
         if not key:
-            return None
-        if self._aho is not None:
-            # ahocorasick_rs reports every occurrence of a pattern as a
-            # substring of the haystack; we only accept exact matches.
-            # ``overlapping=True`` is required so that, when both ``foo`` and
-            # ``foobar`` are keys, resolving ``foobar`` reports the longer
-            # ``foobar`` match in addition to the leftmost ``foo`` match. The
-            # default non-overlapping scan suppresses the longer match, which
-            # would violate the spec's longest-wins guarantee.
-            for match in self._aho.find_matches_as_strings(key, overlapping=True):
-                if match == key:
-                    return self._keys.get(key)
             return None
         return self._keys.get(key)
