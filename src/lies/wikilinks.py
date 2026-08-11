@@ -1,9 +1,8 @@
 """WikiLink extraction and resolution.
 
-Distinct from QMD (semantic search). Uses an Aho-Corasick automaton over
-a corpus of wiki-page identifiers (filename stem, frontmatter title,
-frontmatter aliases) to resolve ``[[WikiLink]]`` targets and detect
-broken links.
+Distinct from QMD (semantic search). Resolves ``[[WikiLink]]`` targets
+against an in-memory dict of wiki-page identifiers (filename stem,
+frontmatter title, frontmatter aliases) and detects broken links.
 """
 
 from __future__ import annotations
@@ -108,14 +107,12 @@ def _collect_keys(fm: Any, stem: str) -> tuple[str, ...]:
 
 
 class WikiLinkResolver:
-    """Aho-Corasick-backed (with dict fallback) ``[[WikiLink]]`` resolver."""
+    """Dict-backed ``[[WikiLink]]`` resolver."""
 
     _keys: dict[str, Path]
-    _aho: Any  # ahocorasick_rs.AhoCorasick | None when the dep is missing
 
     def __init__(self) -> None:
         self._keys = {}
-        self._aho = None
 
     @classmethod
     def build(cls, roots: tuple[Path, ...]) -> WikiLinkResolver:
@@ -147,7 +144,7 @@ class WikiLinkResolver:
                 f"neither {roots[0]} nor {roots[1] if len(roots) > 1 else '<none>'} exists"
             )
 
-        # Build the dict + automaton.
+        # Build the dict.
         resolver = cls()
         for page in pages:
             for key in page.basenames:
@@ -158,19 +155,6 @@ class WikiLinkResolver:
                         stacklevel=2,
                     )
                 resolver._keys[key] = page.path
-
-        # Try to build the Aho-Corasick automaton.
-        try:
-            import ahocorasick_rs  # type: ignore[import-not-found]
-
-            keys_list = sorted(resolver._keys.keys())
-            resolver._aho = ahocorasick_rs.AhoCorasick(keys_list)
-            log.debug("wikilink: built Aho-Corasick automaton with %d keys", len(keys_list))
-        except ImportError:
-            log.info(
-                "wikilink: ahocorasick_rs not installed; using linear lookup "
-                "(slower on large wikis)"
-            )
 
         if not resolver._keys:
             log.warning("wikilink: corpus empty; all [[wikilinks]] will be flagged missing_page")
@@ -186,17 +170,5 @@ class WikiLinkResolver:
             target = target[: target.rfind(".")]
         key = target.lower()
         if not key:
-            return None
-        if self._aho is not None:
-            # ahocorasick_rs reports every occurrence of a pattern as a
-            # substring of the haystack; we only accept exact matches.
-            # ``overlapping=True`` is required so that, when both ``foo`` and
-            # ``foobar`` are keys, resolving ``foobar`` reports the longer
-            # ``foobar`` match in addition to the leftmost ``foo`` match. The
-            # default non-overlapping scan suppresses the longer match, which
-            # would violate the spec's longest-wins guarantee.
-            for match in self._aho.find_matches_as_strings(key, overlapping=True):
-                if match == key:
-                    return self._keys.get(key)
             return None
         return self._keys.get(key)
