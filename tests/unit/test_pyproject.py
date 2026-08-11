@@ -9,7 +9,6 @@ def test_pyproject_has_runtime_deps() -> None:
     for needle in ("pymupdf",):
         assert any(d.startswith(needle) for d in deps), f"missing {needle} in {deps}"
     # Unused runtime dependencies removed in the final code review.
-    # `ahocorasick_rs` is back in service for WikiLink resolution (0.9.0).
     for needle in ("beautifulsoup4",):
         assert not any(d.startswith(needle) for d in deps), f"unused dep {needle} still in {deps}"
 
