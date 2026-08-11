@@ -224,7 +224,7 @@ def migrate_xdg(legacy_path: Path, name: str, force: bool = False) -> None:
 def config_cmd(
     name: str = typer.Option("default", "--name", "-n", envvar="LIES_WIKI_NAME"),
 ) -> None:
-    """Print active model + wiki name + per-agent model assignments."""
+    """Print active model + wiki name + resolved language + per-agent model assignments."""
     from lies.providers import AGENT_ROSTER, load_providers_config, resolve_model
 
     wiki = resolve_wiki(name)
@@ -538,7 +538,7 @@ def collections(
 
         c = load_collection(wiki, name)
         print(f"name={c.name} source={c.source} tags={c.tags}")
-        typer.echo(f"language: {resolve_language(wiki, c)}")
+        print(f"language: {resolve_language(wiki, c)}")
         # The CLI doesn't know whether sync has run in this process;
         # an empty registry means the in-process WikiMemoryService for
         # this wiki root has not registered any collection yet.

@@ -50,11 +50,6 @@ class WikiSettings:
         Invalid ``lies.toml`` (unparseable, wrong type, empty value) →
         defaults + ``warnings.warn(UserWarning)``.
         """
-        from lies.wiki.wiki import Wiki
-
-        if not isinstance(wiki, Wiki):
-            raise TypeError("WikiSettings.load requires a Wiki instance")
-
         # 1. Env wins (short-circuits the toml).
         env_lang = os.environ.get("LIES_LANG", "").strip()
         if env_lang:
