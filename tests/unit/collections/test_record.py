@@ -8,13 +8,21 @@ from unittest import mock
 
 import pytest
 
-from lies.collections.errors import CollectionWriteFailed
+from lies.collections.errors import CollectionConfigInvalid, CollectionWriteFailed
 from lies.collections.record import (
     Collection,
     load_collection,
     save_collection,
 )
+from lies.wiki.wiki import Wiki
 from tests.conftest import make_wiki
+
+
+@pytest.fixture
+def wiki(tmp_path: Path) -> Wiki:
+    root = tmp_path / "wiki"
+    root.mkdir()
+    return make_wiki(name="lang-test", data_root=root)
 
 
 def _collection(name: str = "alpha") -> Collection:
@@ -98,3 +106,63 @@ def test_save_collection_in_memory_only_skips_io(tmp_path: Path) -> None:
     save_collection(wiki, _collection("alpha"), in_memory_only=True)
     target = Collection.config_path(wiki, "alpha")
     assert not target.exists()
+
+
+def test_collection_language_set_nonempty(wiki: Wiki) -> None:
+    """language: 'de' on YAML round-trips into Collection.language."""
+    yaml_path = wiki.collections_dir / "demo.yaml"
+    yaml_path.parent.mkdir(parents=True, exist_ok=True)
+    yaml_path.write_text(
+        "name: demo\npath: /tmp/demo\nsource: https://example.com\n"
+        "tags: []\nscraper_cmd: null\ndoc_path: null\nmapper_model: null\n"
+        "language: de\nversion: 0.0.0\ncreated_at: 2026-01-01T00:00:00Z\n"
+        "updated_at: 2026-01-01T00:00:00Z\nconfig: {}\n",
+        encoding="utf-8",
+    )
+    coll = load_collection(wiki, "demo")
+    assert coll.language == "de"
+
+
+def test_collection_language_empty_string_normalizes_to_none(wiki: Wiki) -> None:
+    """Empty language string normalizes to None (wiki-global inherits)."""
+    yaml_path = wiki.collections_dir / "demo.yaml"
+    yaml_path.parent.mkdir(parents=True, exist_ok=True)
+    yaml_path.write_text(
+        "name: demo\npath: /tmp/demo\nsource: https://example.com\n"
+        "tags: []\nscraper_cmd: null\ndoc_path: null\nmapper_model: null\n"
+        "language: ''\nversion: 0.0.0\ncreated_at: 2026-01-01T00:00:00Z\n"
+        "updated_at: 2026-01-01T00:00:00Z\nconfig: {}\n",
+        encoding="utf-8",
+    )
+    coll = load_collection(wiki, "demo")
+    assert coll.language is None
+
+
+def test_collection_language_whitespace_normalizes_to_none(wiki: Wiki) -> None:
+    """Whitespace-only language string normalizes to None."""
+    yaml_path = wiki.collections_dir / "demo.yaml"
+    yaml_path.parent.mkdir(parents=True, exist_ok=True)
+    yaml_path.write_text(
+        "name: demo\npath: /tmp/demo\nsource: https://example.com\n"
+        "tags: []\nscraper_cmd: null\ndoc_path: null\nmapper_model: null\n"
+        "language: '   '\nversion: 0.0.0\ncreated_at: 2026-01-01T00:00:00Z\n"
+        "updated_at: 2026-01-01T00:00:00Z\nconfig: {}\n",
+        encoding="utf-8",
+    )
+    coll = load_collection(wiki, "demo")
+    assert coll.language is None
+
+
+def test_collection_language_non_string_raises(wiki: Wiki) -> None:
+    """Non-string language raises CollectionConfigInvalid (existing loader behavior)."""
+    yaml_path = wiki.collections_dir / "demo.yaml"
+    yaml_path.parent.mkdir(parents=True, exist_ok=True)
+    yaml_path.write_text(
+        "name: demo\npath: /tmp/demo\nsource: https://example.com\n"
+        "tags: []\nscraper_cmd: null\ndoc_path: null\nmapper_model: null\n"
+        "language: 42\nversion: 0.0.0\ncreated_at: 2026-01-01T00:00:00Z\n"
+        "updated_at: 2026-01-01T00:00:00Z\nconfig: {}\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(CollectionConfigInvalid):
+        load_collection(wiki, "demo")

@@ -20,6 +20,7 @@ from lies.scrapers.base import pick_scraper
 from lies.utils.logging import configure_logging
 from lies.wiki.git import atomic_commit
 from lies.wiki.layout import WikiLayout
+from lies.wiki_settings import resolve_language
 from lies.wikilinks import WikiLinkCorpusMissing, WikiLinkResolver
 
 app = typer.Typer(
@@ -223,12 +224,12 @@ def migrate_xdg(legacy_path: Path, name: str, force: bool = False) -> None:
 def config_cmd(
     name: str = typer.Option("default", "--name", "-n", envvar="LIES_WIKI_NAME"),
 ) -> None:
-    """Print active model + wiki name + per-agent model assignments."""
+    """Print active model + wiki name + resolved language + per-agent model assignments."""
     from lies.providers import AGENT_ROSTER, load_providers_config, resolve_model
-    from lies.wiki.wiki import Wiki
 
-    wiki = Wiki.require(name)
+    wiki = resolve_wiki(name)
     typer.echo(f"wiki: {wiki.name}")
+    typer.echo(f"language: {resolve_language(wiki)}")
 
     cfg = load_providers_config(wiki.providers_path)
     if cfg is None:
@@ -537,6 +538,7 @@ def collections(
 
         c = load_collection(wiki, name)
         print(f"name={c.name} source={c.source} tags={c.tags}")
+        print(f"language: {resolve_language(wiki, c)}")
         # The CLI doesn't know whether sync has run in this process;
         # an empty registry means the in-process WikiMemoryService for
         # this wiki root has not registered any collection yet.

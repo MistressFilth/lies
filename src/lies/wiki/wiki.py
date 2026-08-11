@@ -67,6 +67,10 @@ class Wiki:
         return xdg.config_home() / "lies" / "providers.toml"
 
     @property
+    def settings_path(self) -> Path:
+        return self.config_root / "lies.toml"
+
+    @property
     def hashes_dir(self) -> Path:
         return self.cache_root / "hashes"
 
