@@ -8,12 +8,6 @@ All notable changes to LIES are documented here. The format follows
 
 ### Added
 - `lies config` and `lies collections show <name>` now surface the resolved effective language for the wiki. Resolution chain: `LIES_LANG` env var (highest priority) → `$XDG_CONFIG_HOME/lies/<name>/lies.toml` `[settings].lang` → default `en`. Per-collection `language` (set on the collection YAML) overrides wiki-global. Invalid values produce a stderr warning + defaults; no fatal errors.
-- Aho-Corasick (`ahocorasick_rs`) resolves `[[WikiLink]]` targets against a
-  corpus rebuilt from `wiki/` + `raw/` on every `lies lint` and
-  `lies reindex`. Case-insensitive; basename, frontmatter `title`, and
-  `aliases` are all valid keys. Broken wikilinks surface as `missing_page`
-  findings alongside the existing markdown-link variant. Embeds and block
-  references are out of scope (documented).
 - LIES now follows the [XDG Base Directory Specification](https://specifications.freedesktop.org/basedir/latest/). Wiki content lives under `$XDG_DATA_HOME/lies/<name>/`; configuration under `$XDG_CONFIG_HOME/lies/<name>/`; runtime locks under `$XDG_RUNTIME_DIR/lies/<name>/`; logs/scratch/poison under `$XDG_STATE_HOME/lies/<name>/`; hashes/manifests under `$XDG_CACHE_HOME/lies/<name>/`. Override any root with `LIES_XDG_<NAME>`.
 - `lies init <name>` — name-based initialization (no path argument). Creates all five role-routed XDG directories and `git init` the wiki root.
 - `lies migrate-xdg <legacy-path> --name <name>` — one-shot migration of legacy `<path>/.lies/` into XDG role-routed directories. Idempotent; refuses on byte-mismatched conflicts.
@@ -98,6 +92,7 @@ All notable changes to LIES are documented here. The format follows
 - `WikiLayout.lies_dir`, `WikiLayout.schema_path`, `WikiLayout.memory_lock_path`, and all other `.lies/...` accessors. Use `Wiki` accessors instead.
 - `utils.exclusive.ensure_gitignored` (no `.lies/` to gitignore).
 - `scripts/worktree_lint.py` and the `make worktree-lint` target; the seven-invariants checker is a tool that asserted user-scope rule adherence.
+- Drop the `ahocorasick_rs` runtime dependency. `WikiLinkResolver.resolve` is now dict-only — equivalent correctness, simpler install on Python 3.13+ where the upstream 0.22.2 wheel is missing and the sdist is malformed. No behavior change for `lies lint` output.
 - `tests/unit/test_repository_metadata.py` and its pytest-marker, GitHub-Actions SHA, and mypy-absence assertions.
 - `make release` no longer runs `worktree-lint` as a prerequisite.
 - CI workflow no longer fetches full git history (`fetch-depth: 0`); the only consumer was the dropped compliance test.

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import sys
 import warnings
 from pathlib import Path
 
@@ -170,74 +169,22 @@ class TestResolverBuildAndResolveDict:
         r = WikiLinkResolver.build((wiki,))
         assert r.resolve("anything") is None
 
+    def test_resolve_prefix_overlapping_keys_longest_match(self, tmp_path: Path) -> None:
+        """Prefix-overlapping keys: longest basename wins the lookup.
 
-class TestResolverUsesAhoCorasick:
-    """Regression tests for the Aho-Corasick path of ``WikiLinkResolver.resolve``.
-
-    The automaton's ``find_matches_as_strings`` defaults to ``overlapping=False``,
-    which suppresses longer matches in favor of the leftmost shorter one. When
-    the corpus has both ``foo`` and ``foobar`` as keys, resolving ``foobar``
-    must still return the ``foobar.md`` path — the spec's longest-wins guarantee.
-    """
-
-    def test_prefix_overlapping_keys_longest_wins(self, tmp_path: Path) -> None:
+        Two pages whose stems share a prefix (foo, foobar). Each key in
+        the resolver's dict is, by construction, the full normalized
+        lowercased basename — so a query for ``foobar`` matches only
+        ``foobar.md`` and a query for ``foo`` matches only ``foo.md``.
+        The collision in ``build()`` (when both pages share a stem)
+        is unrelated.
+        """
         wiki = tmp_path / "wiki"
         wiki.mkdir()
-        _write_page(wiki, "foo.md", "# Foo\n")
-        _write_page(wiki, "foobar.md", "# Foobar\n")
+        _write_page(wiki, "foo.md", "# foo\n")
+        _write_page(wiki, "foobar.md", "# foobar\n")
 
         r = WikiLinkResolver.build((wiki,))
-        # Sanity: both keys are present in the corpus.
-        assert set(r._keys.keys()) == {"foo", "foobar"}
-        # The shorter key resolves normally.
-        assert r.resolve("foo") == (wiki / "foo.md").resolve()
-        # Regression: the longer key resolves to its own page, not None.
         assert r.resolve("foobar") == (wiki / "foobar.md").resolve()
-
-    def test_aho_backed_results_match_dict(self, tmp_path: Path) -> None:
-        """When ahocorasick_rs is installed, AC-backed resolve() returns the same
-        results as dict-backed resolve() for the same corpus."""
-        import ahocorasick_rs  # type: ignore[import-not-found]  # noqa: F401
-
-        wiki = tmp_path / "wiki"
-        wiki.mkdir()
-        _write_page(wiki, "alpha.md", "---\ntitle: First\naliases: [uno]\n---\n")
-        _write_page(wiki, "beta.md", "# Beta\n")
-        _write_page(wiki, "gamma/sub.md", "# Sub\n")
-
-        r = WikiLinkResolver.build((wiki,))
-
-        # Sanity: AC actually got built.
-        assert r._aho is not None, "ahocorasick_rs is installed; AC should be built"
-
-        # All dict-resolvable keys resolve identically through AC.
-        dict_only = WikiLinkResolver.build((wiki,))
-        dict_only._aho = None  # Force the dict path.
-        for key in ["alpha", "first", "uno", "beta", "gamma"]:
-            assert r.resolve(key) == dict_only.resolve(key)
-
-
-class TestResolverImportFallback:
-    def test_resolves_correctly_without_ahocorasick(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """When ahocorasick_rs import raises ImportError, build() succeeds and
-        resolve() still returns correct results via the dict fallback."""
-        # Force the import inside build() to fail.
-        monkeypatch.setitem(
-            sys.modules,
-            "ahocorasick_rs",
-            None,  # causes ImportError on `import ahocorasick_rs`
-        )
-
-        wiki = tmp_path / "wiki"
-        wiki.mkdir()
-        _write_page(wiki, "alpha.md", "---\ntitle: First\n---\n")
-        _write_page(wiki, "beta.md", "# Beta\n")
-
-        r = WikiLinkResolver.build((wiki,))
-        assert r._aho is None
-        assert r.resolve("alpha") == (wiki / "alpha.md").resolve()
-        assert r.resolve("First") == (wiki / "alpha.md").resolve()
-        assert r.resolve("beta") == (wiki / "beta.md").resolve()
-        assert r.resolve("missing") is None
+        assert r.resolve("foo") == (wiki / "foo.md").resolve()
+        assert r.resolve("qux") is None
