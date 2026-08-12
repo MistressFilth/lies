@@ -183,7 +183,7 @@ class WikiLinkResolver:
             keys_list = sorted(resolver._keys.keys())
             resolver._aho = ahocorasick_rs.AhoCorasick(keys_list)
             log.debug("wikilink: built Aho-Corasick automaton with %d keys", len(keys_list))
-        except ImportError:
+        except ImportError:  # pragma: no cover
             log.info("wikilink: ahocorasick_rs not installed; using dict lookup")
 
         if not resolver._keys:

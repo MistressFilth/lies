@@ -15,9 +15,11 @@ All notable changes to LIES are documented here. The format follows
   absent, the resolver falls through to the dict-substring path
   unchanged — `TestResolverImportFallback` pins the contract that
   both branches return bit-identical results, deduplicated through
-  `set`. Three tests re-added: `TestResolverUsesAhoCorasick` (2)
-  + `TestResolverImportFallback` (1). Existing longest-match test
-  unchanged.
+  `set`. Four tests re-added: `TestResolverUsesAhoCorasick` (2),
+  `TestResolverImportFallback` (1), and
+  `test_dict_fallback_restored_after_force_fail` (a 4th
+  state-cleanliness guard beyond the original brief). Existing
+  longest-match test unchanged.
 - `python -m lies …` now works alongside the `lies` console script, via a minimal `src/lies/__main__.py` that delegates to `lies.cli:app`. The console-script entry point is unchanged.
 - `lies providers init` interactive wizard (six subcommands under
   `lies providers …`). Opt-in, refuses to overwrite an existing
