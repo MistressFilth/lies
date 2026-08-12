@@ -7,6 +7,18 @@ All notable changes to LIES are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- `python -m lies …` now works alongside the `lies` console script, via a minimal `src/lies/__main__.py` that delegates to `lies.cli:app`. The console-script entry point is unchanged.
+- `lies providers init` interactive wizard (six subcommands under
+  `lies providers …`). Opt-in, refuses to overwrite an existing
+  `providers.toml` unless `--force`; companion commands
+  (`add` / `set-default` / `assign` / `unassign` / `check`) cover every
+  in-place edit. `--check-connection` flag and `lies providers check`
+  ping every configured provider whose key is set; optional
+  `--write-env-file PATH` captures current env values into a
+  `chmod 600` file. First-run hint on `lies config / init / mcp up`
+  when `sys.stdout.isatty()` and `providers.toml` is missing. New
+  modules `src/lies/providers/{editor,bootstrap,ops}.py`; no new
+  runtime or test deps.
 - `lies config` and `lies collections show <name>` now surface the resolved effective language for the wiki. Resolution chain: `LIES_LANG` env var (highest priority) → `$XDG_CONFIG_HOME/lies/<name>/lies.toml` `[settings].lang` → default `en`. Per-collection `language` (set on the collection YAML) overrides wiki-global. Invalid values produce a stderr warning + defaults; no fatal errors.
 - LIES now follows the [XDG Base Directory Specification](https://specifications.freedesktop.org/basedir/latest/). Wiki content lives under `$XDG_DATA_HOME/lies/<name>/`; configuration under `$XDG_CONFIG_HOME/lies/<name>/`; runtime locks under `$XDG_RUNTIME_DIR/lies/<name>/`; logs/scratch/poison under `$XDG_STATE_HOME/lies/<name>/`; hashes/manifests under `$XDG_CACHE_HOME/lies/<name>/`. Override any root with `LIES_XDG_<NAME>`.
 - `lies init <name>` — name-based initialization (no path argument). Creates all five role-routed XDG directories and `git init` the wiki root.
