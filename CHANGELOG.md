@@ -82,6 +82,11 @@ All notable changes to LIES are documented here. The format follows
 - Missing `providers.toml` is non-fatal: every agent falls back to the previous default (`anthropic:claude-opus-4-7`) and a single stderr warning names the expected path.
 
 ### Changed
+- Python floor bumped from `>=3.10` to `>=3.14,<3.15` to align with the
+  Python versions where the restored `ahocorasick_rs` 1.0.x wheels are
+  available prebuilt and where the project's typecheck / lint toolchain
+  is now stable. Operators on Python 3.10–3.13 must upgrade or stay on
+  v0.9.3.
 - CLI flag `--wiki-root`/`-w` replaced by `--name` on every command. Default wiki name `default` (set `LIES_WIKI_NAME` to override).
 - Orchestrator construction no longer reads `LIES_MODEL`. It loads user-level `providers.toml` (or every agent falls back to `anthropic:claude-opus-4-7` when the file is missing) and resolves one `Model | str` per agent.
 - Agent factory signatures (`source_reader_agent`, `page_writer_agent`, `indexer_agent`, `linter_agent`, `query_synthesizer_agent`, `repair_agent`, `enricher_agent`) now accept `model: Model | str` instead of `model: str`.
