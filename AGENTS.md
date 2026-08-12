@@ -103,9 +103,6 @@ lands in the repo has already passed all gates.
 
 ## References
 
-- Project overview: @README.md
-- Makefile targets: @Makefile
-- Release notes: @CHANGELOG.md
-
-For shared standards (versioning, changelog, pre-commit, repo layout,
-Conventional Commits), see `~/.claude/rules/`.
+- Project overview: README.md
+- Makefile targets: Makefile
+- Release notes: CHANGELOG.md
