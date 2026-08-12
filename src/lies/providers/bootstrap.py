@@ -224,6 +224,12 @@ def run_wizard(
 
     try:
         step_default_model(partial, prompt=prompt)
+        # UX gate inserted between step_default_model and step_providers
+        # so first-time users on a single-provider install do not get
+        # bumped into the providers-catalog loop by default. The default
+        # `no` makes this a no-op for the common case; advanced users
+        # opt in to add anthropic_compatible providers (minimax, etc.)
+        # without polluting the catalog by accident.
         edit_providers = (
             prompt(
                 "Edit providers catalog? (yes/no)",
@@ -259,25 +265,18 @@ def run_wizard(
     write_atomic(Path(target), partial)
 
     # Re-load to surface any drift between editor's output and the loader.
+    # Per spec ("TOML parse error after write" → exit 2), reload errors
+    # are fatal: the wizard produced a file that ``load_providers_config``
+    # cannot stand behind, so we refuse to proceed to env capture or
+    # final-print and let the CLI render a typed abort.
     from lies.providers.config import load_providers_config
 
     try:
         reloaded = load_providers_config(Path(target))
     except ProviderConfigError as exc:
-        # The wizard wrote an incomplete file (e.g. operator declined
-        # the agents mirror step). Log the drift but don't abort — the
-        # env capture may still be useful and the operator can repair
-        # the file later.
-        log.warning(
-            "post-write reload flagged validation issues in %s: %s",
-            target,
-            exc,
-        )
-        reloaded = None
-    if reloaded is None and write_env_file is None:
-        # No reload result AND no env capture to write means the wizard
-        # has nothing left to do; report the drift via BootstrapAborted
-        # so the CLI can exit non-zero.
+        msg = f"providers.toml reloaded with errors: {exc}"
+        raise BootstrapAborted(msg) from exc
+    if reloaded is None:
         msg = f"post-write reload returned None; file {target} is unreadable"
         raise BootstrapAborted(msg)
 
@@ -290,14 +289,21 @@ def run_wizard(
 
 
 def _write_env_file(env_path: os.PathLike[str], partial: PartialConfig) -> None:
-    """Capture ``os.environ`` values for every well-known API key into
-    a chmod 600 file. Only writes names that are currently set in the
-    operator's env; key values are never logged."""
-    del partial  # kept in the signature for future per-provider overrides.
+    """Capture ``os.environ`` values for every declared ``api_key_env``
+    into a chmod 600 file. Never writes key names that are not currently
+    set in the operator's env, and never writes env vars from providers
+    the operator did not declare in this wizard session — that would be
+    a silent data egress for unrelated shell values like
+    ``OPENAI_API_KEY`` set by other tools.
+    """
     path = os.fspath(env_path)
     directory = os.path.dirname(path) or "."
     os.makedirs(directory, exist_ok=True)
-    set_keys = {name: os.environ[name] for name in WELL_KNOWN_KEY_ENVS if name in os.environ}
+    set_keys = {
+        spec.api_key_env: os.environ[spec.api_key_env]
+        for spec in partial.providers.values()
+        if spec.api_key_env in os.environ
+    }
     fd, tmp = tempfile.mkstemp(prefix=".lies.env.", dir=directory)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:

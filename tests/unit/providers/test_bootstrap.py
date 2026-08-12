@@ -248,16 +248,26 @@ def test_run_wizard_aborts_leave_file_untouched(
 
 
 def test_run_wizard_writes_env_file_0600(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Full happy path with `--write-env-file` set; the operator must
+    declare the minimax provider through the wizard so its key is a
+    legitimate capture target — the env file iterates declared
+    providers, not unrelated shell values."""
     monkeypatch.setenv("MINIMAX_API_KEY", "sk-test-123")
     env_path = tmp_path / "lies.env"
     target = tmp_path / "providers.toml"
 
     answers = iter(
         [
-            "anthropic:claude-opus-4-7",
-            "",
-            "no",
-            "yes",
+            "anthropic:claude-opus-4-7",  # default_model
+            "yes",  # edit providers
+            # block 1: anthropic_compatible
+            "minimax",
+            "anthropic_compatible",
+            "MINIMAX_API_KEY",
+            "https://api.minimax.io/anthropic",
+            "",  # stop providers loop
+            "yes",  # assign default to every agent
+            "yes",  # confirm write
         ]
     )
 
@@ -278,3 +288,58 @@ def test_run_wizard_writes_env_file_0600(tmp_path: Path, monkeypatch: pytest.Mon
     assert mode == 0o600
     text = env_path.read_text()
     assert "MINIMAX_API_KEY=sk-test-123" in text
+
+
+def test_run_wizard_reload_error_aborts_no_env_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Reload failure must abort before env capture: when the wizard
+    writes a providers.toml that ``load_providers_config`` rejects (an
+    incomplete roster, here from skipping the agents step), the
+    operator should see the typed abort, the file should be left on
+    disk, and the env capture file must NOT exist — because reload
+    abort short-circuits env capture.
+    """
+    env_path = tmp_path / "lies.env"
+    target = tmp_path / "providers.toml"
+
+    answers = iter(
+        [
+            "anthropic:claude-opus-4-7",  # default_model
+            "yes",  # edit providers
+            # block 1: anthropic_compatible
+            "minimax",
+            "anthropic_compatible",
+            "MINIMAX_API_KEY",
+            "https://api.minimax.io/anthropic",
+            "",  # stop providers loop
+            "no",  # decline agents assignment (leaves [agents] empty → reload rejects)
+            "yes",  # confirm write (reload will fire after this and abort)
+        ]
+    )
+
+    def prompt(label: str, default: str) -> str:
+        return next(answers)
+
+    from lies.providers.bootstrap import run_wizard
+
+    with pytest.raises(BootstrapAborted):
+        run_wizard(
+            target,
+            check_connection=False,
+            write_env_file=env_path,
+            non_interactive=False,
+            prompt=prompt,
+        )
+
+    # write_atomic completed before reload — file should exist.
+    assert target.exists()
+    # Reload should reject (no [agents] entries).
+    from lies.providers.config import load_providers_config
+    from lies.providers.errors import ProviderConfigError
+
+    with pytest.raises(ProviderConfigError):
+        load_providers_config(target)
+    # Env capture must NOT have been written — reload abort short-circuits
+    # the env capture step.
+    assert not env_path.exists()
