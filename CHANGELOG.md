@@ -7,6 +7,17 @@ All notable changes to LIES are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- Restore the `ahocorasick_rs>=1.0` Aho-Corasick fast-path inside
+  `WikiLinkResolver`. The dep was removed in v0.9.2 (PR #22, commit
+  `633a374`) because its wheel was missing on Python 3.13+ and the
+  sdist was malformed; the wrapper's 1.0.3 release now ships prebuilt
+  wheels including Python 3.14 (the new floor). When the wheel is
+  absent, the resolver falls through to the dict-substring path
+  unchanged — `TestResolverImportFallback` pins the contract that
+  both branches return bit-identical results, deduplicated through
+  `set`. Three tests re-added: `TestResolverUsesAhoCorasick` (2)
+  + `TestResolverImportFallback` (1). Existing longest-match test
+  unchanged.
 - `python -m lies …` now works alongside the `lies` console script, via a minimal `src/lies/__main__.py` that delegates to `lies.cli:app`. The console-script entry point is unchanged.
 - `lies providers init` interactive wizard (six subcommands under
   `lies providers …`). Opt-in, refuses to overwrite an existing
