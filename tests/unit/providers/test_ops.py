@@ -98,11 +98,57 @@ def test_companion_missing_file_raises(tmp_path: Path) -> None:
         add_provider(target, new_spec)
 
 
-def test_check_connectivity_status_per_provider(
+def test_check_connectivity_anthropic_compatible_ok(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
+    monkeypatch.setenv("MINIMAX_API_KEY", "sk-test")
+
+    class _FakeMessages:
+        @staticmethod
+        async def create(*args, **kwargs):
+            class _Resp:
+                pass
+
+            return _Resp()
+
+    class _FakeAnthropic:
+        def __init__(self, base_url, api_key):
+            self.base_url = base_url
+            self.api_key = api_key
+            self.messages = _FakeMessages()
+
+    monkeypatch.setattr("anthropic.AsyncAnthropic", _FakeAnthropic)
+
     target = _seed_target(tmp_path)
+    write_atomic(
+        target,
+        PartialConfig(
+            providers={
+                "minimax": ProviderSpec(
+                    name="minimax",
+                    type="anthropic_compatible",
+                    api_key_env="MINIMAX_API_KEY",
+                    base_url="https://api.minimax.io/anthropic",
+                ),
+                "anthropic": ProviderSpec(
+                    name="anthropic",
+                    type="anthropic",
+                    api_key_env="ANTHROPIC_API_KEY",
+                ),
+            },
+            default_model="anthropic:claude-opus-4-7",
+            agents={
+                "orchestrator": "anthropic:claude-opus-4-7",
+                "source_reader": "anthropic:claude-opus-4-7",
+                "page_writer": "anthropic:claude-opus-4-7",
+                "indexer": "anthropic:claude-opus-4-7",
+                "linter": "anthropic:claude-opus-4-7",
+                "query_synthesizer": "anthropic:claude-opus-4-7",
+                "enricher": "anthropic:claude-opus-4-7",
+                "repair": "anthropic:claude-opus-4-7",
+            },
+        ),
+    )
     status = check_connectivity(target)
-    assert isinstance(status, list)
-    assert any(name == "anthropic" and st == "unkeyed" or st == "ok" for name, st, _ in status)
+    by_name = {name: st for name, st, _ in status}
+    assert by_name["minimax"] == "ok"
