@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from lies.providers.agents import AGENT_ROSTER
 from lies.providers.config import ProvidersConfig, ProviderSpec, parse_model_string
 from lies.providers.errors import ProviderConfigError
 
@@ -28,6 +29,8 @@ def apply_mutations(cfg: ProvidersConfig, mut: ProvidersMutations) -> ProvidersC
       - ``add_provider`` does not collide with an existing name.
       - ``set_default`` references a declared provider.
       - Each ``set_agents`` value references a declared provider.
+      - No ``remove_agents`` name is an ``AGENT_ROSTER`` member, which
+        the loader requires present in full.
     Re-validation re-uses ``parse_model_string`` from ``config.py`` so
     every write path produces a file ``load_providers_config`` would
     happily re-read.
@@ -66,6 +69,13 @@ def apply_mutations(cfg: ProvidersConfig, mut: ProvidersMutations) -> ProvidersC
             raise ProviderConfigError(msg)
         agents[agent_name] = raw
     for agent_name in mut.remove_agents:
+        if agent_name in AGENT_ROSTER:
+            msg = (
+                f"removing {agent_name!r} would leave the AGENT_ROSTER "
+                "incomplete; the loader refuses incomplete rosters. Set "
+                f"agents.{agent_name} to a different provider instead."
+            )
+            raise ProviderConfigError(msg)
         agents.pop(agent_name, None)
 
     return ProvidersConfig(

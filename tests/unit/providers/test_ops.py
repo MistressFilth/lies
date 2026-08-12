@@ -6,8 +6,10 @@ from pathlib import Path
 
 import pytest
 
+from lies.providers.agents import AGENT_ROSTER
 from lies.providers.bootstrap import PartialConfig, write_atomic
 from lies.providers.config import ProviderSpec, load_providers_config
+from lies.providers.errors import ProviderConfigError
 from lies.providers.ops import (
     ProvidersConfigMissing,
     add_provider,
@@ -18,8 +20,10 @@ from lies.providers.ops import (
 )
 
 
-def _seed_target(tmp_path: Path) -> Path:
+def _seed_target(tmp_path: Path, extra_agents: dict[str, str] | None = None) -> Path:
     target = tmp_path / "providers.toml"
+    agents = {name: "anthropic:claude-opus-4-7" for name in AGENT_ROSTER}
+    agents.update(extra_agents or {})
     write_atomic(
         target,
         PartialConfig(
@@ -31,16 +35,7 @@ def _seed_target(tmp_path: Path) -> Path:
                 ),
             },
             default_model="anthropic:claude-opus-4-7",
-            agents={
-                "orchestrator": "anthropic:claude-opus-4-7",
-                "source_reader": "anthropic:claude-opus-4-7",
-                "page_writer": "anthropic:claude-opus-4-7",
-                "indexer": "anthropic:claude-opus-4-7",
-                "linter": "anthropic:claude-opus-4-7",
-                "query_synthesizer": "anthropic:claude-opus-4-7",
-                "enricher": "anthropic:claude-opus-4-7",
-                "repair": "anthropic:claude-opus-4-7",
-            },
+            agents=agents,
         ),
     )
     return target
@@ -76,12 +71,19 @@ def test_assign_agent_round_trip(tmp_path: Path) -> None:
     assert loaded.agents["source_reader"] == "anthropic:claude-opus-4-7"
 
 
-def test_unassign_agent_round_trip(tmp_path: Path) -> None:
+def test_unassign_agent_raises_for_roster_member(tmp_path: Path) -> None:
     target = _seed_target(tmp_path)
-    unassign_agent(target, "source_reader")
+    with pytest.raises(ProviderConfigError, match="would leave the AGENT_ROSTER incomplete"):
+        unassign_agent(target, "source_reader")
+
+
+def test_unassign_agent_succeeds_for_extra_agent(tmp_path: Path) -> None:
+    target = _seed_target(tmp_path, extra_agents={"legacy_agent": "anthropic:claude-opus-4-7"})
+    unassign_agent(target, "legacy_agent")
     loaded = load_providers_config(target)
     assert loaded is not None
-    assert "source_reader" not in loaded.agents
+    assert "legacy_agent" not in loaded.agents
+    assert all(name in loaded.agents for name in AGENT_ROSTER)
 
 
 def test_companion_missing_file_raises(tmp_path: Path) -> None:
