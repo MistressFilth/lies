@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from typing import Annotated, Any, cast
 
@@ -14,6 +15,8 @@ from lies.mcp import daemon
 from lies.mcp.resolution import resolve_wiki
 from lies.orchestrator import Orchestrator
 from lies.providers import ProviderConfigError
+from lies.providers import bootstrap as providers_bootstrap
+from lies.providers import ops as providers_ops
 from lies.qmd import daemon as qmd_daemon
 from lies.qmd import qmd_status
 from lies.scrapers.base import pick_scraper
@@ -113,6 +116,7 @@ def up(
     """
     configure_logging()
     wiki = resolve_wiki(name)
+    _emit_missing_providers_hint(wiki.providers_path)
     try:
         rec = daemon.spawn_daemon(wiki, host=host, port=port, timeout=timeout)
     except daemon.DaemonAlreadyRunning as exc:
@@ -228,6 +232,7 @@ def config_cmd(
     from lies.providers import AGENT_ROSTER, load_providers_config, resolve_model
 
     wiki = resolve_wiki(name)
+    _emit_missing_providers_hint(wiki.providers_path)
     typer.echo(f"wiki: {wiki.name}")
     typer.echo(f"language: {resolve_language(wiki)}")
 
@@ -287,6 +292,7 @@ def init(name: str) -> None:
     WikiLayout(wiki.data_root).init()
     copy_default_schema(wiki.schema_path)
     git_init_initial(wiki.data_root)
+    _emit_missing_providers_hint(wiki.providers_path)
     typer.echo(f"initialized wiki '{name}' at {wiki.data_root}")
 
 
@@ -726,6 +732,240 @@ def collections(
             raise typer.BadParameter("agent returned unexpected output")
     else:
         raise typer.BadParameter(f"unknown action: {action}")
+
+
+# --- `lies providers` sub-app + first-run hint ---------------------------
+#
+# `providers.toml` is user-level (``$XDG_CONFIG_HOME/lies/providers.toml``),
+# so the wizard + companion operators construct a ``Wiki`` manually rather
+# than going through ``resolve_wiki``: the bootstrap flow cannot depend on a
+# specific wiki already being initialized.
+
+providers_app = typer.Typer(
+    help="Manage the user-level providers.toml bootstrap.",
+    no_args_is_help=True,
+)
+
+
+_HINT = (
+    "providers.toml not found at {path}. "
+    "Run `lies providers init` to bootstrap, or write the file by hand."
+)
+
+
+# Module-level seams so tests can simulate TTY / non-TTY cleanly without
+# wrestling with click's CliRunner stream replacement (which always
+# swaps `sys.stdout` for a BytesIO-backed `_NamedTextIOWrapper` and is
+# immune to attribute patching on the C-level `isatty` method).
+def _stdout_isatty() -> bool:
+    """Whether stdout is attached to a TTY.
+
+    Wrapped so tests can monkeypatch this rather than fighting the click
+    stream wrapper's C-level isatty.
+    """
+    try:
+        return sys.stdout.isatty()
+    except (AttributeError, ValueError):
+        return False
+
+
+def _emit_missing_providers_hint(path: Path) -> None:
+    """Print a one-shot bootstrap pointer to stderr when providers.toml
+    is missing and we're attached to a TTY.
+
+    Skipped silently under CI / pipes so logs stay clean.
+    """
+    if path.exists():
+        return
+    if not _stdout_isatty():
+        return
+    typer.echo(_HINT.format(path=path), err=True)
+
+
+def _providers_wiki(name: str):
+    """Build a Wiki whose ``providers_path`` resolves under the live XDG
+    config home. Skips ``Wiki.require`` because providers commands are
+    user-level and must work before any wiki is registered."""
+    from lies.wiki.wiki import Wiki
+
+    return Wiki(
+        name=name,
+        data_root=Wiki.data_root_for(name),
+        config_root=xdg.config_home() / "lies" / name,
+        cache_root=xdg.cache_home() / "lies" / name,
+        state_root=xdg.state_home() / "lies" / name,
+        runtime_root=xdg.runtime_dir_for(name),
+    )
+
+
+def _cli_prompt(label: str, default: str) -> str:
+    """Default interactive prompt for the wizard.
+
+    Reads from stdin; an empty answer returns ``default``. Tests bypass
+    this by injecting their own ``PromptFn`` into ``run_wizard`` directly.
+    """
+    suffix = f" [{default}]" if default else ""
+    raw = input(f"{label}{suffix}: ")
+    return raw.strip() or default
+
+
+@providers_app.command("init")
+def providers_init(
+    *,
+    check_connection: bool = typer.Option(
+        False,
+        "--check-connection",
+        help="Ping each provider with a set API key before exiting.",
+    ),
+    write_env_file: Path | None = typer.Option(  # noqa: B008
+        None,
+        "--write-env-file",
+        help="Capture API key values from current env into this file "
+        "(chmod 600); only acts on providers whose env var is set.",
+    ),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        help="Overwrite an existing providers.toml.",
+    ),
+    non_interactive: bool = typer.Option(
+        False,
+        "--non-interactive",
+        help="Skip prompts; requires LIES_PROVIDERS_PRESET in a future release; currently raises.",
+    ),
+    name: str = typer.Option("default", "--name", "-n", envvar="LIES_WIKI_NAME"),
+) -> None:
+    """Bootstrap providers.toml through the interactive wizard."""
+    wiki = _providers_wiki(name)
+    target = wiki.providers_path
+    if target.exists() and not force:
+        typer.echo(
+            f"error: {target} already exists. Use `lies providers add|"
+            f"set-default|assign|unassign`, or pass --force.",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+    try:
+        providers_bootstrap.run_wizard(
+            target,
+            check_connection=check_connection,
+            write_env_file=write_env_file,
+            non_interactive=non_interactive,
+            prompt=_cli_prompt,
+        )
+    except providers_bootstrap.BootstrapAborted as exc:
+        typer.echo(f"aborted: {exc}", err=True)
+        raise typer.Exit(code=0)
+
+
+@providers_app.command("add")
+def providers_add(
+    name_arg: str,
+    type_: str = typer.Option("anthropic", "--type", "-t"),
+    api_key_env: str = typer.Option(..., "--api-key-env", "-e"),
+    base_url: str | None = typer.Option(None, "--base-url", "-u"),
+    name: str = typer.Option("default", "--name", "-n", envvar="LIES_WIKI_NAME"),
+) -> None:
+    """Append a provider entry to providers.toml."""
+    from lies.providers.config import ProviderSpec
+    from lies.providers.errors import ProviderConfigError
+
+    wiki = _providers_wiki(name)
+    # ``add_provider`` re-validates the type via the editor layer; cast
+    # because typer cannot enforce the Literal without a custom callback.
+    spec = ProviderSpec(
+        name=name_arg,
+        type=cast(Any, type_),
+        api_key_env=api_key_env,
+        base_url=base_url,
+    )
+    try:
+        providers_ops.add_provider(wiki.providers_path, spec)
+    except providers_bootstrap.ProvidersConfigMissing as exc:
+        typer.echo(f"error: {exc}. Run `lies providers init` first.", err=True)
+        raise typer.Exit(code=2)
+    except ProviderConfigError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2)
+
+
+@providers_app.command("set-default")
+def providers_set_default(
+    model: str,
+    name: str = typer.Option("default", "--name", "-n", envvar="LIES_WIKI_NAME"),
+) -> None:
+    """Replace ``default_model`` in providers.toml."""
+    from lies.providers.errors import ProviderConfigError
+
+    wiki = _providers_wiki(name)
+    try:
+        providers_ops.set_default_model(wiki.providers_path, model)
+    except providers_bootstrap.ProvidersConfigMissing as exc:
+        typer.echo(f"error: {exc}. Run `lies providers init` first.", err=True)
+        raise typer.Exit(code=2)
+    except ProviderConfigError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2)
+
+
+@providers_app.command("assign")
+def providers_assign(
+    agent: str,
+    model: str,
+    name: str = typer.Option("default", "--name", "-n", envvar="LIES_WIKI_NAME"),
+) -> None:
+    """Set ``agents[agent] = model`` in providers.toml."""
+    from lies.providers.agents import AGENT_ROSTER
+    from lies.providers.errors import ProviderConfigError
+
+    if agent not in AGENT_ROSTER:
+        typer.echo(
+            f"error: {agent!r} not in AGENT_ROSTER; valid: {list(AGENT_ROSTER)}",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+    wiki = _providers_wiki(name)
+    try:
+        providers_ops.assign_agent(wiki.providers_path, agent, model)
+    except providers_bootstrap.ProvidersConfigMissing as exc:
+        typer.echo(f"error: {exc}. Run `lies providers init` first.", err=True)
+        raise typer.Exit(code=2)
+    except ProviderConfigError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2)
+
+
+@providers_app.command("unassign")
+def providers_unassign(
+    agent: str,
+    name: str = typer.Option("default", "--name", "-n", envvar="LIES_WIKI_NAME"),
+) -> None:
+    """Remove ``agent`` from providers.toml's [agents] table."""
+    from lies.providers.agents import AGENT_ROSTER
+
+    if agent not in AGENT_ROSTER:
+        typer.echo(
+            f"error: {agent!r} not in AGENT_ROSTER; valid: {list(AGENT_ROSTER)}",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+    wiki = _providers_wiki(name)
+    providers_ops.unassign_agent(wiki.providers_path, agent)
+
+
+@providers_app.command("check")
+def providers_check(
+    name: str = typer.Option("default", "--name", "-n", envvar="LIES_WIKI_NAME"),
+) -> None:
+    """Probe every provider in providers.toml for connectivity."""
+    wiki = _providers_wiki(name)
+    status = providers_ops.check_connectivity(wiki.providers_path)
+    width = max((len(n) for n, _, _ in status), default=0)
+    for n, st, detail in status:
+        typer.echo(f"  {n.ljust(width)}  {st:<8}  {detail}")
+
+
+app.add_typer(providers_app, name="providers")
 
 
 if __name__ == "__main__":
