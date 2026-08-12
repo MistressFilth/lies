@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import re
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from lies.memory.validation import ALLOWED_PAGE_TYPES, parse_frontmatter
@@ -58,7 +58,7 @@ def _discover_pages(wiki: Wiki) -> dict[str, list[tuple[str, str, str]]]:
 
         try:
             content = path.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
+        except OSError, UnicodeDecodeError:
             continue
         title = _page_title_from_frontmatter(content, fallback=name)
         grouped[page_type].append((title, rel, name))
@@ -70,7 +70,7 @@ def _discover_pages(wiki: Wiki) -> dict[str, list[tuple[str, str, str]]]:
 def rebuild_index(wiki: Wiki) -> str:
     """Rebuild ``wiki/index.md`` and return its body."""
     grouped = _discover_pages(wiki)
-    today = datetime.now(timezone.utc).date().isoformat()
+    today = datetime.now(UTC).date().isoformat()
     lines = [
         "# Index",
         "",
@@ -93,7 +93,7 @@ def rebuild_index(wiki: Wiki) -> str:
 
 def append_log_entry(wiki: Wiki, line: str) -> None:
     """Append a single parseable line to ``wiki/log.md``."""
-    today = datetime.now(timezone.utc).date().isoformat()
+    today = datetime.now(UTC).date().isoformat()
     timestamped = line.rstrip("\n")
     if "{date}" in timestamped:
         timestamped = timestamped.replace("{date}", today)

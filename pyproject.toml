@@ -3,7 +3,7 @@ name = "lies"
 version = "0.9.3"
 description = "Library of Inconsistent Explanations & Sources — a Karpathy-pattern LLM wiki."
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.14,<3.15"
 license = { text = "MIT" }
 dependencies = [
     "anthropic>=0.40",
@@ -53,10 +53,10 @@ markers = [
 
 [tool.ruff]
 line-length = 100
-target-version = "py310"
+target-version = "py314"
 
 [tool.ty.environment]
-python-version = "3.11"
+python-version = "3.14"
 
 [tool.ty.src]
 include = ["src/lies"]

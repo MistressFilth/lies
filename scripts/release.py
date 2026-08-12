@@ -278,7 +278,7 @@ def main() -> int:
             pyproject_path.write_text(new_py, encoding="utf-8")
             init_path.write_text(new_init, encoding="utf-8")
         # Split CHANGELOG.
-        today = _dt.datetime.now(tz=_dt.timezone.utc).date().isoformat()
+        today = _dt.datetime.now(tz=_dt.UTC).date().isoformat()
         changelog_text = changelog_path.read_text(encoding="utf-8")
         new_changelog = split_changelog(changelog_text, target_version, today)
         changelog_path.write_text(new_changelog, encoding="utf-8")

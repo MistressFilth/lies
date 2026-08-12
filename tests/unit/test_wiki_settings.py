@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import warnings
+from datetime import UTC
 from pathlib import Path
 
 import pytest
@@ -116,7 +117,7 @@ class TestWikiSettingsLoad:
 
 def _make_collection(wiki, name: str = "test-coll", language: str | None = None) -> Collection:
     """Build a minimal Collection for resolve_language tests."""
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     return Collection(
         name=name,
@@ -128,8 +129,8 @@ def _make_collection(wiki, name: str = "test-coll", language: str | None = None)
         mapper_model=None,
         language=language,
         version="0.0.0",
-        created_at=datetime.now(tz=timezone.utc),
-        updated_at=datetime.now(tz=timezone.utc),
+        created_at=datetime.now(tz=UTC),
+        updated_at=datetime.now(tz=UTC),
     )
 
 

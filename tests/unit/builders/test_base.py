@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -35,7 +35,7 @@ def test_registry_round_trip() -> None:
 
 
 def test_pass_through_returns_single_doc(workspace: Path) -> None:
-    now = datetime.now(tz=timezone.utc)
+    now = datetime.now(tz=UTC)
     c = Collection(
         name="x",
         path=workspace,

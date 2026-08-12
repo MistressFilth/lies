@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest import mock
 
 import pytest
@@ -38,8 +38,8 @@ def _collection(tmp_path) -> Collection:
         mapper_model=None,
         language=None,
         version="1.0.0",
-        created_at=datetime.now(tz=timezone.utc),
-        updated_at=datetime.now(tz=timezone.utc),
+        created_at=datetime.now(tz=UTC),
+        updated_at=datetime.now(tz=UTC),
         config={},
     )
 
@@ -102,8 +102,8 @@ def test_normalize_routes_bespoke_through_builder(tmp_path) -> None:
         mapper_model=None,
         language=None,
         version="1.0.0",
-        created_at=datetime.now(tz=timezone.utc),
-        updated_at=datetime.now(tz=timezone.utc),
+        created_at=datetime.now(tz=UTC),
+        updated_at=datetime.now(tz=UTC),
         config={},
     )
     docs = [

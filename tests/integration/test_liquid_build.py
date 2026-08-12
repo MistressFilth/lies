@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -32,7 +32,7 @@ def workspace(tmp_path: Path) -> Path:
 
 
 def _collection(tmp_path: Path, *, config: dict | None = None) -> Collection:
-    now = datetime.now(tz=timezone.utc)
+    now = datetime.now(tz=UTC)
     return Collection(
         name="liquid-fixture",
         path=tmp_path,

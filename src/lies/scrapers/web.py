@@ -34,7 +34,7 @@ class WebScraper(BaseScraper):
                     body: bytes = resp.read()
                 if body.strip():
                     return body
-            except (HTTPError, URLError):
+            except HTTPError, URLError:
                 continue
         raise ScraperFetchFailed(f"no llms.txt or llms-full.txt found at {base}")
 
