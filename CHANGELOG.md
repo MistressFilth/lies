@@ -7,6 +7,7 @@ All notable changes to LIES are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- `python -m lies …` now works alongside the `lies` console script, via a minimal `src/lies/__main__.py` that delegates to `lies.cli:app`. The console-script entry point is unchanged.
 - `lies providers` sub-app with six operators: `init` (interactive wizard), `add`, `set-default`, `assign`, `unassign`, `check` — manage the user-level `$XDG_CONFIG_HOME/lies/providers.toml`. `init` exits 2 with a stderr hint naming the companion sub-commands when the file already exists (or pass `--force` to overwrite); `--non-interactive` is accepted and currently raises. `assign` and `unassign` validate agent names against `AGENT_ROSTER`; missing agents exit 2 before any write.
 - First-run hint emitted to stderr by `lies config`, `lies init <name>`, and `lies mcp up` when `providers.toml` is missing on disk and stdout is attached to a TTY: surfaces the path that needs the file plus `lies providers init` as the recovery command. Suppressed silently in CI / under pipes.
 - `lies config` and `lies collections show <name>` now surface the resolved effective language for the wiki. Resolution chain: `LIES_LANG` env var (highest priority) → `$XDG_CONFIG_HOME/lies/<name>/lies.toml` `[settings].lang` → default `en`. Per-collection `language` (set on the collection YAML) overrides wiki-global. Invalid values produce a stderr warning + defaults; no fatal errors.
