@@ -103,13 +103,6 @@ lands in the repo has already passed all gates.
 
 ## References
 
-- Project overview: @README.md
-- Makefile targets: @Makefile
-- Release notes: @CHANGELOG.md
-- Memory feature design: project notes at `~/code/project-notes/lies/superpowers/specs/2026-07-29-invisible-persistent-memory-design.md`
-- MCP server design: project notes at `~/code/project-notes/lies/superpowers/specs/2026-07-27-lies-mcp-design.md`
-- Invisible-memory plan: project notes at `~/code/project-notes/lies/superpowers/plans/2026-07-29-invisible-persistent-memory.md`
-- MCP plan: project notes at `~/code/project-notes/lies/superpowers/plans/2026-07-27-lies-mcp.md`
-
-For shared standards (versioning, changelog, pre-commit, repo layout,
-Conventional Commits), see `~/.claude/rules/`.
+- Project overview: README.md
+- Makefile targets: Makefile
+- Release notes: CHANGELOG.md
