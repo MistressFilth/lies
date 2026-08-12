@@ -13,6 +13,7 @@ import os
 import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 
 from lies.providers.config import ProvidersConfig, ProviderSpec
 from lies.providers.errors import ProviderConfigError
@@ -176,3 +177,140 @@ def step_agents(partial: PartialConfig, *, prompt: PromptFn) -> None:
         return
     for agent_name in AGENT_ROSTER:
         partial.agents[agent_name] = partial.default_model
+
+
+def run_wizard(
+    target_path: os.PathLike[str],
+    *,
+    check_connection: bool,
+    write_env_file: os.PathLike[str] | None,
+    non_interactive: bool,
+    prompt: PromptFn,
+) -> None:
+    """Drive the four wizard steps; commit on confirm; surface any drift
+    via re-load; optionally run connectivity check; optionally write
+    the .env capture.
+
+    ``non_interactive`` is reserved; future work, currently accepted
+    and ignored so the CLI flag can wire through without a flag-shaped
+    change later.
+    """
+    del check_connection  # wired in a follow-up; accepted for CLI parity.
+    if non_interactive:
+        msg = "non_interactive wizard mode requires LIES_PROVIDERS_PRESET; shipped as a follow-up"
+        raise NotImplementedError(msg)
+
+    target = os.fspath(target_path)
+    if os.path.dirname(target):
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+
+    print("Welcome to LIES providers setup.")
+    print()
+    print("Detected env vars:")
+    for name, present in detect_env_keys().items():
+        mark = "✓" if present else "✗"
+        print(f"  {mark} {name}")
+    print()
+
+    partial = PartialConfig(providers={}, default_model=None, agents={})
+
+    # Seed with anthropic provider so step_default_model can validate it.
+    if "anthropic" not in partial.providers:
+        partial.providers["anthropic"] = ProviderSpec(
+            name="anthropic",
+            type="anthropic",
+            api_key_env="ANTHROPIC_API_KEY",
+        )
+
+    try:
+        step_default_model(partial, prompt=prompt)
+        edit_providers = (
+            prompt(
+                "Edit providers catalog? (yes/no)",
+                "no",
+            )
+            .strip()
+            .lower()
+        )
+        if edit_providers in ("y", "yes"):
+            step_providers(partial, prompt=prompt)
+        step_agents(partial, prompt=prompt)
+    except EOFError as exc:
+        raise BootstrapAborted("input closed (Ctrl-D)") from exc
+    except KeyboardInterrupt as exc:
+        raise BootstrapAborted("interrupted (Ctrl-C)") from exc
+    except ProviderConfigError as exc:
+        # Wizard input referenced an undeclared provider (or another
+        # validation rule fired). Surface as the wizard's typed abort
+        # so the CLI can render a friendly message and exit cleanly.
+        raise BootstrapAborted(str(exc)) from exc
+
+    confirm = (
+        prompt(
+            f"Write to {target}? (yes/no)",
+            "yes",
+        )
+        .strip()
+        .lower()
+    )
+    if confirm not in ("y", "yes"):
+        raise BootstrapAborted("declined to write")
+
+    write_atomic(Path(target), partial)
+
+    # Re-load to surface any drift between editor's output and the loader.
+    from lies.providers.config import load_providers_config
+
+    try:
+        reloaded = load_providers_config(Path(target))
+    except ProviderConfigError as exc:
+        # The wizard wrote an incomplete file (e.g. operator declined
+        # the agents mirror step). Log the drift but don't abort — the
+        # env capture may still be useful and the operator can repair
+        # the file later.
+        log.warning(
+            "post-write reload flagged validation issues in %s: %s",
+            target,
+            exc,
+        )
+        reloaded = None
+    if reloaded is None and write_env_file is None:
+        # No reload result AND no env capture to write means the wizard
+        # has nothing left to do; report the drift via BootstrapAborted
+        # so the CLI can exit non-zero.
+        msg = f"post-write reload returned None; file {target} is unreadable"
+        raise BootstrapAborted(msg)
+
+    if write_env_file is not None:
+        _write_env_file(write_env_file, partial)
+
+    print()
+    print(f"Written {target}.")
+    print("Run `lies config` to view resolved models.")
+
+
+def _write_env_file(env_path: os.PathLike[str], partial: PartialConfig) -> None:
+    """Capture ``os.environ`` values for every well-known API key into
+    a chmod 600 file. Only writes names that are currently set in the
+    operator's env; key values are never logged."""
+    del partial  # kept in the signature for future per-provider overrides.
+    path = os.fspath(env_path)
+    directory = os.path.dirname(path) or "."
+    os.makedirs(directory, exist_ok=True)
+    set_keys = {name: os.environ[name] for name in WELL_KNOWN_KEY_ENVS if name in os.environ}
+    fd, tmp = tempfile.mkstemp(prefix=".lies.env.", dir=directory)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write("# Generated by LIES providers bootstrap.\n")
+            for key, value in set_keys.items():
+                f.write(f"{key}={value}\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+        os.chmod(path, 0o600)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise

@@ -187,3 +187,94 @@ def test_step_agents_skip_keeps_empty(monkeypatch: pytest.MonkeyPatch) -> None:
 
     step_agents(partial, prompt=prompt)
     assert partial.agents == {}
+
+
+def test_run_wizard_happy_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    target = tmp_path / "providers.toml"
+    answers = iter(
+        [
+            "anthropic:claude-opus-4-7",  # default_model
+            "yes",  # edit providers
+            # block 1: anthropic_compatible
+            "minimax",
+            "anthropic_compatible",
+            "MINIMAX_API_KEY",
+            "https://api.minimax.io/anthropic",
+            "",  # stop providers loop
+            "yes",  # assign default to every agent
+            "yes",  # confirm write
+        ]
+    )
+
+    def prompt(label: str, default: str) -> str:
+        return next(answers)
+
+    from lies.providers.bootstrap import run_wizard
+
+    run_wizard(
+        target,
+        check_connection=False,
+        write_env_file=None,
+        non_interactive=False,
+        prompt=prompt,
+    )
+    from lies.providers.config import load_providers_config
+
+    loaded = load_providers_config(target)
+    assert loaded is not None
+    assert "minimax" in loaded.providers
+
+
+def test_run_wizard_aborts_leave_file_untouched(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "providers.toml"
+    answers = iter(["bogus:provider", "no"])  # bad model + decline continue
+
+    def prompt(label: str, default: str) -> str:
+        return next(answers)
+
+    from lies.providers.bootstrap import run_wizard
+
+    with pytest.raises(BootstrapAborted):
+        run_wizard(
+            target,
+            check_connection=False,
+            write_env_file=None,
+            non_interactive=False,
+            prompt=prompt,
+        )
+    assert not target.exists()
+
+
+def test_run_wizard_writes_env_file_0600(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("MINIMAX_API_KEY", "sk-test-123")
+    env_path = tmp_path / "lies.env"
+    target = tmp_path / "providers.toml"
+
+    answers = iter(
+        [
+            "anthropic:claude-opus-4-7",
+            "",
+            "no",
+            "yes",
+        ]
+    )
+
+    def prompt(label: str, default: str) -> str:
+        return next(answers)
+
+    from lies.providers.bootstrap import run_wizard
+
+    run_wizard(
+        target,
+        check_connection=False,
+        write_env_file=env_path,
+        non_interactive=False,
+        prompt=prompt,
+    )
+    assert env_path.exists()
+    mode = env_path.stat().st_mode & 0o777
+    assert mode == 0o600
+    text = env_path.read_text()
+    assert "MINIMAX_API_KEY=sk-test-123" in text
