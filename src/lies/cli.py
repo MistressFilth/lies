@@ -942,6 +942,7 @@ def providers_unassign(
 ) -> None:
     """Remove ``agent`` from providers.toml's [agents] table."""
     from lies.providers.agents import AGENT_ROSTER
+    from lies.providers.errors import ProviderConfigError
 
     if agent not in AGENT_ROSTER:
         typer.echo(
@@ -950,7 +951,14 @@ def providers_unassign(
         )
         raise typer.Exit(code=2)
     wiki = _providers_wiki(name)
-    providers_ops.unassign_agent(wiki.providers_path, agent)
+    try:
+        providers_ops.unassign_agent(wiki.providers_path, agent)
+    except providers_bootstrap.ProvidersConfigMissing as exc:
+        typer.echo(f"error: {exc}. Run `lies providers init` first.", err=True)
+        raise typer.Exit(code=2)
+    except ProviderConfigError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2)
 
 
 @providers_app.command("check")
@@ -958,8 +966,17 @@ def providers_check(
     name: str = typer.Option("default", "--name", "-n", envvar="LIES_WIKI_NAME"),
 ) -> None:
     """Probe every provider in providers.toml for connectivity."""
+    from lies.providers.errors import ProviderConfigError
+
     wiki = _providers_wiki(name)
-    status = providers_ops.check_connectivity(wiki.providers_path)
+    try:
+        status = providers_ops.check_connectivity(wiki.providers_path)
+    except providers_bootstrap.ProvidersConfigMissing as exc:
+        typer.echo(f"error: {exc}. Run `lies providers init` first.", err=True)
+        raise typer.Exit(code=2)
+    except ProviderConfigError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2)
     width = max((len(n) for n, _, _ in status), default=0)
     for n, st, detail in status:
         typer.echo(f"  {n.ljust(width)}  {st:<8}  {detail}")

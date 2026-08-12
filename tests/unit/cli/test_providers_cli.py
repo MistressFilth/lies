@@ -100,6 +100,83 @@ def test_providers_add_happy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) ->
     assert result.exit_code == 0, result.output
 
 
+def test_providers_unassign_missing_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """``lies providers unassign`` exits 2 with a hint when providers.toml is absent.
+
+    Locks in the F2 fix: the wrapper now catches ``ProvidersConfigMissing``
+    and emits the same bootstrap hint the sibling commands do, instead of
+    bubbling a stack trace from the missing file.
+    """
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    # Intentionally do NOT seed providers.toml — the bug surfaced when
+    # the file was absent and the bare call leaked a stack trace.
+    result = runner.invoke(
+        app,
+        ["providers", "unassign", "source_reader", "--name", "default"],
+    )
+    assert result.exit_code == 2
+    assert "Run `lies providers init` first." in _combined(result)
+
+
+def test_providers_check_missing_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """``lies providers check`` exits 2 with a hint when providers.toml is absent.
+
+    Locks in the F3 fix: defensive ``try``/``except`` parity with the
+    sibling write commands so a missing file prints the bootstrap hint
+    instead of bubbling a stack trace.
+    """
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    result = runner.invoke(app, ["providers", "check", "--name", "default"])
+    assert result.exit_code == 2
+    assert "Run `lies providers init` first." in _combined(result)
+
+
+def test_providers_set_default_missing_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``lies providers set-default`` exits 2 with a hint when providers.toml is absent.
+
+    Belt-and-braces coverage for the pre-existing ``ProvidersConfigMissing``
+    handler on ``set-default`` — confirms the sibling pattern F2/F3 were
+    aligned to.
+    """
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    result = runner.invoke(
+        app,
+        [
+            "providers",
+            "set-default",
+            "anthropic:claude-opus-4-7",
+            "--name",
+            "default",
+        ],
+    )
+    assert result.exit_code == 2
+    assert "Run `lies providers init` first." in _combined(result)
+
+
+def test_providers_assign_missing_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """``lies providers assign`` exits 2 with a hint when providers.toml is absent.
+
+    Belt-and-braces coverage for the pre-existing ``ProvidersConfigMissing``
+    handler on ``assign``.
+    """
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    result = runner.invoke(
+        app,
+        [
+            "providers",
+            "assign",
+            "source_reader",
+            "anthropic:claude-opus-4-7",
+            "--name",
+            "default",
+        ],
+    )
+    assert result.exit_code == 2
+    assert "Run `lies providers init` first." in _combined(result)
+
+
 def _force_stdout_isatty(monkeypatch: pytest.MonkeyPatch, value: bool) -> None:
     """Force ``sys.stdout.isatty()`` to ``value`` for the duration of the test.
 

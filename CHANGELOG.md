@@ -8,7 +8,7 @@ All notable changes to LIES are documented here. The format follows
 
 ### Added
 - `python -m lies …` now works alongside the `lies` console script, via a minimal `src/lies/__main__.py` that delegates to `lies.cli:app`. The console-script entry point is unchanged.
-- `lies providers init` interactive wizard (four subcommands under
+- `lies providers init` interactive wizard (six subcommands under
   `lies providers …`). Opt-in, refuses to overwrite an existing
   `providers.toml` unless `--force`; companion commands
   (`add` / `set-default` / `assign` / `unassign` / `check`) cover every
