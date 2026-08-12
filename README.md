@@ -210,6 +210,33 @@ Environment variables:
 Most commands accept `--name` to override the wiki name for one
 invocation. `lies config` prints the active model and wiki name.
 
+### Bootstrapping providers
+
+On a fresh install with no `providers.toml`, run the wizard:
+
+```bash
+uv run lies providers init
+```
+
+The wizard walks four steps (detected-env summary, default model,
+optional provider catalog, optional per-agent assignment), writes
+`<XDG_CONFIG_HOME>/lies/providers.toml` via atomic rename, and prints
+`Run `lies config` to view resolved models.` Subsequent edits:
+
+```bash
+uv run lies providers add <name> --type anthropic_compatible \
+    --api-key-env MINIMAX_API_KEY \
+    --base-url https://api.minimax.io/anthropic
+
+uv run lies providers assign source_reader minimax:MiniMax-M3
+uv run lies providers set-default anthropic:claude-opus-4-7
+uv run lies providers unassign linter
+uv run lies providers check
+```
+
+Companion commands refuse if the file is missing; the CLI suggests
+`lies providers init` first.
+
 ### Provider and model configuration
 
 LIES reads `$XDG_CONFIG_HOME/lies/providers.toml` at orchestrator construction. The file declares one or more providers and assigns a model to each agent:
