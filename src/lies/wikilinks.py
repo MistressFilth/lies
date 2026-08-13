@@ -3,6 +3,14 @@
 Distinct from QMD (semantic search). Resolves ``[[WikiLink]]`` targets
 against an in-memory dict of wiki-page identifiers (filename stem,
 frontmatter title, frontmatter aliases) and detects broken links.
+
+When the optional ``ahocorasick_rs`` runtime dep is present (default on
+Python 3.14+), ``WikiLinkResolver.build()`` also constructs a
+trie-based substring automaton and stores it on ``_aho``. ``resolve()``
+then routes through ``find_matches_as_strings(..., overlapping=True)``
+so prefix-overlapping keys (``foo`` + ``foobar``) still surface the
+longest match. When the dep is missing, ``_aho`` stays ``None`` and
+the dict branch alone runs — bit-identical output for every key.
 """
 
 from __future__ import annotations
@@ -107,12 +115,22 @@ def _collect_keys(fm: Any, stem: str) -> tuple[str, ...]:
 
 
 class WikiLinkResolver:
-    """Dict-backed ``[[WikiLink]]`` resolver."""
+    """Dict-backed ``[[WikiLink]]`` resolver with optional Aho-Corasick fast-path.
+
+    The AC automaton, when ``ahocorasick_rs`` is installed, lets
+    ``resolve()`` scan a haystack for any corpus-key substring in
+    O(|haystack|) instead of O(|corpus| × |haystack|) dict lookups.
+    ``overlapping=True`` is required so prefix-overlapping keys
+    (``foo`` + ``foobar``) still surface the longer match — the same
+    longest-wins guarantee the dict branch pins in the test suite.
+    """
 
     _keys: dict[str, Path]
+    _aho: Any  # ahocorasick_rs.AhoCorasick | None when the dep is missing
 
     def __init__(self) -> None:
         self._keys = {}
+        self._aho = None
 
     @classmethod
     def build(cls, roots: tuple[Path, ...]) -> WikiLinkResolver:
@@ -156,6 +174,18 @@ class WikiLinkResolver:
                     )
                 resolver._keys[key] = page.path
 
+        # Try to build the Aho-Corasick automaton. The import is deferred
+        # to ``build()`` so tests can patch ``sys.modules`` cleanly and the
+        # dep stays optional for users on platforms without a prebuilt wheel.
+        try:
+            import ahocorasick_rs  # type: ignore[import-not-found]
+
+            keys_list = sorted(resolver._keys.keys())
+            resolver._aho = ahocorasick_rs.AhoCorasick(keys_list)
+            log.debug("wikilink: built Aho-Corasick automaton with %d keys", len(keys_list))
+        except ImportError:  # pragma: no cover
+            log.info("wikilink: ahocorasick_rs not installed; using dict lookup")
+
         if not resolver._keys:
             log.warning("wikilink: corpus empty; all [[wikilinks]] will be flagged missing_page")
 
@@ -170,5 +200,18 @@ class WikiLinkResolver:
             target = target[: target.rfind(".")]
         key = target.lower()
         if not key:
+            return None
+        aho = self._aho
+        if aho is not None:
+            # ahocorasick_rs reports every occurrence of a pattern as a
+            # substring of the haystack; we only accept exact matches.
+            # ``overlapping=True`` is required so that, when both ``foo`` and
+            # ``foobar`` are keys, resolving ``foobar`` reports the longer
+            # ``foobar`` match in addition to the leftmost ``foo`` match. The
+            # default non-overlapping scan suppresses the longer match, which
+            # would violate the spec's longest-wins guarantee.
+            for match in aho.find_matches_as_strings(key, overlapping=True):
+                if match == key:
+                    return self._keys.get(key)
             return None
         return self._keys.get(key)

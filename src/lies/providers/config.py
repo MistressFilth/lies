@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
+import tomllib
 from dataclasses import dataclass
 from logging import getLogger
 from pathlib import Path
 from typing import Literal
-
-import tomllib  # stdlib on 3.11+; project targets 3.10+
 
 from lies.providers.agents import AGENT_ROSTER
 from lies.providers.errors import ProviderConfigError

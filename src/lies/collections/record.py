@@ -62,7 +62,7 @@ def _parse_dt(value: object) -> datetime:
     if isinstance(value, datetime):
         return value
     if isinstance(value, str):
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return datetime.fromisoformat(value)
     raise CollectionConfigInvalid(f"invalid datetime: {value!r}")
 
 

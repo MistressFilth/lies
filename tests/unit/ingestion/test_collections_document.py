@@ -1,6 +1,6 @@
 """Tests for the Document record."""
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
@@ -12,7 +12,7 @@ def test_document_carries_sha256s() -> None:
         path="concepts/example.md",
         source_sha256="a" * 64,
         ingested_sha256="b" * 64,
-        ingested_at=datetime(2026, 8, 1, tzinfo=timezone.utc),
+        ingested_at=datetime(2026, 8, 1, tzinfo=UTC),
         collection="cpython",
         status="ok",
     )
@@ -32,7 +32,7 @@ def test_document_rejects_unknown_status() -> None:
             path="x.md",
             source_sha256="a" * 64,
             ingested_sha256="b" * 64,
-            ingested_at=datetime.now(tz=timezone.utc),
+            ingested_at=datetime.now(tz=UTC),
             collection="cpython",
             status="bogus",
         )

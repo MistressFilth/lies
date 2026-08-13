@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from unittest import mock
 
@@ -56,8 +56,8 @@ def _seed(wiki: Wiki, name: str) -> None:
             mapper_model=None,
             language=None,
             version="1",
-            created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
-            updated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            created_at=datetime(2026, 1, 1, tzinfo=UTC),
+            updated_at=datetime(2026, 1, 1, tzinfo=UTC),
             config={},
         ),
     )
@@ -87,8 +87,8 @@ def test_modify_round_trip(wiki: Wiki) -> None:
     assert loaded.tags == ["stdlib", "core"]
     assert loaded.language == "en"
     assert loaded.source == "https://old.example.com"  # preserved
-    assert loaded.created_at == datetime(2026, 1, 1, tzinfo=timezone.utc)
-    assert loaded.updated_at > datetime(2026, 1, 1, tzinfo=timezone.utc)
+    assert loaded.created_at == datetime(2026, 1, 1, tzinfo=UTC)
+    assert loaded.updated_at > datetime(2026, 1, 1, tzinfo=UTC)
 
 
 def test_modify_atomic_write_no_partial_file(wiki: Wiki) -> None:

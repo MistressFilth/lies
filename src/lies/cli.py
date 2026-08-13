@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+from datetime import UTC
 from pathlib import Path
 from typing import Annotated, Any, cast
 
@@ -427,7 +428,7 @@ def main(
     while True:
         try:
             line = console.input("lies> ")
-        except (EOFError, KeyboardInterrupt):
+        except EOFError, KeyboardInterrupt:
             break
         line = line.strip()
         if not line:
@@ -523,7 +524,7 @@ def collections(
 ) -> None:
     """Inspect, modify, and author collection configurations."""
     import json
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     import yaml  # type: ignore[import-untyped]
     from rich.prompt import Prompt
@@ -637,7 +638,7 @@ def collections(
                 else:
                     updates[key] = value
 
-        updates["updated_at"] = datetime.now(tz=timezone.utc)
+        updates["updated_at"] = datetime.now(tz=UTC)
         new = _dc_replace(existing, **updates)
         save_collection(wiki, new)
         typer.echo(f"updated {Collection.config_path(wiki, name)}")
@@ -702,7 +703,7 @@ def collections(
             if isinstance(out, _AuthorProposal):
                 typer.echo(yaml.safe_dump(out.collection, sort_keys=True))
                 if apply:
-                    now = datetime.now(tz=timezone.utc)
+                    now = datetime.now(tz=UTC)
                     payload = dict(out.collection)
                     payload.setdefault("name", name)
                     payload.setdefault("path", str(wiki.data_root / "raw" / name))
@@ -714,13 +715,9 @@ def collections(
                     created = payload.get("created_at")
                     updated = payload.get("updated_at")
                     if isinstance(created, str):
-                        payload["created_at"] = datetime.fromisoformat(
-                            created.replace("Z", "+00:00")
-                        )
+                        payload["created_at"] = datetime.fromisoformat(created)
                     if isinstance(updated, str):
-                        payload["updated_at"] = datetime.fromisoformat(
-                            updated.replace("Z", "+00:00")
-                        )
+                        payload["updated_at"] = datetime.fromisoformat(updated)
                     payload["path"] = Path(payload["path"])
                     doc_path = payload.get("doc_path")
                     if doc_path is not None:
@@ -765,7 +762,7 @@ def _stdout_isatty() -> bool:
     """
     try:
         return sys.stdout.isatty()
-    except (AttributeError, ValueError):
+    except AttributeError, ValueError:
         return False
 
 

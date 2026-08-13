@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest import mock
 
@@ -16,7 +16,7 @@ from lies.collections.record import Collection
 
 
 def _collection(tmp_path: Path, *, config: dict | None = None) -> Collection:
-    now = datetime.now(tz=timezone.utc)
+    now = datetime.now(tz=UTC)
     return Collection(
         name="liquid-test",
         path=tmp_path,

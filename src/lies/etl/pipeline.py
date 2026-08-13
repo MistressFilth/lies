@@ -8,7 +8,7 @@ stage produced (paths alone are insufficient for normalization).
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
 from typing import TYPE_CHECKING
 
@@ -77,7 +77,7 @@ class SyncOrchestrator:
     def run(self) -> None:
         wiki = self.wiki
         try:
-            self.telemetry.record_started(datetime.now(tz=timezone.utc).isoformat())
+            self.telemetry.record_started(datetime.now(tz=UTC).isoformat())
             self._transition(PipelineState.SCRAPING)
             scraped = run_scrape(wiki, self.collection)
             self.telemetry.record_counter("docs_total", len(scraped.success))
@@ -113,7 +113,7 @@ class SyncOrchestrator:
             run_qmd_update(wiki, self.collection)
 
             self._transition(PipelineState.IDLE)
-            self.telemetry.record_ended(datetime.now(tz=timezone.utc).isoformat())
+            self.telemetry.record_ended(datetime.now(tz=UTC).isoformat())
         except BudgetExceeded:
             try:
                 snap = self.manifest.snapshot()
@@ -121,10 +121,10 @@ class SyncOrchestrator:
             except Exception:  # noqa: BLE001, S110 - cleanup is best-effort
                 pass
             self.telemetry.record_error("budget_exceeded")
-            self.telemetry.record_ended(datetime.now(tz=timezone.utc).isoformat())
+            self.telemetry.record_ended(datetime.now(tz=UTC).isoformat())
             raise
         except Exception as exc:
             self._transition(PipelineState.FAILED)
             self.telemetry.record_error(str(exc))
-            self.telemetry.record_ended(datetime.now(tz=timezone.utc).isoformat())
+            self.telemetry.record_ended(datetime.now(tz=UTC).isoformat())
             raise

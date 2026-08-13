@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, TypeVar
+from typing import Any
 
 from pydantic import BaseModel
 from pydantic_ai import Agent
@@ -19,11 +19,7 @@ wiki structure is:
 """
 
 
-T = TypeVar("T", bound=BaseModel)
-D = TypeVar("D")
-
-
-def make_sub_agent(
+def make_sub_agent[T: BaseModel, D](
     model: Model | str,
     output_type: type[T],
     system_prompt: str,

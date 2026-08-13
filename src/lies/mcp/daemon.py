@@ -25,7 +25,7 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from pydantic import BaseModel, ValidationError
@@ -119,7 +119,7 @@ def read_record(wiki: Wiki) -> PidRecord | None:
     path = pid_path(wiki)
     try:
         raw = path.read_text(encoding="utf-8")
-    except (FileNotFoundError, OSError):
+    except FileNotFoundError, OSError:
         return None
     try:
         return PidRecord.model_validate_json(raw)
@@ -176,7 +176,7 @@ def _daemon_cmdline_matches(pid: int) -> bool | None:
     """
     try:
         cmdline = Path(f"/proc/{pid}/cmdline").read_bytes()
-    except (FileNotFoundError, PermissionError, OSError):
+    except FileNotFoundError, PermissionError, OSError:
         return None
     return b"lies.cli" in cmdline and b"_serve" in cmdline
 
@@ -238,7 +238,7 @@ def tail_log(wiki: Wiki, lines: int = 20) -> list[str]:
     """Return the last ``lines`` lines of the daemon log, or ``[]``."""
     try:
         body = log_path(wiki).read_text(encoding="utf-8", errors="replace")
-    except (FileNotFoundError, OSError):
+    except FileNotFoundError, OSError:
         return []
     return body.splitlines()[-lines:]
 
@@ -270,7 +270,7 @@ def _kill_now(proc: subprocess.Popen[bytes]) -> None:
     """SIGKILL the child and reap it, ignoring an already-dead process."""
     try:
         proc.kill()
-    except (ProcessLookupError, OSError):
+    except ProcessLookupError, OSError:
         return
     try:
         proc.wait(timeout=2.0)
@@ -349,7 +349,7 @@ def spawn_daemon(
             host=host,
             port=port,
             transport="http",
-            started_at=datetime.now(timezone.utc),
+            started_at=datetime.now(UTC),
             wiki_root=str(wiki.data_root),
             version=__version__,
         )
@@ -413,7 +413,7 @@ def _pid_alive(pid: int) -> bool:
     """
     try:
         raw = Path(f"/proc/{pid}/stat").read_text(encoding="ascii", errors="replace")
-    except (FileNotFoundError, PermissionError, OSError):
+    except FileNotFoundError, PermissionError, OSError:
         return process_alive(pid)
     end = raw.rfind(")")
     if end == -1 or end + 2 >= len(raw):
@@ -485,7 +485,7 @@ def daemon_status(wiki: Wiki) -> StatusResult:
         )
     if is_stale(rec):
         return StatusResult(running=False, record=rec, stale=True, url=None, uptime_s=None, log=log)
-    raw_uptime = (datetime.now(timezone.utc) - rec.started_at).total_seconds()
+    raw_uptime = (datetime.now(UTC) - rec.started_at).total_seconds()
     # A hand-edited or clock-skewed record can carry a future
     # ``started_at``; clamp at zero rather than report a negative
     # duration that no caller can make sense of.

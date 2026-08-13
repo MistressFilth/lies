@@ -5,8 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from datetime import datetime
-
-from typing_extensions import Self
+from typing import Self
 
 from lies.wiki.wiki import Wiki
 
@@ -82,11 +81,11 @@ class SyncTelemetry:
             self.record_counter(key, int(val))
 
     def record_started(self, iso_ts: str) -> None:
-        self._started_at = datetime.fromisoformat(iso_ts.replace("Z", "+00:00"))
+        self._started_at = datetime.fromisoformat(iso_ts)
         self._write({"collection": self._collection, "kind": "started", "ts": iso_ts})
 
     def record_ended(self, iso_ts: str) -> None:
-        self._ended_at = datetime.fromisoformat(iso_ts.replace("Z", "+00:00"))
+        self._ended_at = datetime.fromisoformat(iso_ts)
         self._write({"collection": self._collection, "kind": "ended", "ts": iso_ts})
 
     def record_error(self, message: str) -> None:

@@ -31,9 +31,11 @@ repos:
     hooks:
       - id: no-co-authored-by
         name: forbid Co-Authored-By trailer
-        entry: bash -c '! grep -iE "^Co-Author[^:]*:" "$1" >/dev/null'
+        # bash -c 'script' FILE treats FILE as $0 (it is the first arg after
+        # the script). pre-commit passes the commit message filename as the
+        # sole positional argument, so $0 is the message file and $1 is
+        # empty. grep on $0 rejects any Co-Authored-By trailer.
+        entry: bash -c '! grep -iE "^Co-Author[^:]*:" "$0" >/dev/null'
         language: system
-        args: ["<COMMIT_MSG_FILE>"]
         stages: [commit-msg]
         always_run: true
-        pass_filenames: false

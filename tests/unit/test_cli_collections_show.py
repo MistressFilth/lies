@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from unittest import mock
 
@@ -52,8 +52,8 @@ def test_collections_show_reports_pending(wiki: Wiki) -> None:
             mapper_model=None,
             language=None,
             version="1.0.0",
-            created_at=datetime.now(tz=timezone.utc),
-            updated_at=datetime.now(tz=timezone.utc),
+            created_at=datetime.now(tz=UTC),
+            updated_at=datetime.now(tz=UTC),
             config={},
         ),
     )
@@ -79,8 +79,8 @@ def test_collections_show_reports_registered(wiki: Wiki) -> None:
             mapper_model=None,
             language=None,
             version="1.0.0",
-            created_at=datetime.now(tz=timezone.utc),
-            updated_at=datetime.now(tz=timezone.utc),
+            created_at=datetime.now(tz=UTC),
+            updated_at=datetime.now(tz=UTC),
             config={},
         ),
     )

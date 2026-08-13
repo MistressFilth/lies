@@ -1,5 +1,5 @@
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest import mock
 
@@ -41,8 +41,8 @@ def _collection(tmp_path: Path) -> Collection:
         mapper_model=None,
         language=None,
         version="1.0.0",
-        created_at=datetime(2026, 8, 1, tzinfo=timezone.utc),
-        updated_at=datetime(2026, 8, 1, tzinfo=timezone.utc),
+        created_at=datetime(2026, 8, 1, tzinfo=UTC),
+        updated_at=datetime(2026, 8, 1, tzinfo=UTC),
     )
 
 
@@ -229,8 +229,8 @@ def test_scrape_uses_bespoke_scraper_via_scraper_cmd(tmp_path: Path) -> None:
             mapper_model=None,
             language=None,
             version="1.0.0",
-            created_at=datetime.now(tz=timezone.utc),
-            updated_at=datetime.now(tz=timezone.utc),
+            created_at=datetime.now(tz=UTC),
+            updated_at=datetime.now(tz=UTC),
             config={},
         )
         result = run_scrape(_wiki(tmp_path), c)
@@ -254,8 +254,8 @@ def test_scrape_scraper_cmd_import_failure_raises_scraper_unavailable(tmp_path: 
         mapper_model=None,
         language=None,
         version="1.0.0",
-        created_at=datetime.now(tz=timezone.utc),
-        updated_at=datetime.now(tz=timezone.utc),
+        created_at=datetime.now(tz=UTC),
+        updated_at=datetime.now(tz=UTC),
         config={},
     )
     with pytest.raises(ScraperUnavailable):

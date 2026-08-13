@@ -17,11 +17,10 @@ errors are raised from ``WikiSettings.load`` or ``resolve_language``.
 from __future__ import annotations
 
 import os
+import tomllib
 import warnings
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
-
-import tomllib
 
 if TYPE_CHECKING:
     from lies.collections.record import Collection

@@ -15,7 +15,7 @@ import hashlib
 import subprocess
 import threading
 from collections.abc import Callable, Iterator
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -100,7 +100,7 @@ def _read_page(wiki: Wiki, path: str) -> str | None:
         return None
     try:
         return resolved.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
+    except OSError, UnicodeDecodeError:
         return ""
 
 
@@ -402,7 +402,7 @@ class WikiMemoryService:
         for op in plan.operations:
             append_log_entry(
                 self._wiki,
-                f"## [{datetime.now(tz=timezone.utc).date().isoformat()}] "
+                f"## [{datetime.now(tz=UTC).date().isoformat()}] "
                 f"memory | {op.kind.value} | {op.path}",
             )
         return changed

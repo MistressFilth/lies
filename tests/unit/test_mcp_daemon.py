@@ -5,7 +5,7 @@ import socket
 import subprocess
 import sys
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -20,7 +20,7 @@ def _record(**overrides: object) -> daemon.PidRecord:
         "host": "127.0.0.1",
         "port": 8737,
         "transport": "http",
-        "started_at": datetime.now(timezone.utc),
+        "started_at": datetime.now(UTC),
         "wiki_root": "/tmp/wiki",
         "version": "0.5.0",
     }
@@ -376,7 +376,7 @@ def test_status_clamps_negative_uptime_to_zero(
     """A record with a future ``started_at`` reports uptime >= 0, not negative."""
     wiki = _wiki(tmp_path)
     monkeypatch.setattr(daemon, "_daemon_cmdline_matches", lambda _pid: True)
-    future = datetime.now(timezone.utc) + timedelta(hours=1)
+    future = datetime.now(UTC) + timedelta(hours=1)
     daemon.write_record(wiki, _record(pid=os.getpid(), started_at=future))
     status = daemon.daemon_status(wiki)
     assert status.running is True
