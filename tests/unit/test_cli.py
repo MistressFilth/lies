@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from unittest.mock import patch
 
@@ -194,7 +194,7 @@ def _register_wiki(name: str) -> None:
 
 
 def test_up_ensures_the_qmd_daemon(monkeypatch, tmp_path: Path) -> None:
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from lies.mcp import daemon
     from lies.qmd import daemon as qmd_daemon
@@ -206,7 +206,7 @@ def test_up_ensures_the_qmd_daemon(monkeypatch, tmp_path: Path) -> None:
         host="127.0.0.1",
         port=8737,
         transport="http",
-        started_at=datetime.now(timezone.utc),
+        started_at=datetime.now(UTC),
         wiki_root=str(tmp_path),
         version="0.5.0",
     )
@@ -225,7 +225,7 @@ def test_up_ensures_the_qmd_daemon(monkeypatch, tmp_path: Path) -> None:
 
 
 def test_up_skips_qmd_with_no_qmd_flag(monkeypatch, tmp_path: Path) -> None:
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from lies.mcp import daemon
     from lies.qmd import daemon as qmd_daemon
@@ -237,7 +237,7 @@ def test_up_skips_qmd_with_no_qmd_flag(monkeypatch, tmp_path: Path) -> None:
         host="127.0.0.1",
         port=8737,
         transport="http",
-        started_at=datetime.now(timezone.utc),
+        started_at=datetime.now(UTC),
         wiki_root=str(tmp_path),
         version="0.5.0",
     )
@@ -251,7 +251,7 @@ def test_up_skips_qmd_with_no_qmd_flag(monkeypatch, tmp_path: Path) -> None:
 
 def test_up_succeeds_when_qmd_is_unavailable(monkeypatch, tmp_path: Path) -> None:
     """qmd is a search backend, not a prerequisite."""
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from lies.mcp import daemon
     from lies.qmd import daemon as qmd_daemon
@@ -263,7 +263,7 @@ def test_up_succeeds_when_qmd_is_unavailable(monkeypatch, tmp_path: Path) -> Non
         host="127.0.0.1",
         port=8737,
         transport="http",
-        started_at=datetime.now(timezone.utc),
+        started_at=datetime.now(UTC),
         wiki_root=str(tmp_path),
         version="0.5.0",
     )
@@ -343,7 +343,7 @@ def test_serve_rejects_non_loopback_host(monkeypatch) -> None:
 
 
 def test_up_prints_url_on_success(monkeypatch, tmp_path: Path) -> None:
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from lies.mcp import daemon
 
@@ -354,7 +354,7 @@ def test_up_prints_url_on_success(monkeypatch, tmp_path: Path) -> None:
         host="127.0.0.1",
         port=8737,
         transport="http",
-        started_at=datetime.now(timezone.utc),
+        started_at=datetime.now(UTC),
         wiki_root=str(tmp_path),
         version="0.5.0",
     )
@@ -366,7 +366,7 @@ def test_up_prints_url_on_success(monkeypatch, tmp_path: Path) -> None:
 
 
 def test_up_is_idempotent_when_already_running(monkeypatch, tmp_path: Path) -> None:
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from lies.mcp import daemon
 
@@ -377,7 +377,7 @@ def test_up_is_idempotent_when_already_running(monkeypatch, tmp_path: Path) -> N
         host="127.0.0.1",
         port=8737,
         transport="http",
-        started_at=datetime.now(timezone.utc),
+        started_at=datetime.now(UTC),
         wiki_root=str(tmp_path),
         version="0.5.0",
     )
@@ -500,7 +500,7 @@ def test_status_exits_1_when_stopped(monkeypatch, tmp_path: Path) -> None:
 
 
 def test_status_exits_0_when_running(monkeypatch, tmp_path: Path) -> None:
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from lies.mcp import daemon
 
@@ -511,7 +511,7 @@ def test_status_exits_0_when_running(monkeypatch, tmp_path: Path) -> None:
         host="127.0.0.1",
         port=8737,
         transport="http",
-        started_at=datetime.now(timezone.utc),
+        started_at=datetime.now(UTC),
         wiki_root=str(tmp_path),
         version="0.5.0",
     )
@@ -584,8 +584,8 @@ def _seed_collection(wiki_obj: Wiki, name: str) -> Collection:
             mapper_model=None,
             language=None,
             version="1",
-            created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
-            updated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            created_at=datetime(2026, 1, 1, tzinfo=UTC),
+            updated_at=datetime(2026, 1, 1, tzinfo=UTC),
             config={},
         ),
     )
@@ -667,7 +667,7 @@ def test_modify_from_file_applies_editable_fields(wiki: Wiki, tmp_path: Path) ->
     assert loaded.tags == ["stdlib", "core"]
     assert loaded.language == "en"
     assert loaded.config == {"render_cmd": "foo"}
-    assert loaded.created_at == datetime(2026, 1, 1, tzinfo=timezone.utc)
+    assert loaded.created_at == datetime(2026, 1, 1, tzinfo=UTC)
 
 
 def test_modify_from_file_rejects_name_field(wiki: Wiki, tmp_path: Path) -> None:

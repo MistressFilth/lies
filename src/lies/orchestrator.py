@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import subprocess
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from pydantic_ai import Agent
@@ -161,7 +161,7 @@ def _build_lint_report(
         for page in pages:
             try:
                 text = (wiki.wiki_dir / page).read_text(encoding="utf-8")
-            except (OSError, UnicodeDecodeError):
+            except OSError, UnicodeDecodeError:
                 continue
             linked.update(_extract_local_md_links(text, page, wiki.data_root))
         orphans = sorted(pages - linked)
@@ -188,7 +188,7 @@ def _build_lint_report(
         for page in pages:
             try:
                 text = (wiki.wiki_dir / page).read_text(encoding="utf-8")
-            except (OSError, UnicodeDecodeError):
+            except OSError, UnicodeDecodeError:
                 continue
             title = _extract_frontmatter_title(text)
             if title:
@@ -207,7 +207,7 @@ def _build_lint_report(
         for page in pages:
             try:
                 text = (wiki.wiki_dir / page).read_text(encoding="utf-8")
-            except (OSError, UnicodeDecodeError):
+            except OSError, UnicodeDecodeError:
                 continue
             page_links[page] = _extract_local_md_links(text, page, wiki.data_root)
 
@@ -220,7 +220,7 @@ def _build_lint_report(
                 body = body_cache.setdefault(
                     page, _strip_frontmatter((wiki.wiki_dir / page).read_text(encoding="utf-8"))
                 )
-            except (OSError, UnicodeDecodeError):
+            except OSError, UnicodeDecodeError:
                 continue
             body_lower = body.lower()
             page_targets = page_links.get(page, set())
@@ -249,7 +249,7 @@ def _build_lint_report(
     for page in pages:
         try:
             text = (wiki.wiki_dir / page).read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
+        except OSError, UnicodeDecodeError:
             continue
         for source in _extract_frontmatter_sources(text):
             resolved = (wiki.data_root / source).resolve()
@@ -270,7 +270,7 @@ def _build_lint_report(
     for page in pages:
         try:
             text = (wiki.wiki_dir / page).read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
+        except OSError, UnicodeDecodeError:
             continue
         for raw_target in _extract_wikilinks(text):
             if resolver.resolve(raw_target) is None:
@@ -470,7 +470,7 @@ def _format_lint_markdown(report: LintReport, wiki: Wiki) -> str:
         by_cat[f.category] = by_cat.get(f.category, 0) + 1
 
     header = (
-        f"## Lint report — {datetime.now(tz=timezone.utc).date().isoformat()}\n\n"
+        f"## Lint report — {datetime.now(tz=UTC).date().isoformat()}\n\n"
         f"Wiki root: `{wiki.data_root}`\n\n"
     )
     if not report.findings:
@@ -1090,7 +1090,7 @@ class Orchestrator:
         )
         (self.wiki.wiki_dir / "lint-report.md").write_text(final_md, encoding="utf-8")
         self._append_log_entry(
-            f"## [{datetime.now(tz=timezone.utc).date().isoformat()}] lint | "
+            f"## [{datetime.now(tz=UTC).date().isoformat()}] lint | "
             f"{final_md.count(chr(10))} findings"
         )
         return final_md
@@ -1166,7 +1166,7 @@ class Orchestrator:
                     continue
                 try:
                     page_texts[rel] = path.read_text(encoding="utf-8")
-                except (OSError, UnicodeDecodeError):
+                except OSError, UnicodeDecodeError:
                     continue
         deps = LintDeps(page_texts=page_texts, wiki_root=str(self.wiki.data_root))
         try:

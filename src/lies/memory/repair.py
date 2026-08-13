@@ -10,7 +10,7 @@ as apply_plan.
 from __future__ import annotations
 
 import hashlib
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import frontmatter
@@ -35,7 +35,7 @@ from lies.wiki.wiki import Wiki
 
 
 def _stub_body(title: str) -> str:
-    today = datetime.now(tz=timezone.utc).date().isoformat()
+    today = datetime.now(tz=UTC).date().isoformat()
     return (
         f"---\n"
         f"title: {title}\n"

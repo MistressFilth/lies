@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest import mock
 
@@ -51,8 +51,8 @@ def _collection(wiki: Wiki) -> Collection:
         mapper_model=None,
         language=None,
         version="1.0.0",
-        created_at=datetime(2026, 8, 1, tzinfo=timezone.utc),
-        updated_at=datetime(2026, 8, 1, tzinfo=timezone.utc),
+        created_at=datetime(2026, 8, 1, tzinfo=UTC),
+        updated_at=datetime(2026, 8, 1, tzinfo=UTC),
     )
 
 
@@ -296,8 +296,8 @@ def test_pipeline_runs_register_stage(wiki: Wiki, monkeypatch: pytest.MonkeyPatc
         mapper_model=None,
         language=None,
         version="1.0.0",
-        created_at=datetime.now(tz=timezone.utc),
-        updated_at=datetime.now(tz=timezone.utc),
+        created_at=datetime.now(tz=UTC),
+        updated_at=datetime.now(tz=UTC),
         config={},
     )
     telemetry = SyncTelemetry(wiki, c.name)

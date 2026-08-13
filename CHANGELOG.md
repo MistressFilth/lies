@@ -7,6 +7,19 @@ All notable changes to LIES are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- Restore the `ahocorasick_rs>=1.0` Aho-Corasick fast-path inside
+  `WikiLinkResolver`. The dep was removed in v0.9.2 (PR #22, commit
+  `633a374`) because its wheel was missing on Python 3.13+ and the
+  sdist was malformed; the wrapper's 1.0.3 release now ships prebuilt
+  wheels including Python 3.14 (the new floor). When the wheel is
+  absent, the resolver falls through to the dict-substring path
+  unchanged — `TestResolverImportFallback` pins the contract that
+  both branches return bit-identical results, deduplicated through
+  `set`. Four tests re-added: `TestResolverUsesAhoCorasick` (2),
+  `TestResolverImportFallback` (1), and
+  `test_dict_fallback_restored_after_force_fail` (a 4th
+  state-cleanliness guard beyond the original brief). Existing
+  longest-match test unchanged.
 - `python -m lies …` now works alongside the `lies` console script, via a minimal `src/lies/__main__.py` that delegates to `lies.cli:app`. The console-script entry point is unchanged.
 - `lies providers init` interactive wizard (six subcommands under
   `lies providers …`). Opt-in, refuses to overwrite an existing
@@ -69,6 +82,11 @@ All notable changes to LIES are documented here. The format follows
 - Missing `providers.toml` is non-fatal: every agent falls back to the previous default (`anthropic:claude-opus-4-7`) and a single stderr warning names the expected path.
 
 ### Changed
+- Python floor bumped from `>=3.10` to `>=3.14,<3.15` to align with the
+  Python versions where the restored `ahocorasick_rs` 1.0.x wheels are
+  available prebuilt and where the project's typecheck / lint toolchain
+  is now stable. Operators on Python 3.10–3.13 must upgrade or stay on
+  v0.9.3.
 - CLI flag `--wiki-root`/`-w` replaced by `--name` on every command. Default wiki name `default` (set `LIES_WIKI_NAME` to override).
 - Orchestrator construction no longer reads `LIES_MODEL`. It loads user-level `providers.toml` (or every agent falls back to `anthropic:claude-opus-4-7` when the file is missing) and resolves one `Model | str` per agent.
 - Agent factory signatures (`source_reader_agent`, `page_writer_agent`, `indexer_agent`, `linter_agent`, `query_synthesizer_agent`, `repair_agent`, `enricher_agent`) now accept `model: Model | str` instead of `model: str`.
@@ -104,7 +122,6 @@ All notable changes to LIES are documented here. The format follows
 - `WikiLayout.lies_dir`, `WikiLayout.schema_path`, `WikiLayout.memory_lock_path`, and all other `.lies/...` accessors. Use `Wiki` accessors instead.
 - `utils.exclusive.ensure_gitignored` (no `.lies/` to gitignore).
 - `scripts/worktree_lint.py` and the `make worktree-lint` target; the seven-invariants checker is a tool that asserted user-scope rule adherence.
-- Drop the `ahocorasick_rs` runtime dependency. `WikiLinkResolver.resolve` is now dict-only — equivalent correctness, simpler install on Python 3.13+ where the upstream 0.22.2 wheel is missing and the sdist is malformed. No behavior change for `lies lint` output.
 - `tests/unit/test_repository_metadata.py` and its pytest-marker, GitHub-Actions SHA, and mypy-absence assertions.
 - `make release` no longer runs `worktree-lint` as a prerequisite.
 - CI workflow no longer fetches full git history (`fetch-depth: 0`); the only consumer was the dropped compliance test.
@@ -130,6 +147,11 @@ All notable changes to LIES are documented here. The format follows
 - Added the MIT license declared by package metadata.
 - Registered the integration-test pytest marker so full-suite runs emit no unknown-marker warning.
 - `WikiMemoryService.register_collection` now persists to `$XDG_STATE_HOME/lies/<name>/registry.json` so the registration survives process boundaries. `lies collections show` is truthful across processes; the ETL `REGISTERING` stage no longer silently re-registers on every sync. Stale entries (whose `collections/<id>.yaml` is missing) are dropped at load and never persisted. Writes are atomic via temp+rename; concurrent registers union rather than overwrite.
+
+## [0.9.2] - 2026-08-11
+
+### Removed
+- Drop the `ahocorasick_rs` runtime dependency. `WikiLinkResolver.resolve` is now dict-only — equivalent correctness, simpler install on Python 3.13+ where the upstream 0.22.2 wheel is missing and the sdist is malformed. No behavior change for `lies lint` output. (Restored in [0.10.0].)
 
 ## [0.5.1] - 2026-08-03
 

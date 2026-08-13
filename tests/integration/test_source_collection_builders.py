@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import subprocess
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest import mock
 
@@ -70,8 +70,8 @@ def test_sync_pdf_collection_registers_ref(wiki: Wiki) -> None:
         mapper_model=None,
         language=None,
         version="1.0.0",
-        created_at=datetime.now(tz=timezone.utc),
-        updated_at=datetime.now(tz=timezone.utc),
+        created_at=datetime.now(tz=UTC),
+        updated_at=datetime.now(tz=UTC),
         config={},
     )
     save_collection(wiki, c)
@@ -111,8 +111,8 @@ def test_sync_liquid_collection_quarantines_everything(wiki: Wiki) -> None:
         mapper_model=None,
         language=None,
         version="1.0.0",
-        created_at=datetime.now(tz=timezone.utc),
-        updated_at=datetime.now(tz=timezone.utc),
+        created_at=datetime.now(tz=UTC),
+        updated_at=datetime.now(tz=UTC),
         config={},
     )
     save_collection(wiki, c)
@@ -167,7 +167,7 @@ def test_sync_htmx_sphinx_with_excludes(wiki: Wiki) -> None:
     import hashlib
     import json
     import re
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from lies.builders.bespoke import BespokeBuilder
     from lies.scrapers.base import ParsedDoc
@@ -215,8 +215,8 @@ def test_sync_htmx_sphinx_with_excludes(wiki: Wiki) -> None:
         mapper_model=None,
         language=None,
         version="1.0.0",
-        created_at=datetime.now(tz=timezone.utc),
-        updated_at=datetime.now(tz=timezone.utc),
+        created_at=datetime.now(tz=UTC),
+        updated_at=datetime.now(tz=UTC),
         config={
             "sphinx_includes": ["*.rst"],
             "sphinx_excludes": ["base_template.rst", "demo_example.rst"],

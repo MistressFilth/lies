@@ -1,6 +1,6 @@
 """Tests for collection records and YAML persistence."""
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -98,8 +98,8 @@ def test_collection_qmd_name_matches_name() -> None:
         mapper_model=None,
         language=None,
         version="1.0.0",
-        created_at=datetime.now(tz=timezone.utc),
-        updated_at=datetime.now(tz=timezone.utc),
+        created_at=datetime.now(tz=UTC),
+        updated_at=datetime.now(tz=UTC),
     )
 
     assert collection.qmd_name() == "cpython"
@@ -117,8 +117,8 @@ def test_save_then_load_roundtrip(tmp_path: Path) -> None:
         mapper_model=None,
         language=None,
         version="1.0.0",
-        created_at=datetime(2026, 8, 1, tzinfo=timezone.utc),
-        updated_at=datetime(2026, 8, 1, tzinfo=timezone.utc),
+        created_at=datetime(2026, 8, 1, tzinfo=UTC),
+        updated_at=datetime(2026, 8, 1, tzinfo=UTC),
     )
 
     save_collection(wiki, collection)
@@ -128,12 +128,12 @@ def test_save_then_load_roundtrip(tmp_path: Path) -> None:
 
 
 def test_collection_round_trips_config(tmp_path: Path) -> None:
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from lies.collections.record import Collection, load_collection, save_collection
 
     wiki = _wiki(tmp_path)
-    now = datetime.now(tz=timezone.utc)
+    now = datetime.now(tz=UTC)
     c = Collection(
         name="htmx",
         path=tmp_path / "raw" / "htmx",
@@ -157,7 +157,7 @@ def test_collection_round_trips_config(tmp_path: Path) -> None:
 
 
 def test_collection_config_defaults_to_empty_dict(tmp_path: Path) -> None:
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from lies.collections.record import load_collection
 
@@ -173,8 +173,8 @@ def test_collection_config_defaults_to_empty_dict(tmp_path: Path) -> None:
         "mapper_model": None,
         "language": None,
         "version": "1.0.0",
-        "created_at": datetime.now(tz=timezone.utc).isoformat(),
-        "updated_at": datetime.now(tz=timezone.utc).isoformat(),
+        "created_at": datetime.now(tz=UTC).isoformat(),
+        "updated_at": datetime.now(tz=UTC).isoformat(),
     }
     cfg_dir = wiki.collections_dir
     cfg_dir.mkdir(parents=True, exist_ok=True)
