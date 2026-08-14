@@ -218,10 +218,7 @@ On a fresh install with no `providers.toml`, run the wizard:
 uv run lies providers init
 ```
 
-The wizard walks four steps (detected-env summary, default model,
-optional provider catalog, optional per-agent assignment), writes
-`<XDG_CONFIG_HOME>/lies/providers.toml` via atomic rename, and prints
-`Run `lies config` to view resolved models.` Subsequent edits:
+The wizard walks three steps — provider catalog → default model → per-agent assignment — and writes `<XDG_CONFIG_HOME>/lies/providers.toml` via atomic rename. At least one provider is required to write the file; the catalog step re-prompts on a blank-name exit with an empty catalog. Back-out is `^C` only. Subsequent edits:
 
 ```bash
 uv run lies providers add <name> --type anthropic_compatible \

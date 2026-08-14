@@ -82,6 +82,14 @@ All notable changes to LIES are documented here. The format follows
 - Missing `providers.toml` is non-fatal: every agent falls back to the previous default (`anthropic:claude-opus-4-7`) and a single stderr warning names the expected path.
 
 ### Changed
+- `lies providers init` wizard reordered: the catalog step now runs
+  before the `default_model` prompt so a single wizard pass can set
+  any model whose provider is freshly declared. Removed the implicit
+  `[providers.anthropic]` seed — the catalog starts empty and the
+  first provider declared is canonical. The catalog step is now
+  required: at least one provider must be declared before write;
+  back-out via `^C` only. Strict-validation contract for
+  `default_model` and `set_agents` preserved.
 - Python floor bumped from `>=3.10` to `>=3.14,<3.15` to align with the
   Python versions where the restored `ahocorasick_rs` 1.0.x wheels are
   available prebuilt and where the project's typecheck / lint toolchain

@@ -126,11 +126,20 @@ def step_default_model(partial: PartialConfig, *, prompt: PromptFn) -> None:
 
 def step_providers(partial: PartialConfig, *, prompt: PromptFn) -> None:
     """Loop asking for ``(name, type, api_key_env[, base_url])`` until the
-    operator enters a blank name."""
+    operator enters a blank name.
+
+    Blank-name exit requires a non-empty catalog; otherwise the loop
+    re-prompts so the wizard never reaches ``write_atomic`` with no
+    declared providers. Back-out is via ``^C`` only.
+    """
     print("Add provider catalog entries; blank name to stop.")
+    print("(At least one provider is required to write providers.toml.)")
     while True:
         name = prompt("  provider name (e.g. anthropic)", "").strip()
         if not name:
+            if not partial.providers:
+                print("  ✗ at least one provider is required; add one or press Ctrl-C to exit.")
+                continue
             return
         if name in partial.providers:
             print(f"  ✗ {name!r} already declared.")
@@ -187,9 +196,10 @@ def run_wizard(
     non_interactive: bool,
     prompt: PromptFn,
 ) -> None:
-    """Drive the four wizard steps; commit on confirm; surface any drift
-    via re-load; optionally run connectivity check; optionally write
-    the .env capture.
+    """Drive the three wizard steps (provider catalog, default model,
+    per-agent assignment); commit on confirm; surface any drift via
+    re-load; optionally run connectivity check; optionally write the
+    .env capture.
 
     ``non_interactive`` is reserved; future work, currently accepted
     and ignored so the CLI flag can wire through without a flag-shaped
@@ -213,33 +223,11 @@ def run_wizard(
     print()
 
     partial = PartialConfig(providers={}, default_model=None, agents={})
-
-    # Seed with anthropic provider so step_default_model can validate it.
-    if "anthropic" not in partial.providers:
-        partial.providers["anthropic"] = ProviderSpec(
-            name="anthropic",
-            type="anthropic",
-            api_key_env="ANTHROPIC_API_KEY",
-        )
+    # No seed. Empty catalog; first provider declared in step_providers is canonical.
 
     try:
+        step_providers(partial, prompt=prompt)
         step_default_model(partial, prompt=prompt)
-        # UX gate inserted between step_default_model and step_providers
-        # so first-time users on a single-provider install do not get
-        # bumped into the providers-catalog loop by default. The default
-        # `no` makes this a no-op for the common case; advanced users
-        # opt in to add anthropic_compatible providers (minimax, etc.)
-        # without polluting the catalog by accident.
-        edit_providers = (
-            prompt(
-                "Edit providers catalog? (yes/no)",
-                "no",
-            )
-            .strip()
-            .lower()
-        )
-        if edit_providers in ("y", "yes"):
-            step_providers(partial, prompt=prompt)
         step_agents(partial, prompt=prompt)
     except EOFError as exc:
         raise BootstrapAborted("input closed (Ctrl-D)") from exc
