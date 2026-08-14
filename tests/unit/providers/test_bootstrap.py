@@ -424,17 +424,30 @@ def test_run_wizard_can_declare_one_provider_and_proceed(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Minimal: declare one provider, type default, write."""
+    """Minimal: declare one provider, type default, write.
+
+    The iter shape enumerates the documented per-iteration prompts for
+    ``step_providers`` (name, type, api_key_env, [base_url]): an
+    ``anthropic``-typed provider has 3 prompts per iteration (no
+    base_url). After the catalog loop exits on blank name, the next
+    three prompts are ``step_default_model`` (consumes
+    ``"anthropic:claude-opus-4-7"``), ``step_agents`` (consumes
+    ``"yes"`` so the post-write reload succeeds — the loader's
+    ``[agents]`` strictness requires a complete roster), and the
+    final write-confirm (consumes ``"yes"``).
+    """
     target = tmp_path / "providers.toml"
     answers = iter(
         [
-            "anthropic",
-            "",  # one provider, blank to stop
-            "anthropic:claude-opus-4-7",
-            "no",  # don't auto-assign agents
-            "yes",
+            "anthropic",  # name (catalog iter 1)
+            "anthropic",  # type
+            "ANTHROPIC_API_KEY",  # api_key_env
+            "",  # blank -> stop catalog loop
+            "anthropic:claude-opus-4-7",  # default model
+            "yes",  # assign default to every agent (so reload succeeds)
+            "yes",  # confirm write
         ]
-    )  # confirm
+    )
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
 
     def prompt(label: str, default: str) -> str:
@@ -471,7 +484,7 @@ def test_run_wizard_providers_step_runs_unconditionally(
             "ANTHROPIC_API_KEY",  # api_key_env
             "",  # blank name -> catalog loop exit
             "anthropic:claude-opus-4-7",  # default model
-            "no",  # decline agents assignment
+            "yes",  # assign default to every agent (so reload succeeds)
             "yes",  # confirm write
         ]
     )
