@@ -223,6 +223,19 @@ def test_run_wizard_happy_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
 def test_run_wizard_aborts_leave_file_untouched(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """A mid-wizard abort must leave the target file unwritten.
+
+    NOTE: this test is GREEN under both the OLD and NEW prompt orders — today's
+    wizard aborts at the very first prompt because the iter's leading
+    ``minimax`` is not a valid ``provider:model`` string and ``anthropic`` is
+    the only seeded provider, so ``step_default_model`` rejects it before the
+    catalog loop runs. Post-fix (Task 2 drops the seed + reorders), the
+    catalog iter drains first and the same iter aborts at ``bogus:provider``
+    when ``bogus`` is not in the declared catalog. Either way the contract
+    holds: ``BootstrapAborted`` is raised and ``target`` does not exist. The
+    iter is intentionally not tightened further — the abort-vs-write contract
+    is what we're locking here, not the prompt order.
+    """
     target = tmp_path / "providers.toml"
     answers = iter(
         [
@@ -303,14 +316,15 @@ def test_run_wizard_reload_error_aborts_no_env_file(
 
     answers = iter(
         [
-            "anthropic:claude-opus-4-7",  # default_model
-            "yes",  # edit providers
-            # block 1: anthropic_compatible
+            # Catalog step runs first under the new prompt order (no
+            # default-model-first seeding, no gate). Declare a provider
+            # so the catalog guard is satisfied.
             "minimax",
             "anthropic_compatible",
             "MINIMAX_API_KEY",
             "https://api.minimax.io/anthropic",
-            "",  # stop providers loop
+            "",  # stop catalog loop
+            "minimax:minimax-m3",  # default_model
             "no",  # decline agents assignment (leaves [agents] empty → reload rejects)
             "yes",  # confirm write (reload will fire after this and abort)
         ]
@@ -318,8 +332,6 @@ def test_run_wizard_reload_error_aborts_no_env_file(
 
     def prompt(label: str, default: str) -> str:
         return next(answers)
-
-    from lies.providers.bootstrap import run_wizard
 
     with pytest.raises(BootstrapAborted):
         run_wizard(
@@ -333,7 +345,6 @@ def test_run_wizard_reload_error_aborts_no_env_file(
     # write_atomic completed before reload — file should exist.
     assert target.exists()
     # Reload should reject (no [agents] entries).
-    from lies.providers.config import load_providers_config
     from lies.providers.errors import ProviderConfigError
 
     with pytest.raises(ProviderConfigError):
@@ -362,10 +373,8 @@ def test_run_wizard_no_seed_means_anthropic_absent(
         ]
     )  # confirm write
     monkeypatch.setenv("MINIMAX_API_KEY", "sk-test")
-    prompts: list[str] = []
 
     def prompt(label: str, default: str) -> str:
-        prompts.append(label)
         return next(answers)
 
     run_wizard(
@@ -440,38 +449,61 @@ def test_run_wizard_can_declare_one_provider_and_proceed(
 
 
 def test_run_wizard_providers_step_runs_unconditionally(
-    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The 'Edit providers catalog?' gate is gone; providers step runs
-    unconditionally."""
-    # Invariant: a run_wizard call reaches step_providers before any other
-    # step. We can't directly assert ordering without spying on stdout; the
-    # cheapest observable proxy is that the existing happy-path test iter
-    # declarations are now read first (catalog) then a default model that
-    # resolves against the declared catalog. If the gate ever returns, this
-    # test breaks because the iter would need an extra 'yes' between
-    # default_model and providers loop.
+    unconditionally and precedes the default-model step.
+
+    Pins the post-Task-2 prompt-order contract: the catalog loop's prompts
+    appear before the default-model prompt, and the resulting file holds
+    the operator-declared provider. A return of the gate would require an
+    extra 'yes' between catalog and default-model, breaking the prompt
+    ordering assertion; a return of the implicit ``anthropic`` seed would
+    break the file-content assertion (the iter never declares ``anthropic``
+    through any other path).
+    """
+    target = tmp_path / "providers.toml"
+    prompts: list[str] = []
     answers = iter(
         [
-            "anthropic",
-            "",
-            "anthropic:claude-opus-4-7",
-            "yes",
-            "yes",
+            "anthropic",  # provider name (catalog iter 1)
+            "anthropic",  # type
+            "ANTHROPIC_API_KEY",  # api_key_env
+            "",  # blank name -> catalog loop exit
+            "anthropic:claude-opus-4-7",  # default model
+            "no",  # decline agents assignment
+            "yes",  # confirm write
         ]
     )
 
     def prompt(label: str, default: str) -> str:
+        prompts.append(label)
         return next(answers)
 
-    import tempfile
+    run_wizard(
+        target,
+        check_connection=False,
+        write_env_file=None,
+        non_interactive=False,
+        prompt=prompt,
+    )
 
-    with tempfile.TemporaryDirectory() as d:
-        target = Path(d) / "providers.toml"
-        run_wizard(
-            target,
-            check_connection=False,
-            write_env_file=None,
-            non_interactive=False,
-            prompt=prompt,
-        )
+    # File written.
+    assert target.exists()
+
+    # Catalog survived the write.
+    loaded = load_providers_config(target)
+    assert loaded is not None
+    assert loaded.providers["anthropic"]
+
+    # Prompt-order contract: catalog labels appear BEFORE the default-model
+    # prompt. Each ``index`` raises ValueError under the OLD wizard (no
+    # catalog labels are ever collected), turning the test RED pre-fix and
+    # GREEN post-fix. Order check further locks the contract: a future
+    # refactor that re-introduces the gate (default_model-first) would
+    # satisfy the existence checks but fail the index ordering.
+    name_idx = prompts.index("  provider name (e.g. anthropic)")
+    type_idx = prompts.index("  type (anthropic|anthropic_compatible)")
+    api_idx = prompts.index("  api_key_env name (e.g. MINIMAX_API_KEY)")
+    default_model_idx = prompts.index("Default model (provider:model) — blank to keep")
+    assert name_idx < type_idx < api_idx < default_model_idx
