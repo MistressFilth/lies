@@ -126,7 +126,12 @@ def step_default_model(partial: PartialConfig, *, prompt: PromptFn) -> None:
 
 def step_providers(partial: PartialConfig, *, prompt: PromptFn) -> None:
     """Loop asking for ``(name, type, api_key_env[, base_url])`` until the
-    operator enters a blank name."""
+    operator enters a blank name.
+
+    Blank-name exit requires a non-empty catalog; otherwise the loop
+    re-prompts so the wizard never reaches ``write_atomic`` with no
+    declared providers. Back-out is via ``^C`` only.
+    """
     print("Add provider catalog entries; blank name to stop.")
     print("(At least one provider is required to write providers.toml.)")
     while True:
@@ -191,9 +196,10 @@ def run_wizard(
     non_interactive: bool,
     prompt: PromptFn,
 ) -> None:
-    """Drive the four wizard steps; commit on confirm; surface any drift
-    via re-load; optionally run connectivity check; optionally write
-    the .env capture.
+    """Drive the three wizard steps (provider catalog, default model,
+    per-agent assignment); commit on confirm; surface any drift via
+    re-load; optionally run connectivity check; optionally write the
+    .env capture.
 
     ``non_interactive`` is reserved; future work, currently accepted
     and ignored so the CLI flag can wire through without a flag-shaped
