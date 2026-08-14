@@ -12,12 +12,13 @@ from lies.providers.bootstrap import (
     PartialConfig,
     ProvidersConfigMissing,
     detect_env_keys,
+    run_wizard,
     step_agents,
     step_default_model,
     step_providers,
     write_atomic,
 )
-from lies.providers.config import ProviderSpec
+from lies.providers.config import ProviderSpec, load_providers_config
 
 
 def _partial() -> PartialConfig:
@@ -193,14 +194,12 @@ def test_run_wizard_happy_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
     target = tmp_path / "providers.toml"
     answers = iter(
         [
-            "anthropic:claude-opus-4-7",  # default_model
-            "yes",  # edit providers
-            # block 1: anthropic_compatible
-            "minimax",
+            "minimax",  # provider name
             "anthropic_compatible",
             "MINIMAX_API_KEY",
             "https://api.minimax.io/anthropic",
-            "",  # stop providers loop
+            "",  # blank: stop catalog loop
+            "minimax:minimax-m3",  # default model — minimax is now declared
             "yes",  # assign default to every agent
             "yes",  # confirm write
         ]
@@ -209,8 +208,6 @@ def test_run_wizard_happy_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
     def prompt(label: str, default: str) -> str:
         return next(answers)
 
-    from lies.providers.bootstrap import run_wizard
-
     run_wizard(
         target,
         check_connection=False,
@@ -218,23 +215,28 @@ def test_run_wizard_happy_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
         non_interactive=False,
         prompt=prompt,
     )
-    from lies.providers.config import load_providers_config
-
     loaded = load_providers_config(target)
     assert loaded is not None
-    assert "minimax" in loaded.providers
+    assert loaded.providers["minimax"]
 
 
 def test_run_wizard_aborts_leave_file_untouched(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     target = tmp_path / "providers.toml"
-    answers = iter(["bogus:provider", "no"])  # bad model + decline continue
+    answers = iter(
+        [
+            "minimax",
+            "anthropic_compatible",
+            "MINIMAX_API_KEY",
+            "https://api.minimax.io/anthropic",
+            "",  # catalog
+            "bogus:provider",  # bad model -> BootstrapAborted
+        ]
+    )
 
     def prompt(label: str, default: str) -> str:
         return next(answers)
-
-    from lies.providers.bootstrap import run_wizard
 
     with pytest.raises(BootstrapAborted):
         run_wizard(
@@ -258,23 +260,19 @@ def test_run_wizard_writes_env_file_0600(tmp_path: Path, monkeypatch: pytest.Mon
 
     answers = iter(
         [
-            "anthropic:claude-opus-4-7",  # default_model
-            "yes",  # edit providers
-            # block 1: anthropic_compatible
             "minimax",
             "anthropic_compatible",
             "MINIMAX_API_KEY",
             "https://api.minimax.io/anthropic",
-            "",  # stop providers loop
-            "yes",  # assign default to every agent
-            "yes",  # confirm write
+            "",
+            "minimax:minimax-m3",
+            "yes",
+            "yes",
         ]
     )
 
     def prompt(label: str, default: str) -> str:
         return next(answers)
-
-    from lies.providers.bootstrap import run_wizard
 
     run_wizard(
         target,
@@ -343,3 +341,137 @@ def test_run_wizard_reload_error_aborts_no_env_file(
     # Env capture must NOT have been written — reload abort short-circuits
     # the env capture step.
     assert not env_path.exists()
+
+
+def test_run_wizard_no_seed_means_anthropic_absent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The wizard no longer seeds [providers.anthropic] by default."""
+    target = tmp_path / "providers.toml"
+    answers = iter(
+        [
+            "minimax",
+            "anthropic_compatible",
+            "MINIMAX_API_KEY",
+            "https://api.minimax.io/anthropic",
+            "",  # blank to stop
+            "minimax:minimax-m3",  # default model
+            "yes",  # assign default to agents
+            "yes",
+        ]
+    )  # confirm write
+    monkeypatch.setenv("MINIMAX_API_KEY", "sk-test")
+    prompts: list[str] = []
+
+    def prompt(label: str, default: str) -> str:
+        prompts.append(label)
+        return next(answers)
+
+    run_wizard(
+        target, check_connection=False, write_env_file=None, non_interactive=False, prompt=prompt
+    )
+    reloaded = load_providers_config(target)
+    assert reloaded is not None
+    assert "anthropic" not in reloaded.providers, "wizard must not seed [providers.anthropic]"
+    assert "minimax" in reloaded.providers
+    assert reloaded.default_model == "minimax:minimax-m3"
+
+
+def test_run_wizard_requires_at_least_one_provider(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A blank name at the first catalog iteration must re-prompt, not exit."""
+    target = tmp_path / "providers.toml"
+    answers = iter(
+        [
+            "",  # blank at iter 1 (empty catalog -> re-prompt)
+            "minimax",  # iter 2: name
+            "anthropic_compatible",
+            "MINIMAX_API_KEY",
+            "https://api.minimax.io/anthropic",
+            "",  # blank at iter 3: stop
+            "minimax:minimax-m3",
+            "yes",
+            "yes",
+        ]
+    )
+    monkeypatch.setenv("MINIMAX_API_KEY", "sk-test")
+
+    def prompt(label: str, default: str) -> str:
+        return next(answers)
+
+    run_wizard(
+        target, check_connection=False, write_env_file=None, non_interactive=False, prompt=prompt
+    )
+    reloaded = load_providers_config(target)
+    assert reloaded is not None
+    assert "minimax" in reloaded.providers
+    assert reloaded.default_model == "minimax:minimax-m3"
+
+
+def test_run_wizard_can_declare_one_provider_and_proceed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Minimal: declare one provider, type default, write."""
+    target = tmp_path / "providers.toml"
+    answers = iter(
+        [
+            "anthropic",
+            "",  # one provider, blank to stop
+            "anthropic:claude-opus-4-7",
+            "no",  # don't auto-assign agents
+            "yes",
+        ]
+    )  # confirm
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+
+    def prompt(label: str, default: str) -> str:
+        return next(answers)
+
+    run_wizard(
+        target, check_connection=False, write_env_file=None, non_interactive=False, prompt=prompt
+    )
+    reloaded = load_providers_config(target)
+    assert reloaded is not None
+    assert "anthropic" in reloaded.providers
+
+
+def test_run_wizard_providers_step_runs_unconditionally(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The 'Edit providers catalog?' gate is gone; providers step runs
+    unconditionally."""
+    # Invariant: a run_wizard call reaches step_providers before any other
+    # step. We can't directly assert ordering without spying on stdout; the
+    # cheapest observable proxy is that the existing happy-path test iter
+    # declarations are now read first (catalog) then a default model that
+    # resolves against the declared catalog. If the gate ever returns, this
+    # test breaks because the iter would need an extra 'yes' between
+    # default_model and providers loop.
+    answers = iter(
+        [
+            "anthropic",
+            "",
+            "anthropic:claude-opus-4-7",
+            "yes",
+            "yes",
+        ]
+    )
+
+    def prompt(label: str, default: str) -> str:
+        return next(answers)
+
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as d:
+        target = Path(d) / "providers.toml"
+        run_wizard(
+            target,
+            check_connection=False,
+            write_env_file=None,
+            non_interactive=False,
+            prompt=prompt,
+        )
