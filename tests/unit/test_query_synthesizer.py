@@ -51,6 +51,23 @@ def _qmd_ok(paths: list[str]):
     return _fn
 
 
+def _qmd_ok_real_shape(paths: list[str]):
+    """A fake qmd_search that mimics the real qmd --format json shape.
+
+    Each hit has ``file: qmd://<collection>/<path>`` (no top-level
+    ``path`` key). After P3-b, :func:`qmd_query` strips the prefix into
+    ``path``; the synthesizer sees a normalized payload either way. This
+    helper stands in for :func:`lies.qmd.cli.qmd_query` *before* the fix
+    would have run (i.e. it represents the raw, un-normalized qmd output)
+    so we can prove the synthesizer's contract survives the change.
+    """
+
+    def _fn(cwd: Path, question: str, top_n: int) -> list[dict[str, Any]]:
+        return [{"file": f"qmd://mywiki/{p}", "score": 1.0, "docid": "#x"} for p in paths]
+
+    return _fn
+
+
 def _qmd_unavailable(cwd: Path, question: str, top_n: int) -> list[dict[str, Any]]:
     raise QmdNotInstalledError("qmd not found on PATH")
 
@@ -155,6 +172,74 @@ def test_qmd_path_traversal_is_dropped(sample_wiki: Wiki) -> None:
     assert result.fallback_used is True
     # Fallback found pages from the index.
     assert any("entities/" in c for c in result.citations)
+
+
+def test_qmd_real_shape_with_file_only_triggers_fallback(
+    sample_wiki: Wiki,
+) -> None:
+    """Regression (P3-b): raw qmd payload with only ``file`` keys must not
+    silently swallow real hits.
+
+    Before P3-b, ``_qmd_search_dispatch`` read ``r["path"]`` against a
+    payload that only had ``r["file"]``; ``qmd_paths`` was always empty
+    and the synthesizer fell back to ``wiki/index.md`` even when qmd
+    returned hits. The fix is to normalize at the ``qmd_query`` boundary
+    in :mod:`lies.qmd.cli`; this test stands in for that boundary by
+    injecting a payload that has only ``file`` keys. The synthesizer
+    sees no ``path`` and falls back — which is the honest behaviour for
+    a caller that bypasses :func:`qmd_query`.
+    """
+    paths = ["wiki/entities/postgres.md", "wiki/concepts/mvcc.md"]
+    result = synthesize_answer(
+        "anything",
+        sample_wiki,
+        qmd_search=_qmd_ok_real_shape(paths),
+    )
+    # No ``path`` key in the payload → no qmd-sourced citations; fallback
+    # to wiki/index.md kicks in. This is the failure mode the P3-b fix
+    # prevents when the real ``qmd_query`` is used.
+    assert result.fallback_used is True
+    assert result.fallback_reason == FALLBACK_REASON_NO_RESULTS
+
+
+def test_qmd_real_query_end_to_end(sample_wiki: Wiki, monkeypatch) -> None:
+    """End-to-end: subprocess mocks the real qmd CLI JSON shape and the
+    synthesizer consumes the normalized result through :func:`qmd_query`.
+
+    This is the regression test for the original P3-b report:
+    ``lies query "What is a hook?"`` returned "no results" because
+    ``_qmd_search_dispatch`` looked for ``r["path"]`` in a payload that
+    only had ``r["file"]``. After the fix in :mod:`lies.qmd.cli`, the
+    boundary normalizes ``file`` → ``path`` and the synthesizer picks
+    up the hit.
+    """
+    import json
+    import subprocess
+    from unittest.mock import patch
+
+    payload = json.dumps(
+        [
+            {
+                "docid": "#22b4ff",
+                "score": 0.88,
+                "file": "qmd://mywiki/wiki/entities/postgres.md",
+                "title": "What is a hook?",
+            }
+        ]
+    )
+    with (
+        patch("lies.qmd.cli.shutil.which", return_value="/usr/bin/qmd"),
+        patch("lies.qmd.cli.subprocess.run") as mock_run,
+    ):
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout=payload, stderr=""
+        )
+        result = synthesize_answer("What is a hook?", sample_wiki)
+
+    # The hit was preserved through qmd_query → synthesizer; no fallback.
+    assert result.fallback_used is False
+    assert result.fallback_reason == ""
+    assert "wiki/entities/postgres.md" in result.citations
 
 
 # ---------------------------------------------------------------------------

@@ -8,10 +8,20 @@ Use this for: `qmd update`, `qmd status`, `qmd collection add/remove`,
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 from pathlib import Path
 from typing import Any
+
+# Real `qmd query --format json` returns each hit's `file` field as
+# ``qmd://<collection>/<path-within-collection>``. Downstream consumers
+# (synthesizer, memory retrieval) consume a flat ``path`` key, so we strip
+# the ``qmd://<collection>/`` prefix once at this boundary. The contract
+# documented in :func:`qmd_query` ("Each result is a dict with at least a
+# ``path`` key") is what every caller depends on.
+_QMD_URI_PREFIX_RE = re.compile(r"^qmd://[^/]+/")
+_QMD_URI_PREFIX_PREFIX = "qmd://"
 
 
 class QmdError(Exception):
@@ -143,4 +153,29 @@ def qmd_query(
     if not data:
         raise QmdNoResultsError(f"qmd query returned no results for: {question!r}")
 
-    return data
+    return [_normalize_qmd_result(item) for item in data]
+
+
+def _normalize_qmd_result(item: Any) -> dict[str, Any]:
+    """Normalize one qmd hit into the internal ``path`` contract.
+
+    The real qmd CLI emits each hit with ``file: "qmd://<collection>/<path>"``
+    and no top-level ``path`` key. We strip the ``qmd://<collection>/``
+    prefix into ``path`` so downstream consumers (synthesizer,
+    :func:`lies.memory.retrieval.search_wiki`) can rely on the contract
+    documented in :func:`qmd_query`. If qmd already emitted a ``path`` key,
+    leave it alone (the caller's explicit value wins).
+    """
+    if not isinstance(item, dict):
+        return {"path": ""}
+    result = dict(item)
+    if "path" in result and isinstance(result["path"], str):
+        return result
+    file_value = result.get("file")
+    if isinstance(file_value, str) and file_value.startswith(_QMD_URI_PREFIX_PREFIX):
+        result["path"] = _QMD_URI_PREFIX_RE.sub("", file_value, count=1)
+    else:
+        # No usable file field; synthesize an empty path so consumers can
+        # drop the hit cleanly instead of crashing on missing keys.
+        result["path"] = ""
+    return result
