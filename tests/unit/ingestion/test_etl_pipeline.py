@@ -104,12 +104,6 @@ def test_pipeline_runs_all_states(wiki: Wiki) -> None:
                 bytes_out=10,
             ),
         ),
-        mock.patch(
-            "lies.etl.pipeline.run_qmd_update",
-            return_value=StageResult(
-                success=[], quarantined=[], skipped=[], parsed_docs=[], bytes_in=0, bytes_out=0
-            ),
-        ),
     ):
         pipeline.run()
     assert pipeline.state == PipelineState.IDLE
@@ -173,16 +167,10 @@ def test_pipeline_threads_parsed_docs_from_scrape_to_normalize(wiki: Wiki) -> No
             success=[], quarantined=[], skipped=[], parsed_docs=[], bytes_in=0, bytes_out=0
         )
 
-    def fake_qmd(wiki, c):
-        return StageResult(
-            success=[], quarantined=[], skipped=[], parsed_docs=[], bytes_in=0, bytes_out=0
-        )
-
     with (
         mock.patch("lies.etl.pipeline.run_scrape", side_effect=fake_scrape),
         mock.patch("lies.etl.pipeline.run_normalize", side_effect=fake_normalize),
         mock.patch("lies.etl.pipeline.run_write", side_effect=fake_write),
-        mock.patch("lies.etl.pipeline.run_qmd_update", side_effect=fake_qmd),
     ):
         pipeline.run()
     assert captured["docs"] is fake_docs
@@ -219,16 +207,10 @@ def test_pipeline_threads_force_to_write(wiki: Wiki) -> None:
             success=[], quarantined=[], skipped=[], parsed_docs=[], bytes_in=0, bytes_out=0
         )
 
-    def fake_qmd(wiki, c):
-        return StageResult(
-            success=[], quarantined=[], skipped=[], parsed_docs=[], bytes_in=0, bytes_out=0
-        )
-
     with (
         mock.patch("lies.etl.pipeline.run_scrape", side_effect=fake_scrape),
         mock.patch("lies.etl.pipeline.run_normalize", side_effect=fake_normalize),
         mock.patch("lies.etl.pipeline.run_write", side_effect=fake_write),
-        mock.patch("lies.etl.pipeline.run_qmd_update", side_effect=fake_qmd),
     ):
         pipeline.run()
     assert captured["force"] is True
@@ -265,23 +247,20 @@ def test_pipeline_threads_wiki_to_write(wiki: Wiki) -> None:
             success=[], quarantined=[], skipped=[], parsed_docs=[], bytes_in=0, bytes_out=0
         )
 
-    def fake_qmd(wiki, c):
-        return StageResult(
-            success=[], quarantined=[], skipped=[], parsed_docs=[], bytes_in=0, bytes_out=0
-        )
-
     with (
         mock.patch("lies.etl.pipeline.run_scrape", side_effect=fake_scrape),
         mock.patch("lies.etl.pipeline.run_normalize", side_effect=fake_normalize),
         mock.patch("lies.etl.pipeline.run_write", side_effect=fake_write),
-        mock.patch("lies.etl.pipeline.run_qmd_update", side_effect=fake_qmd),
     ):
         pipeline.run()
     assert captured["wiki_root"] == wiki.data_root
 
 
 def test_pipeline_runs_register_stage(wiki: Wiki, monkeypatch: pytest.MonkeyPatch) -> None:
-    """After WRITE and before QMD_UPDATE, the pipeline calls WikiMemoryService.register_collection."""
+    """After WRITE, the pipeline calls WikiMemoryService.register_collection.
+    QMD refresh + collection registration + index.md rebuild now happen
+    inside the WRITE stage's post-commit hook (see run_write), not as a
+    separate pipeline stage."""
     wiki.data_root.mkdir(parents=True, exist_ok=True)
     (wiki.data_root / "wiki").mkdir(parents=True, exist_ok=True)
     (wiki.data_root / "raw").mkdir(parents=True, exist_ok=True)
@@ -313,12 +292,14 @@ def test_pipeline_runs_register_stage(wiki: Wiki, monkeypatch: pytest.MonkeyPatc
         manifest=manifest,
     )
     # Stub each stage to keep the test focused on the new state transition.
+    # QMD refresh + collection registration + index.md rebuild are now a
+    # post-commit hook inside run_write (stages/write.py); the pipeline
+    # no longer calls a separate run_qmd_update stage.
     with (
         mock.patch("lies.etl.pipeline.run_scrape") as m_scrape,
         mock.patch("lies.etl.pipeline.run_normalize") as m_normalize,
         mock.patch("lies.etl.pipeline.run_write") as m_write,
         mock.patch("lies.etl.pipeline.run_register") as m_register,
-        mock.patch("lies.etl.pipeline.run_qmd_update") as m_qmd,
     ):
         m_scrape.return_value = StageResult(success=[], quarantined=[], skipped=[], parsed_docs=[])
         m_normalize.return_value = StageResult(
@@ -335,6 +316,3 @@ def test_pipeline_runs_register_stage(wiki: Wiki, monkeypatch: pytest.MonkeyPatc
     args, _ = m_register.call_args
     assert args[1] is c
     assert args[2] is orch._service
-    m_qmd.assert_called_once()
-    qmd_args, _ = m_qmd.call_args
-    assert qmd_args[1] is c

@@ -183,6 +183,109 @@ def test_run_write_respects_force(tmp_path: Path) -> None:
     ac.assert_called_once()
 
 
+def test_run_write_registers_collection_with_qmd_post_commit(tmp_path: Path) -> None:
+    """After WRITE commits, qmd_collection_add_if_missing must be invoked
+    for the wiki's collection so the qmd derived index can find it."""
+    wiki = _wiki(tmp_path)
+    (wiki.raw_dir / "cpython").mkdir(parents=True, exist_ok=True)
+    manifest = mock.Mock()
+    manifest.compare.return_value = False
+    fake_normalized = [("x.md", "# body")]
+    with (
+        mock.patch("lies.etl.stages.write.atomic_commit"),
+        mock.patch("lies.etl.stages.write.qmd_collection_add_if_missing") as m_add,
+        mock.patch("lies.etl.stages.write.qmd_update"),
+        mock.patch("lies.etl.stages.write.rebuild_index"),
+    ):
+        run_write(
+            wiki,
+            _collection(tmp_path),
+            fake_normalized,
+            manifest=manifest,
+            force=False,
+        )
+    m_add.assert_called_once()
+    args, _ = m_add.call_args
+    # First arg: cwd (raw_dir). Second arg: path to register (raw_dir/<name>).
+    # Third arg: qmd collection name.
+    assert args[0] == wiki.raw_dir
+    assert args[1] == wiki.raw_dir / "cpython"
+    assert args[2] == "cpython"
+
+
+def test_run_write_refreshes_qmd_index_post_commit(tmp_path: Path) -> None:
+    """After WRITE commits, qmd_update must be invoked against the wiki root
+    so the derived index picks up the freshly-written files."""
+    wiki = _wiki(tmp_path)
+    (wiki.raw_dir / "cpython").mkdir(parents=True, exist_ok=True)
+    manifest = mock.Mock()
+    manifest.compare.return_value = False
+    fake_normalized = [("x.md", "# body")]
+    with (
+        mock.patch("lies.etl.stages.write.atomic_commit"),
+        mock.patch("lies.etl.stages.write.qmd_collection_add_if_missing"),
+        mock.patch("lies.etl.stages.write.qmd_update") as m_update,
+        mock.patch("lies.etl.stages.write.rebuild_index"),
+    ):
+        run_write(
+            wiki,
+            _collection(tmp_path),
+            fake_normalized,
+            manifest=manifest,
+            force=False,
+        )
+    m_update.assert_called_once_with(wiki.data_root)
+
+
+def test_run_write_regenerates_index_md_post_commit(tmp_path: Path) -> None:
+    """After WRITE commits, wiki/index.md must be regenerated from the
+    freshly-written pages so the qmd-fallback synthesizer can navigate."""
+    wiki = _wiki(tmp_path)
+    (wiki.raw_dir / "cpython").mkdir(parents=True, exist_ok=True)
+    manifest = mock.Mock()
+    manifest.compare.return_value = False
+    fake_normalized = [("x.md", "# body")]
+    with (
+        mock.patch("lies.etl.stages.write.atomic_commit"),
+        mock.patch("lies.etl.stages.write.qmd_collection_add_if_missing"),
+        mock.patch("lies.etl.stages.write.qmd_update"),
+        mock.patch("lies.etl.stages.write.rebuild_index") as m_index,
+    ):
+        run_write(
+            wiki,
+            _collection(tmp_path),
+            fake_normalized,
+            manifest=manifest,
+            force=False,
+        )
+    m_index.assert_called_once_with(wiki)
+
+
+def test_run_write_skips_qmd_hooks_when_nothing_committed(tmp_path: Path) -> None:
+    """When the WRITE stage has no files to commit (skipped only), the
+    qmd hooks must not run — the wiki state did not change."""
+    manifest = mock.Mock()
+    manifest.compare.return_value = True  # pretend everything unchanged
+    fake_normalized = [("x.md", "# body")]
+    with (
+        mock.patch("lies.etl.stages.write.atomic_commit") as ac,
+        mock.patch("lies.etl.stages.write.qmd_collection_add_if_missing") as m_add,
+        mock.patch("lies.etl.stages.write.qmd_update") as m_update,
+        mock.patch("lies.etl.stages.write.rebuild_index") as m_index,
+    ):
+        run_write(
+            _wiki(tmp_path),
+            _collection(tmp_path),
+            fake_normalized,
+            manifest=manifest,
+            force=False,
+        )
+    ac.assert_not_called()
+    m_add.assert_not_called()
+    m_update.assert_not_called()
+    m_index.assert_not_called()
+
+
 def test_run_qmd_update_triggers_full_reindex(tmp_path: Path) -> None:
     """`qmd update` is always full; the per-collection flag is not honored by qmd."""
     with mock.patch("lies.etl.stages.qmd_update.qmd_update") as q:

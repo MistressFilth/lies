@@ -17,7 +17,6 @@ from lies.collections.record import Collection
 from lies.etl.cost import CostBudget
 from lies.etl.errors import BudgetExceeded
 from lies.etl.stages.normalize import run_normalize
-from lies.etl.stages.qmd_update import run_qmd_update
 from lies.etl.stages.register import run_register
 from lies.etl.stages.scrape import run_scrape
 from lies.etl.stages.write import run_write
@@ -109,8 +108,10 @@ class SyncOrchestrator:
                 except Exception:  # noqa: BLE001
                     self.telemetry.record_error("registration_failed")
 
-            self._transition(PipelineState.QMD_UPDATE)
-            run_qmd_update(wiki, self.collection)
+            # QMD refresh + collection registration + index.md rebuild
+            # all happen inside the WRITE stage as a post-commit hook
+            # (see run_write in etl/stages/write.py). Running them here
+            # would re-invoke qmd update and double-index the wiki.
 
             self._transition(PipelineState.IDLE)
             self.telemetry.record_ended(datetime.now(tz=UTC).isoformat())

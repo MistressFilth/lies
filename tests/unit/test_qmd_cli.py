@@ -10,6 +10,7 @@ from lies.qmd.cli import (
     QmdError,
     QmdNotInstalledError,
     qmd_collection_add,
+    qmd_collection_add_if_missing,
     qmd_status,
     qmd_update,
 )
@@ -71,3 +72,44 @@ def test_qmd_collection_add(tmp_path: Path) -> None:
         args = mock_run.call_args.args[0]
         assert args[:3] == ["qmd", "collection", "add"]
         assert "mywiki" in args
+
+
+def test_qmd_collection_add_if_missing_returns_none_when_add_succeeds(tmp_path: Path) -> None:
+    with (
+        patch("lies.qmd.cli.shutil.which", return_value="/usr/bin/qmd"),
+        patch("lies.qmd.cli.subprocess.run") as mock_run,
+    ):
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="", stderr=""
+        )
+        result = qmd_collection_add_if_missing(tmp_path, tmp_path / "wiki", "mywiki")
+        assert result is None  # no error, collection registered
+
+
+def test_qmd_collection_add_if_missing_swallows_already_exists(tmp_path: Path) -> None:
+    """If qmd reports the collection already exists, treat it as success."""
+    with (
+        patch("lies.qmd.cli.shutil.which", return_value="/usr/bin/qmd"),
+        patch("lies.qmd.cli.subprocess.run") as mock_run,
+    ):
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=[],
+            returncode=1,
+            stdout="",
+            stderr="Collection 'mywiki' already exists.\n",
+        )
+        # Must not raise; idempotent.
+        qmd_collection_add_if_missing(tmp_path, tmp_path / "wiki", "mywiki")
+
+
+def test_qmd_collection_add_if_missing_raises_on_other_qmd_errors(tmp_path: Path) -> None:
+    """Errors that aren't 'already exists' still propagate."""
+    with (
+        patch("lies.qmd.cli.shutil.which", return_value="/usr/bin/qmd"),
+        patch("lies.qmd.cli.subprocess.run") as mock_run,
+    ):
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=[], returncode=1, stdout="", stderr="EACCES: permission denied"
+        )
+        with pytest.raises(QmdError, match="EACCES"):
+            qmd_collection_add_if_missing(tmp_path, tmp_path / "wiki", "mywiki")
