@@ -85,6 +85,22 @@ def qmd_collection_add(cwd: Path, path: Path, name: str) -> None:
         raise QmdError(f"qmd collection add failed: {result.stderr.strip()}")
 
 
+def qmd_collection_add_if_missing(cwd: Path, path: Path, name: str) -> None:
+    """Register ``name`` with qmd, treating "already exists" as success.
+
+    Idempotent. Lets callers re-run a sync without raising on the second
+    pass. Any other non-zero exit (real qmd error) still propagates so
+    the pipeline can react.
+    """
+    result = _run(["collection", "add", str(path), "--name", name], cwd=cwd)
+    if result.returncode == 0:
+        return
+    stderr = result.stderr.strip()
+    if "already exists" in stderr.lower():
+        return
+    raise QmdError(f"qmd collection add failed: {stderr}")
+
+
 def qmd_ls(cwd: Path, collection: str) -> str:
     """List files in a qmd collection."""
     result = _run(["ls", collection], cwd=cwd)
