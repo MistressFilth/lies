@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -77,3 +78,39 @@ def test_lies_xdg_runtime_dir_wins_over_xdg_runtime_dir(
     monkeypatch.setenv("LIES_XDG_RUNTIME_DIR", str(tmp_path / "lies-runtime"))
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "xdg-runtime"))
     assert xdg.runtime_dir() == tmp_path / "lies-runtime"
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="chmod 0o000 does not restrict root")
+def test_runtime_dir_falls_back_on_permission_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """``XDG_RUNTIME_DIR`` mkdir on an unwritable parent must fall through
+    to ``<state_home>/run`` per the module's best-effort contract."""
+    locked_parent = tmp_path / "no-perm"
+    locked_parent.mkdir()
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(locked_parent / "runtime"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    try:
+        locked_parent.chmod(0o000)
+        rt = xdg.runtime_dir()
+    finally:
+        locked_parent.chmod(0o700)
+    assert rt == tmp_path / "state" / "run"
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="chmod 0o000 does not restrict root")
+def test_runtime_dir_falls_back_on_permission_error_for_lies_override(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """``LIES_XDG_RUNTIME_DIR`` mkdir on an unwritable parent must fall
+    through to ``<state_home>/run``."""
+    locked_parent = tmp_path / "no-perm"
+    locked_parent.mkdir()
+    monkeypatch.setenv("LIES_XDG_RUNTIME_DIR", str(locked_parent / "runtime"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    try:
+        locked_parent.chmod(0o000)
+        rt = xdg.runtime_dir()
+    finally:
+        locked_parent.chmod(0o700)
+    assert rt == tmp_path / "state" / "run"
