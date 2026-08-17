@@ -145,7 +145,7 @@ def test_stash_does_not_unlink_held_lock(git_wiki: Wiki) -> None:
             probe.close()
 
 
-def test_wiki_lock_busy_is_wiki_memory_error() -> None:
-    from lies.memory.models import WikiMemoryError
+def test_wiki_lock_busy_is_wiki_flock_error() -> None:
+    from lies.lock_errors import WikiFlockError
 
-    assert issubclass(WikiLockBusy, WikiMemoryError)
+    assert issubclass(WikiLockBusy, WikiFlockError)
