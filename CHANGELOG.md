@@ -4,7 +4,7 @@ All notable changes to LIES are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/) adapted for
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.10.2] - 2026-08-16
 
 ### Added
 - Restore the `ahocorasick_rs>=1.0` Aho-Corasick fast-path inside
