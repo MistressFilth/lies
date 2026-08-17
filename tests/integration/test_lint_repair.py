@@ -16,6 +16,7 @@ from lies.agents.repair_models import (
     RepairPlan,
     UpdateIndex,
 )
+from lies.lock_errors import WikiLockBusy
 from lies.orchestrator import Orchestrator
 from lies.wiki.wiki import Wiki
 from tests.conftest import make_wiki, models_for_tests
@@ -374,10 +375,11 @@ def test_apply_fails_when_lock_held(wiki: Wiki, tmp_path: Path) -> None:
                 _build_lint_report.__module__ + "._build_lint_report",
                 return_value=shell_report,
             ),
+            pytest.raises(WikiLockBusy),
         ):
-            report = orch.run_lint(apply=True)
+            orch.run_lint(apply=True)
 
-        assert "Errors" in report or "errors" in report
+        # Wiki is unchanged — the cross-process lock blocked the apply.
         assert not (wiki.wiki_dir / "concepts" / "x.md").exists()
     finally:
         holder.terminate()

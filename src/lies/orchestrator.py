@@ -27,12 +27,12 @@ from lies.capabilities import (
     planning,
 )
 from lies.config import get_qmd_transport, get_qmd_url
+from lies.lock_errors import WikiFlockUnrepairable, WikiLockBusy
 from lies.memory.enricher import MemoryEnricherDeps, enricher_agent
 from lies.memory.models import (
     MemoryPlan,
     MemoryReceipt,
     WikiCommitFailed,
-    WikiLockBusy,
     WikiPlanInvalid,
     WikiWriteConflict,
 )
@@ -1223,12 +1223,14 @@ class Orchestrator:
 
         ``force_repair=True`` flows through to
         :meth:`WikiMemoryService.apply_repair_plan` and onward into
-        the cross-process flock acquisition. Note that flock-level
-        errors (:class:`WikiLockBusy`, :class:`WikiFlockUnrepairable`)
-        are caught here and surfaced as ``RepairReceipt.errors`` so
-        the existing lint-render pipeline can display them; the CLI
-        also catches them at the top level to exit with a non-zero
-        status and an operator-actionable message.
+        the cross-process flock acquisition. Flock-level errors
+        (:class:`WikiLockBusy`, :class:`WikiFlockUnrepairable`) are
+        re-raised here so the CLI's top-level handlers can exit
+        non-zero with an operator-actionable message; only
+        non-flock failures are captured into ``RepairReceipt.errors``.
+        ``WikiLockBusy`` is the existing behavior;
+        ``WikiFlockUnrepairable`` is new and means manual
+        ``lies flock <name> force-repair`` is required.
         """
         plan = validated.plan
         if plan.is_noop():
@@ -1245,6 +1247,12 @@ class Orchestrator:
             )
         try:
             memory_receipt = self._memory_service.apply_repair_plan(plan, force_repair=force_repair)
+        except WikiFlockUnrepairable:
+            # Operator-actionable: manual intervention required; let CLI exit 1.
+            raise
+        except WikiLockBusy:
+            # Existing behavior: let CLI exit 1.
+            raise
         except Exception as exc:  # noqa: BLE001 - capture all apply failures
             return RepairReceipt(
                 applied=[],
