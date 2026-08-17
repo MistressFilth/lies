@@ -496,16 +496,25 @@ def flock_status(
 
 @flock_app.command("force-repair")
 def flock_force_repair(ctx: typer.Context) -> None:
-    """Reap a stale memory flock and retry; refuse on a live contender."""
+    """Reap the memory flock's envelope and retry; raise WikiFlockUnrepairable
+    capturing the contender's pid + start time when the post-reap retry still
+    loses — the flock files are gone after the reap, but the captured data
+    survives long enough to cite in the operator-actionable message."""
     name: str = ctx.obj["name"]
     runtime_root = xdg.runtime_dir_for(name)
-    lock = runtime_root / "memory.lock"
     pid_path = runtime_root / "memory.pid"
     state_path = runtime_root / "memory.state.json"
     create_lock = runtime_root / "memory.lock.create"
+    lock_path = runtime_root / "memory.lock"
+
+    # Read pid + heartbeat BEFORE the reap loop; the flock files are gone
+    # after the reap and any post-retry operator-actionable message needs
+    # this data to cite.
+    captured_pid = read_owner_pid(pid_path)
+    captured_hb = read_heartbeat(state_path)
 
     # First reap unconditionally (force-repair is unconditional).
-    for p in (state_path, pid_path, lock, create_lock):
+    for p in (state_path, pid_path, lock_path, create_lock):
         if p.exists():
             p.unlink()
             typer.echo(f"reap     : unlinking {p.name}")
@@ -514,7 +523,27 @@ def flock_force_repair(ctx: typer.Context) -> None:
     result = acquire_create_lock(create_lock, max_age_s=MAX_FLOCK_AGE_S)
     if result is None:
         typer.echo("result   : unrepairable — manual intervention required")
-        raise WikiFlockUnrepairable(f"memory flock for wiki '{name}' could not be reaped")
+        if captured_pid is not None and captured_hb is not None:
+            t_iso = (
+                f"{int(captured_hb.started_at // 60)}m"
+                f"{int(captured_hb.started_at % 60)}s "
+                f"since {int(captured_hb.started_at)} epoch"
+            )
+            msg = (
+                f"memory flock for wiki '{name}' held by live pid "
+                f"{captured_pid} (started {t_iso}); force-repair failed "
+                f"after retry. Run `lies flock {name} force-repair` to "
+                f"inspect/retry or kill {captured_pid} manually."
+            )
+            typer.echo(msg, err=True)
+            raise WikiFlockUnrepairable(msg)
+        msg = (
+            f"memory flock for wiki '{name}' could not be reaped; "
+            f"no readable contention state. Run `lies flock {name} "
+            f"force-repair` to inspect."
+        )
+        typer.echo(msg, err=True)
+        raise WikiFlockUnrepairable(msg)
     os.close(result.fd)
     typer.echo("retry    : acquired memory.lock.create")
     typer.echo("result   : ok (recovery succeeded)")

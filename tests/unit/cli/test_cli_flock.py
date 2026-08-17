@@ -231,15 +231,6 @@ def test_lies_flock_force_repair_unrepairable(
     assert "unrepairable" in combined.lower()
 
 
-@pytest.mark.xfail(
-    reason=(
-        "intentionally RED at Task 4 commit point: Task 5 implements the "
-        "capture-before-reap body in flock_force_repair; until then the "
-        "Unrepairable message omits the captured pid. Remove this xfail "
-        "marker when Task 5 lands."
-    ),
-    strict=True,
-)
 def test_flock_force_repair_unrepairable_message_cites_captured_pid(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
