@@ -7,7 +7,6 @@ import pytest
 
 from lies.collections.record import Collection
 from lies.etl.stages.normalize import run_normalize
-from lies.etl.stages.qmd_update import run_qmd_update
 from lies.etl.stages.scrape import run_scrape
 from lies.etl.stages.write import run_write
 from lies.scrapers.base import ParsedDoc
@@ -284,23 +283,6 @@ def test_run_write_skips_qmd_hooks_when_nothing_committed(tmp_path: Path) -> Non
     m_add.assert_not_called()
     m_update.assert_not_called()
     m_index.assert_not_called()
-
-
-def test_run_qmd_update_triggers_full_reindex(tmp_path: Path) -> None:
-    """`qmd update` is always full; the per-collection flag is not honored by qmd."""
-    with mock.patch("lies.etl.stages.qmd_update.qmd_update") as q:
-        result = run_qmd_update(_wiki(tmp_path), _collection(tmp_path))
-    q.assert_called_once_with(tmp_path / "raw" / "cpython")
-    assert result.bytes_in == 0
-    assert result.success == []
-
-
-def test_run_qmd_update_swallows_qmd_failure(tmp_path: Path) -> None:
-    with mock.patch(
-        "lies.etl.stages.qmd_update.qmd_update", side_effect=RuntimeError("qmd missing")
-    ):
-        result = run_qmd_update(_wiki(tmp_path), _collection(tmp_path))
-    assert result.bytes_in == 0  # no-op recorded
 
 
 def test_scrape_uses_bespoke_scraper_via_scraper_cmd(tmp_path: Path) -> None:

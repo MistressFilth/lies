@@ -33,7 +33,6 @@ class PipelineState(str, Enum):
     NORMALIZING = "normalizing"
     WRITING = "writing"
     REGISTERING = "registering"
-    QMD_UPDATE = "qmd_update"
     FAILED = "failed"
 
 
