@@ -84,7 +84,7 @@ def run_write(
             pass
         try:
             rebuild_index(wiki)
-        except OSError:
+        except Exception:  # noqa: BLE001, S110 - rebuild_index parses user-authored frontmatter; failures must not roll back the wiki commit
             pass
 
     return StageResult(

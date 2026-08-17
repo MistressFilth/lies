@@ -285,6 +285,39 @@ def test_run_write_skips_qmd_hooks_when_nothing_committed(tmp_path: Path) -> Non
     m_index.assert_not_called()
 
 
+def test_run_write_does_not_roll_back_commit_on_rebuild_index_value_error(
+    tmp_path: Path,
+) -> None:
+    """A ValueError from rebuild_index (e.g., malformed frontmatter) must NOT
+    propagate out of run_write — the wiki git commit has already happened
+    and cannot be unwound by a fire-and-forget post-commit hook. The same
+    guarantee applies to OSError; the previous narrow OSError-only catch
+    let any non-OSError exception unwrap and abort the pipeline."""
+    wiki = _wiki(tmp_path)
+    (wiki.raw_dir / "cpython").mkdir(parents=True, exist_ok=True)
+    manifest = mock.Mock()
+    manifest.compare.return_value = False
+    fake_normalized = [("x.md", "# body")]
+    with (
+        mock.patch("lies.etl.stages.write.atomic_commit") as ac,
+        mock.patch("lies.etl.stages.write.qmd_collection_add_if_missing"),
+        mock.patch("lies.etl.stages.write.qmd_update"),
+        mock.patch(
+            "lies.etl.stages.write.rebuild_index",
+            side_effect=ValueError("bad frontmatter"),
+        ),
+    ):
+        result = run_write(
+            wiki,
+            _collection(tmp_path),
+            fake_normalized,
+            manifest=manifest,
+            force=False,
+        )
+    assert result.success == ["x.md"]
+    ac.assert_called_once()
+
+
 def test_scrape_uses_bespoke_scraper_via_scraper_cmd(tmp_path: Path) -> None:
     """When Collection.scraper_cmd is set, run_scrape imports and uses it."""
     # Create a module file that defines a BaseScraper subclass.
