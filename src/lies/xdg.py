@@ -62,23 +62,34 @@ def state_home() -> Path:
     return _xdg_root("XDG_STATE_HOME", _SPEC_DEFAULTS["XDG_STATE_HOME"])
 
 
+def _runtime_dir_or_fallback(path: Path) -> Path:
+    """Best-effort mkdir: return ``path`` if created, else ``<state_home>/run``.
+
+    Used by :func:`runtime_dir` so a set-but-unwritable
+    ``XDG_RUNTIME_DIR`` / ``LIES_XDG_RUNTIME_DIR`` falls through to a
+    writable default per the module's best-effort contract.
+    """
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return state_home() / "run"
+    return path
+
+
 def runtime_dir() -> Path:
     """Per-system runtime dir.
 
     Reads ``LIES_XDG_RUNTIME_DIR`` first (LIES-specific override), falls
     back to ``XDG_RUNTIME_DIR`` (spec env var, mkdir if missing), then to
-    ``<state_home>/run`` when neither is set.
+    ``<state_home>/run`` when neither is set or when mkdir on either fails
+    (e.g. unwritable parent). Best-effort per the module's contract.
     """
     lies_override = os.environ.get("LIES_XDG_RUNTIME_DIR")
     if lies_override:
-        path = Path(lies_override).expanduser()
-        path.mkdir(parents=True, exist_ok=True)
-        return path
+        return _runtime_dir_or_fallback(Path(lies_override).expanduser())
     explicit = os.environ.get("XDG_RUNTIME_DIR")
     if explicit:
-        path = Path(explicit).expanduser()
-        path.mkdir(parents=True, exist_ok=True)
-        return path
+        return _runtime_dir_or_fallback(Path(explicit).expanduser())
     return state_home() / "run"
 
 

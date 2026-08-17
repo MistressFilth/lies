@@ -2,6 +2,12 @@
 
 Target paths are computed under ``wiki.wiki_dir``. Per-doc OSError on
 write moves the source to the wiki's poison_root and continues the batch.
+
+Post-commit hook: when files are written, the stage also (a) registers
+the collection with qmd (idempotent), (b) refreshes the qmd derived
+index, and (c) regenerates ``wiki/index.md`` so the qmd-fallback
+synthesizer stays in sync. The qmd hooks are non-fatal — a failure
+must not roll back the wiki git commit that already landed.
 """
 
 from __future__ import annotations
@@ -12,6 +18,8 @@ from typing import TYPE_CHECKING
 from lies.collections.hash_manifest import HashManifest
 from lies.collections.record import Collection
 from lies.etl.quarantine import quarantine as move_to_poison
+from lies.memory.index import rebuild_index
+from lies.qmd.cli import qmd_collection_add_if_missing, qmd_update
 from lies.wiki.git import atomic_commit
 from lies.wiki.wiki import Wiki
 
@@ -61,6 +69,23 @@ def run_write(
             f"sync: {collection.name} +{len(success)} -{len(quarantined)} ~{len(skipped)}",
             files=files,
         )
+        # Post-commit: make the new wiki state visible to qmd and the
+        # qmd-fallback synthesizer. Failures are non-fatal — the wiki
+        # commit already landed and is authoritative.
+        try:
+            qmd_collection_add_if_missing(
+                wiki.raw_dir, wiki.raw_dir / collection.name, collection.qmd_name()
+            )
+        except Exception:  # noqa: BLE001, S110 - qmd is derived; collection-registration failures must not roll back the wiki commit
+            pass
+        try:
+            qmd_update(wiki.data_root)
+        except Exception:  # noqa: BLE001, S110 - qmd is derived; refresh failures must not roll back the wiki commit
+            pass
+        try:
+            rebuild_index(wiki)
+        except Exception:  # noqa: BLE001, S110 - rebuild_index parses user-authored frontmatter; failures must not roll back the wiki commit
+            pass
 
     return StageResult(
         success=success,

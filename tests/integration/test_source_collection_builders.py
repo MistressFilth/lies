@@ -159,7 +159,9 @@ def test_sync_htmx_sphinx_with_excludes(wiki: Wiki) -> None:
     (registration does not over-count docs).
 
     The pipeline runs end-to-end: SCRAPE → NORMALIZE → WRITE →
-    REGISTER → QMD_UPDATE. ``BespokeBuilder.build`` is mocked to a
+    REGISTER. The WRITE stage's post-commit hook invokes
+    ``qmd collection add`` (idempotent), ``qmd update``, and rebuilds
+    ``wiki/index.md``. ``BespokeBuilder.build`` is mocked to a
     side-effect that walks the synth manifest and applies the
     configured ``sphinx_excludes`` — the same dispatch contract a
     real SphinxBuilder would implement.
