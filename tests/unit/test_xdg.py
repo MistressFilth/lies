@@ -80,6 +80,14 @@ def test_lies_xdg_runtime_dir_wins_over_xdg_runtime_dir(
     assert xdg.runtime_dir() == tmp_path / "lies-runtime"
 
 
+# NOTE: These two tests rely on `chmod 0o000` on a parent directory to
+# trigger EACCES. On a host with `fs.protected_regular` or similar sysctl
+# restrictions, the unprivileged chmod may not be enough to deny the
+# caller; the test then passes for the wrong reason (mkdir succeeds and
+# the XDG_RUNTIME_DIR branch is taken). The skip-if-root guard catches
+# the most common cause; consider switching to a mocking-based permission
+# denial (e.g., monkeypatching Path.mkdir to raise PermissionError) if
+# the test ever drifts.
 @pytest.mark.skipif(os.geteuid() == 0, reason="chmod 0o000 does not restrict root")
 def test_runtime_dir_falls_back_on_permission_error(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
