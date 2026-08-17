@@ -39,6 +39,7 @@ def acquire_create_lock(  # type: ignore[no-untyped-def]
     pid_path: Path | None = None,
     state_json_path: Path | None = None,
     pid_alive_fn=None,
+    force_repair: bool = False,
 ) -> int | None:
     """Atomically create ``path``. Return the open fd on win, ``None`` on contention.
 
@@ -46,6 +47,12 @@ def acquire_create_lock(  # type: ignore[no-untyped-def]
     existing create-lock as a stale holder when its stored PID is
     dead (or its heartbeat is older than ``max_age_s``) and reap + retry
     once. See the module docstring for the exception policy.
+
+    ``force_repair=True`` escalates the second-chance reap: when the
+    envelope is held by what looks like a live contender, unconditionally
+    reap + retry once. The caller (``_acquire_wiki_flock``) surfaces
+    ``WikiFlockUnrepairable`` if the retry still loses; without
+    ``force_repair``, a live holder always wins (returns ``None``).
 
     The fd is left open so the OS holds the inode reference; the caller
     must pass it to :func:`release_create_lock`.
@@ -69,7 +76,11 @@ def acquire_create_lock(  # type: ignore[no-untyped-def]
         return os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
     except FileExistsError:
         if pid_path is not None and state_json_path is not None:
-            if not _reap_if_stale(path, pid_path, state_json_path, max_age_s, pid_alive_fn):
+            if force_repair:
+                # Unconditional reap + retry once. The caller will
+                # raise WikiFlockUnrepairable if the retry still loses.
+                _reap_files(path, pid_path, state_json_path)
+            elif not _reap_if_stale(path, pid_path, state_json_path, max_age_s, pid_alive_fn):
                 return None
             # Reap removed the create-lock; retry the create once.
             try:

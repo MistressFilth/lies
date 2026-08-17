@@ -16,7 +16,7 @@ from rich.markdown import Markdown
 
 from lies import __version__, xdg
 from lies.constants import LIES_DATA_SUBDIR
-from lies.lock_errors import WikiFlockUnrepairable
+from lies.lock_errors import WikiFlockUnrepairable, WikiLockBusy
 from lies.mcp import daemon
 from lies.mcp.resolution import resolve_wiki
 from lies.memory.service import MAX_FLOCK_AGE_S
@@ -376,8 +376,26 @@ def query(
 def lint(
     name: str | None = typer.Option(None, "--name", envvar="LIES_WIKI_NAME"),
     fix: bool = typer.Option(False, "--fix", help="Apply repair plan for safe_to_fix findings."),
+    force_repair: bool = typer.Option(
+        False,
+        "--force-repair",
+        help=(
+            "Reap a stale memory flock and retry once before applying the "
+            "repair plan. Only meaningful with --fix; surfaces "
+            "WikiFlockUnrepairable (exit 1) if the retry still loses."
+        ),
+    ),
 ) -> None:
-    """Run lint; with --fix also apply the repair plan."""
+    """Run lint; with --fix also apply the repair plan.
+
+    ``--force-repair`` (with ``--fix``) escalates wiki-memory
+    contention: the cross-process flock is unconditionally reaped +
+    retried once before applying the repair plan. Without the flag, a
+    live contender surfaces as ``WikiLockBusy`` (exit 1). If the
+    force-repair retry still loses, ``WikiFlockUnrepairable`` is
+    surfaced (also exit 1) with an operator-actionable pointer to
+    ``lies flock <name> force-repair``.
+    """
     configure_logging()
     wiki = resolve_wiki(name)
     try:
@@ -388,7 +406,14 @@ def lint(
     orch = Orchestrator(wiki)
     # Use the host-side ``run_lint`` entry point so the lint pass writes
     # a deterministic ``wiki/lint-report.md`` and appends to ``wiki/log.md``.
-    output = orch.run_lint(apply=fix, resolver=resolver)
+    try:
+        output = orch.run_lint(apply=fix, resolver=resolver, force_repair=force_repair)
+    except WikiFlockUnrepairable as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+    except WikiLockBusy as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
     console.print(Markdown(output))
 
 

@@ -1069,8 +1069,24 @@ class Orchestrator:
         """
         return synthesize_answer(question, self.wiki)
 
-    def run_lint(self, apply: bool = False, *, resolver: WikiLinkResolver | None = None) -> str:
-        """Run deterministic and LLM lint, merge findings, and write report."""
+    def run_lint(
+        self,
+        apply: bool = False,
+        *,
+        resolver: WikiLinkResolver | None = None,
+        force_repair: bool = False,
+    ) -> str:
+        """Run deterministic and LLM lint, merge findings, and write report.
+
+        ``force_repair=True`` escalates the cross-process flock
+        contention path: when the wiki memory envelope is held by what
+        looks like a live contender, the underlying
+        :meth:`WikiMemoryService.apply_repair_plan` unconditionally
+        reaps + retries once before surfacing
+        :class:`WikiFlockUnrepairable`. Without the flag, a live
+        contender raises :class:`WikiLockBusy`. Only meaningful when
+        ``apply=True``.
+        """
         shell_report = _build_lint_report(self.wiki, resolver=resolver)
         llm_report, fallback_reason = self._call_linter()
         merged_report, fallback_reason = merge_lint_reports(
@@ -1079,7 +1095,9 @@ class Orchestrator:
         repair_receipt: RepairReceipt | None = None
         if apply:
             plan = self._run_repair_agent(merged_report)
-            repair_receipt = self._validate_and_apply_repair_plan(plan, merged_report.findings)
+            repair_receipt = self._validate_and_apply_repair_plan(
+                plan, merged_report.findings, force_repair=force_repair
+            )
         final_md = _render_lint_report(
             merged_report,
             wiki=self.wiki,
@@ -1116,7 +1134,11 @@ class Orchestrator:
         ).output
 
     def _validate_and_apply_repair_plan(
-        self, plan: RepairPlan, findings: list[LintFinding]
+        self,
+        plan: RepairPlan,
+        findings: list[LintFinding],
+        *,
+        force_repair: bool = False,
     ) -> RepairReceipt:
         """Validate ``plan`` and dispatch to ``_apply_repair_plan``.
 
@@ -1126,6 +1148,9 @@ class Orchestrator:
         orchestrator. The receipt is constructed with empty
         ``applied``/``skipped`` lists and the same ``fallback_used``
         defaults as the noop path.
+
+        ``force_repair`` flows through to the service-layer flock
+        acquisition; see :meth:`WikiMemoryService.apply_repair_plan`.
         """
         try:
             validated = validate_plan(plan, self.wiki, findings)
@@ -1139,7 +1164,7 @@ class Orchestrator:
                 fallback_reason="",
                 errors=[f"plan rejected: {exc}"],
             )
-        return self._apply_repair_plan(validated)
+        return self._apply_repair_plan(validated, force_repair=force_repair)
 
     def _call_linter(self) -> tuple[LintReport, str | None]:
         """Invoke the linter sub-agent; return (report, fallback_reason).
@@ -1180,7 +1205,12 @@ class Orchestrator:
             return LintReport(findings=[], report_markdown=""), f"{type(exc).__name__}: {exc}"
         return result.output, None
 
-    def _apply_repair_plan(self, validated: ValidatedRepairPlan) -> RepairReceipt:
+    def _apply_repair_plan(
+        self,
+        validated: ValidatedRepairPlan,
+        *,
+        force_repair: bool = False,
+    ) -> RepairReceipt:
         """Apply a validated repair plan and return a receipt.
 
         ``ValidatedRepairPlan.dropped_ops`` records the original
@@ -1190,6 +1220,15 @@ class Orchestrator:
         ``applied_repair_kinds`` list is rebuilt from the
         post-drop ``plan.operations`` to keep its positional pairing
         with ``memory_receipt.changed_pages``.
+
+        ``force_repair=True`` flows through to
+        :meth:`WikiMemoryService.apply_repair_plan` and onward into
+        the cross-process flock acquisition. Note that flock-level
+        errors (:class:`WikiLockBusy`, :class:`WikiFlockUnrepairable`)
+        are caught here and surfaced as ``RepairReceipt.errors`` so
+        the existing lint-render pipeline can display them; the CLI
+        also catches them at the top level to exit with a non-zero
+        status and an operator-actionable message.
         """
         plan = validated.plan
         if plan.is_noop():
@@ -1205,7 +1244,7 @@ class Orchestrator:
                 errors=[],
             )
         try:
-            memory_receipt = self._memory_service.apply_repair_plan(plan)
+            memory_receipt = self._memory_service.apply_repair_plan(plan, force_repair=force_repair)
         except Exception as exc:  # noqa: BLE001 - capture all apply failures
             return RepairReceipt(
                 applied=[],
