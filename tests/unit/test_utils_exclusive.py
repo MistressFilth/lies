@@ -19,10 +19,12 @@ from lies.utils.exclusive import (
 
 def test_acquire_returns_fd_when_free(tmp_path: Path) -> None:
     lock = tmp_path / "sub" / "thing.lock.create"
-    fd = acquire_create_lock(lock, max_age_s=60.0)
-    assert fd is not None
+    result = acquire_create_lock(lock, max_age_s=60.0)
+    assert result is not None
+    assert result.fd > 0
+    assert result.status == "acquired"
     assert lock.exists()
-    release_create_lock(lock, fd)
+    release_create_lock(lock, result.fd)
 
 
 def test_second_acquire_is_none(tmp_path: Path) -> None:
@@ -30,38 +32,41 @@ def test_second_acquire_is_none(tmp_path: Path) -> None:
     first = acquire_create_lock(lock, max_age_s=60.0)
     second = acquire_create_lock(lock, max_age_s=60.0)
     assert first is not None
+    # Legacy path: no envelope -> contention is still ``None``.
     assert second is None
-    release_create_lock(lock, first)
+    release_create_lock(lock, first.fd)
 
 
 def test_release_unlinks_and_reallows(tmp_path: Path) -> None:
     lock = tmp_path / "thing.lock.create"
-    fd = acquire_create_lock(lock, max_age_s=60.0)
-    release_create_lock(lock, fd)
+    result = acquire_create_lock(lock, max_age_s=60.0)
+    assert result is not None
+    release_create_lock(lock, result.fd)
     assert not lock.exists()
     again = acquire_create_lock(lock, max_age_s=60.0)
     assert again is not None
-    release_create_lock(lock, again)
+    release_create_lock(lock, again.fd)
 
 
 def test_orphan_reclaimed_past_window(tmp_path: Path) -> None:
     lock = tmp_path / "thing.lock.create"
-    fd = acquire_create_lock(lock, max_age_s=60.0)
-    assert fd is not None
+    result = acquire_create_lock(lock, max_age_s=60.0)
+    assert result is not None
     old = time.time() - 120
     os.utime(lock, (old, old))
     reclaimed = acquire_create_lock(lock, max_age_s=60.0)
     assert reclaimed is not None
-    release_create_lock(lock, reclaimed)
+    release_create_lock(lock, reclaimed.fd)
 
 
 def test_orphan_not_reclaimed_inside_window(tmp_path: Path) -> None:
     lock = tmp_path / "thing.lock.create"
-    fd = acquire_create_lock(lock, max_age_s=3600.0)
+    result = acquire_create_lock(lock, max_age_s=3600.0)
+    assert result is not None
     old = time.time() - 120
     os.utime(lock, (old, old))
     assert acquire_create_lock(lock, max_age_s=3600.0) is None
-    release_create_lock(lock, fd)
+    release_create_lock(lock, result.fd)
 
 
 def test_release_tolerates_none_fd_and_missing_file(tmp_path: Path) -> None:
@@ -91,17 +96,19 @@ def test_acquire_create_lock_reaps_dead_pid_and_reacquires(
     )
 
     # Pretend the stored PID is dead via monkeypatched pid_alive_fn.
-    fd = acquire_create_lock(
+    result = acquire_create_lock(
         lock_create,
         max_age_s=MAX_FLOCK_AGE_S_DEFAULT,
         pid_path=pid_path,
         state_json_path=state_json,
         pid_alive_fn=lambda _: False,
     )
-    assert fd is not None, "expected reap-then-reacquire to succeed"
+    assert result is not None, "expected reap-then-reacquire to succeed"
+    assert result.fd > 0, "AcquireResult must carry a valid fd"
+    assert result.status == "dead_reaped"
     release_create_lock(
         lock_create,
-        fd,
+        result.fd,
         pid_path=pid_path,
         state_json_path=state_json,
     )
@@ -126,17 +133,18 @@ def test_pid_alive_classifier_handles_process_lookup_error(
     )
 
     with patch("os.kill", side_effect=ProcessLookupError("ESRCH")):
-        fd = acquire_create_lock(
+        result = acquire_create_lock(
             lock_create,
             max_age_s=MAX_FLOCK_AGE_S_DEFAULT,
             pid_path=pid_path,
             state_json_path=state_json,
         )
 
-    assert fd is not None, "ESRCH must trigger reap + retry"
+    assert result is not None, "ESRCH must trigger reap + retry"
+    assert result.status == "dead_reaped"
     release_create_lock(
         lock_create,
-        fd,
+        result.fd,
         pid_path=pid_path,
         state_json_path=state_json,
     )
@@ -160,14 +168,19 @@ def test_pid_alive_classifier_handles_permission_error(
 
     caplog.set_level(logging.WARNING, logger="lies.utils.exclusive")
     with patch("os.kill", side_effect=PermissionError("EPERM")):
-        fd = acquire_create_lock(
+        result = acquire_create_lock(
             lock_create,
             max_age_s=MAX_FLOCK_AGE_S_DEFAULT,
             pid_path=pid_path,
             state_json_path=state_json,
         )
 
-    assert fd is None, "EPERM must be treated as busy (no reap)"
+    # Envelope-aware caller: busy path now returns a populated
+    # AcquireResult instead of ``None``; ``fd`` is the sentinel ``-1``.
+    assert result is not None, "EPERM must yield a busy AcquireResult"
+    assert result.fd == -1
+    assert result.status == "busy"
+    assert result.holder_pid == 999999
     assert lock_create.exists(), "lock file must remain after busy path"
     assert pid_path.exists(), "pid file must remain after busy path"
     assert "raised non-ESRCH/EPERM" not in caplog.text, (
@@ -193,14 +206,17 @@ def test_pid_alive_classifier_handles_generic_oserror(
 
     caplog.set_level(logging.WARNING, logger="lies.utils.exclusive")
     with patch("os.kill", side_effect=OSError("EACCES: foo")):
-        fd = acquire_create_lock(
+        result = acquire_create_lock(
             lock_create,
             max_age_s=MAX_FLOCK_AGE_S_DEFAULT,
             pid_path=pid_path,
             state_json_path=state_json,
         )
 
-    assert fd is None, "generic OSError must be treated as busy (no reap)"
+    assert result is not None, "unknown OSError must yield a busy AcquireResult"
+    assert result.fd == -1
+    assert result.status == "busy"
+    assert result.holder_pid == 999999
     assert lock_create.exists(), "lock file must remain after busy path"
     assert pid_path.exists(), "pid file must remain after busy path"
     assert "raised non-ESRCH/EPERM" in caplog.text, "unknown OSError path must emit the WARN log"

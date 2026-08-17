@@ -91,14 +91,14 @@ def _acquire_wiki_flock(wiki: Wiki, *, force_repair: bool = False) -> Iterator[N
     state_path = wiki.memory_heartbeat_path
 
     create_lock.parent.mkdir(parents=True, exist_ok=True)
-    fd = acquire_create_lock(
+    result = acquire_create_lock(
         create_lock,
         max_age_s=MAX_FLOCK_AGE_S,
         pid_path=pid_path,
         state_json_path=state_path,
         force_repair=force_repair,
     )
-    if fd is None:
+    if result is None or result.status == "busy":
         if force_repair:
             # Under force_repair the underlying acquire already
             # attempted an unconditional reap + retry. Still busy
@@ -124,7 +124,7 @@ def _acquire_wiki_flock(wiki: Wiki, *, force_repair: bool = False) -> Iterator[N
     finally:
         release_create_lock(
             create_lock,
-            fd,
+            result.fd,
             pid_path=pid_path,
             state_json_path=state_path,
         )

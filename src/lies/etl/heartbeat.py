@@ -61,7 +61,10 @@ def acquire_create_lock(wiki: Wiki) -> int | None:
     the "this is stale" decision across the heartbeat and its
     create-lock.
     """
-    return _acquire_create_lock(wiki.sync_create_lock_path, max_age_s=_MAX_CREATE_LOCK_AGE_S)
+    result = _acquire_create_lock(wiki.sync_create_lock_path, max_age_s=_MAX_CREATE_LOCK_AGE_S)
+    if result is None:
+        return None
+    return result.fd
 
 
 def release_create_lock(wiki: Wiki, fd: int | None) -> None:

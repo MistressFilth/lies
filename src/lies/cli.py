@@ -511,11 +511,11 @@ def flock_force_repair(ctx: typer.Context) -> None:
             typer.echo(f"reap     : unlinking {p.name}")
 
     # Retry once.
-    fd = acquire_create_lock(create_lock, max_age_s=MAX_FLOCK_AGE_S)
-    if fd is None:
+    result = acquire_create_lock(create_lock, max_age_s=MAX_FLOCK_AGE_S)
+    if result is None:
         typer.echo("result   : unrepairable — manual intervention required")
         raise WikiFlockUnrepairable(f"memory flock for wiki '{name}' could not be reaped")
-    os.close(fd)
+    os.close(result.fd)
     typer.echo("retry    : acquired memory.lock.create")
     typer.echo("result   : ok (recovery succeeded)")
 

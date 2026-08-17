@@ -243,12 +243,13 @@ def test_spawn_raises_busy_when_create_lock_held(tmp_path: Path) -> None:
 
     wiki = _wiki(tmp_path)
     lock = daemon.create_lock_path(wiki)
-    fd = acquire_create_lock(lock, max_age_s=daemon.CREATE_LOCK_MAX_AGE_S)
+    result = acquire_create_lock(lock, max_age_s=daemon.CREATE_LOCK_MAX_AGE_S)
+    assert result is not None
     try:
         with pytest.raises(daemon.DaemonBusy):
             daemon.spawn_daemon(wiki, timeout=1.0)
     finally:
-        release_create_lock(lock, fd)
+        release_create_lock(lock, result.fd)
 
 
 def test_stop_with_no_record_is_a_noop(tmp_path: Path) -> None:
@@ -325,12 +326,13 @@ def test_stop_raises_busy_when_create_lock_held(tmp_path: Path) -> None:
 
     wiki = _wiki(tmp_path)
     lock = daemon.create_lock_path(wiki)
-    fd = acquire_create_lock(lock, max_age_s=daemon.CREATE_LOCK_MAX_AGE_S)
+    result = acquire_create_lock(lock, max_age_s=daemon.CREATE_LOCK_MAX_AGE_S)
+    assert result is not None
     try:
         with pytest.raises(daemon.DaemonBusy):
             daemon.stop_daemon(wiki)
     finally:
-        release_create_lock(lock, fd)
+        release_create_lock(lock, result.fd)
 
 
 def test_status_reports_stopped_without_a_record(tmp_path: Path) -> None:
