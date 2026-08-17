@@ -12,6 +12,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from lies.constants import LIES_DATA_SUBDIR
+
 _HOME = Path.home
 
 _SPEC_DEFAULTS: dict[str, str] = {
@@ -63,12 +65,7 @@ def state_home() -> Path:
 
 
 def _runtime_dir_or_fallback(path: Path) -> Path:
-    """Best-effort mkdir: return ``path`` if created, else ``<state_home>/run``.
-
-    Used by :func:`runtime_dir` so a set-but-unwritable
-    ``XDG_RUNTIME_DIR`` / ``LIES_XDG_RUNTIME_DIR`` falls through to a
-    writable default per the module's best-effort contract.
-    """
+    """Try mkdir; fall through to ``<state_home>/run`` on OSError."""
     try:
         path.mkdir(parents=True, exist_ok=True)
     except OSError:
@@ -95,4 +92,4 @@ def runtime_dir() -> Path:
 
 def runtime_dir_for(wiki: str) -> Path:
     """Per-wiki runtime dir under the system runtime dir."""
-    return runtime_dir() / "lies" / wiki
+    return runtime_dir() / LIES_DATA_SUBDIR / wiki

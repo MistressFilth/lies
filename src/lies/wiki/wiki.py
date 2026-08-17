@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from lies import xdg
+from lies.constants import LIES_DATA_SUBDIR
 from lies.errors import WikiNotRegistered
 from lies.wiki.validation import validate_name
 
@@ -24,7 +25,7 @@ class Wiki:
     @classmethod
     def data_root_for(cls, name: str) -> Path:
         validate_name(name)
-        return xdg.data_home() / "lies" / name
+        return xdg.data_home() / LIES_DATA_SUBDIR / name
 
     @classmethod
     def require(cls, name: str) -> Wiki:
@@ -35,9 +36,9 @@ class Wiki:
         return cls(
             name=name,
             data_root=data_root,
-            config_root=xdg.config_home() / "lies" / name,
-            cache_root=xdg.cache_home() / "lies" / name,
-            state_root=xdg.state_home() / "lies" / name,
+            config_root=xdg.config_home() / LIES_DATA_SUBDIR / name,
+            cache_root=xdg.cache_home() / LIES_DATA_SUBDIR / name,
+            state_root=xdg.state_home() / LIES_DATA_SUBDIR / name,
             runtime_root=xdg.runtime_dir_for(name),
         )
 
@@ -64,7 +65,7 @@ class Wiki:
         This file is intentionally user-level (not per-wiki). All wikis share
         one providers catalog; per-wiki model overrides are not supported.
         """
-        return xdg.config_home() / "lies" / "providers.toml"
+        return xdg.config_home() / LIES_DATA_SUBDIR / "providers.toml"
 
     @property
     def settings_path(self) -> Path:

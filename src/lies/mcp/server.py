@@ -22,6 +22,7 @@ from fastmcp import FastMCP
 from pydantic import BaseModel
 
 from lies import __version__, xdg
+from lies.constants import LIES_DATA_SUBDIR
 from lies.errors import WikiAlreadyExists
 from lies.mcp.resolution import resolve_wiki
 from lies.memory.models import WikiPlanInvalid
@@ -73,9 +74,9 @@ def init_wiki(name: str) -> dict[str, object]:
     wiki = Wiki(
         name=name,
         data_root=Wiki.data_root_for(name),
-        config_root=xdg.config_home() / "lies" / name,
-        cache_root=xdg.cache_home() / "lies" / name,
-        state_root=xdg.state_home() / "lies" / name,
+        config_root=xdg.config_home() / LIES_DATA_SUBDIR / name,
+        cache_root=xdg.cache_home() / LIES_DATA_SUBDIR / name,
+        state_root=xdg.state_home() / LIES_DATA_SUBDIR / name,
         runtime_root=xdg.runtime_dir_for(name),
     )
     if wiki.data_root.exists():

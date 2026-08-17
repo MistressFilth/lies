@@ -11,6 +11,7 @@ import json
 import re
 import shutil
 import subprocess
+import warnings
 from pathlib import Path
 from typing import Any
 
@@ -193,5 +194,14 @@ def _normalize_qmd_result(item: Any) -> dict[str, Any]:
     else:
         # No usable file field; synthesize an empty path so consumers can
         # drop the hit cleanly instead of crashing on missing keys.
+        # Surface the degradation as a warning so unexpected qmd shape
+        # changes (e.g., a future qmd that omits the qmd:// URI prefix)
+        # are visible rather than silently invisible.
+        warnings.warn(
+            "qmd hit lacks a `qmd://` URI; `path` defaults to empty and the "
+            "row will be dropped by downstream consumers.",
+            UserWarning,
+            stacklevel=2,
+        )
         result["path"] = ""
     return result
