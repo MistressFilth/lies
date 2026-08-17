@@ -13,7 +13,7 @@ def _patch_xdg(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
-    monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "runtime"))
 
 
 def test_data_root_for_uses_xdg_data_home(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
@@ -54,3 +54,13 @@ def test_require_succeeds_after_data_root_mkdir(monkeypatch: pytest.MonkeyPatch,
     assert wiki.mcp_pid_path == wiki.runtime_root / "mcp.pid"
     assert wiki.mcp_create_lock_path == wiki.runtime_root / "mcp.pid.create"
     assert wiki.mcp_log_path == wiki.state_root / "mcp.log"
+
+
+def test_wiki_memory_lock_paths_use_runtime_root(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    _patch_xdg(monkeypatch, tmp_path)
+    Wiki.data_root_for("mywiki").mkdir(parents=True)
+    wiki = Wiki.require("mywiki")
+    expected_base = tmp_path / "runtime" / "lies" / "mywiki"
+    assert wiki.memory_create_lock_path == expected_base / "memory.lock.create"
+    assert wiki.memory_pid_path == expected_base / "memory.pid"
+    assert wiki.memory_heartbeat_path == expected_base / "memory.state.json"

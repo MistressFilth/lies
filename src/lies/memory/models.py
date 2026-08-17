@@ -13,6 +13,13 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+# Re-exported from :mod:`lies.lock_errors` so the historical import path
+# (``from lies.memory.models import WikiLockBusy``) keeps working for
+# existing callers (service.py, retry.py, orchestrator.py, tests). The
+# class now subclasses :class:`lies.lock_errors.WikiFlockError` instead
+# of :class:`WikiMemoryError` — see Task 3 of the v0.10.3-flocks spec.
+from lies.lock_errors import WikiLockBusy  # noqa: F401
+
 # --- Errors -------------------------------------------------------------
 
 
@@ -54,10 +61,6 @@ class WikiIndexStale(WikiMemoryError):
 
 class WikiCollectionInvalid(WikiMemoryError):
     """The referenced collection is not registered with the service."""
-
-
-class WikiLockBusy(WikiMemoryError):
-    """Another process holds the wiki memory lock."""
 
 
 # --- Collection and evidence -------------------------------------------

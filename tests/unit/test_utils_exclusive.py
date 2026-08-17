@@ -1,11 +1,20 @@
 from __future__ import annotations
 
+import json
+import logging
 import os
 import time
 from pathlib import Path
+from unittest.mock import patch
+
+import pytest
 
 from lies.utils import exclusive
-from lies.utils.exclusive import acquire_create_lock, release_create_lock
+from lies.utils.exclusive import (
+    MAX_FLOCK_AGE_S_DEFAULT,
+    acquire_create_lock,
+    release_create_lock,
+)
 
 
 def test_acquire_returns_fd_when_free(tmp_path: Path) -> None:
@@ -62,3 +71,136 @@ def test_release_tolerates_none_fd_and_missing_file(tmp_path: Path) -> None:
 def test_ensure_gitignored_removed() -> None:
     """The gitignore guard has been replaced by XDG runtime paths."""
     assert not hasattr(exclusive, "ensure_gitignored")
+
+
+def test_acquire_create_lock_reaps_dead_pid_and_reacquires(
+    tmp_path: Path,
+) -> None:
+    """A pre-existing flock whose stored PID is dead must be reaped on
+    the next acquire, and the second acquire must succeed."""
+    lock_create = tmp_path / "memory.lock.create"
+    pid_path = tmp_path / "memory.pid"
+    state_json = tmp_path / "memory.state.json"
+
+    # First holder: simulate a dead-PID by writing a known-dead pid.
+    lock_create.touch()
+    pid_path.write_text("999999", encoding="utf-8")
+    state_json.write_text(
+        json.dumps({"pid": 999999, "started_at": 0.0, "scope": "test"}),
+        encoding="utf-8",
+    )
+
+    # Pretend the stored PID is dead via monkeypatched pid_alive_fn.
+    fd = acquire_create_lock(
+        lock_create,
+        max_age_s=MAX_FLOCK_AGE_S_DEFAULT,
+        pid_path=pid_path,
+        state_json_path=state_json,
+        pid_alive_fn=lambda _: False,
+    )
+    assert fd is not None, "expected reap-then-reacquire to succeed"
+    release_create_lock(
+        lock_create,
+        fd,
+        pid_path=pid_path,
+        state_json_path=state_json,
+    )
+    assert not lock_create.exists()
+    assert not pid_path.exists()
+    assert not state_json.exists()
+
+
+def test_pid_alive_classifier_handles_process_lookup_error(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """ESRCH from os.kill(pid, 0) must be classified as dead -> reap + retry."""
+    lock_create = tmp_path / "memory.lock.create"
+    pid_path = tmp_path / "memory.pid"
+    state_json = tmp_path / "memory.state.json"
+
+    lock_create.touch()
+    pid_path.write_text("999999", encoding="utf-8")
+    state_json.write_text(
+        json.dumps({"pid": 999999, "started_at": 0.0, "scope": "test"}),
+        encoding="utf-8",
+    )
+
+    with patch("os.kill", side_effect=ProcessLookupError("ESRCH")):
+        fd = acquire_create_lock(
+            lock_create,
+            max_age_s=MAX_FLOCK_AGE_S_DEFAULT,
+            pid_path=pid_path,
+            state_json_path=state_json,
+        )
+
+    assert fd is not None, "ESRCH must trigger reap + retry"
+    release_create_lock(
+        lock_create,
+        fd,
+        pid_path=pid_path,
+        state_json_path=state_json,
+    )
+
+
+def test_pid_alive_classifier_handles_permission_error(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """EPERM from os.kill(pid, 0) must be classified as busy -> no reap."""
+    lock_create = tmp_path / "memory.lock.create"
+    pid_path = tmp_path / "memory.pid"
+    state_json = tmp_path / "memory.state.json"
+
+    lock_create.touch()
+    pid_path.write_text("999999", encoding="utf-8")
+    # Fresh heartbeat so the wall-clock branch does not also trigger reap.
+    state_json.write_text(
+        json.dumps({"pid": 999999, "started_at": time.time(), "scope": "test"}),
+        encoding="utf-8",
+    )
+
+    caplog.set_level(logging.WARNING, logger="lies.utils.exclusive")
+    with patch("os.kill", side_effect=PermissionError("EPERM")):
+        fd = acquire_create_lock(
+            lock_create,
+            max_age_s=MAX_FLOCK_AGE_S_DEFAULT,
+            pid_path=pid_path,
+            state_json_path=state_json,
+        )
+
+    assert fd is None, "EPERM must be treated as busy (no reap)"
+    assert lock_create.exists(), "lock file must remain after busy path"
+    assert pid_path.exists(), "pid file must remain after busy path"
+    assert "raised non-ESRCH/EPERM" not in caplog.text, (
+        "EPERM path must NOT emit the WARN log reserved for unknown OSError"
+    )
+
+
+def test_pid_alive_classifier_handles_generic_oserror(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Unknown OSError from os.kill(pid, 0) must be classified as busy + WARN."""
+    lock_create = tmp_path / "memory.lock.create"
+    pid_path = tmp_path / "memory.pid"
+    state_json = tmp_path / "memory.state.json"
+
+    lock_create.touch()
+    pid_path.write_text("999999", encoding="utf-8")
+    # Fresh heartbeat so the wall-clock branch does not also trigger reap.
+    state_json.write_text(
+        json.dumps({"pid": 999999, "started_at": time.time(), "scope": "test"}),
+        encoding="utf-8",
+    )
+
+    caplog.set_level(logging.WARNING, logger="lies.utils.exclusive")
+    with patch("os.kill", side_effect=OSError("EACCES: foo")):
+        fd = acquire_create_lock(
+            lock_create,
+            max_age_s=MAX_FLOCK_AGE_S_DEFAULT,
+            pid_path=pid_path,
+            state_json_path=state_json,
+        )
+
+    assert fd is None, "generic OSError must be treated as busy (no reap)"
+    assert lock_create.exists(), "lock file must remain after busy path"
+    assert pid_path.exists(), "pid file must remain after busy path"
+    assert "raised non-ESRCH/EPERM" in caplog.text, "unknown OSError path must emit the WARN log"

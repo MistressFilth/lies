@@ -6,6 +6,14 @@ from pathlib import Path
 
 from lies.constants import LIES_DATA_SUBDIR
 
+# Re-exported here so callers that import ``WikiLockBusy`` from the
+# ``lies.errors`` namespace continue to work after the class moved to
+# :mod:`lies.lock_errors`. The canonical definition lives there now and
+# subclasses :class:`lies.lock_errors.WikiFlockError`.
+from lies.lock_errors import WikiLockBusy
+
+__all__ = ["WikiAlreadyExists", "WikiLockBusy", "WikiNameError", "WikiNotRegistered"]
+
 
 class WikiAlreadyExists(Exception):
     """Raised when ``lies init <name>`` targets a name already registered."""

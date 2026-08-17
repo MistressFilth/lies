@@ -24,6 +24,7 @@ from pydantic import BaseModel
 from lies import __version__, xdg
 from lies.constants import LIES_DATA_SUBDIR
 from lies.errors import WikiAlreadyExists
+from lies.lock_errors import WikiFlockUnrepairable, WikiLockBusy
 from lies.mcp.resolution import resolve_wiki
 from lies.memory.models import WikiPlanInvalid
 from lies.orchestrator import Orchestrator
@@ -187,11 +188,27 @@ def query(question: str, name: str | None = None) -> SynthesizedMcpAnswer:
 
 
 @mcp.tool
-def lint(name: str | None = None, fix: bool = False) -> str:
-    """Run lint; with fix=True also apply the repair plan."""
+def lint(
+    name: str | None = None,
+    fix: bool = False,
+    force_repair: bool = False,
+) -> str:
+    """Run lint; with ``fix=True`` also apply the repair plan.
+
+    When ``fix=True`` and ``force_repair=True``, the cross-process
+    memory flock is unconditionally reaped + retried once before
+    surfacing ``WikiFlockUnrepairable`` if a live contender still
+    holds it; without the flag, a live contender raises
+    ``WikiLockBusy``. Flock errors are caught and returned as an
+    ``error:``-prefixed string so the MCP server stays up; other
+    exceptions propagate to the MCP error path.
+    """
     wiki = resolve_wiki(name)
     orch = Orchestrator(wiki=wiki)
-    return orch.run_lint(apply=fix)
+    try:
+        return orch.run_lint(apply=fix, force_repair=force_repair)
+    except (WikiFlockUnrepairable, WikiLockBusy) as exc:
+        return f"error: {exc}"
 
 
 # ---------------------------------------------------------------------------

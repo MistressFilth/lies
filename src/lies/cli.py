@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import json
+import os
 import sys
+import time
 from datetime import UTC
 from pathlib import Path
 from typing import Annotated, Any, cast
@@ -13,8 +16,10 @@ from rich.markdown import Markdown
 
 from lies import __version__, xdg
 from lies.constants import LIES_DATA_SUBDIR
+from lies.lock_errors import WikiFlockUnrepairable, WikiLockBusy
 from lies.mcp import daemon
 from lies.mcp.resolution import resolve_wiki
+from lies.memory.service import MAX_FLOCK_AGE_S
 from lies.orchestrator import Orchestrator
 from lies.providers import ProviderConfigError
 from lies.providers import bootstrap as providers_bootstrap
@@ -22,6 +27,8 @@ from lies.providers import ops as providers_ops
 from lies.qmd import daemon as qmd_daemon
 from lies.qmd import qmd_status
 from lies.scrapers.base import pick_scraper
+from lies.utils.exclusive import acquire_create_lock
+from lies.utils.lock_heartbeat import read_heartbeat, read_owner_pid
 from lies.utils.logging import configure_logging
 from lies.wiki.git import atomic_commit
 from lies.wiki.layout import WikiLayout
@@ -369,8 +376,26 @@ def query(
 def lint(
     name: str | None = typer.Option(None, "--name", envvar="LIES_WIKI_NAME"),
     fix: bool = typer.Option(False, "--fix", help="Apply repair plan for safe_to_fix findings."),
+    force_repair: bool = typer.Option(
+        False,
+        "--force-repair",
+        help=(
+            "Reap a stale memory flock and retry once before applying the "
+            "repair plan. Only meaningful with --fix; surfaces "
+            "WikiFlockUnrepairable (exit 1) if the retry still loses."
+        ),
+    ),
 ) -> None:
-    """Run lint; with --fix also apply the repair plan."""
+    """Run lint; with --fix also apply the repair plan.
+
+    ``--force-repair`` (with ``--fix``) escalates wiki-memory
+    contention: the cross-process flock is unconditionally reaped +
+    retried once before applying the repair plan. Without the flag, a
+    live contender surfaces as ``WikiLockBusy`` (exit 1). If the
+    force-repair retry still loses, ``WikiFlockUnrepairable`` is
+    surfaced (also exit 1) with an operator-actionable pointer to
+    ``lies flock <name> force-repair``.
+    """
     configure_logging()
     wiki = resolve_wiki(name)
     try:
@@ -381,8 +406,118 @@ def lint(
     orch = Orchestrator(wiki)
     # Use the host-side ``run_lint`` entry point so the lint pass writes
     # a deterministic ``wiki/lint-report.md`` and appends to ``wiki/log.md``.
-    output = orch.run_lint(apply=fix, resolver=resolver)
+    try:
+        output = orch.run_lint(apply=fix, resolver=resolver, force_repair=force_repair)
+    except WikiFlockUnrepairable as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+    except WikiLockBusy as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
     console.print(Markdown(output))
+
+
+flock_app = typer.Typer(help="Inspect or repair a wiki's memory flock.")
+app.add_typer(flock_app, name="flock")
+
+
+@flock_app.callback(invoke_without_command=True)
+def _flock_main(
+    ctx: typer.Context,
+    name: Annotated[str, typer.Argument(help="Wiki name.")],
+) -> None:
+    """Capture the wiki name; subcommands dispatch via ``ctx.obj``."""
+    ctx.ensure_object(dict)
+    ctx.obj["name"] = name
+
+
+@flock_app.command("status")
+def flock_status(
+    ctx: typer.Context,
+    json_output: Annotated[bool, typer.Option("--json", help="Emit JSON instead of text.")] = False,
+) -> None:
+    """Show the current memory-flock holder for the named wiki."""
+    name: str = ctx.obj["name"]
+    runtime_root = xdg.runtime_dir_for(name)
+    lock = runtime_root / "memory.lock"
+    pid_path = runtime_root / "memory.pid"
+    state_path = runtime_root / "memory.state.json"
+    create_lock = runtime_root / "memory.lock.create"
+
+    if not (lock.exists() or create_lock.exists() or pid_path.exists()):
+        if json_output:
+            print(json.dumps({"status": "absent"}))
+        else:
+            typer.echo("no flock held; wiki memory is unlocked.")
+        raise typer.Exit(code=2)
+
+    pid = read_owner_pid(pid_path)
+    hb = read_heartbeat(state_path)
+    age_s = (time.time() - hb.started_at) if hb else None
+    age_str = f"{age_s:.0f}s" if age_s is not None else "?"
+    fresh = (age_s is not None) and (age_s < MAX_FLOCK_AGE_S)
+
+    payload = {
+        "wiki": name,
+        "runtime": str(runtime_root),
+        "pid": pid,
+        "started_at": hb.started_at if hb else None,
+        "scope": hb.scope if hb else "",
+        "age_s": age_s,
+        "limit_s": MAX_FLOCK_AGE_S,
+        "fresh": fresh,
+        "status": "held" if fresh else "stale",
+        "files": {
+            ".lock.create": create_lock.exists(),
+            ".pid": pid_path.exists(),
+            ".state.json": state_path.exists(),
+        },
+    }
+    if json_output:
+        print(json.dumps(payload, indent=2))
+    else:
+        typer.echo(f"wiki      : {payload['wiki']}")
+        typer.echo(f"runtime   : {payload['runtime']}")
+        typer.echo(
+            f"holder    : pid={pid} started_at={hb.started_at if hb else '?'} scope={payload['scope']}"
+        )
+        files = payload["files"]
+        typer.echo(
+            f"files     : .lock.create=[{'present' if files['.lock.create'] else 'absent'}] "
+            f".pid=[{pid}] .state.json=[{'ok' if files['.state.json'] else 'absent'}]"
+        )
+        typer.echo(
+            f"age       : {age_str}  (limit={MAX_FLOCK_AGE_S}s, {'fresh' if fresh else 'stale'})"
+        )
+        typer.echo(f"status    : {payload['status']}")
+
+    raise typer.Exit(code=0 if fresh else 1)
+
+
+@flock_app.command("force-repair")
+def flock_force_repair(ctx: typer.Context) -> None:
+    """Reap a stale memory flock and retry; refuse on a live contender."""
+    name: str = ctx.obj["name"]
+    runtime_root = xdg.runtime_dir_for(name)
+    lock = runtime_root / "memory.lock"
+    pid_path = runtime_root / "memory.pid"
+    state_path = runtime_root / "memory.state.json"
+    create_lock = runtime_root / "memory.lock.create"
+
+    # First reap unconditionally (force-repair is unconditional).
+    for p in (state_path, pid_path, lock, create_lock):
+        if p.exists():
+            p.unlink()
+            typer.echo(f"reap     : unlinking {p.name}")
+
+    # Retry once.
+    fd = acquire_create_lock(create_lock, max_age_s=MAX_FLOCK_AGE_S)
+    if fd is None:
+        typer.echo("result   : unrepairable — manual intervention required")
+        raise WikiFlockUnrepairable(f"memory flock for wiki '{name}' could not be reaped")
+    os.close(fd)
+    typer.echo("retry    : acquired memory.lock.create")
+    typer.echo("result   : ok (recovery succeeded)")
 
 
 @app.command()
