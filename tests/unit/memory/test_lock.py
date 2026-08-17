@@ -58,9 +58,10 @@ def git_wiki(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Wiki:
 
 
 def test_lock_path_is_under_runtime_dir(git_wiki: Wiki) -> None:
-    service = WikiMemoryService(git_wiki)
-    path = service._lock_path()
-    assert path == git_wiki.runtime_root / "memory.lock"
+    """The envelope lock (atomic-create sentinel) lives under the wiki's XDG runtime dir."""
+    create_lock = git_wiki.memory_create_lock_path
+    assert create_lock == git_wiki.runtime_root / "memory.lock.create"
+    assert create_lock.parent == git_wiki.runtime_root
 
 
 def test_acquire_flock_succeeds_when_unheld(git_wiki: Wiki) -> None:
@@ -130,15 +131,14 @@ def test_acquire_flock_releases_on_exception(git_wiki: Wiki) -> None:
 
 
 def test_lock_path_is_not_in_wiki_data_root(git_wiki: Wiki) -> None:
-    """The lock lives under XDG_RUNTIME_DIR, not under the wiki's data root.
+    """The envelope lock lives under XDG_RUNTIME_DIR, not under the wiki's data root.
 
     No ``.lies/`` directory exists in the XDG layout — the lock cannot
     live under the wiki anymore, so this is the structural invariant
     that replaced the old ``.lies/memory.lock`` gitignore check.
     """
-    service = WikiMemoryService(git_wiki)
-    lock_path = service._lock_path()
-    assert not str(lock_path).startswith(str(git_wiki.data_root))
+    create_lock = git_wiki.memory_create_lock_path
+    assert not str(create_lock).startswith(str(git_wiki.data_root))
     assert not (git_wiki.data_root / ".lies").exists()
 
 

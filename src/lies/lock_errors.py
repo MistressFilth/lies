@@ -6,6 +6,13 @@ subclass of the same base. Callers can catch the broad category with
 ``except WikiFlockError`` or the narrower specifics; both old
 ``except WikiLockBusy`` clauses and new ``except WikiFlockUnrepairable``
 clauses work without churn.
+
+Hierarchy note (v0.10.3): ``WikiLockBusy`` was re-parented away from
+``WikiMemoryError`` to ``WikiFlockError``. Pre-v0.10.3, ``WikiLockBusy``
+subclassed ``WikiMemoryError``; post-v0.10.3 it subclasses
+``WikiFlockError``. Any caller using ``except WikiMemoryError`` to catch
+memory-related errors will stop catching ``WikiLockBusy``; use
+``except WikiFlockError`` or the specific subclass instead.
 """
 
 from __future__ import annotations

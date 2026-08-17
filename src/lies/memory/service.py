@@ -202,10 +202,6 @@ class WikiMemoryService:
         live = Registry.filter_stale(on_disk, wiki)
         self._registered: dict[str, WikiCollectionRef] = dict(live.collections)
 
-    def _lock_path(self) -> Path:
-        """Return the cross-process lock file path for this wiki."""
-        return self._wiki.memory_lock_path
-
     @contextlib.contextmanager
     def _acquire_flock(self, *, force_repair: bool = False) -> Iterator[None]:
         """Acquire the cross-process flock for this wiki.

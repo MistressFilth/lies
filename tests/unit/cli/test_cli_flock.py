@@ -120,6 +120,51 @@ def test_lies_flock_status_returns_2_when_no_flock(
     assert "no flock" in _combined(result).lower()
 
 
+def test_lies_flock_status_returns_1_when_stale(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A held flock with a stale heartbeat exits 1 (caller can act on it).
+
+    Mirrors ``test_lies_flock_status_reports_held`` but seeds
+    ``started_at`` 10h ago so the heartbeat falls outside the
+    ``MAX_FLOCK_AGE_S`` window — ``flock_status`` reports
+    ``status: stale`` and exits 1, not 0.
+    """
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "runtime"))
+    _seed_wiki(tmp_path, "mywiki")
+    # Seed a stale flock: pid=999999 (dead) + started_at 10h ago.
+    _seed_flock(tmp_path, "mywiki", pid=999999, fresh=False)
+
+    result = runner.invoke(app, ["flock", "mywiki", "status"])
+    assert result.exit_code == 1, _combined(result)
+    combined = _combined(result)
+    assert "stale" in combined.lower()
+
+
+def test_lies_flock_status_json_returns_1_when_stale(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """JSON variant mirrors the text exit: 1 for a stale candidate, 2 for absent."""
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "runtime"))
+    _seed_wiki(tmp_path, "mywiki")
+    _seed_flock(tmp_path, "mywiki", pid=999999, fresh=False)
+
+    result = runner.invoke(app, ["flock", "mywiki", "status", "--json"])
+    assert result.exit_code == 1, _combined(result)
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "stale"
+    assert payload["fresh"] is False
+    assert ".lock" not in payload["files"]
+
+
 def test_lies_flock_status_json_absent(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))

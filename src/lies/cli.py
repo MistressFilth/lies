@@ -468,7 +468,6 @@ def flock_status(
         "fresh": fresh,
         "status": "held" if fresh else "stale",
         "files": {
-            ".lock": lock.exists(),
             ".lock.create": create_lock.exists(),
             ".pid": pid_path.exists(),
             ".state.json": state_path.exists(),
@@ -484,14 +483,15 @@ def flock_status(
         )
         files = payload["files"]
         typer.echo(
-            f"files     : .lock=[{'present' if files['.lock'] else 'absent'}] "
-            f".lock.create=[{'present' if files['.lock.create'] else 'absent'}] "
+            f"files     : .lock.create=[{'present' if files['.lock.create'] else 'absent'}] "
             f".pid=[{pid}] .state.json=[{'ok' if files['.state.json'] else 'absent'}]"
         )
         typer.echo(
             f"age       : {age_str}  (limit={MAX_FLOCK_AGE_S}s, {'fresh' if fresh else 'stale'})"
         )
         typer.echo(f"status    : {payload['status']}")
+
+    raise typer.Exit(code=0 if fresh else 1)
 
 
 @flock_app.command("force-repair")
