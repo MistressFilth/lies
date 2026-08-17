@@ -234,23 +234,12 @@ def test_lies_flock_force_repair_unrepairable(
 def test_flock_force_repair_unrepairable_message_cites_captured_pid(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """``lies flock <name> force-repair`` captures pid + heartbeat BEFORE
-    its reap loop; even when the post-reap retry still loses, the
-    operator-actionable message cites the captured pid + start time.
-
-    NOTE: This test is intentionally RED at the Task 4 commit point.
-    Task 5 (commit on the same branch) implements the capture-before-reap
-    body in ``flock_force_repair``; until that lands, the current
-    implementation raises ``WikiFlockUnrepairable`` with a message that
-    omits the captured pid. The test pins the spec-required behavior so
-    Task 5 must satisfy it.
-
-    Sibling tests in this file use ``pid=999999`` as the "reliably dead"
-    sentinel — ``Task 5``'s capture-before-reap reads pid_file contents
-    verbatim, so pid liveness is irrelevant to message construction.
-    ``strict=True`` makes Task 5's GREEN transition a hard XPASS that
-    the reviewer must remove; ``strict=False`` would silently absorb
-    the XPASS into the green run.
+    """Pins the spec-mandated capture-before-reap behavior of
+    ``lies flock <name> force-repair``: the operator-actionable message
+    cites the captured pid + start time even when the post-reap retry
+    still loses. Sibling tests use ``pid=999999`` as the "reliably dead"
+    sentinel; capture-before-reap reads pid_file contents verbatim, so
+    pid liveness is irrelevant to message construction.
     """
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))

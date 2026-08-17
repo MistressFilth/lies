@@ -201,8 +201,10 @@ def test_lint_fix_force_repair_unrepairable_reraised_through_apply(
     monkeypatch.setattr("lies.cli.WikiLinkResolver.build", lambda _paths: object())
 
     err = WikiFlockUnrepairable(
-        "memory flock for wiki 'mywiki' held by live pid 12345 (started T); "
-        "force-repair failed after retry. Run `lies flock mywiki force-repair`."
+        "memory flock for wiki 'mywiki' could not be force-reaped; "
+        "a live contender won the second attempt. Run `lies flock mywiki "
+        "force-repair` to inspect, then `lies flock mywiki force-repair` "
+        "or kill the contender manually."
     )
 
     from lies.agents.repair_models import AppendLink, RepairPlan
