@@ -10,6 +10,7 @@ from typer.testing import CliRunner
 
 from lies.cli import app
 from lies.lock_errors import WikiFlockUnrepairable, WikiLockBusy
+from lies.memory.service import _acquire_wiki_flock
 from lies.wiki.wiki import Wiki
 
 runner = CliRunner()
@@ -52,6 +53,37 @@ def _fake_wiki(name: str = "mywiki") -> Wiki:
         cache_root=root / "cache",
         state_root=root / "state",
         runtime_root=root / "runtime",
+    )
+
+
+def _capture_production_unrepairable_message(monkeypatch: pytest.MonkeyPatch, wiki: Wiki) -> str:
+    """Drive ``_acquire_wiki_flock(wiki, force_repair=True)`` to its
+    production ``WikiFlockUnrepairable`` raise site and capture the
+    message text.
+
+    The flock acquisition normally takes the success path; forcing
+    ``acquire_create_lock`` to return ``None`` exercises the
+    ``if result is None and force_repair`` branch where the
+    operator-actionable message is constructed. We avoid hard-coding
+    the message so a reword in ``service.py:100-106`` doesn't leave
+    this test green while asserting stale text.
+    """
+    import lies.memory.service as service_module
+
+    def _stub_acquire(*args: object, **kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr(service_module, "acquire_create_lock", _stub_acquire)
+
+    try:
+        _acquire_wiki_flock(wiki, force_repair=True).__enter__()
+    except WikiFlockUnrepairable as exc:
+        msg = str(exc)
+        assert msg, "production raise site produced an empty message"
+        return msg
+    raise AssertionError(
+        "_acquire_wiki_flock did not raise WikiFlockUnrepairable; "
+        "test setup is broken (acquire_create_lock stub not engaged?)"
     )
 
 
@@ -115,15 +147,10 @@ def test_lint_fix_force_repair_propagates_unrepairable(
     monkeypatch.setattr("lies.cli.resolve_wiki", lambda _name=None: fake_wiki)
     monkeypatch.setattr("lies.cli.WikiLinkResolver.build", lambda _paths: object())
 
-    # Production-raised message from ``_acquire_wiki_flock`` (Task 2).
-    # The pid is deliberately omitted (documented spec deviation: the
-    # pid file is unlinked before the retry on the force-repair path).
-    err = WikiFlockUnrepairable(
-        "memory flock for wiki 'mywiki' could not be force-reaped; "
-        "a live contender won the second attempt. Run `lies flock mywiki status` "
-        "to inspect, then `lies flock mywiki force-repair` or kill the "
-        "contender manually."
-    )
+    # Derive the expected message from the production raise site rather
+    # than hand-copying it: a reword in ``service.py:100-106`` would
+    # otherwise leave this test green while asserting stale text.
+    production_msg = _capture_production_unrepairable_message(monkeypatch, fake_wiki)
 
     from lies.orchestrator import Orchestrator
 
@@ -132,14 +159,15 @@ def test_lint_fix_force_repair_propagates_unrepairable(
     # seam is the same one the existing real-path test below uses.
     orch = Orchestrator.__new__(Orchestrator)
     orch.wiki = fake_wiki
-    orch.run_lint = MagicMock(side_effect=err)
+    orch.run_lint = MagicMock(side_effect=WikiFlockUnrepairable(production_msg))
 
     monkeypatch.setattr("lies.cli.Orchestrator", lambda *_a, **_kw: orch)
 
     result = runner.invoke(app, ["lint", "--name", "mywiki", "--fix", "--force-repair"])
     assert result.exit_code == 1, _combined(result)
+    # Assert the full production message is echoed verbatim to stderr.
     combined = _combined(result)
-    assert "lies flock mywiki force-repair" in combined
+    assert production_msg in combined
 
 
 def test_lint_fix_force_repair_unrepairable_reraised_through_apply(
@@ -155,10 +183,11 @@ def test_lint_fix_force_repair_unrepairable_reraised_through_apply(
     ``Orchestrator._apply_repair_plan`` path: a real ``Orchestrator``
     instance built via ``__new__`` (so we skip ``__init__``'s model
     loading) with a mocked memory service that raises the flock
-    error. The re-raise is exercised end-to-end and the CLI exits
-    non-zero with the operator-actionable message — which includes
-    the brief's verbatim substrings (``pid 12345`` and
-    ``lies flock mywiki force-repair``).
+    error. The re-raise is exercised end-to-end and the assertions
+    below confirm ``WikiFlockUnrepairable`` and ``WikiLockBusy``
+    propagate through ``pytest.raises`` (no CLI invocation here; the
+    CLI-side assertions live in
+    ``test_lint_fix_force_repair_propagates_unrepairable`` above).
     """
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))

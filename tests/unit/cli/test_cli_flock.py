@@ -230,7 +230,7 @@ def test_lies_flock_force_repair_unrepairable(
         "Unrepairable message omits the captured pid. Remove this xfail "
         "marker when Task 5 lands."
     ),
-    strict=False,
+    strict=True,
 )
 def test_flock_force_repair_unrepairable_message_cites_captured_pid(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -245,6 +245,13 @@ def test_flock_force_repair_unrepairable_message_cites_captured_pid(
     implementation raises ``WikiFlockUnrepairable`` with a message that
     omits the captured pid. The test pins the spec-required behavior so
     Task 5 must satisfy it.
+
+    Sibling tests in this file use ``pid=999999`` as the "reliably dead"
+    sentinel — ``Task 5``'s capture-before-reap reads pid_file contents
+    verbatim, so pid liveness is irrelevant to message construction.
+    ``strict=True`` makes Task 5's GREEN transition a hard XPASS that
+    the reviewer must remove; ``strict=False`` would silently absorb
+    the XPASS into the green run.
     """
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
@@ -252,19 +259,27 @@ def test_flock_force_repair_unrepairable_message_cites_captured_pid(
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "runtime"))
     _seed_wiki(tmp_path, "mywiki")
-    _seed_flock(tmp_path, "mywiki", pid=12345)
+    # 999999 is reliably dead (pid_alive returns False); Task 5's
+    # capture-before-reap reads pid_file contents verbatim, so the
+    # captured-pid message is host-independent.
+    _seed_flock(tmp_path, "mywiki", pid=999999)
 
     # Force the post-reap retry to fail: ``acquire_create_lock`` returns
     # ``None`` so ``flock_force_repair`` raises ``WikiFlockUnrepairable``.
+    # Type the signature to match ``acquire_create_lock`` (same shape as
+    # the sibling ``test_lies_flock_force_repair_unrepairable`` above)
+    # so a Task 5 call-signature change surfaces as a TypeError here
+    # rather than going undetected.
     import lies.cli as cli_module
 
-    def fail_acquire(*args, **kwargs):
+    def fail_acquire(path, *, max_age_s, pid_path=None, state_json_path=None, pid_alive_fn=None):
         return None
 
     monkeypatch.setattr(cli_module, "acquire_create_lock", fail_acquire)
 
     result = runner.invoke(app, ["flock", "mywiki", "force-repair"])
     assert result.exit_code != 0
-    out = result.output + result.stdout
-    assert "12345" in out
-    assert "lies flock" in out
+    # Click 8.2+ splits stderr from ``.output``; ``_combined`` covers both.
+    out = _combined(result)
+    assert "pid 999999" in out
+    assert "lies flock mywiki force-repair" in out
