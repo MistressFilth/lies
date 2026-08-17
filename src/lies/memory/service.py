@@ -10,10 +10,11 @@ condition in the receipt.
 from __future__ import annotations
 
 import contextlib
-import fcntl
 import hashlib
+import os
 import subprocess
 import threading
+import time
 from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
 from pathlib import Path
@@ -22,6 +23,11 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from lies.agents.repair_models import RepairPlan
 
+from lies.lock_errors import (  # noqa: F401 — Task 5/6/7 will reference these from this module.
+    WikiFlockCorrupt,
+    WikiFlockStale,
+    WikiFlockUnrepairable,
+)
 from lies.memory.index import append_log_entry, rebuild_index
 from lies.memory.models import (
     EvidenceAppend,
@@ -46,10 +52,13 @@ from lies.memory.validation import (
     validate_page_type,
 )
 from lies.qmd.cli import qmd_update
+from lies.utils.exclusive import acquire_create_lock, release_create_lock
+from lies.utils.lock_heartbeat import Heartbeat, write_heartbeat, write_owner_pid
 from lies.wiki.git import atomic_commit
 from lies.wiki.wiki import Wiki
 
 _QMD_STALE_PREFIX = "qmd_stale"
+MAX_FLOCK_AGE_S = 2 * 3600  # 2h ceiling on memory flock liveness
 
 
 def _hash_text(text: str) -> str:
@@ -57,30 +66,68 @@ def _hash_text(text: str) -> str:
 
 
 @contextlib.contextmanager
-def _acquire_wiki_flock(lock_path: Path) -> Iterator[None]:
-    """Acquire a non-blocking exclusive flock on ``lock_path``.
+def _acquire_wiki_flock(wiki: Wiki, *, force_repair: bool = False) -> Iterator[None]:
+    """Acquire a non-blocking exclusive flock on the wiki's memory flock.
 
-    Yields once on success; releases the kernel lock when the file
-    descriptor is closed. Raises :class:`WikiLockBusy` if the lock is
-    already held by another process.
+    Yields once on success. On contention, the underlying
+    :func:`lies.utils.exclusive.acquire_create_lock` reap loop
+    auto-recovers from a dead holder; a still-alive competitor raises
+    :class:`WikiLockBusy`. With ``force_repair=True``, the underlying
+    acquire escalates to an unconditional reap + retry; if the retry
+    still loses (a live contender recreates the create-lock between
+    reap and retry) the caller sees :class:`WikiFlockUnrepairable`
+    with an operator-actionable message. Releases by unlinking the
+    lock files + pid + state JSON on exit.
 
-    The lock path lives under ``$XDG_RUNTIME_DIR`` rather than the
-    wiki's data root, so no gitignore coordination is needed.
+    The lock envelope lives under ``$XDG_RUNTIME_DIR/lies/<wiki>/``
+    (not the wiki's data root), so no gitignore coordination is
+    needed. Each wiki has its own directory containing:
+    ``memory.lock`` (the lock itself), ``memory.lock.create`` (atomic
+    sentinel), ``memory.pid`` (owner-PID text), ``memory.state.json``
+    (heartbeat).
     """
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    fd = lock_path.open("w", encoding="utf-8")
+    create_lock = wiki.memory_create_lock_path
+    pid_path = wiki.memory_pid_path
+    state_path = wiki.memory_heartbeat_path
+
+    create_lock.parent.mkdir(parents=True, exist_ok=True)
+    fd = acquire_create_lock(
+        create_lock,
+        max_age_s=MAX_FLOCK_AGE_S,
+        pid_path=pid_path,
+        state_json_path=state_path,
+        force_repair=force_repair,
+    )
+    if fd is None:
+        if force_repair:
+            # Under force_repair the underlying acquire already
+            # attempted an unconditional reap + retry. Still busy
+            # means a live contender recreated the envelope between
+            # reap and retry; only manual ``lies flock <name>
+            # force-repair`` (or process teardown) can break it.
+            raise WikiFlockUnrepairable(
+                f"memory flock for wiki '{wiki.name}' held by a live "
+                f"process even after force-repair; manual intervention "
+                f"required. Run `lies flock {wiki.name} force-repair`."
+            )
+        # After the one reap-retry, still busy. Manual force-repair is
+        # the only path forward.
+        raise WikiLockBusy(f"wiki memory lock is held by another process: {create_lock}")
+
+    write_owner_pid(pid_path, os.getpid())
+    write_heartbeat(
+        state_path,
+        Heartbeat(pid=os.getpid(), started_at=time.time(), scope=wiki.name),
+    )
     try:
-        try:
-            fcntl.flock(fd.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except (BlockingIOError, OSError) as exc:
-            raise WikiLockBusy(f"wiki memory lock is held by another process: {lock_path}") from exc
         yield
     finally:
-        try:
-            fcntl.flock(fd.fileno(), fcntl.LOCK_UN)
-        except OSError:
-            pass  # LOCK_UN can fail on already-released fd; fd.close() releases the kernel lock as a fallback.
-        fd.close()
+        release_create_lock(
+            create_lock,
+            fd,
+            pid_path=pid_path,
+            state_json_path=state_path,
+        )
 
 
 def _read_page(wiki: Wiki, path: str) -> str | None:
@@ -155,14 +202,17 @@ class WikiMemoryService:
         live = Registry.filter_stale(on_disk, wiki)
         self._registered: dict[str, WikiCollectionRef] = dict(live.collections)
 
-    def _lock_path(self) -> Path:
-        """Return the cross-process lock file path for this wiki."""
-        return self._wiki.memory_lock_path
-
     @contextlib.contextmanager
-    def _acquire_flock(self) -> Iterator[None]:
-        """Acquire the cross-process flock for this wiki."""
-        with _acquire_wiki_flock(self._lock_path()):
+    def _acquire_flock(self, *, force_repair: bool = False) -> Iterator[None]:
+        """Acquire the cross-process flock for this wiki.
+
+        ``force_repair=True`` escalates contention: the underlying
+        :func:`_acquire_wiki_flock` will unconditionally reap a held
+        envelope and retry once before surfacing
+        :class:`WikiFlockUnrepairable`. Without the flag, a live
+        contender raises :class:`WikiLockBusy` as before.
+        """
+        with _acquire_wiki_flock(self._wiki, force_repair=force_repair):
             yield
 
     @property
@@ -303,15 +353,21 @@ class WikiMemoryService:
                         f"got {actual[:12]}..."
                     )
 
-    def apply_plan(self, plan: MemoryPlan) -> MemoryReceipt:
+    def apply_plan(self, plan: MemoryPlan, *, force_repair: bool = False) -> MemoryReceipt:
         """Apply ``plan`` atomically and return a receipt.
 
         The wiki is snapshotted before any on-disk write so a failure
         during ``_apply_operations`` or the git commit can roll the
         working tree back to its pre-apply state. The qmd refresh runs
         after the commit and reports ``qmd_stale`` non-fatally.
+
+        ``force_repair=True`` escalates flock contention: the
+        cross-process envelope is unconditionally reaped + retried
+        once before surfacing :class:`WikiFlockUnrepairable`. Without
+        the flag, a live contender raises :class:`WikiLockBusy` as
+        before.
         """
-        with self._acquire_flock(), self._lock:
+        with self._acquire_flock(force_repair=force_repair), self._lock:
             self.validate_plan(plan)
             if plan.is_noop():
                 return self._empty_receipt()
@@ -345,11 +401,15 @@ class WikiMemoryService:
                 errors=[] if qmd_ok else [qmd_msg],
             )
 
-    def apply_repair_plan(self, plan: RepairPlan) -> MemoryReceipt:
+    def apply_repair_plan(self, plan: RepairPlan, *, force_repair: bool = False) -> MemoryReceipt:
         """Apply a RepairPlan under the same envelope as apply_plan.
 
         Repair evidence is authenticated before translation so the normal
         memory validation path accepts the bounded repair findings.
+
+        ``force_repair`` flows through to :meth:`apply_plan` and onward
+        into the cross-process flock acquisition; see there for the
+        contention semantics.
         """
         from lies.memory.repair import from_repair_plan
 
@@ -357,7 +417,7 @@ class WikiMemoryService:
         for op in plan.operations:
             self.register_evidence(set(getattr(op, "evidence", [])))
         memory_plan = from_repair_plan(plan, wiki=self._wiki)
-        return self.apply_plan(memory_plan)
+        return self.apply_plan(memory_plan, force_repair=force_repair)
 
     def _apply_operations(self, plan: MemoryPlan) -> list[PageReference]:
         changed: list[PageReference] = []

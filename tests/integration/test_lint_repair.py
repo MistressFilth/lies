@@ -16,6 +16,7 @@ from lies.agents.repair_models import (
     RepairPlan,
     UpdateIndex,
 )
+from lies.lock_errors import WikiLockBusy
 from lies.orchestrator import Orchestrator
 from lies.wiki.wiki import Wiki
 from tests.conftest import make_wiki, models_for_tests
@@ -275,23 +276,50 @@ def test_apply_fails_when_lock_held(wiki: Wiki, tmp_path: Path) -> None:
     import textwrap
     import time
 
-    lock_path = wiki.memory_lock_path
+    create_lock = wiki.memory_create_lock_path
+    pid_path = wiki.memory_pid_path
+    state_path = wiki.memory_heartbeat_path
     ready = tmp_path / "holder.ready"
     holder_script = textwrap.dedent(
         """
-        import fcntl, sys, time
+        import os, sys, time
         from pathlib import Path
-        lock_path = Path(sys.argv[1])
-        lock_path.parent.mkdir(parents=True, exist_ok=True)
-        fd = lock_path.open("w", encoding="utf-8")
-        fcntl.flock(fd.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        Path(sys.argv[2]).write_text("ready", encoding="utf-8")
+        from lies.utils.exclusive import acquire_create_lock
+        from lies.utils.lock_heartbeat import Heartbeat, write_heartbeat, write_owner_pid
+
+        create_lock = Path(sys.argv[1])
+        pid_path = Path(sys.argv[2])
+        state_path = Path(sys.argv[3])
+        ready_marker = Path(sys.argv[4])
+
+        create_lock.parent.mkdir(parents=True, exist_ok=True)
+        fd = acquire_create_lock(
+            create_lock,
+            max_age_s=7200,
+            pid_path=pid_path,
+            state_json_path=state_path,
+        )
+        if fd is None:
+            sys.exit(2)
+        write_owner_pid(pid_path, os.getpid())
+        write_heartbeat(
+            state_path,
+            Heartbeat(pid=os.getpid(), started_at=time.time(), scope=""),
+        )
+        ready_marker.write_text("ready", encoding="utf-8")
         time.sleep(15)
-        fd.close()
         """
     )
     holder = subprocess.Popen(
-        [sys.executable, "-c", holder_script, str(lock_path), str(ready)],
+        [
+            sys.executable,
+            "-c",
+            holder_script,
+            str(create_lock),
+            str(pid_path),
+            str(state_path),
+            str(ready),
+        ],
     )
     try:
         deadline = time.time() + 10.0
@@ -347,10 +375,11 @@ def test_apply_fails_when_lock_held(wiki: Wiki, tmp_path: Path) -> None:
                 _build_lint_report.__module__ + "._build_lint_report",
                 return_value=shell_report,
             ),
+            pytest.raises(WikiLockBusy),
         ):
-            report = orch.run_lint(apply=True)
+            orch.run_lint(apply=True)
 
-        assert "Errors" in report or "errors" in report
+        # Wiki is unchanged — the cross-process lock blocked the apply.
         assert not (wiki.wiki_dir / "concepts" / "x.md").exists()
     finally:
         holder.terminate()

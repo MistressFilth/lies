@@ -1,5 +1,7 @@
 # tests/unit/memory/test_service.py
 import hashlib
+import json
+import os
 import subprocess
 from pathlib import Path, PurePosixPath
 
@@ -12,7 +14,7 @@ from lies.memory.models import (
     WikiPlanInvalid,
     WikiWriteConflict,
 )
-from lies.memory.service import WikiMemoryService
+from lies.memory.service import WikiMemoryService, _acquire_wiki_flock
 from lies.wiki.wiki import Wiki
 from tests.conftest import make_wiki
 
@@ -580,3 +582,28 @@ def test_register_collection_preserves_other_entries_on_disk(tmp_path) -> None:
     )
     on_disk = Registry.load(wiki)
     assert set(on_disk.collections.keys()) == {"other", "new"}
+
+
+def test_acquire_wiki_flock_writes_heartbeat_on_acquire(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    git_wiki: Wiki,
+) -> None:
+    """Acquiring the memory flock must write pid + heartbeat alongside
+    the lock files; on release all three are unlinked."""
+    wiki = git_wiki
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "runtime"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+
+    monkeypatch.setattr("lies.utils.exclusive.os.kill", lambda pid, sig: None)
+
+    with _acquire_wiki_flock(wiki):
+        assert wiki.memory_create_lock_path.exists()
+        assert wiki.memory_pid_path.exists()
+        assert wiki.memory_heartbeat_path.exists()
+        hb = json.loads(wiki.memory_heartbeat_path.read_text())
+        assert hb["pid"] == os.getpid()
+
+    assert not wiki.memory_create_lock_path.exists()
+    assert not wiki.memory_pid_path.exists()
+    assert not wiki.memory_heartbeat_path.exists()
