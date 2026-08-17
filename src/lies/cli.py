@@ -12,6 +12,7 @@ from rich.console import Console
 from rich.markdown import Markdown
 
 from lies import __version__, xdg
+from lies.constants import LIES_DATA_SUBDIR
 from lies.mcp import daemon
 from lies.mcp.resolution import resolve_wiki
 from lies.orchestrator import Orchestrator
@@ -271,9 +272,9 @@ def init(name: str) -> None:
     wiki = Wiki(
         name=name,
         data_root=Wiki.data_root_for(name),
-        config_root=xdg.config_home() / "lies" / name,
-        cache_root=xdg.cache_home() / "lies" / name,
-        state_root=xdg.state_home() / "lies" / name,
+        config_root=xdg.config_home() / LIES_DATA_SUBDIR / name,
+        cache_root=xdg.cache_home() / LIES_DATA_SUBDIR / name,
+        state_root=xdg.state_home() / LIES_DATA_SUBDIR / name,
         runtime_root=xdg.runtime_dir_for(name),
     )
     if wiki.data_root.exists():
@@ -788,9 +789,9 @@ def _providers_wiki(name: str):
     return Wiki(
         name=name,
         data_root=Wiki.data_root_for(name),
-        config_root=xdg.config_home() / "lies" / name,
-        cache_root=xdg.cache_home() / "lies" / name,
-        state_root=xdg.state_home() / "lies" / name,
+        config_root=xdg.config_home() / LIES_DATA_SUBDIR / name,
+        cache_root=xdg.cache_home() / LIES_DATA_SUBDIR / name,
+        state_root=xdg.state_home() / LIES_DATA_SUBDIR / name,
         runtime_root=xdg.runtime_dir_for(name),
     )
 

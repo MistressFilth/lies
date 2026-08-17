@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from lies.constants import LIES_DATA_SUBDIR
+
 
 class WikiAlreadyExists(Exception):
     """Raised when ``lies init <name>`` targets a name already registered."""
@@ -24,7 +26,7 @@ class WikiNotRegistered(Exception):
         self.name = name
         self.data_home = data_home
         super().__init__(
-            f"wiki '{name}' not registered at {data_home}/lies/{name}; "
+            f"wiki '{name}' not registered at {data_home}/{LIES_DATA_SUBDIR}/{name}; "
             f"run 'lies init {name}' first or set LIES_WIKI_NAME."
         )
 

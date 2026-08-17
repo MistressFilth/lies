@@ -12,6 +12,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from lies.constants import LIES_DATA_SUBDIR
+
 _HOME = Path.home
 
 _SPEC_DEFAULTS: dict[str, str] = {
@@ -95,4 +97,4 @@ def runtime_dir() -> Path:
 
 def runtime_dir_for(wiki: str) -> Path:
     """Per-wiki runtime dir under the system runtime dir."""
-    return runtime_dir() / "lies" / wiki
+    return runtime_dir() / LIES_DATA_SUBDIR / wiki
