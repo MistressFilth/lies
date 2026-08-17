@@ -212,7 +212,15 @@ def test_lies_flock_force_repair_unrepairable(
     # ``None`` (O_EXCL fails because the path exists with current mtime).
     import lies.cli as cli_module
 
-    def fail_acquire(path, *, max_age_s, pid_path=None, state_json_path=None, pid_alive_fn=None):
+    def fail_acquire(
+        path,
+        *,
+        max_age_s,
+        pid_path=None,
+        state_json_path=None,
+        pid_alive_fn=None,
+        force_repair=False,
+    ):
         path.touch()
 
     monkeypatch.setattr(cli_module, "acquire_create_lock", fail_acquire)
@@ -272,7 +280,15 @@ def test_flock_force_repair_unrepairable_message_cites_captured_pid(
     # rather than going undetected.
     import lies.cli as cli_module
 
-    def fail_acquire(path, *, max_age_s, pid_path=None, state_json_path=None, pid_alive_fn=None):
+    def fail_acquire(
+        path,
+        *,
+        max_age_s,
+        pid_path=None,
+        state_json_path=None,
+        pid_alive_fn=None,
+        force_repair=False,
+    ):
         return None
 
     monkeypatch.setattr(cli_module, "acquire_create_lock", fail_acquire)
