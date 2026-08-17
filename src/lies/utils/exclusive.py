@@ -57,12 +57,12 @@ def acquire_create_lock(  # type: ignore[no-untyped-def]
                 os.kill(pid, 0)
                 return True
             except ProcessLookupError:
-                return False
+                return False  # ESRCH — dead, reap
             except PermissionError:
-                return False
+                return True  # EPERM — different user/perm; treat as busy
             except OSError:
                 _log.warning("pid_alive(%s) raised non-ESRCH/EPERM OSError", pid)
-                return False
+                return True  # unknown syscall failure; treat as busy
 
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -109,11 +109,13 @@ def _reap_if_stale(  # type: ignore[no-untyped-def]
     """
     if not pid_path.exists():
         return False
+    # fmt: off
     try:
         stored_pid = int(pid_path.read_text(encoding="utf-8").strip())
-    except OSError, ValueError:
+    except (OSError, ValueError):
         _log.warning("could not parse pid file %s", pid_path)
         return False
+    # fmt: on
 
     if stored_pid == os.getpid():
         # Self-acquire: not contended. Reap the stale lock and let retry succeed.
@@ -124,11 +126,13 @@ def _reap_if_stale(  # type: ignore[no-untyped-def]
     if pid_alive_fn(stored_pid):
         # Holder alive. Check wall-clock window.
         if state_json_path.exists():
+            # fmt: off
             try:
                 payload = json.loads(state_json_path.read_text(encoding="utf-8"))
                 started_at = float(payload.get("started_at", 0.0))
-            except OSError, ValueError, json.JSONDecodeError:
+            except (OSError, ValueError, json.JSONDecodeError):
                 started_at = 0.0
+            # fmt: on
             if (time.time() - started_at) < max_age_s:
                 return False  # alive and fresh: busy.
         else:
