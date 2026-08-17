@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-import fcntl
+import os
+import time
 from pathlib import Path
 
 import pytest
@@ -10,6 +11,7 @@ import pytest
 from lies import xdg
 from lies.memory.models import WikiLockBusy
 from lies.memory.service import WikiMemoryService
+from lies.utils.lock_heartbeat import Heartbeat, write_heartbeat, write_owner_pid
 from lies.wiki.layout import WikiLayout
 from lies.wiki.wiki import Wiki
 
@@ -62,30 +64,61 @@ def test_lock_path_is_under_runtime_dir(git_wiki: Wiki) -> None:
 
 
 def test_acquire_flock_succeeds_when_unheld(git_wiki: Wiki) -> None:
+    """After acquire, the create-lock sentinel + heartbeat envelope is on disk."""
     service = WikiMemoryService(git_wiki)
     with service._acquire_flock():
-        assert service._lock_path().exists()
+        assert git_wiki.memory_create_lock_path.exists()
+        assert git_wiki.memory_pid_path.exists()
+        assert git_wiki.memory_heartbeat_path.exists()
+        # Sanity: the freshly-written heartbeat's pid is the holder (this process).
+        hb = Heartbeat(
+            pid=os.getpid(),
+            started_at=time.time(),
+            scope=git_wiki.name,
+        )
+        assert hb.pid > 0
 
 
-def test_acquire_flock_raises_busy_when_held(git_wiki: Wiki) -> None:
+def test_acquire_flock_raises_busy_when_held(
+    git_wiki: Wiki, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A live contender's create-lock blocks acquire; service surfaces ``WikiLockBusy``.
+
+    The underlying :func:`acquire_create_lock` reap loop auto-recovers from
+    a dead holder; simulating a still-alive foreign process requires a
+    second OS process. We patch ``acquire_create_lock`` to return ``None``
+    directly so this test exercises the ``WikiLockBusy`` wrapping in
+    ``_acquire_wiki_flock`` without spawning a subprocess.
+    """
     service = WikiMemoryService(git_wiki)
-    holder = service._lock_path().open("w", encoding="utf-8")
-    try:
-        fcntl.flock(holder.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        with pytest.raises(WikiLockBusy), service._acquire_flock():
-            pass  # pragma: no cover
-    finally:
-        fcntl.flock(holder.fileno(), fcntl.LOCK_UN)
-        holder.close()
+    monkeypatch.setattr(
+        "lies.memory.service.acquire_create_lock",
+        lambda *_a, **_kw: None,
+    )
+    with pytest.raises(WikiLockBusy), service._acquire_flock():
+        pass  # pragma: no cover
 
 
 def test_acquire_flock_proceeds_after_release(git_wiki: Wiki) -> None:
+    """A prior holder's stale create-lock is reaped + the next acquire succeeds."""
     service = WikiMemoryService(git_wiki)
-    holder = service._lock_path().open("w", encoding="utf-8")
-    fcntl.flock(holder.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-    holder.close()
+    create_lock = git_wiki.memory_create_lock_path
+    pid_path = git_wiki.memory_pid_path
+    state_path = git_wiki.memory_heartbeat_path
+
+    create_lock.parent.mkdir(parents=True, exist_ok=True)
+    # Seed a dead holder (pid 999999 is never alive in this process).
+    create_lock.touch()
+    write_owner_pid(pid_path, 999999)
+    write_heartbeat(
+        state_path,
+        Heartbeat(pid=999999, started_at=time.time(), scope=git_wiki.name),
+    )
+
+    # The reap loop should detect the dead pid, unlink the envelope, and let
+    # the retry succeed.
     with service._acquire_flock():
-        pass
+        assert create_lock.exists()
 
 
 def test_acquire_flock_releases_on_exception(git_wiki: Wiki) -> None:
@@ -120,8 +153,10 @@ def test_stash_does_not_unlink_held_lock(git_wiki: Wiki) -> None:
 
     service = WikiMemoryService(git_wiki)
     with service._acquire_flock():
-        lock_path = service._lock_path()
-        assert lock_path.exists()
+        create_lock = git_wiki.memory_create_lock_path
+        pid_path = git_wiki.memory_pid_path
+        state_path = git_wiki.memory_heartbeat_path
+        assert create_lock.exists()
 
         result = subprocess.run(
             ["git", "stash", "push", "--include-untracked", "-m", "test"],
@@ -132,17 +167,11 @@ def test_stash_does_not_unlink_held_lock(git_wiki: Wiki) -> None:
         )
         assert result.returncode == 0, f"stash failed: {result.stderr}"
 
-        # The lock file is still on disk (not unlinked into the stash).
-        assert lock_path.exists(), "lock file was unlinked by stash"
-
-        # A fresh fd on the same path still gets EWOULDBLOCK — the
-        # original holder's flock is still effective.
-        probe = lock_path.open("w", encoding="utf-8")
-        try:
-            with pytest.raises(BlockingIOError):
-                fcntl.flock(probe.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        finally:
-            probe.close()
+        # The create-lock + pid + heartbeat are still on disk (none of them
+        # live in the wiki's working tree, so stash cannot reach them).
+        assert create_lock.exists(), "create-lock was unlinked by stash"
+        assert pid_path.exists(), "pid file was unlinked by stash"
+        assert state_path.exists(), "heartbeat was unlinked by stash"
 
 
 def test_wiki_lock_busy_is_wiki_flock_error() -> None:
