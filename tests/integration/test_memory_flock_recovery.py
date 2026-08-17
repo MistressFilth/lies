@@ -169,11 +169,15 @@ def test_wall_clock_stale_reaps(fake_wiki: Wiki) -> None:
     create_lock.parent.mkdir(parents=True, exist_ok=True)
     fd0 = os.open(str(create_lock), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
     os.close(fd0)
-    write_owner_pid(pid_path, os.getpid())
+    # Seed a non-current PID so the self-recovery branch in
+    # _reap_if_stale() (``stored_pid == os.getpid()``) is bypassed;
+    # the wall-clock branch is the only path under test.
+    seeded_pid = os.getpid() + 999_999
+    write_owner_pid(pid_path, seeded_pid)
     write_heartbeat(
         state_json_path,
         Heartbeat(
-            pid=os.getpid(),
+            pid=seeded_pid,
             started_at=time.time() - 10 * 3600,
             scope="stale-test",
         ),
