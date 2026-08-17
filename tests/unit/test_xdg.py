@@ -107,6 +107,9 @@ def test_runtime_dir_falls_back_on_permission_error(
 
 
 @pytest.mark.skipif(os.geteuid() == 0, reason="chmod 0o000 does not restrict root")
+# See the sysctl-fragility note above the first permission-error test
+# (around line 83) — both chmod-based tests share the same EACCES mechanism.
+@pytest.mark.skipif(os.geteuid() == 0, reason="chmod 0o000 does not restrict root")
 def test_runtime_dir_falls_back_on_permission_error_for_lies_override(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

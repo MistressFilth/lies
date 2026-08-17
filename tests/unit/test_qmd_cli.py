@@ -223,7 +223,7 @@ def test_qmd_query_handles_missing_file_field(tmp_path: Path) -> None:
         mock_run.return_value = subprocess.CompletedProcess(
             args=[], returncode=0, stdout=payload, stderr=""
         )
-        with pytest.warns(UserWarning, match="qmd://"):
+        with pytest.warns(UserWarning, match="defaults to empty"):
             results = qmd_query(tmp_path, "q", limit=5)
         assert len(results) == 1
         # No file field → path defaults to "" so the synthesizer drops it.
@@ -242,7 +242,7 @@ def test_qmd_query_warns_on_dropped_file_field(tmp_path: Path) -> None:
         mock_run.return_value = subprocess.CompletedProcess(
             args=[], returncode=0, stdout=payload, stderr=""
         )
-        with pytest.warns(UserWarning, match="qmd://"):
+        with pytest.warns(UserWarning, match="defaults to empty"):
             qmd_query(tmp_path, "q", limit=5)
 
 
