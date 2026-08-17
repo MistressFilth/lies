@@ -9,9 +9,15 @@ from pathlib import Path
 import pytest
 
 from lies import xdg
+from lies.lock_errors import WikiFlockUnrepairable
 from lies.memory.models import WikiLockBusy
 from lies.memory.service import WikiMemoryService
-from lies.utils.lock_heartbeat import Heartbeat, write_heartbeat, write_owner_pid
+from lies.utils.lock_heartbeat import (
+    AcquireResult,
+    Heartbeat,
+    write_heartbeat,
+    write_owner_pid,
+)
 from lies.wiki.layout import WikiLayout
 from lies.wiki.wiki import Wiki
 
@@ -178,3 +184,62 @@ def test_wiki_lock_busy_is_wiki_flock_error() -> None:
     from lies.lock_errors import WikiFlockError
 
     assert issubclass(WikiLockBusy, WikiFlockError)
+
+
+def test_acquire_flock_raises_busy_message_cites_pid(
+    git_wiki: Wiki, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """WikiLockBusy raised with a busy AcquireResult carries pid + start time."""
+    busy = AcquireResult(
+        fd=-1,
+        holder_pid=12345,
+        holder_started_at=1700000000.0,
+        status="busy",
+    )
+    monkeypatch.setattr(
+        "lies.memory.service.acquire_create_lock",
+        lambda *a, **kw: busy,
+    )
+    service = WikiMemoryService(git_wiki)
+    with pytest.raises(WikiLockBusy) as ei, service._acquire_flock():
+        pass  # pragma: no cover
+    msg = str(ei.value)
+    assert "12345" in msg
+    assert "lies flock" in msg
+
+
+def test_acquire_flock_raises_busy_message_legacy_when_no_pid(
+    git_wiki: Wiki, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """WikiLockBusy raised with a None result (legacy callers) keeps the
+    legacy wording — no pid or started_at in the message.
+    """
+    monkeypatch.setattr(
+        "lies.memory.service.acquire_create_lock",
+        lambda *a, **kw: None,
+    )
+    service = WikiMemoryService(git_wiki)
+    with pytest.raises(WikiLockBusy) as ei, service._acquire_flock():
+        pass  # pragma: no cover
+    msg = str(ei.value)
+    assert "12345" not in msg
+    assert "memory.lock" in msg
+
+
+def test_acquire_flock_unrepairable_message_no_pid(
+    git_wiki: Wiki, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """WikiFlockUnrepairable from the force_repair=True retry-lost path uses
+    the documented 'pid was unlinked' wording.
+    """
+    monkeypatch.setattr(
+        "lies.memory.service.acquire_create_lock",
+        lambda *a, **kw: None,  # retry lost
+    )
+    service = WikiMemoryService(git_wiki)
+    with pytest.raises(WikiFlockUnrepairable) as ei, service._acquire_flock(force_repair=True):
+        pass  # pragma: no cover
+    msg = str(ei.value)
+    assert "could not be force-reaped" in msg
+    assert "lies flock" in msg
+    assert "pid" not in msg.lower()

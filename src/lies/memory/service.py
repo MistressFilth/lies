@@ -69,15 +69,12 @@ def _hash_text(text: str) -> str:
 def _acquire_wiki_flock(wiki: Wiki, *, force_repair: bool = False) -> Iterator[None]:
     """Acquire a non-blocking exclusive flock on the wiki's memory flock.
 
-    Yields once on success. On contention, the underlying
-    :func:`lies.utils.exclusive.acquire_create_lock` reap loop
-    auto-recovers from a dead holder; a still-alive competitor raises
-    :class:`WikiLockBusy`. With ``force_repair=True``, the underlying
-    acquire escalates to an unconditional reap + retry; if the retry
-    still loses (a live contender recreates the create-lock between
-    reap and retry) the caller sees :class:`WikiFlockUnrepairable`
-    with an operator-actionable message. Releases by unlinking the
-    lock files + pid + state JSON on exit.
+    Yields once on success. Raises :class:`WikiLockBusy` on a live
+    contender (whose pid + start time surface in the error message so
+    operators can identify the holder), or :class:`WikiFlockUnrepairable`
+    if a ``force_repair=True`` retry still loses (in which case the
+    pid file is already gone — the message directs the operator to run
+    ``lies flock <wiki> status`` to inspect the current contender).
 
     The lock envelope lives under ``$XDG_RUNTIME_DIR/lies/<wiki>/``
     (not the wiki's data root), so no gitignore coordination is
@@ -98,20 +95,26 @@ def _acquire_wiki_flock(wiki: Wiki, *, force_repair: bool = False) -> Iterator[N
         state_json_path=state_path,
         force_repair=force_repair,
     )
-    if result is None or result.status == "busy":
+    if result is None:
         if force_repair:
-            # Under force_repair the underlying acquire already
-            # attempted an unconditional reap + retry. Still busy
-            # means a live contender recreated the envelope between
-            # reap and retry; only manual ``lies flock <name>
-            # force-repair`` (or process teardown) can break it.
             raise WikiFlockUnrepairable(
-                f"memory flock for wiki '{wiki.name}' held by a live "
-                f"process even after force-repair; manual intervention "
-                f"required. Run `lies flock {wiki.name} force-repair`."
+                f"memory flock for wiki '{wiki.name}' could not be "
+                f"force-reaped; a live contender won the second attempt. "
+                f"Run `lies flock {wiki.name} status` to inspect, then "
+                f"`lies flock {wiki.name} force-repair` or kill the "
+                f"contender manually."
             )
-        # After the one reap-retry, still busy. Manual force-repair is
-        # the only path forward.
+        raise WikiLockBusy(f"wiki memory lock is held by another process: {create_lock}")
+    if result.status == "busy":
+        p = result.holder_pid
+        t = result.holder_started_at
+        if p is not None and t is not None:
+            t_iso = f"{int(t // 60)}m{int(t % 60)}s since {int(t)} epoch"
+            raise WikiLockBusy(
+                f"memory flock for wiki '{wiki.name}' held by live pid {p} "
+                f"(started {t_iso}); run `lies flock {wiki.name} status` "
+                f"to inspect or kill {p} manually."
+            )
         raise WikiLockBusy(f"wiki memory lock is held by another process: {create_lock}")
 
     write_owner_pid(pid_path, os.getpid())
