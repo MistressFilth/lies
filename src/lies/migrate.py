@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from lies import xdg
+from lies.constants import LIES_DATA_SUBDIR
 from lies.errors import WikiAlreadyExists
 from lies.wiki.layout import git_init_initial
 from lies.wiki.validation import validate_name
@@ -114,10 +115,10 @@ def migrate_wiki(
 
     wiki = Wiki(
         name=name,
-        data_root=dh / "lies" / name,
-        config_root=ch / "lies" / name,
-        cache_root=cah / "lies" / name,
-        state_root=sh / "lies" / name,
+        data_root=dh / LIES_DATA_SUBDIR / name,
+        config_root=ch / LIES_DATA_SUBDIR / name,
+        cache_root=cah / LIES_DATA_SUBDIR / name,
+        state_root=sh / LIES_DATA_SUBDIR / name,
         runtime_root=xdg.runtime_dir_for(name),
     )
 

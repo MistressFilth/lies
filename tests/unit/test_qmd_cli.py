@@ -223,10 +223,27 @@ def test_qmd_query_handles_missing_file_field(tmp_path: Path) -> None:
         mock_run.return_value = subprocess.CompletedProcess(
             args=[], returncode=0, stdout=payload, stderr=""
         )
-        results = qmd_query(tmp_path, "q", limit=5)
+        with pytest.warns(UserWarning, match="defaults to empty"):
+            results = qmd_query(tmp_path, "q", limit=5)
         assert len(results) == 1
         # No file field → path defaults to "" so the synthesizer drops it.
         assert results[0].get("path", "") == ""
+
+
+def test_qmd_query_warns_on_dropped_file_field(tmp_path: Path) -> None:
+    """Rows without a ``file`` field (or whose ``file`` lacks the qmd://
+    prefix) silently degrade to ``path=""``. Surface the degradation with a
+    warning so unexpected qmd shape changes do not go unnoticed."""
+    payload = json.dumps([{"docid": "#orphan", "score": 0.1, "title": "Orphan (no file key)"}])
+    with (
+        patch("lies.qmd.cli.shutil.which", return_value="/usr/bin/qmd"),
+        patch("lies.qmd.cli.subprocess.run") as mock_run,
+    ):
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout=payload, stderr=""
+        )
+        with pytest.warns(UserWarning, match="defaults to empty"):
+            qmd_query(tmp_path, "q", limit=5)
 
 
 def test_qmd_query_empty_list_still_raises_no_results(tmp_path: Path) -> None:
