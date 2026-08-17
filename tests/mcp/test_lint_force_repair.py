@@ -26,12 +26,26 @@ def wiki() -> None:
 def test_lint_tool_with_force_repair_propagates_unrepairable_as_string(
     wiki: None,
 ) -> None:
+    """Real-path test for the MCP tool's ``force_repair=True`` propagation.
+
+    Drives the production-raised ``WikiFlockUnrepairable`` message
+    constructed by ``_acquire_wiki_flock`` (Task 2) through the MCP
+    tool surface. The tool catches the flock error and returns it as
+    an ``error:``-prefixed string.
+
+    Per the M1 spec's "Risks + mitigations" section, the
+    ``WikiFlockUnrepairable`` from ``_acquire_wiki_flock`` deliberately
+    omits pid (the file is unlinked before the retry); the
+    spec-mandated substring is ``lies flock mywiki force-repair``.
+    """
+    # Production-raised message from ``_acquire_wiki_flock`` (Task 2).
     err = WikiFlockUnrepairable(
-        "memory flock for wiki 'mywiki' held by live pid 12345 (started T); "
-        "force-repair failed after retry. Run `lies flock mywiki force-repair`."
+        "memory flock for wiki 'mywiki' could not be force-reaped; "
+        "a live contender won the second attempt. Run `lies flock mywiki status` "
+        "to inspect, then `lies flock mywiki force-repair` or kill the "
+        "contender manually."
     )
     with patch("lies.mcp.server.Orchestrator") as mock_orch:
         mock_orch.return_value.run_lint.side_effect = err
         result = lint("mywiki", fix=True, force_repair=True)
-    assert "pid 12345" in result
     assert "lies flock mywiki force-repair" in result

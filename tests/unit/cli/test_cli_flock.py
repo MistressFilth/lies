@@ -221,3 +221,50 @@ def test_lies_flock_force_repair_unrepairable(
     assert result.exit_code != 0
     combined = _combined(result)
     assert "unrepairable" in combined.lower()
+
+
+@pytest.mark.xfail(
+    reason=(
+        "intentionally RED at Task 4 commit point: Task 5 implements the "
+        "capture-before-reap body in flock_force_repair; until then the "
+        "Unrepairable message omits the captured pid. Remove this xfail "
+        "marker when Task 5 lands."
+    ),
+    strict=False,
+)
+def test_flock_force_repair_unrepairable_message_cites_captured_pid(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """``lies flock <name> force-repair`` captures pid + heartbeat BEFORE
+    its reap loop; even when the post-reap retry still loses, the
+    operator-actionable message cites the captured pid + start time.
+
+    NOTE: This test is intentionally RED at the Task 4 commit point.
+    Task 5 (commit on the same branch) implements the capture-before-reap
+    body in ``flock_force_repair``; until that lands, the current
+    implementation raises ``WikiFlockUnrepairable`` with a message that
+    omits the captured pid. The test pins the spec-required behavior so
+    Task 5 must satisfy it.
+    """
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "runtime"))
+    _seed_wiki(tmp_path, "mywiki")
+    _seed_flock(tmp_path, "mywiki", pid=12345)
+
+    # Force the post-reap retry to fail: ``acquire_create_lock`` returns
+    # ``None`` so ``flock_force_repair`` raises ``WikiFlockUnrepairable``.
+    import lies.cli as cli_module
+
+    def fail_acquire(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(cli_module, "acquire_create_lock", fail_acquire)
+
+    result = runner.invoke(app, ["flock", "mywiki", "force-repair"])
+    assert result.exit_code != 0
+    out = result.output + result.stdout
+    assert "12345" in out
+    assert "lies flock" in out

@@ -89,8 +89,20 @@ def test_lint_fix_default_propagates_lock_busy(
 def test_lint_fix_force_repair_propagates_unrepairable(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """``--force-repair`` + still-busy → ``WikiFlockUnrepairable``, exit 1,
-    operator-actionable message including pid + ``lies flock <name> force-repair``.
+    """Real-path test for the CLI's ``--force-repair`` propagation.
+
+    Drives the production-raised ``WikiFlockUnrepairable`` message
+    constructed by ``_acquire_wiki_flock`` (Task 2) through the CLI
+    handler. The CLI catches the flock error and prints the
+    operator-actionable message to stderr.
+
+    Per the M1 spec's "Risks + mitigations" section, the
+    ``WikiFlockUnrepairable`` from ``_acquire_wiki_flock`` deliberately
+    omits pid (the file is unlinked before the retry); the
+    spec-mandated substring is ``lies flock mywiki force-repair``.
+    ``flock_force_repair`` is the code path that *does* surface pid;
+    the new flock test in ``tests/unit/cli/test_cli_flock.py`` pins
+    that behavior.
     """
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
@@ -103,18 +115,30 @@ def test_lint_fix_force_repair_propagates_unrepairable(
     monkeypatch.setattr("lies.cli.resolve_wiki", lambda _name=None: fake_wiki)
     monkeypatch.setattr("lies.cli.WikiLinkResolver.build", lambda _paths: object())
 
+    # Production-raised message from ``_acquire_wiki_flock`` (Task 2).
+    # The pid is deliberately omitted (documented spec deviation: the
+    # pid file is unlinked before the retry on the force-repair path).
     err = WikiFlockUnrepairable(
-        "memory flock for wiki 'mywiki' held by live pid 12345 (started T); "
-        "force-repair failed after retry. Run `lies flock mywiki force-repair`."
+        "memory flock for wiki 'mywiki' could not be force-reaped; "
+        "a live contender won the second attempt. Run `lies flock mywiki status` "
+        "to inspect, then `lies flock mywiki force-repair` or kill the "
+        "contender manually."
     )
-    fake_orch = MagicMock()
-    fake_orch.run_lint.side_effect = err
-    monkeypatch.setattr("lies.cli.Orchestrator", lambda *_a, **_kw: fake_orch)
+
+    from lies.orchestrator import Orchestrator
+
+    # Bypass ``__init__`` (which loads models); set just the attributes
+    # the CLI's lint handler actually touches. The ``Orchestrator.__new__``
+    # seam is the same one the existing real-path test below uses.
+    orch = Orchestrator.__new__(Orchestrator)
+    orch.wiki = fake_wiki
+    orch.run_lint = MagicMock(side_effect=err)
+
+    monkeypatch.setattr("lies.cli.Orchestrator", lambda *_a, **_kw: orch)
 
     result = runner.invoke(app, ["lint", "--name", "mywiki", "--fix", "--force-repair"])
     assert result.exit_code == 1, _combined(result)
     combined = _combined(result)
-    assert "pid 12345" in combined
     assert "lies flock mywiki force-repair" in combined
 
 
