@@ -119,3 +119,22 @@ class Wiki:
     @property
     def mcp_log_path(self) -> Path:
         return self.state_root / "mcp.log"
+
+    @property
+    def memory_create_lock_path(self) -> Path:
+        """Atomic-create sentinel for the memory flock.
+
+        ``WikiMemoryService._acquire_wiki_flock`` opens this with
+        ``O_CREAT | O_EXCL``; whoever wins claims the flock.
+        """
+        return self.runtime_root / "memory.lock.create"
+
+    @property
+    def memory_pid_path(self) -> Path:
+        """Holder-PID file for memory flock stale-recovery."""
+        return self.runtime_root / "memory.pid"
+
+    @property
+    def memory_heartbeat_path(self) -> Path:
+        """Heartbeat JSON for memory flock stale-recovery."""
+        return self.runtime_root / "memory.state.json"
