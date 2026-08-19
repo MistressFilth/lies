@@ -6,7 +6,7 @@ import json
 import os
 import sys
 import time
-from datetime import UTC
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any, cast
 
@@ -524,11 +524,7 @@ def flock_force_repair(ctx: typer.Context) -> None:
     if result is None:
         typer.echo("result   : unrepairable — manual intervention required")
         if captured_pid is not None and captured_hb is not None:
-            t_iso = (
-                f"{int(captured_hb.started_at // 60)}m"
-                f"{int(captured_hb.started_at % 60)}s "
-                f"since {int(captured_hb.started_at)} epoch"
-            )
+            t_iso = datetime.fromtimestamp(captured_hb.started_at, tz=UTC).isoformat()
             msg = (
                 f"memory flock for wiki '{name}' held by live pid "
                 f"{captured_pid} (started {t_iso}); force-repair failed "

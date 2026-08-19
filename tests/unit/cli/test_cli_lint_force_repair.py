@@ -110,7 +110,9 @@ def test_lint_fix_default_propagates_lock_busy(
     monkeypatch.setattr("lies.cli.WikiLinkResolver.build", lambda _paths: object())
 
     fake_orch = MagicMock()
-    fake_orch.run_lint.side_effect = WikiLockBusy("wiki memory lock is held by another process")
+    fake_orch.run_lint.side_effect = WikiLockBusy(
+        f"wiki memory lock is held by another process: {fake_wiki.runtime_root / 'memory.lock.create'}"
+    )
     monkeypatch.setattr("lies.cli.Orchestrator", lambda *_a, **_kw: fake_orch)
 
     result = runner.invoke(app, ["lint", "--name", "mywiki", "--fix"])
@@ -203,7 +205,7 @@ def test_lint_fix_force_repair_unrepairable_reraised_through_apply(
     err = WikiFlockUnrepairable(
         "memory flock for wiki 'mywiki' could not be force-reaped; "
         "a live contender won the second attempt. Run `lies flock mywiki "
-        "force-repair` to inspect, then `lies flock mywiki force-repair` "
+        "status` to inspect, then `lies flock mywiki force-repair` "
         "or kill the contender manually."
     )
 

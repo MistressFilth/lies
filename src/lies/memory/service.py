@@ -109,7 +109,7 @@ def _acquire_wiki_flock(wiki: Wiki, *, force_repair: bool = False) -> Iterator[N
         p = result.holder_pid
         t = result.holder_started_at
         if p is not None and t is not None:
-            t_iso = f"{int(t // 60)}m{int(t % 60)}s since {int(t)} epoch"
+            t_iso = datetime.fromtimestamp(t, tz=UTC).isoformat()
             raise WikiLockBusy(
                 f"memory flock for wiki '{wiki.name}' held by live pid {p} "
                 f"(started {t_iso}); run `lies flock {wiki.name} status` "
