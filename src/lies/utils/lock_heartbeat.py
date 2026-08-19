@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import Literal
 
 
 @dataclass(frozen=True)
@@ -18,6 +19,31 @@ class Heartbeat:
     pid: int
     started_at: float
     scope: str = ""
+
+
+@dataclass(frozen=True)
+class AcquireResult:
+    """Result of an ``acquire_create_lock`` attempt.
+
+    Carries both the file descriptor on success and the contender's
+    pid + start time on contention so raise sites can construct
+    operator-actionable messages. The new envelope is opt-in: callers
+    that pass ``pid_path=None, state_json_path=None`` get the legacy
+    ``int | None`` return.
+
+    Status values:
+      - ``"acquired"`` — fresh success; ``fd`` is valid.
+      - ``"busy"`` — contended with a live contender; ``holder_pid`` and
+        ``holder_started_at`` are populated from the existing files.
+      - ``"dead_reaped"`` — the contendee was dead (or the heartbeat stale)
+        and the reap-and-retry succeeded; ``fd`` is valid; holder info
+        is ``None`` because the contendee is gone.
+    """
+
+    fd: int
+    holder_pid: int | None = None
+    holder_started_at: float | None = None
+    status: Literal["acquired", "busy", "dead_reaped"] = "acquired"
 
 
 def write_owner_pid(path: Path, pid: int) -> None:

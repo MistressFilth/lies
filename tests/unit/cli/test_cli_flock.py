@@ -212,7 +212,15 @@ def test_lies_flock_force_repair_unrepairable(
     # ``None`` (O_EXCL fails because the path exists with current mtime).
     import lies.cli as cli_module
 
-    def fail_acquire(path, *, max_age_s, pid_path=None, state_json_path=None, pid_alive_fn=None):
+    def fail_acquire(
+        path,
+        *,
+        max_age_s,
+        pid_path=None,
+        state_json_path=None,
+        pid_alive_fn=None,
+        force_repair=False,
+    ):
         path.touch()
 
     monkeypatch.setattr(cli_module, "acquire_create_lock", fail_acquire)
@@ -221,3 +229,53 @@ def test_lies_flock_force_repair_unrepairable(
     assert result.exit_code != 0
     combined = _combined(result)
     assert "unrepairable" in combined.lower()
+
+
+def test_flock_force_repair_unrepairable_message_cites_captured_pid(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Pins the spec-mandated capture-before-reap behavior of
+    ``lies flock <name> force-repair``: the operator-actionable message
+    cites the captured pid + start time even when the post-reap retry
+    still loses. Sibling tests use ``pid=999999`` as the "reliably dead"
+    sentinel; capture-before-reap reads pid_file contents verbatim, so
+    pid liveness is irrelevant to message construction.
+    """
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "runtime"))
+    _seed_wiki(tmp_path, "mywiki")
+    # 999999 is reliably dead (pid_alive returns False); Task 5's
+    # capture-before-reap reads pid_file contents verbatim, so the
+    # captured-pid message is host-independent.
+    _seed_flock(tmp_path, "mywiki", pid=999999)
+
+    # Force the post-reap retry to fail: ``acquire_create_lock`` returns
+    # ``None`` so ``flock_force_repair`` raises ``WikiFlockUnrepairable``.
+    # Type the signature to match ``acquire_create_lock`` (same shape as
+    # the sibling ``test_lies_flock_force_repair_unrepairable`` above)
+    # so a Task 5 call-signature change surfaces as a TypeError here
+    # rather than going undetected.
+    import lies.cli as cli_module
+
+    def fail_acquire(
+        path,
+        *,
+        max_age_s,
+        pid_path=None,
+        state_json_path=None,
+        pid_alive_fn=None,
+        force_repair=False,
+    ):
+        return None
+
+    monkeypatch.setattr(cli_module, "acquire_create_lock", fail_acquire)
+
+    result = runner.invoke(app, ["flock", "mywiki", "force-repair"])
+    assert result.exit_code != 0
+    # Click 8.2+ splits stderr from ``.output``; ``_combined`` covers both.
+    out = _combined(result)
+    assert "pid 999999" in out
+    assert "lies flock mywiki force-repair" in out

@@ -17,6 +17,16 @@ recovery treats ``stored == os.getpid()`` as recovery. Wall-clock
 recovery treats heartbeats older than ``max_age_s`` as stale. Exception
 policy: ``ProcessLookupError`` (ESRCH) -> reap; ``PermissionError``
 (EPERM) -> busy, never reap; unexpected ``OSError`` -> busy + WARN log.
+
+Return shape: :func:`acquire_create_lock` returns an
+:class:`~lies.utils.lock_heartbeat.AcquireResult` on every successful
+acquire (with ``status`` set to ``"acquired"`` or ``"dead_reaped"``)
+or on contention with ``pid_path`` / ``state_json_path`` supplied
+(``status="busy"``, ``fd=-1``, ``holder_pid`` + ``holder_started_at``
+populated). Legacy callers that omit the envelope get ``None`` for the
+busy path; raise sites that need the contender's pid read ``result.fd``
+on success and ``result.holder_pid`` / ``result.holder_started_at`` on
+the busy branch.
 """
 
 from __future__ import annotations
@@ -26,6 +36,13 @@ import logging
 import os
 import time
 from pathlib import Path
+from typing import Literal
+
+from lies.utils.lock_heartbeat import (
+    AcquireResult,
+    read_heartbeat,
+    read_owner_pid,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -40,19 +57,28 @@ def acquire_create_lock(  # type: ignore[no-untyped-def]
     state_json_path: Path | None = None,
     pid_alive_fn=None,
     force_repair: bool = False,
-) -> int | None:
-    """Atomically create ``path``. Return the open fd on win, ``None`` on contention.
+) -> AcquireResult | None:
+    """Atomically create ``path``. Return ``AcquireResult`` on win, ``None`` on contention.
 
     Optional ``pid_path`` + ``state_json_path``: if provided, treat an
     existing create-lock as a stale holder when its stored PID is
     dead (or its heartbeat is older than ``max_age_s``) and reap + retry
     once. See the module docstring for the exception policy.
 
+    On a contended-but-live branch with the envelope supplied, the
+    return is ``AcquireResult(fd=-1, holder_pid=<read from pid file>,
+    holder_started_at=<read from heartbeat>, status="busy")`` so raise
+    sites can surface operator-actionable messages. Callers that omit
+    the envelope still receive ``None`` for the busy path (legacy
+    semantics).
+
     ``force_repair=True`` escalates the second-chance reap: when the
     envelope is held by what looks like a live contender, unconditionally
     reap + retry once. The caller (``_acquire_wiki_flock``) surfaces
     ``WikiFlockUnrepairable`` if the retry still loses; without
-    ``force_repair``, a live holder always wins (returns ``None``).
+    ``force_repair``, a live holder always wins (returns an
+    ``AcquireResult`` with ``status="busy"`` when the envelope was
+    supplied, otherwise ``None``).
 
     The fd is left open so the OS holds the inode reference; the caller
     must pass it to :func:`release_create_lock`.
@@ -71,9 +97,12 @@ def acquire_create_lock(  # type: ignore[no-untyped-def]
                 _log.warning("pid_alive(%s) raised non-ESRCH/EPERM OSError", pid)
                 return True  # unknown syscall failure; treat as busy
 
+    def _wrap(fd: int, status: Literal["acquired", "dead_reaped"] = "acquired") -> AcquireResult:
+        return AcquireResult(fd=fd, status=status)
+
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
-        return os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+        return _wrap(os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644))
     except FileExistsError:
         if pid_path is not None and state_json_path is not None:
             if force_repair:
@@ -81,10 +110,23 @@ def acquire_create_lock(  # type: ignore[no-untyped-def]
                 # raise WikiFlockUnrepairable if the retry still loses.
                 _reap_files(path, pid_path, state_json_path)
             elif not _reap_if_stale(path, pid_path, state_json_path, max_age_s, pid_alive_fn):
-                return None
+                # Live contender; populate holder info from the files we
+                # just inspected so raise sites can name the pid.
+                holder_pid = read_owner_pid(pid_path)
+                heartbeat = read_heartbeat(state_json_path)
+                holder_started_at = heartbeat.started_at if heartbeat is not None else None
+                return AcquireResult(
+                    fd=-1,
+                    holder_pid=holder_pid,
+                    holder_started_at=holder_started_at,
+                    status="busy",
+                )
             # Reap removed the create-lock; retry the create once.
             try:
-                return os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+                return _wrap(
+                    os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644),
+                    status="dead_reaped",
+                )
             except FileExistsError:
                 return None
         # Legacy orphan-only path: no pid/state supplied -> use mtime window.
@@ -95,7 +137,7 @@ def acquire_create_lock(  # type: ignore[no-untyped-def]
         except FileNotFoundError:
             pass
         try:
-            return os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+            return _wrap(os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644))
         except FileExistsError:
             return None
 

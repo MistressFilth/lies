@@ -138,16 +138,16 @@ def test_process_crash_then_reap(tmp_path: Path, fake_wiki: Wiki) -> None:
         _cleanup_holder(proc)
         raise
 
-    fd = acquire_create_lock(
+    fd_result = acquire_create_lock(
         fake_wiki.memory_create_lock_path,
         max_age_s=7200,
         pid_path=fake_wiki.memory_pid_path,
         state_json_path=fake_wiki.memory_heartbeat_path,
     )
-    assert fd is not None, "expected reap-then-reacquire after kill -9"
+    assert fd_result is not None, "expected reap-then-reacquire after kill -9"
     release_create_lock(
         fake_wiki.memory_create_lock_path,
-        fd,
+        fd_result.fd,
         pid_path=fake_wiki.memory_pid_path,
         state_json_path=fake_wiki.memory_heartbeat_path,
     )
@@ -183,17 +183,17 @@ def test_wall_clock_stale_reaps(fake_wiki: Wiki) -> None:
         ),
     )
 
-    fd = acquire_create_lock(
+    fd_result = acquire_create_lock(
         create_lock,
         max_age_s=7200,
         pid_path=pid_path,
         state_json_path=state_json_path,
         pid_alive_fn=lambda _pid: True,
     )
-    assert fd is not None, "expected wall-clock-stale reap"
+    assert fd_result is not None, "expected wall-clock-stale reap"
     release_create_lock(
         create_lock,
-        fd,
+        fd_result.fd,
         pid_path=pid_path,
         state_json_path=state_json_path,
     )
@@ -215,16 +215,16 @@ def test_gc_cleanup_on_unexpected_exit(tmp_path: Path, fake_wiki: Wiki) -> None:
         _cleanup_holder(proc)
         raise
 
-    fd = acquire_create_lock(
+    fd_result = acquire_create_lock(
         fake_wiki.memory_create_lock_path,
         max_age_s=7200,
         pid_path=fake_wiki.memory_pid_path,
         state_json_path=fake_wiki.memory_heartbeat_path,
     )
-    assert fd is not None
+    assert fd_result is not None
     release_create_lock(
         fake_wiki.memory_create_lock_path,
-        fd,
+        fd_result.fd,
         pid_path=fake_wiki.memory_pid_path,
         state_json_path=fake_wiki.memory_heartbeat_path,
     )

@@ -297,9 +297,10 @@ def spawn_daemon(
     """
     require_loopback_host(host)
     lock = create_lock_path(wiki)
-    fd = acquire_create_lock(lock, max_age_s=CREATE_LOCK_MAX_AGE_S)
-    if fd is None:
+    lock_result = acquire_create_lock(lock, max_age_s=CREATE_LOCK_MAX_AGE_S)
+    if lock_result is None:
         raise DaemonBusy(f"another lies mcp lifecycle operation is in progress: {lock}")
+    fd = lock_result.fd
     try:
         existing = read_record(wiki)
         if existing is not None:
@@ -435,9 +436,10 @@ def stop_daemon(wiki: Wiki, *, grace: float = 10.0) -> StopResult:
     or stale record is a successful no-op, not an error.
     """
     lock = create_lock_path(wiki)
-    fd = acquire_create_lock(lock, max_age_s=CREATE_LOCK_MAX_AGE_S)
-    if fd is None:
+    lock_result = acquire_create_lock(lock, max_age_s=CREATE_LOCK_MAX_AGE_S)
+    if lock_result is None:
         raise DaemonBusy(f"another lies mcp lifecycle operation is in progress: {lock}")
+    fd = lock_result.fd
     try:
         rec = read_record(wiki)
         if rec is None:
