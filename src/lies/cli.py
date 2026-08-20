@@ -1312,6 +1312,72 @@ def providers_check(
         typer.echo(f"  {n.ljust(width)}  {st:<8}  {detail}")
 
 
+@providers_app.command("list")
+def providers_list(
+    json_output: Annotated[
+        bool,
+        typer.Option(
+            "--json",
+            help="Emit a JSON array of {id, default_model, agents} per provider instead of a table.",
+        ),
+    ] = False,
+    name: str = typer.Option("default", "--name", "-n", envvar="LIES_WIKI_NAME"),
+) -> None:
+    """List every provider configured in providers.toml with default model and agent assignments."""
+    import json
+    import tomllib
+
+    wiki = _providers_wiki(name)
+    path = wiki.providers_path
+    if not path.exists():
+        typer.echo(
+            f"error: no providers.toml at {path}. Run `lies providers init` first.",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+    try:
+        with path.open("rb") as f:
+            data = tomllib.load(f)
+    except tomllib.TOMLDecodeError as exc:
+        typer.echo(f"error: failed to parse {path}: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+
+    raw_providers = data.get("providers") or {}
+    agents = data.get("agents") or {}
+    default_model = data.get("default_model", "")
+    providers: dict[str, dict[str, object]] = {
+        pid: body for pid, body in raw_providers.items() if isinstance(body, dict)
+    }
+
+    if json_output:
+        typer.echo(
+            json.dumps(
+                [
+                    {
+                        "id": pid,
+                        "default_model": default_model,
+                        "agents": agents,
+                    }
+                    for pid in providers
+                ],
+                indent=2,
+            )
+        )
+        return
+
+    from rich.console import Console
+    from rich.table import Table
+
+    table = Table(title="providers")
+    table.add_column("id")
+    table.add_column("default_model")
+    table.add_column("agents")
+    agent_summary = ", ".join(f"{a}={m}" for a, m in agents.items()) or "(default agent)"
+    for pid in providers:
+        table.add_row(pid, str(default_model), agent_summary)
+    Console().print(table)
+
+
 app.add_typer(providers_app, name="providers")
 app.add_typer(collections_app, name="collections")
 
