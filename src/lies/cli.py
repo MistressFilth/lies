@@ -44,7 +44,10 @@ app = typer.Typer(
 console = Console()
 
 
-@app.command()
+@app.command(
+    short_help="Print the LIES version and exit.",
+    rich_help_panel="Meta",
+)
 def version() -> None:
     """Print the LIES version and exit."""
     typer.echo(f"lies {__version__}")
@@ -54,7 +57,7 @@ mcp_app = typer.Typer(
     name="mcp",
     help="Run the MCP server on stdio, or manage the http daemon.",
 )
-app.add_typer(mcp_app, name="mcp")
+app.add_typer(mcp_app, name="mcp", rich_help_panel="Operator tooling")
 
 
 def _run_stdio() -> None:
@@ -224,7 +227,10 @@ def _mcp_status(
     raise typer.Exit(code=1)
 
 
-@app.command()
+@app.command(
+    short_help="Migrate a legacy .lies/ wiki into XDG role-routed dirs.",
+    rich_help_panel="Wiki management",
+)
 def migrate_xdg(
     legacy_path: Annotated[
         Path, typer.Argument(help="Path to the legacy .lies/ directory to migrate.")
@@ -256,7 +262,11 @@ def migrate_xdg(
     )
 
 
-@app.command(name="config")
+@app.command(
+    name="config",
+    short_help="Print active model + wiki name + resolved language + per-agent model assignments.",
+    rich_help_panel="Wiki management",
+)
 def config_cmd(
     name: str = typer.Option(
         "default",
@@ -298,7 +308,10 @@ def config_cmd(
             typer.echo(f"  {agent_name.ljust(width)}  {cfg.agents[agent_name]}")
 
 
-@app.command()
+@app.command(
+    short_help="Initialize a new wiki under XDG_DATA_HOME.",
+    rich_help_panel="Wiki management",
+)
 def init(
     name: Annotated[
         str, typer.Argument(help="Wiki name (the XDG role-routed subdir, e.g. 'mywiki').")
@@ -338,7 +351,10 @@ def init(
     typer.echo(f"initialized wiki '{name}' at {wiki.data_root}")
 
 
-@app.command()
+@app.command(
+    short_help="Ingest a source into a collection (creates collection if missing).",
+    rich_help_panel="Source ingestion",
+)
 def ingest(
     collection: str,
     *,
@@ -375,7 +391,10 @@ def ingest(
         release_heartbeat(wiki)
 
 
-@app.command()
+@app.command(
+    short_help="Atomic ingest of a single source into the wiki identified by --name.",
+    rich_help_panel="Source ingestion",
+)
 def ingest_source(
     source: str = typer.Argument(..., help="Path, URL, or '-' for stdin."),
     name: str | None = typer.Option(
@@ -400,7 +419,10 @@ def ingest_source(
     typer.echo(output)
 
 
-@app.command()
+@app.command(
+    short_help="Query the wiki with qmd → index.md fallback.",
+    rich_help_panel="Querying and maintenance",
+)
 def query(
     question: str = typer.Argument(..., help="The question to ask the wiki."),
     name: str | None = typer.Option(
@@ -417,7 +439,10 @@ def query(
     console.print(Markdown(answer.answer))
 
 
-@app.command()
+@app.command(
+    short_help="Run lint; with --fix also apply the repair plan.",
+    rich_help_panel="Querying and maintenance",
+)
 def lint(
     name: str | None = typer.Option(
         None, "--name", envvar="LIES_WIKI_NAME", help="Wiki to lint (default: $LIES_WIKI_NAME)."
@@ -465,7 +490,7 @@ def lint(
 
 
 flock_app = typer.Typer(help="Inspect or repair a wiki's memory flock.")
-app.add_typer(flock_app, name="flock")
+app.add_typer(flock_app, name="flock", rich_help_panel="Operator tooling")
 
 
 @flock_app.callback(invoke_without_command=True)
@@ -592,7 +617,10 @@ def flock_force_repair(ctx: typer.Context) -> None:
     typer.echo("result   : ok (recovery succeeded)")
 
 
-@app.command()
+@app.command(
+    short_help="Show qmd status and the last few log entries.",
+    rich_help_panel="Querying and maintenance",
+)
 def status(
     name: str | None = typer.Option(
         None,
@@ -677,7 +705,10 @@ def main(
     console.print("\nbye.")
 
 
-@app.command()
+@app.command(
+    short_help="Sync one or all collections.",
+    rich_help_panel="Source ingestion",
+)
 def sync(
     collection: Annotated[
         str | None,
@@ -709,7 +740,10 @@ def sync(
         release_heartbeat(wiki)
 
 
-@app.command()
+@app.command(
+    short_help="Reindex QMD collections.",
+    rich_help_panel="Source ingestion",
+)
 def reindex(
     *,
     reconcile: bool = False,
@@ -1508,8 +1542,8 @@ def providers_list(
     Console().print(table)
 
 
-app.add_typer(providers_app, name="providers")
-app.add_typer(collections_app, name="collections")
+app.add_typer(providers_app, name="providers", rich_help_panel="Operator tooling")
+app.add_typer(collections_app, name="collections", rich_help_panel="Wiki management")
 
 
 if __name__ == "__main__":
