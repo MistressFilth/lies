@@ -797,7 +797,7 @@ def collections_new(
         ),
     ] = None,
 ) -> None:
-    """Create a new collection via the interactive wizard (or --from-file for a one-shot YAML)."""
+    """Create a new collection via the interactive wizard."""
     from datetime import datetime
 
     import yaml  # type: ignore[import-untyped]
