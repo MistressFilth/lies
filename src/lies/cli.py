@@ -115,7 +115,12 @@ def up(
     port: int = daemon.DEFAULT_PORT,
     timeout: float = typer.Option(10.0, help="Seconds to wait for the port to accept."),
     no_qmd: bool = typer.Option(False, "--no-qmd", help="Skip ensuring qmd's daemon."),
-    name: str | None = typer.Option(None, "--name", envvar="LIES_WIKI_NAME"),
+    name: str | None = typer.Option(
+        None,
+        "--name",
+        envvar="LIES_WIKI_NAME",
+        help="Wiki to start the daemon for (default: $LIES_WIKI_NAME).",
+    ),
 ) -> None:
     """Start a detached streamable-http MCP daemon for this wiki.
 
@@ -153,7 +158,12 @@ def up(
 @mcp_app.command()
 def down(
     grace: float = typer.Option(10.0, help="Seconds to wait after SIGTERM before SIGKILL."),
-    name: str | None = typer.Option(None, "--name", envvar="LIES_WIKI_NAME"),
+    name: str | None = typer.Option(
+        None,
+        "--name",
+        envvar="LIES_WIKI_NAME",
+        help="Wiki whose daemon should be stopped (default: $LIES_WIKI_NAME).",
+    ),
 ) -> None:
     """Stop the MCP daemon tracked for this wiki.
 
@@ -178,7 +188,12 @@ def down(
 
 @mcp_app.command(name="status")
 def _mcp_status(
-    name: str | None = typer.Option(None, "--name", envvar="LIES_WIKI_NAME"),
+    name: str | None = typer.Option(
+        None,
+        "--name",
+        envvar="LIES_WIKI_NAME",
+        help="Wiki to report daemon status for (default: $LIES_WIKI_NAME).",
+    ),
 ) -> None:
     """Report whether an MCP daemon is running for this wiki.
 
@@ -210,7 +225,15 @@ def _mcp_status(
 
 
 @app.command()
-def migrate_xdg(legacy_path: Path, name: str, force: bool = False) -> None:
+def migrate_xdg(
+    legacy_path: Annotated[
+        Path, typer.Argument(help="Path to the legacy .lies/ directory to migrate.")
+    ],
+    name: Annotated[
+        str, typer.Argument(help="Wiki name (the XDG role-routed subdir to migrate into).")
+    ],
+    force: bool = False,
+) -> None:
     """Migrate a legacy ``.lies/`` wiki into XDG role-routed dirs.
 
     With ``--force``, conflicting source files (destination has
@@ -235,7 +258,13 @@ def migrate_xdg(legacy_path: Path, name: str, force: bool = False) -> None:
 
 @app.command(name="config")
 def config_cmd(
-    name: str = typer.Option("default", "--name", "-n", envvar="LIES_WIKI_NAME"),
+    name: str = typer.Option(
+        "default",
+        "--name",
+        "-n",
+        envvar="LIES_WIKI_NAME",
+        help="Wiki to print config for (default: $LIES_WIKI_NAME, falls back to 'default').",
+    ),
 ) -> None:
     """Print active model + wiki name + resolved language + per-agent model assignments."""
     from lies.providers import AGENT_ROSTER, load_providers_config, resolve_model
@@ -270,7 +299,11 @@ def config_cmd(
 
 
 @app.command()
-def init(name: str) -> None:
+def init(
+    name: Annotated[
+        str, typer.Argument(help="Wiki name (the XDG role-routed subdir, e.g. 'mywiki').")
+    ],
+) -> None:
     """Initialize a new wiki under XDG_DATA_HOME."""
     from lies.errors import WikiAlreadyExists
     from lies.wiki.layout import WikiLayout, copy_default_schema, git_init_initial
@@ -311,7 +344,12 @@ def ingest(
     *,
     source: str | None = None,
     model: str | None = None,
-    name: str | None = typer.Option(None, "--name", envvar="LIES_WIKI_NAME"),
+    name: str | None = typer.Option(
+        None,
+        "--name",
+        envvar="LIES_WIKI_NAME",
+        help="Wiki to ingest into (default: $LIES_WIKI_NAME).",
+    ),
 ) -> None:
     """Ingest a source into a collection (creates collection if missing).
 
@@ -340,7 +378,12 @@ def ingest(
 @app.command()
 def ingest_source(
     source: str = typer.Argument(..., help="Path, URL, or '-' for stdin."),
-    name: str | None = typer.Option(None, "--name", envvar="LIES_WIKI_NAME"),
+    name: str | None = typer.Option(
+        None,
+        "--name",
+        envvar="LIES_WIKI_NAME",
+        help="Wiki to ingest into (default: $LIES_WIKI_NAME).",
+    ),
 ) -> None:
     """Atomic ingest of a single source into the wiki identified by ``name``.
 
@@ -360,7 +403,9 @@ def ingest_source(
 @app.command()
 def query(
     question: str = typer.Argument(..., help="The question to ask the wiki."),
-    name: str | None = typer.Option(None, "--name", envvar="LIES_WIKI_NAME"),
+    name: str | None = typer.Option(
+        None, "--name", envvar="LIES_WIKI_NAME", help="Wiki to query (default: $LIES_WIKI_NAME)."
+    ),
 ) -> None:
     """Query the wiki with qmd → index.md fallback."""
     configure_logging()
@@ -374,7 +419,9 @@ def query(
 
 @app.command()
 def lint(
-    name: str | None = typer.Option(None, "--name", envvar="LIES_WIKI_NAME"),
+    name: str | None = typer.Option(
+        None, "--name", envvar="LIES_WIKI_NAME", help="Wiki to lint (default: $LIES_WIKI_NAME)."
+    ),
     fix: bool = typer.Option(False, "--fix", help="Apply repair plan for safe_to_fix findings."),
     force_repair: bool = typer.Option(
         False,
@@ -547,7 +594,12 @@ def flock_force_repair(ctx: typer.Context) -> None:
 
 @app.command()
 def status(
-    name: str | None = typer.Option(None, "--name", envvar="LIES_WIKI_NAME"),
+    name: str | None = typer.Option(
+        None,
+        "--name",
+        envvar="LIES_WIKI_NAME",
+        help="Wiki to report status for (default: $LIES_WIKI_NAME).",
+    ),
 ) -> None:
     """Show qmd status and the last few log entries."""
     configure_logging()
@@ -572,7 +624,12 @@ def status(
 @app.callback(invoke_without_command=True)
 def main(
     ctx: typer.Context,
-    name: str | None = typer.Option(None, "--name", envvar="LIES_WIKI_NAME"),
+    name: str | None = typer.Option(
+        None,
+        "--name",
+        envvar="LIES_WIKI_NAME",
+        help="Wiki for REPL commands (default: $LIES_WIKI_NAME).",
+    ),
     no_memory: bool = typer.Option(
         False,
         "--no-memory",
@@ -622,12 +679,17 @@ def main(
 
 @app.command()
 def sync(
-    collection: Annotated[str | None, typer.Argument()] = None,
+    collection: Annotated[
+        str | None,
+        typer.Argument(help="Collection to sync (omit to sync every collection in the wiki)."),
+    ] = None,
     *,
     force: bool = False,
     wait: bool = False,
     fail_busy: bool = False,
-    name: str | None = typer.Option(None, "--name", envvar="LIES_WIKI_NAME"),
+    name: str | None = typer.Option(
+        None, "--name", envvar="LIES_WIKI_NAME", help="Wiki to sync (default: $LIES_WIKI_NAME)."
+    ),
 ) -> None:
     """Sync one or all collections."""
     from lies.etl.sync_helper import (
@@ -651,7 +713,9 @@ def sync(
 def reindex(
     *,
     reconcile: bool = False,
-    name: str | None = typer.Option(None, "--name", envvar="LIES_WIKI_NAME"),
+    name: str | None = typer.Option(
+        None, "--name", envvar="LIES_WIKI_NAME", help="Wiki to reindex (default: $LIES_WIKI_NAME)."
+    ),
 ) -> None:
     """Reindex QMD collections.
 
@@ -1163,7 +1227,13 @@ def providers_init(
         "--non-interactive",
         help="Skip prompts; requires LIES_PROVIDERS_PRESET in a future release; currently raises.",
     ),
-    name: str = typer.Option("default", "--name", "-n", envvar="LIES_WIKI_NAME"),
+    name: str = typer.Option(
+        "default",
+        "--name",
+        "-n",
+        envvar="LIES_WIKI_NAME",
+        help="Wiki context for providers.toml resolution (default: $LIES_WIKI_NAME, falls back to 'default').",
+    ),
 ) -> None:
     """Bootstrap providers.toml through the interactive wizard."""
     wiki = _providers_wiki(name)
@@ -1190,11 +1260,32 @@ def providers_init(
 
 @providers_app.command("add")
 def providers_add(
-    name_arg: str,
-    type_: str = typer.Option("anthropic", "--type", "-t"),
-    api_key_env: str = typer.Option(..., "--api-key-env", "-e"),
-    base_url: str | None = typer.Option(None, "--base-url", "-u"),
-    name: str = typer.Option("default", "--name", "-n", envvar="LIES_WIKI_NAME"),
+    name_arg: Annotated[str, typer.Argument(help="Provider id (the [providers.<id>] table key).")],
+    type_: str = typer.Option(
+        "anthropic",
+        "--type",
+        "-t",
+        help="Provider type (anthropic, openai, anthropic_compatible, ollama).",
+    ),
+    api_key_env: str = typer.Option(
+        ...,
+        "--api-key-env",
+        "-e",
+        help="Name of the environment variable holding the provider's API key.",
+    ),
+    base_url: str | None = typer.Option(
+        None,
+        "--base-url",
+        "-u",
+        help="Base URL for the provider's API (anthropic_compatible providers only).",
+    ),
+    name: str = typer.Option(
+        "default",
+        "--name",
+        "-n",
+        envvar="LIES_WIKI_NAME",
+        help="Wiki context for providers.toml resolution (default: $LIES_WIKI_NAME, falls back to 'default').",
+    ),
 ) -> None:
     """Append a provider entry to providers.toml."""
     from lies.providers.config import ProviderSpec
@@ -1221,8 +1312,16 @@ def providers_add(
 
 @providers_app.command("set-default")
 def providers_set_default(
-    model: str,
-    name: str = typer.Option("default", "--name", "-n", envvar="LIES_WIKI_NAME"),
+    model: Annotated[
+        str, typer.Argument(help="Model string to set as default (e.g. 'minimax:claude-opus').")
+    ],
+    name: str = typer.Option(
+        "default",
+        "--name",
+        "-n",
+        envvar="LIES_WIKI_NAME",
+        help="Wiki context for providers.toml resolution (default: $LIES_WIKI_NAME, falls back to 'default').",
+    ),
 ) -> None:
     """Replace ``default_model`` in providers.toml."""
     from lies.providers.errors import ProviderConfigError
@@ -1240,9 +1339,20 @@ def providers_set_default(
 
 @providers_app.command("assign")
 def providers_assign(
-    agent: str,
-    model: str,
-    name: str = typer.Option("default", "--name", "-n", envvar="LIES_WIKI_NAME"),
+    agent: Annotated[
+        str, typer.Argument(help="Agent name (must be one of the LIES AGENT_ROSTER).")
+    ],
+    model: Annotated[
+        str,
+        typer.Argument(help="Model string to assign to the agent (e.g. 'minimax:claude-opus')."),
+    ],
+    name: str = typer.Option(
+        "default",
+        "--name",
+        "-n",
+        envvar="LIES_WIKI_NAME",
+        help="Wiki context for providers.toml resolution (default: $LIES_WIKI_NAME, falls back to 'default').",
+    ),
 ) -> None:
     """Set ``agents[agent] = model`` in providers.toml."""
     from lies.providers.agents import AGENT_ROSTER
@@ -1267,8 +1377,16 @@ def providers_assign(
 
 @providers_app.command("unassign")
 def providers_unassign(
-    agent: str,
-    name: str = typer.Option("default", "--name", "-n", envvar="LIES_WIKI_NAME"),
+    agent: Annotated[
+        str, typer.Argument(help="Agent name to remove (must be one of the LIES AGENT_ROSTER).")
+    ],
+    name: str = typer.Option(
+        "default",
+        "--name",
+        "-n",
+        envvar="LIES_WIKI_NAME",
+        help="Wiki context for providers.toml resolution (default: $LIES_WIKI_NAME, falls back to 'default').",
+    ),
 ) -> None:
     """Remove ``agent`` from providers.toml's [agents] table."""
     from lies.providers.agents import AGENT_ROSTER
@@ -1293,7 +1411,13 @@ def providers_unassign(
 
 @providers_app.command("check")
 def providers_check(
-    name: str = typer.Option("default", "--name", "-n", envvar="LIES_WIKI_NAME"),
+    name: str = typer.Option(
+        "default",
+        "--name",
+        "-n",
+        envvar="LIES_WIKI_NAME",
+        help="Wiki context for providers.toml resolution (default: $LIES_WIKI_NAME, falls back to 'default').",
+    ),
 ) -> None:
     """Probe every provider in providers.toml for connectivity."""
     from lies.providers.errors import ProviderConfigError
@@ -1321,7 +1445,13 @@ def providers_list(
             help="Emit a JSON array of {id, default_model, agents} per provider instead of a table.",
         ),
     ] = False,
-    name: str = typer.Option("default", "--name", "-n", envvar="LIES_WIKI_NAME"),
+    name: str = typer.Option(
+        "default",
+        "--name",
+        "-n",
+        envvar="LIES_WIKI_NAME",
+        help="Wiki context for providers.toml resolution (default: $LIES_WIKI_NAME, falls back to 'default').",
+    ),
 ) -> None:
     """List every provider configured in providers.toml with default model and agent assignments."""
     import json
