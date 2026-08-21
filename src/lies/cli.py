@@ -462,19 +462,28 @@ def query(
     rich_help_panel="Querying and maintenance",
 )
 def lint(
-    name: str | None = typer.Option(
-        None, "--name", envvar="LIES_WIKI_NAME", help="Wiki to lint (default: $LIES_WIKI_NAME)."
-    ),
-    fix: bool = typer.Option(False, "--fix", help="Apply repair plan for safe_to_fix findings."),
-    force_repair: bool = typer.Option(
-        False,
-        "--force-repair",
-        help=(
-            "Reap a stale memory flock and retry once before applying the "
-            "repair plan. Only meaningful with --fix; surfaces "
-            "WikiFlockUnrepairable (exit 1) if the retry still loses."
+    name: Annotated[
+        str | None,
+        typer.Option(
+            "--name",
+            envvar="LIES_WIKI_NAME",
+            help="Wiki to lint (default: $LIES_WIKI_NAME).",
         ),
-    ),
+    ] = None,
+    fix: Annotated[
+        bool, typer.Option("--fix", help="Apply repair plan for safe_to_fix findings.")
+    ] = False,
+    force_repair: Annotated[
+        bool,
+        typer.Option(
+            "--force-repair",
+            help=(
+                "Reap a stale memory flock and retry once before applying the "
+                "repair plan. Only meaningful with --fix; surfaces "
+                "WikiFlockUnrepairable (exit 1) if the retry still loses."
+            ),
+        ),
+    ] = False,
 ) -> None:
     """Run lint; with --fix also apply the repair plan.
 
@@ -831,7 +840,7 @@ def collections_list(
             help="Emit a JSON array of {name, source, tags, language, sync_status} per collection.",
         ),
     ] = False,
-    wiki_name: Annotated[
+    name: Annotated[
         str | None,
         typer.Option(
             "--name",
@@ -845,7 +854,7 @@ def collections_list(
 
     from lies.collections.record import load_collection
 
-    wiki = resolve_wiki(wiki_name)
+    wiki = resolve_wiki(name)
     cfg_dir = wiki.collections_dir
     stems = sorted(p.stem for p in cfg_dir.glob("*.yaml"))
     if json_output:
@@ -876,8 +885,8 @@ def collections_list(
 
 @collections_app.command("show")
 def collections_show(
-    name: Annotated[str, typer.Argument(help="Collection name (e.g. 'claude-code').")],
-    wiki_name: Annotated[
+    collection_name: Annotated[str, typer.Argument(help="Collection name (e.g. 'claude-code').")],
+    name: Annotated[
         str | None,
         typer.Option(
             "--name",
@@ -889,8 +898,8 @@ def collections_show(
     """Show a single collection's full configuration: source, tags, language, registered status."""
     from lies.collections.record import load_collection
 
-    wiki = resolve_wiki(wiki_name)
-    c = load_collection(wiki, name)
+    wiki = resolve_wiki(name)
+    c = load_collection(wiki, collection_name)
     typer.echo(f"name={c.name} source={c.source} tags={c.tags}")
     typer.echo(f"language: {resolve_language(wiki, c)}")
     # The CLI doesn't know whether sync has run in this process;
@@ -901,7 +910,7 @@ def collections_show(
     svc = WikiMemoryService(wiki)
     registered = svc.registered_collections()
     ref = next(
-        (r for r in registered if r.collection_id == name),
+        (r for r in registered if r.collection_id == collection_name),
         None,
     )
     typer.echo(f"status: {'registered' if ref else 'pending'}")
@@ -909,7 +918,7 @@ def collections_show(
 
 @collections_app.command("new")
 def collections_new(
-    name: Annotated[str, typer.Argument(help="Collection name to create.")],
+    collection_name: Annotated[str, typer.Argument(help="Collection name to create.")],
     *,
     source: Annotated[
         str | None,
@@ -928,7 +937,7 @@ def collections_new(
             help="Write the collection YAML to disk; without --apply the config is printed to stdout only.",
         ),
     ] = False,
-    wiki_name: Annotated[
+    name: Annotated[
         str | None,
         typer.Option(
             "--name",
@@ -961,7 +970,7 @@ def collections_new(
     )
     from lies.collections.record import Collection, save_collection
 
-    wiki = resolve_wiki(wiki_name)
+    wiki = resolve_wiki(name)
     cfg_dir = wiki.collections_dir
     if not source or not prompt:
         raise typer.BadParameter("collections new requires --source and --prompt")
@@ -1008,8 +1017,8 @@ def collections_new(
             if apply:
                 now = datetime.now(tz=UTC)
                 payload = dict(out.collection)
-                payload.setdefault("name", name)
-                payload.setdefault("path", str(wiki.data_root / "raw" / name))
+                payload.setdefault("name", collection_name)
+                payload.setdefault("path", str(wiki.data_root / "raw" / collection_name))
                 payload.setdefault("created_at", now)
                 payload.setdefault("updated_at", now)
                 # The agent may emit ISO strings; coerce to datetime
@@ -1027,14 +1036,14 @@ def collections_new(
                     payload["doc_path"] = Path(doc_path)
                 collection = Collection(**payload)
                 save_collection(wiki, collection)
-                typer.echo(f"wrote {cfg_dir / (name + '.yaml')}")
+                typer.echo(f"wrote {cfg_dir / (collection_name + '.yaml')}")
             return
         raise typer.BadParameter("agent returned unexpected output")
 
 
 @collections_app.command("modify")
 def collections_modify(
-    name: Annotated[str, typer.Argument(help="Collection name to modify.")],
+    collection_name: Annotated[str, typer.Argument(help="Collection name to modify.")],
     *,
     set_: Annotated[
         list[str] | None,
@@ -1058,7 +1067,7 @@ def collections_modify(
             help="Path to a YAML patch file with editable fields (mutually exclusive with --set).",
         ),
     ] = None,
-    wiki_name: Annotated[
+    name: Annotated[
         str | None,
         typer.Option(
             "--name",
@@ -1075,13 +1084,13 @@ def collections_modify(
 
     from lies.collections.record import Collection, load_collection, save_collection
 
-    wiki = resolve_wiki(wiki_name)
+    wiki = resolve_wiki(name)
     if from_file is not None and set_:
         raise typer.BadParameter("modify accepts --from-file or --set, not both")
     if from_file is None and not set_ and not tag and not untag:
         raise typer.BadParameter("modify requires --from-file, --set, --tag, or --untag")
 
-    existing = load_collection(wiki, name)
+    existing = load_collection(wiki, collection_name)
 
     editable_top = {
         "source",
@@ -1170,18 +1179,18 @@ def collections_modify(
     updates["updated_at"] = datetime.now(tz=UTC)
     new = _dc_replace(existing, **updates)
     save_collection(wiki, new)
-    typer.echo(f"updated {Collection.config_path(wiki, name)}")
+    typer.echo(f"updated {Collection.config_path(wiki, collection_name)}")
 
 
 @collections_app.command("delete")
 def collections_delete(
-    name: Annotated[str, typer.Argument(help="Collection name to delete.")],
+    collection_name: Annotated[str, typer.Argument(help="Collection name to delete.")],
     *,
     force: Annotated[
         bool,
         typer.Option("--force", help="Skip the confirmation prompt."),
     ] = False,
-    wiki_name: Annotated[
+    name: Annotated[
         str | None,
         typer.Option(
             "--name",
@@ -1193,7 +1202,7 @@ def collections_delete(
     """Delete a collection's YAML config (does not touch the source path)."""
     from rich.prompt import Confirm
 
-    wiki = resolve_wiki(wiki_name)
+    wiki = resolve_wiki(name)
     cfg_path = wiki.collections_dir / f"{name}.yaml"
     if not cfg_path.exists():
         raise typer.BadParameter(f"collection {name!r} not found at {cfg_path}")
