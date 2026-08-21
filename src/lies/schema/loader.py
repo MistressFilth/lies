@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from importlib import resources
 
 from lies.wiki.wiki import Wiki
@@ -24,10 +25,10 @@ def load_default_schema() -> str:
         return (
             resources.files("lies.schema").joinpath("default_schema.md").read_text(encoding="utf-8")
         )
-    except (FileNotFoundError, ModuleNotFoundError) as exc:
+    except FileNotFoundError, ModuleNotFoundError:
         raise SchemaNotFoundError(
             "Default schema not found in package (expected lies.schema.default_schema.md)"
-        ) from exc
+        ) from sys.exc_info()[1]
 
 
 def load_schema(wiki: Wiki) -> str:
