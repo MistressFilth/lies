@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -47,8 +48,8 @@ async def read_file(ctx: RunContext[None], path: str, raw_root: str) -> str:
         return f"ERROR: source is not a file: {path}"
     try:
         return source.read_text(encoding="utf-8")
-    except (OSError, UnicodeError) as exc:
-        return f"ERROR: could not read {path}: {exc}"
+    except OSError, UnicodeError:
+        return f"ERROR: could not read {path}: {sys.exc_info()[1]}"
 
 
 SOURCE_READER_SYSTEM_PROMPT = """Your job is to read a single raw source and

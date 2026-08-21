@@ -25,6 +25,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import sys
 from dataclasses import dataclass
 from typing import Literal
 
@@ -83,8 +84,10 @@ class Registry:
                 raise RegistryCorrupt(path, f"entry {cid!r} must be an object")
             try:
                 collections[cid] = WikiCollectionRef(**ref_payload)
-            except (TypeError, ValueError) as exc:
-                raise RegistryCorrupt(path, f"entry {cid!r} invalid: {exc}") from exc
+            except TypeError, ValueError:
+                raise RegistryCorrupt(
+                    path, f"entry {cid!r} invalid: {sys.exc_info()[1]}"
+                ) from sys.exc_info()[1]
         return Registry(collections=collections)
 
     @staticmethod

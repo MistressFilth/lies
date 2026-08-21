@@ -15,6 +15,7 @@ to already be registered under ``$LIES_XDG_DATA_HOME``.
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from typing import cast
 
@@ -207,8 +208,8 @@ def lint(
     orch = Orchestrator(wiki=wiki)
     try:
         return orch.run_lint(apply=fix, force_repair=force_repair)
-    except (WikiFlockUnrepairable, WikiLockBusy) as exc:
-        return f"error: {exc}"
+    except WikiFlockUnrepairable, WikiLockBusy:
+        return f"error: {sys.exc_info()[1]}"
 
 
 # ---------------------------------------------------------------------------
