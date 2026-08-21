@@ -238,7 +238,13 @@ def migrate_xdg(
     name: Annotated[
         str, typer.Argument(help="Wiki name (the XDG role-routed subdir to migrate into).")
     ],
-    force: bool = False,
+    force: Annotated[
+        bool,
+        typer.Option(
+            "--force/--no-force",
+            help="Overwrite existing files on the destination wiki (default: skip).",
+        ),
+    ] = False,
 ) -> None:
     """Migrate a legacy ``.lies/`` wiki into XDG role-routed dirs.
 
@@ -358,8 +364,20 @@ def init(
 def ingest(
     collection: str,
     *,
-    source: str | None = None,
-    model: str | None = None,
+    source: Annotated[
+        str | None,
+        typer.Option(
+            "--source",
+            help="Path, URL, or '-' for stdin (default: prompt).",
+        ),
+    ] = None,
+    model: Annotated[
+        str | None,
+        typer.Option(
+            "--model",
+            help="Override the model id used for ingestion (default: project's default_model).",
+        ),
+    ] = None,
     name: str | None = typer.Option(
         None,
         "--name",
@@ -715,9 +733,27 @@ def sync(
         typer.Argument(help="Collection to sync (omit to sync every collection in the wiki)."),
     ] = None,
     *,
-    force: bool = False,
-    wait: bool = False,
-    fail_busy: bool = False,
+    force: Annotated[
+        bool,
+        typer.Option(
+            "--force/--no-force",
+            help="Force-sync even if a sync is in progress (default: fail-busy).",
+        ),
+    ] = False,
+    wait: Annotated[
+        bool,
+        typer.Option(
+            "--wait/--no-wait",
+            help="Wait for an in-progress sync to finish before proceeding (default: exit immediately).",
+        ),
+    ] = False,
+    fail_busy: Annotated[
+        bool,
+        typer.Option(
+            "--fail-busy/--no-fail-busy",
+            help="Return non-zero exit code if a sync is in progress (default: wait).",
+        ),
+    ] = False,
     name: str | None = typer.Option(
         None, "--name", envvar="LIES_WIKI_NAME", help="Wiki to sync (default: $LIES_WIKI_NAME)."
     ),
@@ -746,7 +782,13 @@ def sync(
 )
 def reindex(
     *,
-    reconcile: bool = False,
+    reconcile: Annotated[
+        bool,
+        typer.Option(
+            "--reconcile/--no-reconcile",
+            help="Reconcile the qmd index with the wiki's collection directory before reindexing (default: just reindex).",
+        ),
+    ] = False,
     name: str | None = typer.Option(
         None, "--name", envvar="LIES_WIKI_NAME", help="Wiki to reindex (default: $LIES_WIKI_NAME)."
     ),

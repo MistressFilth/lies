@@ -6,12 +6,81 @@ the help= text from the spec at
 
 from __future__ import annotations
 
+import re
+
 import pytest
 from typer.testing import CliRunner
 
 from lies.cli import app
 
 runner = CliRunner()
+
+# Regexes that strip the leading flag spec from a rich --help option line.
+# Order matters: leading flag, optional --no-flag, optional <metavar>, optional [default: ...]
+_LEADING_FLAG = re.compile(r"^--[\w-]+(?:[/\s][\w-]+)*\s*")
+_OPTIONAL_NO_FLAG = re.compile(r"^--[\w-]+\s*")
+_OPTIONAL_METAVAR = re.compile(r"^<[^>]+>\s*")
+_OPTIONAL_DEFAULT = re.compile(r"^\[[^\]]+\]\s*")
+
+
+def _option_description(line: str) -> str:
+    """Strip the flag spec tokens from an option line; return the remaining text.
+
+    Empty string means the option line ended immediately after the flag spec,
+    with no description text following it.
+    """
+    content = line.strip()
+    # Strip the rich panel border characters (│) on both ends
+    while content.startswith("│"):
+        content = content[1:].strip()
+    while content.endswith("│"):
+        content = content[:-1].strip()
+    content = _LEADING_FLAG.sub("", content)
+    content = _OPTIONAL_NO_FLAG.sub("", content)
+    content = _OPTIONAL_METAVAR.sub("", content)
+    content = _OPTIONAL_DEFAULT.sub("", content)
+    return content.strip()
+
+
+def _option_start_lines(output: str) -> list[str]:
+    """Return the lines that start an option entry in a rich --help panel.
+
+    A line "starts an option entry" if it begins with the panel border
+    character (│) followed by a flag (--...). Continuation lines
+    (env-var info, wrapped descriptions) are filtered out because they
+    do not start with -- directly after the panel border.
+    """
+    lines = output.splitlines()
+    starts = []
+    for line in lines:
+        stripped = line.lstrip()
+        if stripped.startswith(("│ --", "|--")):
+            starts.append(line)
+    return starts
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        ["migrate-xdg"],
+        ["ingest"],
+        ["sync"],
+        ["reindex"],
+    ],
+)
+def test_every_option_has_help_text(command):
+    """Every rendered option in --help output must carry a non-empty description.
+
+    Guards against re-introducing a bare `bool = False` or `str | None = None`
+    parameter without an explicit `Annotated[..., typer.Option(..., help=...)]`
+    wrap (see specs/2026-08-20-bare-bool-help-gap-design.md).
+    """
+    result = runner.invoke(app, command + ["--help"])
+    assert result.exit_code == 0, f"command {command} --help failed: {result.output}"
+
+    for line in _option_start_lines(result.output):
+        description = _option_description(line)
+        assert description, f"no help text in option line for {command}: {line!r}"
 
 
 @pytest.mark.parametrize(
