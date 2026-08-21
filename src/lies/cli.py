@@ -44,7 +44,10 @@ app = typer.Typer(
 console = Console()
 
 
-@app.command()
+@app.command(
+    short_help="Print the LIES version and exit.",
+    rich_help_panel="Meta",
+)
 def version() -> None:
     """Print the LIES version and exit."""
     typer.echo(f"lies {__version__}")
@@ -54,7 +57,7 @@ mcp_app = typer.Typer(
     name="mcp",
     help="Run the MCP server on stdio, or manage the http daemon.",
 )
-app.add_typer(mcp_app, name="mcp")
+app.add_typer(mcp_app, name="mcp", rich_help_panel="Operator tooling")
 
 
 def _run_stdio() -> None:
@@ -115,7 +118,12 @@ def up(
     port: int = daemon.DEFAULT_PORT,
     timeout: float = typer.Option(10.0, help="Seconds to wait for the port to accept."),
     no_qmd: bool = typer.Option(False, "--no-qmd", help="Skip ensuring qmd's daemon."),
-    name: str | None = typer.Option(None, "--name", envvar="LIES_WIKI_NAME"),
+    name: str | None = typer.Option(
+        None,
+        "--name",
+        envvar="LIES_WIKI_NAME",
+        help="Wiki to start the daemon for (default: $LIES_WIKI_NAME).",
+    ),
 ) -> None:
     """Start a detached streamable-http MCP daemon for this wiki.
 
@@ -136,9 +144,9 @@ def up(
         for line in daemon.tail_log(wiki, 20):
             typer.echo(line, err=True)
         raise typer.Exit(code=1) from exc
-    except (daemon.NonLoopbackBind, daemon.PortUnavailable, daemon.DaemonBusy) as exc:
-        typer.echo(f"error: {exc}", err=True)
-        raise typer.Exit(code=1) from exc
+    except daemon.NonLoopbackBind, daemon.PortUnavailable, daemon.DaemonBusy:
+        typer.echo(f"error: {sys.exc_info()[1]}", err=True)
+        raise typer.Exit(code=1)
     typer.echo(f"lies mcp daemon running at {daemon.daemon_url(rec)} (pid {rec.pid})")
 
     if no_qmd:
@@ -153,7 +161,12 @@ def up(
 @mcp_app.command()
 def down(
     grace: float = typer.Option(10.0, help="Seconds to wait after SIGTERM before SIGKILL."),
-    name: str | None = typer.Option(None, "--name", envvar="LIES_WIKI_NAME"),
+    name: str | None = typer.Option(
+        None,
+        "--name",
+        envvar="LIES_WIKI_NAME",
+        help="Wiki whose daemon should be stopped (default: $LIES_WIKI_NAME).",
+    ),
 ) -> None:
     """Stop the MCP daemon tracked for this wiki.
 
@@ -165,9 +178,9 @@ def down(
     wiki = resolve_wiki(name)
     try:
         result = daemon.stop_daemon(wiki, grace=grace)
-    except (daemon.DaemonBusy, daemon.DaemonStopFailed) as exc:
-        typer.echo(f"error: {exc}", err=True)
-        raise typer.Exit(code=1) from exc
+    except daemon.DaemonBusy, daemon.DaemonStopFailed:
+        typer.echo(f"error: {sys.exc_info()[1]}", err=True)
+        raise typer.Exit(code=1)
     if result.action == "none":
         typer.echo("no daemon running")
     elif result.action == "cleared_stale":
@@ -178,7 +191,12 @@ def down(
 
 @mcp_app.command(name="status")
 def _mcp_status(
-    name: str | None = typer.Option(None, "--name", envvar="LIES_WIKI_NAME"),
+    name: str | None = typer.Option(
+        None,
+        "--name",
+        envvar="LIES_WIKI_NAME",
+        help="Wiki to report daemon status for (default: $LIES_WIKI_NAME).",
+    ),
 ) -> None:
     """Report whether an MCP daemon is running for this wiki.
 
@@ -209,8 +227,25 @@ def _mcp_status(
     raise typer.Exit(code=1)
 
 
-@app.command()
-def migrate_xdg(legacy_path: Path, name: str, force: bool = False) -> None:
+@app.command(
+    short_help="Migrate a legacy .lies/ wiki into XDG role-routed dirs.",
+    rich_help_panel="Wiki management",
+)
+def migrate_xdg(
+    legacy_path: Annotated[
+        Path, typer.Argument(help="Path to the legacy .lies/ directory to migrate.")
+    ],
+    name: Annotated[
+        str, typer.Argument(help="Wiki name (the XDG role-routed subdir to migrate into).")
+    ],
+    force: Annotated[
+        bool,
+        typer.Option(
+            "--force/--no-force",
+            help="Overwrite existing files on the destination wiki (default: skip).",
+        ),
+    ] = False,
+) -> None:
     """Migrate a legacy ``.lies/`` wiki into XDG role-routed dirs.
 
     With ``--force``, conflicting source files (destination has
@@ -233,9 +268,19 @@ def migrate_xdg(legacy_path: Path, name: str, force: bool = False) -> None:
     )
 
 
-@app.command(name="config")
+@app.command(
+    name="config",
+    short_help="Print active model + wiki name + resolved language + per-agent model assignments.",
+    rich_help_panel="Wiki management",
+)
 def config_cmd(
-    name: str = typer.Option("default", "--name", "-n", envvar="LIES_WIKI_NAME"),
+    name: str = typer.Option(
+        "default",
+        "--name",
+        "-n",
+        envvar="LIES_WIKI_NAME",
+        help="Wiki to print config for (default: $LIES_WIKI_NAME, falls back to 'default').",
+    ),
 ) -> None:
     """Print active model + wiki name + resolved language + per-agent model assignments."""
     from lies.providers import AGENT_ROSTER, load_providers_config, resolve_model
@@ -269,8 +314,15 @@ def config_cmd(
             typer.echo(f"  {agent_name.ljust(width)}  {cfg.agents[agent_name]}")
 
 
-@app.command()
-def init(name: str) -> None:
+@app.command(
+    short_help="Initialize a new wiki under XDG_DATA_HOME.",
+    rich_help_panel="Wiki management",
+)
+def init(
+    name: Annotated[
+        str, typer.Argument(help="Wiki name (the XDG role-routed subdir, e.g. 'mywiki').")
+    ],
+) -> None:
     """Initialize a new wiki under XDG_DATA_HOME."""
     from lies.errors import WikiAlreadyExists
     from lies.wiki.layout import WikiLayout, copy_default_schema, git_init_initial
@@ -305,13 +357,33 @@ def init(name: str) -> None:
     typer.echo(f"initialized wiki '{name}' at {wiki.data_root}")
 
 
-@app.command()
+@app.command(
+    short_help="Ingest a source into a collection (creates collection if missing).",
+    rich_help_panel="Source ingestion",
+)
 def ingest(
     collection: str,
     *,
-    source: str | None = None,
-    model: str | None = None,
-    name: str | None = typer.Option(None, "--name", envvar="LIES_WIKI_NAME"),
+    source: Annotated[
+        str | None,
+        typer.Option(
+            "--source",
+            help="Path, URL, or '-' for stdin (default: prompt).",
+        ),
+    ] = None,
+    model: Annotated[
+        str | None,
+        typer.Option(
+            "--model",
+            help="Override the model id used for ingestion (default: project's default_model).",
+        ),
+    ] = None,
+    name: str | None = typer.Option(
+        None,
+        "--name",
+        envvar="LIES_WIKI_NAME",
+        help="Wiki to ingest into (default: $LIES_WIKI_NAME).",
+    ),
 ) -> None:
     """Ingest a source into a collection (creates collection if missing).
 
@@ -337,10 +409,18 @@ def ingest(
         release_heartbeat(wiki)
 
 
-@app.command()
+@app.command(
+    short_help="Atomic ingest of a single source into the wiki identified by --name.",
+    rich_help_panel="Source ingestion",
+)
 def ingest_source(
     source: str = typer.Argument(..., help="Path, URL, or '-' for stdin."),
-    name: str | None = typer.Option(None, "--name", envvar="LIES_WIKI_NAME"),
+    name: str | None = typer.Option(
+        None,
+        "--name",
+        envvar="LIES_WIKI_NAME",
+        help="Wiki to ingest into (default: $LIES_WIKI_NAME).",
+    ),
 ) -> None:
     """Atomic ingest of a single source into the wiki identified by ``name``.
 
@@ -357,10 +437,15 @@ def ingest_source(
     typer.echo(output)
 
 
-@app.command()
+@app.command(
+    short_help="Query the wiki with qmd → index.md fallback.",
+    rich_help_panel="Querying and maintenance",
+)
 def query(
     question: str = typer.Argument(..., help="The question to ask the wiki."),
-    name: str | None = typer.Option(None, "--name", envvar="LIES_WIKI_NAME"),
+    name: str | None = typer.Option(
+        None, "--name", envvar="LIES_WIKI_NAME", help="Wiki to query (default: $LIES_WIKI_NAME)."
+    ),
 ) -> None:
     """Query the wiki with qmd → index.md fallback."""
     configure_logging()
@@ -372,19 +457,33 @@ def query(
     console.print(Markdown(answer.answer))
 
 
-@app.command()
+@app.command(
+    short_help="Run lint; with --fix also apply the repair plan.",
+    rich_help_panel="Querying and maintenance",
+)
 def lint(
-    name: str | None = typer.Option(None, "--name", envvar="LIES_WIKI_NAME"),
-    fix: bool = typer.Option(False, "--fix", help="Apply repair plan for safe_to_fix findings."),
-    force_repair: bool = typer.Option(
-        False,
-        "--force-repair",
-        help=(
-            "Reap a stale memory flock and retry once before applying the "
-            "repair plan. Only meaningful with --fix; surfaces "
-            "WikiFlockUnrepairable (exit 1) if the retry still loses."
+    name: Annotated[
+        str | None,
+        typer.Option(
+            "--name",
+            envvar="LIES_WIKI_NAME",
+            help="Wiki to lint (default: $LIES_WIKI_NAME).",
         ),
-    ),
+    ] = None,
+    fix: Annotated[
+        bool, typer.Option("--fix", help="Apply repair plan for safe_to_fix findings.")
+    ] = False,
+    force_repair: Annotated[
+        bool,
+        typer.Option(
+            "--force-repair",
+            help=(
+                "Reap a stale memory flock and retry once before applying the "
+                "repair plan. Only meaningful with --fix; surfaces "
+                "WikiFlockUnrepairable (exit 1) if the retry still loses."
+            ),
+        ),
+    ] = False,
 ) -> None:
     """Run lint; with --fix also apply the repair plan.
 
@@ -418,7 +517,7 @@ def lint(
 
 
 flock_app = typer.Typer(help="Inspect or repair a wiki's memory flock.")
-app.add_typer(flock_app, name="flock")
+app.add_typer(flock_app, name="flock", rich_help_panel="Operator tooling")
 
 
 @flock_app.callback(invoke_without_command=True)
@@ -545,9 +644,17 @@ def flock_force_repair(ctx: typer.Context) -> None:
     typer.echo("result   : ok (recovery succeeded)")
 
 
-@app.command()
+@app.command(
+    short_help="Show qmd status and the last few log entries.",
+    rich_help_panel="Querying and maintenance",
+)
 def status(
-    name: str | None = typer.Option(None, "--name", envvar="LIES_WIKI_NAME"),
+    name: str | None = typer.Option(
+        None,
+        "--name",
+        envvar="LIES_WIKI_NAME",
+        help="Wiki to report status for (default: $LIES_WIKI_NAME).",
+    ),
 ) -> None:
     """Show qmd status and the last few log entries."""
     configure_logging()
@@ -572,7 +679,12 @@ def status(
 @app.callback(invoke_without_command=True)
 def main(
     ctx: typer.Context,
-    name: str | None = typer.Option(None, "--name", envvar="LIES_WIKI_NAME"),
+    name: str | None = typer.Option(
+        None,
+        "--name",
+        envvar="LIES_WIKI_NAME",
+        help="Wiki for REPL commands (default: $LIES_WIKI_NAME).",
+    ),
     no_memory: bool = typer.Option(
         False,
         "--no-memory",
@@ -620,14 +732,40 @@ def main(
     console.print("\nbye.")
 
 
-@app.command()
+@app.command(
+    short_help="Sync one or all collections.",
+    rich_help_panel="Source ingestion",
+)
 def sync(
-    collection: Annotated[str | None, typer.Argument()] = None,
+    collection: Annotated[
+        str | None,
+        typer.Argument(help="Collection to sync (omit to sync every collection in the wiki)."),
+    ] = None,
     *,
-    force: bool = False,
-    wait: bool = False,
-    fail_busy: bool = False,
-    name: str | None = typer.Option(None, "--name", envvar="LIES_WIKI_NAME"),
+    force: Annotated[
+        bool,
+        typer.Option(
+            "--force/--no-force",
+            help="Force-sync even if a sync is in progress (default: fail-busy).",
+        ),
+    ] = False,
+    wait: Annotated[
+        bool,
+        typer.Option(
+            "--wait/--no-wait",
+            help="Wait for an in-progress sync to finish before proceeding (default: exit immediately).",
+        ),
+    ] = False,
+    fail_busy: Annotated[
+        bool,
+        typer.Option(
+            "--fail-busy/--no-fail-busy",
+            help="Return non-zero exit code if a sync is in progress (default: wait).",
+        ),
+    ] = False,
+    name: str | None = typer.Option(
+        None, "--name", envvar="LIES_WIKI_NAME", help="Wiki to sync (default: $LIES_WIKI_NAME)."
+    ),
 ) -> None:
     """Sync one or all collections."""
     from lies.etl.sync_helper import (
@@ -647,11 +785,22 @@ def sync(
         release_heartbeat(wiki)
 
 
-@app.command()
+@app.command(
+    short_help="Reindex QMD collections.",
+    rich_help_panel="Source ingestion",
+)
 def reindex(
     *,
-    reconcile: bool = False,
-    name: str | None = typer.Option(None, "--name", envvar="LIES_WIKI_NAME"),
+    reconcile: Annotated[
+        bool,
+        typer.Option(
+            "--reconcile/--no-reconcile",
+            help="Reconcile the qmd index with the wiki's collection directory before reindexing (default: just reindex).",
+        ),
+    ] = False,
+    name: str | None = typer.Option(
+        None, "--name", envvar="LIES_WIKI_NAME", help="Wiki to reindex (default: $LIES_WIKI_NAME)."
+    ),
 ) -> None:
     """Reindex QMD collections.
 
@@ -670,226 +819,398 @@ def reindex(
         WikiLinkResolver.build((wiki.wiki_dir, wiki.raw_dir))
 
 
-@app.command()
-def collections(
-    action: Annotated[str, typer.Argument()],
-    name: Annotated[str | None, typer.Argument()] = None,
-    *,
-    tag: str | None = None,
-    source: str | None = None,
-    prompt: str | None = None,
-    apply: bool = False,
-    from_file: Path | None = typer.Option(None, "--from-file"),  # noqa: B008
-    set_: list[str] | None = typer.Option(None, "--set"),  # noqa: B008
-    wiki_name: str | None = typer.Option(None, "--name", envvar="LIES_WIKI_NAME"),
+# --- `lies collections` sub-app ----------------------------------------------
+#
+# Real subcommands (list / show / new / modify / delete). The pre-fix shape
+# was a single ``collections {action} <str>`` action-dispatch; the parent
+# --help showed ``{action} <str>`` with no enumeration of valid actions.
+# Each new subcommand surfaces in the parent's Commands list.
+
+collections_app = typer.Typer(
+    help="Inspect, modify, and author collection configurations.",
+)
+
+
+@collections_app.command("list")
+def collections_list(
+    json_output: Annotated[
+        bool,
+        typer.Option(
+            "--json",
+            help="Emit a JSON array of {name, source, tags, language, sync_status} per collection.",
+        ),
+    ] = False,
+    name: Annotated[
+        str | None,
+        typer.Option(
+            "--name",
+            envvar="LIES_WIKI_NAME",
+            help="Wiki to inspect (defaults to $LIES_WIKI_NAME).",
+        ),
+    ] = None,
 ) -> None:
-    """Inspect, modify, and author collection configurations."""
+    """List every collection in the wiki's collections dir with source, tags, and sync status."""
     import json
+
+    from lies.collections.record import load_collection
+
+    wiki = resolve_wiki(name)
+    cfg_dir = wiki.collections_dir
+    stems = sorted(p.stem for p in cfg_dir.glob("*.yaml"))
+    if json_output:
+        from lies.memory.service import WikiMemoryService
+
+        svc = WikiMemoryService(wiki)
+        registered = svc.registered_collections()
+        registered_ids = {r.collection_id for r in registered}
+        rows: list[dict[str, object]] = []
+        for stem in stems:
+            c = load_collection(wiki, stem)
+            rows.append(
+                {
+                    "name": c.name,
+                    "source": c.source,
+                    "tags": c.tags,
+                    "language": resolve_language(wiki, c),
+                    "sync_status": "registered" if stem in registered_ids else "pending",
+                }
+            )
+        typer.echo(json.dumps(rows, indent=2))
+        return
+    # Default text output: one stem per line (preserves the pre-split
+    # ``lies collections list`` behavior verbatim).
+    for stem in stems:
+        typer.echo(stem)
+
+
+@collections_app.command("show")
+def collections_show(
+    collection_name: Annotated[str, typer.Argument(help="Collection name (e.g. 'claude-code').")],
+    name: Annotated[
+        str | None,
+        typer.Option(
+            "--name",
+            envvar="LIES_WIKI_NAME",
+            help="Wiki containing the collection.",
+        ),
+    ] = None,
+) -> None:
+    """Show a single collection's full configuration: source, tags, language, registered status."""
+    from lies.collections.record import load_collection
+
+    wiki = resolve_wiki(name)
+    c = load_collection(wiki, collection_name)
+    typer.echo(f"name={c.name} source={c.source} tags={c.tags}")
+    typer.echo(f"language: {resolve_language(wiki, c)}")
+    # The CLI doesn't know whether sync has run in this process;
+    # an empty registry means the in-process WikiMemoryService for
+    # this wiki root has not registered any collection yet.
+    from lies.memory.service import WikiMemoryService
+
+    svc = WikiMemoryService(wiki)
+    registered = svc.registered_collections()
+    ref = next(
+        (r for r in registered if r.collection_id == collection_name),
+        None,
+    )
+    typer.echo(f"status: {'registered' if ref else 'pending'}")
+
+
+@collections_app.command("new")
+def collections_new(
+    collection_name: Annotated[str, typer.Argument(help="Collection name to create.")],
+    *,
+    source: Annotated[
+        str | None,
+        typer.Option(
+            help="Source path or URL for the collection (e.g. a local dir or git URL).",
+        ),
+    ] = None,
+    prompt: Annotated[
+        str | None,
+        typer.Option(help="Path to a prompt file; reads stdin if omitted."),
+    ] = None,
+    apply: Annotated[
+        bool,
+        typer.Option(
+            "--apply/--no-apply",
+            help="Write the collection YAML to disk; without --apply the config is printed to stdout only.",
+        ),
+    ] = False,
+    name: Annotated[
+        str | None,
+        typer.Option(
+            "--name",
+            envvar="LIES_WIKI_NAME",
+            help="Wiki to create the collection in.",
+        ),
+    ] = None,
+) -> None:
+    """Create a new collection via the interactive wizard."""
     from datetime import datetime
 
     import yaml  # type: ignore[import-untyped]
     from rich.prompt import Prompt
 
-    from lies.collections.record import (
-        Collection,
-        load_collection,
-        save_collection,
+    # Import the agent inside the body so that tests can mock
+    # ``lies.agents.collection_author.collection_author_agent`` at
+    # the source module. Module-level imports would freeze the
+    # reference before the mock applies.
+    from lies.agents.collection_author import (
+        AuthorProposal as _AuthorProposal,
     )
+    from lies.agents.collection_author import (
+        AuthorQuestion as _AuthorQuestion,
+    )
+    from lies.agents.collection_author import (
+        CollectionAuthorDeps as _AuthorDeps,
+    )
+    from lies.agents.collection_author import (
+        collection_author_agent as _factory,
+    )
+    from lies.collections.record import Collection, save_collection
 
-    wiki = resolve_wiki(wiki_name)
+    wiki = resolve_wiki(name)
     cfg_dir = wiki.collections_dir
-    if action == "list":
-        for p in sorted(cfg_dir.glob("*.yaml")):
-            print(p.stem)
-    elif action == "show" and name:
-        from lies.memory.service import WikiMemoryService
-
-        c = load_collection(wiki, name)
-        print(f"name={c.name} source={c.source} tags={c.tags}")
-        print(f"language: {resolve_language(wiki, c)}")
-        # The CLI doesn't know whether sync has run in this process;
-        # an empty registry means the in-process WikiMemoryService for
-        # this wiki root has not registered any collection yet.
-        svc = WikiMemoryService(wiki)
-        registered = svc.registered_collections()
-        ref = next(
-            (r for r in registered if r.collection_id == name),
-            None,
+    if not source or not prompt:
+        raise typer.BadParameter("collections new requires --source and --prompt")
+    # Manifest-only fetch (no body). The scraper's emit_manifest
+    # expects a list of ParsedDoc; an empty list produces an empty
+    # manifest, which is fine — the agent uses it to ask format
+    # questions and the user supplies the rest.
+    scraper = pick_scraper(source)
+    scratch_dir = wiki.scratch_dir
+    manifest_path = scraper.emit_manifest([], scratch_dir)
+    manifest: list[dict[str, object]] = []
+    if manifest_path and manifest_path.exists():
+        data = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest = list(data.get("files", []))
+    agent = _factory()
+    history: list[object] = []
+    deps = _AuthorDeps(manifest=manifest)
+    while True:
+        # ``message_history`` expects a typed Sequence of model
+        # messages; we accept arbitrary user-prompt injections from
+        # the rich-prompt loop, so cast to Any at the boundary.
+        result = agent.run_sync(
+            prompt,
+            deps=deps,
+            message_history=cast(Any, history),
         )
-        print(f"status: {'registered' if ref else 'pending'}")
-    elif action == "modify" and name:
-        from dataclasses import replace as _dc_replace
+        history.append(result.new_messages())
+        out = result.output
+        if isinstance(out, _AuthorQuestion):
+            if out.options:
+                answer = Prompt.ask(
+                    out.prompt,
+                    choices=out.options,
+                    default=out.default or out.options[0],
+                )
+            elif out.default is not None:
+                answer = Prompt.ask(out.prompt, default=out.default)
+            else:
+                answer = Prompt.ask(out.prompt)
+            history.append({"role": "user", "content": f"{out.id}: {answer}"})
+            continue
+        if isinstance(out, _AuthorProposal):
+            typer.echo(yaml.safe_dump(out.collection, sort_keys=True))
+            if apply:
+                now = datetime.now(tz=UTC)
+                payload = dict(out.collection)
+                payload.setdefault("name", collection_name)
+                payload.setdefault("path", str(wiki.data_root / "raw" / collection_name))
+                payload.setdefault("created_at", now)
+                payload.setdefault("updated_at", now)
+                # The agent may emit ISO strings; coerce to datetime
+                # so Collection's typed fields and save_collection's
+                # .isoformat() call work either way.
+                created = payload.get("created_at")
+                updated = payload.get("updated_at")
+                if isinstance(created, str):
+                    payload["created_at"] = datetime.fromisoformat(created)
+                if isinstance(updated, str):
+                    payload["updated_at"] = datetime.fromisoformat(updated)
+                payload["path"] = Path(payload["path"])
+                doc_path = payload.get("doc_path")
+                if doc_path is not None:
+                    payload["doc_path"] = Path(doc_path)
+                collection = Collection(**payload)
+                save_collection(wiki, collection)
+                typer.echo(f"wrote {cfg_dir / (collection_name + '.yaml')}")
+            return
+        raise typer.BadParameter("agent returned unexpected output")
 
-        if from_file is not None and set_:
-            raise typer.BadParameter("modify accepts --from-file or --set, not both")
-        if from_file is None and not set_:
-            raise typer.BadParameter("modify requires --from-file or --set")
 
-        existing = load_collection(wiki, name)
+@collections_app.command("modify")
+def collections_modify(
+    collection_name: Annotated[str, typer.Argument(help="Collection name to modify.")],
+    *,
+    set_: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--set",
+            help="KEY=VALUE pair to set (repeatable, e.g. --set source=./new --set doc_path=./new.md).",
+        ),
+    ] = None,
+    tag: Annotated[
+        list[str] | None,
+        typer.Option("--tag", help="Tag to add (repeatable)."),
+    ] = None,
+    untag: Annotated[
+        list[str] | None,
+        typer.Option("--untag", help="Tag to remove (repeatable)."),
+    ] = None,
+    from_file: Annotated[
+        Path | None,
+        typer.Option(
+            "--from-file",
+            help="Path to a YAML patch file with editable fields (mutually exclusive with --set).",
+        ),
+    ] = None,
+    name: Annotated[
+        str | None,
+        typer.Option(
+            "--name",
+            envvar="LIES_WIKI_NAME",
+            help="Wiki containing the collection.",
+        ),
+    ] = None,
+) -> None:
+    """Mutate an existing collection's source, tags, or other fields."""
+    from dataclasses import replace as _dc_replace
+    from datetime import datetime
 
-        editable_top = {
-            "source",
-            "tags",
-            "scraper_cmd",
-            "doc_path",
-            "mapper_model",
-            "language",
-            "config",
-        }
+    import yaml  # type: ignore[import-untyped]
 
-        updates: dict[str, object] = {}
+    from lies.collections.record import Collection, load_collection, save_collection
 
-        if from_file is not None:
-            if not from_file.exists():
-                raise typer.BadParameter(f"file not found: {from_file}")
-            try:
-                payload = yaml.safe_load(from_file.read_text(encoding="utf-8"))
-            except yaml.YAMLError as exc:
-                raise typer.BadParameter(f"invalid YAML in {from_file}: {exc}") from exc
-            if not isinstance(payload, dict):
-                raise typer.BadParameter("--from-file root must be a mapping")
-            reserved = {"name", "path", "version", "created_at", "updated_at"}
-            for k in payload:
-                if k in reserved:
-                    raise typer.BadParameter(f"--from-file cannot set {k!r}; reserved")
-                if k not in editable_top:
-                    raise typer.BadParameter(
-                        f"--from-file key {k!r} not editable; allowed: {sorted(editable_top)}"
-                    )
-            if "doc_path" in payload and payload["doc_path"] is not None:
-                payload["doc_path"] = Path(payload["doc_path"])
-            if "tags" in payload:
-                payload["tags"] = list(payload["tags"])
-            if "config" in payload and payload["config"] is None:
-                payload["config"] = {}
-            updates.update(payload)
+    wiki = resolve_wiki(name)
+    if from_file is not None and set_:
+        raise typer.BadParameter("modify accepts --from-file or --set, not both")
+    if from_file is None and not set_ and not tag and not untag:
+        raise typer.BadParameter("modify requires --from-file, --set, --tag, or --untag")
 
-        if set_:
-            for raw in set_:
-                if "=" not in raw:
-                    raise typer.BadParameter(f"--set expects KEY=VALUE, got {raw!r}")
-                key, value = raw.split("=", 1)
-                key = key.strip()
-                value = value.strip()
-                if key.startswith("config."):
-                    sub = key.split(".", 1)[1]
-                    if not sub:
-                        raise typer.BadParameter(f"--set {key!r}: empty subkey")
-                    cfg_src = updates.get("config")
-                    cfg = (
-                        dict(cast("dict[str, Any]", cfg_src)) if cfg_src else dict(existing.config)
-                    )
-                    cfg[sub] = value
-                    updates["config"] = cfg
-                    continue
-                if key not in editable_top:
-                    raise typer.BadParameter(
-                        f"key {key!r} not editable; allowed: {sorted(editable_top)}"
-                    )
-                if key == "tags":
-                    parts = [p.strip() for p in value.split(",")]
-                    parts = [p for p in parts if p]
-                    if not parts:
-                        raise typer.BadParameter("tags value cannot be empty")
-                    updates["tags"] = parts
-                elif key == "doc_path":
-                    if not value:
-                        raise typer.BadParameter("doc_path cannot be empty")
-                    updates["doc_path"] = Path(value)
-                else:
-                    updates[key] = value
+    existing = load_collection(wiki, collection_name)
 
-        updates["updated_at"] = datetime.now(tz=UTC)
-        new = _dc_replace(existing, **updates)
-        save_collection(wiki, new)
-        typer.echo(f"updated {Collection.config_path(wiki, name)}")
-    elif action == "new" and name:
-        # Import the agent inside the branch so that tests can mock
-        # ``lies.agents.collection_author.collection_author_agent`` at
-        # the source module. Module-level imports would freeze the
-        # reference before the mock applies.
-        from lies.agents.collection_author import (
-            AuthorProposal as _AuthorProposal,
-        )
-        from lies.agents.collection_author import (
-            AuthorQuestion as _AuthorQuestion,
-        )
-        from lies.agents.collection_author import (
-            CollectionAuthorDeps as _AuthorDeps,
-        )
-        from lies.agents.collection_author import (
-            collection_author_agent as _factory,
-        )
+    editable_top = {
+        "source",
+        "tags",
+        "scraper_cmd",
+        "doc_path",
+        "mapper_model",
+        "language",
+        "config",
+    }
 
-        if not source or not prompt:
-            raise typer.BadParameter("collections new requires --source and --prompt")
-        # Manifest-only fetch (no body). The scraper's emit_manifest
-        # expects a list of ParsedDoc; an empty list produces an empty
-        # manifest, which is fine — the agent uses it to ask format
-        # questions and the user supplies the rest.
-        scraper = pick_scraper(source)
-        scratch_dir = wiki.scratch_dir
-        manifest_path = scraper.emit_manifest([], scratch_dir)
-        manifest: list[dict[str, object]] = []
-        if manifest_path and manifest_path.exists():
-            data = json.loads(manifest_path.read_text(encoding="utf-8"))
-            manifest = list(data.get("files", []))
-        agent = _factory()
-        history: list[object] = []
-        deps = _AuthorDeps(manifest=manifest)
-        while True:
-            # ``message_history`` expects a typed Sequence of model
-            # messages; we accept arbitrary user-prompt injections from
-            # the rich-prompt loop, so cast to Any at the boundary.
-            result = agent.run_sync(
-                prompt,
-                deps=deps,
-                message_history=cast(Any, history),
-            )
-            history.append(result.new_messages())
-            out = result.output
-            if isinstance(out, _AuthorQuestion):
-                if out.options:
-                    answer = Prompt.ask(
-                        out.prompt,
-                        choices=out.options,
-                        default=out.default or out.options[0],
-                    )
-                elif out.default is not None:
-                    answer = Prompt.ask(out.prompt, default=out.default)
-                else:
-                    answer = Prompt.ask(out.prompt)
-                history.append({"role": "user", "content": f"{out.id}: {answer}"})
+    updates: dict[str, object] = {}
+
+    if from_file is not None:
+        if not from_file.exists():
+            raise typer.BadParameter(f"file not found: {from_file}")
+        try:
+            payload = yaml.safe_load(from_file.read_text(encoding="utf-8"))
+        except yaml.YAMLError as exc:
+            raise typer.BadParameter(f"invalid YAML in {from_file}: {exc}") from exc
+        if not isinstance(payload, dict):
+            raise typer.BadParameter("--from-file root must be a mapping")
+        reserved = {"name", "path", "version", "created_at", "updated_at"}
+        for k in payload:
+            if k in reserved:
+                raise typer.BadParameter(f"--from-file cannot set {k!r}; reserved")
+            if k not in editable_top:
+                raise typer.BadParameter(
+                    f"--from-file key {k!r} not editable; allowed: {sorted(editable_top)}"
+                )
+        if "doc_path" in payload and payload["doc_path"] is not None:
+            payload["doc_path"] = Path(payload["doc_path"])
+        if "tags" in payload:
+            payload["tags"] = list(payload["tags"])
+        if "config" in payload and payload["config"] is None:
+            payload["config"] = {}
+        updates.update(payload)
+
+    if set_:
+        for raw in set_:
+            if "=" not in raw:
+                raise typer.BadParameter(f"--set expects KEY=VALUE, got {raw!r}")
+            key, value = raw.split("=", 1)
+            key = key.strip()
+            value = value.strip()
+            if key.startswith("config."):
+                sub = key.split(".", 1)[1]
+                if not sub:
+                    raise typer.BadParameter(f"--set {key!r}: empty subkey")
+                cfg_src = updates.get("config")
+                cfg = dict(cast("dict[str, Any]", cfg_src)) if cfg_src else dict(existing.config)
+                cfg[sub] = value
+                updates["config"] = cfg
                 continue
-            if isinstance(out, _AuthorProposal):
-                typer.echo(yaml.safe_dump(out.collection, sort_keys=True))
-                if apply:
-                    now = datetime.now(tz=UTC)
-                    payload = dict(out.collection)
-                    payload.setdefault("name", name)
-                    payload.setdefault("path", str(wiki.data_root / "raw" / name))
-                    payload.setdefault("created_at", now)
-                    payload.setdefault("updated_at", now)
-                    # The agent may emit ISO strings; coerce to datetime
-                    # so Collection's typed fields and save_collection's
-                    # .isoformat() call work either way.
-                    created = payload.get("created_at")
-                    updated = payload.get("updated_at")
-                    if isinstance(created, str):
-                        payload["created_at"] = datetime.fromisoformat(created)
-                    if isinstance(updated, str):
-                        payload["updated_at"] = datetime.fromisoformat(updated)
-                    payload["path"] = Path(payload["path"])
-                    doc_path = payload.get("doc_path")
-                    if doc_path is not None:
-                        payload["doc_path"] = Path(doc_path)
-                    collection = Collection(**payload)
-                    save_collection(wiki, collection)
-                    typer.echo(f"wrote {cfg_dir / (name + '.yaml')}")
-                return
-            raise typer.BadParameter("agent returned unexpected output")
-    else:
-        raise typer.BadParameter(f"unknown action: {action}")
+            if key not in editable_top:
+                raise typer.BadParameter(
+                    f"key {key!r} not editable; allowed: {sorted(editable_top)}"
+                )
+            if key == "tags":
+                parts = [p.strip() for p in value.split(",")]
+                parts = [p for p in parts if p]
+                if not parts:
+                    raise typer.BadParameter("tags value cannot be empty")
+                updates["tags"] = parts
+            elif key == "doc_path":
+                if not value:
+                    raise typer.BadParameter("doc_path cannot be empty")
+                updates["doc_path"] = Path(value)
+            else:
+                updates[key] = value
+
+    # --tag / --untag merge into the existing tags list (or the
+    # --from-file / --set tags update). Additive on top of --set so
+    # callers can ``--set tags=a,b --tag c --untag b`` in one shot.
+    if tag or untag:
+        cur_tags_src = updates.get("tags", existing.tags)
+        cur_tags = list(cast(list[str], cur_tags_src))
+        if tag:
+            for t in tag:
+                if t and t not in cur_tags:
+                    cur_tags.append(t)
+        if untag:
+            cur_tags = [t for t in cur_tags if t not in set(untag)]
+        updates["tags"] = cur_tags
+
+    updates["updated_at"] = datetime.now(tz=UTC)
+    new = _dc_replace(existing, **updates)
+    save_collection(wiki, new)
+    typer.echo(f"updated {Collection.config_path(wiki, collection_name)}")
+
+
+@collections_app.command("delete")
+def collections_delete(
+    collection_name: Annotated[str, typer.Argument(help="Collection name to delete.")],
+    *,
+    force: Annotated[
+        bool,
+        typer.Option("--force", help="Skip the confirmation prompt."),
+    ] = False,
+    name: Annotated[
+        str | None,
+        typer.Option(
+            "--name",
+            envvar="LIES_WIKI_NAME",
+            help="Wiki containing the collection.",
+        ),
+    ] = None,
+) -> None:
+    """Delete a collection's YAML config (does not touch the source path)."""
+    from rich.prompt import Confirm
+
+    wiki = resolve_wiki(name)
+    cfg_path = wiki.collections_dir / f"{name}.yaml"
+    if not cfg_path.exists():
+        raise typer.BadParameter(f"collection {name!r} not found at {cfg_path}")
+    if not force and not Confirm.ask(f"Delete {cfg_path}?", default=False):
+        typer.echo("aborted")
+        raise typer.Exit(code=0)
+    cfg_path.unlink()
+    typer.echo(f"deleted {cfg_path}")
 
 
 # --- `lies providers` sub-app + first-run hint ---------------------------
@@ -991,7 +1312,13 @@ def providers_init(
         "--non-interactive",
         help="Skip prompts; requires LIES_PROVIDERS_PRESET in a future release; currently raises.",
     ),
-    name: str = typer.Option("default", "--name", "-n", envvar="LIES_WIKI_NAME"),
+    name: str = typer.Option(
+        "default",
+        "--name",
+        "-n",
+        envvar="LIES_WIKI_NAME",
+        help="Wiki context for providers.toml resolution (default: $LIES_WIKI_NAME, falls back to 'default').",
+    ),
 ) -> None:
     """Bootstrap providers.toml through the interactive wizard."""
     wiki = _providers_wiki(name)
@@ -1018,11 +1345,32 @@ def providers_init(
 
 @providers_app.command("add")
 def providers_add(
-    name_arg: str,
-    type_: str = typer.Option("anthropic", "--type", "-t"),
-    api_key_env: str = typer.Option(..., "--api-key-env", "-e"),
-    base_url: str | None = typer.Option(None, "--base-url", "-u"),
-    name: str = typer.Option("default", "--name", "-n", envvar="LIES_WIKI_NAME"),
+    name_arg: Annotated[str, typer.Argument(help="Provider id (the [providers.<id>] table key).")],
+    type_: str = typer.Option(
+        "anthropic",
+        "--type",
+        "-t",
+        help="Provider type (anthropic, openai, anthropic_compatible, ollama).",
+    ),
+    api_key_env: str = typer.Option(
+        ...,
+        "--api-key-env",
+        "-e",
+        help="Name of the environment variable holding the provider's API key.",
+    ),
+    base_url: str | None = typer.Option(
+        None,
+        "--base-url",
+        "-u",
+        help="Base URL for the provider's API (anthropic_compatible providers only).",
+    ),
+    name: str = typer.Option(
+        "default",
+        "--name",
+        "-n",
+        envvar="LIES_WIKI_NAME",
+        help="Wiki context for providers.toml resolution (default: $LIES_WIKI_NAME, falls back to 'default').",
+    ),
 ) -> None:
     """Append a provider entry to providers.toml."""
     from lies.providers.config import ProviderSpec
@@ -1049,8 +1397,16 @@ def providers_add(
 
 @providers_app.command("set-default")
 def providers_set_default(
-    model: str,
-    name: str = typer.Option("default", "--name", "-n", envvar="LIES_WIKI_NAME"),
+    model: Annotated[
+        str, typer.Argument(help="Model string to set as default (e.g. 'minimax:claude-opus').")
+    ],
+    name: str = typer.Option(
+        "default",
+        "--name",
+        "-n",
+        envvar="LIES_WIKI_NAME",
+        help="Wiki context for providers.toml resolution (default: $LIES_WIKI_NAME, falls back to 'default').",
+    ),
 ) -> None:
     """Replace ``default_model`` in providers.toml."""
     from lies.providers.errors import ProviderConfigError
@@ -1068,9 +1424,20 @@ def providers_set_default(
 
 @providers_app.command("assign")
 def providers_assign(
-    agent: str,
-    model: str,
-    name: str = typer.Option("default", "--name", "-n", envvar="LIES_WIKI_NAME"),
+    agent: Annotated[
+        str, typer.Argument(help="Agent name (must be one of the LIES AGENT_ROSTER).")
+    ],
+    model: Annotated[
+        str,
+        typer.Argument(help="Model string to assign to the agent (e.g. 'minimax:claude-opus')."),
+    ],
+    name: str = typer.Option(
+        "default",
+        "--name",
+        "-n",
+        envvar="LIES_WIKI_NAME",
+        help="Wiki context for providers.toml resolution (default: $LIES_WIKI_NAME, falls back to 'default').",
+    ),
 ) -> None:
     """Set ``agents[agent] = model`` in providers.toml."""
     from lies.providers.agents import AGENT_ROSTER
@@ -1095,8 +1462,16 @@ def providers_assign(
 
 @providers_app.command("unassign")
 def providers_unassign(
-    agent: str,
-    name: str = typer.Option("default", "--name", "-n", envvar="LIES_WIKI_NAME"),
+    agent: Annotated[
+        str, typer.Argument(help="Agent name to remove (must be one of the LIES AGENT_ROSTER).")
+    ],
+    name: str = typer.Option(
+        "default",
+        "--name",
+        "-n",
+        envvar="LIES_WIKI_NAME",
+        help="Wiki context for providers.toml resolution (default: $LIES_WIKI_NAME, falls back to 'default').",
+    ),
 ) -> None:
     """Remove ``agent`` from providers.toml's [agents] table."""
     from lies.providers.agents import AGENT_ROSTER
@@ -1121,7 +1496,13 @@ def providers_unassign(
 
 @providers_app.command("check")
 def providers_check(
-    name: str = typer.Option("default", "--name", "-n", envvar="LIES_WIKI_NAME"),
+    name: str = typer.Option(
+        "default",
+        "--name",
+        "-n",
+        envvar="LIES_WIKI_NAME",
+        help="Wiki context for providers.toml resolution (default: $LIES_WIKI_NAME, falls back to 'default').",
+    ),
 ) -> None:
     """Probe every provider in providers.toml for connectivity."""
     from lies.providers.errors import ProviderConfigError
@@ -1140,7 +1521,80 @@ def providers_check(
         typer.echo(f"  {n.ljust(width)}  {st:<8}  {detail}")
 
 
-app.add_typer(providers_app, name="providers")
+@providers_app.command("list")
+def providers_list(
+    json_output: Annotated[
+        bool,
+        typer.Option(
+            "--json",
+            help="Emit a JSON array of {id, default_model, agents} per provider instead of a table.",
+        ),
+    ] = False,
+    name: str = typer.Option(
+        "default",
+        "--name",
+        "-n",
+        envvar="LIES_WIKI_NAME",
+        help="Wiki context for providers.toml resolution (default: $LIES_WIKI_NAME, falls back to 'default').",
+    ),
+) -> None:
+    """List every provider configured in providers.toml with default model and agent assignments."""
+    import json
+    import tomllib
+
+    wiki = _providers_wiki(name)
+    path = wiki.providers_path
+    if not path.exists():
+        typer.echo(
+            f"error: no providers.toml at {path}. Run `lies providers init` first.",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+    try:
+        with path.open("rb") as f:
+            data = tomllib.load(f)
+    except tomllib.TOMLDecodeError as exc:
+        typer.echo(f"error: failed to parse {path}: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+
+    raw_providers = data.get("providers") or {}
+    agents = data.get("agents") or {}
+    default_model = data.get("default_model", "")
+    providers: dict[str, dict[str, object]] = {
+        pid: body for pid, body in raw_providers.items() if isinstance(body, dict)
+    }
+
+    if json_output:
+        typer.echo(
+            json.dumps(
+                [
+                    {
+                        "id": pid,
+                        "default_model": default_model,
+                        "agents": agents,
+                    }
+                    for pid in providers
+                ],
+                indent=2,
+            )
+        )
+        return
+
+    from rich.console import Console
+    from rich.table import Table
+
+    table = Table(title="providers")
+    table.add_column("id")
+    table.add_column("default_model")
+    table.add_column("agents")
+    agent_summary = ", ".join(f"{a}={m}" for a, m in agents.items()) or "(default agent)"
+    for pid in providers:
+        table.add_row(pid, str(default_model), agent_summary)
+    Console().print(table)
+
+
+app.add_typer(providers_app, name="providers", rich_help_panel="Operator tooling")
+app.add_typer(collections_app, name="collections", rich_help_panel="Wiki management")
 
 
 if __name__ == "__main__":
