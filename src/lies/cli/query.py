@@ -18,7 +18,6 @@ from lies.cli._helpers import (
     WikiLockBusy,
     configure_logging,
 )
-from lies.wiki.layout import WikiLayout
 
 __all__ = (
     "lint",
@@ -127,6 +126,7 @@ def status(
     """Show qmd status and the last few log entries."""
     from lies.cli import resolve_wiki
     from lies.qmd import qmd_status
+    from lies.wiki.layout import WikiLayout
 
     configure_logging()
     wiki = resolve_wiki(name)
