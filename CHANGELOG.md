@@ -4,6 +4,19 @@ All notable changes to LIES are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/) adapted for
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+- `src/lies/cli.py` (1601 lines) is split into a `src/lies/cli/` package
+  with one file per panel (`_core`, `ingestion`, `query`, `operator`,
+  `collections`) plus cross-group helpers in `_helpers` and a `__main__`
+  shim for `python -m lies.cli`. Heavy dependencies (`lies.orchestrator`,
+  `lies.providers.{bootstrap,ops}`, `lies.scrapers.base`,
+  `lies.qmd.qmd_status`, `lies.wiki.{git,layout}`) move from module-top
+  eager imports to function-body lazy imports. `import lies.cli` no
+  longer pulls in the orchestrator / pydantic-ai stack / anthropic SDK,
+  so `lies --help` wall time drops from ~1.7s to ~1.1s on this machine.
+
 ## [0.10.2] - 2026-08-16
 
 ### Added
