@@ -22,7 +22,6 @@ from lies.memory.service import MAX_FLOCK_AGE_S
 from lies.utils.exclusive import acquire_create_lock
 from lies.utils.lock_heartbeat import read_heartbeat, read_owner_pid
 from lies.utils.logging import configure_logging
-from lies.wiki.git import atomic_commit
 from lies.wikilinks import WikiLinkCorpusMissing, WikiLinkResolver
 
 __all__ = (
@@ -36,7 +35,6 @@ __all__ = (
     "_emit_missing_providers_hint",
     "_stdout_isatty",
     "acquire_create_lock",
-    "atomic_commit",
     "configure_logging",
     "read_heartbeat",
     "read_owner_pid",

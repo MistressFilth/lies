@@ -79,7 +79,8 @@ def main(
 
     from lies.cli import Orchestrator as _Orchestrator
     from lies.cli import resolve_wiki as _resolve_wiki
-    from lies.cli._helpers import atomic_commit, configure_logging
+    from lies.cli._helpers import configure_logging
+    from lies.wiki.git import atomic_commit
 
     configure_logging()
     wiki = _resolve_wiki(name)
