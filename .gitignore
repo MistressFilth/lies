@@ -12,6 +12,7 @@ htmlcov/
 .qmd/
 *.swp
 .DS_Store
+*.log
 
 # Internal development artifacts (superpowers skill state, design spec, plan).
 # Not part of the public repo; local-only tooling.
