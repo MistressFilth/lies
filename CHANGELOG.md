@@ -4,7 +4,7 @@ All notable changes to LIES are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/) adapted for
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.10.3] - 2026-08-22
 
 ### Changed
 - `src/lies/cli.py` (1601 lines) is split into a `src/lies/cli/` package
