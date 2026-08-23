@@ -2,6 +2,7 @@ import sys
 from datetime import UTC, datetime
 from pathlib import Path
 from unittest import mock
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -183,7 +184,7 @@ def test_run_write_respects_force(tmp_path: Path) -> None:
 
 
 def test_run_write_registers_collection_with_qmd_post_commit(tmp_path: Path) -> None:
-    """After WRITE commits, qmd_collection_add_if_missing must be invoked
+    """After WRITE commits, qmd_collection_add_or_update must be invoked
     for the wiki's collection so the qmd derived index can find it."""
     wiki = _wiki(tmp_path)
     (wiki.raw_dir / "cpython").mkdir(parents=True, exist_ok=True)
@@ -192,7 +193,7 @@ def test_run_write_registers_collection_with_qmd_post_commit(tmp_path: Path) -> 
     fake_normalized = [("x.md", "# body")]
     with (
         mock.patch("lies.etl.stages.write.atomic_commit"),
-        mock.patch("lies.etl.stages.write.qmd_collection_add_if_missing") as m_add,
+        mock.patch("lies.etl.stages.write.qmd_collection_add_or_update") as m_add,
         mock.patch("lies.etl.stages.write.qmd_update"),
         mock.patch("lies.etl.stages.write.rebuild_index"),
     ):
@@ -222,7 +223,7 @@ def test_run_write_refreshes_qmd_index_post_commit(tmp_path: Path) -> None:
     fake_normalized = [("x.md", "# body")]
     with (
         mock.patch("lies.etl.stages.write.atomic_commit"),
-        mock.patch("lies.etl.stages.write.qmd_collection_add_if_missing"),
+        mock.patch("lies.etl.stages.write.qmd_collection_add_or_update"),
         mock.patch("lies.etl.stages.write.qmd_update") as m_update,
         mock.patch("lies.etl.stages.write.rebuild_index"),
     ):
@@ -246,7 +247,7 @@ def test_run_write_regenerates_index_md_post_commit(tmp_path: Path) -> None:
     fake_normalized = [("x.md", "# body")]
     with (
         mock.patch("lies.etl.stages.write.atomic_commit"),
-        mock.patch("lies.etl.stages.write.qmd_collection_add_if_missing"),
+        mock.patch("lies.etl.stages.write.qmd_collection_add_or_update"),
         mock.patch("lies.etl.stages.write.qmd_update"),
         mock.patch("lies.etl.stages.write.rebuild_index") as m_index,
     ):
@@ -268,7 +269,7 @@ def test_run_write_skips_qmd_hooks_when_nothing_committed(tmp_path: Path) -> Non
     fake_normalized = [("x.md", "# body")]
     with (
         mock.patch("lies.etl.stages.write.atomic_commit") as ac,
-        mock.patch("lies.etl.stages.write.qmd_collection_add_if_missing") as m_add,
+        mock.patch("lies.etl.stages.write.qmd_collection_add_or_update") as m_add,
         mock.patch("lies.etl.stages.write.qmd_update") as m_update,
         mock.patch("lies.etl.stages.write.rebuild_index") as m_index,
     ):
@@ -300,7 +301,7 @@ def test_run_write_does_not_roll_back_commit_on_rebuild_index_value_error(
     fake_normalized = [("x.md", "# body")]
     with (
         mock.patch("lies.etl.stages.write.atomic_commit") as ac,
-        mock.patch("lies.etl.stages.write.qmd_collection_add_if_missing"),
+        mock.patch("lies.etl.stages.write.qmd_collection_add_or_update"),
         mock.patch("lies.etl.stages.write.qmd_update"),
         mock.patch(
             "lies.etl.stages.write.rebuild_index",
@@ -378,3 +379,80 @@ def test_scrape_scraper_cmd_import_failure_raises_scraper_unavailable(tmp_path: 
     )
     with pytest.raises(ScraperUnavailable):
         run_scrape(_wiki(tmp_path), c)
+
+
+def test_run_write_invokes_qmd_refresh_update_and_embed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """After a successful run_write, the post-commit hook fires three qmd subprocess
+    calls in order: collection_add_or_update, qmd_update, qmd_embed. Each is
+    wrapped in try/except so an individual failure does not abort the run.
+    """
+    from lies.collections.record import Collection
+    from lies.etl.stages.write import run_write
+    from lies.wiki.wiki import Wiki
+
+    wiki = Wiki(
+        name="t",
+        data_root=tmp_path,
+        config_root=tmp_path / "config",
+        cache_root=tmp_path / "cache",
+        state_root=tmp_path / "state",
+        runtime_root=tmp_path / "runtime",
+    )
+    wiki.config_root.mkdir(parents=True, exist_ok=True)
+    wiki.collections_dir.mkdir(parents=True, exist_ok=True)
+
+    coll = Collection(
+        name="t",
+        path=tmp_path / "raw" / "t",
+        source="https://example.com",
+        tags=[],
+        scraper_cmd=None,
+        doc_path=None,
+        mapper_model=None,
+        language=None,
+        version="1.0.0",
+        created_at=datetime(2026, 1, 1, tzinfo=UTC),
+        updated_at=datetime(2026, 1, 1, tzinfo=UTC),
+        config={},
+    )
+    # Skip atomic_commit so the test does not require a real git repo.
+    monkeypatch.setattr("lies.etl.stages.write.atomic_commit", lambda *a, **k: None)
+
+    recorded: list[list[str]] = []
+
+    def fake_run(args, cwd, timeout=300):
+        recorded.append(list(args))
+        proc = MagicMock()
+        proc.returncode = 0
+        proc.stdout = ""
+        proc.stderr = ""
+        return proc
+
+    monkeypatch.setattr(
+        "lies.etl.stages.write.qmd_collection_add_or_update",
+        lambda cwd, path, name: recorded.append(["add_or_update", str(path), name]),
+    )
+    monkeypatch.setattr(
+        "lies.etl.stages.write.qmd_update", lambda cwd: recorded.append(["qmd_update"])
+    )
+    monkeypatch.setattr(
+        "lies.etl.stages.write.qmd_embed",
+        lambda cwd, name, **kw: recorded.append(["qmd_embed", name]),
+    )
+
+    # HashManifest's actual signature is (wiki, collection), not (path). The
+    # brief specified a single-path constructor that does not exist; force=True
+    # bypasses compare() so the manifest only needs update() and flush().
+    from lies.collections.hash_manifest import HashManifest
+
+    manifest = HashManifest(wiki, "t")
+    run_write(wiki, coll, [("hello.md", "# hello")], manifest=manifest, force=True)
+
+    # Three calls in order: refresh, update, embed.
+    assert recorded == [
+        ["add_or_update", str(tmp_path / "raw" / "t"), "t"],
+        ["qmd_update"],
+        ["qmd_embed", "t"],
+    ]
