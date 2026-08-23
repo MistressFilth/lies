@@ -11,6 +11,7 @@ import json
 import re
 import shutil
 import subprocess
+import sys
 import warnings
 from pathlib import Path
 from typing import Any
@@ -100,6 +101,90 @@ def qmd_collection_add_if_missing(cwd: Path, path: Path, name: str) -> None:
     if "already exists" in stderr.lower():
         return
     raise QmdError(f"qmd collection add failed: {stderr}")
+
+
+def qmd_collection_show(cwd: Path, name: str) -> dict[str, str] | None:
+    """Return parsed ``qmd collection show <name>`` output, or None if missing.
+
+    Output shape (verified against qmd 3.x):
+
+        Collection: <name>
+          Path:     <abs path>
+          Pattern:  **/*.md
+          Include:  yes (default)
+
+    We only care about the Path line today; other keys parsed from
+    ``qmd collection show`` output are dropped. Non-zero exit code
+    (collection missing, qmd error) returns None instead of raising so
+    the caller can branch on "register vs refresh".
+    """
+    result = _run(["collection", "show", name], cwd=cwd)
+    if result.returncode != 0:
+        return None
+    info: dict[str, str] = {}
+    for line in result.stdout.splitlines():
+        # Each info line is two-space indented: "  Key:     Value".
+        if not line.startswith("  "):
+            continue
+        try:
+            key, _, value = line.strip().partition(":")
+        except ValueError:
+            continue
+        info[key.strip().lower()] = value.strip()
+    if not info or "path" not in info:
+        return None
+    return {"path": info["path"]}
+
+
+def qmd_collection_add_or_update(cwd: Path, path: Path, name: str) -> None:
+    """Register ``name`` at ``path`` with qmd, refreshing an existing entry.
+
+    Behavior:
+
+    - Collection missing -> ``qmd collection add``.
+    - Collection present at the same path -> no-op (idempotent).
+    - Collection present at a different path -> ``qmd collection remove``
+      then ``qmd collection add``. ``remove`` failures are logged and
+      the ``add`` proceeds; this handles the case where qmd accepts the
+      ``add`` and replaces the existing entry even if ``remove`` errors.
+
+    Resolves ``path`` to an absolute string so the comparison is not
+    tripped up by relative paths from callers.
+    """
+    target = str(path.resolve())
+    info = qmd_collection_show(cwd, name)
+    if info is None:
+        qmd_collection_add(cwd, path, name)
+        return
+    existing = info.get("path", "")
+    if existing == target:
+        return
+    # Path differs; refresh.
+    result = _run(["collection", "remove", name], cwd=cwd)
+    if result.returncode != 0:
+        print(
+            f"warning: qmd collection remove {name} failed: {result.stderr.strip()}; "
+            f"continuing with add.",
+            file=sys.stderr,
+        )
+    qmd_collection_add(cwd, path, name)
+
+
+def qmd_embed(cwd: Path, collection_name: str, *, timeout: int = 1800) -> None:
+    """Run ``qmd embed -c <collection_name>`` in ``cwd``.
+
+    Default timeout is 30 minutes; embedding a large wiki on first
+    ingest can be slow (CPU-bound model inference over hundreds of
+    pages). The default was picked to be generous enough for the
+    largest realistic wiki without making small syncs feel hung.
+
+    Raises ``QmdError`` on non-zero exit so the post-commit hook in
+    ``etl/stages/write.py`` can wrap the call in try/except and
+    surface a stderr warning without rolling back the wiki commit.
+    """
+    result = _run(["embed", "-c", collection_name], cwd=cwd, timeout=timeout)
+    if result.returncode != 0:
+        raise QmdError(f"qmd embed failed: {result.stderr.strip()}")
 
 
 def qmd_ls(cwd: Path, collection: str) -> str:

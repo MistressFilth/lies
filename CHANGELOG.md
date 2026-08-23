@@ -6,6 +6,20 @@ All notable changes to LIES are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- After every successful `lies ingest`, `lies sync`, or
+  `lies reindex --reconcile`, qmd's collection registration now
+  points at the live wiki path (fixes a path-staleness bug introduced
+  by the XDG migration in #33), the qmd index is refreshed, and
+  per-collection vector embeddings are generated via
+  `qmd embed -c <name>`. `qmd_collection_add_if_missing` is replaced
+  by `qmd_collection_add_or_update` in the WRITING stage's post-commit
+  hook; `qmd_embed` is the new wrapper. All three hooks stay non-fatal:
+  a failure logs a stderr warning and the wiki commit stands. The
+  embedding model is not pre-checked; `lies status` shows `Pending: N
+  need embedding` if the model is unavailable. `lies reindex` (without
+  `--reconcile`) is unchanged -- it stays a pure `qmd update`.
+
 ### Changed
 - `lies --help` startup is ~2.7x faster (0.33s → 0.12s on this machine)
   by deferring two transitive cost centers off the bare CLI import path.
