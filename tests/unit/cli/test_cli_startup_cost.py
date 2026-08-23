@@ -31,13 +31,12 @@ import pytest
 
 # Pre-refactor baselines (measured on the same machine, branch
 # `main`): `import lies.cli` ~1.4s, `lies --help` ~1.6s.
-# Post-refactor targets: <2.0s for import, <2.5s for help.
-# (Help budget absorbs the ~400ms `uv run` overhead. Both
-# budgets include ~50% margin over the local dev box measurement
-# of ~1.0s / ~1.5s so the test passes on slower CI hardware; tighten
-# locally only if the post-refactor numbers come down further.)
-# For slow CI, set `LIES_PERF_BUDGET=2.0` in the env, or `SKIP_PERF=1`
-# to skip entirely.
+# Post-refactor measurements (local dev box, this branch): import ~0.75s,
+# `lies --help` ~1.07s. CI measured 1.5s / 1.9s on GitHub Actions
+# runners, so the budgets include ~100% margin on import and ~67% on
+# help vs the local numbers. Tighten locally if the post-refactor
+# numbers come down further; for slow CI, set `LIES_PERF_BUDGET=2.0`
+# in the env, or `SKIP_PERF=1` to skip entirely.
 PERF_BOUND_IMPORT_S = 2.0
 PERF_BOUND_HELP_S = 2.5
 

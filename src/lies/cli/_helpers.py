@@ -22,15 +22,17 @@ from lies.memory.service import MAX_FLOCK_AGE_S
 from lies.utils.exclusive import acquire_create_lock
 from lies.utils.lock_heartbeat import read_heartbeat, read_owner_pid
 from lies.utils.logging import configure_logging
-from lies.wikilinks import WikiLinkCorpusMissing, WikiLinkResolver
+
+# Note: WikiLinkCorpusMissing / WikiLinkResolver are intentionally NOT
+# re-exported here. They are exposed via the PEP 562 `__getattr__` shim
+# in cli/__init__.py (see _LAZY_ATTRS) so they load lazily on first
+# attribute access -- keeping `import lies.cli` cheap.
 
 __all__ = (
     "LIES_DATA_SUBDIR",
     "MAX_FLOCK_AGE_S",
     "_HINT",
     "WikiFlockUnrepairable",
-    "WikiLinkCorpusMissing",
-    "WikiLinkResolver",
     "WikiLockBusy",
     "_emit_missing_providers_hint",
     "_stdout_isatty",
