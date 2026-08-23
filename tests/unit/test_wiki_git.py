@@ -63,9 +63,40 @@ def test_atomic_commit_rolls_back_on_failure(git_wiki: Path) -> None:
 
 
 def test_atomic_commit_empty_tree(git_wiki: Path) -> None:
-    # No changes; should produce a clean "no-op" or raise a specific error
-    with pytest.raises(CommitError, match="nothing to commit"):
-        atomic_commit(git_wiki, "no-op")
+    # No changes; the contract is now a quiet no-op (returns None) so
+    # callers like run_write can gate post-commit hooks on the return
+    # value rather than catching a CommitError that conflates no-op
+    # with a real failure.
+    assert atomic_commit(git_wiki, "no-op") is None
+
+
+def test_atomic_commit_staged_but_no_diff_returns_none(git_wiki: Path) -> None:
+    """Files listed but content byte-identical to HEAD -> no-op, returns None.
+
+    Repro: run_write writes a file with the same content it already has
+    on disk (e.g. a re-ingest of an unchanged collection). atomic_commit
+    is called with that file in its files argument; git diff --cached
+    is empty because nothing actually changed. Before this fix, the call
+    raised CommitError(\"nothing to commit\"), aborting run_write BEFORE
+    the qmd post-commit hooks could run. After the fix, atomic_commit
+    returns None; run_write skips the post-commit hooks and exits cleanly.
+    """
+    (git_wiki / "unchanged.txt").write_text("same content")
+    # Commit it once.
+    atomic_commit(git_wiki, "initial", files=["unchanged.txt"])
+    # Now call again with the same content -- should be a no-op.
+    assert atomic_commit(git_wiki, "re-commit same", files=["unchanged.txt"]) is None
+
+
+def test_atomic_commit_working_tree_unchanged_returns_none(git_wiki: Path) -> None:
+    """files=None + nothing dirty in the working tree -> returns None.
+
+    atomic_commit defaults to staging all working-tree changes; if there
+    are none (no git add -u would stage anything, and the caller passed
+    no explicit files list), the probe finds an empty diff and the
+    function returns None instead of raising.
+    """
+    assert atomic_commit(git_wiki, "no-op-default") is None
 
 
 def test_atomic_commit_stages_tracked_modifications(git_wiki: Path) -> None:

@@ -6,6 +6,18 @@ All notable changes to LIES are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+- `atomic_commit` now returns `None` instead of raising
+  `CommitError("nothing to commit")` when the working tree matches
+  HEAD after staging (e.g. a re-ingest of an unchanged collection).
+  `WikiMemoryService.apply_plan` discarded the return value and
+  unconditionally refreshed qmd + returned a `MemoryReceipt` carrying
+  the in-memory `changed_pages`, falsely claiming the operations were
+  applied at the git level. It now captures the return value, restores
+  the working tree, and routes through `_empty_receipt()` when the
+  commit was a no-op — so a no-op plan never claims git-level changes
+  that did not land.
+
 ### Added
 - After every successful `lies ingest`, `lies sync`, or
   `lies reindex --reconcile`, qmd's collection registration now

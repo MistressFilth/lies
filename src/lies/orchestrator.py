@@ -1311,7 +1311,13 @@ class Orchestrator:
         dirty_paths = _list_working_tree_changes(repo)
         if not dirty_paths:
             raise CommitError("nothing to commit (ingest produced no changes)")
-        return atomic_commit(repo, f"ingest: {source}", files=dirty_paths)
+        sha = atomic_commit(repo, f"ingest: {source}", files=dirty_paths)
+        if sha is None:
+            # atomic_commit detected the staged diff was empty (e.g. the
+            # ingest produced no actual content changes). Treat as a
+            # real failure: the caller asked for a commit, not a no-op.
+            raise CommitError("nothing to commit (ingest produced no changes)")
+        return sha
 
     # -- host-side snapshot / rollback -----------------------------------------
     #

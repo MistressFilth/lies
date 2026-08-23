@@ -111,7 +111,10 @@ def main(
         if line == "/commit":
             try:
                 sha = atomic_commit(wiki.data_root, "manual commit")
-                typer.echo(f"committed {sha[:8]}")
+                if sha is None:
+                    typer.echo("nothing to commit")
+                else:
+                    typer.echo(f"committed {sha[:8]}")
             except Exception as exc:  # noqa: BLE001 - commit failures must not crash the REPL
                 typer.echo(f"commit failed: {exc}")
             continue

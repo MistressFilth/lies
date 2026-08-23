@@ -385,11 +385,19 @@ class WikiMemoryService:
                 if not files:
                     self._restore_working_tree(repo, snapshot_ref)
                     return self._empty_receipt()
-                atomic_commit(
+                commit_sha = atomic_commit(
                     self._wiki.data_root,
                     f"memory: {plan.rationale}",
                     files=files,
                 )
+                if commit_sha is None:
+                    # atomic_commit detected the staged diff was empty
+                    # (e.g. an idempotent plan wrote byte-identical content).
+                    # No commit landed. Return an empty receipt rather
+                    # than claiming changed_pages that were not really
+                    # applied at the git level.
+                    self._restore_working_tree(repo, snapshot_ref)
+                    return self._empty_receipt()
             except BaseException:
                 self._restore_working_tree(repo, snapshot_ref)
                 raise

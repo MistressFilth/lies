@@ -65,44 +65,53 @@ def run_write(
 
     if files:
         manifest.flush()
-        atomic_commit(
+        commit_sha = atomic_commit(
             wiki.data_root,
             f"sync: {collection.name} +{len(success)} -{len(quarantined)} ~{len(skipped)}",
             files=files,
         )
-        # Post-commit: make the new wiki state visible to qmd and the
-        # qmd-fallback synthesizer. Failures are non-fatal — the wiki
-        # commit already landed and is authoritative.
-        try:
-            qmd_collection_add_or_update(
-                wiki.raw_dir, wiki.raw_dir / collection.name, collection.qmd_name()
-            )
-        except Exception as exc:  # noqa: BLE001 - qmd is derived; failures must not roll back the wiki commit
-            print(
-                f"warning: qmd collection registration failed for {collection.name!r}: {exc}; "
-                f"continuing (wiki commit stands). Run `lies status` for state.",
-                file=sys.stderr,
-            )
-        try:
-            qmd_update(wiki.data_root)
-        except Exception as exc:  # noqa: BLE001 - qmd is derived; failures must not roll back the wiki commit
-            print(
-                f"warning: qmd index update failed: {exc}; "
-                f"continuing (wiki commit stands). Run `lies status` for state.",
-                file=sys.stderr,
-            )
-        try:
-            qmd_embed(wiki.data_root, collection.qmd_name())
-        except Exception as exc:  # noqa: BLE001 - qmd is derived; failures must not roll back the wiki commit
-            print(
-                f"warning: qmd embed failed for {collection.name!r}: {exc}; "
-                f"continuing (wiki commit stands). Run `lies status` (or `qmd status` directly if status also fails) for state.",
-                file=sys.stderr,
-            )
-        try:
-            rebuild_index(wiki)
-        except Exception:  # noqa: BLE001, S110 - rebuild_index parses user-authored frontmatter; failures must not roll back the wiki commit
+        if commit_sha is None:
+            # Quiet no-op: atomic_commit staged the files but the diff was
+            # empty (e.g. a re-ingest of an unchanged collection wrote
+            # byte-identical content). Nothing actually changed in the wiki,
+            # so the post-commit hooks (qmd registration, index refresh,
+            # embedding) have nothing new to act on either. Skip them rather
+            # than fire on a no-op state.
             pass
+        else:
+            # Post-commit: make the new wiki state visible to qmd and the
+            # qmd-fallback synthesizer. Failures are non-fatal — the wiki
+            # commit already landed and is authoritative.
+            try:
+                qmd_collection_add_or_update(
+                    wiki.raw_dir, wiki.raw_dir / collection.name, collection.qmd_name()
+                )
+            except Exception as exc:  # noqa: BLE001 - qmd is derived; failures must not roll back the wiki commit
+                print(
+                    f"warning: qmd collection registration failed for {collection.name!r}: {exc}; "
+                    f"continuing (wiki commit stands). Run `lies status` for state.",
+                    file=sys.stderr,
+                )
+            try:
+                qmd_update(wiki.data_root)
+            except Exception as exc:  # noqa: BLE001 - qmd is derived; failures must not roll back the wiki commit
+                print(
+                    f"warning: qmd index update failed: {exc}; "
+                    f"continuing (wiki commit stands). Run `lies status` for state.",
+                    file=sys.stderr,
+                )
+            try:
+                qmd_embed(wiki.data_root, collection.qmd_name())
+            except Exception as exc:  # noqa: BLE001 - qmd is derived; failures must not roll back the wiki commit
+                print(
+                    f"warning: qmd embed failed for {collection.name!r}: {exc}; "
+                    f"continuing (wiki commit stands). Run `lies status` (or `qmd status` directly if status also fails) for state.",
+                    file=sys.stderr,
+                )
+            try:
+                rebuild_index(wiki)
+            except Exception:  # noqa: BLE001, S110 - rebuild_index parses user-authored frontmatter; failures must not roll back the wiki commit
+                pass
 
     return StageResult(
         success=success,
