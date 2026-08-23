@@ -11,6 +11,7 @@ import json
 import re
 import shutil
 import subprocess
+import sys
 import warnings
 from pathlib import Path
 from typing import Any
@@ -100,6 +101,73 @@ def qmd_collection_add_if_missing(cwd: Path, path: Path, name: str) -> None:
     if "already exists" in stderr.lower():
         return
     raise QmdError(f"qmd collection add failed: {stderr}")
+
+
+def qmd_collection_show(cwd: Path, name: str) -> dict[str, str] | None:
+    """Return parsed ``qmd collection show <name>`` output, or None if missing.
+
+    Output shape (verified against qmd 3.x):
+
+        Collection: <name>
+          Path:     <abs path>
+          Pattern:  **/*.md
+          Include:  yes (default)
+
+    We only care about the Path line today; the parser keeps the rest
+    in the dict for future callers but does not key on it. Non-zero
+    exit code (collection missing, qmd error) returns None instead of
+    raising so the caller can branch on "register vs refresh".
+    """
+    result = _run(["collection", "show", name], cwd=cwd)
+    if result.returncode != 0:
+        return None
+    info: dict[str, str] = {}
+    for line in result.stdout.splitlines():
+        # Each info line is two-space indented: "  Key:     Value".
+        if not line.startswith("  "):
+            continue
+        try:
+            key, _, value = line.strip().partition(":")
+        except ValueError:
+            continue
+        info[key.strip().lower()] = value.strip()
+    if not info or "path" not in info:
+        return None
+    return {"path": info["path"]}
+
+
+def qmd_collection_add_or_update(cwd: Path, path: Path, name: str) -> None:
+    """Register ``name`` at ``path`` with qmd, refreshing an existing entry.
+
+    Behavior:
+
+    - Collection missing -> ``qmd collection add``.
+    - Collection present at the same path -> no-op (idempotent).
+    - Collection present at a different path -> ``qmd collection remove``
+      then ``qmd collection add``. ``remove`` failures are logged and
+      the ``add`` proceeds; this handles the case where qmd accepts the
+      ``add`` and replaces the existing entry even if ``remove`` errors.
+
+    Resolves ``path`` to an absolute string so the comparison is not
+    tripped up by relative paths from callers.
+    """
+    target = str(path.resolve())
+    info = qmd_collection_show(cwd, name)
+    if info is None:
+        qmd_collection_add(cwd, path, name)
+        return
+    existing = info.get("path", "")
+    if existing == target:
+        return
+    # Path differs; refresh.
+    try:
+        _run(["collection", "remove", name], cwd=cwd)
+    except QmdError as exc:
+        print(
+            f"warning: qmd collection remove {name} failed: {exc}; continuing with add.",
+            file=sys.stderr,
+        )
+    qmd_collection_add(cwd, path, name)
 
 
 def qmd_ls(cwd: Path, collection: str) -> str:
