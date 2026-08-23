@@ -113,10 +113,10 @@ def qmd_collection_show(cwd: Path, name: str) -> dict[str, str] | None:
           Pattern:  **/*.md
           Include:  yes (default)
 
-    We only care about the Path line today; the parser keeps the rest
-    in the dict for future callers but does not key on it. Non-zero
-    exit code (collection missing, qmd error) returns None instead of
-    raising so the caller can branch on "register vs refresh".
+    We only care about the Path line today; other keys parsed from
+    ``qmd collection show`` output are dropped. Non-zero exit code
+    (collection missing, qmd error) returns None instead of raising so
+    the caller can branch on "register vs refresh".
     """
     result = _run(["collection", "show", name], cwd=cwd)
     if result.returncode != 0:
@@ -160,11 +160,11 @@ def qmd_collection_add_or_update(cwd: Path, path: Path, name: str) -> None:
     if existing == target:
         return
     # Path differs; refresh.
-    try:
-        _run(["collection", "remove", name], cwd=cwd)
-    except QmdError as exc:
+    result = _run(["collection", "remove", name], cwd=cwd)
+    if result.returncode != 0:
         print(
-            f"warning: qmd collection remove {name} failed: {exc}; continuing with add.",
+            f"warning: qmd collection remove {name} failed: {result.stderr.strip()}; "
+            f"continuing with add.",
             file=sys.stderr,
         )
     qmd_collection_add(cwd, path, name)

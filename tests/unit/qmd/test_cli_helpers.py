@@ -10,13 +10,11 @@ import pytest
 from lies.qmd import cli as qmd_cli
 
 
-def _run_record(commands: list[list[str]]):
+def _run_record():
     """Build a fake ``_run`` that records commands and returns canned responses.
 
-    Each entry in ``commands`` is paired with a response: ``commands[i]``
-    is the args list the test expects for the i-th call; the matching
-    response (a CompletedProcess-like MagicMock) is supplied via the
-    parallel ``responses`` list at call time. Tests construct the
+    ``make(responses)`` returns a closure that returns ``responses[i]``
+    for the i-th call and records the args list; tests construct the
     closures inline.
     """
 
@@ -54,7 +52,7 @@ _SHOW_OUTPUT_MATCH = (
 def test_qmd_collection_show_parses_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Happy path: parses the Path: line out of qmd collection show output."""
     responses = [_completed(0, stdout=_SHOW_OUTPUT_MATCH)]
-    make, recorded = _run_record(responses)
+    make, recorded = _run_record()
     monkeypatch.setattr(qmd_cli, "_run", make(responses))
 
     info = qmd_cli.qmd_collection_show(tmp_path, "claude_code")
@@ -67,7 +65,7 @@ def test_qmd_collection_show_returns_none_when_missing(
 ) -> None:
     """qmd exits non-zero (collection not found) -> None, not exception."""
     responses = [_completed(1, stderr="collection not found")]
-    make, recorded = _run_record(responses)
+    make, recorded = _run_record()
     monkeypatch.setattr(qmd_cli, "_run", make(responses))
 
     assert qmd_cli.qmd_collection_show(tmp_path, "missing") is None
@@ -90,7 +88,7 @@ def test_qmd_collection_add_or_update_noop_when_path_matches(
             ),
         )
     ]
-    make, recorded = _run_record(responses)
+    make, recorded = _run_record()
     monkeypatch.setattr(qmd_cli, "_run", make(responses))
 
     qmd_cli.qmd_collection_add_or_update(tmp_path, Path(expected), "claude_code")
@@ -115,7 +113,7 @@ def test_qmd_collection_add_or_update_readds_when_path_differs(
         _completed(0),  # remove
         _completed(0),  # add
     ]
-    make, recorded = _run_record(responses)
+    make, recorded = _run_record()
     monkeypatch.setattr(qmd_cli, "_run", make(responses))
 
     new_path = tmp_path / "wiki"
@@ -135,7 +133,7 @@ def test_qmd_collection_add_or_update_adds_when_show_fails(
         _completed(1, stderr="not found"),  # show fails
         _completed(0),  # add
     ]
-    make, recorded = _run_record(responses)
+    make, recorded = _run_record()
     monkeypatch.setattr(qmd_cli, "_run", make(responses))
 
     new_path = tmp_path / "wiki"
@@ -147,9 +145,9 @@ def test_qmd_collection_add_or_update_adds_when_show_fails(
 
 
 def test_qmd_collection_add_or_update_remove_failure_still_adds(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """remove() non-zero -> continue with add anyway (best-effort)."""
+    """remove() non-zero -> continue with add anyway (best-effort) and warn on stderr."""
     responses = [
         _completed(
             0,
@@ -163,7 +161,7 @@ def test_qmd_collection_add_or_update_remove_failure_still_adds(
         _completed(1, stderr="remove failed"),  # remove fails
         _completed(0),  # add still runs
     ]
-    make, recorded = _run_record(responses)
+    make, recorded = _run_record()
     monkeypatch.setattr(qmd_cli, "_run", make(responses))
 
     new_path = tmp_path / "wiki"
@@ -171,6 +169,9 @@ def test_qmd_collection_add_or_update_remove_failure_still_adds(
     assert recorded[0] == ["collection", "show", "claude_code"]
     assert recorded[1] == ["collection", "remove", "claude_code"]
     assert recorded[2] == ["collection", "add", str(new_path), "--name", "claude_code"]
+    err = capsys.readouterr().err
+    assert "qmd collection remove claude_code failed" in err
+    assert "remove failed" in err
 
 
 def test_qmd_embed_invokes_per_collection_flag(
@@ -178,7 +179,7 @@ def test_qmd_embed_invokes_per_collection_flag(
 ) -> None:
     """Per-collection embed passes -c <name>."""
     responses = [_completed(0)]
-    make, recorded = _run_record(responses)
+    make, recorded = _run_record()
     monkeypatch.setattr(qmd_cli, "_run", make(responses))
 
     qmd_cli.qmd_embed(tmp_path, "claude_code")
@@ -208,7 +209,7 @@ def test_qmd_embed_default_timeout_is_thirty_minutes(
 def test_qmd_embed_propagates_qmd_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Non-zero exit raises QmdError (the post-commit hook in write.py catches it)."""
     responses = [_completed(1, stderr="model not pulled")]
-    make, _ = _run_record(responses)
+    make, _ = _run_record()
     monkeypatch.setattr(qmd_cli, "_run", make(responses))
 
     with pytest.raises(qmd_cli.QmdError):
