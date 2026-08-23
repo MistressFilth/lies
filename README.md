@@ -324,7 +324,7 @@ $XDG_STATE_HOME/lies/<name>/    # logs/scratch/poison
 $XDG_CACHE_HOME/lies/<name>/    # hashes/manifests
 ```
 
-CLI commands (`src/lies/cli.py`):
+CLI commands (`src/lies/cli/`):
 
 - `lies init <name>` — initialize a new wiki by name (creates all five
   role-routed XDG directories, copies default schema, `git init`, initial commit).
