@@ -6,6 +6,19 @@ All notable changes to LIES are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+- `lies --help` startup is ~2.7x faster (0.33s → 0.12s on this machine)
+  by deferring two transitive cost centers off the bare CLI import path.
+  `utils.logging` now imports `logfire` lazily inside
+  `configure_logging()` only when `LOGFIRE_TOKEN` is set; without the
+  token we never load its opentelemetry / requests / markdown_it / attr
+  chain. `cli.operator` no longer imports `lies.mcp.daemon` at module
+  top — that import pulled in `pydantic`, whose `pydantic.fields` plugin
+  loader instantiates the logfire plugin regardless of the env var.
+  The module is now imported inside the `mcp _serve / up / down / status`
+  command bodies, and `_serve` + `up` use literal `typer.Option`
+  defaults so the daemon module is not needed at decorator time.
+
 ## [0.10.4] - 2026-08-22
 
 ### Changed

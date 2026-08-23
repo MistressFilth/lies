@@ -27,7 +27,6 @@ from lies.cli._helpers import (
     read_heartbeat,
     read_owner_pid,
 )
-from lies.mcp import daemon
 
 __all__ = (
     "_cli_prompt",
@@ -82,8 +81,8 @@ def start() -> None:
 
 @mcp_app.command(name="_serve", hidden=True)
 def _serve(
-    host: str = daemon.DEFAULT_HOST,
-    port: int = daemon.DEFAULT_PORT,
+    host: str = typer.Option("127.0.0.1", "--host", help="HTTP host to bind (loopback only)."),
+    port: int = typer.Option(8737, "--port", help="HTTP port to bind."),
 ) -> None:
     """Internal: run the MCP server on streamable-http in the foreground.
 
@@ -91,6 +90,7 @@ def _serve(
     supported surface; use ``up`` instead.
     """
     from lies.cli._helpers import configure_logging
+    from lies.mcp import daemon
     from lies.mcp.server import mcp as _mcp_server
 
     try:
@@ -104,8 +104,8 @@ def _serve(
 
 @mcp_app.command()
 def up(
-    host: str = daemon.DEFAULT_HOST,
-    port: int = daemon.DEFAULT_PORT,
+    host: str = typer.Option("127.0.0.1", "--host", help="HTTP host to bind (loopback only)."),
+    port: int = typer.Option(8737, "--port", help="HTTP port to bind."),
     timeout: float = typer.Option(10.0, help="Seconds to wait for the port to accept."),
     no_qmd: bool = typer.Option(False, "--no-qmd", help="Skip ensuring qmd's daemon."),
     name: str | None = typer.Option(
@@ -123,6 +123,7 @@ def up(
     """
     from lies.cli import resolve_wiki
     from lies.cli._helpers import configure_logging
+    from lies.mcp import daemon
     from lies.qmd import daemon as qmd_daemon
 
     configure_logging()
@@ -170,6 +171,7 @@ def down(
     """
     from lies.cli import resolve_wiki
     from lies.cli._helpers import configure_logging
+    from lies.mcp import daemon
 
     configure_logging()
     wiki = resolve_wiki(name)
@@ -202,6 +204,7 @@ def _mcp_status(
     """
     from lies.cli import resolve_wiki
     from lies.cli._helpers import configure_logging
+    from lies.mcp import daemon
     from lies.qmd import daemon as qmd_daemon
 
     configure_logging()
