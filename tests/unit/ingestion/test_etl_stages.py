@@ -59,7 +59,7 @@ def test_run_scrape_invokes_pick_scraper(tmp_path: Path) -> None:
         result = run_scrape(wiki, collection)
     mock_pick.assert_called_once_with(collection.source)
     fake_scraper.fetch.assert_called_once_with(collection.source)
-    fake_scraper.parse.assert_called_once_with(b"# hello")
+    fake_scraper.parse.assert_called_once_with(b"# hello", source=collection.source)
     fake_scraper.emit_manifest.assert_called_once_with(fake_docs, wiki.raw_dir / collection.name)
     assert (wiki.raw_dir / collection.name).is_dir()
     assert (wiki.cache_root / "collections" / collection.name / "manifest.json").exists()
@@ -327,7 +327,7 @@ def test_scrape_uses_bespoke_scraper_via_scraper_cmd(tmp_path: Path) -> None:
         "class _B(BaseScraper):\n"
         "    def fetch(self, source):\n"
         "        return b''\n"
-        "    def parse(self, raw):\n"
+        "    def parse(self, raw, *, source=None):\n"
         "        return [ParsedDoc(path='x.md', content=b'hi', source_sha256='h', source_format='markdown')]\n"
         "    def emit_manifest(self, docs, raw_dir):\n"
         "        (raw_dir / 'x.md').write_bytes(b'hi')\n"

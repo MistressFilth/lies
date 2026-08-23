@@ -37,7 +37,7 @@ class GitHubScraper(BaseScraper):
                     tar.add(p, arcname=p.relative_to(root))
         return buf.getvalue()
 
-    def parse(self, raw: bytes) -> list[ParsedDoc]:
+    def parse(self, raw: bytes, *, source: str | Path | None = None) -> list[ParsedDoc]:
         docs: list[ParsedDoc] = []
         with tarfile.open(fileobj=io.BytesIO(raw), mode="r") as tar:
             for member in tar.getmembers():
