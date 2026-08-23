@@ -52,13 +52,12 @@ from lies.memory.validation import (
     validate_page_type,
 )
 from lies.qmd.cli import qmd_update
-from lies.utils.exclusive import acquire_create_lock, release_create_lock
+from lies.utils.exclusive import MAX_FLOCK_AGE_S, acquire_create_lock, release_create_lock
 from lies.utils.lock_heartbeat import Heartbeat, write_heartbeat, write_owner_pid
 from lies.wiki.git import atomic_commit
 from lies.wiki.wiki import Wiki
 
 _QMD_STALE_PREFIX = "qmd_stale"
-MAX_FLOCK_AGE_S = 2 * 3600  # 2h ceiling on memory flock liveness
 
 
 def _hash_text(text: str) -> str:
