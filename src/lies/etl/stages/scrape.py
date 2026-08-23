@@ -69,7 +69,10 @@ def run_scrape(wiki: Wiki, collection: Collection) -> StageResult:
     raw = scraper.fetch(collection.source)
     raw_dir = wiki.raw_dir / collection.name
     raw_dir.mkdir(parents=True, exist_ok=True)
-    emitted_manifest = scraper.emit_manifest(docs := scraper.parse(raw), raw_dir)
+    emitted_manifest = scraper.emit_manifest(
+        docs := scraper.parse(raw, source=collection.source),
+        raw_dir,
+    )
 
     # Scrapers still receive the raw directory so bespoke implementations can
     # emit their source files there. Keep the manifest beside the other cache
