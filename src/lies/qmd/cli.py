@@ -170,6 +170,23 @@ def qmd_collection_add_or_update(cwd: Path, path: Path, name: str) -> None:
     qmd_collection_add(cwd, path, name)
 
 
+def qmd_embed(cwd: Path, collection_name: str, *, timeout: int = 1800) -> None:
+    """Run ``qmd embed -c <collection_name>`` in ``cwd``.
+
+    Default timeout is 30 minutes; embedding a large wiki on first
+    ingest can be slow (CPU-bound model inference over hundreds of
+    pages). The default was picked to be generous enough for the
+    largest realistic wiki without making small syncs feel hung.
+
+    Raises ``QmdError`` on non-zero exit so the post-commit hook in
+    ``etl/stages/write.py`` can wrap the call in try/except and
+    surface a stderr warning without rolling back the wiki commit.
+    """
+    result = _run(["embed", "-c", collection_name], cwd=cwd, timeout=timeout)
+    if result.returncode != 0:
+        raise QmdError(f"qmd embed failed: {result.stderr.strip()}")
+
+
 def qmd_ls(cwd: Path, collection: str) -> str:
     """List files in a qmd collection."""
     result = _run(["ls", collection], cwd=cwd)

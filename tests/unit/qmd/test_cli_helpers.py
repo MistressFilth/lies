@@ -171,3 +171,45 @@ def test_qmd_collection_add_or_update_remove_failure_still_adds(
     assert recorded[0] == ["collection", "show", "claude_code"]
     assert recorded[1] == ["collection", "remove", "claude_code"]
     assert recorded[2] == ["collection", "add", str(new_path), "--name", "claude_code"]
+
+
+def test_qmd_embed_invokes_per_collection_flag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Per-collection embed passes -c <name>."""
+    responses = [_completed(0)]
+    make, recorded = _run_record(responses)
+    monkeypatch.setattr(qmd_cli, "_run", make(responses))
+
+    qmd_cli.qmd_embed(tmp_path, "claude_code")
+    assert recorded == [["embed", "-c", "claude_code"]]
+
+
+def test_qmd_embed_default_timeout_is_thirty_minutes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Default timeout = 1800 s. Override path takes the kwarg value."""
+    seen_timeouts: list[int] = []
+    recorded: list[list[str]] = []
+
+    def fake(args, cwd, timeout=300):
+        recorded.append(list(args))
+        seen_timeouts.append(timeout)
+        return _completed(0)
+
+    monkeypatch.setattr(qmd_cli, "_run", fake)
+    qmd_cli.qmd_embed(tmp_path, "claude_code")
+    assert seen_timeouts == [1800]
+
+    qmd_cli.qmd_embed(tmp_path, "claude_code", timeout=42)
+    assert seen_timeouts == [1800, 42]
+
+
+def test_qmd_embed_propagates_qmd_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Non-zero exit raises QmdError (the post-commit hook in write.py catches it)."""
+    responses = [_completed(1, stderr="model not pulled")]
+    make, _ = _run_record(responses)
+    monkeypatch.setattr(qmd_cli, "_run", make(responses))
+
+    with pytest.raises(qmd_cli.QmdError):
+        qmd_cli.qmd_embed(tmp_path, "claude_code")
