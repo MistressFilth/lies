@@ -13,6 +13,7 @@ must not roll back the wiki git commit that already landed.
 from __future__ import annotations
 
 import hashlib
+import sys
 from typing import TYPE_CHECKING
 
 from lies.collections.hash_manifest import HashManifest
@@ -76,16 +77,28 @@ def run_write(
             qmd_collection_add_or_update(
                 wiki.raw_dir, wiki.raw_dir / collection.name, collection.qmd_name()
             )
-        except Exception:  # noqa: BLE001, S110 - qmd is derived; collection-registration failures must not roll back the wiki commit
-            pass
+        except Exception as exc:  # noqa: BLE001 - qmd is derived; failures must not roll back the wiki commit
+            print(
+                f"warning: qmd collection registration failed for {collection.name!r}: {exc}; "
+                f"continuing (wiki commit stands). Run `lies status` for state.",
+                file=sys.stderr,
+            )
         try:
             qmd_update(wiki.data_root)
-        except Exception:  # noqa: BLE001, S110 - qmd is derived; refresh failures must not roll back the wiki commit
-            pass
+        except Exception as exc:  # noqa: BLE001 - qmd is derived; failures must not roll back the wiki commit
+            print(
+                f"warning: qmd index update failed: {exc}; "
+                f"continuing (wiki commit stands). Run `lies status` for state.",
+                file=sys.stderr,
+            )
         try:
             qmd_embed(wiki.data_root, collection.qmd_name())
-        except Exception:  # noqa: BLE001, S110 - qmd is derived; embed failures must not roll back the wiki commit
-            pass
+        except Exception as exc:  # noqa: BLE001 - qmd is derived; failures must not roll back the wiki commit
+            print(
+                f"warning: qmd embed failed for {collection.name!r}: {exc}; "
+                f"continuing (wiki commit stands). Run `lies status` for state (Pending: N will appear).",
+                file=sys.stderr,
+            )
         try:
             rebuild_index(wiki)
         except Exception:  # noqa: BLE001, S110 - rebuild_index parses user-authored frontmatter; failures must not roll back the wiki commit
