@@ -19,7 +19,7 @@ from lies.collections.hash_manifest import HashManifest
 from lies.collections.record import Collection
 from lies.etl.quarantine import quarantine as move_to_poison
 from lies.memory.index import rebuild_index
-from lies.qmd.cli import qmd_collection_add_if_missing, qmd_update
+from lies.qmd.cli import qmd_collection_add_or_update, qmd_embed, qmd_update
 from lies.wiki.git import atomic_commit
 from lies.wiki.wiki import Wiki
 
@@ -73,7 +73,7 @@ def run_write(
         # qmd-fallback synthesizer. Failures are non-fatal — the wiki
         # commit already landed and is authoritative.
         try:
-            qmd_collection_add_if_missing(
+            qmd_collection_add_or_update(
                 wiki.raw_dir, wiki.raw_dir / collection.name, collection.qmd_name()
             )
         except Exception:  # noqa: BLE001, S110 - qmd is derived; collection-registration failures must not roll back the wiki commit
@@ -81,6 +81,10 @@ def run_write(
         try:
             qmd_update(wiki.data_root)
         except Exception:  # noqa: BLE001, S110 - qmd is derived; refresh failures must not roll back the wiki commit
+            pass
+        try:
+            qmd_embed(wiki.data_root, collection.qmd_name())
+        except Exception:  # noqa: BLE001, S110 - qmd is derived; embed failures must not roll back the wiki commit
             pass
         try:
             rebuild_index(wiki)
