@@ -47,3 +47,39 @@ def test_lies_cli_does_not_load_anthropic_sdk() -> None:
         "The AnthropicModel import boundary is owned by pydantic_ai; do not "
         "eagerly import lies.providers at CLI startup."
     )
+
+
+def test_lies_cli_does_not_load_pydantic_ai() -> None:
+    """`import lies.cli` in a fresh process must not load pydantic_ai.
+
+    pydantic_ai is heavy (~700ms) and only needed by command bodies that
+    actually run an agent. It must not be pulled in by `--help` /
+    CLI-package import. The historical regression: `cli/_helpers.py`
+    imported a flock-age constant from `lies.memory.service`, which
+    transitively loaded `pydantic_ai` + `fastmcp`. Constants belong in a
+    leaf module; the orchestrator and pydantic_ai stay out of CLI
+    startup.
+    """
+    out = _run_in_clean_process(
+        "import sys\nimport lies.cli\nprint('pydantic_ai' in sys.modules)\n"
+    )
+    assert out == "False", (
+        f"lies.cli pulled in pydantic_ai. Expected 'False', got {out!r}. "
+        "Move heavy transitive imports out of cli/_helpers.py and into "
+        "command bodies. Profile with `python -X importtime -c 'import lies.cli'`."
+    )
+
+
+def test_lies_cli_does_not_load_fastmcp() -> None:
+    """`import lies.cli` in a fresh process must not load fastmcp.
+
+    Companion to the pydantic_ai guard above: the MCP server SDK is only
+    needed when `lies mcp up` actually runs the server. It must not
+    ride the CLI import path.
+    """
+    out = _run_in_clean_process("import sys\nimport lies.cli\nprint('fastmcp' in sys.modules)\n")
+    assert out == "False", (
+        f"lies.cli pulled in fastmcp. Expected 'False', got {out!r}. "
+        "The MCP server SDK is only needed by `lies mcp up`; do not import "
+        "it from cli/operator.py at module top."
+    )

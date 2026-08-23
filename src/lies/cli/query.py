@@ -1,7 +1,8 @@
 """Querying and maintenance panel: query, lint, status.
 
-Orchestrator + qmd imports stay inside command bodies so
-``import lies.cli`` doesn't pay for the model stack.
+Orchestrator + qmd + rich imports stay inside command bodies so
+``import lies.cli`` doesn't pay for the model stack or the rich
+markdown renderer (markdown-it is ~30ms of cold-start).
 """
 
 from __future__ import annotations
@@ -9,8 +10,6 @@ from __future__ import annotations
 from typing import Annotated
 
 import typer
-from rich.console import Console
-from rich.markdown import Markdown
 
 from lies.cli import app
 from lies.cli._helpers import (
@@ -25,8 +24,6 @@ __all__ = (
     "status",
 )
 
-console = Console()
-
 
 @app.command(
     short_help="Query the wiki with qmd -> index.md fallback.",
@@ -39,6 +36,9 @@ def query(
     ),
 ) -> None:
     """Query the wiki with qmd -> index.md fallback."""
+    from rich.console import Console
+    from rich.markdown import Markdown
+
     from lies.cli import Orchestrator, resolve_wiki
 
     configure_logging()
@@ -47,7 +47,7 @@ def query(
     # Use the host-side ``run_query`` entry point so the synthesizer with
     # qmd->index fallback runs without an LLM round-trip.
     answer = orch.run_query(question)
-    console.print(Markdown(answer.answer))
+    Console().print(Markdown(answer.answer))
 
 
 @app.command(
@@ -88,6 +88,9 @@ def lint(
     surfaced (also exit 1) with an operator-actionable pointer to
     ``lies flock <name> force-repair``.
     """
+    from rich.console import Console
+    from rich.markdown import Markdown
+
     from lies.cli import Orchestrator, WikiLinkCorpusMissing, WikiLinkResolver, resolve_wiki
 
     configure_logging()
@@ -108,7 +111,7 @@ def lint(
     except WikiLockBusy as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=1) from exc
-    console.print(Markdown(output))
+    Console().print(Markdown(output))
 
 
 @app.command(

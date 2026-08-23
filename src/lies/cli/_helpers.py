@@ -18,8 +18,7 @@ import typer
 
 from lies.constants import LIES_DATA_SUBDIR
 from lies.lock_errors import WikiFlockUnrepairable, WikiLockBusy
-from lies.memory.service import MAX_FLOCK_AGE_S
-from lies.utils.exclusive import acquire_create_lock
+from lies.utils.exclusive import MAX_FLOCK_AGE_S, acquire_create_lock
 from lies.utils.lock_heartbeat import read_heartbeat, read_owner_pid
 from lies.utils.logging import configure_logging
 

@@ -46,7 +46,7 @@ from lies.utils.lock_heartbeat import (
 
 _log = logging.getLogger(__name__)
 
-MAX_FLOCK_AGE_S_DEFAULT = 2 * 3600
+MAX_FLOCK_AGE_S = 2 * 3600  # 2h ceiling on memory flock liveness
 
 
 def acquire_create_lock(  # type: ignore[no-untyped-def]

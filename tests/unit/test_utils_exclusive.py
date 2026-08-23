@@ -11,7 +11,7 @@ import pytest
 
 from lies.utils import exclusive
 from lies.utils.exclusive import (
-    MAX_FLOCK_AGE_S_DEFAULT,
+    MAX_FLOCK_AGE_S,
     acquire_create_lock,
     release_create_lock,
 )
@@ -98,7 +98,7 @@ def test_acquire_create_lock_reaps_dead_pid_and_reacquires(
     # Pretend the stored PID is dead via monkeypatched pid_alive_fn.
     result = acquire_create_lock(
         lock_create,
-        max_age_s=MAX_FLOCK_AGE_S_DEFAULT,
+        max_age_s=MAX_FLOCK_AGE_S,
         pid_path=pid_path,
         state_json_path=state_json,
         pid_alive_fn=lambda _: False,
@@ -135,7 +135,7 @@ def test_pid_alive_classifier_handles_process_lookup_error(
     with patch("os.kill", side_effect=ProcessLookupError("ESRCH")):
         result = acquire_create_lock(
             lock_create,
-            max_age_s=MAX_FLOCK_AGE_S_DEFAULT,
+            max_age_s=MAX_FLOCK_AGE_S,
             pid_path=pid_path,
             state_json_path=state_json,
         )
@@ -170,7 +170,7 @@ def test_pid_alive_classifier_handles_permission_error(
     with patch("os.kill", side_effect=PermissionError("EPERM")):
         result = acquire_create_lock(
             lock_create,
-            max_age_s=MAX_FLOCK_AGE_S_DEFAULT,
+            max_age_s=MAX_FLOCK_AGE_S,
             pid_path=pid_path,
             state_json_path=state_json,
         )
@@ -208,7 +208,7 @@ def test_pid_alive_classifier_handles_generic_oserror(
     with patch("os.kill", side_effect=OSError("EACCES: foo")):
         result = acquire_create_lock(
             lock_create,
-            max_age_s=MAX_FLOCK_AGE_S_DEFAULT,
+            max_age_s=MAX_FLOCK_AGE_S,
             pid_path=pid_path,
             state_json_path=state_json,
         )

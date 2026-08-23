@@ -4,6 +4,23 @@ All notable changes to LIES are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/) adapted for
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+## [0.10.4] - 2026-08-22
+
+### Changed
+- `lies --help` (and other CLI startup paths) no longer load
+  `pydantic_ai` / `fastmcp` transitively. The flock-age ceiling
+  constant was duplicated as `MAX_FLOCK_AGE_S` in
+  `lies.memory.service`; that definition moved to
+  `lies.utils.exclusive` (where `MAX_FLOCK_AGE_S_DEFAULT` lived)
+  and `memory/service.py` now imports it from the leaf. `cli/_helpers`
+  follows the new path. `rich.console.Console` + `rich.markdown`
+  imports also move out of `cli/query.py` module top into the two
+  command bodies that actually use them. `import lies.cli` drops from
+  ~1.28s to ~0.22s; `lies --help` wall-clock drops from ~1.07s to
+  ~0.36s on this machine.
+
 ## [0.10.3] - 2026-08-22
 
 ### Changed
