@@ -100,10 +100,11 @@ def atomic_commit(
     - **Commit history**: on success, exactly one new commit is created and
       its 40-character SHA returned. On a no-op (working tree matches HEAD
       after staging -- every file was either already-committed content or
-      the caller passed ``files=[]`` with no dirty working tree), returns
-      ``None`` instead of raising. This lets callers like ``run_write``
-      gate post-commit hooks on "did anything actually change" without
-      catching a CommitError that conflates "no-op" with "real failure".
+      the caller did not pass ``files=`` and the working tree had no dirty
+      tracked changes), returns ``None`` instead of raising. This lets
+      callers like ``run_write`` gate post-commit hooks on "did anything
+      actually change" without catching a CommitError that conflates
+      "no-op" with "real failure".
 
     Args:
         repo: Path to the git working tree.
@@ -118,9 +119,11 @@ def atomic_commit(
         to commit (the working tree matched HEAD after staging).
 
     Raises:
-        CommitError: If the commit fails for any reason OTHER than a
-            no-op. The index is guaranteed to be clean (i.e., unchanged
-            from before the call).
+        CommitError: If the caller explicitly passes ``files=[]`` (rejected
+            as a programming error before any git work runs), or if the
+            commit fails for any reason OTHER than a no-op. The index is
+            guaranteed to be clean (i.e., unchanged from before the call)
+            on every failure mode.
     """
     if files is not None and len(files) == 0:
         raise CommitError("files must not be empty")

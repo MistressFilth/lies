@@ -344,6 +344,57 @@ def test_apply_plan_restores_dirty_tree_when_commit_fails(
     assert not (git_wiki.wiki_dir / "concepts" / "new.md").exists()
 
 
+def test_apply_plan_returns_empty_receipt_when_atomic_commit_is_noop(
+    git_wiki: Wiki, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``atomic_commit`` returning ``None`` (no-op) must short-circuit to
+    :meth:`WikiMemoryService._empty_receipt`.
+
+    Regression: ``apply_plan`` discarded the return value and unconditionally
+    refreshed qmd + returned a ``MemoryReceipt`` with ``changed_pages`` from
+    the in-memory ``_apply_operations`` list. When ``atomic_commit`` detected
+    the staged diff was empty (e.g. an idempotent plan wrote byte-identical
+    content), the receipt falsely claimed those changes were applied at the
+    git level. Capture ``commit_sha``; on ``None`` restore the working tree
+    and return the empty receipt.
+    """
+    service = WikiMemoryService(wiki=git_wiki)
+    service.register_evidence({"page-1"})
+    plan = MemoryPlan(
+        operations=[
+            PageCreate(
+                path="concepts/example.md",
+                content="---\ntitle: Example\ntype: concept\n---\n# Example\n",
+                evidence=["page-1"],
+            )
+        ],
+        rationale="idempotent re-write",
+        evidence=["page-1"],
+    )
+
+    noop_count = {"calls": 0}
+
+    def fake_atomic_commit(*_args: object, **_kwargs: object) -> str | None:
+        noop_count["calls"] += 1
+        # atomic_commit returns None on a no-op; the service must route
+        # through _empty_receipt() instead of claiming changes landed.
+        return
+
+    monkeypatch.setattr("lies.memory.service.atomic_commit", fake_atomic_commit)
+    receipt = service.apply_plan(plan)
+    assert noop_count["calls"] == 1
+    # The receipt must mirror _empty_receipt() — no claimed changes at git
+    # level, no qmd errors, no deferrals, no fallback.
+    assert receipt.changed_pages == []
+    assert receipt.deferred == []
+    assert receipt.fallback_used is False
+    assert receipt.fallback_reason == ""
+    assert receipt.errors == []
+    # And no qmd refresh should have run (receipt.errors is empty AND the
+    # on-disk qmd side-effects of a real commit are absent).
+    assert not (git_wiki.wiki_dir / "concepts" / "example.md").exists()
+
+
 def test_validate_plan_rejects_create_collision(git_wiki: Wiki) -> None:
     page = git_wiki.wiki_dir / "concepts" / "existing.md"
     page.write_text("---\ntitle: Existing\ntype: concept\n---\n", encoding="utf-8")
