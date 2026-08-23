@@ -286,6 +286,46 @@ def test_run_write_skips_qmd_hooks_when_nothing_committed(tmp_path: Path) -> Non
     m_index.assert_not_called()
 
 
+def test_run_write_skips_qmd_hooks_when_atomic_commit_is_noop(
+    tmp_path: Path,
+) -> None:
+    """When atomic_commit returns None (working-tree diff was empty even
+    though run_write wrote N files), the qmd hooks must not run.
+
+    Repro for the no-op atomic_commit bug: re-ingesting an unchanged
+    collection writes 192 byte-identical files. The manifest compare
+    returns False (the in-memory manifest is empty after a prior
+    delete), so every file is a "write" — but the on-disk content is
+    identical to what's already committed. ``git diff --cached`` is
+    empty; ``atomic_commit`` returns None; the post-commit hooks
+    should be skipped because nothing changed downstream either.
+    """
+    manifest = mock.Mock()
+    manifest.compare.return_value = False  # every doc is a "write"
+    fake_normalized = [("a.md", "# a"), ("b.md", "# b")]
+    with (
+        mock.patch("lies.etl.stages.write.atomic_commit", return_value=None) as ac,
+        mock.patch("lies.etl.stages.write.qmd_collection_add_or_update") as m_add,
+        mock.patch("lies.etl.stages.write.qmd_update") as m_update,
+        mock.patch("lies.etl.stages.write.qmd_embed") as m_embed,
+        mock.patch("lies.etl.stages.write.rebuild_index") as m_index,
+    ):
+        run_write(
+            _wiki(tmp_path),
+            _collection(tmp_path),
+            fake_normalized,
+            manifest=manifest,
+            force=False,
+        )
+    ac.assert_called_once()
+    # The contract: atomic_commit returned None -> nothing actually
+    # committed -> no qmd hooks fire.
+    m_add.assert_not_called()
+    m_update.assert_not_called()
+    m_embed.assert_not_called()
+    m_index.assert_not_called()
+
+
 def test_run_write_does_not_roll_back_commit_on_rebuild_index_value_error(
     tmp_path: Path,
 ) -> None:
@@ -418,7 +458,12 @@ def test_run_write_invokes_qmd_refresh_update_and_embed(
         config={},
     )
     # Skip atomic_commit so the test does not require a real git repo.
-    monkeypatch.setattr("lies.etl.stages.write.atomic_commit", lambda *a, **k: None)
+    # The post-commit qmd hooks are gated on a non-None return value
+    # (None means "no commit landed"), so we return a fake SHA here.
+    monkeypatch.setattr(
+        "lies.etl.stages.write.atomic_commit",
+        lambda *a, **k: "deadbeef" * 5,  # 40-char fake SHA
+    )
 
     recorded: list[list[str]] = []
 

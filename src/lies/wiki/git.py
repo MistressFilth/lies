@@ -84,7 +84,7 @@ def atomic_commit(
     repo: Path,
     message: str,
     files: list[str] | None = None,
-) -> str:
+) -> str | None:
     """Stage and commit the given files atomically; return the new commit SHA.
 
     Atomicity guarantee:
@@ -98,7 +98,12 @@ def atomic_commit(
       function on failure. They remain on disk for the caller to inspect,
       re-stage, or discard.
     - **Commit history**: on success, exactly one new commit is created and
-      its 40-character SHA returned. On failure, no commit is created.
+      its 40-character SHA returned. On a no-op (working tree matches HEAD
+      after staging -- every file was either already-committed content or
+      the caller passed ``files=[]`` with no dirty working tree), returns
+      ``None`` instead of raising. This lets callers like ``run_write``
+      gate post-commit hooks on "did anything actually change" without
+      catching a CommitError that conflates "no-op" with "real failure".
 
     Args:
         repo: Path to the git working tree.
@@ -109,11 +114,13 @@ def atomic_commit(
             is rejected.
 
     Returns:
-        The 40-character commit SHA.
+        The 40-character commit SHA, or ``None`` if there was nothing
+        to commit (the working tree matched HEAD after staging).
 
     Raises:
-        CommitError: If the commit fails for any reason. The index is
-            guaranteed to be clean (i.e., unchanged from before the call).
+        CommitError: If the commit fails for any reason OTHER than a
+            no-op. The index is guaranteed to be clean (i.e., unchanged
+            from before the call).
     """
     if files is not None and len(files) == 0:
         raise CommitError("files must not be empty")
@@ -138,7 +145,11 @@ def atomic_commit(
         if diff_result.returncode != 0:
             raise CommitError(f"git diff --cached failed: {diff_result.stderr.strip()}")
         if not diff_result.stdout.strip():
-            raise CommitError("nothing to commit")
+            # Quiet no-op: nothing actually changed in git. Reset staging
+            # to leave the index clean and return None so the caller can
+            # gate downstream work on the no-op signal.
+            _reset_staging(repo)
+            return None
 
         # ---- Commit --------------------------------------------------------
         commit_result = _run_git(["git", "commit", "-m", message], repo)
