@@ -216,6 +216,126 @@ def test_web_scraper_sends_browser_user_agent(
         assert "Python-urllib" not in ua, f"default Python UA leaked: {ua!r}"
 
 
+# ---------------------------------------------------------------------------
+# llms.txt as INDEX: when source ends in /llms.txt (not /llms-full.txt), the
+# body is a markdown index of doc URLs. parse() must follow each link and
+# emit one ParsedDoc per fetched page. Without this, llms.txt ingestion only
+# captures the index file itself (one ~50KB chunked doc) and never fetches
+# the 70+ underlying pages.
+# ---------------------------------------------------------------------------
+
+
+_INDEX_BODY = (
+    "# Claude Code Docs\n\n"
+    "> Official docs.\n\n"
+    "## Docs\n\n"
+    "- [Overview](https://example.com/docs/en/overview.md): an overview.\n"
+    "- [Quickstart](https://example.com/docs/en/quickstart.md): quickstart.\n"
+    "- [Hooks](https://example.com/docs/en/hooks.md): hooks reference.\n"
+)
+
+
+def test_web_scraper_parse_index_follows_links(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Source ends in llms.txt -> parse() extracts URLs and fetches each."""
+    fetched_urls: list[str] = []
+
+    def fake_urlopen(req, *args, **kwargs):
+        fetched_urls.append(req.full_url)
+        if req.full_url == "https://example.com/llms.txt":
+            return _FakeResp(_INDEX_BODY, req.full_url)
+        # Each indexed page returns its own markdown.
+        slug = req.full_url.rsplit("/", 1)[-1].removesuffix(".md")
+        body = f"# {slug}\n\nBody of {slug}.\n".encode()
+        return _FakeResp(body, req.full_url)
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    s = WebScraper()
+    raw = s.fetch("https://example.com/llms.txt")
+    docs = s.parse(raw, source="https://example.com/llms.txt")
+
+    assert len(docs) == 4  # _index.md + 3 pages
+    paths = sorted(d.path for d in docs)
+    assert paths == ["_index.md", "hooks.md", "overview.md", "quickstart.md"]
+    # Each doc's content is the fetched page, not the index entry.
+    by_path = {d.path: d.content.decode("utf-8") for d in docs}
+    assert by_path["overview.md"].startswith("# overview")
+    assert by_path["_index.md"].startswith("# Claude Code Docs")
+    # Format and sha256 set on every doc.
+    for d in docs:
+        assert d.source_format == "markdown"
+        assert len(d.source_sha256) == 64
+    # Indexed URLs were actually fetched (not just parsed from the body).
+    assert any(u.endswith("/overview.md") for u in fetched_urls)
+    assert any(u.endswith("/quickstart.md") for u in fetched_urls)
+    assert any(u.endswith("/hooks.md") for u in fetched_urls)
+
+
+def test_web_scraper_parse_index_skips_failed_fetches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Some indexed URLs 404; the failing ones are dropped, the rest kept."""
+
+    def fake_urlopen(req, *args, **kwargs):
+        if req.full_url == "https://example.com/llms.txt":
+            return _FakeResp(_INDEX_BODY, req.full_url)
+        if req.full_url.endswith("/overview.md"):
+            return _FakeResp("# overview\n\nbody\n", req.full_url)
+        if req.full_url.endswith("/quickstart.md"):
+            raise HTTPError(req.full_url, 404, "Not Found", {}, None)
+        if req.full_url.endswith("/hooks.md"):
+            raise HTTPError(req.full_url, 500, "Server Error", {}, None)
+        raise HTTPError(req.full_url, 404, "Not Found", {}, None)
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    s = WebScraper()
+    raw = s.fetch("https://example.com/llms.txt")
+    docs = s.parse(raw, source="https://example.com/llms.txt")
+
+    paths = sorted(d.path for d in docs)
+    assert paths == ["_index.md", "overview.md"], f"only overview+index survive, got {paths}"
+
+
+def test_web_scraper_parse_chunked_when_source_is_full(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Source ends in llms-full.txt -> parse() treats body as a single chunked doc."""
+    full_body = "# Page One\n\nFirst content.\n\n# Page Two\n\nSecond content.\n"
+
+    def fake_urlopen(req, *args, **kwargs):
+        return _FakeResp(full_body, req.full_url)
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    s = WebScraper()
+    raw = s.fetch("https://example.com/llms-full.txt")
+    docs = s.parse(raw, source="https://example.com/llms-full.txt")
+
+    # Chunked, not per-link. The index pattern in the body would have been
+    # misread as link-list mode -- the source URL must override that.
+    assert len(docs) == 4
+    assert docs[0].path == "chunk-0000.md"
+    assert b"Page One" in docs[0].content
+    assert b"Page Two" in docs[2].content
+
+
+def test_web_scraper_parse_chunked_when_no_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Backwards-compat: parse(raw) without source -> chunked mode (default)."""
+    full_body = "# Just markdown\n\nNo link patterns here.\n\n# Second section\nMore."
+
+    def fake_urlopen(req, *args, **kwargs):
+        return _FakeResp(full_body, req.full_url)
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    s = WebScraper()
+    raw = s.fetch("https://example.com/some/page.md")
+    docs = s.parse(raw)  # no source kwarg
+    assert len(docs) == 3
+    assert docs[0].path == "chunk-0000.md"
+
+
 class _FakeResp:
     def __init__(self, body: str | bytes, url: str) -> None:
         self._body = body.encode("utf-8") if isinstance(body, str) else body

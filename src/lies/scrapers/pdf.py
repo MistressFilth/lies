@@ -26,7 +26,7 @@ class PDFScraper(BaseScraper):
             raise ScraperFetchFailed(f"PDF not found: {path}")
         return path.read_bytes()
 
-    def parse(self, raw: bytes) -> list[ParsedDoc]:
+    def parse(self, raw: bytes, *, source: str | Path | None = None) -> list[ParsedDoc]:
         """Return the fetched PDF unchanged for ``PDFBuilder``."""
         return [
             ParsedDoc(
