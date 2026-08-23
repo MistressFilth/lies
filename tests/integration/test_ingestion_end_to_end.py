@@ -141,8 +141,9 @@ def test_full_pipeline_idempotent(
         result1 = CliRunner().invoke(app, ["sync", "sample"])
     assert result1.exit_code == 0
 
-    # Wiki content directory holds the normalized wiki pages.
-    assert (wiki.wiki_dir / "chunk-0000.md").exists()
+    # Wiki content directory holds the normalized wiki pages, nested
+    # under the per-collection subdir so qmd can index them.
+    assert (wiki.wiki_dir / "sample" / "chunk-0000.md").exists()
     # Per-collection manifest moved to the cache root.
     assert (wiki.cache_root / "collections" / "sample" / "manifest.json").exists()
     # Telemetry log lives under the state root.
