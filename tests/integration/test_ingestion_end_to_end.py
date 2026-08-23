@@ -126,8 +126,18 @@ def test_full_pipeline_idempotent(
     )
 
     canned = b"# Doc 1\n\nSome text.\n\n# Doc 2\n\nMore text.\n"
-    with mock.patch("urllib.request.urlopen") as u:
-        u.return_value.__enter__.return_value.read.return_value = canned
+
+    def fake_urlopen(req):
+        resp = mock.MagicMock()
+        resp.read.return_value = canned
+        # WebScraper.fetch compares resp.geturl() with the requested URL to
+        # reject responses that followed a redirect. The mock must echo the
+        # request URL so the candidate is treated as a non-redirect response.
+        resp.geturl.return_value = req.full_url
+        resp.__enter__.return_value = resp
+        return resp
+
+    with mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
         result1 = CliRunner().invoke(app, ["sync", "sample"])
     assert result1.exit_code == 0
 
@@ -138,8 +148,7 @@ def test_full_pipeline_idempotent(
     # Telemetry log lives under the state root.
     assert (wiki.logs_dir / "sample.log").exists()
 
-    with mock.patch("urllib.request.urlopen") as u:
-        u.return_value.__enter__.return_value.read.return_value = canned
+    with mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
         result2 = CliRunner().invoke(app, ["sync", "sample"])
     assert result2.exit_code == 0
 
