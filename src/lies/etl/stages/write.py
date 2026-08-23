@@ -96,7 +96,7 @@ def run_write(
         except Exception as exc:  # noqa: BLE001 - qmd is derived; failures must not roll back the wiki commit
             print(
                 f"warning: qmd embed failed for {collection.name!r}: {exc}; "
-                f"continuing (wiki commit stands). Run `lies status` for state (Pending: N will appear).",
+                f"continuing (wiki commit stands). Run `lies status` (or `qmd status` directly if status also fails) for state.",
                 file=sys.stderr,
             )
         try:
