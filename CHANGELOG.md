@@ -4,32 +4,7 @@ All notable changes to LIES are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/) adapted for
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
-
-### Fixed
-- `atomic_commit` now returns `None` instead of raising
-  `CommitError("nothing to commit")` when the working tree matches
-  HEAD after staging (e.g. a re-ingest of an unchanged collection).
-  `WikiMemoryService.apply_plan` discarded the return value and
-  unconditionally refreshed qmd + returned a `MemoryReceipt` carrying
-  the in-memory `changed_pages`, falsely claiming the operations were
-  applied at the git level. It now captures the return value, restores
-  the working tree, and routes through `_empty_receipt()` when the
-  commit was a no-op — so a no-op plan never claims git-level changes
-  that did not land.
-- The WRITING stage now lands pages under `wiki/<collection>/<path>`
-  (one subdirectory per collection) and registers each qmd collection
-  against that subdirectory instead of the empty
-  `raw/<collection>` directory. Previously the registration indexed
-  zero files because raw files live elsewhere; the only collections
-  that indexed anything were the ones whose `~/.config/qmd/index.yml`
-  entries happened to point at `wiki.wiki_dir` already. New
-  collections are silently broken no longer. `WikiCollectionRef.root`
-  was a stale pointer at the raw dir; it now points at the
-  per-collection wiki subdir so it actually describes where the
-  pages live. Existing flat-layout pages in `wiki/` are left in place
-  (orphaned, no manifest reference); the next `lies ingest` for a
-  collection writes fresh files into the new subdir.
+## [0.11.1] - 2026-08-24
 
 ### Added
 - After every successful `lies ingest`, `lies sync`, or
@@ -57,6 +32,31 @@ All notable changes to LIES are documented here. The format follows
   The module is now imported inside the `mcp _serve / up / down / status`
   command bodies, and `_serve` + `up` use literal `typer.Option`
   defaults so the daemon module is not needed at decorator time.
+- The WRITING stage now lands pages under `wiki/<collection>/<path>`
+  (one subdirectory per collection) and registers each qmd collection
+  against that subdirectory instead of the empty
+  `raw/<collection>` directory. Previously the registration indexed
+  zero files because raw files live elsewhere; the only collections
+  that indexed anything were the ones whose `~/.config/qmd/index.yml`
+  entries happened to point at `wiki.wiki_dir` already. New
+  collections are silently broken no longer. `WikiCollectionRef.root`
+  was a stale pointer at the raw dir; it now points at the
+  per-collection wiki subdir so it actually describes where the
+  pages live. Existing flat-layout pages in `wiki/` are left in place
+  (orphaned, no manifest reference); the next `lies ingest` for a
+  collection writes fresh files into the new subdir.
+
+### Fixed
+- `atomic_commit` now returns `None` instead of raising
+  `CommitError("nothing to commit")` when the working tree matches
+  HEAD after staging (e.g. a re-ingest of an unchanged collection).
+  `WikiMemoryService.apply_plan` discarded the return value and
+  unconditionally refreshed qmd + returned a `MemoryReceipt` carrying
+  the in-memory `changed_pages`, falsely claiming the operations were
+  applied at the git level. It now captures the return value, restores
+  the working tree, and routes through `_empty_receipt()` when the
+  commit was a no-op — so a no-op plan never claims git-level changes
+  that did not land.
 
 ## [0.10.4] - 2026-08-22
 

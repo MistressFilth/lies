@@ -12,9 +12,10 @@ bookkeeping.
 
 ## Status
 
-MCP server, invisible wiki memory, collection sync, source builders, and safe
-lint repair are available on `main`. Claude Code and other MCP hosts can use
-the stdio server documented below.
+MCP server, invisible wiki memory, collection sync, source builders,
+qmd auto-embed after sync, and safe lint repair are available on
+`main`. Claude Code and other MCP hosts can use the stdio server
+documented below.
 
 ## Quick start
 
@@ -377,8 +378,20 @@ stages:
 
 1. **SCRAPE** — fetch + parse + manifest emit.
 2. **NORMALIZE** — format dispatch + Obsidian convention apply.
-3. **WRITE** — hash compare + atomic_commit (skips unchanged docs).
+3. **WRITE** — hash compare + atomic_commit (skips unchanged docs);
+   one subdirectory per collection under the wiki root
+   (`wiki/<collection>/<path>`), and a non-fatal post-commit hook
+   re-registers the qmd collection against that subdir, refreshes
+   the qmd index, and embeds the new chunks
+   (`qmd embed -c <collection>`).
 4. **QMD_UPDATE** — incremental qmd update per collection.
+
+Per-collection subdirs are how LIES scopes qmd collections. Each
+collection's qmd registration points at its own
+`wiki/<collection>/` subdir, so `qmd query` and the MCP
+`wiki_search` tool return only that collection's pages when the
+caller scopes by collection. The same `wiki/index.md` is
+rebuilt by `rebuild_index` after every successful sync.
 
 Commands:
 
