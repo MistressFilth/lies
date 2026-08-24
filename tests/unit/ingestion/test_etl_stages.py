@@ -339,8 +339,15 @@ def test_run_write_does_not_roll_back_commit_on_rebuild_index_value_error(
     manifest = mock.Mock()
     manifest.compare.return_value = False
     fake_normalized = [("x.md", "# body")]
+    # Pin atomic_commit to a truthy 40-char SHA so the post-commit hooks
+    # fire. The new no-op gate skips them when atomic_commit returns None;
+    # relying on MagicMock's truthy default would silently couple this test
+    # to a fragile side-effect of the mock library rather than the contract.
     with (
-        mock.patch("lies.etl.stages.write.atomic_commit") as ac,
+        mock.patch(
+            "lies.etl.stages.write.atomic_commit",
+            return_value="deadbeef" * 5,
+        ) as ac,
         mock.patch("lies.etl.stages.write.qmd_collection_add_or_update"),
         mock.patch("lies.etl.stages.write.qmd_update"),
         mock.patch(
