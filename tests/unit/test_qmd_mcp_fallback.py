@@ -94,4 +94,18 @@ def test_fallback_search_with_empty_wiki_is_empty_and_degraded(
     raw = mcp.call_wiki_search(service, question="anything", limit=5)
     payload = raw.model_dump()
     assert payload["degraded"] is True
-    assert payload["pages"] == []
+    # Even though qmd was stubbed to return a hit pointing at
+    # ``concepts/alpha.md``, the wiki has no such file — so the hit
+    # carries an empty excerpt (no fabricated content). The page
+    # metadata is preserved for the agent to decide what to do with it.
+    assert payload["pages"] == [
+        {
+            "page_id": payload["pages"][0]["page_id"],
+            "path": "concepts/alpha.md",
+            "collection_id": "qmd-fallback",
+            "excerpt": "",
+            "line_start": 0,
+            "line_end": 0,
+            "score": 1.0,
+        }
+    ]

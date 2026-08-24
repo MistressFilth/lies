@@ -17,6 +17,19 @@ All notable changes to LIES are documented here. The format follows
   the working tree, and routes through `_empty_receipt()` when the
   commit was a no-op — so a no-op plan never claims git-level changes
   that did not land.
+- The WRITING stage now lands pages under `wiki/<collection>/<path>`
+  (one subdirectory per collection) and registers each qmd collection
+  against that subdirectory instead of the empty
+  `raw/<collection>` directory. Previously the registration indexed
+  zero files because raw files live elsewhere; the only collections
+  that indexed anything were the ones whose `~/.config/qmd/index.yml`
+  entries happened to point at `wiki.wiki_dir` already. New
+  collections are silently broken no longer. `WikiCollectionRef.root`
+  was a stale pointer at the raw dir; it now points at the
+  per-collection wiki subdir so it actually describes where the
+  pages live. Existing flat-layout pages in `wiki/` are left in place
+  (orphaned, no manifest reference); the next `lies ingest` for a
+  collection writes fresh files into the new subdir.
 
 ### Added
 - After every successful `lies ingest`, `lies sync`, or

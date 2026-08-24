@@ -119,3 +119,26 @@ def test_read_pages_returns_content_for_ids(indexed_wiki) -> None:
 def test_read_pages_missing_id_returns_empty(indexed_wiki) -> None:
     bodies = read_pages(indexed_wiki, ["not-a-real-id"])
     assert bodies == {}
+
+
+def test_from_qmd_resolves_under_wiki_dir(indexed_wiki, monkeypatch: pytest.MonkeyPatch) -> None:
+    """After PR #39, qmd is registered at wiki.wiki_dir/<collection>/.
+
+    _from_qmd must join raw_path under wiki.wiki_dir, not wiki.data_root,
+    so the relative_to(wiki.wiki_dir) check succeeds and the hit is
+    kept (not silently dropped).
+    """
+    from lies import qmd
+
+    def fake_query(_cwd: Path, _q: str, _limit: int) -> list[dict[str, object]]:
+        # qmd returns the path *within* the registered root. For a
+        # collection named ``concepts`` the relative hit path is
+        # ``concepts/mvc.md``; joining it under ``wiki.wiki_dir`` must
+        # land on the actual on-disk file.
+        return [{"path": "concepts/mvc.md", "score": 0.9}]
+
+    monkeypatch.setattr(qmd.cli, "qmd_query", fake_query)
+    result = search_wiki(indexed_wiki, "MVC")
+    assert result.fallback_used is False
+    assert result.pages, "hit was silently dropped by the wrong join under wiki.data_root"
+    assert result.pages[0].path == "concepts/mvc.md"
