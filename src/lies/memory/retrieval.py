@@ -90,7 +90,7 @@ def _from_qmd(
             continue
         candidate = Path(raw_path)
         if not candidate.is_absolute():
-            candidate = (wiki.data_root / raw_path).resolve()
+            candidate = (wiki.wiki_dir / raw_path).resolve()
         # Compute the path relative to ``wiki_dir`` so it matches the
         # convention used by ``validate_page_path`` and the index parser.
         try:

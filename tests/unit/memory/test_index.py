@@ -57,3 +57,20 @@ def test_append_log_entry_appends(tmp_path: Path) -> None:
     append_log_entry(wiki, "## [2026-07-29] query  | B")
     text = (wiki.wiki_dir / "log.md").read_text(encoding="utf-8")
     assert text.count("## [2026-07-29]") == 2
+
+
+def test_rebuild_index_emits_paths_relative_to_wiki_dir(seeded_wiki) -> None:
+    """rebuild_index must emit paths relative to wiki.wiki_dir, not wiki.data_root.
+
+    The synthesizer's index-fallback path joins link.path under
+    wiki.wiki_dir; emitting ``wiki/<collection>/<path>`` would
+    double-prefix to ``<wiki.wiki_dir>/wiki/<collection>/<path>``,
+    which does not exist and the fallback silently returns nothing.
+    """
+    rebuild_index(seeded_wiki)
+    text = (seeded_wiki.wiki_dir / "index.md").read_text(encoding="utf-8")
+    # Links must be relative to wiki.wiki_dir — no ``wiki/`` prefix.
+    assert "(concepts/x.md)" in text
+    assert "(entities/y.md)" in text
+    assert "wiki/concepts" not in text
+    assert "wiki/entities" not in text

@@ -308,10 +308,11 @@ The wiki is a git repository on disk, rooted under
 $XDG_DATA_HOME/lies/<name>/     # wiki content root
 ├── raw/                        # immutable sources (the human curates these)
 └── wiki/                       # LLM-owned markdown
-    ├── index.md                # catalog of pages
-    ├── log.md                  # append-only log
+    ├── index.md                # catalog of pages (wiki-wide)
+    ├── log.md                  # append-only log (wiki-wide)
     ├── overview.md
-    └── <page-type>/<name>.md
+    └── <collection>/           # per-collection subdir; qmd is registered here
+        └── <page-type>/<name>.md
 
 $XDG_CONFIG_HOME/lies/<name>/   # per-wiki configuration
 └── schema.md                   # per-wiki schema override (optional)

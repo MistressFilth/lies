@@ -161,9 +161,9 @@ def _resolve_qmd_pages(wiki: Wiki, qmd_paths: list[str], top_n: int) -> list[_Pa
             break
         candidate = Path(raw)
         if not candidate.is_absolute():
-            candidate = (wiki.data_root / raw).resolve()
+            candidate = (wiki.wiki_dir / raw).resolve()
         try:
-            candidate.relative_to(wiki.data_root)
+            candidate.relative_to(wiki.wiki_dir)
         except ValueError:
             continue
         read = _try_read(candidate, wiki)

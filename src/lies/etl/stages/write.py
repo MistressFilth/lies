@@ -1,13 +1,20 @@
 """WRITING stage — hash compare + atomic_commit per batch.
 
-Target paths are computed under ``wiki.wiki_dir``. Per-doc OSError on
-write moves the source to the wiki's poison_root and continues the batch.
+Target paths are computed under ``wiki.wiki_dir / <collection.name>`` so
+each collection lives in its own subdirectory of the wiki. The same
+subdirectory is registered with qmd so the derived index sees the
+pages (registering a qmd collection against the empty
+``wiki.raw_dir / <collection.name>`` directory — the previous layout —
+indexes nothing because raw files live elsewhere). Per-doc OSError on
+write moves the source to the wiki's poison_root and continues the
+batch.
 
 Post-commit hook: when files are written, the stage also (a) registers
-the collection with qmd (idempotent), (b) refreshes the qmd derived
-index, and (c) regenerates ``wiki/index.md`` so the qmd-fallback
-synthesizer stays in sync. The qmd hooks are non-fatal — a failure
-must not roll back the wiki git commit that already landed.
+the per-collection wiki subdir with qmd (idempotent), (b) refreshes
+the qmd derived index, (c) regenerates ``wiki/index.md`` so the
+qmd-fallback synthesizer stays in sync, and (d) embeds the collection
+vectors. The qmd hooks are non-fatal — a failure must not roll back
+the wiki git commit that already landed.
 """
 
 from __future__ import annotations
@@ -49,7 +56,7 @@ def run_write(
         if not force and manifest.compare(path, sha):
             skipped.append(path)
             continue
-        target = wiki.wiki_dir / path
+        target = wiki.wiki_dir / collection.name / path
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
             with open(target, "w", encoding="utf-8") as f:
@@ -84,7 +91,7 @@ def run_write(
             # commit already landed and is authoritative.
             try:
                 qmd_collection_add_or_update(
-                    wiki.raw_dir, wiki.raw_dir / collection.name, collection.qmd_name()
+                    wiki.data_root, wiki.wiki_dir / collection.name, collection.qmd_name()
                 )
             except Exception as exc:  # noqa: BLE001 - qmd is derived; failures must not roll back the wiki commit
                 print(

@@ -31,7 +31,7 @@ def run_register(wiki: Wiki, collection: Collection, service: WikiMemoryService)
         )
     ref = WikiCollectionRef(
         collection_id=collection.name,
-        root=(wiki.raw_dir / collection.name).resolve().as_posix(),
+        root=(wiki.wiki_dir / collection.name).resolve().as_posix(),
         qmd_collection=collection.qmd_name(),
         schema_path=wiki.schema_path.resolve().as_posix(),
     )

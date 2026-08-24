@@ -112,12 +112,14 @@ def test_run_write_atomic_commits_new_files(tmp_path: Path) -> None:
         )
     assert result.success == ["x.md"]
     ac.assert_called_once()
-    written = tmp_path / "wiki" / "x.md"
+    # Each collection writes into its own subdir of the wiki so qmd can
+    # register the collection against a non-empty directory.
+    written = tmp_path / "wiki" / "cpython" / "x.md"
     assert written.exists()
 
 
 def test_run_write_writes_under_wiki_root(tmp_path: Path) -> None:
-    """Target path is wiki.wiki_dir/<path>, not CWD-relative."""
+    """Target path is wiki.wiki_dir/<collection>/<path>, not CWD-relative."""
     fake_normalized = [("concepts/example.md", "# body")]
     manifest = mock.Mock()
     manifest.compare.return_value = False
@@ -129,7 +131,7 @@ def test_run_write_writes_under_wiki_root(tmp_path: Path) -> None:
             manifest=manifest,
             force=False,
         )
-    assert (tmp_path / "wiki" / "concepts" / "example.md").exists()
+    assert (tmp_path / "wiki" / "cpython" / "concepts" / "example.md").exists()
 
 
 def test_run_write_skips_unchanged(tmp_path: Path) -> None:
@@ -185,7 +187,12 @@ def test_run_write_respects_force(tmp_path: Path) -> None:
 
 def test_run_write_registers_collection_with_qmd_post_commit(tmp_path: Path) -> None:
     """After WRITE commits, qmd_collection_add_or_update must be invoked
-    for the wiki's collection so the qmd derived index can find it."""
+    for the wiki's collection so the qmd derived index can find it.
+
+    The registered path is the per-collection wiki subdir (the place
+    pages actually live), not the raw directory — registering the raw
+    dir indexes nothing because raw files live elsewhere.
+    """
     wiki = _wiki(tmp_path)
     (wiki.raw_dir / "cpython").mkdir(parents=True, exist_ok=True)
     manifest = mock.Mock()
@@ -206,10 +213,10 @@ def test_run_write_registers_collection_with_qmd_post_commit(tmp_path: Path) -> 
         )
     m_add.assert_called_once()
     args, _ = m_add.call_args
-    # First arg: cwd (raw_dir). Second arg: path to register (raw_dir/<name>).
-    # Third arg: qmd collection name.
-    assert args[0] == wiki.raw_dir
-    assert args[1] == wiki.raw_dir / "cpython"
+    # First arg: cwd (data_root). Second arg: path to register
+    # (wiki.wiki_dir/<collection>). Third arg: qmd collection name.
+    assert args[0] == wiki.data_root
+    assert args[1] == wiki.wiki_dir / "cpython"
     assert args[2] == "cpython"
 
 
@@ -340,7 +347,16 @@ def test_run_write_does_not_roll_back_commit_on_rebuild_index_value_error(
     manifest.compare.return_value = False
     fake_normalized = [("x.md", "# body")]
     with (
-        mock.patch("lies.etl.stages.write.atomic_commit") as ac,
+        # Pin atomic_commit to a truthy 40-char SHA so the post-commit
+        # hooks (qmd_collection_add_or_update, qmd_update, rebuild_index)
+        # all fire under the test. The new no-op gate at write.py skips
+        # the hooks when atomic_commit returns None -- relying on
+        # MagicMock's truthy default would silently couple this test
+        # to a fragile side-effect rather than the contract.
+        mock.patch(
+            "lies.etl.stages.write.atomic_commit",
+            return_value="deadbeef" * 5,
+        ) as ac,
         mock.patch("lies.etl.stages.write.qmd_collection_add_or_update"),
         mock.patch("lies.etl.stages.write.qmd_update"),
         mock.patch(
@@ -496,8 +512,10 @@ def test_run_write_invokes_qmd_refresh_update_and_embed(
     run_write(wiki, coll, [("hello.md", "# hello")], manifest=manifest, force=True)
 
     # Three calls in order: refresh, update, embed.
+    # The collection is registered against the per-collection wiki
+    # subdir (not the raw dir) so qmd actually indexes pages.
     assert recorded == [
-        ["add_or_update", str(tmp_path / "raw" / "t"), "t"],
+        ["add_or_update", str(tmp_path / "wiki" / "t"), "t"],
         ["qmd_update"],
         ["qmd_embed", "t"],
     ]

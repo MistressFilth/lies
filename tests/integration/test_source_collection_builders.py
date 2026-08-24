@@ -87,7 +87,7 @@ def test_sync_pdf_collection_registers_ref(wiki: Wiki) -> None:
     )
     orch.run()
     assert orch._service.is_registered("manual")
-    page = wiki.data_root / "wiki" / "pages" / "page-0001.md"
+    page = wiki.data_root / "wiki" / "manual" / "pages" / "page-0001.md"
     assert "the quick brown fox" in page.read_text(encoding="utf-8")
     # Wiki commit should have happened.
     log = subprocess.run(
@@ -312,11 +312,13 @@ def test_sync_htmx_sphinx_with_excludes(wiki: Wiki) -> None:
         if p.is_file()
     )
     # Only the kept file is written; excludes filtered out the others.
-    assert "wiki/index.rst" in written, f"index.rst missing in {written!r}"
-    assert "wiki/base_template.rst" not in written, (
+    # Pages live under the per-collection subdir of the wiki so qmd can
+    # register the collection against a non-empty directory.
+    assert "wiki/htmx/index.rst" in written, f"index.rst missing in {written!r}"
+    assert "wiki/htmx/base_template.rst" not in written, (
         f"exclude did not filter base_template.rst: {written!r}"
     )
-    assert "wiki/demo_example.rst" not in written, (
+    assert "wiki/htmx/demo_example.rst" not in written, (
         f"exclude did not filter demo_example.rst: {written!r}"
     )
 
