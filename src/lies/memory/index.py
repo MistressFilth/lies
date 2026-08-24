@@ -37,12 +37,12 @@ def _discover_pages(wiki: Wiki) -> dict[str, list[tuple[str, str, str]]]:
     if not wiki.wiki_dir.exists():
         return grouped
     for path in sorted(wiki.wiki_dir.rglob("*.md")):
-        rel = path.relative_to(wiki.data_root).as_posix()
+        rel = path.relative_to(wiki.wiki_dir).as_posix()
         if rel in {
-            "wiki/index.md",
-            "wiki/log.md",
-            "wiki/overview.md",
-            "wiki/lint-report.md",
+            "index.md",
+            "log.md",
+            "overview.md",
+            "lint-report.md",
         }:
             continue
         match = _PAGE_FILENAME_RE.search(path.name)

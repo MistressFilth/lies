@@ -109,7 +109,7 @@ def test_whitespace_only_question_returns_marker(sample_wiki: Wiki) -> None:
 
 
 def test_qmd_happy_path_uses_qmd_results(sample_wiki: Wiki) -> None:
-    paths = ["wiki/entities/postgres.md", "wiki/concepts/mvcc.md"]
+    paths = ["entities/postgres.md", "concepts/mvcc.md"]
     result = synthesize_answer(
         "How does MVCC work?",
         sample_wiki,
@@ -117,8 +117,11 @@ def test_qmd_happy_path_uses_qmd_results(sample_wiki: Wiki) -> None:
     )
     assert result.fallback_used is False
     assert result.fallback_reason == ""
-    assert result.citations == paths
-    assert result.pages_read == paths
+    # citations and pages_read are data_root-relative (the synthesizer
+    # preserves the "wiki/" prefix for backward compatibility with the
+    # CLI's existing markdown-link contract).
+    assert result.citations == ["wiki/" + p for p in paths]
+    assert result.pages_read == ["wiki/" + p for p in paths]
     assert result.page_links == [
         "[Postgres](wiki/entities/postgres.md)",
         "[MVCC](wiki/concepts/mvcc.md)",
@@ -130,7 +133,7 @@ def test_qmd_happy_path_uses_qmd_results(sample_wiki: Wiki) -> None:
 
 
 def test_qmd_results_capped_at_top_n(sample_wiki: Wiki) -> None:
-    paths = ["wiki/entities/postgres.md"] * 10  # more than top_n
+    paths = ["entities/postgres.md"] * 10  # more than top_n
     result = synthesize_answer(
         "anything",
         sample_wiki,
@@ -143,7 +146,7 @@ def test_qmd_results_capped_at_top_n(sample_wiki: Wiki) -> None:
 
 def test_qmd_returns_unreadable_paths_triggers_fallback(sample_wiki: Wiki) -> None:
     """qmd returned paths but none of them exist on disk → fallback."""
-    paths = ["wiki/does-not-exist.md", "wiki/also-missing.md"]
+    paths = ["does-not-exist.md", "also-missing.md"]
     result = synthesize_answer(
         "anything",
         sample_wiki,
@@ -189,7 +192,7 @@ def test_qmd_real_shape_with_file_only_triggers_fallback(
     sees no ``path`` and falls back — which is the honest behaviour for
     a caller that bypasses :func:`qmd_query`.
     """
-    paths = ["wiki/entities/postgres.md", "wiki/concepts/mvcc.md"]
+    paths = ["entities/postgres.md", "concepts/mvcc.md"]
     result = synthesize_answer(
         "anything",
         sample_wiki,
@@ -222,7 +225,7 @@ def test_qmd_real_query_end_to_end(sample_wiki: Wiki, monkeypatch) -> None:
             {
                 "docid": "#22b4ff",
                 "score": 0.88,
-                "file": "qmd://mywiki/wiki/entities/postgres.md",
+                "file": "qmd://mywiki/entities/postgres.md",
                 "title": "What is a hook?",
             }
         ]
@@ -465,7 +468,7 @@ def test_answer_body_omits_fallback_note_on_happy_path(sample_wiki: Wiki) -> Non
     result = synthesize_answer(
         "anything",
         sample_wiki,
-        qmd_search=_qmd_ok(["wiki/entities/postgres.md"]),
+        qmd_search=_qmd_ok(["entities/postgres.md"]),
     )
     # Happy path: no "Note: qmd unavailable" preamble.
     assert "qmd unavailable" not in result.answer.lower()
@@ -494,7 +497,7 @@ def test_pages_with_yaml_frontmatter_are_read_correctly(
     result = synthesize_answer(
         "anything",
         sample_wiki,
-        qmd_search=_qmd_ok(["wiki/entities/postgres.md"]),
+        qmd_search=_qmd_ok(["entities/postgres.md"]),
     )
     # Postgres page has frontmatter; the first paragraph should be the
     # body, not "title: Postgres".
