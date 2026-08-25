@@ -40,7 +40,12 @@ import typer
 # the REPL and dump help on bare ``lies``.
 app = typer.Typer(
     name="lies",
-    help="Library of Inconsistent Explanations & Sources -- a Karpathy-pattern LLM wiki.",
+    help=(
+        "Maintain a personal knowledge wiki with an LLM agent. Sources in raw/, "
+        "agent-maintained markdown in wiki/, behavior contract in schema.md. "
+        "The agent reads, writes, and refines the wiki invisibly during normal "
+        "interaction; explicit commands are for the heavy operations."
+    ),
 )
 
 # Step 2: import the sub-app objects (cheap -- just typer.Typer instances)
