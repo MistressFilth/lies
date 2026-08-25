@@ -174,3 +174,33 @@ def test_apply_plan_two_distinct_commits_produce_two_sidecar_lines(
     parsed = [json.loads(ln) for ln in rows]
     shas = {row["commit_sha"] for row in parsed}
     assert len(shas) == 2, "distinct commits must produce distinct SHAs"
+
+
+def test_apply_plan_passes_evidence_count_to_sidecar_record(wiki: Wiki) -> None:
+    """Live sidecar records must carry the same evidence_count as the commit body.
+
+    Regression: ``apply_plan`` used to compute ``evidence_count`` for the
+    commit message but call ``append_receipt(..., commit_sha)`` without the
+    kwarg, leaving ``evidence_count: 0`` in every JSONL row. ``lies memory
+    reconcile`` reads the correct value from the commit body; live records
+    and reconciled records disagreed on the same data.
+    """
+    svc = WikiMemoryService(wiki=wiki)
+    svc.register_evidence({"ref-1", "ref-2", "ref-3"})
+    plan = MemoryPlan(
+        rationale="create entity page with 3 evidence refs",
+        operations=[
+            PageCreate(
+                path="entities/postgres.md",
+                content=_SAMPLE_CONTENT,
+                evidence=["ref-1", "ref-2", "ref-3"],
+            )
+        ],
+        evidence=["ref-1", "ref-2", "ref-3"],
+    )
+    receipt = svc.apply_plan(plan)
+    assert receipt.changed_pages, "wiki really did change"
+    sidecar_path = wiki.data_root / ".lies" / "memory_plans.jsonl"
+    rows = [json.loads(ln) for ln in sidecar_path.read_text().splitlines() if ln]
+    assert len(rows) == 1
+    assert rows[0]["evidence_count"] == 3

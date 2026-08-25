@@ -419,7 +419,7 @@ class WikiMemoryService:
             try:
                 from lies.memory.sidecar import append_receipt
 
-                append_receipt(self._wiki, plan, commit_sha)
+                append_receipt(self._wiki, plan, commit_sha, evidence_count=evidence_count)
             except Exception as exc:  # noqa: BLE001 - non-fatal: receipt surface
                 sidecar_errors.append(f"sidecar_append_failed: {exc}")
             qmd_ok, qmd_msg = self._refresh_qmd()
