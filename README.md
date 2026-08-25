@@ -357,7 +357,13 @@ CLI commands (`src/lies/cli/`):
 - `lies lint [--fix]` — health-check the wiki (`--fix` applies the repair plan for safe_to_fix findings). Findings span six categories; LLM-backed categories are skipped with a `Sources` line when no model key is configured.
 - `lies mcp` / `lies mcp start` — run the MCP server on stdio.
 - `lies mcp up` / `down` / `status` — manage the detached http MCP daemon.
-- `lies status` — show qmd status and the last few log entries.
+- `lies status` — show qmd status, recent invisible writes, and the last
+  few log entries (`--memory-limit N` to skip or limit the writes section).
+- `lies memory [--limit|--pages|--ops|--since|--json]` — show recent
+  MemoryPlan applications from the JSONL sidecar.
+- `lies memory reconcile` — rebuild the sidecar from `git log --grep='^memory:'`.
+- `lies memory truncate --keep N [--force]` — cap the sidecar to its
+  last N rows.
 - `lies config` — print the active model and wiki name.
 - `lies version` — print the LIES version.
 - `lies` (no subcommand) — enter the REPL (`/ingest`, `/query`, `/lint`,
