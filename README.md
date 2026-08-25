@@ -4,11 +4,25 @@
 
 **Library of Inconsistent Explanations & Sources**
 
-A Karpathy-pattern LLM wiki — a `pydantic-ai`-harness agent that maintains a
-git-backed wiki of interlinked markdown files over a corpus of raw sources. The
-schema (a per-wiki markdown file) defines page types, conventions, and
-workflows. The human curates sources and asks questions; the agent does all
-bookkeeping.
+Most LLM-document tools work like RAG: drop sources in, retrieve chunks at query time, regenerate an answer. Nothing accumulates. Ask a subtle question that needs five sources synthesized and the model pieces together the same fragments every time.
+
+LIES is different. After every source you add and every question you ask, an agent reads what changed, extracts the key information, and quietly updates the wiki — entity pages, concept summaries, cross-references, contradictions. The wiki is a persistent, compounding artifact. You never (or rarely) write the wiki yourself; the agent maintains it.
+
+Three layers: **raw/** (your curated sources, immutable), **wiki/** (the agent's markdown; LLM-owned), **schema.md** (the contract that tells the agent how to behave). You curate and ask; the agent does the bookkeeping.
+
+## Invisible memory
+
+LIES reads and writes the wiki invisibly during normal interaction:
+
+- The Pydantic AI main agent searches and reads relevant wiki pages through `wiki_search` and `wiki_read` tools.
+- After the answer, a `MemoryEnricher` sub-agent proposes a structured `MemoryPlan` only when evidence warrants it.
+- The host validates the plan and applies it through `WikiMemoryService`, which writes the page, rebuilds the index, appends the log, commits atomically, and refreshes the qmd derived index.
+- Each invisible write appends one line to `<wiki>/.lies/memory_plans.jsonl`. Inspect with `lies memory`; the MCP resource `wiki://memory-changes` exposes the same data; `lies memory reconcile` rebuilds from `git log` if the sidecar drifts.
+- Material changes surface in a small receipt at the end of the turn. Routine reads and bookkeeping stay out of the response.
+
+Memory captures durable project knowledge (facts, source claims, concepts, contradictions, crosslinks). It never captures user preferences, working decisions, or task history. Source files in `raw/` are immutable.
+
+Transient persistence failures (`WikiLockBusy`, `WikiWriteConflict`, `WikiCommitFailed`) replay automatically on the next turn; receipt surfaces `(memory: queued for retry — <reason>)` immediately and `(memory: deferred after 3 attempts — <reason>)` if the cap is hit.
 
 ## Status
 
@@ -271,6 +285,8 @@ make test
 
 ## Architecture
 
+The agent maintains the wiki invisibly during normal interaction. See [Invisible memory](#invisible-memory) for the contract.
+
 A top-level `Orchestrator` (`src/lies/orchestrator.py`) dispatches user commands
 to five sub-agents via harness's `SubAgents` and `DynamicWorkflow` capabilities:
 
@@ -346,28 +362,6 @@ CLI commands (`src/lies/cli/`):
 - `lies version` — print the LIES version.
 - `lies` (no subcommand) — enter the REPL (`/ingest`, `/query`, `/lint`,
   `/status`, `/commit`, `/exit`).
-
-## Invisible memory
-
-LIES reads and writes the wiki invisibly during normal interaction:
-
-- The Pydantic AI main agent searches and reads relevant wiki pages
-  through `wiki_search` and `wiki_read` tools.
-- After the answer, a `MemoryEnricher` sub-agent proposes a
-  structured `MemoryPlan` only when evidence warrants it.
-- The host validates the plan and applies it through
-  `WikiMemoryService`, which writes the page, rebuilds the index,
-  appends the log, commits atomically, and refreshes the qmd
-  derived index.
-- Material changes surface in a small receipt at the end of the
-  turn. Routine reads and bookkeeping stay out of the response.
-
-Memory captures durable project knowledge (facts, source claims,
-concepts, contradictions, crosslinks). It never captures user
-preferences, working decisions, or task history. Source files in
-`raw/` are immutable.
-
-- Transient persistence failures (`WikiLockBusy`, `WikiWriteConflict`, `WikiCommitFailed`) replay automatically on the next turn; receipt surfaces `(memory: queued for retry — <reason>)` immediately and `(memory: deferred after 3 attempts — <reason>)` if the cap is hit.
 
 ## Parsing and Ingestion
 
