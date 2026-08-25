@@ -113,3 +113,56 @@ def test_memory_truncate_refuses_overcount_without_force(runner, wiki_with_three
     result = runner.invoke(app, ["memory", "truncate", "--keep", "10"])
     assert result.exit_code != 0
     assert "--force" in result.output
+
+
+def test_memory_default_passes_name_flag_to_resolve(
+    runner, wiki_with_three_rows, monkeypatch
+) -> None:
+    """`lies memory --name other-wiki` forwards the flag to ``resolve_wiki``."""
+    seen: list[str | None] = []
+    wiki = wiki_with_three_rows
+
+    def _spy(name=None):  # type: ignore[no-untyped-def]
+        seen.append(name)
+        return wiki
+
+    monkeypatch.setattr("lies.cli.resolve_wiki", _spy)
+    result = runner.invoke(app, ["memory", "--name", "other-wiki"])
+    assert result.exit_code == 0
+    assert seen == ["other-wiki"]
+
+
+def test_memory_reconcile_passes_name_flag_to_resolve(
+    runner, wiki_with_three_rows, monkeypatch
+) -> None:
+    """`lies memory reconcile --name other-wiki` forwards the flag to ``resolve_wiki``."""
+    seen: list[str | None] = []
+    wiki = wiki_with_three_rows
+
+    def _spy(name=None):  # type: ignore[no-untyped-def]
+        seen.append(name)
+        return wiki
+
+    monkeypatch.setattr("lies.cli.resolve_wiki", _spy)
+    with patch("lies.cli.memory.sidecar.reconcile_from_git_log", return_value=3):
+        result = runner.invoke(app, ["memory", "reconcile", "--name", "other-wiki"])
+    assert result.exit_code == 0
+    assert seen == ["other-wiki"]
+
+
+def test_memory_truncate_passes_name_flag_to_resolve(
+    runner, wiki_with_three_rows, monkeypatch
+) -> None:
+    """`lies memory truncate --name other-wiki` forwards the flag to ``resolve_wiki``."""
+    seen: list[str | None] = []
+    wiki = wiki_with_three_rows
+
+    def _spy(name=None):  # type: ignore[no-untyped-def]
+        seen.append(name)
+        return wiki
+
+    monkeypatch.setattr("lies.cli.resolve_wiki", _spy)
+    with patch("lies.cli.memory.sidecar.truncate", return_value=2):
+        result = runner.invoke(app, ["memory", "truncate", "--keep", "2", "--name", "other-wiki"])
+    assert result.exit_code == 0
+    assert seen == ["other-wiki"]

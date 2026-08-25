@@ -47,10 +47,10 @@ def __getattr__(name: str):
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
-def _resolve_wiki():
+def _resolve_wiki(name: str | None = None):
     from lies.cli import resolve_wiki
 
-    return resolve_wiki()
+    return resolve_wiki(name)
 
 
 def _format_record(rec) -> str:
@@ -68,6 +68,12 @@ def _format_record(rec) -> str:
 @memory_app.callback(invoke_without_command=True)
 def memory(
     ctx: typer.Context,
+    name: str | None = typer.Option(
+        None,
+        "--name",
+        envvar="LIES_WIKI_NAME",
+        help="Wiki to inspect (default: $LIES_WIKI_NAME).",
+    ),
     limit: int = typer.Option(10, "--limit", help="Last N records."),
     pages: str | None = typer.Option(None, "--pages", help="Filter by page substring."),
     ops: str | None = typer.Option(
@@ -81,7 +87,7 @@ def memory(
         return
     from lies.memory import sidecar
 
-    wiki = _resolve_wiki()
+    wiki = _resolve_wiki(name)
     op_filters = [o.strip() for o in ops.split(",") if o.strip()] if ops else None
     try:
         rows = sidecar.read_recent(
@@ -107,24 +113,37 @@ def memory(
 
 
 @memory_app.command("reconcile")
-def reconcile() -> None:
+def reconcile(
+    name: str | None = typer.Option(
+        None,
+        "--name",
+        envvar="LIES_WIKI_NAME",
+        help="Wiki to inspect (default: $LIES_WIKI_NAME).",
+    ),
+) -> None:
     """Rebuild the sidecar from `git log --grep='^memory:'`."""
     from lies.memory import sidecar
 
-    wiki = _resolve_wiki()
+    wiki = _resolve_wiki(name)
     n = sidecar.reconcile_from_git_log(wiki)
     typer.echo(f"reconciled: {n} row(s) written")
 
 
 @memory_app.command("truncate")
 def truncate(
+    name: str | None = typer.Option(
+        None,
+        "--name",
+        envvar="LIES_WIKI_NAME",
+        help="Wiki to inspect (default: $LIES_WIKI_NAME).",
+    ),
     keep: int = typer.Option(..., "--keep", help="Number of rows to keep."),
     force: bool = typer.Option(False, "--force", help="Allow --keep > current count."),
 ) -> None:
     """Cap the sidecar to its last N rows."""
     from lies.memory import sidecar
 
-    wiki = _resolve_wiki()
+    wiki = _resolve_wiki(name)
     try:
         kept = sidecar.truncate(wiki, keep=keep, force=force)
     except ValueError as exc:
