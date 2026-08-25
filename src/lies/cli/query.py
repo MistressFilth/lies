@@ -115,7 +115,7 @@ def lint(
 
 
 @app.command(
-    short_help="Show qmd status and the last few log entries.",
+    short_help="Show qmd status, recent invisible writes, and the last few log entries.",
     rich_help_panel="Querying and maintenance",
 )
 def status(
@@ -125,9 +125,15 @@ def status(
         envvar="LIES_WIKI_NAME",
         help="Wiki to report status for (default: $LIES_WIKI_NAME).",
     ),
+    memory_limit: int = typer.Option(
+        10,
+        "--memory-limit",
+        help="Number of recent MemoryPlan applications to show. Pass 0 to skip.",
+    ),
 ) -> None:
-    """Show qmd status and the last few log entries."""
+    """Show qmd status, recent invisible writes, and the last few log entries."""
     from lies.cli import resolve_wiki
+    from lies.memory import sidecar
     from lies.qmd import qmd_status
     from lies.wiki.layout import WikiLayout
 
@@ -140,6 +146,24 @@ def status(
         typer.echo(qmd_status(root))
     except Exception as exc:  # noqa: BLE001 - qmd failures must not crash the CLI
         typer.echo(f"qmd unavailable: {exc}")
+    if memory_limit > 0:
+        try:
+            rows = sidecar.read_recent(wiki, limit=memory_limit)
+        except OSError as exc:
+            typer.echo("\n=== recent invisible writes ===")
+            typer.echo(f"sidecar unavailable: {exc}")
+        else:
+            if rows:
+                typer.echo("\n=== recent invisible writes ===")
+                for rec in rows:
+                    pages = ", ".join(rec.pages)
+                    ops = " ".join(f"{k}={v}" for k, v in sorted(rec.ops.items()))
+                    typer.echo(
+                        f"  {rec.ts}  {rec.commit_sha[:12]}  {rec.rationale}\n"
+                        f"                          pages: {pages}\n"
+                        f"                          ops: {ops}\n"
+                        f"                          evidence: {rec.evidence_count}\n"
+                    )
     typer.echo("\n=== last 10 log entries ===")
     log_path = layout.wiki_dir / "log.md"
     if log_path.exists():
