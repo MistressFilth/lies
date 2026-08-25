@@ -10,7 +10,11 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import re
+import subprocess
 import sys
+import tempfile
 from collections import Counter
 from datetime import UTC, datetime
 from pathlib import Path
@@ -147,3 +151,152 @@ def read_recent(
     if skipped:
         log.info("sidecar: skipped %d malformed line(s)", skipped)
     return rows[-limit:]
+
+
+_RATIONALE_RE = re.compile(r"^memory:\s*(.*?)\s*$", re.MULTILINE)
+
+
+def _git_log_memory_commits(data_root: Path) -> list[tuple[str, str, str]]:
+    """Return list of (sha, iso_ts, rationale) for `memory:` commits.
+
+    Uses `git log --grep='^memory:'` to filter; ignores non-matching commits.
+    """
+    out = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(data_root),
+            "log",
+            "--grep=^memory:",
+            "--format=%H%x00%aI%x00%s",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if out.returncode != 0:
+        return []
+    rows = []
+    for line in out.stdout.splitlines():
+        if not line.strip():
+            continue
+        sha, ts, subject = line.split("\x00", 2)
+        m = _RATIONALE_RE.match(subject)
+        rationale = m.group(1) if m else subject
+        rows.append((sha, ts, rationale))
+    return rows
+
+
+def _body_pages_ops_evidence(
+    commit_sha: str, data_root: Path
+) -> tuple[list[str], dict[str, int], int]:
+    """Extract Pages/Ops/Evidence trailers from a commit message body."""
+    out = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(data_root),
+            "log",
+            "-1",
+            "--format=%B",
+            commit_sha,
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    body = out.stdout if out.returncode == 0 else ""
+    pages: list[str] = []
+    ops: dict[str, int] = {}
+    evidence = 0
+    for line in body.splitlines():
+        if line.startswith("Pages:"):
+            pages = [p.strip() for p in line.removeprefix("Pages:").split(",") if p.strip()]
+        elif line.startswith("Ops:"):
+            for tok in line.removeprefix("Ops:").split():
+                if "=" in tok:
+                    k, v = tok.split("=", 1)
+                    try:
+                        ops[k] = int(v)
+                    except ValueError:
+                        pass
+        elif line.startswith("Evidence:"):
+            try:
+                evidence = int(line.removeprefix("Evidence:").strip())
+            except ValueError:
+                evidence = 0
+    return pages, ops, evidence
+
+
+def reconcile_from_git_log(wiki: Wiki) -> int:
+    """Rewrite `<wiki>/.lies/memory_plans.jsonl` from `git log --grep='^memory:'`.
+
+    Returns the number of rows written. Malformed commits (no Pages/Ops
+    trailers in the body) are skipped with a stderr warning.
+    """
+    rows: list[MemoryPlanRecord] = []
+    skipped = 0
+    for sha, ts, rationale in _git_log_memory_commits(wiki.data_root):
+        pages, ops, evidence = _body_pages_ops_evidence(sha, wiki.data_root)
+        if not pages:
+            skipped += 1
+            log.warning("sidecar reconcile: skipping %s (no Pages trailer)", sha[:12])
+            continue
+        rows.append(
+            MemoryPlanRecord(
+                ts=ts,
+                commit_sha=sha,
+                rationale=_rationale_truncated(rationale),
+                pages=_pages_capped(pages),
+                ops=ops,
+                evidence_count=evidence,
+            )
+        )
+    path = _sidecar_path(wiki)
+    _ensure_parent(path)
+    tmp = tempfile.NamedTemporaryFile(  # noqa: SIM115 - explicit close after fsync
+        "w", encoding="utf-8", dir=path.parent, delete=False, suffix=".tmp"
+    )
+    try:
+        for r in rows:
+            tmp.write(r.model_dump_json() + "\n")
+        tmp.flush()
+        os.fsync(tmp.fileno())
+    finally:
+        tmp.close()
+    os.replace(tmp.name, path)
+    if skipped:
+        print(f"sidecar reconcile: skipped {skipped} malformed commit(s)", file=sys.stderr)
+    return len(rows)
+
+
+def truncate(wiki: Wiki, keep: int, *, force: bool = False) -> int:
+    """Cap the sidecar to its last `keep` lines. Atomic rewrite.
+
+    Refuse `keep <= 0`. Refuse `keep > current_count` unless `force=True`.
+    Returns the count kept.
+    """
+    if keep <= 0:
+        raise ValueError("--keep must be positive")
+    path = _sidecar_path(wiki)
+    if not path.exists():
+        return 0
+    with path.open("r", encoding="utf-8") as fh:
+        all_lines = [ln for ln in fh.read().splitlines() if ln.strip()]
+    if keep > len(all_lines) and not force:
+        raise ValueError(
+            f"--keep > current count (asked {keep}, have {len(all_lines)}); pass --force to allow"
+        )
+    kept = all_lines[-keep:]
+    tmp = tempfile.NamedTemporaryFile(  # noqa: SIM115 - explicit close after fsync
+        "w", encoding="utf-8", dir=path.parent, delete=False, suffix=".tmp"
+    )
+    try:
+        for ln in kept:
+            tmp.write(ln + "\n")
+        tmp.flush()
+        os.fsync(tmp.fileno())
+    finally:
+        tmp.close()
+    os.replace(tmp.name, path)
+    return len(kept)

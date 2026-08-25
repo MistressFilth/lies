@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 from pathlib import Path
+
+import pytest
 
 from lies.memory import sidecar
 from lies.memory.models import MemoryPlan, PageCreate
@@ -164,3 +168,68 @@ def test_read_recent_skips_malformed_lines(tmp_path: Path) -> None:
     )
     rows = sidecar.read_recent(wiki, limit=10)
     assert len(rows) == 1
+
+
+def _git_init_with_memory_commit(tmp_path: Path, message_body: str, sha: str) -> None:
+    """Create a git repo at tmp_path with one commit whose message matches `^memory:`."""
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.email", "t@t"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=tmp_path, check=True)
+    (tmp_path / "f").write_text("x")
+    subprocess.run(["git", "add", "f"], cwd=tmp_path, check=True)
+    full_msg = f"memory: rationale\n\n{message_body}\n"
+    env = {"GIT_AUTHOR_DATE": "2026-08-24T18:32:14Z", "GIT_COMMITTER_DATE": "2026-08-24T18:32:14Z"}
+    full_env = {**os.environ, **env}
+    subprocess.run(
+        ["git", "commit", "-q", "-m", full_msg],
+        cwd=tmp_path,
+        check=True,
+        env=full_env,
+    )
+
+
+def test_reconcile_walks_git_log_and_rewrites_sidecar(tmp_path: Path) -> None:
+    wiki = _wiki(tmp_path)
+    body = (
+        "Pages: wiki/entities/postgres.md, wiki/concepts/schemas.md\nOps: create=2\nEvidence: 4\n"
+    )
+    _git_init_with_memory_commit(tmp_path, body, sha="dummy")
+    n = sidecar.reconcile_from_git_log(wiki)
+    assert n == 1
+    rows = sidecar.read_recent(wiki, limit=10)
+    assert len(rows) == 1
+    assert rows[0].pages == ["wiki/entities/postgres.md", "wiki/concepts/schemas.md"]
+    assert rows[0].ops == {"create": 2}
+    assert rows[0].evidence_count == 4
+
+
+def test_reconcile_skips_malformed_body(tmp_path: Path) -> None:
+    wiki = _wiki(tmp_path)
+    _git_init_with_memory_commit(tmp_path, "garbage data", sha="dummy")
+    n = sidecar.reconcile_from_git_log(wiki)
+    assert n == 0
+    assert sidecar.read_recent(wiki, limit=10) == []
+
+
+def test_truncate_keeps_last_n(tmp_path: Path) -> None:
+    wiki = _wiki(tmp_path)
+    _seed_three_rows(wiki)
+    kept = sidecar.truncate(wiki, keep=2)
+    assert kept == 2
+    rows = sidecar.read_recent(wiki, limit=10)
+    assert len(rows) == 2
+    assert rows[0].rationale == "plan 1"
+
+
+def test_truncate_refuses_keep_zero(tmp_path: Path) -> None:
+    wiki = _wiki(tmp_path)
+    _seed_three_rows(wiki)
+    with pytest.raises(ValueError, match="--keep must be positive"):
+        sidecar.truncate(wiki, keep=0)
+
+
+def test_truncate_refuses_keep_over_count_without_force(tmp_path: Path) -> None:
+    wiki = _wiki(tmp_path)
+    _seed_three_rows(wiki)
+    with pytest.raises(ValueError, match="--keep > current"):
+        sidecar.truncate(wiki, keep=10)
