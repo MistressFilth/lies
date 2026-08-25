@@ -49,3 +49,13 @@ def test_git_init_initial_writes_gitignore_excluding_lies(tmp_path: Path) -> Non
     gitignore = tmp_path / ".gitignore"
     assert gitignore.is_file()
     assert ".lies/\n" in gitignore.read_text(encoding="utf-8")
+
+
+def test_git_init_initial_does_not_clobber_existing_gitignore(tmp_path: Path) -> None:
+    """A pre-existing ``.gitignore`` is preserved (M4)."""
+    WikiLayout(tmp_path).init()
+    custom = "# my operator-curated ignores\n*.bak\n"
+    (tmp_path / ".gitignore").write_text(custom, encoding="utf-8")
+    git_init_initial(tmp_path)
+    gitignore = tmp_path / ".gitignore"
+    assert gitignore.read_text(encoding="utf-8") == custom
