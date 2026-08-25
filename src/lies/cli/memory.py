@@ -20,6 +20,8 @@ from __future__ import annotations
 
 import typer
 
+from lies.wiki.wiki import Wiki
+
 memory_app = typer.Typer(
     name="memory",
     help="Inspect recent MemoryPlan applications.",
@@ -47,7 +49,7 @@ def __getattr__(name: str):
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
-def _resolve_wiki(name: str | None = None):
+def _resolve_wiki(name: str | None = None) -> Wiki:
     from lies.cli import resolve_wiki
 
     return resolve_wiki(name)

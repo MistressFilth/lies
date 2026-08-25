@@ -137,6 +137,8 @@ def status(
     from lies.qmd import qmd_status
     from lies.wiki.layout import WikiLayout
 
+    if memory_limit < 0:
+        raise typer.BadParameter("--memory-limit must be >= 0", param_hint="--memory-limit")
     configure_logging()
     wiki = resolve_wiki(name)
     root = wiki.data_root

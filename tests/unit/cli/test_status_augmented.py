@@ -75,3 +75,24 @@ def test_status_handles_missing_sidecar_gracefully(runner, tmp_path, monkeypatch
     assert result.exit_code == 0
     # No sidecar → no section, no crash
     assert "recent invisible writes" not in result.output
+
+
+def test_status_rejects_negative_memory_limit(runner, tmp_path, monkeypatch) -> None:
+    """`--memory-limit -1` must exit non-zero with a clear error."""
+    from lies.wiki.wiki import Wiki
+
+    wiki = Wiki(
+        name="t",
+        data_root=tmp_path,
+        config_root=tmp_path / "config",
+        cache_root=tmp_path / "cache",
+        state_root=tmp_path / "state",
+        runtime_root=tmp_path / "runtime",
+    )
+    (tmp_path / "wiki").mkdir()
+    monkeypatch.setenv("LIES_WIKI_NAME", "t")
+    monkeypatch.setattr("lies.cli.resolve_wiki", lambda _name=None: wiki)
+    result = runner.invoke(app, ["status", "--memory-limit", "-1"])
+    assert result.exit_code != 0
+    assert "--memory-limit" in result.output
+    assert ">=" in result.output
