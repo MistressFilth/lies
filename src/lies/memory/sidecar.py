@@ -15,6 +15,8 @@ from collections import Counter
 from datetime import UTC, datetime
 from pathlib import Path
 
+from pydantic import ValidationError
+
 from lies.memory.models import MemoryPlan, MemoryPlanRecord
 from lies.wiki.wiki import Wiki
 
@@ -106,3 +108,42 @@ def append_receipt(
     except OSError as exc:
         log.warning("sidecar append failed: %s", exc)
         print(f"sidecar_append_failed: {exc}", file=sys.stderr)
+
+
+def _parse_line(line: str) -> MemoryPlanRecord | None:
+    try:
+        return MemoryPlanRecord.model_validate_json(line)
+    except ValidationError:
+        return None
+
+
+def read_recent(
+    wiki: Wiki,
+    limit: int = 10,
+    *,
+    page: str | None = None,
+    op: str | None = None,
+    since: str | None = None,
+) -> list[MemoryPlanRecord]:
+    """Read the last `limit` records, optionally filtered. Empty on miss."""
+    path = _sidecar_path(wiki)
+    if not path.exists():
+        return []
+    rows: list[MemoryPlanRecord] = []
+    skipped = 0
+    with path.open("r", encoding="utf-8") as fh:
+        for line in fh:
+            record = _parse_line(line.strip())
+            if record is None:
+                skipped += 1
+                continue
+            if page is not None and not any(page in p for p in record.pages):
+                continue
+            if op is not None and op not in record.ops:
+                continue
+            if since is not None and record.ts < since:
+                continue
+            rows.append(record)
+    if skipped:
+        log.info("sidecar: skipped %d malformed line(s)", skipped)
+    return rows[-limit:]

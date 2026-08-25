@@ -98,3 +98,69 @@ def test_append_receipt_truncates_rationale(tmp_path: Path) -> None:
     record = json.loads(sidecar_path.read_text().splitlines()[0])
     assert len(record["rationale"]) == 121  # 120 chars + ellipsis
     assert record["rationale"].endswith("…")
+
+
+def _seed_three_rows(wiki) -> None:
+    """Seed three plans, each touching two pages: one entity, one concept."""
+    plans = [
+        MemoryPlan(
+            rationale=f"plan {i}",
+            operations=[
+                PageCreate(path=f"wiki/entities/p{i}.md", content=f"# P{i}", evidence=["page-1"]),
+                PageCreate(path=f"wiki/concepts/c{i}.md", content=f"# C{i}", evidence=["page-1"]),
+            ],
+            evidence=["page-1"],
+        )
+        for i in range(3)
+    ]
+    for i, plan in enumerate(plans):
+        sidecar.append_receipt(wiki, plan, commit_sha=f"{i:040x}")
+
+
+def test_read_recent_returns_last_n(tmp_path: Path) -> None:
+    wiki = _wiki(tmp_path)
+    _seed_three_rows(wiki)
+    rows = sidecar.read_recent(wiki, limit=2)
+    assert len(rows) == 2
+    assert rows[0].rationale == "plan 1"
+    assert rows[1].rationale == "plan 2"
+
+
+def test_read_recent_filters_by_page_substring(tmp_path: Path) -> None:
+    wiki = _wiki(tmp_path)
+    _seed_three_rows(wiki)
+    rows = sidecar.read_recent(wiki, limit=10, page="entities/p1.md")
+    assert len(rows) == 1
+    assert rows[0].rationale == "plan 1"
+
+
+def test_read_recent_filters_by_op(tmp_path: Path) -> None:
+    wiki = _wiki(tmp_path)
+    _seed_three_rows(wiki)
+    rows = sidecar.read_recent(wiki, limit=10, op="create")
+    assert len(rows) == 3
+
+
+def test_read_recent_filters_by_since(tmp_path: Path) -> None:
+    wiki = _wiki(tmp_path)
+    _seed_three_rows(wiki)
+    rows = sidecar.read_recent(wiki, limit=10, since="2099-01-01T00:00:00Z")
+    assert rows == []
+
+
+def test_read_recent_returns_empty_on_missing_file(tmp_path: Path) -> None:
+    wiki = _wiki(tmp_path)
+    assert sidecar.read_recent(wiki, limit=10) == []
+
+
+def test_read_recent_skips_malformed_lines(tmp_path: Path) -> None:
+    wiki = _wiki(tmp_path)
+    sidecar_path = tmp_path / ".lies" / "memory_plans.jsonl"
+    sidecar_path.parent.mkdir(parents=True, exist_ok=True)
+    sidecar_path.write_text(
+        '{"ts":"2026-01-01T00:00:00Z","commit_sha":"a","rationale":"ok","pages":[],"ops":{"create":1},"evidence_count":0}\n'
+        "this is not json\n",
+        encoding="utf-8",
+    )
+    rows = sidecar.read_recent(wiki, limit=10)
+    assert len(rows) == 1
