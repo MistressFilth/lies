@@ -56,6 +56,12 @@ def git_init_initial(path: Path) -> None:
         capture_output=True,
         text=True,
     )
+    # Exclude runtime artifacts under ``<wiki>/.lies/`` (the sidecar at
+    # ``.lies/memory_plans.jsonl`` lives there). ``WikiMemoryService.apply_plan``
+    # snapshots the working tree via ``git stash push --include-untracked``;
+    # without this ignore the untracked sidecar is stashed and dropped on
+    # success, silently losing prior sidecar lines.
+    (path / ".gitignore").write_text(".lies/\n", encoding="utf-8")
     subprocess.run(
         ["git", "-C", str(path), "add", "."],
         check=True,

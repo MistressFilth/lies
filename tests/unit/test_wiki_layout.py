@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from lies.wiki.layout import WikiLayout
+from lies.wiki.layout import WikiLayout, git_init_initial
 
 
 @pytest.fixture
@@ -33,3 +33,19 @@ def test_init_is_idempotent(tmp_path: Path) -> None:
     WikiLayout(tmp_path).init()
     assert (tmp_path / "raw").is_dir()
     assert (tmp_path / "wiki").is_dir()
+
+
+def test_git_init_initial_writes_gitignore_excluding_lies(tmp_path: Path) -> None:
+    """``git_init_initial`` writes ``<wiki>/.gitignore`` covering ``.lies/``.
+
+    The sidecar at ``<wiki>/.lies/memory_plans.jsonl`` is untracked on every
+    fresh wiki. ``WikiMemoryService.apply_plan`` snapshots the working tree
+    via ``git stash push --include-untracked``; without this ignore the
+    untracked sidecar is stashed and dropped on success, silently losing
+    prior sidecar lines.
+    """
+    WikiLayout(tmp_path).init()
+    git_init_initial(tmp_path)
+    gitignore = tmp_path / ".gitignore"
+    assert gitignore.is_file()
+    assert ".lies/\n" in gitignore.read_text(encoding="utf-8")
