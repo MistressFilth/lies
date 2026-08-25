@@ -233,3 +233,38 @@ def test_truncate_refuses_keep_over_count_without_force(tmp_path: Path) -> None:
     _seed_three_rows(wiki)
     with pytest.raises(ValueError, match="--keep > current"):
         sidecar.truncate(wiki, keep=10)
+
+
+def test_truncate_force_allows_overcount(tmp_path: Path) -> None:
+    """M8: ``force=True`` lets ``keep`` exceed the current row count."""
+    wiki = _wiki(tmp_path)
+    _seed_three_rows(wiki)
+    kept = sidecar.truncate(wiki, keep=10, force=True)
+    assert kept == 3
+
+
+def test_append_receipt_oserror_does_not_raise(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """M7: filesystem failure on append is logged + printed, never raised."""
+    import logging
+
+    wiki = _wiki(tmp_path)
+    plan = MemoryPlan(
+        rationale="r",
+        operations=[
+            PageCreate(path="wiki/entities/p.md", content="# P", evidence=["x"]),
+        ],
+        evidence=["x"],
+    )
+    real_open = Path.open
+
+    def boom_open(self: Path, *args: object, **kwargs: object) -> object:
+        if str(self).endswith("memory_plans.jsonl"):
+            raise OSError("disk full")
+        return real_open(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "open", boom_open)
+    with caplog.at_level(logging.WARNING):
+        sidecar.append_receipt(wiki, plan, commit_sha="a1" + "0" * 38)
+    assert any("sidecar append failed" in r.message for r in caplog.records)
