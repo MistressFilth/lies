@@ -412,14 +412,7 @@ def _wiki_memory_changes_impl(name: str | None = None) -> str:
     if not rows:
         return out + "(no plans recorded yet)\n"
     for rec in rows:
-        pages = ", ".join(rec.pages)
-        ops = " ".join(f"{k}={v}" for k, v in sorted(rec.ops.items()))
-        out += (
-            f"  {rec.ts}  {rec.commit_sha[:12]}  {rec.rationale}\n"
-            f"                          pages: {pages}\n"
-            f"                          ops: {ops}\n"
-            f"                          evidence: {rec.evidence_count}\n"
-        )
+        out += sidecar.format_record_block(rec)
     return out
 
 

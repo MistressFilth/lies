@@ -30,6 +30,30 @@ _RATIONALE_MAX = 120
 _PAGES_MAX = 8
 
 
+def format_record_block(rec: MemoryPlanRecord) -> str:
+    """Render one ``MemoryPlanRecord`` as a 4-line text block.
+
+    Single source of truth for the CLI ``lies memory`` default output,
+    the ``lies status`` recent-writes section, and the MCP
+    ``wiki://memory-changes`` resource. Layout:
+
+        <ts>  <sha[:12]>  <rationale>
+                              pages: <comma-separated paths, +N more suffix>
+                              ops:   <k=v k=v ...>
+                              evidence: <count>
+
+    The trailing newline keeps successive blocks vertically aligned.
+    """
+    pages = ", ".join(rec.pages)
+    ops = " ".join(f"{k}={v}" for k, v in sorted(rec.ops.items()))
+    return (
+        f"  {rec.ts}  {rec.commit_sha[:12]}  {rec.rationale}\n"
+        f"                          pages: {pages}\n"
+        f"                          ops: {ops}\n"
+        f"                          evidence: {rec.evidence_count}\n"
+    )
+
+
 def _sidecar_path(wiki: Wiki) -> Path:
     """Resolve `<wiki.data_root>/.lies/memory_plans.jsonl`."""
     return wiki.data_root / ".lies" / "memory_plans.jsonl"
@@ -61,7 +85,11 @@ def _ops_histogram(plan: MemoryPlan) -> dict[str, int]:
 
 
 def _is_duplicate(wiki: Wiki, commit_sha: str) -> bool:
-    """Idempotency check: skip append when the last line already has this SHA."""
+    """Idempotency check: skip append when the last line already has this SHA.
+
+    O(n) scan; the sidecar is bounded by operator ``truncate`` so this stays
+    cheap at current scale.
+    """
     path = _sidecar_path(wiki)
     if not path.exists():
         return False
@@ -86,12 +114,11 @@ def append_receipt(
     *,
     evidence_count: int = 0,
 ) -> None:
-    """Append one JSONL line. Idempotent on `commit_sha`. Never raises.
+    """Append one JSONL line. Idempotent on `commit_sha`.
 
-    Logs to stderr on filesystem failure so the orchestrator's
-    `MemoryReceipt.errors` can pick the failure up without crashing the
-    turn. Callers should still surface `errors=[sidecar_append_failed]`
-    in the receipt when `append_receipt` returns False via `_append_failed`.
+    Logs and prints to stderr on filesystem failure but never raises;
+    callers should inspect ``MemoryReceipt.errors`` for the surface
+    failure.
     """
     path = _sidecar_path(wiki)
     if _is_duplicate(wiki, commit_sha):
@@ -257,14 +284,21 @@ def reconcile_from_git_log(wiki: Wiki) -> int:
     tmp = tempfile.NamedTemporaryFile(  # noqa: SIM115 - explicit close after fsync
         "w", encoding="utf-8", dir=path.parent, delete=False, suffix=".tmp"
     )
+    tmp_path = tmp.name
     try:
         for r in rows:
             tmp.write(r.model_dump_json() + "\n")
         tmp.flush()
         os.fsync(tmp.fileno())
-    finally:
         tmp.close()
-    os.replace(tmp.name, path)
+        os.replace(tmp_path, path)
+    except BaseException:
+        tmp.close()
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
     if skipped:
         print(f"sidecar reconcile: skipped {skipped} malformed commit(s)", file=sys.stderr)
     return len(rows)
@@ -291,12 +325,19 @@ def truncate(wiki: Wiki, keep: int, *, force: bool = False) -> int:
     tmp = tempfile.NamedTemporaryFile(  # noqa: SIM115 - explicit close after fsync
         "w", encoding="utf-8", dir=path.parent, delete=False, suffix=".tmp"
     )
+    tmp_path = tmp.name
     try:
         for ln in kept:
             tmp.write(ln + "\n")
         tmp.flush()
         os.fsync(tmp.fileno())
-    finally:
         tmp.close()
-    os.replace(tmp.name, path)
+        os.replace(tmp_path, path)
+    except BaseException:
+        tmp.close()
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
     return len(kept)

@@ -54,15 +54,16 @@ def _resolve_wiki(name: str | None = None):
 
 
 def _format_record(rec) -> str:
-    """Render one MemoryPlanRecord as a 4-line block."""
-    pages = ", ".join(rec.pages)
-    ops = " ".join(f"{k}={v}" for k, v in sorted(rec.ops.items()))
-    return (
-        f"  {rec.ts}  {rec.commit_sha[:12]}  {rec.rationale}\n"
-        f"                          pages: {len(rec.pages) if not rec.pages or not rec.pages[-1].startswith('+') else rec.pages[-1]} ({pages})\n"
-        f"                          ops: {ops}\n"
-        f"                          evidence: {rec.evidence_count}\n"
-    )
+    """Render one MemoryPlanRecord as a 4-line block.
+
+    Thin wrapper around :func:`lies.memory.sidecar.format_record_block`,
+    the single source of truth for ``MemoryPlanRecord`` formatting. Kept
+    here as a module-private shim so existing callers/tests don't need to
+    change import paths.
+    """
+    from lies.memory.sidecar import format_record_block
+
+    return format_record_block(rec)
 
 
 @memory_app.callback(invoke_without_command=True)

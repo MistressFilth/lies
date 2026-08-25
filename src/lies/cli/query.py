@@ -156,14 +156,7 @@ def status(
             if rows:
                 typer.echo("\n=== recent invisible writes ===")
                 for rec in rows:
-                    pages = ", ".join(rec.pages)
-                    ops = " ".join(f"{k}={v}" for k, v in sorted(rec.ops.items()))
-                    typer.echo(
-                        f"  {rec.ts}  {rec.commit_sha[:12]}  {rec.rationale}\n"
-                        f"                          pages: {pages}\n"
-                        f"                          ops: {ops}\n"
-                        f"                          evidence: {rec.evidence_count}\n"
-                    )
+                    typer.echo(sidecar.format_record_block(rec))
     typer.echo("\n=== last 10 log entries ===")
     log_path = layout.wiki_dir / "log.md"
     if log_path.exists():
