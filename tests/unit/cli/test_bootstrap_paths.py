@@ -178,3 +178,91 @@ def test_sync_existing_collection_mismatched_source_errors(
     assert "OLD.example.com" in err
     assert "new.example.com" in err
     assert not mock_sync.called
+
+
+# ---------------------------------------------------------------------------
+# Task 5: ingest_source requires --collection (hard cutover) and bootstraps
+# the YAML on missing, then routes through Orchestrator.run_ingest.
+# ---------------------------------------------------------------------------
+
+
+def test_ingest_source_without_collection_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``lies ingest-source URL`` (no --collection) must be rejected.
+
+    Typer surfaces the missing-required-option error to stderr; the
+    message includes the option name ``--collection``.
+    """
+    monkeypatch.setenv("LIES_WIKI_NAME", "any")
+    result = runner.invoke(
+        app,
+        ["ingest-source", "https://example.com/llms.txt"],
+    )
+    assert result.exit_code != 0
+    # Task 3 convention: combine stderr + stdout so the assertion is robust
+    # to which stream typer writes the missing-arg error to.
+    err = (result.stderr or "") + (result.stdout or "")
+    assert "collection" in err.lower()
+
+
+def test_ingest_source_with_collection_bootstraps_and_calls_run_ingest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    wiki_root = tmp_path / "wiki"
+    wiki_root.mkdir()
+    wiki = make_wiki(name="ingest-src-bootstrap", data_root=wiki_root)
+    monkeypatch.setenv("LIES_WIKI_NAME", wiki.name)
+    fake_orchestrator = mock.MagicMock()
+    fake_orchestrator.run_ingest.return_value = "ok"
+    # Patch the consumer-side lazy proxy ``lies.cli.ingestion.Orchestrator``
+    # (set up via the module-level ``__getattr__`` in ingestion.py) so the
+    # ``Orchestrator(wiki)`` call inside ``ingest_source`` returns our
+    # mock without instantiating the real heavy stack.
+    with mock.patch("lies.cli.ingestion.Orchestrator", return_value=fake_orchestrator):
+        result = runner.invoke(
+            app,
+            [
+                "ingest-source",
+                "https://example.com/llms.txt",
+                "--collection",
+                "alpha",
+                "--name",
+                wiki.name,
+            ],
+        )
+    assert result.exit_code == 0
+    fake_orchestrator.run_ingest.assert_called_once_with("https://example.com/llms.txt")
+    assert (wiki.collections_dir / "alpha.yaml").exists()
+
+
+def test_ingest_source_with_collection_mismatch_errors(
+    wiki: Wiki, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Existing YAML with a different source raises CollectionMismatch (exit 3)."""
+    monkeypatch.setenv("LIES_WIKI_NAME", wiki.name)
+    wiki.collections_dir.mkdir(parents=True, exist_ok=True)
+    (wiki.collections_dir / "alpha.yaml").write_text(
+        "name: alpha\npath: /raw/alpha\nsource: https://OLD.example.com\n"
+        "tags: []\nscraper_cmd: null\ndoc_path: null\nmapper_model: null\n"
+        "language: null\nversion: '1'\n"
+        "created_at: 2026-01-01T00:00:00+00:00\nupdated_at: 2026-01-01T00:00:00+00:00\n"
+        "config: {}\n",
+        encoding="utf-8",
+    )
+    fake_orchestrator = mock.MagicMock()
+    with mock.patch("lies.cli.ingestion.Orchestrator", return_value=fake_orchestrator):
+        result = runner.invoke(
+            app,
+            [
+                "ingest-source",
+                "https://new.example.com/llms.txt",
+                "--collection",
+                "alpha",
+                "--name",
+                wiki.name,
+            ],
+        )
+    assert result.exit_code == 3
+    err = (result.stderr or "") + (result.stdout or "")
+    assert "OLD.example.com" in err
+    assert "new.example.com" in err
+    assert not fake_orchestrator.run_ingest.called

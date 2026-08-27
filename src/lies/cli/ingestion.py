@@ -6,12 +6,20 @@ Orchestrator + heavy ETL imports stay inside each command body so
 
 from __future__ import annotations
 
-from typing import Annotated
+from typing import TYPE_CHECKING, Annotated
 
 import typer
 
 from lies.cli import app
 from lies.cli._helpers import configure_logging
+
+if TYPE_CHECKING:
+    # Type-checker-only import for the lazy ``__getattr__`` re-export below.
+    # The runtime import lives in ``__getattr__`` so ``import lies.cli``
+    # does not pull in the orchestrator + pydantic_ai stack. ``noqa: TC004``
+    # suppresses the "move out of TYPE_CHECKING" suggestion because the
+    # runtime resolution is deliberate (lazy proxy).
+    from lies.orchestrator import Orchestrator  # noqa: TC004
 
 __all__ = (
     "ingest",
@@ -19,6 +27,33 @@ __all__ = (
     "reindex",
     "sync",
 )
+
+
+def __getattr__(name: str):
+    """Lazy re-export of ``Orchestrator`` so tests can ``mock.patch`` it.
+
+    Without this shim, ``mock.patch("lies.cli.ingestion.Orchestrator", ...)``
+    cannot intercept a function-local ``from lies.cli import Orchestrator``
+    (Python binds the import as a fast-local in the function frame, so the
+    consumer module's namespace never sees the patched value). Routing the
+    lookup through a module-level ``__getattr__`` lets ``ingest_source``
+    reference ``Orchestrator`` as a bare name (PEP 562 module attribute
+    lookup) while preserving the lazy-imports contract pinned by
+    ``tests/unit/cli/test_cli_lazy_imports.py`` — orchestrator, pydantic_ai,
+    and the anthropic SDK only load on first call, never on
+    ``import lies.cli``. Same pattern as ``lies.cli.memory.sidecar``.
+    """
+    if name == "Orchestrator":
+        from lies.cli import Orchestrator as _OrchestratorCls
+
+        globals()[name] = _OrchestratorCls
+        return _OrchestratorCls
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def __dir__() -> list[str]:
+    """Include the lazy ``Orchestrator`` attr in ``dir()`` output."""
+    return sorted(set(globals().keys()) | {"Orchestrator"})
 
 
 @app.command(
@@ -94,11 +129,17 @@ def ingest(
 
 
 @app.command(
-    short_help="Atomic ingest of a single source into the wiki identified by --name.",
+    short_help="Atomic ingest of a single source into a collection (creates YAML if missing).",
     rich_help_panel="Source ingestion",
 )
 def ingest_source(
     source: str = typer.Argument(..., help="Path, URL, or '-' for stdin."),
+    *,
+    collection: str = typer.Option(
+        ...,
+        "--collection",
+        help="Collection name to register the source under (writes a YAML if missing).",
+    ),
     name: str | None = typer.Option(
         None,
         "--name",
@@ -108,16 +149,40 @@ def ingest_source(
 ) -> None:
     """Atomic ingest of a single source into the wiki identified by ``name``.
 
-    Kept for backward compatibility with the original source-path CLI
-    surface (``lies ingest <source>``). Delegates to
-    :meth:`Orchestrator.run_ingest`, which snapshots the working
-    tree, runs the agent, and commits atomically. On any failure the
-    working tree is restored and the exception is re-raised.
+    Registers ``--collection`` (writes a minimal YAML if missing; refuses
+    on source mismatch), then delegates to :meth:`Orchestrator.run_ingest`,
+    which snapshots the working tree, runs the agent, and commits
+    atomically. On any failure the working tree is restored and the
+    exception is re-raised.
+
+    ``--collection`` is required: the legacy URL-only ``lies ingest-source
+    URL`` form is rejected up front (Typer missing-required-option).
     """
-    from lies.cli import Orchestrator, resolve_wiki
+    from lies.collections.bootstrap import bootstrap_collection, ensure_wiki
+    from lies.collections.errors import CollectionMismatch, WikiLayoutInitFailed
+    from lies.config import get_wiki_name
 
     configure_logging()
-    wiki = resolve_wiki(name)
+    try:
+        wiki = ensure_wiki(name if name is not None else get_wiki_name())
+    except WikiLayoutInitFailed as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=5)
+    try:
+        bootstrap_collection(wiki, collection, source, wizard=False)
+    except CollectionMismatch as exc:
+        typer.echo(
+            f"error: collection {collection!r} exists with source "
+            f"{exc.existing_source!r}; requested {exc.requested_source!r}. "
+            f"Use `lies collections modify --set source=...` to change.",
+            err=True,
+        )
+        raise typer.Exit(code=3)
+    # ``Orchestrator`` is referenced as a bare name on purpose: the
+    # module-level ``__getattr__`` above lazy-loads it on first call and
+    # lets ``mock.patch("lies.cli.ingestion.Orchestrator", ...)`` intercept
+    # it in tests without paying for the orchestrator import at CLI
+    # startup.
     orch = Orchestrator(wiki)
     output = orch.run_ingest(source)
     typer.echo(output)
