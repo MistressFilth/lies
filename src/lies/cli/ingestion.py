@@ -22,7 +22,7 @@ __all__ = (
 
 
 @app.command(
-    short_help="Ingest a source into a collection (creates collection if missing).",
+    short_help="Bootstrap collection + wiki if missing.",
     rich_help_panel="Source ingestion",
 )
 def ingest(
@@ -58,17 +58,36 @@ def ingest(
     does not auto-scaffold a collection from a source path. Use
     ``ingest_source`` for the legacy single-source ingestion path.
     """
-    from lies.cli import resolve_wiki
+    from lies.collections.bootstrap import bootstrap_collection, ensure_wiki
+    from lies.collections.errors import (
+        CollectionMismatch,
+        WikiLayoutInitFailed,
+    )
+    from lies.config import get_wiki_name
     from lies.etl.sync_helper import (
         acquire_heartbeat,
         release_heartbeat,
         sync_collection,
     )
 
-    wiki = resolve_wiki(name)
+    try:
+        wiki = ensure_wiki(name or get_wiki_name())
+    except WikiLayoutInitFailed as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=5)
     if acquire_heartbeat(wiki, wait=False, fail_busy=True) is None:
         raise typer.Exit(code=2)
     try:
+        try:
+            bootstrap_collection(wiki, collection, source or "", wizard=False)
+        except CollectionMismatch as exc:
+            typer.echo(
+                f"error: collection {collection!r} exists with source "
+                f"{exc.existing_source!r}; requested {exc.requested_source!r}. "
+                f"Use `lies collections modify --set source=...` to change.",
+                err=True,
+            )
+            raise typer.Exit(code=3)
         sync_collection(wiki, collection, force=False)
     finally:
         release_heartbeat(wiki)
