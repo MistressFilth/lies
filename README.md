@@ -153,8 +153,8 @@ The bootstrap path covers the common case (URL → bare YAML → sync). For
 non-URL corpora or hand-tuned scrapers, write the YAML directly:
 
 ```bash
-$EDITOR "$(uv run lies collections path <name>)"
-uv run lies sync <wiki> <name>
+$EDITOR "$XDG_CONFIG_HOME/lies/$LIES_WIKI_NAME/collections/<name>.yaml"
+uv run lies sync <name>
 ```
 
 For bespoke scrapers outside the repo, set `scraper_cmd: module:attr`
