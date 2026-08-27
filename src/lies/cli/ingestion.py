@@ -124,7 +124,7 @@ def ingest_source(
 
 
 @app.command(
-    short_help="Sync one or all collections.",
+    short_help="Sync one or all collections (single-collection mode bootstraps from --source).",
     rich_help_panel="Source ingestion",
 )
 def sync(
@@ -133,6 +133,13 @@ def sync(
         typer.Argument(help="Collection to sync (omit to sync every collection in the wiki)."),
     ] = None,
     *,
+    source: Annotated[
+        str | None,
+        typer.Option(
+            "--source",
+            help="Bootstrap a missing collection from this source (single-collection mode only).",
+        ),
+    ] = None,
     force: Annotated[
         bool,
         typer.Option(
@@ -158,8 +165,10 @@ def sync(
         None, "--name", envvar="LIES_WIKI_NAME", help="Wiki to sync (default: $LIES_WIKI_NAME)."
     ),
 ) -> None:
-    """Sync one or all collections."""
-    from lies.cli import resolve_wiki
+    """Sync one or all collections (bootstraps single-collection mode if --source)."""
+    from lies.collections.bootstrap import bootstrap_collection, ensure_wiki
+    from lies.collections.errors import CollectionMismatch, WikiLayoutInitFailed
+    from lies.config import get_wiki_name
     from lies.etl.sync_helper import (
         acquire_heartbeat,
         collection_names,
@@ -167,10 +176,25 @@ def sync(
         sync_collection,
     )
 
-    wiki = resolve_wiki(name)
+    try:
+        wiki = ensure_wiki(name or get_wiki_name())
+    except WikiLayoutInitFailed as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=5)
     if acquire_heartbeat(wiki, wait=wait, fail_busy=fail_busy) is None:
         raise typer.Exit(code=2)
     try:
+        if collection is not None and source is not None:
+            try:
+                bootstrap_collection(wiki, collection, source, wizard=False)
+            except CollectionMismatch as exc:
+                typer.echo(
+                    f"error: collection {collection!r} exists with source "
+                    f"{exc.existing_source!r}; requested {exc.requested_source!r}. "
+                    f"Use `lies collections modify --set source=...` to change.",
+                    err=True,
+                )
+                raise typer.Exit(code=3)
         for coll_name in collection_names(wiki, collection):
             sync_collection(wiki, coll_name, force=force)
     finally:

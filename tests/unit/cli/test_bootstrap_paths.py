@@ -111,3 +111,70 @@ def test_ingest_with_existing_collection_and_mismatched_source_errors(
     assert "OLD.example.com" in err
     assert "new.example.com" in err
     assert not mock_sync.called
+
+
+def test_sync_single_collection_bootstrap_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    wiki_root = tmp_path / "wiki"
+    wiki_root.mkdir()
+    wiki = make_wiki(name="sync-bootstrap", data_root=wiki_root)
+    monkeypatch.setenv("LIES_WIKI_NAME", wiki.name)
+    with mock.patch("lies.etl.sync_helper.sync_collection") as mock_sync:
+        result = runner.invoke(
+            app,
+            ["sync", "alpha", "--source", "https://example.com", "--name", wiki.name],
+        )
+    assert result.exit_code == 0
+    mock_sync.assert_called_once()
+    assert (wiki.collections_dir / "alpha.yaml").exists()
+
+
+def test_sync_all_collections_no_bootstrap(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    wiki_root = tmp_path / "wiki"
+    wiki_root.mkdir()
+    wiki = make_wiki(name="sync-all", data_root=wiki_root)
+    wiki.collections_dir.mkdir(parents=True, exist_ok=True)
+    (wiki.collections_dir / "beta.yaml").write_text(
+        "name: beta\npath: /raw/beta\nsource: https://b.example.com\n"
+        "tags: []\nscraper_cmd: null\ndoc_path: null\nmapper_model: null\n"
+        "language: null\nversion: '1'\n"
+        "created_at: 2026-01-01T00:00:00+00:00\nupdated_at: 2026-01-01T00:00:00+00:00\n"
+        "config: {}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("LIES_WIKI_NAME", wiki.name)
+    with (
+        mock.patch("lies.etl.sync_helper.collection_names", return_value=["beta"]),
+        mock.patch("lies.etl.sync_helper.sync_collection") as mock_sync,
+    ):
+        result = runner.invoke(app, ["sync", "--name", wiki.name])
+    assert result.exit_code == 0
+    mock_sync.assert_called_once()
+    # No bootstrap happened for an unrelated collection name
+    assert not (wiki.collections_dir / "alpha.yaml").exists()
+
+
+def test_sync_existing_collection_mismatched_source_errors(
+    wiki: Wiki, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("LIES_WIKI_NAME", wiki.name)
+    wiki.collections_dir.mkdir(parents=True, exist_ok=True)
+    (wiki.collections_dir / "alpha.yaml").write_text(
+        "name: alpha\npath: /raw/alpha\nsource: https://OLD.example.com\n"
+        "tags: []\nscraper_cmd: null\ndoc_path: null\nmapper_model: null\n"
+        "language: null\nversion: '1'\n"
+        "created_at: 2026-01-01T00:00:00+00:00\nupdated_at: 2026-01-01T00:00:00+00:00\n"
+        "config: {}\n",
+        encoding="utf-8",
+    )
+    with mock.patch("lies.etl.sync_helper.sync_collection") as mock_sync:
+        result = runner.invoke(
+            app,
+            ["sync", "alpha", "--source", "https://new.example.com", "--name", wiki.name],
+        )
+    assert result.exit_code == 3
+    err = (result.stderr or "") + (result.stdout or "")
+    assert "OLD.example.com" in err
+    assert "new.example.com" in err
+    assert not mock_sync.called

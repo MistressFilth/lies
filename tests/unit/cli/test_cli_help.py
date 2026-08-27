@@ -37,7 +37,8 @@ PARAMETRIZE_HELP_SUBSTRINGS = [
     (
         ["sync"],
         [
-            "Sync one or all collections.",
+            "Sync one or all collections (bootstraps single-collection mode if --source).",
+            "Bootstrap a missing collection",
             "Force-sync even",
             "Wait for an in-progress",
             "Return non-zero exit code",
