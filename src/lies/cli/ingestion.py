@@ -91,18 +91,11 @@ def ingest(
         ),
     ] = False,
 ) -> None:
-    """Ingest a source into a collection (creates collection if missing).
+    """Ingest a source into a collection (bootstraps collection + wiki if missing).
 
-    First-time flow (LLM scraper generation) deferred to follow-up.
-    Currently behaves like sync for existing collections.
-
-    Errors if the collection YAML is missing; ``sync_helper.sync_collection``
-    does not auto-scaffold a collection from a source path. Use
-    ``ingest_source`` for the legacy single-source ingestion path.
-
-    ``--wizard`` routes a missing collection through the interactive
-    ``collection_author_agent`` so the operator can author tags, scraper
-    command, etc. before any sync runs. Without a TTY the command exits 4.
+    With ``--wizard`` and a TTY, routes a missing collection through the
+    ``collection_author_agent`` interactive Q&A instead of the bare scaffold.
+    Refuses on source mismatch with an existing collection.
     """
     from lies.collections.bootstrap import bootstrap_collection, ensure_wiki
     from lies.collections.errors import (
@@ -172,18 +165,11 @@ def ingest_source(
         ),
     ] = False,
 ) -> None:
-    """Atomic ingest of a single source into the wiki identified by ``name``.
+    """Atomic ingest of a single source; requires ``--collection`` (hard cutover).
 
-    Registers ``--collection`` (writes a minimal YAML if missing; refuses
-    on source mismatch), then delegates to :meth:`Orchestrator.run_ingest`,
-    which snapshots the working tree, runs the agent, and commits
-    atomically. On any failure the working tree is restored and the
-    exception is re-raised.
-
-    ``--collection`` is required: the legacy URL-only ``lies ingest-source
-    URL`` form is rejected up front (Typer missing-required-option).
-    ``--wizard`` routes the registration step through
-    ``collection_author_agent``; without a TTY the command exits 4.
+    Registers the collection YAML (creates if missing; refuses on source
+    mismatch), then delegates to :meth:`Orchestrator.run_ingest`. The legacy
+    source-only invocation is no longer supported.
     """
     from lies.collections.bootstrap import bootstrap_collection, ensure_wiki
     from lies.collections.errors import (
@@ -274,12 +260,13 @@ def sync(
         ),
     ] = False,
 ) -> None:
-    """Sync one or all collections (bootstraps single-collection mode if --source).
+    """Sync one or all collections.
 
-    ``--wizard`` routes the bootstrap step through
-    ``collection_author_agent`` when a single-collection ``--source`` is
-    supplied and the YAML does not yet exist. Without a TTY the command
-    exits 4.
+    In single-collection mode (positional arg given), pass ``--source`` to
+    bootstrap a missing collection before syncing. With ``--wizard`` and a
+    TTY, the bootstrap routes through the collection_author_agent.
+
+    Multi-collection mode (no positional) only iterates existing YAMLs.
     """
     from lies.collections.bootstrap import bootstrap_collection, ensure_wiki
     from lies.collections.errors import (
