@@ -177,17 +177,18 @@ def test_ingest_source_returns_ingested_string(
     """
     with mock.patch("lies.etl.sync_helper.sync_collection") as m:
         out = ingest_source(
-            "raw/articles/sample-article.md",
+            "raw/articles/sample_article.md",
+            collection="sample_article",
             name=wiki_name,
         )
 
     # MCP tool returns the wrapper's documented back-compat string.
-    assert out == "ingested raw/articles/sample-article.md"
+    assert out == "ingested raw/articles/sample_article.md"
     # sync_collection was called with (wiki, source.stem, force=False).
     m.assert_called_once()
     args, kwargs = m.call_args
     assert args[0] == registered_wiki
-    assert args[1] == "sample-article"
+    assert args[1] == "sample_article"
     assert kwargs == {"force": False}
 
 
