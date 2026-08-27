@@ -385,9 +385,22 @@ class WikiMemoryService:
                 if not files:
                     self._restore_working_tree(repo, snapshot_ref)
                     return self._empty_receipt()
+                pages_list = ", ".join(op.path for op in plan.operations)
+                ops_hist = {
+                    kind.value: sum(1 for op in plan.operations if op.kind == kind)
+                    for kind in {op.kind for op in plan.operations}
+                }
+                ops_str = " ".join(f"{k}={v}" for k, v in sorted(ops_hist.items()))
+                evidence_count = len(getattr(plan, "evidence", []) or [])
+                commit_message = (
+                    f"memory: {plan.rationale}\n\n"
+                    f"Pages: {pages_list}\n"
+                    f"Ops: {ops_str}\n"
+                    f"Evidence: {evidence_count}\n"
+                )
                 commit_sha = atomic_commit(
                     self._wiki.data_root,
-                    f"memory: {plan.rationale}",
+                    commit_message,
                     files=files,
                 )
                 if commit_sha is None:
@@ -402,13 +415,23 @@ class WikiMemoryService:
                 self._restore_working_tree(repo, snapshot_ref)
                 raise
             self._discard_snapshot(repo, snapshot_ref)
+            sidecar_errors: list[str] = []
+            try:
+                from lies.memory.sidecar import append_receipt
+
+                append_receipt(self._wiki, plan, commit_sha, evidence_count=evidence_count)
+            except Exception as exc:  # noqa: BLE001 - non-fatal: receipt surface
+                sidecar_errors.append(f"sidecar_append_failed: {exc}")
             qmd_ok, qmd_msg = self._refresh_qmd()
+            errors = list(sidecar_errors)
+            if not qmd_ok:
+                errors.append(qmd_msg)
             return MemoryReceipt(
                 changed_pages=changed,
                 deferred=[],
                 fallback_used=False,
                 fallback_reason="",
-                errors=[] if qmd_ok else [qmd_msg],
+                errors=errors,
             )
 
     def apply_repair_plan(self, plan: RepairPlan, *, force_repair: bool = False) -> MemoryReceipt:

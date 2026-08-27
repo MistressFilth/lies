@@ -21,6 +21,20 @@ The wiki supports the following page types. Each page lives at
 - **source** — a summary of a single raw source, with links to the
   pages it informed. Example: `wiki/sources/karpathy-llm-wiki.md`.
 
+## Invisible maintenance contract
+
+The agent maintains the wiki invisibly during every interaction. After you ask a question or add a source, the agent proposes a structured `MemoryPlan` (page creates, updates, evidence appends). The host validates the plan, applies it through `WikiMemoryService`, emits one git commit, and appends one line to `<wiki>/.lies/memory_plans.jsonl`.
+
+Rules the agent follows:
+
+- The plan reflects only durable project knowledge from this turn: facts, source claims, concepts, contradictions, crosslinks. Never user preferences, working decisions, or task history.
+- Every plan operation requires an evidence reference (the page or raw source that grounds the change).
+- Updates and appends carry the current page's content hash. A mismatch causes a fresh read and a single enrichment retry.
+- Source files in `raw/` are immutable. The agent reads from them but never writes to them.
+- Deletions and renames are not part of ordinary-turn memory. They are reserved for explicit maintenance flows (`lies lint --fix`).
+- Receipts surface only material page changes, conflicts, or persistence failures. Routine reads and bookkeeping stay silent.
+- Operators inspect recent plans with `lies memory` or the `wiki://memory-changes` MCP resource. The sidecar is rebuildable from `git log` via `lies memory reconcile`.
+
 ## Frontmatter
 
 Every page has YAML frontmatter:

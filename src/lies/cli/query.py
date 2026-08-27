@@ -115,7 +115,7 @@ def lint(
 
 
 @app.command(
-    short_help="Show qmd status and the last few log entries.",
+    short_help="Show qmd status, recent invisible writes, and the last few log entries.",
     rich_help_panel="Querying and maintenance",
 )
 def status(
@@ -125,12 +125,20 @@ def status(
         envvar="LIES_WIKI_NAME",
         help="Wiki to report status for (default: $LIES_WIKI_NAME).",
     ),
+    memory_limit: int = typer.Option(
+        10,
+        "--memory-limit",
+        help="Number of recent MemoryPlan applications to show. Pass 0 to skip.",
+    ),
 ) -> None:
-    """Show qmd status and the last few log entries."""
+    """Show qmd status, recent invisible writes, and the last few log entries."""
     from lies.cli import resolve_wiki
+    from lies.memory import sidecar
     from lies.qmd import qmd_status
     from lies.wiki.layout import WikiLayout
 
+    if memory_limit < 0:
+        raise typer.BadParameter("--memory-limit must be >= 0", param_hint="--memory-limit")
     configure_logging()
     wiki = resolve_wiki(name)
     root = wiki.data_root
@@ -140,6 +148,17 @@ def status(
         typer.echo(qmd_status(root))
     except Exception as exc:  # noqa: BLE001 - qmd failures must not crash the CLI
         typer.echo(f"qmd unavailable: {exc}")
+    if memory_limit > 0:
+        try:
+            rows = sidecar.read_recent(wiki, limit=memory_limit)
+        except OSError as exc:
+            typer.echo("\n=== recent invisible writes ===")
+            typer.echo(f"sidecar unavailable: {exc}")
+        else:
+            if rows:
+                typer.echo("\n=== recent invisible writes ===")
+                for rec in rows:
+                    typer.echo(sidecar.format_record_block(rec))
     typer.echo("\n=== last 10 log entries ===")
     log_path = layout.wiki_dir / "log.md"
     if log_path.exists():

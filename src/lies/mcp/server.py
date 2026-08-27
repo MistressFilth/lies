@@ -366,6 +366,68 @@ def wiki_page(path: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# wiki_changes — JSONL sidecar reader (tool + resource)
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool
+def wiki_changes(
+    limit: int = 10,
+    page: str | None = None,
+    op: str | None = None,
+    since: str | None = None,
+) -> list[dict]:
+    """Return recent ``MemoryPlan`` applications from the JSONL sidecar.
+
+    Filters compose with AND. ``page`` is a substring match on each
+    plan's pages list. ``op`` matches any op-kind in the histogram.
+    Returns an empty list when the sidecar is unavailable.
+    """
+    from lies.memory import sidecar
+
+    wiki = resolve_wiki()
+    try:
+        rows = sidecar.read_recent(wiki, limit=limit, page=page, op=op, since=since)
+    except OSError:
+        return []
+    return [row.model_dump() for row in rows]
+
+
+def _wiki_memory_changes_impl(name: str | None = None) -> str:
+    """Render recent ``MemoryPlan`` applications as formatted text.
+
+    Matches the layout of ``lies memory`` (the CLI counterpart): one
+    4-line block per record (ts + SHA[:12] + rationale, pages, ops,
+    evidence count). Missing-sidecar and ``OSError`` paths surface as
+    text — the resource handler must never raise.
+    """
+    from lies.memory import sidecar
+
+    wiki = resolve_wiki(name)
+    out = "Recent MemoryPlan applications:\n"
+    try:
+        rows = sidecar.read_recent(wiki, limit=10)
+    except OSError as exc:
+        return out + f"sidecar unavailable: {exc}\n"
+    if not rows:
+        return out + "(no plans recorded yet)\n"
+    for rec in rows:
+        out += sidecar.format_record_block(rec)
+    return out
+
+
+@mcp.resource("wiki://memory-changes")
+def wiki_memory_changes() -> str:
+    """Recent invisible wiki writes (formatted text).
+
+    Zero-argument forwarder (FastMCP 3.4.5 constraint). Real logic in
+    :func:`_wiki_memory_changes_impl`; ``name`` is resolved from the env
+    there.
+    """
+    return _wiki_memory_changes_impl()
+
+
+# ---------------------------------------------------------------------------
 # Prompt — starter template for asking the wiki
 # ---------------------------------------------------------------------------
 
