@@ -266,3 +266,39 @@ def test_ingest_source_with_collection_mismatch_errors(
     assert "OLD.example.com" in err
     assert "new.example.com" in err
     assert not fake_orchestrator.run_ingest.called
+
+
+# ---------------------------------------------------------------------------
+# Task 7: --wizard flag raises WizardRequiresTTY (exit 4) without a TTY.
+# ---------------------------------------------------------------------------
+
+
+def test_ingest_wizard_requires_tty(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """``lies ingest alpha --source ... --wizard`` without a TTY exits 4.
+
+    The CLI catches ``WizardRequiresTTY`` and surfaces it as exit code 4
+    (distinct from the existing 3/5 buckets). The check fires before any
+    ``sync_collection`` call, so the bootstrap path short-circuits cleanly.
+    """
+    monkeypatch.setenv("LIES_WIKI_NAME", "wiz")
+    monkeypatch.setattr("lies.cli.xdg.data_home", lambda: tmp_path)
+    monkeypatch.setattr("lies.cli.xdg.config_home", lambda: tmp_path)
+    monkeypatch.setattr("lies.cli.xdg.cache_home", lambda: tmp_path)
+    monkeypatch.setattr("lies.cli.xdg.state_home", lambda: tmp_path)
+    monkeypatch.setattr("lies.wiki.wiki.xdg.runtime_dir_for", lambda n: tmp_path / "run" / n)
+    monkeypatch.setattr("lies.collections.bootstrap.sys.stdin.isatty", lambda: False)
+    with mock.patch("lies.etl.sync_helper.sync_collection") as mock_sync:
+        result = runner.invoke(
+            app,
+            [
+                "ingest",
+                "alpha",
+                "--source",
+                "https://example.com",
+                "--wizard",
+            ],
+        )
+    # WizardRequiresTTY propagates as an unhandled exception in the body;
+    # the CLI translates it to exit code 4.
+    assert result.exit_code == 4
+    assert not mock_sync.called

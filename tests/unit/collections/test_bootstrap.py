@@ -13,6 +13,8 @@ from lies.collections.errors import (
     CollectionMismatch,
     CollectionNameRejected,
     WikiLayoutInitFailed,
+    WizardAborted,
+    WizardRequiresTTY,
 )
 from lies.collections.record import Collection, load_collection, save_collection
 from lies.wiki.wiki import Wiki
@@ -91,8 +93,70 @@ def test_existing_mismatched_via_empty_existing_skipped(wiki: Wiki) -> None:
     assert coll.source == ""  # kept existing
 
 
-def test_wizard_true_raises_not_implemented(wiki: Wiki) -> None:
-    with pytest.raises(NotImplementedError):
+def test_wizard_raises_when_no_tty(wiki: Wiki, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Wizard mode requires a TTY; otherwise ``WizardRequiresTTY`` is raised."""
+    monkeypatch.setattr("lies.collections.bootstrap.sys.stdin.isatty", lambda: False)
+    with pytest.raises(WizardRequiresTTY):
+        bootstrap_collection(wiki, "alpha", "https://example.com", wizard=True)
+
+
+def test_wizard_writes_proposal(wiki: Wiki, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Wizard mode drives ``collection_author_agent`` and persists the proposal."""
+    from datetime import UTC, datetime
+
+    from lies.agents.collection_author import AuthorProposal
+
+    monkeypatch.setattr("lies.collections.bootstrap.sys.stdin.isatty", lambda: True)
+    proposal_payload = {
+        "name": "alpha",
+        "path": str(wiki.data_root / "raw" / "alpha"),
+        "source": "https://example.com",
+        "tags": ["api"],
+        "scraper_cmd": None,
+        "doc_path": None,
+        "mapper_model": None,
+        "language": None,
+        "version": "1",
+        "created_at": datetime.now(tz=UTC),
+        "updated_at": datetime.now(tz=UTC),
+        "config": {},
+    }
+    fake_agent = mock.MagicMock()
+    fake_agent.run_sync.return_value.output = AuthorProposal(
+        collection=proposal_payload,
+        rationale="stub",
+    )
+    with mock.patch(
+        "lies.collections.bootstrap.collection_author_agent",
+        return_value=fake_agent,
+    ):
+        coll = bootstrap_collection(wiki, "alpha", "https://example.com", wizard=True)
+    assert coll.tags == ["api"]
+    assert (wiki.collections_dir / "alpha.yaml").exists()
+    # The agent factory was called with no args.
+    fake_agent.run_sync.assert_called_once()
+    # YAML persisted with the same payload.
+    assert load_collection(wiki, "alpha").tags == ["api"]
+
+
+def test_wizard_aborts_when_agent_returns_unexpected(
+    wiki: Wiki, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Any agent output that is neither a question nor a proposal aborts the wizard."""
+    monkeypatch.setattr("lies.collections.bootstrap.sys.stdin.isatty", lambda: True)
+
+    class _Bogus:
+        pass
+
+    fake_agent = mock.MagicMock()
+    fake_agent.run_sync.return_value.output = _Bogus()
+    with (
+        mock.patch(
+            "lies.collections.bootstrap.collection_author_agent",
+            return_value=fake_agent,
+        ),
+        pytest.raises(WizardAborted),
+    ):
         bootstrap_collection(wiki, "alpha", "https://example.com", wizard=True)
 
 

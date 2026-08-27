@@ -32,6 +32,7 @@ PARAMETRIZE_HELP_SUBSTRINGS = [
             "Wiki to ingest into (default: $LIES_WIKI_NAME).",
             "Path, URL, or '-' for stdin",
             "Override the model id",
+            "requires TTY",
         ],
     ),
     (
@@ -42,6 +43,7 @@ PARAMETRIZE_HELP_SUBSTRINGS = [
             "Force-sync even",
             "Wait for an in-progress",
             "Return non-zero exit code",
+            "requires TTY",
         ],
     ),
     (

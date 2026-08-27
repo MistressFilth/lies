@@ -83,6 +83,13 @@ def ingest(
         envvar="LIES_WIKI_NAME",
         help="Wiki to ingest into (default: $LIES_WIKI_NAME).",
     ),
+    wizard: Annotated[
+        bool,
+        typer.Option(
+            "--wizard",
+            help="Route through collection_author_agent for missing collections (requires TTY).",
+        ),
+    ] = False,
 ) -> None:
     """Ingest a source into a collection (creates collection if missing).
 
@@ -92,11 +99,16 @@ def ingest(
     Errors if the collection YAML is missing; ``sync_helper.sync_collection``
     does not auto-scaffold a collection from a source path. Use
     ``ingest_source`` for the legacy single-source ingestion path.
+
+    ``--wizard`` routes a missing collection through the interactive
+    ``collection_author_agent`` so the operator can author tags, scraper
+    command, etc. before any sync runs. Without a TTY the command exits 4.
     """
     from lies.collections.bootstrap import bootstrap_collection, ensure_wiki
     from lies.collections.errors import (
         CollectionMismatch,
         WikiLayoutInitFailed,
+        WizardRequiresTTY,
     )
     from lies.config import get_wiki_name
     from lies.etl.sync_helper import (
@@ -114,7 +126,13 @@ def ingest(
         raise typer.Exit(code=2)
     try:
         try:
-            bootstrap_collection(wiki, collection, source or "", wizard=False)
+            bootstrap_collection(wiki, collection, source or "", wizard=wizard)
+        except WizardRequiresTTY:
+            typer.echo(
+                "error: --wizard needs a TTY; run interactively or omit --wizard for bare scaffold",
+                err=True,
+            )
+            raise typer.Exit(code=4)
         except CollectionMismatch as exc:
             typer.echo(
                 f"error: collection {collection!r} exists with source "
@@ -146,6 +164,13 @@ def ingest_source(
         envvar="LIES_WIKI_NAME",
         help="Wiki to ingest into (default: $LIES_WIKI_NAME).",
     ),
+    wizard: Annotated[
+        bool,
+        typer.Option(
+            "--wizard",
+            help="Route through collection_author_agent for missing collections (requires TTY).",
+        ),
+    ] = False,
 ) -> None:
     """Atomic ingest of a single source into the wiki identified by ``name``.
 
@@ -157,9 +182,15 @@ def ingest_source(
 
     ``--collection`` is required: the legacy URL-only ``lies ingest-source
     URL`` form is rejected up front (Typer missing-required-option).
+    ``--wizard`` routes the registration step through
+    ``collection_author_agent``; without a TTY the command exits 4.
     """
     from lies.collections.bootstrap import bootstrap_collection, ensure_wiki
-    from lies.collections.errors import CollectionMismatch, WikiLayoutInitFailed
+    from lies.collections.errors import (
+        CollectionMismatch,
+        WikiLayoutInitFailed,
+        WizardRequiresTTY,
+    )
     from lies.config import get_wiki_name
 
     configure_logging()
@@ -169,7 +200,13 @@ def ingest_source(
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=5)
     try:
-        bootstrap_collection(wiki, collection, source, wizard=False)
+        bootstrap_collection(wiki, collection, source, wizard=wizard)
+    except WizardRequiresTTY:
+        typer.echo(
+            "error: --wizard needs a TTY; run interactively or omit --wizard for bare scaffold",
+            err=True,
+        )
+        raise typer.Exit(code=4)
     except CollectionMismatch as exc:
         typer.echo(
             f"error: collection {collection!r} exists with source "
@@ -229,10 +266,27 @@ def sync(
     name: str | None = typer.Option(
         None, "--name", envvar="LIES_WIKI_NAME", help="Wiki to sync (default: $LIES_WIKI_NAME)."
     ),
+    wizard: Annotated[
+        bool,
+        typer.Option(
+            "--wizard",
+            help="Route through collection_author_agent for missing collections (requires TTY).",
+        ),
+    ] = False,
 ) -> None:
-    """Sync one or all collections (bootstraps single-collection mode if --source)."""
+    """Sync one or all collections (bootstraps single-collection mode if --source).
+
+    ``--wizard`` routes the bootstrap step through
+    ``collection_author_agent`` when a single-collection ``--source`` is
+    supplied and the YAML does not yet exist. Without a TTY the command
+    exits 4.
+    """
     from lies.collections.bootstrap import bootstrap_collection, ensure_wiki
-    from lies.collections.errors import CollectionMismatch, WikiLayoutInitFailed
+    from lies.collections.errors import (
+        CollectionMismatch,
+        WikiLayoutInitFailed,
+        WizardRequiresTTY,
+    )
     from lies.config import get_wiki_name
     from lies.etl.sync_helper import (
         acquire_heartbeat,
@@ -251,7 +305,14 @@ def sync(
     try:
         if collection is not None and source is not None:
             try:
-                bootstrap_collection(wiki, collection, source, wizard=False)
+                bootstrap_collection(wiki, collection, source, wizard=wizard)
+            except WizardRequiresTTY:
+                typer.echo(
+                    "error: --wizard needs a TTY; run interactively "
+                    "or omit --wizard for bare scaffold",
+                    err=True,
+                )
+                raise typer.Exit(code=4)
             except CollectionMismatch as exc:
                 typer.echo(
                     f"error: collection {collection!r} exists with source "
