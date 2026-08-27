@@ -17,6 +17,7 @@ import os
 import socketserver
 import threading
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from typer.testing import CliRunner
@@ -64,28 +65,24 @@ def http_url() -> str:
     down at test end. The brief mandates ``127.0.0.1`` with port 0 so
     the OS picks a free port and parallel runs do not collide.
 
-    The URL path is ``/alpha`` (rather than ``/llms.txt``) on purpose:
-    ``Orchestrator.run_ingest`` derives the collection name from
-    ``Path(source).stem``. If the path basename is ``llms.txt`` the
-    derived stem is ``llms``, which would not match the ``collection``
-    argument the MCP test bootstraps and the ``sync_collection`` call
-    would raise ``CollectionNotFound``. Serving under ``/alpha`` keeps
-    the WebScraper happy (it walks parent directories to find an
-    ``llms.txt``-shaped candidate and our handler responds with the
-    llms-shaped body) while deriving the right collection stem.
+    The URL path is ``/llms.txt`` so the WebScraper sees an
+    ``llms.txt``-shaped candidate; the MCP tool is exercised with a
+    ``collection`` argument (``pydantic_ai``) that intentionally
+    differs from the URL stem (``llms``) to prove the explicit
+    collection name flows end-to-end rather than being derived from
+    the source path.
     """
     with socketserver.TCPServer(("127.0.0.1", 0), _Handler) as httpd:
         port = httpd.server_address[1]
         thread = threading.Thread(target=httpd.serve_forever, daemon=True)
         thread.start()
         try:
-            yield f"http://127.0.0.1:{port}/alpha"
+            yield f"http://127.0.0.1:{port}/llms.txt"
         finally:
             httpd.shutdown()
             thread.join(timeout=2)
 
 
-@pytest.mark.integration
 def test_cli_ingest_end_to_end(
     http_url: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -121,27 +118,29 @@ def test_cli_ingest_end_to_end(
     assert (cfg_root / "alpha.yaml").exists()
 
 
-@pytest.mark.integration
 def test_mcp_ingest_source_end_to_end(
     http_url: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """``ingest_source(source, collection, name)`` bootstraps via the MCP path.
+    """``ingest_source(source, collection, name)`` uses the explicit collection.
 
     Drives the FastMCP server's ``ingest_source`` tool directly (no
-    client socket layer). Like the CLI test, the wiki is created from
-    scratch, the YAML is written at the XDG-derived config path, and
-    the tool returns a non-empty string confirming the orchestrator
-    pipeline ran.
+    client socket layer). The wiki is created from scratch, the YAML
+    is written at the XDG-derived config path, and the tool returns a
+    non-empty string confirming the sync pipeline ran.
 
-    ``ANTHROPIC_API_KEY`` is set so the Anthropic provider constructs
-    during ``Orchestrator(wiki)`` — the actual API is never called by
-    ``run_ingest`` (which delegates to ``sync_collection`` and skips
-    the LLM path), but pydantic-ai demands the key at agent-build
-    time.
+    The ``collection`` argument (``pydantic_ai``) intentionally differs
+    from the URL stem (``llms``) to prove the MCP tool passes the
+    explicit collection name through to ``sync_collection`` rather than
+    deriving a different one from ``Path(source).stem``.
+
+    ``sync_collection`` is patched so the test asserts the call args
+    without driving the full SyncOrchestrator pipeline (which would
+    require LLM round-trips and outbound network). The YAML bootstrap
+    still runs against the real filesystem via the live
+    ``bootstrap_collection`` path.
     """
     name = "integ-mcp"
     monkeypatch.setenv("LIES_WIKI_NAME", name)
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
     monkeypatch.setattr("lies.cli.xdg.data_home", lambda: tmp_path)
     monkeypatch.setattr("lies.cli.xdg.config_home", lambda: tmp_path)
     monkeypatch.setattr("lies.cli.xdg.cache_home", lambda: tmp_path)
@@ -150,8 +149,17 @@ def test_mcp_ingest_source_end_to_end(
 
     from lies.mcp.server import ingest_source
 
-    result = ingest_source(source=http_url, collection="alpha", name=name)
-    assert isinstance(result, str)
+    with patch("lies.etl.sync_helper.sync_collection") as mock_sync:
+        result = ingest_source(source=http_url, collection="pydantic_ai", name=name)
+
+    assert isinstance(result, str) and result.strip()
+    assert mock_sync.call_count == 1
+    call_args = mock_sync.call_args
+    # ``sync_collection(wiki, collection, force=False)`` — first positional
+    # arg is the wiki resolved inside ``ingest_source``, second positional
+    # arg is the explicit collection name; ``force`` is keyword.
+    assert call_args.args[1] == "pydantic_ai"
+    assert call_args.kwargs == {"force": False}
     # Same XDG-derived path correction as the CLI test: see comment above.
     cfg_root = tmp_path / "lies" / name / "collections"
-    assert (cfg_root / "alpha.yaml").exists()
+    assert (cfg_root / "pydantic_ai.yaml").exists()

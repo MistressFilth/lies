@@ -114,7 +114,8 @@ def init_wiki(name: str) -> dict[str, object]:
     description=(
         "Atomic ingest of a single source into a wiki. Registers a collection "
         "YAML (creates it if missing; refuses on source mismatch with the "
-        "existing collection), then delegates to Orchestrator.run_ingest."
+        "existing collection), then delegates to sync_collection with the "
+        "explicit collection name."
     )
 )
 def ingest_source(
@@ -126,19 +127,21 @@ def ingest_source(
 
     ``collection`` is required: writes a minimal collection YAML if missing
     and refuses on source mismatch with an existing YAML. Delegates to
-    ``Orchestrator.run_ingest``.
+    ``sync_collection`` with the explicit collection name so the derived
+    URL basename never overrides the caller's intent.
     """
     from lies.collections.bootstrap import bootstrap_collection, ensure_wiki
     from lies.collections.errors import CollectionMismatch
     from lies.config import get_wiki_name
+    from lies.etl.sync_helper import sync_collection
 
     wiki = ensure_wiki(name if name is not None else get_wiki_name())
     try:
         bootstrap_collection(wiki, collection, source, wizard=False)
     except CollectionMismatch as exc:
         raise ValueError(str(exc)) from exc
-    orch = Orchestrator(wiki)
-    return orch.run_ingest(source)
+    sync_collection(wiki, collection, force=False)
+    return f"ingested {source} into {collection}"
 
 
 # ---------------------------------------------------------------------------

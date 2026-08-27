@@ -30,20 +30,18 @@ def test_ingest_source_tool_signature_requires_collection() -> None:
     assert "collection" in params.get("required", [])
 
 
-def test_ingest_source_calls_bootstrap_then_run_ingest(
+def test_ingest_source_calls_bootstrap_then_sync_collection(
     wiki: Wiki, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     from lies.mcp.server import ingest_source
 
     monkeypatch.setenv("LIES_WIKI_NAME", wiki.name)
-    fake_orch = mock.MagicMock()
-    fake_orch.run_ingest.return_value = "done"
     # ``bootstrap_collection`` runs for real (writes the YAML) so the
     # post-condition ``(wiki.collections_dir / "alpha.yaml").exists()``
     # is meaningful. We only mock ``ensure_wiki`` (skip real XDG init)
-    # and ``Orchestrator`` (skip the heavy ETL stack).
+    # and ``sync_collection`` (skip the heavy ETL stack).
     with (
-        mock.patch("lies.mcp.server.Orchestrator", return_value=fake_orch),
+        mock.patch("lies.etl.sync_helper.sync_collection") as mock_sync,
         mock.patch("lies.collections.bootstrap.ensure_wiki", return_value=wiki),
     ):
         result = ingest_source(
@@ -51,8 +49,15 @@ def test_ingest_source_calls_bootstrap_then_run_ingest(
             collection="alpha",
             name=wiki.name,
         )
-    assert result == "done"
+    assert result == "ingested https://example.com/llms.txt into alpha"
     assert (wiki.collections_dir / "alpha.yaml").exists()
+    # MCP tool passes the explicit ``collection`` through to
+    # ``sync_collection``; the URL stem (``llms``) is ignored.
+    mock_sync.assert_called_once()
+    args, kwargs = mock_sync.call_args
+    assert args[0] == wiki
+    assert args[1] == "alpha"
+    assert kwargs == {"force": False}
 
 
 def test_ingest_source_collision_raises_value_error(

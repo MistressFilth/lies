@@ -169,11 +169,13 @@ def test_ingest_source_returns_ingested_string(
     registered_wiki: Wiki,
     wiki_name: str,
 ) -> None:
-    """ingest_source → Orchestrator.run_ingest → sync_collection.
+    """ingest_source → bootstrap_collection → sync_collection.
 
-    Mocks sync_collection so the real MCP → Orchestrator delegation is
-    exercised. Asserts the MCP tool returns the wrapper's documented
-    back-compat string.
+    Mocks sync_collection so the real MCP delegation is exercised
+    without driving the full SyncOrchestrator pipeline. Asserts the
+    MCP tool returns its documented success string and that the
+    explicit ``collection`` arg reaches ``sync_collection`` as the
+    second positional arg (not the URL basename).
     """
     with mock.patch("lies.etl.sync_helper.sync_collection") as m:
         out = ingest_source(
@@ -182,9 +184,9 @@ def test_ingest_source_returns_ingested_string(
             name=wiki_name,
         )
 
-    # MCP tool returns the wrapper's documented back-compat string.
-    assert out == "ingested raw/articles/sample_article.md"
-    # sync_collection was called with (wiki, source.stem, force=False).
+    # MCP tool returns its documented success string.
+    assert out == "ingested raw/articles/sample_article.md into sample_article"
+    # sync_collection was called with (wiki, collection, force=False).
     m.assert_called_once()
     args, kwargs = m.call_args
     assert args[0] == registered_wiki
