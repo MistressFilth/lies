@@ -4,6 +4,46 @@ All notable changes to LIES are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/) adapted for
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- JSONL receipt sidecar at `<wiki>/.lies/memory_plans.jsonl`. Each
+  applied `MemoryPlan` appends one line (timestamp, commit SHA,
+  rationale, pages, ops histogram, evidence count). Idempotent on
+  commit SHA. Authoritative source is `git log`; the sidecar is
+  rebuildable via `lies memory reconcile`.
+- `lies memory` subcommand. Default shows the last 10 applied
+  plans; `--limit`, `--pages`, `--ops`, `--since`, `--json` filter
+  the output. `lies memory reconcile` rebuilds the sidecar from
+  `git log --grep='^memory:'`. `lies memory truncate --keep N`
+  caps the file (refuses `--keep` ≤0; refuses `--keep > count`
+  without `--force`).
+- MCP `wiki_changes` tool + `wiki://memory-changes` resource. The
+  tool returns structured `MemoryPlanRecord`s; the resource returns
+  formatted text. Both read the JSONL sidecar.
+- `lies status --memory-limit N` flag. Augments `lies status`
+  output with a "recent invisible writes" section.
+
+### Changed
+
+- README lead rewritten to lead with the RAG contrast and the
+  three-layer abstraction. The "Invisible memory" section now
+  appears in the first third of the document. Prose regression
+  gate: temporal markers ≤16, sentence-length std ≤11, Flesch
+  ≥49.8.
+- `--help` banner now names the maintenance loop and the three
+  layers (replaces the 11-word "Library of Inconsistent
+  Explanations & Sources" tagline).
+- `default_schema.md` gains an "Invisible maintenance contract"
+  section between Page types and Frontmatter, naming the
+  `MemoryPlan` flow and the sidecar contract for the agent.
+- `WikiMemoryService.apply_plan` now appends a receipt to the
+  JSONL sidecar after the git commit lands, before qmd refresh.
+  Sidecar append failure is non-fatal and surfaces in the
+  receipt's `errors`. The commit message now includes
+  `Pages:`/`Ops:`/`Evidence:` trailers for reconcile parsing.
+
 ## [0.11.1] - 2026-08-24
 
 ### Added

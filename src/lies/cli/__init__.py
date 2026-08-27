@@ -40,17 +40,24 @@ import typer
 # the REPL and dump help on bare ``lies``.
 app = typer.Typer(
     name="lies",
-    help="Library of Inconsistent Explanations & Sources -- a Karpathy-pattern LLM wiki.",
+    help=(
+        "Maintain a personal knowledge wiki with an LLM agent. Sources in raw/, "
+        "agent-maintained markdown in wiki/, behavior contract in schema.md. "
+        "The agent reads, writes, and refines the wiki invisibly during normal "
+        "interaction; explicit commands are for the heavy operations."
+    ),
 )
 
 # Step 2: import the sub-app objects (cheap -- just typer.Typer instances)
 # and wire them under the root app.
 from lies.cli.collections import collections_app
+from lies.cli.memory import memory_app
 from lies.cli.operator import flock_app, mcp_app, providers_app
 
 app.add_typer(mcp_app, name="mcp", rich_help_panel="Operator tooling")
 app.add_typer(flock_app, name="flock", rich_help_panel="Operator tooling")
 app.add_typer(providers_app, name="providers", rich_help_panel="Operator tooling")
+app.add_typer(memory_app, name="memory", rich_help_panel="Querying and maintenance")
 app.add_typer(collections_app, name="collections", rich_help_panel="Wiki management")
 
 

@@ -21,13 +21,27 @@ async def test_server_name_is_lies() -> None:
 async def test_tools_registered(client: Client) -> None:
     tools = await client.list_tools()
     names = {t.name for t in tools}
-    assert names == {"init_wiki", "ingest_source", "query", "lint", "wiki_search", "wiki_read"}
+    assert names == {
+        "init_wiki",
+        "ingest_source",
+        "query",
+        "lint",
+        "wiki_search",
+        "wiki_read",
+        "wiki_changes",
+    }
 
 
 async def test_resources_registered(client: Client) -> None:
     resources = await client.list_resources()
     uris = {str(r.uri) for r in resources}
-    assert uris == {"wiki://status", "wiki://index", "wiki://log", "wiki://lint-report"}
+    assert uris == {
+        "wiki://status",
+        "wiki://index",
+        "wiki://log",
+        "wiki://lint-report",
+        "wiki://memory-changes",
+    }
 
 
 async def test_resource_templates_registered(client: Client) -> None:

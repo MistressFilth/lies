@@ -188,3 +188,20 @@ class MemoryReceipt(BaseModel):
     fallback_used: bool
     fallback_reason: str
     errors: list[str]
+
+
+class MemoryPlanRecord(BaseModel):
+    """A row in `<wiki>/.lies/memory_plans.jsonl` — the JSONL receipt sidecar.
+
+    Mirrors the on-disk JSON schema exactly. Pydantic enforces shape on read;
+    `sidecar.append_receipt` constructs rows from a MemoryPlan.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    ts: str
+    commit_sha: str
+    rationale: str
+    pages: list[str]
+    ops: dict[str, int]
+    evidence_count: int
