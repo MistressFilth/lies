@@ -2,12 +2,19 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
 from typer.testing import CliRunner
 
 from lies.cli import app
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _strip_ansi(text: str) -> str:
+    return _ANSI_RE.sub("", text)
 
 
 @pytest.fixture
@@ -94,5 +101,6 @@ def test_status_rejects_negative_memory_limit(runner, tmp_path, monkeypatch) -> 
     monkeypatch.setattr("lies.cli.resolve_wiki", lambda _name=None: wiki)
     result = runner.invoke(app, ["status", "--memory-limit", "-1"])
     assert result.exit_code != 0
-    assert "--memory-limit" in result.output
-    assert ">=" in result.output
+    text = _strip_ansi(result.output)
+    assert "--memory-limit" in text
+    assert ">=" in text
