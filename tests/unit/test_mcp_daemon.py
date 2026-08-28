@@ -336,6 +336,28 @@ def test_stop_raises_busy_when_create_lock_held(tmp_path: Path) -> None:
         release_create_lock(lock, result.fd)
 
 
+def test_stop_exits_with_code_5_on_indeterminate_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """An indeterminate create-lock result exits with code 5 and an operator message."""
+    wiki = _wiki(tmp_path)
+    indeterminate = AcquireResult(
+        fd=-1,
+        holder_pid=999,
+        holder_started_at=1723828800.0,
+        status="indeterminate",
+    )
+    monkeypatch.setattr(daemon, "acquire_create_lock", lambda *a, **k: indeterminate)
+    with pytest.raises(SystemExit) as caught:
+        daemon.stop_daemon(wiki)
+    assert caught.value.code == 5
+    err = capsys.readouterr().err
+    assert "pid 999" in err
+    assert "force-repair" in err
+
+
 def test_status_reports_stopped_without_a_record(tmp_path: Path) -> None:
     wiki = _wiki(tmp_path)
     status = daemon.daemon_status(wiki)

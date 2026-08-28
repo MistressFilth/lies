@@ -452,6 +452,18 @@ def stop_daemon(wiki: Wiki, *, grace: float = 10.0) -> StopResult:
     lock_result = acquire_create_lock(lock, max_age_s=CREATE_LOCK_MAX_AGE_S)
     if lock_result is None:
         raise DaemonBusy(f"another lies mcp lifecycle operation is in progress: {lock}")
+    if lock_result.status == "indeterminate":
+        t = lock_result.holder_started_at
+        started_at = datetime.fromtimestamp(t, tz=UTC).isoformat() if t is not None else "unknown"
+        typer.echo(
+            f"error: {wiki.name} flock held by an indeterminate process "
+            f"(pid {lock_result.holder_pid}, started {started_at}); "
+            f"cannot determine live state. "
+            f"Run `lies flock {wiki.name} force-repair` to inspect/retry "
+            f"or kill {lock_result.holder_pid} manually.",
+            err=True,
+        )
+        sys.exit(5)
     fd = lock_result.fd
     try:
         rec = read_record(wiki)
