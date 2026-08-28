@@ -12,21 +12,33 @@ file (``write_owner_pid`` from :mod:`lies.utils.lock_heartbeat`) at the
 those files exist and a competing caller observes the create-lock as
 held, it reads the PID and asks ``pid_alive_fn`` (default:
 ``os.kill(pid, 0)``) whether the holder is alive. A dead holder yields
-reap + one retry; a live holder yields ``None`` (busy). Same-PID
-recovery treats ``stored == os.getpid()`` as recovery. Wall-clock
-recovery treats heartbeats older than ``max_age_s`` as stale. Exception
-policy: ``ProcessLookupError`` (ESRCH) -> reap; ``PermissionError``
-(EPERM) -> busy, never reap; unexpected ``OSError`` -> busy + WARN log.
+reap + one retry; a live holder yields ``"busy"``; a holder whose
+liveness cannot be determined (EPERM or unknown ``OSError``) AND whose
+heartbeat is older than ``max_age_s`` yields ``"indeterminate"``
+(see :class:`_IndeterminateMarker`). Same-PID recovery treats
+``stored == os.getpid()`` as recovery. Wall-clock recovery treats
+heartbeats older than ``max_age_s`` as stale. Exception policy:
+``ProcessLookupError`` (ESRCH) -> reap; ``PermissionError`` (EPERM) ->
+indeterminate when the heartbeat is stale, otherwise busy; unexpected
+``OSError`` -> indeterminate when the heartbeat is stale, otherwise
+busy + WARN log.
 
 Return shape: :func:`acquire_create_lock` returns an
-:class:`~lies.utils.lock_heartbeat.AcquireResult` on every successful
-acquire (with ``status`` set to ``"acquired"`` or ``"dead_reaped"``)
-or on contention with ``pid_path`` / ``state_json_path`` supplied
-(``status="busy"``, ``fd=-1``, ``holder_pid`` + ``holder_started_at``
-populated). Legacy callers that omit the envelope get ``None`` for the
-busy path; raise sites that need the contender's pid read ``result.fd``
-on success and ``result.holder_pid`` / ``result.holder_started_at`` on
-the busy branch.
+:class:`~lies.utils.lock_heartbeat.AcquireResult` whose ``status``
+Literal covers four outcomes — ``"acquired"`` (fresh win), ``"dead_reaped"``
+(reap-and-retry succeeded), ``"busy"`` (live contender; ``holder_pid``
+and ``holder_started_at`` populated), and ``"indeterminate"`` (EPERM
+or unknown OSError on a stale heartbeat; the primitive did **not**
+reap; ``holder_pid`` and ``holder_started_at`` populated). The
+``"indeterminate"`` branch is the caller's signal to surface a
+:class:`~lies.lock_errors.WikiFlockIndeterminate` exception with an
+operator-actionable message — the operator must run
+``lies flock <name> force-repair`` (or kill the holder manually) before
+the wiki can recover. Legacy callers that omit the envelope (no
+``pid_path`` / ``state_json_path``) get ``None`` for the busy path and
+never observe ``"indeterminate"``; raise sites that need the contender's
+pid read ``result.fd`` on success and ``result.holder_pid`` /
+``result.holder_started_at`` on any of ``"busy"`` or ``"indeterminate"``.
 """
 
 from __future__ import annotations
@@ -75,12 +87,28 @@ def acquire_create_lock(  # type: ignore[no-untyped-def]
     dead (or its heartbeat is older than ``max_age_s``) and reap + retry
     once. See the module docstring for the exception policy.
 
-    On a contended-but-live branch with the envelope supplied, the
-    return is ``AcquireResult(fd=-1, holder_pid=<read from pid file>,
-    holder_started_at=<read from heartbeat>, status="busy")`` so raise
-    sites can surface operator-actionable messages. Callers that omit
-    the envelope still receive ``None`` for the busy path (legacy
-    semantics).
+    The returned ``AcquireResult.status`` is one of four outcomes:
+
+    - ``"acquired"`` — fresh create-lock win; ``fd`` is valid.
+    - ``"dead_reaped"`` — the contended holder was stale (dead PID or
+      wall-clock-expired heartbeat) and the reap-and-retry succeeded;
+      ``fd`` is valid.
+    - ``"busy"`` — live contender (the envelope was supplied and the
+      stored PID's liveness check returned ``"alive"`` or
+      ``"indeterminate"`` on a *fresh* heartbeat); ``fd=-1``,
+      ``holder_pid`` + ``holder_started_at`` populated so raise sites
+      can surface operator-actionable messages.
+    - ``"indeterminate"`` — ``pid_alive_fn`` returned ``"indeterminate"``
+      AND the heartbeat is older than ``max_age_s``. The primitive did
+      **not** reap; ``fd=-1``, ``holder_pid`` + ``holder_started_at``
+      populated. The caller translates this to a
+      :class:`~lies.lock_errors.WikiFlockIndeterminate` exception with
+      an operator-actionable message (the operator must run
+      ``lies flock <name> force-repair`` or kill the holder manually).
+
+    Callers that omit the envelope still receive ``None`` for the
+    busy path (legacy semantics); the ``"indeterminate"`` branch is
+    only reachable when ``pid_path`` + ``state_json_path`` are supplied.
 
     ``force_repair=True`` escalates the second-chance reap: when the
     envelope is held by what looks like a live contender, unconditionally
