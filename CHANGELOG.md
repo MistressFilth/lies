@@ -67,6 +67,24 @@ All notable changes to LIES are documented here. The format follows
 - `lies ingest-source <source>` (no `--collection`) is no longer accepted;
   calls fail at the Typer layer with a missing-argument error.
 
+### Fixed
+- EPERM + stale heartbeat no longer triggers an unauthorized reap. The
+  pid_alive classifier is now tri-state; an EPERM contender with a stale
+  heartbeat returns `AcquireResult(status="indeterminate")` which
+  callers translate to a new `WikiFlockIndeterminate` exception with an
+  operator-actionable message ("Run `lies flock <name> force-repair`").
+  Closes the M2 spec/implementation gap from PR #29's whole-branch
+  review.
+
+### Changed
+- `pid_alive(pid)` (public, in `lies.etl.heartbeat`) now returns
+  `Literal["alive","dead","indeterminate"]` instead of `bool`. Internal
+  only — no CLI/MCP surface change.
+- `pid_alive_fn` parameter to `acquire_create_lock` widens from
+  `Callable[[int], bool]` to `Callable[[int], Literal["alive","dead","indeterminate"]]`.
+- `AcquireResult.status` Literal gains `"indeterminate"`; populated
+  fields (`holder_pid`, `holder_started_at`) unchanged.
+
 ## [0.11.1] - 2026-08-24
 
 ### Added
