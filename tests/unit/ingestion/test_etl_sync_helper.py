@@ -12,6 +12,8 @@ import pytest
 from lies import xdg
 from lies.etl.heartbeat import Heartbeat
 from lies.etl.sync_helper import acquire_heartbeat, release_heartbeat
+from lies.lock_errors import WikiFlockIndeterminate
+from lies.utils.lock_heartbeat import AcquireResult
 from lies.wiki.wiki import Wiki
 
 
@@ -76,3 +78,23 @@ def test_release_heartbeat_no_held_lock(wiki: Wiki) -> None:
     """release_heartbeat is safe even if the lock file is absent."""
     # No acquire first; release should be a no-op (no raise).
     release_heartbeat(wiki)
+
+
+def test_acquire_heartbeat_routes_indeterminate_to_wiki_flock_indeterminate(
+    wiki: Wiki,
+) -> None:
+    """An indeterminate acquire result surfaces as WikiFlockIndeterminate."""
+    indeterminate = AcquireResult(
+        fd=-1,
+        holder_pid=999,
+        holder_started_at=1723828800.0,
+        status="indeterminate",
+    )
+    with (
+        mock.patch("lies.etl.sync_helper.acquire_create_lock", return_value=indeterminate),
+        pytest.raises(WikiFlockIndeterminate) as caught,
+    ):
+        acquire_heartbeat(wiki, wait=False, fail_busy=True)
+    msg = str(caught.value)
+    assert "pid 999" in msg
+    assert "force-repair" in msg
