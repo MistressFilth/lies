@@ -15,8 +15,8 @@ from lies.collections.hash_manifest import HashManifest
 from lies.collections.record import Collection, load_collection
 from lies.etl.cost import CostBudget
 from lies.etl.heartbeat import (
+    MAX_SYNC_AGE_S,
     Heartbeat,
-    acquire_create_lock,
     clear_heartbeat,
     heartbeat_is_stale,
     read_heartbeat,
@@ -26,6 +26,8 @@ from lies.etl.heartbeat import (
 )
 from lies.etl.pipeline import SyncOrchestrator
 from lies.etl.telemetry import SyncTelemetry
+from lies.lock_errors import WikiFlockIndeterminate
+from lies.utils.exclusive import acquire_create_lock
 from lies.wiki.wiki import Wiki
 
 
@@ -38,12 +40,18 @@ def acquire_heartbeat(wiki: Wiki, *, wait: bool, fail_busy: bool) -> Heartbeat |
     ``acquire_heartbeat`` cannot both succeed; the loser observes
     ``None`` (or waits, if ``wait=True``).
 
+    When the contender's liveness cannot be determined (``os.kill`` EPERM
+    or unknown OSError) AND the heartbeat is older than the recovery
+    window, the contender is reported as :class:`WikiFlockIndeterminate`
+    — operator must run ``lies flock <name> force-repair`` to inspect or
+    kill the holder manually. The primitive does not reap.
+
     Caller is responsible for invoking :func:`release_heartbeat`
     afterwards, which closes the create-lock fd and unlinks the lock
     file as well as clearing the heartbeat.
     """
-    fd = acquire_create_lock(wiki)
-    if fd is None:
+    result = acquire_create_lock(wiki.sync_create_lock_path, max_age_s=MAX_SYNC_AGE_S)
+    if result is None:
         # Another process already holds the create lock.
         hb = read_heartbeat(wiki)
         if hb and not heartbeat_is_stale(hb):
@@ -51,8 +59,8 @@ def acquire_heartbeat(wiki: Wiki, *, wait: bool, fail_busy: bool) -> Heartbeat |
                 return None
             wait_until_free(wiki)
             # Retry the create after the holder releases.
-            fd = acquire_create_lock(wiki)
-            if fd is None:
+            result = acquire_create_lock(wiki.sync_create_lock_path, max_age_s=MAX_SYNC_AGE_S)
+            if result is None:
                 return None
         else:
             # Stale or absent heartbeat but the create lock is held by
@@ -60,9 +68,18 @@ def acquire_heartbeat(wiki: Wiki, *, wait: bool, fail_busy: bool) -> Heartbeat |
             if fail_busy or not wait:
                 return None
             wait_until_free(wiki)
-            fd = acquire_create_lock(wiki)
-            if fd is None:
+            result = acquire_create_lock(wiki.sync_create_lock_path, max_age_s=MAX_SYNC_AGE_S)
+            if result is None:
                 return None
+    if result.status == "indeterminate":
+        raise WikiFlockIndeterminate(
+            f"{wiki.name} flock held by an indeterminate process "
+            f"(pid {result.holder_pid}, started {result.holder_started_at:.0f}); "
+            f"cannot determine live state. "
+            f"Run `lies flock {wiki.name} force-repair` to inspect/retry "
+            f"or kill {result.holder_pid} manually."
+        )
+    fd = result.fd
     # We hold the create lock; the heartbeat file is now safe to write.
     hb = read_heartbeat(wiki)
     if hb and not heartbeat_is_stale(hb):

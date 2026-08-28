@@ -28,9 +28,11 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+import typer
 from pydantic import BaseModel, ValidationError
 
 from lies import __version__
+from lies.lock_errors import WikiFlockIndeterminate
 from lies.utils.exclusive import acquire_create_lock, release_create_lock
 from lies.wiki.wiki import Wiki
 
@@ -297,7 +299,11 @@ def spawn_daemon(
     """
     require_loopback_host(host)
     lock = create_lock_path(wiki)
-    lock_result = acquire_create_lock(lock, max_age_s=CREATE_LOCK_MAX_AGE_S)
+    try:
+        lock_result = acquire_create_lock(lock, max_age_s=CREATE_LOCK_MAX_AGE_S)
+    except WikiFlockIndeterminate as exc:
+        typer.echo(f"error: {exc}", err=True)
+        sys.exit(5)
     if lock_result is None:
         raise DaemonBusy(f"another lies mcp lifecycle operation is in progress: {lock}")
     fd = lock_result.fd

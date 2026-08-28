@@ -188,7 +188,7 @@ def test_wall_clock_stale_reaps(fake_wiki: Wiki) -> None:
         max_age_s=7200,
         pid_path=pid_path,
         state_json_path=state_json_path,
-        pid_alive_fn=lambda _pid: True,
+        pid_alive_fn=lambda _pid: "alive",
     )
     assert fd_result is not None, "expected wall-clock-stale reap"
     release_create_lock(

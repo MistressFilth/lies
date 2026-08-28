@@ -279,3 +279,48 @@ def test_flock_force_repair_unrepairable_message_cites_captured_pid(
     out = _combined(result)
     assert "pid 999999" in out
     assert "lies flock mywiki force-repair" in out
+
+
+def test_flock_status_reports_indeterminate_contender(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """`lies flock <name> status` surfaces indeterminate classification.
+
+    When the heartbeat is fresh but ``pid_alive`` cannot determine the
+    contender's state (EPERM on ``os.kill``), the status command must
+    emit ``status: indeterminate`` so operators know the flock is held
+    but the holder's liveness is unknown. Exit code stays 0 because the
+    flock is effectively held — no reap is warranted.
+    """
+    from datetime import UTC, datetime
+
+    from lies import xdg
+    from lies.cli import operator as operator_module
+    from lies.utils.lock_heartbeat import Heartbeat, write_heartbeat
+
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "runtime"))
+    name = "t"
+    runtime_root = xdg.runtime_dir_for(name)
+    runtime_root.mkdir(parents=True, exist_ok=True)
+    pid_path = runtime_root / "memory.pid"
+    state_path = runtime_root / "memory.state.json"
+    pid_path.write_text("999", encoding="utf-8")
+    write_heartbeat(
+        state_path,
+        Heartbeat(
+            pid=999,
+            started_at=datetime.now(tz=UTC).timestamp(),
+            scope="*",
+        ),
+    )
+
+    monkeypatch.setattr(operator_module._heartbeat, "pid_alive", lambda _pid: "indeterminate")
+
+    result = runner.invoke(app, ["flock", name, "status"])
+    assert result.exit_code == 0, _combined(result)
+    text = _combined(result).lower()
+    assert "indeterminate" in text
