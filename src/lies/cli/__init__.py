@@ -138,6 +138,7 @@ def main(
 # ``app`` to already exist (which it does from step 1), and Python's import
 # machinery returns the partially-loaded ``lies.cli`` namespace rather than
 # re-executing this __init__.py.
+from lies import xdg
 from lies.cli import _core, ingestion, operator, query  # noqa: F401
 
 # Re-exports for test compat. ``test_cli_flock.py`` monkeypatches
@@ -203,4 +204,5 @@ __all__ = (
     "flock_app",
     "mcp_app",
     "providers_app",
+    "xdg",
 )

@@ -24,6 +24,15 @@ All notable changes to LIES are documented here. The format follows
   formatted text. Both read the JSONL sidecar.
 - `lies status --memory-limit N` flag. Augments `lies status`
   output with a "recent invisible writes" section.
+- `--wizard` flag on `lies ingest`, `lies sync`, and `lies ingest-source`:
+  when the collection YAML is missing, route the bootstrap through
+  `collection_author_agent` instead of the bare scaffold. Requires a TTY.
+- Auto-init wiki: `ingest`, `sync`, and `ingest-source` now create the wiki
+  (via the same code path as `lies init`) when `--name` references an
+  unregistered wiki. Idempotent.
+- `lies.collections.bootstrap.bootstrap_collection`: idempotent YAML scaffold
+  + collision refusal + wizard opt-in. New public primitive.
+- `lies.collections.bootstrap.ensure_wiki`: resolve-or-auto-init helper.
 
 ### Changed
 
@@ -43,6 +52,20 @@ All notable changes to LIES are documented here. The format follows
   Sidecar append failure is non-fatal and surfaces in the
   receipt's `errors`. The commit message now includes
   `Pages:`/`Ops:`/`Evidence:` trailers for reconcile parsing.
+- `lies ingest <coll>` and `lies sync <coll>` now bootstrap a missing
+  collection YAML instead of raising `CollectionNotFound`. Help text
+  updated to match. Refuses with `CollectionMismatch` if the existing
+  YAML's source differs from `--source`.
+- `lies ingest-source <source>` now requires `--collection NAME` (hard
+  cutover). The legacy bypass of the collection YAML is gone; the command
+  registers a YAML like `ingest` and `sync`.
+
+### Removed
+
+- Implicit "creates collection if missing" promise from `ingest` /
+  `sync` short-help text (replaced with accurate description).
+- `lies ingest-source <source>` (no `--collection`) is no longer accepted;
+  calls fail at the Typer layer with a missing-argument error.
 
 ## [0.11.1] - 2026-08-24
 

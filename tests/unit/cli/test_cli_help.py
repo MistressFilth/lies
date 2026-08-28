@@ -32,15 +32,18 @@ PARAMETRIZE_HELP_SUBSTRINGS = [
             "Wiki to ingest into (default: $LIES_WIKI_NAME).",
             "Path, URL, or '-' for stdin",
             "Override the model id",
+            "requires TTY",
         ],
     ),
     (
         ["sync"],
         [
             "Sync one or all collections.",
+            "Bootstrap a missing collection",
             "Force-sync even",
             "Wait for an in-progress",
             "Return non-zero exit code",
+            "requires TTY",
         ],
     ),
     (

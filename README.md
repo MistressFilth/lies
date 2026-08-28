@@ -35,11 +35,16 @@ documented below.
 
 ```bash
 uv sync
-uv run lies init my-research
-uv run lies ingest my-research htmx
+uv run lies ingest pydantic-ai --source https://pydantic.dev/docs/ai/llms.txt
 uv run lies query "What do my sources say about X?"
 uv run lies lint
 ```
+
+The first `ingest` invocation bootstraps both the wiki (under
+`$XDG_DATA_HOME/lies/pydantic-ai`) and the collection YAML (under
+`$XDG_CONFIG_HOME/lies/pydantic-ai/collections/pydantic-ai.yaml`). Pass
+`--wizard` to route the bootstrap through the interactive
+`collection_author_agent` instead of the bare scaffold.
 
 Launch the REPL (no subcommand) for an interactive session:
 
@@ -140,26 +145,20 @@ LIES can ingest PDF, Sphinx, HTML, Liquid, and bespoke source corpora.
 All four named formats are first-class; bespoke dispatches user-provided
 scrapers for other formats.
 
-Add a collection by hand or use the LLM-driven author:
+## Advanced
+
+### Manual authoring (advanced)
+
+The bootstrap path covers the common case (URL → bare YAML → sync). For
+non-URL corpora or hand-tuned scrapers, write the YAML directly:
 
 ```bash
-# Hand-written YAML (path printed by `lies collections path <name>`).
-$EDITOR "$(uv run lies collections path htmx)"
-uv run lies sync my-research htmx
-
-# LLM-driven: the agent asks one question at a time.
-uv run lies collections new htmx \
-    --source https://github.com/bigskysoftware/htmx/tree/master/www/content \
-    --prompt "the curated htmx docs at www/content, drop _templates and examples"
-# Review the YAML on stdout, then re-run with --apply to write it.
-uv run lies collections new htmx --source <url> --prompt "..." --apply
-uv run lies sync my-research htmx
+$EDITOR "$XDG_CONFIG_HOME/lies/$LIES_WIKI_NAME/collections/<name>.yaml"
+uv run lies sync <name>
 ```
 
-For htmx-class messy corpora, the agent may also propose a
-`scraper_cmd` pointing at a Python module outside the repo that
-implements `BaseScraper`. Drop the module anywhere on `PYTHONPATH`
-and reference it as `module:attr` or `path.py:attr`.
+For bespoke scrapers outside the repo, set `scraper_cmd: module:attr`
+referencing a `BaseScraper` subclass on `PYTHONPATH`.
 
 ### Liquid sources
 
@@ -348,11 +347,9 @@ CLI commands (`src/lies/cli/`):
   role-routed XDG directories, copies default schema, `git init`, initial commit).
 - `lies migrate-xdg <legacy-path> --name <name>` — one-shot bridge from
   legacy `<path>/.lies/` to XDG role-routed directories.
-- `lies ingest <collection>` — sync an existing collection (first-time
-  LLM scraper generation is deferred).
-- `lies ingest-source <source>` — ingest a local source path. The legacy
-  source-path CLI surface; delegates to `Orchestrator.run_ingest` for
-  host-side atomicity and rollback.
+- `lies ingest <collection> [--source URL] [--wizard]` — bootstrap (wiki + YAML if missing) and sync. `--wizard` routes the bootstrap through `collection_author_agent`.
+- `lies sync [<collection>] [--source URL] [--wizard]` — sync one collection, or every collection in the wiki when no positional is given. Pass `--source` to bootstrap a missing YAML (single-collection mode only); `--wizard` routes the bootstrap through `collection_author_agent`.
+- `lies ingest-source <source> --collection NAME [--wizard]` — atomic single-source ingest; registers a collection YAML (required). Legacy source-only form is removed. `--wizard` routes the bootstrap through `collection_author_agent`.
 - `lies query <question>` — ask a question of the wiki.
 - `lies lint [--fix]` — health-check the wiki (`--fix` applies the repair plan for safe_to_fix findings). Findings span six categories; LLM-backed categories are skipped with a `Sources` line when no model key is configured.
 - `lies mcp` / `lies mcp start` — run the MCP server on stdio.
