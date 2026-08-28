@@ -48,11 +48,24 @@ def test_write_and_read_heartbeat(wiki: Wiki) -> None:
 
 
 def test_pid_alive_for_self() -> None:
-    assert pid_alive(os.getpid()) is True
+    assert pid_alive(os.getpid()) == "alive"
 
 
 def test_pid_alive_for_missing() -> None:
-    assert pid_alive(999_999_999) is False
+    assert pid_alive(999_999_999) == "dead"
+
+
+def test_pid_alive_returns_indeterminate_on_eperm(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """EPERM on os.kill → public pid_alive returns 'indeterminate'."""
+    from lies.etl.heartbeat import pid_alive
+
+    def _eperm_permission(*_args: object, **_kwargs: object) -> None:
+        raise PermissionError(1, "Operation not permitted")
+
+    monkeypatch.setattr("os.kill", _eperm_permission)
+    assert pid_alive(12345) == "indeterminate"
 
 
 def test_clear_heartbeat(wiki: Wiki) -> None:
