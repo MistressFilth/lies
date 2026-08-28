@@ -13,9 +13,11 @@ import typer
 from lies import __version__, xdg
 from lies.cli import app
 from lies.cli._helpers import LIES_DATA_SUBDIR, _emit_missing_providers_hint
+from lies.wiki.wiki import Wiki
 from lies.wiki_settings import resolve_language
 
 __all__ = (
+    "_init_wiki_internal",
     "config_cmd",
     "init",
     "migrate_xdg",
@@ -136,8 +138,6 @@ def init(
 ) -> None:
     """Initialize a new wiki under XDG_DATA_HOME."""
     from lies.errors import WikiAlreadyExists
-    from lies.wiki.layout import WikiLayout, copy_default_schema, git_init_initial
-    from lies.wiki.wiki import Wiki
 
     wiki = Wiki(
         name=name,
@@ -150,7 +150,20 @@ def init(
     if wiki.data_root.exists():
         typer.echo(f"error: {WikiAlreadyExists(name, wiki.data_root)}", err=True)
         raise typer.Exit(code=1)
-    # All five role roots
+    _init_wiki_internal(wiki)
+    _emit_missing_providers_hint(wiki.providers_path)
+    typer.echo(f"initialized wiki '{name}' at {wiki.data_root}")
+
+
+def _init_wiki_internal(wiki: Wiki) -> None:
+    """Initialize an unregistered wiki in-place. Used by `init` and `ensure_wiki`.
+
+    Creates the five role roots, the collections dir, the data layout, copies
+    the default schema, and runs ``git init``. Does NOT check whether the wiki
+    already exists — callers must do that.
+    """
+    from lies.wiki.layout import WikiLayout, copy_default_schema, git_init_initial
+
     for root in (
         wiki.data_root,
         wiki.config_root,
@@ -159,10 +172,7 @@ def init(
         wiki.runtime_root,
     ):
         root.mkdir(parents=True, exist_ok=True)
-    # Known subdirs under config_root -- ready for users to drop YAMLs in.
     wiki.collections_dir.mkdir(parents=True, exist_ok=True)
     WikiLayout(wiki.data_root).init()
     copy_default_schema(wiki.schema_path)
     git_init_initial(wiki.data_root)
-    _emit_missing_providers_hint(wiki.providers_path)
-    typer.echo(f"initialized wiki '{name}' at {wiki.data_root}")
