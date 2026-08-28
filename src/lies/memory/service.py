@@ -109,9 +109,11 @@ def _acquire_wiki_flock(wiki: Wiki, *, force_repair: bool = False) -> Iterator[N
             )
         raise WikiLockBusy(f"wiki memory lock is held by another process: {create_lock}")
     if result.status == "indeterminate":
+        t = result.holder_started_at
+        started_at = datetime.fromtimestamp(t, tz=UTC).isoformat() if t is not None else "unknown"
         raise WikiFlockIndeterminate(
             f"{wiki.name} flock held by an indeterminate process "
-            f"(pid {result.holder_pid}, started {result.holder_started_at:.0f}); "
+            f"(pid {result.holder_pid}, started {started_at}); "
             f"cannot determine live state. "
             f"Run `lies flock {wiki.name} force-repair` to inspect/retry "
             f"or kill {result.holder_pid} manually."

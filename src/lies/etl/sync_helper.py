@@ -72,9 +72,13 @@ def acquire_heartbeat(wiki: Wiki, *, wait: bool, fail_busy: bool) -> Heartbeat |
             if result is None:
                 return None
     if result.status == "indeterminate":
+        from datetime import UTC, datetime
+
+        t = result.holder_started_at
+        started_at = datetime.fromtimestamp(t, tz=UTC).isoformat() if t is not None else "unknown"
         raise WikiFlockIndeterminate(
             f"{wiki.name} flock held by an indeterminate process "
-            f"(pid {result.holder_pid}, started {result.holder_started_at:.0f}); "
+            f"(pid {result.holder_pid}, started {started_at}); "
             f"cannot determine live state. "
             f"Run `lies flock {wiki.name} force-repair` to inspect/retry "
             f"or kill {result.holder_pid} manually."

@@ -300,9 +300,11 @@ def spawn_daemon(
     lock = create_lock_path(wiki)
     lock_result = acquire_create_lock(lock, max_age_s=CREATE_LOCK_MAX_AGE_S)
     if lock_result is not None and lock_result.status == "indeterminate":
+        t = lock_result.holder_started_at
+        started_at = datetime.fromtimestamp(t, tz=UTC).isoformat() if t is not None else "unknown"
         typer.echo(
             f"error: {wiki.name} flock held by an indeterminate process "
-            f"(pid {lock_result.holder_pid}, started {lock_result.holder_started_at:.0f}); "
+            f"(pid {lock_result.holder_pid}, started {started_at}); "
             f"cannot determine live state. "
             f"Run `lies flock {wiki.name} force-repair` to inspect/retry "
             f"or kill {lock_result.holder_pid} manually.",
