@@ -79,8 +79,7 @@ def test_lies_flock_status_reports_held(monkeypatch: pytest.MonkeyPatch, tmp_pat
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "runtime"))
     _seed_wiki(tmp_path, "mywiki")
     # 999999 is reliably dead (pid_alive returns False); status reports
-    # the flock as ``held`` because the heartbeat is fresh and pid_alive
-    # is not consulted by the read-only status command.
+    # the flock as ``held`` because the heartbeat is fresh.
     _seed_flock(tmp_path, "mywiki", pid=999999)
 
     result = runner.invoke(app, ["flock", "mywiki", "status"])

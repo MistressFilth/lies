@@ -32,7 +32,6 @@ import typer
 from pydantic import BaseModel, ValidationError
 
 from lies import __version__
-from lies.lock_errors import WikiFlockIndeterminate
 from lies.utils.exclusive import acquire_create_lock, release_create_lock
 from lies.wiki.wiki import Wiki
 
@@ -299,10 +298,16 @@ def spawn_daemon(
     """
     require_loopback_host(host)
     lock = create_lock_path(wiki)
-    try:
-        lock_result = acquire_create_lock(lock, max_age_s=CREATE_LOCK_MAX_AGE_S)
-    except WikiFlockIndeterminate as exc:
-        typer.echo(f"error: {exc}", err=True)
+    lock_result = acquire_create_lock(lock, max_age_s=CREATE_LOCK_MAX_AGE_S)
+    if lock_result is not None and lock_result.status == "indeterminate":
+        typer.echo(
+            f"error: {wiki.name} flock held by an indeterminate process "
+            f"(pid {lock_result.holder_pid}, started {lock_result.holder_started_at:.0f}); "
+            f"cannot determine live state. "
+            f"Run `lies flock {wiki.name} force-repair` to inspect/retry "
+            f"or kill {lock_result.holder_pid} manually.",
+            err=True,
+        )
         sys.exit(5)
     if lock_result is None:
         raise DaemonBusy(f"another lies mcp lifecycle operation is in progress: {lock}")
