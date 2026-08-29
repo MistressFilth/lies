@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 
 from lies.collections.hash_manifest import HashManifest
@@ -72,8 +73,6 @@ def acquire_heartbeat(wiki: Wiki, *, wait: bool, fail_busy: bool) -> Heartbeat |
             if result is None:
                 return None
     if result.status == "indeterminate":
-        from datetime import UTC, datetime
-
         t = result.holder_started_at
         started_at = datetime.fromtimestamp(t, tz=UTC).isoformat() if t is not None else "unknown"
         raise WikiFlockIndeterminate(
