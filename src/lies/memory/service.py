@@ -25,6 +25,7 @@ if TYPE_CHECKING:
 
 from lies.lock_errors import (  # noqa: F401 — Task 5/6/7 will reference these from this module.
     WikiFlockCorrupt,
+    WikiFlockIndeterminate,
     WikiFlockStale,
     WikiFlockUnrepairable,
 )
@@ -70,10 +71,13 @@ def _acquire_wiki_flock(wiki: Wiki, *, force_repair: bool = False) -> Iterator[N
 
     Yields once on success. Raises :class:`WikiLockBusy` on a live
     contender (whose pid + start time surface in the error message so
-    operators can identify the holder), or :class:`WikiFlockUnrepairable`
-    if a ``force_repair=True`` retry still loses (in which case the
-    pid file is already gone — the message directs the operator to run
-    ``lies flock <wiki> status`` to inspect the current contender).
+    operators can identify the holder), :class:`WikiFlockIndeterminate`
+    when the contender's liveness cannot be determined (EPERM on
+    ``os.kill``) and the heartbeat is older than the recovery window,
+    or :class:`WikiFlockUnrepairable` if a ``force_repair=True`` retry
+    still loses (in which case the pid file is already gone — the
+    message directs the operator to run ``lies flock <wiki> status``
+    to inspect the current contender).
 
     The lock envelope lives under ``$XDG_RUNTIME_DIR/lies/<wiki>/``
     (not the wiki's data root), so no gitignore coordination is
@@ -104,6 +108,16 @@ def _acquire_wiki_flock(wiki: Wiki, *, force_repair: bool = False) -> Iterator[N
                 f"contender manually."
             )
         raise WikiLockBusy(f"wiki memory lock is held by another process: {create_lock}")
+    if result.status == "indeterminate":
+        t = result.holder_started_at
+        started_at = datetime.fromtimestamp(t, tz=UTC).isoformat() if t is not None else "unknown"
+        raise WikiFlockIndeterminate(
+            f"{wiki.name} flock held by an indeterminate process "
+            f"(pid {result.holder_pid}, started {started_at}); "
+            f"cannot determine live state. "
+            f"Run `lies flock {wiki.name} force-repair` to inspect/retry "
+            f"or kill {result.holder_pid} manually."
+        )
     if result.status == "busy":
         p = result.holder_pid
         t = result.holder_started_at

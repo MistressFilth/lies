@@ -27,6 +27,7 @@ from lies.cli._helpers import (
     read_heartbeat,
     read_owner_pid,
 )
+from lies.etl import heartbeat as _heartbeat
 
 __all__ = (
     "_cli_prompt",
@@ -273,6 +274,25 @@ def flock_status(
     age_s = (time.time() - hb.started_at) if hb else None
     age_str = f"{age_s:.0f}s" if age_s is not None else "?"
     fresh = (age_s is not None) and (age_s < MAX_FLOCK_AGE_S)
+    # Tri-state liveness classification: ``"held"`` for fresh with a
+    # reachable contender, ``"indeterminate"`` for fresh when ``pid_alive``
+    # could not determine state (EPERM / unknown OSError), ``"stale"`` for
+    # a heartbeat outside the recovery window. Indeterminate reports
+    # surface ``pid_alive: indeterminate`` in the text output so operators
+    # know the flock is held but the holder's state is uncertain.
+    liveness: str | None = None
+    if pid is not None:
+        liveness = _heartbeat.pid_alive(pid)
+
+    if fresh and liveness == "indeterminate":
+        status_text = "indeterminate"
+        exit_code = 0
+    elif fresh:
+        status_text = "held"
+        exit_code = 0
+    else:
+        status_text = "stale"
+        exit_code = 1
 
     payload = {
         "wiki": name,
@@ -283,7 +303,8 @@ def flock_status(
         "age_s": age_s,
         "limit_s": MAX_FLOCK_AGE_S,
         "fresh": fresh,
-        "status": "held" if fresh else "stale",
+        "liveness": liveness,
+        "status": status_text,
         "files": {
             ".lock.create": create_lock.exists(),
             ".pid": pid_path.exists(),
@@ -306,9 +327,11 @@ def flock_status(
         typer.echo(
             f"age       : {age_str}  (limit={MAX_FLOCK_AGE_S}s, {'fresh' if fresh else 'stale'})"
         )
+        if liveness is not None:
+            typer.echo(f"pid_alive : {liveness}")
         typer.echo(f"status    : {payload['status']}")
 
-    raise typer.Exit(code=0 if fresh else 1)
+    raise typer.Exit(code=exit_code)
 
 
 @flock_app.command("force-repair")

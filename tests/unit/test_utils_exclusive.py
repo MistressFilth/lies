@@ -101,7 +101,7 @@ def test_acquire_create_lock_reaps_dead_pid_and_reacquires(
         max_age_s=MAX_FLOCK_AGE_S,
         pid_path=pid_path,
         state_json_path=state_json,
-        pid_alive_fn=lambda _: False,
+        pid_alive_fn=lambda _: "dead",
     )
     assert result is not None, "expected reap-then-reacquire to succeed"
     assert result.fd > 0, "AcquireResult must carry a valid fd"
@@ -220,3 +220,68 @@ def test_pid_alive_classifier_handles_generic_oserror(
     assert lock_create.exists(), "lock file must remain after busy path"
     assert pid_path.exists(), "pid file must remain after busy path"
     assert "raised non-ESRCH/EPERM" in caplog.text, "unknown OSError path must emit the WARN log"
+
+
+def test_indeterminate_pid_with_stale_heartbeat_returns_indeterminate_result(
+    tmp_path: Path,
+) -> None:
+    """EPERM + stale heartbeat: AcquireResult(status='indeterminate'), NO reap."""
+    from datetime import UTC, datetime, timedelta
+
+    from lies.utils.lock_heartbeat import Heartbeat, write_heartbeat
+
+    state_path = tmp_path / "state.json"
+    pid_path = tmp_path / "pid"
+    pid_path.write_text("999", encoding="utf-8")
+    stale = datetime.now(tz=UTC) - timedelta(hours=5)
+    write_heartbeat(state_path, Heartbeat(pid=999, started_at=stale.timestamp(), scope=""))
+
+    lock_create = tmp_path / "lock.create"
+    # Pre-touch the create-lock so O_EXCL fails and we reach the contended branch.
+    lock_create.touch()
+
+    result = acquire_create_lock(
+        lock_create,
+        max_age_s=10,
+        pid_alive_fn=lambda _: "indeterminate",
+        pid_path=pid_path,
+        state_json_path=state_path,
+    )
+    assert result is not None
+    assert result.status == "indeterminate"
+    assert result.fd == -1  # sentinel: no acquire happened
+    assert result.holder_pid == 999
+    assert result.holder_started_at == stale.timestamp()
+    # No reap occurred: the lock and pid file remain in place.
+    assert lock_create.exists()
+    assert pid_path.exists()
+
+
+def test_indeterminate_pid_with_fresh_heartbeat_returns_busy_result(
+    tmp_path: Path,
+) -> None:
+    """EPERM + fresh heartbeat: existing busy surface."""
+    from datetime import UTC, datetime
+
+    from lies.utils.lock_heartbeat import Heartbeat, write_heartbeat
+
+    state_path = tmp_path / "state.json"
+    pid_path = tmp_path / "pid"
+    pid_path.write_text("999", encoding="utf-8")
+    fresh = datetime.now(tz=UTC)
+    write_heartbeat(state_path, Heartbeat(pid=999, started_at=fresh.timestamp(), scope=""))
+
+    lock_create = tmp_path / "lock.create"
+    # Pre-touch the create-lock so O_EXCL fails and we reach the contended branch.
+    lock_create.touch()
+
+    result = acquire_create_lock(
+        lock_create,
+        max_age_s=3600,
+        pid_alive_fn=lambda _: "indeterminate",
+        pid_path=pid_path,
+        state_json_path=state_path,
+    )
+    assert result is not None
+    assert result.status == "busy"
+    assert result.holder_pid == 999

@@ -38,12 +38,18 @@ class AcquireResult:
       - ``"dead_reaped"`` — the contendee was dead (or the heartbeat stale)
         and the reap-and-retry succeeded; ``fd`` is valid; holder info
         is ``None`` because the contendee is gone.
+      - ``"indeterminate"`` — ``pid_alive_fn`` returned ``"indeterminate"``
+        (EPERM on ``os.kill(pid, 0)``) and the heartbeat is older than
+        the wall-clock window. The primitive did NOT reap; ``fd`` is
+        the sentinel ``-1``; ``holder_pid`` + ``holder_started_at`` are
+        populated so the raise site can emit ``WikiFlockIndeterminate``
+        with operator-actionable details.
     """
 
     fd: int
     holder_pid: int | None = None
     holder_started_at: float | None = None
-    status: Literal["acquired", "busy", "dead_reaped"] = "acquired"
+    status: Literal["acquired", "busy", "dead_reaped", "indeterminate"] = "acquired"
 
 
 def write_owner_pid(path: Path, pid: int) -> None:

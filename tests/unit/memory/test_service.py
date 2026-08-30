@@ -7,6 +7,7 @@ from pathlib import Path, PurePosixPath
 
 import pytest
 
+from lies.lock_errors import WikiFlockIndeterminate
 from lies.memory.models import (
     MemoryPlan,
     PageCreate,
@@ -15,6 +16,7 @@ from lies.memory.models import (
     WikiWriteConflict,
 )
 from lies.memory.service import WikiMemoryService, _acquire_wiki_flock
+from lies.utils.lock_heartbeat import AcquireResult
 from lies.wiki.wiki import Wiki
 from tests.conftest import make_wiki
 
@@ -658,3 +660,22 @@ def test_acquire_wiki_flock_writes_heartbeat_on_acquire(
     assert not wiki.memory_create_lock_path.exists()
     assert not wiki.memory_pid_path.exists()
     assert not wiki.memory_heartbeat_path.exists()
+
+
+def test_acquire_wiki_flock_routes_indeterminate_to_wiki_flock_indeterminate(
+    git_wiki: Wiki,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An indeterminate acquire result surfaces as WikiFlockIndeterminate."""
+    indeterminate = AcquireResult(
+        fd=-1,
+        holder_pid=999,
+        holder_started_at=1723828800.0,
+        status="indeterminate",
+    )
+    monkeypatch.setattr("lies.memory.service.acquire_create_lock", lambda *a, **k: indeterminate)
+    with pytest.raises(WikiFlockIndeterminate) as caught, _acquire_wiki_flock(git_wiki):
+        pass
+    msg = str(caught.value)
+    assert "pid 999" in msg
+    assert "force-repair" in msg

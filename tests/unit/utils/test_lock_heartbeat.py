@@ -77,3 +77,15 @@ def test_acquire_result_is_frozen() -> None:
     ar = AcquireResult(fd=7)
     with pytest.raises((AttributeError, dataclasses.FrozenInstanceError)):
         ar.fd = 8  # type: ignore[misc]
+
+
+def test_acquire_result_supports_indeterminate_status() -> None:
+    """AcquireResult accepts status='indeterminate' with holder info."""
+    from lies.utils.lock_heartbeat import AcquireResult
+
+    result = AcquireResult(
+        fd=-1, holder_pid=999, holder_started_at=1723828800.0, status="indeterminate"
+    )
+    assert result.status == "indeterminate"
+    assert result.holder_pid == 999
+    assert result.holder_started_at == 1723828800.0

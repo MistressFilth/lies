@@ -43,3 +43,13 @@ class WikiFlockCorrupt(WikiFlockError):
 
 class WikiLockBusy(WikiFlockError):
     """Another process holds the wiki memory lock."""
+
+
+class WikiFlockIndeterminate(WikiFlockError):
+    """``acquire_create_lock`` could not determine live state of the contender.
+
+    Raised when ``pid_alive_fn`` returns ``"indeterminate"`` (EPERM on
+    ``os.kill(pid, 0)``) AND the heartbeat is older than the wall-clock
+    window. The caller must run ``lies flock <name> force-repair`` to
+    override; the primitive does not reap.
+    """

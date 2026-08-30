@@ -24,9 +24,11 @@ by ``WikiMemoryService`` (which guards ``memory.lock``).
 from __future__ import annotations
 
 import json
+import logging
 import os
 import time
 from dataclasses import dataclass
+from typing import Literal
 
 from lies.utils.exclusive import acquire_create_lock as _acquire_create_lock
 from lies.utils.exclusive import release_create_lock as _release_create_lock
@@ -43,12 +45,30 @@ class Heartbeat:
     collection: str
 
 
-def pid_alive(pid: int) -> bool:
+def pid_alive(pid: int) -> Literal["alive", "dead", "indeterminate"]:
+    """Probe ``pid`` via ``os.kill(pid, 0)`` and classify the result.
+
+    Returns:
+      ``"alive"`` — process is reachable as the current user.
+      ``"dead"`` — ``ProcessLookupError`` (ESRCH); process is gone.
+      ``"indeterminate"`` — ``PermissionError`` (EPERM, can't determine
+        without elevated privs) or any other ``OSError`` (unknown syscall
+        failure; treated conservatively as "may be alive").
+
+    ``heartbeat_is_stale`` consumers should treat ``"alive"`` and
+    ``"indeterminate"`` identically (both mean "do not reap"); only
+    ``"dead"`` triggers the reap path.
+    """
     try:
         os.kill(pid, 0)
-        return True
-    except OSError, ProcessLookupError:
-        return False
+        return "alive"
+    except ProcessLookupError:
+        return "dead"
+    except PermissionError:
+        return "indeterminate"
+    except OSError:
+        logging.getLogger(__name__).warning("pid_alive(%s) raised non-ESRCH/EPERM OSError", pid)
+        return "indeterminate"
 
 
 def acquire_create_lock(wiki: Wiki) -> int | None:
@@ -105,7 +125,7 @@ def clear_heartbeat(wiki: Wiki) -> None:
 
 
 def heartbeat_is_stale(heartbeat: Heartbeat) -> bool:
-    if not pid_alive(heartbeat.pid):
+    if pid_alive(heartbeat.pid) == "dead":
         return True
     age = time.time() - heartbeat.started_at
     return age > MAX_SYNC_AGE_S

@@ -28,6 +28,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+import typer
 from pydantic import BaseModel, ValidationError
 
 from lies import __version__
@@ -278,6 +279,26 @@ def _kill_now(proc: subprocess.Popen[bytes]) -> None:
         pass
 
 
+def _emit_indeterminate_and_exit(
+    wiki_name: str, holder_pid: int | None, holder_started_at: float | None
+) -> None:
+    """Echo the operator-facing indeterminate-flock message and exit with code 5."""
+    started_at = (
+        datetime.fromtimestamp(holder_started_at, tz=UTC).isoformat()
+        if holder_started_at is not None
+        else "unknown"
+    )
+    typer.echo(
+        f"error: {wiki_name} flock held by an indeterminate process "
+        f"(pid {holder_pid}, started {started_at}); "
+        f"cannot determine live state. "
+        f"Run `lies flock {wiki_name} force-repair` to inspect/retry "
+        f"or kill {holder_pid} manually.",
+        err=True,
+    )
+    sys.exit(5)
+
+
 def spawn_daemon(
     wiki: Wiki,
     *,
@@ -298,6 +319,10 @@ def spawn_daemon(
     require_loopback_host(host)
     lock = create_lock_path(wiki)
     lock_result = acquire_create_lock(lock, max_age_s=CREATE_LOCK_MAX_AGE_S)
+    if lock_result is not None and lock_result.status == "indeterminate":
+        _emit_indeterminate_and_exit(
+            wiki.name, lock_result.holder_pid, lock_result.holder_started_at
+        )
     if lock_result is None:
         raise DaemonBusy(f"another lies mcp lifecycle operation is in progress: {lock}")
     fd = lock_result.fd
@@ -439,6 +464,10 @@ def stop_daemon(wiki: Wiki, *, grace: float = 10.0) -> StopResult:
     lock_result = acquire_create_lock(lock, max_age_s=CREATE_LOCK_MAX_AGE_S)
     if lock_result is None:
         raise DaemonBusy(f"another lies mcp lifecycle operation is in progress: {lock}")
+    if lock_result.status == "indeterminate":
+        _emit_indeterminate_and_exit(
+            wiki.name, lock_result.holder_pid, lock_result.holder_started_at
+        )
     fd = lock_result.fd
     try:
         rec = read_record(wiki)
