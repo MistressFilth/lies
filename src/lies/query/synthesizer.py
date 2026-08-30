@@ -204,15 +204,24 @@ def _resolve_qmd_pages(wiki: Wiki, qmd_paths: list[str], top_n: int) -> list[Pag
 
 
 def _try_read(path: Path, wiki: Wiki, *, title_override: str | None = None) -> PageRead | None:
-    """Read a page; return None if missing/unreadable."""
+    """Read a page; return None only if the file does not exist.
+
+    A page that exists on disk but cannot be read still produces a
+    :class:`PageRead` with the path stem as the title and an empty
+    excerpt. The caller (the LLM-synthesizing orchestrator path)
+    performs its own full-body re-read, which is the authoritative
+    place to handle transient read failures: the page must surface in
+    ``retrieve_pages`` so the orchestrator can attempt to read it,
+    rather than be silently filtered out here.
+    """
     if not path.exists() or not path.is_file():
         return None
+    rel = path.relative_to(wiki.data_root).as_posix()
     try:
         content = path.read_text(encoding="utf-8")
     except OSError, UnicodeDecodeError:
-        return None
+        return PageRead(rel_path=rel, title=title_override or path.stem, excerpt="")
 
-    rel = path.relative_to(wiki.data_root).as_posix()
     title = title_override or _extract_title(content) or path.stem
     excerpt = _first_meaningful_paragraph(content)
     return PageRead(rel_path=rel, title=title, excerpt=excerpt)

@@ -168,9 +168,26 @@ def test_run_query_falls_back_to_index_when_qmd_unavailable(
     """Query with no qmd installed reads from wiki/index.md and returns a
     SynthesizedAnswer whose fallback fields are populated correctly.
     """
+    from lies.agents.query_synthesizer import QueryAnswer
+
     wiki = make_wiki(name="sample", data_root=wiki_copy)
     orch = Orchestrator(wiki=wiki, models=models_for_tests("test"))
-    answer = orch.run_query("How does Postgres handle concurrency?")
+
+    # The agent is stubbed to a deterministic cited answer so the test
+    # exercises the orchestrator's wiring (retrieval + synthesis merge +
+    # fallback_reason propagation) without depending on TestModel's
+    # unpredictable output.
+    cited_answer = QueryAnswer(
+        answer="### How does Postgres handle concurrency?\n\n- Postgres uses MVCC.",
+        citations=["wiki/entities/postgres.md"],
+        should_file=False,
+    )
+
+    def fake_synth(self, prompt: str, **kwargs: object):  # type: ignore[no-untyped-def]
+        return mock.Mock(output=cited_answer)
+
+    with mock.patch.object(type(orch._query_synthesizer_agent), "run_sync", new=fake_synth):
+        answer = orch.run_query("How does Postgres handle concurrency?")
 
     if shutil.which("qmd") is None:
         # qmd unavailable → fallback path.
