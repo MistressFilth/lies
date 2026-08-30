@@ -26,7 +26,7 @@ __all__ = (
 
 
 @app.command(
-    short_help="Query the wiki with qmd -> index.md fallback.",
+    short_help="Query the wiki with LLM synthesis over qmd hits (extractive fallback).",
     rich_help_panel="Querying and maintenance",
 )
 def query(
@@ -35,7 +35,7 @@ def query(
         None, "--name", envvar="LIES_WIKI_NAME", help="Wiki to query (default: $LIES_WIKI_NAME)."
     ),
 ) -> None:
-    """Query the wiki with qmd -> index.md fallback."""
+    """Query the wiki with LLM synthesis over qmd hits, with an extractive fallback."""
     from rich.console import Console
     from rich.markdown import Markdown
 

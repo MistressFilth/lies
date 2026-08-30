@@ -13,9 +13,10 @@ Fallback (per spec):
     - `qmd query` returns no results → fall back to `wiki/index.md` scan.
 
 The synthesis here is deterministic / extractive so the fallback path
-is testable without a live LLM. A future task may swap the synthesis
-core for an LLM-backed one; the public function signature and the
-fallback contract are the load-bearing parts.
+is testable without a live LLM. The LLM-backed synthesis now lives in
+``Orchestrator._call_query_synthesizer`` and calls this function on
+failure; the public function signature and the fallback contract are
+the load-bearing parts.
 """
 
 from __future__ import annotations

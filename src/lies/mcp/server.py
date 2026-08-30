@@ -39,9 +39,10 @@ mcp = FastMCP("lies")
 class SynthesizedMcpAnswer(BaseModel):
     """Structured answer returned by the ``query`` tool.
 
-    Maps from the internal ``SynthesizedAnswer`` (drops citations,
-    pages_read, page_links — those are available via the wiki://
-    resources if the LLM wants them).
+    A 1:1 slice of :class:`lies.query.models.SynthesizedAnswer` for
+    FastMCP serialization — only ``page_links`` is dropped (raw wiki
+    reads are available via the ``wiki://`` resources if the LLM wants
+    them).
     """
 
     answer: str
