@@ -159,8 +159,8 @@ def test_wall_clock_stale_reaps(fake_wiki: Wiki) -> None:
 
     Seeds the create-lock + pid file + a heartbeat whose ``started_at``
     is 10h in the past, then calls ``acquire_create_lock`` with
-    ``pid_alive_fn=lambda _pid: True``. The PID-alive path yields to the
-    wall-clock window, which reaps the stale envelope.
+    ``pid_alive_fn=lambda _pid: "alive"``. The PID-alive path yields to
+    the wall-clock window, which reaps the stale envelope.
     """
     create_lock = fake_wiki.memory_create_lock_path
     pid_path = fake_wiki.memory_pid_path
@@ -188,7 +188,7 @@ def test_wall_clock_stale_reaps(fake_wiki: Wiki) -> None:
         max_age_s=7200,
         pid_path=pid_path,
         state_json_path=state_json_path,
-        pid_alive_fn=lambda _pid: True,
+        pid_alive_fn=lambda _pid: "alive",
     )
     assert fd_result is not None, "expected wall-clock-stale reap"
     release_create_lock(

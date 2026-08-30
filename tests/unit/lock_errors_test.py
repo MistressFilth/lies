@@ -47,3 +47,20 @@ def test_wiki_lock_busy_still_works_with_legacy_catch() -> None:
     err = WikiLockBusy("held")
     with pytest.raises(WikiFlockError):
         raise err
+
+
+def test_wiki_flock_indeterminate_message_mentions_pid_force_repair_and_kill() -> None:
+    from lies.lock_errors import WikiFlockIndeterminate
+
+    msg = (
+        "mywiki flock held by an indeterminate process "
+        "(pid 12345, started 1723828800); cannot determine live state. "
+        "Run `lies flock mywiki force-repair` to inspect/retry or kill 12345 manually."
+    )
+    err = WikiFlockIndeterminate(msg)
+    from lies.lock_errors import WikiFlockError
+
+    assert isinstance(err, WikiFlockError)
+    assert "pid 12345" in str(err)
+    assert "lies flock mywiki force-repair" in str(err)
+    assert "kill 12345" in str(err)

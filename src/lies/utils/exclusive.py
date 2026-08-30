@@ -12,21 +12,33 @@ file (``write_owner_pid`` from :mod:`lies.utils.lock_heartbeat`) at the
 those files exist and a competing caller observes the create-lock as
 held, it reads the PID and asks ``pid_alive_fn`` (default:
 ``os.kill(pid, 0)``) whether the holder is alive. A dead holder yields
-reap + one retry; a live holder yields ``None`` (busy). Same-PID
-recovery treats ``stored == os.getpid()`` as recovery. Wall-clock
-recovery treats heartbeats older than ``max_age_s`` as stale. Exception
-policy: ``ProcessLookupError`` (ESRCH) -> reap; ``PermissionError``
-(EPERM) -> busy, never reap; unexpected ``OSError`` -> busy + WARN log.
+reap + one retry; a live holder yields ``"busy"``; a holder whose
+liveness cannot be determined (EPERM or unknown ``OSError``) AND whose
+heartbeat is older than ``max_age_s`` yields ``"indeterminate"``
+(see :class:`_IndeterminateMarker`). Same-PID recovery treats
+``stored == os.getpid()`` as recovery. Wall-clock recovery treats
+heartbeats older than ``max_age_s`` as stale. Exception policy:
+``ProcessLookupError`` (ESRCH) -> reap; ``PermissionError`` (EPERM) ->
+indeterminate when the heartbeat is stale, otherwise busy; unexpected
+``OSError`` -> indeterminate when the heartbeat is stale, otherwise
+busy + WARN log.
 
 Return shape: :func:`acquire_create_lock` returns an
-:class:`~lies.utils.lock_heartbeat.AcquireResult` on every successful
-acquire (with ``status`` set to ``"acquired"`` or ``"dead_reaped"``)
-or on contention with ``pid_path`` / ``state_json_path`` supplied
-(``status="busy"``, ``fd=-1``, ``holder_pid`` + ``holder_started_at``
-populated). Legacy callers that omit the envelope get ``None`` for the
-busy path; raise sites that need the contender's pid read ``result.fd``
-on success and ``result.holder_pid`` / ``result.holder_started_at`` on
-the busy branch.
+:class:`~lies.utils.lock_heartbeat.AcquireResult` whose ``status``
+Literal covers four outcomes — ``"acquired"`` (fresh win), ``"dead_reaped"``
+(reap-and-retry succeeded), ``"busy"`` (live contender; ``holder_pid``
+and ``holder_started_at`` populated), and ``"indeterminate"`` (EPERM
+or unknown OSError on a stale heartbeat; the primitive did **not**
+reap; ``holder_pid`` and ``holder_started_at`` populated). The
+``"indeterminate"`` branch is the caller's signal to surface a
+:class:`~lies.lock_errors.WikiFlockIndeterminate` exception with an
+operator-actionable message — the operator must run
+``lies flock <name> force-repair`` (or kill the holder manually) before
+the wiki can recover. Legacy callers that omit the envelope (no
+``pid_path`` / ``state_json_path``) get ``None`` for the busy path and
+never observe ``"indeterminate"``; raise sites that need the contender's
+pid read ``result.fd`` on success and ``result.holder_pid`` /
+``result.holder_started_at`` on any of ``"busy"`` or ``"indeterminate"``.
 """
 
 from __future__ import annotations
@@ -35,6 +47,7 @@ import json
 import logging
 import os
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Literal
 
@@ -49,13 +62,22 @@ _log = logging.getLogger(__name__)
 MAX_FLOCK_AGE_S = 2 * 3600  # 2h ceiling on memory flock liveness
 
 
+class _IndeterminateMarker(Exception):
+    """Internal sentinel: pid_alive_fn returned 'indeterminate' on a stale heartbeat."""
+
+    def __init__(self, holder_pid: int, holder_started_at: float) -> None:
+        super().__init__(holder_pid, holder_started_at)
+        self.holder_pid = holder_pid
+        self.holder_started_at = holder_started_at
+
+
 def acquire_create_lock(  # type: ignore[no-untyped-def]
     path: Path,
     *,
     max_age_s: float,
     pid_path: Path | None = None,
     state_json_path: Path | None = None,
-    pid_alive_fn=None,
+    pid_alive_fn: Callable[[int], Literal["alive", "dead", "indeterminate"]] | None = None,
     force_repair: bool = False,
 ) -> AcquireResult | None:
     """Atomically create ``path``. Return ``AcquireResult`` on win, ``None`` on contention.
@@ -65,12 +87,28 @@ def acquire_create_lock(  # type: ignore[no-untyped-def]
     dead (or its heartbeat is older than ``max_age_s``) and reap + retry
     once. See the module docstring for the exception policy.
 
-    On a contended-but-live branch with the envelope supplied, the
-    return is ``AcquireResult(fd=-1, holder_pid=<read from pid file>,
-    holder_started_at=<read from heartbeat>, status="busy")`` so raise
-    sites can surface operator-actionable messages. Callers that omit
-    the envelope still receive ``None`` for the busy path (legacy
-    semantics).
+    The returned ``AcquireResult.status`` is one of four outcomes:
+
+    - ``"acquired"`` — fresh create-lock win; ``fd`` is valid.
+    - ``"dead_reaped"`` — the contended holder was stale (dead PID or
+      wall-clock-expired heartbeat) and the reap-and-retry succeeded;
+      ``fd`` is valid.
+    - ``"busy"`` — live contender (the envelope was supplied and the
+      stored PID's liveness check returned ``"alive"`` or
+      ``"indeterminate"`` on a *fresh* heartbeat); ``fd=-1``,
+      ``holder_pid`` + ``holder_started_at`` populated so raise sites
+      can surface operator-actionable messages.
+    - ``"indeterminate"`` — ``pid_alive_fn`` returned ``"indeterminate"``
+      AND the heartbeat is older than ``max_age_s``. The primitive did
+      **not** reap; ``fd=-1``, ``holder_pid`` + ``holder_started_at``
+      populated. The caller translates this to a
+      :class:`~lies.lock_errors.WikiFlockIndeterminate` exception with
+      an operator-actionable message (the operator must run
+      ``lies flock <name> force-repair`` or kill the holder manually).
+
+    Callers that omit the envelope still receive ``None`` for the
+    busy path (legacy semantics); the ``"indeterminate"`` branch is
+    only reachable when ``pid_path`` + ``state_json_path`` are supplied.
 
     ``force_repair=True`` escalates the second-chance reap: when the
     envelope is held by what looks like a live contender, unconditionally
@@ -85,17 +123,19 @@ def acquire_create_lock(  # type: ignore[no-untyped-def]
     """
     if pid_alive_fn is None:
 
-        def pid_alive_fn(pid: int) -> bool:
+        def pid_alive_fn(
+            pid: int,
+        ) -> Literal["alive", "dead", "indeterminate"]:
             try:
                 os.kill(pid, 0)
-                return True
+                return "alive"
             except ProcessLookupError:
-                return False  # ESRCH — dead, reap
+                return "dead"  # ESRCH — dead, reap
             except PermissionError:
-                return True  # EPERM — different user/perm; treat as busy
+                return "indeterminate"  # EPERM — different user/perm; cannot determine
             except OSError:
                 _log.warning("pid_alive(%s) raised non-ESRCH/EPERM OSError", pid)
-                return True  # unknown syscall failure; treat as busy
+                return "indeterminate"  # unknown syscall failure; treat conservatively
 
     def _wrap(fd: int, status: Literal["acquired", "dead_reaped"] = "acquired") -> AcquireResult:
         return AcquireResult(fd=fd, status=status)
@@ -109,26 +149,41 @@ def acquire_create_lock(  # type: ignore[no-untyped-def]
                 # Unconditional reap + retry once. The caller will
                 # raise WikiFlockUnrepairable if the retry still loses.
                 _reap_files(path, pid_path, state_json_path)
-            elif not _reap_if_stale(path, pid_path, state_json_path, max_age_s, pid_alive_fn):
-                # Live contender; populate holder info from the files we
-                # just inspected so raise sites can name the pid.
-                holder_pid = read_owner_pid(pid_path)
-                heartbeat = read_heartbeat(state_json_path)
-                holder_started_at = heartbeat.started_at if heartbeat is not None else None
+                try:
+                    return _wrap(
+                        os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644),
+                        status="dead_reaped",
+                    )
+                except FileExistsError:
+                    return None
+            try:
+                if _reap_if_stale(path, pid_path, state_json_path, max_age_s, pid_alive_fn):
+                    # Reap removed the create-lock; retry the create once.
+                    try:
+                        return _wrap(
+                            os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644),
+                            status="dead_reaped",
+                        )
+                    except FileExistsError:
+                        return None
+            except _IndeterminateMarker as marker:
                 return AcquireResult(
                     fd=-1,
-                    holder_pid=holder_pid,
-                    holder_started_at=holder_started_at,
-                    status="busy",
+                    holder_pid=marker.holder_pid,
+                    holder_started_at=marker.holder_started_at,
+                    status="indeterminate",
                 )
-            # Reap removed the create-lock; retry the create once.
-            try:
-                return _wrap(
-                    os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644),
-                    status="dead_reaped",
-                )
-            except FileExistsError:
-                return None
+            # Live contender; populate holder info from the files we
+            # just inspected so raise sites can name the pid.
+            holder_pid = read_owner_pid(pid_path)
+            heartbeat = read_heartbeat(state_json_path)
+            holder_started_at = heartbeat.started_at if heartbeat is not None else None
+            return AcquireResult(
+                fd=-1,
+                holder_pid=holder_pid,
+                holder_started_at=holder_started_at,
+                status="busy",
+            )
         # Legacy orphan-only path: no pid/state supplied -> use mtime window.
         if not _is_orphaned(path, max_age_s):
             return None
@@ -147,15 +202,18 @@ def _reap_if_stale(  # type: ignore[no-untyped-def]
     pid_path: Path,
     state_json_path: Path,
     max_age_s: float,
-    pid_alive_fn,
+    pid_alive_fn: Callable[[int], Literal["alive", "dead", "indeterminate"]],
 ) -> bool:
     """Return True if reap happened (caller should retry), False otherwise.
 
     Reap triggers:
       - pid file missing: race; treat as non-stale (caller treats as busy).
       - stored PID == os.getpid(): self-recovery; reap + retry.
-      - pid_alive_fn(stored) is False: dead; reap + retry.
-      - heartbeat started_at is older than (now - max_age_s): wall-clock stale; reap + retry.
+      - pid_alive_fn(stored) is "dead": reap + retry.
+      - heartbeat started_at is older than (now - max_age_s) AND
+        pid_alive_fn(stored) is "indeterminate": raise
+        :class:`_IndeterminateMarker` so the caller surfaces an
+        ``AcquireResult(status="indeterminate")`` to the raise site.
 
     Reap links the create-lock, the pid file, and the state JSON. The
     caller is responsible for the follow-up retry on True.
@@ -173,23 +231,31 @@ def _reap_if_stale(  # type: ignore[no-untyped-def]
         _reap_files(create_lock, pid_path, state_json_path)
         return True
 
-    # pid_alive_fn may raise on EPERM; classifier already handles that.
-    if pid_alive_fn(stored_pid):
-        # Holder alive. Check wall-clock window.
-        if state_json_path.exists():
-            try:
-                payload = json.loads(state_json_path.read_text(encoding="utf-8"))
-                started_at = float(payload.get("started_at", 0.0))
-            except OSError, ValueError, json.JSONDecodeError:
-                started_at = 0.0
-            if (time.time() - started_at) < max_age_s:
-                return False  # alive and fresh: busy.
-        else:
-            # Heartbeat missing but holder alive: treat as busy.
-            return False
+    classification = pid_alive_fn(stored_pid)
+    if classification == "dead":
+        # Reap + return True so caller retries the create.
+        _reap_files(create_lock, pid_path, state_json_path)
+        return True
+    if classification == "alive":
+        # Spec: never reap a live process. Surface as busy regardless of wall-clock.
+        return False
+    # classification == "indeterminate"
+    started_at: float = 0.0
+    if state_json_path.exists():
+        try:
+            payload = json.loads(state_json_path.read_text(encoding="utf-8"))
+            started_at = float(payload.get("started_at", 0.0))
+        except OSError, ValueError, json.JSONDecodeError:
+            started_at = 0.0
+    if _heartbeat_fresh(started_at, max_age_s):
+        return False  # fresh heartbeat; treat as busy
+    # Stale heartbeat + indeterminate → caller routes to WikiFlockIndeterminate.
+    raise _IndeterminateMarker(stored_pid, started_at)
 
-    _reap_files(create_lock, pid_path, state_json_path)
-    return True
+
+def _heartbeat_fresh(started_at: float, max_age_s: float) -> bool:
+    """Return True when ``started_at`` is within ``max_age_s`` of now."""
+    return (time.time() - started_at) < max_age_s
 
 
 def _reap_files(create_lock: Path, pid_path: Path, state_json_path: Path) -> None:
