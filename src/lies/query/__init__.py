@@ -7,6 +7,8 @@ from lies.query.synthesizer import (
     FALLBACK_REASON_FAILED,
     FALLBACK_REASON_NO_RESULTS,
     FALLBACK_REASON_UNAVAILABLE,
+    PageRead,
+    retrieve_pages,
     synthesize_answer,
 )
 
@@ -16,7 +18,9 @@ __all__ = [
     "FALLBACK_REASON_NO_RESULTS",
     "FALLBACK_REASON_UNAVAILABLE",
     "IndexLink",
+    "PageRead",
     "SynthesizedAnswer",
     "parse_index_links",
+    "retrieve_pages",
     "synthesize_answer",
 ]

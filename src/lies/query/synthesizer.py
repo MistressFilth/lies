@@ -41,12 +41,52 @@ QmdSearchFn = Callable[..., list[dict[str, object]]]
 
 
 @dataclass(frozen=True)
-class _PageRead:
-    """A page read during synthesis."""
+class PageRead:
+    """A page read during retrieval."""
 
     rel_path: str  # wiki-relative, POSIX
     title: str
     excerpt: str
+
+
+def retrieve_pages(
+    question: str,
+    wiki: Wiki,
+    *,
+    top_n: int = DEFAULT_TOP_N,
+    qmd_search: QmdSearchFn = qmd_query,
+) -> tuple[list[PageRead], str]:
+    """Retrieve the candidate pages for ``question``.
+
+    Tries ``qmd_search`` first; on any qmd failure falls back to the
+    top-N pages referenced by ``wiki/index.md``.
+
+    This is the single retrieval path for the query layer. Both the
+    extractive ``synthesize_answer`` and the orchestrator's LLM
+    synthesis consume it, so the agent and its extractive fallback can
+    never disagree about which pages were read.
+
+    Returns:
+        ``(pages, fallback_reason)``. ``fallback_reason`` is ``""``
+        when qmd served the query, else one of the ``FALLBACK_REASON_*``
+        constants. ``pages`` may be empty when nothing was readable.
+    """
+    pages: list[PageRead] = []
+    fallback_reason = ""
+
+    try:
+        pages = _qmd_search_dispatch(qmd_search, wiki, question, top_n)
+    except _QmdUnavailable:
+        fallback_reason = FALLBACK_REASON_UNAVAILABLE
+    except _QmdNoResults:
+        fallback_reason = FALLBACK_REASON_NO_RESULTS
+    except _QmdOtherFailure:
+        fallback_reason = FALLBACK_REASON_FAILED
+
+    if fallback_reason:
+        pages = _read_pages_from_index(wiki, top_n=top_n)
+
+    return pages, fallback_reason
 
 
 def synthesize_answer(
@@ -62,6 +102,10 @@ def synthesize_answer(
     ``QmdNoResultsError``, or any other qmd failure, falls back to
     reading the top-N pages referenced by ``wiki/index.md``.
 
+    Deterministic and extractive: no LLM round-trip. Retrieval is
+    delegated to :func:`retrieve_pages` so the orchestrator's LLM
+    synthesis path shares it.
+
     Args:
         question: The user's natural-language question.
         wiki: The wiki to search.
@@ -76,20 +120,7 @@ def synthesize_answer(
     if not question or not question.strip():
         return SynthesizedAnswer(answer="(empty question)")
 
-    pages: list[_PageRead] = []
-    fallback_reason = ""
-
-    try:
-        pages = _qmd_search_dispatch(qmd_search, wiki, question, top_n)
-    except _QmdUnavailable:
-        fallback_reason = FALLBACK_REASON_UNAVAILABLE
-    except _QmdNoResults:
-        fallback_reason = FALLBACK_REASON_NO_RESULTS
-    except _QmdOtherFailure:
-        fallback_reason = FALLBACK_REASON_FAILED
-
-    if fallback_reason:
-        pages = _read_pages_from_index(wiki, top_n=top_n)
+    pages, fallback_reason = retrieve_pages(question, wiki, top_n=top_n, qmd_search=qmd_search)
 
     if not pages:
         return SynthesizedAnswer(
@@ -125,7 +156,7 @@ class _QmdOtherFailure(Exception):
 # ---------------------------------------------------------------------------
 
 
-def _read_pages_from_index(wiki: Wiki, top_n: int) -> list[_PageRead]:
+def _read_pages_from_index(wiki: Wiki, top_n: int) -> list[PageRead]:
     """Read the top-N pages referenced by ``wiki/index.md``.
 
     Only the first ``top_n`` *existing* pages are returned, in index
@@ -137,7 +168,7 @@ def _read_pages_from_index(wiki: Wiki, top_n: int) -> list[_PageRead]:
     content = (wiki.wiki_dir / "index.md").read_text(encoding="utf-8")
     links = parse_index_links(content)
 
-    pages: list[_PageRead] = []
+    pages: list[PageRead] = []
     for link in links:
         if len(pages) >= top_n:
             break
@@ -149,13 +180,13 @@ def _read_pages_from_index(wiki: Wiki, top_n: int) -> list[_PageRead]:
     return pages
 
 
-def _resolve_qmd_pages(wiki: Wiki, qmd_paths: list[str], top_n: int) -> list[_PageRead]:
+def _resolve_qmd_pages(wiki: Wiki, qmd_paths: list[str], top_n: int) -> list[PageRead]:
     """Resolve qmd-returned paths to actual readable pages on disk.
 
     Defends against path traversal: any returned path that escapes
     ``wiki.data_root`` is silently dropped.
     """
-    pages: list[_PageRead] = []
+    pages: list[PageRead] = []
     for raw in qmd_paths:
         if len(pages) >= top_n:
             break
@@ -172,7 +203,7 @@ def _resolve_qmd_pages(wiki: Wiki, qmd_paths: list[str], top_n: int) -> list[_Pa
     return pages
 
 
-def _try_read(path: Path, wiki: Wiki, *, title_override: str | None = None) -> _PageRead | None:
+def _try_read(path: Path, wiki: Wiki, *, title_override: str | None = None) -> PageRead | None:
     """Read a page; return None if missing/unreadable."""
     if not path.exists() or not path.is_file():
         return None
@@ -184,7 +215,7 @@ def _try_read(path: Path, wiki: Wiki, *, title_override: str | None = None) -> _
     rel = path.relative_to(wiki.data_root).as_posix()
     title = title_override or _extract_title(content) or path.stem
     excerpt = _first_meaningful_paragraph(content)
-    return _PageRead(rel_path=rel, title=title, excerpt=excerpt)
+    return PageRead(rel_path=rel, title=title, excerpt=excerpt)
 
 
 def _extract_title(content: str) -> str | None:
@@ -244,7 +275,7 @@ def _first_meaningful_paragraph(content: str, max_chars: int = 400) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _build_answer(question: str, pages: list[_PageRead], fallback_reason: str) -> SynthesizedAnswer:
+def _build_answer(question: str, pages: list[PageRead], fallback_reason: str) -> SynthesizedAnswer:
     """Assemble the final SynthesizedAnswer from the read pages."""
     citations: list[str] = []
     pages_read: list[str] = []
@@ -311,7 +342,7 @@ def _empty_answer(question: str, fallback_reason: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _qmd_search_dispatch(fn: QmdSearchFn, wiki: Wiki, question: str, top_n: int) -> list[_PageRead]:
+def _qmd_search_dispatch(fn: QmdSearchFn, wiki: Wiki, question: str, top_n: int) -> list[PageRead]:
     """Call ``fn`` and translate its real exceptions into sentinels.
 
     The public ``synthesize_answer`` only catches the sentinel
