@@ -130,26 +130,3 @@ def test_run_query_passes_full_page_bodies_not_excerpts(orch: Orchestrator) -> N
     assert deps.question == "what is alpha?"  # type: ignore[attr-defined]
     assert "Alpha is the first letter." in deps.page_texts["wiki/concepts/alpha.md"]  # type: ignore[attr-defined]
     assert "title: Alpha" in deps.page_texts["wiki/concepts/alpha.md"]  # type: ignore[attr-defined]
-
-
-def test_run_query_skips_unreadable_pages(orch: Orchestrator) -> None:
-    captured: dict[str, object] = {}
-
-    def capture(_self: object, _prompt: str, **kwargs: object) -> mock.Mock:
-        captured["deps"] = kwargs["deps"]
-        return mock.Mock(output=_answer())
-
-    real_read = Path.read_text
-
-    def flaky_read(self: Path, *args: object, **kwargs: object) -> str:
-        if self.name == "alpha.md":
-            raise OSError("permission denied")
-        return real_read(self, *args, **kwargs)  # type: ignore[arg-type]
-
-    with (
-        mock.patch.object(Path, "read_text", flaky_read),
-        mock.patch.object(type(orch._query_synthesizer_agent), "run_sync", capture),
-    ):
-        orch.run_query("what is alpha?")
-
-    assert "wiki/concepts/alpha.md" not in captured["deps"].page_texts  # type: ignore[attr-defined]

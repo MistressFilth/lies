@@ -1119,7 +1119,7 @@ class Orchestrator:
         Reads each retrieved page's FULL body — not the 400-char
         excerpt on ``PageRead`` — because the agent's prompt requires
         verbatim quotation and disagreement-surfacing, neither of which
-        survives truncation. Unreadable pages are skipped.
+        survives truncation.
 
         ``rel_path`` is ``data_root``-relative (it carries the ``wiki/``
         prefix), so it joins onto ``self.wiki.data_root``. Joining onto
@@ -1134,14 +1134,10 @@ class Orchestrator:
         """
         import logging
 
-        page_texts: dict[str, str] = {}
-        for page in pages:
-            try:
-                page_texts[page.rel_path] = (self.wiki.data_root / page.rel_path).read_text(
-                    encoding="utf-8"
-                )
-            except OSError, UnicodeDecodeError:
-                continue
+        page_texts = {
+            page.rel_path: (self.wiki.data_root / page.rel_path).read_text(encoding="utf-8")
+            for page in pages
+        }
 
         deps = QueryDeps(question=question, page_texts=page_texts)
         try:
