@@ -215,10 +215,28 @@ def test_qmd_real_query_end_to_end(sample_wiki: Wiki, monkeypatch) -> None:
     only had ``r["file"]``. After the fix in :mod:`lies.qmd.cli`, the
     boundary normalizes ``file`` → ``path`` and the synthesizer picks
     up the hit.
+
+    The fixture mirrors the post-#39 per-collection layout: pages live at
+    ``<wiki_dir>/<collection>/<rest>``. The qmd mock returns
+    ``qmd://mywiki/entities/postgres.md`` so the normalized path becomes
+    ``mywiki/entities/postgres.md`` and resolves to the file placed
+    under the ``mywiki/`` subdir below.
     """
     import json
+    import shutil
     import subprocess
     from unittest.mock import patch
+
+    # Materialize a per-collection wiki subdir for this hit. The fixture
+    # was copied at sample_wiki creation time; we add the ``mywiki``
+    # collection under ``wiki.wiki_dir`` so the synthesizer can resolve
+    # the post-normalization path ``mywiki/entities/postgres.md``.
+    wiki_collection = sample_wiki.wiki_dir / "mywiki" / "entities"
+    wiki_collection.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(
+        sample_wiki.wiki_dir / "entities" / "postgres.md",
+        wiki_collection / "postgres.md",
+    )
 
     payload = json.dumps(
         [
@@ -242,7 +260,7 @@ def test_qmd_real_query_end_to_end(sample_wiki: Wiki, monkeypatch) -> None:
     # The hit was preserved through qmd_query → synthesizer; no fallback.
     assert result.fallback_used is False
     assert result.fallback_reason == ""
-    assert "wiki/entities/postgres.md" in result.citations
+    assert "wiki/mywiki/entities/postgres.md" in result.citations
 
 
 # ---------------------------------------------------------------------------

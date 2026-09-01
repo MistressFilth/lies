@@ -168,7 +168,9 @@ def _qmd_json_payload() -> str:
 
 
 def test_qmd_query_normalizes_file_to_path(tmp_path: Path) -> None:
-    """Each result gains a ``path`` key stripped of the qmd:// prefix."""
+    """Each result gains a ``path`` key with the qmd:// prefix stripped but
+    the ``<collection>/`` segment preserved (per-collection wiki subdir layout,
+    see PR #39)."""
     with (
         patch("lies.qmd.cli.shutil.which", return_value="/usr/bin/qmd"),
         patch("lies.qmd.cli.subprocess.run") as mock_run,
@@ -181,13 +183,63 @@ def test_qmd_query_normalizes_file_to_path(tmp_path: Path) -> None:
         )
         results = qmd_query(tmp_path, "What is a hook?", limit=5)
         assert len(results) == 2
-        assert results[0]["path"] == "chunk-0068.md"
-        assert results[1]["path"] == "entities/postgres.md"
+        assert results[0]["path"] == "mywiki/chunk-0068.md"
+        assert results[1]["path"] == "mywiki/entities/postgres.md"
         # Original `file` field is preserved (callers may want it).
         assert results[0]["file"] == "qmd://mywiki/chunk-0068.md"
         # Other keys pass through unchanged.
         assert results[0]["docid"] == "#22b4ff"
         assert results[0]["score"] == 0.88
+
+
+def test_qmd_query_preserves_collection_in_path(tmp_path: Path) -> None:
+    """Regression for the live smoke bug: ``qmd://claude_code/hooks.md`` must
+    normalize to ``path="claude_code/hooks.md"`` (NOT ``"hooks.md"``), so the
+    synthesizer and retrieval layer can join it onto ``wiki.wiki_dir`` and find
+    the on-disk file at ``<wiki_dir>/<collection>/<path>``."""
+    payload = json.dumps(
+        [
+            {
+                "docid": "#dd080f",
+                "score": 0.88,
+                "file": "qmd://claude_code/hooks.md",
+            }
+        ]
+    )
+    with (
+        patch("lies.qmd.cli.shutil.which", return_value="/usr/bin/qmd"),
+        patch("lies.qmd.cli.subprocess.run") as mock_run,
+    ):
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout=payload, stderr=""
+        )
+        results = qmd_query(tmp_path, "what is a hook?", limit=3)
+        assert len(results) == 1
+        assert results[0]["path"] == "claude_code/hooks.md"
+
+
+def test_qmd_query_preserves_collection_in_path_nested(tmp_path: Path) -> None:
+    """The collection prefix is preserved for nested file paths too
+    (``qmd://llms/hooks-guide.md`` → ``path="llms/hooks-guide.md"``)."""
+    payload = json.dumps(
+        [
+            {
+                "docid": "#abc123",
+                "score": 0.71,
+                "file": "qmd://llms/hooks-guide.md",
+            }
+        ]
+    )
+    with (
+        patch("lies.qmd.cli.shutil.which", return_value="/usr/bin/qmd"),
+        patch("lies.qmd.cli.subprocess.run") as mock_run,
+    ):
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout=payload, stderr=""
+        )
+        results = qmd_query(tmp_path, "q", limit=1)
+        assert len(results) == 1
+        assert results[0]["path"] == "llms/hooks-guide.md"
 
 
 def test_qmd_query_preserves_path_when_already_present(tmp_path: Path) -> None:

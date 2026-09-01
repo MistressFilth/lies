@@ -19,10 +19,14 @@ from typing import Any
 # Real `qmd query --format json` returns each hit's `file` field as
 # ``qmd://<collection>/<path-within-collection>``. Downstream consumers
 # (synthesizer, memory retrieval) consume a flat ``path`` key, so we strip
-# the ``qmd://<collection>/`` prefix once at this boundary. The contract
-# documented in :func:`qmd_query` ("Each result is a dict with at least a
-# ``path`` key") is what every caller depends on.
-_QMD_URI_PREFIX_RE = re.compile(r"^qmd://[^/]+/")
+# the ``qmd://`` prefix once at this boundary. The ``<collection>/`` segment
+# is **kept** in the normalized path because wiki pages live at
+# ``wiki.wiki_dir/<collection>/<page>`` (per-collection subdir layout, PR
+# #39). Joining the normalized path onto ``wiki.wiki_dir`` lands on the
+# correct on-disk file. The contract documented in :func:`qmd_query`
+# ("Each result is a dict with at least a ``path`` key") is what every
+# caller depends on.
+_QMD_URI_PREFIX_RE = re.compile(r"^qmd://")
 _QMD_URI_PREFIX_PREFIX = "qmd://"
 
 
@@ -262,11 +266,13 @@ def _normalize_qmd_result(item: Any) -> dict[str, Any]:
     """Normalize one qmd hit into the internal ``path`` contract.
 
     The real qmd CLI emits each hit with ``file: "qmd://<collection>/<path>"``
-    and no top-level ``path`` key. We strip the ``qmd://<collection>/``
-    prefix into ``path`` so downstream consumers (synthesizer,
-    :func:`lies.memory.retrieval.search_wiki`) can rely on the contract
-    documented in :func:`qmd_query`. If qmd already emitted a ``path`` key,
-    leave it alone (the caller's explicit value wins).
+    and no top-level ``path`` key. We strip just the ``qmd://`` prefix into
+    ``path`` — the ``<collection>/`` segment is preserved because wiki
+    pages live at ``wiki.wiki_dir/<collection>/<page>`` (per-collection
+    subdir layout, PR #39). Downstream consumers (synthesizer,
+    :func:`lies.memory.retrieval.search_wiki`) join ``path`` onto
+    ``wiki.wiki_dir``. If qmd already emitted a ``path`` key, leave it
+    alone (the caller's explicit value wins).
     """
     if not isinstance(item, dict):
         return {"path": ""}
