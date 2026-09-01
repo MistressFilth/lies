@@ -13,9 +13,10 @@ Fallback (per spec):
     - `qmd query` returns no results → fall back to `wiki/index.md` scan.
 
 The synthesis here is deterministic / extractive so the fallback path
-is testable without a live LLM. A future task may swap the synthesis
-core for an LLM-backed one; the public function signature and the
-fallback contract are the load-bearing parts.
+is testable without a live LLM. The LLM-backed synthesis now lives in
+``Orchestrator._call_query_synthesizer`` and calls this function on
+failure; the public function signature and the fallback contract are
+the load-bearing parts.
 """
 
 from __future__ import annotations
@@ -39,48 +40,78 @@ FALLBACK_REASON_FAILED = "qmd_failed"
 # Qmd search callable signature: (cwd, question, limit) -> list[dict].
 QmdSearchFn = Callable[..., list[dict[str, object]]]
 
+# Indirection over the qmd search callable. The public
+# :func:`retrieve_pages` and :func:`synthesize_answer` look the callable
+# up through ``_qmd_search_default()`` at *call* time rather than via a
+# captured default argument, so tests can rebind it with
+# :func:`set_qmd_search` without having to rewrite ``__defaults__``.
+# The captured-default form would silently shadow module-level
+# ``monkeypatch.setattr`` patches — every test would shell out to the
+# real qmd binary instead of the stub, costing ~40s/test on systems
+# where qmd is installed.
+_QMD_SEARCH: QmdSearchFn = qmd_query
+
+
+def set_qmd_search(fn: QmdSearchFn) -> None:
+    """Replace the qmd search callable used by default.
+
+    Tests use this to stub the real ``qmd_query`` binary without
+    patching module attributes (whose captures in default arguments
+    would otherwise shadow the rebind). Production code never calls
+    this; the default value is the real ``qmd_query`` at import time.
+    """
+    global _QMD_SEARCH
+    _QMD_SEARCH = fn
+
+
+def _qmd_search_default() -> QmdSearchFn:
+    """Return the currently-bound qmd search callable."""
+    return _QMD_SEARCH
+
 
 @dataclass(frozen=True)
-class _PageRead:
-    """A page read during synthesis."""
+class PageRead:
+    """A page read during retrieval."""
 
     rel_path: str  # wiki-relative, POSIX
     title: str
     excerpt: str
 
 
-def synthesize_answer(
+def retrieve_pages(
     question: str,
     wiki: Wiki,
     *,
     top_n: int = DEFAULT_TOP_N,
-    qmd_search: QmdSearchFn = qmd_query,
-) -> SynthesizedAnswer:
-    """Answer `question` using the wiki at `wiki`.
+    qmd_search: QmdSearchFn | None = None,
+) -> tuple[list[PageRead], str]:
+    """Retrieve the candidate pages for ``question``.
 
-    Tries ``qmd_search`` first. On ``QmdNotInstalledError``,
-    ``QmdNoResultsError``, or any other qmd failure, falls back to
-    reading the top-N pages referenced by ``wiki/index.md``.
+    Tries ``qmd_search`` first; on any qmd failure falls back to the
+    top-N pages referenced by ``wiki/index.md``.
 
-    Args:
-        question: The user's natural-language question.
-        wiki: The wiki to search.
-        top_n: Maximum number of pages to read (default 5, per schema).
-        qmd_search: Injectable search callable. Defaults to
-            :func:`lies.qmd.cli.qmd_query`. Tests pass a stub.
+    This is the single retrieval path for the query layer. Both the
+    extractive ``synthesize_answer`` and the orchestrator's LLM
+    synthesis consume it, so the agent and its extractive fallback can
+    never disagree about which pages were read.
+
+    ``qmd_search`` defaults to the module-level indirection over
+    ``lies.qmd.cli.qmd_query`` (rebindable via :func:`set_qmd_search`),
+    not a captured default argument. Tests stub the indirection; the
+    indirection is looked up at call time so a stub rebind actually
+    takes effect for subsequent calls.
 
     Returns:
-        A :class:`SynthesizedAnswer` whose ``fallback_used`` and
-        ``fallback_reason`` fields describe how the answer was built.
+        ``(pages, fallback_reason)``. ``fallback_reason`` is ``""``
+        when qmd served the query, else one of the ``FALLBACK_REASON_*``
+        constants. ``pages`` may be empty when nothing was readable.
     """
-    if not question or not question.strip():
-        return SynthesizedAnswer(answer="(empty question)")
-
-    pages: list[_PageRead] = []
+    pages: list[PageRead] = []
     fallback_reason = ""
 
+    qmd_search_fn = qmd_search if qmd_search is not None else _qmd_search_default()
     try:
-        pages = _qmd_search_dispatch(qmd_search, wiki, question, top_n)
+        pages = _qmd_search_dispatch(qmd_search_fn, wiki, question, top_n)
     except _QmdUnavailable:
         fallback_reason = FALLBACK_REASON_UNAVAILABLE
     except _QmdNoResults:
@@ -91,6 +122,45 @@ def synthesize_answer(
     if fallback_reason:
         pages = _read_pages_from_index(wiki, top_n=top_n)
 
+    return pages, fallback_reason
+
+
+def synthesize_answer(
+    question: str,
+    wiki: Wiki,
+    *,
+    top_n: int = DEFAULT_TOP_N,
+    qmd_search: QmdSearchFn | None = None,
+) -> SynthesizedAnswer:
+    """Answer `question` using the wiki at `wiki`.
+
+    Tries ``qmd_search`` first. On ``QmdNotInstalledError``,
+    ``QmdNoResultsError``, or any other qmd failure, falls back to
+    reading the top-N pages referenced by ``wiki/index.md``.
+
+    Deterministic and extractive: no LLM round-trip. Retrieval is
+    delegated to :func:`retrieve_pages` so the orchestrator's LLM
+    synthesis path shares it.
+
+    Args:
+        question: The user's natural-language question.
+        wiki: The wiki to search.
+        top_n: Maximum number of pages to read (default 5, per schema).
+        qmd_search: Injectable search callable. Defaults to the
+            module-level indirection over :func:`lies.qmd.cli.qmd_query`
+            (rebindable via :func:`set_qmd_search`). Tests pass a stub
+            either as a kwarg or by rebinding the indirection for the
+            test scope.
+
+    Returns:
+        A :class:`SynthesizedAnswer` whose ``fallback_used`` and
+        ``fallback_reason`` fields describe how the answer was built.
+    """
+    if not question or not question.strip():
+        return SynthesizedAnswer(answer="(empty question)")
+
+    pages, fallback_reason = retrieve_pages(question, wiki, top_n=top_n, qmd_search=qmd_search)
+
     if not pages:
         return SynthesizedAnswer(
             answer=_empty_answer(question, fallback_reason),
@@ -100,7 +170,7 @@ def synthesize_answer(
             fallback_reason=fallback_reason,
         )
 
-    return _build_answer(question, pages, fallback_reason)
+    return build_answer_from_pages(question, pages, fallback_reason)
 
 
 # ---------------------------------------------------------------------------
@@ -125,7 +195,7 @@ class _QmdOtherFailure(Exception):
 # ---------------------------------------------------------------------------
 
 
-def _read_pages_from_index(wiki: Wiki, top_n: int) -> list[_PageRead]:
+def _read_pages_from_index(wiki: Wiki, top_n: int) -> list[PageRead]:
     """Read the top-N pages referenced by ``wiki/index.md``.
 
     Only the first ``top_n`` *existing* pages are returned, in index
@@ -137,7 +207,7 @@ def _read_pages_from_index(wiki: Wiki, top_n: int) -> list[_PageRead]:
     content = (wiki.wiki_dir / "index.md").read_text(encoding="utf-8")
     links = parse_index_links(content)
 
-    pages: list[_PageRead] = []
+    pages: list[PageRead] = []
     for link in links:
         if len(pages) >= top_n:
             break
@@ -149,13 +219,13 @@ def _read_pages_from_index(wiki: Wiki, top_n: int) -> list[_PageRead]:
     return pages
 
 
-def _resolve_qmd_pages(wiki: Wiki, qmd_paths: list[str], top_n: int) -> list[_PageRead]:
+def _resolve_qmd_pages(wiki: Wiki, qmd_paths: list[str], top_n: int) -> list[PageRead]:
     """Resolve qmd-returned paths to actual readable pages on disk.
 
     Defends against path traversal: any returned path that escapes
     ``wiki.data_root`` is silently dropped.
     """
-    pages: list[_PageRead] = []
+    pages: list[PageRead] = []
     for raw in qmd_paths:
         if len(pages) >= top_n:
             break
@@ -172,7 +242,7 @@ def _resolve_qmd_pages(wiki: Wiki, qmd_paths: list[str], top_n: int) -> list[_Pa
     return pages
 
 
-def _try_read(path: Path, wiki: Wiki, *, title_override: str | None = None) -> _PageRead | None:
+def _try_read(path: Path, wiki: Wiki, *, title_override: str | None = None) -> PageRead | None:
     """Read a page; return None if missing/unreadable."""
     if not path.exists() or not path.is_file():
         return None
@@ -184,7 +254,7 @@ def _try_read(path: Path, wiki: Wiki, *, title_override: str | None = None) -> _
     rel = path.relative_to(wiki.data_root).as_posix()
     title = title_override or _extract_title(content) or path.stem
     excerpt = _first_meaningful_paragraph(content)
-    return _PageRead(rel_path=rel, title=title, excerpt=excerpt)
+    return PageRead(rel_path=rel, title=title, excerpt=excerpt)
 
 
 def _extract_title(content: str) -> str | None:
@@ -244,8 +314,34 @@ def _first_meaningful_paragraph(content: str, max_chars: int = 400) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _build_answer(question: str, pages: list[_PageRead], fallback_reason: str) -> SynthesizedAnswer:
-    """Assemble the final SynthesizedAnswer from the read pages."""
+def build_answer_from_pages(
+    question: str, pages: list[PageRead], fallback_reason: str
+) -> SynthesizedAnswer:
+    """Assemble the final SynthesizedAnswer from already-retrieved ``pages``.
+
+    Public seam for the extractive answer builder: callers (notably
+    :meth:`lies.orchestrator.Orchestrator.run_query`) that have already
+    called :func:`retrieve_pages` once pass the resulting ``pages``
+    through here so the fallback path doesn't pay for a second qmd /
+    index scan. ``pages`` may be empty, in which case the returned
+    answer has empty citations / pages_read / page_links and a body
+    describing why.
+
+    Args:
+        question: The user's natural-language question.
+        pages: The pages already retrieved for ``question``. Empty is
+            valid; the returned body explains what was missing.
+        fallback_reason: One of the ``FALLBACK_REASON_*`` constants;
+            empty when qmd served the query.
+
+    Returns:
+        A :class:`SynthesizedAnswer` whose ``fallback_used`` /
+        ``fallback_reason`` mirror the inputs. ``synthesis_used`` is
+        always False here — the orchestrator wraps this with the
+        synthesis metadata (``synthesis_used``, ``synthesis_reason``)
+        since this function has no opinion on whether the LLM was
+        invoked.
+    """
     citations: list[str] = []
     pages_read: list[str] = []
     page_links: list[str] = []
@@ -311,7 +407,7 @@ def _empty_answer(question: str, fallback_reason: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _qmd_search_dispatch(fn: QmdSearchFn, wiki: Wiki, question: str, top_n: int) -> list[_PageRead]:
+def _qmd_search_dispatch(fn: QmdSearchFn, wiki: Wiki, question: str, top_n: int) -> list[PageRead]:
     """Call ``fn`` and translate its real exceptions into sentinels.
 
     The public ``synthesize_answer`` only catches the sentinel
