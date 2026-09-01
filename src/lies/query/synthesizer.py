@@ -132,7 +132,7 @@ def synthesize_answer(
             fallback_reason=fallback_reason,
         )
 
-    return _build_answer(question, pages, fallback_reason)
+    return build_answer_from_pages(question, pages, fallback_reason)
 
 
 # ---------------------------------------------------------------------------
@@ -276,8 +276,34 @@ def _first_meaningful_paragraph(content: str, max_chars: int = 400) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _build_answer(question: str, pages: list[PageRead], fallback_reason: str) -> SynthesizedAnswer:
-    """Assemble the final SynthesizedAnswer from the read pages."""
+def build_answer_from_pages(
+    question: str, pages: list[PageRead], fallback_reason: str
+) -> SynthesizedAnswer:
+    """Assemble the final SynthesizedAnswer from already-retrieved ``pages``.
+
+    Public seam for the extractive answer builder: callers (notably
+    :meth:`lies.orchestrator.Orchestrator.run_query`) that have already
+    called :func:`retrieve_pages` once pass the resulting ``pages``
+    through here so the fallback path doesn't pay for a second qmd /
+    index scan. ``pages`` may be empty, in which case the returned
+    answer has empty citations / pages_read / page_links and a body
+    describing why.
+
+    Args:
+        question: The user's natural-language question.
+        pages: The pages already retrieved for ``question``. Empty is
+            valid; the returned body explains what was missing.
+        fallback_reason: One of the ``FALLBACK_REASON_*`` constants;
+            empty when qmd served the query.
+
+    Returns:
+        A :class:`SynthesizedAnswer` whose ``fallback_used`` /
+        ``fallback_reason`` mirror the inputs. ``synthesis_used`` is
+        always False here — the orchestrator wraps this with the
+        synthesis metadata (``synthesis_used``, ``synthesis_reason``)
+        since this function has no opinion on whether the LLM was
+        invoked.
+    """
     citations: list[str] = []
     pages_read: list[str] = []
     page_links: list[str] = []

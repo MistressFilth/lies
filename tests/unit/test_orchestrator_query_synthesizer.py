@@ -10,6 +10,7 @@ import pytest
 
 from lies.agents.query_synthesizer import QueryAnswer
 from lies.orchestrator import Orchestrator
+from lies.query.synthesizer import PageRead
 from tests.conftest import make_wiki, models_for_tests
 
 
@@ -113,7 +114,101 @@ def test_run_query_skips_the_agent_when_no_pages_were_retrieved(
 
     assert run_sync.call_count == 0
     assert result.synthesis_used is False
+    assert result.synthesis_reason == "no pages retrieved"
     assert result.fallback_used is True
+
+
+def test_run_query_calls_retrieve_pages_at_most_once_per_branch(
+    orch: Orchestrator, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`retrieve_pages` must run once per `run_query` regardless of branch.
+
+    The agent-success path uses `pages` directly; the agent-failure and
+    empty-pages paths must build the extractive answer from the pages
+    `retrieve_pages` already returned, not re-run it. Counts every
+    branch.
+    """
+    call_count = 0
+
+    def counting_retrieve(*_a: object, **_kw: object) -> tuple[list[object], str]:
+        nonlocal call_count
+        call_count += 1
+        return ([], "qmd_no_results")
+
+    monkeypatch.setattr("lies.orchestrator.retrieve_pages", counting_retrieve)
+
+    # 1. Empty-pages branch: `retrieve_pages` once, agent never invoked.
+    with mock.patch.object(type(orch._query_synthesizer_agent), "run_sync") as run_sync:
+        orch.run_query("what is alpha?")
+    assert call_count == 1
+    assert run_sync.call_count == 0
+
+    # 2. Agent-failure branch: `retrieve_pages` once, extractive builds
+    #    from the cached pages, no second retrieval.
+    pages = [
+        PageRead(
+            rel_path="wiki/concepts/alpha.md",
+            title="Alpha",
+            excerpt="Alpha is the first letter.",
+        ),
+    ]
+
+    def fake_retrieve_with_pages(*_a: object, **_kw: object) -> tuple[list[PageRead], str]:
+        nonlocal call_count
+        call_count += 1
+        return pages, ""
+
+    monkeypatch.setattr("lies.orchestrator.retrieve_pages", fake_retrieve_with_pages)
+    call_count = 0
+
+    with mock.patch.object(
+        type(orch._query_synthesizer_agent),
+        "run_sync",
+        side_effect=RuntimeError("model exploded"),
+    ):
+        result = orch.run_query("what is alpha?")
+    assert call_count == 1
+    assert result.synthesis_used is False
+    assert result.synthesis_reason == "RuntimeError: model exploded"
+
+
+def test_call_query_synthesizer_handles_unreadable_pages_silently(
+    orch: Orchestrator,
+) -> None:
+    """An unreadable page must be silently skipped, not raised.
+
+    Mirrors `_call_linter`'s defensive read loop: a single
+    `OSError` / `UnicodeDecodeError` on one page must not bubble out of
+    `_call_query_synthesizer` and crash the synthesis path. The agent
+    still runs with the pages that did read cleanly.
+    """
+
+    captured: dict[str, object] = {}
+
+    def capture(_self: object, _prompt: str, **kwargs: object) -> mock.Mock:
+        captured["deps"] = kwargs["deps"]
+        return mock.Mock(output=_answer())
+
+    with (
+        mock.patch.object(type(orch._query_synthesizer_agent), "run_sync", capture),
+        mock.patch.object(Path, "read_text", side_effect=OSError("disk gone")),
+    ):
+        output, reason = orch._call_query_synthesizer(
+            "what is alpha?",
+            [
+                PageRead(
+                    rel_path="wiki/concepts/alpha.md",
+                    title="Alpha",
+                    excerpt="Alpha is the first letter.",
+                ),
+            ],
+        )
+
+    # Agent ran, returned its answer, no failure surfaced.
+    assert output is not None
+    assert reason == ""
+    # The unreadable page was silently skipped; deps has no entry for it.
+    assert captured["deps"].page_texts == {}  # type: ignore[attr-defined]
 
 
 def test_run_query_passes_full_page_bodies_not_excerpts(orch: Orchestrator) -> None:

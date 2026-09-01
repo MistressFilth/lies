@@ -41,7 +41,13 @@ from lies.memory.retry import EnrichmentQueue
 from lies.memory.service import WikiMemoryService
 from lies.memory.tools import WikiMemoryDeps, register_read_tools
 from lies.qmd import QmdCapability
-from lies.query import PageRead, SynthesizedAnswer, retrieve_pages, synthesize_answer
+from lies.query import (
+    PageRead,
+    SynthesizedAnswer,
+    build_answer_from_pages,
+    retrieve_pages,
+    synthesize_answer,
+)
 from lies.schema import load_schema
 from lies.wiki.git import CommitError, atomic_commit
 from lies.wiki.wiki import Wiki
@@ -1079,12 +1085,20 @@ class Orchestrator:
         pages, fallback_reason = retrieve_pages(question, self.wiki)
 
         # Nothing to synthesize: don't spend a model call on an empty wiki.
+        # ``synthesis_reason="no pages retrieved"`` surfaces the bypass to
+        # the CLI/MCP so the user sees the same "LLM synthesis unavailable"
+        # note they'd see on an agent failure.
         if not pages:
-            return synthesize_answer(question, self.wiki)
+            extractive = build_answer_from_pages(question, pages, fallback_reason)
+            return replace(
+                extractive,
+                synthesis_used=False,
+                synthesis_reason="no pages retrieved",
+            )
 
         output, synthesis_reason = self._call_query_synthesizer(question, pages)
         if output is None:
-            extractive = synthesize_answer(question, self.wiki)
+            extractive = build_answer_from_pages(question, pages, fallback_reason)
             return replace(
                 extractive,
                 synthesis_used=False,
