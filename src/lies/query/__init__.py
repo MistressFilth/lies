@@ -10,6 +10,7 @@ from lies.query.synthesizer import (
     PageRead,
     build_answer_from_pages,
     retrieve_pages,
+    set_qmd_search,
     synthesize_answer,
 )
 
@@ -24,5 +25,6 @@ __all__ = [
     "build_answer_from_pages",
     "parse_index_links",
     "retrieve_pages",
+    "set_qmd_search",
     "synthesize_answer",
 ]

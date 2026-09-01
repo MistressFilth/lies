@@ -40,6 +40,34 @@ FALLBACK_REASON_FAILED = "qmd_failed"
 # Qmd search callable signature: (cwd, question, limit) -> list[dict].
 QmdSearchFn = Callable[..., list[dict[str, object]]]
 
+# Indirection over the qmd search callable. The public
+# :func:`retrieve_pages` and :func:`synthesize_answer` look the callable
+# up through ``_qmd_search_default()`` at *call* time rather than via a
+# captured default argument, so tests can rebind it with
+# :func:`set_qmd_search` without having to rewrite ``__defaults__``.
+# The captured-default form would silently shadow module-level
+# ``monkeypatch.setattr`` patches — every test would shell out to the
+# real qmd binary instead of the stub, costing ~40s/test on systems
+# where qmd is installed.
+_QMD_SEARCH: QmdSearchFn = qmd_query
+
+
+def set_qmd_search(fn: QmdSearchFn) -> None:
+    """Replace the qmd search callable used by default.
+
+    Tests use this to stub the real ``qmd_query`` binary without
+    patching module attributes (whose captures in default arguments
+    would otherwise shadow the rebind). Production code never calls
+    this; the default value is the real ``qmd_query`` at import time.
+    """
+    global _QMD_SEARCH
+    _QMD_SEARCH = fn
+
+
+def _qmd_search_default() -> QmdSearchFn:
+    """Return the currently-bound qmd search callable."""
+    return _QMD_SEARCH
+
 
 @dataclass(frozen=True)
 class PageRead:
@@ -55,7 +83,7 @@ def retrieve_pages(
     wiki: Wiki,
     *,
     top_n: int = DEFAULT_TOP_N,
-    qmd_search: QmdSearchFn = qmd_query,
+    qmd_search: QmdSearchFn | None = None,
 ) -> tuple[list[PageRead], str]:
     """Retrieve the candidate pages for ``question``.
 
@@ -67,6 +95,12 @@ def retrieve_pages(
     synthesis consume it, so the agent and its extractive fallback can
     never disagree about which pages were read.
 
+    ``qmd_search`` defaults to the module-level indirection over
+    ``lies.qmd.cli.qmd_query`` (rebindable via :func:`set_qmd_search`),
+    not a captured default argument. Tests stub the indirection; the
+    indirection is looked up at call time so a stub rebind actually
+    takes effect for subsequent calls.
+
     Returns:
         ``(pages, fallback_reason)``. ``fallback_reason`` is ``""``
         when qmd served the query, else one of the ``FALLBACK_REASON_*``
@@ -75,8 +109,9 @@ def retrieve_pages(
     pages: list[PageRead] = []
     fallback_reason = ""
 
+    qmd_search_fn = qmd_search if qmd_search is not None else _qmd_search_default()
     try:
-        pages = _qmd_search_dispatch(qmd_search, wiki, question, top_n)
+        pages = _qmd_search_dispatch(qmd_search_fn, wiki, question, top_n)
     except _QmdUnavailable:
         fallback_reason = FALLBACK_REASON_UNAVAILABLE
     except _QmdNoResults:
@@ -95,7 +130,7 @@ def synthesize_answer(
     wiki: Wiki,
     *,
     top_n: int = DEFAULT_TOP_N,
-    qmd_search: QmdSearchFn = qmd_query,
+    qmd_search: QmdSearchFn | None = None,
 ) -> SynthesizedAnswer:
     """Answer `question` using the wiki at `wiki`.
 
@@ -111,8 +146,11 @@ def synthesize_answer(
         question: The user's natural-language question.
         wiki: The wiki to search.
         top_n: Maximum number of pages to read (default 5, per schema).
-        qmd_search: Injectable search callable. Defaults to
-            :func:`lies.qmd.cli.qmd_query`. Tests pass a stub.
+        qmd_search: Injectable search callable. Defaults to the
+            module-level indirection over :func:`lies.qmd.cli.qmd_query`
+            (rebindable via :func:`set_qmd_search`). Tests pass a stub
+            either as a kwarg or by rebinding the indirection for the
+            test scope.
 
     Returns:
         A :class:`SynthesizedAnswer` whose ``fallback_used`` and

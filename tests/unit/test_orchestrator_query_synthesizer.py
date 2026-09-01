@@ -10,7 +10,7 @@ import pytest
 
 from lies.agents.query_synthesizer import QueryAnswer
 from lies.orchestrator import Orchestrator
-from lies.query.synthesizer import PageRead
+from lies.query.synthesizer import PageRead, qmd_query, set_qmd_search
 from tests.conftest import make_wiki, models_for_tests
 
 
@@ -38,12 +38,18 @@ def orch(tmp_path: Path) -> Orchestrator:
 
 
 @pytest.fixture(autouse=True)
-def _no_real_qmd(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Never shell out to the real qmd binary from these tests."""
-    monkeypatch.setattr(
-        "lies.query.synthesizer.qmd_query",
-        lambda *a, **kw: [{"path": "concepts/alpha.md", "score": 0.9}],
-    )
+def _no_real_qmd() -> None:
+    """Never shell out to the real qmd binary from these tests.
+
+    Uses ``set_qmd_search`` (the indirection seam in
+    ``lies.query.synthesizer``) rather than ``monkeypatch.setattr`` on
+    the module attribute: a captured default argument would otherwise
+    shadow the rebind, and every test would shell out to the real qmd
+    binary (~40s/test on systems where qmd is on PATH).
+    """
+    set_qmd_search(lambda *a, **kw: [{"path": "concepts/alpha.md", "score": 0.9}])
+    yield
+    set_qmd_search(qmd_query)
 
 
 def _answer(**kwargs: object) -> QueryAnswer:
@@ -209,6 +215,68 @@ def test_call_query_synthesizer_handles_unreadable_pages_silently(
     assert reason == ""
     # The unreadable page was silently skipped; deps has no entry for it.
     assert captured["deps"].page_texts == {}  # type: ignore[attr-defined]
+
+
+def test_set_qmd_search_rebinds_retrieve_pages_default(
+    orch: Orchestrator, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`set_qmd_search` must rebind what `retrieve_pages` / `synthesize_answer`
+    see when called without the ``qmd_search`` kwarg.
+
+    Regression for the captured-default-argument leak: before the
+    indirection seam, `monkeypatch.setattr` on the module attribute
+    silently failed because `qmd_search=qmd_query` was evaluated at
+    function-definition time. Each test then shelled out to the real
+    qmd binary (~40s/test on systems where qmd is on PATH).
+    """
+    from lies.query import synthesize_answer
+    from lies.query.synthesizer import retrieve_pages
+    from lies.query.synthesizer import set_qmd_search as direct_set_qmd_search
+
+    sentinel_calls: list[tuple[str, object, object, object]] = []
+
+    def sentinel(_cwd: object, _question: object, _limit: object) -> list[dict[str, object]]:
+        sentinel_calls.append(("sentinel", _cwd, _question, _limit))
+        return [{"path": "concepts/alpha.md", "score": 0.9}]
+
+    direct_set_qmd_search(sentinel)
+    try:
+        # Both functions honor the rebind when no kwarg is supplied.
+        retrieve_pages("what is alpha?", orch.wiki)
+        assert len(sentinel_calls) == 1
+        synthesize_answer("what is alpha?", orch.wiki)
+        assert len(sentinel_calls) == 2
+    finally:
+        # Restore the real binary so other tests aren't broken.
+        direct_set_qmd_search(qmd_query)
+
+
+def test_set_qmd_search_propagates_through_orchestrator(
+    orch: Orchestrator,
+) -> None:
+    """`run_query` honors the indirection even though it doesn't pass
+    the kwarg explicitly to ``retrieve_pages``.
+    """
+    from lies.query.synthesizer import set_qmd_search as direct_set_qmd_search
+
+    called: list[str] = []
+
+    def fake(*_a: object, **_kw: object) -> list[dict[str, object]]:
+        called.append("fake")
+        return [{"path": "concepts/alpha.md", "score": 0.9}]
+
+    direct_set_qmd_search(fake)
+    try:
+        with mock.patch.object(
+            type(orch._query_synthesizer_agent),
+            "run_sync",
+            return_value=mock.Mock(output=_answer()),
+        ):
+            orch.run_query("what is alpha?")
+    finally:
+        direct_set_qmd_search(qmd_query)
+
+    assert called == ["fake"]
 
 
 def test_run_query_passes_full_page_bodies_not_excerpts(orch: Orchestrator) -> None:
