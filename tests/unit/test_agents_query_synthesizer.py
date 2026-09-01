@@ -49,5 +49,9 @@ def test_build_query_prompt_includes_the_question() -> None:
 def test_build_query_prompt_survives_missing_deps() -> None:
     ctx = RunContext(deps=None, model=TestModel(), usage=None, prompt="")
     rendered = _build_query_prompt(ctx)
-    assert "--- " not in rendered
+    # The static prompt must still render, and the corpus-rendering
+    # function must NOT have appended a page (no question, no `--- wiki/...
+    # ---` corpus block — the static prompt references that pattern as an
+    # example but does not itself emit a page separator).
+    assert "Question:" not in rendered
     assert rendered.strip() != ""

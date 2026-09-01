@@ -40,9 +40,12 @@ class SynthesizedMcpAnswer(BaseModel):
     """Structured answer returned by the ``query`` tool.
 
     A 1:1 slice of :class:`lies.query.models.SynthesizedAnswer` for
-    FastMCP serialization — only ``page_links`` is dropped (raw wiki
-    reads are available via the ``wiki://`` resources if the LLM wants
-    them).
+    FastMCP serialization — only ``page_links`` and ``should_file``
+    are dropped. ``page_links`` is redundant with ``citations`` plus
+    the answer body's own links; raw wiki reads are still available via
+    the ``wiki://`` resources if the LLM wants them. ``should_file``
+    is not yet consumed by any MCP caller; F3 will add it back when
+    the file-back loop lands.
     """
 
     answer: str

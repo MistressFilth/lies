@@ -46,9 +46,15 @@ Read each page carefully. Synthesize a markdown answer that:
    Set `should_file=False` for one-off factual lookups.
 
 Return a `QueryAnswer` with:
-- `answer`: the markdown body
-- `citations`: the wiki-relative paths you cited
-- `should_file`: True/False as above
+- **`answer`**: the markdown body
+- **`citations`**: data-root-relative POSIX paths matching the keys
+  shown in the corpus below (`--- wiki/concepts/alpha.md ---` etc.).
+  **Keep the `wiki/` prefix.** The `[name](path)` link inside the
+  answer body must use the **same path verbatim** — the orchestrator
+  drops citations whose path does not match a retrieved page key, and
+  the resulting answer body's link will then point to a non-existent
+  page.
+- **`should_file`**: True/False as above
 """
 
 
