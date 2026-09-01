@@ -1134,10 +1134,14 @@ class Orchestrator:
         """
         import logging
 
-        page_texts = {
-            page.rel_path: (self.wiki.data_root / page.rel_path).read_text(encoding="utf-8")
-            for page in pages
-        }
+        page_texts: dict[str, str] = {}
+        for page in pages:
+            try:
+                page_texts[page.rel_path] = (self.wiki.data_root / page.rel_path).read_text(
+                    encoding="utf-8"
+                )
+            except OSError, UnicodeDecodeError:
+                continue
 
         deps = QueryDeps(question=question, page_texts=page_texts)
         try:
