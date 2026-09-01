@@ -2,6 +2,10 @@
 
 Source of truth for LLM agents working in the `lies` repository.
 
+## Local-only Memory Files
+
+@AGENTS.local.md
+
 ## Pre-PR checklist
 
 Before opening or merging a PR, the agent MUST:
