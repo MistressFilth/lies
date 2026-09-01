@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import subprocess
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -14,7 +15,7 @@ from pydantic_ai.models import Model
 from lies.agents.indexer import indexer_agent
 from lies.agents.linter import LintFinding, LintReport, linter_agent
 from lies.agents.page_writer import page_writer_agent
-from lies.agents.query_synthesizer import query_synthesizer_agent
+from lies.agents.query_synthesizer import QueryAnswer, QueryDeps, query_synthesizer_agent
 from lies.agents.repair import RepairAgentDeps, repair_agent
 from lies.agents.repair_models import RepairPlan, RepairReceipt
 from lies.agents.repair_validation import ValidatedRepairPlan, validate_plan
@@ -40,7 +41,13 @@ from lies.memory.retry import EnrichmentQueue
 from lies.memory.service import WikiMemoryService
 from lies.memory.tools import WikiMemoryDeps, register_read_tools
 from lies.qmd import QmdCapability
-from lies.query import SynthesizedAnswer, synthesize_answer
+from lies.query import (
+    PageRead,
+    SynthesizedAnswer,
+    build_answer_from_pages,
+    retrieve_pages,
+    synthesize_answer,
+)
 from lies.schema import load_schema
 from lies.wiki.git import CommitError, atomic_commit
 from lies.wiki.wiki import Wiki
@@ -695,6 +702,9 @@ class Orchestrator:
         self._enricher = enricher_agent(model=self.models["enricher"])
         self._repair_agent = repair_agent(model=self.models["repair"])
         self._linter_agent = linter_agent(model=self.models["linter"])
+        self._query_synthesizer_agent = query_synthesizer_agent(
+            model=self.models["query_synthesizer"]
+        )
         register_read_tools(self._agent)
 
     def run(self, command: str) -> str:
@@ -1057,17 +1067,107 @@ class Orchestrator:
         return f"ingested {source}"
 
     def run_query(self, question: str) -> SynthesizedAnswer:
-        """Answer ``question`` using the wiki with the qmd→index fallback.
+        """Answer ``question`` using the wiki, synthesized by the LLM.
 
-        Tries ``qmd query`` first. When qmd is unavailable, returns no
-        results, or fails for any reason, falls back to reading the
-        top-N pages referenced by ``wiki/index.md``.
+        Retrieval runs once via :func:`retrieve_pages` (qmd, falling
+        back to ``wiki/index.md``), then ``query_synthesizer_agent``
+        writes the answer from the full text of those pages. If the
+        agent fails for any reason, the deterministic extractive
+        synthesizer produces the answer instead and ``synthesis_used``
+        is False.
 
-        Deterministic and extractive: no LLM round-trip. The synthesizer
-        returns a :class:`SynthesizedAnswer` whose ``fallback_used`` and
-        ``fallback_reason`` fields describe how the answer was built.
+        The two provenance axes are independent: ``fallback_used``
+        reports retrieval, ``synthesis_used`` reports synthesis.
         """
-        return synthesize_answer(question, self.wiki)
+        if not question or not question.strip():
+            return synthesize_answer(question, self.wiki)
+
+        pages, fallback_reason = retrieve_pages(question, self.wiki)
+
+        # Nothing to synthesize: don't spend a model call on an empty wiki.
+        # ``synthesis_reason="no pages retrieved"`` surfaces the bypass to
+        # the CLI/MCP so the user sees the same "LLM synthesis unavailable"
+        # note they'd see on an agent failure.
+        if not pages:
+            extractive = build_answer_from_pages(question, pages, fallback_reason)
+            return replace(
+                extractive,
+                synthesis_used=False,
+                synthesis_reason="no pages retrieved",
+            )
+
+        output, synthesis_reason = self._call_query_synthesizer(question, pages)
+        if output is None:
+            extractive = build_answer_from_pages(question, pages, fallback_reason)
+            return replace(
+                extractive,
+                synthesis_used=False,
+                synthesis_reason=synthesis_reason,
+            )
+
+        retrieved = {page.rel_path for page in pages}
+        kept = [c for c in output.citations if c in retrieved]
+        dropped = [c for c in output.citations if c not in retrieved]
+        if dropped:
+            synthesis_reason = (
+                f"dropped {len(dropped)} unretrieved citation(s): {', '.join(dropped)}"
+            )
+
+        return SynthesizedAnswer(
+            answer=output.answer,
+            citations=kept,
+            pages_read=[page.rel_path for page in pages],
+            fallback_used=bool(fallback_reason),
+            fallback_reason=fallback_reason,
+            page_links=[f"[{page.title}]({page.rel_path})" for page in pages],
+            synthesis_used=True,
+            synthesis_reason=synthesis_reason,
+            should_file=output.should_file,
+        )
+
+    def _call_query_synthesizer(
+        self, question: str, pages: list[PageRead]
+    ) -> tuple[QueryAnswer | None, str]:
+        """Invoke the query-synthesizer sub-agent over ``pages``.
+
+        Reads each retrieved page's FULL body — not the 400-char
+        excerpt on ``PageRead`` — because the agent's prompt requires
+        verbatim quotation and disagreement-surfacing, neither of which
+        survives truncation.
+
+        ``rel_path`` is ``data_root``-relative (it carries the ``wiki/``
+        prefix), so it joins onto ``self.wiki.data_root``. Joining onto
+        ``wiki_dir`` would silently produce ``wiki/wiki/...`` and read
+        nothing.
+
+        Returns ``(output, "")`` on success and ``(None, reason)`` on
+        any failure, where ``reason`` is ``"<ExcType>: <msg>"``. One
+        attempt, no retry: the extractive path is the safety net and a
+        query is cheap for the user to re-run. Mirrors
+        :meth:`_call_linter`.
+        """
+        import logging
+
+        page_texts: dict[str, str] = {}
+        for page in pages:
+            try:
+                page_texts[page.rel_path] = (self.wiki.data_root / page.rel_path).read_text(
+                    encoding="utf-8"
+                )
+            except OSError, UnicodeDecodeError:
+                continue
+
+        deps = QueryDeps(question=question, page_texts=page_texts)
+        try:
+            result = self._query_synthesizer_agent.run_sync(question, deps=deps)
+        except Exception as exc:  # noqa: BLE001 - broad catch; extractive is the safety net
+            logging.getLogger(__name__).warning(
+                "query_synthesizer_agent failed; falling back to extractive: %s: %s",
+                type(exc).__name__,
+                exc,
+            )
+            return None, f"{type(exc).__name__}: {exc}"
+        return result.output, ""
 
     def run_lint(
         self,

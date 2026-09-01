@@ -262,6 +262,32 @@ def test_query_propagates_fallback_reason(
     assert result.fallback_reason == "qmd_unavailable"
 
 
+def test_query_tool_reports_synthesis_provenance(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The MCP query tool surfaces both provenance axes."""
+    from unittest import mock
+
+    from lies.mcp import server
+    from lies.query.models import SynthesizedAnswer
+
+    answer = SynthesizedAnswer(
+        answer="Alpha.",
+        citations=["wiki/concepts/alpha.md"],
+        pages_read=["wiki/concepts/alpha.md"],
+        synthesis_used=True,
+        synthesis_reason="",
+    )
+    with (
+        mock.patch.object(server, "resolve_wiki"),
+        mock.patch.object(server, "Orchestrator") as orch_cls,
+    ):
+        orch_cls.return_value.run_query.return_value = answer
+        result = query(question="what is alpha?", name="w")
+
+    assert result.synthesis_used is True
+    assert result.synthesis_reason is None
+    assert result.fallback_used is False
+
+
 # ---------------------------------------------------------------------------
 # lint — deterministic health-check
 # ---------------------------------------------------------------------------

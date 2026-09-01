@@ -350,7 +350,9 @@ CLI commands (`src/lies/cli/`):
 - `lies ingest <collection> [--source URL] [--wizard]` — bootstrap (wiki + YAML if missing) and sync. `--wizard` routes the bootstrap through `collection_author_agent`.
 - `lies sync [<collection>] [--source URL] [--wizard]` — sync one collection, or every collection in the wiki when no positional is given. Pass `--source` to bootstrap a missing YAML (single-collection mode only); `--wizard` routes the bootstrap through `collection_author_agent`.
 - `lies ingest-source <source> --collection NAME [--wizard]` — atomic single-source ingest; registers a collection YAML (required). Legacy source-only form is removed. `--wizard` routes the bootstrap through `collection_author_agent`.
-- `lies query <question>` — ask a question of the wiki.
+- `lies query <question>` — ask a question of the wiki; answers are
+  LLM-synthesized with citations over qmd-retrieved pages, falling back
+  to the previous extractive output when no model is available.
 - `lies lint [--fix]` — health-check the wiki (`--fix` applies the repair plan for safe_to_fix findings). Findings span six categories; LLM-backed categories are skipped with a `Sources` line when no model key is configured.
 - `lies mcp` / `lies mcp start` — run the MCP server on stdio.
 - `lies mcp up` / `down` / `status` — manage the detached http MCP daemon.

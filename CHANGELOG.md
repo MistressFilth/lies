@@ -33,6 +33,13 @@ All notable changes to LIES are documented here. The format follows
 - `lies.collections.bootstrap.bootstrap_collection`: idempotent YAML scaffold
   + collision refusal + wizard opt-in. New public primitive.
 - `lies.collections.bootstrap.ensure_wiki`: resolve-or-auto-init helper.
+- `synthesis_used` / `synthesis_reason` on query results, reported by
+  `lies query` and the MCP `query` tool. They describe whether the LLM
+  synthesizer or the extractive fallback wrote the answer, independently
+  of `fallback_used`, which describes retrieval.
+- `lies.query.retrieve_pages`: the shared retrieval path (qmd, falling
+  back to `wiki/index.md`) behind both the extractive synthesizer and
+  LLM synthesis. New public primitive.
 
 ### Changed
 
@@ -66,6 +73,12 @@ All notable changes to LIES are documented here. The format follows
   `Callable[[int], bool]` to `Callable[[int], Literal["alive","dead","indeterminate"]]`.
 - `AcquireResult.status` Literal gains `"indeterminate"`; populated
   fields (`holder_pid`, `holder_started_at`) unchanged.
+- `lies query` and the MCP `query` tool now synthesize answers through
+  `query_synthesizer_agent` instead of returning extractive excerpt
+  bullets. The agent reads the full text of every retrieved page, cites
+  its claims, surfaces disagreements between pages, and says what the
+  wiki does not know. When the model is unavailable the previous
+  extractive output is returned unchanged and `synthesis_used` is False.
 
 ### Removed
 

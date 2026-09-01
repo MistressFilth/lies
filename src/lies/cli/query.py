@@ -26,7 +26,7 @@ __all__ = (
 
 
 @app.command(
-    short_help="Query the wiki with qmd -> index.md fallback.",
+    short_help="Query the wiki with LLM synthesis over qmd hits (extractive fallback).",
     rich_help_panel="Querying and maintenance",
 )
 def query(
@@ -35,7 +35,7 @@ def query(
         None, "--name", envvar="LIES_WIKI_NAME", help="Wiki to query (default: $LIES_WIKI_NAME)."
     ),
 ) -> None:
-    """Query the wiki with qmd -> index.md fallback."""
+    """Query the wiki with LLM synthesis over qmd hits, with an extractive fallback."""
     from rich.console import Console
     from rich.markdown import Markdown
 
@@ -44,10 +44,21 @@ def query(
     configure_logging()
     wiki = resolve_wiki(name)
     orch = Orchestrator(wiki)
-    # Use the host-side ``run_query`` entry point so the synthesizer with
-    # qmd->index fallback runs without an LLM round-trip.
+    # Use the host-side ``run_query`` entry point so LLM synthesis runs
+    # with the qmd->index retrieval and the extractive fallback intact.
     answer = orch.run_query(question)
-    Console().print(Markdown(answer.answer))
+    console = Console()
+    console.print(Markdown(answer.answer))
+    if answer.synthesis_reason:
+        if answer.synthesis_used:
+            console.print(Markdown(f"_Note: {answer.synthesis_reason}._"))
+        else:
+            console.print(
+                Markdown(
+                    f"_Note: LLM synthesis unavailable ({answer.synthesis_reason}); "
+                    f"answered extractively._"
+                )
+            )
 
 
 @app.command(

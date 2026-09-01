@@ -39,9 +39,13 @@ mcp = FastMCP("lies")
 class SynthesizedMcpAnswer(BaseModel):
     """Structured answer returned by the ``query`` tool.
 
-    Maps from the internal ``SynthesizedAnswer`` (drops citations,
-    pages_read, page_links — those are available via the wiki://
-    resources if the LLM wants them).
+    A 1:1 slice of :class:`lies.query.models.SynthesizedAnswer` for
+    FastMCP serialization — only ``page_links`` and ``should_file``
+    are dropped. ``page_links`` is redundant with ``citations`` plus
+    the answer body's own links; raw wiki reads are still available via
+    the ``wiki://`` resources if the LLM wants them. ``should_file``
+    is not yet consumed by any MCP caller; F3 will add it back when
+    the file-back loop lands.
     """
 
     answer: str
@@ -50,6 +54,8 @@ class SynthesizedMcpAnswer(BaseModel):
     citations: list[str]
     pages_read: list[str]
     changed_pages: list[str]
+    synthesis_used: bool = False
+    synthesis_reason: str | None = None  # None when the agent answered cleanly
 
 
 # ---------------------------------------------------------------------------
@@ -181,7 +187,7 @@ def wiki_read(
 
 
 # ---------------------------------------------------------------------------
-# query — extractive answer with structured fallback metadata
+# query — synthesized answer with structured retrieval + synthesis metadata
 # ---------------------------------------------------------------------------
 
 
@@ -189,9 +195,10 @@ def wiki_read(
 def query(question: str, name: str | None = None) -> SynthesizedMcpAnswer:
     """Answer ``question`` from the wiki identified by ``name``.
 
-    Uses the qmd → index.md fallback path. The result always has
-    ``fallback_used`` and ``fallback_reason`` populated so the caller
-    can distinguish a real qmd-backed answer from a fallback.
+    Synthesizes through ``query_synthesizer_agent`` over qmd-retrieved
+    pages. ``fallback_used`` / ``fallback_reason`` report retrieval;
+    ``synthesis_used`` / ``synthesis_reason`` report whether the LLM or
+    the extractive fallback wrote the body.
     """
     wiki = resolve_wiki(name)
     orch = Orchestrator(wiki=wiki)
@@ -203,6 +210,8 @@ def query(question: str, name: str | None = None) -> SynthesizedMcpAnswer:
         citations=ans.citations,
         pages_read=ans.pages_read,
         changed_pages=ans.changed_pages,
+        synthesis_used=ans.synthesis_used,
+        synthesis_reason=ans.synthesis_reason or None,
     )
 
 

@@ -22,6 +22,19 @@ class SynthesizedAnswer:
         page_links: Full markdown link markup for each cited page
             (``[Title](path)``), suitable for direct inclusion in
             markdown output.
+        synthesis_used: True when ``query_synthesizer_agent`` produced
+            the answer body; False when the extractive fallback did.
+            Independent of ``fallback_used``, which reports retrieval.
+        synthesis_reason: A note about the synthesis, not solely a
+            failure field. Empty when the agent answered cleanly;
+            ``"dropped N unretrieved citation(s): <paths>"`` when the
+            agent answered but citations were filtered; and
+            ``"<ExcType>: <msg>"`` when the agent failed and the body
+            is the extractive fallback.
+        should_file: Carried from the agent's ``QueryAnswer``. True
+            when the agent judged the answer worth keeping as a wiki
+            page. Nothing acts on it yet; F3 (the file-back loop)
+            consumes it.
     """
 
     answer: str
@@ -31,3 +44,6 @@ class SynthesizedAnswer:
     fallback_reason: str = ""
     changed_pages: list[str] = field(default_factory=list)
     page_links: list[str] = field(default_factory=list)
+    synthesis_used: bool = False
+    synthesis_reason: str = ""
+    should_file: bool = False

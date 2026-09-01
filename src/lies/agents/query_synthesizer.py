@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from pydantic import BaseModel
 from pydantic_ai import Agent
 from pydantic_ai.models import Model
+from pydantic_ai.tools import RunContext
 
 from lies.agents.base import make_sub_agent
 
@@ -43,18 +46,75 @@ Read each page carefully. Synthesize a markdown answer that:
    Set `should_file=False` for one-off factual lookups.
 
 Return a `QueryAnswer` with:
-- `answer`: the markdown body
-- `citations`: the wiki-relative paths you cited
-- `should_file`: True/False as above
+- **`answer`**: the markdown body
+- **`citations`**: data-root-relative POSIX paths matching the keys
+  shown in the corpus below (`--- wiki/concepts/alpha.md ---` etc.).
+  **Keep the `wiki/` prefix.** The `[name](path)` link inside the
+  answer body must use the **same path verbatim** — the orchestrator
+  drops citations whose path does not match a retrieved page key, and
+  the resulting answer body's link will then point to a non-existent
+  page.
+- **`should_file`**: True/False as above
 """
+
+
+@dataclass
+class QueryDeps:
+    """Dependencies the query-synthesizer needs to answer without tool calls.
+
+    ``page_texts`` is a ``data_root``-relative POSIX path → full
+    markdown body map, collected by
+    ``Orchestrator._call_query_synthesizer``. Keys carry the ``wiki/``
+    prefix (``wiki/concepts/alpha.md``) because that is the convention
+    ``PageRead.rel_path`` and ``SynthesizedAnswer.citations`` already
+    use — the agent's returned citations must be comparable against the
+    retrieved set without translation. This deliberately differs from
+    ``LintDeps.page_texts``, which is wiki-dir-relative.
+
+    Full bodies, not excerpts: the prompt requires the agent to quote
+    the wiki verbatim and to present both sides when two pages disagree,
+    and neither is possible from a truncated excerpt.
+    """
+
+    question: str
+    page_texts: dict[str, str]
+
+
+def _build_query_prompt(ctx: RunContext[QueryDeps]) -> str:
+    """Render the question and page corpus into the system prompt.
+
+    Pydantic-ai deps are ``RunContext`` data and are NOT auto-serialized
+    into model messages, so a static ``system_prompt`` alone would leave
+    the agent unable to read any page. Mirrors
+    ``lies.agents.linter._build_linter_prompt``.
+
+    Defensive against ``ctx.deps is None`` for callers that drive the
+    agent without deps.
+    """
+    parts: list[str] = [QUERY_SYNTHESIZER_SYSTEM_PROMPT]
+    if ctx.deps is None:
+        return parts[0]
+    parts.append(f"\nQuestion: {ctx.deps.question}")
+    for path, text in ctx.deps.page_texts.items():
+        parts.append(f"\n--- {path} ---\n{text}")
+    return "\n".join(parts)
 
 
 def query_synthesizer_agent(
     model: Model | str = "anthropic:claude-opus-4-7",
-) -> Agent[None, QueryAnswer]:
-    """Construct the query-synthesizer sub-agent."""
-    return make_sub_agent(
+) -> Agent[QueryDeps, QueryAnswer]:
+    """Construct the query-synthesizer sub-agent.
+
+    Carries ``QueryDeps`` so the orchestrator can pre-supply the full
+    body of every retrieved page. ``_build_query_prompt`` is registered
+    as a ``system_prompt`` callable so that corpus is rendered into the
+    prompt at run time.
+    """
+    agent: Agent[QueryDeps, QueryAnswer] = make_sub_agent(
         model=model,
         output_type=QueryAnswer,
+        deps_type=QueryDeps,
         system_prompt=QUERY_SYNTHESIZER_SYSTEM_PROMPT,
     )
+    agent.system_prompt(_build_query_prompt)
+    return agent
