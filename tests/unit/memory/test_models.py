@@ -11,6 +11,7 @@ from lies.memory.models import (
     MemoryReceipt,
     OperationKind,
     PageCreate,
+    PageDelete,
     PageReference,
     PageUpdate,
     WikiCollectionRef,
@@ -223,3 +224,16 @@ def test_memory_plan_accepts_homogeneous_tags_custom() -> None:
         evidence=["e"],
     )
     assert {op.tag for op in plan.operations} == {"ingest"}
+
+
+def test_page_delete_carries_evidence_and_kind() -> None:
+    op = PageDelete(path="wiki/entities/postgres.md", evidence=["raw/x.md"])
+    assert op.kind == OperationKind.DELETE
+    assert op.tag == "memory"
+    assert op.path == "wiki/entities/postgres.md"
+    assert op.evidence == ["raw/x.md"]
+
+
+def test_page_delete_requires_evidence() -> None:
+    with pytest.raises(ValidationError):
+        PageDelete(path="wiki/foo.md", evidence=[])

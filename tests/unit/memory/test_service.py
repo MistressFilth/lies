@@ -10,7 +10,9 @@ import pytest
 from lies.lock_errors import WikiFlockIndeterminate
 from lies.memory.models import (
     MemoryPlan,
+    OperationKind,
     PageCreate,
+    PageDelete,
     PageUpdate,
     WikiPlanInvalid,
     WikiWriteConflict,
@@ -735,3 +737,43 @@ def test_apply_plan_log_entry_uses_op_tag(git_wiki: Wiki) -> None:
     service.apply_plan(plan)
     log_text = (git_wiki.wiki_dir / "log.md").read_text(encoding="utf-8")
     assert "ingest | create | concepts/alpha.md" in log_text, log_text
+
+
+def test_apply_plan_delete_removes_existing_page(git_wiki: Wiki) -> None:
+    """A ``PageDelete`` op removes an existing wiki page and records
+    the change in the receipt with ``OperationKind.DELETE``."""
+    target = git_wiki.wiki_dir / "concepts" / "obsolete.md"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("---\ntitle: Obsolete\ntype: concept\n---\n# Obsolete\n", encoding="utf-8")
+    _git_init(git_wiki.data_root)
+    service = WikiMemoryService(wiki=git_wiki)
+    service.register_evidence({"raw/x.md"})
+    plan = MemoryPlan(
+        operations=[
+            PageDelete(path="concepts/obsolete.md", evidence=["raw/x.md"]),
+        ],
+        rationale="page replaced",
+        evidence=["raw/x.md"],
+    )
+    receipt = service.apply_plan(plan)
+    assert not target.exists()
+    delete_refs = [r for r in receipt.changed_pages if r.path == "concepts/obsolete.md"]
+    assert delete_refs, "expected a PageReference for the deleted path"
+    assert delete_refs[0].op == OperationKind.DELETE
+
+
+def test_apply_plan_delete_no_op_when_missing(git_wiki: Wiki) -> None:
+    """A ``PageDelete`` op against a missing file is a silent no-op:
+    ``apply_plan`` records no ``PageReference`` for the path because no
+    actual change occurred (the file was already absent)."""
+    service = WikiMemoryService(wiki=git_wiki)
+    service.register_evidence({"raw/x.md"})
+    plan = MemoryPlan(
+        operations=[
+            PageDelete(path="concepts/never-existed.md", evidence=["raw/x.md"]),
+        ],
+        rationale="ensure gone",
+        evidence=["raw/x.md"],
+    )
+    receipt = service.apply_plan(plan)
+    assert not any(r.path == "concepts/never-existed.md" for r in receipt.changed_pages)

@@ -151,6 +151,7 @@ class OperationKind(str, Enum):
     CREATE = "create"
     UPDATE = "update"
     APPEND = "append"
+    DELETE = "delete"
 
 
 class _PlanOperation(BaseModel):
@@ -190,6 +191,12 @@ class EvidenceAppend(_PlanOperation):
     expected_sha256: str = Field(min_length=1)
     content: str
     kind: Literal[OperationKind.APPEND] = OperationKind.APPEND
+
+
+class PageDelete(_PlanOperation):
+    """Remove an existing wiki page. No-op if the page does not exist."""
+
+    kind: Literal[OperationKind.DELETE] = OperationKind.DELETE
 
 
 class MemoryPlan(BaseModel):

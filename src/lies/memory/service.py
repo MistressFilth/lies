@@ -36,6 +36,7 @@ from lies.memory.models import (
     MemoryReceipt,
     OperationKind,
     PageCreate,
+    PageDelete,
     PageReference,
     PageUpdate,
     WikiCollectionRef,
@@ -342,7 +343,7 @@ class WikiMemoryService:
             page_type = _page_type_from_dir(resolved.parent.name)
             if not is_index:
                 validate_page_type(page_type)
-            if not isinstance(op, (PageCreate, PageUpdate, EvidenceAppend)):
+            if not isinstance(op, (PageCreate, PageUpdate, EvidenceAppend, PageDelete)):
                 raise WikiPlanInvalid(f"unsupported operation: {op!r}", path=op.path)
             if not is_index and isinstance(op, (PageCreate, PageUpdate)):
                 try:
@@ -497,6 +498,16 @@ class WikiMemoryService:
                 base = "" if existing is None else existing
                 resolved.write_text(base.rstrip() + "\n\n" + op.content, encoding="utf-8")
                 kind = OperationKind.APPEND
+            elif isinstance(op, PageDelete):
+                if not resolved.exists():
+                    # No-op: file already absent. Skip the PageReference
+                    # so the receipt reflects that no change occurred at
+                    # this op's target. ``rebuild_index`` and
+                    # ``append_log_entry`` (below) still run for the rest
+                    # of the plan.
+                    continue
+                resolved.unlink()
+                kind = OperationKind.DELETE
             else:
                 raise WikiPlanInvalid(f"unsupported operation: {op!r}")
             changed.append(
