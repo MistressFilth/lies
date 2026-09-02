@@ -61,18 +61,7 @@ app.add_typer(memory_app, name="memory", rich_help_panel="Querying and maintenan
 app.add_typer(collections_app, name="collections", rich_help_panel="Wiki management")
 
 
-# The REPL callback -- invoked when ``lies`` is run with no subcommand.
-# Lives in __init__.py so the bare ``lies`` command (no subcommand) is the REPL.
-#
-# Note: the top-level ``--name`` option was removed. It was registered on this
-# callback but never threaded into subcommands that take their own ``--name``
-# (e.g. ``config``, ``lint``, ``collections show``); the operator typed
-# ``lies --name <wiki> <subcommand>`` and silently got the wrong wiki. The
-# subcommand ``--name`` is the only path. After ``consolidate-wikis`` lands,
-# ``--name`` is replaced by ``--project`` at the daemon level and the
-# top-level-vs-subcommand distinction dissolves. The REPL reads
-# ``LIES_WIKI_NAME`` directly via ``get_wiki_name()`` when no subcommand
-# is invoked; no top-level option is needed.
+# REPL callback: invoked when ``lies`` is run with no subcommand.
 @app.callback(invoke_without_command=True)
 def main(
     ctx: typer.Context,

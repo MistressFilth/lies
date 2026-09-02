@@ -95,14 +95,8 @@ All notable changes to LIES are documented here. The format follows
   operator-actionable message ("Run `lies flock <name> force-repair`").
   Closes the M2 spec/implementation gap from PR #29's whole-branch
   review.
-- Top-level `--name` removed. The flag was registered on the REPL
-  callback but never threaded into subcommands that take their own
-  `--name` (e.g. `config`, `lint`, `collections show`); the operator
-  typed `lies --name <wiki> <subcommand>` and silently got the wrong
-  wiki. The subcommand `--name` is the only path; the REPL now reads
-  the wiki name from `$LIES_WIKI_NAME` via `get_wiki_name()`. After
-  `consolidate-wikis` lands, `--name` is replaced by `--project` at
-  the daemon level and the top-level/subcommand distinction dissolves.
+- Top-level `--name` removed. Subcommand `--name` is the only path;
+  the REPL reads the wiki from `$LIES_WIKI_NAME` via `get_wiki_name()`.
 
 ## [0.11.1] - 2026-08-24
 
