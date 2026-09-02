@@ -61,17 +61,10 @@ app.add_typer(memory_app, name="memory", rich_help_panel="Querying and maintenan
 app.add_typer(collections_app, name="collections", rich_help_panel="Wiki management")
 
 
-# The REPL callback -- invoked when ``lies`` is run with no subcommand.
-# Lives in __init__.py so the bare ``lies`` command (no subcommand) is the REPL.
+# REPL callback: invoked when ``lies`` is run with no subcommand.
 @app.callback(invoke_without_command=True)
 def main(
     ctx: typer.Context,
-    name: str | None = typer.Option(
-        None,
-        "--name",
-        envvar="LIES_WIKI_NAME",
-        help="Wiki for REPL commands (default: $LIES_WIKI_NAME).",
-    ),
     no_memory: bool = typer.Option(
         False,
         "--no-memory",
@@ -90,7 +83,7 @@ def main(
     from lies.wiki.git import atomic_commit
 
     configure_logging()
-    wiki = _resolve_wiki(name)
+    wiki = _resolve_wiki(get_wiki_name())
     orch = _Orchestrator(wiki)
     console = Console()
     console.print("[bold]LIES REPL[/bold] -- type /help for commands, /exit to leave.")
@@ -151,6 +144,7 @@ from lies.cli._helpers import (
     WikiLockBusy,
     acquire_create_lock,
 )
+from lies.config import get_wiki_name
 
 # Lazy re-exports for test compat. Several tests do
 # ``monkeypatch.setattr("lies.cli.Orchestrator", ...)`` /

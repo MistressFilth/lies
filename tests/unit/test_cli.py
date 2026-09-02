@@ -111,14 +111,13 @@ def test_repl_no_memory_uses_plain_orchestrator_run() -> None:
 
 
 def test_repl_respects_wiki_name_env(monkeypatch) -> None:
-    """The REPL must resolve `--name` from the CLI flag and pass a Wiki to the orchestrator."""
-    name = "from-flag"
+    """The REPL must resolve the wiki from $LIES_WIKI_NAME."""
+    name = "from-env"
     monkeypatch.setenv("LIES_WIKI_NAME", name)
     Wiki.data_root_for(name).mkdir(parents=True, exist_ok=True)
     with patch("lies.cli.Orchestrator") as MockOrch:
-        result = runner.invoke(app, ["--name", name], input="/exit\n")
+        result = runner.invoke(app, [], input="/exit\n")
     assert result.exit_code == 0
-    # The REPL constructs the orchestrator positionally: Orchestrator(wiki).
     positional, _ = MockOrch.call_args
     assert positional[0].name == name
 
