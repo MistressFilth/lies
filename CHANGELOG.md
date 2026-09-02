@@ -40,6 +40,15 @@ All notable changes to LIES are documented here. The format follows
 - `lies.query.retrieve_pages`: the shared retrieval path (qmd, falling
   back to `wiki/index.md`) behind both the extractive synthesizer and
   LLM synthesis. New public primitive.
+- F2: single-source ingest (`lies ingest-source`) now runs the LLM
+  round-trip through `source_reader_agent` and `page_writer_agent`;
+  pages land at `wiki/<collection>/<file>` via
+  `WikiMemoryService.apply_plan`. New `--no-llm` flag preserves the
+  pre-F2 `sync_collection` shim behavior for operators who prefer
+  bulk-scrape semantics. New `IngestQuarantined` /
+  `IngestSourceUnreachable` errors mirror the existing
+  `WikiMemoryError` rendering. `MemoryPlan` gains a `PageDelete`
+  variant and an optional `tag` field for `log.md` attribution.
 
 ### Changed
 
