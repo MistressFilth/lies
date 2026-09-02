@@ -180,13 +180,14 @@ def read_recent(
     return rows[-limit:]
 
 
-_RATIONALE_RE = re.compile(r"^memory:\s*(.*?)\s*$", re.MULTILINE)
+_RATIONALE_RE = re.compile(r"^[a-z]+:\s*(.*?)\s*$", re.MULTILINE)
 
 
 def _git_log_memory_commits(data_root: Path) -> list[tuple[str, str, str]]:
-    """Return list of (sha, iso_ts, rationale) for `memory:` commits.
+    """Return list of (sha, iso_ts, rationale) for memory-system commits.
 
-    Uses `git log --grep='^memory:'` to filter; ignores non-matching commits.
+    Uses `git log -E --grep='^[a-z]+:'` to filter; ignores non-matching commits.
+    Accepts any lowercase tag (`memory:`, `ingest:`, future `synthesis:`, ...).
     """
     out = subprocess.run(
         [
@@ -194,7 +195,8 @@ def _git_log_memory_commits(data_root: Path) -> list[tuple[str, str, str]]:
             "-C",
             str(data_root),
             "log",
-            "--grep=^memory:",
+            "-E",
+            "--grep=^[a-z]+:",
             "--format=%H%x00%aI%x00%s",
         ],
         check=False,
