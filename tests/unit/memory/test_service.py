@@ -777,3 +777,43 @@ def test_apply_plan_delete_no_op_when_missing(git_wiki: Wiki) -> None:
     )
     receipt = service.apply_plan(plan)
     assert not any(r.path == "concepts/never-existed.md" for r in receipt.changed_pages)
+
+
+def test_apply_plan_delete_refuses_index_md(git_wiki: Wiki) -> None:
+    """A ``PageDelete`` op targeting ``wiki/index.md`` is rejected: the
+    catalog is rebuilt from disk state by the service, never literally
+    written or removed, so a delete op would silently destroy the wiki's
+    navigation surface."""
+    service = WikiMemoryService(wiki=git_wiki)
+    service.register_evidence({"raw/x.md"})
+    plan = MemoryPlan(
+        operations=[
+            PageDelete(path="wiki/index.md", evidence=["raw/x.md"]),
+        ],
+        rationale="attempt to drop catalog",
+        evidence=["raw/x.md"],
+    )
+    with pytest.raises(WikiPlanInvalid):
+        service.apply_plan(plan)
+    assert (git_wiki.wiki_dir / "index.md").exists(), "index.md must be intact"
+
+
+def test_apply_plan_delete_refuses_log_md(git_wiki: Wiki) -> None:
+    """A ``PageDelete`` op targeting ``wiki/log.md`` is rejected: the
+    log is append-only, so a delete op would silently destroy the
+    wiki's audit trail."""
+    log = git_wiki.wiki_dir / "log.md"
+    log.write_text("# Log\n- entry\n", encoding="utf-8")
+    _git_init(git_wiki.data_root)
+    service = WikiMemoryService(wiki=git_wiki)
+    service.register_evidence({"raw/x.md"})
+    plan = MemoryPlan(
+        operations=[
+            PageDelete(path="wiki/log.md", evidence=["raw/x.md"]),
+        ],
+        rationale="attempt to drop log",
+        evidence=["raw/x.md"],
+    )
+    with pytest.raises(WikiPlanInvalid):
+        service.apply_plan(plan)
+    assert log.exists(), "log.md must be intact"

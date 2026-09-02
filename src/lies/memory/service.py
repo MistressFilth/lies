@@ -499,6 +499,8 @@ class WikiMemoryService:
                 resolved.write_text(base.rstrip() + "\n\n" + op.content, encoding="utf-8")
                 kind = OperationKind.APPEND
             elif isinstance(op, PageDelete):
+                if op.path in ("wiki/index.md", "wiki/log.md"):
+                    raise WikiPlanInvalid(f"cannot delete {op.path}: {op.path} is a system file")
                 if not resolved.exists():
                     # No-op: file already absent. Skip the PageReference
                     # so the receipt reflects that no change occurred at
