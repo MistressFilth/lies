@@ -95,6 +95,8 @@ All notable changes to LIES are documented here. The format follows
   operator-actionable message ("Run `lies flock <name> force-repair`").
   Closes the M2 spec/implementation gap from PR #29's whole-branch
   review.
+- Top-level `--name` removed. Subcommand `--name` is the only path;
+  the REPL reads the wiki from `$LIES_WIKI_NAME` via `get_wiki_name()`.
 
 ## [0.11.1] - 2026-08-24
 
