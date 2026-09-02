@@ -1191,3 +1191,132 @@ def test_translate_page_diffs_to_plan_empty_returns_noop(tmp_path: Path) -> None
         source_path="raw/articles/x.md",
     )
     assert plan.is_noop()
+
+
+def test_validate_plan_read_matches_apply_for_prefixed_path(git_wiki: Wiki) -> None:
+    """``validate_plan`` and ``apply_plan`` must read the same file for
+    a prefixed UPDATE path.
+
+    Regression for the whole-branch review finding: ``validate_plan``
+    passed the prefixed ``op.path`` (``"wiki/<col>/<file>.md"``)
+    straight to ``_read_page``, which joined it onto ``wiki.wiki_dir``
+    and resolved to ``<data_root>/wiki/wiki/<rest>`` (which does not
+    exist). ``_read_page`` returned ``None``, ``actual = ""``, and the
+    validate-side hash comparison silently agreed with whatever
+    ``expected_sha256`` carried — including the wrong value produced
+    by the orchestrator's ``_sha_lookup`` when *that* helper also
+    failed to strip the prefix. The two callers always computed the
+    same (wrong) hash, so the bug was invisible until a real on-disk
+    file existed and the orchestrator's broken ``_sha_lookup`` was
+    later fixed in isolation.
+
+    The fix in ``validate_plan`` strips the ``wiki/`` prefix (the same
+    strip ``_apply_operations`` does) before reading, so both callers
+    now read the actual on-disk content. With the page pre-staged at
+    the correct location and a correct ``expected_sha256`` provided,
+    ``validate_plan`` succeeds *and* ``apply_plan`` succeeds.
+    """
+    body = "---\ntitle: Alpha\ntype: concept\n---\n# Alpha\n\nbody\n"
+    target = git_wiki.wiki_dir / "article" / "concepts" / "alpha.md"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(body, encoding="utf-8")
+    _git_init(git_wiki.data_root)
+    service = WikiMemoryService(wiki=git_wiki)
+    service.register_evidence({"raw/x.md"})
+    plan = MemoryPlan(
+        operations=[
+            PageUpdate(
+                path="wiki/article/concepts/alpha.md",  # prefixed
+                expected_sha256=_sha(body),
+                content=body + "\n## New section\n",
+                evidence=["raw/x.md"],
+            )
+        ],
+        rationale="update via prefixed path",
+        evidence=["raw/x.md"],
+    )
+    # Before the fix, ``validate_plan`` saw ``actual = ""`` because the
+    # read targeted the doubled-prefix path; the assertion below would
+    # have raised ``WikiWriteConflict``. After the fix the read targets
+    # the real file and matches ``expected_sha256``.
+    service.validate_plan(plan)
+    receipt = service.apply_plan(plan)
+    assert receipt.changed_pages
+    assert "## New section" in target.read_text(encoding="utf-8")
+
+
+def test_apply_plan_system_file_guard_catches_doubled_prefix(git_wiki: Wiki) -> None:
+    """A ``PageCreate`` on ``"wiki/wiki/log.md"`` must be rejected by
+    the system-file guard, not silently create a shadow log file.
+
+    Regression for the whole-branch review finding: after a single
+    ``wiki/`` strip in ``_apply_operations`` the guard's
+    bare-name + resolved-equality checks both missed a
+    ``"wiki/wiki/log.md"`` input. ``resolved`` pointed at
+    ``<data_root>/wiki/wiki/log.md`` (the shadow), not the real
+    ``log_path``. The op slipped past the guard, the
+    ``mkdir(parents=True, exist_ok=True)`` created the ``wiki/wiki/``
+    tree, and the write landed outside ``append_log_entry``'s
+    awareness — every subsequent ``append_log_entry`` would write to
+    the real log while the agent's create persisted in the shadow.
+
+    The fix normalizes ``op.path`` by stripping ``wiki/`` defensively
+    twice before the guard, so ``resolved`` collapses back to
+    ``log_path`` and the guard fires.
+    """
+    log = git_wiki.wiki_dir / "log.md"
+    log.write_text("# Log\n- entry\n", encoding="utf-8")
+    _git_init(git_wiki.data_root)
+    service = WikiMemoryService(wiki=git_wiki)
+    service.register_evidence({"raw/x.md"})
+    plan = MemoryPlan(
+        operations=[
+            PageCreate(
+                path="wiki/wiki/log.md",  # doubled prefix
+                content="shadow",
+                evidence=["raw/x.md"],
+            ),
+        ],
+        rationale="attempt to create shadow log via doubled prefix",
+        evidence=["raw/x.md"],
+    )
+    with pytest.raises(WikiPlanInvalid, match="system file"):
+        service.apply_plan(plan)
+    # The real log must be intact.
+    assert log.read_text(encoding="utf-8") == "# Log\n- entry\n", "log.md must be intact"
+    # The shadow path must NOT exist (the doubled-prefix write must
+    # have been rejected before the ``mkdir(parents=True)`` call).
+    shadow = git_wiki.wiki_dir / "wiki" / "log.md"
+    assert not shadow.exists(), f"shadow log at {shadow} must not exist after guard rejection"
+
+
+def test_apply_plan_system_file_guard_catches_doubled_prefix_index(git_wiki: Wiki) -> None:
+    """Same bypass check for ``"wiki/wiki/index.md"``.
+
+    The ``PageCreate`` form is used here because ``PageUpdate`` on
+    ``index_path`` is the established carve-out for the repair agent's
+    ``UpdateIndex`` op (see ``_apply_operations`` docstring). The
+    doubled-prefix input is a ``PageCreate`` (catalog overwrite) and
+    must be rejected before the guard's carve-out would otherwise let
+    it through.
+    """
+    index = git_wiki.wiki_dir / "index.md"
+    original = index.read_text(encoding="utf-8")
+    service = WikiMemoryService(wiki=git_wiki)
+    service.register_evidence({"raw/x.md"})
+    plan = MemoryPlan(
+        operations=[
+            PageCreate(
+                path="wiki/wiki/index.md",  # doubled prefix
+                content="shadow",
+                evidence=["raw/x.md"],
+            ),
+        ],
+        rationale="attempt to create shadow index via doubled prefix",
+        evidence=["raw/x.md"],
+    )
+    with pytest.raises(WikiPlanInvalid, match="system file"):
+        service.apply_plan(plan)
+    assert index.read_text(encoding="utf-8") == original, "index.md must be intact"
+    shadow = git_wiki.wiki_dir / "wiki" / "index.md"
+    assert not shadow.exists(), f"shadow index at {shadow} must not exist after guard rejection"

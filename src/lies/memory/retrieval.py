@@ -64,7 +64,7 @@ def _read_page_content(wiki: Wiki, path: str) -> str:
         return ""
     try:
         return resolved.read_text(encoding="utf-8")
-    except OSError, UnicodeDecodeError:
+    except (OSError, UnicodeDecodeError):
         return ""
 
 

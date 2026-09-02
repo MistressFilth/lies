@@ -50,9 +50,9 @@ app = typer.Typer(
 
 # Step 2: import the sub-app objects (cheap -- just typer.Typer instances)
 # and wire them under the root app.
-from lies.cli.collections import collections_app
-from lies.cli.memory import memory_app
-from lies.cli.operator import flock_app, mcp_app, providers_app
+from lies.cli.collections import collections_app  # noqa: E402
+from lies.cli.memory import memory_app  # noqa: E402
+from lies.cli.operator import flock_app, mcp_app, providers_app  # noqa: E402
 
 app.add_typer(mcp_app, name="mcp", rich_help_panel="Operator tooling")
 app.add_typer(flock_app, name="flock", rich_help_panel="Operator tooling")
@@ -90,7 +90,7 @@ def main(
     while True:
         try:
             line = console.input("lies> ")
-        except EOFError, KeyboardInterrupt:
+        except (EOFError, KeyboardInterrupt):
             break
         line = line.strip()
         if not line:
@@ -131,20 +131,20 @@ def main(
 # ``app`` to already exist (which it does from step 1), and Python's import
 # machinery returns the partially-loaded ``lies.cli`` namespace rather than
 # re-executing this __init__.py.
-from lies import xdg
-from lies.cli import _core, ingestion, operator, query  # noqa: F401
+from lies import xdg  # noqa: E402
+from lies.cli import _core, ingestion, operator, query  # noqa: E402,F401
 
 # Re-exports for test compat. ``test_cli_flock.py`` monkeypatches
 # ``cli_module.acquire_create_lock``; ``test_cli_lint_force_repair.py``
 # reaches ``WikiFlockUnrepairable`` / ``WikiLockBusy`` through the same
 # ``import lies.cli as cli_module`` alias. These are cheap so they're
 # re-exported directly.
-from lies.cli._helpers import (
+from lies.cli._helpers import (  # noqa: E402
     WikiFlockUnrepairable,
     WikiLockBusy,
     acquire_create_lock,
 )
-from lies.config import get_wiki_name
+from lies.config import get_wiki_name  # noqa: E402
 
 # Lazy re-exports for test compat. Several tests do
 # ``monkeypatch.setattr("lies.cli.Orchestrator", ...)`` /

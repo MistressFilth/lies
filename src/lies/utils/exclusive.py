@@ -222,7 +222,7 @@ def _reap_if_stale(  # type: ignore[no-untyped-def]
         return False
     try:
         stored_pid = int(pid_path.read_text(encoding="utf-8").strip())
-    except OSError, ValueError:
+    except (OSError, ValueError):
         _log.warning("could not parse pid file %s", pid_path)
         return False
 
@@ -245,7 +245,7 @@ def _reap_if_stale(  # type: ignore[no-untyped-def]
         try:
             payload = json.loads(state_json_path.read_text(encoding="utf-8"))
             started_at = float(payload.get("started_at", 0.0))
-        except OSError, ValueError, json.JSONDecodeError:
+        except (OSError, ValueError, json.JSONDecodeError):
             started_at = 0.0
     if _heartbeat_fresh(started_at, max_age_s):
         return False  # fresh heartbeat; treat as busy

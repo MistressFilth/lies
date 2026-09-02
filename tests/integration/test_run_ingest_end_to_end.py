@@ -440,6 +440,158 @@ def test_run_ingest_unreachable_source_raises(
         o.run_ingest("/definitely/does/not/exist.md")
 
 
+def test_run_ingest_unreachable_source_discards_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """An unreachable source must drop the snapshot, not leak it.
+
+    Regression for the whole-branch review finding: ``_materialize_source``
+    raises ``IngestSourceUnreachable`` AFTER the orchestrator took a
+    stash snapshot of pre-existing dirty state. Before the fix the
+    exception bypassed both ``except IngestQuarantined`` (discard) and
+    ``except BaseException`` (restore) arms and propagated raw,
+    leaving the stash entry in ``git stash list`` until a future
+    ``git stash clear`` or another ``run_ingest`` overwrote it.
+
+    The test pre-stages a tracked file with an uncommitted edit so
+    ``git stash push`` records a real entry. After the unreachable
+    raise, ``git stash list`` must be empty — the snapshot was
+    discarded on the unreachable path.
+    """
+    subprocess.run(
+        ["git", "init", "--initial-branch=main", str(tmp_path)],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Test"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+    # Seed an initial commit so ``git stash push`` is willing to run.
+    (tmp_path / "README").write_text("seed", encoding="utf-8")
+    subprocess.run(
+        ["git", "add", "."],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "commit", "-m", "seed"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+    # Pre-existing dirty edit so the snapshot records a real entry.
+    (tmp_path / "README").write_text("seed with edit", encoding="utf-8")
+    wiki = _make_wiki(tmp_path)
+    o = Orchestrator(wiki, models=models_for_tests("test"))
+    monkeypatch.setattr(
+        "lies.orchestrator.source_reader_agent",
+        lambda model: (_ for _ in ()).throw(AssertionError("source reader must not be called")),
+    )
+    monkeypatch.setattr(
+        "lies.orchestrator.page_writer_agent",
+        lambda model: (_ for _ in ()).throw(AssertionError("page writer must not be called")),
+    )
+    with pytest.raises(IngestSourceUnreachable):
+        o.run_ingest("/definitely/does/not/exist.md")
+    stash_list = subprocess.run(
+        ["git", "stash", "list"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert stash_list.stdout.strip() == "", (
+        f"stash entry leaked after unreachable source: {stash_list.stdout!r}"
+    )
+
+
+def test_run_ingest_update_with_wiki_prefix_sha_lookup_matches(
+    monkeypatch: pytest.MonkeyPatch,
+    wiki_copy: Path,
+) -> None:
+    """Agent UPDATE on a prefixed path: ``_sha_lookup`` must compute the
+    real on-disk hash, not ``""``.
+
+    Regression for the whole-branch review finding: ``_sha_lookup``
+    passed the prefixed path straight to ``_read_page``, which joins
+    onto ``wiki.wiki_dir``. With a ``"wiki/<col>/<file>.md"`` input
+    the lookup read ``<data_root>/wiki/wiki/<col>/<file>.md`` (which
+    does not exist), returned ``""``, and the orchestrator stamped
+    ``expected_sha256=""`` onto the ``PageUpdate``. The apply path
+    stripped the ``wiki/`` prefix and computed the real on-disk hash,
+    so ``validate_plan`` raised :class:`WikiWriteConflict` on a
+    well-formed update.
+
+    The CREATE-with-prefix sibling tests cover the on-disk write
+    landing at the correct location; this test specifically exercises
+    the UPDATE-with-prefix path that was silently broken.
+    """
+    import hashlib
+
+    wiki = _make_wiki(wiki_copy)
+    src = _make_source(wiki_copy.parent, wiki.data_root)
+
+    # Pre-stage a page at the correct on-disk location so the apply
+    # path computes a real hash and the sha lookup needs to agree.
+    # Commit the pre-staged file so the orchestrator's pre-ingest
+    # ``git stash push --include-untracked`` does not move it off
+    # disk into the stash (the sha lookup would then see ``None``
+    # and the test would fail for a non-fix reason).
+    body = "---\ntitle: Alpha\ntype: concept\n---\n# Alpha\n\nold body\n"
+    (wiki.wiki_dir / "article" / "concepts").mkdir(parents=True, exist_ok=True)
+    (wiki.wiki_dir / "article" / "concepts" / "alpha.md").write_text(body, encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=wiki_copy, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "commit", "-m", "seed alpha"], cwd=wiki_copy, check=True, capture_output=True
+    )
+    real_hash = hashlib.sha256(body.encode("utf-8")).hexdigest()
+
+    monkeypatch.setattr(
+        "lies.orchestrator.source_reader_agent",
+        lambda model: _FakeAgent(output=_fake_extraction()),
+    )
+    monkeypatch.setattr(
+        "lies.orchestrator.page_writer_agent",
+        lambda model: _FakeAgent(
+            output=[
+                PageDiff(
+                    operation=PageOperation.UPDATE,
+                    path=Path("wiki/article/concepts/alpha.md"),
+                    old_content=body,
+                    new_content=body + "\n## New section\n",
+                )
+            ]
+        ),
+    )
+    o = Orchestrator(wiki, models=models_for_tests("test"))
+    # Before the fix this raised ``WikiWriteConflict`` (``expected
+    # `` got ``<real-hash-prefix>``). After the fix the lookup matches
+    # the apply path's hash and the run completes.
+    o.run_ingest(str(src))
+
+    updated = (wiki.wiki_dir / "article" / "concepts" / "alpha.md").read_text(encoding="utf-8")
+    assert "## New section" in updated
+    # Belt-and-suspenders: the file at the doubled-prefix path still
+    # does not exist (the UPDATE rewrote the real one, not a shadow).
+    doubled = wiki.wiki_dir / "wiki" / "article" / "concepts" / "alpha.md"
+    assert not doubled.exists()
+    # Reference ``real_hash`` so the computed value is observable in
+    # the test surface; the assertion above already proves the
+    # update landed.
+    assert real_hash
+
+
 def test_run_ingest_validation_failure_refuses_index_writes(
     monkeypatch: pytest.MonkeyPatch,
     wiki_copy: Path,

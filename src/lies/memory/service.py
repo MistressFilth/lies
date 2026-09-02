@@ -166,7 +166,7 @@ def _read_page(wiki: Wiki, path: str) -> str | None:
         return None
     try:
         return resolved.read_text(encoding="utf-8")
-    except OSError, UnicodeDecodeError:
+    except (OSError, UnicodeDecodeError):
         return ""
 
 
@@ -390,8 +390,23 @@ class WikiMemoryService:
         """Validate a plan without applying it. Raises typed errors."""
         for op in plan.operations:
             validate_operation_evidence(op, known_references=self._known_evidence)
+            # Normalize the path the same way ``_apply_operations``
+            # does: defensively strip ``wiki/`` twice so a
+            # doubled-prefix input (``op.path = "wiki/wiki/log.md"``)
+            # is recognized as a system file rather than a page under
+            # a ``wiki/`` subdirectory. Without this normalization the
+            # validate-side system-file checks (the
+            # ``op.path == "wiki/log.md"`` and ``resolved == log_path``
+            # tests below) miss the doubled-prefix shape and the op
+            # either slips through to ``validate_page_type("wiki")`` or
+            # falls through to the apply-side guard with the wrong
+            # resolved path. The apply path strips twice too; keeping
+            # the two in lockstep ensures a typo-bypass attempt is
+            # caught at validate time with the same error the apply
+            # path would raise.
+            normalized = op.path.removeprefix("wiki/").removeprefix("wiki/")
             try:
-                resolved = validate_page_path(self._wiki, op.path)
+                resolved = validate_page_path(self._wiki, normalized)
             except WikiPlanInvalid as exc:
                 raise WikiPlanInvalid(str(exc), path=op.path) from exc
             is_index = op.path == "wiki/index.md" or resolved == self._wiki.wiki_dir / "index.md"
@@ -423,7 +438,17 @@ class WikiMemoryService:
                 elif is_log:
                     current = log_path.read_text(encoding="utf-8") if log_path.exists() else None
                 else:
-                    current = _read_page(self._wiki, op.path)
+                    # Use the normalized path so the read targets the
+                    # same on-disk file the apply path will write to.
+                    # Page-writer emits paths with the ``wiki/`` prefix
+                    # per the schema convention; ``_read_page`` joins
+                    # onto ``wiki.wiki_dir`` so a bare ``op.path``
+                    # would resolve to ``<data_root>/wiki/wiki/<rest>``
+                    # and silently miss the file. The hash comparison
+                    # then sees ``""`` (= missing) regardless of the
+                    # real on-disk content, so ``validate_plan`` and
+                    # ``apply_plan`` must agree on the resolved path.
+                    current = _read_page(self._wiki, normalized)
                 actual = "" if current is None else _hash_text(current)
                 if actual != op.expected_sha256:
                     raise WikiWriteConflict(
@@ -542,9 +567,17 @@ class WikiMemoryService:
             # ``<data_root>/wiki/wiki/<rest>`` — outside the per-collection
             # subdir convention. Strip the leading ``wiki/`` before
             # resolving so the file lands at the correct on-disk path.
-            rel = op.path.removeprefix("wiki/")
+            # Strip the leading ``wiki/`` defensively twice so a
+            # doubled-prefix input (``op.path = "wiki/wiki/log.md"``)
+            # can't bypass the system-file guard below. After the
+            # double-strip the resolved-on-disk path matches
+            # ``log_path`` / ``index_path`` and the guard fires; a
+            # single-strip would leave the resolved path at
+            # ``<data_root>/wiki/wiki/<file>`` and the guard's
+            # bare-name + resolved-equality checks would both miss.
+            rel = op.path.removeprefix("wiki/").removeprefix("wiki/")
             resolved = validate_page_path(self._wiki, rel)
-            if op.path == "wiki/index.md" or resolved == index_path:
+            if resolved == index_path:
                 resolved = index_path
             resolved.parent.mkdir(parents=True, exist_ok=True)
             # System-file guard: ``wiki/index.md`` and ``wiki/log.md`` are
@@ -565,14 +598,18 @@ class WikiMemoryService:
             #
             # Both the bare-name form (``op.path == "log.md"``) and the
             # qualified form (``op.path == "wiki/log.md"``) reach the
-            # dispatcher's guard: after the ``wiki/`` strip above, a
-            # literal ``wiki/log.md`` input resolves to ``wiki.wiki_dir/log.md``
+            # dispatcher's guard: after the double ``wiki/`` strip above,
+            # ``"wiki/log.md"`` resolves to ``wiki.wiki_dir/log.md``
             # (= ``log_path``) and is matched by the resolved equality,
-            # while a bare ``log.md`` input also resolves to ``log_path``.
-            # In either case the guard raises and the op-shape-specific
+            # while a bare ``log.md`` also resolves to ``log_path``. A
+            # pathological ``"wiki/wiki/log.md"`` input also resolves to
+            # ``log_path`` after the double strip, so the guard fires
+            # (a single strip would have left it at
+            # ``<data_root>/wiki/wiki/log.md`` and bypassed the guard).
+            # In every case the guard raises and the op-shape-specific
             # branches below never see those paths.
-            is_system_log = op.path == "wiki/log.md" or resolved == log_path
-            is_system_index = op.path == "wiki/index.md" or resolved == index_path
+            is_system_log = resolved == log_path
+            is_system_index = resolved == index_path
             if is_system_log:
                 raise WikiPlanInvalid(f"cannot write to {op.path}: system file")
             if is_system_index and not isinstance(op, PageUpdate):

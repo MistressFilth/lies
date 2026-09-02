@@ -176,7 +176,7 @@ def _build_lint_report(
         for page in pages:
             try:
                 text = (wiki.wiki_dir / page).read_text(encoding="utf-8")
-            except OSError, UnicodeDecodeError:
+            except (OSError, UnicodeDecodeError):
                 continue
             linked.update(_extract_local_md_links(text, page, wiki.data_root))
         orphans = sorted(pages - linked)
@@ -203,7 +203,7 @@ def _build_lint_report(
         for page in pages:
             try:
                 text = (wiki.wiki_dir / page).read_text(encoding="utf-8")
-            except OSError, UnicodeDecodeError:
+            except (OSError, UnicodeDecodeError):
                 continue
             title = _extract_frontmatter_title(text)
             if title:
@@ -222,7 +222,7 @@ def _build_lint_report(
         for page in pages:
             try:
                 text = (wiki.wiki_dir / page).read_text(encoding="utf-8")
-            except OSError, UnicodeDecodeError:
+            except (OSError, UnicodeDecodeError):
                 continue
             page_links[page] = _extract_local_md_links(text, page, wiki.data_root)
 
@@ -235,7 +235,7 @@ def _build_lint_report(
                 body = body_cache.setdefault(
                     page, _strip_frontmatter((wiki.wiki_dir / page).read_text(encoding="utf-8"))
                 )
-            except OSError, UnicodeDecodeError:
+            except (OSError, UnicodeDecodeError):
                 continue
             body_lower = body.lower()
             page_targets = page_links.get(page, set())
@@ -264,7 +264,7 @@ def _build_lint_report(
     for page in pages:
         try:
             text = (wiki.wiki_dir / page).read_text(encoding="utf-8")
-        except OSError, UnicodeDecodeError:
+        except (OSError, UnicodeDecodeError):
             continue
         for source in _extract_frontmatter_sources(text):
             resolved = (wiki.data_root / source).resolve()
@@ -285,7 +285,7 @@ def _build_lint_report(
     for page in pages:
         try:
             text = (wiki.wiki_dir / page).read_text(encoding="utf-8")
-        except OSError, UnicodeDecodeError:
+        except (OSError, UnicodeDecodeError):
             continue
         for raw_target in _extract_wikilinks(text):
             if resolver.resolve(raw_target) is None:
@@ -591,9 +591,9 @@ def _summarize_page(path: Path) -> str:
             # the ``title:`` line doesn't get reported as the first body.
             body_text = text[end + 4 :].lstrip("\n")
     lines = body_text.splitlines()
-    h1 = next((l for l in lines if l.startswith("# ")), "")
+    h1 = next((line for line in lines if line.startswith("# ")), "")
     body = next(
-        (l.strip() for l in lines if l.strip() and not l.startswith("#")),
+        (line.strip() for line in lines if line.strip() and not line.startswith("#")),
         "",
     )
     return f"{h1.removeprefix('# ').strip()} {body}".strip()
@@ -1134,6 +1134,13 @@ class Orchestrator:
         Agent failures at steps 3 or 5 call
         ``etl.quarantine.quarantine`` and raise ``IngestQuarantined``.
         Infra failures rollback and propagate the typed error.
+
+        ``IngestSourceUnreachable`` (raised at step 1 before any agent
+        work) takes the same ``discard snapshot`` path as
+        :class:`IngestQuarantined` — the snapshot was taken, but no
+        wiki writes happened, so the stash entry can be dropped rather
+        than restored. Without this branch the stash would leak until
+        the next ``git stash clear``.
         """
         from lies.etl.sync_helper import sync_collection
         from lies.memory.service import (
@@ -1155,8 +1162,19 @@ class Orchestrator:
             current on-disk hash so :class:`WikiWriteConflict` catches
             drift. Brand-new pages don't go through UPDATE, but we still
             return "" uniformly for non-existent paths.
+
+            The page-writer emits paths with the ``wiki/`` prefix per
+            the schema convention. ``_read_page`` joins onto
+            ``wiki.wiki_dir`` (= ``<data_root>/wiki``), so it expects a
+            path WITHOUT the leading ``wiki/`` — exactly like
+            ``_apply_operations`` passes to ``validate_page_path``.
+            Without the strip, ``_sha_lookup`` reads the doubled-prefix
+            location (``<data_root>/wiki/wiki/<rest>``) and returns
+            ``""`` even when the real on-disk file exists, breaking
+            the validate/apply agreement that
+            ``expected_sha256`` relies on.
             """
-            body = _read_page(self.wiki, rel)
+            body = _read_page(self.wiki, rel.removeprefix("wiki/"))
             return "" if body is None else _hash_text(body)
 
         repo = self.wiki.data_root
@@ -1170,7 +1188,16 @@ class Orchestrator:
         # success; on failure the service's own snapshot/restore rolls
         # those back too.
         snapshot_ref = Orchestrator._snapshot_working_tree(repo)
-        raw_path = self._materialize_source(source, collection=collection_name)
+        try:
+            raw_path = self._materialize_source(source, collection=collection_name)
+        except IngestSourceUnreachable:
+            # Step 1 failed before any agent work — no wiki writes
+            # happened, so the snapshot can be discarded rather than
+            # restored. Without this branch the stash entry would
+            # survive the raise and accumulate until ``git stash
+            # clear`` or the next ``run_ingest`` overwrites it.
+            Orchestrator._discard_snapshot(repo, snapshot_ref)
+            raise
         source_relpath = raw_path.relative_to(repo).as_posix()
         try:
             extraction = self._call_source_reader(
@@ -1305,7 +1332,7 @@ class Orchestrator:
                 page_texts[page.rel_path] = (self.wiki.data_root / page.rel_path).read_text(
                     encoding="utf-8"
                 )
-            except OSError, UnicodeDecodeError:
+            except (OSError, UnicodeDecodeError):
                 continue
 
         deps = QueryDeps(question=question, page_texts=page_texts)
@@ -1535,7 +1562,7 @@ class Orchestrator:
                     continue
                 try:
                     page_texts[rel] = path.read_text(encoding="utf-8")
-                except OSError, UnicodeDecodeError:
+                except (OSError, UnicodeDecodeError):
                     continue
         deps = LintDeps(page_texts=page_texts, wiki_root=str(self.wiki.data_root))
         try:

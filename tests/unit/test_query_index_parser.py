@@ -22,7 +22,7 @@ SAMPLE = """\
 
 def test_parse_returns_links_in_order() -> None:
     links = parse_index_links(SAMPLE)
-    titles = [l.title for l in links]
+    titles = [link.title for link in links]
     # Postgres, MySQL, Query (with query string, kept), MVCC.
     # External, Anchor, and Image are skipped (URL / fragment / non-.md).
     assert titles == ["Postgres", "MySQL", "Query", "MVCC"]
@@ -38,31 +38,31 @@ def test_parse_strips_fragments_and_queries() -> None:
 def test_parse_skips_http_urls() -> None:
     sample = "- [Web](https://example.com/page.md)\n- [Local](entities/x.md)\n"
     links = parse_index_links(sample)
-    assert [l.title for l in links] == ["Local"]
+    assert [link.title for link in links] == ["Local"]
 
 
 def test_parse_skips_mailto_and_tel() -> None:
     sample = "- [Mail](mailto:a@b.com)\n- [Tel](tel:123)\n- [Local](e.md)\n"
     links = parse_index_links(sample)
-    assert [l.title for l in links] == ["Local"]
+    assert [link.title for link in links] == ["Local"]
 
 
 def test_parse_skips_anchor_only_links() -> None:
     sample = "- [Sec](#section)\n- [Local](e.md)\n"
     links = parse_index_links(sample)
-    assert [l.title for l in links] == ["Local"]
+    assert [link.title for link in links] == ["Local"]
 
 
 def test_parse_skips_non_md_paths() -> None:
     sample = "- [Pic](assets/foo.png)\n- [Local](e.md)\n"
     links = parse_index_links(sample)
-    assert [l.title for l in links] == ["Local"]
+    assert [link.title for link in links] == ["Local"]
 
 
 def test_parse_skips_absolute_paths() -> None:
     sample = "- [Abs](/etc/passwd.md)\n- [Local](e.md)\n"
     links = parse_index_links(sample)
-    assert [l.title for l in links] == ["Local"]
+    assert [link.title for link in links] == ["Local"]
 
 
 def test_parse_deduplicates_same_title_and_path() -> None:
@@ -74,7 +74,7 @@ def test_parse_deduplicates_same_title_and_path() -> None:
 def test_parse_allows_same_title_different_path() -> None:
     sample = "- [Same](a.md)\n- [Same](b.md)\n"
     links = parse_index_links(sample)
-    assert [l.path for l in links] == ["a.md", "b.md"]
+    assert [link.path for link in links] == ["a.md", "b.md"]
 
 
 def test_parse_empty_input() -> None:
@@ -88,4 +88,4 @@ def test_parse_handles_no_links() -> None:
 def test_parse_handles_inline_links_in_paragraphs() -> None:
     sample = "See [Foo](entities/foo.md) for the overview and [Bar](entities/bar.md) for details.\n"
     links = parse_index_links(sample)
-    assert [l.title for l in links] == ["Foo", "Bar"]
+    assert [link.title for link in links] == ["Foo", "Bar"]
