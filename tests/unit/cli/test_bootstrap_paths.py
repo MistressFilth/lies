@@ -230,7 +230,9 @@ def test_ingest_source_with_collection_bootstraps_and_calls_run_ingest(
             ],
         )
     assert result.exit_code == 0
-    fake_orchestrator.run_ingest.assert_called_once_with("https://example.com/llms.txt")
+    fake_orchestrator.run_ingest.assert_called_once_with(
+        "https://example.com/llms.txt", no_llm=False
+    )
     assert (wiki.collections_dir / "alpha.yaml").exists()
 
 
