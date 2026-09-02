@@ -5,6 +5,8 @@ from pydantic import ValidationError
 
 from lies.memory.models import (
     EvidenceAppend,
+    IngestQuarantined,
+    IngestSourceUnreachable,
     MemoryPlan,
     MemoryReceipt,
     OperationKind,
@@ -13,6 +15,7 @@ from lies.memory.models import (
     PageUpdate,
     WikiCollectionRef,
     WikiEvidence,
+    WikiMemoryError,
     WikiPlanInvalid,
     WikiSearchResult,
 )
@@ -118,3 +121,25 @@ def test_typed_error_carries_path_and_message() -> None:
     err = WikiPlanInvalid(path="x.md", reason="missing evidence")
     assert "missing evidence" in str(err)
     assert err.path == "x.md"
+
+
+def test_ingest_quarantined_is_wiki_memory_error() -> None:
+    err = IngestQuarantined(
+        source="raw/articles/sample.md",
+        collection="claude-code",
+        reason="page_writer_agent raised ValidationError: ...",
+    )
+    assert isinstance(err, WikiMemoryError)
+    msg = str(err)
+    assert "claude-code" in msg
+    assert "raw/articles/sample.md" in msg
+    assert "page_writer_agent" in msg
+
+
+def test_ingest_source_unreachable_is_wiki_memory_error() -> None:
+    err = IngestSourceUnreachable(
+        source="https://example.com/missing",
+        reason="WebScraper.fetch raised ConnectionError",
+    )
+    assert isinstance(err, WikiMemoryError)
+    assert "https://example.com/missing" in str(err)

@@ -63,6 +63,37 @@ class WikiCollectionInvalid(WikiMemoryError):
     """The referenced collection is not registered with the service."""
 
 
+class IngestQuarantined(WikiMemoryError):
+    """A single-source ingest failed at the agent layer.
+
+    The source has been copied to
+    ``$XDG_STATE_HOME/lies/<wiki>/poison/<collection>/<relpath>``
+    with a ``.reason`` sidecar (see :mod:`lies.etl.quarantine`).
+    """
+
+    def __init__(self, source: str, collection: str, reason: str) -> None:
+        super().__init__(
+            f"ingest-source {source!r} for collection {collection!r} quarantined: {reason}"
+        )
+        self.source = source
+        self.collection = collection
+        self.reason = reason
+
+
+class IngestSourceUnreachable(WikiMemoryError):
+    """A single-source ingest could not materialize the source to disk.
+
+    Raised before any wiki write or quarantine copy; the source
+    artifact is not on disk yet (URL fetch failed, stdin closed, or
+    the local path was missing).
+    """
+
+    def __init__(self, source: str, reason: str) -> None:
+        super().__init__(f"ingest-source unreachable: {source!r}: {reason}")
+        self.source = source
+        self.reason = reason
+
+
 # --- Collection and evidence -------------------------------------------
 
 
