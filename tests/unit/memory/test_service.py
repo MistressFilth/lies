@@ -9,6 +9,7 @@ import pytest
 
 from lies.lock_errors import WikiFlockIndeterminate
 from lies.memory.models import (
+    EvidenceAppend,
     MemoryPlan,
     OperationKind,
     PageCreate,
@@ -878,3 +879,125 @@ def test_apply_plan_delete_refuses_log_md_now_exercises_guard(git_wiki: Wiki) ->
     with pytest.raises(WikiPlanInvalid, match="system file"):
         service.apply_plan(plan)
     assert log.exists(), "log.md must be intact"
+
+
+def test_apply_plan_create_refuses_log_md(git_wiki: Wiki) -> None:
+    """A ``PageCreate`` op targeting ``wiki/log.md`` is rejected by the
+    symmetric apply-side ``system file`` guard.
+
+    The log is append-only and owned by ``append_log_entry`` inside
+    ``_apply_operations``; a ``PageCreate`` (or any other write op) that
+    targets ``wiki/log.md`` would silently destroy the audit trail.
+    The guard runs before the op-kind dispatch so every op shape is
+    caught, regardless of the path it takes.
+    """
+    log = git_wiki.wiki_dir / "log.md"
+    log.write_text("# Log\n- entry\n", encoding="utf-8")
+    _git_init(git_wiki.data_root)
+    service = WikiMemoryService(wiki=git_wiki)
+    service.register_evidence({"raw/x.md"})
+    plan = MemoryPlan(
+        operations=[
+            PageCreate(
+                path="wiki/log.md",
+                content="bad",
+                evidence=["raw/x.md"],
+            ),
+        ],
+        rationale="attempt to overwrite log via create",
+        evidence=["raw/x.md"],
+    )
+    with pytest.raises(WikiPlanInvalid, match="system file"):
+        service.apply_plan(plan)
+    assert log.read_text(encoding="utf-8") == "# Log\n- entry\n", "log.md must be intact"
+
+
+def test_apply_plan_update_refuses_log_md(git_wiki: Wiki) -> None:
+    """A ``PageUpdate`` op targeting ``wiki/log.md`` is rejected by the
+    symmetric apply-side ``system file`` guard.
+
+    The log is append-only; ``PageUpdate`` would clobber it with a
+    full-content replacement, silently destroying the audit trail.
+    """
+    log = git_wiki.wiki_dir / "log.md"
+    log.write_text("# Log\n- entry\n", encoding="utf-8")
+    _git_init(git_wiki.data_root)
+    service = WikiMemoryService(wiki=git_wiki)
+    service.register_evidence({"raw/x.md"})
+    plan = MemoryPlan(
+        operations=[
+            PageUpdate(
+                path="wiki/log.md",
+                expected_sha256=_sha("# Log\n- entry\n"),
+                content="bad",
+                evidence=["raw/x.md"],
+            ),
+        ],
+        rationale="attempt to overwrite log via update",
+        evidence=["raw/x.md"],
+    )
+    with pytest.raises(WikiPlanInvalid, match="system file"):
+        service.apply_plan(plan)
+    assert log.read_text(encoding="utf-8") == "# Log\n- entry\n", "log.md must be intact"
+
+
+def test_apply_plan_append_refuses_log_md(git_wiki: Wiki) -> None:
+    """An ``EvidenceAppend`` op targeting ``wiki/log.md`` is rejected by
+    the symmetric apply-side ``system file`` guard.
+
+    The log is append-only and managed by ``append_log_entry``; a direct
+    ``EvidenceAppend`` against it would append through the wrong
+    envelope, leaving the entry unparseable by the log reader.
+    """
+    log = git_wiki.wiki_dir / "log.md"
+    log.write_text("# Log\n- entry\n", encoding="utf-8")
+    _git_init(git_wiki.data_root)
+    service = WikiMemoryService(wiki=git_wiki)
+    service.register_evidence({"raw/x.md"})
+    plan = MemoryPlan(
+        operations=[
+            EvidenceAppend(
+                path="wiki/log.md",
+                expected_sha256=_sha("# Log\n- entry\n"),
+                content="bad",
+                evidence=["raw/x.md"],
+            ),
+        ],
+        rationale="attempt to append via EvidenceAppend",
+        evidence=["raw/x.md"],
+    )
+    with pytest.raises(WikiPlanInvalid, match="system file"):
+        service.apply_plan(plan)
+    assert log.read_text(encoding="utf-8") == "# Log\n- entry\n", "log.md must be intact"
+
+
+def test_apply_plan_create_refuses_index_md(git_wiki: Wiki) -> None:
+    """A ``PageCreate`` op targeting ``wiki/index.md`` is rejected by
+    the symmetric apply-side ``system file`` guard.
+
+    ``wiki/index.md`` is rebuilt from disk state by ``rebuild_index``
+    after every apply, so a literal ``PageCreate`` overwrite would
+    either be silently undone or, on a fresh repo with no other pages,
+    leave a stale catalog. The guard rejects ``PageCreate`` (and
+    ``EvidenceAppend`` / ``PageDelete``) on ``index.md``; ``PageUpdate``
+    remains the established pathway for the repair agent's
+    ``UpdateIndex`` operation.
+    """
+    index = git_wiki.wiki_dir / "index.md"
+    original = index.read_text(encoding="utf-8")
+    service = WikiMemoryService(wiki=git_wiki)
+    service.register_evidence({"raw/x.md"})
+    plan = MemoryPlan(
+        operations=[
+            PageCreate(
+                path="wiki/index.md",
+                content="bad",
+                evidence=["raw/x.md"],
+            ),
+        ],
+        rationale="attempt to overwrite catalog via create",
+        evidence=["raw/x.md"],
+    )
+    with pytest.raises(WikiPlanInvalid, match="system file"):
+        service.apply_plan(plan)
+    assert index.read_text(encoding="utf-8") == original, "index.md must be intact"

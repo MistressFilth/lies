@@ -353,18 +353,20 @@ class WikiMemoryService:
                     validate_frontmatter(parse_frontmatter(op.content), page_type=page_type)
                 except WikiPlanInvalid as exc:
                     raise WikiPlanInvalid(str(exc), path=op.path) from exc
-            if isinstance(op, PageCreate) and resolved.exists():
+            if isinstance(op, PageCreate) and resolved.exists() and not (is_index or is_log):
                 raise WikiPlanInvalid(
                     "page already exists; use UPDATE or APPEND",
                     path=op.path,
                 )
             if isinstance(op, (PageUpdate, EvidenceAppend)):
                 index_path = self._wiki.wiki_dir / "index.md"
-                current = (
-                    index_path.read_text(encoding="utf-8")
-                    if is_index
-                    else _read_page(self._wiki, op.path)
-                )
+                log_path = self._wiki.wiki_dir / "log.md"
+                if is_index:
+                    current = index_path.read_text(encoding="utf-8")
+                elif is_log:
+                    current = log_path.read_text(encoding="utf-8") if log_path.exists() else None
+                else:
+                    current = _read_page(self._wiki, op.path)
                 actual = "" if current is None else _hash_text(current)
                 if actual != op.expected_sha256:
                     raise WikiWriteConflict(
@@ -480,22 +482,57 @@ class WikiMemoryService:
             if op.path == "wiki/index.md" or resolved == index_path:
                 resolved = index_path
             resolved.parent.mkdir(parents=True, exist_ok=True)
+            # System-file guard: ``wiki/index.md`` and ``wiki/log.md`` are
+            # rebuilt/extended by the service itself (``rebuild_index``
+            # and ``append_log_entry`` below) — never written or removed
+            # by an op. Block ALL op kinds against these paths so the
+            # agent can never bypass the rebuild/append envelope by
+            # routing a write through a different op shape.
+            #
+            # Carve-out: ``PageUpdate`` on ``index_path`` is the
+            # established pathway for the repair agent's ``UpdateIndex``
+            # operation (see :func:`from_repair_plan`). The page is
+            # transiently rewritten with the catalog update, then
+            # overwritten by ``rebuild_index`` below — the ``PageUpdate``
+            # is the receipt surface for the operation, not a permanent
+            # write. ``log_path`` has no analogous pathway because
+            # ``append_log_entry`` already owns log mutation.
+            #
+            # The path-equality check covers both the bare-name form
+            # (``op.path == "wiki/log.md"``) and the resolved form
+            # (``resolved == log_path``) because ``validate_page_path``
+            # joins ``op.path`` onto ``wiki.wiki_dir``, so a literal
+            # ``wiki/log.md`` input becomes ``wiki/wikifiles/log.md``
+            # after resolution and the bare-name comparison is the only
+            # reliable equality check.
+            is_system_log = op.path == "wiki/log.md" or resolved == log_path
+            is_system_index = op.path == "wiki/index.md" or resolved == index_path
+            if is_system_log:
+                raise WikiPlanInvalid(f"cannot write to {op.path}: system file")
+            if is_system_index and not isinstance(op, PageUpdate):
+                raise WikiPlanInvalid(f"cannot write to {op.path}: system file")
             if isinstance(op, PageCreate):
                 resolved.write_text(op.content, encoding="utf-8")
                 kind = OperationKind.CREATE
             elif isinstance(op, PageUpdate):
-                existing = (
-                    index_path.read_text(encoding="utf-8")
-                    if resolved == index_path
-                    else _read_page(self._wiki, op.path)
-                )
+                if resolved == index_path:
+                    existing = index_path.read_text(encoding="utf-8")
+                elif resolved == log_path:
+                    existing = log_path.read_text(encoding="utf-8") if log_path.exists() else None
+                else:
+                    existing = _read_page(self._wiki, op.path)
                 actual = "" if existing is None else _hash_text(existing)
                 if actual != op.expected_sha256:
                     raise WikiWriteConflict(f"hash mismatch for {op.path}")
                 resolved.write_text(op.content, encoding="utf-8")
                 kind = OperationKind.UPDATE
             elif isinstance(op, EvidenceAppend):
-                existing = _read_page(self._wiki, op.path)
+                if resolved == index_path:
+                    existing = index_path.read_text(encoding="utf-8")
+                elif resolved == log_path:
+                    existing = log_path.read_text(encoding="utf-8") if log_path.exists() else None
+                else:
+                    existing = _read_page(self._wiki, op.path)
                 actual = "" if existing is None else _hash_text(existing)
                 if actual != op.expected_sha256:
                     raise WikiWriteConflict(f"hash mismatch for {op.path}")
@@ -503,8 +540,6 @@ class WikiMemoryService:
                 resolved.write_text(base.rstrip() + "\n\n" + op.content, encoding="utf-8")
                 kind = OperationKind.APPEND
             elif isinstance(op, PageDelete):
-                if resolved in (index_path, log_path):
-                    raise WikiPlanInvalid(f"cannot delete {op.path}: system file")
                 if not resolved.exists():
                     # No-op: file already absent. Skip the PageReference
                     # so the receipt reflects that no change occurred at
