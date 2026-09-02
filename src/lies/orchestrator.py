@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import subprocess
+import sys
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -31,6 +33,7 @@ from lies.config import get_qmd_transport, get_qmd_url
 from lies.lock_errors import WikiFlockUnrepairable, WikiLockBusy
 from lies.memory.enricher import MemoryEnricherDeps, enricher_agent
 from lies.memory.models import (
+    IngestSourceUnreachable,
     MemoryPlan,
     MemoryReceipt,
     WikiCommitFailed,
@@ -541,6 +544,67 @@ def _format_repair_section(receipt: RepairReceipt) -> str:
         lines.extend(["", f"### Errors ({len(receipt.errors)})", ""])
         lines.extend(f"- {err}" for err in receipt.errors)
     return "\n".join(lines)
+
+
+# Module-level constants for the F2 helpers (_list_existing_pages and
+# _materialize_source). These are deterministic pure functions, not
+# agent-shaped, so they live as module-level helpers alongside the
+# other host-side helpers (lint shell, snapshot, etc.) rather than on
+# the WikiMemoryService.
+#
+# _EXCLUDED_TOP_LEVEL_DIRS: any directory segment in this set is
+# skipped by the page walker. Keeps ``.lies/`` (runtime sidecars),
+# ``.git/`` (git metadata), and ``node_modules/`` (tooling artifacts)
+# out of the agent's existing-pages list.
+_EXCLUDED_TOP_LEVEL_DIRS = frozenset({".lies", ".git", "node_modules"})
+# _FRONTMATTER_SUMMARY_RE: matches a ``summary: <value>`` line inside a
+# YAML frontmatter block. The block is parsed by checking
+# ``text.startswith("---")`` and finding the closing ``\n---``; only
+# then is the regex applied to the block contents.
+_FRONTMATTER_SUMMARY_RE = re.compile(r"^summary:\s*(.+)$", re.MULTILINE)
+
+
+def _summarize_page(path: Path) -> str:
+    """Return the page's frontmatter ``summary:`` value, else a
+    deterministic fallback built from the first H1 + first body line.
+
+    Pure function; no I/O beyond reading the file. Test-only / agent-input
+    utility — does not need to live on the WikiMemoryService. The body
+    line is taken from lines AFTER any YAML frontmatter block so the
+    ``title:`` (or other frontmatter fields) don't get reported as the
+    first body line.
+    """
+    text = path.read_text(encoding="utf-8", errors="replace")
+    body_text = text
+    if text.startswith("---"):
+        end = text.find("\n---", 3)
+        if end != -1:
+            fm_match = _FRONTMATTER_SUMMARY_RE.search(text[3:end])
+            if fm_match:
+                return fm_match.group(1).strip().strip('"').strip("'")
+            # Skip the frontmatter block when building the fallback so
+            # the ``title:`` line doesn't get reported as the first body.
+            body_text = text[end + 4 :].lstrip("\n")
+    lines = body_text.splitlines()
+    h1 = next((l for l in lines if l.startswith("# ")), "")
+    body = next(
+        (l.strip() for l in lines if l.strip() and not l.startswith("#")),
+        "",
+    )
+    return f"{h1.removeprefix('# ').strip()} {body}".strip()
+
+
+def _url_basename(url: str) -> str:
+    """Stable filename for a fetched URL. Falls back to ``fetched.md``.
+
+    The basename is the URL's last path segment; URLs whose path has
+    no useful tail (e.g. ``https://example.com/``) get the literal
+    fallback so the materialize step always produces a real file.
+    """
+    from urllib.parse import urlparse
+
+    name = Path(urlparse(url).path).name
+    return name or "fetched.md"
 
 
 ORCHESTRATOR_SYSTEM_PROMPT_PREFIX = """You are the LIES orchestrator. The user
@@ -1535,3 +1599,97 @@ class Orchestrator:
             text=True,
             check=False,
         )
+
+    # -- F2 single-source ingest helpers --------------------------------------
+    #
+    # These two methods back the ingest-source flow (``lies ingest-source
+    # <path> --collection <name>``). ``_materialize_source`` ensures the
+    # source is on disk under ``raw/<collection>/<basename>``; the page
+    # writer's deps then call ``_list_existing_pages`` so the agent sees
+    # the existing wiki corpus before proposing PageDiff operations. Both
+    # are pure deterministic host-side helpers (no LLM call), so they live
+    # on the Orchestrator rather than on WikiMemoryService.
+
+    def _list_existing_pages(self, collection: str) -> list[tuple[str, str]]:
+        """Walk ``wiki/<collection>/`` returning
+        ``(data-root-relative path, summary)`` pairs.
+
+        The path is ``data_root``-relative and keeps the ``wiki/`` prefix
+        (e.g., ``wiki/foo/concepts/alpha.md``) so the agent's
+        existing-pages list maps 1-to-1 onto paths it can also write to.
+        The summary is the frontmatter ``summary:`` field if present,
+        else the first H1 plus the first non-empty line of body text.
+        Excludes ``index.md``, ``log.md``, and anything under ``.lies/``
+        or ``.git/``. Pure deterministic; no LLM call. Returns ``[]``
+        when the collection directory does not exist.
+        """
+        out: list[tuple[str, str]] = []
+        collection_dir = self.wiki.wiki_dir / collection
+        if not collection_dir.exists():
+            return out
+        for path in sorted(collection_dir.rglob("*.md")):
+            rel = path.relative_to(self.wiki.data_root).as_posix()
+            parts = rel.split("/")
+            if any(part in _EXCLUDED_TOP_LEVEL_DIRS for part in parts):
+                continue
+            if parts[-1] in {"index.md", "log.md"}:
+                continue
+            out.append((rel, _summarize_page(path)))
+        return out
+
+    def _materialize_source(self, source: str, collection: str) -> Path:
+        """Ensure ``source`` is on disk under
+        ``wiki.data_root/raw/<collection>/<basename>``.
+
+        Branches:
+        - URL (http/https): fetch via ``WebScraper.fetch`` and write.
+        - local path: must exist; copy if outside ``raw/``, else pass-through.
+        - ``'-'`` (stdin): read all of stdin, write to a stable basename.
+
+        Raises :class:`IngestSourceUnreachable` on any failure.
+        """
+        import shutil
+
+        raw_root = self.wiki.raw_dir / collection
+        raw_root.mkdir(parents=True, exist_ok=True)
+
+        # Stdin branch: the source arrives over stdin; we need a real file
+        # on disk for the agent pipeline. Read all of stdin and write to
+        # ``raw/<collection>/stdin.md`` so the basename is stable.
+        if source.strip() == "-":
+            try:
+                sys.stdin.seek(0)
+                body = sys.stdin.read()
+            except Exception as exc:
+                raise IngestSourceUnreachable(source="stdin", reason=str(exc)) from exc
+            target = raw_root / "stdin.md"
+            target.write_text(body, encoding="utf-8")
+            return target
+
+        # URL branch: fetch via the project's WebScraper. The fetcher
+        # already handles llms.txt / llms-full.txt walking and rejects
+        # HTML / redirect-to-marketing responses; we just persist its
+        # bytes under a stable basename.
+        if source.startswith(("http://", "https://")):
+            from lies.scrapers.web import WebScraper
+
+            try:
+                body = WebScraper().fetch(source)
+            except Exception as exc:
+                raise IngestSourceUnreachable(source=source, reason=str(exc)) from exc
+            basename = _url_basename(source)
+            target = raw_root / basename
+            target.write_bytes(body)
+            return target
+
+        # Local-path branch: must exist on disk. Pass through when the
+        # caller already pointed at the destination (avoids a redundant
+        # copy that would otherwise wipe the file's mtime).
+        path = Path(source).expanduser().resolve()
+        if not path.is_file():
+            raise IngestSourceUnreachable(source=source, reason="local path missing")
+        basename = path.name
+        target = raw_root / basename
+        if path != target:
+            shutil.copy2(path, target)
+        return target
