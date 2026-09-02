@@ -471,6 +471,7 @@ class WikiMemoryService:
     def _apply_operations(self, plan: MemoryPlan) -> list[PageReference]:
         changed: list[PageReference] = []
         index_path = self._wiki.wiki_dir / "index.md"
+        log_path = self._wiki.wiki_dir / "log.md"
         for op in plan.operations:
             resolved = validate_page_path(self._wiki, op.path)
             if op.path == "wiki/index.md" or resolved == index_path:
@@ -499,8 +500,8 @@ class WikiMemoryService:
                 resolved.write_text(base.rstrip() + "\n\n" + op.content, encoding="utf-8")
                 kind = OperationKind.APPEND
             elif isinstance(op, PageDelete):
-                if op.path in ("wiki/index.md", "wiki/log.md"):
-                    raise WikiPlanInvalid(f"cannot delete {op.path}: {op.path} is a system file")
+                if resolved in (index_path, log_path):
+                    raise WikiPlanInvalid(f"cannot delete {op.path}: system file")
                 if not resolved.exists():
                     # No-op: file already absent. Skip the PageReference
                     # so the receipt reflects that no change occurred at

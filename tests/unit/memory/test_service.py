@@ -798,10 +798,38 @@ def test_apply_plan_delete_refuses_index_md(git_wiki: Wiki) -> None:
     assert (git_wiki.wiki_dir / "index.md").exists(), "index.md must be intact"
 
 
+def test_apply_plan_delete_refuses_index_md_via_bare_path(git_wiki: Wiki) -> None:
+    """A ``PageDelete`` op using the bare ``index.md`` path (no ``wiki/``
+    prefix) is rejected by the resolved-path guard in
+    ``_apply_operations``. ``validate_plan``'s ``is_index`` branch routes
+    this op and skips ``validate_page_type``, so a literal-string guard
+    keyed on ``op.path`` would let the unlink through; the resolved-path
+    check catches it instead."""
+    service = WikiMemoryService(wiki=git_wiki)
+    service.register_evidence({"raw/x.md"})
+    plan = MemoryPlan(
+        operations=[
+            PageDelete(path="index.md", evidence=["raw/x.md"]),
+        ],
+        rationale="attempt to drop catalog via bare path",
+        evidence=["raw/x.md"],
+    )
+    with pytest.raises(WikiPlanInvalid):
+        service.apply_plan(plan)
+    assert (git_wiki.wiki_dir / "index.md").exists(), "index.md must be intact"
+
+
 def test_apply_plan_delete_refuses_log_md(git_wiki: Wiki) -> None:
     """A ``PageDelete`` op targeting ``wiki/log.md`` is rejected: the
     log is append-only, so a delete op would silently destroy the
-    wiki's audit trail."""
+    wiki's audit trail.
+
+    Uses the bare ``log.md`` path so the resolved-path guard inside
+    ``_apply_operations`` is exercised directly. The qualified
+    ``wiki/log.md`` path is rejected earlier by ``validate_plan``'s
+    ``validate_page_type`` step because ``log.md``'s parent is the wiki
+    root (not a recognized page-type directory), which would mask a
+    regression in the apply-side guard."""
     log = git_wiki.wiki_dir / "log.md"
     log.write_text("# Log\n- entry\n", encoding="utf-8")
     _git_init(git_wiki.data_root)
@@ -809,9 +837,9 @@ def test_apply_plan_delete_refuses_log_md(git_wiki: Wiki) -> None:
     service.register_evidence({"raw/x.md"})
     plan = MemoryPlan(
         operations=[
-            PageDelete(path="wiki/log.md", evidence=["raw/x.md"]),
+            PageDelete(path="log.md", evidence=["raw/x.md"]),
         ],
-        rationale="attempt to drop log",
+        rationale="attempt to drop log via bare path",
         evidence=["raw/x.md"],
     )
     with pytest.raises(WikiPlanInvalid):
