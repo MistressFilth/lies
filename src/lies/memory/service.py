@@ -535,7 +535,15 @@ class WikiMemoryService:
         index_path = self._wiki.wiki_dir / "index.md"
         log_path = self._wiki.wiki_dir / "log.md"
         for op in plan.operations:
-            resolved = validate_page_path(self._wiki, op.path)
+            # Page-writer emits paths with the ``wiki/`` prefix per the
+            # schema convention; ``validate_page_path`` joins onto
+            # ``wiki.wiki_dir`` (= ``<data_root>/wiki``), so the bare
+            # ``op.path`` would otherwise resolve to
+            # ``<data_root>/wiki/wiki/<rest>`` — outside the per-collection
+            # subdir convention. Strip the leading ``wiki/`` before
+            # resolving so the file lands at the correct on-disk path.
+            rel = op.path.removeprefix("wiki/")
+            resolved = validate_page_path(self._wiki, rel)
             if op.path == "wiki/index.md" or resolved == index_path:
                 resolved = index_path
             resolved.parent.mkdir(parents=True, exist_ok=True)
@@ -557,13 +565,12 @@ class WikiMemoryService:
             #
             # Both the bare-name form (``op.path == "log.md"``) and the
             # qualified form (``op.path == "wiki/log.md"``) reach the
-            # dispatcher's guard: ``validate_page_path`` joins ``op.path``
-            # onto ``wiki.wiki_dir``, so a literal ``wiki/log.md`` input
-            # resolves to ``wiki.wiki_dir/wiki/log.md`` (not ``log_path``)
-            # and is matched by the string equality, while a bare
-            # ``log.md`` input resolves to ``log_path`` and is matched by
-            # the resolved equality. In either case the guard raises and
-            # the op-shape-specific branches below never see those paths.
+            # dispatcher's guard: after the ``wiki/`` strip above, a
+            # literal ``wiki/log.md`` input resolves to ``wiki.wiki_dir/log.md``
+            # (= ``log_path``) and is matched by the resolved equality,
+            # while a bare ``log.md`` input also resolves to ``log_path``.
+            # In either case the guard raises and the op-shape-specific
+            # branches below never see those paths.
             is_system_log = op.path == "wiki/log.md" or resolved == log_path
             is_system_index = op.path == "wiki/index.md" or resolved == index_path
             if is_system_log:
@@ -576,11 +583,13 @@ class WikiMemoryService:
             elif isinstance(op, PageUpdate):
                 # ``log_path`` is blocked by the guard above; only the
                 # ``index_path`` carve-out reaches this branch. All other
-                # targets fall through to ``_read_page``.
+                # targets fall through to ``_read_page`` — pass the
+                # stripped ``rel`` so the read targets the same path as
+                # the write above.
                 if resolved == index_path:
                     existing = index_path.read_text(encoding="utf-8")
                 else:
-                    existing = _read_page(self._wiki, op.path)
+                    existing = _read_page(self._wiki, rel)
                 actual = "" if existing is None else _hash_text(existing)
                 if actual != op.expected_sha256:
                     raise WikiWriteConflict(f"hash mismatch for {op.path}")
@@ -590,7 +599,9 @@ class WikiMemoryService:
                 # Both ``log_path`` and ``index_path`` are blocked by the
                 # guard above. Every surviving op targets a non-system
                 # page, so the unconditional ``_read_page`` is correct.
-                existing = _read_page(self._wiki, op.path)
+                # Pass the stripped ``rel`` so the read targets the same
+                # path as the write above.
+                existing = _read_page(self._wiki, rel)
                 actual = "" if existing is None else _hash_text(existing)
                 if actual != op.expected_sha256:
                     raise WikiWriteConflict(f"hash mismatch for {op.path}")
@@ -653,11 +664,18 @@ class WikiMemoryService:
         candidates: set[str] = set()
         for ref in changed:
             try:
-                resolved = validate_page_path(self._wiki, ref.path)
+                # Strip the leading ``wiki/`` before resolving so
+                # ``validate_page_path`` produces the same on-disk path
+                # the write landed at in ``_apply_operations``. The
+                # ``git add`` pathspec must match the actual file
+                # location; otherwise the commit fails with
+                # ``pathspec ... did not match any files``.
+                ref_rel = ref.path.removeprefix("wiki/")
+                resolved = validate_page_path(self._wiki, ref_rel)
             except WikiPlanInvalid:
                 continue  # validate_plan should have rejected this already
-            # ``validate_page_path`` joins ``ref.path`` onto
-            # ``wiki.wiki_dir``. A literal ``"wiki/index.md"`` input
+            # ``validate_page_path`` joins the (already-stripped) path
+            # onto ``wiki.wiki_dir``. A literal ``"wiki/index.md"`` input
             # (e.g. the repair agent's ``UpdateIndex`` →
             # ``PageUpdate(path="wiki/index.md")``) would otherwise
             # resolve to ``wiki.wiki_dir/wiki/index.md`` instead of the

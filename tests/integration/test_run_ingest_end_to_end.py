@@ -206,6 +206,108 @@ def test_run_ingest_happy_path_writes_pages_and_commits(
     assert "ingest |" in log
 
 
+def test_run_ingest_happy_path_with_wiki_prefix(
+    monkeypatch: pytest.MonkeyPatch,
+    wiki_copy: Path,
+) -> None:
+    """End-to-end success when the agent emits paths WITH the ``wiki/`` prefix.
+
+    The page-writer prompt tells the LLM to emit paths in
+    ``wiki/<collection>/<type>/<name>.md`` form per the schema
+    convention. ``WikiMemoryService._apply_operations`` strips the
+    leading ``wiki/`` before resolving so the file lands at
+    ``<wiki.wiki_dir>/<collection>/<type>/<name>.md`` rather than the
+    doubled-prefix path
+    ``<wiki.wiki_dir>/wiki/<collection>/<type>/<name>.md``. This test
+    covers the realistic LLM shape that ``test_run_ingest_happy_path_writes_pages_and_commits``
+    sidesteps by emitting an unprefixed path.
+    """
+    wiki = _make_wiki(wiki_copy)
+    src = _make_source(wiki_copy.parent, wiki.data_root)
+    monkeypatch.setattr(
+        "lies.orchestrator.source_reader_agent",
+        lambda model: _FakeAgent(output=_fake_extraction()),
+    )
+    monkeypatch.setattr(
+        "lies.orchestrator.page_writer_agent",
+        lambda model: _FakeAgent(
+            output=[
+                PageDiff(
+                    operation=PageOperation.CREATE,
+                    path=Path("wiki/article/concepts/alpha.md"),
+                    new_content=("---\ntitle: Alpha\ntype: concept\n---\n# Alpha\n\nbody\n"),
+                )
+            ]
+        ),
+    )
+    o = Orchestrator(wiki, models=models_for_tests("test"))
+    result = o.run_ingest(str(src))
+    assert "article.md" in result
+
+    # The file lands at the per-collection subdir, not the doubled-prefix
+    # ``<wiki.wiki_dir>/wiki/<...>`` location.
+    target = wiki.wiki_dir / "article" / "concepts" / "alpha.md"
+    assert target.exists()
+    # Belt-and-suspenders: the doubled-prefix path must NOT exist.
+    doubled = wiki.wiki_dir / "wiki" / "article" / "concepts" / "alpha.md"
+    assert not doubled.exists()
+
+
+def test_run_ingest_with_wiki_prefix_full_envelope(
+    monkeypatch: pytest.MonkeyPatch,
+    wiki_copy: Path,
+) -> None:
+    """Prefixed-path E2E: sidecar + log entry + index all reflect the write.
+
+    Extends ``test_run_ingest_happy_path_with_wiki_prefix`` to assert
+    the surrounding machinery (sidecar row, ``wiki/log.md`` entry,
+    rebuilt ``wiki/index.md`` listing the new page) all reach disk for
+    the prefixed-path case. Without the strip-prefix fix in
+    ``_apply_operations`` / ``_collect_commit_files``, ``git add``
+    fails to find the file at the doubled-prefix path and the commit
+    raises ``CommitError`` — none of these artifacts would land.
+    """
+    wiki = _make_wiki(wiki_copy)
+    src = _make_source(wiki_copy.parent, wiki.data_root)
+    monkeypatch.setattr(
+        "lies.orchestrator.source_reader_agent",
+        lambda model: _FakeAgent(output=_fake_extraction()),
+    )
+    monkeypatch.setattr(
+        "lies.orchestrator.page_writer_agent",
+        lambda model: _FakeAgent(
+            output=[
+                PageDiff(
+                    operation=PageOperation.CREATE,
+                    path=Path("wiki/article/concepts/alpha.md"),
+                    new_content=("---\ntitle: Alpha\ntype: concept\n---\n# Alpha\n\nbody\n"),
+                )
+            ]
+        ),
+    )
+    o = Orchestrator(wiki, models=models_for_tests("test"))
+    o.run_ingest(str(src))
+
+    # Sidecar row references the page.
+    sidecar = wiki.data_root / ".lies" / "memory_plans.jsonl"
+    assert sidecar.exists()
+    rows = [
+        json.loads(line)
+        for line in sidecar.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert any("alpha.md" in row.get("pages", [""])[0] for row in rows)
+
+    # Log entry with tag=ingest.
+    log = (wiki.wiki_dir / "log.md").read_text(encoding="utf-8")
+    assert "ingest |" in log
+    assert "alpha.md" in log
+
+    # ``rebuild_index`` runs after the commit and lists the new concept.
+    index = (wiki.wiki_dir / "index.md").read_text(encoding="utf-8")
+    assert "alpha.md" in index
+
+
 def test_run_ingest_quarantines_on_page_writer_failure(
     monkeypatch: pytest.MonkeyPatch,
     wiki_copy: Path,
