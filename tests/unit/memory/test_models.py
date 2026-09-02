@@ -170,3 +170,56 @@ def test_page_create_with_custom_tag_is_frozen() -> None:
     assert op.tag == "ingest"
     with pytest.raises(ValidationError):
         op.tag = "synthesis"  # type: ignore[misc]
+
+
+def test_memory_plan_rejects_heterogeneous_tags() -> None:
+    with pytest.raises(ValidationError):
+        MemoryPlan(
+            operations=[
+                PageCreate(path="x.md", content="a", evidence=["e"], tag="ingest"),
+                PageUpdate(
+                    path="y.md",
+                    expected_sha256="h",
+                    content="b",
+                    evidence=["e"],
+                    tag="memory",
+                ),
+            ],
+            rationale="mixed tags",
+            evidence=["e"],
+        )
+
+
+def test_memory_plan_accepts_homogeneous_tags_default() -> None:
+    plan = MemoryPlan(
+        operations=[
+            PageCreate(path="x.md", content="a", evidence=["e"]),
+            PageUpdate(
+                path="y.md",
+                expected_sha256="h",
+                content="b",
+                evidence=["e"],
+            ),
+        ],
+        rationale="all memory",
+        evidence=["e"],
+    )
+    assert {op.tag for op in plan.operations} == {"memory"}
+
+
+def test_memory_plan_accepts_homogeneous_tags_custom() -> None:
+    plan = MemoryPlan(
+        operations=[
+            PageCreate(path="x.md", content="a", evidence=["e"], tag="ingest"),
+            PageUpdate(
+                path="y.md",
+                expected_sha256="h",
+                content="b",
+                evidence=["e"],
+                tag="ingest",
+            ),
+        ],
+        rationale="all ingest",
+        evidence=["e"],
+    )
+    assert {op.tag for op in plan.operations} == {"ingest"}

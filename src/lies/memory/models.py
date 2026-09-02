@@ -213,6 +213,13 @@ class MemoryPlan(BaseModel):
             seen.add(op.path)
         return self
 
+    @model_validator(mode="after")
+    def _all_operations_share_one_tag(self) -> MemoryPlan:
+        tags = {op.tag for op in self.operations}
+        if len(tags) > 1:
+            raise ValueError(f"MemoryPlan ops must share one tag; got {sorted(tags)!r}")
+        return self
+
 
 class MemoryReceipt(BaseModel):
     """Result of applying (or attempting to apply) a MemoryPlan."""
