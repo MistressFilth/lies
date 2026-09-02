@@ -48,8 +48,9 @@ def test_ingest_source_calls_bootstrap_then_sync_collection(
             source="https://example.com/llms.txt",
             collection="alpha",
             name=wiki.name,
+            no_llm=True,
         )
-    assert result == "ingested https://example.com/llms.txt into alpha"
+    assert result == "ingested https://example.com/llms.txt into alpha (no_llm)"
     assert (wiki.collections_dir / "alpha.yaml").exists()
     # MCP tool passes the explicit ``collection`` through to
     # ``sync_collection``; the URL stem (``llms``) is ignored.
