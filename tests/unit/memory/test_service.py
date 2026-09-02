@@ -761,6 +761,69 @@ def test_apply_plan_delete_removes_existing_page(git_wiki: Wiki) -> None:
     delete_refs = [r for r in receipt.changed_pages if r.path == "concepts/obsolete.md"]
     assert delete_refs, "expected a PageReference for the deleted path"
     assert delete_refs[0].op == OperationKind.DELETE
+    # The deletion MUST land in git: an uncommitted ``D`` entry in the
+    # working tree would resurrect the file on the next ``apply_plan``'s
+    # snapshot/restore. Regression: ``_collect_commit_files`` previously
+    # filtered candidates by ``.exists()`` and dropped the deleted path.
+    porcelain = _tracked_porcelain(git_wiki.data_root)
+    assert porcelain == "", f"working tree should be clean after delete; got:\n{porcelain}"
+
+
+def test_apply_plan_delete_commits_to_git(git_wiki: Wiki) -> None:
+    """A ``PageDelete`` op MUST land in git (not stay as an uncommitted
+    ``D`` in the working tree).
+
+    Regression: ``_collect_commit_files`` filtered candidates by
+    ``.exists()``. ``_apply_operations`` unlinked the file before the
+    staging list was computed, so the path was dropped and ``git add``
+    never recorded the removal. The next ``apply_plan``'s snapshot
+    (which stashes uncommitted changes) + restore resurrected the file.
+
+    The fix: ``_collect_commit_files`` derives its candidate list from
+    the ``PageReference`` list returned by ``_apply_operations`` rather
+    than the raw plan ops, so successful deletes are staged even after
+    ``unlink``.
+    """
+    target = git_wiki.wiki_dir / "concepts" / "obsolete.md"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    sentinel = "---\ntitle: Obsolete\ntype: concept\n---\n# Obsolete\n"
+    target.write_text(sentinel, encoding="utf-8")
+    _git_init(git_wiki.data_root)
+
+    service = WikiMemoryService(wiki=git_wiki)
+    service.register_evidence({"raw/x.md"})
+    plan = MemoryPlan(
+        operations=[
+            PageDelete(path="concepts/obsolete.md", evidence=["raw/x.md"]),
+        ],
+        rationale="page replaced",
+        evidence=["raw/x.md"],
+    )
+    receipt = service.apply_plan(plan)
+
+    # 1. Working tree has no uncommitted modifications to tracked paths:
+    #    in particular no ``D`` entry for the deleted page (which would
+    #    resurrect it on the following snapshot/restore).
+    porcelain = _tracked_porcelain(git_wiki.data_root)
+    assert porcelain == "", f"working tree should be clean after delete; got:\n{porcelain}"
+
+    # 2. The most recent commit records the deletion with status ``D``.
+    name_status = subprocess.run(
+        ["git", "log", "-1", "--name-status"],
+        cwd=git_wiki.data_root,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    assert "D\twiki/concepts/obsolete.md" in name_status, name_status
+
+    # 3. The file is gone from the working tree.
+    assert not target.exists()
+
+    # 4. The receipt reflects the DELETE op.
+    delete_refs = [r for r in receipt.changed_pages if r.path == "concepts/obsolete.md"]
+    assert delete_refs, "expected a PageReference for the deleted path"
+    assert delete_refs[0].op == OperationKind.DELETE
 
 
 def test_apply_plan_delete_no_op_when_missing(git_wiki: Wiki) -> None:
@@ -778,6 +841,60 @@ def test_apply_plan_delete_no_op_when_missing(git_wiki: Wiki) -> None:
     )
     receipt = service.apply_plan(plan)
     assert not any(r.path == "concepts/never-existed.md" for r in receipt.changed_pages)
+
+
+def test_apply_plan_delete_no_op_when_missing_still_records_commit(
+    git_wiki: Wiki,
+) -> None:
+    """A no-op ``PageDelete`` (file already absent) leaves the receipt
+    with no ``PageReference`` for the target, but the plan still
+    commits ``wiki/index.md`` / ``wiki/log.md`` (which ``rebuild_index``
+    and ``append_log_entry`` always touch) so ``git status`` is clean.
+
+    Regression: a previous fix attempt included the deletion target in
+    the staging list unconditionally; ``git add`` failed on the
+    never-existed path (``fatal: pathspec ... did not match any files``)
+    and broke the commit. The correct mechanism uses the
+    ``_apply_operations`` ``changed`` list, which omits no-op deletes.
+    """
+    service = WikiMemoryService(wiki=git_wiki)
+    service.register_evidence({"raw/x.md"})
+    plan = MemoryPlan(
+        operations=[
+            PageDelete(path="concepts/never-was.md", evidence=["raw/x.md"]),
+        ],
+        rationale="ensure gone",
+        evidence=["raw/x.md"],
+    )
+    receipt = service.apply_plan(plan)
+    # No PageReference for the target — the op was a no-op.
+    assert receipt.changed_pages == []
+    # Working tree must still be clean: the index/log rewrites that
+    # ``rebuild_index`` / ``append_log_entry`` performed were committed.
+    porcelain = _tracked_porcelain(git_wiki.data_root)
+    assert porcelain == "", f"working tree should be clean after no-op delete; got:\n{porcelain}"
+
+
+def _tracked_porcelain(repo: Path) -> str:
+    """Return ``git status --porcelain`` with untracked entries stripped.
+
+    The ``git_wiki`` fixture does not seed ``.gitignore`` so the
+    per-wiki sidecar at ``<data_root>/.lies/`` (created by
+    ``append_receipt``) shows up as an untracked directory in
+    ``git status``. The fix under test concerns committed-path
+    bookkeeping, not sidecar artifacts, so strip untracked entries
+    before asserting the working tree is clean.
+    """
+    raw = subprocess.run(
+        ["git", "status", "--porcelain"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    return "\n".join(
+        line for line in raw.splitlines() if line and not line.startswith("??")
+    ).strip()
 
 
 def test_apply_plan_delete_refuses_index_md(git_wiki: Wiki) -> None:

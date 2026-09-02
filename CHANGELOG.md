@@ -97,6 +97,15 @@ All notable changes to LIES are documented here. The format follows
   review.
 - Top-level `--name` removed. Subcommand `--name` is the only path;
   the REPL reads the wiki from `$LIES_WIKI_NAME` via `get_wiki_name()`.
+- `PageDelete` ops now land in git. Previously, `_collect_commit_files`
+  filtered staging candidates by `.exists()`, so the path was dropped
+  after `_apply_operations` unlinked the file; the deletion stayed as an
+  uncommitted `D` entry and the next `apply_plan`'s snapshot/restore
+  resurrected the file. The candidate list now derives from the
+  `PageReference` list returned by `_apply_operations`, so successful
+  deletes are staged even after `unlink`. No-op deletes (file never
+  existed) remain absent from the list so `git add` is never asked to
+  stage a never-existed path.
 
 ## [0.11.1] - 2026-08-24
 

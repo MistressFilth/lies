@@ -401,7 +401,7 @@ class WikiMemoryService:
                 self._restore_working_tree(repo, snapshot_ref)
                 raise
             try:
-                files = self._collect_commit_files(plan)
+                files = self._collect_commit_files(plan, changed)
                 if not files:
                     self._restore_working_tree(repo, snapshot_ref)
                     return self._empty_receipt()
@@ -498,13 +498,15 @@ class WikiMemoryService:
             # write. ``log_path`` has no analogous pathway because
             # ``append_log_entry`` already owns log mutation.
             #
-            # The path-equality check covers both the bare-name form
-            # (``op.path == "wiki/log.md"``) and the resolved form
-            # (``resolved == log_path``) because ``validate_page_path``
-            # joins ``op.path`` onto ``wiki.wiki_dir``, so a literal
-            # ``wiki/log.md`` input becomes ``wiki/wikifiles/log.md``
-            # after resolution and the bare-name comparison is the only
-            # reliable equality check.
+            # Both the bare-name form (``op.path == "log.md"``) and the
+            # qualified form (``op.path == "wiki/log.md"``) reach the
+            # dispatcher's guard: ``validate_page_path`` joins ``op.path``
+            # onto ``wiki.wiki_dir``, so a literal ``wiki/log.md`` input
+            # resolves to ``wiki.wiki_dir/wiki/log.md`` (not ``log_path``)
+            # and is matched by the string equality, while a bare
+            # ``log.md`` input resolves to ``log_path`` and is matched by
+            # the resolved equality. In either case the guard raises and
+            # the op-shape-specific branches below never see those paths.
             is_system_log = op.path == "wiki/log.md" or resolved == log_path
             is_system_index = op.path == "wiki/index.md" or resolved == index_path
             if is_system_log:
@@ -515,10 +517,11 @@ class WikiMemoryService:
                 resolved.write_text(op.content, encoding="utf-8")
                 kind = OperationKind.CREATE
             elif isinstance(op, PageUpdate):
+                # ``log_path`` is blocked by the guard above; only the
+                # ``index_path`` carve-out reaches this branch. All other
+                # targets fall through to ``_read_page``.
                 if resolved == index_path:
                     existing = index_path.read_text(encoding="utf-8")
-                elif resolved == log_path:
-                    existing = log_path.read_text(encoding="utf-8") if log_path.exists() else None
                 else:
                     existing = _read_page(self._wiki, op.path)
                 actual = "" if existing is None else _hash_text(existing)
@@ -527,12 +530,10 @@ class WikiMemoryService:
                 resolved.write_text(op.content, encoding="utf-8")
                 kind = OperationKind.UPDATE
             elif isinstance(op, EvidenceAppend):
-                if resolved == index_path:
-                    existing = index_path.read_text(encoding="utf-8")
-                elif resolved == log_path:
-                    existing = log_path.read_text(encoding="utf-8") if log_path.exists() else None
-                else:
-                    existing = _read_page(self._wiki, op.path)
+                # Both ``log_path`` and ``index_path`` are blocked by the
+                # guard above. Every surviving op targets a non-system
+                # page, so the unconditional ``_read_page`` is correct.
+                existing = _read_page(self._wiki, op.path)
                 actual = "" if existing is None else _hash_text(existing)
                 if actual != op.expected_sha256:
                     raise WikiWriteConflict(f"hash mismatch for {op.path}")
@@ -567,24 +568,45 @@ class WikiMemoryService:
             )
         return changed
 
-    def _collect_commit_files(self, plan: MemoryPlan) -> list[str]:
+    def _collect_commit_files(self, plan: MemoryPlan, changed: list[PageReference]) -> list[str]:
         """Compute the repo-relative paths to commit for ``plan``.
 
-        Includes every op's target page plus ``wiki/index.md`` and
-        ``wiki/log.md``. Files that do not exist on disk are skipped so
-        a fresh repo (where ``wiki/log.md`` may not yet exist) does not
-        pass an empty list to ``atomic_commit``. Returns a sorted,
-        de-duplicated list of repo-relative POSIX paths.
+        Driven by ``changed`` (the ``PageReference`` list returned by
+        ``_apply_operations``) rather than the raw ``plan.operations``
+        so a successful ``PageDelete`` is staged even though ``unlink``
+        already removed it from disk. ``git add`` records the removal
+        when the path is passed; if the path is omitted the working
+        tree keeps the file uncommitted and the next ``apply_plan``'s
+        snapshot/restore resurrects it.
+
+        A no-op ``PageDelete`` (file never existed) leaves no
+        ``PageReference`` in ``changed`` and therefore no entry in
+        ``candidates`` — ``git add`` is never asked to stage a
+        never-existed path (it returns ``fatal: pathspec ... did not
+        match any files``).
+
+        System files (``wiki/index.md``, ``wiki/log.md``) are added
+        unconditionally; the trailing ``.exists()`` filter drops
+        ``wiki/log.md`` only on a fresh repo where ``append_log_entry``
+        has not yet created it. Returns a sorted, de-duplicated list of
+        repo-relative POSIX paths.
         """
         root = self._wiki.data_root
         index_path = self._wiki.wiki_dir / "index.md"
         candidates: set[str] = set()
-        for op in plan.operations:
+        for ref in changed:
             try:
-                resolved = validate_page_path(self._wiki, op.path)
+                resolved = validate_page_path(self._wiki, ref.path)
             except WikiPlanInvalid:
                 continue  # validate_plan should have rejected this already
-            if op.path == "wiki/index.md" or resolved == index_path:
+            # ``validate_page_path`` joins ``ref.path`` onto
+            # ``wiki.wiki_dir``. A literal ``"wiki/index.md"`` input
+            # (e.g. the repair agent's ``UpdateIndex`` →
+            # ``PageUpdate(path="wiki/index.md")``) would otherwise
+            # resolve to ``wiki.wiki_dir/wiki/index.md`` instead of the
+            # real catalog at ``wiki.wiki_dir/index.md``. Remap to the
+            # on-disk path before computing the repo-relative form.
+            if ref.path == "wiki/index.md" or resolved == index_path:
                 resolved = index_path
             try:
                 rel = resolved.relative_to(root).as_posix()
@@ -593,7 +615,11 @@ class WikiMemoryService:
             candidates.add(rel)
         candidates.add("wiki/index.md")
         candidates.add("wiki/log.md")
-        return sorted(p for p in candidates if (root / p).exists())
+        return sorted(
+            p
+            for p in candidates
+            if p not in ("wiki/index.md", "wiki/log.md") or (root / p).exists()
+        )
 
     def _restore_index(self) -> None:
         try:
