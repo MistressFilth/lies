@@ -63,15 +63,19 @@ app.add_typer(collections_app, name="collections", rich_help_panel="Wiki managem
 
 # The REPL callback -- invoked when ``lies`` is run with no subcommand.
 # Lives in __init__.py so the bare ``lies`` command (no subcommand) is the REPL.
+#
+# Note: the top-level ``--name`` option was removed. It was registered on this
+# callback but never threaded into subcommands that take their own ``--name``
+# (e.g. ``config``, ``lint``, ``collections show``); the operator typed
+# ``lies --name <wiki> <subcommand>`` and silently got the wrong wiki. The
+# subcommand ``--name`` is the only path. After ``consolidate-wikis`` lands,
+# ``--name`` is replaced by ``--project`` at the daemon level and the
+# top-level-vs-subcommand distinction dissolves. The REPL reads
+# ``LIES_WIKI_NAME`` directly via ``get_wiki_name()`` when no subcommand
+# is invoked; no top-level option is needed.
 @app.callback(invoke_without_command=True)
 def main(
     ctx: typer.Context,
-    name: str | None = typer.Option(
-        None,
-        "--name",
-        envvar="LIES_WIKI_NAME",
-        help="Wiki for REPL commands (default: $LIES_WIKI_NAME).",
-    ),
     no_memory: bool = typer.Option(
         False,
         "--no-memory",
@@ -90,7 +94,7 @@ def main(
     from lies.wiki.git import atomic_commit
 
     configure_logging()
-    wiki = _resolve_wiki(name)
+    wiki = _resolve_wiki(get_wiki_name())
     orch = _Orchestrator(wiki)
     console = Console()
     console.print("[bold]LIES REPL[/bold] -- type /help for commands, /exit to leave.")
@@ -151,6 +155,7 @@ from lies.cli._helpers import (
     WikiLockBusy,
     acquire_create_lock,
 )
+from lies.config import get_wiki_name
 
 # Lazy re-exports for test compat. Several tests do
 # ``monkeypatch.setattr("lies.cli.Orchestrator", ...)`` /
