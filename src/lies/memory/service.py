@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from lies.agents.repair_models import RepairPlan
 
+from lies.agents.page_writer import PageDiff, PageOperation
 from lies.lock_errors import (  # noqa: F401 — Task 5/6/7 will reference these from this module.
     WikiFlockCorrupt,
     WikiFlockIndeterminate,
@@ -44,6 +45,7 @@ from lies.memory.models import (
     WikiPlanInvalid,
     WikiSearchResult,
     WikiWriteConflict,
+    _PlanOperation,
 )
 from lies.memory.retrieval import _path_for_id, read_pages, search_wiki
 from lies.memory.validation import (
@@ -166,6 +168,61 @@ def _read_page(wiki: Wiki, path: str) -> str | None:
         return resolved.read_text(encoding="utf-8")
     except OSError, UnicodeDecodeError:
         return ""
+
+
+def translate_page_diffs_to_plan(
+    diffs: list[PageDiff],
+    *,
+    collection: str,
+    source_path: str,
+    sha_lookup: Callable[[str], str] | None = None,
+) -> MemoryPlan:
+    """Map page-writer output to a MemoryPlan with tag="ingest".
+
+    Each ``PageDiff`` becomes one operation carrying the source path
+    as its sole evidence reference. ``PageUpdate`` requires
+    ``sha_lookup``; ``PageCreate`` and ``PageDelete`` do not.
+    """
+    operations: list[_PlanOperation] = []
+    for diff in diffs:
+        rel = diff.path.as_posix() if isinstance(diff.path, Path) else str(diff.path)
+        if diff.operation == PageOperation.CREATE:
+            if diff.new_content is None:
+                raise WikiPlanInvalid(f"CREATE op missing new_content: {rel}")
+            operations.append(
+                PageCreate(
+                    path=rel,
+                    content=diff.new_content,
+                    evidence=[source_path],
+                    tag="ingest",
+                )
+            )
+        elif diff.operation == PageOperation.UPDATE:
+            if diff.new_content is None:
+                raise WikiPlanInvalid(f"UPDATE op missing new_content: {rel}")
+            if sha_lookup is None:
+                raise WikiPlanInvalid(
+                    f"UPDATE op {rel} requires sha_lookup so expected_sha256 can be set"
+                )
+            operations.append(
+                PageUpdate(
+                    path=rel,
+                    expected_sha256=sha_lookup(rel),
+                    content=diff.new_content,
+                    evidence=[source_path],
+                    tag="ingest",
+                )
+            )
+        elif diff.operation == PageOperation.DELETE:
+            operations.append(PageDelete(path=rel, evidence=[source_path], tag="ingest"))
+        else:
+            raise WikiPlanInvalid(f"unsupported PageOperation: {diff.operation!r}")
+    rationale = f"ingest {source_path} into {collection}"
+    return MemoryPlan(
+        operations=operations,
+        rationale=rationale,
+        evidence=[source_path],
+    )
 
 
 def _page_type_from_dir(directory_name: str) -> str:

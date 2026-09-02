@@ -7,6 +7,7 @@ from pathlib import Path, PurePosixPath
 
 import pytest
 
+from lies.agents.page_writer import PageDiff, PageOperation
 from lies.lock_errors import WikiFlockIndeterminate
 from lies.memory.models import (
     EvidenceAppend,
@@ -18,7 +19,11 @@ from lies.memory.models import (
     WikiPlanInvalid,
     WikiWriteConflict,
 )
-from lies.memory.service import WikiMemoryService, _acquire_wiki_flock
+from lies.memory.service import (
+    WikiMemoryService,
+    _acquire_wiki_flock,
+    translate_page_diffs_to_plan,
+)
 from lies.utils.lock_heartbeat import AcquireResult
 from lies.wiki.wiki import Wiki
 from tests.conftest import make_wiki
@@ -1118,3 +1123,71 @@ def test_apply_plan_create_refuses_index_md(git_wiki: Wiki) -> None:
     with pytest.raises(WikiPlanInvalid, match="system file"):
         service.apply_plan(plan)
     assert index.read_text(encoding="utf-8") == original, "index.md must be intact"
+
+
+def test_translate_page_diffs_to_plan_create(tmp_path: Path) -> None:
+    diffs = [
+        PageDiff(
+            operation=PageOperation.CREATE,
+            path=Path("wiki/concepts/alpha.md"),
+            new_content="# Alpha\n\nbody",
+        )
+    ]
+    plan = translate_page_diffs_to_plan(
+        diffs=diffs,
+        collection="claude-code",
+        source_path="raw/articles/x.md",
+    )
+    assert plan.rationale == "ingest raw/articles/x.md into claude-code"
+    assert len(plan.operations) == 1
+    op = plan.operations[0]
+    assert isinstance(op, PageCreate)
+    assert op.path == "wiki/concepts/alpha.md"
+    assert op.content == "# Alpha\n\nbody"
+    assert op.evidence == ["raw/articles/x.md"]
+    assert op.tag == "ingest"
+
+
+def test_translate_page_diffs_to_plan_update(tmp_path: Path) -> None:
+    diffs = [
+        PageDiff(
+            operation=PageOperation.UPDATE,
+            path=Path("wiki/concepts/alpha.md"),
+            old_content="old",
+            new_content="new",
+        )
+    ]
+    plan = translate_page_diffs_to_plan(
+        diffs=diffs,
+        collection="claude-code",
+        source_path="raw/articles/x.md",
+        sha_lookup=lambda p: "deadbeef",
+    )
+    op = plan.operations[0]
+    assert isinstance(op, PageUpdate)
+    assert op.expected_sha256 == "deadbeef"
+    assert op.content == "new"
+
+
+def test_translate_page_diffs_to_plan_delete(tmp_path: Path) -> None:
+    diffs = [
+        PageDiff(
+            operation=PageOperation.DELETE,
+            path=Path("wiki/concepts/obsolete.md"),
+        )
+    ]
+    plan = translate_page_diffs_to_plan(
+        diffs=diffs,
+        collection="claude-code",
+        source_path="raw/articles/x.md",
+    )
+    assert isinstance(plan.operations[0], PageDelete)
+
+
+def test_translate_page_diffs_to_plan_empty_returns_noop(tmp_path: Path) -> None:
+    plan = translate_page_diffs_to_plan(
+        diffs=[],
+        collection="claude-code",
+        source_path="raw/articles/x.md",
+    )
+    assert plan.is_noop()
