@@ -338,14 +338,17 @@ class WikiMemoryService:
             except WikiPlanInvalid as exc:
                 raise WikiPlanInvalid(str(exc), path=op.path) from exc
             is_index = op.path == "wiki/index.md" or resolved == self._wiki.wiki_dir / "index.md"
+            is_log = op.path == "wiki/log.md" or resolved == self._wiki.wiki_dir / "log.md"
             if is_index:
                 resolved = self._wiki.wiki_dir / "index.md"
+            elif is_log:
+                resolved = self._wiki.wiki_dir / "log.md"
             page_type = _page_type_from_dir(resolved.parent.name)
-            if not is_index:
+            if not is_index and not is_log:
                 validate_page_type(page_type)
             if not isinstance(op, (PageCreate, PageUpdate, EvidenceAppend, PageDelete)):
                 raise WikiPlanInvalid(f"unsupported operation: {op!r}", path=op.path)
-            if not is_index and isinstance(op, (PageCreate, PageUpdate)):
+            if not is_index and not is_log and isinstance(op, (PageCreate, PageUpdate)):
                 try:
                     validate_frontmatter(parse_frontmatter(op.content), page_type=page_type)
                 except WikiPlanInvalid as exc:

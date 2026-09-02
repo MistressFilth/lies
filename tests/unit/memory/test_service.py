@@ -829,7 +829,12 @@ def test_apply_plan_delete_refuses_log_md(git_wiki: Wiki) -> None:
     ``wiki/log.md`` path is rejected earlier by ``validate_plan``'s
     ``validate_page_type`` step because ``log.md``'s parent is the wiki
     root (not a recognized page-type directory), which would mask a
-    regression in the apply-side guard."""
+    regression in the apply-side guard.
+
+    Asserts the apply-side guard's exact message so a regression that
+    makes ``validate_page_type`` reject the path instead is caught —
+    the bare-path route should reach the apply-side guard.
+    """
     log = git_wiki.wiki_dir / "log.md"
     log.write_text("# Log\n- entry\n", encoding="utf-8")
     _git_init(git_wiki.data_root)
@@ -842,6 +847,34 @@ def test_apply_plan_delete_refuses_log_md(git_wiki: Wiki) -> None:
         rationale="attempt to drop log via bare path",
         evidence=["raw/x.md"],
     )
-    with pytest.raises(WikiPlanInvalid):
+    with pytest.raises(WikiPlanInvalid, match="system file"):
+        service.apply_plan(plan)
+    assert log.exists(), "log.md must be intact"
+
+
+def test_apply_plan_delete_refuses_log_md_now_exercises_guard(git_wiki: Wiki) -> None:
+    """``PageDelete(path='log.md')`` is rejected by the apply-side
+    ``system file`` guard inside ``_apply_operations`` rather than by
+    ``validate_plan``'s ``validate_page_type`` step.
+
+    The assertion is on the exact message ``"system file"`` — the
+    apply-side guard's signature. ``validate_page_type`` would surface
+    ``"unknown page type"`` instead, which would indicate the
+    ``is_log`` branch in ``validate_plan`` regressed and the test is
+    vacuous.
+    """
+    log = git_wiki.wiki_dir / "log.md"
+    log.write_text("# Log\n- entry\n", encoding="utf-8")
+    _git_init(git_wiki.data_root)
+    service = WikiMemoryService(wiki=git_wiki)
+    service.register_evidence({"raw/x.md"})
+    plan = MemoryPlan(
+        operations=[
+            PageDelete(path="log.md", evidence=["raw/x.md"]),
+        ],
+        rationale="attempt to drop log via bare path",
+        evidence=["raw/x.md"],
+    )
+    with pytest.raises(WikiPlanInvalid, match="system file"):
         service.apply_plan(plan)
     assert log.exists(), "log.md must be intact"
