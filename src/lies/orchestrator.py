@@ -16,12 +16,16 @@ from pydantic_ai.models import Model
 
 from lies.agents.indexer import indexer_agent
 from lies.agents.linter import LintFinding, LintReport, linter_agent
-from lies.agents.page_writer import page_writer_agent
+from lies.agents.page_writer import (
+    PageDiff,
+    PageWriterDeps,
+    page_writer_agent,
+)
 from lies.agents.query_synthesizer import QueryAnswer, QueryDeps, query_synthesizer_agent
 from lies.agents.repair import RepairAgentDeps, repair_agent
 from lies.agents.repair_models import RepairPlan, RepairReceipt
 from lies.agents.repair_validation import ValidatedRepairPlan, validate_plan
-from lies.agents.source_reader import source_reader_agent
+from lies.agents.source_reader import SourceExtraction, source_reader_agent
 from lies.capabilities import (
     code_mode,
     dynamic_workflow,
@@ -33,6 +37,7 @@ from lies.config import get_qmd_transport, get_qmd_url
 from lies.lock_errors import WikiFlockUnrepairable, WikiLockBusy
 from lies.memory.enricher import MemoryEnricherDeps, enricher_agent
 from lies.memory.models import (
+    IngestQuarantined,
     IngestSourceUnreachable,
     MemoryPlan,
     MemoryReceipt,
@@ -1232,6 +1237,99 @@ class Orchestrator:
             )
             return None, f"{type(exc).__name__}: {exc}"
         return result.output, ""
+
+    # -- F2 single-source ingest wrappers --------------------------------------
+    #
+    # These two wrappers back the ingest-source flow
+    # (``lies ingest-source <path> --collection <name>``). Both follow the
+    # existing fail-soft shape (``except Exception``) but, unlike the
+    # lint / query-synthesizer wrappers that degrade silently, they
+    # quarantine the offending source and re-raise as
+    # :class:`IngestQuarantined` so the caller surfaces the failure
+    # rather than papering over it. ``source_relpath`` is the path the
+    # caller is operating on (e.g. ``raw/foo/incoming.md``);
+    # ``quarantine`` wants just the basename relative to
+    # ``raw/<collection>/``, so the wrappers strip the prefix before
+    # delegating.
+
+    def _call_source_reader(
+        self,
+        raw_path: Path,
+        *,
+        collection: str = "",
+        source_relpath: str = "",
+    ) -> SourceExtraction:
+        """Call ``source_reader_agent`` on the materialized raw file.
+
+        On any agent exception, quarantine the source and raise
+        :class:`IngestQuarantined`. ``collection`` and ``source_relpath``
+        are required for the quarantine sidecar; both default to
+        empty strings so the success-path unit tests don't need to
+        thread them through. Real callers (the F2 ingest flow) always
+        supply both.
+        """
+        try:
+            reader = source_reader_agent(model=self.models["source_reader"])
+            extraction: SourceExtraction = reader.run_sync(  # type: ignore[assignment]
+                f"Read {raw_path} and emit a SourceExtraction."
+            ).output
+            return extraction
+        except Exception as exc:
+            from lies.etl.quarantine import quarantine
+
+            quarantine(
+                self.wiki,
+                collection=collection,
+                path=source_relpath.removeprefix("raw/" + collection + "/"),
+                reason=f"source_reader_agent raised {type(exc).__name__}: {exc}",
+            )
+            raise IngestQuarantined(
+                source=source_relpath,
+                collection=collection,
+                reason=f"source_reader_agent raised {type(exc).__name__}: {exc}",
+            ) from exc
+
+    def _call_page_writer(
+        self,
+        *,
+        extraction: SourceExtraction,
+        existing_pages: list[tuple[str, str]],
+        schema_text: str,
+        collection: str = "",
+        source_relpath: str = "",
+    ) -> list[PageDiff]:
+        """Call ``page_writer_agent`` with deps, returning ``list[PageDiff]``.
+
+        Quarantine + raise on agent failure (mirrors
+        :meth:`_call_source_reader`). ``collection`` and
+        ``source_relpath`` are required for the quarantine sidecar;
+        real callers always supply both, but both default to empty
+        strings so the success-path unit tests don't need to thread
+        them through.
+        """
+        try:
+            writer = page_writer_agent(model=self.models["page_writer"])
+            deps = PageWriterDeps(
+                question=f"Ingest {source_relpath} into {collection}",
+                schema_text=schema_text,
+                existing_pages=existing_pages,
+            )
+            diffs: list[PageDiff] = writer.run_sync(deps=deps).output  # type: ignore[assignment]
+            return diffs
+        except Exception as exc:
+            from lies.etl.quarantine import quarantine
+
+            quarantine(
+                self.wiki,
+                collection=collection,
+                path=source_relpath.removeprefix("raw/" + collection + "/"),
+                reason=f"page_writer_agent raised {type(exc).__name__}: {exc}",
+            )
+            raise IngestQuarantined(
+                source=source_relpath,
+                collection=collection,
+                reason=f"page_writer_agent raised {type(exc).__name__}: {exc}",
+            ) from exc
 
     def run_lint(
         self,
