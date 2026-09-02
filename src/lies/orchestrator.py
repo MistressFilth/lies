@@ -1116,24 +1116,106 @@ class Orchestrator:
         except Exception:  # noqa: BLE001 - last-resort graceful degradation
             return ""
 
-    def run_ingest(self, source: str) -> str:
-        """Backward-compatible wrapper. Delegates to SyncOrchestrator.
+    def run_ingest(self, source: str, *, no_llm: bool = False) -> str:
+        """Ingest a single source through the LLM round-trip (default)
+        or via ``sync_collection`` (when ``no_llm=True``).
 
-        To be deleted in a follow-up release once CLI and tests migrate.
+        F2 default (``no_llm=False``):
+          1. materialize ``source`` to ``raw/<collection>/<basename>``
+          2. snapshot working tree (``_snapshot_working_tree``)
+          3. ``source_reader_agent`` → ``SourceExtraction``
+          4. ``_list_existing_pages`` (deterministic)
+          5. ``page_writer_agent`` → ``list[PageDiff]``
+          6. ``translate_page_diffs_to_plan`` → ``MemoryPlan(tag="ingest")``
+          7. ``WikiMemoryService.apply_plan`` (flock + atomic commit +
+             sidecar + log + qmd update + rebuild_index + rollback)
+          8. discard snapshot
+
+        Agent failures at steps 3 or 5 call
+        ``etl.quarantine.quarantine`` and raise ``IngestQuarantined``.
+        Infra failures rollback and propagate the typed error.
         """
         from lies.etl.sync_helper import sync_collection
+        from lies.memory.service import (
+            _hash_text,
+            _read_page,
+            translate_page_diffs_to_plan,
+        )
 
         collection_name = Path(source).stem
-        # The orchestrator still operates against a single on-disk wiki
-        # rooted at ``self.wiki.data_root``; pass that path through to
-        # sync_collection, which (in Task 11+) routes XDG lookups via
-        # the per-wiki ``Wiki`` dataclass. Construct a Wiki mirroring the
-        # legacy layout (every role pinned to data_root) so the XDG
-        # lookups that may try to mkdir on a privileged path are
-        # skipped — this back-compat shim keeps honoring the legacy
-        # locations for quarantine and telemetry.
-        sync_collection(self.wiki, collection_name, force=False)
-        return f"ingested {source}"
+        if no_llm:
+            sync_collection(self.wiki, collection_name, force=False)
+            return f"ingested {source}"
+
+        def _sha_lookup(rel: str) -> str:
+            """Return the SHA-256 of an existing wiki page, or "" if missing.
+
+            The page-writer agent emits UPDATE ops with a fresh
+            ``new_content``; the adapter sets ``expected_sha256`` to the
+            current on-disk hash so :class:`WikiWriteConflict` catches
+            drift. Brand-new pages don't go through UPDATE, but we still
+            return "" uniformly for non-existent paths.
+            """
+            body = _read_page(self.wiki, rel)
+            return "" if body is None else _hash_text(body)
+
+        repo = self.wiki.data_root
+        # Snapshot first (captures pre-existing dirty state in the wiki),
+        # then materialize. The user's source is expected to live
+        # OUTSIDE the wiki — materialize copies it in AFTER the snapshot,
+        # so the materialized file is NOT part of the stash and quarantine
+        # can still find it on the failure path. The snapshot still
+        # stashes any agent-written untracked files (new wiki pages)
+        # that ``WikiMemoryService.apply_plan`` will overwrite on
+        # success; on failure the service's own snapshot/restore rolls
+        # those back too.
+        snapshot_ref = Orchestrator._snapshot_working_tree(repo)
+        raw_path = self._materialize_source(source, collection=collection_name)
+        source_relpath = raw_path.relative_to(repo).as_posix()
+        try:
+            extraction = self._call_source_reader(
+                raw_path,
+                collection=collection_name,
+                source_relpath=source_relpath,
+            )
+            existing_pages = self._list_existing_pages(collection_name)
+            schema_text = (
+                self.wiki.schema_path.read_text(encoding="utf-8")
+                if self.wiki.schema_path and self.wiki.schema_path.exists()
+                else ""
+            )
+            diffs = self._call_page_writer(
+                extraction=extraction,
+                existing_pages=existing_pages,
+                schema_text=schema_text,
+                collection=collection_name,
+                source_relpath=source_relpath,
+            )
+            plan = translate_page_diffs_to_plan(
+                diffs=diffs,
+                collection=collection_name,
+                source_path=source_relpath,
+                sha_lookup=_sha_lookup,
+            )
+            svc = WikiMemoryService(self.wiki)
+            svc.register_evidence({source_relpath, *plan.evidence})
+            svc.apply_plan(plan)
+        except IngestQuarantined:
+            # The agent wrapper already quarantined the source. No wiki
+            # writes happened, so the snapshot can be discarded (the
+            # underlying ``git stash push --include-untracked`` is
+            # purely a safety net; nothing was staged into HEAD).
+            Orchestrator._discard_snapshot(repo, snapshot_ref)
+            raise
+        except BaseException:
+            # Any other failure (WikiPlanInvalid, WikiWriteConflict,
+            # WikiCommitFailed, …) means the agent or the service
+            # envelope blew up after the snapshot was taken. Restore
+            # the working tree so a follow-up retry sees a clean slate.
+            Orchestrator._restore_working_tree(repo, snapshot_ref)
+            raise
+        Orchestrator._discard_snapshot(repo, snapshot_ref)
+        return f"ingested {source} into {collection_name}"
 
     def run_query(self, question: str) -> SynthesizedAnswer:
         """Answer ``question`` using the wiki, synthesized by the LLM.
