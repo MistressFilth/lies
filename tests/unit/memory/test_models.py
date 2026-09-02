@@ -143,3 +143,30 @@ def test_ingest_source_unreachable_is_wiki_memory_error() -> None:
     )
     assert isinstance(err, WikiMemoryError)
     assert "https://example.com/missing" in str(err)
+
+
+def test_page_create_default_tag_is_memory() -> None:
+    op = PageCreate(path="wiki/foo.md", evidence=["raw/x.md"], content="body")
+    assert op.tag == "memory"
+
+
+def test_page_update_default_tag_is_memory() -> None:
+    op = PageUpdate(
+        path="wiki/foo.md",
+        evidence=["raw/x.md"],
+        expected_sha256="abc",
+        content="body",
+    )
+    assert op.tag == "memory"
+
+
+def test_page_create_with_custom_tag_is_frozen() -> None:
+    op = PageCreate(
+        path="wiki/foo.md",
+        evidence=["raw/x.md"],
+        content="body",
+        tag="ingest",
+    )
+    assert op.tag == "ingest"
+    with pytest.raises(ValidationError):
+        op.tag = "synthesis"  # type: ignore[misc]

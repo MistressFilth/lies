@@ -160,6 +160,11 @@ class _PlanOperation(BaseModel):
 
     path: str
     evidence: list[str] = Field(min_length=1)
+    tag: str = "memory"
+    """Provenance label rendered in the git commit message and the
+    ``wiki/log.md`` entry. Defaults to ``"memory"`` for the existing
+    MemoryEnricher flow. Override to ``"ingest"`` (F2 single-source
+    ingest), ``"synthesis"`` (F3 file-back loop), etc."""
 
     kind: OperationKind
 
