@@ -221,8 +221,10 @@ Environment variables:
 - `LIES_XDG_CACHE_HOME` — overrides `$XDG_CACHE_HOME` for LIES
 - `LIES_ORCHESTRATOR_MODEL`, `LIES_SOURCE_READER_MODEL`, `LIES_PAGE_WRITER_MODEL`, `LIES_INDEXER_MODEL`, `LIES_LINTER_MODEL`, `LIES_QUERY_SYNTHESIZER_MODEL`, `LIES_ENRICHER_MODEL`, `LIES_REPAIR_MODEL` — per-agent model override. Non-empty value beats `providers.toml`.
 
-Most commands accept `--name` to override the wiki name for one
-invocation. `lies config` prints the active model and wiki name.
+Most subcommands accept `--name` to override the wiki name for one
+invocation. The bare `lies` REPL (no subcommand) reads the wiki name
+from `$LIES_WIKI_NAME` only; set the env var to switch wikis in the REPL.
+`lies config` prints the active model and wiki name.
 
 ### Bootstrapping providers
 
