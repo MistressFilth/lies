@@ -194,6 +194,18 @@ def _commit_changed_files(repo: Path) -> list[str]:
     return [line.strip() for line in result.stdout.splitlines() if line.strip()]
 
 
+def _last_git_commit_message(repo: Path) -> str:
+    """Return the full message of the most recent commit on ``repo``."""
+    result = subprocess.run(
+        ["git", "log", "-1", "--pretty=%B"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return result.stdout.rstrip("\n")
+
+
 def test_apply_plan_commit_includes_new_page_index_and_log(
     git_wiki: Wiki,
 ) -> None:
@@ -679,3 +691,47 @@ def test_acquire_wiki_flock_routes_indeterminate_to_wiki_flock_indeterminate(
     msg = str(caught.value)
     assert "pid 999" in msg
     assert "force-repair" in msg
+
+
+def test_apply_plan_commit_message_uses_op_tag(git_wiki: Wiki) -> None:
+    """An op with ``tag="ingest"`` must produce a commit message that
+    starts with ``ingest:`` (not the hard-coded ``memory:`` prefix)."""
+    service = WikiMemoryService(wiki=git_wiki)
+    service.register_evidence({"raw/articles/x.md"})
+    plan = MemoryPlan(
+        operations=[
+            PageCreate(
+                path="concepts/alpha.md",
+                content="---\ntitle: Alpha\ntype: concept\n---\n# Alpha\n",
+                evidence=["raw/articles/x.md"],
+                tag="ingest",
+            )
+        ],
+        rationale="distill single source",
+        evidence=["raw/articles/x.md"],
+    )
+    service.apply_plan(plan)
+    msg = _last_git_commit_message(git_wiki.data_root)
+    assert msg.startswith("ingest: distill single source"), msg
+
+
+def test_apply_plan_log_entry_uses_op_tag(git_wiki: Wiki) -> None:
+    """An op with ``tag="ingest"`` must produce a ``wiki/log.md`` entry
+    prefixed ``ingest | <op> | <path>`` (not the hard-coded ``memory``)."""
+    service = WikiMemoryService(wiki=git_wiki)
+    service.register_evidence({"raw/articles/x.md"})
+    plan = MemoryPlan(
+        operations=[
+            PageCreate(
+                path="concepts/alpha.md",
+                content="---\ntitle: Alpha\ntype: concept\n---\n# Alpha\n",
+                evidence=["raw/articles/x.md"],
+                tag="ingest",
+            )
+        ],
+        rationale="distill single source",
+        evidence=["raw/articles/x.md"],
+    )
+    service.apply_plan(plan)
+    log_text = (git_wiki.wiki_dir / "log.md").read_text(encoding="utf-8")
+    assert "ingest | create | concepts/alpha.md" in log_text, log_text

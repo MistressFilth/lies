@@ -406,8 +406,9 @@ class WikiMemoryService:
                 }
                 ops_str = " ".join(f"{k}={v}" for k, v in sorted(ops_hist.items()))
                 evidence_count = len(getattr(plan, "evidence", []) or [])
+                tag = next(iter(plan.operations)).tag
                 commit_message = (
-                    f"memory: {plan.rationale}\n\n"
+                    f"{tag}: {plan.rationale}\n\n"
                     f"Pages: {pages_list}\n"
                     f"Ops: {ops_str}\n"
                     f"Evidence: {evidence_count}\n"
@@ -510,7 +511,7 @@ class WikiMemoryService:
             append_log_entry(
                 self._wiki,
                 f"## [{datetime.now(tz=UTC).date().isoformat()}] "
-                f"memory | {op.kind.value} | {op.path}",
+                f"{op.tag} | {op.kind.value} | {op.path}",
             )
         return changed
 
