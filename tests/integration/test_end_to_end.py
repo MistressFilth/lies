@@ -145,7 +145,7 @@ def test_run_ingest_delegates_to_sync_helper(wiki_copy: Path) -> None:
     orch = Orchestrator(wiki=wiki, models=models_for_tests("test"))
 
     with mock.patch("lies.etl.sync_helper.sync_collection") as m:
-        result = orch.run_ingest("raw/articles/sample-article.md")
+        result = orch.run_ingest("raw/articles/sample-article.md", no_llm=True)
 
     # Wrapper returned the documented back-compat string.
     assert result == "ingested raw/articles/sample-article.md"

@@ -29,7 +29,7 @@ def _ref(name: str) -> WikiCollectionRef:
     )
 
 
-from pathlib import PurePosixPath
+from pathlib import PurePosixPath  # noqa: E402
 
 
 def _wiki(tmp_path: Path) -> Wiki:

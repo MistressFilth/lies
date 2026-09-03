@@ -78,7 +78,7 @@ def write_heartbeat(path: Path, heartbeat: Heartbeat) -> None:
 def read_heartbeat(path: Path) -> Heartbeat | None:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
-    except FileNotFoundError, json.JSONDecodeError:
+    except (FileNotFoundError, json.JSONDecodeError):
         return None
     try:
         return Heartbeat(
@@ -86,5 +86,5 @@ def read_heartbeat(path: Path) -> Heartbeat | None:
             started_at=float(payload["started_at"]),
             scope=str(payload.get("scope", "")),
         )
-    except KeyError, ValueError, TypeError:
+    except (KeyError, ValueError, TypeError):
         return None

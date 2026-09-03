@@ -211,6 +211,71 @@ def test_reconcile_skips_malformed_body(tmp_path: Path) -> None:
     assert sidecar.read_recent(wiki, limit=10) == []
 
 
+def test_reconcile_walks_ingest_tagged_commits(tmp_path: Path) -> None:
+    """F2: ``ingest:``-prefixed commits must also be reconciled.
+
+    Broadened regex / git-log grep must accept any lowercase tag, not just
+    ``memory:``. The rationale capture must keep working for the post-`:` body.
+    """
+    wiki = _wiki(tmp_path)
+    body = (
+        "Pages: wiki/entities/postgres.md, wiki/concepts/schemas.md\nOps: create=2\nEvidence: 4\n"
+    )
+    # Reuse the helper but swap the prefix from memory: to ingest:.
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.email", "t@t"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=tmp_path, check=True)
+    (tmp_path / "f").write_text("x")
+    subprocess.run(["git", "add", "f"], cwd=tmp_path, check=True)
+    full_msg = f"ingest: rationale\n\n{body}\n"
+    env = {"GIT_AUTHOR_DATE": "2026-08-24T18:32:14Z", "GIT_COMMITTER_DATE": "2026-08-24T18:32:14Z"}
+    subprocess.run(
+        ["git", "commit", "-q", "-m", full_msg],
+        cwd=tmp_path,
+        check=True,
+        env={**os.environ, **env},
+    )
+    n = sidecar.reconcile_from_git_log(wiki)
+    assert n == 1
+    rows = sidecar.read_recent(wiki, limit=10)
+    assert len(rows) == 1
+    assert rows[0].rationale == "rationale"
+    assert rows[0].pages == ["wiki/entities/postgres.md", "wiki/concepts/schemas.md"]
+
+
+def test_git_log_filter_matches_ingest_prefix_via_stub(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Stubbed subprocess.run: assert broadened grep + rationale parsing for ingest:.
+
+    The stub stands in for git's own --grep filtering; we assert two things:
+    1. The function passes -E (extended regex) and the broadened ``--grep``.
+    2. The rationale capture strips the ``ingest:`` prefix correctly.
+    """
+    captured: dict[str, object] = {}
+
+    fake_proc = subprocess.CompletedProcess(
+        args=[],
+        returncode=0,
+        stdout=("deadbeef\x002026-08-24T18:32:14+00:00\x00ingest: pulled three pages\n"),
+        stderr="",
+    )
+
+    def fake_run(*args, **kwargs):  # type: ignore[no-untyped-def]
+        captured["args"] = args[0]
+        return fake_proc
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    rows = sidecar._git_log_memory_commits(tmp_path)
+
+    # Broadened grep must accept any lowercase tag (not just ``memory:``) and
+    # use extended regex so ``+`` is a metacharacter.
+    argv = captured["args"]
+    assert "-E" in argv
+    assert "--grep=^[a-z]+:" in argv
+    assert rows == [("deadbeef", "2026-08-24T18:32:14+00:00", "pulled three pages")]
+
+
 def test_truncate_keeps_last_n(tmp_path: Path) -> None:
     wiki = _wiki(tmp_path)
     _seed_three_rows(wiki)
