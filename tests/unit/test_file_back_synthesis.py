@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 from lies.memory.errors import WikiPlanInvalid
 from lies.memory.models import (
@@ -14,6 +17,7 @@ from lies.memory.models import (
 )
 from lies.orchestrator import Orchestrator
 from lies.query.models import SynthesizedAnswer
+from tests.conftest import make_wiki, models_for_tests
 
 
 def _answer() -> SynthesizedAnswer:
@@ -165,3 +169,124 @@ def test_file_back_synthesis_does_not_retry_on_wikiplaninvalid_from_build(
         fallback_reason="",
         errors=["plan_invalid: pages_read is empty; nothing to file"],
     )
+
+
+@pytest.fixture
+def real_orch(tmp_path: Path) -> Orchestrator:
+    """Real Orchestrator wired to a real WikiMemoryService.
+
+    Existing ``file_back_synthesis`` tests use ``MagicMock`` for the
+    service, which silently bypasses ``validate_plan``. This fixture
+    stands up the full service so a regression in the validation
+    envelope surfaces as a real ``WikiEvidenceMissing`` rather than a
+    no-op mock call.
+    """
+    from lies.query.synthesizer import set_qmd_search
+
+    root = tmp_path / "wiki"
+    (root / "wiki" / "concepts").mkdir(parents=True)
+    (root / "raw").mkdir(parents=True)
+    (root / "wiki" / "concepts" / "alpha.md").write_text(
+        "---\ntitle: Alpha\ntype: concept\n---\n\nAlpha is the first letter.\n",
+        encoding="utf-8",
+    )
+    (root / "wiki" / "index.md").write_text(
+        "# Index\n\n## concepts\n\n- [Alpha](concepts/alpha.md) — `alpha`\n",
+        encoding="utf-8",
+    )
+    wiki = make_wiki(name="fileback", data_root=root)
+    wiki.config_root.mkdir(parents=True, exist_ok=True)
+    (wiki.config_root / "schema.md").write_text(
+        "## Page types\n- concept\n- synthesis\n", encoding="utf-8"
+    )
+    subprocess.run(["git", "init", "--initial-branch=main", str(root)], check=True)
+    subprocess.run(["git", "config", "user.email", "t@e.com"], cwd=root, check=True)
+    subprocess.run(["git", "config", "user.name", "T"], cwd=root, check=True)
+    subprocess.run(["git", "add", "."], cwd=root, check=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=root, check=True)
+    set_qmd_search(lambda *a, **kw: [{"path": "wiki/concepts/alpha.md", "score": 0.9}])
+    try:
+        yield Orchestrator(wiki=wiki, models=models_for_tests("test"))
+    finally:
+        from lies.query.synthesizer import qmd_query
+
+        set_qmd_search(qmd_query)
+
+
+def test_run_query_registers_pages_read_evidence_before_file_back(
+    real_orch: Orchestrator, tmp_path: Path
+) -> None:
+    """Bug 3 regression: ``run_query`` must register pages_read evidence.
+
+    Before the fix, ``run_query`` called ``file_back_synthesis`` without
+    first calling ``register_evidence``; the plan's
+    ``evidence=pages_read`` was rejected by ``validate_operation_evidence``
+    because ``_known_evidence`` was empty. The receipt carried
+    ``plan_invalid: frontmatter type missing or does not match page_type
+    'synthesi'`` (Bug 1/Bug 2 compounded with Bug 3) or simply
+    ``WikiEvidenceMissing``.
+
+    With all three bugs fixed, ``run_query(file=True, force_file=True)``
+    files a real synthesis page on disk; ``apply_plan`` returns a
+    receipt whose ``changed_pages`` lists the new file.
+    """
+    from lies.agents.query_synthesizer import QueryAnswer
+    from unittest import mock
+
+    canned = QueryAnswer(
+        answer="Alpha is the first letter. [Alpha](wiki/concepts/alpha.md)",
+        citations=["wiki/concepts/alpha.md"],
+        should_file=True,
+    )
+    with mock.patch.object(
+        type(real_orch._query_synthesizer_agent), "run_sync", return_value=mock.Mock(output=canned)
+    ):
+        result = real_orch.run_query(
+            "what is alpha?",
+            collection="wiki",
+            file=True,
+            force_file=True,
+        )
+
+    assert result.synthesis_used is True
+    assert result.file_receipt is not None
+    # The receipt must show a successful write, not a validation failure.
+    assert result.file_receipt.errors == []
+    assert result.file_receipt.changed_pages, result.file_receipt
+
+    # And the page must actually exist on disk under the synthesis dir.
+    written = [op for op in result.file_receipt.changed_pages if "/synthesis/" in op.path]
+    assert written, result.file_receipt
+    # ``PageReference.path`` keeps the ``wiki/`` prefix; ``_apply_operations``
+    # strips it before resolving against ``wiki_dir`` for the actual write.
+    rel = written[0].path.removeprefix("wiki/").removeprefix("wiki/")
+    on_disk = (real_orch.wiki.wiki_dir / rel).read_text(encoding="utf-8")
+    assert "type: synthesis" in on_disk
+    assert "tags: [synthesis]" in on_disk
+
+
+def test_run_query_file_back_rejects_unknown_evidence(
+    real_orch: Orchestrator,
+) -> None:
+    """Validation envelope: unknown evidence must still trip apply_plan.
+
+    Guards the contract from the other direction: if a plan references
+    evidence that was never registered (whether the caller forgot or the
+    agent hallucinated), ``apply_plan`` raises. Pairs with the
+    regression above to confirm the fix didn't accidentally widen the
+    evidence window.
+    """
+    from lies.memory.models import WikiEvidenceMissing
+    from lies.memory.service import build_synthesis_plan
+
+    # Build a plan whose evidence references a page the orchestrator
+    # never registered. Without a prior ``register_evidence`` call,
+    # ``validate_operation_evidence`` must reject it.
+    plan = build_synthesis_plan(
+        question="what is a hook?",
+        answer="A hook intercepts events.",
+        pages_read=["wiki/concepts/ghost.md"],
+        collection="wiki",
+    )
+    with pytest.raises(WikiEvidenceMissing):
+        real_orch._memory_service.apply_plan(plan)

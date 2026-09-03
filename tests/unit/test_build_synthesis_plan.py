@@ -13,7 +13,11 @@ from lies.memory.models import (
     PageUpdate,
     WikiPlanInvalid,
 )
-from lies.memory.service import build_synthesis_plan
+from lies.memory.service import (
+    _format_synthesis_body,
+    _page_type_from_dir,
+    build_synthesis_plan,
+)
 
 
 QUESTION = "what is a hook?"
@@ -118,3 +122,45 @@ def test_build_synthesis_plan_collision_without_sha_lookup_raises() -> None:
             # sha_lookup omitted on purpose; the helper detects the
             # collision via an `exists` probe and requires sha_lookup.
         )
+
+
+def test_page_type_from_dir_preserves_synthesis() -> None:
+    """Bug 1 regression: ``synthesis`` is its own singular form.
+
+    The naive ``removesuffix("s")`` branch used to mangle
+    ``"synthesis"`` into ``"synthesi"``, which then failed
+    ``validate_page_type`` and made the synthesis file-back path
+    impossible to validate.
+    """
+    assert _page_type_from_dir("synthesis") == "synthesis"
+    # Spot-check the other branches still work after the special-case.
+    assert _page_type_from_dir("concepts") == "concept"
+    assert _page_type_from_dir("entities") == "entity"
+    assert _page_type_from_dir("comparisons") == "comparison"
+
+
+def test_synthesis_body_declares_type_in_frontmatter() -> None:
+    """Bug 2 regression: ``type: synthesis`` must be in the frontmatter.
+
+    ``validate_frontmatter`` rejects a body whose declared ``type:``
+    is missing or mismatched against the derived ``page_type``. Without
+    this line, ``validate_plan`` raised ``WikiPlanInvalid`` and the
+    file-back receipt returned ``plan_invalid: ...``.
+    """
+    body = _format_synthesis_body(
+        question=QUESTION,
+        answer=ANSWER,
+        pages_read=PAGES_READ,
+    )
+    # Frontmatter sits between the first pair of ``---`` fences.
+    head = body.split("---", 2)[1]
+    assert "type: synthesis" in head
+    # Cross-check via the end-to-end plan builder so the line survives
+    # any future refactor of ``_format_synthesis_body``.
+    plan = build_synthesis_plan(
+        question=QUESTION,
+        answer=ANSWER,
+        pages_read=PAGES_READ,
+        collection=COLLECTION,
+    )
+    assert "type: synthesis" in plan.operations[0].content

@@ -308,6 +308,7 @@ def _format_synthesis_body(*, question: str, answer: str, pages_read: list[str])
     frontmatter_lines = [
         "---",
         f"title: {title}",
+        "type: synthesis",
         f"collection: {pages_read[0].split('/')[0] if pages_read else 'unknown'}",
         "tags: [synthesis]",
         "sources:",
@@ -336,7 +337,13 @@ def _page_type_from_dir(directory_name: str) -> str:
     ``entities``). The on-disk convention is plural; the type vocabulary is
     singular. This helper bridges them so the service can call
     ``validate_page_type`` without bypassing it.
+
+    A small allow-list handles words whose plural form is identical to the
+    singular (``synthesis``): naively stripping the trailing ``s`` would
+    mangle them.
     """
+    if directory_name == "synthesis":
+        return "synthesis"
     if directory_name.endswith("ies"):
         return directory_name[:-3] + "y"
     return directory_name.removesuffix("s")

@@ -1509,6 +1509,13 @@ class Orchestrator:
         # omission in ``synthesis_reason`` instead of raising.
         should_file = ans.should_file or force_file
         if should_file and file and collection is not None:
+            # Register the read pages so the synthesis plan's
+            # ``evidence=pages_read`` survives ``validate_operation_evidence``;
+            # otherwise ``apply_plan`` rejects the plan with
+            # ``WikiEvidenceMissing`` before any disk write happens. Mirrors
+            # the ``register_evidence`` call in ``_run_enrichment`` and
+            # ``run_ingest``.
+            self._memory_service.register_evidence(set(ans.pages_read))
             ans = replace(ans, file_receipt=self.file_back_synthesis(ans, collection))
         elif should_file and file and collection is None:
             ans = replace(
