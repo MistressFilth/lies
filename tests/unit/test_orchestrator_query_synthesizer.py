@@ -73,13 +73,18 @@ def test_run_query_uses_agent_answer_on_success(orch: Orchestrator) -> None:
         "run_sync",
         return_value=mock.Mock(output=_answer(should_file=True)),
     ):
-        result = orch.run_query("what is alpha?")
+        # ``file=False`` opts out of the F3 file-back path so this
+        # test stays focused on pure synthesis-success. The
+        # ``should_file=True`` flag from the agent is still preserved
+        # on the answer; only the file-back wiring is suppressed.
+        result = orch.run_query("what is alpha?", file=False)
 
     assert result.synthesis_used is True
     assert result.synthesis_reason == ""
     assert result.answer == "Alpha is the first letter. [Alpha](wiki/concepts/alpha.md)"
     assert result.citations == ["wiki/concepts/alpha.md"]
     assert result.should_file is True
+    assert result.file_receipt is None
 
 
 def test_run_query_falls_back_to_extractive_when_agent_raises(orch: Orchestrator) -> None:

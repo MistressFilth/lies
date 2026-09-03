@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from lies.memory.models import MemoryReceipt
 from lies.query.models import SynthesizedAnswer
 
 
@@ -43,3 +44,33 @@ def test_retrieval_axis_is_independent_of_synthesis_axis() -> None:
     )
     assert good_pages_no_synthesis.fallback_used is False
     assert good_pages_no_synthesis.synthesis_used is False
+
+
+def test_synthesized_answer_carries_question_and_receipt() -> None:
+    """``question`` is the prompt (slug source); ``file_receipt`` carries the F3 file-back result."""
+    receipt = MemoryReceipt(
+        changed_pages=[],
+        deferred=[],
+        fallback_used=False,
+        fallback_reason="",
+        errors=[],
+    )
+    ans = SynthesizedAnswer(
+        question="what is a hook?",
+        answer="...",
+        file_receipt=receipt,
+    )
+    assert ans.question == "what is a hook?"
+    assert ans.file_receipt is receipt
+
+
+def test_synthesized_answer_default_file_receipt_is_none() -> None:
+    """F4a call sites must keep working unchanged when ``file_receipt`` is omitted."""
+    ans = SynthesizedAnswer(answer="...")
+    assert ans.file_receipt is None
+
+
+def test_synthesized_answer_default_question_is_empty_string() -> None:
+    """``question`` defaults to ``""`` to preserve call sites that don't supply it."""
+    ans = SynthesizedAnswer(answer="...")
+    assert ans.question == ""

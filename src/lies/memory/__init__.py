@@ -3,7 +3,7 @@
 from lies.memory.enricher import MemoryEnricherDeps, enricher_agent
 from lies.memory.namespace import WikiIdentity, memory_namespace
 from lies.memory.retry import DrainResult, EnrichmentQueue, PendingRetry
-from lies.memory.service import WikiMemoryService
+from lies.memory.service import WikiMemoryService, build_synthesis_plan
 from lies.memory.tools import WikiMemoryDeps, register_read_tools
 
 __all__ = [
@@ -14,6 +14,7 @@ __all__ = [
     "WikiIdentity",
     "WikiMemoryDeps",
     "WikiMemoryService",
+    "build_synthesis_plan",
     "enricher_agent",
     "memory_namespace",
     "register_read_tools",

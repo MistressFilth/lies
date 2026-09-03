@@ -31,6 +31,26 @@ __all__ = (
 )
 def query(
     question: str = typer.Argument(..., help="The question to ask the wiki."),
+    collection: str | None = typer.Option(
+        None,
+        "--collection",
+        help=(
+            "Collection the synthesized page is filed under "
+            "(wiki/<collection>/synthesis/<file>). Required for the file-back "
+            "loop to actually write; without it, the agent's should_file "
+            "verdict is recorded as a synthesis_reason note."
+        ),
+    ),
+    no_file: bool = typer.Option(
+        False,
+        "--no-file",
+        help="Skip the file-back loop even if the agent marks the answer should_file.",
+    ),
+    force_file: bool = typer.Option(
+        False,
+        "--force-file",
+        help="Force the file-back loop even if the agent did not mark should_file.",
+    ),
     name: str | None = typer.Option(
         None, "--name", envvar="LIES_WIKI_NAME", help="Wiki to query (default: $LIES_WIKI_NAME)."
     ),
@@ -40,13 +60,34 @@ def query(
     from rich.markdown import Markdown
 
     from lies.cli import Orchestrator, resolve_wiki
+    from lies.memory.models import WikiPlanInvalid
 
     configure_logging()
     wiki = resolve_wiki(name)
     orch = Orchestrator(wiki)
     # Use the host-side ``run_query`` entry point so LLM synthesis runs
     # with the qmd->index retrieval and the extractive fallback intact.
-    answer = orch.run_query(question)
+    # ``--no-file`` maps to ``file=False``; ``--force-file`` to
+    # ``force_file=True``; ``--collection`` flows straight through so the
+    # orchestrator can route the new page under the right wiki subdir.
+    try:
+        answer = orch.run_query(
+            question,
+            collection=collection,
+            file=not no_file,
+            force_file=force_file,
+        )
+    except WikiPlanInvalid as exc:
+        # ``run_query`` raises when the agent/force file marked the answer
+        # for filing but the caller did not supply ``--collection``.
+        # Without the typed-error envelope a missing collection would
+        # silently drop the filing intent; the spec mandates a clean
+        # exit-2 + operator-actionable message instead.
+        typer.echo(
+            "error: --collection NAME required to file synthesis (or pass --no-file to skip)",
+            err=True,
+        )
+        raise typer.Exit(code=2) from exc
     console = Console()
     console.print(Markdown(answer.answer))
     if answer.synthesis_reason:
@@ -59,6 +100,18 @@ def query(
                     f"answered extractively._"
                 )
             )
+    # F3 file-back receipt. Printed only when there is something to say
+    # (durable change or error); an empty receipt is silent so the no-op
+    # case stays clean.
+    if answer.file_receipt:
+        if answer.file_receipt.changed_pages:
+            lines = ["(synthesis: durably filed"]
+            for ref in answer.file_receipt.changed_pages:
+                lines.append(f"  - {ref.op.value}: {ref.path}")
+            lines.append(")")
+            typer.echo("\n".join(lines))
+        elif answer.file_receipt.errors:
+            typer.echo(f"(synthesis: error — {answer.file_receipt.errors[0]})")
 
 
 @app.command(
