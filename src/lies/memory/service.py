@@ -225,6 +225,125 @@ def translate_page_diffs_to_plan(
     )
 
 
+def build_synthesis_plan(
+    *,
+    question: str,
+    answer: str,
+    pages_read: list[str],
+    collection: str,
+    sha_lookup: Callable[[str], str] | None = None,
+    exists: Callable[[str], bool] | None = None,
+) -> MemoryPlan:
+    """Build a single-op MemoryPlan that files a synthesis page.
+
+    Slug: ``<slugify(question)[:48]-<sha256(question)[:8]>.md``.
+    Path: ``wiki/<collection>/synthesis/<slug>``.
+    Body: agent's answer + ``## Evidence`` section listing each
+    page in ``pages_read`` as ``[[slug]]``.
+    Frontmatter: ``title``, ``collection``, ``tags: [synthesis]``,
+    ``sources``, ``derived_from: pages_read``.
+    Returns ``PageCreate`` if the slug does not exist; ``PageUpdate``
+    otherwise (the latter requires ``sha_lookup``).
+
+    Raises:
+        WikiPlanInvalid: ``pages_read`` is empty (no evidence), or
+            collision detected without ``sha_lookup`` provided.
+    """
+    if not pages_read:
+        raise WikiPlanInvalid("pages_read is empty; nothing to file")
+
+    safe_slug = _slugify(question)[:48].strip("-") or "synthesis"
+    digest = hashlib.sha256(question.encode("utf-8")).hexdigest()[:8]
+    rel_path = f"{collection}/synthesis/{safe_slug}-{digest}.md"
+
+    body = _format_synthesis_body(
+        question=question,
+        answer=answer,
+        pages_read=pages_read,
+        collection=collection,
+    )
+
+    collision = exists is not None and exists(rel_path)
+    if collision:
+        if sha_lookup is None:
+            raise WikiPlanInvalid(f"collision on {rel_path} but sha_lookup not provided")
+        op: _PlanOperation = PageUpdate(
+            path=rel_path,
+            expected_sha256=sha_lookup(rel_path),
+            content=body,
+            evidence=list(pages_read),
+            tag="synthesis",
+        )
+    else:
+        op = PageCreate(
+            path=rel_path,
+            content=body,
+            evidence=list(pages_read),
+            tag="synthesis",
+        )
+
+    return MemoryPlan(
+        operations=[op],
+        rationale=f"synthesis for question: {question[:120]}",
+        evidence=list(pages_read),
+    )
+
+
+def _slugify(text: str) -> str:
+    """Lowercase, replace non-alphanumeric with '-', collapse runs."""
+    out = []
+    for ch in text.lower():
+        if ch.isalnum():
+            out.append(ch)
+        else:
+            out.append("-")
+    slug = "".join(out).strip("-")
+    while "--" in slug:
+        slug = slug.replace("--", "-")
+    return slug
+
+
+def _format_synthesis_body(
+    *, question: str, answer: str, pages_read: list[str], collection: str
+) -> str:
+    """Build the full markdown body: frontmatter + answer + Evidence.
+
+    The title is ``question.strip().rstrip("?.!").strip()`` (or the
+    literal ``"Synthesis"`` when the question is empty/punctuation),
+    double-quoted so questions containing ``:`` or other YAML-significant
+    characters parse cleanly. The ``collection`` field is the literal
+    target collection (the page lives at
+    ``wiki/<collection>/synthesis/<slug>.md``), NOT derived from
+    ``pages_read[0]`` (which carries the ``wiki/`` prefix and would
+    yield ``"wiki"``). ``derived_from:`` lists the wiki pages read
+    during synthesis; ``sources:`` is intentionally absent because
+    synthesis pages distill other wiki pages — there is no raw source
+    to cite, and the existing ``sources`` convention is for raw-source
+    paths.
+    """
+    title = question.strip().rstrip("?.!").strip() or "Synthesis"
+    title_quoted = '"' + title.replace("\\", "\\\\").replace('"', '\\"') + '"'
+    frontmatter_lines = [
+        "---",
+        f"title: {title_quoted}",
+        "type: synthesis",
+        f"collection: {collection}",
+        "tags: [synthesis]",
+        "derived_from:",
+    ]
+    for p in pages_read:
+        frontmatter_lines.append(f"  - {p}")
+    frontmatter_lines.append("---")
+    frontmatter_lines.append("")
+
+    evidence_lines = ["## Evidence", ""]
+    for p in pages_read:
+        evidence_lines.append(f"- [[{p}]]")
+    evidence_lines.append("")
+
+    return "\n".join(frontmatter_lines) + answer.strip() + "\n\n" + "\n".join(evidence_lines)
+
+
 def _page_type_from_dir(directory_name: str) -> str:
     """Convert a plural wiki subdirectory name to its singular page type.
 
@@ -233,7 +352,13 @@ def _page_type_from_dir(directory_name: str) -> str:
     ``entities``). The on-disk convention is plural; the type vocabulary is
     singular. This helper bridges them so the service can call
     ``validate_page_type`` without bypassing it.
+
+    A small allow-list handles words whose plural form is identical to the
+    singular (``synthesis``): naively stripping the trailing ``s`` would
+    mangle them.
     """
+    if directory_name == "synthesis":
+        return "synthesis"
     if directory_name.endswith("ies"):
         return directory_name[:-3] + "y"
     return directory_name.removesuffix("s")

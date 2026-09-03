@@ -81,7 +81,14 @@ async def test_query_tool_round_trip(
     # to mock because ``run_query`` never goes through the agent. We also
     # no-op ``Orchestrator._build`` so the constructor doesn't try to spin
     # up the qmd stdio MCP transport in the test process.
-    def fake_run_query(self, question: str) -> SynthesizedAnswer:
+    def fake_run_query(
+        self,
+        question: str,
+        *,
+        collection: str | None = None,
+        file: bool = True,
+        force_file: bool = False,
+    ) -> SynthesizedAnswer:
         return fake_answer
 
     with (

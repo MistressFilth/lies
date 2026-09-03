@@ -23,7 +23,7 @@ from lies.memory.models import (
 from lies.wiki.wiki import Wiki
 
 ALLOWED_PAGE_TYPES: frozenset[str] = frozenset(
-    {"overview", "entity", "concept", "comparison", "source"}
+    {"overview", "entity", "concept", "comparison", "source", "synthesis"}
 )
 
 

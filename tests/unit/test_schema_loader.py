@@ -5,7 +5,12 @@ from pathlib import Path
 import pytest
 
 from lies import xdg
-from lies.schema.loader import load_default_schema, load_schema
+from lies.schema.loader import (
+    dump_page,
+    load_default_schema,
+    load_page,
+    load_schema,
+)
 from lies.wiki.wiki import Wiki
 
 
@@ -56,3 +61,26 @@ def test_load_raises_when_no_default() -> None:
     # so this is implicitly covered by the test above: if the default
     # didn't exist, test_load_default_when_no_override would fail.
     pass
+
+
+def test_loader_round_trips_derived_from(tmp_path: Path) -> None:
+    page = tmp_path / "test.md"
+    page.write_text(
+        "---\n"
+        "title: Test\n"
+        "collection: claude-code\n"
+        "derived_from:\n"
+        "  - claude-code/concepts/hooks\n"
+        "  - claude-code/concepts/skills\n"
+        "---\n\n"
+        "Body.\n",
+        encoding="utf-8",
+    )
+    parsed = load_page(page)
+    assert parsed.frontmatter["derived_from"] == [
+        "claude-code/concepts/hooks",
+        "claude-code/concepts/skills",
+    ]
+    dumped = dump_page(parsed, page)
+    assert "derived_from:" in dumped
+    assert "claude-code/concepts/hooks" in dumped

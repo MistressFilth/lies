@@ -7,6 +7,7 @@ import json
 import re
 import subprocess
 import sys
+import time
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -46,7 +47,7 @@ from lies.memory.models import (
     WikiWriteConflict,
 )
 from lies.memory.retry import EnrichmentQueue
-from lies.memory.service import WikiMemoryService
+from lies.memory.service import WikiMemoryService, build_synthesis_plan
 from lies.memory.tools import WikiMemoryDeps, register_read_tools
 from lies.qmd import QmdCapability
 from lies.query import (
@@ -299,6 +300,51 @@ def _build_lint_report(
                     )
                 )
 
+    # Synthesis-page mechanical checks: synthesis_missing_evidence and
+    # dangling_derived_from. A synthesis page's contract (see
+    # ``src/lies/schema/default_schema.md`` and ``build_synthesis_plan``)
+    # is: frontmatter ``type: synthesis`` + ``derived_from: list[str]``
+    # of wiki-relative slugs, plus a body ``## Evidence`` section. The
+    # spec'd repairs are mechanical: ``synthesis_missing_evidence``
+    # appends a ``## Evidence`` block listing every ``derived_from``
+    # slug (empty section if the list is empty); ``dangling_derived_from``
+    # removes the dangling slug from the frontmatter list. Both flip
+    # ``safe_to_fix=True`` so the repair agent can auto-close them.
+    #
+    # Read each synthesis page once: a single ``read_text`` per page
+    # feeds the type check, the body ``## Evidence`` check, and the
+    # ``derived_from`` slug resolution — the previous 3-pass loop
+    # opened and closed each file three times, which adds up on large
+    # wikis without any semantic gain.
+    for page in pages:
+        try:
+            text = (wiki.wiki_dir / page).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        if _extract_frontmatter_type(text) != "synthesis":
+            continue
+        if "## Evidence" not in _strip_frontmatter(text):
+            findings.append(
+                LintFinding(
+                    severity=LintSeverity.MEDIUM,
+                    category="synthesis_missing_evidence",
+                    pages=[page],
+                    message=f"synthesis page {page} lacks ## Evidence section",
+                    safe_to_fix=True,
+                )
+            )
+        for slug in _extract_frontmatter_derived_from(text):
+            if not (wiki.wiki_dir / f"{slug}.md").exists():
+                findings.append(
+                    LintFinding(
+                        severity=LintSeverity.MEDIUM,
+                        category="dangling_derived_from",
+                        pages=[page],
+                        message=f"derived_from slug {slug} does not resolve to an existing page",
+                        safe_to_fix=True,
+                    )
+                )
+
     report = LintReport(findings=findings, report_markdown="")
     body = _format_lint_markdown(report, wiki)
     if repair_receipt is not None:
@@ -476,6 +522,59 @@ def _extract_frontmatter_sources(text: str) -> list[str]:
         elif line.startswith("sources:"):
             in_sources = True
     return sources
+
+
+def _extract_frontmatter_type(text: str) -> str | None:
+    """Return the ``type:`` value from YAML frontmatter, or None.
+
+    Used by the synthesis-page checks in :func:`_build_lint_report`
+    to identify synthesis pages (``type: synthesis``). Mirrors the
+    minimal-regex style of the surrounding frontmatter helpers so a
+    malformed block yields ``None`` rather than raising.
+    """
+    if not text.startswith("---"):
+        return None
+    end = text.find("\n---", 3)
+    if end == -1:
+        return None
+    block = text[3:end]
+    match = re.search(r"^type:\s*(.+?)\s*$", block, re.MULTILINE)
+    if not match:
+        return None
+    value = match.group(1).strip()
+    if value.startswith(('"', "'")) and value.endswith(('"', "'")):
+        value = value[1:-1]
+    return value or None
+
+
+def _extract_frontmatter_derived_from(text: str) -> list[str]:
+    """Return the ``derived_from:`` list from YAML frontmatter.
+
+    Used by :func:`_build_lint_report` to flag synthesis pages whose
+    cited slugs do not resolve to an existing wiki page
+    (``dangling_derived_from``). Same minimal-regex shape as
+    :func:`_extract_frontmatter_sources`: a missing or malformed
+    ``derived_from`` block yields ``[]`` rather than raising.
+    """
+    if not text.startswith("---"):
+        return []
+    end = text.find("\n---", 3)
+    if end == -1:
+        return []
+    block = text[3:end]
+    lines = block.splitlines()
+    derived: list[str] = []
+    in_derived = False
+    for line in lines:
+        if in_derived:
+            stripped = line.strip()
+            if stripped.startswith("- "):
+                derived.append(stripped[2:].strip().strip('"').strip("'"))
+            elif stripped and not stripped.startswith("-"):
+                in_derived = False
+        elif line.startswith("derived_from:"):
+            in_derived = True
+    return derived
 
 
 def _format_lint_markdown(report: LintReport, wiki: Wiki) -> str:
@@ -1043,6 +1142,72 @@ class Orchestrator:
             return f"{head}\n(memory: {tail})"
         return f"(memory: {', '.join(other) or 'no change'})"
 
+    def file_back_synthesis(
+        self,
+        answer: SynthesizedAnswer,
+        collection: str,
+    ) -> MemoryReceipt:
+        """Best-effort write of a synthesis answer to ``wiki/<collection>/synthesis/``.
+
+        Inline 3-attempt retry on transient persistence errors. Never
+        raises — the synthesized answer is always returned to the
+        operator regardless of outcome.
+        """
+
+        def exists(rel: str) -> bool:
+            return (self.wiki.wiki_dir / rel).exists()
+
+        def sha_lookup(rel: str) -> str:
+            return self._memory_service.current_state(rel)[0]
+
+        question = getattr(answer, "question", "")
+
+        try:
+            plan = build_synthesis_plan(
+                question=question,
+                answer=answer.answer,
+                pages_read=answer.pages_read,
+                collection=collection,
+                sha_lookup=sha_lookup,
+                exists=exists,
+            )
+        except WikiPlanInvalid as exc:
+            return MemoryReceipt(
+                changed_pages=[],
+                deferred=[],
+                fallback_used=False,
+                fallback_reason="",
+                errors=[f"plan_invalid: {exc}"],
+            )
+
+        last_exc: BaseException | None = None
+        for attempt in range(3):
+            try:
+                return self._memory_service.apply_plan(plan)
+            except (WikiLockBusy, WikiWriteConflict, WikiCommitFailed) as exc:
+                last_exc = exc
+                if attempt < 2:
+                    time.sleep(0.1)
+                    continue
+                break
+            except Exception as exc:  # noqa: BLE001 - persistence never invalidates the answer
+                return MemoryReceipt(
+                    changed_pages=[],
+                    deferred=[],
+                    fallback_used=False,
+                    fallback_reason="",
+                    errors=[f"file_back_crashed: {type(exc).__name__}: {exc}"],
+                )
+
+        reason = f"{type(last_exc).__name__}: {last_exc}"
+        return MemoryReceipt(
+            changed_pages=[],
+            deferred=[],
+            fallback_used=False,
+            fallback_reason="",
+            errors=[f"file_back_failed_after_3_attempts: {reason}"],
+        )
+
     def _format_durable_receipt(
         self,
         receipt: MemoryReceipt,
@@ -1250,7 +1415,14 @@ class Orchestrator:
         Orchestrator._discard_snapshot(repo, snapshot_ref)
         return f"ingested {source} into {collection_name}"
 
-    def run_query(self, question: str) -> SynthesizedAnswer:
+    def run_query(
+        self,
+        question: str,
+        *,
+        collection: str | None = None,
+        file: bool = True,
+        force_file: bool = False,
+    ) -> SynthesizedAnswer:
         """Answer ``question`` using the wiki, synthesized by the LLM.
 
         Retrieval runs once via :func:`retrieve_pages` (qmd, falling
@@ -1262,6 +1434,15 @@ class Orchestrator:
 
         The two provenance axes are independent: ``fallback_used``
         reports retrieval, ``synthesis_used`` reports synthesis.
+
+        File-back (F3): when ``file`` is True and the agent marked the
+        answer ``should_file`` (or ``force_file`` flips it on), a wiki
+        page is materialized via :meth:`file_back_synthesis` and the
+        resulting :class:`MemoryReceipt` is attached as
+        ``ans.file_receipt``. ``collection`` identifies which
+        subdirectory the page lands in; without it, the answer is
+        returned unfilled and a note is appended to ``synthesis_reason``
+        rather than silently dropping the filing intent.
         """
         if not question or not question.strip():
             return synthesize_answer(question, self.wiki)
@@ -1297,7 +1478,8 @@ class Orchestrator:
                 f"dropped {len(dropped)} unretrieved citation(s): {', '.join(dropped)}"
             )
 
-        return SynthesizedAnswer(
+        ans = SynthesizedAnswer(
+            question=question,
             answer=output.answer,
             citations=kept,
             pages_read=[page.rel_path for page in pages],
@@ -1308,6 +1490,30 @@ class Orchestrator:
             synthesis_reason=synthesis_reason,
             should_file=output.should_file,
         )
+
+        # File-back decision (F3). ``should_file`` is the agent's own
+        # verdict on whether this answer earns a wiki page; ``force_file``
+        # overrides it for callers who always want one (e.g. an
+        # integration test). ``file`` lets callers opt out entirely
+        # (``file=False``) without losing the rest of the synthesis
+        # envelope. ``collection`` is required to know where the page
+        # lives — when the caller wants a filing but didn't supply one,
+        # raise ``WikiPlanInvalid`` so the CLI can exit 2 and the MCP
+        # tool can re-raise as ``ToolError``.
+        should_file = ans.should_file or force_file
+        if should_file and file and collection is None:
+            raise WikiPlanInvalid("collection required to file synthesis")
+        if should_file and file and collection is not None:
+            # Register the read pages so the synthesis plan's
+            # ``evidence=pages_read`` survives ``validate_operation_evidence``;
+            # otherwise ``apply_plan`` rejects the plan with
+            # ``WikiEvidenceMissing`` before any disk write happens. Mirrors
+            # the ``register_evidence`` call in ``_run_enrichment`` and
+            # ``run_ingest``.
+            self._memory_service.register_evidence(set(ans.pages_read))
+            ans = replace(ans, file_receipt=self.file_back_synthesis(ans, collection))
+
+        return ans
 
     def _call_query_synthesizer(
         self, question: str, pages: list[PageRead]

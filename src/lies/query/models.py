@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from lies.memory.models import MemoryReceipt
+
 
 @dataclass(frozen=True)
 class SynthesizedAnswer:
@@ -47,3 +49,5 @@ class SynthesizedAnswer:
     synthesis_used: bool = False
     synthesis_reason: str = ""
     should_file: bool = False
+    question: str = ""
+    file_receipt: MemoryReceipt | None = None
