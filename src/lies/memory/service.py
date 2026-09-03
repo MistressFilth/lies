@@ -225,6 +225,109 @@ def translate_page_diffs_to_plan(
     )
 
 
+def build_synthesis_plan(
+    *,
+    question: str,
+    answer: str,
+    pages_read: list[str],
+    collection: str,
+    sha_lookup: Callable[[str], str] | None = None,
+    exists: Callable[[str], bool] | None = None,
+) -> MemoryPlan:
+    """Build a single-op MemoryPlan that files a synthesis page.
+
+    Slug: ``<slugify(question)[:48]-<sha256(question)[:8]>.md``.
+    Path: ``wiki/<collection>/synthesis/<slug>``.
+    Body: agent's answer + ``## Evidence`` section listing each
+    page in ``pages_read`` as ``[[slug]]``.
+    Frontmatter: ``title``, ``collection``, ``tags: [synthesis]``,
+    ``sources``, ``derived_from: pages_read``.
+    Returns ``PageCreate`` if the slug does not exist; ``PageUpdate``
+    otherwise (the latter requires ``sha_lookup``).
+
+    Raises:
+        WikiPlanInvalid: ``pages_read`` is empty (no evidence), or
+            collision detected without ``sha_lookup`` provided.
+    """
+    if not pages_read:
+        raise WikiPlanInvalid("pages_read is empty; nothing to file")
+
+    safe_slug = _slugify(question)[:48].strip("-") or "synthesis"
+    digest = hashlib.sha256(question.encode("utf-8")).hexdigest()[:8]
+    rel_path = f"{collection}/synthesis/{safe_slug}-{digest}.md"
+
+    body = _format_synthesis_body(
+        question=question,
+        answer=answer,
+        pages_read=pages_read,
+    )
+
+    collision = exists is not None and exists(rel_path)
+    if collision:
+        if sha_lookup is None:
+            raise WikiPlanInvalid(f"collision on {rel_path} but sha_lookup not provided")
+        op: _PlanOperation = PageUpdate(
+            path=rel_path,
+            expected_sha256=sha_lookup(rel_path),
+            content=body,
+            evidence=list(pages_read),
+            tag="synthesis",
+        )
+    else:
+        op = PageCreate(
+            path=rel_path,
+            content=body,
+            evidence=list(pages_read),
+            tag="synthesis",
+        )
+
+    return MemoryPlan(
+        operations=[op],
+        rationale=f"synthesis for question: {question[:120]}",
+        evidence=list(pages_read),
+    )
+
+
+def _slugify(text: str) -> str:
+    """Lowercase, replace non-alphanumeric with '-', collapse runs."""
+    out = []
+    for ch in text.lower():
+        if ch.isalnum():
+            out.append(ch)
+        else:
+            out.append("-")
+    slug = "".join(out).strip("-")
+    while "--" in slug:
+        slug = slug.replace("--", "-")
+    return slug
+
+
+def _format_synthesis_body(*, question: str, answer: str, pages_read: list[str]) -> str:
+    """Build the full markdown body: frontmatter + answer + Evidence."""
+    title = question.strip().rstrip("?.!").strip() or "Synthesis"
+    frontmatter_lines = [
+        "---",
+        f"title: {title}",
+        f"collection: {pages_read[0].split('/')[0] if pages_read else 'unknown'}",
+        "tags: [synthesis]",
+        "sources:",
+    ]
+    for p in pages_read:
+        frontmatter_lines.append(f"  - {p}")
+    frontmatter_lines.append("derived_from:")
+    for p in pages_read:
+        frontmatter_lines.append(f"  - {p}")
+    frontmatter_lines.append("---")
+    frontmatter_lines.append("")
+
+    evidence_lines = ["## Evidence", ""]
+    for p in pages_read:
+        evidence_lines.append(f"- [[{p}]]")
+    evidence_lines.append("")
+
+    return "\n".join(frontmatter_lines) + answer.strip() + "\n\n" + "\n".join(evidence_lines)
+
+
 def _page_type_from_dir(directory_name: str) -> str:
     """Convert a plural wiki subdirectory name to its singular page type.
 
