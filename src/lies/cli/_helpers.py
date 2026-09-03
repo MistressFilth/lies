@@ -60,7 +60,7 @@ def _stdout_isatty() -> bool:
     """
     try:
         return sys.stdout.isatty()
-    except AttributeError, ValueError:
+    except (AttributeError, ValueError):
         return False
 
 

@@ -63,6 +63,37 @@ class WikiCollectionInvalid(WikiMemoryError):
     """The referenced collection is not registered with the service."""
 
 
+class IngestQuarantined(WikiMemoryError):
+    """A single-source ingest failed at the agent layer.
+
+    The source has been copied to
+    ``$XDG_STATE_HOME/lies/<wiki>/poison/<collection>/<relpath>``
+    with a ``.reason`` sidecar (see :mod:`lies.etl.quarantine`).
+    """
+
+    def __init__(self, source: str, collection: str, reason: str) -> None:
+        super().__init__(
+            f"ingest-source {source!r} for collection {collection!r} quarantined: {reason}"
+        )
+        self.source = source
+        self.collection = collection
+        self.reason = reason
+
+
+class IngestSourceUnreachable(WikiMemoryError):
+    """A single-source ingest could not materialize the source to disk.
+
+    Raised before any wiki write or quarantine copy; the source
+    artifact is not on disk yet (URL fetch failed, stdin closed, or
+    the local path was missing).
+    """
+
+    def __init__(self, source: str, reason: str) -> None:
+        super().__init__(f"ingest-source unreachable: {source!r}: {reason}")
+        self.source = source
+        self.reason = reason
+
+
 # --- Collection and evidence -------------------------------------------
 
 
@@ -120,6 +151,7 @@ class OperationKind(str, Enum):
     CREATE = "create"
     UPDATE = "update"
     APPEND = "append"
+    DELETE = "delete"
 
 
 class _PlanOperation(BaseModel):
@@ -129,6 +161,11 @@ class _PlanOperation(BaseModel):
 
     path: str
     evidence: list[str] = Field(min_length=1)
+    tag: str = "memory"
+    """Provenance label rendered in the git commit message and the
+    ``wiki/log.md`` entry. Defaults to ``"memory"`` for the existing
+    MemoryEnricher flow. Override to ``"ingest"`` (F2 single-source
+    ingest), ``"synthesis"`` (F3 file-back loop), etc."""
 
     kind: OperationKind
 
@@ -156,6 +193,12 @@ class EvidenceAppend(_PlanOperation):
     kind: Literal[OperationKind.APPEND] = OperationKind.APPEND
 
 
+class PageDelete(_PlanOperation):
+    """Remove an existing wiki page. No-op if the page does not exist."""
+
+    kind: Literal[OperationKind.DELETE] = OperationKind.DELETE
+
+
 class MemoryPlan(BaseModel):
     """A structured set of memory operations proposed by MemoryEnricher."""
 
@@ -175,6 +218,13 @@ class MemoryPlan(BaseModel):
             if op.path in seen:
                 raise ValueError(f"multiple operations target the same path: {op.path}")
             seen.add(op.path)
+        return self
+
+    @model_validator(mode="after")
+    def _all_operations_share_one_tag(self) -> MemoryPlan:
+        tags = {op.tag for op in self.operations}
+        if len(tags) > 1:
+            raise ValueError(f"MemoryPlan ops must share one tag; got {sorted(tags)!r}")
         return self
 
 

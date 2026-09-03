@@ -84,7 +84,7 @@ class Registry:
                 raise RegistryCorrupt(path, f"entry {cid!r} must be an object")
             try:
                 collections[cid] = WikiCollectionRef(**ref_payload)
-            except TypeError, ValueError:
+            except (TypeError, ValueError):
                 raise RegistryCorrupt(
                     path, f"entry {cid!r} invalid: {sys.exc_info()[1]}"
                 ) from sys.exc_info()[1]

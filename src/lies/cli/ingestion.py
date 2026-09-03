@@ -164,12 +164,23 @@ def ingest_source(
             help="Route through collection_author_agent for missing collections (requires TTY).",
         ),
     ] = False,
+    no_llm: Annotated[
+        bool,
+        typer.Option(
+            "--no-llm",
+            help="Demote to the legacy sync_collection shim (skips the LLM round-trip).",
+        ),
+    ] = False,
 ) -> None:
     """Atomic ingest of a single source; requires ``--collection`` (hard cutover).
 
     Registers the collection YAML (creates if missing; refuses on source
     mismatch), then delegates to :meth:`Orchestrator.run_ingest`. The legacy
     source-only invocation is no longer supported.
+
+    ``--no-llm`` demotes to ``sync_collection`` for callers that want the
+    raw ETL pass without an LLM round-trip; a stderr notice is emitted so
+    operators see the opt-out.
     """
     from lies.collections.bootstrap import bootstrap_collection, ensure_wiki
     from lies.collections.errors import (
@@ -207,7 +218,13 @@ def ingest_source(
     # it in tests without paying for the orchestrator import at CLI
     # startup.
     orch = Orchestrator(wiki)
-    output = orch.run_ingest(source)
+    output = orch.run_ingest(source, no_llm=no_llm)
+    if no_llm:
+        typer.echo(
+            "ingest-source routed through sync_collection (--no-llm); "
+            "use the default for LLM-shaped distillation",
+            err=True,
+        )
     typer.echo(output)
 
 

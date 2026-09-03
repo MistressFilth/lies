@@ -25,7 +25,7 @@ def load_default_schema() -> str:
         return (
             resources.files("lies.schema").joinpath("default_schema.md").read_text(encoding="utf-8")
         )
-    except FileNotFoundError, ModuleNotFoundError:
+    except (FileNotFoundError, ModuleNotFoundError):
         raise SchemaNotFoundError(
             "Default schema not found in package (expected lies.schema.default_schema.md)"
         ) from sys.exc_info()[1]

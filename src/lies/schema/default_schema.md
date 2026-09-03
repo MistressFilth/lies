@@ -44,6 +44,7 @@ Every page has YAML frontmatter:
 title: "Concise title"
 type: entity | concept | comparison | source | overview
 tags: [optional, list, of, tags]
+derived_from: [optional, slugs of pages this page was distilled from]
 created: YYYY-MM-DD
 updated: YYYY-MM-DD
 sources:

@@ -169,7 +169,7 @@ def test_ingest_source_returns_ingested_string(
     registered_wiki: Wiki,
     wiki_name: str,
 ) -> None:
-    """ingest_source → bootstrap_collection → sync_collection.
+    """ingest_source (no_llm=True) → bootstrap_collection → sync_collection.
 
     Mocks sync_collection so the real MCP delegation is exercised
     without driving the full SyncOrchestrator pipeline. Asserts the
@@ -182,10 +182,11 @@ def test_ingest_source_returns_ingested_string(
             "raw/articles/sample_article.md",
             collection="sample_article",
             name=wiki_name,
+            no_llm=True,
         )
 
     # MCP tool returns its documented success string.
-    assert out == "ingested raw/articles/sample_article.md into sample_article"
+    assert out == "ingested raw/articles/sample_article.md into sample_article (no_llm)"
     # sync_collection was called with (wiki, collection, force=False).
     m.assert_called_once()
     args, kwargs = m.call_args

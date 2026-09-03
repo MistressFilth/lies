@@ -40,3 +40,8 @@ def test_contract_section_mentions_lies_memory_reconcile() -> None:
         text.index("## Invisible maintenance contract") : text.index("## Frontmatter")
     ]
     assert "lies memory reconcile" in contract_section
+
+
+def test_default_schema_documents_derived_from_field(tmp_path: Path) -> None:
+    schema_text = SCHEMA_PATH.read_text(encoding="utf-8")
+    assert "derived_from:" in schema_text

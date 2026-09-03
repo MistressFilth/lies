@@ -42,13 +42,13 @@ async def read_file(ctx: RunContext[None], path: str, raw_root: str) -> str:
             candidate = root / candidate
         source = candidate.resolve(strict=True)
         source.relative_to(root)
-    except FileNotFoundError, OSError, TypeError, ValueError:
+    except (FileNotFoundError, OSError, TypeError, ValueError):
         return f"ERROR: source must be an existing file under {raw_root}: {path}"
     if not source.is_file():
         return f"ERROR: source is not a file: {path}"
     try:
         return source.read_text(encoding="utf-8")
-    except OSError, UnicodeError:
+    except (OSError, UnicodeError):
         return f"ERROR: could not read {path}: {sys.exc_info()[1]}"
 
 

@@ -1,6 +1,11 @@
 repos:
+  # Pinned to v0.14.14 because ruff 0.15+ strips the mandatory
+  # parens around multi-exception ``except`` clauses (upstream
+  # issue #26449), reverting them to Python 2 ``except X, Y:``
+  # syntax that fails at import time. The pin matches the
+  # ``ruff<0.15`` upper bound in ``pyproject.toml``.
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.16.1
+    rev: v0.14.14
     hooks:
       - id: ruff-check
         args: [--fix]

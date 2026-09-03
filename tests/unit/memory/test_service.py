@@ -7,15 +7,23 @@ from pathlib import Path, PurePosixPath
 
 import pytest
 
+from lies.agents.page_writer import PageDiff, PageOperation
 from lies.lock_errors import WikiFlockIndeterminate
 from lies.memory.models import (
+    EvidenceAppend,
     MemoryPlan,
+    OperationKind,
     PageCreate,
+    PageDelete,
     PageUpdate,
     WikiPlanInvalid,
     WikiWriteConflict,
 )
-from lies.memory.service import WikiMemoryService, _acquire_wiki_flock
+from lies.memory.service import (
+    WikiMemoryService,
+    _acquire_wiki_flock,
+    translate_page_diffs_to_plan,
+)
 from lies.utils.lock_heartbeat import AcquireResult
 from lies.wiki.wiki import Wiki
 from tests.conftest import make_wiki
@@ -192,6 +200,18 @@ def _commit_changed_files(repo: Path) -> list[str]:
         check=True,
     )
     return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+
+def _last_git_commit_message(repo: Path) -> str:
+    """Return the full message of the most recent commit on ``repo``."""
+    result = subprocess.run(
+        ["git", "log", "-1", "--pretty=%B"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return result.stdout.rstrip("\n")
 
 
 def test_apply_plan_commit_includes_new_page_index_and_log(
@@ -679,3 +699,624 @@ def test_acquire_wiki_flock_routes_indeterminate_to_wiki_flock_indeterminate(
     msg = str(caught.value)
     assert "pid 999" in msg
     assert "force-repair" in msg
+
+
+def test_apply_plan_commit_message_uses_op_tag(git_wiki: Wiki) -> None:
+    """An op with ``tag="ingest"`` must produce a commit message that
+    starts with ``ingest:`` (not the hard-coded ``memory:`` prefix)."""
+    service = WikiMemoryService(wiki=git_wiki)
+    service.register_evidence({"raw/articles/x.md"})
+    plan = MemoryPlan(
+        operations=[
+            PageCreate(
+                path="concepts/alpha.md",
+                content="---\ntitle: Alpha\ntype: concept\n---\n# Alpha\n",
+                evidence=["raw/articles/x.md"],
+                tag="ingest",
+            )
+        ],
+        rationale="distill single source",
+        evidence=["raw/articles/x.md"],
+    )
+    service.apply_plan(plan)
+    msg = _last_git_commit_message(git_wiki.data_root)
+    assert msg.startswith("ingest: distill single source"), msg
+
+
+def test_apply_plan_log_entry_uses_op_tag(git_wiki: Wiki) -> None:
+    """An op with ``tag="ingest"`` must produce a ``wiki/log.md`` entry
+    prefixed ``ingest | <op> | <path>`` (not the hard-coded ``memory``)."""
+    service = WikiMemoryService(wiki=git_wiki)
+    service.register_evidence({"raw/articles/x.md"})
+    plan = MemoryPlan(
+        operations=[
+            PageCreate(
+                path="concepts/alpha.md",
+                content="---\ntitle: Alpha\ntype: concept\n---\n# Alpha\n",
+                evidence=["raw/articles/x.md"],
+                tag="ingest",
+            )
+        ],
+        rationale="distill single source",
+        evidence=["raw/articles/x.md"],
+    )
+    service.apply_plan(plan)
+    log_text = (git_wiki.wiki_dir / "log.md").read_text(encoding="utf-8")
+    assert "ingest | create | concepts/alpha.md" in log_text, log_text
+
+
+def test_apply_plan_delete_removes_existing_page(git_wiki: Wiki) -> None:
+    """A ``PageDelete`` op removes an existing wiki page and records
+    the change in the receipt with ``OperationKind.DELETE``."""
+    target = git_wiki.wiki_dir / "concepts" / "obsolete.md"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("---\ntitle: Obsolete\ntype: concept\n---\n# Obsolete\n", encoding="utf-8")
+    _git_init(git_wiki.data_root)
+    service = WikiMemoryService(wiki=git_wiki)
+    service.register_evidence({"raw/x.md"})
+    plan = MemoryPlan(
+        operations=[
+            PageDelete(path="concepts/obsolete.md", evidence=["raw/x.md"]),
+        ],
+        rationale="page replaced",
+        evidence=["raw/x.md"],
+    )
+    receipt = service.apply_plan(plan)
+    assert not target.exists()
+    delete_refs = [r for r in receipt.changed_pages if r.path == "concepts/obsolete.md"]
+    assert delete_refs, "expected a PageReference for the deleted path"
+    assert delete_refs[0].op == OperationKind.DELETE
+    # The deletion MUST land in git: an uncommitted ``D`` entry in the
+    # working tree would resurrect the file on the next ``apply_plan``'s
+    # snapshot/restore. Regression: ``_collect_commit_files`` previously
+    # filtered candidates by ``.exists()`` and dropped the deleted path.
+    porcelain = _tracked_porcelain(git_wiki.data_root)
+    assert porcelain == "", f"working tree should be clean after delete; got:\n{porcelain}"
+
+
+def test_apply_plan_delete_commits_to_git(git_wiki: Wiki) -> None:
+    """A ``PageDelete`` op MUST land in git (not stay as an uncommitted
+    ``D`` in the working tree).
+
+    Regression: ``_collect_commit_files`` filtered candidates by
+    ``.exists()``. ``_apply_operations`` unlinked the file before the
+    staging list was computed, so the path was dropped and ``git add``
+    never recorded the removal. The next ``apply_plan``'s snapshot
+    (which stashes uncommitted changes) + restore resurrected the file.
+
+    The fix: ``_collect_commit_files`` derives its candidate list from
+    the ``PageReference`` list returned by ``_apply_operations`` rather
+    than the raw plan ops, so successful deletes are staged even after
+    ``unlink``.
+    """
+    target = git_wiki.wiki_dir / "concepts" / "obsolete.md"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    sentinel = "---\ntitle: Obsolete\ntype: concept\n---\n# Obsolete\n"
+    target.write_text(sentinel, encoding="utf-8")
+    _git_init(git_wiki.data_root)
+
+    service = WikiMemoryService(wiki=git_wiki)
+    service.register_evidence({"raw/x.md"})
+    plan = MemoryPlan(
+        operations=[
+            PageDelete(path="concepts/obsolete.md", evidence=["raw/x.md"]),
+        ],
+        rationale="page replaced",
+        evidence=["raw/x.md"],
+    )
+    receipt = service.apply_plan(plan)
+
+    # 1. Working tree has no uncommitted modifications to tracked paths:
+    #    in particular no ``D`` entry for the deleted page (which would
+    #    resurrect it on the following snapshot/restore).
+    porcelain = _tracked_porcelain(git_wiki.data_root)
+    assert porcelain == "", f"working tree should be clean after delete; got:\n{porcelain}"
+
+    # 2. The most recent commit records the deletion with status ``D``.
+    name_status = subprocess.run(
+        ["git", "log", "-1", "--name-status"],
+        cwd=git_wiki.data_root,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    assert "D\twiki/concepts/obsolete.md" in name_status, name_status
+
+    # 3. The file is gone from the working tree.
+    assert not target.exists()
+
+    # 4. The receipt reflects the DELETE op.
+    delete_refs = [r for r in receipt.changed_pages if r.path == "concepts/obsolete.md"]
+    assert delete_refs, "expected a PageReference for the deleted path"
+    assert delete_refs[0].op == OperationKind.DELETE
+
+
+def test_apply_plan_delete_no_op_when_missing(git_wiki: Wiki) -> None:
+    """A ``PageDelete`` op against a missing file is a silent no-op:
+    ``apply_plan`` records no ``PageReference`` for the path because no
+    actual change occurred (the file was already absent)."""
+    service = WikiMemoryService(wiki=git_wiki)
+    service.register_evidence({"raw/x.md"})
+    plan = MemoryPlan(
+        operations=[
+            PageDelete(path="concepts/never-existed.md", evidence=["raw/x.md"]),
+        ],
+        rationale="ensure gone",
+        evidence=["raw/x.md"],
+    )
+    receipt = service.apply_plan(plan)
+    assert not any(r.path == "concepts/never-existed.md" for r in receipt.changed_pages)
+
+
+def test_apply_plan_delete_no_op_when_missing_still_records_commit(
+    git_wiki: Wiki,
+) -> None:
+    """A no-op ``PageDelete`` (file already absent) leaves the receipt
+    with no ``PageReference`` for the target, but the plan still
+    commits ``wiki/index.md`` / ``wiki/log.md`` (which ``rebuild_index``
+    and ``append_log_entry`` always touch) so ``git status`` is clean.
+
+    Regression: a previous fix attempt included the deletion target in
+    the staging list unconditionally; ``git add`` failed on the
+    never-existed path (``fatal: pathspec ... did not match any files``)
+    and broke the commit. The correct mechanism uses the
+    ``_apply_operations`` ``changed`` list, which omits no-op deletes.
+    """
+    service = WikiMemoryService(wiki=git_wiki)
+    service.register_evidence({"raw/x.md"})
+    plan = MemoryPlan(
+        operations=[
+            PageDelete(path="concepts/never-was.md", evidence=["raw/x.md"]),
+        ],
+        rationale="ensure gone",
+        evidence=["raw/x.md"],
+    )
+    receipt = service.apply_plan(plan)
+    # No PageReference for the target — the op was a no-op.
+    assert receipt.changed_pages == []
+    # Working tree must still be clean: the index/log rewrites that
+    # ``rebuild_index`` / ``append_log_entry`` performed were committed.
+    porcelain = _tracked_porcelain(git_wiki.data_root)
+    assert porcelain == "", f"working tree should be clean after no-op delete; got:\n{porcelain}"
+
+
+def _tracked_porcelain(repo: Path) -> str:
+    """Return ``git status --porcelain`` with untracked entries stripped.
+
+    The ``git_wiki`` fixture does not seed ``.gitignore`` so the
+    per-wiki sidecar at ``<data_root>/.lies/`` (created by
+    ``append_receipt``) shows up as an untracked directory in
+    ``git status``. The fix under test concerns committed-path
+    bookkeeping, not sidecar artifacts, so strip untracked entries
+    before asserting the working tree is clean.
+    """
+    raw = subprocess.run(
+        ["git", "status", "--porcelain"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    return "\n".join(
+        line for line in raw.splitlines() if line and not line.startswith("??")
+    ).strip()
+
+
+def test_apply_plan_delete_refuses_index_md(git_wiki: Wiki) -> None:
+    """A ``PageDelete`` op targeting ``wiki/index.md`` is rejected: the
+    catalog is rebuilt from disk state by the service, never literally
+    written or removed, so a delete op would silently destroy the wiki's
+    navigation surface."""
+    service = WikiMemoryService(wiki=git_wiki)
+    service.register_evidence({"raw/x.md"})
+    plan = MemoryPlan(
+        operations=[
+            PageDelete(path="wiki/index.md", evidence=["raw/x.md"]),
+        ],
+        rationale="attempt to drop catalog",
+        evidence=["raw/x.md"],
+    )
+    with pytest.raises(WikiPlanInvalid):
+        service.apply_plan(plan)
+    assert (git_wiki.wiki_dir / "index.md").exists(), "index.md must be intact"
+
+
+def test_apply_plan_delete_refuses_index_md_via_bare_path(git_wiki: Wiki) -> None:
+    """A ``PageDelete`` op using the bare ``index.md`` path (no ``wiki/``
+    prefix) is rejected by the resolved-path guard in
+    ``_apply_operations``. ``validate_plan``'s ``is_index`` branch routes
+    this op and skips ``validate_page_type``, so a literal-string guard
+    keyed on ``op.path`` would let the unlink through; the resolved-path
+    check catches it instead."""
+    service = WikiMemoryService(wiki=git_wiki)
+    service.register_evidence({"raw/x.md"})
+    plan = MemoryPlan(
+        operations=[
+            PageDelete(path="index.md", evidence=["raw/x.md"]),
+        ],
+        rationale="attempt to drop catalog via bare path",
+        evidence=["raw/x.md"],
+    )
+    with pytest.raises(WikiPlanInvalid):
+        service.apply_plan(plan)
+    assert (git_wiki.wiki_dir / "index.md").exists(), "index.md must be intact"
+
+
+def test_apply_plan_delete_refuses_log_md(git_wiki: Wiki) -> None:
+    """A ``PageDelete`` op targeting ``wiki/log.md`` is rejected: the
+    log is append-only, so a delete op would silently destroy the
+    wiki's audit trail.
+
+    Uses the bare ``log.md`` path so the resolved-path guard inside
+    ``_apply_operations`` is exercised directly. The qualified
+    ``wiki/log.md`` path is rejected earlier by ``validate_plan``'s
+    ``validate_page_type`` step because ``log.md``'s parent is the wiki
+    root (not a recognized page-type directory), which would mask a
+    regression in the apply-side guard.
+
+    Asserts the apply-side guard's exact message so a regression that
+    makes ``validate_page_type`` reject the path instead is caught —
+    the bare-path route should reach the apply-side guard.
+    """
+    log = git_wiki.wiki_dir / "log.md"
+    log.write_text("# Log\n- entry\n", encoding="utf-8")
+    _git_init(git_wiki.data_root)
+    service = WikiMemoryService(wiki=git_wiki)
+    service.register_evidence({"raw/x.md"})
+    plan = MemoryPlan(
+        operations=[
+            PageDelete(path="log.md", evidence=["raw/x.md"]),
+        ],
+        rationale="attempt to drop log via bare path",
+        evidence=["raw/x.md"],
+    )
+    with pytest.raises(WikiPlanInvalid, match="system file"):
+        service.apply_plan(plan)
+    assert log.exists(), "log.md must be intact"
+
+
+def test_apply_plan_delete_refuses_log_md_now_exercises_guard(git_wiki: Wiki) -> None:
+    """``PageDelete(path='log.md')`` is rejected by the apply-side
+    ``system file`` guard inside ``_apply_operations`` rather than by
+    ``validate_plan``'s ``validate_page_type`` step.
+
+    The assertion is on the exact message ``"system file"`` — the
+    apply-side guard's signature. ``validate_page_type`` would surface
+    ``"unknown page type"`` instead, which would indicate the
+    ``is_log`` branch in ``validate_plan`` regressed and the test is
+    vacuous.
+    """
+    log = git_wiki.wiki_dir / "log.md"
+    log.write_text("# Log\n- entry\n", encoding="utf-8")
+    _git_init(git_wiki.data_root)
+    service = WikiMemoryService(wiki=git_wiki)
+    service.register_evidence({"raw/x.md"})
+    plan = MemoryPlan(
+        operations=[
+            PageDelete(path="log.md", evidence=["raw/x.md"]),
+        ],
+        rationale="attempt to drop log via bare path",
+        evidence=["raw/x.md"],
+    )
+    with pytest.raises(WikiPlanInvalid, match="system file"):
+        service.apply_plan(plan)
+    assert log.exists(), "log.md must be intact"
+
+
+def test_apply_plan_create_refuses_log_md(git_wiki: Wiki) -> None:
+    """A ``PageCreate`` op targeting ``wiki/log.md`` is rejected by the
+    symmetric apply-side ``system file`` guard.
+
+    The log is append-only and owned by ``append_log_entry`` inside
+    ``_apply_operations``; a ``PageCreate`` (or any other write op) that
+    targets ``wiki/log.md`` would silently destroy the audit trail.
+    The guard runs before the op-kind dispatch so every op shape is
+    caught, regardless of the path it takes.
+    """
+    log = git_wiki.wiki_dir / "log.md"
+    log.write_text("# Log\n- entry\n", encoding="utf-8")
+    _git_init(git_wiki.data_root)
+    service = WikiMemoryService(wiki=git_wiki)
+    service.register_evidence({"raw/x.md"})
+    plan = MemoryPlan(
+        operations=[
+            PageCreate(
+                path="wiki/log.md",
+                content="bad",
+                evidence=["raw/x.md"],
+            ),
+        ],
+        rationale="attempt to overwrite log via create",
+        evidence=["raw/x.md"],
+    )
+    with pytest.raises(WikiPlanInvalid, match="system file"):
+        service.apply_plan(plan)
+    assert log.read_text(encoding="utf-8") == "# Log\n- entry\n", "log.md must be intact"
+
+
+def test_apply_plan_update_refuses_log_md(git_wiki: Wiki) -> None:
+    """A ``PageUpdate`` op targeting ``wiki/log.md`` is rejected by the
+    symmetric apply-side ``system file`` guard.
+
+    The log is append-only; ``PageUpdate`` would clobber it with a
+    full-content replacement, silently destroying the audit trail.
+    """
+    log = git_wiki.wiki_dir / "log.md"
+    log.write_text("# Log\n- entry\n", encoding="utf-8")
+    _git_init(git_wiki.data_root)
+    service = WikiMemoryService(wiki=git_wiki)
+    service.register_evidence({"raw/x.md"})
+    plan = MemoryPlan(
+        operations=[
+            PageUpdate(
+                path="wiki/log.md",
+                expected_sha256=_sha("# Log\n- entry\n"),
+                content="bad",
+                evidence=["raw/x.md"],
+            ),
+        ],
+        rationale="attempt to overwrite log via update",
+        evidence=["raw/x.md"],
+    )
+    with pytest.raises(WikiPlanInvalid, match="system file"):
+        service.apply_plan(plan)
+    assert log.read_text(encoding="utf-8") == "# Log\n- entry\n", "log.md must be intact"
+
+
+def test_apply_plan_append_refuses_log_md(git_wiki: Wiki) -> None:
+    """An ``EvidenceAppend`` op targeting ``wiki/log.md`` is rejected by
+    the symmetric apply-side ``system file`` guard.
+
+    The log is append-only and managed by ``append_log_entry``; a direct
+    ``EvidenceAppend`` against it would append through the wrong
+    envelope, leaving the entry unparseable by the log reader.
+    """
+    log = git_wiki.wiki_dir / "log.md"
+    log.write_text("# Log\n- entry\n", encoding="utf-8")
+    _git_init(git_wiki.data_root)
+    service = WikiMemoryService(wiki=git_wiki)
+    service.register_evidence({"raw/x.md"})
+    plan = MemoryPlan(
+        operations=[
+            EvidenceAppend(
+                path="wiki/log.md",
+                expected_sha256=_sha("# Log\n- entry\n"),
+                content="bad",
+                evidence=["raw/x.md"],
+            ),
+        ],
+        rationale="attempt to append via EvidenceAppend",
+        evidence=["raw/x.md"],
+    )
+    with pytest.raises(WikiPlanInvalid, match="system file"):
+        service.apply_plan(plan)
+    assert log.read_text(encoding="utf-8") == "# Log\n- entry\n", "log.md must be intact"
+
+
+def test_apply_plan_create_refuses_index_md(git_wiki: Wiki) -> None:
+    """A ``PageCreate`` op targeting ``wiki/index.md`` is rejected by
+    the symmetric apply-side ``system file`` guard.
+
+    ``wiki/index.md`` is rebuilt from disk state by ``rebuild_index``
+    after every apply, so a literal ``PageCreate`` overwrite would
+    either be silently undone or, on a fresh repo with no other pages,
+    leave a stale catalog. The guard rejects ``PageCreate`` (and
+    ``EvidenceAppend`` / ``PageDelete``) on ``index.md``; ``PageUpdate``
+    remains the established pathway for the repair agent's
+    ``UpdateIndex`` operation.
+    """
+    index = git_wiki.wiki_dir / "index.md"
+    original = index.read_text(encoding="utf-8")
+    service = WikiMemoryService(wiki=git_wiki)
+    service.register_evidence({"raw/x.md"})
+    plan = MemoryPlan(
+        operations=[
+            PageCreate(
+                path="wiki/index.md",
+                content="bad",
+                evidence=["raw/x.md"],
+            ),
+        ],
+        rationale="attempt to overwrite catalog via create",
+        evidence=["raw/x.md"],
+    )
+    with pytest.raises(WikiPlanInvalid, match="system file"):
+        service.apply_plan(plan)
+    assert index.read_text(encoding="utf-8") == original, "index.md must be intact"
+
+
+def test_translate_page_diffs_to_plan_create(tmp_path: Path) -> None:
+    diffs = [
+        PageDiff(
+            operation=PageOperation.CREATE,
+            path=Path("wiki/concepts/alpha.md"),
+            new_content="# Alpha\n\nbody",
+        )
+    ]
+    plan = translate_page_diffs_to_plan(
+        diffs=diffs,
+        collection="claude-code",
+        source_path="raw/articles/x.md",
+    )
+    assert plan.rationale == "ingest raw/articles/x.md into claude-code"
+    assert len(plan.operations) == 1
+    op = plan.operations[0]
+    assert isinstance(op, PageCreate)
+    assert op.path == "wiki/concepts/alpha.md"
+    assert op.content == "# Alpha\n\nbody"
+    assert op.evidence == ["raw/articles/x.md"]
+    assert op.tag == "ingest"
+
+
+def test_translate_page_diffs_to_plan_update(tmp_path: Path) -> None:
+    diffs = [
+        PageDiff(
+            operation=PageOperation.UPDATE,
+            path=Path("wiki/concepts/alpha.md"),
+            old_content="old",
+            new_content="new",
+        )
+    ]
+    plan = translate_page_diffs_to_plan(
+        diffs=diffs,
+        collection="claude-code",
+        source_path="raw/articles/x.md",
+        sha_lookup=lambda p: "deadbeef",
+    )
+    op = plan.operations[0]
+    assert isinstance(op, PageUpdate)
+    assert op.expected_sha256 == "deadbeef"
+    assert op.content == "new"
+
+
+def test_translate_page_diffs_to_plan_delete(tmp_path: Path) -> None:
+    diffs = [
+        PageDiff(
+            operation=PageOperation.DELETE,
+            path=Path("wiki/concepts/obsolete.md"),
+        )
+    ]
+    plan = translate_page_diffs_to_plan(
+        diffs=diffs,
+        collection="claude-code",
+        source_path="raw/articles/x.md",
+    )
+    assert isinstance(plan.operations[0], PageDelete)
+
+
+def test_translate_page_diffs_to_plan_empty_returns_noop(tmp_path: Path) -> None:
+    plan = translate_page_diffs_to_plan(
+        diffs=[],
+        collection="claude-code",
+        source_path="raw/articles/x.md",
+    )
+    assert plan.is_noop()
+
+
+def test_validate_plan_read_matches_apply_for_prefixed_path(git_wiki: Wiki) -> None:
+    """``validate_plan`` and ``apply_plan`` must read the same file for
+    a prefixed UPDATE path.
+
+    Regression for the whole-branch review finding: ``validate_plan``
+    passed the prefixed ``op.path`` (``"wiki/<col>/<file>.md"``)
+    straight to ``_read_page``, which joined it onto ``wiki.wiki_dir``
+    and resolved to ``<data_root>/wiki/wiki/<rest>`` (which does not
+    exist). ``_read_page`` returned ``None``, ``actual = ""``, and the
+    validate-side hash comparison silently agreed with whatever
+    ``expected_sha256`` carried — including the wrong value produced
+    by the orchestrator's ``_sha_lookup`` when *that* helper also
+    failed to strip the prefix. The two callers always computed the
+    same (wrong) hash, so the bug was invisible until a real on-disk
+    file existed and the orchestrator's broken ``_sha_lookup`` was
+    later fixed in isolation.
+
+    The fix in ``validate_plan`` strips the ``wiki/`` prefix (the same
+    strip ``_apply_operations`` does) before reading, so both callers
+    now read the actual on-disk content. With the page pre-staged at
+    the correct location and a correct ``expected_sha256`` provided,
+    ``validate_plan`` succeeds *and* ``apply_plan`` succeeds.
+    """
+    body = "---\ntitle: Alpha\ntype: concept\n---\n# Alpha\n\nbody\n"
+    target = git_wiki.wiki_dir / "article" / "concepts" / "alpha.md"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(body, encoding="utf-8")
+    _git_init(git_wiki.data_root)
+    service = WikiMemoryService(wiki=git_wiki)
+    service.register_evidence({"raw/x.md"})
+    plan = MemoryPlan(
+        operations=[
+            PageUpdate(
+                path="wiki/article/concepts/alpha.md",  # prefixed
+                expected_sha256=_sha(body),
+                content=body + "\n## New section\n",
+                evidence=["raw/x.md"],
+            )
+        ],
+        rationale="update via prefixed path",
+        evidence=["raw/x.md"],
+    )
+    # Before the fix, ``validate_plan`` saw ``actual = ""`` because the
+    # read targeted the doubled-prefix path; the assertion below would
+    # have raised ``WikiWriteConflict``. After the fix the read targets
+    # the real file and matches ``expected_sha256``.
+    service.validate_plan(plan)
+    receipt = service.apply_plan(plan)
+    assert receipt.changed_pages
+    assert "## New section" in target.read_text(encoding="utf-8")
+
+
+def test_apply_plan_system_file_guard_catches_doubled_prefix(git_wiki: Wiki) -> None:
+    """A ``PageCreate`` on ``"wiki/wiki/log.md"`` must be rejected by
+    the system-file guard, not silently create a shadow log file.
+
+    Regression for the whole-branch review finding: after a single
+    ``wiki/`` strip in ``_apply_operations`` the guard's
+    bare-name + resolved-equality checks both missed a
+    ``"wiki/wiki/log.md"`` input. ``resolved`` pointed at
+    ``<data_root>/wiki/wiki/log.md`` (the shadow), not the real
+    ``log_path``. The op slipped past the guard, the
+    ``mkdir(parents=True, exist_ok=True)`` created the ``wiki/wiki/``
+    tree, and the write landed outside ``append_log_entry``'s
+    awareness — every subsequent ``append_log_entry`` would write to
+    the real log while the agent's create persisted in the shadow.
+
+    The fix normalizes ``op.path`` by stripping ``wiki/`` defensively
+    twice before the guard, so ``resolved`` collapses back to
+    ``log_path`` and the guard fires.
+    """
+    log = git_wiki.wiki_dir / "log.md"
+    log.write_text("# Log\n- entry\n", encoding="utf-8")
+    _git_init(git_wiki.data_root)
+    service = WikiMemoryService(wiki=git_wiki)
+    service.register_evidence({"raw/x.md"})
+    plan = MemoryPlan(
+        operations=[
+            PageCreate(
+                path="wiki/wiki/log.md",  # doubled prefix
+                content="shadow",
+                evidence=["raw/x.md"],
+            ),
+        ],
+        rationale="attempt to create shadow log via doubled prefix",
+        evidence=["raw/x.md"],
+    )
+    with pytest.raises(WikiPlanInvalid, match="system file"):
+        service.apply_plan(plan)
+    # The real log must be intact.
+    assert log.read_text(encoding="utf-8") == "# Log\n- entry\n", "log.md must be intact"
+    # The shadow path must NOT exist (the doubled-prefix write must
+    # have been rejected before the ``mkdir(parents=True)`` call).
+    shadow = git_wiki.wiki_dir / "wiki" / "log.md"
+    assert not shadow.exists(), f"shadow log at {shadow} must not exist after guard rejection"
+
+
+def test_apply_plan_system_file_guard_catches_doubled_prefix_index(git_wiki: Wiki) -> None:
+    """Same bypass check for ``"wiki/wiki/index.md"``.
+
+    The ``PageCreate`` form is used here because ``PageUpdate`` on
+    ``index_path`` is the established carve-out for the repair agent's
+    ``UpdateIndex`` op (see ``_apply_operations`` docstring). The
+    doubled-prefix input is a ``PageCreate`` (catalog overwrite) and
+    must be rejected before the guard's carve-out would otherwise let
+    it through.
+    """
+    index = git_wiki.wiki_dir / "index.md"
+    original = index.read_text(encoding="utf-8")
+    service = WikiMemoryService(wiki=git_wiki)
+    service.register_evidence({"raw/x.md"})
+    plan = MemoryPlan(
+        operations=[
+            PageCreate(
+                path="wiki/wiki/index.md",  # doubled prefix
+                content="shadow",
+                evidence=["raw/x.md"],
+            ),
+        ],
+        rationale="attempt to create shadow index via doubled prefix",
+        evidence=["raw/x.md"],
+    )
+    with pytest.raises(WikiPlanInvalid, match="system file"):
+        service.apply_plan(plan)
+    assert index.read_text(encoding="utf-8") == original, "index.md must be intact"
+    shadow = git_wiki.wiki_dir / "wiki" / "index.md"
+    assert not shadow.exists(), f"shadow index at {shadow} must not exist after guard rejection"

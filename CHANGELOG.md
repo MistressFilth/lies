@@ -40,6 +40,15 @@ All notable changes to LIES are documented here. The format follows
 - `lies.query.retrieve_pages`: the shared retrieval path (qmd, falling
   back to `wiki/index.md`) behind both the extractive synthesizer and
   LLM synthesis. New public primitive.
+- F2: single-source ingest (`lies ingest-source`) now runs the LLM
+  round-trip through `source_reader_agent` and `page_writer_agent`;
+  pages land at `wiki/<collection>/<file>` via
+  `WikiMemoryService.apply_plan`. New `--no-llm` flag preserves the
+  pre-F2 `sync_collection` shim behavior for operators who prefer
+  bulk-scrape semantics. New `IngestQuarantined` /
+  `IngestSourceUnreachable` errors mirror the existing
+  `WikiMemoryError` rendering. `MemoryPlan` gains a `PageDelete`
+  variant and an optional `tag` field for `log.md` attribution.
 
 ### Changed
 
@@ -97,6 +106,37 @@ All notable changes to LIES are documented here. The format follows
   review.
 - Top-level `--name` removed. Subcommand `--name` is the only path;
   the REPL reads the wiki from `$LIES_WIKI_NAME` via `get_wiki_name()`.
+- `PageDelete` ops now land in git. Previously, `_collect_commit_files`
+  filtered staging candidates by `.exists()`, so the path was dropped
+  after `_apply_operations` unlinked the file; the deletion stayed as an
+  uncommitted `D` entry and the next `apply_plan`'s snapshot/restore
+  resurrected the file. The candidate list now derives from the
+  `PageReference` list returned by `_apply_operations`, so successful
+  deletes are staged even after `unlink`. No-op deletes (file never
+  existed) remain absent from the list so `git add` is never asked to
+  stage a never-existed path.
+- F2 whole-branch follow-up fixes (review of `run_ingest` /
+  `WikiMemoryService`): the orchestrator's `_sha_lookup` now strips
+  the `wiki/` prefix before reading, so an UPDATE on a prefixed
+  page-writer path computes the real on-disk hash instead of `""`;
+  `WikiMemoryService.validate_plan` strips the same prefix before
+  reading so validate and apply agree on the resolved file; the
+  system-file guard now normalizes `op.path` by stripping `wiki/`
+  twice, so a `wiki/wiki/log.md` or `wiki/wiki/index.md` input is
+  rejected as a system file instead of writing a shadow copy
+  outside `append_log_entry`'s awareness; `run_ingest` discards
+  (not leaks) the pre-ingest stash entry when
+  `IngestSourceUnreachable` is raised. All four findings carry
+  regression tests under
+  `tests/integration/test_run_ingest_end_to_end.py` and
+  `tests/unit/memory/test_service.py`.
+- All Python 2 `except X, Y:` clauses parenthesized to the Python 3
+  tuple form `except (X, Y):` across `src/` (orchestrator, memory
+  service, mcp server, scrapers, utils, cli, schema, etl, etc.).
+  ruff 0.16's formatter silently reverts the parens on py314
+  (upstream issue #26449), so `ruff-pre-commit` is pinned to
+  `v0.14.14` and `pyproject.toml` constrains `ruff<0.15` until
+  upstream ships the fix.
 
 ## [0.11.1] - 2026-08-24
 

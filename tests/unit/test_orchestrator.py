@@ -215,7 +215,7 @@ def test_run_ingest_delegates_and_returns_ingested_string(git_wiki) -> None:
     orch = Orchestrator(wiki=git_wiki, models=models_for_tests("test"))
 
     with mock.patch("lies.etl.sync_helper.sync_collection") as m:
-        result = orch.run_ingest("raw/some-source.md")
+        result = orch.run_ingest("raw/some-source.md", no_llm=True)
 
     # Wrapper returned the documented back-compat string.
     assert result == "ingested raw/some-source.md"
@@ -246,7 +246,7 @@ def test_run_ingest_propagates_sync_collection_exception(git_wiki) -> None:
         ),
         pytest.raises(IngestFailure, match="malformed URL"),
     ):
-        orch.run_ingest("raw/broken-source.md")
+        orch.run_ingest("raw/broken-source.md", no_llm=True)
 
 
 def test_run_ingest_propagates_keyboard_interrupt(git_wiki) -> None:
@@ -264,7 +264,7 @@ def test_run_ingest_propagates_keyboard_interrupt(git_wiki) -> None:
         ),
         pytest.raises(KeyboardInterrupt),
     ):
-        orch.run_ingest("raw/source.md")
+        orch.run_ingest("raw/source.md", no_llm=True)
 
 
 def test_run_ingest_propagates_commit_error(git_wiki) -> None:
@@ -283,7 +283,7 @@ def test_run_ingest_propagates_commit_error(git_wiki) -> None:
         ),
         pytest.raises(CommitError, match="simulated post-ingest commit"),
     ):
-        orch.run_ingest("raw/some-source.md")
+        orch.run_ingest("raw/some-source.md", no_llm=True)
 
 
 def test_run_ingest_propagates_sync_failure_with_pre_existing_dirty_state(
@@ -314,7 +314,7 @@ def test_run_ingest_propagates_sync_failure_with_pre_existing_dirty_state(
         ),
         pytest.raises(RuntimeError, match="sync crashed"),
     ):
-        orch.run_ingest("raw/source.md")
+        orch.run_ingest("raw/source.md", no_llm=True)
 
     # The wrapper itself did not touch the user's dirty state.
     assert (data_root / "initial.txt").read_text() == pre_initial
@@ -335,7 +335,7 @@ def test_run_ingest_success_returns_ingested_string(
     orch = Orchestrator(wiki=git_wiki, models=models_for_tests("test"))
 
     with mock.patch("lies.etl.sync_helper.sync_collection") as m:
-        result = orch.run_ingest("raw/source.md")
+        result = orch.run_ingest("raw/source.md", no_llm=True)
 
     assert result == "ingested raw/source.md"
     m.assert_called_once()
@@ -357,7 +357,7 @@ def test_run_ingest_propagates_nothing_to_commit_error(git_wiki) -> None:
         ),
         pytest.raises(CommitError, match="nothing to commit"),
     ):
-        orch.run_ingest("raw/empty-source.md")
+        orch.run_ingest("raw/empty-source.md", no_llm=True)
 
 
 def test_orchestrator_uses_qmd_http_transport(

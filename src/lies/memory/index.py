@@ -58,7 +58,7 @@ def _discover_pages(wiki: Wiki) -> dict[str, list[tuple[str, str, str]]]:
 
         try:
             content = path.read_text(encoding="utf-8")
-        except OSError, UnicodeDecodeError:
+        except (OSError, UnicodeDecodeError):
             continue
         title = _page_title_from_frontmatter(content, fallback=name)
         grouped[page_type].append((title, rel, name))

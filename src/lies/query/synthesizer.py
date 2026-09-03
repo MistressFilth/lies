@@ -248,7 +248,7 @@ def _try_read(path: Path, wiki: Wiki, *, title_override: str | None = None) -> P
         return None
     try:
         content = path.read_text(encoding="utf-8")
-    except OSError, UnicodeDecodeError:
+    except (OSError, UnicodeDecodeError):
         return None
 
     rel = path.relative_to(wiki.data_root).as_posix()

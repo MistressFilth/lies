@@ -10,8 +10,8 @@ name and ``idle_timeout_s`` argument remain for API compatibility; there is
 no persistent process or idle timeout. A failed process is retried once.
 """
 
-import subprocess
-import threading
+import subprocess  # noqa: E402
+import threading  # noqa: E402
 
 
 class PandocDaemon:

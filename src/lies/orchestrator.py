@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import subprocess
+import sys
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -14,12 +16,16 @@ from pydantic_ai.models import Model
 
 from lies.agents.indexer import indexer_agent
 from lies.agents.linter import LintFinding, LintReport, linter_agent
-from lies.agents.page_writer import page_writer_agent
+from lies.agents.page_writer import (
+    PageDiff,
+    PageWriterDeps,
+    page_writer_agent,
+)
 from lies.agents.query_synthesizer import QueryAnswer, QueryDeps, query_synthesizer_agent
 from lies.agents.repair import RepairAgentDeps, repair_agent
 from lies.agents.repair_models import RepairPlan, RepairReceipt
 from lies.agents.repair_validation import ValidatedRepairPlan, validate_plan
-from lies.agents.source_reader import source_reader_agent
+from lies.agents.source_reader import SourceExtraction, source_reader_agent
 from lies.capabilities import (
     code_mode,
     dynamic_workflow,
@@ -31,6 +37,8 @@ from lies.config import get_qmd_transport, get_qmd_url
 from lies.lock_errors import WikiFlockUnrepairable, WikiLockBusy
 from lies.memory.enricher import MemoryEnricherDeps, enricher_agent
 from lies.memory.models import (
+    IngestQuarantined,
+    IngestSourceUnreachable,
     MemoryPlan,
     MemoryReceipt,
     WikiCommitFailed,
@@ -168,7 +176,7 @@ def _build_lint_report(
         for page in pages:
             try:
                 text = (wiki.wiki_dir / page).read_text(encoding="utf-8")
-            except OSError, UnicodeDecodeError:
+            except (OSError, UnicodeDecodeError):
                 continue
             linked.update(_extract_local_md_links(text, page, wiki.data_root))
         orphans = sorted(pages - linked)
@@ -195,7 +203,7 @@ def _build_lint_report(
         for page in pages:
             try:
                 text = (wiki.wiki_dir / page).read_text(encoding="utf-8")
-            except OSError, UnicodeDecodeError:
+            except (OSError, UnicodeDecodeError):
                 continue
             title = _extract_frontmatter_title(text)
             if title:
@@ -214,7 +222,7 @@ def _build_lint_report(
         for page in pages:
             try:
                 text = (wiki.wiki_dir / page).read_text(encoding="utf-8")
-            except OSError, UnicodeDecodeError:
+            except (OSError, UnicodeDecodeError):
                 continue
             page_links[page] = _extract_local_md_links(text, page, wiki.data_root)
 
@@ -227,7 +235,7 @@ def _build_lint_report(
                 body = body_cache.setdefault(
                     page, _strip_frontmatter((wiki.wiki_dir / page).read_text(encoding="utf-8"))
                 )
-            except OSError, UnicodeDecodeError:
+            except (OSError, UnicodeDecodeError):
                 continue
             body_lower = body.lower()
             page_targets = page_links.get(page, set())
@@ -256,7 +264,7 @@ def _build_lint_report(
     for page in pages:
         try:
             text = (wiki.wiki_dir / page).read_text(encoding="utf-8")
-        except OSError, UnicodeDecodeError:
+        except (OSError, UnicodeDecodeError):
             continue
         for source in _extract_frontmatter_sources(text):
             resolved = (wiki.data_root / source).resolve()
@@ -277,7 +285,7 @@ def _build_lint_report(
     for page in pages:
         try:
             text = (wiki.wiki_dir / page).read_text(encoding="utf-8")
-        except OSError, UnicodeDecodeError:
+        except (OSError, UnicodeDecodeError):
             continue
         for raw_target in _extract_wikilinks(text):
             if resolver.resolve(raw_target) is None:
@@ -541,6 +549,67 @@ def _format_repair_section(receipt: RepairReceipt) -> str:
         lines.extend(["", f"### Errors ({len(receipt.errors)})", ""])
         lines.extend(f"- {err}" for err in receipt.errors)
     return "\n".join(lines)
+
+
+# Module-level constants for the F2 helpers (_list_existing_pages and
+# _materialize_source). These are deterministic pure functions, not
+# agent-shaped, so they live as module-level helpers alongside the
+# other host-side helpers (lint shell, snapshot, etc.) rather than on
+# the WikiMemoryService.
+#
+# _EXCLUDED_TOP_LEVEL_DIRS: any directory segment in this set is
+# skipped by the page walker. Keeps ``.lies/`` (runtime sidecars),
+# ``.git/`` (git metadata), and ``node_modules/`` (tooling artifacts)
+# out of the agent's existing-pages list.
+_EXCLUDED_TOP_LEVEL_DIRS = frozenset({".lies", ".git", "node_modules"})
+# _FRONTMATTER_SUMMARY_RE: matches a ``summary: <value>`` line inside a
+# YAML frontmatter block. The block is parsed by checking
+# ``text.startswith("---")`` and finding the closing ``\n---``; only
+# then is the regex applied to the block contents.
+_FRONTMATTER_SUMMARY_RE = re.compile(r"^summary:\s*(.+)$", re.MULTILINE)
+
+
+def _summarize_page(path: Path) -> str:
+    """Return the page's frontmatter ``summary:`` value, else a
+    deterministic fallback built from the first H1 + first body line.
+
+    Pure function; no I/O beyond reading the file. Test-only / agent-input
+    utility — does not need to live on the WikiMemoryService. The body
+    line is taken from lines AFTER any YAML frontmatter block so the
+    ``title:`` (or other frontmatter fields) don't get reported as the
+    first body line.
+    """
+    text = path.read_text(encoding="utf-8", errors="replace")
+    body_text = text
+    if text.startswith("---"):
+        end = text.find("\n---", 3)
+        if end != -1:
+            fm_match = _FRONTMATTER_SUMMARY_RE.search(text[3:end])
+            if fm_match:
+                return fm_match.group(1).strip().strip('"').strip("'")
+            # Skip the frontmatter block when building the fallback so
+            # the ``title:`` line doesn't get reported as the first body.
+            body_text = text[end + 4 :].lstrip("\n")
+    lines = body_text.splitlines()
+    h1 = next((line for line in lines if line.startswith("# ")), "")
+    body = next(
+        (line.strip() for line in lines if line.strip() and not line.startswith("#")),
+        "",
+    )
+    return f"{h1.removeprefix('# ').strip()} {body}".strip()
+
+
+def _url_basename(url: str) -> str:
+    """Stable filename for a fetched URL. Falls back to ``fetched.md``.
+
+    The basename is the URL's last path segment; URLs whose path has
+    no useful tail (e.g. ``https://example.com/``) get the literal
+    fallback so the materialize step always produces a real file.
+    """
+    from urllib.parse import urlparse
+
+    name = Path(urlparse(url).path).name
+    return name or "fetched.md"
 
 
 ORCHESTRATOR_SYSTEM_PROMPT_PREFIX = """You are the LIES orchestrator. The user
@@ -1047,24 +1116,139 @@ class Orchestrator:
         except Exception:  # noqa: BLE001 - last-resort graceful degradation
             return ""
 
-    def run_ingest(self, source: str) -> str:
-        """Backward-compatible wrapper. Delegates to SyncOrchestrator.
+    def run_ingest(self, source: str, *, no_llm: bool = False) -> str:
+        """Ingest a single source through the LLM round-trip (default)
+        or via ``sync_collection`` (when ``no_llm=True``).
 
-        To be deleted in a follow-up release once CLI and tests migrate.
+        F2 default (``no_llm=False``):
+          1. snapshot working tree (``_snapshot_working_tree``)
+          2. materialize ``source`` to ``raw/<collection>/<basename>``
+          3. ``source_reader_agent`` → ``SourceExtraction``
+          4. ``_list_existing_pages`` (deterministic)
+          5. ``page_writer_agent`` → ``list[PageDiff]``
+          6. ``translate_page_diffs_to_plan`` → ``MemoryPlan(tag="ingest")``
+          7. ``WikiMemoryService.apply_plan`` (flock + atomic commit +
+             sidecar + log + qmd update + rebuild_index + rollback)
+          8. discard snapshot
+
+        Agent failures at steps 3 or 5 call
+        ``etl.quarantine.quarantine`` and raise ``IngestQuarantined``.
+        Infra failures rollback and propagate the typed error.
+
+        ``IngestSourceUnreachable`` (raised at step 2 before any agent
+        work) — and any raw ``OSError`` from step 2's disk I/O — takes
+        the same ``discard snapshot`` path as :class:`IngestQuarantined`.
+        The snapshot was taken, but no wiki writes happened, so the
+        stash entry can be dropped rather than restored. Without this
+        branch the stash would leak until the next ``git stash clear``.
         """
         from lies.etl.sync_helper import sync_collection
+        from lies.memory.service import (
+            _hash_text,
+            _read_page,
+            translate_page_diffs_to_plan,
+        )
 
         collection_name = Path(source).stem
-        # The orchestrator still operates against a single on-disk wiki
-        # rooted at ``self.wiki.data_root``; pass that path through to
-        # sync_collection, which (in Task 11+) routes XDG lookups via
-        # the per-wiki ``Wiki`` dataclass. Construct a Wiki mirroring the
-        # legacy layout (every role pinned to data_root) so the XDG
-        # lookups that may try to mkdir on a privileged path are
-        # skipped — this back-compat shim keeps honoring the legacy
-        # locations for quarantine and telemetry.
-        sync_collection(self.wiki, collection_name, force=False)
-        return f"ingested {source}"
+        if no_llm:
+            sync_collection(self.wiki, collection_name, force=False)
+            return f"ingested {source}"
+
+        def _sha_lookup(rel: str) -> str:
+            """Return the SHA-256 of an existing wiki page, or "" if missing.
+
+            The page-writer agent emits UPDATE ops with a fresh
+            ``new_content``; the adapter sets ``expected_sha256`` to the
+            current on-disk hash so :class:`WikiWriteConflict` catches
+            drift. Brand-new pages don't go through UPDATE, but we still
+            return "" uniformly for non-existent paths.
+
+            The page-writer emits paths with the ``wiki/`` prefix per
+            the schema convention. ``_read_page`` joins onto
+            ``wiki.wiki_dir`` (= ``<data_root>/wiki``), so it expects a
+            path WITHOUT the leading ``wiki/`` — exactly like
+            ``_apply_operations`` passes to ``validate_page_path``.
+            Without the strip, ``_sha_lookup`` reads the doubled-prefix
+            location (``<data_root>/wiki/wiki/<rest>``) and returns
+            ``""`` even when the real on-disk file exists, breaking
+            the validate/apply agreement that
+            ``expected_sha256`` relies on.
+            """
+            body = _read_page(self.wiki, rel.removeprefix("wiki/"))
+            return "" if body is None else _hash_text(body)
+
+        repo = self.wiki.data_root
+        # Snapshot first (captures pre-existing dirty state in the wiki),
+        # then materialize. The user's source is expected to live
+        # OUTSIDE the wiki — materialize copies it in AFTER the snapshot,
+        # so the materialized file is NOT part of the stash and quarantine
+        # can still find it on the failure path. The snapshot still
+        # stashes any agent-written untracked files (new wiki pages)
+        # that ``WikiMemoryService.apply_plan`` will overwrite on
+        # success; on failure the service's own snapshot/restore rolls
+        # those back too.
+        snapshot_ref = Orchestrator._snapshot_working_tree(repo)
+        try:
+            raw_path = self._materialize_source(source, collection=collection_name)
+        except (IngestSourceUnreachable, OSError):
+            # Step 2 failed before any agent work — no wiki writes
+            # happened, so the snapshot can be discarded rather than
+            # restored. ``_materialize_source`` raises
+            # :class:`IngestSourceUnreachable` for typed source
+            # failures, but raw ``OSError`` (e.g. ``PermissionError``
+            # from ``mkdir`` / ``write_text``) can also leak out of
+            # the disk I/O branches. Both error classes trigger the
+            # same discard-snapshot path here because no wiki writes
+            # occurred. Without this branch the stash entry would
+            # survive the raise and accumulate until ``git stash
+            # clear`` or the next ``run_ingest`` overwrites it.
+            Orchestrator._discard_snapshot(repo, snapshot_ref)
+            raise
+        source_relpath = raw_path.relative_to(repo).as_posix()
+        try:
+            extraction = self._call_source_reader(
+                raw_path,
+                collection=collection_name,
+                source_relpath=source_relpath,
+            )
+            existing_pages = self._list_existing_pages(collection_name)
+            schema_text = (
+                self.wiki.schema_path.read_text(encoding="utf-8")
+                if self.wiki.schema_path and self.wiki.schema_path.exists()
+                else ""
+            )
+            diffs = self._call_page_writer(
+                extraction=extraction,
+                existing_pages=existing_pages,
+                schema_text=schema_text,
+                collection=collection_name,
+                source_relpath=source_relpath,
+            )
+            plan = translate_page_diffs_to_plan(
+                diffs=diffs,
+                collection=collection_name,
+                source_path=source_relpath,
+                sha_lookup=_sha_lookup,
+            )
+            svc = WikiMemoryService(self.wiki)
+            svc.register_evidence({source_relpath, *plan.evidence})
+            svc.apply_plan(plan)
+        except IngestQuarantined:
+            # The agent wrapper already quarantined the source. No wiki
+            # writes happened, so the snapshot can be discarded (the
+            # underlying ``git stash push --include-untracked`` is
+            # purely a safety net; nothing was staged into HEAD).
+            Orchestrator._discard_snapshot(repo, snapshot_ref)
+            raise
+        except BaseException:
+            # Any other failure (WikiPlanInvalid, WikiWriteConflict,
+            # WikiCommitFailed, …) means the agent or the service
+            # envelope blew up after the snapshot was taken. Restore
+            # the working tree so a follow-up retry sees a clean slate.
+            Orchestrator._restore_working_tree(repo, snapshot_ref)
+            raise
+        Orchestrator._discard_snapshot(repo, snapshot_ref)
+        return f"ingested {source} into {collection_name}"
 
     def run_query(self, question: str) -> SynthesizedAnswer:
         """Answer ``question`` using the wiki, synthesized by the LLM.
@@ -1154,7 +1338,7 @@ class Orchestrator:
                 page_texts[page.rel_path] = (self.wiki.data_root / page.rel_path).read_text(
                     encoding="utf-8"
                 )
-            except OSError, UnicodeDecodeError:
+            except (OSError, UnicodeDecodeError):
                 continue
 
         deps = QueryDeps(question=question, page_texts=page_texts)
@@ -1168,6 +1352,99 @@ class Orchestrator:
             )
             return None, f"{type(exc).__name__}: {exc}"
         return result.output, ""
+
+    # -- F2 single-source ingest wrappers --------------------------------------
+    #
+    # These two wrappers back the ingest-source flow
+    # (``lies ingest-source <path> --collection <name>``). Both follow the
+    # existing fail-soft shape (``except Exception``) but, unlike the
+    # lint / query-synthesizer wrappers that degrade silently, they
+    # quarantine the offending source and re-raise as
+    # :class:`IngestQuarantined` so the caller surfaces the failure
+    # rather than papering over it. ``source_relpath`` is the path the
+    # caller is operating on (e.g. ``raw/foo/incoming.md``);
+    # ``quarantine`` wants just the basename relative to
+    # ``raw/<collection>/``, so the wrappers strip the prefix before
+    # delegating.
+
+    def _call_source_reader(
+        self,
+        raw_path: Path,
+        *,
+        collection: str = "",
+        source_relpath: str = "",
+    ) -> SourceExtraction:
+        """Call ``source_reader_agent`` on the materialized raw file.
+
+        On any agent exception, quarantine the source and raise
+        :class:`IngestQuarantined`. ``collection`` and ``source_relpath``
+        are required for the quarantine sidecar; both default to
+        empty strings so the success-path unit tests don't need to
+        thread them through. Real callers (the F2 ingest flow) always
+        supply both.
+        """
+        try:
+            reader = source_reader_agent(model=self.models["source_reader"])
+            extraction: SourceExtraction = reader.run_sync(  # type: ignore[assignment]
+                f"Read {raw_path} and emit a SourceExtraction."
+            ).output
+            return extraction
+        except Exception as exc:
+            from lies.etl.quarantine import quarantine
+
+            quarantine(
+                self.wiki,
+                collection=collection,
+                path=source_relpath.removeprefix("raw/" + collection + "/"),
+                reason=f"source_reader_agent raised {type(exc).__name__}: {exc}",
+            )
+            raise IngestQuarantined(
+                source=source_relpath,
+                collection=collection,
+                reason=f"source_reader_agent raised {type(exc).__name__}: {exc}",
+            ) from exc
+
+    def _call_page_writer(
+        self,
+        *,
+        extraction: SourceExtraction,
+        existing_pages: list[tuple[str, str]],
+        schema_text: str,
+        collection: str = "",
+        source_relpath: str = "",
+    ) -> list[PageDiff]:
+        """Call ``page_writer_agent`` with deps, returning ``list[PageDiff]``.
+
+        Quarantine + raise on agent failure (mirrors
+        :meth:`_call_source_reader`). ``collection`` and
+        ``source_relpath`` are required for the quarantine sidecar;
+        real callers always supply both, but both default to empty
+        strings so the success-path unit tests don't need to thread
+        them through.
+        """
+        try:
+            writer = page_writer_agent(model=self.models["page_writer"])
+            deps = PageWriterDeps(
+                question=f"Ingest {source_relpath} into {collection}",
+                schema_text=schema_text,
+                existing_pages=existing_pages,
+            )
+            diffs: list[PageDiff] = writer.run_sync(deps=deps).output  # type: ignore[assignment]
+            return diffs
+        except Exception as exc:
+            from lies.etl.quarantine import quarantine
+
+            quarantine(
+                self.wiki,
+                collection=collection,
+                path=source_relpath.removeprefix("raw/" + collection + "/"),
+                reason=f"page_writer_agent raised {type(exc).__name__}: {exc}",
+            )
+            raise IngestQuarantined(
+                source=source_relpath,
+                collection=collection,
+                reason=f"page_writer_agent raised {type(exc).__name__}: {exc}",
+            ) from exc
 
     def run_lint(
         self,
@@ -1291,7 +1568,7 @@ class Orchestrator:
                     continue
                 try:
                     page_texts[rel] = path.read_text(encoding="utf-8")
-                except OSError, UnicodeDecodeError:
+                except (OSError, UnicodeDecodeError):
                     continue
         deps = LintDeps(page_texts=page_texts, wiki_root=str(self.wiki.data_root))
         try:
@@ -1535,3 +1812,102 @@ class Orchestrator:
             text=True,
             check=False,
         )
+
+    # -- F2 single-source ingest helpers --------------------------------------
+    #
+    # These two methods back the ingest-source flow (``lies ingest-source
+    # <path> --collection <name>``). ``_materialize_source`` ensures the
+    # source is on disk under ``raw/<collection>/<basename>``; the page
+    # writer's deps then call ``_list_existing_pages`` so the agent sees
+    # the existing wiki corpus before proposing PageDiff operations. Both
+    # are pure deterministic host-side helpers (no LLM call), so they live
+    # on the Orchestrator rather than on WikiMemoryService.
+
+    def _list_existing_pages(self, collection: str) -> list[tuple[str, str]]:
+        """Walk ``wiki/<collection>/`` returning
+        ``(data-root-relative path, summary)`` pairs.
+
+        The path is ``data_root``-relative and keeps the ``wiki/`` prefix
+        (e.g., ``wiki/foo/concepts/alpha.md``) so the agent's
+        existing-pages list maps 1-to-1 onto paths it can also write to.
+        The summary is the frontmatter ``summary:`` field if present,
+        else the first H1 plus the first non-empty line of body text.
+        Excludes ``index.md``, ``log.md``, and anything under ``.lies/``
+        or ``.git/``. Pure deterministic; no LLM call. Returns ``[]``
+        when the collection directory does not exist.
+        """
+        out: list[tuple[str, str]] = []
+        collection_dir = self.wiki.wiki_dir / collection
+        if not collection_dir.exists():
+            return out
+        for path in sorted(collection_dir.rglob("*.md")):
+            rel = path.relative_to(self.wiki.data_root).as_posix()
+            parts = rel.split("/")
+            if any(part in _EXCLUDED_TOP_LEVEL_DIRS for part in parts):
+                continue
+            if parts[-1] in {"index.md", "log.md"}:
+                continue
+            out.append((rel, _summarize_page(path)))
+        return out
+
+    def _materialize_source(self, source: str, collection: str) -> Path:
+        """Ensure ``source`` is on disk under
+        ``wiki.data_root/raw/<collection>/<basename>``.
+
+        Branches:
+        - URL (http/https): fetch via ``WebScraper.fetch`` and write.
+        - local path: must exist; copy if outside ``raw/``, else pass-through.
+        - ``'-'`` (stdin): read all of stdin, write to a stable basename.
+
+        Raises :class:`IngestSourceUnreachable` on source-resolution
+        failures (unreachable URL, missing local path, stdin read
+        errors). Raw ``OSError`` (e.g. ``PermissionError`` from the
+        ``mkdir`` / ``write_text`` / ``write_bytes`` disk I/O) is NOT
+        wrapped — the caller (``run_ingest``) catches it alongside
+        :class:`IngestSourceUnreachable` and discards the snapshot.
+        """
+        import shutil
+
+        raw_root = self.wiki.raw_dir / collection
+        raw_root.mkdir(parents=True, exist_ok=True)
+
+        # Stdin branch: the source arrives over stdin; we need a real file
+        # on disk for the agent pipeline. Read all of stdin and write to
+        # ``raw/<collection>/stdin.md`` so the basename is stable.
+        if source.strip() == "-":
+            try:
+                sys.stdin.seek(0)
+                body = sys.stdin.read()
+            except Exception as exc:
+                raise IngestSourceUnreachable(source="stdin", reason=str(exc)) from exc
+            target = raw_root / "stdin.md"
+            target.write_text(body, encoding="utf-8")
+            return target
+
+        # URL branch: fetch via the project's WebScraper. The fetcher
+        # already handles llms.txt / llms-full.txt walking and rejects
+        # HTML / redirect-to-marketing responses; we just persist its
+        # bytes under a stable basename.
+        if source.startswith(("http://", "https://")):
+            from lies.scrapers.web import WebScraper
+
+            try:
+                body = WebScraper().fetch(source)
+            except Exception as exc:
+                raise IngestSourceUnreachable(source=source, reason=str(exc)) from exc
+            basename = _url_basename(source)
+            target = raw_root / basename
+            target.write_bytes(body)
+            return target
+
+        # Local-path branch: must exist on disk. Pass through when the
+        # caller already pointed at the destination (avoids a redundant
+        # copy that would otherwise wipe the file's mtime).
+        path = Path(source).expanduser().resolve()
+        if not path.is_file():
+            raise IngestSourceUnreachable(source=source, reason="local path missing")
+        basename = path.name
+        target = raw_root / basename
+        if path != target:
+            shutil.copy2(path, target)
+        return target

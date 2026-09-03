@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from lies.agents.repair_models import RepairPlan
 
+from lies.agents.page_writer import PageDiff, PageOperation
 from lies.lock_errors import (  # noqa: F401 — Task 5/6/7 will reference these from this module.
     WikiFlockCorrupt,
     WikiFlockIndeterminate,
@@ -36,6 +37,7 @@ from lies.memory.models import (
     MemoryReceipt,
     OperationKind,
     PageCreate,
+    PageDelete,
     PageReference,
     PageUpdate,
     WikiCollectionRef,
@@ -43,6 +45,7 @@ from lies.memory.models import (
     WikiPlanInvalid,
     WikiSearchResult,
     WikiWriteConflict,
+    _PlanOperation,
 )
 from lies.memory.retrieval import _path_for_id, read_pages, search_wiki
 from lies.memory.validation import (
@@ -163,8 +166,63 @@ def _read_page(wiki: Wiki, path: str) -> str | None:
         return None
     try:
         return resolved.read_text(encoding="utf-8")
-    except OSError, UnicodeDecodeError:
+    except (OSError, UnicodeDecodeError):
         return ""
+
+
+def translate_page_diffs_to_plan(
+    diffs: list[PageDiff],
+    *,
+    collection: str,
+    source_path: str,
+    sha_lookup: Callable[[str], str] | None = None,
+) -> MemoryPlan:
+    """Map page-writer output to a MemoryPlan with tag="ingest".
+
+    Each ``PageDiff`` becomes one operation carrying the source path
+    as its sole evidence reference. ``PageUpdate`` requires
+    ``sha_lookup``; ``PageCreate`` and ``PageDelete`` do not.
+    """
+    operations: list[_PlanOperation] = []
+    for diff in diffs:
+        rel = diff.path.as_posix() if isinstance(diff.path, Path) else str(diff.path)
+        if diff.operation == PageOperation.CREATE:
+            if diff.new_content is None:
+                raise WikiPlanInvalid(f"CREATE op missing new_content: {rel}")
+            operations.append(
+                PageCreate(
+                    path=rel,
+                    content=diff.new_content,
+                    evidence=[source_path],
+                    tag="ingest",
+                )
+            )
+        elif diff.operation == PageOperation.UPDATE:
+            if diff.new_content is None:
+                raise WikiPlanInvalid(f"UPDATE op missing new_content: {rel}")
+            if sha_lookup is None:
+                raise WikiPlanInvalid(
+                    f"UPDATE op {rel} requires sha_lookup so expected_sha256 can be set"
+                )
+            operations.append(
+                PageUpdate(
+                    path=rel,
+                    expected_sha256=sha_lookup(rel),
+                    content=diff.new_content,
+                    evidence=[source_path],
+                    tag="ingest",
+                )
+            )
+        elif diff.operation == PageOperation.DELETE:
+            operations.append(PageDelete(path=rel, evidence=[source_path], tag="ingest"))
+        else:
+            raise WikiPlanInvalid(f"unsupported PageOperation: {diff.operation!r}")
+    rationale = f"ingest {source_path} into {collection}"
+    return MemoryPlan(
+        operations=operations,
+        rationale=rationale,
+        evidence=[source_path],
+    )
 
 
 def _page_type_from_dir(directory_name: str) -> str:
@@ -332,35 +390,65 @@ class WikiMemoryService:
         """Validate a plan without applying it. Raises typed errors."""
         for op in plan.operations:
             validate_operation_evidence(op, known_references=self._known_evidence)
+            # Normalize the path the same way ``_apply_operations``
+            # does: defensively strip ``wiki/`` twice so a
+            # doubled-prefix input (``op.path = "wiki/wiki/log.md"``)
+            # is recognized as a system file rather than a page under
+            # a ``wiki/`` subdirectory. Without this normalization the
+            # validate-side system-file checks (the
+            # ``op.path == "wiki/log.md"`` and ``resolved == log_path``
+            # tests below) miss the doubled-prefix shape and the op
+            # either slips through to ``validate_page_type("wiki")`` or
+            # falls through to the apply-side guard with the wrong
+            # resolved path. The apply path strips twice too; keeping
+            # the two in lockstep ensures a typo-bypass attempt is
+            # caught at validate time with the same error the apply
+            # path would raise.
+            normalized = op.path.removeprefix("wiki/").removeprefix("wiki/")
             try:
-                resolved = validate_page_path(self._wiki, op.path)
+                resolved = validate_page_path(self._wiki, normalized)
             except WikiPlanInvalid as exc:
                 raise WikiPlanInvalid(str(exc), path=op.path) from exc
             is_index = op.path == "wiki/index.md" or resolved == self._wiki.wiki_dir / "index.md"
+            is_log = op.path == "wiki/log.md" or resolved == self._wiki.wiki_dir / "log.md"
             if is_index:
                 resolved = self._wiki.wiki_dir / "index.md"
+            elif is_log:
+                resolved = self._wiki.wiki_dir / "log.md"
             page_type = _page_type_from_dir(resolved.parent.name)
-            if not is_index:
+            if not is_index and not is_log:
                 validate_page_type(page_type)
-            if not isinstance(op, (PageCreate, PageUpdate, EvidenceAppend)):
+            if not isinstance(op, (PageCreate, PageUpdate, EvidenceAppend, PageDelete)):
                 raise WikiPlanInvalid(f"unsupported operation: {op!r}", path=op.path)
-            if not is_index and isinstance(op, (PageCreate, PageUpdate)):
+            if not is_index and not is_log and isinstance(op, (PageCreate, PageUpdate)):
                 try:
                     validate_frontmatter(parse_frontmatter(op.content), page_type=page_type)
                 except WikiPlanInvalid as exc:
                     raise WikiPlanInvalid(str(exc), path=op.path) from exc
-            if isinstance(op, PageCreate) and resolved.exists():
+            if isinstance(op, PageCreate) and resolved.exists() and not (is_index or is_log):
                 raise WikiPlanInvalid(
                     "page already exists; use UPDATE or APPEND",
                     path=op.path,
                 )
             if isinstance(op, (PageUpdate, EvidenceAppend)):
                 index_path = self._wiki.wiki_dir / "index.md"
-                current = (
-                    index_path.read_text(encoding="utf-8")
-                    if is_index
-                    else _read_page(self._wiki, op.path)
-                )
+                log_path = self._wiki.wiki_dir / "log.md"
+                if is_index:
+                    current = index_path.read_text(encoding="utf-8")
+                elif is_log:
+                    current = log_path.read_text(encoding="utf-8") if log_path.exists() else None
+                else:
+                    # Use the normalized path so the read targets the
+                    # same on-disk file the apply path will write to.
+                    # Page-writer emits paths with the ``wiki/`` prefix
+                    # per the schema convention; ``_read_page`` joins
+                    # onto ``wiki.wiki_dir`` so a bare ``op.path``
+                    # would resolve to ``<data_root>/wiki/wiki/<rest>``
+                    # and silently miss the file. The hash comparison
+                    # then sees ``""`` (= missing) regardless of the
+                    # real on-disk content, so ``validate_plan`` and
+                    # ``apply_plan`` must agree on the resolved path.
+                    current = _read_page(self._wiki, normalized)
                 actual = "" if current is None else _hash_text(current)
                 if actual != op.expected_sha256:
                     raise WikiWriteConflict(
@@ -395,7 +483,7 @@ class WikiMemoryService:
                 self._restore_working_tree(repo, snapshot_ref)
                 raise
             try:
-                files = self._collect_commit_files(plan)
+                files = self._collect_commit_files(plan, changed)
                 if not files:
                     self._restore_working_tree(repo, snapshot_ref)
                     return self._empty_receipt()
@@ -406,8 +494,9 @@ class WikiMemoryService:
                 }
                 ops_str = " ".join(f"{k}={v}" for k, v in sorted(ops_hist.items()))
                 evidence_count = len(getattr(plan, "evidence", []) or [])
+                tag = next(iter(plan.operations)).tag
                 commit_message = (
-                    f"memory: {plan.rationale}\n\n"
+                    f"{tag}: {plan.rationale}\n\n"
                     f"Pages: {pages_list}\n"
                     f"Ops: {ops_str}\n"
                     f"Evidence: {evidence_count}\n"
@@ -469,33 +558,103 @@ class WikiMemoryService:
     def _apply_operations(self, plan: MemoryPlan) -> list[PageReference]:
         changed: list[PageReference] = []
         index_path = self._wiki.wiki_dir / "index.md"
+        log_path = self._wiki.wiki_dir / "log.md"
         for op in plan.operations:
-            resolved = validate_page_path(self._wiki, op.path)
-            if op.path == "wiki/index.md" or resolved == index_path:
+            # Page-writer emits paths with the ``wiki/`` prefix per the
+            # schema convention; ``validate_page_path`` joins onto
+            # ``wiki.wiki_dir`` (= ``<data_root>/wiki``), so the bare
+            # ``op.path`` would otherwise resolve to
+            # ``<data_root>/wiki/wiki/<rest>`` — outside the per-collection
+            # subdir convention. Strip the leading ``wiki/`` before
+            # resolving so the file lands at the correct on-disk path.
+            # Strip the leading ``wiki/`` defensively twice so a
+            # doubled-prefix input (``op.path = "wiki/wiki/log.md"``)
+            # can't bypass the system-file guard below. After the
+            # double-strip the resolved-on-disk path matches
+            # ``log_path`` / ``index_path`` and the guard fires; a
+            # single-strip would leave the resolved path at
+            # ``<data_root>/wiki/wiki/<file>`` and the guard's
+            # bare-name + resolved-equality checks would both miss.
+            rel = op.path.removeprefix("wiki/").removeprefix("wiki/")
+            resolved = validate_page_path(self._wiki, rel)
+            if resolved == index_path:
                 resolved = index_path
             resolved.parent.mkdir(parents=True, exist_ok=True)
+            # System-file guard: ``wiki/index.md`` and ``wiki/log.md`` are
+            # rebuilt/extended by the service itself (``rebuild_index``
+            # and ``append_log_entry`` below) — never written or removed
+            # by an op. Block ALL op kinds against these paths so the
+            # agent can never bypass the rebuild/append envelope by
+            # routing a write through a different op shape.
+            #
+            # Carve-out: ``PageUpdate`` on ``index_path`` is the
+            # established pathway for the repair agent's ``UpdateIndex``
+            # operation (see :func:`from_repair_plan`). The page is
+            # transiently rewritten with the catalog update, then
+            # overwritten by ``rebuild_index`` below — the ``PageUpdate``
+            # is the receipt surface for the operation, not a permanent
+            # write. ``log_path`` has no analogous pathway because
+            # ``append_log_entry`` already owns log mutation.
+            #
+            # Both the bare-name form (``op.path == "log.md"``) and the
+            # qualified form (``op.path == "wiki/log.md"``) reach the
+            # dispatcher's guard: after the double ``wiki/`` strip above,
+            # ``"wiki/log.md"`` resolves to ``wiki.wiki_dir/log.md``
+            # (= ``log_path``) and is matched by the resolved equality,
+            # while a bare ``log.md`` also resolves to ``log_path``. A
+            # pathological ``"wiki/wiki/log.md"`` input also resolves to
+            # ``log_path`` after the double strip, so the guard fires
+            # (a single strip would have left it at
+            # ``<data_root>/wiki/wiki/log.md`` and bypassed the guard).
+            # In every case the guard raises and the op-shape-specific
+            # branches below never see those paths.
+            is_system_log = resolved == log_path
+            is_system_index = resolved == index_path
+            if is_system_log:
+                raise WikiPlanInvalid(f"cannot write to {op.path}: system file")
+            if is_system_index and not isinstance(op, PageUpdate):
+                raise WikiPlanInvalid(f"cannot write to {op.path}: system file")
             if isinstance(op, PageCreate):
                 resolved.write_text(op.content, encoding="utf-8")
                 kind = OperationKind.CREATE
             elif isinstance(op, PageUpdate):
-                existing = (
-                    index_path.read_text(encoding="utf-8")
-                    if resolved == index_path
-                    else _read_page(self._wiki, op.path)
-                )
+                # ``log_path`` is blocked by the guard above; only the
+                # ``index_path`` carve-out reaches this branch. All other
+                # targets fall through to ``_read_page`` — pass the
+                # stripped ``rel`` so the read targets the same path as
+                # the write above.
+                if resolved == index_path:
+                    existing = index_path.read_text(encoding="utf-8")
+                else:
+                    existing = _read_page(self._wiki, rel)
                 actual = "" if existing is None else _hash_text(existing)
                 if actual != op.expected_sha256:
                     raise WikiWriteConflict(f"hash mismatch for {op.path}")
                 resolved.write_text(op.content, encoding="utf-8")
                 kind = OperationKind.UPDATE
             elif isinstance(op, EvidenceAppend):
-                existing = _read_page(self._wiki, op.path)
+                # Both ``log_path`` and ``index_path`` are blocked by the
+                # guard above. Every surviving op targets a non-system
+                # page, so the unconditional ``_read_page`` is correct.
+                # Pass the stripped ``rel`` so the read targets the same
+                # path as the write above.
+                existing = _read_page(self._wiki, rel)
                 actual = "" if existing is None else _hash_text(existing)
                 if actual != op.expected_sha256:
                     raise WikiWriteConflict(f"hash mismatch for {op.path}")
                 base = "" if existing is None else existing
                 resolved.write_text(base.rstrip() + "\n\n" + op.content, encoding="utf-8")
                 kind = OperationKind.APPEND
+            elif isinstance(op, PageDelete):
+                if not resolved.exists():
+                    # No-op: file already absent. Skip the PageReference
+                    # so the receipt reflects that no change occurred at
+                    # this op's target. ``rebuild_index`` and
+                    # ``append_log_entry`` (below) still run for the rest
+                    # of the plan.
+                    continue
+                resolved.unlink()
+                kind = OperationKind.DELETE
             else:
                 raise WikiPlanInvalid(f"unsupported operation: {op!r}")
             changed.append(
@@ -510,28 +669,56 @@ class WikiMemoryService:
             append_log_entry(
                 self._wiki,
                 f"## [{datetime.now(tz=UTC).date().isoformat()}] "
-                f"memory | {op.kind.value} | {op.path}",
+                f"{op.tag} | {op.kind.value} | {op.path}",
             )
         return changed
 
-    def _collect_commit_files(self, plan: MemoryPlan) -> list[str]:
+    def _collect_commit_files(self, plan: MemoryPlan, changed: list[PageReference]) -> list[str]:
         """Compute the repo-relative paths to commit for ``plan``.
 
-        Includes every op's target page plus ``wiki/index.md`` and
-        ``wiki/log.md``. Files that do not exist on disk are skipped so
-        a fresh repo (where ``wiki/log.md`` may not yet exist) does not
-        pass an empty list to ``atomic_commit``. Returns a sorted,
-        de-duplicated list of repo-relative POSIX paths.
+        Driven by ``changed`` (the ``PageReference`` list returned by
+        ``_apply_operations``) rather than the raw ``plan.operations``
+        so a successful ``PageDelete`` is staged even though ``unlink``
+        already removed it from disk. ``git add`` records the removal
+        when the path is passed; if the path is omitted the working
+        tree keeps the file uncommitted and the next ``apply_plan``'s
+        snapshot/restore resurrects it.
+
+        A no-op ``PageDelete`` (file never existed) leaves no
+        ``PageReference`` in ``changed`` and therefore no entry in
+        ``candidates`` — ``git add`` is never asked to stage a
+        never-existed path (it returns ``fatal: pathspec ... did not
+        match any files``).
+
+        System files (``wiki/index.md``, ``wiki/log.md``) are added
+        unconditionally; the trailing ``.exists()`` filter drops
+        ``wiki/log.md`` only on a fresh repo where ``append_log_entry``
+        has not yet created it. Returns a sorted, de-duplicated list of
+        repo-relative POSIX paths.
         """
         root = self._wiki.data_root
         index_path = self._wiki.wiki_dir / "index.md"
         candidates: set[str] = set()
-        for op in plan.operations:
+        for ref in changed:
             try:
-                resolved = validate_page_path(self._wiki, op.path)
+                # Strip the leading ``wiki/`` before resolving so
+                # ``validate_page_path`` produces the same on-disk path
+                # the write landed at in ``_apply_operations``. The
+                # ``git add`` pathspec must match the actual file
+                # location; otherwise the commit fails with
+                # ``pathspec ... did not match any files``.
+                ref_rel = ref.path.removeprefix("wiki/")
+                resolved = validate_page_path(self._wiki, ref_rel)
             except WikiPlanInvalid:
                 continue  # validate_plan should have rejected this already
-            if op.path == "wiki/index.md" or resolved == index_path:
+            # ``validate_page_path`` joins the (already-stripped) path
+            # onto ``wiki.wiki_dir``. A literal ``"wiki/index.md"`` input
+            # (e.g. the repair agent's ``UpdateIndex`` →
+            # ``PageUpdate(path="wiki/index.md")``) would otherwise
+            # resolve to ``wiki.wiki_dir/wiki/index.md`` instead of the
+            # real catalog at ``wiki.wiki_dir/index.md``. Remap to the
+            # on-disk path before computing the repo-relative form.
+            if ref.path == "wiki/index.md" or resolved == index_path:
                 resolved = index_path
             try:
                 rel = resolved.relative_to(root).as_posix()
@@ -540,7 +727,11 @@ class WikiMemoryService:
             candidates.add(rel)
         candidates.add("wiki/index.md")
         candidates.add("wiki/log.md")
-        return sorted(p for p in candidates if (root / p).exists())
+        return sorted(
+            p
+            for p in candidates
+            if p not in ("wiki/index.md", "wiki/log.md") or (root / p).exists()
+        )
 
     def _restore_index(self) -> None:
         try:

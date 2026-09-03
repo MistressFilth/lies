@@ -5,14 +5,18 @@ from pydantic import ValidationError
 
 from lies.memory.models import (
     EvidenceAppend,
+    IngestQuarantined,
+    IngestSourceUnreachable,
     MemoryPlan,
     MemoryReceipt,
     OperationKind,
     PageCreate,
+    PageDelete,
     PageReference,
     PageUpdate,
     WikiCollectionRef,
     WikiEvidence,
+    WikiMemoryError,
     WikiPlanInvalid,
     WikiSearchResult,
 )
@@ -118,3 +122,118 @@ def test_typed_error_carries_path_and_message() -> None:
     err = WikiPlanInvalid(path="x.md", reason="missing evidence")
     assert "missing evidence" in str(err)
     assert err.path == "x.md"
+
+
+def test_ingest_quarantined_is_wiki_memory_error() -> None:
+    err = IngestQuarantined(
+        source="raw/articles/sample.md",
+        collection="claude-code",
+        reason="page_writer_agent raised ValidationError: ...",
+    )
+    assert isinstance(err, WikiMemoryError)
+    msg = str(err)
+    assert "claude-code" in msg
+    assert "raw/articles/sample.md" in msg
+    assert "page_writer_agent" in msg
+
+
+def test_ingest_source_unreachable_is_wiki_memory_error() -> None:
+    err = IngestSourceUnreachable(
+        source="https://example.com/missing",
+        reason="WebScraper.fetch raised ConnectionError",
+    )
+    assert isinstance(err, WikiMemoryError)
+    assert "https://example.com/missing" in str(err)
+
+
+def test_page_create_default_tag_is_memory() -> None:
+    op = PageCreate(path="wiki/foo.md", evidence=["raw/x.md"], content="body")
+    assert op.tag == "memory"
+
+
+def test_page_update_default_tag_is_memory() -> None:
+    op = PageUpdate(
+        path="wiki/foo.md",
+        evidence=["raw/x.md"],
+        expected_sha256="abc",
+        content="body",
+    )
+    assert op.tag == "memory"
+
+
+def test_page_create_with_custom_tag_is_frozen() -> None:
+    op = PageCreate(
+        path="wiki/foo.md",
+        evidence=["raw/x.md"],
+        content="body",
+        tag="ingest",
+    )
+    assert op.tag == "ingest"
+    with pytest.raises(ValidationError):
+        op.tag = "synthesis"  # type: ignore[misc]
+
+
+def test_memory_plan_rejects_heterogeneous_tags() -> None:
+    with pytest.raises(ValidationError):
+        MemoryPlan(
+            operations=[
+                PageCreate(path="x.md", content="a", evidence=["e"], tag="ingest"),
+                PageUpdate(
+                    path="y.md",
+                    expected_sha256="h",
+                    content="b",
+                    evidence=["e"],
+                    tag="memory",
+                ),
+            ],
+            rationale="mixed tags",
+            evidence=["e"],
+        )
+
+
+def test_memory_plan_accepts_homogeneous_tags_default() -> None:
+    plan = MemoryPlan(
+        operations=[
+            PageCreate(path="x.md", content="a", evidence=["e"]),
+            PageUpdate(
+                path="y.md",
+                expected_sha256="h",
+                content="b",
+                evidence=["e"],
+            ),
+        ],
+        rationale="all memory",
+        evidence=["e"],
+    )
+    assert {op.tag for op in plan.operations} == {"memory"}
+
+
+def test_memory_plan_accepts_homogeneous_tags_custom() -> None:
+    plan = MemoryPlan(
+        operations=[
+            PageCreate(path="x.md", content="a", evidence=["e"], tag="ingest"),
+            PageUpdate(
+                path="y.md",
+                expected_sha256="h",
+                content="b",
+                evidence=["e"],
+                tag="ingest",
+            ),
+        ],
+        rationale="all ingest",
+        evidence=["e"],
+    )
+    assert {op.tag for op in plan.operations} == {"ingest"}
+
+
+def test_page_delete_carries_evidence_and_kind() -> None:
+    op = PageDelete(path="wiki/entities/postgres.md", evidence=["raw/x.md"])
+    assert op.kind == OperationKind.DELETE
+    assert op.tag == "memory"
+    assert op.path == "wiki/entities/postgres.md"
+    assert op.evidence == ["raw/x.md"]
+
+
+def test_page_delete_requires_evidence() -> None:
+    with pytest.raises(ValidationError):
+        PageDelete(path="wiki/foo.md", evidence=[])

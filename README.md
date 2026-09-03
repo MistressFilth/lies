@@ -120,7 +120,11 @@ proxy in front if remote access is required.
 After registration, Claude Code sees these tools:
 
 - `init_wiki(name)` — bootstrap a new wiki by name (creates XDG role-routed dirs).
-- `ingest_source(collection, name?)` — atomic ingest.
+- `ingest_source(collection, name?, no_llm=False)` — atomic ingest.
+  Default runs the LLM round-trip (`source_reader_agent` →
+  `page_writer_agent` → `WikiMemoryService.apply_plan`); pass
+  `no_llm=True` to demote to the legacy `sync_collection` shim for
+  bulk-scrape semantics.
 - `query(question, name?)` — synthesized answer (structured result
   with `fallback_used` and `fallback_reason`).
 - `lint(name?)` — health-check the wiki.
@@ -351,7 +355,7 @@ CLI commands (`src/lies/cli/`):
   legacy `<path>/.lies/` to XDG role-routed directories.
 - `lies ingest <collection> [--source URL] [--wizard]` — bootstrap (wiki + YAML if missing) and sync. `--wizard` routes the bootstrap through `collection_author_agent`.
 - `lies sync [<collection>] [--source URL] [--wizard]` — sync one collection, or every collection in the wiki when no positional is given. Pass `--source` to bootstrap a missing YAML (single-collection mode only); `--wizard` routes the bootstrap through `collection_author_agent`.
-- `lies ingest-source <source> --collection NAME [--wizard]` — atomic single-source ingest; registers a collection YAML (required). Legacy source-only form is removed. `--wizard` routes the bootstrap through `collection_author_agent`.
+- `lies ingest-source <source> --collection NAME [--wizard] [--no-llm]` — atomic single-source ingest; registers a collection YAML (required). Legacy source-only form is removed. Default path runs the LLM round-trip (`source_reader_agent` → `page_writer_agent` → `WikiMemoryService.apply_plan`); pass `--no-llm` to demote to the legacy `sync_collection` shim for bulk-scrape semantics. `--wizard` routes the bootstrap through `collection_author_agent`.
 - `lies query <question>` — ask a question of the wiki; answers are
   LLM-synthesized with citations over qmd-retrieved pages, falling back
   to the previous extractive output when no model is available.

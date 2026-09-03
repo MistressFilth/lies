@@ -124,7 +124,7 @@ def reconcile(
         help="Wiki to inspect (default: $LIES_WIKI_NAME).",
     ),
 ) -> None:
-    """Rebuild the sidecar from `git log --grep='^memory:'`."""
+    """Rebuild the sidecar from `git log` filtered to memory-system commits (memory: / ingest: / ...)."""
     from lies.memory import sidecar
 
     wiki = _resolve_wiki(name)
