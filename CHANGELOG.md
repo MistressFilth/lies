@@ -109,6 +109,15 @@ All notable changes to LIES are documented here. The format follows
   calls fail at the Typer layer with a missing-argument error.
 
 ### Fixed
+- Unit suite runtime drops from ~50s to ~14s. The 3 slowest `run_write`
+  tests pinned their `atomic_commit` mock to `return_value=None` so the
+  post-commit qmd hooks (the dominant cost) skip in tests that do not
+  assert on them. `apply_plan` / `apply_repair_plan` tests get an
+  autouse fixture that no-ops `_refresh_qmd`. CLI startup-cost tests
+  use `sys.executable` instead of `uv run` to skip project-resolution
+  overhead. The SIGKILL-escalation test is rewritten as a pure mock
+  (no real subprocess). `test_unreachable_when_host_does_not_resolve`
+  removed (required a real DNS lookup).
 - EPERM + stale heartbeat no longer triggers an unauthorized reap. The
   pid_alive classifier is now tri-state; an EPERM contender with a stale
   heartbeat returns `AcquireResult(status="indeterminate")` which

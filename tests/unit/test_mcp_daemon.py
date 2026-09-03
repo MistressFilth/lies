@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import os
+import signal
 import socket
 import subprocess
 import sys
-import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -285,41 +286,46 @@ def test_stop_terminates_a_cooperative_child(tmp_path: Path) -> None:
         proc.wait(timeout=5)
 
 
-def test_stop_escalates_to_sigkill(tmp_path: Path) -> None:
-    """A child that ignores SIGTERM is killed after the grace period."""
+def test_stop_escalates_to_sigkill(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A child that ignores SIGTERM is killed via SIGKILL after the grace.
+
+    Pure unit test: every signal primitive and liveness probe is mocked.
+    Asserts the escalation state machine — TERM first, then KILL — and
+    the returned ``StopResult`` shape. The PID is a chosen integer (no
+    real process exists), so no subprocess is spawned.
+    """
     wiki = _wiki(tmp_path)
-    ready_marker = wiki.runtime_root / "handler_ready"
-    ready_marker.parent.mkdir(parents=True, exist_ok=True)
-    script = (
-        "import signal, sys, time;"
-        f"signal.signal(signal.SIGTERM, signal.SIG_IGN);"
-        f"open({str(ready_marker)!r}, 'w').close();"
-        "time.sleep(60)"
-    )
-    proc = subprocess.Popen([sys.executable, "-c", script, "lies.cli", "_serve"])
-    # Block until the child has installed the SIG_IGN handler. Without
-    # this handshake the parent's SIGTERM can land first and the test
-    # races — the child would exit from the default SIGTERM action
-    # before its handler is in place.
-    deadline = time.monotonic() + 5.0
-    while time.monotonic() < deadline:
-        if ready_marker.exists():
-            break
-        time.sleep(0.01)
-    else:
-        proc.kill()
-        proc.wait(timeout=5)
-        pytest.fail("child never installed its SIGTERM handler within 5s")
-    daemon.write_record(wiki, _record(pid=proc.pid))
-    try:
-        result = daemon.stop_daemon(wiki, grace=1.0)
-        assert result.action == "stopped"
-        assert result.signal == "SIGKILL"
-        assert daemon.read_record(wiki) is None
-    finally:
-        if proc.poll() is None:
-            proc.kill()
-        proc.wait(timeout=5)
+    pid = 31415
+    signals: list[tuple[int, int]] = []
+    alive_after_sigkill = {"v": True}
+
+    def fake_kill(target_pid: int, sig: int) -> None:
+        signals.append((target_pid, sig))
+        if sig == signal.SIGKILL:
+            alive_after_sigkill["v"] = False
+
+    def fake_wait_for_exit(target_pid: int, timeout: float) -> bool:
+        # After the SIGKILL the pid is reported dead; everything else stays
+        # alive so the post-SIGTERM grace check returns False and forces the
+        # escalation path.
+        return not alive_after_sigkill["v"]
+
+    monkeypatch.setattr(daemon.os, "kill", fake_kill)
+    monkeypatch.setattr(daemon, "_wait_for_exit", fake_wait_for_exit)
+    monkeypatch.setattr(daemon, "is_stale", lambda _r: False)
+    monkeypatch.setattr(daemon, "acquire_create_lock", lambda _p, **_kw: SimpleNamespace(fd=1))
+    monkeypatch.setattr(daemon, "release_create_lock", lambda _p, _fd, **_kw: None)
+    monkeypatch.setattr(daemon, "read_record", lambda _w: _record(pid=pid))
+    monkeypatch.setattr(daemon, "clear_record", lambda _w: None)
+
+    result = daemon.stop_daemon(wiki, grace=0.05)
+
+    assert result.action == "stopped"
+    assert result.signal == "SIGKILL"
+    assert result.pid == pid
+    # Two signals, in order: SIGTERM, then SIGKILL, both targeted at the
+    # recorded pid. The escalation is the contract under test.
+    assert signals == [(pid, signal.SIGTERM), (pid, signal.SIGKILL)]
 
 
 def test_stop_raises_busy_when_create_lock_held(tmp_path: Path) -> None:
