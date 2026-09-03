@@ -20,6 +20,9 @@ The wiki supports the following page types. Each page lives at
   Example: `wiki/comparisons/postgres-vs-mysql.md`.
 - **source** — a summary of a single raw source, with links to the
   pages it informed. Example: `wiki/sources/karpathy-llm-wiki.md`.
+- **synthesis** — a distilled answer or top-level write-up filed back
+  from a query. Example: `wiki/synthesis/what-is-a-hook.md`. Always
+  carries a `derived_from:` list citing the pages that fed it.
 
 ## Invisible maintenance contract
 
@@ -42,7 +45,7 @@ Every page has YAML frontmatter:
 ```yaml
 ---
 title: "Concise title"
-type: entity | concept | comparison | source | overview
+type: entity | concept | comparison | source | overview | synthesis
 tags: [optional, list, of, tags]
 derived_from: [optional, slugs of pages this page was distilled from]
 created: YYYY-MM-DD
@@ -51,6 +54,11 @@ sources:
   - raw/articles/some-article.md
 ---
 ```
+
+- `derived_from: list[str]` — optional. Wiki-relative slugs of pages
+  that fed this page (e.g. filed synthesis pages cite the pages they
+  were distilled from). Loader at `src/lies/schema/loader.py`
+  round-trips the field; no value validation.
 
 ## Ingest workflow
 
