@@ -1121,8 +1121,8 @@ class Orchestrator:
         or via ``sync_collection`` (when ``no_llm=True``).
 
         F2 default (``no_llm=False``):
-          1. materialize ``source`` to ``raw/<collection>/<basename>``
-          2. snapshot working tree (``_snapshot_working_tree``)
+          1. snapshot working tree (``_snapshot_working_tree``)
+          2. materialize ``source`` to ``raw/<collection>/<basename>``
           3. ``source_reader_agent`` → ``SourceExtraction``
           4. ``_list_existing_pages`` (deterministic)
           5. ``page_writer_agent`` → ``list[PageDiff]``
@@ -1135,12 +1135,12 @@ class Orchestrator:
         ``etl.quarantine.quarantine`` and raise ``IngestQuarantined``.
         Infra failures rollback and propagate the typed error.
 
-        ``IngestSourceUnreachable`` (raised at step 1 before any agent
-        work) takes the same ``discard snapshot`` path as
-        :class:`IngestQuarantined` — the snapshot was taken, but no
-        wiki writes happened, so the stash entry can be dropped rather
-        than restored. Without this branch the stash would leak until
-        the next ``git stash clear``.
+        ``IngestSourceUnreachable`` (raised at step 2 before any agent
+        work) — and any raw ``OSError`` from step 2's disk I/O — takes
+        the same ``discard snapshot`` path as :class:`IngestQuarantined`.
+        The snapshot was taken, but no wiki writes happened, so the
+        stash entry can be dropped rather than restored. Without this
+        branch the stash would leak until the next ``git stash clear``.
         """
         from lies.etl.sync_helper import sync_collection
         from lies.memory.service import (
@@ -1190,10 +1190,16 @@ class Orchestrator:
         snapshot_ref = Orchestrator._snapshot_working_tree(repo)
         try:
             raw_path = self._materialize_source(source, collection=collection_name)
-        except IngestSourceUnreachable:
-            # Step 1 failed before any agent work — no wiki writes
+        except (IngestSourceUnreachable, OSError):
+            # Step 2 failed before any agent work — no wiki writes
             # happened, so the snapshot can be discarded rather than
-            # restored. Without this branch the stash entry would
+            # restored. ``_materialize_source`` raises
+            # :class:`IngestSourceUnreachable` for typed source
+            # failures, but raw ``OSError`` (e.g. ``PermissionError``
+            # from ``mkdir`` / ``write_text``) can also leak out of
+            # the disk I/O branches. Both error classes trigger the
+            # same discard-snapshot path here because no wiki writes
+            # occurred. Without this branch the stash entry would
             # survive the raise and accumulate until ``git stash
             # clear`` or the next ``run_ingest`` overwrites it.
             Orchestrator._discard_snapshot(repo, snapshot_ref)
@@ -1853,7 +1859,12 @@ class Orchestrator:
         - local path: must exist; copy if outside ``raw/``, else pass-through.
         - ``'-'`` (stdin): read all of stdin, write to a stable basename.
 
-        Raises :class:`IngestSourceUnreachable` on any failure.
+        Raises :class:`IngestSourceUnreachable` on source-resolution
+        failures (unreachable URL, missing local path, stdin read
+        errors). Raw ``OSError`` (e.g. ``PermissionError`` from the
+        ``mkdir`` / ``write_text`` / ``write_bytes`` disk I/O) is NOT
+        wrapped — the caller (``run_ingest``) catches it alongside
+        :class:`IngestSourceUnreachable` and discards the snapshot.
         """
         import shutil
 

@@ -619,3 +619,92 @@ def test_run_ingest_validation_failure_refuses_index_writes(
     o = Orchestrator(wiki, models=models_for_tests("test"))
     with pytest.raises(WikiPlanInvalid):
         o.run_ingest(str(src))
+
+
+def test_run_ingest_materialize_oserror_discards_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A raw ``OSError`` from ``_materialize_source`` must drop the snapshot,
+    not leak it.
+
+    Regression for the final-review Minor finding: ``_materialize_source``
+    wraps URL / stdin / missing-local-path failures as
+    :class:`IngestSourceUnreachable`, but its disk I/O calls
+    (``mkdir(parents=True, exist_ok=True)``, ``target.write_text``,
+    ``target.write_bytes``) can raise a raw ``PermissionError`` /
+    :class:`OSError` that bypasses the wrapper. The previous
+    ``except IngestSourceUnreachable`` arm did not catch that case, so
+    the snapshot taken before materialize survived the raise and
+    leaked into ``git stash list``.
+
+    The test pre-stages a tracked file with an uncommitted edit so
+    ``git stash push`` records a real entry, monkeypatches
+    ``_materialize_source`` to raise ``PermissionError("read-only
+    filesystem")``, then asserts the raw ``OSError`` propagates AND
+    ``git stash list`` is empty after the call.
+    """
+    subprocess.run(
+        ["git", "init", "--initial-branch=main", str(tmp_path)],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Test"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+    # Seed an initial commit so ``git stash push`` is willing to run.
+    (tmp_path / "README").write_text("seed", encoding="utf-8")
+    subprocess.run(
+        ["git", "add", "."],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "commit", "-m", "seed"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+    # Pre-existing dirty edit so the snapshot records a real entry.
+    (tmp_path / "README").write_text("seed with edit", encoding="utf-8")
+    wiki = _make_wiki(tmp_path)
+    o = Orchestrator(wiki, models=models_for_tests("test"))
+
+    # Force ``_materialize_source`` to raise a raw ``OSError`` (not the
+    # typed ``IngestSourceUnreachable``) so the widened except arm in
+    # ``run_ingest`` is the one that fires.
+    def _boom(source: str, collection: str) -> Path:
+        raise PermissionError("read-only filesystem")
+
+    monkeypatch.setattr(o, "_materialize_source", _boom)
+    monkeypatch.setattr(
+        "lies.orchestrator.source_reader_agent",
+        lambda model: (_ for _ in ()).throw(AssertionError("source reader must not be called")),
+    )
+    monkeypatch.setattr(
+        "lies.orchestrator.page_writer_agent",
+        lambda model: (_ for _ in ()).throw(AssertionError("page writer must not be called")),
+    )
+    src = _make_source(tmp_path.parent, wiki.data_root)
+    with pytest.raises(PermissionError):
+        o.run_ingest(str(src))
+    stash_list = subprocess.run(
+        ["git", "stash", "list"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert stash_list.stdout.strip() == "", (
+        f"stash entry leaked after raw OSError from materialize: {stash_list.stdout!r}"
+    )
