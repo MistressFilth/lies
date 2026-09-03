@@ -57,8 +57,10 @@ All notable changes to LIES are documented here. The format follows
   `synthesis_missing_evidence` and `dangling_derived_from`. Inline
   3-attempt retry on transient persistence errors.
   `SynthesizedMcpAnswer` exposes `should_file` and a serialized
-  `file_receipt`; a `WikiPlanInvalid` escaping the orchestrator is
-  re-raised as a typed `ToolError` so MCP callers can react.
+  `file_receipt`; a `WikiPlanInvalid` raised by `run_query` when the
+  caller asks for a filing but does not supply `--collection` is
+  caught at the CLI (exit 2, spec'd stderr message) and re-raised as
+  a typed `ToolError` on the MCP side so LLM callers can react.
 
 ### Changed
 
@@ -112,6 +114,16 @@ All notable changes to LIES are documented here. The format follows
   heartbeat returns `AcquireResult(status="indeterminate")` which
   callers translate to a new `WikiFlockIndeterminate` exception with an
   operator-actionable message ("Run `lies flock <name> force-repair`").
+- F3 synthesis frontmatter: dropped the duplicate `sources:` block
+  (synthesis pages have no raw source — they distill other wiki pages
+  via `derived_from:`), hand-quoted the `title:` value so questions
+  containing `:` or other YAML-significant characters parse cleanly,
+  and corrected `collection:` to use the target collection instead of
+  `pages_read[0].split('/')[0]` (which yielded `"wiki"` for
+  wiki-rooted pages).
+- F3 lint shell now reads each synthesis page once instead of three
+  times (type detection, `## Evidence` check, and `derived_from`
+  resolution all share a single `read_text`).
   Closes the M2 spec/implementation gap from PR #29's whole-branch
   review.
 - Top-level `--name` removed. Subcommand `--name` is the only path;
