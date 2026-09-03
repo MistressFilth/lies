@@ -1317,7 +1317,14 @@ class Orchestrator:
         Orchestrator._discard_snapshot(repo, snapshot_ref)
         return f"ingested {source} into {collection_name}"
 
-    def run_query(self, question: str) -> SynthesizedAnswer:
+    def run_query(
+        self,
+        question: str,
+        *,
+        collection: str | None = None,
+        file: bool = True,
+        force_file: bool = False,
+    ) -> SynthesizedAnswer:
         """Answer ``question`` using the wiki, synthesized by the LLM.
 
         Retrieval runs once via :func:`retrieve_pages` (qmd, falling
@@ -1329,6 +1336,15 @@ class Orchestrator:
 
         The two provenance axes are independent: ``fallback_used``
         reports retrieval, ``synthesis_used`` reports synthesis.
+
+        File-back (F3): when ``file`` is True and the agent marked the
+        answer ``should_file`` (or ``force_file`` flips it on), a wiki
+        page is materialized via :meth:`file_back_synthesis` and the
+        resulting :class:`MemoryReceipt` is attached as
+        ``ans.file_receipt``. ``collection`` identifies which
+        subdirectory the page lands in; without it, the answer is
+        returned unfilled and a note is appended to ``synthesis_reason``
+        rather than silently dropping the filing intent.
         """
         if not question or not question.strip():
             return synthesize_answer(question, self.wiki)
@@ -1364,7 +1380,8 @@ class Orchestrator:
                 f"dropped {len(dropped)} unretrieved citation(s): {', '.join(dropped)}"
             )
 
-        return SynthesizedAnswer(
+        ans = SynthesizedAnswer(
+            question=question,
             answer=output.answer,
             citations=kept,
             pages_read=[page.rel_path for page in pages],
@@ -1375,6 +1392,28 @@ class Orchestrator:
             synthesis_reason=synthesis_reason,
             should_file=output.should_file,
         )
+
+        # File-back decision (F3). ``should_file`` is the agent's own
+        # verdict on whether this answer earns a wiki page; ``force_file``
+        # overrides it for callers who always want one (e.g. an
+        # integration test). ``file`` lets callers opt out entirely
+        # (``file=False``) without losing the rest of the synthesis
+        # envelope. ``collection`` is required to know where the page
+        # lives — without it we degrade gracefully by recording the
+        # omission in ``synthesis_reason`` instead of raising.
+        should_file = ans.should_file or force_file
+        if should_file and file and collection is not None:
+            ans = replace(ans, file_receipt=self.file_back_synthesis(ans, collection))
+        elif should_file and file and collection is None:
+            ans = replace(
+                ans,
+                synthesis_reason=(
+                    (ans.synthesis_reason + "; " if ans.synthesis_reason else "")
+                    + "not filed: --collection required"
+                ),
+            )
+
+        return ans
 
     def _call_query_synthesizer(
         self, question: str, pages: list[PageRead]
