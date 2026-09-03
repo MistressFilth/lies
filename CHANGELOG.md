@@ -49,6 +49,16 @@ All notable changes to LIES are documented here. The format follows
   `IngestSourceUnreachable` errors mirror the existing
   `WikiMemoryError` rendering. `MemoryPlan` gains a `PageDelete`
   variant and an optional `tag` field for `log.md` attribution.
+- F3 synthesis file-back loop: `lies query --collection NAME [--no-file]
+  [--force-file]` (and MCP `collection` / `file` / `force_file`) writes
+  a `synthesis` page through `WikiMemoryService.apply_plan` when
+  `query_synthesizer_agent` emits `should_file=True`. Filed pages carry
+  `derived_from: list[str]` frontmatter. New lint findings
+  `synthesis_missing_evidence` and `dangling_derived_from`. Inline
+  3-attempt retry on transient persistence errors.
+  `SynthesizedMcpAnswer` exposes `should_file` and a serialized
+  `file_receipt`; a `WikiPlanInvalid` escaping the orchestrator is
+  re-raised as a typed `ToolError` so MCP callers can react.
 
 ### Changed
 
@@ -88,24 +98,6 @@ All notable changes to LIES are documented here. The format follows
   its claims, surfaces disagreements between pages, and says what the
   wiki does not know. When the model is unavailable the previous
   extractive output is returned unchanged and `synthesis_used` is False.
-- F3 file-back loop: when the synthesizer marks an answer
-  `should_file`, `lies query` durably files it as a wiki page under
-  `wiki/<collection>/synthesis/<file>` via
-  `WikiMemoryService.apply_plan`. Three new flags surface the loop on
-  the CLI: `--collection NAME` (where the page lands; required to
-  actually write), `--no-file` (skip the loop even if the agent wants
-  to file), `--force-file` (write regardless of the agent's verdict).
-  Success prints a `(synthesis: durably filed - <op>: <path>)`
-  receipt; failure prints `(synthesis: error — <reason>)`. Missing
-  collection with `should_file=True` is recorded as a
-  `synthesis_reason` note instead of erroring, so a misconfigured
-  flag never costs the synthesized answer.
-- F3 file-back loop also wired through the MCP `query` tool: it gains
-  matching `collection` / `file` / `force_file` kwargs, the
-  `SynthesizedMcpAnswer` slice exposes `should_file` and a serialized
-  `file_receipt` (or `None` when filing was skipped), and a `WikiPlanInvalid`
-  escaping the orchestrator is re-raised as a typed `ToolError` so MCP
-  callers can react.
 
 ### Removed
 
