@@ -88,6 +88,18 @@ All notable changes to LIES are documented here. The format follows
   its claims, surfaces disagreements between pages, and says what the
   wiki does not know. When the model is unavailable the previous
   extractive output is returned unchanged and `synthesis_used` is False.
+- F3 file-back loop: when the synthesizer marks an answer
+  `should_file`, `lies query` durably files it as a wiki page under
+  `wiki/<collection>/synthesis/<file>` via
+  `WikiMemoryService.apply_plan`. Three new flags surface the loop on
+  the CLI: `--collection NAME` (where the page lands; required to
+  actually write), `--no-file` (skip the loop even if the agent wants
+  to file), `--force-file` (write regardless of the agent's verdict).
+  Success prints a `(synthesis: durably filed - <op>: <path>)`
+  receipt; failure prints `(synthesis: error — <reason>)`. Missing
+  collection with `should_file=True` is recorded as a
+  `synthesis_reason` note instead of erroring, so a misconfigured
+  flag never costs the synthesized answer.
 
 ### Removed
 

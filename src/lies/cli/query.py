@@ -31,6 +31,26 @@ __all__ = (
 )
 def query(
     question: str = typer.Argument(..., help="The question to ask the wiki."),
+    collection: str | None = typer.Option(
+        None,
+        "--collection",
+        help=(
+            "Collection the synthesized page is filed under "
+            "(wiki/<collection>/synthesis/<file>). Required for the file-back "
+            "loop to actually write; without it, the agent's should_file "
+            "verdict is recorded as a synthesis_reason note."
+        ),
+    ),
+    no_file: bool = typer.Option(
+        False,
+        "--no-file",
+        help="Skip the file-back loop even if the agent marks the answer should_file.",
+    ),
+    force_file: bool = typer.Option(
+        False,
+        "--force-file",
+        help="Force the file-back loop even if the agent did not mark should_file.",
+    ),
     name: str | None = typer.Option(
         None, "--name", envvar="LIES_WIKI_NAME", help="Wiki to query (default: $LIES_WIKI_NAME)."
     ),
@@ -46,7 +66,15 @@ def query(
     orch = Orchestrator(wiki)
     # Use the host-side ``run_query`` entry point so LLM synthesis runs
     # with the qmd->index retrieval and the extractive fallback intact.
-    answer = orch.run_query(question)
+    # ``--no-file`` maps to ``file=False``; ``--force-file`` to
+    # ``force_file=True``; ``--collection`` flows straight through so the
+    # orchestrator can route the new page under the right wiki subdir.
+    answer = orch.run_query(
+        question,
+        collection=collection,
+        file=not no_file,
+        force_file=force_file,
+    )
     console = Console()
     console.print(Markdown(answer.answer))
     if answer.synthesis_reason:
@@ -59,6 +87,18 @@ def query(
                     f"answered extractively._"
                 )
             )
+    # F3 file-back receipt. Printed only when there is something to say
+    # (durable change or error); an empty receipt is silent so the no-op
+    # case stays clean.
+    if answer.file_receipt:
+        if answer.file_receipt.changed_pages:
+            lines = ["(synthesis: durably filed"]
+            for ref in answer.file_receipt.changed_pages:
+                lines.append(f"  - {ref.op.value}: {ref.path}")
+            lines.append(")")
+            typer.echo("\n".join(lines))
+        elif answer.file_receipt.errors:
+            typer.echo(f"(synthesis: error — {answer.file_receipt.errors[0]})")
 
 
 @app.command(
