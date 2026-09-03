@@ -7,6 +7,7 @@ import json
 import re
 import subprocess
 import sys
+import time
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -46,7 +47,7 @@ from lies.memory.models import (
     WikiWriteConflict,
 )
 from lies.memory.retry import EnrichmentQueue
-from lies.memory.service import WikiMemoryService
+from lies.memory.service import WikiMemoryService, build_synthesis_plan
 from lies.memory.tools import WikiMemoryDeps, register_read_tools
 from lies.qmd import QmdCapability
 from lies.query import (
@@ -1042,6 +1043,72 @@ class Orchestrator:
             tail = ", ".join(other)
             return f"{head}\n(memory: {tail})"
         return f"(memory: {', '.join(other) or 'no change'})"
+
+    def file_back_synthesis(
+        self,
+        answer: SynthesizedAnswer,
+        collection: str,
+    ) -> MemoryReceipt:
+        """Best-effort write of a synthesis answer to ``wiki/<collection>/synthesis/``.
+
+        Inline 3-attempt retry on transient persistence errors. Never
+        raises — the synthesized answer is always returned to the
+        operator regardless of outcome.
+        """
+
+        def exists(rel: str) -> bool:
+            return (self.wiki.wiki_dir / rel).exists()
+
+        def sha_lookup(rel: str) -> str:
+            return self._memory_service.current_state(rel)[0]
+
+        question = getattr(answer, "question", "")
+
+        try:
+            plan = build_synthesis_plan(
+                question=question,
+                answer=answer.answer,
+                pages_read=answer.pages_read,
+                collection=collection,
+                sha_lookup=sha_lookup,
+                exists=exists,
+            )
+        except WikiPlanInvalid as exc:
+            return MemoryReceipt(
+                changed_pages=[],
+                deferred=[],
+                fallback_used=False,
+                fallback_reason="",
+                errors=[f"plan_invalid: {exc}"],
+            )
+
+        last_exc: BaseException | None = None
+        for attempt in range(3):
+            try:
+                return self._memory_service.apply_plan(plan)
+            except (WikiLockBusy, WikiWriteConflict, WikiCommitFailed) as exc:
+                last_exc = exc
+                if attempt < 2:
+                    time.sleep(0.1)
+                    continue
+                break
+            except Exception as exc:  # noqa: BLE001 - persistence never invalidates the answer
+                return MemoryReceipt(
+                    changed_pages=[],
+                    deferred=[],
+                    fallback_used=False,
+                    fallback_reason="",
+                    errors=[f"file_back_crashed: {type(exc).__name__}: {exc}"],
+                )
+
+        reason = f"{type(last_exc).__name__}: {last_exc}"
+        return MemoryReceipt(
+            changed_pages=[],
+            deferred=[],
+            fallback_used=False,
+            fallback_reason="",
+            errors=[f"file_back_failed_after_3_attempts: {reason}"],
+        )
 
     def _format_durable_receipt(
         self,
