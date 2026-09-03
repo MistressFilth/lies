@@ -60,6 +60,7 @@ def query(
     from rich.markdown import Markdown
 
     from lies.cli import Orchestrator, resolve_wiki
+    from lies.memory.models import WikiPlanInvalid
 
     configure_logging()
     wiki = resolve_wiki(name)
@@ -69,12 +70,24 @@ def query(
     # ``--no-file`` maps to ``file=False``; ``--force-file`` to
     # ``force_file=True``; ``--collection`` flows straight through so the
     # orchestrator can route the new page under the right wiki subdir.
-    answer = orch.run_query(
-        question,
-        collection=collection,
-        file=not no_file,
-        force_file=force_file,
-    )
+    try:
+        answer = orch.run_query(
+            question,
+            collection=collection,
+            file=not no_file,
+            force_file=force_file,
+        )
+    except WikiPlanInvalid as exc:
+        # ``run_query`` raises when the agent/force file marked the answer
+        # for filing but the caller did not supply ``--collection``.
+        # Without the typed-error envelope a missing collection would
+        # silently drop the filing intent; the spec mandates a clean
+        # exit-2 + operator-actionable message instead.
+        typer.echo(
+            "error: --collection NAME required to file synthesis (or pass --no-file to skip)",
+            err=True,
+        )
+        raise typer.Exit(code=2) from exc
     console = Console()
     console.print(Markdown(answer.answer))
     if answer.synthesis_reason:

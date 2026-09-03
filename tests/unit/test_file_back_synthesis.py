@@ -8,12 +8,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from lies.memory.errors import WikiPlanInvalid
 from lies.memory.models import (
     MemoryReceipt,
     PageReference,
     WikiLockBusy,
     OperationKind,
+    WikiPlanInvalid,
 )
 from lies.orchestrator import Orchestrator
 from lies.query.models import SynthesizedAnswer
@@ -290,3 +290,78 @@ def test_run_query_file_back_rejects_unknown_evidence(
     )
     with pytest.raises(WikiEvidenceMissing):
         real_orch._memory_service.apply_plan(plan)
+
+
+def test_run_query_missing_collection_when_should_file_raises(
+    real_orch: Orchestrator,
+) -> None:
+    """Bug-fix regression: missing ``collection`` + ``should_file=True`` raises.
+
+    The orchestrator's ``run_query`` raises :class:`WikiPlanInvalid`
+    when the answer is marked for filing (or ``force_file=True``) but
+    the caller did not supply ``collection``. The CLI catches the
+    typed error and exits 2; the MCP layer re-raises it as a
+    ``ToolError``. When ``should_file=False`` and ``force_file=False``,
+    missing ``collection`` is irrelevant and the call returns normally.
+    """
+    from lies.agents.query_synthesizer import QueryAnswer
+    from unittest import mock
+
+    canned = QueryAnswer(
+        answer="Alpha is the first letter. [Alpha](wiki/concepts/alpha.md)",
+        citations=["wiki/concepts/alpha.md"],
+        should_file=True,
+    )
+    with mock.patch.object(
+        type(real_orch._query_synthesizer_agent), "run_sync", return_value=mock.Mock(output=canned)
+    ):
+        with pytest.raises(WikiPlanInvalid, match="collection required to file synthesis"):
+            real_orch.run_query(
+                "what is alpha?",
+                collection=None,
+                file=True,
+                force_file=False,
+            )
+
+    # ``force_file=True`` without ``collection`` also raises.
+    with mock.patch.object(
+        type(real_orch._query_synthesizer_agent), "run_sync", return_value=mock.Mock(output=canned)
+    ):
+        with pytest.raises(WikiPlanInvalid, match="collection required to file synthesis"):
+            real_orch.run_query(
+                "what is alpha?",
+                collection=None,
+                file=True,
+                force_file=True,
+            )
+
+
+def test_run_query_missing_collection_when_no_file_needed_succeeds(
+    real_orch: Orchestrator,
+) -> None:
+    """Missing ``collection`` is a no-op when filing is not requested.
+
+    ``should_file=False`` and ``force_file=False`` mean no filing
+    happens regardless of ``collection``. The orchestrator must
+    return the synthesized answer normally rather than raising.
+    """
+    from lies.agents.query_synthesizer import QueryAnswer
+    from unittest import mock
+
+    canned = QueryAnswer(
+        answer="Alpha is the first letter.",
+        citations=["wiki/concepts/alpha.md"],
+        should_file=False,
+    )
+    with mock.patch.object(
+        type(real_orch._query_synthesizer_agent), "run_sync", return_value=mock.Mock(output=canned)
+    ):
+        result = real_orch.run_query(
+            "what is alpha?",
+            collection=None,
+            file=True,
+            force_file=False,
+        )
+
+    assert result.synthesis_used is True
+    assert result.file_receipt is None

@@ -3,9 +3,9 @@
 The `query` MCP tool mirrors the `lies query` CLI flags of the same
 name. The MCP layer itself must stay a thin shim: ``Orchestrator.run_query``
 already accepts those kwargs, so the tool forwards them and only adds a
-typed ``ToolError`` envelope around the rare case where a
-``WikiPlanInvalid`` escapes the orchestrator (the query tool is otherwise
-fail-soft, the same as the CLI).
+typed ``ToolError`` envelope around ``WikiPlanInvalid`` raised by the
+orchestrator when ``file=True`` and the caller didn't supply
+``collection``.
 
 Tests patch ``lies.mcp.server.resolve_wiki`` and
 ``lies.mcp.server.Orchestrator`` so they don't depend on a real wiki,
@@ -80,12 +80,14 @@ def test_mcp_query_forwards_collection_to_orchestrator(
 def test_mcp_query_missing_collection_raises_tool_error(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """A ``WikiPlanInvalid`` escaping ``Orchestrator.run_query`` becomes a ``ToolError``.
+    """Missing collection with ``should_file=True`` raises a typed ``ToolError``.
 
-    The ``Orchestrator.file_back_synthesis`` path is fail-soft, so a
-    real run-query call won't surface ``WikiPlanInvalid`` here. We
-    simulate the rare escape so the MCP layer's typed-error envelope
-    is exercised end-to-end.
+    ``Orchestrator.run_query`` raises :class:`WikiPlanInvalid` when the
+    caller asks for a filing (``file=True`` + ``should_file=True`` /
+    ``force_file=True``) but does not supply ``collection``. The MCP
+    layer catches the typed error and re-raises it as ``ToolError`` so
+    LLM callers can react to the failure rather than silently losing
+    the filing intent.
     """
     from fastmcp.exceptions import ToolError
 
@@ -95,9 +97,11 @@ def test_mcp_query_missing_collection_raises_tool_error(
     monkeypatch.setattr(server, "resolve_wiki", lambda _name=None: _wiki(tmp_path))
 
     with mock.patch.object(server, "Orchestrator") as orch_cls:
-        orch_cls.return_value.run_query.side_effect = WikiPlanInvalid("plan bad")
+        orch_cls.return_value.run_query.side_effect = WikiPlanInvalid(
+            "collection required to file synthesis"
+        )
         with pytest.raises(ToolError, match="collection required"):
-            query("what?", name="t", collection="c", file=True, force_file=True)
+            query("what?", name="t", file=True, force_file=True)
 
 
 def test_mcp_query_no_file_skips_file_back(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

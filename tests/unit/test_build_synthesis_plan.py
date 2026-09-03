@@ -151,6 +151,7 @@ def test_synthesis_body_declares_type_in_frontmatter() -> None:
         question=QUESTION,
         answer=ANSWER,
         pages_read=PAGES_READ,
+        collection=COLLECTION,
     )
     # Frontmatter sits between the first pair of ``---`` fences.
     head = body.split("---", 2)[1]

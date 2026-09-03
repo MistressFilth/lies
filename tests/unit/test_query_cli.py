@@ -12,12 +12,10 @@ The four new flags surface Task 4's file-back plumbing on the CLI:
   on success, ``(synthesis: error — <first error>)`` on failure, and
   silently omitted when both ``changed_pages`` and ``errors`` are empty.
 
-The brief's "missing collection should exit 2" sketch doesn't match the
-current orchestrator contract: ``run_query`` degrades gracefully by
-appending ``"not filed: --collection required"`` to ``synthesis_reason``
-and returns the unfilled answer, which the CLI prints through the
-existing receipt path. We assert that annotation here instead of
-synthesising an exit code.
+``--force-file`` (or an agent that marked ``should_file=True``) without
+``--collection`` is a hard error: the CLI exits 2 with the spec'd
+``error: --collection NAME required to file synthesis (or pass --no-file to skip)``
+message, mirroring the spec's typed-error contract.
 """
 
 from __future__ import annotations
@@ -83,27 +81,29 @@ def test_query_default_collection_file_and_force_file() -> None:
     assert call.kwargs["force_file"] is False
 
 
-def test_query_missing_collection_when_should_file_annotates_reason() -> None:
-    """Missing collection with ``should_file=True`` records a synthesis_reason note.
+def test_query_missing_collection_with_force_file_exits_2() -> None:
+    """Missing collection with ``--force-file`` raises ``WikiPlanInvalid`` → exit 2.
 
-    The orchestrator degrades gracefully rather than raising, so the CLI
-    must not invent an exit code — it just prints the annotated note via
-    the existing receipt path.
+    The orchestrator raises :class:`WikiPlanInvalid` when the caller
+    asks for a filing (``file=True`` and ``should_file=True`` /
+    ``force_file=True``) but does not supply ``--collection``. The CLI
+    catches the typed error, prints the spec'd message on stderr, and
+    exits 2 so operators can script the failure.
     """
+    from lies.memory.models import WikiPlanInvalid
+
     with (
         mock.patch("lies.cli.resolve_wiki"),
         mock.patch("lies.cli.Orchestrator") as orch_cls,
     ):
-        orch_cls.return_value.run_query.return_value = SynthesizedAnswer(
-            answer="X.",
-            synthesis_used=True,
-            should_file=True,
-            synthesis_reason="not filed: --collection required",
+        orch_cls.return_value.run_query.side_effect = WikiPlanInvalid(
+            "collection required to file synthesis"
         )
-        result = runner.invoke(app, ["query", "what is alpha?", "--name", "w"])
+        result = runner.invoke(app, ["query", "what is alpha?", "--name", "w", "--force-file"])
 
-    assert result.exit_code == 0, result.stdout
-    assert "not filed: --collection required" in result.stdout
+    assert result.exit_code == 2, result.stdout
+    assert "--collection NAME required to file synthesis" in result.output
+    assert "--no-file" in result.output
 
 
 def test_query_success_receipt_prints_synthesis_line() -> None:

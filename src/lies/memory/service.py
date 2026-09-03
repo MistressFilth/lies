@@ -260,6 +260,7 @@ def build_synthesis_plan(
         question=question,
         answer=answer,
         pages_read=pages_read,
+        collection=collection,
     )
 
     collision = exists is not None and exists(rel_path)
@@ -302,20 +303,34 @@ def _slugify(text: str) -> str:
     return slug
 
 
-def _format_synthesis_body(*, question: str, answer: str, pages_read: list[str]) -> str:
-    """Build the full markdown body: frontmatter + answer + Evidence."""
+def _format_synthesis_body(
+    *, question: str, answer: str, pages_read: list[str], collection: str
+) -> str:
+    """Build the full markdown body: frontmatter + answer + Evidence.
+
+    The title is ``question.strip().rstrip("?.!").strip()`` (or the
+    literal ``"Synthesis"`` when the question is empty/punctuation),
+    double-quoted so questions containing ``:`` or other YAML-significant
+    characters parse cleanly. The ``collection`` field is the literal
+    target collection (the page lives at
+    ``wiki/<collection>/synthesis/<slug>.md``), NOT derived from
+    ``pages_read[0]`` (which carries the ``wiki/`` prefix and would
+    yield ``"wiki"``). ``derived_from:`` lists the wiki pages read
+    during synthesis; ``sources:`` is intentionally absent because
+    synthesis pages distill other wiki pages — there is no raw source
+    to cite, and the existing ``sources`` convention is for raw-source
+    paths.
+    """
     title = question.strip().rstrip("?.!").strip() or "Synthesis"
+    title_quoted = '"' + title.replace("\\", "\\\\").replace('"', '\\"') + '"'
     frontmatter_lines = [
         "---",
-        f"title: {title}",
+        f"title: {title_quoted}",
         "type: synthesis",
-        f"collection: {pages_read[0].split('/')[0] if pages_read else 'unknown'}",
+        f"collection: {collection}",
         "tags: [synthesis]",
-        "sources:",
+        "derived_from:",
     ]
-    for p in pages_read:
-        frontmatter_lines.append(f"  - {p}")
-    frontmatter_lines.append("derived_from:")
     for p in pages_read:
         frontmatter_lines.append(f"  - {p}")
     frontmatter_lines.append("---")

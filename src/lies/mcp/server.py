@@ -220,11 +220,8 @@ def query(
     marks itself ``should_file`` (or ``force_file`` flips it on), the
     answer is filed under ``wiki/<collection>/synthesis/`` and a
     structured ``file_receipt`` is returned. ``collection`` is required
-    to know where the page lives; without it, the orchestrator
-    degrades gracefully (records the omission in ``synthesis_reason``)
-    rather than raising. ``force_file=True`` without a ``collection``
-    is the one case where the orchestrator can raise
-    :class:`WikiPlanInvalid`; the tool re-raises that as a
+    to know where the page lives; without it the orchestrator raises
+    :class:`WikiPlanInvalid` and the tool re-raises that as a
     ``ToolError`` so the LLM caller can react.
     """
     wiki = resolve_wiki(name)

@@ -310,22 +310,20 @@ def _build_lint_report(
     # slug (empty section if the list is empty); ``dangling_derived_from``
     # removes the dangling slug from the frontmatter list. Both flip
     # ``safe_to_fix=True`` so the repair agent can auto-close them.
-    synthesis_pages: set[str] = set()
+    #
+    # Read each synthesis page once: a single ``read_text`` per page
+    # feeds the type check, the body ``## Evidence`` check, and the
+    # ``derived_from`` slug resolution — the previous 3-pass loop
+    # opened and closed each file three times, which adds up on large
+    # wikis without any semantic gain.
     for page in pages:
         try:
             text = (wiki.wiki_dir / page).read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError):
             continue
-        if _extract_frontmatter_type(text) == "synthesis":
-            synthesis_pages.add(page)
-
-    for page in synthesis_pages:
-        try:
-            text = (wiki.wiki_dir / page).read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
+        if _extract_frontmatter_type(text) != "synthesis":
             continue
-        body = _strip_frontmatter(text)
-        if "## Evidence" not in body:
+        if "## Evidence" not in _strip_frontmatter(text):
             findings.append(
                 LintFinding(
                     severity=LintSeverity.MEDIUM,
@@ -335,12 +333,6 @@ def _build_lint_report(
                     safe_to_fix=True,
                 )
             )
-
-    for page in synthesis_pages:
-        try:
-            text = (wiki.wiki_dir / page).read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
-            continue
         for slug in _extract_frontmatter_derived_from(text):
             if not (wiki.wiki_dir / f"{slug}.md").exists():
                 findings.append(
@@ -1505,9 +1497,12 @@ class Orchestrator:
         # integration test). ``file`` lets callers opt out entirely
         # (``file=False``) without losing the rest of the synthesis
         # envelope. ``collection`` is required to know where the page
-        # lives — without it we degrade gracefully by recording the
-        # omission in ``synthesis_reason`` instead of raising.
+        # lives — when the caller wants a filing but didn't supply one,
+        # raise ``WikiPlanInvalid`` so the CLI can exit 2 and the MCP
+        # tool can re-raise as ``ToolError``.
         should_file = ans.should_file or force_file
+        if should_file and file and collection is None:
+            raise WikiPlanInvalid("collection required to file synthesis")
         if should_file and file and collection is not None:
             # Register the read pages so the synthesis plan's
             # ``evidence=pages_read`` survives ``validate_operation_evidence``;
@@ -1517,14 +1512,6 @@ class Orchestrator:
             # ``run_ingest``.
             self._memory_service.register_evidence(set(ans.pages_read))
             ans = replace(ans, file_receipt=self.file_back_synthesis(ans, collection))
-        elif should_file and file and collection is None:
-            ans = replace(
-                ans,
-                synthesis_reason=(
-                    (ans.synthesis_reason + "; " if ans.synthesis_reason else "")
-                    + "not filed: --collection required"
-                ),
-            )
 
         return ans
 

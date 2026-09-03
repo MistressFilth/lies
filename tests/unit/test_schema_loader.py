@@ -63,7 +63,7 @@ def test_load_raises_when_no_default() -> None:
     pass
 
 
-def test_loader_round_taps_derived_from(tmp_path: Path) -> None:
+def test_loader_round_trips_derived_from(tmp_path: Path) -> None:
     page = tmp_path / "test.md"
     page.write_text(
         "---\n"
