@@ -100,7 +100,18 @@ def test_file_back_synthesis_recovers_after_one_retry(tmp_path: Path) -> None:
     assert out is receipt
 
 
-def test_file_back_synthesis_plan_invalid_does_not_retry(tmp_path: Path) -> None:
+def test_file_back_synthesis_does_not_retry_on_wikiplaninvalid_from_apply_plan(
+    tmp_path: Path,
+) -> None:
+    """``WikiPlanInvalid`` raised by ``apply_plan`` falls to the catch-all.
+
+    ``WikiPlanInvalid`` is not in the retryable-exception tuple
+    (``WikiLockBusy``/``WikiWriteConflict``/``WikiCommitFailed``), so the
+    inline retry loop does not retry: the first call propagates to the
+    catch-all ``except Exception`` branch which returns a
+    ``MemoryReceipt`` with the error stringified. The receipt carries
+    no ``changed_pages``.
+    """
     wiki = MagicMock()
     wiki.wiki_dir = tmp_path
     memory_service = MagicMock()
@@ -115,3 +126,42 @@ def test_file_back_synthesis_plan_invalid_does_not_retry(tmp_path: Path) -> None
 
     assert memory_service.apply_plan.call_count == 1
     assert any("WikiPlanInvalid" in e for e in out.errors)
+    assert out.changed_pages == []
+
+
+def test_file_back_synthesis_does_not_retry_on_wikiplaninvalid_from_build(
+    tmp_path: Path,
+) -> None:
+    """Build-time ``WikiPlanInvalid`` short-circuits before ``apply_plan``.
+
+    ``build_synthesis_plan`` raises ``WikiPlanInvalid`` for plan
+    validation failures (e.g. empty ``pages_read``); the orchestrator's
+    surrounding ``try`` returns immediately with a
+    ``MemoryReceipt(errors=["plan_invalid: ..."])`` and never invokes
+    ``apply_plan``.
+    """
+    wiki = MagicMock()
+    wiki.wiki_dir = tmp_path
+    memory_service = MagicMock()
+
+    with (
+        patch("lies.orchestrator.Orchestrator.__init__", lambda self, wiki: None),
+        patch(
+            "lies.orchestrator.build_synthesis_plan",
+            side_effect=WikiPlanInvalid("pages_read is empty; nothing to file"),
+        ),
+    ):
+        orch = Orchestrator.__new__(Orchestrator)
+        orch.wiki = wiki
+        orch._memory_service = memory_service
+
+        out = orch.file_back_synthesis(_answer(), collection="claude-code")
+
+    assert memory_service.apply_plan.call_count == 0
+    assert out == MemoryReceipt(
+        changed_pages=[],
+        deferred=[],
+        fallback_used=False,
+        fallback_reason="",
+        errors=["plan_invalid: pages_read is empty; nothing to file"],
+    )
