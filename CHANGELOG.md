@@ -100,6 +100,12 @@ All notable changes to LIES are documented here. The format follows
   collection with `should_file=True` is recorded as a
   `synthesis_reason` note instead of erroring, so a misconfigured
   flag never costs the synthesized answer.
+- F3 file-back loop also wired through the MCP `query` tool: it gains
+  matching `collection` / `file` / `force_file` kwargs, the
+  `SynthesizedMcpAnswer` slice exposes `should_file` and a serialized
+  `file_receipt` (or `None` when filing was skipped), and a `WikiPlanInvalid`
+  escaping the orchestrator is re-raised as a typed `ToolError` so MCP
+  callers can react.
 
 ### Removed
 

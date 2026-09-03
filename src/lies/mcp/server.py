@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import cast
 
 from fastmcp import FastMCP
+from fastmcp.exceptions import ToolError
 from pydantic import BaseModel
 
 from lies import __version__, xdg
@@ -40,12 +41,14 @@ class SynthesizedMcpAnswer(BaseModel):
     """Structured answer returned by the ``query`` tool.
 
     A 1:1 slice of :class:`lies.query.models.SynthesizedAnswer` for
-    FastMCP serialization — only ``page_links`` and ``should_file``
-    are dropped. ``page_links`` is redundant with ``citations`` plus
-    the answer body's own links; raw wiki reads are still available via
-    the ``wiki://`` resources if the LLM wants them. ``should_file``
-    is not yet consumed by any MCP caller; F3 will add it back when
-    the file-back loop lands.
+    FastMCP serialization — only ``page_links`` is dropped (it is
+    redundant with ``citations`` plus the answer body's own links;
+    raw wiki reads are still available via the ``wiki://`` resources
+    if the LLM wants them). ``should_file`` and ``file_receipt`` are
+    F3 file-back fields: ``should_file`` is the agent's verdict on
+    whether the answer earns a wiki page; ``file_receipt`` is the
+    structured outcome of the file-back attempt (or ``None`` when
+    filing was skipped / failed-soft).
     """
 
     answer: str
@@ -56,6 +59,8 @@ class SynthesizedMcpAnswer(BaseModel):
     changed_pages: list[str]
     synthesis_used: bool = False
     synthesis_reason: str | None = None  # None when the agent answered cleanly
+    should_file: bool = False  # F3: agent verdict on whether this earns a page
+    file_receipt: dict | None = None  # F3: serialized MemoryReceipt or None
 
 
 # ---------------------------------------------------------------------------
@@ -197,17 +202,45 @@ def wiki_read(
 
 
 @mcp.tool
-def query(question: str, name: str | None = None) -> SynthesizedMcpAnswer:
+def query(
+    question: str,
+    name: str | None = None,
+    collection: str | None = None,
+    file: bool = True,
+    force_file: bool = False,
+) -> SynthesizedMcpAnswer:
     """Answer ``question`` from the wiki identified by ``name``.
 
     Synthesizes through ``query_synthesizer_agent`` over qmd-retrieved
     pages. ``fallback_used`` / ``fallback_reason`` report retrieval;
     ``synthesis_used`` / ``synthesis_reason`` report whether the LLM or
     the extractive fallback wrote the body.
+
+    F3 file-back: when ``file`` is True and the synthesized answer
+    marks itself ``should_file`` (or ``force_file`` flips it on), the
+    answer is filed under ``wiki/<collection>/synthesis/`` and a
+    structured ``file_receipt`` is returned. ``collection`` is required
+    to know where the page lives; without it, the orchestrator
+    degrades gracefully (records the omission in ``synthesis_reason``)
+    rather than raising. ``force_file=True`` without a ``collection``
+    is the one case where the orchestrator can raise
+    :class:`WikiPlanInvalid`; the tool re-raises that as a
+    ``ToolError`` so the LLM caller can react.
     """
     wiki = resolve_wiki(name)
     orch = Orchestrator(wiki=wiki)
-    ans: SynthesizedAnswer = orch.run_query(question)
+    try:
+        ans: SynthesizedAnswer = orch.run_query(
+            question,
+            collection=collection,
+            file=file,
+            force_file=force_file,
+        )
+    except WikiPlanInvalid as exc:
+        raise ToolError(
+            f"collection required for should_file=True; pass "
+            f"collection=<name> or file=False ({exc})"
+        ) from exc
     return SynthesizedMcpAnswer(
         answer=ans.answer,
         fallback_used=ans.fallback_used,
@@ -217,6 +250,8 @@ def query(question: str, name: str | None = None) -> SynthesizedMcpAnswer:
         changed_pages=ans.changed_pages,
         synthesis_used=ans.synthesis_used,
         synthesis_reason=ans.synthesis_reason or None,
+        should_file=ans.should_file,
+        file_receipt=(ans.file_receipt.model_dump() if ans.file_receipt is not None else None),
     )
 
 
