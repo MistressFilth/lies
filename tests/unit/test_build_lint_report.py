@@ -298,7 +298,7 @@ def test_lint_flags_synthesis_missing_evidence(wiki) -> None:
     assert len(findings) == 1
     finding = findings[0]
     assert "claude-code/synthesis/what-is-a-hook.md" in finding.pages
-    assert finding.safe_to_fix is False
+    assert finding.safe_to_fix is True
 
 
 def test_lint_flags_dangling_derived_from(wiki) -> None:
@@ -324,7 +324,7 @@ def test_lint_flags_dangling_derived_from(wiki) -> None:
     assert len(findings) == 1
     finding = findings[0]
     assert "claude-code/concepts/does-not-exist" in finding.message
-    assert finding.safe_to_fix is False
+    assert finding.safe_to_fix is True
 
 
 def test_lint_passes_synthesis_page_with_evidence_and_resolved_derived_from(wiki) -> None:

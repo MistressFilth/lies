@@ -304,10 +304,12 @@ def _build_lint_report(
     # dangling_derived_from. A synthesis page's contract (see
     # ``src/lies/schema/default_schema.md`` and ``build_synthesis_plan``)
     # is: frontmatter ``type: synthesis`` + ``derived_from: list[str]``
-    # of wiki-relative slugs, plus a body ``## Evidence`` section.
-    # Both checks are mechanical: an LLM must decide whether the
-    # evidence is sound and whether a dangling slug needs to be
-    # repaired, so ``safe_to_fix=False`` for every finding.
+    # of wiki-relative slugs, plus a body ``## Evidence`` section. The
+    # spec'd repairs are mechanical: ``synthesis_missing_evidence``
+    # appends a ``## Evidence`` block listing every ``derived_from``
+    # slug (empty section if the list is empty); ``dangling_derived_from``
+    # removes the dangling slug from the frontmatter list. Both flip
+    # ``safe_to_fix=True`` so the repair agent can auto-close them.
     synthesis_pages: set[str] = set()
     for page in pages:
         try:
@@ -330,7 +332,7 @@ def _build_lint_report(
                     category="synthesis_missing_evidence",
                     pages=[page],
                     message=f"synthesis page {page} lacks ## Evidence section",
-                    safe_to_fix=False,
+                    safe_to_fix=True,
                 )
             )
 
@@ -347,7 +349,7 @@ def _build_lint_report(
                         category="dangling_derived_from",
                         pages=[page],
                         message=f"derived_from slug {slug} does not resolve to an existing page",
-                        safe_to_fix=False,
+                        safe_to_fix=True,
                     )
                 )
 
@@ -544,8 +546,6 @@ def _extract_frontmatter_type(text: str) -> str | None:
     if end == -1:
         return None
     block = text[3:end]
-    import re
-
     match = re.search(r"^type:\s*(.+?)\s*$", block, re.MULTILINE)
     if not match:
         return None
