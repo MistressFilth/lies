@@ -9,6 +9,7 @@ was skipped.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import pytest
@@ -17,6 +18,16 @@ from typer.testing import CliRunner
 from lies.cli import app
 
 runner = CliRunner()
+
+# CI's GNU runner leaves ANSI escape codes in captured help output (the
+# local macOS runner strips them via libc/terminal detection). Strip
+# before substring-matching so the assertions don't depend on the runner.
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+
+
+def _strip_ansi(text: str) -> str:
+    """Strip ANSI control sequences from terminal-rendered text."""
+    return _ANSI_RE.sub("", text or "")
 
 
 class _FakeOrchestrator:
@@ -83,4 +94,7 @@ def test_ingest_source_help_describes_no_llm_opt_out() -> None:
     """``--help`` documents the ``--no-llm`` flag's opt-out semantics."""
     result = runner.invoke(app, ["ingest-source", "--help"])
     assert result.exit_code == 0
-    assert "--no-llm" in result.stdout
+    combined = _strip_ansi(result.stdout) + _strip_ansi(result.stderr or "")
+    assert "--no-llm" in combined
+    # Also assert the flag's purpose is described.
+    assert "Demote to the legacy" in combined or "sync_collection" in combined
