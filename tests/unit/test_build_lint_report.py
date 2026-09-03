@@ -280,3 +280,74 @@ def test_empty_corpus_flags_every_wikilink(wiki) -> None:
     assert len(flagged) == 2
     assert any("Beta" in m for m in flagged)
     assert any("Gamma" in m for m in flagged)
+
+
+def test_lint_flags_synthesis_missing_evidence(wiki) -> None:
+    """A synthesis page without ## Evidence triggers synthesis_missing_evidence."""
+    _write(
+        wiki,
+        "wiki/claude-code/synthesis/what-is-a-hook.md",
+        "---\ntitle: What is a hook\ntype: synthesis\ntags: [synthesis]\n"
+        "derived_from:\n  - claude-code/concepts/hooks\n---\n"
+        "# What is a hook\n\nA hook intercepts events.\n",
+    )
+    subprocess.run(["git", "commit", "-m", "seed"], cwd=wiki.data_root, check=True)
+
+    report = _build_lint_report(wiki)
+    findings = [f for f in report.findings if f.category == "synthesis_missing_evidence"]
+    assert len(findings) == 1
+    finding = findings[0]
+    assert "claude-code/synthesis/what-is-a-hook.md" in finding.pages
+    assert finding.safe_to_fix is False
+
+
+def test_lint_flags_dangling_derived_from(wiki) -> None:
+    """A derived_from slug that does not resolve triggers dangling_derived_from."""
+    _write(
+        wiki,
+        "wiki/claude-code/concepts/hooks.md",
+        "---\ntitle: Hooks\ntype: concept\n---\n# Hooks\n",
+    )
+    _write(
+        wiki,
+        "wiki/claude-code/synthesis/what-is-a-hook.md",
+        "---\ntitle: What is a hook\ntype: synthesis\ntags: [synthesis]\n"
+        "derived_from:\n  - claude-code/concepts/hooks\n"
+        "  - claude-code/concepts/does-not-exist\n---\n"
+        "# What is a hook\n\nA hook intercepts events.\n\n"
+        "## Evidence\n\n- [[claude-code/concepts/hooks]]\n",
+    )
+    subprocess.run(["git", "commit", "-m", "seed"], cwd=wiki.data_root, check=True)
+
+    report = _build_lint_report(wiki)
+    findings = [f for f in report.findings if f.category == "dangling_derived_from"]
+    assert len(findings) == 1
+    finding = findings[0]
+    assert "claude-code/concepts/does-not-exist" in finding.message
+    assert finding.safe_to_fix is False
+
+
+def test_lint_passes_synthesis_page_with_evidence_and_resolved_derived_from(wiki) -> None:
+    """Happy path: a well-formed synthesis page emits zero new findings."""
+    _write(
+        wiki,
+        "wiki/claude-code/concepts/hooks.md",
+        "---\ntitle: Hooks\ntype: concept\n---\n# Hooks\n",
+    )
+    _write(
+        wiki,
+        "wiki/claude-code/synthesis/what-is-a-hook.md",
+        "---\ntitle: What is a hook\ntype: synthesis\ntags: [synthesis]\n"
+        "derived_from:\n  - claude-code/concepts/hooks\n---\n"
+        "# What is a hook\n\nA hook intercepts events.\n\n"
+        "## Evidence\n\n- [[claude-code/concepts/hooks]]\n",
+    )
+    subprocess.run(["git", "commit", "-m", "seed"], cwd=wiki.data_root, check=True)
+
+    report = _build_lint_report(wiki)
+    new_findings = [
+        f
+        for f in report.findings
+        if f.category in {"synthesis_missing_evidence", "dangling_derived_from"}
+    ]
+    assert new_findings == []

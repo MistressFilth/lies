@@ -300,6 +300,57 @@ def _build_lint_report(
                     )
                 )
 
+    # Synthesis-page mechanical checks: synthesis_missing_evidence and
+    # dangling_derived_from. A synthesis page's contract (see
+    # ``src/lies/schema/default_schema.md`` and ``build_synthesis_plan``)
+    # is: frontmatter ``type: synthesis`` + ``derived_from: list[str]``
+    # of wiki-relative slugs, plus a body ``## Evidence`` section.
+    # Both checks are mechanical: an LLM must decide whether the
+    # evidence is sound and whether a dangling slug needs to be
+    # repaired, so ``safe_to_fix=False`` for every finding.
+    synthesis_pages: set[str] = set()
+    for page in pages:
+        try:
+            text = (wiki.wiki_dir / page).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        if _extract_frontmatter_type(text) == "synthesis":
+            synthesis_pages.add(page)
+
+    for page in synthesis_pages:
+        try:
+            text = (wiki.wiki_dir / page).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        body = _strip_frontmatter(text)
+        if "## Evidence" not in body:
+            findings.append(
+                LintFinding(
+                    severity=LintSeverity.MEDIUM,
+                    category="synthesis_missing_evidence",
+                    pages=[page],
+                    message=f"synthesis page {page} lacks ## Evidence section",
+                    safe_to_fix=False,
+                )
+            )
+
+    for page in synthesis_pages:
+        try:
+            text = (wiki.wiki_dir / page).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        for slug in _extract_frontmatter_derived_from(text):
+            if not (wiki.wiki_dir / f"{slug}.md").exists():
+                findings.append(
+                    LintFinding(
+                        severity=LintSeverity.MEDIUM,
+                        category="dangling_derived_from",
+                        pages=[page],
+                        message=f"derived_from slug {slug} does not resolve to an existing page",
+                        safe_to_fix=False,
+                    )
+                )
+
     report = LintReport(findings=findings, report_markdown="")
     body = _format_lint_markdown(report, wiki)
     if repair_receipt is not None:
@@ -477,6 +528,61 @@ def _extract_frontmatter_sources(text: str) -> list[str]:
         elif line.startswith("sources:"):
             in_sources = True
     return sources
+
+
+def _extract_frontmatter_type(text: str) -> str | None:
+    """Return the ``type:`` value from YAML frontmatter, or None.
+
+    Used by the synthesis-page checks in :func:`_build_lint_report`
+    to identify synthesis pages (``type: synthesis``). Mirrors the
+    minimal-regex style of the surrounding frontmatter helpers so a
+    malformed block yields ``None`` rather than raising.
+    """
+    if not text.startswith("---"):
+        return None
+    end = text.find("\n---", 3)
+    if end == -1:
+        return None
+    block = text[3:end]
+    import re
+
+    match = re.search(r"^type:\s*(.+?)\s*$", block, re.MULTILINE)
+    if not match:
+        return None
+    value = match.group(1).strip()
+    if value.startswith(('"', "'")) and value.endswith(('"', "'")):
+        value = value[1:-1]
+    return value or None
+
+
+def _extract_frontmatter_derived_from(text: str) -> list[str]:
+    """Return the ``derived_from:`` list from YAML frontmatter.
+
+    Used by :func:`_build_lint_report` to flag synthesis pages whose
+    cited slugs do not resolve to an existing wiki page
+    (``dangling_derived_from``). Same minimal-regex shape as
+    :func:`_extract_frontmatter_sources`: a missing or malformed
+    ``derived_from`` block yields ``[]`` rather than raising.
+    """
+    if not text.startswith("---"):
+        return []
+    end = text.find("\n---", 3)
+    if end == -1:
+        return []
+    block = text[3:end]
+    lines = block.splitlines()
+    derived: list[str] = []
+    in_derived = False
+    for line in lines:
+        if in_derived:
+            stripped = line.strip()
+            if stripped.startswith("- "):
+                derived.append(stripped[2:].strip().strip('"').strip("'"))
+            elif stripped and not stripped.startswith("-"):
+                in_derived = False
+        elif line.startswith("derived_from:"):
+            in_derived = True
+    return derived
 
 
 def _format_lint_markdown(report: LintReport, wiki: Wiki) -> str:
