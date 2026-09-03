@@ -180,7 +180,25 @@ def real_orch(tmp_path: Path) -> Orchestrator:
     stands up the full service so a regression in the validation
     envelope surfaces as a real ``WikiEvidenceMissing`` rather than a
     no-op mock call.
+
+    ``run_query`` resolves ``qmd_search`` through **two** call sites:
+    ``lies.query.synthesizer._qmd_search_default`` (set by
+    ``set_qmd_search``) and ``lies.memory.retrieval.search_wiki`` which
+    falls back to ``lies.qmd.cli.qmd_query`` directly. CI runners do
+    not ship ``qmd`` on PATH; stubbing only the synthesizer path leaves
+    the retrieval path free to raise ``QmdNotInstalledError`` and
+    propagate ``fallback_reason="qmd_stale"`` into the synthesis
+    receipt, breaking the no-errors assertion.
+
+    Independently, ``WikiMemoryService.apply_plan`` calls
+    ``self._qmd_update(...)`` after every commit (``_refresh_qmd``); a
+    missing ``qmd`` binary turns that into ``qmd_stale: ...`` on the
+    returned ``MemoryReceipt.errors``. Replace the bound
+    ``_qmd_update`` with a no-op so CI runners without ``qmd`` still
+    see a clean receipt. Patch both surfaces.
     """
+    from unittest.mock import patch
+
     from lies.query.synthesizer import set_qmd_search
 
     root = tmp_path / "wiki"
@@ -204,13 +222,18 @@ def real_orch(tmp_path: Path) -> Orchestrator:
     subprocess.run(["git", "config", "user.name", "T"], cwd=root, check=True)
     subprocess.run(["git", "add", "."], cwd=root, check=True)
     subprocess.run(["git", "commit", "-m", "init"], cwd=root, check=True)
-    set_qmd_search(lambda *a, **kw: [{"path": "wiki/concepts/alpha.md", "score": 0.9}])
-    try:
-        yield Orchestrator(wiki=wiki, models=models_for_tests("test"))
-    finally:
-        from lies.query.synthesizer import qmd_query
+    canned = [{"path": "wiki/concepts/alpha.md", "score": 0.9}]
+    set_qmd_search(lambda *a, **kw: canned)
+    with patch("lies.qmd.cli.qmd_query", return_value=canned):
+        orch = Orchestrator(wiki=wiki, models=models_for_tests("test"))
+        # Bypass the post-commit qmd refresh; CI runners don't ship qmd.
+        orch._memory_service._qmd_update = lambda _path: None  # type: ignore[attr-defined]
+        try:
+            yield orch
+        finally:
+            from lies.query.synthesizer import qmd_query
 
-        set_qmd_search(qmd_query)
+            set_qmd_search(qmd_query)
 
 
 def test_run_query_registers_pages_read_evidence_before_file_back(
