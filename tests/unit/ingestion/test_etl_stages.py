@@ -102,7 +102,10 @@ def test_run_write_atomic_commits_new_files(tmp_path: Path) -> None:
     fake_normalized = [("x.md", "# body")]
     manifest = mock.Mock()
     manifest.compare.return_value = False  # fresh manifest: no prior entries
-    with mock.patch("lies.etl.stages.write.atomic_commit") as ac:
+    # Pin atomic_commit to None so the no-op gate in run_write skips the
+    # post-commit qmd hooks. A bare `mock.patch(...)` returns a truthy
+    # MagicMock, which silently fires real qmd subprocesses.
+    with mock.patch("lies.etl.stages.write.atomic_commit", return_value=None) as ac:
         result = run_write(
             _wiki(tmp_path),
             _collection(tmp_path),
@@ -123,7 +126,9 @@ def test_run_write_writes_under_wiki_root(tmp_path: Path) -> None:
     fake_normalized = [("concepts/example.md", "# body")]
     manifest = mock.Mock()
     manifest.compare.return_value = False
-    with mock.patch("lies.etl.stages.write.atomic_commit"):
+    # Pin atomic_commit to None so the no-op gate in run_write skips the
+    # post-commit qmd hooks; this test is about path layout, not qmd.
+    with mock.patch("lies.etl.stages.write.atomic_commit", return_value=None):
         run_write(
             _wiki(tmp_path),
             _collection(tmp_path),
@@ -172,7 +177,9 @@ def test_run_write_respects_force(tmp_path: Path) -> None:
     manifest = mock.Mock()
     manifest.compare.return_value = True
     fake_normalized = [("x.md", "# body")]
-    with mock.patch("lies.etl.stages.write.atomic_commit") as ac:
+    # Pin atomic_commit to None so the no-op gate skips the post-commit
+    # qmd hooks; this test is about force semantics, not qmd.
+    with mock.patch("lies.etl.stages.write.atomic_commit", return_value=None) as ac:
         result = run_write(
             _wiki(tmp_path),
             _collection(tmp_path),
@@ -346,6 +353,10 @@ def test_run_write_does_not_roll_back_commit_on_rebuild_index_value_error(
     manifest = mock.Mock()
     manifest.compare.return_value = False
     fake_normalized = [("x.md", "# body")]
+    # Pin atomic_commit to a truthy 40-char SHA so the post-commit hooks
+    # fire. The new no-op gate skips them when atomic_commit returns None;
+    # relying on MagicMock's truthy default would silently couple this test
+    # to a fragile side-effect of the mock library rather than the contract.
     with (
         # Pin atomic_commit to a truthy 40-char SHA so the post-commit
         # hooks (qmd_collection_add_or_update, qmd_update, rebuild_index)

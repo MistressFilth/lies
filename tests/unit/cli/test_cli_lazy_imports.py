@@ -15,12 +15,18 @@ A clean Python process is the only reliable way to measure what
 from __future__ import annotations
 
 import subprocess
+import sys
 
 
 def _run_in_clean_process(snippet: str) -> str:
-    """Run `python -c <snippet>` in a fresh interpreter and return stdout."""
+    """Run `python -c <snippet>` in a fresh interpreter and return stdout.
+
+    Bypasses ``uv run`` to avoid its ~150ms of project lookup overhead;
+    the test runs under pytest's own venv, so ``sys.executable`` already
+    points at the right interpreter with the right site-packages.
+    """
     result = subprocess.run(
-        ["uv", "run", "python", "-c", snippet],
+        [sys.executable, "-c", snippet],
         capture_output=True,
         text=True,
         check=True,
