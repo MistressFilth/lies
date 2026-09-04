@@ -98,3 +98,38 @@ def test_status_rejects_negative_memory_limit(runner, tmp_path, monkeypatch) -> 
     text = strip_ansi(result.output)
     assert "--memory-limit" in text
     assert ">=" in text
+
+
+def test_status_includes_catalog_count(runner, tmp_path, monkeypatch) -> None:
+    """`lies status` surfaces the catalog row count + schema version."""
+    from lies.memory.catalog import count_pages, open_catalog, upsert_page
+    from lies.memory.catalog_models import CatalogPage
+    from lies.wiki.wiki import Wiki
+
+    wiki = Wiki(
+        name="t",
+        data_root=tmp_path,
+        config_root=tmp_path / "config",
+        cache_root=tmp_path / "cache",
+        state_root=tmp_path / "state",
+        runtime_root=tmp_path / "runtime",
+    )
+    (tmp_path / "wiki").mkdir()
+    monkeypatch.setenv("LIES_WIKI_NAME", "t")
+    monkeypatch.setattr("lies.cli.resolve_wiki", lambda _name=None: wiki)
+
+    # Seed three rows so the assertion is deterministic regardless of any
+    # first-open backfill that runs against an empty wiki dir.
+    conn = open_catalog(wiki)
+    try:
+        for i in range(3):
+            upsert_page(conn, CatalogPage(slug=f"x/{i}", title=f"T{i}"))
+    finally:
+        conn.close()
+    expected_rows = count_pages(open_catalog(wiki))
+    conn.close()
+
+    result = runner.invoke(app, ["status"])
+    assert result.exit_code == 0, result.output
+    assert f"catalog: {expected_rows} pages" in result.output
+    assert "schema v1" in result.output

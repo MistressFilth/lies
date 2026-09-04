@@ -207,6 +207,19 @@ def status(
     wiki = resolve_wiki(name)
     root = wiki.data_root
     layout = WikiLayout(root)
+    try:
+        from lies.memory.catalog import count_pages, open_catalog
+
+        conn = open_catalog(wiki)
+        try:
+            n_pages = count_pages(conn)
+            ver_row = conn.execute("SELECT version FROM schema_version LIMIT 1").fetchone()
+            schema_ver = ver_row[0] if ver_row else "unknown"
+        finally:
+            conn.close()
+        typer.echo(f"catalog: {n_pages} pages, schema v{schema_ver}")
+    except Exception:  # noqa: BLE001 - status is observability; never fail the command
+        typer.echo("catalog: unavailable")
     typer.echo("=== qmd status ===")
     try:
         typer.echo(qmd_status(root))
