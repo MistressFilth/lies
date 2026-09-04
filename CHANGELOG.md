@@ -8,6 +8,10 @@ All notable changes to LIES are documented here. The format follows
 
 ### Added
 
+- Fresh wikis seed `.gitignore` with explicit `.lies/catalog.db`,
+  `.lies/catalog.db-wal`, and `.lies/catalog.db-shm` entries alongside
+  `.lies/` and `.lies/memory_plans.jsonl`, so the sqlite catalog and its
+  WAL siblings stay untracked.
 - JSONL receipt sidecar at `<wiki>/.lies/memory_plans.jsonl`. Each
   applied `MemoryPlan` appends one line (timestamp, commit SHA,
   rationale, pages, ops histogram, evidence count). Idempotent on

@@ -36,6 +36,24 @@ def copy_default_schema(target: Path) -> None:
     shutil.copyfile(str(src), str(target))
 
 
+def _gitignore_lines() -> tuple[str, ...]:
+    """Lines seeded into a fresh wiki's ``.gitignore``.
+
+    ``.lies/`` already covers every runtime artifact under the sidecar
+    directory; the explicit ``catalog.db`` entries below document the
+    sqlite catalog and its WAL siblings so an operator merging these
+    lines into a curated ``.gitignore`` keeps them ignored even if the
+    directory-wide rule is narrowed.
+    """
+    return (
+        ".lies/",
+        ".lies/memory_plans.jsonl",
+        ".lies/catalog.db",
+        ".lies/catalog.db-wal",
+        ".lies/catalog.db-shm",
+    )
+
+
 def git_init_initial(path: Path) -> None:
     """git init --initial-branch=main, set user.email/name, add ., commit."""
     subprocess.run(
@@ -67,7 +85,9 @@ def git_init_initial(path: Path) -> None:
     # entries.
     gitignore_path = path / ".gitignore"
     if not gitignore_path.exists():
-        gitignore_path.write_text(".lies/\n", encoding="utf-8")
+        gitignore_path.write_text(
+            "".join(f"{line}\n" for line in _gitignore_lines()), encoding="utf-8"
+        )
     subprocess.run(
         ["git", "-C", str(path), "add", "."],
         check=True,
