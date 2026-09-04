@@ -18,6 +18,21 @@ class PageSection(str, Enum):
     ingested = "ingested"
 
 
+def _slug_for(rel: str) -> str:
+    """Return the canonical catalog slug for a wiki-relative path.
+
+    Pure string work — no I/O, no ``Wiki`` reference. ``rel`` may be
+    wiki-relative with or without the leading ``wiki/`` prefix, with or
+    without a trailing ``.md`` suffix; the result is always the bare
+    slug (``claude-code/concepts/hooks``). Used by callers that need a
+    slug for catalog membership checks without paying the cost of
+    reading and hashing the file (e.g. ``_iter_disk_slugs`` in
+    ``catalog.py``).
+    """
+    stripped = rel.removeprefix("wiki/").removeprefix("wiki/")
+    return stripped.removesuffix(".md") if stripped.endswith(".md") else stripped
+
+
 class CatalogPage(BaseModel):
     """A single page in the wiki catalog. Frozen."""
 
@@ -53,13 +68,12 @@ class CatalogPage(BaseModel):
         """
         wiki_dir: Path = wiki.wiki_dir  # type: ignore[attr-defined]  # ty: ignore[unresolved-attribute]
         # Strip leading wiki/ defensively (page-writer emits wiki/-prefixed paths).
-        rel = path.removeprefix("wiki/").removeprefix("wiki/")
-        slug = rel.removesuffix(".md") if rel.endswith(".md") else rel
+        slug = _slug_for(path)
         # Look up the on-disk file; tolerate the caller passing a bare slug
         # (without the ``.md`` suffix) by appending it when needed.
-        file_path = wiki_dir / rel
-        if not file_path.exists() and not rel.endswith(".md"):
-            file_path = wiki_dir / (rel + ".md")
+        file_path = wiki_dir / slug
+        if not file_path.exists() and not file_path.suffix:
+            file_path = wiki_dir / (slug + ".md")
         source_pkg = slug.split("/", 1)[0] if "/" in slug else ""
 
         if file_path.exists():

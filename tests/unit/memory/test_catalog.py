@@ -163,20 +163,21 @@ def test_rebuild_from_disk_walks_markdown(tmp_path: Path) -> None:
     """rebuild_from_disk walks wiki/**/*.md and returns CatalogPage rows."""
     from lies.memory.catalog import rebuild_from_disk
 
-    wiki_root = tmp_path / "test-wiki"
-    wiki_root.mkdir()
-    page_dir = wiki_root / "wiki" / "x" / "concepts"
+    wiki_dir = tmp_path / "wiki"
+    wiki_dir.mkdir()
+    page_dir = wiki_dir / "x" / "concepts"
     page_dir.mkdir(parents=True)
     (page_dir / "a.md").write_text("---\ntitle: A\n---\n\n# A\n", encoding="utf-8")
     (page_dir / "b.md").write_text("---\ntitle: B\n---\n\n# B\n", encoding="utf-8")
-    (wiki_root / "wiki" / "log.md").write_text("# Log\n", encoding="utf-8")
-    (wiki_root / "wiki" / "index.md").write_text("# Index\n", encoding="utf-8")
+    # Top-level system files (production layout: at the root of wiki_dir).
+    (wiki_dir / "log.md").write_text("# Log\n", encoding="utf-8")
+    (wiki_dir / "index.md").write_text("# Index\n", encoding="utf-8")
 
     class _StubWiki:
         pass
 
     wiki = _StubWiki()
-    wiki.wiki_dir = wiki_root  # type: ignore[attr-defined]
+    wiki.wiki_dir = wiki_dir  # type: ignore[attr-defined]
 
     pages = rebuild_from_disk(wiki)
     slugs = {p.slug for p in pages}
@@ -186,21 +187,59 @@ def test_rebuild_from_disk_walks_markdown(tmp_path: Path) -> None:
     assert "index" not in slugs
 
 
-def test_reconcile_dry_run(tmp_path: Path) -> None:
-    """dry_run reports would_add/would_remove without writing."""
-    from lies.memory.catalog import open_catalog, reconcile, upsert_page
-    from lies.memory.catalog_models import CatalogPage
+def test_rebuild_from_disk_keeps_nested_system_named_files(tmp_path: Path) -> None:
+    """A nested ``concepts/index.md`` is a real wiki page, not a system file.
 
-    wiki_root = tmp_path / "test-wiki"
-    wiki_root.mkdir()
-    (wiki_root / "wiki").mkdir()
-    (wiki_root / "wiki" / "on-disk.md").write_text("# On-disk\n", encoding="utf-8")
+    Guards against the Task 3 review finding: the previous basename-based
+    filter (``md.name in {"index.md", ...}``) silently dropped a legit
+    ``<collection>/concepts/index.md`` even though only the top-level
+    ``wiki/index.md`` is a system artifact.
+    """
+    from lies.memory.catalog import rebuild_from_disk
+
+    wiki_dir = tmp_path / "wiki"
+    wiki_dir.mkdir()
+    page_dir = wiki_dir / "x" / "concepts"
+    page_dir.mkdir(parents=True)
+    (page_dir / "index.md").write_text("---\ntitle: Index\n---\n\n# Index\n", encoding="utf-8")
+    (page_dir / "overview.md").write_text(
+        "---\ntitle: Overview\n---\n\n# Overview\n", encoding="utf-8"
+    )
+    # Top-level system files still excluded.
+    (wiki_dir / "index.md").write_text("# Top Index\n", encoding="utf-8")
+    (wiki_dir / "overview.md").write_text("# Top Overview\n", encoding="utf-8")
 
     class _StubWiki:
         pass
 
     wiki = _StubWiki()
-    wiki.wiki_dir = wiki_root  # type: ignore[attr-defined]
+    wiki.wiki_dir = wiki_dir  # type: ignore[attr-defined]
+
+    pages = rebuild_from_disk(wiki)
+    slugs = {p.slug for p in pages}
+    assert "x/concepts/index" in slugs
+    assert "x/concepts/overview" in slugs
+    # The top-level system files are NOT in the catalog — only nested
+    # ones with the same name. (Top-level slugs would be ``"index"`` /
+    # ``"overview"``, not the nested ones.)
+    assert "index" not in slugs
+    assert "overview" not in slugs
+
+
+def test_reconcile_dry_run(tmp_path: Path) -> None:
+    """dry_run reports would_add/would_remove without writing."""
+    from lies.memory.catalog import open_catalog, reconcile, upsert_page
+    from lies.memory.catalog_models import CatalogPage
+
+    wiki_dir = tmp_path / "wiki"
+    wiki_dir.mkdir()
+    (wiki_dir / "on-disk.md").write_text("# On-disk\n", encoding="utf-8")
+
+    class _StubWiki:
+        pass
+
+    wiki = _StubWiki()
+    wiki.wiki_dir = wiki_dir  # type: ignore[attr-defined]
 
     # Pre-seed an orphan row in catalog (file is missing)
     conn = open_catalog(wiki)
@@ -219,16 +258,15 @@ def test_reconcile_applies_changes(tmp_path: Path) -> None:
     from lies.memory.catalog import get_page, open_catalog, reconcile, upsert_page
     from lies.memory.catalog_models import CatalogPage
 
-    wiki_root = tmp_path / "test-wiki"
-    wiki_root.mkdir()
-    (wiki_root / "wiki").mkdir()
-    (wiki_root / "wiki" / "on-disk.md").write_text("# On-disk\n", encoding="utf-8")
+    wiki_dir = tmp_path / "wiki"
+    wiki_dir.mkdir()
+    (wiki_dir / "on-disk.md").write_text("# On-disk\n", encoding="utf-8")
 
     class _StubWiki:
         pass
 
     wiki = _StubWiki()
-    wiki.wiki_dir = wiki_root  # type: ignore[attr-defined]
+    wiki.wiki_dir = wiki_dir  # type: ignore[attr-defined]
 
     conn = open_catalog(wiki)
     try:
@@ -252,16 +290,15 @@ def test_reconcile_applies_changes(tmp_path: Path) -> None:
 def test_reconcile_idempotent(tmp_path: Path) -> None:
     from lies.memory.catalog import reconcile
 
-    wiki_root = tmp_path / "test-wiki"
-    wiki_root.mkdir()
-    (wiki_root / "wiki").mkdir()
-    (wiki_root / "wiki" / "a.md").write_text("# A\n", encoding="utf-8")
+    wiki_dir = tmp_path / "wiki"
+    wiki_dir.mkdir()
+    (wiki_dir / "a.md").write_text("# A\n", encoding="utf-8")
 
     class _StubWiki:
         pass
 
     wiki = _StubWiki()
-    wiki.wiki_dir = wiki_root  # type: ignore[attr-defined]
+    wiki.wiki_dir = wiki_dir  # type: ignore[attr-defined]
 
     first = reconcile(wiki, dry_run=False)
     second = reconcile(wiki, dry_run=False)
@@ -283,10 +320,13 @@ def test_render_markdown_title_only(tmp_path: Path, conn: sqlite3.Connection) ->
         ],
     )
     md = render_markdown(conn)
-    assert "- [Hooks]" in md
-    assert "- [Skills]" in md
-    # No summary line — title only
-    assert "— " not in md or md.count("— ") == 0
+    # Full link line — guards against the doubled ``wiki/<pkg>/<pkg>/...``
+    # segment bug found in Task 3 review. Source_pkg is already encoded
+    # in the slug, so the link is just ``{slug}.md``.
+    assert "- [Hooks](claude-code/concepts/hooks.md)" in md
+    assert "- [Skills](claude-code/concepts/skills.md)" in md
+    # No summary line — title only.
+    assert "— " not in md
 
 
 def test_render_markdown_empty(tmp_path: Path, conn: sqlite3.Connection) -> None:
@@ -295,3 +335,33 @@ def test_render_markdown_empty(tmp_path: Path, conn: sqlite3.Connection) -> None
     md = render_markdown(conn)
     assert md.startswith("# Wiki Catalog")
     assert "- " not in md
+
+
+def test_slug_for_bare_path() -> None:
+    """Bare slug → returned verbatim (no suffix, no prefix)."""
+    from lies.memory.catalog_models import _slug_for
+
+    assert _slug_for("claude-code/concepts/hooks") == "claude-code/concepts/hooks"
+
+
+def test_slug_for_md_suffixed_path() -> None:
+    """.md suffix is stripped; prefix (if any) is preserved."""
+    from lies.memory.catalog_models import _slug_for
+
+    assert _slug_for("claude-code/concepts/hooks.md") == "claude-code/concepts/hooks"
+
+
+def test_slug_for_wiki_prefixed_path() -> None:
+    """Leading ``wiki/`` prefix is stripped (single occurrence)."""
+    from lies.memory.catalog_models import _slug_for
+
+    assert _slug_for("wiki/claude-code/concepts/hooks") == "claude-code/concepts/hooks"
+    assert _slug_for("wiki/claude-code/concepts/hooks.md") == "claude-code/concepts/hooks"
+
+
+def test_slug_for_double_prefixed_path() -> None:
+    """Defensive double-strip handles ``wiki/wiki/...`` (e.g. page-writer bug)."""
+    from lies.memory.catalog_models import _slug_for
+
+    assert _slug_for("wiki/wiki/claude-code/concepts/hooks") == "claude-code/concepts/hooks"
+    assert _slug_for("wiki/wiki/claude-code/concepts/hooks.md") == "claude-code/concepts/hooks"

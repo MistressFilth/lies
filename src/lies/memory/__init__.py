@@ -16,7 +16,7 @@ from lies.memory.catalog import (
     upsert_page,
     upsert_pages,
 )
-from lies.memory.catalog_models import CatalogPage, PageSection
+from lies.memory.catalog_models import CatalogPage, PageSection, _slug_for
 from lies.memory.enricher import MemoryEnricherDeps, enricher_agent
 from lies.memory.namespace import WikiIdentity, memory_namespace
 from lies.memory.retry import DrainResult, EnrichmentQueue, PendingRetry
@@ -34,6 +34,7 @@ __all__ = [
     "WikiIdentity",
     "WikiMemoryDeps",
     "WikiMemoryService",
+    "_slug_for",
     "build_synthesis_plan",
     "count_pages",
     "enricher_agent",

@@ -13,7 +13,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
-from lies.memory.catalog_models import CatalogPage, PageSection
+from lies.memory.catalog_models import CatalogPage, PageSection, _slug_for
 
 
 SCHEMA_VERSION = 1
@@ -230,7 +230,23 @@ def _row_to_page(row: sqlite3.Row) -> CatalogPage:
 # Disk sync (orphan + dangling)
 # ---------------------------------------------------------------------------
 
-_SYSTEM_FILES = frozenset({"log.md", "schema.md", "index.md"})
+# System files excluded from the catalog walk. ``_SYSTEM_FILES`` is keyed
+# by *root-anchored relative path* (``path.relative_to(wiki_dir).as_posix()``)
+# so a nested ``claude-code/concepts/index.md`` is NOT excluded; only the
+# top-level ``index.md`` / ``log.md`` / ``schema.md`` are. This matches
+# the pattern at ``src/lies/memory/index.py:41`` and
+# ``src/lies/orchestrator.py:170``. ``overview.md`` and ``lint-report.md``
+# are also excluded — these are the deterministic host-side artifacts the
+# linter / orchestrator emit and are NOT wiki pages.
+_SYSTEM_FILES = frozenset(
+    {
+        "index.md",
+        "lint-report.md",
+        "log.md",
+        "overview.md",
+        "schema.md",
+    }
+)
 
 
 @dataclass
@@ -246,37 +262,42 @@ class ReconcileResult:  # type: ignore[no-redef]
 def _iter_disk_slugs(wiki: object) -> set[str]:
     """Return wiki slugs for every markdown file under ``wiki.wiki_dir``.
 
-    Slugs are derived via ``CatalogPage.from_path`` so the result matches
-    the catalog's stored slug form (no leading ``wiki/`` prefix, no
-    ``.md`` suffix). Skips system files (``log.md``, ``schema.md``,
-    ``index.md``) and catalog sibling files (``catalog.db*``).
+    Pure-string walk: no file reads, no SHA-256. Slugs come from the
+    wiki-dir-relative path via :func:`_slug_for`. System files
+    (``index.md`` / ``log.md`` / ``schema.md`` / ``overview.md`` /
+    ``lint-report.md``) and the catalog's own sibling files
+    (``catalog.db*``) are excluded.
     """
     wiki_dir: Path = wiki.wiki_dir  # type: ignore[attr-defined]  # ty: ignore[unresolved-attribute]
     slugs: set[str] = set()
     for md in wiki_dir.rglob("*.md"):
-        if md.name in _SYSTEM_FILES:
+        rel = md.relative_to(wiki_dir).as_posix()
+        if rel in _SYSTEM_FILES:
             continue
         if md.name.startswith("catalog.db"):
             continue
-        rel = md.relative_to(wiki_dir).with_suffix("").as_posix()
-        slugs.add(CatalogPage.from_path(wiki, rel).slug)
+        slugs.add(_slug_for(rel))
     return slugs
 
 
 def rebuild_from_disk(wiki: object) -> list[CatalogPage]:
     """Walk ``<wiki_dir>/**/*.md`` and return one ``CatalogPage`` per file.
 
-    Skips system files (``log.md`` / ``schema.md`` / ``index.md``) and the
-    catalog's own sibling files (``catalog.db*``). Idempotent on second call.
+    Skips system files (``index.md`` / ``log.md`` / ``schema.md`` /
+    ``overview.md`` / ``lint-report.md``) and the catalog's own sibling
+    files (``catalog.db*``). Idempotent on second call.
     """
     wiki_dir: Path = wiki.wiki_dir  # type: ignore[attr-defined]  # ty: ignore[unresolved-attribute]
     out: list[CatalogPage] = []
     for md in sorted(wiki_dir.rglob("*.md")):
-        if md.name in _SYSTEM_FILES:
+        rel = md.relative_to(wiki_dir).as_posix()
+        if rel in _SYSTEM_FILES:
             continue
         if md.name.startswith("catalog.db"):
             continue
-        rel = md.relative_to(wiki_dir).with_suffix("").as_posix()
+        # ``_slug_for`` expects a path-with-suffix or bare slug; pass the
+        # wiki-relative ``.md`` path so the ``removeprefix("wiki/")`` is
+        # a no-op and ``.md`` is stripped from the trailing segment only.
         out.append(CatalogPage.from_path(wiki, rel))
     return out
 
@@ -288,9 +309,10 @@ def reconcile(wiki: object, *, dry_run: bool = False) -> ReconcileResult:
       1. Orphan pass: files on disk with no catalog row → upsert.
       2. Dangling pass: catalog rows with no disk file → remove.
 
-    Returns a ``ReconcileResult`` whose ``added`` / ``removed`` count the
-    applied rows, or whose ``would_add`` / ``would_remove`` count the
-    would-be changes when ``dry_run=True``.
+    Returns a ``ReconcileResult`` whose ``added`` / ``removed`` counts
+    reflect the rows actually written / deleted (per ``upsert_pages``
+    and ``remove_pages`` rowcounts); ``would_add`` / ``would_remove``
+    count the would-be changes when ``dry_run=True``.
     """
     conn = open_catalog(wiki)
     try:
@@ -311,26 +333,32 @@ def reconcile(wiki: object, *, dry_run: bool = False) -> ReconcileResult:
 
     conn = open_catalog(wiki)
     try:
+        added = 0
         if orphans:
             pages = rebuild_from_disk(wiki)
             keep = [p for p in pages if p.slug in set(orphans)]
             upsert_pages(conn, keep)
-        if dangling:
-            remove_pages(conn, dangling)
+            added = len(keep)
+        removed = remove_pages(conn, dangling) if dangling else 0
     finally:
         conn.close()
-    return ReconcileResult(added=len(orphans), removed=len(dangling))
+    return ReconcileResult(added=added, removed=removed)
 
 
 def render_markdown(conn: sqlite3.Connection) -> str:
     """Title-only markdown export. One ``- [Title](path)`` per row.
 
     Closes P2 ``wiki/index.md collapses to title-only``: the current
-    title-only behavior becomes canonical.
+    title-only behavior becomes canonical. Links use the wiki-dir-
+    relative ``{slug}.md`` form (matching ``rebuild_index`` at
+    ``src/lies/memory/index.py:86`` and ``_read_pages_from_index`` at
+    ``src/lies/query/synthesizer.py:216``); the slug already encodes
+    the collection / source_pkg prefix, so re-prepending it produces a
+    doubled-segment target.
     """
     pages = list_pages(conn, section=PageSection.wiki)
     pages.sort(key=lambda p: (p.source_pkg, p.slug))
     lines = ["# Wiki Catalog", ""]
     for p in pages:
-        lines.append(f"- [{p.title}](wiki/{p.source_pkg}/{p.slug}.md)")
+        lines.append(f"- [{p.title}]({p.slug}.md)")
     return "\n".join(lines) + "\n"
