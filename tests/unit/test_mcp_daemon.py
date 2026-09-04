@@ -313,7 +313,11 @@ def test_stop_escalates_to_sigkill(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     monkeypatch.setattr(daemon.os, "kill", fake_kill)
     monkeypatch.setattr(daemon, "_wait_for_exit", fake_wait_for_exit)
     monkeypatch.setattr(daemon, "is_stale", lambda _r: False)
-    monkeypatch.setattr(daemon, "acquire_create_lock", lambda _p, **_kw: SimpleNamespace(fd=1))
+    monkeypatch.setattr(
+        daemon,
+        "acquire_create_lock",
+        lambda _p, **_kw: SimpleNamespace(fd=1, status="acquired"),
+    )
     monkeypatch.setattr(daemon, "release_create_lock", lambda _p, _fd, **_kw: None)
     monkeypatch.setattr(daemon, "read_record", lambda _w: _record(pid=pid))
     monkeypatch.setattr(daemon, "clear_record", lambda _w: None)
