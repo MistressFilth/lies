@@ -11,10 +11,10 @@ batch.
 
 Post-commit hook: when files are written, the stage also (a) registers
 the per-collection wiki subdir with qmd (idempotent), (b) refreshes
-the qmd derived index, (c) regenerates ``wiki/index.md`` so the
-qmd-fallback synthesizer stays in sync, and (d) embeds the collection
-vectors. The qmd hooks are non-fatal — a failure must not roll back
-the wiki git commit that already landed.
+the qmd derived index, (c) bulk-upserts the freshly-written pages into
+``catalog.db`` so the catalog stays in lockstep with the wiki, and
+(d) embeds the collection vectors. The qmd hooks are non-fatal — a
+failure must not roll back the wiki git commit that already landed.
 """
 
 from __future__ import annotations
@@ -26,13 +26,38 @@ from typing import TYPE_CHECKING
 from lies.collections.hash_manifest import HashManifest
 from lies.collections.record import Collection
 from lies.etl.quarantine import quarantine as move_to_poison
-from lies.memory.catalog import rebuild_index
+from lies.memory.catalog import open_catalog, upsert_pages
+from lies.memory.catalog_models import CatalogPage
 from lies.qmd.cli import qmd_collection_add_or_update, qmd_embed, qmd_update
 from lies.wiki.git import atomic_commit
 from lies.wiki.wiki import Wiki
 
 if TYPE_CHECKING:
     from lies.etl.pipeline import StageResult
+
+
+def _bulk_update_catalog(wiki: object, written_paths: list[str]) -> None:
+    """Upsert every written path into catalog.db in a single transaction.
+
+    Mirrors ask's ``_bulk_update_catalog``: executemany + commit. Best-
+    effort; failures degrade to non-fatal stderr warnings (per the
+    existing pattern that previously wrapped ``rebuild_index`` in
+    ``try/except Exception: pass``). An empty ``written_paths`` is a
+    no-op so callers don't pay for a catalog open on the empty path.
+    """
+    if not written_paths:
+        return
+    conn = open_catalog(wiki)
+    try:
+        pages = [CatalogPage.from_path(wiki, p) for p in written_paths]
+        upsert_pages(conn, pages)
+    except Exception as exc:  # noqa: BLE001 - non-fatal: catalog is reconcile-cleanable
+        print(
+            f"warn: bulk catalog update failed: {exc}",
+            file=sys.stderr,
+        )
+    finally:
+        conn.close()
 
 
 def run_write(
@@ -115,10 +140,7 @@ def run_write(
                     f"continuing (wiki commit stands). Run `lies status` (or `qmd status` directly if status also fails) for state.",
                     file=sys.stderr,
                 )
-            try:
-                rebuild_index(wiki)
-            except Exception:  # noqa: BLE001, S110 - rebuild_index parses user-authored frontmatter; failures must not roll back the wiki commit
-                pass
+            _bulk_update_catalog(wiki, files)
 
     return StageResult(
         success=success,

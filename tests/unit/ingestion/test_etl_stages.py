@@ -209,7 +209,7 @@ def test_run_write_registers_collection_with_qmd_post_commit(tmp_path: Path) -> 
         mock.patch("lies.etl.stages.write.atomic_commit"),
         mock.patch("lies.etl.stages.write.qmd_collection_add_or_update") as m_add,
         mock.patch("lies.etl.stages.write.qmd_update"),
-        mock.patch("lies.etl.stages.write.rebuild_index"),
+        mock.patch("lies.etl.stages.write._bulk_update_catalog"),
     ):
         run_write(
             wiki,
@@ -239,7 +239,7 @@ def test_run_write_refreshes_qmd_index_post_commit(tmp_path: Path) -> None:
         mock.patch("lies.etl.stages.write.atomic_commit"),
         mock.patch("lies.etl.stages.write.qmd_collection_add_or_update"),
         mock.patch("lies.etl.stages.write.qmd_update") as m_update,
-        mock.patch("lies.etl.stages.write.rebuild_index"),
+        mock.patch("lies.etl.stages.write._bulk_update_catalog"),
     ):
         run_write(
             wiki,
@@ -251,9 +251,16 @@ def test_run_write_refreshes_qmd_index_post_commit(tmp_path: Path) -> None:
     m_update.assert_called_once_with(wiki.data_root)
 
 
-def test_run_write_regenerates_index_md_post_commit(tmp_path: Path) -> None:
-    """After WRITE commits, wiki/index.md must be regenerated from the
-    freshly-written pages so the qmd-fallback synthesizer can navigate."""
+def test_run_write_bulk_updates_catalog_post_commit(tmp_path: Path) -> None:
+    """After WRITE commits, the catalog must be bulk-upserted with the
+    freshly-written pages so catalog.db stays in lockstep with the wiki.
+
+    Replaces the previous rebuild_index contract: the WRITE stage no
+    longer walks the disk to regenerate ``index.md`` (per-op catalog
+    upserts in ``WikiMemoryService`` keep ``catalog.db`` current); it
+    instead upserts exactly the rows it just wrote, in a single
+    transaction.
+    """
     wiki = _wiki(tmp_path)
     (wiki.raw_dir / "cpython").mkdir(parents=True, exist_ok=True)
     manifest = mock.Mock()
@@ -263,7 +270,7 @@ def test_run_write_regenerates_index_md_post_commit(tmp_path: Path) -> None:
         mock.patch("lies.etl.stages.write.atomic_commit"),
         mock.patch("lies.etl.stages.write.qmd_collection_add_or_update"),
         mock.patch("lies.etl.stages.write.qmd_update"),
-        mock.patch("lies.etl.stages.write.rebuild_index") as m_index,
+        mock.patch("lies.etl.stages.write._bulk_update_catalog") as m_bulk,
     ):
         run_write(
             wiki,
@@ -272,7 +279,13 @@ def test_run_write_regenerates_index_md_post_commit(tmp_path: Path) -> None:
             manifest=manifest,
             force=False,
         )
-    m_index.assert_called_once_with(wiki)
+    m_bulk.assert_called_once()
+    args, _ = m_bulk.call_args
+    assert args[0] is wiki
+    # written_paths is the second positional arg; should contain the
+    # wiki-relative path of the freshly-written file.
+    written_paths = args[1]
+    assert "wiki/cpython/x.md" in written_paths
 
 
 def test_run_write_skips_qmd_hooks_when_nothing_committed(tmp_path: Path) -> None:
@@ -285,7 +298,7 @@ def test_run_write_skips_qmd_hooks_when_nothing_committed(tmp_path: Path) -> Non
         mock.patch("lies.etl.stages.write.atomic_commit") as ac,
         mock.patch("lies.etl.stages.write.qmd_collection_add_or_update") as m_add,
         mock.patch("lies.etl.stages.write.qmd_update") as m_update,
-        mock.patch("lies.etl.stages.write.rebuild_index") as m_index,
+        mock.patch("lies.etl.stages.write._bulk_update_catalog") as m_bulk,
     ):
         run_write(
             _wiki(tmp_path),
@@ -297,7 +310,7 @@ def test_run_write_skips_qmd_hooks_when_nothing_committed(tmp_path: Path) -> Non
     ac.assert_not_called()
     m_add.assert_not_called()
     m_update.assert_not_called()
-    m_index.assert_not_called()
+    m_bulk.assert_not_called()
 
 
 def test_run_write_skips_qmd_hooks_when_atomic_commit_is_noop(
@@ -322,7 +335,7 @@ def test_run_write_skips_qmd_hooks_when_atomic_commit_is_noop(
         mock.patch("lies.etl.stages.write.qmd_collection_add_or_update") as m_add,
         mock.patch("lies.etl.stages.write.qmd_update") as m_update,
         mock.patch("lies.etl.stages.write.qmd_embed") as m_embed,
-        mock.patch("lies.etl.stages.write.rebuild_index") as m_index,
+        mock.patch("lies.etl.stages.write._bulk_update_catalog") as m_bulk,
     ):
         run_write(
             _wiki(tmp_path),
@@ -337,53 +350,7 @@ def test_run_write_skips_qmd_hooks_when_atomic_commit_is_noop(
     m_add.assert_not_called()
     m_update.assert_not_called()
     m_embed.assert_not_called()
-    m_index.assert_not_called()
-
-
-def test_run_write_does_not_roll_back_commit_on_rebuild_index_value_error(
-    tmp_path: Path,
-) -> None:
-    """A ValueError from rebuild_index (e.g., malformed frontmatter) must NOT
-    propagate out of run_write — the wiki git commit has already happened
-    and cannot be unwound by a fire-and-forget post-commit hook. The same
-    guarantee applies to OSError; the previous narrow OSError-only catch
-    let any non-OSError exception unwrap and abort the pipeline."""
-    wiki = _wiki(tmp_path)
-    (wiki.raw_dir / "cpython").mkdir(parents=True, exist_ok=True)
-    manifest = mock.Mock()
-    manifest.compare.return_value = False
-    fake_normalized = [("x.md", "# body")]
-    # Pin atomic_commit to a truthy 40-char SHA so the post-commit hooks
-    # fire. The new no-op gate skips them when atomic_commit returns None;
-    # relying on MagicMock's truthy default would silently couple this test
-    # to a fragile side-effect of the mock library rather than the contract.
-    with (
-        # Pin atomic_commit to a truthy 40-char SHA so the post-commit
-        # hooks (qmd_collection_add_or_update, qmd_update, rebuild_index)
-        # all fire under the test. The new no-op gate at write.py skips
-        # the hooks when atomic_commit returns None -- relying on
-        # MagicMock's truthy default would silently couple this test
-        # to a fragile side-effect rather than the contract.
-        mock.patch(
-            "lies.etl.stages.write.atomic_commit",
-            return_value="deadbeef" * 5,
-        ) as ac,
-        mock.patch("lies.etl.stages.write.qmd_collection_add_or_update"),
-        mock.patch("lies.etl.stages.write.qmd_update"),
-        mock.patch(
-            "lies.etl.stages.write.rebuild_index",
-            side_effect=ValueError("bad frontmatter"),
-        ),
-    ):
-        result = run_write(
-            wiki,
-            _collection(tmp_path),
-            fake_normalized,
-            manifest=manifest,
-            force=False,
-        )
-    assert result.success == ["x.md"]
-    ac.assert_called_once()
+    m_bulk.assert_not_called()
 
 
 def test_scrape_uses_bespoke_scraper_via_scraper_cmd(tmp_path: Path) -> None:
