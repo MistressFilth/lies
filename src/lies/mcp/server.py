@@ -497,6 +497,78 @@ def wiki_memory_changes() -> str:
 
 
 # ---------------------------------------------------------------------------
+# wiki://catalog — sqlite catalog read-through (F4b)
+# ---------------------------------------------------------------------------
+
+
+def _wiki_catalog_impl(name: str | None = None) -> str:
+    """Structured list of every catalog row.
+
+    Each row is the JSON-serialized ``CatalogPage.model_dump(mode="json")``
+    of one row in ``<wiki_dir>/.lies/catalog.db``. The shape mirrors
+    ``lies catalog dump --json``. The empty-catalog case returns ``"[]"``
+    so the JSON shape is stable for LLM callers.
+    """
+    import json
+
+    from lies.memory.catalog import list_pages as _catalog_list_pages
+    from lies.memory.catalog import open_catalog as _open_catalog
+
+    wiki = resolve_wiki(name)
+    conn = _open_catalog(wiki)
+    try:
+        pages = _catalog_list_pages(conn)
+    finally:
+        conn.close()
+    return json.dumps([p.model_dump(mode="json") for p in pages], indent=2)
+
+
+@mcp.resource("wiki://catalog")
+def wiki_catalog() -> str:
+    """All catalog rows (JSON-serialized ``list[dict]``).
+
+    Zero-argument forwarder (FastMCP 3.4.5 constraint). Real logic in
+    :func:`_wiki_catalog_impl`; ``name`` is resolved from the env there.
+    """
+    return _wiki_catalog_impl()
+
+
+def _wiki_catalog_slug_impl(slug: str, name: str | None = None) -> str:
+    """Single catalog row by slug. Empty when not found.
+
+    Returns ``""`` (not a JSON object) when the slug is absent so an LLM
+    caller can distinguish "missing" from "present with empty fields"
+    cheaply. ``model_dump(mode="json")`` ensures the ``PageSection``
+    enum serializes as ``"wiki"`` / ``"ingested"`` rather than the enum
+    repr.
+    """
+    import json
+
+    from lies.memory.catalog import get_page as _catalog_get_page
+    from lies.memory.catalog import open_catalog as _open_catalog
+
+    wiki = resolve_wiki(name)
+    conn = _open_catalog(wiki)
+    try:
+        page = _catalog_get_page(conn, slug)
+    finally:
+        conn.close()
+    if page is None:
+        return ""
+    return json.dumps(page.model_dump(mode="json"), indent=2)
+
+
+@mcp.resource("wiki://catalog/{slug}")
+def wiki_catalog_slug(slug: str) -> str:
+    """Single catalog row by slug (JSON-serialized ``dict`` or ``""``).
+
+    Template-resource handler — FastMCP passes ``slug`` directly so the
+    forwarder forwards it to :func:`_wiki_catalog_slug_impl`.
+    """
+    return _wiki_catalog_slug_impl(slug)
+
+
+# ---------------------------------------------------------------------------
 # Prompt — starter template for asking the wiki
 # ---------------------------------------------------------------------------
 
