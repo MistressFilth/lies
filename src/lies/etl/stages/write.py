@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING
 from lies.collections.hash_manifest import HashManifest
 from lies.collections.record import Collection
 from lies.etl.quarantine import quarantine as move_to_poison
-from lies.memory.index import rebuild_index
+from lies.memory.catalog import rebuild_index
 from lies.qmd.cli import qmd_collection_add_or_update, qmd_embed, qmd_update
 from lies.wiki.git import atomic_commit
 from lies.wiki.wiki import Wiki

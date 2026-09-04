@@ -306,6 +306,26 @@ def reconcile_from_git_log(wiki: Wiki) -> int:
     return len(rows)
 
 
+def append_log_entry(wiki: Wiki, line: str) -> None:
+    """Append a single parseable line to ``wiki/log.md``.
+
+    Lines starting with ``## `` are stamped with today's date if not already
+    present; ``{date}`` placeholders are substituted with the current date.
+    Creates the wiki dir + log file on first use. Mirrors the previous
+    ``lies.memory.index.append_log_entry`` API so the service can keep
+    emitting per-op audit entries without a separate module.
+    """
+    today = datetime.now(UTC).date().isoformat()
+    timestamped = line.rstrip("\n")
+    if "{date}" in timestamped:
+        timestamped = timestamped.replace("{date}", today)
+    if not timestamped.startswith("## "):
+        timestamped = f"## [{today}] {timestamped}"
+    wiki.wiki_dir.mkdir(parents=True, exist_ok=True)
+    with (wiki.wiki_dir / "log.md").open("a", encoding="utf-8") as fh:
+        fh.write(timestamped.rstrip() + "\n")
+
+
 def truncate(wiki: Wiki, keep: int, *, force: bool = False) -> int:
     """Cap the sidecar to its last `keep` lines. Atomic rewrite.
 

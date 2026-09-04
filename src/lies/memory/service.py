@@ -30,7 +30,11 @@ from lies.lock_errors import (  # noqa: F401 — Task 5/6/7 will reference these
     WikiFlockStale,
     WikiFlockUnrepairable,
 )
-from lies.memory.index import append_log_entry, rebuild_index
+from lies.memory.catalog import (
+    open_catalog as _open_catalog,
+    remove_page as _remove_catalog_page,
+    upsert_page as _upsert_catalog_page,
+)
 from lies.memory.models import (
     EvidenceAppend,
     MemoryPlan,
@@ -48,6 +52,7 @@ from lies.memory.models import (
     _PlanOperation,
 )
 from lies.memory.retrieval import _path_for_id, read_pages, search_wiki
+from lies.memory.sidecar import append_log_entry
 from lies.memory.validation import (
     parse_frontmatter,
     validate_frontmatter,
@@ -375,6 +380,39 @@ def _run_git(
         text=True,
         check=check,
     )
+
+
+def _upsert_or_remove_catalog_row(wiki: Wiki, op: _PlanOperation, kind: OperationKind) -> None:
+    """Apply one op to ``catalog.db``. Best-effort; non-fatal.
+
+    Mirrors the on-disk write/delete the apply envelope just performed:
+    ``PageDelete`` removes the catalog row by slug; everything else
+    (PageCreate / PageUpdate / EvidenceAppend) upserts a row built from
+    the freshly-written file via :meth:`CatalogPage.from_path`. The slug
+    is derived defensively — strip a leading ``wiki/`` twice so the
+    helper matches the same path resolution ``_apply_operations`` uses,
+    and drop the trailing ``.md`` so the slug lands in the same form
+    the rest of the catalog surface (``list_pages``, ``reconcile``)
+    already speaks.
+
+    Caller is responsible for the ``try/except`` envelope: per-op
+    catalog failures are non-fatal. The file write landed, so a
+    follow-up ``reconcile`` cleans up an orphan or stale row.
+    """
+    from lies.memory.catalog_models import CatalogPage
+
+    slug = op.path.removeprefix("wiki/").removeprefix("wiki/")
+    if slug.endswith(".md"):
+        slug = slug[: -len(".md")]
+
+    conn = _open_catalog(wiki)
+    try:
+        if kind is OperationKind.DELETE:
+            _remove_catalog_page(conn, slug)
+        else:
+            _upsert_catalog_page(conn, CatalogPage.from_path(wiki, op.path))
+    finally:
+        conn.close()
 
 
 class WikiMemoryService:
@@ -714,11 +752,10 @@ class WikiMemoryService:
             #
             # Carve-out: ``PageUpdate`` on ``index_path`` is the
             # established pathway for the repair agent's ``UpdateIndex``
-            # operation (see :func:`from_repair_plan`). The page is
-            # transiently rewritten with the catalog update, then
-            # overwritten by ``rebuild_index`` below — the ``PageUpdate``
-            # is the receipt surface for the operation, not a permanent
-            # write. ``log_path`` has no analogous pathway because
+            # operation (see :func:`from_repair_plan`). The page is the
+            # receipt surface for the operation, not a permanent write
+            # — the per-op catalog upsert below keeps ``catalog.db``
+            # in lockstep. ``log_path`` has no analogous pathway because
             # ``append_log_entry`` already owns log mutation.
             #
             # Both the bare-name form (``op.path == "log.md"``) and the
@@ -774,14 +811,29 @@ class WikiMemoryService:
                 if not resolved.exists():
                     # No-op: file already absent. Skip the PageReference
                     # so the receipt reflects that no change occurred at
-                    # this op's target. ``rebuild_index`` and
-                    # ``append_log_entry`` (below) still run for the rest
-                    # of the plan.
+                    # this op's target. ``append_log_entry`` (below) still
+                    # runs for the rest of the plan. Orphan catalog rows
+                    # are reconcile-cleanable.
                     continue
                 resolved.unlink()
                 kind = OperationKind.DELETE
             else:
                 raise WikiPlanInvalid(f"unsupported operation: {op!r}")
+            # Per-op catalog write (mirrors the file write/delete just
+            # performed; rollback semantics handled by the existing
+            # snapshot+restore envelope). Best-effort: a catalog failure
+            # is logged but does not roll back the wiki write. An orphan
+            # or stale row is reconcile-cleanable.
+            try:
+                _upsert_or_remove_catalog_row(self._wiki, op, kind)
+            except Exception as exc:  # noqa: BLE001 - per-op catalog failures are non-fatal
+                import logging
+
+                logging.getLogger(__name__).warning(
+                    "catalog upsert failed for %s: %s",
+                    op.path,
+                    exc,
+                )
             changed.append(
                 PageReference(
                     path=op.path,
@@ -789,7 +841,6 @@ class WikiMemoryService:
                     op=kind,
                 )
             )
-        rebuild_index(self._wiki)
         for op in plan.operations:
             append_log_entry(
                 self._wiki,
@@ -857,12 +908,6 @@ class WikiMemoryService:
             for p in candidates
             if p not in ("wiki/index.md", "wiki/log.md") or (root / p).exists()
         )
-
-    def _restore_index(self) -> None:
-        try:
-            rebuild_index(self._wiki)
-        except OSError:
-            pass
 
     def _refresh_qmd(self) -> tuple[bool, str]:
         try:
