@@ -15,14 +15,14 @@ resolves the wiki via ``lies.cli.resolve_wiki`` — the same shim
 only reads ``wiki.wiki_dir`` from the resolved wiki, so the same
 ``Wiki(...)`` instance works for both CLI and library callers.
 
-The read commands (``status`` / ``dump`` / ``render``) and
-``reconcile`` lazily backfill the catalog from disk on first open
-via :func:`_open_catalog_with_seed`. Without that seed, a fresh
-wiki's ``catalog.db`` is empty even though there are pages on disk
-(the etl WRITE stage and the WikiMemoryService normally populate
-it, but a CLI user poking around with raw files should not have to
-manually ``rebuild`` first to see the catalog's contents).
-``rebuild`` is the explicit seed command and does not auto-seed.
+First-open backfill (seeding ``catalog.db`` from on-disk ``.md``
+files when the catalog file did not previously exist) lives inside
+``lies.memory.catalog.open_catalog``. The read commands
+(``status`` / ``dump`` / ``render``) and ``reconcile`` rely on
+that behavior via a plain ``open_catalog(wiki)`` call; ``rebuild``
+remains the explicit seed command and bypasses the trigger because
+the file already exists when ``rebuild`` runs (and the upsert is
+idempotent either way).
 
 Heavy ``lies.memory.catalog`` imports stay inside the command
 bodies: the catalog itself is pure sqlite + filesystem walks, no
@@ -62,32 +62,6 @@ def _resolve_wiki(name: str | None = None) -> Wiki:
     return resolve_wiki(name)
 
 
-def _open_catalog_with_seed(wiki: Wiki):
-    """Open the catalog, backfilling from disk if empty.
-
-    The catalog is normally populated by ``WikiMemoryService`` per-op
-    upserts during memory operations, and by the etl WRITE stage on
-    ingest. A bare ``catalog.db`` is therefore expected to mirror the
-    wiki's ``.md`` files. When a CLI user pokes around without going
-    through those paths, the catalog can be empty even though pages
-    exist on disk — this helper seeds the empty case from
-    ``rebuild_from_disk`` so the read commands reflect reality.
-    """
-    from lies.memory.catalog import (
-        count_pages,
-        open_catalog,
-        rebuild_from_disk,
-        upsert_pages,
-    )
-
-    conn = open_catalog(wiki)
-    if count_pages(conn) == 0:
-        pages = rebuild_from_disk(wiki)
-        if pages:
-            upsert_pages(conn, pages)
-    return conn
-
-
 @catalog_app.command("status")
 def status_cmd(
     name: Annotated[
@@ -100,10 +74,10 @@ def status_cmd(
     ] = None,
 ) -> None:
     """Print row count + schema version."""
-    from lies.memory.catalog import count_pages
+    from lies.memory.catalog import count_pages, open_catalog
 
     wiki = _resolve_wiki(name)
-    conn = _open_catalog_with_seed(wiki)
+    conn = open_catalog(wiki)
     try:
         n = count_pages(conn)
         row = conn.execute("SELECT version FROM schema_version LIMIT 1").fetchone()
@@ -137,10 +111,10 @@ def dump_cmd(
     ] = None,
 ) -> None:
     """Dump all rows (optionally filtered)."""
-    from lies.memory.catalog import list_pages
+    from lies.memory.catalog import list_pages, open_catalog
 
     wiki = _resolve_wiki(name)
-    conn = _open_catalog_with_seed(wiki)
+    conn = open_catalog(wiki)
     try:
         pages = list_pages(
             conn,
@@ -177,16 +151,13 @@ def reconcile_cmd(
 ) -> None:
     """Sync catalog.db with files on disk (orphan + dangling pass).
 
-    Seeds the catalog from disk first so the orphan / dangling sets
-    reflect on-disk truth rather than the empty initial state.
+    ``open_catalog`` seeds on first open so the orphan / dangling
+    sets reflect on-disk truth rather than the empty initial state.
     """
-    from lies.memory.catalog import reconcile
+    from lies.memory.catalog import open_catalog, reconcile
 
     wiki = _resolve_wiki(name)
-    # Force-seed before reconciling so reconcile operates on a
-    # populated catalog, not an empty one (which would treat every
-    # disk file as an orphan).
-    _open_catalog_with_seed(wiki).close()
+    open_catalog(wiki).close()
     result = reconcile(wiki, dry_run=dry_run)
 
     if dry_run:
@@ -250,10 +221,10 @@ def render_cmd(
     ] = None,
 ) -> None:
     """Render markdown derivative (title-only)."""
-    from lies.memory.catalog import render_markdown
+    from lies.memory.catalog import open_catalog, render_markdown
 
     wiki = _resolve_wiki(name)
-    conn = _open_catalog_with_seed(wiki)
+    conn = open_catalog(wiki)
     try:
         md = render_markdown(conn)
     finally:

@@ -83,6 +83,111 @@ def test_open_catalog_idempotent(tmp_path: Path) -> None:
         conn2.close()
 
 
+def test_open_catalog_seeds_on_first_open(tmp_path: Path) -> None:
+    """First open with no ``.md`` files: catalog is empty."""
+    wiki_dir = tmp_path / "wiki"
+    wiki_dir.mkdir()
+
+    class _StubWiki:
+        pass
+
+    wiki = _StubWiki()
+    wiki.wiki_dir = wiki_dir  # type: ignore[attr-defined]
+
+    conn = open_catalog(wiki)
+    try:
+        assert count_pages(conn) == 0
+    finally:
+        conn.close()
+
+
+def test_open_catalog_seeds_existing_disk_files(tmp_path: Path) -> None:
+    """Add a ``.md`` file, delete catalog.db, re-open: row appears.
+
+    Regression test for the Task 7 review findings I1/I2: first-open
+    backfill belongs in :func:`open_catalog` (triggered by file
+    absence, not empty-row count) so a fresh wiki's catalog mirrors
+    the on-disk ``.md`` set without a manual ``rebuild`` step.
+    """
+    wiki_dir = tmp_path / "wiki"
+    wiki_dir.mkdir()
+    page_dir = wiki_dir / "x" / "concepts"
+    page_dir.mkdir(parents=True)
+    (page_dir / "a.md").write_text("---\ntitle: A\n---\n\n# A\n", encoding="utf-8")
+    (page_dir / "b.md").write_text("---\ntitle: B\n---\n\n# B\n", encoding="utf-8")
+
+    class _StubWiki:
+        pass
+
+    wiki = _StubWiki()
+    wiki.wiki_dir = wiki_dir  # type: ignore[attr-defined]
+
+    # First open: seeds both pages.
+    conn = open_catalog(wiki)
+    try:
+        assert count_pages(conn) == 2
+    finally:
+        conn.close()
+
+    # Delete catalog.db, add another page, re-open: new page lands too.
+    catalog_path = wiki_dir / ".lies" / "catalog.db"
+    catalog_path.unlink()
+    (page_dir / "c.md").write_text("---\ntitle: C\n---\n\n# C\n", encoding="utf-8")
+
+    conn = open_catalog(wiki)
+    try:
+        slugs = {p.slug for p in list_pages(conn)}
+        assert "x/concepts/a" in slugs
+        assert "x/concepts/b" in slugs
+        assert "x/concepts/c" in slugs
+    finally:
+        conn.close()
+
+
+def test_open_catalog_does_not_reseed_existing_catalog(tmp_path: Path) -> None:
+    """Cleared catalog (``pages`` empty, file present) is NOT auto-seeded.
+
+    The first-open trigger is file-existence, not row count. An
+    intentionally cleared catalog stays empty until a manual
+    ``rebuild`` / ``reconcile`` populates it — otherwise the
+    "empty rows" signal would mask catalog debugging state.
+    """
+    wiki_dir = tmp_path / "wiki"
+    wiki_dir.mkdir()
+    page_dir = wiki_dir / "x" / "concepts"
+    page_dir.mkdir(parents=True)
+    (page_dir / "a.md").write_text("---\ntitle: A\n---\n\n# A\n", encoding="utf-8")
+
+    class _StubWiki:
+        pass
+
+    wiki = _StubWiki()
+    wiki.wiki_dir = wiki_dir  # type: ignore[attr-defined]
+
+    # First open seeds the page.
+    conn = open_catalog(wiki)
+    try:
+        assert count_pages(conn) == 1
+    finally:
+        conn.close()
+
+    # Delete all rows but leave the file in place.
+    conn = open_catalog(wiki)
+    try:
+        conn.execute("DELETE FROM pages")
+        conn.commit()
+        assert count_pages(conn) == 0
+    finally:
+        conn.close()
+
+    # Re-open: file existed, so no re-seed.
+    conn = open_catalog(wiki)
+    try:
+        assert count_pages(conn) == 0
+    finally:
+        conn.close()
+
+
 def test_upsert_page_inserts(tmp_path: Path, conn: sqlite3.Connection) -> None:
     page = CatalogPage(
         slug="claude-code/concepts/hooks",
@@ -233,7 +338,6 @@ def test_reconcile_dry_run(tmp_path: Path) -> None:
 
     wiki_dir = tmp_path / "wiki"
     wiki_dir.mkdir()
-    (wiki_dir / "on-disk.md").write_text("# On-disk\n", encoding="utf-8")
 
     class _StubWiki:
         pass
@@ -241,12 +345,18 @@ def test_reconcile_dry_run(tmp_path: Path) -> None:
     wiki = _StubWiki()
     wiki.wiki_dir = wiki_dir  # type: ignore[attr-defined]
 
-    # Pre-seed an orphan row in catalog (file is missing)
+    # Create the catalog first (no .md files yet, so first-open
+    # backfill is a no-op), then pre-seed an orphan row.
     conn = open_catalog(wiki)
     try:
         upsert_page(conn, CatalogPage(slug="dangling", title="D"))
     finally:
         conn.close()
+
+    # Add the on-disk file AFTER the catalog exists, so first-open
+    # backfill has already happened and ``on-disk.md`` is genuinely
+    # missing from the catalog.
+    (wiki_dir / "on-disk.md").write_text("# On-disk\n", encoding="utf-8")
 
     result = reconcile(wiki, dry_run=True)
     assert result.would_add == 1  # on-disk.md has no row
@@ -260,7 +370,6 @@ def test_reconcile_applies_changes(tmp_path: Path) -> None:
 
     wiki_dir = tmp_path / "wiki"
     wiki_dir.mkdir()
-    (wiki_dir / "on-disk.md").write_text("# On-disk\n", encoding="utf-8")
 
     class _StubWiki:
         pass
@@ -268,11 +377,18 @@ def test_reconcile_applies_changes(tmp_path: Path) -> None:
     wiki = _StubWiki()
     wiki.wiki_dir = wiki_dir  # type: ignore[attr-defined]
 
+    # Create catalog before any .md files; first-open backfill is a
+    # no-op, so the dangling row below lands in a "really empty"
+    # catalog.
     conn = open_catalog(wiki)
     try:
         upsert_page(conn, CatalogPage(slug="dangling", title="D"))
     finally:
         conn.close()
+
+    # Add the on-disk file after the catalog exists so reconcile
+    # sees it as a genuine orphan.
+    (wiki_dir / "on-disk.md").write_text("# On-disk\n", encoding="utf-8")
 
     result = reconcile(wiki, dry_run=False)
     assert result.added == 1
@@ -288,11 +404,12 @@ def test_reconcile_applies_changes(tmp_path: Path) -> None:
 
 
 def test_reconcile_idempotent(tmp_path: Path) -> None:
-    from lies.memory.catalog import reconcile
+    """Second reconcile call is a no-op after the first converges state."""
+    from lies.memory.catalog import open_catalog, reconcile, upsert_page
+    from lies.memory.catalog_models import CatalogPage
 
     wiki_dir = tmp_path / "wiki"
     wiki_dir.mkdir()
-    (wiki_dir / "a.md").write_text("# A\n", encoding="utf-8")
 
     class _StubWiki:
         pass
@@ -300,9 +417,20 @@ def test_reconcile_idempotent(tmp_path: Path) -> None:
     wiki = _StubWiki()
     wiki.wiki_dir = wiki_dir  # type: ignore[attr-defined]
 
+    # Create the catalog first so first-open backfill is a no-op,
+    # then seed a dangling row. Add the on-disk file after so the
+    # first reconcile actually has work to do.
+    conn = open_catalog(wiki)
+    try:
+        upsert_page(conn, CatalogPage(slug="dangling", title="D"))
+    finally:
+        conn.close()
+    (wiki_dir / "a.md").write_text("# A\n", encoding="utf-8")
+
     first = reconcile(wiki, dry_run=False)
     second = reconcile(wiki, dry_run=False)
-    assert first.added >= 1
+    assert first.added == 1  # a.md was orphaned
+    assert first.removed == 1  # "dangling" had no file
     assert second.added == 0 and second.removed == 0
 
 

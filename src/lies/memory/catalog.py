@@ -74,10 +74,19 @@ def open_catalog(wiki: object) -> sqlite3.Connection:
     """Open (or create) ``<wiki_dir>/.lies/catalog.db``.
 
     Creates the schema, sets WAL journal mode and a 5-second busy
-    timeout, and stamps the current ``SCHEMA_VERSION``. Idempotent.
-    Caller owns the connection.
+    timeout, and stamps the current ``SCHEMA_VERSION``. On the first
+    open (i.e. when the catalog file did not previously exist), walks
+    ``wiki.wiki_dir`` and seeds the ``pages`` table with one row per
+    ``.md`` file so a fresh wiki's catalog reflects on-disk truth
+    without requiring a manual ``lies catalog rebuild`` step.
+
+    ``existed`` is captured *before* ``mkdir`` so the trigger is
+    "catalog file was absent" rather than "no rows" — the latter would
+    re-seed an intentionally cleared one. Idempotent across calls
+    after the first. Caller owns the connection.
     """
     catalog_path = _catalog_path(wiki)
+    existed = catalog_path.exists()
     catalog_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(catalog_path))
     conn.row_factory = sqlite3.Row
@@ -89,6 +98,10 @@ def open_catalog(wiki: object) -> sqlite3.Connection:
         "INSERT INTO schema_version (version) VALUES (?)",
         (SCHEMA_VERSION,),
     )
+    if not existed:
+        pages = rebuild_from_disk(wiki)
+        if pages:
+            upsert_pages(conn, pages)
     conn.commit()
     return conn
 
