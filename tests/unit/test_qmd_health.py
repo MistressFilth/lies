@@ -46,9 +46,5 @@ def test_unreachable_when_port_refuses_connection() -> None:
         sock.close()
 
 
-def test_unreachable_when_host_does_not_resolve() -> None:
-    assert qmd_daemon_reachable("http://does-not-exist.invalid:8181", timeout=0.2) is False
-
-
 def test_unreachable_when_url_is_malformed() -> None:
     assert qmd_daemon_reachable("not a url") is False

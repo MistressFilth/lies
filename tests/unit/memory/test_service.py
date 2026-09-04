@@ -45,6 +45,21 @@ def _git_init(root: Path) -> None:
     subprocess.run(["git", "commit", "-m", "init"], cwd=root, check=True)
 
 
+@pytest.fixture(autouse=True)
+def _skip_qmd_refresh(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Skip the post-commit qmd_update subprocess in tests that do not assert on it.
+
+    Each ``WikiMemoryService.apply_plan`` invocation fires a real
+    ``qmd update`` subprocess (~100ms startup) which is the dominant cost
+    of these tests. The qmd-failure contract is preserved by leaving the
+    explicit ``qmd_failure`` test untouched (it asserts ``qmd_stale``
+    in ``receipt.errors``).
+    """
+    if "qmd_failure" in request.node.name:
+        return
+    monkeypatch.setattr(WikiMemoryService, "_refresh_qmd", lambda self: (True, ""))
+
+
 @pytest.fixture
 def git_wiki(tmp_path: Path) -> Wiki:
     root = tmp_path / "wiki"

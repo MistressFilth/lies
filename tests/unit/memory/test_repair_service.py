@@ -26,6 +26,19 @@ from lies.memory.service import WikiMemoryService
 from tests.conftest import make_wiki
 
 
+@pytest.fixture(autouse=True)
+def _skip_qmd_refresh(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Skip the post-commit qmd_update subprocess in repair-service tests.
+
+    ``apply_repair_plan`` routes through ``apply_plan`` which fires a real
+    ``qmd update`` subprocess (~100ms). The repair-service tests assert
+    on wiki state, not on qmd, so the refresh is no-op'd module-wide.
+    """
+    from lies.memory.service import WikiMemoryService
+
+    monkeypatch.setattr(WikiMemoryService, "_refresh_qmd", lambda self: (True, ""))
+
+
 @pytest.fixture
 def git_wiki(tmp_path: Path):
     root = tmp_path / "wiki"
