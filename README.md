@@ -309,8 +309,8 @@ See "Using LIES from Claude Code" above for the registration command.
   surfaces disagreements and notes what the wiki does NOT know.
 
 `wiki/index.md` (the catalog) is now maintained deterministically by the
-sqlite-backed catalog port (`<wiki>/.lies/catalog.db`), not by a sub-agent.
-See "Catalog" below.
+sqlite-backed catalog port (`.lies/catalog.db` in the wiki dir), not by a
+sub-agent. See [Storage layout](#storage-layout).
 
 The orchestrator owns cross-cutting `pydantic-ai-harness` capabilities:
 
@@ -325,14 +325,23 @@ The orchestrator owns cross-cutting `pydantic-ai-harness` capabilities:
 `qmd` provides hybrid search (BM25 + vector + rerank) via MCP (primary) and CLI
 shell-out (for `qmd update` after ingest and `qmd status` for diagnostics).
 
+### Storage layout
+
 The wiki is a git repository on disk, rooted under
 `$XDG_DATA_HOME/lies/<name>/` by default:
 
 ```
-$XDG_DATA_HOME/lies/<name>/     # wiki content root
+$XDG_DATA_HOME/lies/<name>/     # wiki content root (the git repo)
+├── .gitignore                  # seeded by `lies init`; ignores `.lies/`
+├── .lies/                      # gitignored; wiki-root derived state
+│   └── memory_plans.jsonl      # invisible-write receipt sidecar
 ├── raw/                        # immutable sources (the human curates these)
 └── wiki/                       # LLM-owned markdown
-    ├── index.md                # catalog of pages (wiki-wide)
+    ├── .lies/                  # gitignored; wiki-dir derived state
+    │   ├── catalog.db          # sqlite wiki catalog (source-of-truth)
+    │   ├── catalog.db-wal      # write-ahead log
+    │   └── catalog.db-shm      # shared memory file
+    ├── index.md                # read-only title-only catalog derivative
     ├── log.md                  # append-only log (wiki-wide)
     ├── overview.md
     └── <collection>/           # per-collection subdir; qmd is registered here
@@ -348,6 +357,21 @@ $XDG_STATE_HOME/lies/<name>/    # logs/scratch/poison
 
 $XDG_CACHE_HOME/lies/<name>/    # hashes/manifests
 ```
+
+The catalog is a small sqlite database at `.lies/catalog.db` **inside the
+wiki dir** (WAL journal mode, `busy_timeout=5000`), accompanied by its
+`-wal` and `-shm` siblings. Note that this is a different `.lies/` from
+the wiki-root one holding `memory_plans.jsonl`. All three catalog files
+are gitignored — `lies init` seeds a `.gitignore` whose `.lies/` rule
+covers every `.lies/` directory in the repo. `wiki/index.md` is a
+read-only markdown derivative of that database, rendered on demand by
+`lies catalog render`.
+
+The catalog is kept in lockstep with the wiki by per-operation upserts
+inside `WikiMemoryService.apply_plan` and a bulk upsert in the etl WRITE
+stage, so it never needs a rebuild during normal operation. Reconcile
+after any out-of-band file edits: `lies catalog reconcile --dry-run` to
+preview, then drop the flag to apply.
 
 CLI commands (`src/lies/cli/`):
 
@@ -371,8 +395,18 @@ CLI commands (`src/lies/cli/`):
 - `lies lint [--fix]` — health-check the wiki (`--fix` applies the repair plan for safe_to_fix findings). Findings span six categories; LLM-backed categories are skipped with a `Sources` line when no model key is configured.
 - `lies mcp` / `lies mcp start` — run the MCP server on stdio.
 - `lies mcp up` / `down` / `status` — manage the detached http MCP daemon.
-- `lies status` — show qmd status, recent invisible writes, and the last
-  few log entries (`--memory-limit N` to skip or limit the writes section).
+- `lies status` — show qmd status, catalog size, recent invisible writes,
+  and the last few log entries (`--memory-limit N` to skip or limit the
+  writes section).
+- `lies catalog {status, dump, reconcile, rebuild, render}` — manage the
+  sqlite wiki catalog (`.lies/catalog.db` inside the wiki dir). `status`
+  prints the row count and schema version; `dump` lists rows (`--json`,
+  `--source-pkg`, `--type` filters); `reconcile` syncs the catalog with
+  files on disk (`--dry-run` to preview); `rebuild` forces a full
+  backfill from disk; `render` writes the title-only `wiki/index.md`
+  markdown derivative (`--out FILE`, default stdout). Mirrors ask's
+  `scripts/catalog.py` and `scripts/reconcile-index.py`. See
+  [Storage layout](#storage-layout).
 - `lies memory [--limit|--pages|--ops|--since|--json]` — show recent
   MemoryPlan applications from the JSONL sidecar.
 - `lies memory reconcile` — rebuild the sidecar from `git log --grep='^memory:'`.

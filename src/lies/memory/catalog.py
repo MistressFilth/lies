@@ -391,12 +391,12 @@ def render_markdown(conn: sqlite3.Connection) -> str:
 # Wiki index.md rebuild (moved from ``lies.memory.index``)
 # ---------------------------------------------------------------------------
 #
-# The :class:`WikiMemoryService` apply envelope no longer calls
-# :func:`rebuild_index` — per-op catalog upserts keep ``catalog.db`` in
-# lockstep with the wiki. The etl WRITE stage (``lies.etl.stages.write``)
-# still relies on this deterministic disk-walker as a non-fatal
-# post-commit hook, so it lives here next to the rest of the catalog
-# surface rather than disappearing entirely.
+# Neither the :class:`WikiMemoryService` apply envelope nor the etl WRITE
+# stage calls :func:`rebuild_index` any more — per-op upserts and the
+# WRITE stage's bulk upsert keep ``catalog.db`` in lockstep with the
+# wiki, and :func:`render_markdown` produces the ``wiki/index.md``
+# derivative. The disk-walker is kept here as the last remaining
+# markdown-first index builder; it has no production call site.
 
 _PAGE_FILENAME_RE = re.compile(r"^(?P<name>.+)\.md$")
 
@@ -456,9 +456,10 @@ def rebuild_index(wiki: object) -> str:
 
     Walks every ``*.md`` under ``wiki.wiki_dir``, groups by page-type
     subdirectory, and emits a stable ``## <page_type>``-sectioned
-    markdown body. Used as a non-fatal post-commit hook by the etl
-    WRITE stage; the service path keeps ``catalog.db`` in lockstep
-    via per-op upserts and does not call this.
+    markdown body. Has no production call site since the catalog port:
+    the service path and the etl WRITE stage both keep ``catalog.db``
+    in lockstep via upserts, and ``lies catalog render`` emits the
+    ``wiki/index.md`` derivative through :func:`render_markdown`.
     """
     grouped = _discover_pages(wiki)
     today = datetime.now(UTC).date().isoformat()
