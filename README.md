@@ -438,8 +438,9 @@ Per-collection subdirs are how LIES scopes qmd collections. Each
 collection's qmd registration points at its own
 `wiki/<collection>/` subdir, so `qmd query` and the MCP
 `wiki_search` tool return only that collection's pages when the
-caller scopes by collection. The same `wiki/index.md` is
-rebuilt by `rebuild_index` after every successful sync.
+caller scopes by collection. `wiki/index.md` is **not**
+regenerated during sync — it is a read-only title-only derivative
+of `.lies/catalog.db`, emitted on demand by `lies catalog render`.
 
 Commands:
 

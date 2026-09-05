@@ -5,26 +5,21 @@ single-page or batch upsert, replace-on-conflict, and a CHECK constraint
 on ``section``. Schema versioned in a ``schema_version`` table; this
 PR ships v1 (initial schema). Future migrations are additive only.
 
-Also owns :func:`rebuild_index`, the deterministic disk-walker that
-regenerates ``wiki/index.md`` from on-disk pages. The
-:func:`WikiMemoryService` apply envelope no longer calls it — per-op
-catalog upserts (``upsert_page`` / ``remove_page``) keep ``catalog.db``
-in lockstep with the wiki instead — but the etl WRITE stage still
-relies on the disk-walking rebuild as a post-commit hook.
+Per-op catalog upserts (``upsert_page`` / ``remove_page``) and the
+etl WRITE stage's bulk upsert keep ``catalog.db`` in lockstep with
+the wiki; :func:`render_markdown` emits the on-demand
+``wiki/index.md`` title-only derivative consumed by ``lies catalog
+render``.
 """
 
 from __future__ import annotations
 
-import re
 import sqlite3
-from collections import defaultdict
 from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from pathlib import Path
 
 from lies.memory.catalog_models import CatalogPage, PageSection, _slug_for
-from lies.memory.validation import ALLOWED_PAGE_TYPES, parse_frontmatter
 
 
 SCHEMA_VERSION = 1
@@ -374,10 +369,10 @@ def render_markdown(conn: sqlite3.Connection) -> str:
 
     Closes P2 ``wiki/index.md collapses to title-only``: the current
     title-only behavior becomes canonical. Links use the wiki-dir-
-    relative ``{slug}.md`` form (matching ``rebuild_index`` below and
-    ``_read_pages_from_index`` at ``src/lies/query/synthesizer.py:216``);
-    the slug already encodes the collection / source_pkg prefix, so
-    re-prepending it produces a doubled-segment target.
+    relative ``{slug}.md`` form (matching ``_read_pages_from_index``
+    at ``src/lies/query/synthesizer.py:216``); the slug already
+    encodes the collection / source_pkg prefix, so re-prepending it
+    produces a doubled-segment target.
     """
     pages = list_pages(conn, section=PageSection.wiki)
     pages.sort(key=lambda p: (p.source_pkg, p.slug))
@@ -385,100 +380,3 @@ def render_markdown(conn: sqlite3.Connection) -> str:
     for p in pages:
         lines.append(f"- [{p.title}]({p.slug}.md)")
     return "\n".join(lines) + "\n"
-
-
-# ---------------------------------------------------------------------------
-# Wiki index.md rebuild (moved from ``lies.memory.index``)
-# ---------------------------------------------------------------------------
-#
-# Neither the :class:`WikiMemoryService` apply envelope nor the etl WRITE
-# stage calls :func:`rebuild_index` any more — per-op upserts and the
-# WRITE stage's bulk upsert keep ``catalog.db`` in lockstep with the
-# wiki, and :func:`render_markdown` produces the ``wiki/index.md``
-# derivative. The disk-walker is kept here as the last remaining
-# markdown-first index builder; it has no production call site.
-
-_PAGE_FILENAME_RE = re.compile(r"^(?P<name>.+)\.md$")
-
-
-def _page_type_dir(path: Path) -> str:
-    """Return the page-type subdirectory name (concepts, entities, ...)."""
-    return path.parent.name
-
-
-def _page_title_from_frontmatter(content: str, fallback: str) -> str:
-    metadata = parse_frontmatter(content)
-    title = metadata.get("title")
-    if isinstance(title, str) and title.strip():
-        return title
-    return fallback
-
-
-def _discover_pages(wiki: object) -> dict[str, list[tuple[str, str, str]]]:
-    """Return a mapping of page_type -> [(title, path_posix, name)]."""
-    grouped: dict[str, list[tuple[str, str, str]]] = defaultdict(list)
-    wiki_dir: Path = wiki.wiki_dir  # type: ignore[attr-defined]  # ty: ignore[unresolved-attribute]
-    if not wiki_dir.exists():
-        return grouped
-    for path in sorted(wiki_dir.rglob("*.md")):
-        rel = path.relative_to(wiki_dir).as_posix()
-        if rel in {
-            "index.md",
-            "log.md",
-            "overview.md",
-            "lint-report.md",
-        }:
-            continue
-        match = _PAGE_FILENAME_RE.search(path.name)
-        if match is None:
-            continue
-        name = match.group("name")
-        page_type = _page_type_dir(path)
-        normalized_type = (
-            page_type[:-3] + "y" if page_type.endswith("ies") else page_type.removesuffix("s")
-        )
-        if page_type not in ALLOWED_PAGE_TYPES and normalized_type not in ALLOWED_PAGE_TYPES:
-            continue
-
-        try:
-            content = path.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
-            continue
-        title = _page_title_from_frontmatter(content, fallback=name)
-        grouped[page_type].append((title, rel, name))
-    for entries in grouped.values():
-        entries.sort(key=lambda e: e[0].lower())
-    return grouped
-
-
-def rebuild_index(wiki: object) -> str:
-    """Rebuild ``wiki/index.md`` and return its body.
-
-    Walks every ``*.md`` under ``wiki.wiki_dir``, groups by page-type
-    subdirectory, and emits a stable ``## <page_type>``-sectioned
-    markdown body. Has no production call site since the catalog port:
-    the service path and the etl WRITE stage both keep ``catalog.db``
-    in lockstep via upserts, and ``lies catalog render`` emits the
-    ``wiki/index.md`` derivative through :func:`render_markdown`.
-    """
-    grouped = _discover_pages(wiki)
-    today = datetime.now(UTC).date().isoformat()
-    lines = [
-        "# Index",
-        "",
-        f"_Rebuilt {today}._",
-        "",
-    ]
-    for page_type in sorted(grouped):
-        if not grouped[page_type]:
-            continue
-        lines.append(f"## {page_type}")
-        lines.append("")
-        for title, rel, name in grouped[page_type]:
-            lines.append(f"- [{title}]({rel}) — `{name}`")
-        lines.append("")
-    body = "\n".join(lines)
-    wiki_dir: Path = wiki.wiki_dir  # type: ignore[attr-defined]  # ty: ignore[unresolved-attribute]
-    wiki_dir.mkdir(parents=True, exist_ok=True)
-    (wiki_dir / "index.md").write_text(body, encoding="utf-8")
-    return body

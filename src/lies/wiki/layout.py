@@ -39,11 +39,12 @@ def copy_default_schema(target: Path) -> None:
 def _gitignore_lines() -> tuple[str, ...]:
     """Lines seeded into a fresh wiki's ``.gitignore``.
 
-    ``.lies/`` already covers every runtime artifact under the sidecar
-    directory; the explicit ``catalog.db`` entries below document the
-    sqlite catalog and its WAL siblings so an operator merging these
-    lines into a curated ``.gitignore`` keeps them ignored even if the
-    directory-wide rule is narrowed.
+    ``.lies/`` covers every runtime artifact under the sidecar
+    directory. The explicit ``catalog.db*`` entries below are
+    documentation of the sqlite catalog and its WAL siblings; the
+    seeded ``.gitignore`` lives at the repo root, so the root-anchored
+    patterns only ever apply if the operator widens or relocates the
+    directory-wide rule (see P3 in the project TODO).
     """
     return (
         ".lies/",
