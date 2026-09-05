@@ -56,8 +56,9 @@ src/lies/
 │   └── daemon.py    # pidfile lifecycle for `lies mcp up/down/status`
 ├── memory/          # invisible-memory layer (see below)
 │   ├── catalog.py   # sqlite wiki catalog: schema + CRUD + rebuild_from_disk
-│   │                # + reconcile + render_markdown. Mirrors ask's
-│   │                # scripts/catalog.py. Lives at <wiki_dir>/.lies/catalog.db
+│   │                # + reconcile + render_markdown. Mirrors the design
+│   │                # described in superpowers/specs/2026-09-04-f4b-f16-catalog-port-design.md
+│   │                # Lives at <wiki_dir>/.lies/catalog.db
 │   └── catalog_models.py  # CatalogPage (frozen BaseModel) + PageSection enum
 ├── orchestrator.py  # top-level Orchestrator; owns cross-cutting capabilities
 ├── qmd/             # qmd CLI + MCP adapters

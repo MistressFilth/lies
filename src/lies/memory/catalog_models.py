@@ -1,4 +1,4 @@
-"""Catalog page + section model. SQLite row shape mirrors ask's `CatalogPage`."""
+"""Catalog page + section model."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from pydantic import BaseModel, ConfigDict
 
 
 class PageSection(str, Enum):
-    """Catalog section discriminator. Mirrors ask's CHECK constraint."""
+    """Catalog section discriminator."""
 
     wiki = "wiki"
     ingested = "ingested"

@@ -404,8 +404,9 @@ CLI commands (`src/lies/cli/`):
   `--source-pkg`, `--type` filters); `reconcile` syncs the catalog with
   files on disk (`--dry-run` to preview); `rebuild` forces a full
   backfill from disk; `render` writes the title-only `wiki/index.md`
-  markdown derivative (`--out FILE`, default stdout). Mirrors ask's
-  `scripts/catalog.py` and `scripts/reconcile-index.py`. See
+  markdown derivative (`--out FILE`, default stdout). Mirrors the design
+  described in superpowers/specs/2026-09-04-f4b-f16-catalog-port-design.md.
+  See
   [Storage layout](#storage-layout).
 - `lies memory [--limit|--pages|--ops|--since|--json]` — show recent
   MemoryPlan applications from the JSONL sidecar.

@@ -1,9 +1,7 @@
-"""SQLite-backed wiki page catalog.
-
-Mirrors ``ask/repo/ask/scripts/catalog.py``: WAL mode + busy_timeout,
-single-page or batch upsert, replace-on-conflict, and a CHECK constraint
-on ``section``. Schema versioned in a ``schema_version`` table; this
-PR ships v1 (initial schema). Future migrations are additive only.
+"""SQLite-backed wiki catalog. WAL mode + busy_timeout, single-page or batch
+upsert, replace-on-conflict, and a CHECK constraint on ``section``.
+Schema versioned in a ``schema_version`` table; this PR ships v1 (initial
+schema). Future migrations are additive only.
 
 Per-op catalog upserts (``upsert_page`` / ``remove_page``) and the
 etl WRITE stage's bulk upsert keep ``catalog.db`` in lockstep with
