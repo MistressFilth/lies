@@ -199,7 +199,7 @@ def _read_pages_from_index(wiki: Wiki, top_n: int) -> list[PageRead]:
     """Read the top-N pages referenced by ``wiki/index.md``.
 
     Only the first ``top_n`` *existing* pages are returned, in index
-    order (which the indexer keeps alphabetical within each section).
+    order (which the catalog port keeps alphabetical within each section).
     """
     if not (wiki.wiki_dir / "index.md").exists():
         return []

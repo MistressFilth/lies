@@ -41,16 +41,25 @@ questions; the agent does all bookkeeping.
 
 ```
 src/lies/
-├── agents/          # sub-agent prompt YAMLs (source-reader, page-writer, ...)
+├── agents/          # sub-agent prompt YAMLs (source-reader, page-writer,
+│                    # linter, query-synthesizer). No indexer — the catalog
+│                    # is deterministic (see below).
 ├── capabilities/    # harness capability adapters (CodeMode, Memory, Planning, ...)
 │   └── memory.py    # Harness Memory capability; per-wiki namespace via WikiIdentity
-├── cli.py           # Typer CLI entrypoint (init / ingest / query / lint / mcp / REPL)
+├── cli/             # Typer CLI package (init / ingest / query / lint / mcp / REPL)
+│   └── catalog.py   # `lies catalog` group: status/dump/reconcile/rebuild/render
 ├── config.py        # env-driven config (model, wiki root, log level)
 ├── mcp/             # FastMCP server (src/lies/mcp/server.py) — thin adapter
 │                    # around WikiMemoryService; tools: init_wiki, ingest_source,
-│                    # query, lint, wiki_search, wiki_read
+│                    # query, lint, wiki_search, wiki_read; resources include
+│                    # wiki://catalog and wiki://catalog/{slug}
 │   └── daemon.py    # pidfile lifecycle for `lies mcp up/down/status`
 ├── memory/          # invisible-memory layer (see below)
+│   ├── catalog.py   # sqlite wiki catalog: schema + CRUD + rebuild_from_disk
+│   │                # + reconcile + render_markdown. Mirrors the design
+│   │                # described in superpowers/specs/2026-09-04-f4b-f16-catalog-port-design.md
+│   │                # Lives at <wiki_dir>/.lies/catalog.db
+│   └── catalog_models.py  # CatalogPage (frozen BaseModel) + PageSection enum
 ├── orchestrator.py  # top-level Orchestrator; owns cross-cutting capabilities
 ├── qmd/             # qmd CLI + MCP adapters
 │   └── daemon.py    # ensure/inspect qmd's own daemon (never stops it)
@@ -81,6 +90,15 @@ tests/
   mutation for memory: it validates plans, applies operations, snapshots
   the working tree, commits atomically, restores on failure, and refreshes
   the qmd derived index.
+- `catalog.py` is the sqlite wiki catalog at `<wiki_dir>/.lies/catalog.db`
+  (WAL, `busy_timeout=5000`) — the catalog source-of-truth, replacing
+  `wiki/index.md`. `apply_plan` upserts one row per operation inside the
+  flock + atomic-commit envelope; the etl WRITE stage bulk-upserts every
+  written path. Both paths are deterministic: **no model call belongs
+  inside the lock**, which is what F4b's design turned on. `wiki/index.md`
+  is a read-only title-only derivative rendered by `lies catalog render`.
+  Drift from out-of-band edits is fixed explicitly with
+  `lies catalog reconcile`, never implicitly.
 - `capabilities/memory.py` exposes this through the harness `Memory`
   capability with a per-wiki namespace derived from `WikiIdentity` (so
   two wikis against the same install do not share state).

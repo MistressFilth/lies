@@ -33,7 +33,7 @@ def parse_index_links(content: str) -> list[IndexLink]:
     """Parse markdown links out of an index.md-style content block.
 
     Links are returned in the order they appear in the content (which
-    matches the indexer's grouping convention: type → alphabetical).
+    matches the catalog port's grouping convention: type → alphabetical).
     Duplicate (title, path) pairs are collapsed.
 
     URLs and fragment-only links are skipped. Only relative paths ending

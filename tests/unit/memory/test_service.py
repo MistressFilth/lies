@@ -232,12 +232,18 @@ def _last_git_commit_message(repo: Path) -> str:
 def test_apply_plan_commit_includes_new_page_index_and_log(
     git_wiki: Wiki,
 ) -> None:
-    """Atomic commit must include the new page, index.md, and log.md.
+    """Atomic commit must include the new page and log.md.
 
     Regression: ``atomic_commit`` defaults to ``git add -u`` which only
     stages modifications to already-tracked files. Untracked files
     (newly created pages, a freshly written ``wiki/log.md``) would be
     silently skipped. The service must enumerate the files explicitly.
+
+    Note: as of the F4b+F16 catalog port, the service no longer calls
+    ``rebuild_index``; per-op catalog upserts keep ``catalog.db`` in
+    lockstep with the wiki instead, so ``wiki/index.md`` is not
+    rewritten by the apply envelope and won't appear in the commit
+    when it hasn't been otherwise modified.
     """
     service = WikiMemoryService(wiki=git_wiki)
     service.register_evidence({"page-1"})
@@ -255,7 +261,6 @@ def test_apply_plan_commit_includes_new_page_index_and_log(
     service.apply_plan(plan)
     changed = set(_commit_changed_files(git_wiki.data_root))
     assert "wiki/concepts/example.md" in changed
-    assert "wiki/index.md" in changed
     assert "wiki/log.md" in changed
 
 
@@ -1335,3 +1340,143 @@ def test_apply_plan_system_file_guard_catches_doubled_prefix_index(git_wiki: Wik
     assert index.read_text(encoding="utf-8") == original, "index.md must be intact"
     shadow = git_wiki.wiki_dir / "wiki" / "index.md"
     assert not shadow.exists(), f"shadow index at {shadow} must not exist after guard rejection"
+
+
+# ---------------------------------------------------------------------------
+# F4b+F16 catalog port — per-op catalog upsert/delete wires into the apply
+# envelope in place of the old ``rebuild_index(self._wiki)`` post-loop call.
+# ---------------------------------------------------------------------------
+
+
+def test_apply_plan_writes_catalog_row_for_page_create(git_wiki: Wiki) -> None:
+    """apply_plan(PageCreate) writes a catalog row matching the file's frontmatter."""
+    from lies.memory.catalog import list_pages, open_catalog
+    from lies.memory.service import WikiMemoryService
+
+    service = WikiMemoryService(wiki=git_wiki)
+    service.register_evidence({"page-1"})
+    plan = MemoryPlan(
+        operations=[
+            PageCreate(
+                path="claude-code/concepts/hooks",
+                content=("---\ntitle: Hooks\ntype: concept\n---\n\n# Hooks\n\nBody.\n"),
+                evidence=["page-1"],
+            ),
+        ],
+        rationale="create hooks page",
+        evidence=["page-1"],
+    )
+
+    service.apply_plan(plan)
+
+    conn = open_catalog(git_wiki)
+    try:
+        pages = list_pages(conn)
+        slugs = {p.slug for p in pages}
+    finally:
+        conn.close()
+    assert "claude-code/concepts/hooks" in slugs
+    row = next(p for p in pages if p.slug == "claude-code/concepts/hooks")
+    assert row.title == "Hooks"
+    assert row.type == "concept"
+    assert row.source_pkg == "claude-code"
+
+
+def test_apply_plan_removes_catalog_row_for_page_delete(git_wiki: Wiki) -> None:
+    """apply_plan(PageDelete) removes the corresponding catalog row."""
+    from lies.memory.catalog import open_catalog, upsert_page
+    from lies.memory.catalog_models import CatalogPage
+    from lies.memory.service import WikiMemoryService
+
+    # Seed a row + file on disk so the per-op delete has a target.
+    page_path = git_wiki.wiki_dir / "claude-code" / "concepts" / "x.md"
+    page_path.parent.mkdir(parents=True, exist_ok=True)
+    page_path.write_text("# X\n", encoding="utf-8")
+    conn = open_catalog(git_wiki)
+    try:
+        upsert_page(conn, CatalogPage(slug="claude-code/concepts/x", title="X"))
+    finally:
+        conn.close()
+
+    service = WikiMemoryService(wiki=git_wiki)
+    service.register_evidence({"raw/x.md"})
+    plan = MemoryPlan(
+        operations=[
+            PageDelete(path="claude-code/concepts/x.md", evidence=["raw/x.md"]),
+        ],
+        rationale="delete x",
+        evidence=["raw/x.md"],
+    )
+    service.apply_plan(plan)
+
+    from lies.memory.catalog import list_pages
+
+    conn = open_catalog(git_wiki)
+    try:
+        slugs = {p.slug for p in list_pages(conn)}
+    finally:
+        conn.close()
+    assert "claude-code/concepts/x" not in slugs
+
+
+def test_apply_plan_does_not_call_rebuild_index() -> None:
+    """The service no longer imports or calls ``rebuild_index``.
+
+    Per the F4b+F16 catalog port, ``WikiMemoryService._apply_operations``
+    uses per-op catalog upserts to keep ``catalog.db`` in lockstep with
+    the wiki. The old ``rebuild_index(self._wiki)`` post-loop call is
+    removed; ``rebuild_index`` is no longer imported into the service
+    module at all.
+    """
+    import lies.memory.service as service_mod
+
+    # After the edit, rebuild_index must not be a name in the service
+    # module's namespace — the catalog (per-op upsert/remove) replaces it.
+    assert not hasattr(service_mod, "rebuild_index"), (
+        "WikiMemoryService should not export rebuild_index — catalog replaces it"
+    )
+
+
+def test_apply_plan_skips_catalog_upsert_for_index_md(git_wiki: Wiki) -> None:
+    """apply_plan(PageUpdate("wiki/index.md", ...)) must NOT add a catalog row.
+
+    Regression: the repair agent's ``UpdateIndex`` op routes through
+    ``PageUpdate("wiki/index.md", ...)`` via the carve-out in
+    ``_apply_operations``. Without a guard, the per-op catalog upsert
+    would write a row for slug ``"index"`` that ``reconcile`` could
+    never clean — the disk walk excludes ``index.md`` via
+    ``catalog._SYSTEM_FILES``, so the row is never an orphan.
+
+    ``index.md`` is a render derivative (owned by ``lies catalog
+    render``), not a source page. The catalog is built from non-system
+    files; writing a row for it is a phantom.
+    """
+    from lies.memory.catalog import list_pages, open_catalog
+    from lies.memory.service import WikiMemoryService
+
+    # The fixture already wrote ``wiki/index.md`` and committed it; read
+    # back the same content so the PageUpdate hash check matches.
+    existing_index = (git_wiki.wiki_dir / "index.md").read_text(encoding="utf-8")
+
+    service = WikiMemoryService(wiki=git_wiki)
+    service.register_evidence({"repair-1"})
+    plan = MemoryPlan(
+        operations=[
+            PageUpdate(
+                path="wiki/index.md",
+                expected_sha256=_sha(existing_index),
+                content=existing_index + "\n- [X](concepts/x.md)\n",
+                evidence=["repair-1"],
+            ),
+        ],
+        rationale="repair: add orphan to index",
+        evidence=["repair-1"],
+    )
+    service.apply_plan(plan)
+
+    conn = open_catalog(git_wiki)
+    try:
+        slugs = {p.slug for p in list_pages(conn)}
+    finally:
+        conn.close()
+    assert "index" not in slugs, "PageUpdate on wiki/index.md must not create a phantom catalog row"

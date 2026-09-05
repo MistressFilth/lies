@@ -41,6 +41,7 @@ async def test_resources_registered(client: Client) -> None:
         "wiki://log",
         "wiki://lint-report",
         "wiki://memory-changes",
+        "wiki://catalog",
     }
 
 
@@ -52,6 +53,7 @@ async def test_resource_templates_registered(client: Client) -> None:
     # protocol-layer objects.
     patterns = {t.uriTemplate for t in templates}
     assert "wiki://page/{path}" in patterns
+    assert "wiki://catalog/{slug}" in patterns
 
 
 async def test_prompts_registered(client: Client) -> None:

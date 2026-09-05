@@ -50,6 +50,7 @@ app = typer.Typer(
 
 # Step 2: import the sub-app objects (cheap -- just typer.Typer instances)
 # and wire them under the root app.
+from lies.cli.catalog import catalog_app  # noqa: E402
 from lies.cli.collections import collections_app  # noqa: E402
 from lies.cli.memory import memory_app  # noqa: E402
 from lies.cli.operator import flock_app, mcp_app, providers_app  # noqa: E402
@@ -58,6 +59,7 @@ app.add_typer(mcp_app, name="mcp", rich_help_panel="Operator tooling")
 app.add_typer(flock_app, name="flock", rich_help_panel="Operator tooling")
 app.add_typer(providers_app, name="providers", rich_help_panel="Operator tooling")
 app.add_typer(memory_app, name="memory", rich_help_panel="Querying and maintenance")
+app.add_typer(catalog_app, name="catalog", rich_help_panel="Querying and maintenance")
 app.add_typer(collections_app, name="collections", rich_help_panel="Wiki management")
 
 

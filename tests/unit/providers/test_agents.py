@@ -8,7 +8,6 @@ def test_roster_contains_all_known_agents() -> None:
         "orchestrator",
         "source_reader",
         "page_writer",
-        "indexer",
         "linter",
         "query_synthesizer",
         "enricher",

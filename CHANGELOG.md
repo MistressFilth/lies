@@ -8,6 +8,36 @@ All notable changes to LIES are documented here. The format follows
 
 ### Added
 
+- F4b + F16 — wiki catalog port. A sqlite database at
+  `<wiki>/wiki/.lies/catalog.db` (WAL journal mode +
+  `busy_timeout=5000`) replaces `wiki/index.md` as the catalog
+  source-of-truth. Note the location: this `.lies/` sits inside the
+  wiki dir, beside the markdown — distinct from the wiki-root
+  `<wiki>/.lies/` that holds `memory_plans.jsonl`. The surfaces:
+  - `lies.memory.catalog` — schema, CRUD (`upsert_page(s)`,
+    `remove_page(s)`, `get_page`, `list_pages`, `count_pages`),
+    `rebuild_from_disk`, `reconcile`, and `render_markdown`.
+    `lies.memory.catalog_models` adds the frozen `CatalogPage` model
+    and the `PageSection` enum.
+  - `WikiMemoryService.apply_plan` upserts per operation, inside the
+    existing flock + atomic-commit envelope — deterministic, no model
+    call in the lock. The etl WRITE stage bulk-upserts every written
+    path in one transaction (non-fatal; a failed upsert degrades to a
+    stderr warning because the catalog is reconcile-cleanable).
+  - `lies catalog` CLI group: `status`, `dump`, `reconcile`,
+    `rebuild`, `render`. Drift is explicit rather than implicit —
+    run `lies catalog reconcile --dry-run` after any out-of-band file
+    edit, then drop the flag to apply.
+  - `wiki://catalog` and `wiki://catalog/{slug}` MCP resources.
+  - `lies status` gains a `catalog: N pages, schema vN` line.
+  - Fresh wikis seed `.gitignore` with explicit `.lies/catalog.db`,
+    `.lies/catalog.db-wal`, and `.lies/catalog.db-shm` entries
+    alongside `.lies/` and `.lies/memory_plans.jsonl`, so the sqlite
+    catalog and its WAL siblings stay untracked.
+  `wiki/index.md` becomes a read-only markdown derivative rendered on
+  demand by `lies catalog render`, listing one title-only
+  `- [Title](slug.md)` line per page. Queryable metadata now lives in
+  the database rather than in that markdown.
 - JSONL receipt sidecar at `<wiki>/.lies/memory_plans.jsonl`. Each
   applied `MemoryPlan` appends one line (timestamp, commit SHA,
   rationale, pages, ops histogram, evidence count). Idempotent on
@@ -107,6 +137,15 @@ All notable changes to LIES are documented here. The format follows
   `sync` short-help text (replaced with accurate description).
 - `lies ingest-source <source>` (no `--collection`) is no longer accepted;
   calls fail at the Typer layer with a missing-argument error.
+- `indexer` sub-agent (`lies.agents.indexer`, `indexer_agent`,
+  `IndexerResult`, `format_log_entry`) — the removal half of the
+  F4b + F16 catalog port above. The orchestrator's sub-agent table
+  shrinks from five to four (source-reader, page-writer, linter,
+  query-synthesizer). `wiki/index.md` maintenance is now owned by
+  the sqlite-backed catalog (`<wiki>/.lies/catalog.db`);
+  `wiki/log.md` is appended directly by the orchestrator. Operators
+  with `"indexer"` in `providers.toml` must remove the line —
+  `AGENT_ROSTER` no longer contains it.
 
 ### Fixed
 - Unit suite runtime drops from ~50s to ~14s. The 3 slowest `run_write`

@@ -60,7 +60,9 @@ Rules:
 - Add cross-references (`[Name](concepts/name.md)`) liberally.
 - When updating, preserve valid existing content; integrate new information.
 - Cite sources at the bottom of each page.
-- Do not touch `wiki/index.md` or `wiki/log.md` — that's the indexer's job.
+- Do not touch `wiki/index.md` or `wiki/log.md` — the catalog port owns
+  `index.md` (deterministic sqlite-backed mirror) and the orchestrator
+  appends `log.md` directly.
 - Do not emit DELETE operations — the single-source ingest path is
   write-new. Deletes are reserved for explicit maintenance flows.
 """
