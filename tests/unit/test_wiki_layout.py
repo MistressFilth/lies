@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from lies.wiki.layout import WikiLayout, git_init_initial
+from lies.wiki.layout import WikiLayout, _gitignore_lines, git_init_initial
 
 
 @pytest.fixture
@@ -49,6 +49,20 @@ def test_git_init_initial_writes_gitignore_excluding_lies(tmp_path: Path) -> Non
     gitignore = tmp_path / ".gitignore"
     assert gitignore.is_file()
     assert ".lies/\n" in gitignore.read_text(encoding="utf-8")
+
+
+def test_gitignore_lines_cover_catalog_db(tmp_path: Path) -> None:
+    """The seeded gitignore covers ``catalog.db`` and its WAL siblings."""
+    lines = _gitignore_lines()
+    assert ".lies/catalog.db" in lines
+    assert ".lies/catalog.db-wal" in lines
+    assert ".lies/catalog.db-shm" in lines
+
+    WikiLayout(tmp_path).init()
+    git_init_initial(tmp_path)
+    written = (tmp_path / ".gitignore").read_text(encoding="utf-8")
+    for line in lines:
+        assert f"{line}\n" in written
 
 
 def test_git_init_initial_does_not_clobber_existing_gitignore(tmp_path: Path) -> None:

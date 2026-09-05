@@ -35,7 +35,6 @@ def _partial() -> PartialConfig:
             "orchestrator": "anthropic:claude-opus-4-7",
             "source_reader": "anthropic:claude-opus-4-7",
             "page_writer": "anthropic:claude-opus-4-7",
-            "indexer": "anthropic:claude-opus-4-7",
             "linter": "anthropic:claude-opus-4-7",
             "query_synthesizer": "anthropic:claude-opus-4-7",
             "enricher": "anthropic:claude-opus-4-7",

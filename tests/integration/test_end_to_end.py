@@ -13,7 +13,7 @@ This test exercises the full LIES flow on a real fixture wiki:
 
 The agent's LLM is mocked so the round-trip is deterministic. The
 underlying ``_agent.run_sync`` is patched to drop a wiki page (mimicking
-the page-writer + indexer sub-agents writing artifacts).
+the page-writer sub-agent writing artifacts).
 """
 
 from __future__ import annotations

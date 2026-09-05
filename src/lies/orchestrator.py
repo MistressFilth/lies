@@ -15,7 +15,6 @@ from pathlib import Path
 from pydantic_ai import Agent
 from pydantic_ai.models import Model
 
-from lies.agents.indexer import indexer_agent
 from lies.agents.linter import LintFinding, LintReport, linter_agent
 from lies.agents.page_writer import (
     PageDiff,
@@ -743,14 +742,6 @@ _SUB_AGENT_TABLE: tuple[tuple[str, object, str], ...] = (
         ),
     ),
     (
-        "indexer",
-        indexer_agent,
-        (
-            "Maintain wiki/index.md (the catalog) and wiki/log.md "
-            "(the append-only log) from a list of `PageDiff` operations."
-        ),
-    ),
-    (
         "linter",
         linter_agent,
         (
@@ -802,9 +793,9 @@ class Orchestrator:
     """The top-level agent that maintains a LIES wiki.
 
     The orchestrator is the only entrypoint exposed to the CLI. It composes
-    five sub-agents (source-reader, page-writer, indexer, linter,
-    query-synthesizer) via harness's `SubAgents` capability, plus file system,
-    shell, qmd MCP, CodeMode, Memory, Planning, and DynamicWorkflow.
+    four sub-agents (source-reader, page-writer, linter, query-synthesizer)
+    via harness's `SubAgents` capability, plus file system, shell, qmd MCP,
+    CodeMode, Memory, Planning, and DynamicWorkflow.
 
     The orchestrator NEVER reads or writes wiki files directly. All file
     mutations go through a sub-agent (or CodeMode), keeping them auditable and
@@ -1293,7 +1284,7 @@ class Orchestrator:
           5. ``page_writer_agent`` → ``list[PageDiff]``
           6. ``translate_page_diffs_to_plan`` → ``MemoryPlan(tag="ingest")``
           7. ``WikiMemoryService.apply_plan`` (flock + atomic commit +
-             sidecar + log + qmd update + rebuild_index + rollback)
+             sidecar + log + qmd update + per-op catalog upsert + rollback)
           8. discard snapshot
 
         Agent failures at steps 3 or 5 call
@@ -1866,7 +1857,7 @@ class Orchestrator:
         """Append a single line to ``wiki/log.md``.
 
         Creates the file (and parent dir) if missing. Used by lint to
-        record its run without disturbing the indexer's contract.
+        record its run independently of catalog maintenance.
         """
         log_path = self.wiki.wiki_dir / "log.md"
         log_path.parent.mkdir(parents=True, exist_ok=True)
