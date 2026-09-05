@@ -111,6 +111,15 @@ All notable changes to LIES are documented here. The format follows
   `sync` short-help text (replaced with accurate description).
 - `lies ingest-source <source>` (no `--collection`) is no longer accepted;
   calls fail at the Typer layer with a missing-argument error.
+- `indexer` sub-agent (`lies.agents.indexer`, `indexer_agent`,
+  `IndexerResult`, `format_log_entry`). The orchestrator's sub-agent
+  table shrinks from five to four (source-reader, page-writer,
+  linter, query-synthesizer). `wiki/index.md` maintenance is now
+  owned by the sqlite-backed catalog port (`<wiki>/.lies/catalog.db`,
+  see the F4b+F16 entries above); `wiki/log.md` is appended directly
+  by the orchestrator. Operators with `"indexer"` in
+  `providers.toml` must remove the line — `AGENT_ROSTER` no longer
+  contains it.
 
 ### Fixed
 - Unit suite runtime drops from ~50s to ~14s. The 3 slowest `run_write`

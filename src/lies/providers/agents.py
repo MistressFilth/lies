@@ -11,7 +11,6 @@ AGENT_ROSTER: tuple[str, ...] = (
     "orchestrator",
     "source_reader",
     "page_writer",
-    "indexer",
     "linter",
     "query_synthesizer",
     "enricher",

@@ -293,7 +293,7 @@ make test
 The agent maintains the wiki invisibly during normal interaction. See [Invisible memory](#invisible-memory) for the contract.
 
 A top-level `Orchestrator` (`src/lies/orchestrator.py`) dispatches user commands
-to five sub-agents via harness's `SubAgents` and `DynamicWorkflow` capabilities:
+to four sub-agents via harness's `SubAgents` and `DynamicWorkflow` capabilities:
 
 A `FastMCP` server (`src/lies/mcp/server.py`) exposes the orchestrator's
 operations to MCP-capable hosts (Claude Code, Cursor, etc.) over stdio.
@@ -303,12 +303,14 @@ See "Using LIES from Claude Code" above for the registration command.
   (claims, entities, concepts, comparisons, summary).
 - `page-writer` — create or update wiki pages from extracted material; returns
   `PageDiff` operations; never touches `index.md` or `log.md`.
-- `indexer` — maintain `wiki/index.md` (the catalog) and `wiki/log.md`
-  (the append-only log) from a list of `PageDiff` operations.
 - `linter` — walk the wiki and produce a structured `LintReport`
   (contradictions, stale, orphans, missing pages, missing xrefs, data gaps).
 - `query-synthesizer` — synthesize a cited answer from qmd search results;
   surfaces disagreements and notes what the wiki does NOT know.
+
+`wiki/index.md` (the catalog) is now maintained deterministically by the
+sqlite-backed catalog port (`<wiki>/.lies/catalog.db`), not by a sub-agent.
+See "Catalog" below.
 
 The orchestrator owns cross-cutting `pydantic-ai-harness` capabilities:
 
