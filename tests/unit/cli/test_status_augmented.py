@@ -126,8 +126,8 @@ def test_status_includes_catalog_count(runner, tmp_path, monkeypatch) -> None:
             upsert_page(conn, CatalogPage(slug=f"x/{i}", title=f"T{i}"))
     finally:
         conn.close()
-    expected_rows = count_pages(open_catalog(wiki))
-    conn.close()
+    with open_catalog(wiki) as conn:
+        expected_rows = count_pages(conn)
 
     result = runner.invoke(app, ["status"])
     assert result.exit_code == 0, result.output

@@ -1435,3 +1435,48 @@ def test_apply_plan_does_not_call_rebuild_index() -> None:
     assert not hasattr(service_mod, "rebuild_index"), (
         "WikiMemoryService should not export rebuild_index — catalog replaces it"
     )
+
+
+def test_apply_plan_skips_catalog_upsert_for_index_md(git_wiki: Wiki) -> None:
+    """apply_plan(PageUpdate("wiki/index.md", ...)) must NOT add a catalog row.
+
+    Regression: the repair agent's ``UpdateIndex`` op routes through
+    ``PageUpdate("wiki/index.md", ...)`` via the carve-out in
+    ``_apply_operations``. Without a guard, the per-op catalog upsert
+    would write a row for slug ``"index"`` that ``reconcile`` could
+    never clean — the disk walk excludes ``index.md`` via
+    ``catalog._SYSTEM_FILES``, so the row is never an orphan.
+
+    ``index.md`` is a render derivative (owned by ``lies catalog
+    render``), not a source page. The catalog is built from non-system
+    files; writing a row for it is a phantom.
+    """
+    from lies.memory.catalog import list_pages, open_catalog
+    from lies.memory.service import WikiMemoryService
+
+    # The fixture already wrote ``wiki/index.md`` and committed it; read
+    # back the same content so the PageUpdate hash check matches.
+    existing_index = (git_wiki.wiki_dir / "index.md").read_text(encoding="utf-8")
+
+    service = WikiMemoryService(wiki=git_wiki)
+    service.register_evidence({"repair-1"})
+    plan = MemoryPlan(
+        operations=[
+            PageUpdate(
+                path="wiki/index.md",
+                expected_sha256=_sha(existing_index),
+                content=existing_index + "\n- [X](concepts/x.md)\n",
+                evidence=["repair-1"],
+            ),
+        ],
+        rationale="repair: add orphan to index",
+        evidence=["repair-1"],
+    )
+    service.apply_plan(plan)
+
+    conn = open_catalog(git_wiki)
+    try:
+        slugs = {p.slug for p in list_pages(conn)}
+    finally:
+        conn.close()
+    assert "index" not in slugs, "PageUpdate on wiki/index.md must not create a phantom catalog row"

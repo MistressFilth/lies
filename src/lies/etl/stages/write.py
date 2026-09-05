@@ -39,7 +39,7 @@ if TYPE_CHECKING:
 def _bulk_update_catalog(wiki: object, written_paths: list[str]) -> None:
     """Upsert every written path into catalog.db in a single transaction.
 
-    Bulk-upserter: opens catalog, builds CatalogPage rows from paths, calls upsert_pages in one transaction. Best-
+    Bulk upserter: opens catalog, builds CatalogPage rows from paths, calls upsert_pages in one transaction. Best-
     effort; failures degrade to non-fatal stderr warnings (per the
     existing pattern that previously wrapped ``rebuild_index`` in
     ``try/except Exception: pass``). An empty ``written_paths`` is a

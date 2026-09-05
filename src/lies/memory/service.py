@@ -31,6 +31,7 @@ from lies.lock_errors import (  # noqa: F401 — Task 5/6/7 will reference these
     WikiFlockUnrepairable,
 )
 from lies.memory.catalog import (
+    _SYSTEM_FILES,
     open_catalog as _open_catalog,
     remove_page as _remove_catalog_page,
     upsert_page as _upsert_catalog_page,
@@ -395,21 +396,38 @@ def _upsert_or_remove_catalog_row(wiki: Wiki, op: _PlanOperation, kind: Operatio
     the rest of the catalog surface (``list_pages``, ``reconcile``)
     already speaks.
 
+    System files (``index.md``, ``log.md``, …) are skipped on the
+    upsert path: ``index.md`` is a render derivative emitted by
+    ``lies catalog render`` (not a source page); ``log.md`` is owned
+    by ``append_log_entry``. Writing a row for either would create a
+    phantom row that ``reconcile`` (which excludes ``_SYSTEM_FILES``
+    from the disk walk) cannot clean. ``PageDelete`` is unaffected —
+    there is never a catalog row for a system file in a healthy wiki,
+    so the remove path stays a no-op.
+
     Caller is responsible for the ``try/except`` envelope: per-op
     catalog failures are non-fatal. The file write landed, so a
     follow-up ``reconcile`` cleans up an orphan or stale row.
     """
     from lies.memory.catalog_models import CatalogPage
 
-    slug = op.path.removeprefix("wiki/").removeprefix("wiki/")
-    if slug.endswith(".md"):
-        slug = slug[: -len(".md")]
+    rel = op.path.removeprefix("wiki/").removeprefix("wiki/")
 
     conn = _open_catalog(wiki)
     try:
         if kind is OperationKind.DELETE:
+            slug = rel.removesuffix(".md") if rel.endswith(".md") else rel
             _remove_catalog_page(conn, slug)
         else:
+            # Skip system files: log.md, index.md (and the other files
+            # ``catalog._SYSTEM_FILES`` excludes from the disk walk).
+            # These are managed by the service (log) or are a render
+            # derivative (index) / deterministic host-side artifacts
+            # (lint-report, overview, schema) — NOT source pages. A row
+            # for any of them would be a phantom that ``reconcile``
+            # cannot clean because the disk walk skips them too.
+            if rel in _SYSTEM_FILES:
+                return
             _upsert_catalog_page(conn, CatalogPage.from_path(wiki, op.path))
     finally:
         conn.close()
