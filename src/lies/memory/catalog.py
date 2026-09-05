@@ -269,7 +269,7 @@ _SYSTEM_FILES = frozenset(
 
 
 @dataclass
-class ReconcileResult:  # type: ignore[no-redef]
+class ReconcileResult:
     """Result of a `reconcile(wiki)` call."""
 
     added: int = 0

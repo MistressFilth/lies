@@ -743,12 +743,16 @@ class WikiMemoryService:
             if resolved == index_path:
                 resolved = index_path
             resolved.parent.mkdir(parents=True, exist_ok=True)
-            # System-file guard: ``wiki/index.md`` and ``wiki/log.md`` are
-            # rebuilt/extended by the service itself (``rebuild_index``
-            # and ``append_log_entry`` below) — never written or removed
-            # by an op. Block ALL op kinds against these paths so the
-            # agent can never bypass the rebuild/append envelope by
-            # routing a write through a different op shape.
+            # System-file guard: ``wiki/index.md`` and ``wiki/log.md``
+            # are NOT rewritten by this service. ``index.md`` is a
+            # read-only derivative emitted by ``lies catalog render``;
+            # ``log.md`` is appended via ``append_log_entry`` after the
+            # per-op loop below. The per-op catalog upsert keeps
+            # ``catalog.db`` in lockstep with every non-system write so
+            # the catalog is the wiki's source of truth. The guard
+            # blocks agent-driven writes to these files so the agent
+            # can never bypass the catalog as source of truth by routing
+            # a write through a different op shape.
             #
             # Carve-out: ``PageUpdate`` on ``index_path`` is the
             # established pathway for the repair agent's ``UpdateIndex``

@@ -1284,7 +1284,7 @@ class Orchestrator:
           5. ``page_writer_agent`` → ``list[PageDiff]``
           6. ``translate_page_diffs_to_plan`` → ``MemoryPlan(tag="ingest")``
           7. ``WikiMemoryService.apply_plan`` (flock + atomic commit +
-             sidecar + log + qmd update + rebuild_index + rollback)
+             sidecar + log + qmd update + per-op catalog upsert + rollback)
           8. discard snapshot
 
         Agent failures at steps 3 or 5 call
