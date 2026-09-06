@@ -8,12 +8,12 @@ from __future__ import annotations
 
 from anthropic import AsyncAnthropic
 
-from lies.providers.config import ProviderSpec, _read_api_key
+from lies.providers.config import ProviderSpec, read_api_key
 from lies.providers.errors import ProviderConfigError
 
 
 def _client_for(spec: ProviderSpec) -> AsyncAnthropic:
-    key = _read_api_key(spec)
+    key = read_api_key(spec)
     if spec.base_url is None:  # pragma: no cover — guarded by config validation
         msg = f"provider {spec.name!r}: base_url is required for anthropic_compatible providers"
         raise ProviderConfigError(msg)

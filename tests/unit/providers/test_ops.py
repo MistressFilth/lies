@@ -98,10 +98,9 @@ def test_companion_missing_file_raises(tmp_path: Path) -> None:
         add_provider(target, new_spec)
 
 
-def test_check_connectivity_anthropic_compatible_ok(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setenv("MINIMAX_API_KEY", "sk-test")
+@pytest.fixture
+def fake_anthropic(monkeypatch: pytest.MonkeyPatch):
+    """Stub AsyncAnthropic + AsyncMessages for check_connectivity tests."""
 
     class _FakeMessages:
         @staticmethod
@@ -111,13 +110,22 @@ def test_check_connectivity_anthropic_compatible_ok(
 
             return _Resp()
 
+    messages = _FakeMessages()
+
     class _FakeAnthropic:
         def __init__(self, base_url, api_key):
             self.base_url = base_url
             self.api_key = api_key
-            self.messages = _FakeMessages()
+            self.messages = messages
 
     monkeypatch.setattr("anthropic.AsyncAnthropic", _FakeAnthropic)
+    return messages
+
+
+def test_check_connectivity_anthropic_compatible_ok(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_anthropic
+) -> None:
+    monkeypatch.setenv("MINIMAX_API_KEY", "sk-test")
 
     target = _seed_target(tmp_path)
     write_atomic(
@@ -153,25 +161,11 @@ def test_check_connectivity_anthropic_compatible_ok(
     assert by_name["minimax"] == "ok"
 
 
-def test_check_connectivity_ok_when_set(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_check_connectivity_ok_when_set(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_anthropic
+) -> None:
     """check_connectivity returns ('minimax', 'ok', ...) when the env var is set."""
     monkeypatch.setenv("MINIMAX_API_KEY", "sk-rotation-A")
-
-    class _FakeMessages:
-        @staticmethod
-        async def create(*args, **kwargs):
-            class _Resp:
-                pass
-
-            return _Resp()
-
-    class _FakeAnthropic:
-        def __init__(self, base_url, api_key):
-            self.base_url = base_url
-            self.api_key = api_key
-            self.messages = _FakeMessages()
-
-    monkeypatch.setattr("anthropic.AsyncAnthropic", _FakeAnthropic)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-rotation-A")
 
     target = tmp_path / "providers.toml"
@@ -205,7 +199,6 @@ def test_check_connectivity_unkeyed_message_omits_value(
 ) -> None:
     """The 'unkeyed' status message names the env var but never the value."""
     secret = "supersecret-rotation-value-A"
-    monkeypatch.setenv("MINIMAX_API_KEY", secret)
     monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
 
     target = tmp_path / "providers.toml"
@@ -243,7 +236,7 @@ def test_check_connectivity_unkeyed_message_omits_value(
 
 
 def test_probe_raises_provider_config_error_on_unset(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """_probe raises ProviderConfigError (no longer KeyError) when env var unset."""
     monkeypatch.delenv("MINIMAX_API_KEY", raising=False)

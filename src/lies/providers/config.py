@@ -43,7 +43,7 @@ def parse_model_string(raw: str) -> tuple[str, str]:
     return provider, model
 
 
-def _read_api_key(spec: ProviderSpec) -> str:
+def read_api_key(spec: ProviderSpec) -> str:
     """Return the current value of ``spec.api_key_env`` from ``os.environ``.
 
     Re-reads ``os.environ`` on every call so token rotation is picked up
@@ -52,7 +52,7 @@ def _read_api_key(spec: ProviderSpec) -> str:
     logged — only the spec NAME is emitted at debug level.
     """
     value = os.environ.get(spec.api_key_env)
-    if not value or not value.strip():
+    if not (value and value.strip()):
         msg = (
             f"provider {spec.name!r}: env var {spec.api_key_env!r} "
             f"unset or empty; set it to a non-empty value"

@@ -14,7 +14,7 @@ import logging
 from pathlib import Path
 
 from lies.providers.bootstrap import ProvidersConfigMissing, write_atomic
-from lies.providers.config import ProviderSpec, _read_api_key, load_providers_config
+from lies.providers.config import ProviderSpec, read_api_key, load_providers_config
 from lies.providers.errors import ProviderConfigError
 from lies.providers.editor import ProvidersMutations, apply_mutations
 
@@ -66,7 +66,7 @@ def check_connectivity(target: Path) -> list[tuple[str, str, str]]:
     rows: list[tuple[str, str, str]] = []
     for name, spec in cfg.providers.items():
         try:
-            _read_api_key(spec)
+            read_api_key(spec)
         except ProviderConfigError as exc:
             rows.append((name, "unkeyed", str(exc)))
             continue
@@ -103,7 +103,7 @@ def _probe(spec: ProviderSpec) -> None:
         return
     from anthropic import AsyncAnthropic
 
-    client = AsyncAnthropic(base_url=spec.base_url, api_key=_read_api_key(spec))
+    client = AsyncAnthropic(base_url=spec.base_url, api_key=read_api_key(spec))
     # The lightest call Anthropic-compatible endpoints expose is a
     # 1-token completion; fall back to a no-op models.list when the
     # endpoint supports it. Bridge the coroutine into the sync probe
