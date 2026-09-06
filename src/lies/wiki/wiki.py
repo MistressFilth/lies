@@ -26,7 +26,7 @@ from lies.wiki.validation import validate_name
 # <xdg>/lies/default/ to <xdg>/lies/wiki/ during the bare-repo
 # migration. Only the default wiki has this history.
 _MIGRATION_FALLBACKS: dict[str, Callable[[], tuple[Path, ...]]] = {
-    "default": lambda: (xdg.data_home() / "lies" / "wiki",),
+    "default": lambda: (xdg.data_home() / LIES_DATA_SUBDIR / "wiki",),
 }
 
 
