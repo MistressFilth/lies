@@ -493,3 +493,16 @@ def test_slug_for_double_prefixed_path() -> None:
 
     assert _slug_for("wiki/wiki/claude-code/concepts/hooks") == "claude-code/concepts/hooks"
     assert _slug_for("wiki/wiki/claude-code/concepts/hooks.md") == "claude-code/concepts/hooks"
+
+
+def test_catalog_rebuild_index_removed() -> None:
+    """Regression guard: ``rebuild_index`` was deleted in the F4b+F16
+    catalog port (commit 169871d); if it reappears, the catalog is
+    no longer the sole source-of-truth and ``apply_plan`` upserts
+    may be bypassed.
+    """
+    import lies.memory.catalog as catalog
+
+    assert not hasattr(catalog, "rebuild_index")
+    assert not hasattr(catalog, "_discover_pages")
+    assert not hasattr(catalog, "_page_title_from_frontmatter")
