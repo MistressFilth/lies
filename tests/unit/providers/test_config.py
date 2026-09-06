@@ -177,11 +177,6 @@ def test_parse_model_string_rejects_malformed() -> None:
         parse_model_string("no-colon-here")
 
 
-# ---------------------------------------------------------------------------
-# N5: _read_api_key helper (live env-var re-read + no-leak guarantee)
-# ---------------------------------------------------------------------------
-
-
 def _spec(env: str = "MINIMAX_API_KEY", name: str = "minimax") -> ProviderSpec:
     return ProviderSpec(
         name=name,

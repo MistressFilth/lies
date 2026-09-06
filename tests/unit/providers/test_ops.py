@@ -153,11 +153,6 @@ def test_check_connectivity_anthropic_compatible_ok(
     assert by_name["minimax"] == "ok"
 
 
-# ---------------------------------------------------------------------------
-# N5: check_connectivity + _probe use _read_api_key (live + consistent error)
-# ---------------------------------------------------------------------------
-
-
 def test_check_connectivity_ok_when_set(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """check_connectivity returns ('minimax', 'ok', ...) when the env var is set."""
     monkeypatch.setenv("MINIMAX_API_KEY", "sk-rotation-A")

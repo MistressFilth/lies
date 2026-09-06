@@ -50,11 +50,6 @@ def test_returns_fresh_instance_per_call(monkeypatch: pytest.MonkeyPatch) -> Non
     assert a is not b
 
 
-# ---------------------------------------------------------------------------
-# N5: live env-var re-read so token rotation is picked up without restart
-# ---------------------------------------------------------------------------
-
-
 def test_live_re_read_picks_new_value(monkeypatch: pytest.MonkeyPatch) -> None:
     """A fresh _client_for call after env var rotation must construct a client
     holding the new value. The @cache decorator must not freeze the old one."""
