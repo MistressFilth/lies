@@ -34,6 +34,14 @@ def test_require_raises_when_unregistered(monkeypatch: pytest.MonkeyPatch, tmp_p
     assert exc.value.name == "ghost"
 
 
+def test_wiki_not_registered_message_includes_full_data_root(tmp_path, monkeypatch):
+    monkeypatch.setattr("lies.wiki.wiki.xdg.data_home", lambda: tmp_path)
+    with pytest.raises(WikiNotRegistered) as exc_info:
+        Wiki.require("ghost")
+    expected = tmp_path / "lies" / "ghost"
+    assert str(expected) in str(exc_info.value)
+
+
 def test_require_succeeds_after_data_root_mkdir(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     _patch_xdg(monkeypatch, tmp_path)
     Wiki.data_root_for("mywiki").mkdir(parents=True)
