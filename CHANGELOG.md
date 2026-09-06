@@ -24,6 +24,14 @@ All notable changes to LIES are documented here. The format follows
   the running qmd daemon was started with. `ensure_qmd_daemon` reaps
   and respawns qmd when the sidecar disagrees with the requested
   `data-dir`; first-run (no sidecar) is a non-mismatch. Closes N7.
+- `_reap_qmd_daemon` now waits for the daemon to exit before returning
+  (SIGTERM first, SIGKILL after a 2s grace) and checks `/proc/<pid>`
+  state to distinguish zombies from live processes, so the subsequent
+  spawn no longer races the dying daemon for the port. Without the
+  wait the sidecar could record a new `data-dir` while the old daemon
+  still served the old index. `check_data_dir_match` normalizes paths
+  via `Path.resolve` so `Path("wiki")` vs `Path("./wiki")` no longer
+  spuriously reports a mismatch.
 
 ### Tests
 
