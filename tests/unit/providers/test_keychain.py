@@ -115,3 +115,10 @@ def test_debug_log_emitted_on_each_resolve(env: None, caplog: pytest.LogCaptureF
     records = [r for r in caplog.records if "resolved via" in r.getMessage()]
     assert len(records) == 3
     assert all("'x'" in r.getMessage() or "x" in r.getMessage() for r in records)
+
+
+def test_provider_config_error_reexported() -> None:
+    from lies.providers import keychain
+    from lies.providers.config import ProviderConfigError
+
+    assert keychain.ProviderConfigError is ProviderConfigError

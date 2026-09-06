@@ -20,7 +20,7 @@ from lies.providers.config import ProviderConfigError
 if TYPE_CHECKING:
     from lies.providers.config import ProviderSpec
 
-__all__ = ["resolve_api_key", "chosen_env_name", "invalidate"]
+__all__ = ["resolve_api_key", "chosen_env_name", "invalidate", "ProviderConfigError"]
 
 log = logging.getLogger(__name__)
 
