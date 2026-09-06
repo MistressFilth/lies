@@ -148,6 +148,12 @@ All notable changes to LIES are documented here. The format follows
   `AGENT_ROSTER` no longer contains it.
 
 ### Fixed
+- **providers:** `_client_for`, `check_connectivity`, and `_probe` now
+  re-read `os.environ` on every call so token rotation is picked up
+  without a restart. Missing/empty env vars raise `ProviderConfigError`
+  consistently across all three sites (previously `_probe` raised
+  `KeyError`). Env var VALUES are never logged, echoed, or included in
+  exception messages — only env var NAMES appear in logs and errors.
 - Unit suite runtime drops from ~50s to ~14s. The 3 slowest `run_write`
   tests pinned their `atomic_commit` mock to `return_value=None` so the
   post-commit qmd hooks (the dominant cost) skip in tests that do not
