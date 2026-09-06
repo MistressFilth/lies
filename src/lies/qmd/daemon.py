@@ -18,14 +18,46 @@ rather than raised.
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
 from dataclasses import dataclass
+from pathlib import Path as _Path
 
 _QMD_BIN = "qmd"
 _MCP_LINE = re.compile(r"^MCP:\s+running\s+\(PID\s+(\d+)\)", re.MULTILINE)
 _ALREADY_RUNNING = re.compile(r"Already running\s+\(PID\s+(\d+)\)")
+
+SIDECAR_PATH = _Path(
+    os.environ.get("LIES_QMD_SIDECAR_OVERRIDE")
+    or (_Path.home() / ".local" / "share" / "qmd" / "mcp.data-dir")
+)
+
+
+def read_sidecar_data_dir() -> _Path | None:
+    """Read the ``data-dir`` the running qmd daemon was started with.
+
+    Returns ``None`` when the sidecar is absent (first-run case).
+    """
+    if not SIDECAR_PATH.exists():
+        return None
+    return _Path(SIDECAR_PATH.read_text().strip())
+
+
+def write_sidecar_data_dir(data_dir: _Path) -> None:
+    """Record the ``data-dir`` for the current qmd daemon session.
+
+    Called from :func:`ensure_qmd_daemon` after a successful start.
+    """
+    SIDECAR_PATH.parent.mkdir(parents=True, exist_ok=True)
+    SIDECAR_PATH.write_text(str(data_dir))
+
+
+def check_data_dir_match(expected: _Path) -> bool:
+    """Return True if the sidecar's data-dir matches ``expected`` (or is absent)."""
+    actual = read_sidecar_data_dir()
+    return actual is None or actual == expected
 
 
 @dataclass(frozen=True)
@@ -88,14 +120,46 @@ def qmd_daemon_state() -> QmdState:
     return QmdState(True, True, pid, f"qmd daemon running (pid {pid})")
 
 
-def ensure_qmd_daemon(*, timeout: float = 15.0) -> QmdState:
-    """Start qmd's http daemon if it is not already up.
+def _reap_qmd_daemon() -> None:
+    """Kill the running qmd daemon process. Never raises."""
+    state = qmd_daemon_state()
+    if not state.running or state.pid is None:
+        return
+    import signal
 
-    ``qmd mcp --http --daemon`` is idempotent upstream, so this is safe to
-    call on every ``lies mcp up``. Never raises.
+    try:
+        os.kill(state.pid, signal.SIGTERM)
+    except OSError:
+        pass
+
+
+def _spawn_qmd_daemon() -> None:
+    """Invoke ``qmd mcp --http --daemon``. Never raises."""
+    try:
+        subprocess.run(
+            [_QMD_BIN, "mcp", "--http", "--daemon"],
+            capture_output=True,
+            text=True,
+            timeout=15.0,
+            check=False,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        pass
+
+
+def ensure_qmd_daemon(*, data_dir: _Path, timeout: float = 15.0) -> QmdState:
+    """Start qmd's http daemon if not already up; reap and respawn if the
+    sidecar records a different ``data-dir``.
     """
     if not qmd_installed():
         return _not_installed()
+    if not check_data_dir_match(data_dir):
+        # Foreign daemon serving the wrong index; reap and respawn.
+        _reap_qmd_daemon()
+        _spawn_qmd_daemon()
+        write_sidecar_data_dir(data_dir)
+        return qmd_daemon_state()
+    # Normal path: idempotent start.
     try:
         proc = subprocess.run(
             [_QMD_BIN, "mcp", "--http", "--daemon"],
@@ -108,7 +172,7 @@ def ensure_qmd_daemon(*, timeout: float = 15.0) -> QmdState:
         return QmdState(True, False, None, f"starting qmd timed out after {timeout:g}s")
     except OSError as exc:
         return QmdState(True, False, None, f"starting qmd failed: {exc}")
-
+    write_sidecar_data_dir(data_dir)
     output = f"{proc.stdout or ''}{proc.stderr or ''}"
     already = _ALREADY_RUNNING.search(output)
     if already is not None:
@@ -117,5 +181,4 @@ def ensure_qmd_daemon(*, timeout: float = 15.0) -> QmdState:
     if proc.returncode != 0:
         first = output.strip().splitlines()[0] if output.strip() else "no output"
         return QmdState(True, False, None, f"qmd exited {proc.returncode}: {first}")
-    # Started cleanly — ask qmd for the pid rather than assuming one.
     return qmd_daemon_state()

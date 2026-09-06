@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -85,7 +86,9 @@ def test_state_when_not_installed(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "not installed" in state.detail
 
 
-def test_ensure_returns_running_on_clean_exit(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_ensure_returns_running_on_clean_exit(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     monkeypatch.setattr(qmd_daemon.shutil, "which", lambda _name: "/usr/bin/qmd")
     calls: list[list[str]] = []
 
@@ -96,12 +99,14 @@ def test_ensure_returns_running_on_clean_exit(monkeypatch: pytest.MonkeyPatch) -
         return _completed(_STATUS_RUNNING)
 
     monkeypatch.setattr(qmd_daemon.subprocess, "run", _run)
-    state = qmd_daemon.ensure_qmd_daemon()
+    state = qmd_daemon.ensure_qmd_daemon(data_dir=tmp_path / "wiki")
     assert state.running is True
     assert ["qmd", "mcp", "--http", "--daemon"] in calls
 
 
-def test_ensure_accepts_already_running_output(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_ensure_accepts_already_running_output(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     """qmd's own idempotence path must not read as a failure."""
     monkeypatch.setattr(qmd_daemon.shutil, "which", lambda _name: "/usr/bin/qmd")
 
@@ -111,35 +116,39 @@ def test_ensure_accepts_already_running_output(monkeypatch: pytest.MonkeyPatch) 
         return _completed(_STATUS_RUNNING)
 
     monkeypatch.setattr(qmd_daemon.subprocess, "run", _run)
-    state = qmd_daemon.ensure_qmd_daemon()
+    state = qmd_daemon.ensure_qmd_daemon(data_dir=tmp_path / "wiki")
     assert state.running is True
 
 
-def test_ensure_is_non_fatal_on_nonzero_exit(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_ensure_is_non_fatal_on_nonzero_exit(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     monkeypatch.setattr(qmd_daemon.shutil, "which", lambda _name: "/usr/bin/qmd")
     monkeypatch.setattr(
         qmd_daemon.subprocess, "run", lambda *a, **k: _completed("boom", returncode=1)
     )
-    state = qmd_daemon.ensure_qmd_daemon()
+    state = qmd_daemon.ensure_qmd_daemon(data_dir=tmp_path / "wiki")
     assert state.running is False
     assert state.detail
 
 
-def test_ensure_is_non_fatal_on_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_ensure_is_non_fatal_on_timeout(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setattr(qmd_daemon.shutil, "which", lambda _name: "/usr/bin/qmd")
 
     def _raise(*args: object, **kwargs: object) -> None:
         raise subprocess.TimeoutExpired(cmd="qmd", timeout=15.0)
 
     monkeypatch.setattr(qmd_daemon.subprocess, "run", _raise)
-    state = qmd_daemon.ensure_qmd_daemon()
+    state = qmd_daemon.ensure_qmd_daemon(data_dir=tmp_path / "wiki")
     assert state.running is False
     assert "timed out" in state.detail
 
 
-def test_ensure_is_non_fatal_when_qmd_absent(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_ensure_is_non_fatal_when_qmd_absent(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     monkeypatch.setattr(qmd_daemon.shutil, "which", lambda _name: None)
-    state = qmd_daemon.ensure_qmd_daemon()
+    state = qmd_daemon.ensure_qmd_daemon(data_dir=tmp_path / "wiki")
     assert state.installed is False
     assert state.running is False
 
