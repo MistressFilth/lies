@@ -11,6 +11,7 @@ from lies.providers.bootstrap import (
     BootstrapValidationFailed,
     PartialConfig,
     ProvidersConfigMissing,
+    _write_env_file,
     detect_env_keys,
     run_wizard,
     step_agents,
@@ -582,4 +583,39 @@ def test_wizard_prompts_chain_multiple(monkeypatch: pytest.MonkeyPatch) -> None:
         "MINIMAX_API_KEY",
         "ANTHROPIC_API_KEY",
         "OPENAI_API_KEY",
+    )
+
+
+def test_write_env_file_filters_unset(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Regression: unset names in ``api_key_envs`` must NOT be written.
+
+    For a 2-entry chain ``["MINIMAX_API_KEY", "ANTHROPIC_API_KEY"]``
+    where only ``MINIMAX_API_KEY`` is set, the env capture file must
+    contain exactly one ``MINIMAX_API_KEY=...`` line — never a
+    stray ``ANTHROPIC_API_KEY=`` (empty value). The previous
+    implementation appended a line for every name in the chain,
+    regardless of whether the operator had the var set; the docstring
+    explicitly requires unset names be filtered out so unrelated
+    operator shell state is not silently leaked.
+    """
+    monkeypatch.setenv("MINIMAX_API_KEY", "sk-minimax-123")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    partial = PartialConfig(
+        providers={
+            "minimax": ProviderSpec(
+                name="minimax",
+                type="anthropic_compatible",
+                api_key_envs=("MINIMAX_API_KEY", "ANTHROPIC_API_KEY"),
+                base_url="https://api.minimax.io/anthropic",
+            ),
+        },
+        default_model=None,
+        agents={},
+    )
+    env_path = tmp_path / "lies.env"
+    _write_env_file(env_path, partial)
+    text = env_path.read_text()
+    key_lines = [line for line in text.splitlines() if line and not line.startswith("#")]
+    assert key_lines == ["MINIMAX_API_KEY=sk-minimax-123"], (
+        f"expected only the set key to be captured; got {key_lines!r}"
     )

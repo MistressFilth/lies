@@ -525,6 +525,8 @@ def providers_add(
     from lies.providers.errors import ProviderConfigError
 
     wiki = _providers_wiki(name)
+    if not api_key_env:
+        raise typer.BadParameter("at least one --api-key-env is required")
     # ``add_provider`` re-validates the type via the editor layer; cast
     # because typer cannot enforce the Literal without a custom callback.
     spec = ProviderSpec(

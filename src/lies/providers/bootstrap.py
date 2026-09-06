@@ -125,8 +125,11 @@ def step_default_model(partial: PartialConfig, *, prompt: PromptFn) -> None:
 
 
 def step_providers(partial: PartialConfig, *, prompt: PromptFn) -> None:
-    """Loop asking for ``(name, type, api_key_env[, base_url])`` until the
-    operator enters a blank name.
+    """Loop asking for ``(name, type, api_key_envs[, base_url])`` until
+    the operator enters a blank name. ``api_key_envs`` is a chain
+    (tuple) collected by repeatedly prompting until a blank entry —
+    the first element is the primary key source, later elements are
+    fallbacks.
 
     Blank-name exit requires a non-empty catalog; otherwise the loop
     re-prompts so the wizard never reaches ``write_atomic`` with no
@@ -295,8 +298,8 @@ def _write_env_file(env_path: os.PathLike[str], partial: PartialConfig) -> None:
     env_lines: list[str] = []
     for spec in partial.providers.values():
         for name in spec.api_key_envs:
-            value = os.environ.get(name, "")
-            env_lines.append(f"{name}={value}")
+            if name in os.environ:
+                env_lines.append(f"{name}={os.environ[name]}")
     fd, tmp = tempfile.mkstemp(prefix=".lies.env.", dir=directory)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:

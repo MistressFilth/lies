@@ -104,7 +104,7 @@ def to_toml(cfg: ProvidersConfig) -> str:
         spec = cfg.providers[name]
         lines.append(f"[providers.{name}]")
         lines.append(f'type = "{spec.type}"')
-        lines.append(f"api_key_envs = [{', '.join(repr(n) for n in spec.api_key_envs)}]")
+        lines.append(f"api_key_envs = [{', '.join(f'"{n}"' for n in spec.api_key_envs)}]")
         if spec.base_url is not None:
             lines.append(f'base_url = "{spec.base_url}"')
         lines.append("")

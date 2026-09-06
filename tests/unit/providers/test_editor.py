@@ -122,18 +122,13 @@ def test_toml_serializes_list() -> None:
     out = to_toml(
         ProvidersConfig(providers={"minimax": spec}, default_model="minimax:M3", agents={})
     )
-    assert "api_key_envs = ['PRIMARY_KEY', 'BACKUP_KEY']" in out
+    assert 'api_key_envs = ["PRIMARY_KEY", "BACKUP_KEY"]' in out
 
 
 def test_round_trip_list(tmp_path: Path) -> None:
     """serialize via ``to_toml``, reload via ``load_providers_config``; tuple survives."""
     from lies.providers.config import load_providers_config
 
-    ProviderSpec(
-        name="anthropic",
-        type="anthropic",
-        api_key_envs=("PRIMARY_KEY", "BACKUP_KEY"),
-    )
     path = tmp_path / "providers.toml"
     # Minimal viable TOML for the loader: full agents block, anthropic provider,
     # default_model points at anthropic so cross-reference passes.
