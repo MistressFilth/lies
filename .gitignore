@@ -16,17 +16,13 @@ htmlcov/
 
 # Internal development artifacts (superpowers skill state, design spec, plan).
 # Not part of the public repo; local-only tooling.
-.lies/memory.lock
-.lies/sync.lock
-.lies/sync.lock.create
-.lies/sync.lock.fd
-.lies/hashes/
-.lies/poison/
-.lies/logs/
-.lies/collections/
+.lies
 .superpowers/
-docs/superpowers/
+superpowers/
 sdd/
+.sdd/
+seal/
+.seal/
 
 # Per-repo LLM agent memory (per-machine, not shared) and Claude Code local settings.
 AGENTS.local.md
