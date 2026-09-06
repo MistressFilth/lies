@@ -527,7 +527,7 @@ def providers_add(
     spec = ProviderSpec(
         name=name_arg,
         type=cast(Any, type_),
-        api_key_env=api_key_env,
+        api_key_envs=(api_key_env,),
         base_url=base_url,
     )
     try:

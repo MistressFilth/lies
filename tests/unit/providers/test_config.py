@@ -28,7 +28,7 @@ def test_load_minimal_valid_config(tmp_path: Path) -> None:
 
         [providers.anthropic]
         type = "anthropic"
-        api_key_env = "ANTHROPIC_API_KEY"
+        api_key_envs = ["ANTHROPIC_API_KEY"]
 
         [agents]
     """
@@ -40,7 +40,7 @@ def test_load_minimal_valid_config(tmp_path: Path) -> None:
 
     assert cfg.providers == {
         "anthropic": ProviderSpec(
-            name="anthropic", type="anthropic", api_key_env="ANTHROPIC_API_KEY", base_url=None
+            name="anthropic", type="anthropic", api_key_envs=("ANTHROPIC_API_KEY",), base_url=None
         ),
     }
     assert cfg.default_model == "anthropic:claude-opus-4-7"
@@ -53,12 +53,12 @@ def test_load_minimax_provider(tmp_path: Path) -> None:
 
         [providers.anthropic]
         type = "anthropic"
-        api_key_env = "ANTHROPIC_API_KEY"
+        api_key_envs = ["ANTHROPIC_API_KEY"]
 
         [providers.minimax]
         type = "anthropic_compatible"
         base_url = "https://api.minimax.io/anthropic"
-        api_key_env = "MINIMAX_API_KEY"
+        api_key_envs = ["MINIMAX_API_KEY"]
 
         [agents]
     """
@@ -70,7 +70,7 @@ def test_load_minimax_provider(tmp_path: Path) -> None:
     minimax = cfg.providers["minimax"]
     assert minimax.type == "anthropic_compatible"
     assert minimax.base_url == "https://api.minimax.io/anthropic"
-    assert minimax.api_key_env == "MINIMAX_API_KEY"
+    assert minimax.api_key_envs == ("MINIMAX_API_KEY",)
 
 
 def test_missing_file_returns_none(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
@@ -91,7 +91,7 @@ def test_missing_agent_in_agents_table_raises(tmp_path: Path) -> None:
 
         [providers.anthropic]
         type = "anthropic"
-        api_key_env = "ANTHROPIC_API_KEY"
+        api_key_envs = ["ANTHROPIC_API_KEY"]
 
         [agents]
     """
@@ -110,7 +110,7 @@ def test_default_model_referencing_unknown_provider_raises(tmp_path: Path) -> No
 
         [providers.anthropic]
         type = "anthropic"
-        api_key_env = "ANTHROPIC_API_KEY"
+        api_key_envs = ["ANTHROPIC_API_KEY"]
 
         [agents]
     """
@@ -127,7 +127,7 @@ def test_agent_referencing_unknown_provider_raises(tmp_path: Path) -> None:
 
         [providers.anthropic]
         type = "anthropic"
-        api_key_env = "ANTHROPIC_API_KEY"
+        api_key_envs = ["ANTHROPIC_API_KEY"]
 
         [agents]
     """
@@ -148,11 +148,11 @@ def test_anthropic_compatible_without_base_url_raises(tmp_path: Path) -> None:
 
         [providers.anthropic]
         type = "anthropic"
-        api_key_env = "ANTHROPIC_API_KEY"
+        api_key_envs = ["ANTHROPIC_API_KEY"]
 
         [providers.minimax]
         type = "anthropic_compatible"
-        api_key_env = "MINIMAX_API_KEY"
+        api_key_envs = ["MINIMAX_API_KEY"]
 
         [agents]
     """
@@ -175,3 +175,54 @@ def test_parse_model_string_rejects_malformed() -> None:
 
     with pytest.raises(ProviderConfigError):
         parse_model_string("no-colon-here")
+
+
+def test_load_rejects_empty_list(tmp_path: Path) -> None:
+    body = """
+        default_model = "anthropic:claude-sonnet-4-5"
+
+        [providers.x]
+        type = "anthropic"
+        api_key_envs = []
+
+        [agents]
+    """
+    agents_block = "\n".join(f'{n} = "anthropic:claude-sonnet-4-5"' for n in AGENT_ROSTER)
+    path = _write(tmp_path, body + "\n" + agents_block + "\n")
+
+    with pytest.raises(ProviderConfigError, match="≥1"):
+        load_providers_config(path)
+
+
+def test_load_rejects_empty_entry(tmp_path: Path) -> None:
+    body = """
+        default_model = "anthropic:claude-sonnet-4-5"
+
+        [providers.x]
+        type = "anthropic"
+        api_key_envs = ["MINIMAX_API_KEY", ""]
+
+        [agents]
+    """
+    agents_block = "\n".join(f'{n} = "anthropic:claude-sonnet-4-5"' for n in AGENT_ROSTER)
+    path = _write(tmp_path, body + "\n" + agents_block + "\n")
+
+    with pytest.raises(ProviderConfigError, match="entry 1 is empty"):
+        load_providers_config(path)
+
+
+def test_load_accepts_single_element_list(tmp_path: Path) -> None:
+    body = """
+        default_model = "anthropic:claude-sonnet-4-5"
+
+        [providers.anthropic]
+        type = "anthropic"
+        api_key_envs = ["MINIMAX_API_KEY"]
+
+        [agents]
+    """
+    agents_block = "\n".join(f'{n} = "anthropic:claude-sonnet-4-5"' for n in AGENT_ROSTER)
+    path = _write(tmp_path, body + "\n" + agents_block + "\n")
+
+    cfg: ProvidersConfig = load_providers_config(path)
+    assert cfg.providers["anthropic"].api_key_envs == ("MINIMAX_API_KEY",)

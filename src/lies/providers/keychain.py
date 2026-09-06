@@ -34,14 +34,14 @@ def resolve_api_key(spec: "ProviderSpec") -> str:
     Raises ProviderConfigError with the full chain enumerated when every
     entry is unset or empty/whitespace-only.
     """
-    for name in spec.api_key_envs:  # ty: ignore[unresolved-attribute]
+    for name in spec.api_key_envs:
         value = os.environ.get(name)
         if value and value.strip():
             _chosen[spec.name] = name
             log.debug("provider %s resolved via %s", spec.name, name)
             return value
     raise ProviderConfigError(
-        f"provider {spec.name!r} api_key_envs {list(spec.api_key_envs)} "  # ty: ignore[unresolved-attribute]
+        f"provider {spec.name!r} api_key_envs {list(spec.api_key_envs)} "
         f"all unset or empty; set one to a non-empty value"
     )
 

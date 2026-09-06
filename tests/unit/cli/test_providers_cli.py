@@ -48,7 +48,7 @@ def _seed(tmp_path: Path) -> Path:
                 "anthropic": ProviderSpec(
                     name="anthropic",
                     type="anthropic",
-                    api_key_env="ANTHROPIC_API_KEY",
+                    api_key_envs=("ANTHROPIC_API_KEY",),
                 ),
             },
             default_model="anthropic:claude-opus-4-7",

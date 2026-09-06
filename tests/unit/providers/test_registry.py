@@ -22,7 +22,7 @@ def test_builds_client_when_env_set(monkeypatch: pytest.MonkeyPatch) -> None:
     spec = ProviderSpec(
         name="minimax",
         type="anthropic_compatible",
-        api_key_env="MINIMAX_API_KEY",
+        api_key_envs=("MINIMAX_API_KEY",),
         base_url="https://api.minimax.io/anthropic",
     )
     client = _client_for(spec)
@@ -34,7 +34,7 @@ def test_raises_when_env_unset(monkeypatch: pytest.MonkeyPatch) -> None:
     spec = ProviderSpec(
         name="minimax",
         type="anthropic_compatible",
-        api_key_env="MINIMAX_API_KEY",
+        api_key_envs=("MINIMAX_API_KEY",),
         base_url="https://api.minimax.io/anthropic",
     )
     with pytest.raises(ProviderConfigError, match="MINIMAX_API_KEY"):
@@ -46,7 +46,7 @@ def test_cache_returns_same_instance(monkeypatch: pytest.MonkeyPatch) -> None:
     spec = ProviderSpec(
         name="minimax",
         type="anthropic_compatible",
-        api_key_env="MINIMAX_API_KEY",
+        api_key_envs=("MINIMAX_API_KEY",),
         base_url="https://api.minimax.io/anthropic",
     )
     a = _client_for(spec)

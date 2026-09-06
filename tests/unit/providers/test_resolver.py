@@ -20,7 +20,7 @@ def _anthropic_only_config() -> ProvidersConfig:
     return ProvidersConfig(
         providers={
             "anthropic": ProviderSpec(
-                name="anthropic", type="anthropic", api_key_env="ANTHROPIC_API_KEY"
+                name="anthropic", type="anthropic", api_key_envs=("ANTHROPIC_API_KEY",)
             ),
         },
         default_model="anthropic:claude-opus-4-7",
@@ -32,12 +32,12 @@ def _anthropic_plus_minimax_config() -> ProvidersConfig:
     return ProvidersConfig(
         providers={
             "anthropic": ProviderSpec(
-                name="anthropic", type="anthropic", api_key_env="ANTHROPIC_API_KEY"
+                name="anthropic", type="anthropic", api_key_envs=("ANTHROPIC_API_KEY",)
             ),
             "minimax": ProviderSpec(
                 name="minimax",
                 type="anthropic_compatible",
-                api_key_env="MINIMAX_API_KEY",
+                api_key_envs=("MINIMAX_API_KEY",),
                 base_url="https://api.minimax.io/anthropic",
             ),
         },

@@ -20,8 +20,19 @@ ProviderType = Literal["anthropic", "anthropic_compatible"]
 class ProviderSpec:
     name: str
     type: ProviderType
-    api_key_env: str
+    api_key_envs: tuple[str, ...]
     base_url: str | None = None
+
+    def __post_init__(self) -> None:
+        if not self.api_key_envs:
+            raise ProviderConfigError(
+                f"provider {self.name!r}: api_key_envs must list ≥1 env var name"
+            )
+        for i, name in enumerate(self.api_key_envs):
+            if not isinstance(name, str) or not name.strip():
+                raise ProviderConfigError(
+                    f"provider {self.name!r}: api_key_envs entry {i} is empty"
+                )
 
 
 @dataclass(frozen=True)
@@ -69,13 +80,13 @@ def load_providers_config(path: Path) -> ProvidersConfig | None:
             msg = f"{path}: provider {name!r} must be a table"
             raise ProviderConfigError(msg)
         provider_type = body.get("type")
-        api_key_env = body.get("api_key_env")
+        api_key_envs = body.get("api_key_envs")
         base_url = body.get("base_url")
         if provider_type not in ("anthropic", "anthropic_compatible"):
             msg = f"{path}: provider {name!r}: type must be 'anthropic' or 'anthropic_compatible', got {provider_type!r}"
             raise ProviderConfigError(msg)
-        if not isinstance(api_key_env, str) or not api_key_env:
-            msg = f"{path}: provider {name!r}: api_key_env is required"
+        if not isinstance(api_key_envs, list) or not api_key_envs:
+            msg = f"{path}: provider {name!r}: api_key_envs must list ≥1 env var name"
             raise ProviderConfigError(msg)
         if provider_type == "anthropic_compatible" and not base_url:
             msg = f"{path}: provider {name!r}: base_url is required for anthropic_compatible providers"
@@ -83,7 +94,7 @@ def load_providers_config(path: Path) -> ProvidersConfig | None:
         providers[name] = ProviderSpec(
             name=name,
             type=provider_type,  # type: ignore[arg-type]
-            api_key_env=api_key_env,
+            api_key_envs=tuple(api_key_envs),
             base_url=base_url,
         )
 

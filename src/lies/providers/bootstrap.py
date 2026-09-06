@@ -167,7 +167,7 @@ def step_providers(partial: PartialConfig, *, prompt: PromptFn) -> None:
         partial.providers[name] = ProviderSpec(
             name=name,
             type=type_,  # type: ignore[arg-type]
-            api_key_env=api_key_env,
+            api_key_envs=(api_key_env,),
             base_url=base_url,
         )
         print(f"  ✓ added provider {name!r}.")
@@ -288,9 +288,9 @@ def _write_env_file(env_path: os.PathLike[str], partial: PartialConfig) -> None:
     directory = os.path.dirname(path) or "."
     os.makedirs(directory, exist_ok=True)
     set_keys = {
-        spec.api_key_env: os.environ[spec.api_key_env]
+        spec.api_key_envs[0]: os.environ[spec.api_key_envs[0]]
         for spec in partial.providers.values()
-        if spec.api_key_env in os.environ
+        if spec.api_key_envs[0] in os.environ
     }
     fd, tmp = tempfile.mkstemp(prefix=".lies.env.", dir=directory)
     try:
