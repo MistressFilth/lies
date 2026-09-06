@@ -138,8 +138,9 @@ All notable changes to LIES are documented here. The format follows
   and re-reads env values live so token rotation is picked up without
   a restart; `resolve_api_key` emits `provider <name> resolved via <env>`
   at `DEBUG`. CLI `lies providers add -e NAME` is now repeatable; the
-  `lies providers init` wizard loops until blank input. Bumping to 1.0.0
-  for the breaking field shape.
+  `lies providers init` wizard loops until blank input. Bumping to 0.18.0;
+  the field rename is breaking but the project remains pre-1.0, so the
+  bump is the next minor.
 
 ### Removed
 
