@@ -11,11 +11,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 from pathlib import Path
 
 from lies.providers.bootstrap import ProvidersConfigMissing, write_atomic
-from lies.providers.config import ProviderSpec, load_providers_config
+from lies.providers.config import ProviderSpec, _read_api_key, load_providers_config
+from lies.providers.errors import ProviderConfigError
 from lies.providers.editor import ProvidersMutations, apply_mutations
 
 log = logging.getLogger(__name__)
@@ -65,9 +65,10 @@ def check_connectivity(target: Path) -> list[tuple[str, str, str]]:
     cfg = _load_or_raise(target)
     rows: list[tuple[str, str, str]] = []
     for name, spec in cfg.providers.items():
-        key = os.environ.get(spec.api_key_env)
-        if not key:
-            rows.append((name, "unkeyed", f"env {spec.api_key_env!r} unset"))
+        try:
+            _read_api_key(spec)
+        except ProviderConfigError as exc:
+            rows.append((name, "unkeyed", str(exc)))
             continue
         try:
             _probe(spec)
@@ -102,7 +103,7 @@ def _probe(spec: ProviderSpec) -> None:
         return
     from anthropic import AsyncAnthropic
 
-    client = AsyncAnthropic(base_url=spec.base_url, api_key=os.environ[spec.api_key_env])
+    client = AsyncAnthropic(base_url=spec.base_url, api_key=_read_api_key(spec))
     # The lightest call Anthropic-compatible endpoints expose is a
     # 1-token completion; fall back to a no-op models.list when the
     # endpoint supports it. Bridge the coroutine into the sync probe

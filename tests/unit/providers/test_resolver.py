@@ -9,13 +9,6 @@ from lies.providers.config import ProvidersConfig, ProviderSpec
 from lies.providers.resolver import resolve_model
 
 
-@pytest.fixture(autouse=True)
-def _clear_cache() -> None:
-    from lies.providers.registry import _client_for
-
-    _client_for.cache_clear()
-
-
 def _anthropic_only_config() -> ProvidersConfig:
     return ProvidersConfig(
         providers={
