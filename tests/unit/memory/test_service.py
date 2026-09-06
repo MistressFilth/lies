@@ -176,7 +176,7 @@ def test_apply_plan_rejects_raw_source_access(git_wiki: Wiki) -> None:
                 evidence=["page-1"],
             )
         ],
-        rationale="raw escape",
+        rationale="raw/ traversal",
         evidence=["page-1"],
     )
     service = WikiMemoryService(wiki=git_wiki)
