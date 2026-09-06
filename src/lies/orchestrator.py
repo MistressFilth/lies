@@ -649,6 +649,20 @@ def _format_repair_section(receipt: RepairReceipt) -> str:
     return "\n".join(lines)
 
 
+def _lint_log_title(report: LintReport) -> str:
+    """Build the ``log.md`` title for a lint pass.
+
+    Format: ``lint | N findings (<cat1>, <cat2>, ...)`` with categories
+    deduped and sorted. Empty category list → ``lint | 0 findings``.
+    """
+    categories = sorted({f.category for f in report.findings})
+    n = len(report.findings)
+    if not categories:
+        return f"lint | {n} findings"
+    cat_str = ", ".join(categories)
+    return f"lint | {n} findings ({cat_str})"
+
+
 # Module-level constants for the F2 helpers (_list_existing_pages and
 # _materialize_source). These are deterministic pure functions, not
 # agent-shaped, so they live as module-level helpers alongside the
@@ -1681,10 +1695,9 @@ class Orchestrator:
             llm_fallback_reason=fallback_reason,
         )
         (self.wiki.wiki_dir / "lint-report.md").write_text(final_md, encoding="utf-8")
-        self._append_log_entry(
-            f"## [{datetime.now(tz=UTC).date().isoformat()}] lint | "
-            f"{final_md.count(chr(10))} findings"
-        )
+        date = datetime.now(tz=UTC).date().isoformat()
+        title = _lint_log_title(merged_report)
+        self._append_log_entry(f"## [{date}] {title}")
         return final_md
 
     def _run_repair_agent(self, lint_report: LintReport) -> RepairPlan:
