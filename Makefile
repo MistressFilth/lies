@@ -43,6 +43,11 @@ features-test: ## Run behavior/feature/integration tests.
 test: ## Run all tests (unit + features/integration).
 	$(PYTEST)
 
+.PHONY: test-timer
+test-timer: ## Run unit tests with per-test timing; prints N slowest (override N=20).
+	@N=$${N:-20}; echo "==> pytest tests/unit/ --durations=$$N (top $$N slowest)"; \
+	$(PYTEST) $(TESTS)/unit/ --durations=$$N -vv --durations-min=0.0
+
 .PHONY: clean
 clean: ## Remove caches and build artifacts.
 	rm -rf \
