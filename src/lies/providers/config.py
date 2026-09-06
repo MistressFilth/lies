@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import tomllib
 from dataclasses import dataclass
 from logging import getLogger
@@ -40,6 +41,25 @@ def parse_model_string(raw: str) -> tuple[str, str]:
         msg = f"model string must be 'provider:model', got {raw!r}"
         raise ProviderConfigError(msg)
     return provider, model
+
+
+def read_api_key(spec: ProviderSpec) -> str:
+    """Return the current value of ``spec.api_key_env`` from ``os.environ``.
+
+    Re-reads ``os.environ`` on every call so token rotation is picked up
+    without restart. Raises :class:`ProviderConfigError` if the env var
+    is unset, empty, or whitespace-only. Env var VALUES are never
+    logged — only the spec NAME is emitted at debug level.
+    """
+    value = os.environ.get(spec.api_key_env)
+    if not (value and value.strip()):
+        msg = (
+            f"provider {spec.name!r}: env var {spec.api_key_env!r} "
+            f"unset or empty; set it to a non-empty value"
+        )
+        raise ProviderConfigError(msg)
+    log.debug("provider %s resolved", spec.name)
+    return value
 
 
 def load_providers_config(path: Path) -> ProvidersConfig | None:

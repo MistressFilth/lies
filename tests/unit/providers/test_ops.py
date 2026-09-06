@@ -98,10 +98,9 @@ def test_companion_missing_file_raises(tmp_path: Path) -> None:
         add_provider(target, new_spec)
 
 
-def test_check_connectivity_anthropic_compatible_ok(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setenv("MINIMAX_API_KEY", "sk-test")
+@pytest.fixture
+def fake_anthropic(monkeypatch: pytest.MonkeyPatch):
+    """Stub AsyncAnthropic + AsyncMessages for check_connectivity tests."""
 
     class _FakeMessages:
         @staticmethod
@@ -111,13 +110,22 @@ def test_check_connectivity_anthropic_compatible_ok(
 
             return _Resp()
 
+    messages = _FakeMessages()
+
     class _FakeAnthropic:
         def __init__(self, base_url, api_key):
             self.base_url = base_url
             self.api_key = api_key
-            self.messages = _FakeMessages()
+            self.messages = messages
 
     monkeypatch.setattr("anthropic.AsyncAnthropic", _FakeAnthropic)
+    return messages
+
+
+def test_check_connectivity_anthropic_compatible_ok(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_anthropic
+) -> None:
+    monkeypatch.setenv("MINIMAX_API_KEY", "sk-test")
 
     target = _seed_target(tmp_path)
     write_atomic(
@@ -151,3 +159,95 @@ def test_check_connectivity_anthropic_compatible_ok(
     status = check_connectivity(target)
     by_name = {name: st for name, st, _ in status}
     assert by_name["minimax"] == "ok"
+
+
+def test_check_connectivity_ok_when_set(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_anthropic
+) -> None:
+    """check_connectivity returns ('minimax', 'ok', ...) when the env var is set."""
+    monkeypatch.setenv("MINIMAX_API_KEY", "sk-rotation-A")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-rotation-A")
+
+    target = tmp_path / "providers.toml"
+    write_atomic(
+        target,
+        PartialConfig(
+            providers={
+                "minimax": ProviderSpec(
+                    name="minimax",
+                    type="anthropic_compatible",
+                    api_key_env="MINIMAX_API_KEY",
+                    base_url="https://api.minimax.io/anthropic",
+                ),
+                "anthropic": ProviderSpec(
+                    name="anthropic",
+                    type="anthropic",
+                    api_key_env="ANTHROPIC_API_KEY",
+                ),
+            },
+            default_model="anthropic:claude-opus-4-7",
+            agents={n: "anthropic:claude-opus-4-7" for n in AGENT_ROSTER},
+        ),
+    )
+    rows = check_connectivity(target)
+    by_name = {name: (status, detail) for name, status, detail in rows}
+    assert by_name["minimax"][0] == "ok"
+
+
+def test_check_connectivity_unkeyed_message_omits_value(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The 'unkeyed' status message names the env var but never the value."""
+    secret = "supersecret-rotation-value-A"
+    monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
+
+    target = tmp_path / "providers.toml"
+    write_atomic(
+        target,
+        PartialConfig(
+            providers={
+                "minimax": ProviderSpec(
+                    name="minimax",
+                    type="anthropic_compatible",
+                    api_key_env="MINIMAX_API_KEY",
+                    base_url="https://api.minimax.io/anthropic",
+                ),
+                "anthropic": ProviderSpec(
+                    name="anthropic",
+                    type="anthropic",
+                    api_key_env="ANTHROPIC_API_KEY",
+                ),
+            },
+            default_model="anthropic:claude-opus-4-7",
+            agents={n: "anthropic:claude-opus-4-7" for n in AGENT_ROSTER},
+        ),
+    )
+    with caplog.at_level("DEBUG", logger="lies.providers.ops"):
+        rows = check_connectivity(target)
+    by_name = {name: (status, detail) for name, status, detail in rows}
+    status, detail = by_name["minimax"]
+    assert status == "unkeyed"
+    assert "MINIMAX_API_KEY" in detail
+    assert secret not in detail
+    leaked_logs = [r for r in caplog.records if secret in r.getMessage()]
+    assert leaked_logs == [], (
+        f"env var VALUE leaked into log records: {[r.getMessage() for r in leaked_logs]}"
+    )
+
+
+def test_probe_raises_provider_config_error_on_unset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """_probe raises ProviderConfigError (no longer KeyError) when env var unset."""
+    monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
+
+    spec = ProviderSpec(
+        name="minimax",
+        type="anthropic_compatible",
+        api_key_env="MINIMAX_API_KEY",
+        base_url="https://api.minimax.io/anthropic",
+    )
+    from lies.providers.ops import _probe
+
+    with pytest.raises(ProviderConfigError, match="MINIMAX_API_KEY"):
+        _probe(spec)

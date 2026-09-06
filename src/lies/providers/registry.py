@@ -1,30 +1,19 @@
-"""Per-``ProviderSpec`` ``AsyncAnthropic`` client cache.
+"""Per-``ProviderSpec`` ``AsyncAnthropic`` client constructor.
 
-One ``AsyncAnthropic`` instance per spec for the life of the process. All
-wikis share providers, so process-scope caching is correct and avoids
-re-instantiating SDK clients on every orchestrator construction.
+Returns a fresh ``AsyncAnthropic`` instance per call, re-reading
+``os.environ`` so token rotation is picked up without restart.
 """
 
 from __future__ import annotations
 
-import os
-from functools import cache
-
 from anthropic import AsyncAnthropic
 
-from lies.providers.config import ProviderSpec
+from lies.providers.config import ProviderSpec, read_api_key
 from lies.providers.errors import ProviderConfigError
 
 
-@cache
 def _client_for(spec: ProviderSpec) -> AsyncAnthropic:
-    key = os.environ.get(spec.api_key_env)
-    if not key:
-        msg = (
-            f"provider {spec.name!r}: env var {spec.api_key_env!r} is unset. "
-            f"Set it before running LIES."
-        )
-        raise ProviderConfigError(msg)
+    key = read_api_key(spec)
     if spec.base_url is None:  # pragma: no cover — guarded by config validation
         msg = f"provider {spec.name!r}: base_url is required for anthropic_compatible providers"
         raise ProviderConfigError(msg)

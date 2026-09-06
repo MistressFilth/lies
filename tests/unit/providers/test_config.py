@@ -175,3 +175,60 @@ def test_parse_model_string_rejects_malformed() -> None:
 
     with pytest.raises(ProviderConfigError):
         parse_model_string("no-colon-here")
+
+
+def _spec(env: str = "MINIMAX_API_KEY", name: str = "minimax") -> ProviderSpec:
+    return ProviderSpec(
+        name=name,
+        type="anthropic_compatible",
+        api_key_env=env,
+        base_url="https://api.minimax.io/anthropic",
+    )
+
+
+def test_read_api_key_returns_value(monkeypatch: pytest.MonkeyPatch) -> None:
+    from lies.providers.config import read_api_key
+
+    monkeypatch.setenv("MINIMAX_API_KEY", "secret-value-A")
+    assert read_api_key(_spec()) == "secret-value-A"
+
+
+def test_read_api_key_raises_on_unset(monkeypatch: pytest.MonkeyPatch) -> None:
+    from lies.providers.config import read_api_key
+
+    monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
+    with pytest.raises(ProviderConfigError, match="MINIMAX_API_KEY"):
+        read_api_key(_spec())
+
+
+def test_read_api_key_raises_on_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+    from lies.providers.config import read_api_key
+
+    monkeypatch.setenv("MINIMAX_API_KEY", "")
+    with pytest.raises(ProviderConfigError, match="MINIMAX_API_KEY"):
+        read_api_key(_spec())
+
+
+def test_read_api_key_raises_on_whitespace(monkeypatch: pytest.MonkeyPatch) -> None:
+    from lies.providers.config import read_api_key
+
+    monkeypatch.setenv("MINIMAX_API_KEY", "   ")
+    with pytest.raises(ProviderConfigError, match="MINIMAX_API_KEY"):
+        read_api_key(_spec())
+
+
+def test_no_leak_in_logs(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+    from lies.providers.config import read_api_key
+
+    secret = "supersecret-rotated-token-xyz"
+    monkeypatch.setenv("MINIMAX_API_KEY", secret)
+    with caplog.at_level("DEBUG", logger="lies.providers.config"):
+        value = read_api_key(_spec())
+    assert value == secret
+    # Env var VALUE must never appear in any captured log record.
+    leaked = [r for r in caplog.records if secret in r.getMessage()]
+    assert leaked == [], (
+        f"env var VALUE leaked into log records: {[r.getMessage() for r in leaked]}"
+    )
+    # The env var NAME is fine to log; the spec NAME is fine to log.
+    assert any("minimax" in r.getMessage() for r in caplog.records)
