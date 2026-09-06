@@ -17,7 +17,6 @@ from lies.providers import keychain
 from lies.providers.bootstrap import ProvidersConfigMissing, write_atomic
 from lies.providers.config import ProviderSpec, load_providers_config
 from lies.providers.editor import ProvidersMutations, apply_mutations
-from lies.providers.errors import ProviderConfigError
 
 log = logging.getLogger(__name__)
 
@@ -68,7 +67,7 @@ def check_connectivity(target: Path) -> list[tuple[str, str, str]]:
     for name, spec in cfg.providers.items():
         try:
             keychain.resolve_api_key(spec)
-        except ProviderConfigError as exc:
+        except keychain.ProviderConfigError as exc:
             rows.append((name, "unkeyed", str(exc)))
             continue
         try:

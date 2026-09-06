@@ -226,3 +226,24 @@ def test_load_accepts_single_element_list(tmp_path: Path) -> None:
 
     cfg: ProvidersConfig = load_providers_config(path)
     assert cfg.providers["anthropic"].api_key_envs == ("MINIMAX_API_KEY",)
+
+
+def test_legacy_api_key_env_ignored(tmp_path, monkeypatch):
+    """A TOML with only the legacy `api_key_env` key fails the validator.
+
+    Locks in the hard cutover: the loader does NOT parse `api_key_env`.
+    Old TOML files get the standard "api_key_envs must list ≥1 env var
+    name" error, not a rename hint, not silent acceptance.
+    """
+    from lies.providers.config import load_providers_config, ProviderConfigError
+
+    providers_path = tmp_path / "providers.toml"
+    providers_path.write_text(
+        "[providers.anthropic]\n"
+        'type = "anthropic"\n'
+        'api_key_env = "ANTHROPIC_API_KEY"\n'
+        'default_model = "anthropic:claude-sonnet-4-5"\n'
+    )
+    monkeypatch.setenv("LIES_PROVIDERS_PATH", str(providers_path))
+    with pytest.raises(ProviderConfigError, match="≥1"):
+        load_providers_config(path=providers_path)
