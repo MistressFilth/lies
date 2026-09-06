@@ -18,12 +18,12 @@ def _write_providers_toml(providers_path: Path) -> None:
 
         [providers.anthropic]
         type = "anthropic"
-        api_key_env = "ANTHROPIC_API_KEY"
+        api_key_envs = ["ANTHROPIC_API_KEY"]
 
         [providers.minimax]
         type = "anthropic_compatible"
         base_url = "https://api.minimax.io/anthropic"
-        api_key_env = "MINIMAX_API_KEY"
+        api_key_envs = ["MINIMAX_API_KEY"]
 
         [agents]
     """

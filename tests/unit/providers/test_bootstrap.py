@@ -146,7 +146,8 @@ def test_step_providers_appends_minimax(monkeypatch: pytest.MonkeyPatch) -> None
         [
             "minimax",  # provider name
             "anthropic_compatible",  # type
-            "MINIMAX_API_KEY",  # api_key_env
+            "MINIMAX_API_KEY",  # api_key_envs #1
+            "",  # blank -> finish chain
             "https://api.minimax.io/anthropic",  # base_url
             "",  # blank -> stop loop
         ]
@@ -159,6 +160,7 @@ def test_step_providers_appends_minimax(monkeypatch: pytest.MonkeyPatch) -> None
     assert "minimax" in partial.providers
     assert partial.providers["minimax"].type == "anthropic_compatible"
     assert partial.providers["minimax"].base_url == "https://api.minimax.io/anthropic"
+    assert partial.providers["minimax"].api_key_envs == ("MINIMAX_API_KEY",)
 
 
 def test_step_agents_mirrors_roster(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -195,7 +197,8 @@ def test_run_wizard_happy_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
         [
             "minimax",  # provider name
             "anthropic_compatible",
-            "MINIMAX_API_KEY",
+            "MINIMAX_API_KEY",  # api_key_envs #1
+            "",  # blank -> finish chain
             "https://api.minimax.io/anthropic",
             "",  # blank: stop catalog loop
             "minimax:minimax-m3",  # default model — minimax is now declared
@@ -241,6 +244,7 @@ def test_run_wizard_aborts_leave_file_untouched(
             "minimax",
             "anthropic_compatible",
             "MINIMAX_API_KEY",
+            "",  # blank -> finish chain
             "https://api.minimax.io/anthropic",
             "",  # catalog
             "bogus:provider",  # bad model -> BootstrapAborted
@@ -275,6 +279,7 @@ def test_run_wizard_writes_env_file_0600(tmp_path: Path, monkeypatch: pytest.Mon
             "minimax",
             "anthropic_compatible",
             "MINIMAX_API_KEY",
+            "",  # blank -> finish chain
             "https://api.minimax.io/anthropic",
             "",
             "minimax:minimax-m3",
@@ -321,6 +326,7 @@ def test_run_wizard_reload_error_aborts_no_env_file(
             "minimax",
             "anthropic_compatible",
             "MINIMAX_API_KEY",
+            "",  # blank -> finish chain
             "https://api.minimax.io/anthropic",
             "",  # stop catalog loop
             "minimax:minimax-m3",  # default_model
@@ -364,6 +370,7 @@ def test_run_wizard_no_seed_means_anthropic_absent(
             "minimax",
             "anthropic_compatible",
             "MINIMAX_API_KEY",
+            "",  # blank -> finish chain
             "https://api.minimax.io/anthropic",
             "",  # blank to stop
             "minimax:minimax-m3",  # default model
@@ -398,6 +405,7 @@ def test_run_wizard_requires_at_least_one_provider(
             "minimax",  # iter 2: name
             "anthropic_compatible",
             "MINIMAX_API_KEY",
+            "",  # blank -> finish chain
             "https://api.minimax.io/anthropic",
             "",  # blank at iter 3: stop
             "minimax:minimax-m3",
@@ -440,7 +448,8 @@ def test_run_wizard_can_declare_one_provider_and_proceed(
         [
             "anthropic",  # name (catalog iter 1)
             "anthropic",  # type
-            "ANTHROPIC_API_KEY",  # api_key_env
+            "ANTHROPIC_API_KEY",  # api_key_envs #1
+            "",  # blank -> finish chain
             "",  # blank -> stop catalog loop
             "anthropic:claude-opus-4-7",  # default model
             "yes",  # assign default to every agent (so reload succeeds)
@@ -480,7 +489,8 @@ def test_run_wizard_providers_step_runs_unconditionally(
         [
             "anthropic",  # provider name (catalog iter 1)
             "anthropic",  # type
-            "ANTHROPIC_API_KEY",  # api_key_env
+            "ANTHROPIC_API_KEY",  # api_key_envs #1
+            "",  # blank -> finish chain
             "",  # blank name -> catalog loop exit
             "anthropic:claude-opus-4-7",  # default model
             "yes",  # assign default to every agent (so reload succeeds)
@@ -516,6 +526,60 @@ def test_run_wizard_providers_step_runs_unconditionally(
     # satisfy the existence checks but fail the index ordering.
     name_idx = prompts.index("  provider name (e.g. anthropic)")
     type_idx = prompts.index("  type (anthropic|anthropic_compatible)")
-    api_idx = prompts.index("  api_key_env name (e.g. MINIMAX_API_KEY)")
+    api_idx = prompts.index("  api_key_env #1 name (blank to finish)")
     default_model_idx = prompts.index("Default model (provider:model) — blank to keep")
     assert name_idx < type_idx < api_idx < default_model_idx
+
+
+def test_wizard_prompts_chain_until_blank(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Wizard collects env-var names until blank input, returns tuple.
+
+    The new chain prompt loops: each non-blank answer appends to the
+    spec's ``api_key_envs`` tuple; blank answer terminates the loop
+    and constructs the ProviderSpec.
+    """
+    partial = _partial_min()
+    answers = iter(
+        [
+            "minimax",  # provider name
+            "anthropic_compatible",  # type
+            "MINIMAX_API_KEY",  # api_key_envs entry #1
+            "",  # blank -> finish chain
+            "https://api.minimax.io/anthropic",  # base_url
+            "",  # blank -> stop catalog loop
+        ]
+    )
+
+    def prompt(label: str, default: str) -> str:
+        return next(answers)
+
+    step_providers(partial, prompt=prompt)
+    assert "minimax" in partial.providers
+    assert partial.providers["minimax"].api_key_envs == ("MINIMAX_API_KEY",)
+
+
+def test_wizard_prompts_chain_multiple(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Multiple env-var names are all captured in declaration order."""
+    partial = _partial_min()
+    answers = iter(
+        [
+            "minimax",  # provider name
+            "anthropic_compatible",  # type
+            "MINIMAX_API_KEY",  # api_key_envs entry #1
+            "ANTHROPIC_API_KEY",  # api_key_envs entry #2
+            "OPENAI_API_KEY",  # api_key_envs entry #3
+            "",  # blank -> finish chain
+            "https://api.minimax.io/anthropic",  # base_url
+            "",  # blank -> stop catalog loop
+        ]
+    )
+
+    def prompt(label: str, default: str) -> str:
+        return next(answers)
+
+    step_providers(partial, prompt=prompt)
+    assert partial.providers["minimax"].api_key_envs == (
+        "MINIMAX_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "OPENAI_API_KEY",
+    )

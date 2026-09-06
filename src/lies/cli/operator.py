@@ -495,11 +495,14 @@ def providers_add(
         "-t",
         help="Provider type (anthropic, openai, anthropic_compatible, ollama).",
     ),
-    api_key_env: str = typer.Option(
-        ...,
+    api_key_env: list[str] = typer.Option(
+        [],
         "--api-key-env",
         "-e",
-        help="Name of the environment variable holding the provider's API key.",
+        help=(
+            "Name of the environment variable holding the provider's API key. "
+            "Repeatable; chain in priority order."
+        ),
     ),
     base_url: str | None = typer.Option(
         None,
@@ -527,7 +530,7 @@ def providers_add(
     spec = ProviderSpec(
         name=name_arg,
         type=cast(Any, type_),
-        api_key_envs=(api_key_env,),
+        api_key_envs=tuple(api_key_env),
         base_url=base_url,
     )
     try:

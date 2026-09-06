@@ -216,3 +216,70 @@ def test_no_hint_when_isatty_false(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     Wiki.data_root_for("default").mkdir(parents=True, exist_ok=True)
     result = runner.invoke(app, ["config", "--name", "default"])
     assert "providers init" not in (result.stderr or "")
+
+
+def test_add_repeated_e_flag(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """``-e A -e B`` writes the providers.toml with ``api_key_envs = ['A', 'B']``.
+
+    Verifies the Typer ``tuple[str, ...]`` option binding so the
+    operator can declare a fallback chain through repeated flags.
+    """
+    import tomllib
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    _seed(tmp_path)
+    result = runner.invoke(
+        app,
+        [
+            "providers",
+            "add",
+            "minimax",
+            "--type",
+            "anthropic_compatible",
+            "-e",
+            "MINIMAX_API_KEY",
+            "-e",
+            "ANTHROPIC_API_KEY",
+            "--base-url",
+            "https://api.minimax.io/anthropic",
+            "--name",
+            "default",
+        ],
+    )
+    assert result.exit_code == 0, _combined(result)
+    target = tmp_path / "lies" / "providers.toml"
+    with target.open("rb") as f:
+        data = tomllib.load(f)
+    assert data["providers"]["minimax"]["api_key_envs"] == [
+        "MINIMAX_API_KEY",
+        "ANTHROPIC_API_KEY",
+    ]
+
+
+def test_add_single_e_flag(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """``-e A`` (single repetition) writes a single-element list."""
+    import tomllib
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    _seed(tmp_path)
+    result = runner.invoke(
+        app,
+        [
+            "providers",
+            "add",
+            "minimax",
+            "--type",
+            "anthropic_compatible",
+            "-e",
+            "MINIMAX_API_KEY",
+            "--base-url",
+            "https://api.minimax.io/anthropic",
+            "--name",
+            "default",
+        ],
+    )
+    assert result.exit_code == 0, _combined(result)
+    target = tmp_path / "lies" / "providers.toml"
+    with target.open("rb") as f:
+        data = tomllib.load(f)
+    assert data["providers"]["minimax"]["api_key_envs"] == ["MINIMAX_API_KEY"]

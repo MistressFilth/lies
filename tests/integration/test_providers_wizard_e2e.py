@@ -32,7 +32,8 @@ def test_wizard_dry_run(tmp_path):
         "yes\n"  # edit providers catalog?
         "minimax\n"  # provider name
         "anthropic_compatible\n"  # type
-        "MINIMAX_API_KEY\n"  # api_key_env
+        "MINIMAX_API_KEY\n"  # api_key_envs #1
+        "\n"  # blank -> finish chain
         "https://api.minimax.io/anthropic\n"  # base_url
         "\n"  # blank -> stop providers
         "yes\n"  # assign to all agents
@@ -60,7 +61,7 @@ def test_wizard_dry_run(tmp_path):
 
     minimax = loaded.providers["minimax"]
     assert minimax.type == "anthropic_compatible"
-    assert minimax.api_key_env == "MINIMAX_API_KEY"
+    assert minimax.api_key_envs == ("MINIMAX_API_KEY",)
     assert minimax.base_url == "https://api.minimax.io/anthropic"
 
     assert set(AGENT_ROSTER) <= set(loaded.agents), (

@@ -38,10 +38,10 @@ def seeded_providers_toml(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Pa
             """\
             default_model = "minimax:default"
             [providers.minimax]
-            api_key_env = "MINIMAX_API_KEY"
+            api_key_envs = ["MINIMAX_API_KEY"]
 
             [providers.local-ollama]
-            api_key_env = "OLLAMA_API_KEY"
+            api_key_envs = ["OLLAMA_API_KEY"]
 
             [agents]
             orchestrator = "minimax:claude-opus"
