@@ -130,6 +130,16 @@ All notable changes to LIES are documented here. The format follows
   its claims, surfaces disagreements between pages, and says what the
   wiki does not know. When the model is unavailable the previous
   extractive output is returned unchanged and `synthesis_used` is False.
+- **providers:** rename `api_key_env` (single string) to `api_key_envs`
+  (tuple) for env-var fallback chains. Hard cutover — `providers.toml`
+  entries with `api_key_env = "X"` must rename to `api_key_envs = ["X"]`;
+  no legacy parse path. Central resolver at
+  `src/lies/providers/keychain.py` memoizes the chosen name per process
+  and re-reads env values live so token rotation is picked up without
+  a restart; `resolve_api_key` emits `provider <name> resolved via <env>`
+  at `DEBUG`. CLI `lies providers add -e NAME` is now repeatable; the
+  `lies providers init` wizard loops until blank input. Bumping to 1.0.0
+  for the breaking field shape.
 
 ### Removed
 

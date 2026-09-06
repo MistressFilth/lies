@@ -242,7 +242,7 @@ The wizard walks three steps — provider catalog → default model → per-agen
 
 ```bash
 uv run lies providers add <name> --type anthropic_compatible \
-    --api-key-env MINIMAX_API_KEY \
+    -e MINIMAX_API_KEY -e ANTHROPIC_API_KEY \
     --base-url https://api.minimax.io/anthropic
 
 uv run lies providers assign source_reader minimax:MiniMax-M3
@@ -261,12 +261,12 @@ LIES reads `$XDG_CONFIG_HOME/lies/providers.toml` at orchestrator construction. 
 ```toml
 [providers.anthropic]
 type = "anthropic"
-api_key_env = "ANTHROPIC_API_KEY"
+api_key_envs = ["ANTHROPIC_API_KEY"]
 
 [providers.minimax]
 type = "anthropic_compatible"
 base_url = "https://api.minimax.io/anthropic"
-api_key_env = "MINIMAX_API_KEY"
+api_key_envs = ["MINIMAX_API_KEY", "ANTHROPIC_API_KEY"]
 
 default_model = "anthropic:claude-opus-4-7"
 
@@ -277,6 +277,8 @@ source_reader = "minimax:MiniMax-M3"
 ```
 
 `type = "anthropic"` resolves through pydantic-ai's built-in provider. `type = "anthropic_compatible"` constructs an `AnthropicModel` directly with a custom `AsyncAnthropic(base_url=..., api_key=...)`.
+
+`api_key_envs = [...]` lists env-var names in priority order; the first non-empty entry wins, so a stale primary credential no longer blocks synthesis once a backup env var is set. Values are re-read live, so rotating tokens mid-process is picked up without a restart.
 
 `lies config` prints every agent and its resolved model. Missing `providers.toml` is non-fatal — every agent falls back to `default_model` and a warning names the expected path.
 
