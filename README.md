@@ -323,7 +323,7 @@ The orchestrator owns cross-cutting `pydantic-ai-harness` capabilities:
 - Shell — `qmd` and `git` allowlist.
 
 `qmd` provides hybrid search (BM25 + vector + rerank) via MCP (primary) and CLI
-shell-out (for `qmd update` after ingest and `qmd status` for diagnostics).
+shell-out (for `qmd status` diagnostics).
 
 ### Storage layout
 

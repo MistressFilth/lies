@@ -40,18 +40,16 @@ def _gitignore_lines() -> tuple[str, ...]:
     """Lines seeded into a fresh wiki's ``.gitignore``.
 
     ``.lies/`` covers every runtime artifact under the sidecar
-    directory. The explicit ``catalog.db*`` entries below are
-    documentation of the sqlite catalog and its WAL siblings; the
-    seeded ``.gitignore`` lives at the repo root, so the root-anchored
-    patterns only ever apply if the operator widens or relocates the
-    directory-wide rule (see P3 in the project TODO).
+    directory. The catalog itself lives at
+    ``<wiki>/wiki/.lies/catalog.db`` (not at the wiki root), so the
+    ``wiki/`` prefix on the ``catalog.db*`` pattern below is required
+    to match — root-anchored entries never match the real path. The
+    glob subsumes the database, WAL, and SHM siblings.
     """
     return (
         ".lies/",
         ".lies/memory_plans.jsonl",
-        ".lies/catalog.db",
-        ".lies/catalog.db-wal",
-        ".lies/catalog.db-shm",
+        "wiki/.lies/catalog.db*",
     )
 
 

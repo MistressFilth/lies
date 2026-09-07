@@ -51,18 +51,18 @@ def test_git_init_initial_writes_gitignore_excluding_lies(tmp_path: Path) -> Non
     assert ".lies/\n" in gitignore.read_text(encoding="utf-8")
 
 
-def test_gitignore_lines_cover_catalog_db(tmp_path: Path) -> None:
-    """The seeded gitignore covers ``catalog.db`` and its WAL siblings."""
-    lines = _gitignore_lines()
-    assert ".lies/catalog.db" in lines
-    assert ".lies/catalog.db-wal" in lines
-    assert ".lies/catalog.db-shm" in lines
+def test_gitignore_lines_includes_catalog_pattern() -> None:
+    """The catalog entry is anchored under ``wiki/``; root-anchored entries are gone.
 
-    WikiLayout(tmp_path).init()
-    git_init_initial(tmp_path)
-    written = (tmp_path / ".gitignore").read_text(encoding="utf-8")
-    for line in lines:
-        assert f"{line}\n" in written
+    The catalog lives at ``<wiki>/wiki/.lies/catalog.db`` (not at the
+    wiki root), so a single ``wiki/.lies/catalog.db*`` pattern
+    subsumes the database, WAL, and SHM siblings.
+    """
+    lines = _gitignore_lines()
+    assert any("wiki/.lies/catalog.db*" in line for line in lines)
+    assert not any(line.startswith(".lies/catalog.db") for line in lines), (
+        "root-anchored entries should be removed"
+    )
 
 
 def test_git_init_initial_does_not_clobber_existing_gitignore(tmp_path: Path) -> None:

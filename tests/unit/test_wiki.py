@@ -34,6 +34,14 @@ def test_require_raises_when_unregistered(monkeypatch: pytest.MonkeyPatch, tmp_p
     assert exc.value.name == "ghost"
 
 
+def test_wiki_not_registered_message_includes_full_data_root(tmp_path, monkeypatch):
+    monkeypatch.setattr("lies.wiki.wiki.xdg.data_home", lambda: tmp_path)
+    with pytest.raises(WikiNotRegistered) as exc_info:
+        Wiki.require("ghost")
+    expected = tmp_path / "lies" / "ghost"
+    assert str(expected) in str(exc_info.value)
+
+
 def test_require_succeeds_after_data_root_mkdir(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     _patch_xdg(monkeypatch, tmp_path)
     Wiki.data_root_for("mywiki").mkdir(parents=True)
@@ -64,3 +72,28 @@ def test_wiki_memory_lock_paths_use_runtime_root(monkeypatch: pytest.MonkeyPatch
     assert wiki.memory_create_lock_path == expected_base / "memory.lock.create"
     assert wiki.memory_pid_path == expected_base / "memory.pid"
     assert wiki.memory_heartbeat_path == expected_base / "memory.state.json"
+
+
+def test_wiki_require_probes_default_fallback(tmp_path, monkeypatch):
+    monkeypatch.setattr("lies.wiki.wiki.xdg.data_home", lambda: tmp_path)
+    # primary <tmp>/lies/default does NOT exist
+    fallback = tmp_path / "lies" / "wiki"
+    fallback.mkdir(parents=True)
+    wiki = Wiki.require("default")
+    assert wiki.data_root == fallback
+
+
+def test_wiki_require_primary_wins_over_fallback(tmp_path, monkeypatch):
+    monkeypatch.setattr("lies.wiki.wiki.xdg.data_home", lambda: tmp_path)
+    primary = tmp_path / "lies" / "default"
+    primary.mkdir(parents=True)
+    fallback = tmp_path / "lies" / "wiki"
+    fallback.mkdir(parents=True)
+    wiki = Wiki.require("default")
+    assert wiki.data_root == primary
+
+
+def test_wiki_require_no_fallback_for_other_names(tmp_path, monkeypatch):
+    monkeypatch.setattr("lies.wiki.wiki.xdg.data_home", lambda: tmp_path)
+    with pytest.raises(WikiNotRegistered):
+        Wiki.require("claude-code")

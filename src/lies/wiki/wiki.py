@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -9,6 +10,24 @@ from lies import xdg
 from lies.constants import LIES_DATA_SUBDIR
 from lies.errors import WikiNotRegistered
 from lies.wiki.validation import validate_name
+
+
+# Per-name migration fallback table. Maps wiki name -> a no-arg callable
+# returning a tuple of alternative data_root paths to probe in order if
+# the primary (``xdg.data_home() / LIES_DATA_SUBDIR / <name>``) does
+# not exist. Callables (not static tuples) so each call re-resolves
+# ``xdg.data_home()`` — tests monkeypatch ``xdg.data_home`` and expect
+# the fallback to track the patched value. First existing wins. The
+# returned Wiki keeps the requested ``name``; only ``data_root`` falls
+# back — other xdg-role paths (config_root, cache_root, state_root,
+# runtime_root) still resolve via ``name``.
+#
+# 2026-08-15: default wiki's data_root was renamed from
+# <xdg>/lies/default/ to <xdg>/lies/wiki/ during the bare-repo
+# migration. Only the default wiki has this history.
+_MIGRATION_FALLBACKS: dict[str, Callable[[], tuple[Path, ...]]] = {
+    "default": lambda: (xdg.data_home() / LIES_DATA_SUBDIR / "wiki",),
+}
 
 
 @dataclass(frozen=True)
@@ -30,8 +49,16 @@ class Wiki:
     @classmethod
     def require(cls, name: str) -> Wiki:
         validate_name(name)
-        data_root = cls.data_root_for(name)
-        if not data_root.exists():
+        primary = cls.data_root_for(name)
+        builder = _MIGRATION_FALLBACKS.get(name)
+        fallbacks: tuple[Path, ...] = builder() if builder else ()
+        candidates = (primary, *fallbacks)
+        data_root: Path | None = None
+        for candidate in candidates:
+            if candidate.exists():
+                data_root = candidate
+                break
+        if data_root is None:
             raise WikiNotRegistered(name, xdg.data_home())
         return cls(
             name=name,
