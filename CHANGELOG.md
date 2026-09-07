@@ -54,6 +54,9 @@ All notable changes to LIES are documented here. The format follows
 
 ### Added
 
+- F39: `lies page write` CLI + MCP `file_knowledge` tool for direct page authoring.
+- F12: MCP `ctx.elicit` collision gate (overwrite/rename/cancel) on `file_knowledge`.
+- Refactor: `build_synthesis_plan` collapsed into `build_author_plan(type="synthesis", ...)`. F3 behavior preserved by regression-test pins.
 - F4b + F16 — wiki catalog port. A sqlite database at
   `<wiki>/wiki/.lies/catalog.db` (WAL journal mode +
   `busy_timeout=5000`) replaces `wiki/index.md` as the catalog
