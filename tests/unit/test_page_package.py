@@ -48,11 +48,16 @@ def test_build_author_plan_is_callable():
     assert callable(build_author_plan)
 
 
-def test_build_author_plan_not_implemented_yet():
-    """Skeleton raises NotImplementedError until Task 2 implements it."""
+def test_build_author_plan_not_implemented_for_overview():
+    """overview branch raises NotImplementedError (lands in Task 3).
+
+    Task 2 implemented the non-synthesis branch. The overview and
+    synthesis branches remain pending; this test pins that overview
+    still raises until Task 3 lands.
+    """
     with pytest.raises(NotImplementedError):
         build_author_plan(
-            type="concept",
+            type="overview",
             collection="claude-code",
             slug="hooks",
             title="Hooks",
