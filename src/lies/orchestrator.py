@@ -1206,6 +1206,9 @@ class Orchestrator:
         apply-with-retry envelope. Never raises — the operator always
         sees a receipt, even on exhaustion or unexpected exceptions.
         """
+        self._memory_service.register_evidence(
+            {ref for op in plan.operations for ref in op.evidence}
+        )
         last_exc: BaseException | None = None
         for attempt in range(3):
             try:

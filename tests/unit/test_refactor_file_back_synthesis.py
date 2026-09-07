@@ -44,7 +44,7 @@ def _orch(tmp_path: Path) -> "Orchestrator":  # noqa: F821
     with patch("lies.orchestrator.Orchestrator.__init__", lambda self, wiki: None):
         orch = Orchestrator.__new__(Orchestrator)
     orch.wiki = wiki
-    orch._memory_service = MagicMock()
+    orch._memory_service = MagicMock(register_evidence=MagicMock())
     orch._memory_service.apply_plan = MagicMock(
         return_value=MemoryReceipt(
             changed_pages=[],

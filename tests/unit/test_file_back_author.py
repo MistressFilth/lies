@@ -62,9 +62,49 @@ def orch(tmp_path: Path) -> Orchestrator:
     with patch("lies.orchestrator.Orchestrator.__init__", lambda self, wiki: None):
         orch = Orchestrator.__new__(Orchestrator)
     orch.wiki = wiki
-    orch._memory_service = MagicMock()
+    orch._memory_service = MagicMock(register_evidence=MagicMock())
     orch._memory_service.apply_plan = MagicMock(return_value=_receipt_ok())
     return orch
+
+
+def test_register_evidence_called_before_apply_plan(orch: Orchestrator) -> None:
+    plan = MemoryPlan(
+        operations=[
+            PageCreate(
+                path="c/concepts/first.md",
+                content="first",
+                evidence=["c/first", "shared/ref"],
+                tag="author",
+            ),
+            PageCreate(
+                path="c/concepts/second.md",
+                content="second",
+                evidence=["c/second", "shared/ref"],
+                tag="author",
+            ),
+        ],
+        rationale="author",
+        evidence=["plan-level/ref"],
+    )
+    events: list[str] = []
+
+    def record_register(_references: set[str]) -> None:
+        events.append("register")
+
+    def record_apply(_plan: MemoryPlan) -> MemoryReceipt:
+        events.append("apply")
+        return _receipt_ok()
+
+    orch._memory_service.register_evidence.side_effect = record_register
+    orch._memory_service.apply_plan.side_effect = record_apply
+
+    receipt = orch.file_back_author(plan)
+
+    orch._memory_service.register_evidence.assert_called_once_with(
+        {"c/first", "c/second", "shared/ref"}
+    )
+    assert events == ["register", "apply"]
+    assert receipt.errors == []
 
 
 def test_success_on_first_attempt(orch: Orchestrator) -> None:
