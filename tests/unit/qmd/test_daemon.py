@@ -57,6 +57,7 @@ def test_ensure_qmd_daemon_reaps_on_mismatch(
     spawn_called: list[bool] = []
     monkeypatch.setattr(qmd_daemon, "_reap_qmd_daemon", lambda: reap_called.append(True))
     monkeypatch.setattr(qmd_daemon, "_spawn_qmd_daemon", lambda: spawn_called.append(True))
+    monkeypatch.setattr(qmd_daemon, "qmd_installed", lambda: True)
     qmd_daemon.ensure_qmd_daemon(data_dir=tmp_path / "fresh")
     assert reap_called == [True]
     assert spawn_called == [True]
