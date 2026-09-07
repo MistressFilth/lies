@@ -235,7 +235,7 @@ class _CollisionVerdict(BaseModel):
         "on plan-invalid input."
     ),
 )
-def file_knowledge(
+async def file_knowledge(
     page_type: str,
     collection: str,
     slug: str,
@@ -259,12 +259,15 @@ def file_knowledge(
     if (wiki.wiki_dir / rel_path).exists() and not force:
         if ctx is None:
             raise ToolError(f"page exists at {rel_path}; pass force=True to overwrite")
-        verdict = ctx.elicit(
+        verdict = await ctx.elicit(
             f"page already exists at {rel_path}; overwrite, rename, or cancel?",
             response_type=_CollisionVerdict,
         )
-        action = verdict.action  # type: ignore[attr-defined]  # ty: ignore[unresolved-attribute]
-        if action == "cancel":
+        # FastMCP wraps the response: AcceptedElicitation has .action == "accept"
+        # and .data == <_CollisionVerdict>; DeclinedElicitation / CancelledElicitation
+        # carry no user payload. Branch on the wrapper action first; only on "accept"
+        # read the user's choice from .data.
+        if verdict.action == "cancel":
             return WriteKnowledgeResult(
                 page_path=None,
                 page_type=page_type,
@@ -279,16 +282,52 @@ def file_knowledge(
                     "errors": ["cancelled by operator"],
                 },
             ).model_dump()
-        if action == "rename":
-            new_slug = getattr(verdict, "new_slug", None)
-            if not new_slug:
-                raise ToolError("rename requires new_slug")
-            slug = new_slug
-            rel_path = (
-                "wiki/overview.md"
-                if page_type == "overview"
-                else f"{collection}/{_TYPE_PLURAL_MCP[page_type]}/{new_slug}.md"
-            )
+        if verdict.action == "decline":
+            # Treat decline the same as cancel: no write, return a cancelled receipt.
+            return WriteKnowledgeResult(
+                page_path=None,
+                page_type=page_type,
+                slug=slug,
+                collection=collection,
+                op="none",
+                receipt={
+                    "changed_pages": [],
+                    "deferred": [],
+                    "fallback_used": False,
+                    "fallback_reason": "",
+                    "errors": ["cancelled by operator"],
+                },
+            ).model_dump()
+        if verdict.action == "accept":
+            user_action = verdict.data.action
+            if user_action == "rename":
+                new_slug = verdict.data.new_slug
+                if not new_slug:
+                    raise ToolError("rename requires new_slug")
+                slug = new_slug
+                rel_path = (
+                    "wiki/overview.md"
+                    if page_type == "overview"
+                    else f"{collection}/{_TYPE_PLURAL_MCP[page_type]}/{new_slug}.md"
+                )
+            elif user_action == "cancel":
+                return WriteKnowledgeResult(
+                    page_path=None,
+                    page_type=page_type,
+                    slug=slug,
+                    collection=collection,
+                    op="none",
+                    receipt={
+                        "changed_pages": [],
+                        "deferred": [],
+                        "fallback_used": False,
+                        "fallback_reason": "",
+                        "errors": ["cancelled by operator"],
+                    },
+                ).model_dump()
+            # user_action == "overwrite" falls through; proceed to build_author_plan
+        else:  # pragma: no cover  # unknown wrapper action
+            raise ToolError(f"unexpected elicit verdict action: {verdict.action}")
 
     orch = Orchestrator(wiki=wiki)
     try:

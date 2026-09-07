@@ -1,34 +1,77 @@
-"""Tests for file_knowledge with mocked Context returning elicit verdicts."""
+"""Tests for file_knowledge with mocked Context returning elicit verdicts.
+
+FastMCP's ``ctx.elicit`` returns one of three wrapper types whose ``.action``
+distinguishes the outcome:
+
+- ``AcceptedElicitation[T]`` — ``.action == "accept"``; the user's choice
+  lives at ``.data`` (here a ``_CollisionVerdict`` with ``.action`` and
+  ``.new_slug``).
+- ``DeclinedElicitation`` — ``.action == "decline"``.
+- ``CancelledElicitation`` — ``.action == "cancel"``.
+
+These tests use ``AsyncMock`` (because ``ctx.elicit`` is a coroutine) and
+construct real ``AcceptedElicitation`` instances via FastMCP's exported
+wrapper so the contract under test matches what production will see.
+"""
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from fastmcp.server.elicitation import AcceptedElicitation
 
 from lies.memory.models import MemoryReceipt, PageReference
 from lies.memory.models import OperationKind
 
 
-class _Verdict:
-    def __init__(self, action, new_slug=None):
-        self.action = action
-        self.new_slug = new_slug
+# FastMCP does not re-export ``DeclinedElicitation`` / ``CancelledElicitation``
+# (only ``AcceptedElicitation``), so we import them from the underlying
+# ``mcp.server.elicitation`` module which FastMCP's wrappers delegate to.
+from mcp.server.elicitation import (  # noqa: E402
+    CancelledElicitation,
+    DeclinedElicitation,
+)
 
 
 @pytest.fixture
 def ctx_overwrite():
-    return MagicMock(elicit=MagicMock(return_value=_Verdict("overwrite")))
+    """Mock Context where the user accepts and chooses 'overwrite'."""
+    return MagicMock(
+        elicit=AsyncMock(
+            return_value=AcceptedElicitation(
+                data=_CollisionVerdict(action="overwrite", new_slug=None),
+            ),
+        ),
+    )
 
 
 @pytest.fixture
 def ctx_rename():
-    return MagicMock(elicit=MagicMock(return_value=_Verdict("rename", new_slug="hooks-v2")))
+    """Mock Context where the user accepts and chooses 'rename' with a slug."""
+    return MagicMock(
+        elicit=AsyncMock(
+            return_value=AcceptedElicitation(
+                data=_CollisionVerdict(action="rename", new_slug="hooks-v2"),
+            ),
+        ),
+    )
 
 
 @pytest.fixture
 def ctx_cancel():
-    return MagicMock(elicit=MagicMock(return_value=_Verdict("cancel")))
+    """Mock Context where the user cancels the elicitation at the wrapper level."""
+    return MagicMock(
+        elicit=AsyncMock(return_value=CancelledElicitation()),
+    )
+
+
+@pytest.fixture
+def ctx_decline():
+    """Mock Context where the user declines the elicitation at the wrapper level."""
+    return MagicMock(
+        elicit=AsyncMock(return_value=DeclinedElicitation()),
+    )
 
 
 def _setup():
@@ -55,7 +98,22 @@ def _setup():
     return wiki, orch
 
 
-def test_elicit_overwrite_proceeds_with_existing_path(ctx_overwrite):
+class _CollisionVerdict:
+    """Verdict the user submits inside an ``AcceptedElicitation.data``.
+
+    Mirrors ``lies.mcp.server._CollisionVerdict`` but is duck-typed here so
+    the test does not depend on the server module's import order. The two
+    literals must stay in sync (``Literal["overwrite", "rename", "cancel"]``).
+    """
+
+    __slots__ = ("action", "new_slug")
+
+    def __init__(self, action: str, new_slug: str | None = None) -> None:
+        self.action = action
+        self.new_slug = new_slug
+
+
+async def test_elicit_overwrite_proceeds_with_existing_path(ctx_overwrite):
     from unittest.mock import patch
 
     from lies.mcp.server import file_knowledge
@@ -65,7 +123,7 @@ def test_elicit_overwrite_proceeds_with_existing_path(ctx_overwrite):
         patch("lies.mcp.server.resolve_wiki", return_value=wiki),
         patch("lies.mcp.server.Orchestrator", return_value=orch),
     ):
-        result = file_knowledge(
+        result = await file_knowledge(
             page_type="concept",
             collection="claude-code",
             slug="hooks",
@@ -77,7 +135,7 @@ def test_elicit_overwrite_proceeds_with_existing_path(ctx_overwrite):
     assert orch.file_back_author.call_count == 1
 
 
-def test_elicit_rename_uses_new_slug(ctx_rename):
+async def test_elicit_rename_uses_new_slug(ctx_rename):
     from unittest.mock import patch
 
     from lies.mcp.server import file_knowledge
@@ -87,7 +145,7 @@ def test_elicit_rename_uses_new_slug(ctx_rename):
         patch("lies.mcp.server.resolve_wiki", return_value=wiki),
         patch("lies.mcp.server.Orchestrator", return_value=orch),
     ):
-        result = file_knowledge(
+        result = await file_knowledge(
             page_type="concept",
             collection="claude-code",
             slug="hooks",
@@ -99,7 +157,7 @@ def test_elicit_rename_uses_new_slug(ctx_rename):
     assert "hooks-v2.md" in result["page_path"]
 
 
-def test_elicit_cancel_returns_cancelled_receipt(ctx_cancel):
+async def test_elicit_cancel_returns_cancelled_receipt(ctx_cancel):
     from unittest.mock import patch
 
     from lies.mcp.server import file_knowledge
@@ -109,7 +167,7 @@ def test_elicit_cancel_returns_cancelled_receipt(ctx_cancel):
         patch("lies.mcp.server.resolve_wiki", return_value=wiki),
         patch("lies.mcp.server.Orchestrator", return_value=orch),
     ):
-        result = file_knowledge(
+        result = await file_knowledge(
             page_type="concept",
             collection="claude-code",
             slug="hooks",
@@ -122,7 +180,31 @@ def test_elicit_cancel_returns_cancelled_receipt(ctx_cancel):
     assert orch.file_back_author.call_count == 0
 
 
-def test_elicit_rename_without_new_slug_raises_tool_error():
+async def test_elicit_decline_returns_cancelled_receipt(ctx_decline):
+    """User clicking 'decline' must NOT silently overwrite; treated as cancel."""
+    from unittest.mock import patch
+
+    from lies.mcp.server import file_knowledge
+
+    wiki, orch = _setup()
+    with (
+        patch("lies.mcp.server.resolve_wiki", return_value=wiki),
+        patch("lies.mcp.server.Orchestrator", return_value=orch),
+    ):
+        result = await file_knowledge(
+            page_type="concept",
+            collection="claude-code",
+            slug="hooks",
+            title="Hooks",
+            body="body",
+            ctx=ctx_decline,
+        )
+    assert result["op"] == "none"
+    assert result["receipt"]["errors"] == ["cancelled by operator"]
+    assert orch.file_back_author.call_count == 0
+
+
+async def test_elicit_rename_without_new_slug_raises_tool_error():
     from unittest.mock import patch
 
     from fastmcp.exceptions import ToolError
@@ -130,13 +212,19 @@ def test_elicit_rename_without_new_slug_raises_tool_error():
     from lies.mcp.server import file_knowledge
 
     wiki, orch = _setup()
-    bad_ctx = MagicMock(elicit=MagicMock(return_value=_Verdict("rename", new_slug=None)))
+    bad_ctx = MagicMock(
+        elicit=AsyncMock(
+            return_value=AcceptedElicitation(
+                data=_CollisionVerdict(action="rename", new_slug=None),
+            ),
+        ),
+    )
     with (
         patch("lies.mcp.server.resolve_wiki", return_value=wiki),
         patch("lies.mcp.server.Orchestrator", return_value=orch),
     ):
         with pytest.raises(ToolError, match="rename requires new_slug"):
-            file_knowledge(
+            await file_knowledge(
                 page_type="concept",
                 collection="c",
                 slug="s",

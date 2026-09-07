@@ -35,7 +35,7 @@ def mock_servicer():
         yield {"wiki": wiki, "orch": orch}
 
 
-def test_file_knowledge_round_trip(mock_servicer):
+async def test_file_knowledge_round_trip(mock_servicer):
     from lies.mcp.server import file_knowledge
 
     mock_servicer["wiki"].wiki_dir.__truediv__.return_value.exists.return_value = False
@@ -43,7 +43,7 @@ def test_file_knowledge_round_trip(mock_servicer):
         patch("lies.mcp.server.resolve_wiki", return_value=mock_servicer["wiki"]),
         patch("lies.mcp.server.Orchestrator", return_value=mock_servicer["orch"]),
     ):
-        result = file_knowledge(
+        result = await file_knowledge(
             page_type="concept",
             collection="claude-code",
             slug="hooks",
@@ -54,7 +54,7 @@ def test_file_knowledge_round_trip(mock_servicer):
     assert result["op"] == "create"
 
 
-def test_file_knowledge_collision_no_force_no_ctx_raises_tool_error(mock_servicer):
+async def test_file_knowledge_collision_no_force_no_ctx_raises_tool_error(mock_servicer):
     from fastmcp.exceptions import ToolError
 
     from lies.mcp.server import file_knowledge
@@ -65,7 +65,7 @@ def test_file_knowledge_collision_no_force_no_ctx_raises_tool_error(mock_service
         patch("lies.mcp.server.Orchestrator", return_value=mock_servicer["orch"]),
     ):
         with pytest.raises(ToolError, match="pass force=True"):
-            file_knowledge(
+            await file_knowledge(
                 page_type="concept",
                 collection="c",
                 slug="s",
@@ -74,7 +74,7 @@ def test_file_knowledge_collision_no_force_no_ctx_raises_tool_error(mock_service
             )
 
 
-def test_file_knowledge_plan_invalid_raises_tool_error(mock_servicer):
+async def test_file_knowledge_plan_invalid_raises_tool_error(mock_servicer):
     from fastmcp.exceptions import ToolError
 
     from lies.mcp.server import file_knowledge
@@ -85,7 +85,7 @@ def test_file_knowledge_plan_invalid_raises_tool_error(mock_servicer):
         patch("lies.mcp.server.Orchestrator", return_value=mock_servicer["orch"]),
     ):
         with pytest.raises(ToolError, match="plan_invalid"):
-            file_knowledge(
+            await file_knowledge(
                 page_type="concept",
                 collection="c",
                 slug="s",
