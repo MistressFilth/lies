@@ -23,6 +23,11 @@ from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 from pydantic import BaseModel
 
+try:
+    from fastmcp import Context
+except ImportError:  # FastMCP < 3.4.5 with Context.elicit
+    Context: type | None = None  # type: ignore[assignment,misc]
+
 from lies import __version__, xdg
 from lies.constants import LIES_DATA_SUBDIR
 from lies.errors import WikiAlreadyExists
@@ -61,6 +66,10 @@ class SynthesizedMcpAnswer(BaseModel):
     synthesis_reason: str | None = None  # None when the agent answered cleanly
     should_file: bool = False  # F3: agent verdict on whether this earns a page
     file_receipt: dict | None = None  # F3: serialized MemoryReceipt or None
+
+
+# Re-export the page-author slice for FastMCP serialization.
+from lies.page import WriteKnowledgeResult  # noqa: E402,F401
 
 
 # ---------------------------------------------------------------------------
