@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import cast
+from typing import Literal, cast
 
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
@@ -220,6 +220,13 @@ _TYPE_PLURAL_MCP: dict[str, str] = {
 }
 
 
+class _CollisionVerdict(BaseModel):
+    """Pydantic response model for the file_knowledge collision elicit."""
+
+    action: Literal["overwrite", "rename", "cancel"]
+    new_slug: str | None = None
+
+
 @mcp.tool(
     description=(
         "Write one markdown page to the wiki. type/slug/title/body required. "
@@ -248,12 +255,40 @@ def file_knowledge(
         else f"{collection}/{_TYPE_PLURAL_MCP[page_type]}/{slug}.md"
     )
 
-    # Collision gate (F12 wiring lands in Task 12).
+    # Collision gate.
     if (wiki.wiki_dir / rel_path).exists() and not force:
         if ctx is None:
             raise ToolError(f"page exists at {rel_path}; pass force=True to overwrite")
-        # Elicit branch placeholder — Task 12 replaces this block.
-        raise ToolError(f"page exists at {rel_path}; ctx.elicit wiring lands in Task 12")
+        verdict = ctx.elicit(
+            f"page already exists at {rel_path}; overwrite, rename, or cancel?",
+            response_type=_CollisionVerdict,
+        )
+        action = verdict.action  # type: ignore[attr-defined]  # ty: ignore[unresolved-attribute]
+        if action == "cancel":
+            return WriteKnowledgeResult(
+                page_path=None,
+                page_type=page_type,
+                slug=slug,
+                collection=collection,
+                op="none",
+                receipt={
+                    "changed_pages": [],
+                    "deferred": [],
+                    "fallback_used": False,
+                    "fallback_reason": "",
+                    "errors": ["cancelled by operator"],
+                },
+            ).model_dump()
+        if action == "rename":
+            new_slug = getattr(verdict, "new_slug", None)
+            if not new_slug:
+                raise ToolError("rename requires new_slug")
+            slug = new_slug
+            rel_path = (
+                "wiki/overview.md"
+                if page_type == "overview"
+                else f"{collection}/{_TYPE_PLURAL_MCP[page_type]}/{new_slug}.md"
+            )
 
     orch = Orchestrator(wiki=wiki)
     try:
