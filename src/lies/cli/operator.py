@@ -147,7 +147,7 @@ def up(
 
     if no_qmd:
         return
-    qmd_state = qmd_daemon.ensure_qmd_daemon()
+    qmd_state = qmd_daemon.ensure_qmd_daemon(data_dir=wiki.wiki_dir)
     if qmd_state.running:
         typer.echo(qmd_state.detail)
     else:

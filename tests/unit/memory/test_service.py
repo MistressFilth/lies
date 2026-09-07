@@ -160,6 +160,31 @@ def test_apply_plan_rejects_path_escape(git_wiki: Wiki) -> None:
         service.apply_plan(plan)
 
 
+def test_apply_plan_rejects_raw_source_access(git_wiki: Wiki) -> None:
+    """Regression guard: ``raw/`` is documented as immutable; the
+    enforcement lives in ``validate_page_path`` which rejects any path
+    that resolves outside ``wiki.wiki_dir`` (including the ``..``
+    traversal needed to reach the raw/ sibling directory). A write
+    targeting ``../raw/<file>`` must raise ``WikiPlanInvalid`` at
+    ``apply_plan`` time, before any on-disk mutation.
+    """
+    plan = MemoryPlan(
+        operations=[
+            PageCreate(
+                path="../raw/source.md",
+                content="hi",
+                evidence=["page-1"],
+            )
+        ],
+        rationale="raw/ traversal",
+        evidence=["page-1"],
+    )
+    service = WikiMemoryService(wiki=git_wiki)
+    service.register_evidence({"page-1"})
+    with pytest.raises(WikiPlanInvalid):
+        service.apply_plan(plan)
+
+
 def test_apply_plan_rolls_back_on_qmd_failure(
     git_wiki: Wiki, monkeypatch: pytest.MonkeyPatch
 ) -> None:

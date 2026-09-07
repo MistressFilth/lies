@@ -202,6 +202,9 @@ def test_run_query_falls_back_to_index_when_qmd_unavailable(
     # least one bullet for the read pages.
     assert "### " in answer.answer
     assert answer.citations, "expected at least one cited page"
+    assert answer.synthesis_used is True
+    assert answer.synthesis_reason == ""
+    assert answer.should_file is False
 
 
 def test_synthesizer_reads_index_pages(wiki_copy: Path) -> None:

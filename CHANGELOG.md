@@ -6,6 +6,52 @@ All notable changes to LIES are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- `Wiki.require` probes a known migration fallback for the `default`
+  wiki's `data_root` (`<xdg>/lies/wiki` from the 2026-08-15 rename).
+  First existing path wins. Closes N4.
+- `log.md` lint entries now include finding categories in the title
+  (e.g. `lint | 3 findings (missing_xref, orphan)`); the count derives
+  from `len(report.findings)` rather than the rendered markdown's
+  newline count. Closes F7.
+- Catalog `.gitignore` entries rewritten to `wiki/.lies/catalog.db*` so
+  the pattern actually matches the on-disk path at
+  `<wiki>/wiki/.lies/catalog.db` (the previous root-anchored entries
+  never matched and the catalog was being committed). Closes the
+  catalog-gitignore entry.
+- qmd daemon sidecar (`<xdg>/qmd/mcp.data-dir`) records the `data-dir`
+  the running qmd daemon was started with. `ensure_qmd_daemon` reaps
+  and respawns qmd when the sidecar disagrees with the requested
+  `data-dir`; first-run (no sidecar) is a non-mismatch. Closes N7.
+- `_reap_qmd_daemon` now waits for the daemon to exit before returning
+  (SIGTERM first, SIGKILL after a 2s grace) and checks `/proc/<pid>`
+  state to distinguish zombies from live processes, so the subsequent
+  spawn no longer races the dying daemon for the port. Without the
+  wait the sidecar could record a new `data-dir` while the old daemon
+  still served the old index. `check_data_dir_match` normalizes paths
+  via `Path.resolve` so `Path("wiki")` vs `Path("./wiki")` no longer
+  spuriously reports a mismatch.
+
+### Tests
+
+- Regression test pinning the resolved `data_root` path in
+  `WikiNotRegistered` messages (N3 — the fix shipped earlier in 926f398
+  and 939ecc7; the test guards the contract).
+- Integration test asserting `SynthesizedAnswer.synthesis_used`,
+  `synthesis_reason`, and `should_file` on the F4a clean-answer path.
+  Closes the F4a-cov entry.
+- Regression guard pinning the deletion of `catalog.rebuild_index`
+  and its helpers (`_discover_pages`, `_page_title_from_frontmatter`),
+  removed in the F4b+F16 port (commit 169871d).
+- Regression test pinning `raw/` immutability via `validate_page_path`,
+  which rejects `..` traversal into `<data_root>/raw` with
+  `WikiPlanInvalid`. No chmod or new error type added — the path-
+  traversal guard predates this release.
+- README drops the obsolete manual `qmd update` workaround (the
+  embedded post-commit hook from PR #37 is the only path). Closes the
+  qmd double-indexing entry.
+
 ### Added
 
 - F4b + F16 — wiki catalog port. A sqlite database at
