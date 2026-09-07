@@ -1213,6 +1213,42 @@ class Orchestrator:
             errors=[f"file_back_failed_after_3_attempts: {reason}"],
         )
 
+    def file_back_author(self, plan: MemoryPlan) -> MemoryReceipt:
+        """Apply a pre-built ``plan`` with inline 3-attempt retry on transient errors.
+
+        Sibling of :meth:`file_back_synthesis`. The plan is pre-built by
+        :func:`lies.page.build_author_plan`; this method only handles the
+        apply-with-retry envelope. Never raises — the operator always
+        sees a receipt, even on exhaustion or unexpected exceptions.
+        """
+        last_exc: BaseException | None = None
+        for attempt in range(3):
+            try:
+                return self._memory_service.apply_plan(plan)
+            except (WikiLockBusy, WikiWriteConflict, WikiCommitFailed) as exc:
+                last_exc = exc
+                if attempt < 2:
+                    time.sleep(0.1)
+                    continue
+                break
+            except Exception as exc:  # noqa: BLE001 - persistence never invalidates the answer
+                return MemoryReceipt(
+                    changed_pages=[],
+                    deferred=[],
+                    fallback_used=False,
+                    fallback_reason="",
+                    errors=[f"file_back_crashed: {type(exc).__name__}: {exc}"],
+                )
+
+        reason = f"{type(last_exc).__name__}: {last_exc}"
+        return MemoryReceipt(
+            changed_pages=[],
+            deferred=[],
+            fallback_used=False,
+            fallback_reason="",
+            errors=[f"file_back_failed_after_3_attempts: {reason}"],
+        )
+
     def _format_durable_receipt(
         self,
         receipt: MemoryReceipt,
