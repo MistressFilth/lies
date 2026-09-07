@@ -33,18 +33,28 @@ def _strip_ansi(text: str) -> str:
 class _FakeOrchestrator:
     """Stand-in for ``Orchestrator`` that records the kwargs passed to ``run_ingest``.
 
-    The CLI references ``Orchestrator`` as a bare name; tests monkeypatch
-    the module-level lookup with a factory that returns an instance of
-    this recorder. ``run_ingest`` returns a deterministic string so the
-    CLI's ``typer.echo(output)`` path can be exercised end-to-end.
+    The CLI references ``Orchestrator`` via ``from lies.cli import
+    Orchestrator`` (function-local import that triggers the
+    ``__getattr__`` lazy-load shim). Tests patch ``lies.cli.Orchestrator``
+    — the canonical location the ``__getattr__`` reads from — so the
+    factory returns an instance of this recorder without instantiating the
+    real orchestrator stack. ``run_ingest`` returns a deterministic string
+    so the CLI's ``typer.echo(output)`` path can be exercised end-to-end.
     """
 
     def __init__(self, wiki: Any, recorder: dict[str, object]) -> None:
         self.wiki = wiki
         self.recorder = recorder
 
-    def run_ingest(self, source: str, *, no_llm: bool = False) -> str:
+    def run_ingest(
+        self,
+        source: str,
+        *,
+        collection: str | None = None,
+        no_llm: bool = False,
+    ) -> str:
         self.recorder["source"] = source
+        self.recorder["collection"] = collection
         self.recorder["no_llm"] = no_llm
         return f"fake-ingested {source}"
 
@@ -55,7 +65,7 @@ def test_ingest_source_default_runs_llm_path(
     """Default invocation (no flag) keeps the LLM round-trip (``no_llm=False``)."""
     seen: dict[str, object] = {}
     monkeypatch.setattr(
-        "lies.cli.ingestion.Orchestrator",
+        "lies.cli.Orchestrator",
         lambda wiki: _FakeOrchestrator(wiki, recorder=seen),
     )
     result = runner.invoke(
@@ -66,6 +76,7 @@ def test_ingest_source_default_runs_llm_path(
         f"expected exit 0; got {result.exit_code}; stderr={result.stderr!r}"
     )
     assert seen.get("source") == "raw/x.md"
+    assert seen.get("collection") == "foo"
     assert seen.get("no_llm") is False
 
 
@@ -75,7 +86,7 @@ def test_ingest_source_no_llm_flag_demotes_to_sync(
     """``--no-llm`` forwards ``no_llm=True`` and emits a stderr notice."""
     seen: dict[str, object] = {}
     monkeypatch.setattr(
-        "lies.cli.ingestion.Orchestrator",
+        "lies.cli.Orchestrator",
         lambda wiki: _FakeOrchestrator(wiki, recorder=seen),
     )
     result = runner.invoke(
@@ -86,6 +97,7 @@ def test_ingest_source_no_llm_flag_demotes_to_sync(
         f"expected exit 0; got {result.exit_code}; stderr={result.stderr!r}"
     )
     assert seen.get("source") == "raw/x.md"
+    assert seen.get("collection") == "foo"
     assert seen.get("no_llm") is True
     assert "sync_collection" in (result.stderr or "")
 

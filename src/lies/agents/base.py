@@ -21,7 +21,7 @@ wiki structure is:
 
 def make_sub_agent[T: BaseModel, D](
     model: Model | str,
-    output_type: type[T],
+    output_type: Any,
     system_prompt: str,
     tools: list[Any] | None = None,
     deps_type: type[D] | None = None,

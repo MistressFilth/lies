@@ -176,6 +176,37 @@ def _read_page(wiki: Wiki, path: str) -> str | None:
         return ""
 
 
+def _normalize_collection_prefix(rel: str, collection: str) -> str:
+    """Force ``rel`` to live under ``wiki/<collection>/``.
+
+    The page-writer agent often emits paths using the source filename
+    as the collection prefix (``wiki/llms/hooks.md`` for an ``llms.txt``
+    source mapped to the ``claude_code`` collection) or omits the
+    collection segment entirely (``wiki/hooks.md``). This helper
+    rewrites either shape so the path lands at the per-collection
+    subdir convention from PR #39.
+
+    Idempotent: if the path already starts with ``wiki/<collection>/``,
+    it is returned unchanged. System-file paths (``wiki/index.md``,
+    ``wiki/log.md``) are preserved untouched so the system-file guard
+    in :meth:`WikiMemoryService._apply_operations` continues to fire.
+    """
+    # System files must remain at wiki/index.md / wiki/log.md so the
+    # guard in _apply_operations catches them.
+    system_files = {"wiki/index.md", "wiki/log.md"}
+    if rel in system_files:
+        return rel
+    # Strip a leading wiki/ to get the post-root portion.
+    stripped = rel.removeprefix("wiki/")
+    # If the next segment already matches the target collection, the
+    # path is already correctly rooted.
+    parts = stripped.split("/", 1)
+    if parts and parts[0] == collection:
+        return f"wiki/{stripped}"
+    # Otherwise rebuild under wiki/<collection>/, preserving the tail.
+    return f"wiki/{collection}/{stripped}"
+
+
 def translate_page_diffs_to_plan(
     diffs: list[PageDiff],
     *,
@@ -185,13 +216,22 @@ def translate_page_diffs_to_plan(
 ) -> MemoryPlan:
     """Map page-writer output to a MemoryPlan with tag="ingest".
 
-    Each ``PageDiff`` becomes one operation carrying the source path
-    as its sole evidence reference. ``PageUpdate`` requires
-    ``sha_lookup``; ``PageCreate`` and ``PageDelete`` do not.
+        Each ``PageDiff`` becomes one operation carrying the source path
+        as its sole evidence reference. ``PageUpdate`` requires
+        ``sha_lookup``; ``PageCreate`` and ``PageDelete`` do not.
+
+        Path normalization: the page-writer agent may emit paths using the
+        source filename as the collection prefix (e.g. ``wiki/llms/hooks.md
+    `` for an ``llms.txt`` source fed via the ``claude_code`` collection)
+    or omit the collection segment entirely. The function forces every
+    op path to sit under ``wiki/<collection>/`` so the wiki's per-collection
+    subdir layout (PR #39) is preserved regardless of what the LLM emits.
     """
     operations: list[_PlanOperation] = []
     for diff in diffs:
         rel = diff.path.as_posix() if isinstance(diff.path, Path) else str(diff.path)
+        # Normalize the collection prefix.
+        rel = _normalize_collection_prefix(rel, collection)
         if diff.operation == PageOperation.CREATE:
             if diff.new_content is None:
                 raise WikiPlanInvalid(f"CREATE op missing new_content: {rel}")
@@ -240,15 +280,34 @@ def _page_type_from_dir(directory_name: str) -> str:
     singular. This helper bridges them so the service can call
     ``validate_page_type`` without bypassing it.
 
-    A small allow-list handles words whose plural form is identical to the
-    singular (``synthesis``): naively stripping the trailing ``s`` would
-    mangle them.
+    The mapping is hard-coded because naively stripping ``s`` mangles
+    ``entities`` → ``entitie`` (the original bug; fixed in F2 close-out)
+    and doesn't generalize to collection-name directories like
+    ``claude_code`` (the page-writer agent's M3-driven flattening bug).
+
+    Unknown directories (e.g. ``claude_code`` when the page-writer agent
+    emits a path directly under the collection subdir without a type
+    subdirectory) default to ``concept`` so the ingest path doesn't trip
+    validation. The default is deliberately permissive — anything that
+    falls outside the schema allow-list still gets caught by
+    ``validate_page_type`` after the default.
     """
-    if directory_name == "synthesis":
-        return "synthesis"
-    if directory_name.endswith("ies"):
-        return directory_name[:-3] + "y"
-    return directory_name.removesuffix("s")
+    plural_to_singular = {
+        "concepts": "concept",
+        "entities": "entity",
+        "comparisons": "comparison",
+        "sources": "source",
+        "overviews": "overview",
+        "synthesis": "synthesis",
+    }
+    if directory_name in plural_to_singular:
+        return plural_to_singular[directory_name]
+    # Already singular — pass through.
+    if directory_name in {"concept", "entity", "comparison", "source", "overview", "synthesis"}:
+        return directory_name
+    # Unknown — default to "concept" rather than returning the raw dir
+    # name (which would be a collection name or other nonsense).
+    return "concept"
 
 
 def _run_git(

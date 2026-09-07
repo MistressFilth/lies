@@ -10,6 +10,7 @@ from typing import Any
 from pydantic import BaseModel
 from pydantic_ai import Agent
 from pydantic_ai.models import Model
+from pydantic_ai.output import PromptedOutput
 from pydantic_ai.tools import RunContext
 
 from lies.agents.base import SUB_AGENT_SYSTEM_PROMPT_PREFIX
@@ -57,6 +58,12 @@ Rules:
 - One page per entity or concept (no duplicates).
 - Always include YAML frontmatter
   (title, type, tags, created, updated, sources, optional derived_from).
+- The `type` field MUST be one of these exact strings
+  (MiniMax-M3 has been observed to substitute the collection name,
+  producing `type: <collection>` which fails validation):
+  `overview`, `entity`, `concept`, `comparison`, `source`, `synthesis`.
+  Pick the type that best matches the page content — the collection
+  name (e.g. `claude_code`) is NOT a valid page type.
 - Add cross-references (`[Name](concepts/name.md)`) liberally.
 - When updating, preserve valid existing content; integrate new information.
 - Cite sources at the bottom of each page.
@@ -106,9 +113,15 @@ def page_writer_agent(
     model: Model | str = "anthropic:claude-opus-4-7",
 ) -> Agent[PageWriterDeps, list[PageDiff]]:
     """Construct the page-writer sub-agent."""
+    # PromptedOutput — same rationale as source_reader_agent. M3
+    # ignores tool_choice and response_format=json_schema on both
+    # endpoints, so the default ToolOutput mode fails. Schema goes in
+    # instructions; model emits JSON text. The unit test that
+    # exercised the live run was relaxed (TestModel can't drive
+    # PromptedOutput) and the integration test exercises the real path.
     agent: Agent[PageWriterDeps, list[PageDiff]] = Agent(
         model,
-        output_type=list[PageDiff],
+        output_type=PromptedOutput(list[PageDiff]),
         system_prompt=SUB_AGENT_SYSTEM_PROMPT_PREFIX + PAGE_WRITER_SYSTEM_PROMPT,
         deps_type=PageWriterDeps,
     )

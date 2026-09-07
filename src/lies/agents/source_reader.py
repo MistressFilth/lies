@@ -12,25 +12,43 @@ from pydantic_ai import Agent, RunContext
 from pydantic_ai.models import Model
 
 from lies.agents.base import make_sub_agent
+from pydantic_ai.output import PromptedOutput
 
 
 class SourceExtraction(BaseModel):
-    """Structured extraction from a single raw source."""
+    """Structured extraction from a single raw source.
 
-    claims: list[str]
+    All fields default to empty so a partial extraction (one the model
+    refuses to fill for non-prose inputs like ``llms.txt`` indexes, or a
+    fully-skipped extraction when the agent raises) constructs cleanly
+    via ``SourceExtraction()``. The empty defaults also let
+    ``_call_source_reader`` return a sensible value when the model hits
+    validation retries or HTTP errors — the extraction is advisory and
+    not consumed by ``PageWriterDeps``.
+    """
+
+    claims: list[str] = []
     """Atomic factual claims made by the source."""
 
-    entities: list[str]
+    entities: list[str] = []
     """Named things (people, projects, systems) the source discusses."""
 
-    concepts: list[str]
+    concepts: list[str] = []
     """Abstract ideas or patterns the source discusses."""
 
-    comparisons: list[tuple[str, str]]
+    comparisons: list[tuple[str, str]] = []
     """Pairs of (entity_A, entity_B) that the source compares."""
 
-    summary: str
-    """One-paragraph summary of the source."""
+    summary: str = ""
+    """One-paragraph summary of the source.
+
+    Defaults to empty string: link-list sources (``llms.txt`` indexes,
+    sitemap excerpts, navigation manifests) have no prose to summarize, and
+    forcing the model to fabricate a summary for non-prose inputs produces
+    a validation error that triggers pydantic-ai's "exceeded maximum
+    output retries" path. Downstream consumers (``PageWriterDeps``) do
+    not currently consume this field, so the default is safe.
+    """
 
 
 async def read_file(ctx: RunContext[None], path: str, raw_root: str) -> str:
@@ -79,9 +97,16 @@ def source_reader_agent(
     tools: list[Callable[..., Any]] | None = None,
 ) -> Agent[None, SourceExtraction]:
     """Construct the source-reader sub-agent."""
+    # PromptedOutput wraps the schema in instructions and parses the
+    # model's free-form JSON text rather than relying on tool calling
+    # or response_format=json_schema. MiniMax-M3 ignores tool_choice and
+    # response_format on both endpoints; PromptedOutput is the only
+    # shape that works reliably with that model. See TODO F13 entry
+    # + /home/divinefilth/code/project-notes/lies/TODO.md for the
+    # systematic-debugging trace.
     return make_sub_agent(
         model=model,
-        output_type=SourceExtraction,
+        output_type=PromptedOutput(SourceExtraction),
         system_prompt=SOURCE_READER_SYSTEM_PROMPT,
         tools=tools if tools is not None else [read_file],
     )

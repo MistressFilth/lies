@@ -483,7 +483,14 @@ def test_validate_plan_rejects_create_collision(git_wiki: Wiki) -> None:
         service.validate_plan(plan)
 
 
-def test_validate_plan_rejects_frontmatter_type_mismatch(git_wiki: Wiki) -> None:
+def test_validate_plan_accepts_explicit_frontmatter_type(git_wiki: Wiki) -> None:
+    """The agent's explicit `type:` is authoritative — the path-derived
+    page_type is just a hint. MiniMax-M3 flattens the per-collection
+    subdir layout (writes at ``concepts/wrong.md`` with `type: entity`
+    rather than ``entity/wrong.md`` with `type: entity``), so the
+    path-derived page_type for ``concepts/wrong.md`` would be ``concept``;
+    accepting the explicit `type: entity` lets the ingest proceed.
+    """
     service = WikiMemoryService(wiki=git_wiki)
     service.register_evidence({"page-1"})
     service.register_evidence({"page-1"})
@@ -495,10 +502,31 @@ def test_validate_plan_rejects_frontmatter_type_mismatch(git_wiki: Wiki) -> None
                 evidence=["page-1"],
             )
         ],
-        rationale="wrong type",
+        rationale="explicit type wins over path-derived",
         evidence=["page-1"],
     )
-    with pytest.raises(WikiPlanInvalid, match="does not match"):
+    service.validate_plan(plan)  # no raise
+
+
+def test_validate_plan_rejects_invalid_frontmatter_type(git_wiki: Wiki) -> None:
+    """An explicit but invalid `type:` (not in ALLOWED_PAGE_TYPES) is
+    still rejected — only valid types are accepted as overrides.
+    """
+    service = WikiMemoryService(wiki=git_wiki)
+    service.register_evidence({"page-1"})
+    service.register_evidence({"page-1"})
+    plan = MemoryPlan(
+        operations=[
+            PageCreate(
+                path="concepts/wrong.md",
+                content="---\ntitle: Wrong\ntype: garbage\n---\n",
+                evidence=["page-1"],
+            )
+        ],
+        rationale="invalid type",
+        evidence=["page-1"],
+    )
+    with pytest.raises(WikiPlanInvalid, match="not a valid page type"):
         service.validate_plan(plan)
 
 
@@ -1187,7 +1215,10 @@ def test_translate_page_diffs_to_plan_create(tmp_path: Path) -> None:
     assert len(plan.operations) == 1
     op = plan.operations[0]
     assert isinstance(op, PageCreate)
-    assert op.path == "wiki/concepts/alpha.md"
+    # Path is normalized to sit under wiki/<collection>/ regardless of
+    # what the page-writer emitted (the LLM often uses the source filename
+    # as the prefix instead of the target collection).
+    assert op.path == "wiki/claude-code/concepts/alpha.md"
     assert op.content == "# Alpha\n\nbody"
     assert op.evidence == ["raw/articles/x.md"]
     assert op.tag == "ingest"
@@ -1197,7 +1228,7 @@ def test_translate_page_diffs_to_plan_update(tmp_path: Path) -> None:
     diffs = [
         PageDiff(
             operation=PageOperation.UPDATE,
-            path=Path("wiki/concepts/alpha.md"),
+            path=Path("wiki/claude-code/concepts/alpha.md"),
             old_content="old",
             new_content="new",
         )

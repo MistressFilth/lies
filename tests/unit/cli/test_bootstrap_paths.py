@@ -213,11 +213,11 @@ def test_ingest_source_with_collection_bootstraps_and_calls_run_ingest(
     monkeypatch.setenv("LIES_WIKI_NAME", wiki.name)
     fake_orchestrator = mock.MagicMock()
     fake_orchestrator.run_ingest.return_value = "ok"
-    # Patch the consumer-side lazy proxy ``lies.cli.ingestion.Orchestrator``
-    # (set up via the module-level ``__getattr__`` in ingestion.py) so the
-    # ``Orchestrator(wiki)`` call inside ``ingest_source`` returns our
-    # mock without instantiating the real heavy stack.
-    with mock.patch("lies.cli.ingestion.Orchestrator", return_value=fake_orchestrator):
+    # Patch ``lies.cli.Orchestrator`` (the canonical location the
+    # ``__getattr__`` lazy-load shim in ``ingestion.py`` reads from) so the
+    # ``from lies.cli import Orchestrator`` inside ``ingest_source`` returns
+    # our mock without instantiating the real heavy stack.
+    with mock.patch("lies.cli.Orchestrator", return_value=fake_orchestrator):
         result = runner.invoke(
             app,
             [
@@ -231,7 +231,7 @@ def test_ingest_source_with_collection_bootstraps_and_calls_run_ingest(
         )
     assert result.exit_code == 0
     fake_orchestrator.run_ingest.assert_called_once_with(
-        "https://example.com/llms.txt", no_llm=False
+        "https://example.com/llms.txt", collection="alpha", no_llm=False
     )
     assert (wiki.collections_dir / "alpha.yaml").exists()
 
@@ -251,7 +251,7 @@ def test_ingest_source_with_collection_mismatch_errors(
         encoding="utf-8",
     )
     fake_orchestrator = mock.MagicMock()
-    with mock.patch("lies.cli.ingestion.Orchestrator", return_value=fake_orchestrator):
+    with mock.patch("lies.cli.Orchestrator", return_value=fake_orchestrator):
         result = runner.invoke(
             app,
             [

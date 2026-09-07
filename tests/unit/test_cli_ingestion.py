@@ -82,3 +82,84 @@ def test_reindex_no_flags_runs_no_sync(tmp_path: Path, monkeypatch: pytest.Monke
     mock_sync.assert_not_called()
     assert "--embed is a no-op" not in (result.stderr or "")
     assert "--cleanup is a no-op" not in (result.stderr or "")
+
+
+def test_ingest_source_invokes_orchestrator_without_nameerror(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression: bare-name `Orchestrator(wiki)` at ingestion.py:220 raised NameError.
+
+    PEP 562 module ``__getattr__`` does NOT fire for bare-name lookup inside
+    a function body — only for ``module.attr`` or ``from M import X`` access.
+    The pre-fix pattern assumed otherwise and raised ``NameError: name
+    'Orchestrator' is not defined`` on every ``lies ingest-source``
+    invocation. Fix mirrors the established pattern in
+    ``lies.cli/__init__.py:84-91``: function-local import that triggers the
+    module-level ``__getattr__`` shim (which IS invoked by ``from lies.cli
+    import Orchestrator``).
+    """
+    _use_default_wiki(monkeypatch)
+
+    mock_orch_instance = mock.MagicMock()
+    mock_orch_instance.run_ingest.return_value = "mock-output"
+    mock_orch_class = mock.MagicMock(return_value=mock_orch_instance)
+
+    with (
+        mock.patch("lies.cli.Orchestrator", mock_orch_class),
+        mock.patch("lies.collections.bootstrap.bootstrap_collection"),
+    ):
+        result = runner.invoke(
+            app,
+            [
+                "ingest-source",
+                "https://example.invalid/x",
+                "--collection",
+                "test_xyz",
+                "--no-llm",
+            ],
+        )
+    assert result.exit_code == 0, (
+        f"exit={result.exit_code} stderr={result.stderr!r} stdout={result.stdout!r}"
+    )
+    mock_orch_class.assert_called_once()
+    mock_orch_instance.run_ingest.assert_called_once_with(
+        "https://example.invalid/x", collection="test_xyz", no_llm=True
+    )
+
+
+def test_ingest_source_threads_collection_to_orchestrator(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression: ``Orchestrator.run_ingest`` used to ignore the CLI
+    ``--collection`` flag and derive ``collection_name = Path(source).stem``,
+    silently routing ``llms.txt``-style sources to ``raw/llms/`` instead of
+    ``raw/<collection>/``. The orchestrator signature now accepts a
+    ``collection`` kwarg and the CLI threads the flag through.
+    """
+    _use_default_wiki(monkeypatch)
+
+    mock_orch_instance = mock.MagicMock()
+    mock_orch_instance.run_ingest.return_value = "mock-output"
+    mock_orch_class = mock.MagicMock(return_value=mock_orch_instance)
+
+    with (
+        mock.patch("lies.cli.Orchestrator", mock_orch_class),
+        mock.patch("lies.collections.bootstrap.bootstrap_collection"),
+    ):
+        result = runner.invoke(
+            app,
+            [
+                "ingest-source",
+                "https://code.claude.com/llms.txt",
+                "--collection",
+                "claude_code",
+            ],
+        )
+    assert result.exit_code == 0, (
+        f"exit={result.exit_code} stderr={result.stderr!r} stdout={result.stdout!r}"
+    )
+    mock_orch_instance.run_ingest.assert_called_once()
+    call_kwargs = mock_orch_instance.run_ingest.call_args.kwargs
+    assert call_kwargs["collection"] == "claude_code", (
+        f"--collection flag was not threaded through. call_args={call_kwargs!r}"
+    )

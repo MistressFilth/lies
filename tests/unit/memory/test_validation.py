@@ -72,8 +72,22 @@ def test_parse_frontmatter_full() -> None:
 
 
 def test_validate_frontmatter_missing_type() -> None:
-    with pytest.raises(WikiPlanInvalid):
-        validate_frontmatter({"title": "x"}, page_type="concept")
+    # Missing `type:` is now allowed — the path-derived page_type
+    # auto-fills on disk later. Pin the permissive behavior.
+    validate_frontmatter({"title": "x"}, page_type="concept")  # no raise
+
+
+def test_validate_frontmatter_rejects_invalid_type() -> None:
+    # An explicit but invalid `type:` (not in ALLOWED_PAGE_TYPES) is
+    # still rejected. Pin the strict-on-invalid behavior.
+    with pytest.raises(WikiPlanInvalid, match="not a valid page type"):
+        validate_frontmatter({"title": "x", "type": "garbage"}, page_type="concept")
+
+
+def test_validate_frontmatter_accepts_explicit_valid_type() -> None:
+    # The agent's explicit `type:` wins even when it disagrees with the
+    # path-derived page_type (MiniMax-M3 path-flattening is tolerated).
+    validate_frontmatter({"title": "x", "type": "entity"}, page_type="concept")  # no raise
 
 
 def test_validate_operation_evidence_present() -> None:

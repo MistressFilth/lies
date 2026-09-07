@@ -18,7 +18,6 @@ import pytest
 
 from lies.agents.page_writer import PageDiff, PageOperation
 from lies.agents.source_reader import SourceExtraction
-from lies.memory.models import IngestQuarantined
 from lies.orchestrator import Orchestrator
 from tests.conftest import make_wiki, models_for_tests
 
@@ -122,16 +121,20 @@ def test_call_page_writer_returns_page_diffs(
     assert diffs[0].operation == PageOperation.CREATE
 
 
-def test_call_page_writer_quarantines_on_agent_failure(
+def test_call_page_writer_returns_empty_on_agent_failure(
     monkeypatch: pytest.MonkeyPatch, orch: Orchestrator
 ) -> None:
-    """Agent raises -> ``quarantine`` copies the file + sidecar, raise
-    :class:`IngestQuarantined`.
+    """Agent raises -> ``quarantine`` sidecar + return empty list.
 
     The wrapper receives ``source_relpath`` as ``raw/<collection>/<file>``
     but ``quarantine`` wants the path relative to ``raw/<collection>/``
     (i.e., just the basename); the wrapper strips the prefix before
     delegating. The poison sidecar must exist after the call.
+
+    Page-writer is fail-soft so a flaky LLM (ModelHTTPError, validation
+    retries, partial output) does not block an otherwise-valid ingest;
+    the empty diff list produces no wiki writes for this source and the
+    quarantine sidecar preserves the raw material for inspection.
     """
     monkeypatch.setattr(
         "lies.orchestrator.page_writer_agent",
@@ -141,14 +144,14 @@ def test_call_page_writer_quarantines_on_agent_failure(
     src = orch.wiki.data_root / "raw" / "foo" / "incoming.md"
     src.parent.mkdir(parents=True, exist_ok=True)
     src.write_text("# Source\n", encoding="utf-8")
-    with pytest.raises(IngestQuarantined):
-        orch._call_page_writer(
-            extraction=_fake_extraction(),
-            existing_pages=[],
-            schema_text="",
-            source_relpath="raw/foo/incoming.md",
-            collection="foo",
-        )
+    diffs = orch._call_page_writer(
+        extraction=_fake_extraction(),
+        existing_pages=[],
+        schema_text="",
+        source_relpath="raw/foo/incoming.md",
+        collection="foo",
+    )
+    assert diffs == []
     poison = orch.wiki.poison_root / "foo" / "incoming.md"
     assert poison.exists()
     assert poison.with_suffix(poison.suffix + ".reason").exists()
@@ -171,10 +174,15 @@ def test_call_source_reader_returns_extraction(
     assert "Postgres uses MVCC" in extraction.claims
 
 
-def test_call_source_reader_quarantines_on_agent_failure(
+def test_call_source_reader_returns_empty_on_agent_failure(
     monkeypatch: pytest.MonkeyPatch, orch: Orchestrator
 ) -> None:
-    """Agent raises -> ``quarantine`` + :class:`IngestQuarantined`."""
+    """Agent raises -> quarantine sidecar + return empty ``SourceExtraction``.
+
+    The source-reader is advisory: ``PageWriterDeps`` does not consume the
+    extraction, so a failed agent call must not block the rest of the
+    ingest. The quarantine sidecar is still written for inspection.
+    """
     monkeypatch.setattr(
         "lies.orchestrator.source_reader_agent",
         lambda model: _FakeAgent(raise_on_run=ValueError("rate limit")),
@@ -183,12 +191,17 @@ def test_call_source_reader_quarantines_on_agent_failure(
     src = orch.wiki.data_root / "raw" / "foo" / "incoming.md"
     src.parent.mkdir(parents=True, exist_ok=True)
     src.write_text("# Source\n", encoding="utf-8")
-    with pytest.raises(IngestQuarantined):
-        orch._call_source_reader(
-            raw_path=src,
-            collection="foo",
-            source_relpath="raw/foo/incoming.md",
-        )
+    extraction = orch._call_source_reader(
+        raw_path=src,
+        collection="foo",
+        source_relpath="raw/foo/incoming.md",
+    )
+    assert isinstance(extraction, SourceExtraction)
+    assert extraction.claims == []
+    assert extraction.entities == []
+    assert extraction.concepts == []
+    assert extraction.comparisons == []
+    assert extraction.summary == ""
     poison = orch.wiki.poison_root / "foo" / "incoming.md"
     assert poison.exists()
     assert poison.with_suffix(poison.suffix + ".reason").exists()

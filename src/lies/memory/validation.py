@@ -65,13 +65,31 @@ def parse_frontmatter(content: str) -> dict[str, Any]:
 
 
 def validate_frontmatter(frontmatter_dict: dict[str, Any], *, page_type: str) -> None:
-    """Validate frontmatter shape for the given page type."""
+    """Validate frontmatter shape for the given page type.
+
+    The agent's explicit ``type:`` declaration wins when valid — it is
+    authoritative. The path-derived ``page_type`` is a hint used to fill
+    in when the agent omits the declaration. MiniMax-M3 has been
+    observed to flatten the per-collection subdir layout (writing pages
+    at ``wiki/<collection>/<file>`` without a ``<type_plural>/`` segment),
+    so the path-derived page_type defaulted to ``concept`` but the
+    frontmatter's ``type: <actual>`` is what the user sees. Trusting the
+    frontmatter lets the ingest proceed with the agent's chosen type.
+    """
     validate_page_type(page_type)
     if page_type == "overview" and not frontmatter_dict.get("title"):
         raise WikiPlanInvalid("overview frontmatter requires title")
     declared = frontmatter_dict.get("type")
-    if declared is None or str(declared) != page_type:
-        raise WikiPlanInvalid(f"frontmatter type missing or does not match page_type {page_type!r}")
+    if declared is None:
+        # No declaration — auto-fill the page_type into the frontmatter
+        # on disk later (the on-disk frontmatter is parsed but not
+        # rewritten here). Validation passes.
+        return
+    if str(declared) not in ALLOWED_PAGE_TYPES:
+        raise WikiPlanInvalid(
+            f"frontmatter type {declared!r} is not a valid page type; "
+            f"expected one of {sorted(ALLOWED_PAGE_TYPES)}"
+        )
 
 
 def validate_operation_evidence(
