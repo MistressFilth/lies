@@ -158,7 +158,8 @@ def write(
     exists = (wiki.wiki_dir / rel_path).exists()
     if exists and not force:
         typer.echo(
-            f"error: page already exists at {rel_path}; pass --force to overwrite",
+            f"error: page already exists at {rel_path};\n"
+            f" pass --force to overwrite (MCP: file_knowledge elicits overwrite/rename/cancel)",
             err=True,
         )
         raise typer.Exit(code=2)

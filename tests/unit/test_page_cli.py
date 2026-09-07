@@ -26,12 +26,25 @@ import pytest
 from typer.testing import CliRunner
 
 from lies.cli import app
+from lies.cli.page import page_app
 from lies.memory.models import MemoryReceipt, OperationKind, PageReference
 
 
 @pytest.fixture
 def runner() -> CliRunner:
     return CliRunner()
+
+
+def _register_app() -> None:
+    """Register ``page_app`` onto the root ``app`` for this test run.
+
+    Task 8 deliberately does NOT register ``page_app`` in
+    ``src/lies/cli/__init__.py`` (Task 9 owns that boundary). This
+    helper registers it locally for the test process; ``app.add_typer``
+    is idempotent when the same ``name`` is added twice, so repeated
+    invocations within a session stay safe.
+    """
+    app.add_typer(page_app, name="page", rich_help_panel="Wiki management")
 
 
 @pytest.fixture
@@ -88,6 +101,7 @@ def test_write_success_prints_create_receipt(
     wiki_dir.mkdir()
     (wiki_dir / "claude-code" / "concepts").mkdir(parents=True)
 
+    _register_app()
     with patch("lies.cli.resolve_wiki", return_value=_mock_resolve_wiki(wiki_dir)):
         result = runner.invoke(
             app,
@@ -125,6 +139,7 @@ def test_write_collision_no_force_exits_2(runner: CliRunner, tmp_path: Path) -> 
     collision_path.parent.mkdir(parents=True)
     collision_path.write_text("existing")
 
+    _register_app()
     with patch("lies.cli.resolve_wiki", return_value=_mock_resolve_wiki(wiki_dir)):
         result = runner.invoke(
             app,
@@ -163,6 +178,7 @@ def test_write_force_overwrites(
     collision_path.parent.mkdir(parents=True)
     collision_path.write_text("existing")
 
+    _register_app()
     with patch("lies.cli.resolve_wiki", return_value=_mock_resolve_wiki(wiki_dir)):
         result = runner.invoke(
             app,
@@ -198,6 +214,7 @@ def test_write_dry_run_skips_apply(
     wiki_dir = tmp_path / "wiki"
     wiki_dir.mkdir()
 
+    _register_app()
     with patch("lies.cli.resolve_wiki", return_value=_mock_resolve_wiki(wiki_dir)):
         result = runner.invoke(
             app,
@@ -227,6 +244,7 @@ def test_write_missing_collection_exits_2(runner: CliRunner, tmp_path: Path) -> 
     """Missing --collection surfaces a typer usage error (exit 2)."""
     body_file = tmp_path / "body.md"
     body_file.write_text("body")
+    _register_app()
     result = runner.invoke(
         app,
         [
