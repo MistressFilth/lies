@@ -120,8 +120,37 @@ def build_author_plan(
             )
         return MemoryPlan(operations=[op], rationale="explicit author write", evidence=evidence)
     if type == "synthesis":
-        # Implemented in Task 5.
-        raise NotImplementedError("synthesis handling lands in Task 5")
+        if not derived_from:
+            raise WikiPlanInvalid("synthesis requires non-empty derived_from (no ingested source)")
+        rel_path = f"{collection}/{_TYPE_PLURAL[type]}/{slug}.md"
+        body_md = _format_author_body(
+            type=type,
+            collection=collection,
+            title=title,
+            body=body,
+            derived_from=derived_from,
+            tags=tags,
+            sources=sources,
+        )
+        evidence = [f"{collection}/{slug}"]
+        if exists(rel_path):
+            if sha_lookup is None:
+                raise WikiPlanInvalid(f"collision on {rel_path} but sha_lookup not provided")
+            op = PageUpdate(
+                path=rel_path,
+                expected_sha256=sha_lookup(rel_path),
+                content=body_md,
+                evidence=evidence,
+                tag="synthesis",
+            )
+        else:
+            op = PageCreate(
+                path=rel_path,
+                content=body_md,
+                evidence=evidence,
+                tag="synthesis",
+            )
+        return MemoryPlan(operations=[op], rationale="synthesis write", evidence=evidence)
     if not body.strip():
         raise WikiPlanInvalid("body is empty")
     if len(body.encode("utf-8")) > _MAX_BODY_BYTES:
@@ -188,7 +217,16 @@ def _format_author_body(
     parts.append(_yaml_list("derived_from", derived_from))
     parts.append("---")
     parts.append("")
-    parts.append(body)
+
+    if type == "synthesis":
+        # Append ## Evidence section listing each derived_from slug.
+        evidence_lines = ["", "## Evidence", ""]
+        for slug_ref in derived_from:
+            evidence_lines.append(f"- [[{slug_ref}]]")
+        parts.append(body)
+        parts.extend(evidence_lines)
+    else:
+        parts.append(body)
     return "\n".join(parts)
 
 

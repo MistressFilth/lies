@@ -48,14 +48,34 @@ def test_build_author_plan_is_callable():
     assert callable(build_author_plan)
 
 
-def test_build_author_plan_not_implemented_for_synthesis():
-    """synthesis branch raises NotImplementedError (lands in Task 5).
+def test_build_author_plan_synthesis_returns_plan_with_tag():
+    """synthesis branch is implemented (Task 5); empty derived_from still raises.
 
-    Task 2 implemented the non-synthesis branch. Task 3 landed overview.
-    The synthesis branch remains pending; this test pins that synthesis
-    still raises until Task 5 lands.
+    Task 2 pinned ``NotImplementedError`` while synthesis was pending.
+    Task 5 lands the F3 migration: synthesis with a non-empty
+    ``derived_from`` returns a ``MemoryPlan`` whose op has
+    ``tag == "synthesis"``; empty ``derived_from`` still raises
+    ``WikiPlanInvalid`` (F3 invariant — no ingested source means no
+    synthesis).
     """
-    with pytest.raises(NotImplementedError):
+    from lies.memory.models import WikiPlanInvalid
+
+    # Non-empty derived_from → success with synthesis tag.
+    plan = build_author_plan(
+        type="synthesis",
+        collection="claude-code",
+        slug="hooks",
+        title="Hooks",
+        body="body",
+        derived_from=["claude-code/concepts/hooks"],
+        tags=["synthesis"],
+        sources=[],
+        exists=lambda r: False,
+    )
+    assert plan.operations[0].tag == "synthesis"
+
+    # Empty derived_from → still raises WikiPlanInvalid.
+    with pytest.raises(WikiPlanInvalid, match="derived_from"):
         build_author_plan(
             type="synthesis",
             collection="claude-code",
