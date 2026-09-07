@@ -46,8 +46,9 @@ from lies.memory.models import (
     WikiWriteConflict,
 )
 from lies.memory.retry import EnrichmentQueue
-from lies.memory.service import WikiMemoryService, build_synthesis_plan
+from lies.memory.service import WikiMemoryService
 from lies.memory.tools import WikiMemoryDeps, register_read_tools
+from lies.page import build_author_plan
 from lies.qmd import QmdCapability
 from lies.query import (
     PageRead,
@@ -301,14 +302,15 @@ def _build_lint_report(
 
     # Synthesis-page mechanical checks: synthesis_missing_evidence and
     # dangling_derived_from. A synthesis page's contract (see
-    # ``src/lies/schema/default_schema.md`` and ``build_synthesis_plan``)
-    # is: frontmatter ``type: synthesis`` + ``derived_from: list[str]``
-    # of wiki-relative slugs, plus a body ``## Evidence`` section. The
-    # spec'd repairs are mechanical: ``synthesis_missing_evidence``
-    # appends a ``## Evidence`` block listing every ``derived_from``
-    # slug (empty section if the list is empty); ``dangling_derived_from``
-    # removes the dangling slug from the frontmatter list. Both flip
-    # ``safe_to_fix=True`` so the repair agent can auto-close them.
+    # ``src/lies/schema/default_schema.md`` and
+    # ``lies.page.build_author_plan``) is: frontmatter ``type: synthesis``
+    # + ``derived_from: list[str]`` of wiki-relative slugs, plus a body
+    # ``## Evidence`` section. The spec'd repairs are mechanical:
+    # ``synthesis_missing_evidence`` appends a ``## Evidence`` block
+    # listing every ``derived_from`` slug (empty section if the list is
+    # empty); ``dangling_derived_from`` removes the dangling slug from
+    # the frontmatter list. Both flip ``safe_to_fix=True`` so the
+    # repair agent can auto-close them.
     #
     # Read each synthesis page once: a single ``read_text`` per page
     # feeds the type check, the body ``## Evidence`` check, and the
@@ -1154,27 +1156,36 @@ class Orchestrator:
     ) -> MemoryReceipt:
         """Best-effort write of a synthesis answer to ``wiki/<collection>/synthesis/``.
 
-        Inline 3-attempt retry on transient persistence errors. Never
-        raises — the synthesized answer is always returned to the
-        operator regardless of outcome.
+        Public API unchanged from F3; body now delegates to
+        ``build_author_plan(type="synthesis", ...)`` + ``file_back_author``.
+        Inline 3-attempt retry on transient persistence errors lives in
+        :meth:`file_back_author`. Never raises.
         """
+        import hashlib
+        import re
 
-        def exists(rel: str) -> bool:
-            return (self.wiki.wiki_dir / rel).exists()
-
-        def sha_lookup(rel: str) -> str:
-            return self._memory_service.current_state(rel)[0]
+        def _slugify(s: str) -> str:
+            s = s.lower().strip()
+            s = re.sub(r"[^a-z0-9]+", "-", s)
+            return s.strip("-")
 
         question = getattr(answer, "question", "")
+        digest = hashlib.sha256(question.encode("utf-8")).hexdigest()[:8]
+        slug = f"{_slugify(question)[:48]}-{digest}"
+        title = question
 
         try:
-            plan = build_synthesis_plan(
-                question=question,
-                answer=answer.answer,
-                pages_read=answer.pages_read,
+            plan = build_author_plan(
+                type="synthesis",
                 collection=collection,
-                sha_lookup=sha_lookup,
-                exists=exists,
+                slug=slug,
+                title=title,
+                body=answer.answer,
+                derived_from=list(answer.pages_read),
+                tags=["synthesis"],
+                sources=[],
+                exists=lambda r: (self.wiki.wiki_dir / r).exists(),
+                sha_lookup=lambda r: self._memory_service.current_state(r)[0],
             )
         except WikiPlanInvalid as exc:
             return MemoryReceipt(
@@ -1185,33 +1196,7 @@ class Orchestrator:
                 errors=[f"plan_invalid: {exc}"],
             )
 
-        last_exc: BaseException | None = None
-        for attempt in range(3):
-            try:
-                return self._memory_service.apply_plan(plan)
-            except (WikiLockBusy, WikiWriteConflict, WikiCommitFailed) as exc:
-                last_exc = exc
-                if attempt < 2:
-                    time.sleep(0.1)
-                    continue
-                break
-            except Exception as exc:  # noqa: BLE001 - persistence never invalidates the answer
-                return MemoryReceipt(
-                    changed_pages=[],
-                    deferred=[],
-                    fallback_used=False,
-                    fallback_reason="",
-                    errors=[f"file_back_crashed: {type(exc).__name__}: {exc}"],
-                )
-
-        reason = f"{type(last_exc).__name__}: {last_exc}"
-        return MemoryReceipt(
-            changed_pages=[],
-            deferred=[],
-            fallback_used=False,
-            fallback_reason="",
-            errors=[f"file_back_failed_after_3_attempts: {reason}"],
-        )
+        return self.file_back_author(plan)
 
     def file_back_author(self, plan: MemoryPlan) -> MemoryReceipt:
         """Apply a pre-built ``plan`` with inline 3-attempt retry on transient errors.

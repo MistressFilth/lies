@@ -1,7 +1,7 @@
 """F3 synthesis behavior regression pins after migration to build_author_plan.
 
-Lifted verbatim from tests/unit/test_build_synthesis_plan.py (which is
-deleted in Task 7). Pins slug stability, PageCreate vs PageUpdate,
+Lifted verbatim from the previous F3-specific plan-builder test suite
+(deleted in Task 7). Pins slug stability, PageCreate vs PageUpdate,
 frontmatter, body ## Evidence assembly.
 """
 

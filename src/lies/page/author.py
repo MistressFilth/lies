@@ -1,8 +1,8 @@
 """Plan-builder + body formatter for the generic page-author surface (F39).
 
-Mirrors F3's `build_synthesis_plan` + `_format_synthesis_body` shape; the
-synthesis-type branch is migrated from F3 in Task 5 (so F3 callers can
-collapse their wrapper).
+Mirrors the shape of the F3 synthesis path it absorbed in Task 5; the
+synthesis-type branch is migrated from F3 in Task 5 (so F3 callers
+can collapse their wrapper).
 """
 
 from __future__ import annotations
