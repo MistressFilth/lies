@@ -29,6 +29,7 @@ async def test_tools_registered(client: Client) -> None:
         "wiki_search",
         "wiki_read",
         "wiki_changes",
+        "file_knowledge",
     }
 
 

@@ -10,8 +10,7 @@ LLM co-evolve [the schema] over time." Copy this file to
 The wiki supports the following page types. Each page lives at
 `wiki/<page-type>/<name>.md` (e.g., `wiki/entities/alice.md`).
 
-- **overview** — the top-level synthesis. One per wiki, at
-  `wiki/overview.md`. Always keep up to date.
+- **overview**   — wiki/overview.md (one per wiki; written via `lies page write --type overview`)
 - **entity** — a person, place, project, system, or other named thing
   mentioned by the corpus. Example: `wiki/entities/postgres.md`.
 - **concept** — an abstract idea, pattern, framework, or methodology.
@@ -27,6 +26,13 @@ The wiki supports the following page types. Each page lives at
 ## Invisible maintenance contract
 
 The agent maintains the wiki invisibly during every interaction. After you ask a question or add a source, the agent proposes a structured `MemoryPlan` (page creates, updates, evidence appends). The host validates the plan, applies it through `WikiMemoryService`, emits one git commit, and appends one line to `<wiki>/.lies/memory_plans.jsonl`.
+
+> Explicit authoring (`lies page write` / MCP `file_knowledge`) is a peer of
+the auto-MemoryEnricher flow rather than its only path. Both write through
+`WikiMemoryService.apply_plan`; the tag in the commit-message prefix and
+`log.md` entry identifies the source (`author` for explicit, `synthesis`
+for F3 file-back, `ingest` for F2 source ingestion, `memory` for the
+auto-enricher).
 
 Rules the agent follows:
 

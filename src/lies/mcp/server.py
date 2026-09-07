@@ -17,11 +17,16 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import cast
+from typing import Literal, cast
 
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 from pydantic import BaseModel
+
+try:
+    from fastmcp import Context
+except ImportError:  # FastMCP < 3.4.5 with Context.elicit
+    Context: type | None = None  # type: ignore[assignment,misc]
 
 from lies import __version__, xdg
 from lies.constants import LIES_DATA_SUBDIR
@@ -61,6 +66,10 @@ class SynthesizedMcpAnswer(BaseModel):
     synthesis_reason: str | None = None  # None when the agent answered cleanly
     should_file: bool = False  # F3: agent verdict on whether this earns a page
     file_receipt: dict | None = None  # F3: serialized MemoryReceipt or None
+
+
+# Re-export the page-author slice for FastMCP serialization.
+from lies.page import WriteKnowledgeResult  # noqa: E402,F401
 
 
 # ---------------------------------------------------------------------------
@@ -194,6 +203,160 @@ def wiki_read(
 
     wiki = resolve_wiki(name)
     return WikiMemoryService(wiki).read(page_ids)
+
+
+# ---------------------------------------------------------------------------
+# file_knowledge — write one markdown page (collision + force gate)
+# ---------------------------------------------------------------------------
+
+from lies.page import build_author_plan  # noqa: E402
+
+_TYPE_PLURAL_MCP: dict[str, str] = {
+    "entity": "entities",
+    "concept": "concepts",
+    "comparison": "comparisons",
+    "source": "sources",
+    "synthesis": "synthesis",
+}
+
+
+class _CollisionVerdict(BaseModel):
+    """Pydantic response model for the file_knowledge collision elicit."""
+
+    action: Literal["overwrite", "rename", "cancel"]
+    new_slug: str | None = None
+
+
+@mcp.tool(
+    description=(
+        "Write one markdown page to the wiki. type/slug/title/body required. "
+        "Slugs already on disk elicit overwrite/rename/cancel via ctx.elicit. "
+        "Returns the written page path + receipt on success; raises ToolError "
+        "on plan-invalid input."
+    ),
+)
+async def file_knowledge(
+    page_type: str,
+    collection: str,
+    slug: str,
+    title: str,
+    body: str,
+    *,
+    derived_from: list[str] | None = None,
+    tags: list[str] | None = None,
+    sources: list[str] | None = None,
+    force: bool = False,
+    name: str | None = None,
+    ctx: Context | None = None,  # type: ignore[valid-type]
+) -> dict[str, object]:
+    wiki = resolve_wiki(name)
+    rel_path = (
+        "wiki/overview.md"
+        if page_type == "overview"
+        else f"{collection}/{_TYPE_PLURAL_MCP[page_type]}/{slug}.md"
+    )
+
+    # Collision gate.
+    if (wiki.wiki_dir / rel_path).exists() and not force:
+        if ctx is None:
+            raise ToolError(f"page exists at {rel_path}; pass force=True to overwrite")
+        verdict = await ctx.elicit(
+            f"page already exists at {rel_path}; overwrite, rename, or cancel?",
+            response_type=_CollisionVerdict,
+        )
+        # FastMCP wraps the response: AcceptedElicitation has .action == "accept"
+        # and .data == <_CollisionVerdict>; DeclinedElicitation / CancelledElicitation
+        # carry no user payload. Branch on the wrapper action first; only on "accept"
+        # read the user's choice from .data.
+        if verdict.action == "cancel":
+            return WriteKnowledgeResult(
+                page_path=None,
+                page_type=page_type,
+                slug=slug,
+                collection=collection,
+                op="none",
+                receipt={
+                    "changed_pages": [],
+                    "deferred": [],
+                    "fallback_used": False,
+                    "fallback_reason": "",
+                    "errors": ["cancelled by operator"],
+                },
+            ).model_dump()
+        if verdict.action == "decline":
+            # Treat decline the same as cancel: no write, return a cancelled receipt.
+            return WriteKnowledgeResult(
+                page_path=None,
+                page_type=page_type,
+                slug=slug,
+                collection=collection,
+                op="none",
+                receipt={
+                    "changed_pages": [],
+                    "deferred": [],
+                    "fallback_used": False,
+                    "fallback_reason": "",
+                    "errors": ["cancelled by operator"],
+                },
+            ).model_dump()
+        if verdict.action == "accept":
+            user_action = verdict.data.action
+            if user_action == "rename":
+                new_slug = verdict.data.new_slug
+                if not new_slug:
+                    raise ToolError("rename requires new_slug")
+                slug = new_slug
+                rel_path = (
+                    "wiki/overview.md"
+                    if page_type == "overview"
+                    else f"{collection}/{_TYPE_PLURAL_MCP[page_type]}/{new_slug}.md"
+                )
+            elif user_action == "cancel":
+                return WriteKnowledgeResult(
+                    page_path=None,
+                    page_type=page_type,
+                    slug=slug,
+                    collection=collection,
+                    op="none",
+                    receipt={
+                        "changed_pages": [],
+                        "deferred": [],
+                        "fallback_used": False,
+                        "fallback_reason": "",
+                        "errors": ["cancelled by operator"],
+                    },
+                ).model_dump()
+            # user_action == "overwrite" falls through; proceed to build_author_plan
+        else:  # pragma: no cover  # unknown wrapper action
+            raise ToolError(f"unexpected elicit verdict action: {verdict.action}")
+
+    orch = Orchestrator(wiki=wiki)
+    try:
+        plan = build_author_plan(
+            type=page_type,  # type: ignore
+            collection=collection,
+            slug=slug,
+            title=title,
+            body=body,
+            derived_from=derived_from or [],
+            tags=tags or [],
+            sources=sources or [],
+            exists=lambda r: (wiki.wiki_dir / r).exists(),
+            sha_lookup=lambda r: orch._memory_service.current_state(r)[0],
+        )
+    except WikiPlanInvalid as exc:
+        raise ToolError(f"plan_invalid: {exc}") from exc
+
+    receipt = orch.file_back_author(plan)
+    op_kind = "update" if any(p.op.name == "UPDATE" for p in receipt.changed_pages) else "create"
+    return WriteKnowledgeResult(
+        page_path=rel_path,
+        page_type=page_type,
+        slug=slug,
+        collection=collection,
+        op=op_kind,
+        receipt=receipt.model_dump(),
+    ).model_dump()
 
 
 # ---------------------------------------------------------------------------
