@@ -59,6 +59,9 @@ _TYPE_PLURAL: dict[str, str] = {
 }
 
 
+_MAX_BODY_BYTES = 10 * 1024 * 1024  # 10 MB
+
+
 def build_author_plan(
     *,
     type: Literal["overview", "entity", "concept", "comparison", "source", "synthesis"],
@@ -121,6 +124,8 @@ def build_author_plan(
         raise NotImplementedError("synthesis handling lands in Task 5")
     if not body.strip():
         raise WikiPlanInvalid("body is empty")
+    if len(body.encode("utf-8")) > _MAX_BODY_BYTES:
+        raise WikiPlanInvalid(f"body exceeds 10 MB limit ({len(body.encode('utf-8'))} bytes)")
 
     rel_path = f"{collection}/{_TYPE_PLURAL[type]}/{slug}.md"
     body_md = _format_author_body(

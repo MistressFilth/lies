@@ -270,3 +270,39 @@ def test_overview_collision_uses_wiki_root_path():
     assert isinstance(op, PageUpdate)
     assert op.path == "wiki/overview.md"
     assert op.expected_sha256 == "deadbeef" * 8
+
+
+# ---------- body size cap ----------
+
+
+def test_body_over_10mb_raises():
+    big_body = "x" * (10 * 1024 * 1024 + 1)
+    with pytest.raises(WikiPlanInvalid, match="exceeds 10 MB"):
+        build_author_plan(
+            type="concept",
+            collection="c",
+            slug="s",
+            title="T",
+            body=big_body,
+            derived_from=[],
+            tags=[],
+            sources=[],
+            exists=_exists_always_false,
+        )
+
+
+def test_body_at_10mb_passes():
+    """Exactly 10 MB is allowed; only over-cap raises."""
+    body_at_cap = "x" * (10 * 1024 * 1024)
+    plan = build_author_plan(
+        type="concept",
+        collection="c",
+        slug="s",
+        title="T",
+        body=body_at_cap,
+        derived_from=[],
+        tags=[],
+        sources=[],
+        exists=_exists_always_false,
+    )
+    assert len(plan.operations) == 1
