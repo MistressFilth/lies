@@ -40,28 +40,11 @@ calls keep ``--name`` because ``name`` *is* an ``Option`` on
 Current test status
 -------------------
 
-This test currently FAILS when run with ``INTEGRATION=1`` because the
-``lies page write`` CLI does not pre-register plan evidence with the
-``WikiMemoryService`` before invoking ``apply_plan``. The plan builder
-emits ``evidence=[f"{collection}/{slug}"]`` (e.g. ``["claude-code/hooks"]``)
-which ``validate_operation_evidence`` checks against
-``WikiMemoryService._known_evidence``. The F3 ``run_query`` flow works
-because it pre-registers evidence (``orchestrator.py:1539``); the
-``Orchestrator.file_back_synthesis`` and ``Orchestrator.file_back_author``
-wrappers do not register anything themselves, so the CLI/MCP surface
-that bypasses ``run_query`` hits ``WikiEvidenceMissing``. The CLI exits
-0 (errors-as-values), but stdout carries
-``(author: error — file_back_crashed: WikiEvidenceMissing: …)`` rather
-than the expected ``(author: durably filed ... - create: ...)``.
-
-The default CI run (without ``INTEGRATION=1``) still skips cleanly, so
-this failing integration test does not break CI — but it documents a
-real implementation gap in Tasks 8 and 11 that the unit suite (which
-mocks ``file_back_author``) never caught. The fix belongs in either
-``src/lies/cli/page.py:write`` and ``src/lies/mcp/server.py:file_knowledge``
-(register evidence before calling ``file_back_author``) or in
-``Orchestrator.file_back_author`` itself (register the plan's evidence
-before delegating to ``apply_plan``).
+Regression coverage for Task 14: ``file_back_author`` must pre-register
+plan evidence with ``WikiMemoryService`` before ``apply_plan``, otherwise
+``validate_operation_evidence`` raises ``WikiEvidenceMissing``. Pinned by
+``test_register_evidence_called_before_apply_plan`` (unit) and this
+integration test.
 """
 
 from __future__ import annotations

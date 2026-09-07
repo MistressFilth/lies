@@ -246,9 +246,10 @@ async def file_knowledge(
     tags: list[str] | None = None,
     sources: list[str] | None = None,
     force: bool = False,
+    name: str | None = None,
     ctx: Context | None = None,  # type: ignore[valid-type]
 ) -> dict[str, object]:
-    wiki = resolve_wiki(None)
+    wiki = resolve_wiki(name)
     rel_path = (
         "wiki/overview.md"
         if page_type == "overview"

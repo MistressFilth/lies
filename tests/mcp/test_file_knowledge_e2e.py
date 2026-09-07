@@ -232,3 +232,32 @@ async def test_elicit_rename_without_new_slug_raises_tool_error():
                 body="b",
                 ctx=bad_ctx,
             )
+
+
+async def test_file_knowledge_with_explicit_name_uses_that_wiki(ctx_overwrite):
+    """``name`` kwarg must be forwarded to ``resolve_wiki`` verbatim.
+
+    Mirrors the pattern every other MCP tool uses (``init_wiki``,
+    ``ingest_source``, ``query``, ``lint``, ``wiki_search``,
+    ``wiki_read``, ``wiki_changes``) so an operator can target a
+    specific wiki instead of falling back to ``LIES_WIKI_NAME``.
+    """
+    from unittest.mock import patch
+
+    from lies.mcp.server import file_knowledge
+
+    wiki, orch = _setup()
+    with (
+        patch("lies.mcp.server.resolve_wiki", return_value=wiki) as resolve_wiki_mock,
+        patch("lies.mcp.server.Orchestrator", return_value=orch),
+    ):
+        await file_knowledge(
+            page_type="concept",
+            collection="claude-code",
+            slug="hooks",
+            title="Hooks",
+            body="body",
+            name="my-explicit-wiki",
+            ctx=ctx_overwrite,
+        )
+    resolve_wiki_mock.assert_called_once_with("my-explicit-wiki")

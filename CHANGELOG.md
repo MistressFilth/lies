@@ -32,6 +32,14 @@ All notable changes to LIES are documented here. The format follows
   still served the old index. `check_data_dir_match` normalizes paths
   via `Path.resolve` so `Path("wiki")` vs `Path("./wiki")` no longer
   spuriously reports a mismatch.
+- MCP `file_knowledge` now accepts a `name: str | None = None` parameter
+  and forwards it to `resolve_wiki`, mirroring every other tool
+  (`init_wiki`, `ingest_source`, `query`, `lint`, `wiki_search`,
+  `wiki_read`, `wiki_changes`). Without it an operator could not
+  target a specific wiki via the MCP surface; the CLI's `--name`
+  flag was the only path. Regression test
+  `test_file_knowledge_with_explicit_name_uses_that_wiki` pins the
+  contract.
 
 ### Tests
 

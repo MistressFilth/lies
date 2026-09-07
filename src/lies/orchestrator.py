@@ -1205,6 +1205,11 @@ class Orchestrator:
         :func:`lies.page.build_author_plan`; this method only handles the
         apply-with-retry envelope. Never raises — the operator always
         sees a receipt, even on exhaustion or unexpected exceptions.
+
+        Pre-registers plan evidence with ``_memory_service.register_evidence``
+        before each apply attempt so ``validate_operation_evidence`` accepts
+        the plan; without this the receipt carries ``WikiEvidenceMissing``
+        and ``apply_plan`` rejects the plan before any disk write.
         """
         self._memory_service.register_evidence(
             {ref for op in plan.operations for ref in op.evidence}

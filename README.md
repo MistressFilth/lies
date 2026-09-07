@@ -154,7 +154,7 @@ scrapers for other formats.
 `lies page write` writes one markdown page directly to the wiki through
 `WikiMemoryService.apply_plan`. Use it to author concept / entity /
 comparison / overview / source / synthesis pages from any context the
-agent isn't already covers.
+agent isn't already covering.
 
 ```bash
 # Write a concept page (body from stdin)
