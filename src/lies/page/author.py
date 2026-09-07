@@ -87,8 +87,35 @@ def build_author_plan(
     if type not in _ALLOWED_TYPES:
         raise WikiPlanInvalid(f"page type {type!r} not in ALLOWED_PAGE_TYPES")
     if type == "overview":
-        # Implemented in Task 3.
-        raise NotImplementedError("overview handling lands in Task 3")
+        rel_path = "wiki/overview.md"
+        body_md = _format_author_body(
+            type=type,
+            collection=collection,
+            title=title,
+            body=body,
+            derived_from=derived_from,
+            tags=tags,
+            sources=sources,
+        )
+        evidence = ["wiki/overview"]
+        if exists(rel_path):
+            if sha_lookup is None:
+                raise WikiPlanInvalid(f"collision on {rel_path} but sha_lookup not provided")
+            op = PageUpdate(
+                path=rel_path,
+                expected_sha256=sha_lookup(rel_path),
+                content=body_md,
+                evidence=evidence,
+                tag="author",
+            )
+        else:
+            op = PageCreate(
+                path=rel_path,
+                content=body_md,
+                evidence=evidence,
+                tag="author",
+            )
+        return MemoryPlan(operations=[op], rationale="explicit author write", evidence=evidence)
     if type == "synthesis":
         # Implemented in Task 5.
         raise NotImplementedError("synthesis handling lands in Task 5")

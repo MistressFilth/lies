@@ -228,3 +228,45 @@ def test_format_body_emits_frontmatter_then_body():
     body = out[fm_end + 5 :]
     assert "## Section" in body
     assert "Content" in body
+
+
+# ---------- overview singleton ----------
+
+
+def test_overview_ignores_collection_lands_at_wiki_root():
+    plan = build_author_plan(
+        type="overview",
+        collection="ignored-collection",
+        slug="ignored-slug",
+        title="Wiki Overview",
+        body="# Wiki Overview\nContent.",
+        derived_from=[],
+        tags=[],
+        sources=[],
+        exists=_exists_always_false,
+    )
+    op = plan.operations[0]
+    assert isinstance(op, PageCreate)
+    assert op.path == "wiki/overview.md"
+
+
+def test_overview_collision_uses_wiki_root_path():
+    def exists(rel: str) -> bool:
+        return rel == "wiki/overview.md"
+
+    plan = build_author_plan(
+        type="overview",
+        collection="anything",
+        slug="anything",
+        title="T",
+        body="b",
+        derived_from=[],
+        tags=[],
+        sources=[],
+        exists=exists,
+        sha_lookup=_sha_lookup,
+    )
+    op = plan.operations[0]
+    assert isinstance(op, PageUpdate)
+    assert op.path == "wiki/overview.md"
+    assert op.expected_sha256 == "deadbeef" * 8
