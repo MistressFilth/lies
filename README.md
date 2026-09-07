@@ -149,6 +149,28 @@ LIES can ingest PDF, Sphinx, HTML, Liquid, and bespoke source corpora.
 All four named formats are first-class; bespoke dispatches user-provided
 scrapers for other formats.
 
+## Page authoring
+
+`lies page write` writes one markdown page directly to the wiki through
+`WikiMemoryService.apply_plan`. Use it to author concept / entity /
+comparison / overview / source / synthesis pages from any context the
+agent isn't already covering.
+
+```bash
+# Write a concept page (body from stdin)
+echo "## Definition
+A hook intercepts events at fixed points." | \
+  lies page write --collection claude-code --type concept \
+    --slug hooks --title "Hooks" --body-file -
+
+# Overwrite an existing page
+lies page write --collection claude-code --type concept \
+  --slug hooks --title "Hooks" --body-file body.md --force
+```
+
+The MCP equivalent (`mcp__plugin_lies__file_knowledge`) elicits
+overwrite/rename/cancel on slug collision via `ctx.elicit`.
+
 ## Advanced
 
 ### Manual authoring (advanced)
@@ -392,6 +414,7 @@ CLI commands (`src/lies/cli/`):
   `--force-file` writes regardless of the agent's verdict. Success
   prints a `(synthesis: durably filed - <op>: <path>)` receipt;
   failure prints `(synthesis: error — <reason>)`.
+- `lies page write` — write one page directly to the wiki (F39).
 - `lies lint [--fix]` — health-check the wiki (`--fix` applies the repair plan for safe_to_fix findings). Findings span six categories; LLM-backed categories are skipped with a `Sources` line when no model key is configured.
 - `lies mcp` / `lies mcp start` — run the MCP server on stdio.
 - `lies mcp up` / `down` / `status` — manage the detached http MCP daemon.
