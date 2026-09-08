@@ -140,7 +140,13 @@ def qmd_collection_show(cwd: Path, name: str) -> dict[str, str] | None:
     return {"path": info["path"]}
 
 
-def qmd_collection_add_or_update(cwd: Path, path: Path, name: str) -> None:
+def qmd_collection_add_or_update(
+    cwd: Path,
+    path: Path,
+    name: str,
+    *,
+    library_target: Path | None = None,
+) -> None:
     """Register ``name`` at ``path`` with qmd, refreshing an existing entry.
 
     Behavior:
@@ -152,13 +158,19 @@ def qmd_collection_add_or_update(cwd: Path, path: Path, name: str) -> None:
       the ``add`` proceeds; this handles the case where qmd accepts the
       ``add`` and replaces the existing entry even if ``remove`` errors.
 
-    Resolves ``path`` to an absolute string so the comparison is not
-    tripped up by relative paths from callers.
+    When ``library_target`` is set (Task 12 — library writer integration),
+    that path is what gets registered with qmd; ``path`` is ignored for
+    the show/remove/add call. Without ``library_target``, the existing
+    wiki behavior uses ``path`` verbatim.
+
+    Resolves the effective path to an absolute string so the comparison
+    is not tripped up by relative paths from callers.
     """
-    target = str(path.resolve())
+    register_path = library_target if library_target is not None else path
+    target = str(register_path.resolve())
     info = qmd_collection_show(cwd, name)
     if info is None:
-        qmd_collection_add(cwd, path, name)
+        qmd_collection_add(cwd, register_path, name)
         return
     existing = info.get("path", "")
     if existing == target:
@@ -171,7 +183,7 @@ def qmd_collection_add_or_update(cwd: Path, path: Path, name: str) -> None:
             f"continuing with add.",
             file=sys.stderr,
         )
-    qmd_collection_add(cwd, path, name)
+    qmd_collection_add(cwd, register_path, name)
 
 
 def qmd_embed(cwd: Path, collection_name: str, *, timeout: int = 1800) -> None:
