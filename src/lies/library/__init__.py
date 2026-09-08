@@ -6,6 +6,7 @@ from lies.library.errors import (
     LibraryError,
     LibraryFetchUnreachable,
 )
+from lies.library.fetcher import ScraperFetcher
 from lies.library.paths import Library, LibraryCollection
 from lies.library.writer import LibraryWriter
 
@@ -17,4 +18,5 @@ __all__ = (
     "LibraryFetchUnreachable",
     "LibraryCatalogLocked",
     "LibraryAtomicCommitFailed",
+    "ScraperFetcher",
 )
