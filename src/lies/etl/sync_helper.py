@@ -25,6 +25,7 @@ from lies.etl.heartbeat import (
 )
 from lies.library import ingest as _library_ingest
 from lies.library.fetcher import ScraperFetcher
+from lies.library.ingest import BatchIngestResult
 from lies.library.paths import Library
 from lies.lock_errors import WikiFlockIndeterminate
 from lies.utils.exclusive import acquire_create_lock
@@ -129,7 +130,7 @@ def sync_collection(
     collection_name: str,
     *,
     force: bool = False,
-) -> None:
+) -> BatchIngestResult:
     """Sync a single collection into the library.
 
     Wiki is kept as the first parameter for ``--wait`` / ``--fail-busy``
@@ -139,6 +140,16 @@ def sync_collection(
     registered source (``Collection.source``) is resolved from the wiki's
     ``collections_dir/<name>.yaml`` and handed to ``run_batch_ingest``
     along with the library instance and a ``ScraperFetcher``.
+
+    Returns the :class:`BatchIngestResult` from ``run_batch_ingest`` so
+    the CLI can surface non-zero ``result.errors`` to the operator
+    instead of silently exiting 0 on a wholly-failed batch.
+
+    ``Collection.scraper_cmd`` is honored: when set, the
+    ``ScraperFetcher`` loads the bespoke scraper instead of falling
+    through to ``pick_scraper``. The :class:`Collection` itself is
+    threaded through so REGISTRY builders (sphinx, liquid, bespoke)
+    that read ``collection.config`` keep working.
     """
     collection: Collection = load_collection(wiki, collection_name)
     # ``Collection.source`` is a string — either a URL (``http(s)://`` /
@@ -152,8 +163,12 @@ def sync_collection(
     else:
         source_dir = Path(source)
     library = Library.open()
-    fetcher = ScraperFetcher(library=library)
-    _library_ingest.run_batch_ingest(
+    fetcher = ScraperFetcher(
+        library=library,
+        scraper_cmd=collection.scraper_cmd,
+        collection=collection,
+    )
+    return _library_ingest.run_batch_ingest(
         library=library,
         collection_name=collection_name,
         source_dir=source_dir,

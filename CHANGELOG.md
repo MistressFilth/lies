@@ -25,6 +25,14 @@ All notable changes to LIES are documented here. The format follows
   command is removed — its responsibilities did not survive the move
   to the deterministic library ingest path. `sync` and `reindex`
   remain in place.
+- `lies sync` now honors `Collection.scraper_cmd` end-to-end: the
+  `ScraperFetcher` loads bespoke scrapers via the same `module:attr`
+  / `path.py:attr` resolver the wiki side uses (`Collection.source`
+  no longer has to be a URL/path the prefix heuristic can match).
+  Bespoke-loader failures propagate; the fetcher never silently
+  falls back to `pick_scraper`. `lies sync` now also exits non-zero
+  when the underlying `BatchIngestResult.errors` is non-empty, so a
+  wholly-failed batch no longer exits 0.
 
 ### Removed
 - `lies ingest-source <src> --collection NAME` (Phase-1 atomic LLM
@@ -37,6 +45,12 @@ All notable changes to LIES are documented here. The format follows
   place.
 
 ### Fixed
+- `library/fetcher.py`: `_normalize_body` now routes registered
+  source formats (sphinx / liquid / bespoke / etc.) through the
+  `REGISTRY` builder before falling back to `format_dispatch.dispatch`,
+  mirroring `etl/stages/normalize.py:83-90`. Without the REGISTRY
+  first-pass, builder-handled formats raised `UnknownFormatError` and
+  the doc was quarantined even when a valid builder was registered.
 - `cli/ingestion.py` NameError on `ingest-source` — bare-name `Orchestrator(wiki)`
   lookup does not consult the module `__getattr__` (PEP 562 fires on
   `module.attr` / `from M import X`, not on function-body global lookup).

@@ -44,7 +44,16 @@ def test_sync_single_collection_bootstrap_missing(
     wiki_root.mkdir()
     wiki = make_wiki(name="sync-bootstrap", data_root=wiki_root)
     monkeypatch.setenv("LIES_WIKI_NAME", wiki.name)
-    with mock.patch("lies.etl.sync_helper.sync_collection") as mock_sync:
+    # Task 11 retarget: ``sync_collection`` now returns a
+    # ``BatchIngestResult``. The CLI exits 1 when ``errors`` is
+    # non-zero. Mock the helper to return a clean result so the
+    # bootstrap-only path can be tested.
+    from lies.library.ingest import BatchIngestResult
+
+    with mock.patch(
+        "lies.etl.sync_helper.sync_collection",
+        return_value=BatchIngestResult(),
+    ) as mock_sync:
         result = runner.invoke(
             app,
             ["sync", "alpha", "--source", "https://example.com", "--name", wiki.name],
@@ -68,9 +77,14 @@ def test_sync_all_collections_no_bootstrap(tmp_path: Path, monkeypatch: pytest.M
         encoding="utf-8",
     )
     monkeypatch.setenv("LIES_WIKI_NAME", wiki.name)
+    from lies.library.ingest import BatchIngestResult
+
     with (
         mock.patch("lies.etl.sync_helper.collection_names", return_value=["beta"]),
-        mock.patch("lies.etl.sync_helper.sync_collection") as mock_sync,
+        mock.patch(
+            "lies.etl.sync_helper.sync_collection",
+            return_value=BatchIngestResult(),
+        ) as mock_sync,
     ):
         result = runner.invoke(app, ["sync", "--name", wiki.name])
     assert result.exit_code == 0

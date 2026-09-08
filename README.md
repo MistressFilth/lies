@@ -185,14 +185,24 @@ uv run lies sync <name>
 ```
 
 For bespoke scrapers outside the repo, set `scraper_cmd: module:attr`
-referencing a `BaseScraper` subclass on `PYTHONPATH`.
+referencing a `BaseScraper` subclass on `PYTHONPATH`. The `lies sync`
+pipeline honors `scraper_cmd` end-to-end: the `ScraperFetcher` loads
+the bespoke scraper via the same `module:attr` / `path.py:attr`
+resolver the wiki side uses. A bespoke-loader failure propagates —
+the fetcher never silently falls back to `pick_scraper` on
+prefix/suffix heuristics, so misconfigured scrapers surface
+immediately rather than ingesting nothing.
 
 ### Liquid sources
 
 `source_format=liquid` enables per-file Liquid template conversion.
 LIES reads `source.liquid`, optionally renders it via a Python callable
 referenced from `Collection.config["render_cmd"]`, then converts the
-HTML to Markdown via pandoc.
+HTML to Markdown via pandoc. `lies sync` routes `liquid` through the
+`REGISTRY`-registered `LiquidBuilder` rather than the wiki-side
+`normalize.py` `UnknownFormatError("liquid parsing not yet supported")`
+fallback, so a Liquid collection syncs end-to-end without bespoke
+plumbing.
 
 ```yaml
 # <wiki>/.lies/collections/liquid-theme.yaml
@@ -413,7 +423,7 @@ CLI commands (`src/lies/cli/`):
   legacy `<path>/.lies/` to XDG role-routed directories.
 - `lies ingest --source <PATH|URL> [--collection NAME] [--slug <slug>] [--title <title>] [--force] [--dry-run] [--exclude-stem <name> ...] [--exclude-dir <name> ...]` — deterministic single-source ingest into the library. No LLM round-trip; the 5-step pipeline (fetch → ETL → filter → mirror → catalog) writes a deterministic frontmatter mirror and atomic-commits one catalog upsert. `--collection` defaults to `--slug-prefix` or `default`; `--force` overwrites an existing mirror; `--dry-run` prints the plan without writing.
 - `lies ingest --batch <DIR> --slug-prefix <name> [--force] [--dry-run] [--exclude-stem <name> ...] [--exclude-dir <name> ...]` — directory walk into one collection. Same pipeline as `--source` but iterates every eligible file under `<DIR>`.
-- `lies sync [<collection>] [--source URL] [--wizard]` — sync one collection, or every collection in the wiki when no positional is given. Pass `--source` to bootstrap a missing YAML (single-collection mode only); `--wizard` routes the bootstrap through `collection_author_agent`.
+- `lies sync [<collection>] [--source URL] [--wizard]` — sync one collection into the library, or every collection in the wiki when no positional is given. Pass `--source` to bootstrap a missing YAML (single-collection mode only); `--wizard` routes the bootstrap through `collection_author_agent`. Honors `Collection.scraper_cmd` (bespoke scrapers via `module:attr` / `path.py:attr`) and routes REGISTRY-registered source formats (sphinx / liquid / bespoke) through their builders before falling back to `format_dispatch`. Exits non-zero when the batch reports any `errors`.
 - `lies query <question> [--collection NAME] [--no-file] [--force-file]`
   — ask a question of the wiki; answers are LLM-synthesized with
   citations over qmd-retrieved pages, falling back to the previous
@@ -478,7 +488,7 @@ of `.lies/catalog.db`, emitted on demand by `lies catalog render`.
 
 Commands:
 
-- `lies sync <collection>` — re-ingest changed docs only (`--force` for full).
+- `lies sync <collection>` — re-ingest changed docs only (`--force` for full); writes land under the library (`$XDG_DATA_HOME/lies/library/collections/<name>/`), not the wiki `wiki_dir`.
 - `lies ingest <collection>` — bootstrap a collection (existing or new).
 - `lies reindex --reconcile` — sync each collection.
 - `lies collections list|show|modify` — manage collection configs (modify writes immediately; see `--help`).

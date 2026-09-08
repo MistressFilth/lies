@@ -9,6 +9,7 @@ from pathlib import Path
 import subprocess
 import pytest
 from lies.etl.sync_helper import sync_collection
+from lies.library.ingest import BatchIngestResult
 from lies.library.paths import Library
 
 
@@ -34,13 +35,10 @@ def fixture_lib(tmp_path: Path, monkeypatch) -> Library:
     return lib
 
 
-def test_sync_collection_writes_to_library(fixture_lib: Library, monkeypatch) -> None:
-    """``sync_collection`` must land the mirror under library, not wiki."""
-    # Stub Wiki with the data_root pointing at fixture_lib.git_root (wiki
-    # side gets nothing committed). Stub scrapers to emit one FetchItem.
+def _stub_wiki(fixture_lib: Library):
     from lies.wiki.wiki import Wiki
 
-    wiki = Wiki(
+    return Wiki(
         name="t",
         data_root=fixture_lib.git_root,
         config_root=fixture_lib.git_root,
@@ -48,30 +46,38 @@ def test_sync_collection_writes_to_library(fixture_lib: Library, monkeypatch) ->
         state_root=fixture_lib.git_root,
         runtime_root=fixture_lib.git_root,
     )
-    # Collection YAML at ``wiki.collections_dir`` so load_collection resolves.
+
+
+def _seed_collection(wiki, *, name: str = "claude", scraper_cmd: str | None = None) -> None:
     wiki.collections_dir.mkdir(parents=True, exist_ok=True)
-    (wiki.collections_dir / "claude.yaml").write_text(
-        "name: claude\n"
-        "path: raw/claude\n"
-        "source: https://example.com/claude\n"
+    scraper_line = f"scraper_cmd: {scraper_cmd}\n" if scraper_cmd else ""
+    (wiki.collections_dir / f"{name}.yaml").write_text(
+        "name: {name}\n"
+        "path: raw/{name}\n"
+        "source: https://example.com/{name}\n"
         "tags: []\n"
-        "version: '1'\n"
+        "{scraper}".format(name=name, scraper=scraper_line)
+        + "version: '1'\n"
         "created_at: 2026-01-01T00:00:00\n"
         "updated_at: 2026-01-01T00:00:00\n",
         encoding="utf-8",
     )
 
+
+def test_sync_collection_writes_to_library(fixture_lib: Library, monkeypatch) -> None:
+    """``sync_collection`` must land the mirror under library, not wiki."""
+    wiki = _stub_wiki(fixture_lib)
+    _seed_collection(wiki)
+
     captured = {"called_with": None}
 
     def fake_run_batch(*args, **kwargs):
         captured["called_with"] = kwargs
-        from lies.library.ingest import BatchIngestResult
-
         return BatchIngestResult(created=1)
 
     monkeypatch.setattr("lies.library.ingest.run_batch_ingest", fake_run_batch)
 
-    sync_collection(
+    result = sync_collection(
         wiki=wiki,
         collection_name="claude",
         force=False,
@@ -80,3 +86,91 @@ def test_sync_collection_writes_to_library(fixture_lib: Library, monkeypatch) ->
     # The library-side fakes confirmed library was the target.
     assert captured["called_with"] is not None
     assert captured["called_with"].get("library") is fixture_lib
+    # Finding 3: ``sync_collection`` must surface ``BatchIngestResult``
+    # so the CLI can exit non-zero on errors instead of silently
+    # swallowing the failure.
+    assert isinstance(result, BatchIngestResult)
+    assert result.created == 1
+    assert result.errors == 0
+
+
+def test_sync_collection_threads_scraper_cmd_into_fetcher(
+    fixture_lib: Library, monkeypatch
+) -> None:
+    """``Collection.scraper_cmd`` is passed through to ``ScraperFetcher``.
+
+    Finding 1 pin: the bespoke loader must be honored end-to-end. We
+    capture the ``ScraperFetcher`` instance the helper hands to
+    ``run_batch_ingest`` and assert it carries the right
+    ``scraper_cmd`` / ``collection`` (REGISTRY routing needs the
+    collection for ``Collection.config`` lookups in sphinx / liquid /
+    bespoke builders).
+    """
+    wiki = _stub_wiki(fixture_lib)
+    _seed_collection(wiki, scraper_cmd="lies.scrapers.web:WebScraper")
+
+    seen = {}
+
+    class _FakeFetcher:
+        def __init__(self, library, **kwargs):
+            seen["init"] = {"library": library, **kwargs}
+
+    def fake_run_batch(*args, **kwargs):
+        seen["kwargs"] = kwargs
+        return BatchIngestResult()
+
+    # Patch the binding the helper actually uses, not the source module.
+    monkeypatch.setattr("lies.etl.sync_helper.ScraperFetcher", _FakeFetcher)
+    monkeypatch.setattr("lies.library.ingest.run_batch_ingest", fake_run_batch)
+
+    sync_collection(wiki=wiki, collection_name="claude", force=False)
+
+    init = seen["init"]
+    assert init["library"] is fixture_lib
+    assert init["scraper_cmd"] == "lies.scrapers.web:WebScraper"
+    # Collection must be threaded through for REGISTRY builders.
+    assert init["collection"] is not None
+    assert init["collection"].name == "claude"
+
+
+def test_sync_collection_no_scraper_cmd_uses_pick_scraper(
+    fixture_lib: Library, monkeypatch
+) -> None:
+    """Without ``scraper_cmd`` the fetcher is built with ``scraper_cmd=None``."""
+    wiki = _stub_wiki(fixture_lib)
+    _seed_collection(wiki)
+
+    seen = {}
+
+    class _FakeFetcher:
+        def __init__(self, library, **kwargs):
+            seen["init"] = {"library": library, **kwargs}
+
+    monkeypatch.setattr("lies.etl.sync_helper.ScraperFetcher", _FakeFetcher)
+    monkeypatch.setattr(
+        "lies.library.ingest.run_batch_ingest", lambda *a, **kw: BatchIngestResult()
+    )
+
+    sync_collection(wiki=wiki, collection_name="claude", force=False)
+
+    assert seen["init"]["scraper_cmd"] is None
+    assert seen["init"]["collection"].name == "claude"
+
+
+def test_sync_collection_propagates_errors(fixture_lib: Library, monkeypatch) -> None:
+    """A wholly-failed batch surfaces ``errors`` on the returned result.
+
+    Finding 3 pin: the returned ``BatchIngestResult.errors`` is the
+    signal the CLI uses to exit non-zero.
+    """
+    wiki = _stub_wiki(fixture_lib)
+    _seed_collection(wiki)
+
+    def fake_run_batch(*args, **kwargs):
+        return BatchIngestResult(errors=2, quarantine_records=[("x:u", "broken")])
+
+    monkeypatch.setattr("lies.library.ingest.run_batch_ingest", fake_run_batch)
+
+    result = sync_collection(wiki=wiki, collection_name="claude", force=False)
+    assert result.errors == 2
+    assert len(result.quarantine_records) == 1

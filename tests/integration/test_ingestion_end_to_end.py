@@ -195,8 +195,15 @@ def test_full_pipeline_idempotent(
 
     assert (lib.collections_root / "sample" / "chunk-0000.md").exists()
 
+    # Task 11 retarget: ``lies sync`` now exits non-zero when the
+    # underlying ``BatchIngestResult.errors`` is non-empty. The
+    # second sync sees a mirror collision (the file already exists
+    # from ``result1``) and is quarantined as an error — this is
+    # the correct contract per Finding 3 (no silent data loss).
+    # Pass ``--force`` to allow the second sync to overwrite and
+    # verify the re-run still succeeds.
     with mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
-        result2 = CliRunner().invoke(app, ["sync", "sample"])
+        result2 = CliRunner().invoke(app, ["sync", "sample", "--force"])
     assert result2.exit_code == 0
 
     # Best-effort cleanup; the CWD-relative raw path the test seeded is

@@ -143,6 +143,10 @@ def sync(
         raise typer.Exit(code=5)
     if acquire_heartbeat(wiki, wait=wait, fail_busy=fail_busy) is None:
         raise typer.Exit(code=2)
+    total_errors = 0
+    total_created = 0
+    total_updated = 0
+    total_skipped = 0
     try:
         if collection is not None and source is not None:
             try:
@@ -162,8 +166,23 @@ def sync(
                     err=True,
                 )
                 raise typer.Exit(code=3)
+        last_result = None
         for coll_name in collection_names(wiki, collection):
-            sync_collection(wiki, coll_name, force=force)
+            last_result = sync_collection(wiki, coll_name, force=force)
+            total_errors += last_result.errors
+            total_created += last_result.created
+            total_updated += last_result.updated
+            total_skipped += last_result.skipped
+        summary = (
+            f"created={total_created} updated={total_updated} "
+            f"skipped={total_skipped} errors={total_errors}"
+        )
+        typer.echo(summary)
+        if total_errors:
+            raise typer.Exit(code=1)
+        # Suppress unused-binding: ``last_result`` is referenced for
+        # the single-collection fast path below if we ever inline.
+        del last_result
     finally:
         release_heartbeat(wiki)
 

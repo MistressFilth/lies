@@ -9,7 +9,7 @@ import pytest
 
 from lies.etl.normalize.format_dispatch import UnknownFormatError
 from lies.library.errors import LibraryFetchUnreachable
-from lies.library.fetcher import ScraperFetcher
+from lies.library.fetcher import ScraperFetcher, _load_bespoke_scraper
 from lies.library.ingest import FetchItem
 from lies.scrapers.base import ParsedDoc
 
@@ -225,11 +225,14 @@ def test_fetcher_yields_iterator_not_list(monkeypatch, tmp_path: Path) -> None:
 
 
 def test_fetcher_unknown_format_propagates(monkeypatch, tmp_path: Path) -> None:
-    """A scraper emitting ``source_format="liquid"`` propagates ``UnknownFormatError``.
+    """A REGISTRY-registered format without ``Collection`` propagates the builder's error.
 
-    The fetcher must not swallow dispatch failures into a UTF-8 decode
-    fallback: a PDF or pandoc outage must not land raw binary as if it
-    were clean markdown. The ingest pipeline handles quarantine.
+    ``liquid`` IS registered with REGISTRY (via the ``LiquidBuilder``
+    module side-effect import), but the builder reads
+    ``collection.config`` — without a Collection the builder raises
+    ``AttributeError`` on the bare-``None``. The fetcher must surface
+    that, not silently fall through to a UTF-8 decode fallback. The
+    ingest pipeline handles quarantine.
     """
     src = tmp_path / "page.md"
     src.write_text("# hello\nbody\n")
@@ -249,7 +252,7 @@ def test_fetcher_unknown_format_propagates(monkeypatch, tmp_path: Path) -> None:
     )
 
     fetcher = ScraperFetcher(library=None)  # type: ignore[arg-type]
-    with pytest.raises(UnknownFormatError):
+    with pytest.raises(AttributeError, match="config"):
         list(fetcher.fetch_sources(src))
 
 
@@ -280,3 +283,273 @@ def test_fetcher_unrecognized_format_propagates(monkeypatch, tmp_path: Path) -> 
     fetcher = ScraperFetcher(library=None)  # type: ignore[arg-type]
     with pytest.raises(UnknownFormatError):
         list(fetcher.fetch_sources(src))
+
+
+# ---------------------------------------------------------------------------
+# Finding 1: scraper_cmd must be honored end-to-end.
+# ---------------------------------------------------------------------------
+
+
+class _FakeBespokeScraper:
+    """Minimal BaseScraper for the bespoke-loader happy path."""
+
+    def fetch(self, source: Path | str) -> bytes:
+        return b"raw bytes from bespoke"
+
+    def parse(
+        self,
+        raw: bytes,
+        *,
+        source: str | Path | None = None,
+    ) -> list[ParsedDoc]:
+        return [
+            ParsedDoc(
+                path="page.md",
+                content=b"# bespoke body\n",
+                source_sha256="bb" * 32,
+                source_format="markdown",
+            )
+        ]
+
+    def emit_manifest(self, docs: list[ParsedDoc], raw_dir: Path) -> Path:
+        return raw_dir / "manifest.json"
+
+
+def test_fetcher_uses_bespoke_loader_when_scraper_cmd_set(monkeypatch, tmp_path: Path) -> None:
+    """``scraper_cmd`` routes through ``_load_bespoke_scraper`` instead of ``pick_scraper``.
+
+    Pin for Finding 1: the bespoke scraper (loaded from
+    ``module:attr``) must drive the fetch/parse, NOT the URL/path
+    prefix heuristic. We monkeypatch the bespoke loader to return a
+    fake scraper and assert ``pick_scraper`` was never called.
+    """
+    fake = _FakeBespokeScraper()
+    pick_called = {"n": 0}
+
+    def _fake_pick(source):
+        pick_called["n"] += 1
+        return fake
+
+    def _fake_load(spec):
+        assert spec == "my_pkg.mod:scraper"
+        return fake
+
+    monkeypatch.setattr("lies.scrapers.base.pick_scraper", _fake_pick)
+    monkeypatch.setattr("lies.library.fetcher._load_bespoke_scraper", _fake_load)
+
+    src = tmp_path / "page.md"
+    src.write_text("# hello\n")
+    fetcher = ScraperFetcher(
+        library=None,  # type: ignore[arg-type]
+        scraper_cmd="my_pkg.mod:scraper",
+    )
+    items = list(fetcher.fetch_sources(src))
+
+    assert len(items) == 1
+    assert items[0].fetched_via == "_FakeBespokeScraper"
+    assert pick_called["n"] == 0, "pick_scraper must NOT be called when scraper_cmd is set"
+
+
+def test_fetcher_propagates_bespoke_loader_failure(monkeypatch, tmp_path: Path) -> None:
+    """A broken bespoke loader propagates; the fetcher never falls through.
+
+    Pin for Finding 1's fail-loud contract: a misconfigured
+    ``scraper_cmd`` (``bad:attr`` or a non-importable module) raises
+    ``ScraperUnavailable`` from ``_load_bespoke_scraper`` and the
+    fetcher does NOT silently route through ``pick_scraper``.
+    """
+    pick_called = {"n": 0}
+
+    def _fake_pick(source):
+        pick_called["n"] += 1
+        return _FakeBespokeScraper()
+
+    def _fake_load(spec):
+        from lies.scrapers.errors import ScraperUnavailable
+
+        raise ScraperUnavailable(f"bad loader for {spec!r}")
+
+    monkeypatch.setattr("lies.scrapers.base.pick_scraper", _fake_pick)
+    monkeypatch.setattr("lies.library.fetcher._load_bespoke_scraper", _fake_load)
+
+    src = tmp_path / "page.md"
+    src.write_text("# hello\n")
+    fetcher = ScraperFetcher(
+        library=None,  # type: ignore[arg-type]
+        scraper_cmd="bad:attr",
+    )
+    with pytest.raises(Exception) as ei:
+        list(fetcher.fetch_sources(src))
+    # pick_scraper must never be reached — fail-loud contract.
+    assert pick_called["n"] == 0
+    assert "bad loader" in str(ei.value)
+
+
+def test_load_bespoke_scraper_rejects_missing_colon() -> None:
+    """``module:attr`` shape is enforced — no colon means fail loud."""
+    from lies.scrapers.errors import ScraperUnavailable
+
+    with pytest.raises(ScraperUnavailable, match="module:attr"):
+        _load_bespoke_scraper("no_colon_here")
+
+
+# ---------------------------------------------------------------------------
+# Finding 2: REGISTRY routing.
+# ---------------------------------------------------------------------------
+
+
+def test_fetcher_routes_registered_format_via_registry(monkeypatch, tmp_path: Path) -> None:
+    """A ``source_format`` in ``REGISTRY.formats()`` routes through the builder.
+
+    Pin for Finding 2: the fetcher must check ``REGISTRY`` BEFORE
+    falling back to ``format_dispatch.dispatch``. We register a fake
+    builder under the ``x-fake`` format, monkeypatch the REGISTRY's
+    ``formats()`` / ``resolve()`` to surface it, and assert the
+    builder's output becomes the body.
+    """
+    from lies.builders.base import REGISTRY
+
+    seen = {"called": False}
+
+    class _FakeBuilder:
+        def build(self, workspace: Path, *, collection):
+            seen["called"] = True
+            from lies.scrapers.base import ParsedDoc
+
+            return [
+                ParsedDoc(
+                    path="built.md",
+                    content=b"# builder output\n",
+                    source_sha256="cc" * 32,
+                    source_format="markdown",
+                )
+            ]
+
+    formats = set(REGISTRY.formats()) | {"x-fake"}
+
+    monkeypatch.setattr(REGISTRY, "formats", lambda: formats)
+    monkeypatch.setattr(REGISTRY, "resolve", lambda fmt: _FakeBuilder())
+
+    fake = _FakeScraper(
+        [
+            ParsedDoc(
+                path="page.x-fake",
+                content=b"<fake>bytes</fake>",
+                source_sha256="aa" * 32,
+                source_format="x-fake",
+            )
+        ]
+    )
+    monkeypatch.setattr(
+        "lies.scrapers.base.pick_scraper",
+        lambda source: fake,
+    )
+
+    src = tmp_path / "page.x-fake"
+    src.write_bytes(b"placeholder")
+    fetcher = ScraperFetcher(library=None)  # type: ignore[arg-type]
+    items = list(fetcher.fetch_sources(src))
+
+    assert seen["called"] is True, "REGISTRY builder must be invoked for registered format"
+    assert items[0].body == "# builder output\n"
+
+
+def test_fetcher_markdown_skips_registry(monkeypatch, tmp_path: Path) -> None:
+    """``source_format=markdown`` short-circuits REGISTRY (PassThrough is a no-op).
+
+    Mirrors ``normalize.py:83``'s ``and doc.source_format != "markdown"``
+    guard. The base ``PassThroughBuilder`` would re-decode bytes from
+    a non-existent ``source.md`` file in a temp workspace; the
+    dispatch pass-through keeps the bytes intact.
+    """
+    fake = _FakeScraper(
+        [
+            ParsedDoc(
+                path="page.md",
+                content=b"# direct markdown\n",
+                source_sha256="aa" * 32,
+                source_format="markdown",
+            )
+        ]
+    )
+    monkeypatch.setattr(
+        "lies.scrapers.base.pick_scraper",
+        lambda source: fake,
+    )
+    src = tmp_path / "page.md"
+    src.write_text("# hello\n")
+    fetcher = ScraperFetcher(library=None)  # type: ignore[arg-type]
+    items = list(fetcher.fetch_sources(src))
+    assert items[0].body == "# direct markdown\n"
+
+
+def test_fetcher_passes_collection_to_registry_builder(monkeypatch, tmp_path: Path) -> None:
+    """The ``Collection`` is threaded through to the REGISTRY builder.
+
+    Builders like ``sphinx`` / ``liquid`` / ``bespoke`` read
+    ``collection.config`` for their include/exclude/rename config.
+    Without the Collection, those builders raise
+    ``AttributeError`` on the dataclass.
+    """
+    from lies.builders.base import REGISTRY
+
+    seen_collection = {"value": None}
+
+    class _FakeBuilder:
+        def build(self, workspace: Path, *, collection):
+            seen_collection["value"] = collection
+            from lies.scrapers.base import ParsedDoc
+
+            return [
+                ParsedDoc(
+                    path="b.md",
+                    content=b"# from builder\n",
+                    source_sha256="dd" * 32,
+                    source_format="markdown",
+                )
+            ]
+
+    formats = set(REGISTRY.formats()) | {"x-coll-aware"}
+    monkeypatch.setattr(REGISTRY, "formats", lambda: formats)
+    monkeypatch.setattr(REGISTRY, "resolve", lambda fmt: _FakeBuilder())
+
+    from lies.collections.record import Collection
+    from datetime import datetime
+
+    coll = Collection(
+        name="x",
+        path=tmp_path,
+        source="https://example.com/x",
+        tags=[],
+        scraper_cmd=None,
+        doc_path=None,
+        mapper_model=None,
+        language=None,
+        version="1",
+        created_at=datetime.fromisoformat("2026-01-01T00:00:00"),
+        updated_at=datetime.fromisoformat("2026-01-01T00:00:00"),
+        config={"k": "v"},
+    )
+
+    fake = _FakeScraper(
+        [
+            ParsedDoc(
+                path="page.x-coll-aware",
+                content=b"raw",
+                source_sha256="ee" * 32,
+                source_format="x-coll-aware",
+            )
+        ]
+    )
+    monkeypatch.setattr(
+        "lies.scrapers.base.pick_scraper",
+        lambda source: fake,
+    )
+
+    src = tmp_path / "page.x-coll-aware"
+    src.write_bytes(b"placeholder")
+    fetcher = ScraperFetcher(library=None, collection=coll)  # type: ignore[arg-type]
+    items = list(fetcher.fetch_sources(src))
+
+    assert seen_collection["value"] is coll
+    assert items[0].body == "# from builder\n"
