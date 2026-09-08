@@ -33,6 +33,10 @@ def migrated_wiki(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     ``Wiki.require("t")``). Sharing one ``xdg.data_home`` lets the
     ``migrated_wiki`` fixture route both to ``tmp_path/library_data``
     so a single ``monkeypatch.setattr`` resolves wiki + library.
+
+    The library is git-initialised so the C2 fix (apply_migration
+    routing through LibraryWriter.commit) can land its atomic commit
+    before the qmd cleanup hook fires.
     """
     lib_root = tmp_path / "library_data"
     wiki_data_root = lib_root / "lies" / "t"
@@ -62,6 +66,31 @@ def migrated_wiki(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         check=True,
         capture_output=True,
     )
+
+    # Initialise the library git root so LibraryWriter.commit can land.
+    lib_git_root = lib_root / "lies" / "library"
+    (lib_git_root / ".lies").mkdir(parents=True, exist_ok=True)
+    (lib_git_root / ".gitkeep").write_text("")
+    subprocess.run(
+        ["git", "init", "-b", "main", str(lib_git_root)],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(lib_git_root), "config", "user.email", "t@t"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(lib_git_root), "config", "user.name", "t"],
+        check=True,
+    )
+    subprocess.run(["git", "-C", str(lib_git_root), "add", "."], check=True)
+    subprocess.run(
+        ["git", "-C", str(lib_git_root), "commit", "-m", "init"],
+        check=True,
+        capture_output=True,
+    )
+
     monkeypatch.setattr("lies.xdg.data_home", lambda: lib_root)
     from lies.library.paths import Library
 
