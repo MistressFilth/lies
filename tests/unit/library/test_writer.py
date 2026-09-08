@@ -110,14 +110,21 @@ def test_writer_upsert_catalog_raises_locked_when_open_locked(
     """Pins existing behavior: lock on open_catalog → LibraryCatalogLocked."""
     import lies.library.writer as writer_mod
 
+    original_operational_error = sqlite3.OperationalError("database is locked")
+
     def boom_open_catalog(_library):  # type: ignore[no-untyped-def]
-        raise sqlite3.OperationalError("database is locked")
+        raise original_operational_error
 
     monkeypatch.setattr(writer_mod, "open_catalog", boom_open_catalog)
     writer = LibraryWriter(lib_with_git)
 
-    with pytest.raises(LibraryCatalogLocked):
+    with pytest.raises(LibraryCatalogLocked) as exc_info:
         writer._upsert_catalog([_sample_catalog_update("claude/x")])
+    msg = str(exc_info.value)
+    assert "busy_timeout exceeded" in msg
+    assert str(lib_with_git.catalog_path) in msg
+    assert "during write" not in msg
+    assert exc_info.value.__cause__ is original_operational_error
 
 
 def test_writer_upsert_catalog_raises_locked_when_commit_locked(
@@ -127,6 +134,7 @@ def test_writer_upsert_catalog_raises_locked_when_commit_locked(
     import lies.library.writer as writer_mod
 
     real_conn = open_catalog(lib_with_git)
+    original_operational_error = sqlite3.OperationalError("database is locked")
 
     class _StubConn:
         def __init__(self, real: sqlite3.Connection) -> None:
@@ -136,7 +144,7 @@ def test_writer_upsert_catalog_raises_locked_when_commit_locked(
             return self._real.executemany(sql, params)
 
         def commit(self) -> None:
-            raise sqlite3.OperationalError("database is locked")
+            raise original_operational_error
 
         def close(self) -> None:
             self._real.close()
@@ -147,8 +155,13 @@ def test_writer_upsert_catalog_raises_locked_when_commit_locked(
     monkeypatch.setattr(writer_mod, "open_catalog", stub_open_catalog)
     writer = LibraryWriter(lib_with_git)
 
-    with pytest.raises(LibraryCatalogLocked):
+    with pytest.raises(LibraryCatalogLocked) as exc_info:
         writer._upsert_catalog([_sample_catalog_update("claude/x")])
+    msg = str(exc_info.value)
+    assert "busy_timeout exceeded" in msg
+    assert str(lib_with_git.catalog_path) in msg
+    assert "during write" in msg
+    assert exc_info.value.__cause__ is original_operational_error
     # The stub's close() ran (via finally), but real_conn was already
     # closed by the stub. Verify nothing leaked by re-opening cleanly.
     conn = open_catalog(lib_with_git)
