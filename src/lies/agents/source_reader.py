@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import sys
 from collections.abc import Callable
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel
 from pydantic_ai import Agent, RunContext
 from pydantic_ai.models import Model
 
@@ -15,7 +15,8 @@ from lies.agents.base import make_sub_agent
 from pydantic_ai.output import PromptedOutput
 
 
-class SourceExtraction(BaseModel):
+@dataclass
+class SourceExtraction:
     """Structured extraction from a single raw source.
 
     All fields default to empty so a partial extraction (one the model
@@ -27,16 +28,16 @@ class SourceExtraction(BaseModel):
     not consumed by ``PageWriterDeps``.
     """
 
-    claims: list[str] = []
+    claims: list[str] = field(default_factory=list)
     """Atomic factual claims made by the source."""
 
-    entities: list[str] = []
+    entities: list[str] = field(default_factory=list)
     """Named things (people, projects, systems) the source discusses."""
 
-    concepts: list[str] = []
+    concepts: list[str] = field(default_factory=list)
     """Abstract ideas or patterns the source discusses."""
 
-    comparisons: list[tuple[str, str]] = []
+    comparisons: list[tuple[str, str]] = field(default_factory=list)
     """Pairs of (entity_A, entity_B) that the source compares."""
 
     summary: str = ""

@@ -1,3 +1,5 @@
+import dataclasses
+
 import pytest
 from pydantic_ai.models.test import TestModel
 
@@ -8,11 +10,13 @@ from lies.memory.models import MemoryPlan
 @pytest.fixture
 def model() -> TestModel:
     return TestModel(
-        custom_output_args=MemoryPlan(
-            operations=[],
-            rationale="noop",
-            evidence=[],
-        ).model_dump()
+        custom_output_args=dataclasses.asdict(
+            MemoryPlan(
+                operations=[],
+                rationale="noop",
+                evidence=[],
+            )
+        )
     )
 
 

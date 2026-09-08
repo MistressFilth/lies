@@ -70,9 +70,13 @@ def _build_repair_prompt(ctx: RunContext[RepairAgentDeps]) -> str:
     """
     if ctx.deps is None:
         return REPAIR_AGENT_SYSTEM_PROMPT
+    import dataclasses
+    import json
+
     parts: list[str] = [
         REPAIR_AGENT_SYSTEM_PROMPT,
-        "\nLint report findings (JSON):\n" + ctx.deps.lint_report.model_dump_json(indent=2),
+        "\nLint report findings (JSON):\n"
+        + json.dumps(dataclasses.asdict(ctx.deps.lint_report), indent=2),
     ]
     for path, text in ctx.deps.page_texts.items():
         parts.append(f"\n--- {path} ---\n{text}")

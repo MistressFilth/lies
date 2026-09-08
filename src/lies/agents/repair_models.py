@@ -35,7 +35,17 @@ class _RepairOp(BaseModel):
 
 
 class CreateStub(_RepairOp):
-    """Create a stub page for a missing entity or concept."""
+    """Create a stub page for a missing entity or concept.
+
+    Carries an explicit ``model_config = ConfigDict(frozen=True)`` so
+    the pydantic-guidance PG101 lint sees Pydantic surface use; the
+    parent ``_RepairOp`` already freezes via its own model_config, but
+    PG101's heuristic only inspects direct class-body items per
+    clarification Q2 of the upstream README — inheriting the parent's
+    model_config is not enough.
+    """
+
+    model_config = ConfigDict(frozen=True)
 
     path: str
     title: str

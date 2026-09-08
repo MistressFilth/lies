@@ -14,7 +14,7 @@ TY         := $(PY) ty check $(SRC)
 # `flake8 --select=PG,PYD` picks it up via the entry-point. Vendoring
 # sidesteps the upstream's private GitHub repo (CI + credential-less
 # runners cannot reach it).
-PG_LINT    := $(PY) flake8 --select=PG,PYD --extend-ignore=PG101 --exclude=.venv,build,dist,node_modules $(SRC)
+PG_LINT    := $(PY) flake8 --select=PG,PYD --exclude=.venv,build,dist,node_modules $(SRC)
 PYTEST     := $(PY) pytest
 
 REPO_ROOT              ?= $(HOME)/code/github/MistressFilth/lies

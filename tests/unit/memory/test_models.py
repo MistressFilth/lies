@@ -1,3 +1,4 @@
+from dataclasses import FrozenInstanceError
 from pathlib import PurePosixPath
 
 import pytest
@@ -69,12 +70,17 @@ def test_search_result_serializes_with_evidence() -> None:
 
 
 def test_page_create_requires_evidence() -> None:
-    with pytest.raises(ValidationError):
+    # ``evidence`` is required (min_length=1) and the constraint is
+    # enforced in the @dataclass ``__post_init__`` — constructing with
+    # an empty list raises plain ``ValueError``.
+    with pytest.raises(ValueError, match="at least one evidence"):
         PageCreate(path="concepts/x.md", content="# X", evidence=[])
 
 
 def test_page_update_requires_expected_hash() -> None:
-    with pytest.raises(ValidationError):
+    # ``expected_sha256`` is required (min_length=1) and the constraint
+    # is enforced in the @dataclass ``__post_init__``.
+    with pytest.raises(ValueError, match="expected_sha256 must be non-empty"):
         PageUpdate(path="x.md", expected_sha256="", content="x", evidence=["e"])
 
 
@@ -94,7 +100,10 @@ def test_memory_plan_noop_is_valid() -> None:
 
 
 def test_memory_plan_rejects_mixed_operations_on_same_path() -> None:
-    with pytest.raises(ValidationError):
+    # The cross-operation validator moved from a Pydantic ``model_validator``
+    # on ``MemoryPlan`` (raised ``ValidationError``) to the
+    # ``@dataclass`` ``__post_init__`` (raises ``ValueError``).
+    with pytest.raises(ValueError, match="multiple operations target the same path"):
         MemoryPlan(
             operations=[
                 PageCreate(path="x.md", content="a", evidence=["e"]),
@@ -169,12 +178,18 @@ def test_page_create_with_custom_tag_is_frozen() -> None:
         tag="ingest",
     )
     assert op.tag == "ingest"
-    with pytest.raises(ValidationError):
+    # ``@dataclass(frozen=True)`` raises ``dataclasses.FrozenInstanceError``
+    # on attribute assignment (Pydantic v2's ``ValidationError`` only
+    # fires on ``BaseModel`` subclasses).
+    with pytest.raises(FrozenInstanceError):
         op.tag = "synthesis"  # type: ignore[misc]
 
 
 def test_memory_plan_rejects_heterogeneous_tags() -> None:
-    with pytest.raises(ValidationError):
+    # The per-tag invariant moved from a Pydantic ``model_validator`` on
+    # ``MemoryPlan`` (raised ``ValidationError``) to the
+    # ``@dataclass`` ``__post_init__`` (raises ``ValueError``).
+    with pytest.raises(ValueError, match="must share one tag"):
         MemoryPlan(
             operations=[
                 PageCreate(path="x.md", content="a", evidence=["e"], tag="ingest"),
@@ -235,5 +250,7 @@ def test_page_delete_carries_evidence_and_kind() -> None:
 
 
 def test_page_delete_requires_evidence() -> None:
-    with pytest.raises(ValidationError):
+    # ``evidence`` is required (min_length=1) and the constraint is
+    # enforced in the @dataclass ``__post_init__``.
+    with pytest.raises(ValueError, match="at least one evidence"):
         PageDelete(path="wiki/foo.md", evidence=[])

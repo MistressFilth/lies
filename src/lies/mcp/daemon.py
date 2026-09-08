@@ -29,7 +29,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import typer
-from pydantic import BaseModel, ValidationError
+from pydantic import ValidationError  # noqa: F401  # kept for other readers; PidRecord no longer uses it
 
 from lies import __version__
 from lies.utils.exclusive import acquire_create_lock, release_create_lock
@@ -81,7 +81,8 @@ class DaemonStopFailed(DaemonError):
     """The daemon process survived SIGKILL."""
 
 
-class PidRecord(BaseModel):
+@dataclass
+class PidRecord:
     """On-disk description of a running daemon.
 
     A record on disk means "this daemon accepted a connection at least
@@ -117,24 +118,36 @@ def read_record(wiki: Wiki) -> PidRecord | None:
     than raising. A daemon that crashed mid-write must not wedge every
     subsequent ``up``.
     """
+    import json
+
     path = pid_path(wiki)
     try:
         raw = path.read_text(encoding="utf-8")
     except (FileNotFoundError, OSError):
         return None
     try:
-        return PidRecord.model_validate_json(raw)
-    except ValidationError:
+        payload = json.loads(raw)
+        # ``started_at`` is serialized as an ISO 8601 string (datetime
+        # is not JSON-serializable by default; we pass ``default=str``
+        # to ``json.dumps`` in ``write_record``). Hydrate it back.
+        if isinstance(payload.get("started_at"), str):
+            payload["started_at"] = datetime.fromisoformat(payload["started_at"])
+        return PidRecord(**payload)
+    except (ValueError, TypeError):
         return None
 
 
 def write_record(wiki: Wiki, rec: PidRecord) -> None:
     """Write the record atomically (temp file plus ``os.replace``)."""
+    import json
+
+    from dataclasses import asdict
+
     path = pid_path(wiki)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f"{path.name}.tmp")
     try:
-        tmp.write_text(rec.model_dump_json(), encoding="utf-8")
+        tmp.write_text(json.dumps(asdict(rec), default=str), encoding="utf-8")
         os.replace(tmp, path)
     except BaseException:
         try:

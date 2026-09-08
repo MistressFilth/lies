@@ -21,7 +21,7 @@ from typing import Literal, cast
 
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
-from pydantic import BaseModel
+from dataclasses import dataclass
 
 try:
     from fastmcp import Context
@@ -42,7 +42,8 @@ from lies.wiki.wiki import Wiki
 mcp = FastMCP("lies")
 
 
-class SynthesizedMcpAnswer(BaseModel):
+@dataclass
+class SynthesizedMcpAnswer:
     """Structured answer returned by the ``query`` tool.
 
     A 1:1 slice of :class:`lies.query.models.SynthesizedAnswer` for
@@ -220,8 +221,9 @@ _TYPE_PLURAL_MCP: dict[str, str] = {
 }
 
 
-class _CollisionVerdict(BaseModel):
-    """Pydantic response model for the file_knowledge collision elicit."""
+@dataclass
+class _CollisionVerdict:
+    """Response model for the file_knowledge collision elicit."""
 
     action: Literal["overwrite", "rename", "cancel"]
     new_slug: str | None = None

@@ -7,11 +7,12 @@ FastMCP adapter.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from enum import Enum
 from pathlib import PurePosixPath
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field
 
 # Re-exported from :mod:`lies.lock_errors` so the historical import path
 # (``from lies.memory.models import WikiLockBusy``) keeps working for
@@ -154,78 +155,92 @@ class OperationKind(str, Enum):
     DELETE = "delete"
 
 
-class _PlanOperation(BaseModel):
-    """Base for plan operations."""
-
-    model_config = ConfigDict(frozen=True)
+@dataclass(frozen=True, kw_only=True)
+class _PlanOperation:
+    """Base for plan operations. Subclasses redeclare ``kind`` with a
+    concrete ``Literal[OperationKind.X]`` value (Pydantic's union
+    discriminator becomes a class type).
+    """
 
     path: str
-    evidence: list[str] = Field(min_length=1)
-    tag: str = "memory"
-    """Provenance label rendered in the git commit message and the
-    ``wiki/log.md`` entry. Defaults to ``"memory"`` for the existing
-    MemoryEnricher flow. Override to ``"ingest"`` (F2 single-source
-    ingest), ``"synthesis"`` (F3 file-back loop), etc."""
-
+    evidence: list[str]
     kind: OperationKind
+    tag: str = "memory"
+
+    def __post_init__(self) -> None:
+        if len(self.evidence) < 1:
+            raise ValueError(
+                f"plan op {self.kind!r} on {self.path!r}: at least one evidence reference required"
+            )
 
 
+@dataclass(frozen=True, kw_only=True)
 class PageCreate(_PlanOperation):
     """Create a new wiki page."""
 
     content: str
     kind: Literal[OperationKind.CREATE] = OperationKind.CREATE
+    tag: str = "memory"
 
 
+@dataclass(frozen=True, kw_only=True)
 class PageUpdate(_PlanOperation):
     """Replace a wiki page with a versioned update."""
 
-    expected_sha256: str = Field(min_length=1)
     content: str
+    expected_sha256: str
     kind: Literal[OperationKind.UPDATE] = OperationKind.UPDATE
+    tag: str = "memory"
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        if len(self.expected_sha256) < 1:
+            raise ValueError(f"PageUpdate on {self.path!r}: expected_sha256 must be non-empty")
 
 
+@dataclass(frozen=True, kw_only=True)
 class EvidenceAppend(_PlanOperation):
     """Append a short evidence block to an existing wiki page."""
 
-    expected_sha256: str = Field(min_length=1)
     content: str
+    expected_sha256: str
     kind: Literal[OperationKind.APPEND] = OperationKind.APPEND
+    tag: str = "memory"
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        if len(self.expected_sha256) < 1:
+            raise ValueError(f"EvidenceAppend on {self.path!r}: expected_sha256 must be non-empty")
 
 
+@dataclass(frozen=True, kw_only=True)
 class PageDelete(_PlanOperation):
     """Remove an existing wiki page. No-op if the page does not exist."""
 
     kind: Literal[OperationKind.DELETE] = OperationKind.DELETE
+    tag: str = "memory"
 
 
-class MemoryPlan(BaseModel):
+@dataclass(frozen=True)
+class MemoryPlan:
     """A structured set of memory operations proposed by MemoryEnricher."""
-
-    model_config = ConfigDict(frozen=True)
 
     operations: list[_PlanOperation]
     rationale: str
     evidence: list[str]
 
-    def is_noop(self) -> bool:
-        return not self.operations
-
-    @model_validator(mode="after")
-    def _no_conflicting_operations_on_same_path(self) -> MemoryPlan:
+    def __post_init__(self) -> None:
         seen: set[str] = set()
         for op in self.operations:
             if op.path in seen:
                 raise ValueError(f"multiple operations target the same path: {op.path}")
             seen.add(op.path)
-        return self
-
-    @model_validator(mode="after")
-    def _all_operations_share_one_tag(self) -> MemoryPlan:
         tags = {op.tag for op in self.operations}
         if len(tags) > 1:
             raise ValueError(f"MemoryPlan ops must share one tag; got {sorted(tags)!r}")
-        return self
+
+    def is_noop(self) -> bool:
+        return not self.operations
 
 
 class MemoryReceipt(BaseModel):

@@ -10,17 +10,11 @@ repos:
     hooks:
       - id: pydantic-guidance
         name: pydantic-guidance (PG) + flake8-pydantic (PYD)
-        # PG101 (BaseModel uses no Pydantic surface) is an opt-in
-        # advisory that flake8 still fires under --select=PG (prefix
-        # match). Hold it back from the commit-time surface — the
-        # PG101.md rule definition itself recommends per-line
-        # `# noqa: PG101` only when the user opts in via
-        # `--extend-select=PG101`.
         # `--exclude` is required because flake8's default exclude
         # patterns are skipped when flake8 is invoked from a
         # pre-commit hook with `types_or: [python, pyi]` (every
         # Python file is staged, including `.venv/.../site-packages`).
-        entry: uv run flake8 --select=PG,PYD --extend-ignore=PG101 --exclude=.venv,build,dist,node_modules
+        entry: uv run flake8 --select=PG,PYD --exclude=.venv,build,dist,node_modules
         language: system
         types_or: [python, pyi]
         pass_filenames: false
