@@ -27,6 +27,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol
 
+import frontmatter  # type: ignore[import-untyped]
+
 from lies.library.catalog import LibraryCatalogPage
 from lies.library.errors import LibraryFetchUnreachable
 from lies.library.filter import should_skip_content, should_skip_filename
@@ -165,15 +167,25 @@ def _process_item(
     source_url = item.url
     source_path = str(path) if path is not None else None
     target = coll.dir / f"{slug}.md"
+    existed = target.exists()
 
-    if target.exists() and not force:
+    if existed and not force:
+        existing_hash = "?"
+        try:
+            existing_text = target.read_text(encoding="utf-8")
+            post = frontmatter.loads(existing_text)
+            parsed_hash = str(post.get("source_hash", ""))
+            if parsed_hash:
+                existing_hash = parsed_hash
+        except Exception:
+            pass
         result.errors += 1
         result.quarantine_records.append(
             _quarantine_to_poison(
                 coll,
                 slug,
                 item.body,
-                f"mirror-collision:{slug}:{item.source_hash[:8]}",
+                f"mirror-collision:{slug}:existing-{existing_hash[:8]}!=new-{item.source_hash[:8]}",
             )
         )
         return
@@ -191,7 +203,7 @@ def _process_item(
         fetched_via=item.fetched_via,
         force=force,
     )
-    if target.exists() and not (target == written and target.stat().st_size > 0):
+    if existed:
         result.updated += 1
     else:
         result.created += 1

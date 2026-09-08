@@ -89,6 +89,54 @@ def test_run_source_ingest_basic(lib_with_git: Library) -> None:
     assert (coll.dir / "x.md").exists()
 
 
+def test_run_source_ingest_force_overwrite_counts_as_updated(lib_with_git: Library) -> None:
+    item = FetchItem(
+        path=Path("/src/x.md"),
+        url=None,
+        body="body\n" * 10,
+        source_hash="abc123",
+        fetched_via="github",
+    )
+    fetcher = _StaticFetcher([item])
+
+    first = run_source_ingest(lib_with_git, "claude", source="x", fetcher=fetcher)
+    assert first.created == 1
+
+    result = run_source_ingest(lib_with_git, "claude", source="x", fetcher=fetcher, force=True)
+
+    assert result.updated == 1
+    assert result.created == 0
+
+
+def test_run_source_ingest_mirror_collision_reports_existing_and_new_hashes(
+    lib_with_git: Library,
+) -> None:
+    body = "body\n" * 10
+    first = FetchItem(
+        path=Path("/src/x.md"),
+        url=None,
+        body=body,
+        source_hash="a1b2c3d4existing",
+        fetched_via="github",
+    )
+    incoming = FetchItem(
+        path=Path("/src/x.md"),
+        url=None,
+        body=body,
+        source_hash="deadbeefnew",
+        fetched_via="github",
+    )
+
+    run_source_ingest(lib_with_git, "claude", source="x", fetcher=_StaticFetcher([first]))
+    result = run_source_ingest(
+        lib_with_git, "claude", source="x", fetcher=_StaticFetcher([incoming])
+    )
+
+    reason = next(reason for _, reason in result.quarantine_records)
+    assert "existing-a1b2c3d4" in reason
+    assert "new-deadbeef" in reason
+
+
 def test_run_source_ingest_filter_skip(lib_with_git: Library) -> None:
     fetcher = _StaticFetcher(
         [
