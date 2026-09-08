@@ -42,7 +42,7 @@ from lies.wiki.wiki import Wiki
 mcp = FastMCP("lies")
 
 
-class SynthesizedMcpAnswer(BaseModel):  # noqa: PG101
+class SynthesizedMcpAnswer(BaseModel):
     """Structured answer returned by the ``query`` tool.
 
     A 1:1 slice of :class:`lies.query.models.SynthesizedAnswer` for
@@ -220,7 +220,7 @@ _TYPE_PLURAL_MCP: dict[str, str] = {
 }
 
 
-class _CollisionVerdict(BaseModel):  # noqa: PG101
+class _CollisionVerdict(BaseModel):
     """Pydantic response model for the file_knowledge collision elicit."""
 
     action: Literal["overwrite", "rename", "cancel"]

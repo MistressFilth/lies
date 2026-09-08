@@ -28,15 +28,6 @@ dev = [
     "pytest-mock>=3.12",
     "ruff>=0.5,<0.15",
     "ty>=0.0.65",
-    # pydantic-guidance (PG) + PYD lint hook: local Makefile runs invoke
-    # `flake8 --select=PG,PYD` from the `lint-pydantic-guidance` target.
-    # The pre-commit hook installs these into its own venv via
-    # `additional_dependencies`, so this list only matters for local runs.
-    # `pydantic-guidance` is a private GitHub repo and is sourced via
-    # `[tool.uv.sources]` below; `flake8` + `flake8-pydantic` come from PyPI.
-    "pydantic-guidance",
-    "flake8>=5.0",
-    "flake8-pydantic>=0.4",
 ]
 # `qmd` is now an empty extra retained for back-compat. `fastmcp` and `mcp`
 # are default dependencies as of the MCP server release. Install with
@@ -78,11 +69,3 @@ dev = [
 ]
 
 [tool.uv.sources]
-# `pydantic-guidance` is a private GitHub repo; source it directly. Bump
-# `rev` here when upgrading. The same rev is pinned in
-# `.pre-commit-config.yaml` so the hook venv and the local dev env stay
-# in sync. Pinned to a commit SHA because the upstream `v0.1.1` tag
-# referenced in the upstream README + pyproject.toml hasn't been pushed
-# (`git ls-remote --tags` returns empty). Replace with a real tag once
-# upstream publishes one.
-pydantic-guidance = { git = "https://github.com/MistressFilth/pydantic-guidance", rev = "d7d992b3b5897321a92fb21b1ad6f35f49b35fa5" }

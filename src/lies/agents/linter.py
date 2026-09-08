@@ -24,7 +24,7 @@ class LintSeverity(str, Enum):
     LOW = "low"
 
 
-class LintFinding(BaseModel):  # noqa: PG101
+class LintFinding(BaseModel):
     """A single lint finding."""
 
     severity: LintSeverity
@@ -34,7 +34,7 @@ class LintFinding(BaseModel):  # noqa: PG101
     safe_to_fix: bool = False
 
 
-class LintReport(BaseModel):  # noqa: PG101
+class LintReport(BaseModel):
     """The result of a lint pass."""
 
     findings: list[LintFinding]

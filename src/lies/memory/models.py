@@ -97,7 +97,7 @@ class IngestSourceUnreachable(WikiMemoryError):
 # --- Collection and evidence -------------------------------------------
 
 
-class WikiCollectionRef(BaseModel):  # noqa: PG101
+class WikiCollectionRef(BaseModel):
     """A reference to a prepared wiki collection."""
 
     model_config = ConfigDict(frozen=True)
@@ -108,7 +108,7 @@ class WikiCollectionRef(BaseModel):  # noqa: PG101
     schema_path: PurePosixPath
 
 
-class WikiEvidence(BaseModel):  # noqa: PG101
+class WikiEvidence(BaseModel):
     """A bounded excerpt from a wiki page, returned by `wiki_search`."""
 
     model_config = ConfigDict(frozen=True)
@@ -122,7 +122,7 @@ class WikiEvidence(BaseModel):  # noqa: PG101
     score: float = Field(ge=0.0, le=1.0)
 
 
-class WikiSearchResult(BaseModel):  # noqa: PG101
+class WikiSearchResult(BaseModel):
     """A bounded set of evidence from a wiki search."""
 
     model_config = ConfigDict(frozen=True)
@@ -134,7 +134,7 @@ class WikiSearchResult(BaseModel):  # noqa: PG101
     fallback_reason: str
 
 
-class PageReference(BaseModel):  # noqa: PG101
+class PageReference(BaseModel):
     """A reference to a page that was read or changed."""
 
     model_config = ConfigDict(frozen=True)
@@ -154,7 +154,7 @@ class OperationKind(str, Enum):
     DELETE = "delete"
 
 
-class _PlanOperation(BaseModel):  # noqa: PG101
+class _PlanOperation(BaseModel):
     """Base for plan operations."""
 
     model_config = ConfigDict(frozen=True)
@@ -170,14 +170,14 @@ class _PlanOperation(BaseModel):  # noqa: PG101
     kind: OperationKind
 
 
-class PageCreate(_PlanOperation):  # noqa: PG101
+class PageCreate(_PlanOperation):
     """Create a new wiki page."""
 
     content: str
     kind: Literal[OperationKind.CREATE] = OperationKind.CREATE
 
 
-class PageUpdate(_PlanOperation):  # noqa: PG101
+class PageUpdate(_PlanOperation):
     """Replace a wiki page with a versioned update."""
 
     expected_sha256: str = Field(min_length=1)
@@ -185,7 +185,7 @@ class PageUpdate(_PlanOperation):  # noqa: PG101
     kind: Literal[OperationKind.UPDATE] = OperationKind.UPDATE
 
 
-class EvidenceAppend(_PlanOperation):  # noqa: PG101
+class EvidenceAppend(_PlanOperation):
     """Append a short evidence block to an existing wiki page."""
 
     expected_sha256: str = Field(min_length=1)
@@ -193,13 +193,13 @@ class EvidenceAppend(_PlanOperation):  # noqa: PG101
     kind: Literal[OperationKind.APPEND] = OperationKind.APPEND
 
 
-class PageDelete(_PlanOperation):  # noqa: PG101
+class PageDelete(_PlanOperation):
     """Remove an existing wiki page. No-op if the page does not exist."""
 
     kind: Literal[OperationKind.DELETE] = OperationKind.DELETE
 
 
-class MemoryPlan(BaseModel):  # noqa: PG101
+class MemoryPlan(BaseModel):
     """A structured set of memory operations proposed by MemoryEnricher."""
 
     model_config = ConfigDict(frozen=True)
@@ -228,7 +228,7 @@ class MemoryPlan(BaseModel):  # noqa: PG101
         return self
 
 
-class MemoryReceipt(BaseModel):  # noqa: PG101
+class MemoryReceipt(BaseModel):
     """Result of applying (or attempting to apply) a MemoryPlan."""
 
     model_config = ConfigDict(frozen=True)
@@ -240,7 +240,7 @@ class MemoryReceipt(BaseModel):  # noqa: PG101
     errors: list[str]
 
 
-class MemoryPlanRecord(BaseModel):  # noqa: PG101
+class MemoryPlanRecord(BaseModel):
     """A row in `<wiki>/.lies/memory_plans.jsonl` — the JSONL receipt sidecar.
 
     Mirrors the on-disk JSON schema exactly. Pydantic enforces shape on read;

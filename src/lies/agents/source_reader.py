@@ -15,7 +15,7 @@ from lies.agents.base import make_sub_agent
 from pydantic_ai.output import PromptedOutput
 
 
-class SourceExtraction(BaseModel):  # noqa: PG101
+class SourceExtraction(BaseModel):
     """Structured extraction from a single raw source.
 
     All fields default to empty so a partial extraction (one the model

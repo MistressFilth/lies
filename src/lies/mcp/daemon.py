@@ -81,7 +81,7 @@ class DaemonStopFailed(DaemonError):
     """The daemon process survived SIGKILL."""
 
 
-class PidRecord(BaseModel):  # noqa: PG101
+class PidRecord(BaseModel):
     """On-disk description of a running daemon.
 
     A record on disk means "this daemon accepted a connection at least

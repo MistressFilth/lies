@@ -22,7 +22,7 @@ class PageOperation(str, Enum):
     DELETE = "delete"
 
 
-class PageDiff(BaseModel):  # noqa: PG101
+class PageDiff(BaseModel):
     """A proposed change to a single wiki page."""
 
     path: Path

@@ -12,7 +12,7 @@ from pydantic_ai.tools import RunContext
 from lies.agents.base import make_sub_agent
 
 
-class QueryAnswer(BaseModel):  # noqa: PG101
+class QueryAnswer(BaseModel):
     """A synthesized answer to a user question."""
 
     answer: str

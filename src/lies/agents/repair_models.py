@@ -23,7 +23,7 @@ class RepairOpKind(str, Enum):
     APPEND_EVIDENCE = "append_evidence"
 
 
-class _RepairOp(BaseModel):  # noqa: PG101
+class _RepairOp(BaseModel):
     """Base for repair operations."""
 
     model_config = ConfigDict(frozen=True)
@@ -34,7 +34,7 @@ class _RepairOp(BaseModel):  # noqa: PG101
     evidence: list[str] = Field(min_length=1)
 
 
-class CreateStub(_RepairOp):  # noqa: PG101
+class CreateStub(_RepairOp):
     """Create a stub page for a missing entity or concept."""
 
     path: str
@@ -42,7 +42,7 @@ class CreateStub(_RepairOp):  # noqa: PG101
     kind: Literal[RepairOpKind.CREATE_STUB] = RepairOpKind.CREATE_STUB
 
 
-class AppendLink(_RepairOp):  # noqa: PG101
+class AppendLink(_RepairOp):
     """Append a markdown link to an existing page."""
 
     target_path: str
@@ -64,7 +64,7 @@ class AppendLink(_RepairOp):  # noqa: PG101
         return self.append_to
 
 
-class UpdateIndex(_RepairOp):  # noqa: PG101
+class UpdateIndex(_RepairOp):
     """Add an entry to wiki/index.md."""
 
     path: str
@@ -78,7 +78,7 @@ class UpdateIndex(_RepairOp):  # noqa: PG101
         return self
 
 
-class AppendEvidence(_RepairOp):  # noqa: PG101
+class AppendEvidence(_RepairOp):
     """Append a short evidence block to an existing page."""
 
     path: str
@@ -87,7 +87,7 @@ class AppendEvidence(_RepairOp):  # noqa: PG101
     kind: Literal[RepairOpKind.APPEND_EVIDENCE] = RepairOpKind.APPEND_EVIDENCE
 
 
-class RepairPlan(BaseModel):  # noqa: PG101
+class RepairPlan(BaseModel):
     """A structured set of repair operations proposed by repair_agent."""
 
     model_config = ConfigDict(frozen=True)
@@ -114,7 +114,7 @@ class RepairPlan(BaseModel):  # noqa: PG101
         return self
 
 
-class RepairReceipt(BaseModel):  # noqa: PG101
+class RepairReceipt(BaseModel):
     """Result of applying (or attempting to apply) a RepairPlan."""
 
     model_config = ConfigDict(frozen=True)

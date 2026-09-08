@@ -39,7 +39,7 @@ When you have enough information, return an AuthorProposal.
 """
 
 
-class AuthorQuestion(BaseModel):  # noqa: PG101
+class AuthorQuestion(BaseModel):
     """A single question the agent needs answered before it can propose."""
 
     id: str
@@ -48,7 +48,7 @@ class AuthorQuestion(BaseModel):  # noqa: PG101
     default: str | None = None
 
 
-class AuthorProposal(BaseModel):  # noqa: PG101
+class AuthorProposal(BaseModel):
     """The final proposal — a serialized Collection record plus rationale."""
 
     collection: dict[str, Any] = Field(
@@ -64,7 +64,7 @@ class AuthorProposal(BaseModel):  # noqa: PG101
 AuthorOutput = AuthorQuestion | AuthorProposal
 
 
-class CollectionAuthorDeps(BaseModel):  # noqa: PG101
+class CollectionAuthorDeps(BaseModel):
     """Per-run dependencies for the CollectionAuthorAgent.
 
     Carries the manifest of source files available at the source URL,
