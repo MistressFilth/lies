@@ -6,6 +6,36 @@ All notable changes to LIES are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- `lies ingest` Typer sub-app (`src/lies/library/cli.py`) with two
+  modes: `--source <PATH|URL>` for single-source deterministic ingest
+  and `--batch <DIR>` for directory walks. Routes through the
+  `ScraperFetcher` + 5-step pipeline (Tasks 8–9) into the library
+  catalog. No LLM call on the ingest path. New flags: `--slug-prefix`,
+  `--collection`, `--slug`, `--title`, `--exclude-stem`,
+  `--exclude-dir`, `--force`, `--dry-run`. The legacy `ingest-source`
+  command is reduced to a one-minor-version deprecation stub that
+  emits an error steering operators to `lies ingest --source`.
+
+### Changed
+- `cli/__init__.py`: `library_app` is imported alongside the other
+  sub-apps and registered as the `ingest` subcommand (same panel as
+  `sync` / `reindex`).
+- `cli/ingestion.py`: the old Phase-1 `ingest` (bootstrap-on-missing)
+  command is removed — its responsibilities did not survive the move
+  to the deterministic library ingest path. `sync` and `reindex`
+  remain in place.
+
+### Removed
+- `lies ingest-source <src> --collection NAME` (Phase-1 atomic LLM
+  ingest) is replaced by `lies ingest --source <PATH|URL>
+  --collection NAME`. The CLI flag is stubbed for one minor version
+  (Typer `deprecated=True`, errors out with a steering message),
+  then removed.
+- `--no-llm` opt-out: the legacy `sync_collection` fallback is gone;
+  the deterministic ingest never made an LLM round-trip in the first
+  place.
+
 ### Fixed
 - `cli/ingestion.py` NameError on `ingest-source` — bare-name `Orchestrator(wiki)`
   lookup does not consult the module `__getattr__` (PEP 562 fires on

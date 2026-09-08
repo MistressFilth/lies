@@ -35,16 +35,17 @@ documented below.
 
 ```bash
 uv sync
-uv run lies ingest pydantic-ai --source https://pydantic.dev/docs/ai/llms.txt
+uv run lies ingest --source https://pydantic.dev/docs/ai/llms.txt --collection pydantic-ai
 uv run lies query "What do my sources say about X?"
 uv run lies lint
 ```
 
-The first `ingest` invocation bootstraps both the wiki (under
-`$XDG_DATA_HOME/lies/pydantic-ai`) and the collection YAML (under
-`$XDG_CONFIG_HOME/lies/pydantic-ai/collections/pydantic-ai.yaml`). Pass
-`--wizard` to route the bootstrap through the interactive
-`collection_author_agent` instead of the bare scaffold.
+The first `ingest --source` invocation writes a deterministic mirror
+file under the library (`$XDG_DATA_HOME/lies/library/collections/<name>/`)
+and registers it in the library catalog. Use `--batch <DIR>` to walk a
+directory of sources into one collection, or `--exclude-stem` /
+`--exclude-dir` to skip noise. The ingest path is purely deterministic
+(no LLM call).
 
 Launch the REPL (no subcommand) for an interactive session:
 
@@ -410,9 +411,9 @@ CLI commands (`src/lies/cli/`):
   role-routed XDG directories, copies default schema, `git init`, initial commit).
 - `lies migrate-xdg <legacy-path> --name <name>` — one-shot bridge from
   legacy `<path>/.lies/` to XDG role-routed directories.
-- `lies ingest <collection> [--source URL] [--wizard]` — bootstrap (wiki + YAML if missing) and sync. `--wizard` routes the bootstrap through `collection_author_agent`.
+- `lies ingest --source <PATH|URL> [--collection NAME] [--slug <slug>] [--title <title>] [--force] [--dry-run] [--exclude-stem <name> ...] [--exclude-dir <name> ...]` — deterministic single-source ingest into the library. No LLM round-trip; the 5-step pipeline (fetch → ETL → filter → mirror → catalog) writes a deterministic frontmatter mirror and atomic-commits one catalog upsert. `--collection` defaults to `--slug-prefix` or `default`; `--force` overwrites an existing mirror; `--dry-run` prints the plan without writing.
+- `lies ingest --batch <DIR> --slug-prefix <name> [--force] [--dry-run] [--exclude-stem <name> ...] [--exclude-dir <name> ...]` — directory walk into one collection. Same pipeline as `--source` but iterates every eligible file under `<DIR>`.
 - `lies sync [<collection>] [--source URL] [--wizard]` — sync one collection, or every collection in the wiki when no positional is given. Pass `--source` to bootstrap a missing YAML (single-collection mode only); `--wizard` routes the bootstrap through `collection_author_agent`.
-- `lies ingest-source <source> --collection NAME [--wizard] [--no-llm]` — atomic single-source ingest; registers a collection YAML (required). Legacy source-only form is removed. Default path runs the LLM round-trip (`source_reader_agent` → `page_writer_agent` → `WikiMemoryService.apply_plan`); pass `--no-llm` to demote to the legacy `sync_collection` shim for bulk-scrape semantics. `--wizard` routes the bootstrap through `collection_author_agent`.
 - `lies query <question> [--collection NAME] [--no-file] [--force-file]`
   — ask a question of the wiki; answers are LLM-synthesized with
   citations over qmd-retrieved pages, falling back to the previous
