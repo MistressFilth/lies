@@ -125,6 +125,25 @@ All notable changes to LIES are documented here. The format follows
   endpoint returns `400 unknown model 'minimax-m3[1m]'` for the
   suffixed form. The Anthropic-compat endpoint silently accepted it
   (which is why the original ingest ran against `/anthropic` at all).
+- `vendor/pydantic-guidance/` (new): vendored copy of the upstream
+  `pydantic-guidance` flake8 plugin (v0.1.1, plus local fixes). The
+  upstream lives in a private GitHub repo that the credential-less
+  CI runner cannot clone. Vendoring + an editable path dep
+  (`pyproject.toml` → `[tool.uv.sources] pydantic-guidance`) lets
+  `uv sync --all-extras` install the plugin into the project venv
+  on every machine that has the lies repo checked out. The lint
+  target (`make lint-pydantic-guidance`) and the pre-commit hook
+  (`pydantic-guidance (PG) + flake8-pydantic (PYD)`) both invoke
+  the project venv's flake8 via `uv run flake8 --select=PG,PYD
+  --extend-ignore=PG101 --exclude=.venv,build,dist,node_modules`.
+  PG101 (BaseModel uses no Pydantic surface) is held back from the
+  commit-time surface per the rule's own activation note (opt-in via
+  `--extend-select=PG101`); flake8's `--select=PG` is a prefix match
+  and the rule fires under it even though the rule is documented as
+  opt-in. `--exclude` is required because flake8's default exclude
+  patterns are skipped when invoked from a pre-commit hook with
+  `types_or: [python, pyi]` (every Python file is staged, including
+  `.venv/.../site-packages`).
 
 ## [0.18.0] - 2026-09-07
 

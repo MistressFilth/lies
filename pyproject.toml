@@ -19,6 +19,12 @@ dependencies = [
     "fastmcp>=2.0",
     "mcp>=1.0",
     "ahocorasick_rs>=1.0,<2.0",
+    # Vendored flake8 plugin — see ./vendor/pydantic-guidance. Pinned to
+    # a path dep rather than `[tool.uv.sources] pydantic-guidance` because
+    # the upstream is a private GitHub repo and `uv sync` cannot clone it
+    # without credentials (the CI runner has none). Vendoring makes the
+    # lint installable on every machine that has the lies repo checked out.
+    "pydantic-guidance",
 ]
 
 [project.optional-dependencies]
@@ -66,13 +72,9 @@ include = ["src/lies"]
 dev = [
     "identify>=2.6.19",
     "pre-commit>=4.6.1",
+    "flake8>=5.0",
+    "flake8-pydantic>=0.4",
 ]
-# `pydantic-guidance` is NOT listed in `[project.optional-dependencies]
-# dev` or `[dependency-groups] dev` because it lives in a private
-# GitHub repo and `uv sync --all-extras` (CI + local) cannot clone
-# it without credentials. The lint lives entirely inside the
-# pre-commit hook venv (`.pre-commit-config.yaml` →
-# `additional_dependencies: pydantic-guidance, flake8, flake8-pydantic`)
-# and is invoked via `pre-commit run pydantic-guidance`. The Makefile
-# `lint-pydantic-guidance` target delegates to pre-commit for the
-# same reason.
+
+[tool.uv.sources]
+pydantic-guidance = { path = "vendor/pydantic-guidance", editable = true }

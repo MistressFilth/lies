@@ -1,18 +1,29 @@
 repos:
-  # Pydantic-guidance (PG) + PYD lint. The hook ships flake8 with the
-  # upstream `pydantic-guidance` plugin and `flake8-pydantic` as
-  # `additional_dependencies`, so no prior `uv add` is needed. The
-  # Makefile `lint-pydantic-guidance` target delegates to this hook
-  # for the same reason.
-  #
-  # Pinned to a commit SHA because the upstream `v0.1.1` tag referenced
-  # in the repo's own README + pyproject.toml hasn't been pushed yet
-  # (`git ls-remote --tags` returns empty). Bump to a real tag (or a
-  # newer SHA) once upstream publishes one.
-  - repo: https://github.com/MistressFilth/pydantic-guidance
-    rev: d7d992b3b5897321a92fb21b1ad6f35f49b35fa5
+  # Pydantic-guidance (PG) + PYD lint. The plugin is vendored under
+  # `vendor/pydantic-guidance/` and installed as an editable path dep
+  # (`pyproject.toml` → `[tool.uv.sources] pydantic-guidance`). `uv sync`
+  # builds + installs the plugin into the project venv so `flake8` picks
+  # it up via the flake8 entry-point. The local hook below calls
+  # `uv run flake8 --select=PG,PYD` so pre-commit uses the project's
+  # already-installed flake8 + plugin (no upstream clone needed).
+  - repo: local
     hooks:
       - id: pydantic-guidance
+        name: pydantic-guidance (PG) + flake8-pydantic (PYD)
+        # PG101 (BaseModel uses no Pydantic surface) is an opt-in
+        # advisory that flake8 still fires under --select=PG (prefix
+        # match). Hold it back from the commit-time surface — the
+        # PG101.md rule definition itself recommends per-line
+        # `# noqa: PG101` only when the user opts in via
+        # `--extend-select=PG101`.
+        # `--exclude` is required because flake8's default exclude
+        # patterns are skipped when flake8 is invoked from a
+        # pre-commit hook with `types_or: [python, pyi]` (every
+        # Python file is staged, including `.venv/.../site-packages`).
+        entry: uv run flake8 --select=PG,PYD --extend-ignore=PG101 --exclude=.venv,build,dist,node_modules
+        language: system
+        types_or: [python, pyi]
+        pass_filenames: false
 
   # Pinned to v0.14.14 because ruff 0.15+ strips the mandatory
   # parens around multi-exception ``except`` clauses (upstream
