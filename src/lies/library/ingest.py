@@ -160,6 +160,8 @@ def _process_item(
     *,
     exclude_stems: Container[str] = (),
     exclude_dirs: Container[str] = (),
+    slug_override: str | None = None,
+    title_override: str | None = None,
     force: bool,
     dry_run: bool,
     result: BatchIngestResult,
@@ -169,6 +171,10 @@ def _process_item(
     Returns ``None`` after appending to ``result``; the caller iterates over
     all items and then calls ``_finalize`` to commit the batch. Skips /
     quarantines / mirror-collisions all return early without raising.
+
+    ``slug_override`` and ``title_override`` (single-source mode) replace
+    the slug-derivation and the slug→Title default. Both are validated
+    by ``validate_slug`` / ``write_mirror``.
     """
     coll = library.collection(collection_name)
     path = item.path
@@ -181,10 +187,13 @@ def _process_item(
         if skip_reason:
             _record_skip(result, skip_reason)
             return
-        slug = derive_slug(path)
+        slug = derive_slug(path, override=slug_override)
     else:
-        slug = item.url.rsplit("/", 1)[-1].rsplit("?", 1)[0] if item.url else "page"
-        slug = slug.lower().replace("_", "-")
+        if slug_override is not None:
+            slug = validate_slug(slug_override)
+        else:
+            slug = item.url.rsplit("/", 1)[-1].rsplit("?", 1)[0] if item.url else "page"
+            slug = slug.lower().replace("_", "-")
     try:
         validate_slug(slug)
     except ValueError:
@@ -209,12 +218,40 @@ def _process_item(
         existing_hash = ""
         try:
             existing_text = target.read_text(encoding="utf-8")
-            post = frontmatter.loads(existing_text)
-            parsed_hash = str(post.get("source_hash", ""))
-            if parsed_hash:
-                existing_hash = parsed_hash
-        except Exception:
-            pass
+            try:
+                post = frontmatter.loads(existing_text)
+                parsed_hash = str(post.get("source_hash", ""))
+                if parsed_hash:
+                    existing_hash = parsed_hash
+            except Exception as exc:
+                # I16: surface the frontmatter parse failure as an explicit
+                # quarantine reason rather than silently treating the
+                # mirror as if it had no source_hash (which would
+                # short-circuit the idempotency check and quarantine with
+                # the misleading "hashes differ" reason).
+                result.errors += 1
+                result.quarantine_records.append(
+                    _quarantine_to_poison(
+                        coll,
+                        slug,
+                        item.body,
+                        f"frontmatter-unparseable:{slug}:{type(exc).__name__}",
+                    )
+                )
+                return
+        except Exception as exc:
+            # File read failure (permission, vanished) — also surface as
+            # a quarantine rather than silently downgrading.
+            result.errors += 1
+            result.quarantine_records.append(
+                _quarantine_to_poison(
+                    coll,
+                    slug,
+                    item.body,
+                    f"mirror-unreadable:{slug}:{type(exc).__name__}",
+                )
+            )
+            return
         # Idempotency contract: when the incoming source_hash matches the
         # existing mirror's hash, the source is unchanged — record a skip
         # (not an error) and do NOT bump errors / quarantine. This restores
@@ -246,6 +283,7 @@ def _process_item(
         source_path=source_path,
         source_hash=item.source_hash,
         fetched_via=item.fetched_via,
+        title=title_override,
         force=force,
     )
     if existed:
@@ -262,6 +300,7 @@ def _finalize(
     *,
     dry_run: bool,
     message: str,
+    title_override: str | None = None,
 ) -> BatchIngestResult:
     """Commit the batch atomically (Task 7's ``LibraryWriter`` envelope).
 
@@ -271,6 +310,10 @@ def _finalize(
     ``LibraryFetchUnreachable``). Catalog upserts are best-effort: failures
     raise through ``LibraryWriter`` (preserving ``LibraryAtomicCommitFailed`` /
     ``LibraryCatalogLocked`` semantics).
+
+    ``title_override`` (single-source mode) replaces the slug-derived
+    catalog title when set; batch mode leaves the per-slug derivation
+    intact.
     """
     if dry_run or not result.mirror_paths:
         return result
@@ -280,7 +323,9 @@ def _finalize(
     catalog_updates = [
         LibraryCatalogPage(
             slug=f"{collection_name}/{p.stem}",
-            title=p.stem.replace("-", " ").title(),
+            title=title_override
+            if (title_override and len(rel_paths) == 1)
+            else p.stem.replace("-", " ").title(),
             type="",
             source_pkg=collection_name,
             section="library",
@@ -336,6 +381,8 @@ def run_source_ingest(
             collection_name,
             exclude_stems=exclude_stems,
             exclude_dirs=exclude_dirs,
+            slug_override=slug,
+            title_override=title,
             force=force,
             dry_run=dry_run,
             result=result,
@@ -346,6 +393,7 @@ def run_source_ingest(
         result,
         dry_run=dry_run,
         message=f"ingest: {collection_name} +{result.created}",
+        title_override=title,
     )
 
 

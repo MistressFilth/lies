@@ -22,6 +22,28 @@ import typer
 __all__ = ("register",)
 
 
+def _coerce_source(value: str | Path | None) -> Path | str | None:
+    """Coerce a CLI string into Path (filesystem) or str (URL).
+
+    ``Path("https://example.com/...")`` mangles the URL on POSIX
+    (``PosixPath('https:/example.com/...')`` — single slash after the
+    scheme), which the URL-prefix check in ``pick_scraper`` rejects.
+    We accept ``str | Path`` on the wire and resolve to a ``Path``
+    only when the value points at an existing filesystem entry.
+    """
+    if value is None:
+        return None
+    if isinstance(value, Path):
+        return value
+    try:
+        p = Path(value)
+    except (TypeError, ValueError):
+        return value
+    if p.exists():
+        return p
+    return value
+
+
 def register(app: typer.Typer) -> None:
     """Register the ``ingest`` command on ``app``.
 
@@ -43,14 +65,14 @@ def register(app: typer.Typer) -> None:
     )
     def ingest(
         source: Annotated[
-            Path | None,
+            str | None,
             typer.Option(
                 "--source",
                 help="Single source: file path or URL.",
             ),
         ] = None,
         batch: Annotated[
-            Path | None,
+            str | None,
             typer.Option(
                 "--batch",
                 help="Directory to walk for batch ingest.",
@@ -127,13 +149,20 @@ def register(app: typer.Typer) -> None:
 
         lib = Library.open()
         fetcher = ScraperFetcher(library=lib)
-        coll_name = collection or slug_prefix or (batch.name if batch else None) or "default"
+        coerced_source = _coerce_source(source)
+        coerced_batch = _coerce_source(batch)
+        coll_name = (
+            collection
+            or slug_prefix
+            or (Path(coerced_batch).name if isinstance(coerced_batch, Path) else None)
+            or "default"
+        )
 
-        if source is not None:
+        if coerced_source is not None:
             result = run_source_ingest(
                 lib,
                 coll_name,
-                source,
+                coerced_source,
                 fetcher=fetcher,
                 slug=slug,
                 title=title,
@@ -143,11 +172,11 @@ def register(app: typer.Typer) -> None:
                 dry_run=dry_run,
             )
         else:
-            assert batch is not None
+            assert coerced_batch is not None
             result = run_batch_ingest(
                 lib,
                 coll_name,
-                batch,
+                coerced_batch,
                 fetcher=fetcher,
                 exclude_stems=set(exclude_stem),
                 exclude_dirs=set(exclude_dir),

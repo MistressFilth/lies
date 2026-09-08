@@ -127,6 +127,41 @@ def test_run_source_ingest_force_overwrite_counts_as_updated(lib_with_git: Libra
     assert result.created == 0
 
 
+def test_run_source_ingest_frontmatter_unparseable_quarantines(
+    lib_with_git: Library,
+) -> None:
+    """I16: a malformed frontmatter on the existing mirror surfaces a typed reason.
+
+    Previously the ``try: frontmatter.loads(...) except Exception: pass``
+    swallowed the parse error and silently downgraded the existing
+    mirror to ``hash=""``. That made the idempotency check always
+    miss and the run always quarantined with ``mirror-collision`` —
+    the operator never learned the mirror is malformed. The new
+    contract: surface ``frontmatter-unparseable:<slug>:<ExceptionName>``
+    in ``quarantine_records`` so the operator can see the real failure.
+    """
+    body = "body\n" * 10
+    coll = lib_with_git.collection("claude")
+    target = coll.dir / "x.md"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    # Malformed YAML frontmatter: unbalanced quote.
+    target.write_text('---\ntitle: "Unterminated\n---\n# body\n', encoding="utf-8")
+
+    item = FetchItem(
+        path=Path("/src/x.md"),
+        url=None,
+        body=body,
+        source_hash="abc",
+        fetched_via="github",
+    )
+    result = run_source_ingest(lib_with_git, "claude", source="x", fetcher=_StaticFetcher([item]))
+    # The unparseable mirror produces an explicit quarantine reason
+    # rather than a misleading mirror-collision.
+    assert any("frontmatter-unparseable" in reason for _, reason in result.quarantine_records), (
+        f"expected frontmatter-unparseable reason; got {result.quarantine_records!r}"
+    )
+
+
 def test_run_source_ingest_mirror_collision_reports_existing_and_new_hashes(
     lib_with_git: Library,
 ) -> None:
@@ -486,6 +521,5 @@ def test_run_source_ingest_wires_qmd_collection_through_finalize(
     assert args[1] == lib_with_git.collections_root
     assert args[2] == "claude"
     # Kwarg: library_target=coll_dir
-    assert kwargs is not None
     assert "library_target" in kwargs
     assert kwargs["library_target"] == lib_with_git.collections_root / "claude"
