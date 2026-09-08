@@ -22,6 +22,8 @@ from lies.memory.models import (
 from lies.memory.service import (
     WikiMemoryService,
     _acquire_wiki_flock,
+    _normalize_collection_prefix,
+    _page_type_from_dir,
     translate_page_diffs_to_plan,
 )
 from lies.utils.lock_heartbeat import AcquireResult
@@ -1215,9 +1217,12 @@ def test_translate_page_diffs_to_plan_create(tmp_path: Path) -> None:
     assert len(plan.operations) == 1
     op = plan.operations[0]
     assert isinstance(op, PageCreate)
-    # Path is normalized to sit under wiki/<collection>/ regardless of
-    # what the page-writer emitted (the LLM often uses the source filename
-    # as the prefix instead of the target collection).
+    # Path is normalized to sit under wiki/<collection>/. The page-writer
+    # emitted ``wiki/concepts/alpha.md`` (using the page-type directory
+    # ``concepts/`` as a leading prefix without the collection); the
+    # normalizer recognizes the leading ``concepts/`` as a known page-type
+    # directory and prepends the target collection so the file lands at
+    # the per-collection subdir while preserving the type directory.
     assert op.path == "wiki/claude-code/concepts/alpha.md"
     assert op.content == "# Alpha\n\nbody"
     assert op.evidence == ["raw/articles/x.md"]
@@ -1536,3 +1541,75 @@ def test_apply_plan_skips_catalog_upsert_for_index_md(git_wiki: Wiki) -> None:
     finally:
         conn.close()
     assert "index" not in slugs, "PageUpdate on wiki/index.md must not create a phantom catalog row"
+
+
+# --- _normalize_collection_prefix --------------------------------------------
+
+
+class TestNormalizeCollectionPrefix:
+    """Direct unit tests for the page-writer path-normalization helper."""
+
+    def test_preserves_correctly_rooted_path(self) -> None:
+        # Path already under wiki/<collection>/; helper is idempotent.
+        assert (
+            _normalize_collection_prefix("wiki/claude_code/hooks.md", "claude_code")
+            == "wiki/claude_code/hooks.md"
+        )
+
+    def test_strips_wrong_collection_prefix_and_reprefixes(self) -> None:
+        # The classic M3 bug: page-writer emits ``wiki/llms/hooks.md``
+        # for an ``llms.txt`` source fed via the ``claude_code``
+        # collection. The helper drops the bogus ``llms/`` segment and
+        # re-prefixes with the target collection.
+        assert (
+            _normalize_collection_prefix("wiki/llms/hooks.md", "claude_code")
+            == "wiki/claude_code/hooks.md"
+        )
+
+    def test_strips_wrong_prefix_with_nested_path(self) -> None:
+        # Deeper nesting: ``wiki/llms/concepts/hooks.md`` → ``wiki/claude_code/concepts/hooks.md``.
+        assert (
+            _normalize_collection_prefix("wiki/llms/concepts/hooks.md", "claude_code")
+            == "wiki/claude_code/concepts/hooks.md"
+        )
+
+    def test_adds_collection_to_unprefixed_path(self) -> None:
+        # No collection prefix at all → wrap under ``wiki/<collection>/``.
+        assert (
+            _normalize_collection_prefix("wiki/concepts/alpha.md", "claude_code")
+            == "wiki/claude_code/concepts/alpha.md"
+        )
+
+    def test_preserves_system_files(self) -> None:
+        # ``wiki/index.md`` / ``wiki/log.md`` are reserved by
+        # ``_apply_operations``; the helper must not rewrite them.
+        assert _normalize_collection_prefix("wiki/index.md", "claude_code") == "wiki/index.md"
+        assert _normalize_collection_prefix("wiki/log.md", "claude_code") == "wiki/log.md"
+
+
+# --- _page_type_from_dir ------------------------------------------------------
+
+
+class TestPageTypeFromDir:
+    """Direct unit tests for the path → page-type resolver."""
+
+    def test_plural_to_singular_mapping(self) -> None:
+        # The hard-coded map covers every plural form from the schema.
+        assert _page_type_from_dir("concepts") == "concept"
+        assert _page_type_from_dir("entities") == "entity"
+        assert _page_type_from_dir("comparisons") == "comparison"
+        assert _page_type_from_dir("sources") == "source"
+        assert _page_type_from_dir("overviews") == "overview"
+        assert _page_type_from_dir("synthesis") == "synthesis"
+
+    def test_singular_passes_through(self) -> None:
+        # If a caller already normalized to singular, pass through.
+        for singular in ("concept", "entity", "comparison", "source", "overview", "synthesis"):
+            assert _page_type_from_dir(singular) == singular
+
+    def test_unknown_directory_defaults_to_concept(self) -> None:
+        # M3's path-flattening bug puts the collection name in the
+        # parent directory; the helper defaults to "concept" rather
+        # than returning the raw collection name.
+        assert _page_type_from_dir("claude_code") == "concept"
+        assert _page_type_from_dir("minimax") == "concept"

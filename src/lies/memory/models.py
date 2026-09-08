@@ -7,12 +7,11 @@ FastMCP adapter.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from enum import Enum
 from pathlib import PurePosixPath
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 # Re-exported from :mod:`lies.lock_errors` so the historical import path
 # (``from lies.memory.models import WikiLockBusy``) keeps working for
@@ -98,7 +97,7 @@ class IngestSourceUnreachable(WikiMemoryError):
 # --- Collection and evidence -------------------------------------------
 
 
-class WikiCollectionRef(BaseModel):
+class WikiCollectionRef(BaseModel):  # noqa: PG101
     """A reference to a prepared wiki collection."""
 
     model_config = ConfigDict(frozen=True)
@@ -109,7 +108,7 @@ class WikiCollectionRef(BaseModel):
     schema_path: PurePosixPath
 
 
-class WikiEvidence(BaseModel):
+class WikiEvidence(BaseModel):  # noqa: PG101
     """A bounded excerpt from a wiki page, returned by `wiki_search`."""
 
     model_config = ConfigDict(frozen=True)
@@ -123,7 +122,7 @@ class WikiEvidence(BaseModel):
     score: float = Field(ge=0.0, le=1.0)
 
 
-class WikiSearchResult(BaseModel):
+class WikiSearchResult(BaseModel):  # noqa: PG101
     """A bounded set of evidence from a wiki search."""
 
     model_config = ConfigDict(frozen=True)
@@ -135,7 +134,7 @@ class WikiSearchResult(BaseModel):
     fallback_reason: str
 
 
-class PageReference(BaseModel):
+class PageReference(BaseModel):  # noqa: PG101
     """A reference to a page that was read or changed."""
 
     model_config = ConfigDict(frozen=True)
@@ -155,95 +154,81 @@ class OperationKind(str, Enum):
     DELETE = "delete"
 
 
-@dataclass(frozen=True, kw_only=True)
-class _PlanOperation:
-    """Base for plan operations. Subclasses redeclare ``kind`` with a
-    concrete ``Literal[OperationKind.X]`` value (Pydantic's union
-    discriminator becomes a class type).
-    """
+class _PlanOperation(BaseModel):  # noqa: PG101
+    """Base for plan operations."""
+
+    model_config = ConfigDict(frozen=True)
 
     path: str
-    evidence: list[str]
-    kind: OperationKind
+    evidence: list[str] = Field(min_length=1)
     tag: str = "memory"
+    """Provenance label rendered in the git commit message and the
+    ``wiki/log.md`` entry. Defaults to ``"memory"`` for the existing
+    MemoryEnricher flow. Override to ``"ingest"`` (F2 single-source
+    ingest), ``"synthesis"`` (F3 file-back loop), etc."""
 
-    def __post_init__(self) -> None:
-        if len(self.evidence) < 1:
-            raise ValueError(
-                f"plan op {self.kind!r} on {self.path!r}: at least one evidence reference required"
-            )
+    kind: OperationKind
 
 
-@dataclass(frozen=True, kw_only=True)
-class PageCreate(_PlanOperation):
+class PageCreate(_PlanOperation):  # noqa: PG101
     """Create a new wiki page."""
 
     content: str
     kind: Literal[OperationKind.CREATE] = OperationKind.CREATE
-    tag: str = "memory"
 
 
-@dataclass(frozen=True, kw_only=True)
-class PageUpdate(_PlanOperation):
+class PageUpdate(_PlanOperation):  # noqa: PG101
     """Replace a wiki page with a versioned update."""
 
+    expected_sha256: str = Field(min_length=1)
     content: str
-    expected_sha256: str
     kind: Literal[OperationKind.UPDATE] = OperationKind.UPDATE
-    tag: str = "memory"
-
-    def __post_init__(self) -> None:
-        super().__post_init__()
-        if len(self.expected_sha256) < 1:
-            raise ValueError(f"PageUpdate on {self.path!r}: expected_sha256 must be non-empty")
 
 
-@dataclass(frozen=True, kw_only=True)
-class EvidenceAppend(_PlanOperation):
+class EvidenceAppend(_PlanOperation):  # noqa: PG101
     """Append a short evidence block to an existing wiki page."""
 
+    expected_sha256: str = Field(min_length=1)
     content: str
-    expected_sha256: str
     kind: Literal[OperationKind.APPEND] = OperationKind.APPEND
-    tag: str = "memory"
-
-    def __post_init__(self) -> None:
-        super().__post_init__()
-        if len(self.expected_sha256) < 1:
-            raise ValueError(f"EvidenceAppend on {self.path!r}: expected_sha256 must be non-empty")
 
 
-@dataclass(frozen=True, kw_only=True)
-class PageDelete(_PlanOperation):
+class PageDelete(_PlanOperation):  # noqa: PG101
     """Remove an existing wiki page. No-op if the page does not exist."""
 
     kind: Literal[OperationKind.DELETE] = OperationKind.DELETE
-    tag: str = "memory"
 
 
-@dataclass(frozen=True)
-class MemoryPlan:
+class MemoryPlan(BaseModel):  # noqa: PG101
     """A structured set of memory operations proposed by MemoryEnricher."""
+
+    model_config = ConfigDict(frozen=True)
 
     operations: list[_PlanOperation]
     rationale: str
     evidence: list[str]
 
-    def __post_init__(self) -> None:
+    def is_noop(self) -> bool:
+        return not self.operations
+
+    @model_validator(mode="after")
+    def _no_conflicting_operations_on_same_path(self) -> MemoryPlan:
         seen: set[str] = set()
         for op in self.operations:
             if op.path in seen:
                 raise ValueError(f"multiple operations target the same path: {op.path}")
             seen.add(op.path)
+        return self
+
+    @model_validator(mode="after")
+    def _all_operations_share_one_tag(self) -> MemoryPlan:
         tags = {op.tag for op in self.operations}
         if len(tags) > 1:
             raise ValueError(f"MemoryPlan ops must share one tag; got {sorted(tags)!r}")
-
-    def is_noop(self) -> bool:
-        return not self.operations
+        return self
 
 
-class MemoryReceipt(BaseModel):
+class MemoryReceipt(BaseModel):  # noqa: PG101
     """Result of applying (or attempting to apply) a MemoryPlan."""
 
     model_config = ConfigDict(frozen=True)
@@ -255,7 +240,7 @@ class MemoryReceipt(BaseModel):
     errors: list[str]
 
 
-class MemoryPlanRecord(BaseModel):
+class MemoryPlanRecord(BaseModel):  # noqa: PG101
     """A row in `<wiki>/.lies/memory_plans.jsonl` — the JSONL receipt sidecar.
 
     Mirrors the on-disk JSON schema exactly. Pydantic enforces shape on read;

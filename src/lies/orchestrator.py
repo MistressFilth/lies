@@ -37,7 +37,6 @@ from lies.config import get_qmd_transport, get_qmd_url
 from lies.lock_errors import WikiFlockUnrepairable, WikiLockBusy
 from lies.memory.enricher import MemoryEnricherDeps, enricher_agent
 from lies.memory.models import (
-    IngestQuarantined,
     IngestSourceUnreachable,
     MemoryPlan,
     MemoryReceipt,
@@ -1448,15 +1447,8 @@ class Orchestrator:
             svc = WikiMemoryService(self.wiki)
             svc.register_evidence({source_relpath, *plan.evidence})
             svc.apply_plan(plan)
-        except IngestQuarantined:
-            # The agent wrapper already quarantined the source. No wiki
-            # writes happened, so the snapshot can be discarded (the
-            # underlying ``git stash push --include-untracked`` is
-            # purely a safety net; nothing was staged into HEAD).
-            Orchestrator._discard_snapshot(repo, snapshot_ref)
-            raise
         except BaseException:
-            # Any other failure (WikiPlanInvalid, WikiWriteConflict,
+            # Any failure (WikiPlanInvalid, WikiWriteConflict,
             # WikiCommitFailed, …) means the agent or the service
             # envelope blew up after the snapshot was taken. Restore
             # the working tree so a follow-up retry sees a clean slate.
@@ -1651,10 +1643,13 @@ class Orchestrator:
         Retries: each ``run_sync`` starts fresh (no accumulated message
         history) which sidesteps pydantic-ai's internal retry growing the
         context with prior validation errors. MiniMax-M3 has been observed
-        to succeed on a fresh attempt after the first one fails.
+        to succeed on a fresh attempt after the first one fails. The 100ms
+        backoff between attempts mirrors the pre-existing retry loop in
+        ``EnrichmentQueue`` so transient rate-limit responses (the most
+        common reason for back-to-back identical failures) cool off.
         """
         last_exc: BaseException | None = None
-        for attempt in range(3):
+        for _ in range(3):
             try:
                 reader = source_reader_agent(model=self.models["source_reader"])
                 extraction: SourceExtraction = reader.run_sync(  # type: ignore[assignment]
@@ -1663,6 +1658,9 @@ class Orchestrator:
                 return extraction
             except Exception as exc:
                 last_exc = exc
+                import time
+
+                time.sleep(0.1)
                 continue
         # All retries failed — quarantine sidecar + empty extraction.
         assert last_exc is not None
@@ -1687,15 +1685,16 @@ class Orchestrator:
     ) -> list[PageDiff]:
         """Call ``page_writer_agent`` with deps, returning ``list[PageDiff]``.
 
-        Quarantine + raise on agent failure (mirrors
-        :meth:`_call_source_reader`). ``collection`` and
-        ``source_relpath`` are required for the quarantine sidecar;
-        real callers always supply both, but both default to empty
-        strings so the success-path unit tests don't need to thread
-        them through.
+        Failed agent calls quarantine the source and return an empty
+        ``list[PageDiff]`` (mirrors :meth:`_call_source_reader`). The
+        wrapper is fail-soft so a flaky LLM does not block an
+        otherwise-valid ingest. ``collection`` and ``source_relpath``
+        are required for the quarantine sidecar; both default to
+        empty strings so the success-path unit tests don't need to
+        thread them through.
         """
         last_exc: BaseException | None = None
-        for attempt in range(3):
+        for _ in range(3):
             try:
                 writer = page_writer_agent(model=self.models["page_writer"])
                 prompt = (
@@ -1709,9 +1708,12 @@ class Orchestrator:
                     existing_pages=existing_pages,
                 )
                 diffs: list[PageDiff] = writer.run_sync(prompt, deps=deps).output  # type: ignore[assignment]
-                return diffs or []
+                return diffs
             except Exception as exc:
                 last_exc = exc
+                import time
+
+                time.sleep(0.1)
                 continue
         assert last_exc is not None
         from lies.etl.quarantine import quarantine

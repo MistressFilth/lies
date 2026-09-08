@@ -780,7 +780,6 @@ dependencies = [
     { name = "pydantic" },
     { name = "pydantic-ai-harness", extra = ["code-mode", "dynamic-workflow"] },
     { name = "pydantic-ai-slim", extra = ["openai"] },
-    { name = "pydantic-guidance" },
     { name = "pymupdf" },
     { name = "python-frontmatter" },
     { name = "pyyaml" },
@@ -789,6 +788,9 @@ dependencies = [
 
 [package.optional-dependencies]
 dev = [
+    { name = "flake8" },
+    { name = "flake8-pydantic" },
+    { name = "pydantic-guidance" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "pytest-mock" },
@@ -798,8 +800,6 @@ dev = [
 
 [package.dev-dependencies]
 dev = [
-    { name = "flake8" },
-    { name = "flake8-pydantic" },
     { name = "identify" },
     { name = "pre-commit" },
 ]
@@ -809,13 +809,15 @@ requires-dist = [
     { name = "ahocorasick-rs", specifier = ">=1.0,<2.0" },
     { name = "anthropic", specifier = ">=0.40" },
     { name = "fastmcp", specifier = ">=2.0" },
+    { name = "flake8", marker = "extra == 'dev'", specifier = ">=5.0" },
+    { name = "flake8-pydantic", marker = "extra == 'dev'", specifier = ">=0.4" },
     { name = "logfire" },
     { name = "mcp", specifier = ">=1.0" },
     { name = "pdfplumber", specifier = ">=0.10" },
     { name = "pydantic", specifier = ">=2.0" },
     { name = "pydantic-ai-harness", extras = ["code-mode", "dynamic-workflow"] },
     { name = "pydantic-ai-slim", extras = ["openai"], specifier = ">=2.18" },
-    { name = "pydantic-guidance", editable = "vendor/pydantic-guidance" },
+    { name = "pydantic-guidance", marker = "extra == 'dev'", git = "https://github.com/MistressFilth/pydantic-guidance?rev=d7d992b3b5897321a92fb21b1ad6f35f49b35fa5" },
     { name = "pymupdf", specifier = ">=1.24" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23" },
@@ -830,8 +832,6 @@ provides-extras = ["dev", "qmd"]
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "flake8", specifier = ">=5.0" },
-    { name = "flake8-pydantic", specifier = ">=0.4" },
     { name = "identify", specifier = ">=2.6.19" },
     { name = "pre-commit", specifier = ">=4.6.1" },
 ]
@@ -1351,25 +1351,11 @@ wheels = [
 [[package]]
 name = "pydantic-guidance"
 version = "0.1.1"
-source = { editable = "vendor/pydantic-guidance" }
+source = { git = "https://github.com/MistressFilth/pydantic-guidance?rev=d7d992b3b5897321a92fb21b1ad6f35f49b35fa5#d7d992b3b5897321a92fb21b1ad6f35f49b35fa5" }
 dependencies = [
     { name = "flake8" },
     { name = "flake8-pydantic" },
     { name = "pydantic" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "flake8", specifier = ">=5.0" },
-    { name = "flake8-pydantic", specifier = ">=0.4" },
-    { name = "pydantic", specifier = ">=2.0" },
-]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "behave", specifier = ">=1.2" },
-    { name = "mypy", specifier = ">=2.0.0" },
-    { name = "pytest", specifier = ">=8.0" },
 ]
 
 [[package]]

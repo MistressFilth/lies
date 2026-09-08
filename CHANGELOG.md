@@ -6,22 +6,6 @@ All notable changes to LIES are documented here. The format follows
 
 ## [Unreleased]
 
-### Added
-
-- Pydantic-guidance (PG) lint hook — `pydantic-guidance@<commit-sha>`
-  (pinned to commit `d7d992b3b5897321a92fb21b1ad6f35f49b35fa5` because
-  the upstream `v0.1.1` tag referenced in the upstream README has not
-  been pushed to `refs/tags`; bump to a real tag once upstream publishes
-  one) runs flake8 with PG (boundary-aware Pydantic usage) + PYD
-  (`flake8-pydantic`) selectors against staged files at commit time.
-  Local invocation via `make lint-pydantic-guidance` (wraps
-  `flake8 --select=PG,PYD src/lies`); the hook is also wired into
-  `make check`. `pydantic-guidance`, `flake8`, and `flake8-pydantic`
-  are added to `[project.optional-dependencies] dev` so `uv sync` pulls
-  them into the local env for Makefile runs; pre-commit's hook venv
-  installs them independently via `additional_dependencies`.
-  `[tool.uv.sources]` declares the git source for `pydantic-guidance`.
-
 ### Fixed
 - `cli/ingestion.py` NameError on `ingest-source` — bare-name `Orchestrator(wiki)`
   lookup does not consult the module `__getattr__` (PEP 562 fires on
@@ -125,25 +109,60 @@ All notable changes to LIES are documented here. The format follows
   endpoint returns `400 unknown model 'minimax-m3[1m]'` for the
   suffixed form. The Anthropic-compat endpoint silently accepted it
   (which is why the original ingest ran against `/anthropic` at all).
-- `vendor/pydantic-guidance/` (new): vendored copy of the upstream
-  `pydantic-guidance` flake8 plugin (v0.1.1, plus local fixes). The
-  upstream lives in a private GitHub repo that the credential-less
-  CI runner cannot clone. Vendoring + an editable path dep
-  (`pyproject.toml` → `[tool.uv.sources] pydantic-guidance`) lets
-  `uv sync --all-extras` install the plugin into the project venv
-  on every machine that has the lies repo checked out. The lint
-  target (`make lint-pydantic-guidance`) and the pre-commit hook
-  (`pydantic-guidance (PG) + flake8-pydantic (PYD)`) both invoke
-  the project venv's flake8 via `uv run flake8 --select=PG,PYD
-  --extend-ignore=PG101 --exclude=.venv,build,dist,node_modules`.
-  PG101 (BaseModel uses no Pydantic surface) is held back from the
-  commit-time surface per the rule's own activation note (opt-in via
-  `--extend-select=PG101`); flake8's `--select=PG` is a prefix match
-  and the rule fires under it even though the rule is documented as
-  opt-in. `--exclude` is required because flake8's default exclude
-  patterns are skipped when invoked from a pre-commit hook with
-  `types_or: [python, pyi]` (every Python file is staged, including
-  `.venv/.../site-packages`).
+
+### Reviewer follow-ups (PR #59)
+
+- `providers/bootstrap.py`: wizard prompt label + validator now include
+  `openai_compatible` alongside `anthropic` / `anthropic_compatible`.
+  The `base_url` prompt defaults to `https://api.minimax.io/v1` for the
+  `openai_compatible` case.
+- `providers/config.py`: `base_url` is now required for both compatible
+  provider types. Stale error message that mentioned only
+  `anthropic` + `anthropic_compatible` updated.
+- `providers/ops.py._probe`: probes `openai_compatible` providers via
+  `AsyncOpenAI.models.list()`. Previously silently skipped them,
+  making `lies providers check` falsely report an unconfigured provider
+  as ok.
+- `memory/service._normalize_collection_prefix`: the rewrite now
+  strips the wrong-collection prefix and re-prefixes with the target
+  collection. A page emitted at `wiki/llms/concepts/hooks.md` for the
+  `claude_code` collection now lands at
+  `wiki/claude_code/concepts/hooks.md` rather than
+  `wiki/claude_code/llms/concepts/hooks.md`. The page-type directory
+  (`concepts/` etc.) is preserved when present. New direct unit tests
+  in `tests/unit/memory/test_service.py::TestNormalizeCollectionPrefix`.
+- `memory/service._page_type_from_dir`: the "unknown directory
+  defaults to concept" branch now logs a `logging.getLogger` warning
+  so the operator can spot M3's path-flattening bug in the catalog
+  without auditing every page.
+- `orchestrator._call_source_reader` / `_call_page_writer`: retry
+  loop variable renamed `attempt` to `_` and added 100ms `time.sleep`
+  backoff between attempts, matching the existing `EnrichmentQueue`
+  retry loop. Removed dead `IngestQuarantined` branch in
+  `Orchestrator.run_ingest` + the corresponding import + stale
+  docstring references (the wrapper is fail-soft and no longer raises).
+- `tests/integration/test_run_ingest_end_to_end.py`: page-writer
+  failure test updated to assert the new fail-soft contract (empty
+  diffs + quarantine sidecar) instead of the old `IngestQuarantined`
+  raise.
+- `tests/mcp/test_ingest_source_tool.py`: `_FakeOrchestrator.run_ingest`
+  adds the `collection` kwarg to match the orchestrator signature;
+  `test_mcp_ingest_source_default_runs_llm_path` now asserts
+  `seen["collection"] == "foo"` to pin the threading.
+- `tests/unit/providers/test_bootstrap.py`: wizard prompt-label
+  substring updated to match the new `openai_compatible`-aware prompt.
+- `tests/unit/memory/test_service.py`: `test_translate_page_diffs_to_plan_create`
+  updated to assert the corrected path layout
+  (`wiki/<collection>/<type_plural>/<file>`).
+- `agents/source_reader.source_reader_agent`: breadcrumb comment
+  updated to point at the project-notes issue file instead of the
+  stale `TODO F13` reference (F13 is qmd-singleflight, unrelated).
+- `orchestrator._call_page_writer`: dropped redundant `or []` on the
+  `diffs` return (the `output_type: list[PageDiff]` contract guarantees
+  a list).
+- `README.md`: provider docs section updated to enumerate all three
+  provider types (including the `openai_compatible` /
+  `https://api.minimax.io/v1` shape and the `PromptedOutput` rationale).
 
 ## [0.18.0] - 2026-09-07
 

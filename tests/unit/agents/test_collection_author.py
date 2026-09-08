@@ -8,8 +8,6 @@ the filesystem directly.
 
 from __future__ import annotations
 
-from dataclasses import asdict
-
 from pydantic_ai.models.test import TestModel
 
 from lies.agents.collection_author import (
@@ -35,7 +33,7 @@ def test_proposal_serializes_collection() -> None:
         collection={"name": "demo", "source": "https://example.com"},
         rationale="test",
     )
-    payload = asdict(proposal)
+    payload = proposal.model_dump()
     assert "collection" in payload
     assert payload["collection"]["name"] == "demo"
     assert payload["rationale"] == "test"
@@ -49,7 +47,7 @@ def test_question_carries_id_and_prompt() -> None:
         options=["alpha", "beta"],
         default="alpha",
     )
-    payload = asdict(question)
+    payload = question.model_dump()
     assert payload["id"] == "name"
     assert payload["prompt"] == "What name should the collection use?"
     assert payload["options"] == ["alpha", "beta"]
@@ -78,9 +76,7 @@ def test_agent_runs_with_test_model() -> None:
     result = agent.run_sync("add docs", deps=deps)
     out = result.output
     assert isinstance(out, (AuthorQuestion, AuthorProposal))
-    # AuthorQuestion and AuthorProposal both have asdict; verify dispatch.
-    assert hasattr(out, "__dataclass_fields__") or hasattr(out, "__pydantic_fields__")
-    import dataclasses
-
-    payload = dataclasses.asdict(out)
+    # AuthorQuestion and AuthorProposal both have model_dump; verify dispatch.
+    assert hasattr(out, "model_dump")
+    payload = out.model_dump()
     assert isinstance(payload, dict)

@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 
+from pydantic import BaseModel
 from pydantic_ai import Agent
 from pydantic_ai.models import Model
 from pydantic_ai.tools import RunContext
@@ -23,8 +24,7 @@ class LintSeverity(str, Enum):
     LOW = "low"
 
 
-@dataclass
-class LintFinding:
+class LintFinding(BaseModel):  # noqa: PG101
     """A single lint finding."""
 
     severity: LintSeverity
@@ -34,8 +34,7 @@ class LintFinding:
     safe_to_fix: bool = False
 
 
-@dataclass
-class LintReport:
+class LintReport(BaseModel):  # noqa: PG101
     """The result of a lint pass."""
 
     findings: list[LintFinding]

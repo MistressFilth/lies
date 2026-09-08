@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import sys
 from collections.abc import Callable
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from pydantic import BaseModel
 from pydantic_ai import Agent, RunContext
 from pydantic_ai.models import Model
 
@@ -15,8 +15,7 @@ from lies.agents.base import make_sub_agent
 from pydantic_ai.output import PromptedOutput
 
 
-@dataclass
-class SourceExtraction:
+class SourceExtraction(BaseModel):  # noqa: PG101
     """Structured extraction from a single raw source.
 
     All fields default to empty so a partial extraction (one the model
@@ -28,16 +27,16 @@ class SourceExtraction:
     not consumed by ``PageWriterDeps``.
     """
 
-    claims: list[str] = field(default_factory=list)
+    claims: list[str] = []
     """Atomic factual claims made by the source."""
 
-    entities: list[str] = field(default_factory=list)
+    entities: list[str] = []
     """Named things (people, projects, systems) the source discusses."""
 
-    concepts: list[str] = field(default_factory=list)
+    concepts: list[str] = []
     """Abstract ideas or patterns the source discusses."""
 
-    comparisons: list[tuple[str, str]] = field(default_factory=list)
+    comparisons: list[tuple[str, str]] = []
     """Pairs of (entity_A, entity_B) that the source compares."""
 
     summary: str = ""
@@ -102,9 +101,9 @@ def source_reader_agent(
     # model's free-form JSON text rather than relying on tool calling
     # or response_format=json_schema. MiniMax-M3 ignores tool_choice and
     # response_format on both endpoints; PromptedOutput is the only
-    # shape that works reliably with that model. See TODO F13 entry
-    # + /home/divinefilth/code/project-notes/lies/TODO.md for the
-    # systematic-debugging trace.
+    # shape that works reliably with that model. See the project-notes
+    # issue that captured the systematic-debugging trace:
+    # superpowers/issues/2026-09-07-ingest-design-mismatch.md
     return make_sub_agent(
         model=model,
         output_type=PromptedOutput(SourceExtraction),

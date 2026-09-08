@@ -6,6 +6,7 @@ import pytest
 
 from lies.memory.models import (
     EvidenceAppend,
+    OperationKind,
     PageCreate,
     PageUpdate,
     WikiEvidenceMissing,
@@ -95,36 +96,27 @@ def test_validate_operation_evidence_present() -> None:
 
 
 def test_validate_operation_evidence_missing() -> None:
-    # ``evidence`` is required (min_length=1) and the constraint is
-    # enforced in the @dataclass ``__post_init__`` — constructing with
-    # an empty list raises plain ``ValueError`` (Pydantic's
-    # ``ValidationError`` only fires for ``BaseModel`` subclasses).
-    with pytest.raises(ValueError, match="at least one evidence"):
-        PageCreate(path="x.md", content="# X", evidence=[])
+    op = PageCreate.model_construct(
+        path="x.md", content="# X", evidence=[], kind=OperationKind.CREATE
+    )
+    with pytest.raises(WikiEvidenceMissing):
+        validate_operation_evidence(op)
 
 
 def test_validate_operation_evidence_update_requires_hash() -> None:
-    # ``expected_sha256`` is required (min_length=1) and the constraint
-    # is enforced in the @dataclass ``__post_init__``.
-    with pytest.raises(ValueError, match="expected_sha256 must be non-empty"):
-        PageUpdate(
-            path="x.md",
-            expected_sha256="",
-            content="x",
-            evidence=["e"],
-        )
+    op = PageUpdate.model_construct(
+        path="x.md", expected_sha256="", content="x", evidence=["e"], kind=OperationKind.UPDATE
+    )
+    with pytest.raises(WikiPlanInvalid):
+        validate_operation_evidence(op)
 
 
 def test_validate_operation_evidence_append_requires_hash() -> None:
-    # ``expected_sha256`` is required (min_length=1) and the constraint
-    # is enforced in the @dataclass ``__post_init__``.
-    with pytest.raises(ValueError, match="expected_sha256 must be non-empty"):
-        EvidenceAppend(
-            path="x.md",
-            expected_sha256="",
-            content="x",
-            evidence=["e"],
-        )
+    op = EvidenceAppend.model_construct(
+        path="x.md", expected_sha256="", content="x", evidence=["e"], kind=OperationKind.APPEND
+    )
+    with pytest.raises(WikiPlanInvalid):
+        validate_operation_evidence(op)
 
 
 def test_validate_operation_evidence_rejects_unknown_reference() -> None:

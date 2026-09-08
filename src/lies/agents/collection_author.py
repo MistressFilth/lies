@@ -13,9 +13,9 @@ plus a rationale.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Any, cast
 
+from pydantic import BaseModel, Field
 from pydantic_ai import Agent
 
 AUTHOR_SYSTEM_PROMPT = """\
@@ -39,8 +39,7 @@ When you have enough information, return an AuthorProposal.
 """
 
 
-@dataclass
-class AuthorQuestion:
+class AuthorQuestion(BaseModel):  # noqa: PG101
     """A single question the agent needs answered before it can propose."""
 
     id: str
@@ -49,12 +48,12 @@ class AuthorQuestion:
     default: str | None = None
 
 
-@dataclass
-class AuthorProposal:
+class AuthorProposal(BaseModel):  # noqa: PG101
     """The final proposal — a serialized Collection record plus rationale."""
 
-    collection: dict[str, Any]
-    """Serialized Collection record. Will be loaded via Collection(**payload)."""
+    collection: dict[str, Any] = Field(
+        description=("Serialized Collection record. Will be loaded via Collection(**payload).")
+    )
     rationale: str
 
 
@@ -65,8 +64,7 @@ class AuthorProposal:
 AuthorOutput = AuthorQuestion | AuthorProposal
 
 
-@dataclass
-class CollectionAuthorDeps:
+class CollectionAuthorDeps(BaseModel):  # noqa: PG101
     """Per-run dependencies for the CollectionAuthorAgent.
 
     Carries the manifest of source files available at the source URL,

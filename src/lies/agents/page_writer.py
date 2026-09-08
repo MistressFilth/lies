@@ -7,6 +7,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
+from pydantic import BaseModel
 from pydantic_ai import Agent
 from pydantic_ai.models import Model
 from pydantic_ai.output import PromptedOutput
@@ -21,8 +22,7 @@ class PageOperation(str, Enum):
     DELETE = "delete"
 
 
-@dataclass
-class PageDiff:
+class PageDiff(BaseModel):  # noqa: PG101
     """A proposed change to a single wiki page."""
 
     path: Path

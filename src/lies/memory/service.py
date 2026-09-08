@@ -179,17 +179,21 @@ def _read_page(wiki: Wiki, path: str) -> str | None:
 def _normalize_collection_prefix(rel: str, collection: str) -> str:
     """Force ``rel`` to live under ``wiki/<collection>/``.
 
-    The page-writer agent often emits paths using the source filename
-    as the collection prefix (``wiki/llms/hooks.md`` for an ``llms.txt``
-    source mapped to the ``claude_code`` collection) or omits the
-    collection segment entirely (``wiki/hooks.md``). This helper
-    rewrites either shape so the path lands at the per-collection
-    subdir convention from PR #39.
+    The page-writer agent emits paths in one of three shapes:
 
-    Idempotent: if the path already starts with ``wiki/<collection>/``,
-    it is returned unchanged. System-file paths (``wiki/index.md``,
-    ``wiki/log.md``) are preserved untouched so the system-file guard
-    in :meth:`WikiMemoryService._apply_operations` continues to fire.
+    - Correctly rooted: ``wiki/<collection>/<rest>`` (idempotent).
+    - Wrong collection prefix: ``wiki/<other>/<rest>`` where ``<other>``
+      is something like the source filename (``llms`` for an ``llms.txt``
+      ingest). The helper replaces the wrong prefix with the target
+      collection.
+    - Missing collection prefix entirely: ``wiki/<rest>`` where the
+      first segment is a page-type directory (``concepts``,
+      ``entities``, …) or the file itself. The helper prepends
+      ``<collection>/``.
+
+    System-file paths (``wiki/index.md``, ``wiki/log.md``) are preserved
+    untouched so the system-file guard in
+    :meth:`WikiMemoryService._apply_operations` continues to fire.
     """
     # System files must remain at wiki/index.md / wiki/log.md so the
     # guard in _apply_operations catches them.
@@ -198,13 +202,32 @@ def _normalize_collection_prefix(rel: str, collection: str) -> str:
         return rel
     # Strip a leading wiki/ to get the post-root portion.
     stripped = rel.removeprefix("wiki/")
-    # If the next segment already matches the target collection, the
-    # path is already correctly rooted.
     parts = stripped.split("/", 1)
-    if parts and parts[0] == collection:
+    if not parts or not parts[0]:
+        return rel  # malformed; leave as-is for downstream validation
+    first, rest = parts[0], parts[1] if len(parts) > 1 else ""
+    if first == collection:
+        # Already correctly rooted.
         return f"wiki/{stripped}"
-    # Otherwise rebuild under wiki/<collection>/, preserving the tail.
-    return f"wiki/{collection}/{stripped}"
+    # Known plural type directories (concepts/, entities/, …) and the
+    # type-less file case — the page-writer omitted the collection
+    # prefix; prepend it.
+    known_type_plurals = {
+        "concepts",
+        "entities",
+        "comparisons",
+        "sources",
+        "overviews",
+        "synthesis",
+    }
+    if first in known_type_plurals or "/" not in stripped:
+        return f"wiki/{collection}/{stripped}"
+    # Otherwise ``<other>`` is a wrong collection prefix (the source
+    # filename or another collection name). Strip it and re-prefix so
+    # pages don't end up nested under ``wiki/<collection>/<other>/``.
+    if rest:
+        return f"wiki/{collection}/{rest}"
+    return f"wiki/{collection}/{first}"
 
 
 def translate_page_diffs_to_plan(
@@ -306,7 +329,19 @@ def _page_type_from_dir(directory_name: str) -> str:
     if directory_name in {"concept", "entity", "comparison", "source", "overview", "synthesis"}:
         return directory_name
     # Unknown — default to "concept" rather than returning the raw dir
-    # name (which would be a collection name or other nonsense).
+    # name (which would be a collection name such as ``claude_code``).
+    # The warning lets the operator spot M3's path-flattening bug in
+    # the catalog without having to audit every page.
+    import logging
+
+    logging.getLogger(__name__).warning(
+        "page_type_from_dir: unknown directory %r in collection %r; defaulting to 'concept'",
+        directory_name,
+        # collection is captured by the closure in the caller; we do
+        # not thread it here to keep the helper a pure function of
+        # (directory_name).
+        "(see caller)",
+    )
     return "concept"
 
 

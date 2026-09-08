@@ -8,13 +8,7 @@ TESTS      := tests
 RUFF_LINT  := $(PY) ruff check $(SRC) $(TESTS)
 RUFF_FMT   := $(PY) ruff format $(SRC) $(TESTS)
 TY         := $(PY) ty check $(SRC)
-# `pydantic-guidance` is vendored under `vendor/pydantic-guidance/` and
-# installed as an editable path dep (`[tool.uv.sources] pydantic-guidance`)
-# so `uv sync` builds + installs the plugin into the project venv and
-# `flake8 --select=PG,PYD` picks it up via the entry-point. Vendoring
-# sidesteps the upstream's private GitHub repo (CI + credential-less
-# runners cannot reach it).
-PG_LINT    := $(PY) flake8 --select=PG,PYD --exclude=.venv,build,dist,node_modules $(SRC)
+PG_LINT    := $(PY) flake8 --select=PG,PYD $(SRC)
 PYTEST     := $(PY) pytest
 
 REPO_ROOT              ?= $(HOME)/code/github/MistressFilth/lies

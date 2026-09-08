@@ -30,8 +30,15 @@ class _FakeOrchestrator:
         self.wiki = wiki
         self.recorder = recorder
 
-    def run_ingest(self, source: str, *, no_llm: bool = False) -> str:
+    def run_ingest(
+        self,
+        source: str,
+        *,
+        collection: str | None = None,
+        no_llm: bool = False,
+    ) -> str:
         self.recorder["source"] = source
+        self.recorder["collection"] = collection
         self.recorder["no_llm"] = no_llm
         return f"fake-ingested {source}"
 
@@ -67,6 +74,7 @@ def test_mcp_ingest_source_default_runs_llm_path(
     )
     assert out == "fake-ingested raw/x.md"
     assert seen.get("source") == "raw/x.md"
+    assert seen.get("collection") == "foo"
     assert seen.get("no_llm") is False
 
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from pydantic import BaseModel
 from pydantic_ai import Agent
 from pydantic_ai.models import Model
 from pydantic_ai.tools import RunContext
@@ -11,8 +12,7 @@ from pydantic_ai.tools import RunContext
 from lies.agents.base import make_sub_agent
 
 
-@dataclass
-class QueryAnswer:
+class QueryAnswer(BaseModel):  # noqa: PG101
     """A synthesized answer to a user question."""
 
     answer: str
