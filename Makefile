@@ -8,6 +8,13 @@ TESTS      := tests
 RUFF_LINT  := $(PY) ruff check $(SRC) $(TESTS)
 RUFF_FMT   := $(PY) ruff format $(SRC) $(TESTS)
 TY         := $(PY) ty check $(SRC)
+# Default-on PG (PG001-003) + PYD only. flake8's `--select=PG` is a
+# prefix match that would also pull in the opt-in `PG101` advisory
+# (`BaseModel` uses no Pydantic surface), which produces a high
+# false-positive rate in this repo. Pin the explicit default-on list
+# here; `PG101` lives in `PG_LINT_STRICT` below for opt-in review.
+PG_LINT        := $(PY) flake8 --select=PG001,PG002,PG003,PYD $(SRC)
+PG_LINT_STRICT := $(PY) flake8 --select=PG101 $(SRC)
 PYTEST     := $(PY) pytest
 
 REPO_ROOT              ?= $(HOME)/code/github/MistressFilth/lies
@@ -59,6 +66,14 @@ clean: ## Remove caches and build artifacts.
 lint: ## Run ruff check on src and tests.
 	$(RUFF_LINT)
 
+.PHONY: lint-pydantic-guidance
+lint-pydantic-guidance: ## Run flake8 with default-on PG (PG001-003) + PYD on src.
+	$(PG_LINT)
+
+.PHONY: lint-pg101
+lint-pg101: ## Run flake8 with the opt-in PG101 advisory on src.
+	$(PG_LINT_STRICT)
+
 .PHONY: typecheck
 typecheck: ## Run ty on src.
 	$(TY)
@@ -68,10 +83,14 @@ format: ## Run ruff format (may auto-edit).
 	$(RUFF_FMT)
 
 .PHONY: check
-check: ## Run lint, typecheck, and format.
+check: ## Run lint, pydantic-guidance lint, typecheck, and format.
 	$(RUFF_LINT)
+	$(PG_LINT)
 	$(TY)
 	$(RUFF_FMT)
+
+.PHONY: check-strict
+check-strict: check lint-pg101 ## Run check plus the opt-in PG101 advisory.
 
 .PHONY: release
 release: check test ## Bump version, update CHANGELOG, run gates, push tag.

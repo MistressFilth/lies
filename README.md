@@ -310,6 +310,17 @@ make check
 make test
 ```
 
+`make check` runs ruff, pydantic-guidance (PG + PYD flake8), ty, and
+ruff format. Run the pydantic-guidance lint on its own with
+`make lint-pydantic-guidance`; the same check fires on every commit via
+`.pre-commit-config.yaml`. The pydantic-guidance hook is pinned to the
+default-on codes (`PG001`, `PG002`, `PG003`) plus `PYD` — the opt-in
+`PG101` advisory (`BaseModel` uses no Pydantic surface; a stdlib
+`@dataclass` is lighter) is held back from the commit-time surface
+because sub-agent message models are dataclass-shaped by design. Run
+`make check-strict` (which adds `make lint-pg101`) to opt in for a
+review pass.
+
 ## Architecture
 
 The agent maintains the wiki invisibly during normal interaction. See [Invisible memory](#invisible-memory) for the contract.

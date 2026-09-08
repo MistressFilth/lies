@@ -6,6 +6,32 @@ All notable changes to LIES are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Pydantic-guidance (PG) lint hook — `pydantic-guidance@<commit-sha>`
+  (pinned to commit `d7d992b3b5897321a92fb21b1ad6f35f49b35fa5` because
+  the upstream `v0.1.1` tag referenced in the upstream README has not
+  been pushed to `refs/tags`; bump to a real tag once upstream publishes
+  one) runs flake8 with the default-on PG codes (`PG001`, `PG002`,
+  `PG003`) + `PYD` (`flake8-pydantic`) selectors against staged files
+  at commit time, scoped to `src/lies`, `tests/`, `scripts/`, and
+  `pyproject.toml`. Local invocation via `make lint-pydantic-guidance`
+  (wraps `flake8 --select=PG001,PG002,PG003,PYD src/lies`); the hook is
+  also wired into `make check`. `pydantic-guidance`, `flake8`, and
+  `flake8-pydantic` are added to `[project.optional-dependencies] dev`
+  so `uv sync` pulls them into the local env for Makefile runs;
+  pre-commit's hook venv installs them independently via
+  `additional_dependencies`. `[tool.uv.sources]` declares the git
+  source for `pydantic-guidance`.
+
+  The opt-in `PG101` advisory (`BaseModel` uses no Pydantic surface — a
+  stdlib `@dataclass` is lighter) is held back from the commit-time
+  surface because flake8's `--select=PG` is a prefix match that would
+  pull it in unconditionally, and PG101 produces a high false-positive
+  rate in this repo (sub-agent message models are dataclass-shaped by
+  design). Run `make check-strict` (which adds `make lint-pg101`) for
+  opt-in review; per-line suppression is `# noqa: PG101`.
+
 ### Fixed
 
 - `Wiki.require` probes a known migration fallback for the `default`
