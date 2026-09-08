@@ -117,6 +117,42 @@ def _quarantine_to_poison(
     return (str(target.relative_to(collection.library.git_root)), reason)
 
 
+def _iter_fetch_items(
+    fetcher: Fetcher,
+    source: Path | str,
+    result: BatchIngestResult,
+) -> Iterator[FetchItem]:
+    """Yield ``FetchItem``s, catching per-doc dispatch failures.
+
+    ``ScraperFetcher.fetch_sources`` is a generator that calls
+    ``_normalize_body`` (which dispatches through ``format_dispatch``) for
+    each doc; an unknown format or a normalizer outage raises mid-yield
+    and propagates out of the generator, aborting the whole batch.
+
+    The spec mandates per-doc quarantine (see this module's docstring),
+    so we wrap the generator and catch the per-doc exception, record a
+    ``fetch-unreachable:<source>:<ExceptionName>`` quarantine entry, and
+    end the iteration. Items successfully yielded before the failure are
+    preserved; subsequent docs in the same source are not yielded (the
+    scraper generator is closed by the exception).
+
+    ``LibraryFetchUnreachable`` is re-raised: it is a run-boundary error
+    (the scraper produced zero items, with no per-doc dispatch in play)
+    and the caller surfaces it to the operator.
+    """
+    src_str = str(source)
+    try:
+        yield from fetcher.fetch_sources(source)
+    except LibraryFetchUnreachable:
+        raise
+    except Exception as exc:  # noqa: BLE001 - quarantine is the catch-all
+        result.errors += 1
+        result.quarantine_records.append(
+            (f"{src_str}:unknown", f"fetch-unreachable:{src_str}:{type(exc).__name__}")
+        )
+        return
+
+
 def _process_item(
     item: FetchItem,
     library: Library,
@@ -273,12 +309,15 @@ def run_source_ingest(
 ) -> BatchIngestResult:
     """Ingest a single source (URL or path).
 
-    Raises ``LibraryFetchUnreachable`` when the fetcher yields zero items —
-    the entire run aborts so the operator notices (no silent empty batch).
+    Raises ``LibraryFetchUnreachable`` when the fetcher yields zero items
+    AND no per-doc quarantine records were produced — the entire run
+    aborts so the operator notices (no silent empty batch). When the
+    fetcher produces per-doc dispatch failures, those are quarantined
+    and the run continues with whatever items survived.
     """
     result = BatchIngestResult()
-    items = list(fetcher.fetch_sources(source))
-    if not items:
+    items = list(_iter_fetch_items(fetcher, source, result))
+    if not items and not result.quarantine_records:
         raise LibraryFetchUnreachable(f"no items fetched from {source}")
     for item in items:
         _process_item(
@@ -316,10 +355,15 @@ def run_batch_ingest(
     Directory walk is the fetcher's responsibility — ``run_batch_ingest``
     just delegates to ``Fetcher.fetch_sources(source_dir)`` and processes
     the yielded items through the same pipeline as ``run_source_ingest``.
+
+    Same quarantine semantics as ``run_source_ingest``: a per-doc dispatch
+    failure quarantines the bad doc and the run continues with whatever
+    items survived. ``LibraryFetchUnreachable`` is only raised when both
+    the fetch yielded zero items AND no per-doc quarantine records exist.
     """
     result = BatchIngestResult()
-    items = list(fetcher.fetch_sources(source_dir))
-    if not items:
+    items = list(_iter_fetch_items(fetcher, source_dir, result))
+    if not items and not result.quarantine_records:
         raise LibraryFetchUnreachable(f"no items fetched from {source_dir}")
     for item in items:
         _process_item(

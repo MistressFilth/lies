@@ -4,6 +4,7 @@ from collections.abc import Iterator
 from pathlib import Path
 import subprocess
 import pytest
+from lies.library.errors import LibraryFetchUnreachable
 from lies.library.ingest import (
     run_source_ingest,
     run_batch_ingest,
@@ -21,6 +22,24 @@ class _StaticFetcher(Fetcher):
 
     def fetch_sources(self, source: Path | str) -> Iterator[FetchItem]:
         yield from self._items
+
+
+class _RaisingFetcher(Fetcher):
+    """Test double: yields items, then raises once to simulate dispatch failure.
+
+    Mirrors ``ScraperFetcher``'s shape: the exception is raised mid-iteration
+    (after the first yield), the way ``_normalize_body`` raises when
+    ``format_dispatch.dispatch`` rejects an unknown ``source_format``.
+    """
+
+    def __init__(self, items: list[FetchItem], exc: BaseException) -> None:
+        self._items = items
+        self._exc = exc
+
+    def fetch_sources(self, source: Path | str) -> Iterator[FetchItem]:
+        for item in self._items:
+            yield item
+        raise self._exc
 
 
 @pytest.fixture
@@ -210,3 +229,157 @@ def test_run_batch_ingest_walks_dir(lib_with_git: Library, tmp_path: Path) -> No
     result = run_batch_ingest(lib_with_git, "claude", tmp_path, fetcher=fetcher)
     assert result.created == 2
     assert result.skipped >= 1  # LICENSE filtered by filename gate
+
+
+def test_run_source_ingest_dispatch_failure_quarantines_and_continues(
+    lib_with_git: Library,
+) -> None:
+    """A mid-batch ``UnknownFormatError`` quarantines the bad doc, keeps the good one.
+
+    Regression for the fetcher-fix follow-up: ``ScraperFetcher`` raises
+    ``UnknownFormatError`` mid-yield when ``format_dispatch.dispatch`` rejects
+    a ``source_format``. Without per-doc quarantine at the ingest boundary,
+    that exception aborts the whole batch and the good items that yielded
+    before the failure are lost.
+
+    The pipeline must:
+    - return normally (not raise);
+    - record the bad doc in ``quarantine_records`` with a
+      ``fetch-unreachable``-prefixed reason;
+    - increment ``errors`` for the quarantined doc;
+    - still process the items that yielded before the failure.
+    """
+    from lies.etl.normalize.format_dispatch import UnknownFormatError
+
+    valid = FetchItem(
+        path=Path("/src/valid.md"),
+        url=None,
+        body="body\n" * 10,
+        source_hash="aaa",
+        fetched_via="github",
+    )
+    fetcher = _RaisingFetcher(
+        [valid],
+        UnknownFormatError("unknown source format: 'liquid'"),
+    )
+    result = run_source_ingest(lib_with_git, "claude", source="x", fetcher=fetcher)
+
+    # The good item made it through; the dispatch failure was quarantined
+    # without aborting the run.
+    assert result.created == 1
+    assert result.errors == 1
+    assert len(result.quarantine_records) == 1
+    poison_path, reason = result.quarantine_records[0]
+    assert "fetch-unreachable" in reason
+    assert "UnknownFormatError" in reason
+    # The poison path encodes the source + a sentinel for the bad doc.
+    assert "x" in poison_path
+
+    coll = lib_with_git.collection("claude")
+    assert (coll.dir / "valid.md").exists()
+
+
+def test_run_source_ingest_dispatch_failure_when_zero_items_yielded(
+    lib_with_git: Library,
+) -> None:
+    """When every doc fails dispatch, the run continues with a quarantine record.
+
+    Previously the whole batch would abort and surface the dispatch
+    exception to the operator. With per-doc quarantine, an empty items
+    list paired with a non-empty ``quarantine_records`` is a soft failure:
+    the run returns normally, ``errors`` reflects the bad doc, and
+    ``LibraryFetchUnreachable`` is NOT raised (the run was not a no-op —
+    the fetcher reported the failure explicitly).
+    """
+    from lies.etl.normalize.format_dispatch import UnknownFormatError
+
+    fetcher = _RaisingFetcher(
+        [],
+        UnknownFormatError("unknown source format: 'liquid'"),
+    )
+    result = run_source_ingest(lib_with_git, "claude", source="x", fetcher=fetcher)
+
+    assert result.errors == 1
+    assert result.created == 0
+    assert len(result.quarantine_records) == 1
+    _, reason = result.quarantine_records[0]
+    assert "fetch-unreachable" in reason
+    assert "UnknownFormatError" in reason
+
+
+def test_run_source_ingest_zero_items_no_quarantine_still_raises(
+    lib_with_git: Library,
+) -> None:
+    """A truly-empty fetcher (no dispatch in play) still raises.
+
+    Preserves the existing ``LibraryFetchUnreachable`` semantic: when the
+    fetcher yields zero items AND no per-doc quarantine records exist, the
+    run is a no-op and aborts so the operator notices.
+    """
+    fetcher = _StaticFetcher([])
+    with pytest.raises(LibraryFetchUnreachable):
+        run_source_ingest(lib_with_git, "claude", source="x", fetcher=fetcher)
+
+
+def test_run_batch_ingest_dispatch_failure_quarantines_and_continues(
+    lib_with_git: Library,
+) -> None:
+    """``run_batch_ingest`` applies the same per-doc quarantine contract.
+
+    ``_iter_fetch_items`` is shared by both call sites; this guards the
+    second call site explicitly.
+    """
+    from lies.etl.normalize.format_dispatch import UnknownFormatError
+
+    valid_a = FetchItem(
+        path=Path("/src/a.md"),
+        url=None,
+        body="body a\n" * 10,
+        source_hash="aaa",
+        fetched_via="github",
+    )
+    valid_b = FetchItem(
+        path=Path("/src/b.md"),
+        url=None,
+        body="body b\n" * 10,
+        source_hash="bbb",
+        fetched_via="github",
+    )
+    fetcher = _RaisingFetcher(
+        [valid_a, valid_b],
+        UnknownFormatError("unknown source format: 'liquid'"),
+    )
+    result = run_batch_ingest(lib_with_git, "claude", Path("/src"), fetcher=fetcher)
+
+    assert result.created == 2
+    assert result.errors == 1
+    assert len(result.quarantine_records) == 1
+    _, reason = result.quarantine_records[0]
+    assert "fetch-unreachable" in reason
+
+
+def test_run_source_ingest_generic_dispatch_exception_is_quarantined(
+    lib_with_git: Library,
+) -> None:
+    """Any per-doc dispatch exception is quarantined, not just ``UnknownFormatError``.
+
+    The spec says "any per-doc exception from ``format_dispatch.dispatch``"
+    — the catch-all in ``_iter_fetch_items`` must cover more than the
+    one known class so a future format-dispatch error doesn't silently
+    abort the batch.
+    """
+    valid = FetchItem(
+        path=Path("/src/valid.md"),
+        url=None,
+        body="body\n" * 10,
+        source_hash="aaa",
+        fetched_via="github",
+    )
+    fetcher = _RaisingFetcher([valid], RuntimeError("pandoc daemon died"))
+    result = run_source_ingest(lib_with_git, "claude", source="x", fetcher=fetcher)
+
+    assert result.created == 1
+    assert result.errors == 1
+    _, reason = result.quarantine_records[0]
+    assert "fetch-unreachable" in reason
+    assert "RuntimeError" in reason
