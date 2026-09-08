@@ -515,7 +515,7 @@ def test_run_wizard_providers_step_runs_unconditionally(
     # refactor that re-introduces the gate (default_model-first) would
     # satisfy the existence checks but fail the index ordering.
     name_idx = prompts.index("  provider name (e.g. anthropic)")
-    type_idx = prompts.index("  type (anthropic|anthropic_compatible)")
+    type_idx = prompts.index("  type (anthropic|anthropic_compatible|openai_compatible)")
     api_idx = prompts.index("  api_key_env name (e.g. MINIMAX_API_KEY)")
     default_model_idx = prompts.index("Default model (provider:model) — blank to keep")
     assert name_idx < type_idx < api_idx < default_model_idx

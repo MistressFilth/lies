@@ -14,7 +14,7 @@ from lies.providers.errors import ProviderConfigError
 
 log = getLogger(__name__)
 
-ProviderType = Literal["anthropic", "anthropic_compatible"]
+ProviderType = Literal["anthropic", "anthropic_compatible", "openai_compatible"]
 
 
 @dataclass(frozen=True)
@@ -91,14 +91,17 @@ def load_providers_config(path: Path) -> ProvidersConfig | None:
         provider_type = body.get("type")
         api_key_env = body.get("api_key_env")
         base_url = body.get("base_url")
-        if provider_type not in ("anthropic", "anthropic_compatible"):
-            msg = f"{path}: provider {name!r}: type must be 'anthropic' or 'anthropic_compatible', got {provider_type!r}"
+        if provider_type not in ("anthropic", "anthropic_compatible", "openai_compatible"):
+            msg = (
+                f"{path}: provider {name!r}: type must be 'anthropic', "
+                f"'anthropic_compatible', or 'openai_compatible', got {provider_type!r}"
+            )
             raise ProviderConfigError(msg)
         if not isinstance(api_key_env, str) or not api_key_env:
             msg = f"{path}: provider {name!r}: api_key_env is required"
             raise ProviderConfigError(msg)
-        if provider_type == "anthropic_compatible" and not base_url:
-            msg = f"{path}: provider {name!r}: base_url is required for anthropic_compatible providers"
+        if provider_type in ("anthropic_compatible", "openai_compatible") and not base_url:
+            msg = f"{path}: provider {name!r}: base_url is required for {provider_type} providers"
             raise ProviderConfigError(msg)
         providers[name] = ProviderSpec(
             name=name,

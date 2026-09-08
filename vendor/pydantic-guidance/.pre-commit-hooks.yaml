@@ -1,0 +1,12 @@
+- id: pydantic-guidance
+  name: pydantic guidance
+  description: "Run flake8 with PG (pydantic-guidance) and PYD checks"
+  entry: flake8 --select=PG,PYD
+  language: python
+  types_or: [python, pyi]
+  args: []
+  require_serial: true
+  additional_dependencies:
+    - flake8>=5.0
+    - flake8-pydantic>=0.4
+  minimum_pre_commit_version: "3.0.0"

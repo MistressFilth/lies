@@ -7,6 +7,171 @@ All notable changes to LIES are documented here. The format follows
 ## [Unreleased]
 
 ### Fixed
+- `cli/ingestion.py` NameError on `ingest-source` — bare-name `Orchestrator(wiki)`
+  lookup does not consult the module `__getattr__` (PEP 562 fires on
+  `module.attr` / `from M import X`, not on function-body global lookup).
+  Replaced with function-local `from lies.cli import Orchestrator as
+  _Orchestrator`, mirroring the established `lies.cli/__init__.py:84-91`
+  pattern. Closes the regression where every `ingest-source` invocation
+  raised `NameError: name 'Orchestrator' is not defined`.
+- F2 single-source ingest now threads the CLI `--collection` flag
+  through to `Orchestrator.run_ingest`. Previously, `run_ingest` derived
+  `collection_name = Path(source).stem` and ignored the CLI arg, silently
+  routing `https://code.claude.com/llms.txt` (collection `claude_code`)
+  through `raw/llms/` + `apply_plan(tag="ingest", collection="llms")`.
+  Added `collection: str | None = None` kwarg to `run_ingest`; CLI +
+  MCP callers thread it; default falls back to source-stem for legacy
+  callers. The same F2-era bug was present in `_call_page_writer`
+  (`writer.run_sync(prompt, deps=deps)` had no positional prompt,
+  which makes pydantic-ai send empty messages and the provider returns
+  `400 invalid params, messages must not be empty`); added the
+  positional `prompt` so the request body always has at least one user
+  message. Both fixes surfaced during the 2026-09-07 ingest attempt.
+- `agents/source_reader.SourceExtraction` schema defaults: `claims`,
+  `entities`, `concepts`, `comparisons`, `summary` all default to empty.
+  Link-list sources (`llms.txt` indexes, sitemap excerpts, navigation
+  manifests) have no prose to summarize; M3's natural output omits
+  `summary` and the `claims`/`entities`/`concepts`/`comparisons` lists
+  are sometimes empty. The previous all-required schema caused
+  `UnexpectedModelBehavior: Exceeded maximum output retries (1)` even
+  on otherwise-valid output. Downstream `PageWriterDeps` does not
+  consume `SourceExtraction` today, so the relaxed defaults are safe.
+- `memory/service._call_source_reader` and `_call_page_writer` are
+  fail-soft: any agent exception (validation retries, `ModelHTTPError`
+  400/401, TypeError on partial output) writes the quarantine sidecar
+  and returns an empty result so the ingest completes with no pages
+  rather than raising `IngestQuarantined` and aborting the entire
+  apply_plan. The outer wrapper retries the agent call up to 3 times
+  with a fresh `run_sync` (no accumulated message history), since
+  pydantic-ai's internal retry grows the context with prior errors
+  and `MiniMax-M3` is observed to succeed on a fresh attempt after
+  the first one fails.
+- `memory/service._normalize_collection_prefix` (new): forces every
+  PageDiff path to land under `wiki/<collection>/`. The
+  page-writer agent emits `wiki/<source_stem>/<rest>` (using the
+  source filename as the collection prefix instead of the target
+  collection) or omits the collection segment entirely. Without this
+  normalization, the per-collection subdir convention (PR #39) is
+  silently violated and pages land under `wiki/<source_stem>/`.
+  System-file paths (`wiki/index.md`, `wiki/log.md`) are preserved
+  untouched so the system-file guard in `_apply_operations` continues
+  to fire.
+- `memory/service._page_type_from_dir` no longer naively strips the
+  trailing `s` (`entities` → `entitie`, the F2-era bug) nor accepts a
+  raw collection name as a valid type (`claude_code`). Hard-coded
+  plural→singular mapping (`concepts` → `concept`, etc.) + unknown
+  defaults to `concept`. `MiniMax-M3`'s page-writer flattens the
+  per-collection subdir layout (writes at `wiki/<collection>/<file>.md`
+  without a `<type_plural>/` segment), so the path-derived page_type
+  would otherwise be the collection name.
+- `memory/validation.validate_frontmatter` is permissive on
+  mismatch: an explicit `type:` in the frontmatter wins over the
+  path-derived page_type. MiniMax-M3's flat path layout + the agent's
+  own page-type choice in the frontmatter (`type: entity`, etc.) are
+  both respected. Invalid `type:` values (not in ALLOWED_PAGE_TYPES)
+  are still rejected. Missing `type:` is now accepted (auto-fill on
+  disk later); the path-derived page_type is a hint, not authoritative.
+- `memory/service._page_type_from_dir` + `memory/validation.validate_frontmatter`
+  regressions pinned via `tests/unit/memory/test_service.py` +
+  `tests/unit/memory/test_validation.py`.
+
+### Changed
+- `providers/config.py`, `providers/resolver.py`: add
+  `openai_compatible` provider type. Resolves to `OpenAIChatModel` +
+  `AsyncOpenAI` client (was: `anthropic_compatible` only,
+  `AnthropicModel` + `AsyncAnthropic`). The minimax provider in
+  `~/.config/lies/providers.toml` is now `openai_compatible` pointing at
+  `https://api.minimax.io/v1`. The `/anthropic` endpoint is preserved
+  as a supported type for future providers. The resolver dispatches
+  on `spec.type` and narrows to the right client constructor; the
+  `providers/registry._client_for` helper is unchanged (still
+  Anthropic-only).
+- `pyproject.toml`: `pydantic-ai-slim>=2.18` → `pydantic-ai-slim[openai]>=2.18`
+  so the `openai` extra is installed and `OpenAIChatModel` +
+  `OpenAIProvider` resolve.
+- `agents/source_reader.source_reader_agent`: wraps `SourceExtraction`
+  in `pydantic_ai.output.PromptedOutput`. `PromptedOutput` serializes
+  the schema into instructions and parses the model's free-form JSON
+  text rather than relying on tool calling. `MiniMax-M3` ignores
+  `tool_choice` and `response_format=json_schema` on both the
+  Anthropic-compat and OpenAI-compat endpoints — returning a text
+  description of the schema rather than invoking the tool — so the
+  default `ToolOutput` and `NativeOutput` modes fail with
+  `Exceeded maximum output retries (1)`. `PromptedOutput` is the only
+  shape that works reliably with that model. Same change applied to
+  `agents/page_writer.page_writer_agent` for `list[PageDiff]`. The
+  `TestModel`-based unit test that exercised the live run was relaxed
+  (TestModel can't drive `PromptedOutput`); the integration path
+  exercises the real model.
+- `~/.config/lies/providers.toml`: model name changed from
+  `MiniMax-M3[1m]` to `MiniMax-M3`. The `[1m]` suffix is a
+  context-window label, not part of the model ID; the OpenAI-compat
+  endpoint returns `400 unknown model 'minimax-m3[1m]'` for the
+  suffixed form. The Anthropic-compat endpoint silently accepted it
+  (which is why the original ingest ran against `/anthropic` at all).
+
+### Reviewer follow-ups (PR #59)
+
+- `providers/bootstrap.py`: wizard prompt label + validator now include
+  `openai_compatible` alongside `anthropic` / `anthropic_compatible`.
+  The `base_url` prompt defaults to `https://api.minimax.io/v1` for the
+  `openai_compatible` case.
+- `providers/config.py`: `base_url` is now required for both compatible
+  provider types. Stale error message that mentioned only
+  `anthropic` + `anthropic_compatible` updated.
+- `providers/ops.py._probe`: probes `openai_compatible` providers via
+  `AsyncOpenAI.models.list()`. Previously silently skipped them,
+  making `lies providers check` falsely report an unconfigured provider
+  as ok.
+- `memory/service._normalize_collection_prefix`: the rewrite now
+  strips the wrong-collection prefix and re-prefixes with the target
+  collection. A page emitted at `wiki/llms/concepts/hooks.md` for the
+  `claude_code` collection now lands at
+  `wiki/claude_code/concepts/hooks.md` rather than
+  `wiki/claude_code/llms/concepts/hooks.md`. The page-type directory
+  (`concepts/` etc.) is preserved when present. New direct unit tests
+  in `tests/unit/memory/test_service.py::TestNormalizeCollectionPrefix`.
+- `memory/service._page_type_from_dir`: the "unknown directory
+  defaults to concept" branch now logs a `logging.getLogger` warning
+  so the operator can spot M3's path-flattening bug in the catalog
+  without auditing every page.
+- `orchestrator._call_source_reader` / `_call_page_writer`: retry
+  loop variable renamed `attempt` to `_` and added 100ms `time.sleep`
+  backoff between attempts, matching the existing `EnrichmentQueue`
+  retry loop. Removed dead `IngestQuarantined` branch in
+  `Orchestrator.run_ingest` + the corresponding import + stale
+  docstring references (the wrapper is fail-soft and no longer raises).
+- `tests/integration/test_run_ingest_end_to_end.py`: page-writer
+  failure test updated to assert the new fail-soft contract (empty
+  diffs + quarantine sidecar) instead of the old `IngestQuarantined`
+  raise.
+- `tests/mcp/test_ingest_source_tool.py`: `_FakeOrchestrator.run_ingest`
+  adds the `collection` kwarg to match the orchestrator signature;
+  `test_mcp_ingest_source_default_runs_llm_path` now asserts
+  `seen["collection"] == "foo"` to pin the threading.
+- `tests/unit/providers/test_bootstrap.py`: wizard prompt-label
+  substring updated to match the new `openai_compatible`-aware prompt.
+- `tests/unit/memory/test_service.py`: `test_translate_page_diffs_to_plan_create`
+  updated to assert the corrected path layout
+  (`wiki/<collection>/<type_plural>/<file>`).
+- `agents/source_reader.source_reader_agent`: breadcrumb comment
+  updated to point at the project-notes issue file instead of the
+  stale `TODO F13` reference (F13 is qmd-singleflight, unrelated).
+- `orchestrator._call_page_writer`: dropped redundant `or []` on the
+  `diffs` return (the `output_type: list[PageDiff]` contract guarantees
+  a list).
+- `README.md`: provider docs section updated to enumerate all three
+  provider types (including the `openai_compatible` /
+  `https://api.minimax.io/v1` shape and the `PromptedOutput` rationale).
+
+## [0.18.0] - 2026-09-07
+
+### Added
+- F39: `lies page write` CLI + MCP `file_knowledge` tool for direct page authoring.
+- F12: MCP `ctx.elicit` collision gate (overwrite/rename/cancel) on `file_knowledge`.
+- Refactor: `build_synthesis_plan` collapsed into `build_author_plan(type="synthesis", ...)`. F3 behavior preserved by regression-test pins.
+
+### Fixed
 
 - `Wiki.require` probes a known migration fallback for the `default`
   wiki's `data_root` (`<xdg>/lies/wiki` from the 2026-08-15 rename).

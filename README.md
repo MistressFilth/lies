@@ -286,8 +286,8 @@ type = "anthropic"
 api_key_env = "ANTHROPIC_API_KEY"
 
 [providers.minimax]
-type = "anthropic_compatible"
-base_url = "https://api.minimax.io/anthropic"
+type = "openai_compatible"
+base_url = "https://api.minimax.io/v1"
 api_key_env = "MINIMAX_API_KEY"
 
 default_model = "anthropic:claude-opus-4-7"
@@ -298,7 +298,11 @@ source_reader = "minimax:MiniMax-M3"
 # ... one entry per agent in AGENT_ROSTER.
 ```
 
-`type = "anthropic"` resolves through pydantic-ai's built-in provider. `type = "anthropic_compatible"` constructs an `AnthropicModel` directly with a custom `AsyncAnthropic(base_url=..., api_key=...)`.
+Three provider types are accepted:
+
+- `type = "anthropic"` resolves through pydantic-ai's built-in provider.
+- `type = "anthropic_compatible"` constructs an `AnthropicModel` directly with a custom `AsyncAnthropic(base_url=..., api_key=...)`. Requires `base_url`.
+- `type = "openai_compatible"` constructs an `OpenAIChatModel` with a custom `AsyncOpenAI(base_url=..., api_key=...)`. Requires `base_url`. Use this for the `https://api.minimax.io/v1` endpoint; the corresponding source_reader / page_writer / etc. agents should be wrapped in `pydantic_ai.output.PromptedOutput` because `MiniMax-M3` ignores `tool_choice` and `response_format=json_schema` on both endpoints.
 
 `lies config` prints every agent and its resolved model. Missing `providers.toml` is non-fatal — every agent falls back to `default_model` and a warning names the expected path.
 
@@ -309,6 +313,11 @@ make init
 make check
 make test
 ```
+
+`make check` runs ruff, pydantic-guidance (PG + PYD flake8), ty, and
+ruff format. Run the pydantic-guidance lint on its own with
+`make lint-pydantic-guidance`; the same check fires on every commit via
+`.pre-commit-config.yaml`.
 
 ## Architecture
 

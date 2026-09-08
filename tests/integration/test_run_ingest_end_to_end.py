@@ -30,7 +30,6 @@ import pytest
 from lies.agents.page_writer import PageDiff, PageOperation
 from lies.agents.source_reader import SourceExtraction
 from lies.memory.models import (
-    IngestQuarantined,
     IngestSourceUnreachable,
     WikiPlanInvalid,
 )
@@ -322,7 +321,13 @@ def test_run_ingest_quarantines_on_page_writer_failure(
     monkeypatch: pytest.MonkeyPatch,
     wiki_copy: Path,
 ) -> None:
-    """Page-writer raises -> quarantine + raise ``IngestQuarantined``.
+    """Page-writer raises -> quarantine sidecar + empty diff list (fail-soft).
+
+    The wrapper is fail-soft by design: agent exceptions quarantine the
+    source and return an empty ``list[PageDiff]`` so the ingest
+    completes with no pages rather than raising ``IngestQuarantined``
+    and aborting the entire apply_plan. The poison sidecar must still
+    land so the operator can inspect why this source produced no pages.
 
     Collection name derives from ``Path(source).stem`` so the poison
     sidecar lives under ``<collection>/<basename>``.
@@ -338,10 +343,11 @@ def test_run_ingest_quarantines_on_page_writer_failure(
         lambda model: _FakeAgent(raise_on_run=ValueError("rate limit")),
     )
     o = Orchestrator(wiki, models=models_for_tests("test"))
-    with pytest.raises(IngestQuarantined):
-        o.run_ingest(str(src))
+    out = o.run_ingest(str(src))
+    assert out.startswith("ingested ") and out.endswith(" into article"), out
     poison = wiki.poison_root / "article" / "article.md"
     assert poison.exists()
+    assert poison.with_suffix(poison.suffix + ".reason").exists()
 
 
 def test_run_ingest_no_llm_falls_back_to_sync_collection(

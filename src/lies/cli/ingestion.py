@@ -19,7 +19,7 @@ if TYPE_CHECKING:
     # does not pull in the orchestrator + pydantic_ai stack. ``noqa: TC004``
     # suppresses the "move out of TYPE_CHECKING" suggestion because the
     # runtime resolution is deliberate (lazy proxy).
-    from lies.orchestrator import Orchestrator  # noqa: TC004
+    pass  # noqa: TC004
 
 __all__ = (
     "ingest",
@@ -212,13 +212,15 @@ def ingest_source(
             err=True,
         )
         raise typer.Exit(code=3)
-    # ``Orchestrator`` is referenced as a bare name on purpose: the
-    # module-level ``__getattr__`` above lazy-loads it on first call and
-    # lets ``mock.patch("lies.cli.ingestion.Orchestrator", ...)`` intercept
-    # it in tests without paying for the orchestrator import at CLI
-    # startup.
-    orch = Orchestrator(wiki)
-    output = orch.run_ingest(source, no_llm=no_llm)
+    # Function-local import mirrors the pattern at lies.cli/__init__.py:84-91
+    # and is the only correct way to trigger PEP 562 module attribute lookup
+    # from inside a function body. A bare-name ``Orchestrator(wiki)`` would
+    # not consult the module ``__getattr__`` and would raise NameError
+    # unless some prior code already populated the module global.
+    from lies.cli import Orchestrator as _Orchestrator
+
+    orch = _Orchestrator(wiki)
+    output = orch.run_ingest(source, collection=collection, no_llm=no_llm)
     if no_llm:
         typer.echo(
             "ingest-source routed through sync_collection (--no-llm); "

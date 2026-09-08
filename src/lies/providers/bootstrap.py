@@ -144,19 +144,30 @@ def step_providers(partial: PartialConfig, *, prompt: PromptFn) -> None:
         if name in partial.providers:
             print(f"  ✗ {name!r} already declared.")
             continue
-        type_ = prompt("  type (anthropic|anthropic_compatible)", "anthropic").strip()
-        if type_ not in ("anthropic", "anthropic_compatible"):
-            print(f"  ✗ type must be 'anthropic' or 'anthropic_compatible', got {type_!r}")
+        type_ = prompt(
+            "  type (anthropic|anthropic_compatible|openai_compatible)",
+            "anthropic",
+        ).strip()
+        if type_ not in ("anthropic", "anthropic_compatible", "openai_compatible"):
+            print(
+                f"  ✗ type must be 'anthropic', 'anthropic_compatible', or "
+                f"'openai_compatible', got {type_!r}"
+            )
             continue
         api_key_env = prompt("  api_key_env name (e.g. MINIMAX_API_KEY)", "").strip()
         if not api_key_env:
             print("  ✗ api_key_env required.")
             continue
         base_url: str | None = None
-        if type_ == "anthropic_compatible":
+        if type_ in ("anthropic_compatible", "openai_compatible"):
+            default_url = (
+                "https://api.minimax.io/anthropic"
+                if type_ == "anthropic_compatible"
+                else "https://api.minimax.io/v1"
+            )
             base_url = (
                 prompt(
-                    "  base_url (e.g. https://api.minimax.io/anthropic)",
+                    f"  base_url (e.g. {default_url})",
                     "",
                 ).strip()
                 or None

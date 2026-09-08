@@ -94,24 +94,38 @@ def _to_partial(cfg):
 def _probe(spec: ProviderSpec) -> None:
     """Best-effort ping; raises on transport / auth failure.
 
-    For now only ``anthropic_compatible`` providers get probed (we
-    already have an AsyncAnthropic client ready). ``anthropic`` skips
-    the ping because pydantic-ai's built-in provider does its own
-    resolution and we don't want to import-open a client we won't use.
+    Probes ``anthropic_compatible`` and ``openai_compatible`` providers.
+    ``anthropic`` (native) skips the ping because pydantic-ai's built-in
+    provider does its own resolution and we don't want to import-open
+    a client we won't use.
     """
-    if spec.type != "anthropic_compatible" or not spec.base_url:
+    if spec.type == "anthropic":
         return
-    from anthropic import AsyncAnthropic
+    if not spec.base_url:
+        return
+    if spec.type == "anthropic_compatible":
+        from anthropic import AsyncAnthropic
 
-    client = AsyncAnthropic(base_url=spec.base_url, api_key=read_api_key(spec))
-    # The lightest call Anthropic-compatible endpoints expose is a
-    # 1-token completion; fall back to a no-op models.list when the
-    # endpoint supports it. Bridge the coroutine into the sync probe
-    # surface via asyncio.run so ``check_connectivity`` stays sync.
-    asyncio.run(
-        client.messages.create(
-            model="_probe_",
-            max_tokens=1,
-            messages=[{"role": "user", "content": "ping"}],
+        client = AsyncAnthropic(base_url=spec.base_url, api_key=read_api_key(spec))
+        # The lightest call Anthropic-compatible endpoints expose is a
+        # 1-token completion. Bridge the coroutine into the sync probe
+        # surface via asyncio.run so ``check_connectivity`` stays sync.
+        asyncio.run(
+            client.messages.create(
+                model="_probe_",
+                max_tokens=1,
+                messages=[{"role": "user", "content": "ping"}],
+            )
         )
-    )
+        return
+    if spec.type == "openai_compatible":
+        from openai import AsyncOpenAI
+
+        client = AsyncOpenAI(base_url=spec.base_url, api_key=read_api_key(spec))
+        # OpenAI-compat endpoints expose ``models.list``; cheapest
+        # authenticated probe.
+        asyncio.run(client.models.list())
+        return
+    # Unknown provider type — defensive no-op; load_providers_config
+    # would have rejected an invalid type at startup.
+    return

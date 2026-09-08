@@ -7,7 +7,7 @@ requires-python = ">=3.14,<3.15"
 license = { text = "MIT" }
 dependencies = [
     "anthropic>=0.40",
-    "pydantic-ai-slim>=2.18",
+    "pydantic-ai-slim[openai]>=2.18",
     "pydantic-ai-harness[code-mode,dynamic-workflow]",
     "typer>=0.12",
     "logfire",
@@ -67,3 +67,5 @@ dev = [
     "identify>=2.6.19",
     "pre-commit>=4.6.1",
 ]
+
+[tool.uv.sources]

@@ -166,7 +166,7 @@ def ingest_source(
         sync_collection(wiki, collection, force=False)
         return f"ingested {source} into {collection} (no_llm)"
     orch = Orchestrator(wiki)
-    return orch.run_ingest(source)
+    return orch.run_ingest(source, collection=collection)
 
 
 # ---------------------------------------------------------------------------

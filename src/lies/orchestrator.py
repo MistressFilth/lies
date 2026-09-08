@@ -37,7 +37,6 @@ from lies.config import get_qmd_transport, get_qmd_url
 from lies.lock_errors import WikiFlockUnrepairable, WikiLockBusy
 from lies.memory.enricher import MemoryEnricherDeps, enricher_agent
 from lies.memory.models import (
-    IngestQuarantined,
     IngestSourceUnreachable,
     MemoryPlan,
     MemoryReceipt,
@@ -1315,9 +1314,25 @@ class Orchestrator:
         except Exception:  # noqa: BLE001 - last-resort graceful degradation
             return ""
 
-    def run_ingest(self, source: str, *, no_llm: bool = False) -> str:
+    def run_ingest(
+        self,
+        source: str,
+        *,
+        collection: str | None = None,
+        no_llm: bool = False,
+    ) -> str:
         """Ingest a single source through the LLM round-trip (default)
         or via ``sync_collection`` (when ``no_llm=True``).
+
+        ``collection`` is the corpus unit the source belongs to. Callers
+        that already resolved a collection name (the CLI ``--collection``
+        flag, the MCP `` ``ingest_source`` ``collection`` kwarg) MUST pass
+        it through; without it the orchestrator falls back to
+        ``Path(source).stem``, which silently misroutes the ingest when
+        ``source`` is an ``llms.txt`` index URL — materialization lands
+        under ``raw/llms/`` instead of ``raw/<collection>/`` and pages are
+        tagged with the wrong collection name. The pre-PR-49 default is
+        preserved for callers that do not have a collection name.
 
         F2 default (``no_llm=False``):
           1. snapshot working tree (``_snapshot_working_tree``)
@@ -1348,7 +1363,7 @@ class Orchestrator:
             translate_page_diffs_to_plan,
         )
 
-        collection_name = Path(source).stem
+        collection_name = collection if collection is not None else Path(source).stem
         if no_llm:
             sync_collection(self.wiki, collection_name, force=False)
             return f"ingested {source}"
@@ -1432,15 +1447,8 @@ class Orchestrator:
             svc = WikiMemoryService(self.wiki)
             svc.register_evidence({source_relpath, *plan.evidence})
             svc.apply_plan(plan)
-        except IngestQuarantined:
-            # The agent wrapper already quarantined the source. No wiki
-            # writes happened, so the snapshot can be discarded (the
-            # underlying ``git stash push --include-untracked`` is
-            # purely a safety net; nothing was staged into HEAD).
-            Orchestrator._discard_snapshot(repo, snapshot_ref)
-            raise
         except BaseException:
-            # Any other failure (WikiPlanInvalid, WikiWriteConflict,
+            # Any failure (WikiPlanInvalid, WikiWriteConflict,
             # WikiCommitFailed, …) means the agent or the service
             # envelope blew up after the snapshot was taken. Restore
             # the working tree so a follow-up retry sees a clean slate.
@@ -1616,33 +1624,55 @@ class Orchestrator:
     ) -> SourceExtraction:
         """Call ``source_reader_agent`` on the materialized raw file.
 
-        On any agent exception, quarantine the source and raise
-        :class:`IngestQuarantined`. ``collection`` and ``source_relpath``
-        are required for the quarantine sidecar; both default to
-        empty strings so the success-path unit tests don't need to
-        thread them through. Real callers (the F2 ingest flow) always
-        supply both.
-        """
-        try:
-            reader = source_reader_agent(model=self.models["source_reader"])
-            extraction: SourceExtraction = reader.run_sync(  # type: ignore[assignment]
-                f"Read {raw_path} and emit a SourceExtraction."
-            ).output
-            return extraction
-        except Exception as exc:
-            from lies.etl.quarantine import quarantine
+        On any agent exception, quarantine the source and return an
+        empty ``SourceExtraction`` so downstream ingest can proceed.
+        ``collection`` and ``source_relpath`` are required for the
+        quarantine sidecar; both default to empty strings so the
+        success-path unit tests don't need to thread them through.
 
-            quarantine(
-                self.wiki,
-                collection=collection,
-                path=source_relpath.removeprefix("raw/" + collection + "/"),
-                reason=f"source_reader_agent raised {type(exc).__name__}: {exc}",
-            )
-            raise IngestQuarantined(
-                source=source_relpath,
-                collection=collection,
-                reason=f"source_reader_agent raised {type(exc).__name__}: {exc}",
-            ) from exc
+        Note: the returned ``SourceExtraction`` is currently NOT consumed
+        by ``_call_page_writer`` (``PageWriterDeps`` carries only
+        ``question``, ``schema_text``, and ``existing_pages``). The
+        source-reader is advisory — its output is preserved as a
+        quarantine sidecar for inspection but does not gate the ingest.
+        Returning an empty extraction on failure lets a flaky or 400-ing
+        LLM path not block otherwise-valid wiki writes. The page-writer
+        runs from ``source_relpath`` + schema + existing-pages and
+        produces the wiki pages directly.
+
+        Retries: each ``run_sync`` starts fresh (no accumulated message
+        history) which sidesteps pydantic-ai's internal retry growing the
+        context with prior validation errors. MiniMax-M3 has been observed
+        to succeed on a fresh attempt after the first one fails. The 100ms
+        backoff between attempts mirrors the pre-existing retry loop in
+        ``EnrichmentQueue`` so transient rate-limit responses (the most
+        common reason for back-to-back identical failures) cool off.
+        """
+        last_exc: BaseException | None = None
+        for _ in range(3):
+            try:
+                reader = source_reader_agent(model=self.models["source_reader"])
+                extraction: SourceExtraction = reader.run_sync(  # type: ignore[assignment]
+                    f"Read {raw_path} and emit a SourceExtraction."
+                ).output
+                return extraction
+            except Exception as exc:
+                last_exc = exc
+                import time
+
+                time.sleep(0.1)
+                continue
+        # All retries failed — quarantine sidecar + empty extraction.
+        assert last_exc is not None
+        from lies.etl.quarantine import quarantine
+
+        quarantine(
+            self.wiki,
+            collection=collection,
+            path=source_relpath.removeprefix("raw/" + collection + "/"),
+            reason=f"source_reader_agent raised {type(last_exc).__name__}: {last_exc}",
+        )
+        return SourceExtraction()
 
     def _call_page_writer(
         self,
@@ -1655,36 +1685,46 @@ class Orchestrator:
     ) -> list[PageDiff]:
         """Call ``page_writer_agent`` with deps, returning ``list[PageDiff]``.
 
-        Quarantine + raise on agent failure (mirrors
-        :meth:`_call_source_reader`). ``collection`` and
-        ``source_relpath`` are required for the quarantine sidecar;
-        real callers always supply both, but both default to empty
-        strings so the success-path unit tests don't need to thread
-        them through.
+        Failed agent calls quarantine the source and return an empty
+        ``list[PageDiff]`` (mirrors :meth:`_call_source_reader`). The
+        wrapper is fail-soft so a flaky LLM does not block an
+        otherwise-valid ingest. ``collection`` and ``source_relpath``
+        are required for the quarantine sidecar; both default to
+        empty strings so the success-path unit tests don't need to
+        thread them through.
         """
-        try:
-            writer = page_writer_agent(model=self.models["page_writer"])
-            deps = PageWriterDeps(
-                question=f"Ingest {source_relpath} into {collection}",
-                schema_text=schema_text,
-                existing_pages=existing_pages,
-            )
-            diffs: list[PageDiff] = writer.run_sync(deps=deps).output  # type: ignore[assignment]
-            return diffs
-        except Exception as exc:
-            from lies.etl.quarantine import quarantine
+        last_exc: BaseException | None = None
+        for _ in range(3):
+            try:
+                writer = page_writer_agent(model=self.models["page_writer"])
+                prompt = (
+                    f"Write wiki pages for the source at {source_relpath} "
+                    f"in collection {collection!r}. Follow the schema and avoid "
+                    f"duplicating existing pages."
+                )
+                deps = PageWriterDeps(
+                    question=f"Ingest {source_relpath} into {collection}",
+                    schema_text=schema_text,
+                    existing_pages=existing_pages,
+                )
+                diffs: list[PageDiff] = writer.run_sync(prompt, deps=deps).output  # type: ignore[assignment]
+                return diffs
+            except Exception as exc:
+                last_exc = exc
+                import time
 
-            quarantine(
-                self.wiki,
-                collection=collection,
-                path=source_relpath.removeprefix("raw/" + collection + "/"),
-                reason=f"page_writer_agent raised {type(exc).__name__}: {exc}",
-            )
-            raise IngestQuarantined(
-                source=source_relpath,
-                collection=collection,
-                reason=f"page_writer_agent raised {type(exc).__name__}: {exc}",
-            ) from exc
+                time.sleep(0.1)
+                continue
+        assert last_exc is not None
+        from lies.etl.quarantine import quarantine
+
+        quarantine(
+            self.wiki,
+            collection=collection,
+            path=source_relpath.removeprefix("raw/" + collection + "/"),
+            reason=f"page_writer_agent raised {type(last_exc).__name__}: {last_exc}",
+        )
+        return []
 
     def run_lint(
         self,
