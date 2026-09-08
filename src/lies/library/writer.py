@@ -82,6 +82,12 @@ class LibraryWriter:
         try:
             upsert_pages(conn, updates)
             conn.commit()
+        except sqlite3.OperationalError as exc:
+            if "database is locked" in str(exc):
+                raise LibraryCatalogLocked(
+                    f"library catalog busy_timeout exceeded at {self._library.catalog_path} during write"
+                ) from exc
+            raise
         finally:
             conn.close()
 
