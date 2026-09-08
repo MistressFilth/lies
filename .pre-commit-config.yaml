@@ -20,6 +20,11 @@ repos:
         # does not auto-regenerate `uv.lock` on every commit (a stale lock
         # would otherwise be silently rewritten, masking version bumps).
         args: ["--frozen"]
+  - repo: https://github.com/MistressFilth/supyrliminal
+    rev: v0.1.0
+    hooks:
+      - id: supyrliminal
+        files: ^((src/lies|tests|scripts)/|pyproject\.toml$)
   - repo: local
     hooks:
       - id: test

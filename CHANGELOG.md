@@ -6,6 +6,16 @@ All notable changes to LIES are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+- Replaced the vendored `pydantic-guidance` flake8 plugin with the
+  upstream [`supyrliminal`](https://github.com/MistressFilth/supyrliminal)
+  package. `supyrliminal` is now a dev dependency, pinned via
+  `[tool.uv.sources]` to `v0.1.0` of the GitHub repo (the same code that
+  lived under `vendor/pydantic-guidance`, now packaged as `supyrliminal`).
+  `make lint-supyrliminal` runs `flake8 --select=SL,PYD` and is wired
+  into `make check`; the same hook is registered in
+  `.pre-commit-config.yaml`. The `vendor/` directory is removed.
+
 ### Fixed
 - `cli/ingestion.py` NameError on `ingest-source` — bare-name `Orchestrator(wiki)`
   lookup does not consult the module `__getattr__` (PEP 562 fires on
