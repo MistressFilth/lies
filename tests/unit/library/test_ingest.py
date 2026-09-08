@@ -154,6 +154,11 @@ def test_run_source_ingest_mirror_collision_reports_existing_and_new_hashes(
     reason = next(reason for _, reason in result.quarantine_records)
     assert "existing-a1b2c3d4" in reason
     assert "new-deadbeef" in reason
+    # Pin the fail-loud contract: genuine hash mismatch must bump errors so
+    # `errors > 0 → exit 1` fires through the CLI (Fix #1). Without this
+    # assertion, a regression that quarantines mismatches without bumping
+    # errors would silently slip through.
+    assert result.errors == 1
 
 
 def test_run_source_ingest_same_hash_mirror_collision_is_idempotent_skip(
