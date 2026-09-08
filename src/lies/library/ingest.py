@@ -342,7 +342,7 @@ def run_source_ingest(
 def run_batch_ingest(
     library: Library,
     collection_name: str,
-    source_dir: Path,
+    source_dir: Path | str,
     *,
     fetcher: Fetcher,
     exclude_stems: Container[str] = (),
@@ -355,6 +355,12 @@ def run_batch_ingest(
     Directory walk is the fetcher's responsibility — ``run_batch_ingest``
     just delegates to ``Fetcher.fetch_sources(source_dir)`` and processes
     the yielded items through the same pipeline as ``run_source_ingest``.
+
+    ``source_dir`` accepts ``Path | str`` to match the
+    :class:`Fetcher` protocol: callers that have a URL (``https://...``)
+    on hand pass it as a string, since ``Path("https://...")`` mangles
+    the scheme on POSIX (becomes ``https:/...``) and breaks the URL
+    prefix check in :func:`lies.scrapers.base.pick_scraper`.
 
     Same quarantine semantics as ``run_source_ingest``: a per-doc dispatch
     failure quarantines the bad doc and the run continues with whatever

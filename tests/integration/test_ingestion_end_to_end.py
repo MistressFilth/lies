@@ -1,12 +1,10 @@
 """Integration test for the XDG-routed ingestion pipeline.
 
-Asserts that the sync path writes its derived artifacts at the
-XDG-derived locations:
-- raw docs / per-collection inputs under ``<wiki>/raw/``.
-- normalized wiki pages under ``<wiki>/wiki/``.
-- scraper manifest under ``<cache_root>/collections/<c>/manifest.json``.
-- hashes sidecar under ``<cache_root>/hashes/<c>.json``.
-- per-sync telemetry log under ``<state_root>/logs/<c>.log``.
+Asserts that ``lies sync`` lands the mirror file under the library
+singleton (Phase-2 retargeting, Task 11) at
+``$XDG_DATA_HOME/lies/library/collections/<c>/<slug>.md``. Wiki still
+hosts the collection YAML + flock + qmd-side resolution; the write
+target moved.
 
 The test uses a name-based wiki and exercises ``lies sync <c>`` end-to-end.
 """
@@ -110,7 +108,7 @@ def test_full_pipeline_idempotent(
     cfg = {
         "name": "sample",
         "path": "./raw/sample",
-        "source": "https://example.com",
+        "source": "https://example.com/llms-full.txt",
         "tags": ["test"],
         "scraper_cmd": None,
         "doc_path": None,
@@ -125,7 +123,24 @@ def test_full_pipeline_idempotent(
         yaml.safe_dump(cfg), encoding="utf-8"
     )
 
-    canned = b"# Doc 1\n\nSome text.\n\n# Doc 2\n\nMore text.\n"
+    canned = (
+        b"# Doc 1\n"
+        b"Line one\n"
+        b"Line two\n"
+        b"Line three\n"
+        b"Line four\n"
+        b"Line five\n"
+        b"Line six\n"
+        b"Line seven\n"
+        b"\n# Doc 2\n"
+        b"Line one\n"
+        b"Line two\n"
+        b"Line three\n"
+        b"Line four\n"
+        b"Line five\n"
+        b"Line six\n"
+        b"Line seven\n"
+    )
 
     def fake_urlopen(req):
         resp = mock.MagicMock()
@@ -137,17 +152,48 @@ def test_full_pipeline_idempotent(
         resp.__enter__.return_value = resp
         return resp
 
+    # Library (Phase-2 write target) holds the mirror file under
+    # ``$XDG_DATA_HOME/lies/library/collections/<c>/<slug>.md``. The wiki's
+    # ``wiki_dir`` no longer receives the sync output. Initialise the
+    # library's git repo before the first sync so ``LibraryWriter``'s
+    # ``atomic_commit`` has somewhere to land.
+    from lies.library.paths import Library
+
+    Library.open.cache_clear()
+    lib = Library.open()
+    lib.git_root.mkdir(parents=True, exist_ok=True)
+    (lib.git_root / ".gitkeep").write_text("")
+    subprocess.run(
+        ["git", "init", "--initial-branch=main", str(lib.git_root)],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(lib.git_root), "config", "user.email", "t@e.com"],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(lib.git_root), "config", "user.name", "T"],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(lib.git_root), "add", "."],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(lib.git_root), "commit", "-m", "init"],
+        check=True,
+        capture_output=True,
+    )
+
     with mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
         result1 = CliRunner().invoke(app, ["sync", "sample"])
     assert result1.exit_code == 0
 
-    # Wiki content directory holds the normalized wiki pages, nested
-    # under the per-collection subdir so qmd can index them.
-    assert (wiki.wiki_dir / "sample" / "chunk-0000.md").exists()
-    # Per-collection manifest moved to the cache root.
-    assert (wiki.cache_root / "collections" / "sample" / "manifest.json").exists()
-    # Telemetry log lives under the state root.
-    assert (wiki.logs_dir / "sample.log").exists()
+    assert (lib.collections_root / "sample" / "chunk-0000.md").exists()
 
     with mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
         result2 = CliRunner().invoke(app, ["sync", "sample"])
