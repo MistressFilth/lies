@@ -9,6 +9,7 @@ RUFF_LINT  := $(PY) ruff check $(SRC) $(TESTS)
 RUFF_FMT   := $(PY) ruff format $(SRC) $(TESTS)
 TY         := $(PY) ty check $(SRC)
 PYTEST     := $(PY) pytest
+SL         := $(PY) flake8 --select=SL,PYD $(SRC) $(TESTS)
 
 REPO_ROOT              ?= $(HOME)/code/github/MistressFilth/lies
 
@@ -58,6 +59,10 @@ clean: ## Remove caches and build artifacts.
 .PHONY: lint
 lint: ## Run ruff check on src and tests.
 	$(RUFF_LINT)
+
+.PHONY: lint-supyrliminal
+lint-supyrliminal: ## Run supyrliminal (SL + PYD flake8) on src and tests.
+	$(SL)
 
 .PHONY: typecheck
 typecheck: ## Run ty on src.

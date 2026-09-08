@@ -314,10 +314,12 @@ make check
 make test
 ```
 
-`make check` runs ruff, pydantic-guidance (PG + PYD flake8), ty, and
-ruff format. Run the pydantic-guidance lint on its own with
-`make lint-pydantic-guidance`; the same check fires on every commit via
-`.pre-commit-config.yaml`.
+`make check` runs ruff, ty, and ruff format. Run the supyrliminal
+(SL + PYD flake8) lint on its own with `make lint-supyrliminal`; the
+same check fires on every commit via `.pre-commit-config.yaml`.
+Supyrliminal is opt-in at the CI gate — its findings are not yet
+treated as blocking because the codebase carries pre-existing SL101
+findings that need triage before it can be required.
 
 ## Architecture
 
