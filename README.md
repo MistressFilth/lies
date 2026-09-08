@@ -400,6 +400,35 @@ $XDG_STATE_HOME/lies/<name>/    # logs/scratch/poison
 $XDG_CACHE_HOME/lies/<name>/    # hashes/manifests
 ```
 
+#### Library
+
+The library is the global corpus of deterministic source mirrors —
+a sibling of every wiki root under `$XDG_DATA_HOME/lies/`. Every
+ingest across every wiki writes here, so the same ingested source
+can feed multiple wikis without a re-fetch:
+
+```
+$XDG_DATA_HOME/lies/library/        # global corpus (shared across wikis)
+├── .lies/                          # gitignored; library-root derived state
+│   ├── catalog.db                  # sqlite library catalog (source-of-truth)
+│   ├── catalog.db-wal              # write-ahead log
+│   └── catalog.db-shm              # shared memory file
+├── log.md                          # append-only library log
+├── poison/                         # quarantined failures
+└── collections/                    # one subdir per collection
+    └── <collection>/               # deterministic mirror + frontmatter
+        ├── raw/                    # raw source bytes (optional)
+        └── .lies/manifest.json     # per-collection manifest
+```
+
+The library catalog is a separate sqlite database from the wiki's
+`.lies/catalog.db`: the wiki catalog indexes the agent's wiki pages;
+the library catalog indexes the ingested source mirrors.
+`section='library'` covers active mirrors; `section='library-migrated'`
+quarantines anything `lies migrate ingest-to-library` could not move.
+Library mirrors are immutable once written — re-ingest with `--force`
+to overwrite.
+
 The catalog is a small sqlite database at `.lies/catalog.db` **inside the
 wiki dir** (WAL journal mode, `busy_timeout=5000`), accompanied by its
 `-wal` and `-shm` siblings. Note that this is a different `.lies/` from
@@ -438,9 +467,9 @@ CLI commands (`src/lies/cli/`):
 - `lies lint [--fix]` — health-check the wiki (`--fix` applies the repair plan for safe_to_fix findings). Findings span six categories; LLM-backed categories are skipped with a `Sources` line when no model key is configured.
 - `lies mcp` / `lies mcp start` — run the MCP server on stdio.
 - `lies mcp up` / `down` / `status` — manage the detached http MCP daemon.
-- `lies status` — show qmd status, catalog size, recent invisible writes,
-  and the last few log entries (`--memory-limit N` to skip or limit the
-  writes section).
+- `lies status` — show the library catalog count + migrated tally, qmd
+  status, wiki catalog size, recent invisible writes, and the last few
+  log entries (`--memory-limit N` to skip or limit the writes section).
 - `lies catalog {status, dump, reconcile, rebuild, render}` — manage the
   sqlite wiki catalog (`.lies/catalog.db` inside the wiki dir). `status`
   prints the row count and schema version; `dump` lists rows (`--json`,
