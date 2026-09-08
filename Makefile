@@ -8,6 +8,7 @@ TESTS      := tests
 RUFF_LINT  := $(PY) ruff check $(SRC) $(TESTS)
 RUFF_FMT   := $(PY) ruff format $(SRC) $(TESTS)
 TY         := $(PY) ty check $(SRC)
+PG_LINT    := $(PY) flake8 --select=PG,PYD $(SRC)
 PYTEST     := $(PY) pytest
 
 REPO_ROOT              ?= $(HOME)/code/github/MistressFilth/lies
@@ -59,6 +60,10 @@ clean: ## Remove caches and build artifacts.
 lint: ## Run ruff check on src and tests.
 	$(RUFF_LINT)
 
+.PHONY: lint-pydantic-guidance
+lint-pydantic-guidance: ## Run flake8 with pydantic-guidance (PG) + flake8-pydantic (PYD) on src.
+	$(PG_LINT)
+
 .PHONY: typecheck
 typecheck: ## Run ty on src.
 	$(TY)
@@ -68,8 +73,9 @@ format: ## Run ruff format (may auto-edit).
 	$(RUFF_FMT)
 
 .PHONY: check
-check: ## Run lint, typecheck, and format.
+check: ## Run lint, pydantic-guidance lint, typecheck, and format.
 	$(RUFF_LINT)
+	$(PG_LINT)
 	$(TY)
 	$(RUFF_FMT)
 

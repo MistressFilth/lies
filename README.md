@@ -310,6 +310,11 @@ make check
 make test
 ```
 
+`make check` runs ruff, pydantic-guidance (PG + PYD flake8), ty, and
+ruff format. Run the pydantic-guidance lint on its own with
+`make lint-pydantic-guidance`; the same check fires on every commit via
+`.pre-commit-config.yaml`.
+
 ## Architecture
 
 The agent maintains the wiki invisibly during normal interaction. See [Invisible memory](#invisible-memory) for the contract.
