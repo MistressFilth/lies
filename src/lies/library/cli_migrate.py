@@ -68,7 +68,7 @@ def ingest_to_library(
     if dry_run:
         typer.echo("(dry-run; pass --apply to mutate)")
         return
-    apply_migration(plan, dry_run=False)
+    apply_migration(plan, lib, dry_run=False)
     sha = atomic_commit(
         wiki.data_root,
         f"migrate: ingest-to-library +{len(plan.moves)}",

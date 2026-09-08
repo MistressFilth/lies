@@ -19,7 +19,11 @@ from pathlib import Path
 
 import frontmatter
 
-from lies.library.catalog import LibraryCatalogPage
+from lies.library.catalog import (
+    LibraryCatalogPage,
+    open_catalog,
+    upsert_pages,
+)
 from lies.library.frontmatter import _ingested_at_from_hash, build_frontmatter
 from lies.library.paths import Library
 from lies.wiki.wiki import Wiki
@@ -84,7 +88,12 @@ def _deterministic_updated(source_hash: str) -> str:
     return f"{_ingested_at_from_hash(source_hash)}T00:00:00+00:00"
 
 
-def apply_migration(plan: MigrationPlan, *, dry_run: bool = True) -> None:
+def apply_migration(
+    plan: MigrationPlan,
+    library: Library,
+    *,
+    dry_run: bool = True,
+) -> None:
     if dry_run:
         return
     for src, dst in plan.moves:
@@ -97,6 +106,17 @@ def apply_migration(plan: MigrationPlan, *, dry_run: bool = True) -> None:
     for src, backup in plan.duplicates_to_backup:
         backup.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(src, backup)
+    # Catalog upsert: library catalog rows inserted with section="library"
+    # and deterministic `updated` (per spec §Migration §catalog state).
+    # Wrapped in an explicit transaction; WAL + busy_timeout protect
+    # against concurrent writers.
+    if plan.catalog_updates:
+        conn = open_catalog(library)
+        try:
+            upsert_pages(conn, plan.catalog_updates)
+            conn.commit()
+        finally:
+            conn.close()
 
 
 def _rewrite_frontmatter(src: Path) -> str:

@@ -18,7 +18,6 @@ from typer.testing import CliRunner
 from lies import xdg
 from lies.cli import app
 from lies.library.catalog import (
-    LibraryCatalogPage,
     list_pages,
     open_catalog,
 )
@@ -109,7 +108,7 @@ def test_apply_migration_writes_library_and_upserts_catalog(
     assert len(plan.moves) == 2
     assert {src.stem for src, _ in plan.moves} == {"a", "b"}
 
-    apply_migration(plan, dry_run=False)
+    apply_migration(plan, lib, dry_run=False)
 
     # Library mirror files now exist
     coll_dir = lib.collections_root / "claude"
@@ -120,34 +119,16 @@ def test_apply_migration_writes_library_and_upserts_catalog(
     assert 'fetched_via: "migration"' in a_body or "fetched_via: migration" in a_body
     assert "ingested_at:" in a_body
 
-    # Catalog rows are upserted with section="library" by the apply call
-    # itself (Task 13 brief: dry-run aware; library-side commit envelope
-    # is provided by LibraryWriter — Task 14 wraps the wiki-side commit).
-    # Verify the catalog schema accepts the section and that an explicit
-    # upsert via the DAO works.
+    # Catalog rows are upserted by apply_migration itself with
+    # section="library" and a deterministic `updated` derived from
+    # the source_hash (per spec §Migration §catalog state).
     conn = open_catalog(lib)
-    upserted = [
-        LibraryCatalogPage(
-            slug=p.slug,
-            title=p.title,
-            type=p.type,
-            source_pkg=p.source_pkg,
-            section=p.section,
-            updated=p.updated,
-            hash=p.hash,
-            derived_from=p.derived_from,
-        )
-        for p in plan.catalog_updates
-    ]
-    for page in upserted:
-        from lies.library.catalog import upsert_page
-
-        upsert_page(conn, page)
-    conn.commit()
-    rows = list_pages(conn)
-    assert {r.slug for r in rows} == {"claude/a", "claude/b"}
-    assert {r.section for r in rows} == {"library"}
-    conn.close()
+    try:
+        rows = list_pages(conn)
+        assert {r.slug for r in rows} == {"claude/a", "claude/b"}
+        assert {r.section for r in rows} == {"library"}
+    finally:
+        conn.close()
 
 
 def test_cli_ingest_to_library_dry_run_prints_plan(
@@ -191,3 +172,70 @@ def test_cli_ingest_to_library_dry_run_prints_plan(
     assert "(dry-run" in combined
     # Dry-run must not write
     assert not (lib.collections_root / "claude" / "only.md").exists()
+
+
+def test_cli_ingest_to_library_apply_writes_files_and_catalog(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(xdg, "data_home", lambda: tmp_path)
+    Library.open.cache_clear()
+    lib = Library.open()
+    _seed_library(lib)
+
+    name = "cli-apply"
+    wiki = Wiki(
+        name=name,
+        data_root=xdg.data_home() / "lies" / name,
+        config_root=xdg.config_home() / "lies" / name,
+        cache_root=xdg.cache_home() / "lies" / name,
+        state_root=xdg.state_home() / "lies" / name,
+        runtime_root=xdg.runtime_dir_for(name),
+    )
+    _seed_wiki(
+        wiki,
+        slug_to_body={
+            "a": "---\ntitle: A\n---\n# A\nbody a\n",
+            "b": "---\ntitle: B\n---\n# B\nbody b\n",
+        },
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "ingest-to-library",
+            "--apply",
+            "--name",
+            name,
+        ],
+        env={"XDG_DATA_HOME": str(tmp_path), "LIES_WIKI_NAME": name},
+    )
+    if result.exit_code != 0:
+        raise AssertionError(
+            f"exit={result.exit_code}; stdout={result.stdout!r}; stderr={result.stderr!r}"
+        )
+    combined = _strip_ansi(result.stdout) + _strip_ansi(result.stderr or "")
+
+    # Mirror files land at <library>/collections/<collection>/<slug>.md
+    coll_dir = lib.collections_root / "claude"
+    assert (coll_dir / "a.md").exists()
+    assert (coll_dir / "b.md").exists()
+
+    # Catalog row exists in <library>/.lies/catalog.db with section="library"
+    conn = open_catalog(lib)
+    try:
+        rows = list_pages(conn)
+        assert {r.slug for r in rows} == {"claude/a", "claude/b"}
+        assert {r.section for r in rows} == {"library"}
+    finally:
+        conn.close()
+
+    # CLI ran to completion. Wiki-side commit SHA is printed when the
+    # wiki has tracked changes (e.g. via migration-backup writes for
+    # duplicates); Task 13 scope doesn't add wiki-side cleanup, so
+    # absent wiki-side changes → no SHA. Library-side atomic-commit
+    # envelope is owned by LibraryWriter (wired in Task 14).
+    assert "done." in combined
+    sha_match = re.search(r"wiki commit ([0-9a-f]+)", combined)
+    if sha_match is not None:
+        assert len(sha_match.group(1)) >= 7

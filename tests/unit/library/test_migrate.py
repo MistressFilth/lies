@@ -88,6 +88,6 @@ def test_apply_migration_dry_run_writes_nothing(
     )
     lib = Library.open()
     plan = plan_migration(wiki, lib)
-    apply_migration(plan, dry_run=True)
+    apply_migration(plan, lib, dry_run=True)
     coll_dir = lib.collections_root / "claude"
     assert not coll_dir.exists() or not any(coll_dir.iterdir())
