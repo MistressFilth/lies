@@ -13,6 +13,20 @@ _BASE_ORDINAL: Final[int] = (_CAP_DATE - _BASE_DATE).days  # 27758
 _HASH_SPACE: Final[int] = 1 << 32  # 4 bytes = uint32 max + 1
 
 
+def _quote_yaml_string(value: str) -> str:
+    """Double-quote a string for YAML output and escape ``\\`` and ``"``.
+
+    Newlines (``\\r``/``\\n``) are stripped (replaced with a single space)
+    so a hostile or accidental newline in a user-supplied field (notably
+    ``title`` lifted from HTML/Markdown) cannot terminate the frontmatter
+    block and inject a second top-level key. The same escape pattern is
+    used by ``lies.page.author._format_author_body`` — kept consistent on
+    purpose.
+    """
+    safe = value.replace("\r", " ").replace("\n", " ").replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{safe}"'
+
+
 class MirrorFrontmatter(BaseModel):
     """Deterministic mirror frontmatter schema (no ``type:`` field).
 
@@ -62,9 +76,9 @@ def build_frontmatter(
     ingested_at = _ingested_at_from_hash(source_hash)
     lines = [
         "---",
-        f"title: {title}",
-        f"source_url: {source_url if source_url is not None else 'null'}",
-        f"source_path: {source_path if source_path is not None else 'null'}",
+        f"title: {_quote_yaml_string(title)}",
+        f"source_url: {_quote_yaml_string(source_url) if source_url is not None else 'null'}",
+        f"source_path: {_quote_yaml_string(source_path) if source_path is not None else 'null'}",
         f"source_hash: {source_hash}",
         f"fetched_via: {fetched_via}",
         f"ingested_at: {ingested_at}",

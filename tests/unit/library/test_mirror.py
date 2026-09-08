@@ -23,7 +23,7 @@ def test_render_mirror_default_title() -> None:
         fetched_via="web",
     )
     assert text.startswith("---\n")
-    assert "title: Getting Started\n" in text
+    assert 'title: "Getting Started"\n' in text
     assert text.endswith("# hello\n")
 
 
@@ -37,7 +37,7 @@ def test_render_mirror_with_explicit_title() -> None:
         fetched_via="github",
         title="Override",
     )
-    assert "title: Override\n" in text
+    assert 'title: "Override"\n' in text
 
 
 def test_write_mirror_creates_file(lib: Library) -> None:
