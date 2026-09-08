@@ -7,49 +7,49 @@ All notable changes to LIES are documented here. The format follows
 ## [Unreleased]
 
 ### Added
-- `lies ingest-to-library --apply` post-apply qmd cleanup hook
-  (`src/lies/library/cli_migrate.py`): for each migrated collection,
-  unregister the per-wiki `<wiki>_<collection>` qmd index and register
-  the library-side collection (`qmd_collection_remove` +
-  `qmd_collection_add_or_update` + `qmd_update` + `qmd_embed`). qmd is
-  derived, so every failure is non-fatal and the migration commit
-  stands.
-- `lies ingest` Typer sub-app (`src/lies/library/cli.py`) with two
-  modes: `--source <PATH|URL>` for single-source deterministic ingest
-  and `--batch <DIR>` for directory walks. Routes through the
-  `ScraperFetcher` + 5-step pipeline (Tasks 8–9) into the library
-  catalog. No LLM call on the ingest path. New flags: `--slug-prefix`,
-  `--collection`, `--slug`, `--title`, `--exclude-stem`,
-  `--exclude-dir`, `--force`, `--dry-run`. The legacy `ingest-source`
-  command is reduced to a one-minor-version deprecation stub that
-  emits an error steering operators to `lies ingest --source`.
+- Library split: ingested sources land in
+  `$XDG_DATA_HOME/lies/library/collections/<collection>/`, never under
+  `wiki/`. The wiki is now the agent's markdown; the library is the
+  deterministic, immutable mirror of curated sources.
+- New `lies ingest` CLI (`src/lies/library/cli.py`) with `--source`
+  (single) and `--batch` (multi) modes; deterministic 5-step pipeline
+  (fetch → ETL → filter → mirror → catalog+commit). No LLM call on
+  the ingest path. New flags: `--slug-prefix`, `--collection`,
+  `--slug`, `--title`, `--exclude-stem`, `--exclude-dir`, `--force`,
+  `--dry-run`.
+- New `lies migrate ingest-to-library` script
+  (`src/lies/library/cli_migrate.py`): moves wiki-resident ingests
+  into the library; backup duplicates at
+  `<wiki>/.lies/migration-backup/<date>/`. `--dry-run` previews the
+  moves; `--apply` performs the atomic-commit envelope (one commit
+  per collection) and registers each library-side collection with
+  qmd.
+- `LibraryWriter` atomic-commit envelope
+  (`src/lies/library/writer.py`), mirroring
+  `WikiMemoryService.apply_plan` semantics on the library git root.
+- Library catalog DB at `<library>/.lies/catalog.db` (sqlite WAL,
+  `busy_timeout=5000`, schema v2 with `library` and
+  `library-migrated` sections).
+- `lies status` output gains library catalog count + migrated tally.
 
 ### Changed
-- `cli/__init__.py`: `library_app` is imported alongside the other
-  sub-apps and registered as the `ingest` subcommand (same panel as
-  `sync` / `reindex`).
-- `cli/ingestion.py`: the old Phase-1 `ingest` (bootstrap-on-missing)
-  command is removed — its responsibilities did not survive the move
-  to the deterministic library ingest path. `sync` and `reindex`
-  remain in place.
-- `lies sync` now honors `Collection.scraper_cmd` end-to-end: the
-  `ScraperFetcher` loads bespoke scrapers via the same `module:attr`
-  / `path.py:attr` resolver the wiki side uses (`Collection.source`
-  no longer has to be a URL/path the prefix heuristic can match).
-  Bespoke-loader failures propagate; the fetcher never silently
-  falls back to `pick_scraper`. `lies sync` now also exits non-zero
-  when the underlying `BatchIngestResult.errors` is non-empty, so a
-  wholly-failed batch no longer exits 0.
+- Wiki-write surface narrowed to F39 page-author + LLM-driven paths
+  (MemoryEnricher, F3 file-back). Ingest no longer writes under
+  `wiki/<collection>/`.
+- `lies sync` retargeted: writes to library, not wiki. Honors
+  `Collection.scraper_cmd` end-to-end (bespoke scrapers via
+  `module:attr` / `path.py:attr`); routes REGISTRY-registered source
+  formats (sphinx / liquid / bespoke) through their builders before
+  falling back to `format_dispatch`. Exits non-zero when the
+  underlying `BatchIngestResult.errors` is non-empty, so a wholly-
+  failed batch no longer exits 0.
 
 ### Removed
-- `lies ingest-source <src> --collection NAME` (Phase-1 atomic LLM
-  ingest) is replaced by `lies ingest --source <PATH|URL>
-  --collection NAME`. The CLI flag is stubbed for one minor version
-  (Typer `deprecated=True`, errors out with a steering message),
-  then removed.
-- `--no-llm` opt-out: the legacy `sync_collection` fallback is gone;
-  the deterministic ingest never made an LLM round-trip in the first
-  place.
+- `lies ingest-source` command (collapsed into `lies ingest
+  --source`). The CLI flag is stubbed for one minor version (Typer
+  `deprecated=True`, errors out with a steering message).
+- `--no-llm` flag (no LLM on the ingest path; the deterministic
+  ingest never made an LLM round-trip in the first place).
 
 ### Fixed
 - `library/fetcher.py`: `_normalize_body` now routes registered

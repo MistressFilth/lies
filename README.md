@@ -463,39 +463,49 @@ CLI commands (`src/lies/cli/`):
 
 ## Parsing and Ingestion
 
-LIES includes a state-machine ETL pipeline for ingesting documentation
-sources into the wiki. The pipeline is independent of `WikiMemoryService`
-(bulk writes go through `atomic_commit` directly) and runs as four
-stages:
+LIES ingests documentation sources through a deterministic 5-step
+pipeline. The pipeline is purely mechanical — no LLM call on the
+ingest path:
 
-1. **SCRAPE** — fetch + parse + manifest emit.
-2. **NORMALIZE** — format dispatch + Obsidian convention apply.
-3. **WRITE** — hash compare + atomic_commit (skips unchanged docs);
-   one subdirectory per collection under the wiki root
-   (`wiki/<collection>/<path>`), and a non-fatal post-commit hook
-   re-registers the qmd collection against that subdir, refreshes
-   the qmd index, and embeds the new chunks
-   (`qmd embed -c <collection>`).
-4. **QMD_UPDATE** — incremental qmd update per collection.
+1. **FETCH** — pull bytes from a URL/path via `ScraperFetcher`
+   (honors `Collection.scraper_cmd` for bespoke loaders;
+   routes REGISTRY-registered source formats — sphinx, liquid,
+   bespoke — through their builders before falling back to
+   `format_dispatch`).
+2. **ETL** — format dispatch (HTML, PDF, Sphinx, Liquid, etc.) →
+   per-collection builders → normalized markdown.
+3. **FILTER** — drop docs excluded by `--exclude-stem` /
+   `--exclude-dir`; reject empty bodies.
+4. **MIRROR** — write one deterministic frontmatter mirror per
+   doc at `<library>/collections/<collection>/<slug>.md` (or
+   reject on slug collision unless `--force`).
+5. **CATALOG + COMMIT** — upsert one row per mirror into
+   `<library>/.lies/catalog.db` (sqlite WAL,
+   `busy_timeout=5000`) inside the `LibraryWriter` atomic-commit
+   envelope, then refresh qmd against the library path via a
+   non-fatal post-commit hook.
 
-Per-collection subdirs are how LIES scopes qmd collections. Each
-collection's qmd registration points at its own
-`wiki/<collection>/` subdir, so `qmd query` and the MCP
-`wiki_search` tool return only that collection's pages when the
-caller scopes by collection. `wiki/index.md` is **not**
-regenerated during sync — it is a read-only title-only derivative
-of `.lies/catalog.db`, emitted on demand by `lies catalog render`.
+Ingested sources live in the **library**
+(`$XDG_DATA_HOME/lies/library/collections/<collection>/`), not
+under `wiki/`. The library is the deterministic, immutable mirror
+of curated sources; the wiki is the agent's downstream markdown
+(F39 page-author + LLM-driven `MemoryEnricher` / F3 file-back).
+See [Storage layout](#storage-layout) for the full directory
+boundary.
+
+The wiki catalog (`wiki/.lies/catalog.db`) is unchanged — it still
+indexes the agent's wiki pages, not the library mirrors.
+`wiki/index.md` is a read-only title-only derivative of that
+catalog, emitted on demand by `lies catalog render`.
 
 Commands:
 
-- `lies sync <collection>` — re-ingest changed docs only (`--force` for full); writes land under the library (`$XDG_DATA_HOME/lies/library/collections/<name>/`), not the wiki `wiki_dir`.
-- `lies ingest <collection>` — bootstrap a collection (existing or new).
+- `lies ingest --source <PATH|URL> [--collection NAME] [--slug <slug>] [--title <title>] [--force] [--dry-run] [--exclude-stem ...] [--exclude-dir ...]` — deterministic single-source ingest into the library. No LLM round-trip; the 5-step pipeline writes a deterministic frontmatter mirror and atomic-commits one catalog upsert. `--collection` defaults to `--slug-prefix` or `default`; `--force` overwrites an existing mirror; `--dry-run` prints the plan without writing.
+- `lies ingest --batch <DIR> --slug-prefix <name> [--force] [--dry-run] [--exclude-stem ...] [--exclude-dir ...]` — directory walk into one collection. Same pipeline as `--source` but iterates every eligible file under `<DIR>`.
+- `lies sync <collection> [--source URL] [--wizard]` — sync one collection into the library, or every collection in the wiki when no positional is given. Pass `--source` to bootstrap a missing YAML (single-collection mode only); `--wizard` routes the bootstrap through `collection_author_agent`. Honors `Collection.scraper_cmd` (bespoke scrapers via `module:attr` / `path.py:attr`) and routes REGISTRY-registered source formats (sphinx / liquid / bespoke) through their builders before falling back to `format_dispatch`. Exits non-zero when the batch reports any `errors`.
+- `lies migrate ingest-to-library [--dry-run|--apply]` — move wiki-resident ingests into the library. Backup duplicates at `<wiki>/.lies/migration-backup/<date>/`. `--dry-run` previews the moves; `--apply` performs one atomic commit per collection (cross-process flock, snapshot/restore on failure) and registers each library-side collection with qmd.
 - `lies reindex --reconcile` — sync each collection.
 - `lies collections list|show|modify` — manage collection configs (modify writes immediately; see `--help`).
-
-See `docs/superpowers/plans/2026-08-01-parsing-and-ingestion-plan.md`
-for the implementation plan and `2026-08-01-parsing-and-ingestion-design.md`
-for the design spec.
 
 ## License
 
