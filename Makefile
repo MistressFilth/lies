@@ -8,7 +8,13 @@ TESTS      := tests
 RUFF_LINT  := $(PY) ruff check $(SRC) $(TESTS)
 RUFF_FMT   := $(PY) ruff format $(SRC) $(TESTS)
 TY         := $(PY) ty check $(SRC)
-PG_LINT    := $(PY) flake8 --select=PG,PYD $(SRC)
+# pydantic-guidance lives in a private GitHub repo; `uv sync --all-extras`
+# cannot clone it on a credential-less CI runner. The lint runs inside
+# the pre-commit hook venv via `additional_dependencies` and the
+# Makefile target delegates to `pre-commit run` so the hook's venv is
+# used (no `uv add` step needed). The repo's flake8 + flake8-pydantic
+# deps are NOT installed in the project venv.
+PG_LINT    := $(UV) run pre-commit run pydantic-guidance --all-files
 PYTEST     := $(PY) pytest
 
 REPO_ROOT              ?= $(HOME)/code/github/MistressFilth/lies
