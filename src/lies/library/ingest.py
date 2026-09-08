@@ -206,7 +206,7 @@ def _process_item(
     existed = target.exists()
 
     if existed and not force:
-        existing_hash = "?"
+        existing_hash = ""
         try:
             existing_text = target.read_text(encoding="utf-8")
             post = frontmatter.loads(existing_text)
@@ -215,6 +215,15 @@ def _process_item(
                 existing_hash = parsed_hash
         except Exception:
             pass
+        # Idempotency contract: when the incoming source_hash matches the
+        # existing mirror's hash, the source is unchanged — record a skip
+        # (not an error) and do NOT bump errors / quarantine. This restores
+        # the exit-0 behavior for re-runs of unchanged sources (Task 11
+        # fix #2). Mismatched hashes still fall through to the
+        # error+quarantine branch below so genuine conflicts stay fail-loud.
+        if existing_hash and existing_hash == item.source_hash:
+            _record_skip(result, "mirror-collision:up_to_date")
+            return
         result.errors += 1
         result.quarantine_records.append(
             _quarantine_to_poison(

@@ -156,6 +156,51 @@ def test_run_source_ingest_mirror_collision_reports_existing_and_new_hashes(
     assert "new-deadbeef" in reason
 
 
+def test_run_source_ingest_same_hash_mirror_collision_is_idempotent_skip(
+    lib_with_git: Library,
+) -> None:
+    """Re-ingesting an unchanged source is a skip, not an error.
+
+    Regression for Task 11 fix #2: the collision branch in
+    ``_process_item`` was always bumping ``result.errors`` whenever a
+    target mirror existed, even when the incoming ``source_hash``
+    matched the existing mirror's frontmatter ``source_hash``. With
+    ``errors > 0 → exit 1`` wired through the CLI (Fix #1), idempotent
+    re-runs of unchanged sources started exiting 1 — a silent regression
+    from the previous exit-0 behavior. The fix reads the existing
+    mirror's frontmatter and treats a matching hash as
+    ``mirror-collision:up_to_date``: skip, no error, no quarantine.
+    """
+    body = "body\n" * 10
+    item = FetchItem(
+        path=Path("/src/x.md"),
+        url=None,
+        body=body,
+        source_hash="samehashdeadbeef",
+        fetched_via="github",
+    )
+
+    first = run_source_ingest(lib_with_git, "claude", source="x", fetcher=_StaticFetcher([item]))
+    assert first.created == 1
+    assert first.errors == 0
+
+    # Second sync with the same hash — mirror collision must NOT bump
+    # errors, NOT add a quarantine record, and must record a skip with
+    # the ``mirror-collision:up_to_date`` reason.
+    result = run_source_ingest(lib_with_git, "claude", source="x", fetcher=_StaticFetcher([item]))
+
+    assert result.errors == 0
+    assert result.quarantine_records == []
+    assert result.skipped >= 1
+    assert result.skip_reasons.get("mirror-collision", 0) >= 1
+    # The on-disk mirror was not touched by the second sync (it
+    # short-circuited before reaching ``write_mirror``).
+    assert result.created == 0
+    assert result.updated == 0
+    coll = lib_with_git.collection("claude")
+    assert (coll.dir / "x.md").exists()
+
+
 def test_run_source_ingest_filter_skip(lib_with_git: Library) -> None:
     fetcher = _StaticFetcher(
         [
