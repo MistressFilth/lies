@@ -145,6 +145,11 @@ from lies.cli import _core, ingestion, operator, query  # noqa: E402,F401
 # (it is -- bound in step 1 above).
 library_cli.register(app)
 
+# Register the ``ingest-to-library`` migration command (Task 13). The
+# module's top-level ``@app.command(...)`` decorator needs the root
+# ``app`` to be defined first (it is -- bound in step 1 above).
+from lies.library import cli_migrate  # noqa: E402,F401
+
 # Re-exports for test compat. ``test_cli_flock.py`` monkeypatches
 # ``cli_module.acquire_create_lock``; ``test_cli_lint_force_repair.py``
 # reaches ``WikiFlockUnrepairable`` / ``WikiLockBusy`` through the same
