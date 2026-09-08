@@ -433,3 +433,59 @@ def test_run_source_ingest_generic_dispatch_exception_is_quarantined(
     _, reason = result.quarantine_records[0]
     assert "fetch-unreachable" in reason
     assert "RuntimeError" in reason
+
+
+def test_run_source_ingest_wires_qmd_collection_through_finalize(
+    lib_with_git: Library,
+) -> None:
+    """End-to-end: ``run_source_ingest`` passes ``qmd_collection`` to ``LibraryWriter.commit``.
+
+    Regression for the dormant-hook fix (Task 12 follow-up):
+    ``LibraryWriter.commit`` accepts ``qmd_collection: str | None`` to
+    fire the post-commit qmd hook against the library path. ``_finalize``
+    MUST thread ``collection_name`` through, otherwise the qmd hook is
+    dormant in production. This test wires the full ingest pipeline
+    (no ``run_*_ingest`` mocking) and asserts the qmd hook actually
+    fires with the library target — a regression that drops the kwarg
+    in ``_finalize`` leaves the hook off and the assertion catches it.
+    """
+    from unittest.mock import patch
+
+    fetcher = _StaticFetcher(
+        [
+            FetchItem(
+                path=Path("/src/x.md"),
+                url=None,
+                body="body\n" * 10,
+                source_hash="abc123",
+                fetched_via="github",
+            ),
+        ]
+    )
+
+    called: dict[str, object] = {"args": None, "kwargs": None}
+
+    def fake_qmd(*args, **kwargs):  # type: ignore[no-untyped-def]
+        called["args"] = args
+        called["kwargs"] = kwargs
+
+    with patch("lies.library.writer.qmd_collection_add_or_update", side_effect=fake_qmd):
+        with patch("lies.library.writer.qmd_update"):
+            with patch("lies.library.writer.qmd_embed"):
+                result = run_source_ingest(
+                    lib_with_git, "claude", source="https://example.com/x", fetcher=fetcher
+                )
+
+    assert result.created == 1
+    assert result.errors == 0
+    # The qmd hook must have fired against the library collection dir.
+    assert called["args"] is not None, "qmd_collection_add_or_update was never called"
+    args, kwargs = called["args"], called["kwargs"]
+    # Positional: (library.git_root, library.collections_root, qmd_name)
+    assert args[0] == lib_with_git.git_root
+    assert args[1] == lib_with_git.collections_root
+    assert args[2] == "claude"
+    # Kwarg: library_target=coll_dir
+    assert kwargs is not None
+    assert "library_target" in kwargs
+    assert kwargs["library_target"] == lib_with_git.collections_root / "claude"

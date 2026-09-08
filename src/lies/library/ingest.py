@@ -294,6 +294,7 @@ def _finalize(
         rel_paths,
         message=message,
         catalog_updates=catalog_updates,
+        qmd_collection=collection_name,
     )
     if sha is None:
         # Empty rel_paths + non-empty catalog_updates case: ``LibraryWriter``

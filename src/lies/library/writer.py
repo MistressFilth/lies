@@ -21,6 +21,7 @@ Differences from wiki-side write path:
 from __future__ import annotations
 
 import sqlite3
+import sys
 from collections.abc import Iterable
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -134,17 +135,42 @@ class LibraryWriter:
         # there is nothing new to register.
         if sha is not None and qmd_collection is not None:
             coll_dir = self._library.collections_root / qmd_collection
+            # Positional ``path`` is the library ``collections_root``
+            # (NOT ``coll_dir``) — the qmd hook resolves the registered
+            # path via ``library_target`` (the collection dir); ``path``
+            # is just a fallback used when ``library_target`` is not
+            # set. Passing a deliberately distinct value here lets the
+            # wire test distinguish the positional from the kwarg and
+            # catch a regression that silently drops ``library_target``.
             try:
                 qmd_collection_add_or_update(
                     self._library.git_root,
-                    coll_dir,
+                    self._library.collections_root,
                     qmd_collection,
                     library_target=coll_dir,
                 )
+            except Exception as exc:  # noqa: BLE001 - qmd is derived; failures must not roll back the commit
+                print(
+                    f"warning: qmd collection registration failed for {qmd_collection!r}: {exc}; "
+                    f"continuing (library commit stands). Run `lies status` for state.",
+                    file=sys.stderr,
+                )
+            try:
                 qmd_update(self._library.git_root)
+            except Exception as exc:  # noqa: BLE001 - qmd is derived; failures must not roll back the commit
+                print(
+                    f"warning: qmd index update failed: {exc}; "
+                    f"continuing (library commit stands). Run `lies status` for state.",
+                    file=sys.stderr,
+                )
+            try:
                 qmd_embed(self._library.git_root, qmd_collection)
-            except Exception:  # noqa: BLE001 - qmd is derived; failures must not roll back the commit
-                pass
+            except Exception as exc:  # noqa: BLE001 - qmd is derived; failures must not roll back the commit
+                print(
+                    f"warning: qmd embed failed for {qmd_collection!r}: {exc}; "
+                    f"continuing (library commit stands). Run `lies status` (or `qmd status` directly if status also fails) for state.",
+                    file=sys.stderr,
+                )
 
         return sha
 

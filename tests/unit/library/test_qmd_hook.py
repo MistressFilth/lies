@@ -76,7 +76,18 @@ def test_writer_calls_qmd_hook_against_library_path(tmp_path: Path) -> None:
     args, kwargs = called["args"]
     # qmd_collection_add_or_update(library_root, target_path, qmd_name,
     #                             library_target=...)
-    assert kwargs.get("library_target") == coll_dir
+    # The writer passes ``collections_root`` (NOT ``coll_dir``) as the
+    # positional ``path`` so the test can catch a regression that
+    # silently drops ``library_target`` — without this asymmetry, both
+    # positional and kwarg would equal ``coll_dir`` and the kwarg's
+    # role in registration would be invisible to the test. ``path`` is
+    # the qmd fallback used only when ``library_target`` is not set;
+    # passing a deliberately distinct value keeps the wire honest.
     assert args[0] == lib_root
-    assert args[1] == coll_dir
+    assert args[1] == lib_root / "collections"
     assert args[2] == "claude"
+    # Library_target must be present as a kwarg with the collection dir.
+    # Direct subscript (not ``.get``) so a regression that drops the
+    # kwarg KeyErrors instead of silently passing.
+    assert "library_target" in kwargs
+    assert kwargs["library_target"] == coll_dir
