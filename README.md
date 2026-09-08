@@ -121,11 +121,12 @@ proxy in front if remote access is required.
 After registration, Claude Code sees these tools:
 
 - `init_wiki(name)` — bootstrap a new wiki by name (creates XDG role-routed dirs).
-- `ingest_source(collection, name?, no_llm=False)` — atomic ingest.
-  Default runs the LLM round-trip (`source_reader_agent` →
-  `page_writer_agent` → `WikiMemoryService.apply_plan`); pass
-  `no_llm=True` to demote to the legacy `sync_collection` shim for
-  bulk-scrape semantics.
+- `ingest_source(collection, name?, no_llm=False)` — deprecated. Use
+  `lies ingest --source <PATH>` (deterministic, no LLM call) for new
+  ingest runs. The MCP tool still wires through the LLM round-trip
+  (`source_reader_agent` → `page_writer_agent` →
+  `WikiMemoryService.apply_plan`) by default; `no_llm=True` is
+  preserved for one minor version.
 - `query(question, name?)` — synthesized answer (structured result
   with `fallback_used` and `fallback_reason`).
 - `lint(name?)` — health-check the wiki.
@@ -325,10 +326,10 @@ make check
 make test
 ```
 
-`make check` runs ruff, pydantic-guidance (PG + PYD flake8), ty, and
-ruff format. Run the pydantic-guidance lint on its own with
-`make lint-pydantic-guidance`; the same check fires on every commit via
-`.pre-commit-config.yaml`.
+`make check` runs ruff, ty, and ruff format (in that order); the
+same checks fire on every commit via `.pre-commit-config.yaml`.
+The pre-commit chain wraps `make unit-test`, so a commit that lands
+in the repo has already passed the local gate.
 
 ## Architecture
 

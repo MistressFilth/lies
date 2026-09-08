@@ -6,6 +6,8 @@ All notable changes to LIES are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-09-08
+
 ### Added
 - Library split: ingested sources land in
   `$XDG_DATA_HOME/lies/library/collections/<collection>/`, never under
