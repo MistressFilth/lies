@@ -9,14 +9,18 @@ clean markdown body that the ingest pipeline can hand to the mirror
 writer, which applies the deterministic frontmatter with the upstream
 ``source_hash`` flowing into the ``ingested_at`` derivation.
 
+Limits: builder-registry formats (bespoke, liquid, sphinx, etc.) are not
+yet routed; only direct-format dispatch is supported. Wiki-side
+coverage is added in a follow-up task.
+
 Per-doc flow:
 
 1. ``pick_scraper(source)`` selects a ``BaseScraper`` subclass.
 2. ``scraper.fetch(source)`` returns raw bytes.
 3. ``scraper.parse(raw, source=source)`` returns a list of ``ParsedDoc``.
 4. For each ``ParsedDoc``, ``format_dispatch.dispatch`` produces a
-   markdown body (markdown / html / rst / pdf formats handled; falls
-   back to UTF-8 decode on error).
+   markdown body (markdown / html / rst / pdf formats handled; unknown
+   formats raise ``UnknownFormatError`` to the caller for quarantine).
 5. The upstream ``source_sha256`` (or ``sha256(content)`` when blank) is
    preserved on ``FetchItem.source_hash`` so the mirror writer can stamp
    it into the deterministic frontmatter.
@@ -42,19 +46,18 @@ def _hash_bytes(raw: bytes) -> str:
 
 
 def _normalize_body(doc: ParsedDoc) -> str:
-    """Best-effort markdown body without wiki/collection context.
+    """Markdown body without wiki/collection context.
 
     Uses ``format_dispatch.dispatch`` which is format-aware (markdown /
     html / rst / pdf) but skips the obsidian frontmatter pass that
-    requires a wiki ``Collection``. Falls back to UTF-8 decode on any
-    error so a single broken doc does not abort the whole batch.
+    requires a wiki ``Collection``. Errors propagate so a PDF or pandoc
+    outage cannot silently land raw binary / raw HTML in a mirror file
+    as if it were clean markdown; the ingest pipeline can then quarantine
+    or surface the failure explicitly.
     """
-    try:
-        from lies.etl.normalize.format_dispatch import dispatch
+    from lies.etl.normalize.format_dispatch import dispatch
 
-        return dispatch(doc.content, doc.source_format)
-    except Exception:
-        return doc.content.decode("utf-8", errors="replace")
+    return dispatch(doc.content, doc.source_format)
 
 
 class ScraperFetcher:

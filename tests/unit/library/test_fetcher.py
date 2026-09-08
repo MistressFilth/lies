@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from lies.etl.normalize.format_dispatch import UnknownFormatError
 from lies.library.errors import LibraryFetchUnreachable
 from lies.library.fetcher import ScraperFetcher
 from lies.library.ingest import FetchItem
@@ -221,3 +222,61 @@ def test_fetcher_yields_iterator_not_list(monkeypatch, tmp_path: Path) -> None:
     # Pulling consumes the generator — confirm items flow before exhaustion.
     first = next(result)
     assert isinstance(first, FetchItem)
+
+
+def test_fetcher_unknown_format_propagates(monkeypatch, tmp_path: Path) -> None:
+    """A scraper emitting ``source_format="liquid"`` propagates ``UnknownFormatError``.
+
+    The fetcher must not swallow dispatch failures into a UTF-8 decode
+    fallback: a PDF or pandoc outage must not land raw binary as if it
+    were clean markdown. The ingest pipeline handles quarantine.
+    """
+    src = tmp_path / "page.md"
+    src.write_text("# hello\nbody\n")
+    fake = _FakeScraper(
+        [
+            ParsedDoc(
+                path="page.md",
+                content=b"<html>raw html bytes</html>",
+                source_sha256="aa" * 32,
+                source_format="liquid",
+            )
+        ]
+    )
+    monkeypatch.setattr(
+        "lies.scrapers.base.pick_scraper",
+        lambda source: fake,
+    )
+
+    fetcher = ScraperFetcher(library=None)  # type: ignore[arg-type]
+    with pytest.raises(UnknownFormatError):
+        list(fetcher.fetch_sources(src))
+
+
+def test_fetcher_unrecognized_format_propagates(monkeypatch, tmp_path: Path) -> None:
+    """An arbitrary unknown source_format propagates ``UnknownFormatError``.
+
+    Guards the catch-all branch of ``format_dispatch.dispatch`` (anything
+    not in the markdown/html/rst/pdf/liquid whitelist raises). Without
+    this propagation, raw content could silently land as a mirror file.
+    """
+    src = tmp_path / "page.md"
+    src.write_text("# hello\nbody\n")
+    fake = _FakeScraper(
+        [
+            ParsedDoc(
+                path="page.md",
+                content=b"\x00\x01\x02 binary blob",
+                source_sha256="bb" * 32,
+                source_format="x-totally-made-up",
+            )
+        ]
+    )
+    monkeypatch.setattr(
+        "lies.scrapers.base.pick_scraper",
+        lambda source: fake,
+    )
+
+    fetcher = ScraperFetcher(library=None)  # type: ignore[arg-type]
+    with pytest.raises(UnknownFormatError):
+        list(fetcher.fetch_sources(src))
