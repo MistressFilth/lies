@@ -93,19 +93,41 @@ def apply_migration(
     library: Library,
     *,
     dry_run: bool = True,
-) -> None:
+    commit_message: str | None = None,
+) -> str | None:
+    """Apply a migration plan in three stages.
+
+    1. Move wiki pages to ``library/collections/<coll>/<slug>.md``.
+    2. Backup byte-identical duplicates at
+       ``<wiki>/.lies/migration-backup/<date>/<coll>/<slug>.md`` AND
+       remove the duplicate wiki file (``src.unlink()``) so the wiki
+       atomic-commit picks up the deletion in the same commit. The
+       first-seen wins (per consolidate-wikis resolved Q #6).
+    3. Upsert library catalog rows with section="library" + a
+       deterministic ``updated`` derived from the source hash (per
+       spec §Migration §catalog state).
+
+    Returns the library-side git commit SHA (``None`` on no-op), routed
+    through ``LibraryWriter.commit`` so the wiki side and library side
+    each get their own atomic-commit envelope (per spec §Migration
+    §Atomicity: "Per-collection library write = one atomic git commit
+    at the library").
+    """
     if dry_run:
-        return
+        return None
+    moved_paths: list[Path] = []
     for src, dst in plan.moves:
         dst.parent.mkdir(parents=True, exist_ok=True)
         rewritten = _rewrite_frontmatter(src)
         dst.write_text(rewritten, encoding="utf-8")
-        # Atomic commit at library side handled by LibraryWriter in Task 13,
-        # but the wiki-side move also needs atomic git commit. Left to the
-        # full Task 14 (migrate CLI) which wraps both envelopes.
+        moved_paths.append(dst)
     for src, backup in plan.duplicates_to_backup:
         backup.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(src, backup)
+        # C3: remove the duplicate wiki file so the wiki-side
+        # atomic-commit picks up the removal. The backup stays as a
+        # workspace file (per spec §Duplicates).
+        src.unlink()
     # Catalog upsert: library catalog rows inserted with section="library"
     # and deterministic `updated` (per spec §Migration §catalog state).
     # Wrapped in an explicit transaction; WAL + busy_timeout protect
@@ -118,15 +140,37 @@ def apply_migration(
         finally:
             conn.close()
 
+    # C2: library-side atomic commit, routed through LibraryWriter so
+    # the catalog upsert + the mirror writes land in the same envelope
+    # as the rest of the library write path. No-op when nothing moved
+    # (matches PR #38 contract).
+    if moved_paths or plan.catalog_updates:
+        from lies.library.writer import LibraryWriter
+
+        writer = LibraryWriter(library)
+        rel_paths = [p.relative_to(library.git_root) for p in moved_paths]
+        msg = commit_message or f"migrate: ingest-to-library +{len(moved_paths)}"
+        return writer.commit(
+            rel_paths,
+            message=msg,
+            catalog_updates=plan.catalog_updates,
+        )
+    return None
+
 
 def _rewrite_frontmatter(src: Path) -> str:
     """Re-tag wiki-side frontmatter to library schema.
 
     - Drops ``type:`` (library mirrors are type-less).
-    - Adds ``source_url: null``, ``source_path: <absolute>``,
-      ``source_hash: <sha>``, ``fetched_via: migration``,
-      ``ingested_at: <date derived from hash>``.
+    - Adds ``source_url: null``, ``source_path: "migrated-from-wiki"``
+      (stable placeholder — see I9), ``source_hash: <sha>``,
+      ``fetched_via: migration``, ``ingested_at: <date derived from hash>``.
     - Preserves ``title:``.
+
+    ``source_path`` is set to a stable placeholder rather than the
+    host-local ``str(src.resolve())`` so migrated mirror files are
+    host-independent: relocating the wiki directory doesn't change
+    the byte-identical determinism contract on the library side.
     """
     body = src.read_text(encoding="utf-8")
     post = frontmatter.loads(body)
@@ -135,7 +179,7 @@ def _rewrite_frontmatter(src: Path) -> str:
     fm = build_frontmatter(
         title=title,
         source_url=None,
-        source_path=str(src.resolve()),
+        source_path="migrated-from-wiki",
         source_hash=sha,
         fetched_via="migration",
     )

@@ -239,3 +239,228 @@ def test_cli_ingest_to_library_apply_writes_files_and_catalog(
     sha_match = re.search(r"wiki commit ([0-9a-f]+)", combined)
     if sha_match is not None:
         assert len(sha_match.group(1)) >= 7
+
+
+def test_apply_migration_atomic_commits_library_side(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """C2 anti-tautology: ``apply_migration`` lands a NEW library git commit.
+
+    Before the fix, mirror files were written and the catalog was
+    SQLite-committed, but no library git commit fired — leaving
+    ``library.git_root`` with uncommitted mirror content. The new
+    contract routes through ``LibraryWriter.commit`` so the spec
+    §Migration §Atomicity requirement ("Per-collection library write =
+    one atomic git commit at the library") is satisfied.
+    """
+    monkeypatch.setattr(xdg, "data_home", lambda: tmp_path)
+    Library.open.cache_clear()
+    lib = Library.open()
+    _seed_library(lib)
+
+    name = "atomic-commit"
+    wiki = Wiki(
+        name=name,
+        data_root=xdg.data_home() / "lies" / name,
+        config_root=xdg.config_home() / "lies" / name,
+        cache_root=xdg.cache_home() / "lies" / name,
+        state_root=xdg.state_home() / "lies" / name,
+        runtime_root=xdg.runtime_dir_for(name),
+    )
+    _seed_wiki(
+        wiki,
+        slug_to_body={"a": "---\ntitle: A\n---\n# A\nbody\n"},
+    )
+
+    # Capture the lib git log before applying.
+    before = subprocess.run(
+        ["git", "-C", str(lib.git_root), "log", "--oneline"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    before_count = len([line for line in before.splitlines() if line])
+
+    plan = plan_migration(wiki, lib)
+    assert len(plan.moves) == 1
+    lib_sha = apply_migration(plan, lib, dry_run=False)
+
+    assert lib_sha is not None, (
+        "apply_migration must return a library commit SHA; mirror files were "
+        "written but the library side was not committed"
+    )
+    assert len(lib_sha) == 40
+
+    # A new commit must have landed in the library.
+    after = subprocess.run(
+        ["git", "-C", str(lib.git_root), "log", "--oneline"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    after_count = len([line for line in after.splitlines() if line])
+    assert after_count == before_count + 1, (
+        f"expected one new library commit; before={before_count}, after={after_count}\n"
+        f"log:\n{after}"
+    )
+    # The new commit message matches the migration tag.
+    assert "ingest-to-library" in after.splitlines()[0]
+
+
+def test_apply_migration_removes_duplicate_from_wiki(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """C3 anti-tautology: byte-identical duplicates are REMOVED from wiki.
+
+    Two byte-identical files in different collections: only the
+    first-seen survives in the library; the second moves to
+    ``<wiki>/.lies/migration-backup/<date>/<coll>/<slug>.md`` AND is
+    unlinked from ``<wiki>/wiki/<coll>/<slug>.md`` so the wiki-side
+    atomic-commit picks up the removal.
+    """
+    monkeypatch.setattr(xdg, "data_home", lambda: tmp_path)
+    Library.open.cache_clear()
+    lib = Library.open()
+    _seed_library(lib)
+
+    name = "dup-remove"
+    wiki = Wiki(
+        name=name,
+        data_root=xdg.data_home() / "lies" / name,
+        config_root=xdg.config_home() / "lies" / name,
+        cache_root=xdg.cache_home() / "lies" / name,
+        state_root=xdg.state_home() / "lies" / name,
+        runtime_root=xdg.runtime_dir_for(name),
+    )
+    # Two byte-identical files in different collections.
+    body = "---\ntitle: Shared\n---\n# Shared\nbody\n"
+    wiki.data_root.mkdir(parents=True, exist_ok=True)
+    wiki.wiki_dir.mkdir(parents=True, exist_ok=True)
+    for coll, slug in [("claude", "x"), ("openai", "y")]:
+        page = wiki.wiki_dir / coll / f"{slug}.md"
+        page.parent.mkdir(parents=True, exist_ok=True)
+        page.write_text(body, encoding="utf-8")
+    _git_init(wiki.data_root)
+
+    plan = plan_migration(wiki, lib, date_str="2026-09-08")
+    assert len(plan.moves) == 1  # first-seen wins
+    assert len(plan.duplicates_to_backup) == 1
+    src, backup = plan.duplicates_to_backup[0]
+    assert src.exists()
+
+    apply_migration(plan, lib, dry_run=False)
+
+    # First-seen winner still exists in library.
+    assert (lib.collections_root / "claude" / "x.md").exists()
+    # Duplicate was removed from wiki AND copied to the backup path.
+    assert not src.exists(), f"duplicate wiki file {src} was not removed"
+    assert backup.exists(), f"backup file {backup} was not created"
+
+
+def test_migrated_mirror_source_path_is_host_independent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """I9: migrated mirror ``source_path:`` is a stable placeholder, not a host path.
+
+    Previously the field carried ``str(src.resolve())`` — the host-
+    local wiki path. That made migrated mirror files host-dependent:
+    moving the wiki directory changes the byte-identical determinism
+    contract. New value: ``"migrated-from-wiki"`` (stable).
+    """
+    monkeypatch.setattr(xdg, "data_home", lambda: tmp_path)
+    Library.open.cache_clear()
+    lib = Library.open()
+    _seed_library(lib)
+
+    name = "host-indep"
+    wiki = Wiki(
+        name=name,
+        data_root=xdg.data_home() / "lies" / name,
+        config_root=xdg.config_home() / "lies" / name,
+        cache_root=xdg.cache_home() / "lies" / name,
+        state_root=xdg.state_home() / "lies" / name,
+        runtime_root=xdg.runtime_dir_for(name),
+    )
+    _seed_wiki(
+        wiki,
+        slug_to_body={"only": "---\ntitle: Only\n---\n# Only\nbody\n"},
+    )
+    plan = plan_migration(wiki, lib)
+    apply_migration(plan, lib, dry_run=False)
+
+    mirror_text = (lib.collections_root / "claude" / "only.md").read_text(encoding="utf-8")
+    assert 'source_path: "migrated-from-wiki"' in mirror_text or (
+        "source_path: migrated-from-wiki" in mirror_text
+    ), f"migrated mirror must carry stable placeholder; got:\n{mirror_text[:400]}"
+    # And the host path does NOT appear.
+    assert str(wiki.data_root.resolve()) not in mirror_text
+
+
+def test_cli_collection_filter_narrows_all_plan_fields(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """I10: ``--collection=claude`` filters moves, duplicates, AND catalog updates.
+
+    The previous filter only narrowed ``plan.moves`` — duplicates
+    and catalog updates for other collections still shipped through.
+    New contract: every plan field narrows on the same predicate.
+    """
+    monkeypatch.setattr(xdg, "data_home", lambda: tmp_path)
+    Library.open.cache_clear()
+    lib = Library.open()
+    _seed_library(lib)
+
+    name = "filter"
+    wiki = Wiki(
+        name=name,
+        data_root=xdg.data_home() / "lies" / name,
+        config_root=xdg.config_home() / "lies" / name,
+        cache_root=xdg.cache_home() / "lies" / name,
+        state_root=xdg.state_home() / "lies" / name,
+        runtime_root=xdg.runtime_dir_for(name),
+    )
+    wiki.data_root.mkdir(parents=True, exist_ok=True)
+    wiki.wiki_dir.mkdir(parents=True, exist_ok=True)
+    # claude/x and openai/y are byte-identical — openai/y is the
+    # duplicate-backup target. Filter on ``claude`` and only claude/x
+    # moves; openai/y stays put (not in the apply scope).
+    body = "---\ntitle: Shared\n---\n# body\n"
+    for coll, slug in [("claude", "x"), ("openai", "y")]:
+        page = wiki.wiki_dir / coll / f"{slug}.md"
+        page.parent.mkdir(parents=True, exist_ok=True)
+        page.write_text(body, encoding="utf-8")
+    _git_init(wiki.data_root)
+
+    result = runner.invoke(
+        app,
+        [
+            "ingest-to-library",
+            "--collection",
+            "claude",
+            "--apply",
+            "--name",
+            name,
+        ],
+        env={"XDG_DATA_HOME": str(tmp_path), "LIES_WIKI_NAME": name},
+    )
+    assert result.exit_code == 0, (
+        f"exit={result.exit_code}; stdout={result.stdout!r}; stderr={result.stderr!r}"
+    )
+
+    # claude/x moved; openai/y was filtered out (stays in wiki).
+    assert (lib.collections_root / "claude" / "x.md").exists()
+    assert not (lib.collections_root / "openai" / "y.md").exists()
+    assert (wiki.wiki_dir / "openai" / "y.md").exists(), (
+        "openai/y should stay in wiki when --collection=claude filters it out"
+    )
+    # Catalog only got the claude/x row.
+    conn = open_catalog(lib)
+    try:
+        rows = list_pages(conn)
+    finally:
+        conn.close()
+    assert {r.slug for r in rows} == {"claude/x"}

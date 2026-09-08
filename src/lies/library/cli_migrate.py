@@ -62,12 +62,19 @@ def ingest_to_library(
     lib = Library.open()
     plan = plan_migration(wiki, lib, date_str=date_str)
     if collection is not None:
+        # Filter all three plan fields on --collection. The first-seen
+        # duplicate backup is keyed on its (coll, sha) so a backup for
+        # a different collection is NOT in scope for this apply.
         plan = MigrationPlan(
             moves=[
                 (s, d) for s, d in plan.moves if s.relative_to(wiki.wiki_dir).parts[0] == collection
             ],
-            duplicates_to_backup=plan.duplicates_to_backup,
-            catalog_updates=plan.catalog_updates,
+            duplicates_to_backup=[
+                (s, b)
+                for s, b in plan.duplicates_to_backup
+                if s.relative_to(wiki.wiki_dir).parts[0] == collection
+            ],
+            catalog_updates=[c for c in plan.catalog_updates if c.source_pkg == collection],
         )
     typer.echo(
         f"plan: {len(plan.moves)} pages move, {len(plan.duplicates_to_backup)} duplicates backup"
@@ -75,7 +82,9 @@ def ingest_to_library(
     if dry_run:
         typer.echo("(dry-run; pass --apply to mutate)")
         return
-    apply_migration(plan, lib, dry_run=False)
+    lib_sha = apply_migration(plan, lib, dry_run=False)
+    if lib_sha:
+        typer.echo(f"library commit {lib_sha[:8]}")
     sha = atomic_commit(
         wiki.data_root,
         f"migrate: ingest-to-library +{len(plan.moves)}",
