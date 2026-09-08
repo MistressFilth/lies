@@ -204,6 +204,27 @@ def status(
     if memory_limit < 0:
         raise typer.BadParameter("--memory-limit must be >= 0", param_hint="--memory-limit")
     configure_logging()
+    # Library section surfaces before wiki resolution so the line still
+    # appears on a fresh wiki (no catalog yet → graceful indicator). The
+    # library is independent of any specific wiki, so it does not depend
+    # on ``resolve_wiki`` succeeding.
+    try:
+        from lies.library.catalog import list_pages, open_catalog
+        from lies.library.paths import Library
+
+        lib = Library.open()
+        conn = open_catalog(lib)
+        try:
+            rows = list_pages(conn, section="library")
+            quarantine = list_pages(conn, section="library-migrated")
+            typer.echo(
+                f"library: catalog: {len(rows)} pages in section=library, "
+                f"{len(quarantine)} migrated"
+            )
+        finally:
+            conn.close()
+    except Exception:  # noqa: BLE001 - status is observability; never fail the command
+        typer.echo("library: (no catalog yet)")
     wiki = resolve_wiki(name)
     root = wiki.data_root
     layout = WikiLayout(root)
