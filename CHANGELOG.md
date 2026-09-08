@@ -7,6 +7,13 @@ All notable changes to LIES are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- `lies ingest-to-library --apply` post-apply qmd cleanup hook
+  (`src/lies/library/cli_migrate.py`): for each migrated collection,
+  unregister the per-wiki `<wiki>_<collection>` qmd index and register
+  the library-side collection (`qmd_collection_remove` +
+  `qmd_collection_add_or_update` + `qmd_update` + `qmd_embed`). qmd is
+  derived, so every failure is non-fatal and the migration commit
+  stands.
 - `lies ingest` Typer sub-app (`src/lies/library/cli.py`) with two
   modes: `--source <PATH|URL>` for single-source deterministic ingest
   and `--batch <DIR>` for directory walks. Routes through the

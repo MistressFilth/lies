@@ -107,6 +107,20 @@ def qmd_collection_add_if_missing(cwd: Path, path: Path, name: str) -> None:
     raise QmdError(f"qmd collection add failed: {stderr}")
 
 
+def qmd_collection_remove(cwd: Path, name: str) -> None:
+    """Run ``qmd collection remove <name>`` in ``cwd``.
+
+    Used by the ingest-to-library cleanup hook (Task 14) to unregister
+    the per-wiki ``<wiki>_<collection>`` index once a collection has
+    moved into the library. Raises ``QmdError`` on non-zero exit so the
+    caller can wrap in try/except and continue without rolling back
+    the migration commit.
+    """
+    result = _run(["collection", "remove", name], cwd=cwd)
+    if result.returncode != 0:
+        raise QmdError(f"qmd collection remove failed: {result.stderr.strip()}")
+
+
 def qmd_collection_show(cwd: Path, name: str) -> dict[str, str] | None:
     """Return parsed ``qmd collection show <name>`` output, or None if missing.
 

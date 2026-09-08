@@ -51,6 +51,13 @@ def ingest_to_library(
     """One-shot migration script. See spec section 5."""
     from lies.cli import resolve_wiki as _resolve_wiki
 
+    # Deferred import: ``lies.qmd.cli`` runs ``lies.qmd.__init__``, which
+    # pulls in fastmcp + pydantic_ai (via ``lies.qmd.capability``).
+    # Importing here keeps ``import lies.cli`` cheap; the
+    # ``test_cli_lazy_imports`` no-fastmcp / no-pydantic_ai contract is
+    # preserved. Same rationale as ``library/writer.py``.
+    from lies.qmd import cli as _qmd_cli
+
     wiki = _resolve_wiki(name)
     lib = Library.open()
     plan = plan_migration(wiki, lib, date_str=date_str)
@@ -75,4 +82,27 @@ def ingest_to_library(
     )
     if sha:
         typer.echo(f"wiki commit {sha[:8]}")
+    # Post-apply qmd cleanup hook (Task 14): for each collection that
+    # just moved to the library, unregister the per-wiki
+    # ``<wiki>_<collection>`` qmd index and register the library-side
+    # collection. The wiki-side atomic_commit above has already landed;
+    # qmd is a derived index, so every failure here is non-fatal and the
+    # migration commit stands.
+    collections_moved = sorted({src.relative_to(wiki.wiki_dir).parts[0] for src, _ in plan.moves})
+    for coll in collections_moved:
+        try:
+            _qmd_cli.qmd_collection_remove(wiki.data_root, f"{wiki.name}_{coll}")
+        except Exception:  # noqa: BLE001 - qmd is derived; non-fatal
+            pass
+        try:
+            _qmd_cli.qmd_collection_add_or_update(
+                lib.git_root,
+                lib.collections_root / coll,
+                coll,
+                library_target=lib.collections_root / coll,
+            )
+            _qmd_cli.qmd_update(lib.git_root)
+            _qmd_cli.qmd_embed(lib.git_root, coll)
+        except Exception:  # noqa: BLE001 - qmd is derived; non-fatal
+            pass
     typer.echo("done.")
