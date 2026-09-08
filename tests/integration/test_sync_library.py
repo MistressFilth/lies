@@ -65,17 +65,58 @@ def _seed_collection(wiki, *, name: str = "claude", scraper_cmd: str | None = No
 
 
 def test_sync_collection_writes_to_library(fixture_lib: Library, monkeypatch) -> None:
-    """``sync_collection`` must land the mirror under library, not wiki."""
+    """``sync_collection`` lands the mirror under library, not wiki.
+
+    Regression pin for the Phase-2 ingest → library swap. Mocks the
+    fetcher layer (so the test does not shell out / hit the network)
+    but lets ``run_batch_ingest`` run end-to-end on the real on-disk
+    library fixture. Asserts the three contract pins:
+
+      1. Mirror file lands at ``<library.collections_root>/<c>/<slug>.md``.
+      2. Library catalog row exists at ``<library.catalog_path>`` with
+         ``section="library"``.
+      3. Wiki's ``wiki_dir`` did NOT receive a write (negative control).
+
+    Without #1, the helper would silently drop the body. Without #2, the
+    visible-memory layer would diverge from disk. Without #3, this test
+    could not distinguish a library-write from a leftover wiki-write
+    that the operator might still query against.
+    """
+    from lies.library.catalog import list_pages, open_catalog
+    from lies.library.ingest import FetchItem
+
     wiki = _stub_wiki(fixture_lib)
     _seed_collection(wiki)
 
-    captured = {"called_with": None}
+    body = (
+        "# Hello\n"
+        "body line one\n"
+        "body line two\n"
+        "body line three\n"
+        "body line four\n"
+        "body line five\n"
+        "body line six\n"
+        "body line seven\n"
+    )
 
-    def fake_run_batch(*args, **kwargs):
-        captured["called_with"] = kwargs
-        return BatchIngestResult(created=1)
+    class _StaticFetcher:
+        """Test double: yields one ``FetchItem`` with a body that clears
+        the thin-content gate (``should_skip_content``'s ``<= 5`` rule).
+        """
 
-    monkeypatch.setattr("lies.library.ingest.run_batch_ingest", fake_run_batch)
+        def __init__(self, library, **kwargs) -> None:
+            self._library = library
+
+        def fetch_sources(self, source):
+            yield FetchItem(
+                path=Path("/src/x.md"),
+                url=None,
+                body=body,
+                source_hash="abc123",
+                fetched_via="static",
+            )
+
+    monkeypatch.setattr("lies.etl.sync_helper.ScraperFetcher", _StaticFetcher)
 
     result = sync_collection(
         wiki=wiki,
@@ -83,12 +124,31 @@ def test_sync_collection_writes_to_library(fixture_lib: Library, monkeypatch) ->
         force=False,
     )
 
-    # The library-side fakes confirmed library was the target.
-    assert captured["called_with"] is not None
-    assert captured["called_with"].get("library") is fixture_lib
-    # Finding 3: ``sync_collection`` must surface ``BatchIngestResult``
-    # so the CLI can exit non-zero on errors instead of silently
-    # swallowing the failure.
+    coll_dir = fixture_lib.collections_root / "claude"
+    # Pin 1: mirror file lands at the library path.
+    assert (coll_dir / "x.md").exists(), (
+        f"expected mirror at {coll_dir / 'x.md'}; got {list(coll_dir.iterdir())!r}"
+    )
+
+    # Pin 2: library catalog row exists with section="library".
+    conn = open_catalog(fixture_lib)
+    try:
+        pages = list_pages(conn, section="library")
+    finally:
+        conn.close()
+    library_slugs = {p.slug for p in pages}
+    assert "claude/x" in library_slugs, (
+        f"expected slug 'claude/x' in section='library'; got {library_slugs!r}"
+    )
+
+    # Pin 3: wiki did NOT receive a write.
+    assert not (wiki.wiki_dir / "claude" / "x.md").exists(), (
+        "wiki.wiki_dir must not receive a write after Phase-2 retargeting"
+    )
+
+    # Contract: ``sync_collection`` surfaces ``BatchIngestResult`` so the
+    # CLI can exit non-zero on errors instead of silently swallowing the
+    # failure (Task 11's Finding 3).
     assert isinstance(result, BatchIngestResult)
     assert result.created == 1
     assert result.errors == 0
