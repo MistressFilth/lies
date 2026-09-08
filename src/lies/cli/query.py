@@ -7,6 +7,7 @@ markdown renderer (markdown-it is ~30ms of cold-start).
 
 from __future__ import annotations
 
+import sqlite3
 from typing import Annotated
 
 import typer
@@ -210,6 +211,7 @@ def status(
     # on ``resolve_wiki`` succeeding.
     try:
         from lies.library.catalog import list_pages, open_catalog
+        from lies.library.errors import LibraryError
         from lies.library.paths import Library
 
         lib = Library.open()
@@ -222,8 +224,15 @@ def status(
                 f"{len(quarantine)} migrated"
             )
         finally:
-            conn.close()
-    except Exception:  # noqa: BLE001 - status is observability; never fail the command
+            try:
+                conn.close()
+            except Exception:
+                pass
+    except (OSError, sqlite3.Error, LibraryError):
+        # Status is observability; we still want to surface the wiki
+        # section. Narrow catch so a regression that mis-spells
+        # ``list_pages`` (e.g. ``NameError``) surfaces instead of being
+        # silently masked as ``(no catalog yet)``.
         typer.echo("library: (no catalog yet)")
     wiki = resolve_wiki(name)
     root = wiki.data_root

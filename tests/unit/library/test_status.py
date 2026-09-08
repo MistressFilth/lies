@@ -18,17 +18,14 @@ from lies.cli import app
 runner = CliRunner()
 
 
-def test_status_reports_library_catalog_count(tmp_path: Path, monkeypatch) -> None:
-    """``lies status`` surfaces a ``library:`` line with catalog counts.
+def _setup_library(tmp_path: Path, monkeypatch) -> object:
+    """Provision an isolated library root with an initial git commit.
 
-    Sets up a real library directory (singleton ``Library`` rooted at
-    ``xdg.data_home()/lies/library/``) with an empty catalog, plus a
-    stubbed ``resolve_wiki`` so the wiki section doesn't crash on a
-    fresh wiki. Asserts the rendered output contains the library line.
+    Returns the ``Library`` singleton. Mirrors the fixture plumbing from
+    ``test_status_reports_library_catalog_count`` so both tests share it.
     """
     from lies import xdg
     from lies.library.paths import Library
-    from lies.wiki.wiki import Wiki
 
     lib_root = tmp_path / "lib"
     lib_root.mkdir()
@@ -68,9 +65,13 @@ def test_status_reports_library_catalog_count(tmp_path: Path, monkeypatch) -> No
         check=True,
         capture_output=True,
     )
+    return lib
 
-    # Stub ``resolve_wiki`` so the wiki section doesn't fail with
-    # WikiNotRegistered; the library section must run regardless.
+
+def _stub_wiki(tmp_path: Path, monkeypatch) -> None:
+    """Stub ``resolve_wiki`` so the wiki section doesn't fail with WikiNotRegistered."""
+    from lies.wiki.wiki import Wiki
+
     wiki = Wiki(
         name="default",
         data_root=tmp_path / "wiki",
@@ -82,14 +83,111 @@ def test_status_reports_library_catalog_count(tmp_path: Path, monkeypatch) -> No
     (tmp_path / "wiki" / "wiki").mkdir(parents=True)
     monkeypatch.setattr("lies.cli.resolve_wiki", lambda _name=None: wiki)
 
+
+def test_status_reports_library_catalog_count(tmp_path: Path, monkeypatch) -> None:
+    """``lies status`` surfaces a ``library:`` line with catalog counts.
+
+    Populates the catalog with BOTH ``section="library"`` and
+    ``section="library-migrated"`` rows so the migrated tally is non-zero
+    — a regression that drops the migrated count or conflates the two
+    would surface as a substring mismatch on ``, 1 migrated`` below.
+    """
+    from lies.library.catalog import (
+        LibraryCatalogPage,
+        open_catalog,
+        upsert_page,
+    )
+
+    lib = _setup_library(tmp_path, monkeypatch)
+    _stub_wiki(tmp_path, monkeypatch)
+
+    # Populate the catalog so the migrated tally is meaningful.
+    conn = open_catalog(lib)
+    try:
+        upsert_page(
+            conn,
+            LibraryCatalogPage(
+                slug="claude/x",
+                title="X",
+                type="",
+                source_pkg="claude",
+                section="library",
+                updated="2026-01-01",
+                hash="h1",
+                derived_from="",
+            ),
+        )
+        upsert_page(
+            conn,
+            LibraryCatalogPage(
+                slug="wiki-old/y",
+                title="Y",
+                type="",
+                source_pkg="wiki-old",
+                section="library-migrated",
+                updated="2026-01-02",
+                hash="h2",
+                derived_from="",
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
     result = runner.invoke(app, ["status"], env={"LIES_WIKI_NAME": "default"})
     # ``section=library`` is the library-line substring; the wiki-side
     # ``catalog:`` line only says ``catalog:`` (no ``section=``), so this
     # assertion pins the library line specifically (not the wiki catalog
     # block that pre-existed).
-    out = result.stdout.lower()
-    assert "section=library" in out, f"library line missing from status output: {result.stdout!r}"
-    # The library line is also exposed when the wiki section is reachable,
-    # which it is here (resolve_wiki is stubbed). Both substrings present.
-    assert "library" in out
-    assert "catalog" in out
+    out = result.stdout
+    assert "section=library" in out, f"library line missing from status output: {out!r}"
+    # Pin both counts so a regression that drops the migrated tally or
+    # conflates sections is caught — ``, 1 migrated`` proves the
+    # ``library-migrated`` section is queried and reported distinctly.
+    assert "1 pages in section=library" in out, f"library count missing: {out!r}"
+    assert "1 migrated" in out, f"migrated count missing: {out!r}"
+
+
+def test_status_reports_zero_migrated_when_only_library_section(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """``lies status`` prints ``0 migrated`` when only ``library`` rows exist.
+
+    Pins the unpopulated-quarantine case so a regression that always
+    reports ``0`` (or always reports ``N``) for the migrated tally is
+    caught regardless of how the populated case changes.
+    """
+    from lies.library.catalog import (
+        LibraryCatalogPage,
+        open_catalog,
+        upsert_page,
+    )
+
+    lib = _setup_library(tmp_path, monkeypatch)
+    _stub_wiki(tmp_path, monkeypatch)
+
+    # Populate ONLY ``section="library"``; no migrated rows.
+    conn = open_catalog(lib)
+    try:
+        upsert_page(
+            conn,
+            LibraryCatalogPage(
+                slug="claude/x",
+                title="X",
+                type="",
+                source_pkg="claude",
+                section="library",
+                updated="2026-01-01",
+                hash="h1",
+                derived_from="",
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    result = runner.invoke(app, ["status"], env={"LIES_WIKI_NAME": "default"})
+    out = result.stdout
+    assert "section=library" in out, f"library line missing: {out!r}"
+    # Exactly zero migrated; substring "0 migrated" pins the unpopulated case.
+    assert "0 migrated" in out, f"zero-migrated indicator missing: {out!r}"
