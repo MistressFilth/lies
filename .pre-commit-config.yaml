@@ -4,30 +4,16 @@ repos:
   # `additional_dependencies`, so no prior `uv add` is needed when running
   # pre-commit. For local Makefile runs, both packages are listed under
   # `[project.optional-dependencies] dev` in `pyproject.toml`.
+  #
+  # Pinned to a commit SHA because the upstream `v0.1.1` tag referenced
+  # in the repo's own README + pyproject.toml hasn't been pushed yet
+  # (`git ls-remote --tags` returns empty). Bump to a real tag (or a
+  # newer SHA) once upstream publishes one; mirror the same ref in
+  # `[tool.uv.sources] pydantic-guidance.rev` in `pyproject.toml`.
   - repo: https://github.com/MistressFilth/pydantic-guidance
-    # Pinned to a commit SHA because the upstream `v0.1.1` tag referenced
-    # in the repo's own README + pyproject.toml hasn't been pushed yet
-    # (`git ls-remote --tags` returns empty). Bump to a real tag (or a
-    # newer SHA) once upstream publishes one; mirror the same ref in
-    # `[tool.uv.sources] pydantic-guidance.rev` in `pyproject.toml`.
     rev: d7d992b3b5897321a92fb21b1ad6f35f49b35fa5
     hooks:
       - id: pydantic-guidance
-        # Override the upstream entry: flake8's `--select=PG` is a prefix
-        # match that would also pull in the opt-in advisory `PG101`
-        # (`BaseModel` uses no Pydantic surface). PG101 produces high
-        # false-positive rates in this repo because sub-agent message
-        # models are dataclass-shaped by design. The default-on PG codes
-        # (PG001-003) cover real Pydantic-usage guidance; PG101 lives
-        # behind `make lint-pg101` / `make check-strict` for opt-in
-        # review.
-        entry: flake8 --select=PG001,PG002,PG003,PYD
-        # Mirror the file scope used by ruff + ty so the lint surface stays
-        # consistent across hooks. Without this, pre-commit defaults to
-        # `types_or: [python, pyi]` which is also fine — the explicit
-        # `files:` regex keeps scope aligned with `src/`, `tests/`, and
-        # `scripts/`.
-        files: ^((src/lies|tests|scripts)/.*\.(py|pyi)|pyproject\.toml)$
 
   # Pinned to v0.14.14 because ruff 0.15+ strips the mandatory
   # parens around multi-exception ``except`` clauses (upstream
