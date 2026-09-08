@@ -103,10 +103,31 @@ class LibraryWriter:
         catalog_updates: Iterable[LibraryCatalogPage] = (),
         qmd_collection: str | None = None,
     ) -> str | None:
-        # Paths arrive already relative to ``library.git_root`` (callers
-        # compute them via ``Path.relative_to(library.git_root)``). Atomic
-        # commit expects repo-relative strings, so we just stringify.
-        rel_paths = [str(p) for p in paths]
+        # I12: accept both absolute and relative paths. Absolute paths
+        # are coerced via ``relative_to(git_root)``; callers that
+        # already pass repo-relative strings (or paths) round-trip
+        # unchanged. A path that escapes ``git_root`` raises a typed
+        # ``LibraryAtomicCommitFailed`` (we deliberately do not
+        # silently stringify — the previous behaviour misclassified
+        # caller mistakes as commit failures with no diagnostic).
+        rel_paths: list[str] = []
+        for p in paths:
+            if isinstance(p, str):
+                rel_paths.append(p)
+                continue
+            try:
+                rel = p.relative_to(self._library.git_root)
+            except ValueError:
+                if p.is_absolute():
+                    raise LibraryAtomicCommitFailed(
+                        f"path {p} is outside git_root {self._library.git_root}; "
+                        f"expected a repo-relative path or a path under git_root"
+                    ) from None
+                # Repo-relative already (relative_to errored because
+                # of mismatched root); pass through as a string.
+                rel_paths.append(str(p))
+                continue
+            rel_paths.append(str(rel))
         updates = list(catalog_updates)
 
         # Short-circuit a true no-op: nothing to commit and nothing to
@@ -122,8 +143,12 @@ class LibraryWriter:
                 files=rel_paths,
             )
         except Exception as exc:
+            # I13: include the recovery command in the error so the
+            # operator can inspect the staged state without reading
+            # source.
             raise LibraryAtomicCommitFailed(
-                f"atomic_commit failed for {self._library.git_root}: {exc}"
+                f"atomic_commit failed for {self._library.git_root}: {exc}. "
+                f"Run `git -C {self._library.git_root} status` to inspect staged state."
             ) from exc
 
         if updates:

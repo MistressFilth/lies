@@ -104,16 +104,21 @@ def _quarantine_to_poison(
     body: str,
     reason: str,
 ) -> tuple[str, str]:
-    """Copy the body to ``poison/<collection>/<slug>.md`` and return the record.
+    """Copy the body to ``poison/<collection>/<slug>.md`` AND write a ``.reason`` sidecar.
 
     Per-doc quarantine: preserves the failed doc for inspection, mirroring
-    the wiki-side ``lies.etl.quarantine.quarantine`` contract. Returns a
+    the wiki-side ``lies.etl.quarantine.quarantine`` contract. The
+    spec mandates both the body file AND a ``<slug>.md.reason`` sidecar
+    so the operator can read the typed reason without parsing the
+    ``BatchIngestResult.quarantine_records`` API. Returns a
     ``(relative_path, reason)`` tuple suitable for
     ``BatchIngestResult.quarantine_records``.
     """
     target = collection.library.poison_root / collection.name / f"{slug}.md"
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(body, encoding="utf-8")
+    reason_path = target.parent / f"{target.name}.reason"
+    reason_path.write_text(reason, encoding="utf-8")
     return (str(target.relative_to(collection.library.git_root)), reason)
 
 

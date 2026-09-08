@@ -36,6 +36,68 @@ class _FakeScraper:
         return self._docs
 
 
+def test_fetcher_source_hash_is_raw_bytes(monkeypatch, tmp_path: Path) -> None:
+    """C4 anti-tautology: source_hash is SHA256 of raw fetch bytes, not per-doc slices.
+
+    Two scrapers returning different per-doc ``source_sha256`` /
+    ``content`` parses for the same source URL must produce the SAME
+    ``source_hash`` on the emitted ``FetchItem`` (spec §Frontmatter).
+    The hash is computed once from the raw scraper.fetch() bytes,
+    not from doc.source_sha256 or doc.content.
+    """
+    import hashlib
+
+    raw_bytes = b"shared raw response body across both scrapers"
+
+    class _ScraperA:
+        def fetch(self, source):  # type: ignore[no-untyped-def]
+            return raw_bytes
+
+        def parse(self, raw, *, source=None):  # type: ignore[no-untyped-def]
+            from lies.scrapers.base import ParsedDoc
+
+            return [
+                ParsedDoc(
+                    path="a.md",
+                    content=b"per-doc content A",
+                    source_sha256="aa" * 32,  # DIFFERENT from raw bytes
+                    source_format="markdown",
+                )
+            ]
+
+    class _ScraperB:
+        def fetch(self, source):  # type: ignore[no-untyped-def]
+            return raw_bytes
+
+        def parse(self, raw, *, source=None):  # type: ignore[no-untyped-def]
+            from lies.scrapers.base import ParsedDoc
+
+            return [
+                ParsedDoc(
+                    path="a.md",
+                    content=b"per-doc content B",
+                    source_sha256="bb" * 32,  # DIFFERENT again
+                    source_format="markdown",
+                )
+            ]
+
+    # Run with scraper A — capture the hash.
+    monkeypatch.setattr("lies.scrapers.base.pick_scraper", lambda source: _ScraperA())
+    fetcher = ScraperFetcher(library=None)  # type: ignore[arg-type]
+    items_a = list(fetcher.fetch_sources("https://example.com/x"))
+
+    # Re-run with scraper B — assert the hash matches A.
+    monkeypatch.setattr("lies.scrapers.base.pick_scraper", lambda source: _ScraperB())
+    items_b = list(fetcher.fetch_sources("https://example.com/x"))
+
+    expected_hash = hashlib.sha256(raw_bytes).hexdigest()
+    assert items_a[0].source_hash == expected_hash
+    assert items_b[0].source_hash == expected_hash
+    assert items_a[0].source_hash == items_b[0].source_hash, (
+        "source_hash must be stable across scrapers returning different per-doc parses"
+    )
+
+
 def test_fetcher_invokes_local_file(monkeypatch, tmp_path: Path) -> None:
     """ScraperFetcher drives a fake scraper end-to-end and yields FetchItems.
 
@@ -64,7 +126,15 @@ def test_fetcher_invokes_local_file(monkeypatch, tmp_path: Path) -> None:
 
     assert len(items) == 1
     item = items[0]
-    assert item.source_hash == "abc123def456"
+    # C4: source_hash is SHA256 of raw scraper.fetch() bytes — NOT
+    # the per-doc source_sha256 ("abc123def456") carried on ParsedDoc.
+    import hashlib
+
+    expected_raw_hash = hashlib.sha256(b"raw bytes").hexdigest()
+    assert item.source_hash == expected_raw_hash
+    assert item.source_hash != "abc123def456", (
+        "source_hash must be raw-bytes hash, not the per-doc source_sha256"
+    )
     assert item.fetched_via == "_FakeScraper"
     assert item.body == "raw body"
     assert item.path == Path("page.md")
@@ -141,27 +211,42 @@ def test_fetcher_emits_multiple_docs(monkeypatch) -> None:
     items = list(fetcher.fetch_sources("https://example.com/x"))
 
     assert [i.path.name for i in items] == ["a.md", "b.md", "c.md"]
-    assert [i.source_hash for i in items] == ["aa" * 32, "bb" * 32, "cc" * 32]
+    # C4: every emitted item carries the SAME source_hash (raw bytes
+    # hash), regardless of per-doc source_sha256 differences.
+    assert len({i.source_hash for i in items}) == 1, (
+        f"all items must share one source_hash (raw bytes); got {[i.source_hash for i in items]}"
+    )
 
 
-def test_fetcher_derives_hash_when_scraper_omits_it(
+def test_fetcher_derives_hash_from_raw_bytes(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    """ParsedDoc.source_sha256 may be empty; fetcher falls back to sha256(content)."""
+    """C4: source_hash is SHA256 of the raw scraper.fetch() bytes, not per-doc.
+
+    The previous contract used ``doc.source_sha256 or _hash_bytes(doc.content)``
+    (per-doc slices) which mixed scraper-specific parser output into the
+    hash. Spec §Frontmatter requires SHA256 of raw bytes at fetch time,
+    so the fetcher now hashes the upstream ``scraper.fetch(source)``
+    output and threads that single value through every emitted item.
+    """
     src = tmp_path / "page.md"
     src.write_text("# hello\nbody\n")
+    raw_bytes = b"raw scraper.fetch() bytes"
     content = b"\x00\x01\x02 deterministic bytes"
     fake = _FakeScraper(
         [
             ParsedDoc(
                 path="page.md",
                 content=content,
-                source_sha256="",  # blank — fetcher must compute
+                source_sha256="",
                 source_format="markdown",
             )
         ]
     )
+    # _FakeScraper.fetch returns b"raw bytes" — use a custom raw_bytes
+    # by overriding the fake's fetch at construction time.
+    fake.fetch = lambda source: raw_bytes  # type: ignore[method-assign]
     monkeypatch.setattr(
         "lies.scrapers.base.pick_scraper",
         lambda source: fake,
@@ -172,7 +257,9 @@ def test_fetcher_derives_hash_when_scraper_omits_it(
 
     import hashlib
 
-    assert items[0].source_hash == hashlib.sha256(content).hexdigest()
+    assert items[0].source_hash == hashlib.sha256(raw_bytes).hexdigest()
+    # The doc.content hash is NOT the source_hash (per spec §Frontmatter).
+    assert items[0].source_hash != hashlib.sha256(content).hexdigest()
 
 
 def test_fetcher_zero_items_raises_library_fetch_unreachable(

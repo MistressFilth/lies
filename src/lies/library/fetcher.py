@@ -234,15 +234,23 @@ class ScraperFetcher:
         else:
             scraper = _scraper_base.pick_scraper(source)
         raw = scraper.fetch(source)
+        # C4: hash the raw bytes ONCE up front so the same source URL
+        # returns the same ``source_hash`` regardless of which scraper's
+        # per-doc parser / normalizer the request lands on. The previous
+        # ``doc.source_sha256 or _hash_bytes(doc.content)`` mixed
+        # scraper-specific per-doc slices into the hash, breaking the
+        # idempotency contract (``ingested_at`` derives from
+        # ``source_hash``). Per spec §Frontmatter: ``source_hash`` is the
+        # SHA256 of raw bytes at fetch time.
+        fetcher_raw_hash = _hash_bytes(raw)
         docs = scraper.parse(raw, source=source)
         emitted = 0
         for doc in docs:
-            source_hash = doc.source_sha256 or _hash_bytes(doc.content)
             yield FetchItem(
                 path=Path(doc.path),
                 url=str(source) if not isinstance(source, Path) else None,
                 body=_normalize_body(doc, collection=self._collection),
-                source_hash=source_hash,
+                source_hash=fetcher_raw_hash,
                 fetched_via=type(scraper).__name__,
             )
             emitted += 1

@@ -10,7 +10,7 @@ from lies.library.catalog import (
     open_catalog,
     list_pages,
 )
-from lies.library.errors import LibraryCatalogLocked
+from lies.library.errors import LibraryAtomicCommitFailed, LibraryCatalogLocked
 from lies.library.paths import Library
 
 
@@ -41,6 +41,64 @@ def lib_with_git(lib: Library) -> Library:
         ["git", "-C", str(lib.git_root), "commit", "-m", "init"], check=True, capture_output=True
     )
     return lib
+
+
+def test_writer_commit_absolute_paths_are_coerced(lib_with_git: Library) -> None:
+    """I12: absolute paths under ``git_root`` round-trip to repo-relative strings."""
+    target = lib_with_git.collections_root / "claude" / "x.md"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("body\n")
+    writer = LibraryWriter(lib_with_git)
+    # Pass the absolute path; the writer must coerce it.
+    sha = writer.commit([target], message="abs-path +1")
+    assert sha is not None
+    assert len(sha) == 40
+
+
+def test_writer_commit_path_outside_git_root_raises_typed(
+    lib_with_git: Library, tmp_path: Path
+) -> None:
+    """I12: a path that escapes ``git_root`` raises ``LibraryAtomicCommitFailed``.
+
+    Previously a bare ``Path.relative_to`` raised ``ValueError`` that
+    was caught by the generic envelope and misclassified as a git
+    failure. The fix surfaces a typed error with a clear diagnostic.
+    """
+    outside = tmp_path / "outside.md"
+    outside.write_text("body\n")
+    writer = LibraryWriter(lib_with_git)
+    with pytest.raises(LibraryAtomicCommitFailed) as exc_info:
+        writer.commit([outside], message="oops")
+    msg = str(exc_info.value)
+    assert "outside" in msg or str(outside) in msg
+
+
+def test_writer_commit_failed_message_includes_recovery_command(
+    lib_with_git: Library, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """I13: ``LibraryAtomicCommitFailed`` message includes the recovery command.
+
+    Spec §Atomic commit envelope mandates the recovery hint in the
+    raised message so the operator doesn't have to read the source.
+    """
+    from lies.library import writer as writer_mod
+
+    def boom(*args, **kwargs):  # type: ignore[no-untyped-def]
+        from lies.wiki.git import CommitError
+
+        raise CommitError("git commit failed: simulated")
+
+    monkeypatch.setattr(writer_mod, "atomic_commit", boom)
+    target = lib_with_git.collections_root / "claude" / "x.md"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("body\n")
+    writer = LibraryWriter(lib_with_git)
+    with pytest.raises(LibraryAtomicCommitFailed) as exc_info:
+        writer.commit([target], message="oops")
+    msg = str(exc_info.value)
+    assert "git -C" in msg, f"expected recovery hint in message; got: {msg}"
+    assert "status" in msg, f"expected `status` in recovery hint; got: {msg}"
+    assert str(lib_with_git.git_root) in msg
 
 
 def test_writer_commit_records_sha(lib_with_git: Library, tmp_path: Path) -> None:

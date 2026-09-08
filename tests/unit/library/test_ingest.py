@@ -257,6 +257,35 @@ def test_run_source_ingest_filter_skip(lib_with_git: Library) -> None:
     assert result.skipped >= 1
 
 
+def test_run_source_ingest_quarantine_writes_reason_sidecar(lib_with_git: Library) -> None:
+    """C5 anti-tautology: quarantine writes BOTH body AND ``.reason`` sidecar.
+
+    Spec §Error handling row 3b mandates
+    ``<poison>/<collection>/<slug>.md + <slug>.md.reason``. The
+    sidecar carries the typed reason verbatim so the operator can
+    read it from the filesystem without parsing the result API.
+    """
+    fetcher = _StaticFetcher(
+        [
+            FetchItem(
+                path=Path("/src/x.md"),
+                url=None,
+                body="tiny\n",  # thin → quarantine
+                source_hash="aaa",
+                fetched_via="github",
+            ),
+        ]
+    )
+    result = run_source_ingest(lib_with_git, "claude", source="x", fetcher=fetcher)
+    assert result.errors >= 1
+    body_path = lib_with_git.poison_root / "claude" / "x.md"
+    assert body_path.exists(), f"quarantine body missing at {body_path}"
+    reason_path = lib_with_git.poison_root / "claude" / "x.md.reason"
+    assert reason_path.exists(), f"quarantine .reason sidecar missing at {reason_path}"
+    expected_reason = result.quarantine_records[0][1]
+    assert reason_path.read_text(encoding="utf-8") == expected_reason
+
+
 def test_run_source_ingest_thin_content_quarantine(lib_with_git: Library) -> None:
     fetcher = _StaticFetcher(
         [
