@@ -88,6 +88,12 @@ class BatchIngestResult:
     errors: int = 0
     skip_reasons: dict[str, int] = field(default_factory=dict)
     mirror_paths: list[Path] = field(default_factory=list)
+    # Per-mirror source hashes, parallel to ``mirror_paths`` (same index).
+    # ``_finalize`` threads each into the catalog row's ``hash`` column so
+    # the catalog stays useful for dedup + qmd change-detection — a bare
+    # ``hash=""`` discards the upstream content hash and makes the catalog
+    # row indistinguishable from a never-hashed mirror (Minor 29).
+    mirror_source_hashes: list[str] = field(default_factory=list)
     quarantine_records: list[tuple[str, str]] = field(default_factory=list)
 
 
@@ -296,6 +302,7 @@ def _process_item(
     else:
         result.created += 1
     result.mirror_paths.append(written)
+    result.mirror_source_hashes.append(item.source_hash)
 
 
 def _finalize(
@@ -335,10 +342,16 @@ def _finalize(
             source_pkg=collection_name,
             section="library",
             updated=updated_iso,
-            hash="",
+            # Minor 29: thread the upstream source_hash into the catalog
+            # row so qmd change-detection / catalog-level dedup can use
+            # the row without re-reading the mirror frontmatter. The
+            # parallel list ``mirror_source_hashes`` is index-aligned with
+            # ``mirror_paths``; an off-by-one here would silently tag the
+            # wrong mirror — assert it instead in the test suite.
+            hash=result.mirror_source_hashes[i],
             derived_from="",
         )
-        for p in result.mirror_paths
+        for i, p in enumerate(result.mirror_paths)
     ]
     sha = writer.commit(
         rel_paths,

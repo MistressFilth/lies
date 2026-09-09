@@ -118,6 +118,61 @@ def test_writer_commit_no_op_returns_none(lib_with_git: Library) -> None:
     assert result is None
 
 
+def test_writer_commit_catalog_only_no_paths_skips_git_commit(
+    lib_with_git: Library,
+) -> None:
+    """Minor 27 anti-tautology: rel_paths=[] + updates=[...] short-circuits.
+
+    Previously ``atomic_commit(files=[])`` raised ``CommitError`` which the
+    envelope misclassified as ``LibraryAtomicCommitFailed``. The fix is
+    symmetric: when there are no mirror files to commit, skip the git
+    commit entirely but still upsert the catalog rows (the
+    ``upsert_pages`` auto-commit makes a separate git commit unnecessary).
+    """
+    before_sha = subprocess.run(
+        ["git", "-C", str(lib_with_git.git_root), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    writer = LibraryWriter(lib_with_git)
+    result = writer.commit(
+        [],
+        message="catalog-only",
+        catalog_updates=[
+            LibraryCatalogPage(
+                slug="claude/cat-only",
+                title="Cat Only",
+                type="",
+                source_pkg="claude",
+                section="library",
+                updated="2024-01-01",
+                hash="",
+                derived_from="",
+            ),
+        ],
+    )
+    assert result is None, "no git commit when rel_paths is empty; should return None"
+
+    # Catalog row landed.
+    conn = open_catalog(lib_with_git)
+    try:
+        slugs = [p.slug for p in list_pages(conn, section="library")]
+    finally:
+        conn.close()
+    assert slugs == ["claude/cat-only"], f"catalog row not persisted; got {slugs!r}"
+
+    # Git HEAD did NOT advance (no commit was attempted).
+    after_sha = subprocess.run(
+        ["git", "-C", str(lib_with_git.git_root), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    assert after_sha == before_sha, "catalog-only short-circuit must not touch HEAD"
+
+
 def test_writer_commit_catalog_updates(lib_with_git: Library) -> None:
     file = lib_with_git.collections_root / "claude" / "x.md"
     file.parent.mkdir(parents=True)

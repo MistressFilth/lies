@@ -552,3 +552,77 @@ def test_run_source_ingest_wires_qmd_collection_through_finalize(
     # Kwarg: library_target=coll_dir
     assert "library_target" in kwargs
     assert kwargs["library_target"] == lib_with_git.collections_root / "claude"
+
+
+def test_run_source_ingest_catalog_row_carries_source_hash(
+    lib_with_git: Library,
+) -> None:
+    """Minor 29 anti-tautology: catalog row's ``hash`` column carries source_hash.
+
+    The previous implementation built catalog rows with ``hash=""``,
+    discarding the upstream SHA256 of the raw fetch bytes. That made
+    catalog-level dedup / qmd change-detection impossible without re-parsing
+    the mirror frontmatter. The fix threads ``item.source_hash`` through
+    ``BatchIngestResult.mirror_source_hashes`` into the catalog row.
+    """
+    from lies.library.catalog import open_catalog, list_pages
+
+    fetcher = _StaticFetcher(
+        [
+            FetchItem(
+                path=Path("/src/x.md"),
+                url=None,
+                body="body\n" * 10,
+                source_hash="deadbeef" * 8,  # 64 hex chars — full SHA256
+                fetched_via="github",
+            ),
+        ]
+    )
+    result = run_source_ingest(lib_with_git, "claude", source="x", fetcher=fetcher)
+    assert result.created == 1
+    conn = open_catalog(lib_with_git)
+    try:
+        pages = list_pages(conn, section="library")
+    finally:
+        conn.close()
+    assert len(pages) == 1
+    assert pages[0].hash == "deadbeef" * 8, (
+        f"catalog row should carry the upstream source_hash; got {pages[0].hash!r}"
+    )
+
+
+def test_run_batch_ingest_catalog_rows_carry_source_hashes(
+    lib_with_git: Library,
+) -> None:
+    """Minor 29 anti-tautology: per-doc source_hash lands in the matching catalog row.
+
+    Pins the parallel-list invariant (``mirror_paths`` and
+    ``mirror_source_hashes`` are index-aligned). Off-by-one or alignment
+    drift between the two lists would tag a catalog row with the wrong
+    upstream hash — a silent data-integrity bug.
+    """
+    from lies.library.catalog import open_catalog, list_pages
+
+    a = FetchItem(
+        path=Path("/src/a.md"),
+        url=None,
+        body="body a\n" * 10,
+        source_hash="a" * 64,
+        fetched_via="github",
+    )
+    b = FetchItem(
+        path=Path("/src/b.md"),
+        url=None,
+        body="body b\n" * 10,
+        source_hash="b" * 64,
+        fetched_via="github",
+    )
+    result = run_batch_ingest(lib_with_git, "claude", Path("/src"), fetcher=_StaticFetcher([a, b]))
+    assert result.created == 2
+
+    conn = open_catalog(lib_with_git)
+    try:
+        rows = {p.slug: p.hash for p in list_pages(conn, section="library")}
+    finally:
+        conn.close()
+    assert rows == {"claude/a": "a" * 64, "claude/b": "b" * 64}
