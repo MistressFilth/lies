@@ -69,6 +69,32 @@ def test_ingested_at_capped_to_2099() -> None:
     assert "ingested_at: 2099-12-31\n" in fm
 
 
+def test_ingested_at_short_hash_falls_back_to_base_date() -> None:
+    """Minor 35: a hash shorter than 8 hex chars falls back to ``_BASE_DATE``.
+
+    The previous ``len(source_hash) < 4`` check was too permissive:
+    a 5-, 6-, or 7-char prefix would pass the guard, attempt a partial
+    ``int(source_hash[:8], 16)`` parse (only 5-7 chars were present so
+    the slice read past the end), raise ``ValueError``, and silently
+    fall back to ``_BASE_DATE``. The new guard reads
+    ``len(source_hash) < 8`` so the parse never attempts a
+    cross-boundary slice. Regression test: 7-char hash still produces
+    the base date (not a ``ValueError`` raised from
+    ``_ingested_at_from_hash``).
+    """
+    from datetime import date as _date
+
+    from lies.library.frontmatter import _BASE_DATE, _ingested_at_from_hash
+
+    # Below the new boundary (< 8 chars) → _BASE_DATE
+    assert _ingested_at_from_hash("") == _BASE_DATE.isoformat()
+    assert _ingested_at_from_hash("a") == _BASE_DATE.isoformat()
+    assert _ingested_at_from_hash("a" * 7) == _BASE_DATE.isoformat()
+    # At/above the boundary → deterministic derivation
+    assert _ingested_at_from_hash("0" * 8) == _BASE_DATE.isoformat()
+    assert _ingested_at_from_hash("f" * 8) == _date(2099, 12, 31).isoformat()
+
+
 # --- YAML-escaping tests for user-supplied string fields -----------------
 #
 # Regression: build_frontmatter previously interpolated `title` (and the

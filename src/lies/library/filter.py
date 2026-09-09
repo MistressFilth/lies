@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Container, Iterable
+from collections.abc import Container, Sequence
 from pathlib import Path
 
 FILENAME_SKIP_STEMS: frozenset[str] = frozenset(
@@ -43,20 +43,33 @@ def should_skip_filename(
     path: Path,
     *,
     extra_stems: Container[str] = (),
-    extra_prefixes: Container[str] = (),
+    extra_prefixes: Sequence[str] = (),
 ) -> str | None:
+    """Return a skip reason if ``path`` matches a skip stem or prefix.
+
+    ``extra_stems`` are matched against both the filename (with
+    extension) AND the bare stem so the operator CLI flag
+    ``--exclude-stem`` works for both ``robots.txt.md`` and
+    ``robots.txt.md.md``-style naming (Minor 33 pins the dual-match).
+    ``extra_stems`` stays ``Container[str]`` (only ``__contains__``
+    is required); ``extra_prefixes`` is ``Sequence[str]`` because we
+    unpack it positionally (Minor 32) and a Container's protocol does
+    not promise iteration.
+    """
     filename = path.name.lower()
     stem = path.stem.lower()
     if stem in FILENAME_SKIP_STEMS or filename in extra_stems or stem in extra_stems:
         return f"skip-stem:{stem}"
-    for prefix in (*FILENAME_SKIP_PREFIXES, *_iterable_prefixes(extra_prefixes)):
+    # Minor 32: inlined the previous ``_iterable_prefixes`` wrapper.
+    # The wrapper was a ``yield from prefixes`` over a Container, which
+    # is just an iteration; the wrapper layer added nothing. Keeping
+    # the iteration explicit here preserves the same union order
+    # (built-in prefixes first, then operator-supplied) without the
+    # extra function call.
+    for prefix in (*FILENAME_SKIP_PREFIXES, *extra_prefixes):
         if stem.startswith(prefix):
             return f"skip-stem-prefix:{prefix}"
     return None
-
-
-def _iterable_prefixes(prefixes: Container[str]) -> Iterable[str]:
-    yield from prefixes
 
 
 def _strip_fenced(content: str) -> str:
@@ -64,6 +77,13 @@ def _strip_fenced(content: str) -> str:
 
 
 def should_skip_content(body: str) -> str | None:
+    """Return a skip reason if ``body`` is auto-generated, jinja-templated, or thin.
+
+    The thin-content threshold is ``< _MIN_CONTENT_LINES`` (strictly
+    less than 5 non-blank lines). A body with EXACTLY 5 non-blank
+    lines passes the gate; a body with 4 or fewer is quarantined.
+    Pinned by Minor 34.
+    """
     stripped = _strip_fenced(body)
     upper = stripped[:2000].upper()
     for marker in _AUTOGEN_MARKERS:
@@ -73,7 +93,12 @@ def should_skip_content(body: str) -> str | None:
         if marker in stripped[:2000]:
             return f"skip-content:template-artifact:{marker}"
     non_blank = [ln for ln in body.splitlines() if ln.strip()]
-    if len(non_blank) <= _MIN_CONTENT_LINES:
+    # Minor 34: ``len(non_blank) < _MIN_CONTENT_LINES`` is the strict-
+    # less-than contract; a body with EXACTLY ``_MIN_CONTENT_LINES``
+    # non-blank lines passes the gate. The previous ``<=`` comparison
+    # quarantined at the boundary; this is the implementation that
+    # matches the spec ask and the comment in this module.
+    if len(non_blank) < _MIN_CONTENT_LINES:
         return f"skip-content:thin-content:{len(non_blank)}"
     return None
 

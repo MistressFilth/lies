@@ -21,7 +21,7 @@ commit and the per-doc ``write_mirror`` entirely.
 
 from __future__ import annotations
 
-from collections.abc import Container, Iterator
+from collections.abc import Container, Iterator, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -170,7 +170,7 @@ def _process_item(
     collection_name: str,
     *,
     exclude_stems: Container[str] = (),
-    exclude_dirs: Container[str] = (),
+    exclude_dirs: Sequence[str] = (),
     slug_override: str | None = None,
     title_override: str | None = None,
     force: bool,
@@ -376,7 +376,7 @@ def run_source_ingest(
     slug: str | None = None,
     title: str | None = None,
     exclude_stems: Container[str] = (),
-    exclude_dirs: Container[str] = (),
+    exclude_dirs: Sequence[str] = (),
     force: bool = False,
     dry_run: bool = False,
 ) -> BatchIngestResult:
@@ -422,7 +422,7 @@ def run_batch_ingest(
     *,
     fetcher: Fetcher,
     exclude_stems: Container[str] = (),
-    exclude_dirs: Container[str] = (),
+    exclude_dirs: Sequence[str] = (),
     force: bool = False,
     dry_run: bool = False,
 ) -> BatchIngestResult:

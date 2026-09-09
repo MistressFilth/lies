@@ -89,3 +89,59 @@ def test_skip_content_fenced_marker_ignored() -> None:
         f"l{i}" for i in range(20)
     )
     assert should_skip_content(body) is None
+
+
+def test_skip_content_boundary_4_quarantines_5_passes() -> None:
+    """Minor 34: ``_MIN_CONTENT_LINES`` boundary contract.
+
+    The threshold is strict-less-than-5: a body with exactly 4 non-blank
+    lines is quarantined (returns ``skip-content:thin-content:4``); a
+    body with exactly 5 non-blank lines PASSES the gate (returns
+    ``None``). Pins the implementation choice so a regression to ``<=``
+    would flip the 5-line case.
+    """
+    # 4 non-blank lines → quarantined
+    reason_4 = should_skip_content("line1\nline2\nline3\nline4\n")
+    assert reason_4 == "skip-content:thin-content:4"
+    # 5 non-blank lines → passes
+    reason_5 = should_skip_content("line1\nline2\nline3\nline4\nline5\n")
+    assert reason_5 is None
+
+
+def test_skip_filename_extra_stems_matches_filename() -> None:
+    """Minor 33: ``extra_stems`` matches both filename AND bare stem.
+
+    The operator CLI flag ``--exclude-stem`` (``extra_stems``) is
+    matched against both ``path.name.lower()`` (filename-with-extension)
+    and ``path.stem.lower()`` (bare stem). A file named
+    ``robots.txt.md`` matches an ``extra_stems={"robots.txt"}`` because
+    ``stem == "robots.txt"``; the same file matches
+    ``extra_stems={"robots.txt.md"}`` because ``filename == "robots.txt.md"``.
+    """
+    # Match by filename (with extension)
+    assert (
+        should_skip_filename(Path("anywhere/robots.txt.md"), extra_stems={"robots.txt.md"})
+        is not None
+    )
+    # Match by bare stem (no extension)
+    assert (
+        should_skip_filename(Path("anywhere/robots.txt.md"), extra_stems={"robots.txt"}) is not None
+    )
+
+
+def test_skip_filename_iterable_prefixes_inlined() -> None:
+    """Minor 32: ``_iterable_prefixes`` wrapper is gone; the union
+    happens inline in ``should_skip_filename``.
+
+    This is a regression test for the wrapper: the public behavior
+    is that ``extra_prefixes`` is concatenated after the built-in
+    ``FILENAME_SKIP_PREFIXES`` and prefix-matched in order. A future
+    refactor that re-introduces a helper without preserving the order
+    would silently change the matching semantics.
+    """
+    # Built-in prefix (changelog) comes first.
+    assert should_skip_filename(Path("anywhere/changelog-2024.md")) is not None
+    # Operator prefix overrides the iteration order (after built-ins).
+    assert should_skip_filename(Path("anywhere/anything"), extra_prefixes=("any",)) is not None
+    # Operator prefix that doesn't match — passes.
+    assert should_skip_filename(Path("anywhere/zzz"), extra_prefixes=("any",)) is None

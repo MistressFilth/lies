@@ -154,6 +154,11 @@ def register(app: typer.Typer) -> None:
             or (Path(coerced_batch).name if isinstance(coerced_batch, Path) else None)
             or "default"
         )
+        # ``set`` is unordered; convert to a sorted ``list`` so the
+        # Sequence-typed ``exclude_stems`` / ``exclude_dirs`` parameters
+        # receive a deterministic iteration order.
+        stems_list = list(exclude_stem)
+        dirs_list = list(exclude_dir)
 
         if coerced_source is not None:
             result = run_source_ingest(
@@ -163,8 +168,8 @@ def register(app: typer.Typer) -> None:
                 fetcher=fetcher,
                 slug=slug,
                 title=title,
-                exclude_stems=set(exclude_stem),
-                exclude_dirs=set(exclude_dir),
+                exclude_stems=stems_list,
+                exclude_dirs=dirs_list,
                 force=force,
                 dry_run=dry_run,
             )
@@ -175,8 +180,8 @@ def register(app: typer.Typer) -> None:
                 coll_name,
                 coerced_batch,
                 fetcher=fetcher,
-                exclude_stems=set(exclude_stem),
-                exclude_dirs=set(exclude_dir),
+                exclude_stems=stems_list,
+                exclude_dirs=dirs_list,
                 force=force,
                 dry_run=dry_run,
             )

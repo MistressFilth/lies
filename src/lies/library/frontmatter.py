@@ -5,8 +5,6 @@ from __future__ import annotations
 from datetime import date, timedelta
 from typing import Final
 
-from pydantic import BaseModel, ConfigDict
-
 _BASE_DATE: Final[date] = date(2024, 1, 1)
 _CAP_DATE: Final[date] = date(2099, 12, 31)
 _BASE_ORDINAL: Final[int] = (_CAP_DATE - _BASE_DATE).days  # 27758
@@ -27,32 +25,27 @@ def _quote_yaml_string(value: str) -> str:
     return f'"{safe}"'
 
 
-class MirrorFrontmatter(BaseModel):
-    """Deterministic mirror frontmatter schema (no ``type:`` field).
-
-    Mirrors are library-internal artifacts, not wiki pages, so they do not
-    carry a schema ``type:`` tag. ``ingested_at`` is derived from
-    ``source_hash`` (see :func:`build_frontmatter`) so re-ingest yields
-    byte-identical YAML.
-    """
-
-    model_config = ConfigDict(frozen=True)
-
-    title: str
-    source_url: str | None
-    source_path: str | None
-    source_hash: str
-    fetched_via: str
-    ingested_at: str
-
-
 def _ingested_at_from_hash(source_hash: str) -> str:
     """Map ``source_hash`` to an ISO date in ``[_BASE_DATE, _CAP_DATE]``.
 
     Deterministic: same hash always yields the same date. Saturates: the
     all-``f`` hash ``0xffffffff`` lands on ``_CAP_DATE`` exactly.
+
+    The hash-suffix derivation reads ``source_hash[:8]`` (the first
+    four bytes / eight hex chars of the upstream SHA256). The bound
+    check enforces that prefix length — see Minor 35: the previous
+    ``len(source_hash) < 4`` check was too permissive and let a 5-char
+    partial hash through (only enough for the 4-byte ``int()`` parse
+    to fail and fall back to ``_BASE_DATE``, silently discarding the
+    ingest-date signal).
     """
-    if not source_hash or len(source_hash) < 4:
+    # Minor 35: spec mandates "first 4 bytes" (= 8 hex chars). The
+    # strict-less-than-8 check ensures we never attempt a partial
+    # ``int()`` parse on a hash that does not actually have the full
+    # 8-hex-char prefix; otherwise the parse would silently fall back
+    # to ``_BASE_DATE`` and a fresh re-ingest would lose its
+    # deterministic ``ingested_at`` date.
+    if not source_hash or len(source_hash) < 8:
         return _BASE_DATE.isoformat()
     try:
         first4 = int(source_hash[:8], 16)
@@ -87,4 +80,4 @@ def build_frontmatter(
     return "\n".join(lines) + "\n"
 
 
-__all__ = ("MirrorFrontmatter", "build_frontmatter")
+__all__ = ("build_frontmatter",)
