@@ -87,7 +87,6 @@ PARAMETRIZE_COMMAND_HELP_SUBSTRINGS = [
     (["config"], ["Print active model"]),
     (["init"], ["Initialize a new wiki"]),
     (["ingest"], ["Deterministic ingest"]),
-    (["ingest-source"], ["Use ``lies ingest --source"]),
     (["query"], ["Query the wiki"]),
     (["lint"], ["Run lint"]),
     (["status"], ["Show qmd status"]),

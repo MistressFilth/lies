@@ -7,9 +7,6 @@ pattern used by ``sync`` and ``reindex`` in
 :mod:`lies.cli.ingestion`. The canonical user-facing invocation is
 ``lies ingest --source <PATH>`` (or ``--batch <DIR>``); there is no
 intermediate sub-app wrapper.
-
-The legacy ``lies ingest-source`` and the ``--no-llm`` opt-out are
-deprecated (see :mod:`lies.cli.ingestion`).
 """
 
 from __future__ import annotations

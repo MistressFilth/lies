@@ -4,11 +4,11 @@ Each tool is tested by calling the decorated function directly after
 registering the server module. The Orchestrator's agent ``run_sync``
 is mocked so no real LLM call is made — same pattern as
 ``tests/integration/test_end_to_end.py``. The real
-``Orchestrator.run_ingest`` and ``Orchestrator.run_lint`` methods are
-NOT mocked, so the tool-to-orchestrator delegation is exercised
-end-to-end. ``Orchestrator.run_query`` is mocked because the underlying
-synthesizer still expects a ``WikiLayout`` (the Wiki→synthesizer
-adapter is Task 17's work).
+``Orchestrator.run_lint`` method is NOT mocked, so the
+tool-to-orchestrator delegation is exercised end-to-end.
+``Orchestrator.run_query`` is mocked because the underlying synthesizer
+still expects a ``WikiLayout`` (the Wiki→synthesizer adapter is
+Task 17's work).
 
 The XDG-role redirect fixture ``_redirect_xdg`` sets up a hermetic
 ``XDG_*_HOME`` per test so ``Wiki.data_root_for(name)`` lands under
@@ -29,7 +29,6 @@ from lies.agents.linter import LintReport
 from lies.errors import WikiAlreadyExists
 from lies.mcp.server import (
     SynthesizedMcpAnswer,
-    ingest_source,
     init_wiki,
     lint,
     mcp,
@@ -158,41 +157,6 @@ def test_init_wiki_rejects_invalid_name(tmp_path: Path) -> None:
 
     with pytest.raises(WikiNameError):
         init_wiki("foo/bar")
-
-
-# ---------------------------------------------------------------------------
-# ingest_source — atomic ingest through the orchestrator
-# ---------------------------------------------------------------------------
-
-
-def test_ingest_source_returns_ingested_string(
-    registered_wiki: Wiki,
-    wiki_name: str,
-) -> None:
-    """ingest_source (no_llm=True) → bootstrap_collection → sync_collection.
-
-    Mocks sync_collection so the real MCP delegation is exercised
-    without driving the full SyncOrchestrator pipeline. Asserts the
-    MCP tool returns its documented success string and that the
-    explicit ``collection`` arg reaches ``sync_collection`` as the
-    second positional arg (not the URL basename).
-    """
-    with mock.patch("lies.etl.sync_helper.sync_collection") as m:
-        out = ingest_source(
-            "raw/articles/sample_article.md",
-            collection="sample_article",
-            name=wiki_name,
-            no_llm=True,
-        )
-
-    # MCP tool returns its documented success string.
-    assert out == "ingested raw/articles/sample_article.md into sample_article (no_llm)"
-    # sync_collection was called with (wiki, collection, force=False).
-    m.assert_called_once()
-    args, kwargs = m.call_args
-    assert args[0] == registered_wiki
-    assert args[1] == "sample_article"
-    assert kwargs == {"force": False}
 
 
 # ---------------------------------------------------------------------------

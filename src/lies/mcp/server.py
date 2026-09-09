@@ -126,50 +126,6 @@ def init_wiki(name: str) -> dict[str, object]:
 
 
 # ---------------------------------------------------------------------------
-# ingest_source — atomic ingest through the orchestrator
-# ---------------------------------------------------------------------------
-
-
-@mcp.tool(
-    description=(
-        "Atomic ingest of a single source into a wiki. Registers a collection "
-        "YAML (creates it if missing; refuses on source mismatch with the "
-        "existing collection), then runs the LLM round-trip through "
-        "Orchestrator.run_ingest (default) or sync_collection (no_llm=True)."
-    )
-)
-def ingest_source(
-    source: str,
-    collection: str,
-    name: str | None = None,
-    no_llm: bool = False,
-) -> str:
-    """Ingest ``source`` into the wiki identified by ``name``.
-
-    ``collection`` is required: writes a minimal collection YAML if missing
-    and refuses on source mismatch with an existing YAML. The default
-    path (no_llm=False) routes through ``Orchestrator.run_ingest`` which
-    runs the LLM distillation (source-reader + page-writer). Setting
-    ``no_llm=True`` demotes to ``sync_collection`` for bulk-scrape semantics.
-    """
-    from lies.collections.bootstrap import bootstrap_collection, ensure_wiki
-    from lies.collections.errors import CollectionMismatch
-    from lies.config import get_wiki_name
-    from lies.etl.sync_helper import sync_collection
-
-    wiki = ensure_wiki(name if name is not None else get_wiki_name())
-    try:
-        bootstrap_collection(wiki, collection, source, wizard=False)
-    except CollectionMismatch as exc:
-        raise ValueError(str(exc)) from exc
-    if no_llm:
-        sync_collection(wiki, collection, force=False)
-        return f"ingested {source} into {collection} (no_llm)"
-    orch = Orchestrator(wiki)
-    return orch.run_ingest(source, collection=collection)
-
-
-# ---------------------------------------------------------------------------
 # wiki_search / wiki_read — direct memory retrieval
 # ---------------------------------------------------------------------------
 

@@ -99,7 +99,7 @@ def test_coerce_source_none_returns_none() -> None:
     assert _coerce_source(None) is None
 
 
-def test_ingest_source_url_reaches_fetcher_intact(
+def test_ingest_single_source_url_reaches_fetcher_intact(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """C1 anti-tautology: ``--source <URL>`` reaches the fetcher with double slashes.
@@ -160,7 +160,7 @@ def test_ingest_source_url_reaches_fetcher_intact(
         assert src.as_posix().startswith("https:/") is False or "://" in str(src)
 
 
-def test_ingest_source_passes_slug_and_title_kwargs(
+def test_ingest_single_source_passes_slug_and_title_kwargs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """I8: ``--slug custom --title "Test"`` threads through to the mirror frontmatter.

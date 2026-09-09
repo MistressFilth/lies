@@ -82,18 +82,3 @@ def test_reindex_no_flags_runs_no_sync(tmp_path: Path, monkeypatch: pytest.Monke
     mock_sync.assert_not_called()
     assert "--embed is a no-op" not in (result.stderr or "")
     assert "--cleanup is a no-op" not in (result.stderr or "")
-
-
-def test_ingest_source_stub_errors_with_deprecation_message() -> None:
-    """``ingest-source`` is a one-minor-version deprecation stub.
-
-    Any invocation exits non-zero with a stderr message steering the
-    operator to ``lies ingest --source``.
-    """
-    result = runner.invoke(
-        app,
-        ["ingest-source", "https://example.com/llms.txt", "--collection", "alpha"],
-    )
-    assert result.exit_code == 2
-    err = (result.stderr or "") + (result.stdout or "")
-    assert "ingest --source" in err

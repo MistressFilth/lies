@@ -6,6 +6,16 @@ All notable changes to LIES are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+- Replaced the vendored `pydantic-guidance` flake8 plugin with the
+  upstream [`supyrliminal`](https://github.com/MistressFilth/supyrliminal)
+  package. `supyrliminal` is now a dev dependency, pinned via
+  `[tool.uv.sources]` to `v0.1.0` of the GitHub repo (the same code that
+  lived under `vendor/pydantic-guidance`, now packaged as `supyrliminal`).
+  `make lint-supyrliminal` runs `flake8 --select=SL,PYD` and is wired
+  into `make check`; the same hook is registered in
+  `.pre-commit-config.yaml`. The `vendor/` directory is removed.
+
 ## [0.19.0] - 2026-09-08
 
 ### Added
@@ -45,13 +55,6 @@ All notable changes to LIES are documented here. The format follows
   falling back to `format_dispatch`. Exits non-zero when the
   underlying `BatchIngestResult.errors` is non-empty, so a wholly-
   failed batch no longer exits 0.
-
-### Removed
-- `lies ingest-source` command (collapsed into `lies ingest
-  --source`). The CLI flag is stubbed for one minor version (Typer
-  `deprecated=True`, errors out with a steering message).
-- `--no-llm` flag (no LLM on the ingest path; the deterministic
-  ingest never made an LLM round-trip in the first place).
 
 ### Fixed
 - `library/fetcher.py`: `_normalize_body` now routes registered

@@ -1,4 +1,4 @@
-"""CLI integration tests for the bootstrap path on sync + ``ingest-source`` stub."""
+"""CLI integration tests for the bootstrap path on sync."""
 
 from __future__ import annotations
 
@@ -20,21 +20,6 @@ def wiki(tmp_path: Path) -> Wiki:
     root = tmp_path / "wiki"
     root.mkdir()
     return make_wiki(name="cli-bootstrap", data_root=root)
-
-
-def test_ingest_source_stub_errors_with_deprecation_message() -> None:
-    """``ingest-source`` is a one-minor-version deprecation stub.
-
-    Any invocation exits non-zero with a stderr message steering the
-    operator to ``lies ingest --source``.
-    """
-    result = runner.invoke(
-        app,
-        ["ingest-source", "https://example.com/llms.txt", "--collection", "alpha"],
-    )
-    assert result.exit_code == 2
-    err = (result.stderr or "") + (result.stdout or "")
-    assert "ingest --source" in err
 
 
 def test_sync_single_collection_bootstrap_missing(

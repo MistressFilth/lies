@@ -1,55 +1,32 @@
-"""Deprecated Phase-1 ingest entry points; one minor version of grace.
+"""Wiki-side collection sync and qmd reindex commands.
 
-The deterministic ingest lives at ``lies ingest`` (``lies.library.cli``).
-The LLM-distilled Phase-1 paths are removed; ``ingest-source`` is kept
-only as a deprecated stub that emits an error directing operators to
-the new subcommand. The ``--no-llm`` opt-out is gone with it.
-
-``sync`` and ``reindex`` remain in place — they are wiki-side
-collection / QMD commands, not ingest paths, and continue to operate
-unchanged.
+``sync`` and ``reindex`` operate on the wiki's collection / QMD
+surface, not the library ingest path. The deterministic library
+ingest lives at ``lies ingest`` (``lies.library.cli``).
 """
 
 from __future__ import annotations
+
+from typing import Annotated
 
 import typer
 
 from lies.cli import app
 
-__all__ = ("ingest_source_stub",)
-
-
-@app.command(
-    name="ingest-source",
-    short_help="[deprecated] Use 'lies ingest --source' instead.",
-    deprecated=True,
-    context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
-)
-def ingest_source_stub() -> None:
-    """Deprecated. Use ``lies ingest --source <path> --collection NAME``."""
-    typer.echo(
-        "error: 'lies ingest-source' is removed. Use 'lies ingest --source'.",
-        err=True,
-    )
-    raise typer.Exit(code=2)
+__all__ = ("sync", "reindex")
 
 
 # ---------------------------------------------------------------------------
-# Wiki-side: ``sync`` and ``reindex`` are unchanged from their Phase-1
-# implementations. They live in this module because they share the
-# ``Source ingestion`` rich-help panel with the legacy ``ingest`` /
-# ``ingest-source`` commands they used to flank. Removing the legacy
-# commands and keeping these keeps the help-panel grouping intact.
+# Lazy re-export so tests can ``mock.patch`` ``lies.cli.ingestion.Orchestrator``.
+#
+# Same PEP-562 pattern as the established ``lies.cli/__init__.py`` shape:
+# ``mock.patch`` of ``lies.cli.ingestion.Orchestrator`` lets tests intercept
+# the Orchestrator factory the sync/reindex bodies still pull through.
 # ---------------------------------------------------------------------------
 
 
 def __getattr__(name: str):
-    """Lazy re-export so tests can ``mock.patch`` ``lies.cli.ingestion.Orchestrator``.
-
-    Same PEP-562 pattern as the Phase-1 version: ``mock.patch`` of
-    ``lies.cli.ingestion.Orchestrator`` lets tests intercept the
-    Orchestrator factory the sync/reindex bodies still pull through.
-    """
+    """Lazy re-export of ``Orchestrator`` for ``mock.patch``."""
     if name == "Orchestrator":
         from lies.cli import Orchestrator as _OrchestratorCls
 
@@ -60,9 +37,6 @@ def __getattr__(name: str):
 
 def __dir__() -> list[str]:
     return sorted(set(globals().keys()) | {"Orchestrator"})
-
-
-from typing import Annotated  # noqa: E402
 
 
 @app.command(
@@ -219,10 +193,3 @@ def reindex(
         # Spec: reindex rebuilds the corpus. No in-process consumer today
         # (YAGNI); held for the lifetime of this process.
         WikiLinkResolver.build((wiki.wiki_dir, wiki.raw_dir))
-
-
-__all__ = (
-    "ingest_source_stub",
-    "sync",
-    "reindex",
-)

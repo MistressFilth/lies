@@ -21,10 +21,10 @@ class SourceExtraction(BaseModel):
     All fields default to empty so a partial extraction (one the model
     refuses to fill for non-prose inputs like ``llms.txt`` indexes, or a
     fully-skipped extraction when the agent raises) constructs cleanly
-    via ``SourceExtraction()``. The empty defaults also let
-    ``_call_source_reader`` return a sensible value when the model hits
-    validation retries or HTTP errors — the extraction is advisory and
-    not consumed by ``PageWriterDeps``.
+    via ``SourceExtraction()``. The empty defaults also let downstream
+    callers return a sensible value when the model hits validation
+    retries or HTTP errors — the extraction is advisory and not consumed
+    by ``PageWriterDeps``.
     """
 
     claims: list[str] = []

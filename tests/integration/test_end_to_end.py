@@ -4,11 +4,9 @@ Finding 11 — `lint` (CLI smoke) and `run_query` are not covered by an
 integration test that drives the public `Orchestrator` API end-to-end.
 This test exercises the full LIES flow on a real fixture wiki:
 
-    1. Ingest — ``Orchestrator.run_ingest`` writes artifacts and creates
-       exactly one atomic git commit.
-    2. Query fallback — ``Orchestrator.run_query`` synthesizes a deterministic
+    1. Query fallback — ``Orchestrator.run_query`` synthesizes a deterministic
        answer from ``wiki/index.md`` when qmd is unavailable.
-    3. Lint — ``Orchestrator.run_lint`` writes ``wiki/lint-report.md`` and
+    2. Lint — ``Orchestrator.run_lint`` writes ``wiki/lint-report.md`` and
        appends a parseable entry to ``wiki/log.md``.
 
 The agent's LLM is mocked so the round-trip is deterministic. The
@@ -124,37 +122,6 @@ def test_orchestrator_constructs(wiki_copy: Path) -> None:
     orch = Orchestrator(wiki=wiki, models=models_for_tests("test"))
     assert orch is not None
     assert orch.wiki.data_root == wiki_copy.resolve()
-
-
-# ---------------------------------------------------------------------------
-# Ingest — run_ingest writes artifacts + one atomic git commit
-# ---------------------------------------------------------------------------
-
-
-def test_run_ingest_delegates_to_sync_helper(wiki_copy: Path) -> None:
-    """``Orchestrator.run_ingest`` delegates to sync_collection and
-    returns the documented ``"ingested {source}"`` string.
-
-    The atomic git commit, working-tree snapshot/rollback, and stash
-    handling moved to ``sync_helper.sync_collection`` (Task 27). The
-    wrapper's job is just delegation + the back-compat return string.
-    The real SyncOrchestrator behavior is covered by
-    ``tests/integration/test_sync_collection.py``.
-    """
-    wiki = make_wiki(name="sample", data_root=wiki_copy)
-    orch = Orchestrator(wiki=wiki, models=models_for_tests("test"))
-
-    with mock.patch("lies.etl.sync_helper.sync_collection") as m:
-        result = orch.run_ingest("raw/articles/sample-article.md", no_llm=True)
-
-    # Wrapper returned the documented back-compat string.
-    assert result == "ingested raw/articles/sample-article.md"
-    # sync_collection was called once with the right args.
-    m.assert_called_once()
-    args, kwargs = m.call_args
-    assert args[0] is wiki
-    assert args[1] == "sample-article"  # Path(source).stem strips dir + .md
-    assert kwargs == {"force": False}
 
 
 # ---------------------------------------------------------------------------

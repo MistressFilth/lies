@@ -28,6 +28,7 @@ dev = [
     "pytest-mock>=3.12",
     "ruff>=0.5,<0.15",
     "ty>=0.0.65",
+    "supyrliminal>=0.1.0",
 ]
 # `qmd` is now an empty extra retained for back-compat. `fastmcp` and `mcp`
 # are default dependencies as of the MCP server release. Install with
@@ -66,6 +67,8 @@ include = ["src/lies"]
 dev = [
     "identify>=2.6.19",
     "pre-commit>=4.6.1",
+    "supyrliminal>=0.1.0",
 ]
 
 [tool.uv.sources]
+supyrliminal = { git = "https://github.com/MistressFilth/supyrliminal.git", rev = "v0.1.0" }

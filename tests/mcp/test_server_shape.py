@@ -23,7 +23,6 @@ async def test_tools_registered(client: Client) -> None:
     names = {t.name for t in tools}
     assert names == {
         "init_wiki",
-        "ingest_source",
         "query",
         "lint",
         "wiki_search",

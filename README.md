@@ -121,12 +121,6 @@ proxy in front if remote access is required.
 After registration, Claude Code sees these tools:
 
 - `init_wiki(name)` — bootstrap a new wiki by name (creates XDG role-routed dirs).
-- `ingest_source(collection, name?, no_llm=False)` — deprecated. Use
-  `lies ingest --source <PATH>` (deterministic, no LLM call) for new
-  ingest runs. The MCP tool still wires through the LLM round-trip
-  (`source_reader_agent` → `page_writer_agent` →
-  `WikiMemoryService.apply_plan`) by default; `no_llm=True` is
-  preserved for one minor version.
 - `query(question, name?)` — synthesized answer (structured result
   with `fallback_used` and `fallback_reason`).
 - `lint(name?)` — health-check the wiki.
@@ -330,6 +324,12 @@ make test
 same checks fire on every commit via `.pre-commit-config.yaml`.
 The pre-commit chain wraps `make unit-test`, so a commit that lands
 in the repo has already passed the local gate.
+
+`make lint-supyrliminal` runs `flake8 --select=SL,PYD`; the same
+check fires on every commit via `.pre-commit-config.yaml`. Supyrliminal
+is opt-in at the CI gate — its findings are not yet treated as
+blocking because the codebase carries pre-existing SL101 findings that
+need triage before it can be required.
 
 ## Architecture
 
