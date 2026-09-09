@@ -51,15 +51,22 @@ def test_canonical_ingest_invocation_is_reachable() -> None:
     argument" error. The exit code being non-zero is acceptable; what we
     pin is that the command was matched and dispatched (no
     ``Usage:``-style help dump, no ``No such command``).
+
+    Minor 49: previous assertion used
+    ``"Usage:" not in combined or "--source" in combined`` which
+    silently passed when both substrings appeared together (the
+    ``--help`` dump contains BOTH ``Usage:`` AND ``--source``). The
+    strengthened form forbids the help dump unconditionally. The
+    dedicated ``--help`` test
+    (``test_ingest_help_lists_source_and_batch``) covers the help text
+    separately.
     """
     result = runner.invoke(app, ["ingest", "--source", "/tmp/does-not-exist"])
     combined = _strip_ansi(result.stdout) + _strip_ansi(result.stderr or "")
     assert "No such command" not in combined, (
         f"ingest was not registered as a root-level command: {combined!r}"
     )
-    assert "Usage:" not in combined or "--source" in combined, (
-        f"ingest help dumped instead of dispatching: {combined!r}"
-    )
+    assert "Usage:" not in combined, f"ingest help dumped instead of dispatching: {combined!r}"
 
 
 def test_help_text_mentions_library() -> None:

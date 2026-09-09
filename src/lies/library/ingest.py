@@ -220,8 +220,13 @@ def _process_item(
         result.quarantine_records.append(_quarantine_to_poison(coll, slug, item.body, skip_reason))
         return
 
-    source_url = item.url
-    source_path = str(path) if path is not None else None
+    source_url = item.url if item.url is not None else ""
+    # ``source_path`` is required by ``write_mirror`` (Minor 38). For
+    # URL-only items we have no local file path, so we record an empty
+    # string (frontmatter writes ``source_path: ""`` instead of
+    # ``source_path: null``) — the operator can still grep for the
+    # URL to trace the mirror back to its source.
+    source_path = str(path) if path is not None else ""
     target = coll.dir / f"{slug}.md"
     existed = target.exists()
 

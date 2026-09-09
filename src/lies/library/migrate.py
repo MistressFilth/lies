@@ -119,6 +119,15 @@ def apply_migration(
     for src, dst in plan.moves:
         dst.parent.mkdir(parents=True, exist_ok=True)
         rewritten = _rewrite_frontmatter(src)
+        # Minor 41: skip the rewrite + write if the destination already
+        # exists with the same content. A re-run of an unchanged
+        # migration would otherwise re-write every mirror file and
+        # bump the library git tree unnecessarily; the content is
+        # identical so the existing destination is preserved.
+        if dst.exists():
+            existing = dst.read_text(encoding="utf-8")
+            if existing == rewritten:
+                continue
         dst.write_text(rewritten, encoding="utf-8")
         moved_paths.append(dst)
     for src, backup in plan.duplicates_to_backup:

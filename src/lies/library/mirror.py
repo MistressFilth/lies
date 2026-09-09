@@ -13,12 +13,21 @@ def render_mirror(
     *,
     slug: str,
     body: str,
-    source_url: str | None,
-    source_path: str | None,
+    source_url: str,
+    source_path: str,
     source_hash: str,
     fetched_via: str,
     title: str | None = None,
 ) -> str:
+    """Render the frontmatter + body block as a single string.
+
+    Minor 38: ``source_url`` and ``source_path`` are required
+    keyword-only arguments. The brief mandates them; the previous
+    ``None`` defaults silently allowed callers to omit the upstream
+    provenance and still write a mirror with ``source_path: null`` /
+    ``source_url: null`` rows in the frontmatter — the operator then
+    had no way to trace a mirror back to its source.
+    """
     if title is None:
         title = slug.replace("-", " ").title()
     fm = build_frontmatter(
@@ -37,13 +46,23 @@ def write_mirror(
     slug: str,
     body: str,
     *,
-    source_url: str | None = None,
-    source_path: str | None = None,
+    source_url: str,
+    source_path: str,
     source_hash: str,
     fetched_via: str,
     title: str | None = None,
     force: bool = False,
 ) -> Path:
+    """Write the mirror file at ``<collection>/<slug>.md``.
+
+    Minor 38: ``source_url`` and ``source_path`` are required
+    keyword-only. The migration path passed ``source_path=None`` and
+    ``source_url=None`` because the wiki-side schema lacked those
+    fields — the mirror writer accepted the None defaults. After the
+    migration sets the deterministic placeholder
+    ``source_path="migrated-from-wiki"``, the writer no longer needs
+    the None fall-through; the type signature now enforces both.
+    """
     validate_slug(slug)
     target = collection.dir / f"{slug}.md"
     if target.exists() and not force:

@@ -148,12 +148,24 @@ def register(app: typer.Typer) -> None:
         fetcher = ScraperFetcher(library=lib)
         coerced_source = _coerce_source(source)
         coerced_batch = _coerce_source(batch)
+        # Minor 42: surface a clearer error when the operator passes
+        # neither ``--collection`` nor ``--slug-prefix`` and there is
+        # no batch parent dir to derive one from. Previously this
+        # silently fell through to ``"default"`` — surprising for a
+        # bare URL where the operator had no reason to expect a
+        # collection called ``default``.
         coll_name = (
             collection
             or slug_prefix
             or (Path(coerced_batch).name if isinstance(coerced_batch, Path) else None)
-            or "default"
         )
+        if coll_name is None:
+            typer.echo(
+                "error: pass --collection <NAME> or --slug-prefix <NAME>; "
+                "no collection name could be derived from the source.",
+                err=True,
+            )
+            raise typer.Exit(code=2)
         # ``set`` is unordered; convert to a sorted ``list`` so the
         # Sequence-typed ``exclude_stems`` / ``exclude_dirs`` parameters
         # receive a deterministic iteration order.
