@@ -70,7 +70,6 @@ def test_section_check_accepts_library_migrated(lib: Library) -> None:
                 derived_from="",
             ),
         )
-        conn.commit()
         rows = list_pages(conn, section="library-migrated")
         assert len(rows) == 1
     finally:
@@ -93,7 +92,6 @@ def test_upsert_replaces_existing(lib: Library) -> None:
                 derived_from="",
             ),
         )
-        conn.commit()
         upsert_page(
             conn,
             LibraryCatalogPage(
@@ -107,7 +105,6 @@ def test_upsert_replaces_existing(lib: Library) -> None:
                 derived_from="",
             ),
         )
-        conn.commit()
         rows = list_pages(conn)
         assert len(rows) == 1
         assert rows[0].title == "second"
@@ -134,10 +131,61 @@ def test_upsert_pages_bulk(lib: Library) -> None:
                 for i in range(5)
             ],
         )
-        conn.commit()
         assert len(list_slugs(conn)) == 5
     finally:
         conn.close()
+
+
+def test_upsert_pages_empty_noop(lib: Library) -> None:
+    """Minor 26 anti-tautology: empty input is a no-op (no commit, no fsync).
+
+    Pins the early-return contract: passing ``[]`` returns without touching
+    the catalog AND without committing (a redundant ``commit()`` on an
+    unchanged connection is a wasted fsync).
+    """
+    conn = open_catalog(lib)
+    try:
+        upsert_pages(conn, [])
+        assert list_slugs(conn) == set()
+    finally:
+        conn.close()
+
+
+def test_upsert_pages_commits_on_success(lib: Library) -> None:
+    """Minor 26 anti-tautology: ``upsert_pages`` commits before returning.
+
+    Closes the connection between the upsert call and the read so a regression
+    that drops the internal commit would surface as an empty list. The wiki
+    side (``memory.catalog.upsert_pages``) commits the same way; the library
+    side matches the contract.
+    """
+    conn = open_catalog(lib)
+    try:
+        upsert_pages(
+            conn,
+            [
+                LibraryCatalogPage(
+                    slug="x",
+                    title="x",
+                    type="",
+                    source_pkg="p",
+                    section="library",
+                    updated="2024-01-01",
+                    hash="",
+                    derived_from="",
+                )
+            ],
+        )
+    finally:
+        conn.close()
+    # Re-open with a fresh connection — rows must persist from the prior
+    # commit, proving ``upsert_pages`` commits internally.
+    conn2 = open_catalog(lib)
+    try:
+        slugs = list_slugs(conn2)
+    finally:
+        conn2.close()
+    assert slugs == {"x"}
 
 
 def test_remove_page(lib: Library) -> None:
@@ -156,9 +204,7 @@ def test_remove_page(lib: Library) -> None:
                 derived_from="",
             ),
         )
-        conn.commit()
         remove_page(conn, "x")
-        conn.commit()
         assert "x" not in list_slugs(conn)
     finally:
         conn.close()

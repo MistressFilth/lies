@@ -130,10 +130,23 @@ class LibraryWriter:
             rel_paths.append(str(rel))
         updates = list(catalog_updates)
 
-        # Short-circuit a true no-op: nothing to commit and nothing to
-        # upsert. atomic_commit rejects an empty files list, so we must
-        # not call it in this case.
+        # Minor 27: symmetric short-circuit. ``atomic_commit`` rejects
+        # ``files=[]`` as a programming error, so we cannot fall through
+        # when one side of the envelope is empty. Two cases:
+        #
+        #   rel_paths=[] and updates=[] → true no-op (return None).
+        #   rel_paths=[] and updates!=[] → catalog-only write. The
+        #     catalog.db is committed via ``upsert_pages`` (see Minor 26);
+        #     no git commit is needed. Still apply the catalog upsert so
+        #     the catalog-side state stays consistent, then return None.
+        #
+        # This mirrors the wiki-side ``WikiMemoryService.apply_plan`` envelope
+        # which short-circuits a no-op commit but still applies the
+        # catalog-side state.
         if not rel_paths and not updates:
+            return None
+        if not rel_paths:
+            self._upsert_catalog(updates)
             return None
 
         try:
@@ -209,8 +222,11 @@ class LibraryWriter:
                 ) from exc
             raise
         try:
+            # Minor 26: ``upsert_pages`` commits internally (matches the
+            # wiki-side ``lies.memory.catalog.upsert_pages`` contract). No
+            # second commit needed — one fsync per call, regardless of how
+            # many pages land.
             upsert_pages(conn, updates)
-            conn.commit()
         except sqlite3.OperationalError as exc:
             if "database is locked" in str(exc):
                 raise LibraryCatalogLocked(

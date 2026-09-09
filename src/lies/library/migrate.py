@@ -130,13 +130,12 @@ def apply_migration(
         src.unlink()
     # Catalog upsert: library catalog rows inserted with section="library"
     # and deterministic `updated` (per spec §Migration §catalog state).
-    # Wrapped in an explicit transaction; WAL + busy_timeout protect
-    # against concurrent writers.
+    # ``upsert_pages`` commits internally (matches the wiki-side contract).
+    # WAL + busy_timeout protect against concurrent writers.
     if plan.catalog_updates:
         conn = open_catalog(library)
         try:
             upsert_pages(conn, plan.catalog_updates)
-            conn.commit()
         finally:
             conn.close()
 

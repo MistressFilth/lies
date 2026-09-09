@@ -97,6 +97,14 @@ def _row_to_page(row: sqlite3.Row) -> LibraryCatalogPage:
 
 
 def upsert_page(conn: sqlite3.Connection, page: LibraryCatalogPage) -> None:
+    """Insert or replace a single page. Commits the transaction on success.
+
+    Matches the wiki-side ``lies.memory.catalog.upsert_page`` contract: the
+    call is its own atomic unit, so the caller does not have to follow up
+    with ``conn.commit()``. The single-row form is convenient for the
+    per-doc catalog row written by ``LibraryWriter._upsert_catalog``;
+    batch updates should prefer :func:`upsert_pages` for fewer fsyncs.
+    """
     conn.execute(
         _UPSERT_SQL,
         (
@@ -110,9 +118,20 @@ def upsert_page(conn: sqlite3.Connection, page: LibraryCatalogPage) -> None:
             page.derived_from,
         ),
     )
+    conn.commit()
 
 
 def upsert_pages(conn: sqlite3.Connection, pages: Iterable[LibraryCatalogPage]) -> None:
+    """Insert or replace multiple pages in one transaction; commit on success.
+
+    Matches the wiki-side ``lies.memory.catalog.upsert_pages`` contract.
+    Empty input is a no-op (the early return avoids an empty ``executemany``
+    call AND skips the ``commit()`` so a no-op update never forces a
+    fsync).
+    """
+    pages = list(pages)
+    if not pages:
+        return
     conn.executemany(
         _UPSERT_SQL,
         [
@@ -120,10 +139,20 @@ def upsert_pages(conn: sqlite3.Connection, pages: Iterable[LibraryCatalogPage]) 
             for p in pages
         ],
     )
+    conn.commit()
 
 
 def remove_page(conn: sqlite3.Connection, slug: str) -> None:
+    """Delete a page by slug. Commits the transaction on success.
+
+    Matches the wiki-side ``lies.memory.catalog.remove_page`` contract: the
+    call is its own atomic unit, so the caller does not need a follow-up
+    ``conn.commit()``. (The wiki version returns ``bool`` for "did a row
+    match"; the library version returns ``None`` because no current caller
+    needs the bool. Kept simple.)
+    """
     conn.execute("DELETE FROM pages WHERE slug = ?", (slug,))
+    conn.commit()
 
 
 def list_pages(
