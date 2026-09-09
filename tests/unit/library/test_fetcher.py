@@ -11,7 +11,7 @@ from lies.etl.normalize.format_dispatch import UnknownFormatError
 from lies.library.errors import LibraryFetchUnreachable
 from lies.library.fetcher import ScraperFetcher, _load_bespoke_scraper
 from lies.library.ingest import FetchItem
-from lies.scrapers.base import ParsedDoc
+from lies.scrapers.base import BaseScraper, ParsedDoc
 
 
 class _FakeScraper:
@@ -312,15 +312,19 @@ def test_fetcher_yields_iterator_not_list(monkeypatch, tmp_path: Path) -> None:
 
 
 def test_fetcher_unknown_format_propagates(monkeypatch, tmp_path: Path) -> None:
-    """A REGISTRY-registered format without ``Collection`` propagates the builder's error.
+    """A REGISTRY-registered format without ``Collection`` propagates a typed BuilderError.
 
     ``liquid`` IS registered with REGISTRY (via the ``LiquidBuilder``
     module side-effect import), but the builder reads
     ``collection.config`` — without a Collection the builder raises
-    ``AttributeError`` on the bare-``None``. The fetcher must surface
-    that, not silently fall through to a UTF-8 decode fallback. The
-    ingest pipeline handles quarantine.
+    ``AttributeError`` on the bare-``None``. Minor 30 wraps that
+    ``AttributeError`` in a typed ``BuilderError`` so the operator sees
+    "builder for 'liquid' requires a Collection" instead of a confusing
+    ``AttributeError: 'NoneType' object has no attribute 'config'``.
+    The ingest pipeline handles quarantine.
     """
+    from lies.builders.errors import BuilderError
+
     src = tmp_path / "page.md"
     src.write_text("# hello\nbody\n")
     fake = _FakeScraper(
@@ -339,7 +343,7 @@ def test_fetcher_unknown_format_propagates(monkeypatch, tmp_path: Path) -> None:
     )
 
     fetcher = ScraperFetcher(library=None)  # type: ignore[arg-type]
-    with pytest.raises(AttributeError, match="config"):
+    with pytest.raises(BuilderError, match="requires a Collection"):
         list(fetcher.fetch_sources(src))
 
 
@@ -444,6 +448,11 @@ def test_fetcher_propagates_bespoke_loader_failure(monkeypatch, tmp_path: Path) 
     ``scraper_cmd`` (``bad:attr`` or a non-importable module) raises
     ``ScraperUnavailable`` from ``_load_bespoke_scraper`` and the
     fetcher does NOT silently route through ``pick_scraper``.
+
+    Minor 44: the bespoke-loader failure is wrapped in
+    ``LibraryFetchUnreachable`` (a ``LibraryError`` subclass) so it
+    appears under the same taxonomy as every other library error.
+    The test asserts both the typed lineage and the cause.
     """
     pick_called = {"n": 0}
 
@@ -465,19 +474,152 @@ def test_fetcher_propagates_bespoke_loader_failure(monkeypatch, tmp_path: Path) 
         library=None,  # type: ignore[arg-type]
         scraper_cmd="bad:attr",
     )
-    with pytest.raises(Exception) as ei:
+    with pytest.raises(LibraryFetchUnreachable) as ei:
         list(fetcher.fetch_sources(src))
     # pick_scraper must never be reached — fail-loud contract.
     assert pick_called["n"] == 0
     assert "bad loader" in str(ei.value)
+    assert "bespoke scraper loader failed" in str(ei.value)
+    # ``ScraperUnavailable`` is preserved on ``__cause__`` so the
+    # bespoke-loader lineage is still inspectable.
+    assert isinstance(ei.value.__cause__, Exception)
 
 
 def test_load_bespoke_scraper_rejects_missing_colon() -> None:
-    """``module:attr`` shape is enforced — no colon means fail loud."""
+    """``module:attr`` shape is enforced — no colon means fail loud.
+
+    Minor 44: the bare ``_load_bespoke_scraper`` raises
+        ``ScraperUnavailable``; the wrapping into
+        ``LibraryFetchUnreachable`` happens at the call site
+        (``fetch_sources``), not inside the function.
+    """
     from lies.scrapers.errors import ScraperUnavailable
 
     with pytest.raises(ScraperUnavailable, match="module:attr"):
         _load_bespoke_scraper("no_colon_here")
+
+
+def test_fetcher_fetched_via_uses_short_id(monkeypatch, tmp_path: Path) -> None:
+    """Minor 31: ``fetched_via`` uses short id (``web``/``github``/``pdf``).
+
+    The previous implementation used ``type(scraper).__name__`` (e.g.
+    ``WebScraper``), leaking the class hierarchy into the mirror
+    frontmatter. The short-id contract pins the cross-task value to
+    ``web`` / ``github`` / ``pdf`` regardless of the concrete class.
+    """
+    from lies.scrapers.github import GitHubScraper
+    from lies.scrapers.pdf import PDFScraper
+    from lies.scrapers.web import WebScraper
+
+    def _stub_methods(instance: BaseScraper) -> None:
+        # Override network-touching methods so the test does not hit
+        # the real web scraper's llms.txt heuristic.
+        instance.fetch = lambda source: b"raw body"  # type: ignore[method-assign]
+        instance.parse = lambda raw, *, source=None: [  # type: ignore[method-assign]
+            ParsedDoc(
+                path="x.md",
+                content=b"body",
+                source_sha256="aa" * 32,
+                source_format="markdown",
+            )
+        ]
+
+    for cls, expected_short in [
+        (WebScraper, "web"),
+        (GitHubScraper, "github"),
+        (PDFScraper, "pdf"),
+    ]:
+        instance = cls()
+        _stub_methods(instance)
+        monkeypatch.setattr("lies.scrapers.base.pick_scraper", lambda source, _i=instance: _i)
+        fetcher = ScraperFetcher(library=None)  # type: ignore[arg-type]
+        items = list(fetcher.fetch_sources("https://example.com/x"))
+        assert items[0].fetched_via == expected_short, (
+            f"{cls.__name__} should map to {expected_short!r}; got {items[0].fetched_via!r}"
+        )
+
+
+def test_fetcher_fetched_via_unknown_scraper_falls_back_to_classname(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """Minor 31: an unmapped scraper class falls back to ``type(scraper).__name__``.
+
+    Keeps the field populated even when a new bespoke scraper class is
+    added without registering a short id — the operator still gets a
+    non-empty marker they can grep for rather than a missing field.
+    """
+    from lies.scrapers.base import ParsedDoc
+
+    class _UserScraper(BaseScraper):
+        def fetch(self, source):  # type: ignore[no-untyped-def]
+            return b"raw"
+
+        def parse(self, raw, *, source=None):  # type: ignore[no-untyped-def]
+            return [
+                ParsedDoc(
+                    path="x.md",
+                    content=b"body",
+                    source_sha256="aa" * 32,
+                    source_format="markdown",
+                )
+            ]
+
+        def emit_manifest(self, docs, raw_dir):  # type: ignore[no-untyped-def]
+            return raw_dir / "manifest.json"
+
+    fake = _UserScraper()
+    monkeypatch.setattr("lies.scrapers.base.pick_scraper", lambda source: fake)
+    fetcher = ScraperFetcher(library=None)  # type: ignore[arg-type]
+    items = list(fetcher.fetch_sources("https://example.com/x"))
+    assert items[0].fetched_via == "_UserScraper"
+
+
+def test_normalize_body_missing_collection_wraps_attribute_error(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """Minor 30: a builder reading ``collection.config`` without a Collection
+    surfaces a typed ``BuilderError`` rather than a confusing
+    ``AttributeError``.
+
+    Previously the bare ``AttributeError`` was caught by
+    ``_iter_fetch_items``'s quarantine branch, and the operator saw a
+    ``fetch-unreachable:NoneType has no attribute 'config'`` reason
+    instead of a clean "collection required" diagnostic.
+    """
+    from lies.builders.base import REGISTRY
+    from lies.builders.errors import BuilderError
+    from lies.scrapers.base import ParsedDoc
+
+    class _CollectionReadingBuilder:
+        def build(self, workspace: Path, *, collection):  # type: ignore[no-untyped-def]
+            # Mimic a builder that reads ``collection.config`` — the bare
+            # ``None`` raises ``AttributeError`` here.
+            return collection.config["k"]
+
+    formats = set(REGISTRY.formats()) | {"x-coll-required"}
+    monkeypatch.setattr(REGISTRY, "formats", lambda: formats)
+    monkeypatch.setattr(REGISTRY, "resolve", lambda fmt: _CollectionReadingBuilder())
+
+    fake = _FakeScraper(
+        [
+            ParsedDoc(
+                path="page.x-coll-required",
+                content=b"raw",
+                source_sha256="aa" * 32,
+                source_format="x-coll-required",
+            )
+        ]
+    )
+    monkeypatch.setattr(
+        "lies.scrapers.base.pick_scraper",
+        lambda source: fake,
+    )
+    src = tmp_path / "page.x-coll-required"
+    src.write_bytes(b"placeholder")
+
+    fetcher = ScraperFetcher(library=None)  # type: ignore[arg-type]
+    with pytest.raises(BuilderError, match="requires a Collection"):
+        list(fetcher.fetch_sources(src))
 
 
 # ---------------------------------------------------------------------------

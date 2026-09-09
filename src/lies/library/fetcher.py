@@ -12,9 +12,9 @@ writer, which applies the deterministic frontmatter with the upstream
 Bespoke scrapers (those configured via ``Collection.scraper_cmd``) are
 loaded through the same ``module:attr`` / ``path.py:attr`` resolver the
 wiki-side ``_load_bespoke_scraper`` uses. If the resolver fails, the
-exception propagates -- the fetcher does NOT silently fall through to
-``pick_scraper`` (that would cause bespoke collections to ingest
-through the wrong scraper and lose data).
+exception is re-raised as :class:`LibraryFetchUnreachable` (a
+``LibraryError``) so operators grepping for ``LibraryError`` see bespoke
+loader failures alongside every other library-side error — see Minor 44.
 
 Per-doc flow:
 
@@ -26,7 +26,8 @@ Per-doc flow:
    - If ``source_format`` is in ``REGISTRY.formats()`` (and not
      ``markdown``), the bytes are materialized into a per-doc temp
      workspace and routed through the matching ``Builder`` -- mirroring
-     ``etl/stages/normalize.py:83-90``.
+     ``etl/stages/normalize.py:83-90`` (canonical location of
+     ``_materialize`` / ``_materialize_bespoke`` — see Minor 45).
    - Otherwise ``format_dispatch.dispatch`` produces a markdown body
      (markdown / html / rst / pdf formats handled; unknown formats raise
      ``UnknownFormatError`` to the caller for quarantine).
@@ -64,6 +65,62 @@ def _hash_bytes(raw: bytes) -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
+# Minor 31: short-ID mapping for ``fetched_via``. The previous
+# implementation used ``type(scraper).__name__`` (e.g. ``WebScraper``,
+# ``GitHubScraper``), which leaks the class hierarchy into the mirror
+# frontmatter and conflicts with the spec's short-id contract
+# (``web`` / ``github`` / ``pdf``). The dict maps the concrete class to
+# its short id; any unmapped class falls back to its bare class name so
+# a new scraper added later is still recorded (just with a less-prettied
+# name) instead of crashing the ingest.
+_FETCHED_VIA_ID: dict[type[BaseScraper], str] = {}
+
+
+def _register_short_id(cls: type[BaseScraper], short_id: str) -> None:
+    """Register a concrete scraper class with a short ``fetched_via`` id.
+
+    Idempotent: re-registering the same mapping is a no-op (we don't
+    overwrite an existing entry to avoid surprises on import order).
+    """
+    _FETCHED_VIA_ID.setdefault(cls, short_id)
+
+
+# Concrete registrations. Each is a one-line pin against the class
+# name changing in the future — the cross-task contract is the short
+# id, not the bare class name.
+def _register_known_scrapers() -> None:
+    """Populate ``_FETCHED_VIA_ID`` with the concrete scraper classes.
+
+    Lazy import keeps ``import lies.cli`` cheap: the web/github/pdf
+    scraper modules pull pydantic_ai / fastmcp transitively through the
+    builder package. We only need their class objects here, which is
+    what the registry pins anyway.
+    """
+    # Local imports mirror the lazy pattern in ``pick_scraper`` —
+    # same import-graph reasoning applies.
+    from lies.scrapers.github import GitHubScraper
+    from lies.scrapers.pdf import PDFScraper
+    from lies.scrapers.web import WebScraper
+
+    _register_short_id(WebScraper, "web")
+    _register_short_id(GitHubScraper, "github")
+    _register_short_id(PDFScraper, "pdf")
+
+
+def _short_id_for(scraper: BaseScraper) -> str:
+    """Resolve the short id for ``scraper``.
+
+    Falls back to ``type(scraper).__name__`` when the concrete class
+    is not registered (e.g. a user-supplied bespoke scraper). The
+    fallback preserves a non-empty ``fetched_via`` value rather than
+    silently dropping the field — the operator still gets a marker
+    they can grep for.
+    """
+    if not _FETCHED_VIA_ID:
+        _register_known_scrapers()
+    return _FETCHED_VIA_ID.get(type(scraper), type(scraper).__name__)
+
+
 def _load_bespoke_scraper(scraper_cmd: str) -> BaseScraper:
     """Resolve ``module:attr`` or ``path.py:attr`` to a BaseScraper.
 
@@ -71,7 +128,9 @@ def _load_bespoke_scraper(scraper_cmd: str) -> BaseScraper:
     library-side fetcher honors ``Collection.scraper_cmd`` without a
     silent fall-through to ``pick_scraper``. On any failure
     (``ScraperUnavailable``) the exception propagates so the caller can
-    surface the bespoke-loader failure to the operator.
+    surface the bespoke-loader failure to the operator. ``fetch_sources``
+    wraps the ``ScraperUnavailable`` in ``LibraryFetchUnreachable`` for
+    taxonomy consistency (Minor 44).
     """
     if ":" not in scraper_cmd:
         raise ScraperUnavailable(f"scraper_cmd must be 'module:attr', got: {scraper_cmd!r}")
@@ -108,6 +167,15 @@ def _materialize(workspace: Path, fmt: str, raw: bytes) -> None:
     Mirrors ``etl/stages/normalize.py:_materialize`` so REGISTRY routing
     can reuse the same on-disk shape (PDF reads ``source.pdf``; HTML
     reads ``source.html``; Sphinx walks ``src/``).
+
+    Minor 45: kept as a verbatim mirror on purpose. The canonical
+    implementation lives in ``etl/stages/normalize.py`` and is wired
+    into the wiki-side ETL pipeline. Refactoring to a shared helper
+    would couple the library import graph to the wiki-side ETL module
+    chain — pulling pydantic_ai / fastmcp into ``import lies.cli`` via
+    a transitive wiki dependency. The duplication is the cheaper path
+    until consolidation lands; if the wiki-side logic changes, this
+    copy must change in lockstep.
     """
     if fmt == "pdf":
         (workspace / "source.pdf").write_bytes(raw)
@@ -129,6 +197,9 @@ def _materialize_bespoke(workspace: Path, doc: ParsedDoc) -> None:
     bespoke builder sees the same on-disk layout it expects. The
     manifest points at the per-doc body; the builder reads
     ``<workspace>/manifest.json`` and ``<workspace>/<entry.path>``.
+
+    Minor 45: same rationale as :func:`_materialize` — verbatim mirror
+    of the canonical implementation in ``etl/stages/normalize.py``.
     """
     workspace.mkdir(parents=True, exist_ok=True)
     body_name = doc.path.rsplit("/", 1)[-1] or "body.md"
@@ -183,10 +254,26 @@ def _normalize_body(
                 _materialize_bespoke(workspace, doc)
             else:
                 _materialize(workspace, doc.source_format, doc.content)
-            built = REGISTRY.resolve(doc.source_format).build(
-                workspace,
-                collection=collection,  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
-            )
+            # Minor 30: a builder that reads ``collection.config`` (e.g.
+            # ``liquid``, ``sphinx``, ``bespoke``) without a real
+            # ``Collection`` raises ``AttributeError`` on the bare-``None``.
+            # Without this catch, the exception masks as a per-doc
+            # quarantine entry, not the typed ``BuilderError`` that
+            # ``_iter_fetch_items`` knows how to handle. Catch the
+            # AttributeError here and re-raise as ``BuilderError`` so the
+            # operator sees the real cause ("collection required") rather
+            # than a confusing "AttributeError: 'NoneType' object has no
+            # attribute 'config'".
+            try:
+                built = REGISTRY.resolve(doc.source_format).build(
+                    workspace,
+                    collection=collection,  # ty: ignore[invalid-argument-type]
+                )
+            except AttributeError as exc:
+                raise BuilderError(
+                    f"builder for {doc.source_format!r} requires a Collection "
+                    f"(got {type(collection).__name__}): {exc}"
+                ) from exc
         if not built:
             # Surface an explicit error rather than committing an empty
             # body; the caller will quarantine the doc with the reason.
@@ -230,7 +317,20 @@ class ScraperFetcher:
 
     def fetch_sources(self, source: Path | str) -> Iterator[FetchItem]:
         if self._scraper_cmd is not None:
-            scraper = _load_bespoke_scraper(self._scraper_cmd)
+            # Minor 44: wrap bespoke-loader ``ScraperUnavailable`` into
+            # ``LibraryFetchUnreachable`` at the call site (not inside
+            # ``_load_bespoke_scraper``). The wrapping has to happen
+            # HERE so it also fires when tests monkeypatch
+            # ``_load_bespoke_scraper`` with a stub that raises
+            # ``ScraperUnavailable`` directly — the production function
+            # itself is the one place that does NOT see the wrap when
+            # bypassed.
+            try:
+                scraper = _load_bespoke_scraper(self._scraper_cmd)
+            except ScraperUnavailable as exc:
+                raise LibraryFetchUnreachable(
+                    f"bespoke scraper loader failed for {self._scraper_cmd!r}: {exc}"
+                ) from exc
         else:
             scraper = _scraper_base.pick_scraper(source)
         raw = scraper.fetch(source)
@@ -251,7 +351,13 @@ class ScraperFetcher:
                 url=str(source) if not isinstance(source, Path) else None,
                 body=_normalize_body(doc, collection=self._collection),
                 source_hash=fetcher_raw_hash,
-                fetched_via=type(scraper).__name__,
+                # Minor 31: short-id mapping. Spec mandates short ids
+                # (``web`` / ``github`` / ``pdf``); the bare
+                # ``type(scraper).__name__`` leaks the class hierarchy
+                # (``WebScraper`` / ``GitHubScraper``). The mapping
+                # ``_FETCHED_VIA_ID`` is populated lazily by
+                # ``_register_known_scrapers`` on first use.
+                fetched_via=_short_id_for(scraper),
             )
             emitted += 1
         if emitted == 0:
