@@ -6,23 +6,29 @@ All notable changes to LIES are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.20.0] - 2026-09-10
+
 ### Added
-- `lies query` accepts a tag filter ahead of the question. A leading
-  `+tag` chain (atoms joined by `&` / `|`, `&` binding tighter)
-  restricts the search; a following `-tag` excludes one tag; the
-  remaining tokens are the question. A collection's own name is an
-  implicit tag. `--tag-expr` / `--exclude-tag` express the same filter
-  explicitly and mirror the MCP tool's argument shape. Bare
-  `lies query what is X?` is unchanged. Grammar errors and unknown
-  tags exit 2.
-- `lies collections enrich-tags` dry-run helper. Walks the wiki's
-  `collections_dir` and prints one
-  `lies collections modify <name> --set tags=<comma-separated>` line
-  per collection whose `tags` field is empty or missing. Default
-  dry-run never writes; the operator runs the printed commands, or
-  re-uses `lies collections modify --set tags=X,Y` directly.
-  `--apply` is reserved for a future auto-apply and currently raises
-  `BadParameter`.
+- **F15 — Tag-filter language** (`+tag&tag|tag -tag`): `lies query`
+  and `mcp_query` accept a filter expression to scope retrieval to
+  collections whose tags match. `Collection.tags` round-trips through
+  YAML with permissive coercion; the parser uses `shlex` for quoted
+  tag names; the resolver validates tags against the available set
+  with no fuzzy match. `SynthesizedAnswer.searched_scope` reports the
+  resolved collection set. CLI: `lies query +airflow what are DAGs?`,
+  `lies query --tag-expr "airflow&provider" --exclude-tag amazon
+  what is X?`. MCP: `mcp_query(tag_expr=..., exclude_tags=...)`.
+  Mirrors the predecessor's `ROUTING.md` §"Tag-filter syntax".
+- `lies collections new --tag X` (repeatable) for attaching tags at
+  creation time.
+- `lies collections enrich-tags` (dry-run) prints
+  `lies collections modify --set tags=...` invocations for
+  collections missing tags. `--apply` is reserved for a future
+  auto-apply and currently raises `BadParameter`.
+
+### Fixed
+- `Collection.tags` non-list YAML values now coerce to `[]` with a
+  warning (mirrors the `language` permissive fallback).
 
 ### Changed
 - Replaced the vendored `pydantic-guidance` flake8 plugin with the

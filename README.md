@@ -167,6 +167,34 @@ lies page write --collection claude-code --type concept \
 The MCP equivalent (`mcp__plugin_lies__file_knowledge`) elicits
 overwrite/rename/cancel on slug collision via `ctx.elicit`.
 
+## Tag-filter language
+
+Filter `lies query` to collections whose tags match a `+tag&tag|tag`
+expression. `&` binds tighter than `|`; `-tag` excludes; quoted tags
+(`+"airflow provider"`) allow spaces.
+
+```bash
+lies query +airflow what are DAGs?
+lies query +airflow&provider -amazon what connectors?
+lies query --tag-expr "airflow|spark" --exclude-tag aws what is X?
+```
+
+`Collection.name` is an implicit self-tag: `+airflow` matches a
+collection named `airflow` even without `airflow` in its tags. Set
+tags at creation (`lies collections new airflow --tag airflow --tag
+provider`) or modify (`lies collections modify airflow --tag provider`).
+
+The MCP `query` tool accepts `tag_expr` and `exclude_tags` (size ≤ 1)
+kwargs. `SynthesizedMcpAnswer.searched_scope` reports the resolved
+collection set; with no filter, it reports all collections.
+
+Notes on the CLI parser: Typer is configured with
+`ignore_unknown_options=True` so the leading `+tag...` token chain
+reaches `parse_query_argv`. The trade-off is that an unknown flag
+(e.g. a typo like `--tagge` instead of `--tag`) is not rejected at the
+Typer layer — it lands in the question text verbatim. Use
+`--tag-expr` / `--exclude-tag` for an explicit, Typer-validated form.
+
 ## Advanced
 
 ### Manual authoring (advanced)
