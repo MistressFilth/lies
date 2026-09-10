@@ -549,3 +549,41 @@ def _collections_matching(wiki: Wiki, tag_filter: ResolvedTagFilter) -> set[str]
         if _eval_include(include, effective):
             matching.add(coll.name)
     return matching
+
+
+def _all_collection_names(wiki: Wiki) -> list[str]:
+    """Every collection registered in ``wiki``, sorted by name.
+
+    The "no tag_filter" scope per the Bundle C spec
+    (§"Retriever consumption" — "without a filter, the scope is all
+    registered collections"). Walks ``wiki.collections_dir/*.yaml``,
+    the same source :func:`_collections_matching` walks; collection
+    ``name`` is the addressable key throughout (qmd's per-collection
+    filter, registry indexes, and the operator-facing surface).
+    """
+    from lies.collections.record import load_collection
+
+    if not wiki.collections_dir.exists():
+        return []
+    return sorted(
+        load_collection(wiki, path.stem).name for path in wiki.collections_dir.glob("*.yaml")
+    )
+
+
+def _searched_scope(wiki: Wiki, tag_filter: ResolvedTagFilter | None) -> list[str]:
+    """The ``searched_scope`` list for an answer against ``wiki``.
+
+    With a filter: the resolved collection set from
+    :func:`_collections_matching` (sorted, unique). Without a filter:
+    every collection registered in ``wiki`` per
+    :func:`_all_collection_names`. Empty in either case when no
+    collections are registered.
+
+    The result is the Bundle C answer-shape contract: the
+    orchestrator populates ``SynthesizedAnswer.searched_scope`` from
+    this helper so downstream surfaces (F12 elicitation, F16 catalog
+    pages_read_by_collection) can react to the effective scope.
+    """
+    if tag_filter is not None:
+        return sorted(_collections_matching(wiki, tag_filter))
+    return _all_collection_names(wiki)

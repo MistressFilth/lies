@@ -174,3 +174,51 @@ def test_mcp_query_synthesized_answer_carries_should_file(
         result = query("what?", name="t", file=False)
 
     assert result.should_file is True
+
+
+# --- Task 7 / Bundle C — searched_scope on the MCP slice ------------------
+
+
+def test_mcp_query_synthesized_answer_carries_searched_scope(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The MCP ``searched_scope`` mirrors the orchestrator's resolved set.
+
+    Spec (2026-09-09-bundle-c-tag-filter-design.md §"Retriever consumption"):
+    > The ``searched_scope`` field on the answer reports the collections
+    > that were searched. With a filter, the scope is the resolved set;
+    > without a filter, the scope is all registered collections.
+
+    The MCP slice is dict-serialized for transport; this test pins the
+    1:1 mirror on the new ``searched_scope`` field.
+    """
+    from lies.mcp import server
+    from lies.mcp.server import SynthesizedMcpAnswer, query
+
+    monkeypatch.setattr(server, "resolve_wiki", lambda _name=None: _wiki(tmp_path))
+
+    with mock.patch.object(server, "Orchestrator") as orch_cls:
+        orch_cls.return_value.run_query.return_value = _answer(searched_scope=["airflow", "amazon"])
+        result = query("what?", name="t")
+
+    assert isinstance(result, SynthesizedMcpAnswer)
+    assert result.searched_scope == ["airflow", "amazon"]
+
+
+def test_mcp_query_synthesized_answer_searched_scope_defaults_to_empty(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """An ``Orchestrator.run_query`` answer without ``searched_scope``
+    surfaces an empty list — the new field's ``default_factory=list``
+    contract (existing constructions don't break)."""
+    from lies.mcp import server
+    from lies.mcp.server import SynthesizedMcpAnswer, query
+
+    monkeypatch.setattr(server, "resolve_wiki", lambda _name=None: _wiki(tmp_path))
+
+    with mock.patch.object(server, "Orchestrator") as orch_cls:
+        orch_cls.return_value.run_query.return_value = _answer()
+        result = query("what?", name="t")
+
+    assert isinstance(result, SynthesizedMcpAnswer)
+    assert result.searched_scope == []

@@ -22,6 +22,7 @@ from typing import Literal, cast
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 from pydantic import BaseModel
+from pydantic import Field
 
 try:
     from fastmcp import Context
@@ -66,6 +67,9 @@ class SynthesizedMcpAnswer(BaseModel):
     synthesis_reason: str | None = None  # None when the agent answered cleanly
     should_file: bool = False  # F3: agent verdict on whether this earns a page
     file_receipt: dict | None = None  # F3: serialized MemoryReceipt or None
+    searched_scope: list[str] = Field(
+        default_factory=list
+    )  # Bundle C (F15): sorted, unique collection names searched
 
 
 # Re-export the page-author slice for FastMCP serialization.
@@ -368,6 +372,7 @@ def query(
         synthesis_reason=ans.synthesis_reason or None,
         should_file=ans.should_file,
         file_receipt=(ans.file_receipt.model_dump() if ans.file_receipt is not None else None),
+        searched_scope=list(ans.searched_scope),
     )
 
 

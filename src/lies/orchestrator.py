@@ -49,6 +49,7 @@ from lies.query import (
     synthesize_answer,
 )
 from lies.query.tag_expr import ResolvedTagFilter
+from lies.query.synthesizer import _searched_scope
 from lies.schema import load_schema
 from lies.wiki.wiki import Wiki
 from lies.wikilinks import WikiLinkResolver
@@ -1263,9 +1264,28 @@ class Orchestrator:
         from the CLI or MCP surface. The parameter is declared here so
         both callers can pass it; threading it into
         :func:`retrieve_pages` lands with the retriever work.
+
+        ``searched_scope`` on the returned :class:`SynthesizedAnswer`
+        reports the collections that were searched (Bundle C). With a
+        filter, the scope is the resolved set; without a filter, the
+        scope is every collection registered in ``self.wiki``. Empty
+        when no collections are registered. The helper
+        :func:`lies.query.synthesizer._searched_scope` carries the
+        same source-of-truth the retriever sees, so the answer's
+        ``searched_scope`` always matches what qmd was actually
+        called against.
         """
+        # Resolve the searched scope once up front — every branch of
+        # this method returns a ``SynthesizedAnswer`` and each must
+        # carry the same scope (spec §"Retriever consumption",
+        # documented at ``SynthesizedAnswer.searched_scope``).
+        searched_scope = _searched_scope(self.wiki, tag_filter)
+
         if not question or not question.strip():
-            return synthesize_answer(question, self.wiki)
+            return replace(
+                synthesize_answer(question, self.wiki),
+                searched_scope=list(searched_scope),
+            )
 
         pages, fallback_reason = retrieve_pages(question, self.wiki, tag_filter=tag_filter)
 
@@ -1279,6 +1299,7 @@ class Orchestrator:
                 extractive,
                 synthesis_used=False,
                 synthesis_reason="no pages retrieved",
+                searched_scope=list(searched_scope),
             )
 
         output, synthesis_reason = self._call_query_synthesizer(question, pages)
@@ -1288,6 +1309,7 @@ class Orchestrator:
                 extractive,
                 synthesis_used=False,
                 synthesis_reason=synthesis_reason,
+                searched_scope=list(searched_scope),
             )
 
         retrieved = {page.rel_path for page in pages}
@@ -1309,6 +1331,7 @@ class Orchestrator:
             synthesis_used=True,
             synthesis_reason=synthesis_reason,
             should_file=output.should_file,
+            searched_scope=list(searched_scope),
         )
 
         # File-back decision (F3). ``should_file`` is the agent's own

@@ -37,6 +37,16 @@ class SynthesizedAnswer:
             when the agent judged the answer worth keeping as a wiki
             page. Nothing acts on it yet; F3 (the file-back loop)
             consumes it.
+        searched_scope: Sorted, unique list of collection names that
+            were searched for this answer. With a tag filter, the
+            resolved collection set (the output of
+            :func:`lies.query.synthesizer._collections_matching`).
+            Without a tag filter, every collection registered in the
+            wiki. See the Bundle C spec §"Retriever consumption" —
+            the field reports the resolved scope so downstream
+            surfaces (F12 elicitation, F16 catalog
+            ``pages_read_by_collection``, F1 output-format routing)
+            can react to the effective scope.
     """
 
     answer: str
@@ -51,3 +61,4 @@ class SynthesizedAnswer:
     should_file: bool = False
     question: str = ""
     file_receipt: MemoryReceipt | None = None
+    searched_scope: list[str] = field(default_factory=list)
