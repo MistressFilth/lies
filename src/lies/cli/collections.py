@@ -139,6 +139,13 @@ def collections_new(
             help="Write the collection YAML to disk; without --apply the config is printed to stdout only.",
         ),
     ] = False,
+    tag: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--tag",
+            help="Tag to attach to the new collection (repeatable); merged with the agent's proposed tags.",
+        ),
+    ] = None,
     name: Annotated[
         str | None,
         typer.Option(
@@ -222,6 +229,17 @@ def collections_new(
                 payload.setdefault("path", str(wiki.data_root / "raw" / collection_name))
                 payload.setdefault("created_at", now)
                 payload.setdefault("updated_at", now)
+                # Merge --tag values into the agent's proposed tags list
+                # (de-duplicated, preserving order, agent's tags first).
+                # Matches collections_modify's --tag/--untag merge semantics
+                # so operators get the same behavior across both verbs.
+                if tag:
+                    existing_tags = [str(t) for t in payload.get("tags") or []]
+                    merged = list(existing_tags)
+                    for t in tag:
+                        if t and t not in merged:
+                            merged.append(t)
+                    payload["tags"] = merged
                 # The agent may emit ISO strings; coerce to datetime
                 # so Collection's typed fields and save_collection's
                 # .isoformat() call work either way.
