@@ -72,6 +72,7 @@ def test_mcp_query_forwards_collection_to_orchestrator(
         collection="c",
         file=True,
         force_file=False,
+        tag_filter=None,
     )
     # And the instance was built with the wiki the resolver returned.
     orch_cls.assert_called_once_with(wiki=wiki)
@@ -121,6 +122,7 @@ def test_mcp_query_no_file_skips_file_back(monkeypatch: pytest.MonkeyPatch, tmp_
         collection=None,
         file=False,
         force_file=False,
+        tag_filter=None,
     )
     # file=False means no filing; the answer's should_file is still
     # carried but file_receipt stays None.
