@@ -15,6 +15,7 @@ from lies.query.tag_expr import (
     _render_include,
     parse_include,
     parse_query_argv,
+    resolve,
 )
 
 
@@ -225,3 +226,46 @@ def test_render_include_round_trip_multiatom_with_internal_space():
     rendered = _render_include(ast)
     assert rendered == '"airflow provider"'
     assert parse_include(rendered) == ast
+
+
+# --- resolve ---------------------------------------------------------------
+
+
+def test_resolve_valid_tag():
+    tree = parse_include("airflow")
+    result = resolve(tree, available={"airflow", "amazon"})
+    assert result.include == Include("airflow")
+    assert result.exclude is None
+
+
+def test_resolve_valid_and():
+    tree = parse_include("airflow&provider")
+    result = resolve(tree, available={"airflow", "provider", "amazon"})
+    assert isinstance(result.include, And)
+
+
+def test_resolve_unknown_tag_raises():
+    tree = parse_include("nope")
+    with pytest.raises(TagExprUnknown):
+        resolve(tree, available={"airflow", "provider"})
+
+
+def test_resolve_and_one_branch_unknown():
+    tree = parse_include("airflow&nope")
+    with pytest.raises(TagExprUnknown):
+        resolve(tree, available={"airflow", "provider"})
+
+
+def test_resolve_or_one_branch_unknown():
+    tree = parse_include("airflow|nope")
+    with pytest.raises(TagExprUnknown):
+        resolve(tree, available={"airflow", "provider"})
+
+
+def test_resolve_nested_unknown_in_left_subtree():
+    # Re-test via parse_tokens instead
+    from lies.query.tag_expr import parse_tokens
+
+    tree = parse_tokens(["airflow", "&", "nope", "|", "provider"])
+    with pytest.raises(TagExprUnknown):
+        resolve(tree, available={"airflow", "provider"})

@@ -340,3 +340,37 @@ def parse_query_argv(
             raise TagExprParseError("filter present but no question")
     question = " ".join(question_tokens)
     return question, include_ast, exclude_tag
+
+
+# ---------------------------------------------------------------------------
+# Resolver
+# ---------------------------------------------------------------------------
+
+
+def resolve(expr: TagExpr, *, available: set[str]) -> ResolvedTagFilter:
+    """Validate the include AST against the available tag set.
+
+    Every `Include(tag)` requires `tag` in `available`; the first
+    unknown raises `TagExprUnknown` with the exact spelling.
+    `And` / `Or` are recursive — both children must validate.
+    The exclude lives on `ResolvedTagFilter.exclude`; this
+    function does not validate it (the retriever does).
+
+    Returns:
+        `ResolvedTagFilter(include=validated_tree, exclude=None)`.
+        Exclude is filled by the caller (`parse_query_argv` already
+        extracted it; this function only handles the include AST).
+    """
+    if isinstance(expr, Include):
+        if expr.tag not in available:
+            raise TagExprUnknown(expr.tag)
+        return ResolvedTagFilter(include=expr)
+    if isinstance(expr, And):
+        left = resolve(expr.left, available=available)
+        right = resolve(expr.right, available=available)
+        return ResolvedTagFilter(include=And(left.include, right.include))  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
+    if isinstance(expr, Or):
+        left = resolve(expr.left, available=available)
+        right = resolve(expr.right, available=available)
+        return ResolvedTagFilter(include=Or(left.include, right.include))  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
+    raise TypeError(f"unexpected node type: {type(expr).__name__}")
