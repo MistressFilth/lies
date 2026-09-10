@@ -7,6 +7,7 @@ primary key and must not contain QMD operator characters.
 from __future__ import annotations
 
 import re
+import warnings
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -94,11 +95,23 @@ def load_collection(wiki: Wiki, name: str) -> Collection:
             raise CollectionConfigInvalid(
                 f"language must be a string, got {type(raw_lang).__name__}"
             )
+        raw_tags = payload.get("tags", [])
+        if isinstance(raw_tags, list):
+            tags = [str(t) for t in raw_tags]
+        elif raw_tags is None:
+            tags = []
+        else:
+            warnings.warn(
+                f"tags must be a list, got {type(raw_tags).__name__}; coercing to empty list",
+                UserWarning,
+                stacklevel=2,
+            )
+            tags = []
         collection = Collection(
             name=payload["name"],
             path=Path(payload["path"]),
             source=payload["source"],
-            tags=list(payload.get("tags", [])),
+            tags=tags,
             scraper_cmd=payload.get("scraper_cmd"),
             doc_path=Path(payload["doc_path"]) if payload.get("doc_path") else None,
             mapper_model=payload.get("mapper_model"),
