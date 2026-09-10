@@ -454,10 +454,20 @@ CLI commands (`src/lies/cli/`):
 - `lies ingest --source <PATH|URL> [--collection NAME] [--slug <slug>] [--title <title>] [--force] [--dry-run] [--exclude-stem <name> ...] [--exclude-dir <name> ...]` — deterministic single-source ingest into the library. No LLM round-trip; the 5-step pipeline (fetch → ETL → filter → mirror → catalog) writes a deterministic frontmatter mirror and atomic-commits one catalog upsert. `--collection` defaults to `--slug-prefix` or `default`; `--force` overwrites an existing mirror; `--dry-run` prints the plan without writing.
 - `lies ingest --batch <DIR> --slug-prefix <name> [--force] [--dry-run] [--exclude-stem <name> ...] [--exclude-dir <name> ...]` — directory walk into one collection. Same pipeline as `--source` but iterates every eligible file under `<DIR>`.
 - `lies sync [<collection>] [--source URL] [--wizard]` — sync one collection into the library, or every collection in the wiki when no positional is given. Pass `--source` to bootstrap a missing YAML (single-collection mode only); `--wizard` routes the bootstrap through `collection_author_agent`. Honors `Collection.scraper_cmd` (bespoke scrapers via `module:attr` / `path.py:attr`) and routes REGISTRY-registered source formats (sphinx / liquid / bespoke) through their builders before falling back to `format_dispatch`. Exits non-zero when the batch reports any `errors`.
-- `lies query <question> [--collection NAME] [--no-file] [--force-file]`
+- `lies query [+tag[&|tag]...] [-tag] <question> [--collection NAME] [--no-file] [--force-file] [--tag-expr EXPR] [--exclude-tag TAG]`
   — ask a question of the wiki; answers are LLM-synthesized with
   citations over qmd-retrieved pages, falling back to the previous
-  extractive output when no model is available. When the synthesizer
+  extractive output when no model is available. A leading `+tag`
+  restricts the search to collections carrying that tag (atoms joined
+  by `&` / `|`, with `&` binding tighter, e.g.
+  `+airflow&provider|pyspark`); a following `-tag` excludes one tag.
+  A collection's own name is always an addressable tag. Everything
+  after the filter is the question, so bare `lies query what is X?`
+  keeps working unchanged. `--tag-expr` (include body, no leading `+`)
+  and `--exclude-tag` express the same filter without the prefix
+  syntax and mirror the MCP tool's argument shape; when either is
+  given the positional tokens are the question verbatim. A grammar
+  error or a tag outside the registry exits 2. When the synthesizer
   marks an answer `should_file`, the answer is durably filed under
   `wiki/<collection>/synthesis/<file>`; `--collection NAME` selects
   the target subdir (required to write), `--no-file` skips the loop,

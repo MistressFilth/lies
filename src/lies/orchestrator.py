@@ -48,6 +48,7 @@ from lies.query import (
     retrieve_pages,
     synthesize_answer,
 )
+from lies.query.tag_expr import ResolvedTagFilter
 from lies.schema import load_schema
 from lies.wiki.wiki import Wiki
 from lies.wikilinks import WikiLinkResolver
@@ -1235,6 +1236,7 @@ class Orchestrator:
         collection: str | None = None,
         file: bool = True,
         force_file: bool = False,
+        tag_filter: ResolvedTagFilter | None = None,
     ) -> SynthesizedAnswer:
         """Answer ``question`` using the wiki, synthesized by the LLM.
 
@@ -1256,6 +1258,11 @@ class Orchestrator:
         subdirectory the page lands in; without it, the answer is
         returned unfilled and a note is appended to ``synthesis_reason``
         rather than silently dropping the filing intent.
+
+        ``tag_filter`` carries the resolved include/exclude tag filter
+        from the CLI or MCP surface. The parameter is declared here so
+        both callers can pass it; threading it into
+        :func:`retrieve_pages` lands with the retriever work.
         """
         if not question or not question.strip():
             return synthesize_answer(question, self.wiki)

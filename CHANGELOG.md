@@ -6,6 +6,16 @@ All notable changes to LIES are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- `lies query` accepts a tag filter ahead of the question. A leading
+  `+tag` chain (atoms joined by `&` / `|`, `&` binding tighter)
+  restricts the search; a following `-tag` excludes one tag; the
+  remaining tokens are the question. A collection's own name is an
+  implicit tag. `--tag-expr` / `--exclude-tag` express the same filter
+  explicitly and mirror the MCP tool's argument shape. Bare
+  `lies query what is X?` is unchanged. Grammar errors and unknown
+  tags exit 2.
+
 ### Changed
 - Replaced the vendored `pydantic-guidance` flake8 plugin with the
   upstream [`supyrliminal`](https://github.com/MistressFilth/supyrliminal)
