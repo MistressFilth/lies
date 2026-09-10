@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from lies.query.tag_expr import (
     And,
     Include,
@@ -10,6 +12,8 @@ from lies.query.tag_expr import (
     TagExprEmpty,
     TagExprParseError,
     TagExprUnknown,
+    parse_include,
+    parse_query_argv,
 )
 
 
@@ -45,3 +49,136 @@ def test_exceptions_exist():
     assert issubclass(TagExprParseError, Exception)
     assert issubclass(TagExprUnknown, Exception)
     assert issubclass(TagExprEmpty, Exception)
+
+
+# --- parse_include -------------------------------------------------------
+
+
+def test_parse_include_single_tag():
+    assert parse_include("airflow") == Include("airflow")
+
+
+def test_parse_include_and():
+    assert parse_include("a&b") == And(Include("a"), Include("b"))
+
+
+def test_parse_include_or():
+    assert parse_include("a|b") == Or(Include("a"), Include("b"))
+
+
+def test_parse_include_precedence_and_binds_tighter():
+    # a&b|c  ==  (a&b)|c
+    assert parse_include("a&b|c") == Or(And(Include("a"), Include("b")), Include("c"))
+
+
+def test_parse_include_three_atom_and():
+    assert parse_include("a&b&c") == And(And(Include("a"), Include("b")), Include("c"))
+
+
+def test_parse_include_quoted_tag():
+    # shlex keeps "airflow provider" as one token
+    assert parse_include('"airflow provider"') == Include("airflow provider")
+
+
+def test_parse_include_quoted_with_operator():
+    assert parse_include('"airflow provider"&"machine learning"') == And(
+        Include("airflow provider"), Include("machine learning")
+    )
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "&a",  # leading &
+        "a&",  # trailing &
+        "a|",  # trailing |
+        "&",  # dangling
+        "|",  # dangling
+        "a&&b",  # consecutive operators
+    ],
+)
+def test_parse_include_errors(bad):
+    from lies.query.tag_expr import TagExprParseError
+
+    with pytest.raises(TagExprParseError):
+        parse_include(bad)
+
+
+# --- parse_query_argv ----------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "argv,expected_filter,expected_exclude,expected_query",
+    [
+        # No filter at all
+        (["what is X?"], None, None, "what is X?"),
+        # Single +tag
+        (["+airflow", "what", "are", "DAGs?"], "airflow", None, "what are DAGs?"),
+        # +tag&tag
+        (
+            ["+airflow&provider", "what", "connectors?"],
+            "airflow&provider",
+            None,
+            "what connectors?",
+        ),
+        # +tag|tag (note: | inside argv is one token due to shell split)
+        (
+            ["+claude-code|claude-platform", "what", "is", "a", "hook?"],
+            "claude-code|claude-platform",
+            None,
+            "what is a hook?",
+        ),
+        # +chain -exclude
+        (
+            ["+airflow&provider", "-amazon", "compare", "X", "and", "Y"],
+            "airflow&provider",
+            "amazon",
+            "compare X and Y",
+        ),
+        # Quoted tag with space
+        (
+            ['+"airflow provider"', "what", "is", "X?"],
+            '"airflow provider"',
+            None,
+            "what is X?",
+        ),
+        # +a +b — first is filter, second is query
+        (["+a", "+b"], "a", None, "+b"),
+        # +a -b -c — first is filter, -b consumed, -c is query
+        (["+a", "-b", "-c"], "a", "b", "-c"),
+        # -amazon without +chain
+        (["-amazon", "what", "is", "S3?"], None, "amazon", "what is S3?"),
+    ],
+)
+def test_parse_query_argv_happy(argv, expected_filter, expected_exclude, expected_query):
+    # expected_filter as string is re-parsed to compare; we
+    # compare on (question, include_ast.render() if include else None, exclude).
+    from lies.query.tag_expr import _render_include  # see step 7
+
+    question, include_ast, exclude = parse_query_argv(argv)
+    assert question == expected_query
+    if expected_filter is None:
+        assert include_ast is None
+    else:
+        assert _render_include(include_ast) == expected_filter
+    assert exclude == expected_exclude
+
+
+def test_parse_query_argv_with_exclude():
+    argv = ["+airflow&provider", "-amazon", "compare", "X", "and", "Y"]
+    question, include_ast, exclude = parse_query_argv(argv)
+    assert question == "compare X and Y"
+    assert exclude == "amazon"
+
+
+def test_parse_query_argv_filter_no_question_errors():
+    from lies.query.tag_expr import TagExprParseError
+
+    with pytest.raises(TagExprParseError):
+        parse_query_argv(["+airflow"])
+
+
+@pytest.mark.parametrize("argv", [["+"], ["-"], ["+"]])
+def test_parse_query_argv_dangling_operator_errors(argv):
+    with pytest.raises(TagExprParseError):
+        parse_query_argv(argv + ["question"])
