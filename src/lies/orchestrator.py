@@ -6,7 +6,6 @@ import asyncio
 import json
 import re
 import subprocess
-import sys
 import time
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -16,16 +15,10 @@ from pydantic_ai import Agent
 from pydantic_ai.models import Model
 
 from lies.agents.linter import LintFinding, LintReport, linter_agent
-from lies.agents.page_writer import (
-    PageDiff,
-    PageWriterDeps,
-    page_writer_agent,
-)
 from lies.agents.query_synthesizer import QueryAnswer, QueryDeps, query_synthesizer_agent
 from lies.agents.repair import RepairAgentDeps, repair_agent
 from lies.agents.repair_models import RepairPlan, RepairReceipt
 from lies.agents.repair_validation import ValidatedRepairPlan, validate_plan
-from lies.agents.source_reader import SourceExtraction, source_reader_agent
 from lies.capabilities import (
     code_mode,
     dynamic_workflow,
@@ -37,7 +30,6 @@ from lies.config import get_qmd_transport, get_qmd_url
 from lies.lock_errors import WikiFlockUnrepairable, WikiLockBusy
 from lies.memory.enricher import MemoryEnricherDeps, enricher_agent
 from lies.memory.models import (
-    IngestSourceUnreachable,
     MemoryPlan,
     MemoryReceipt,
     WikiCommitFailed,
@@ -57,7 +49,6 @@ from lies.query import (
     synthesize_answer,
 )
 from lies.schema import load_schema
-from lies.wiki.git import CommitError, atomic_commit
 from lies.wiki.wiki import Wiki
 from lies.wikilinks import WikiLinkResolver
 from lies.wikilinks import extract_wikilinks as _extract_wikilinks
@@ -664,67 +655,6 @@ def _lint_log_title(report: LintReport) -> str:
     return f"lint | {n} findings ({cat_str})"
 
 
-# Module-level constants for the F2 helpers (_list_existing_pages and
-# _materialize_source). These are deterministic pure functions, not
-# agent-shaped, so they live as module-level helpers alongside the
-# other host-side helpers (lint shell, snapshot, etc.) rather than on
-# the WikiMemoryService.
-#
-# _EXCLUDED_TOP_LEVEL_DIRS: any directory segment in this set is
-# skipped by the page walker. Keeps ``.lies/`` (runtime sidecars),
-# ``.git/`` (git metadata), and ``node_modules/`` (tooling artifacts)
-# out of the agent's existing-pages list.
-_EXCLUDED_TOP_LEVEL_DIRS = frozenset({".lies", ".git", "node_modules"})
-# _FRONTMATTER_SUMMARY_RE: matches a ``summary: <value>`` line inside a
-# YAML frontmatter block. The block is parsed by checking
-# ``text.startswith("---")`` and finding the closing ``\n---``; only
-# then is the regex applied to the block contents.
-_FRONTMATTER_SUMMARY_RE = re.compile(r"^summary:\s*(.+)$", re.MULTILINE)
-
-
-def _summarize_page(path: Path) -> str:
-    """Return the page's frontmatter ``summary:`` value, else a
-    deterministic fallback built from the first H1 + first body line.
-
-    Pure function; no I/O beyond reading the file. Test-only / agent-input
-    utility — does not need to live on the WikiMemoryService. The body
-    line is taken from lines AFTER any YAML frontmatter block so the
-    ``title:`` (or other frontmatter fields) don't get reported as the
-    first body line.
-    """
-    text = path.read_text(encoding="utf-8", errors="replace")
-    body_text = text
-    if text.startswith("---"):
-        end = text.find("\n---", 3)
-        if end != -1:
-            fm_match = _FRONTMATTER_SUMMARY_RE.search(text[3:end])
-            if fm_match:
-                return fm_match.group(1).strip().strip('"').strip("'")
-            # Skip the frontmatter block when building the fallback so
-            # the ``title:`` line doesn't get reported as the first body.
-            body_text = text[end + 4 :].lstrip("\n")
-    lines = body_text.splitlines()
-    h1 = next((line for line in lines if line.startswith("# ")), "")
-    body = next(
-        (line.strip() for line in lines if line.strip() and not line.startswith("#")),
-        "",
-    )
-    return f"{h1.removeprefix('# ').strip()} {body}".strip()
-
-
-def _url_basename(url: str) -> str:
-    """Stable filename for a fetched URL. Falls back to ``fetched.md``.
-
-    The basename is the URL's last path segment; URLs whose path has
-    no useful tail (e.g. ``https://example.com/``) get the literal
-    fallback so the materialize step always produces a real file.
-    """
-    from urllib.parse import urlparse
-
-    name = Path(urlparse(url).path).name
-    return name or "fetched.md"
-
-
 ORCHESTRATOR_SYSTEM_PROMPT_PREFIX = """You are the LIES orchestrator. The user
 is curating a Karpathy-pattern LLM wiki at the path below. You dispatch their
 commands to specialized sub-agents and return results.
@@ -740,22 +670,6 @@ The schema for this wiki:
 # Python identifiers because DynamicWorkflow exposes them as sandbox function
 # names; they must also be unique across the catalog.
 _SUB_AGENT_TABLE: tuple[tuple[str, object, str], ...] = (
-    (
-        "source_reader",
-        source_reader_agent,
-        (
-            "Read a raw source and return a structured extraction "
-            "(claims, entities, concepts, comparisons, summary)."
-        ),
-    ),
-    (
-        "page_writer",
-        page_writer_agent,
-        (
-            "Create or update wiki pages from extracted material; "
-            "return `PageDiff` operations; never touches index.md or log.md."
-        ),
-    ),
     (
         "linter",
         linter_agent,
@@ -1314,149 +1228,6 @@ class Orchestrator:
         except Exception:  # noqa: BLE001 - last-resort graceful degradation
             return ""
 
-    def run_ingest(
-        self,
-        source: str,
-        *,
-        collection: str | None = None,
-        no_llm: bool = False,
-    ) -> str:
-        """Ingest a single source through the LLM round-trip (default)
-        or via ``sync_collection`` (when ``no_llm=True``).
-
-        ``collection`` is the corpus unit the source belongs to. Callers
-        that already resolved a collection name (the CLI ``--collection``
-        flag, the MCP `` ``ingest_source`` ``collection`` kwarg) MUST pass
-        it through; without it the orchestrator falls back to
-        ``Path(source).stem``, which silently misroutes the ingest when
-        ``source`` is an ``llms.txt`` index URL — materialization lands
-        under ``raw/llms/`` instead of ``raw/<collection>/`` and pages are
-        tagged with the wrong collection name. The pre-PR-49 default is
-        preserved for callers that do not have a collection name.
-
-        F2 default (``no_llm=False``):
-          1. snapshot working tree (``_snapshot_working_tree``)
-          2. materialize ``source`` to ``raw/<collection>/<basename>``
-          3. ``source_reader_agent`` → ``SourceExtraction``
-          4. ``_list_existing_pages`` (deterministic)
-          5. ``page_writer_agent`` → ``list[PageDiff]``
-          6. ``translate_page_diffs_to_plan`` → ``MemoryPlan(tag="ingest")``
-          7. ``WikiMemoryService.apply_plan`` (flock + atomic commit +
-             sidecar + log + qmd update + per-op catalog upsert + rollback)
-          8. discard snapshot
-
-        Agent failures at steps 3 or 5 call
-        ``etl.quarantine.quarantine`` and raise ``IngestQuarantined``.
-        Infra failures rollback and propagate the typed error.
-
-        ``IngestSourceUnreachable`` (raised at step 2 before any agent
-        work) — and any raw ``OSError`` from step 2's disk I/O — takes
-        the same ``discard snapshot`` path as :class:`IngestQuarantined`.
-        The snapshot was taken, but no wiki writes happened, so the
-        stash entry can be dropped rather than restored. Without this
-        branch the stash would leak until the next ``git stash clear``.
-        """
-        from lies.etl.sync_helper import sync_collection
-        from lies.memory.service import (
-            _hash_text,
-            _read_page,
-            translate_page_diffs_to_plan,
-        )
-
-        collection_name = collection if collection is not None else Path(source).stem
-        if no_llm:
-            sync_collection(self.wiki, collection_name, force=False)
-            return f"ingested {source}"
-
-        def _sha_lookup(rel: str) -> str:
-            """Return the SHA-256 of an existing wiki page, or "" if missing.
-
-            The page-writer agent emits UPDATE ops with a fresh
-            ``new_content``; the adapter sets ``expected_sha256`` to the
-            current on-disk hash so :class:`WikiWriteConflict` catches
-            drift. Brand-new pages don't go through UPDATE, but we still
-            return "" uniformly for non-existent paths.
-
-            The page-writer emits paths with the ``wiki/`` prefix per
-            the schema convention. ``_read_page`` joins onto
-            ``wiki.wiki_dir`` (= ``<data_root>/wiki``), so it expects a
-            path WITHOUT the leading ``wiki/`` — exactly like
-            ``_apply_operations`` passes to ``validate_page_path``.
-            Without the strip, ``_sha_lookup`` reads the doubled-prefix
-            location (``<data_root>/wiki/wiki/<rest>``) and returns
-            ``""`` even when the real on-disk file exists, breaking
-            the validate/apply agreement that
-            ``expected_sha256`` relies on.
-            """
-            body = _read_page(self.wiki, rel.removeprefix("wiki/"))
-            return "" if body is None else _hash_text(body)
-
-        repo = self.wiki.data_root
-        # Snapshot first (captures pre-existing dirty state in the wiki),
-        # then materialize. The user's source is expected to live
-        # OUTSIDE the wiki — materialize copies it in AFTER the snapshot,
-        # so the materialized file is NOT part of the stash and quarantine
-        # can still find it on the failure path. The snapshot still
-        # stashes any agent-written untracked files (new wiki pages)
-        # that ``WikiMemoryService.apply_plan`` will overwrite on
-        # success; on failure the service's own snapshot/restore rolls
-        # those back too.
-        snapshot_ref = Orchestrator._snapshot_working_tree(repo)
-        try:
-            raw_path = self._materialize_source(source, collection=collection_name)
-        except (IngestSourceUnreachable, OSError):
-            # Step 2 failed before any agent work — no wiki writes
-            # happened, so the snapshot can be discarded rather than
-            # restored. ``_materialize_source`` raises
-            # :class:`IngestSourceUnreachable` for typed source
-            # failures, but raw ``OSError`` (e.g. ``PermissionError``
-            # from ``mkdir`` / ``write_text``) can also leak out of
-            # the disk I/O branches. Both error classes trigger the
-            # same discard-snapshot path here because no wiki writes
-            # occurred. Without this branch the stash entry would
-            # survive the raise and accumulate until ``git stash
-            # clear`` or the next ``run_ingest`` overwrites it.
-            Orchestrator._discard_snapshot(repo, snapshot_ref)
-            raise
-        source_relpath = raw_path.relative_to(repo).as_posix()
-        try:
-            extraction = self._call_source_reader(
-                raw_path,
-                collection=collection_name,
-                source_relpath=source_relpath,
-            )
-            existing_pages = self._list_existing_pages(collection_name)
-            schema_text = (
-                self.wiki.schema_path.read_text(encoding="utf-8")
-                if self.wiki.schema_path and self.wiki.schema_path.exists()
-                else ""
-            )
-            diffs = self._call_page_writer(
-                extraction=extraction,
-                existing_pages=existing_pages,
-                schema_text=schema_text,
-                collection=collection_name,
-                source_relpath=source_relpath,
-            )
-            plan = translate_page_diffs_to_plan(
-                diffs=diffs,
-                collection=collection_name,
-                source_path=source_relpath,
-                sha_lookup=_sha_lookup,
-            )
-            svc = WikiMemoryService(self.wiki)
-            svc.register_evidence({source_relpath, *plan.evidence})
-            svc.apply_plan(plan)
-        except BaseException:
-            # Any failure (WikiPlanInvalid, WikiWriteConflict,
-            # WikiCommitFailed, …) means the agent or the service
-            # envelope blew up after the snapshot was taken. Restore
-            # the working tree so a follow-up retry sees a clean slate.
-            Orchestrator._restore_working_tree(repo, snapshot_ref)
-            raise
-        Orchestrator._discard_snapshot(repo, snapshot_ref)
-        return f"ingested {source} into {collection_name}"
-
     def run_query(
         self,
         question: str,
@@ -1550,8 +1321,7 @@ class Orchestrator:
             # ``evidence=pages_read`` survives ``validate_operation_evidence``;
             # otherwise ``apply_plan`` rejects the plan with
             # ``WikiEvidenceMissing`` before any disk write happens. Mirrors
-            # the ``register_evidence`` call in ``_run_enrichment`` and
-            # ``run_ingest``.
+            # the ``register_evidence`` call in ``_run_enrichment``.
             self._memory_service.register_evidence(set(ans.pages_read))
             ans = replace(ans, file_receipt=self.file_back_synthesis(ans, collection))
 
@@ -1600,131 +1370,6 @@ class Orchestrator:
             )
             return None, f"{type(exc).__name__}: {exc}"
         return result.output, ""
-
-    # -- F2 single-source ingest wrappers --------------------------------------
-    #
-    # These two wrappers back the ingest-source flow
-    # (``lies ingest-source <path> --collection <name>``). Both follow the
-    # existing fail-soft shape (``except Exception``) but, unlike the
-    # lint / query-synthesizer wrappers that degrade silently, they
-    # quarantine the offending source and re-raise as
-    # :class:`IngestQuarantined` so the caller surfaces the failure
-    # rather than papering over it. ``source_relpath`` is the path the
-    # caller is operating on (e.g. ``raw/foo/incoming.md``);
-    # ``quarantine`` wants just the basename relative to
-    # ``raw/<collection>/``, so the wrappers strip the prefix before
-    # delegating.
-
-    def _call_source_reader(
-        self,
-        raw_path: Path,
-        *,
-        collection: str = "",
-        source_relpath: str = "",
-    ) -> SourceExtraction:
-        """Call ``source_reader_agent`` on the materialized raw file.
-
-        On any agent exception, quarantine the source and return an
-        empty ``SourceExtraction`` so downstream ingest can proceed.
-        ``collection`` and ``source_relpath`` are required for the
-        quarantine sidecar; both default to empty strings so the
-        success-path unit tests don't need to thread them through.
-
-        Note: the returned ``SourceExtraction`` is currently NOT consumed
-        by ``_call_page_writer`` (``PageWriterDeps`` carries only
-        ``question``, ``schema_text``, and ``existing_pages``). The
-        source-reader is advisory — its output is preserved as a
-        quarantine sidecar for inspection but does not gate the ingest.
-        Returning an empty extraction on failure lets a flaky or 400-ing
-        LLM path not block otherwise-valid wiki writes. The page-writer
-        runs from ``source_relpath`` + schema + existing-pages and
-        produces the wiki pages directly.
-
-        Retries: each ``run_sync`` starts fresh (no accumulated message
-        history) which sidesteps pydantic-ai's internal retry growing the
-        context with prior validation errors. MiniMax-M3 has been observed
-        to succeed on a fresh attempt after the first one fails. The 100ms
-        backoff between attempts mirrors the pre-existing retry loop in
-        ``EnrichmentQueue`` so transient rate-limit responses (the most
-        common reason for back-to-back identical failures) cool off.
-        """
-        last_exc: BaseException | None = None
-        for _ in range(3):
-            try:
-                reader = source_reader_agent(model=self.models["source_reader"])
-                extraction: SourceExtraction = reader.run_sync(  # type: ignore[assignment]
-                    f"Read {raw_path} and emit a SourceExtraction."
-                ).output
-                return extraction
-            except Exception as exc:
-                last_exc = exc
-                import time
-
-                time.sleep(0.1)
-                continue
-        # All retries failed — quarantine sidecar + empty extraction.
-        assert last_exc is not None
-        from lies.etl.quarantine import quarantine
-
-        quarantine(
-            self.wiki,
-            collection=collection,
-            path=source_relpath.removeprefix("raw/" + collection + "/"),
-            reason=f"source_reader_agent raised {type(last_exc).__name__}: {last_exc}",
-        )
-        return SourceExtraction()
-
-    def _call_page_writer(
-        self,
-        *,
-        extraction: SourceExtraction,
-        existing_pages: list[tuple[str, str]],
-        schema_text: str,
-        collection: str = "",
-        source_relpath: str = "",
-    ) -> list[PageDiff]:
-        """Call ``page_writer_agent`` with deps, returning ``list[PageDiff]``.
-
-        Failed agent calls quarantine the source and return an empty
-        ``list[PageDiff]`` (mirrors :meth:`_call_source_reader`). The
-        wrapper is fail-soft so a flaky LLM does not block an
-        otherwise-valid ingest. ``collection`` and ``source_relpath``
-        are required for the quarantine sidecar; both default to
-        empty strings so the success-path unit tests don't need to
-        thread them through.
-        """
-        last_exc: BaseException | None = None
-        for _ in range(3):
-            try:
-                writer = page_writer_agent(model=self.models["page_writer"])
-                prompt = (
-                    f"Write wiki pages for the source at {source_relpath} "
-                    f"in collection {collection!r}. Follow the schema and avoid "
-                    f"duplicating existing pages."
-                )
-                deps = PageWriterDeps(
-                    question=f"Ingest {source_relpath} into {collection}",
-                    schema_text=schema_text,
-                    existing_pages=existing_pages,
-                )
-                diffs: list[PageDiff] = writer.run_sync(prompt, deps=deps).output  # type: ignore[assignment]
-                return diffs
-            except Exception as exc:
-                last_exc = exc
-                import time
-
-                time.sleep(0.1)
-                continue
-        assert last_exc is not None
-        from lies.etl.quarantine import quarantine
-
-        quarantine(
-            self.wiki,
-            collection=collection,
-            path=source_relpath.removeprefix("raw/" + collection + "/"),
-            reason=f"page_writer_agent raised {type(last_exc).__name__}: {last_exc}",
-        )
-        return []
 
     def run_lint(
         self,
@@ -1945,248 +1590,3 @@ class Orchestrator:
         log_path.parent.mkdir(parents=True, exist_ok=True)
         with log_path.open("a", encoding="utf-8") as fh:
             fh.write(line.rstrip("\n") + "\n")
-
-    @staticmethod
-    def _commit_ingest(repo: Path, source: str) -> str:
-        """Commit the agent's ingest output as one atomic commit.
-
-        Unlike the bare ``atomic_commit(repo, message)`` default (which
-        only stages tracked modifications), an ingest may add brand-new
-        wiki pages. This helper enumerates every dirty path
-        -- untracked, modified, and deleted -- and passes them to
-        ``atomic_commit`` so the commit is all-or-nothing.
-
-        Returns:
-            The new commit SHA.
-
-        Raises:
-            CommitError: If there is nothing to commit, or the commit
-                itself fails. (Atomicity is preserved: the index is reset
-                to its pre-call state on any failure.)
-        """
-        dirty_paths = _list_working_tree_changes(repo)
-        if not dirty_paths:
-            raise CommitError("nothing to commit (ingest produced no changes)")
-        sha = atomic_commit(repo, f"ingest: {source}", files=dirty_paths)
-        if sha is None:
-            # atomic_commit detected the staged diff was empty (e.g. the
-            # ingest produced no actual content changes). Treat as a
-            # real failure: the caller asked for a commit, not a no-op.
-            raise CommitError("nothing to commit (ingest produced no changes)")
-        return sha
-
-    # -- host-side snapshot / rollback -----------------------------------------
-    #
-    # The wiki is expected to be clean between invocations. The snapshot
-    # machinery uses ``git stash`` so the working tree is empty while
-    # the agent runs (a clean tree makes file writes by sub-agents easy to
-    # inspect and roll back). If the wiki is dirty at entry we still record
-    # the state so we can restore it on failure.
-
-    @staticmethod
-    def _snapshot_working_tree(repo: Path) -> str:
-        """Stash any working-tree changes; return a stash ref.
-
-        If the working tree is clean, returns the sentinel ``"<clean>"``
-        so the restore path knows there's nothing to put back.
-        """
-        # Stash includes untracked files so any new files the agent creates
-        # can also be rolled back.
-        result = subprocess.run(
-            ["git", "stash", "push", "--include-untracked", "-m", "pre-ingest"],
-            cwd=repo,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if result.returncode != 0:
-            raise RuntimeError(f"failed to snapshot working tree: {result.stderr.strip()}")
-        # ``git stash push`` is silent when there is nothing to stash. Detect
-        # that case and return the clean-tree sentinel.
-        if "No local changes to save" in result.stdout:
-            return "<clean>"
-        return "stash@{0}"
-
-    @staticmethod
-    def _restore_working_tree(repo: Path, snapshot_ref: str) -> None:
-        """Restore the working tree from a snapshot, wiping any agent changes.
-
-        Used on the failure path of ``run_ingest`` to put the wiki back to
-        the pre-ingest state.
-        """
-        if snapshot_ref == "<clean>":
-            # The tree was clean before the agent ran; just wipe whatever
-            # the agent left behind. ``git checkout -- .`` covers tracked
-            # files, ``git clean -fd`` covers untracked files and dirs.
-            subprocess.run(
-                ["git", "checkout", "--", "."],
-                cwd=repo,
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            subprocess.run(
-                ["git", "clean", "-fd"],
-                cwd=repo,
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            return
-        # The pre-ingest state was stashed. Drop the agent's changes and
-        # restore the stash. ``git checkout`` + ``git clean`` discards the
-        # agent's edits; ``git stash pop`` re-applies the pre-ingest state.
-        subprocess.run(
-            ["git", "checkout", "--", "."],
-            cwd=repo,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        subprocess.run(
-            ["git", "clean", "-fd"],
-            cwd=repo,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        pop = subprocess.run(
-            ["git", "stash", "pop"],
-            cwd=repo,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if pop.returncode != 0:
-            # The stash pop conflicted (e.g. the agent's changes touched
-            # the same files the user had dirty). Drop the stash and
-            # surface a clear error -- the user's pre-existing changes
-            # are still preserved in the stash list, but we couldn't
-            # safely merge them.
-            subprocess.run(
-                ["git", "stash", "drop"],
-                cwd=repo,
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            raise RuntimeError(
-                "could not restore pre-ingest working tree: stash pop "
-                "conflicted. Original state is preserved in the stash list."
-            )
-
-    @staticmethod
-    def _discard_snapshot(repo: Path, snapshot_ref: str) -> None:
-        """Drop the stash entry without applying it.
-
-        Called on the success path of ``run_ingest`` -- the agent's changes
-        are kept and the snapshot is no longer needed.
-        """
-        if snapshot_ref == "<clean>":
-            return
-        subprocess.run(
-            ["git", "stash", "drop", snapshot_ref],
-            cwd=repo,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-
-    # -- F2 single-source ingest helpers --------------------------------------
-    #
-    # These two methods back the ingest-source flow (``lies ingest-source
-    # <path> --collection <name>``). ``_materialize_source`` ensures the
-    # source is on disk under ``raw/<collection>/<basename>``; the page
-    # writer's deps then call ``_list_existing_pages`` so the agent sees
-    # the existing wiki corpus before proposing PageDiff operations. Both
-    # are pure deterministic host-side helpers (no LLM call), so they live
-    # on the Orchestrator rather than on WikiMemoryService.
-
-    def _list_existing_pages(self, collection: str) -> list[tuple[str, str]]:
-        """Walk ``wiki/<collection>/`` returning
-        ``(data-root-relative path, summary)`` pairs.
-
-        The path is ``data_root``-relative and keeps the ``wiki/`` prefix
-        (e.g., ``wiki/foo/concepts/alpha.md``) so the agent's
-        existing-pages list maps 1-to-1 onto paths it can also write to.
-        The summary is the frontmatter ``summary:`` field if present,
-        else the first H1 plus the first non-empty line of body text.
-        Excludes ``index.md``, ``log.md``, and anything under ``.lies/``
-        or ``.git/``. Pure deterministic; no LLM call. Returns ``[]``
-        when the collection directory does not exist.
-        """
-        out: list[tuple[str, str]] = []
-        collection_dir = self.wiki.wiki_dir / collection
-        if not collection_dir.exists():
-            return out
-        for path in sorted(collection_dir.rglob("*.md")):
-            rel = path.relative_to(self.wiki.data_root).as_posix()
-            parts = rel.split("/")
-            if any(part in _EXCLUDED_TOP_LEVEL_DIRS for part in parts):
-                continue
-            if parts[-1] in {"index.md", "log.md"}:
-                continue
-            out.append((rel, _summarize_page(path)))
-        return out
-
-    def _materialize_source(self, source: str, collection: str) -> Path:
-        """Ensure ``source`` is on disk under
-        ``wiki.data_root/raw/<collection>/<basename>``.
-
-        Branches:
-        - URL (http/https): fetch via ``WebScraper.fetch`` and write.
-        - local path: must exist; copy if outside ``raw/``, else pass-through.
-        - ``'-'`` (stdin): read all of stdin, write to a stable basename.
-
-        Raises :class:`IngestSourceUnreachable` on source-resolution
-        failures (unreachable URL, missing local path, stdin read
-        errors). Raw ``OSError`` (e.g. ``PermissionError`` from the
-        ``mkdir`` / ``write_text`` / ``write_bytes`` disk I/O) is NOT
-        wrapped — the caller (``run_ingest``) catches it alongside
-        :class:`IngestSourceUnreachable` and discards the snapshot.
-        """
-        import shutil
-
-        raw_root = self.wiki.raw_dir / collection
-        raw_root.mkdir(parents=True, exist_ok=True)
-
-        # Stdin branch: the source arrives over stdin; we need a real file
-        # on disk for the agent pipeline. Read all of stdin and write to
-        # ``raw/<collection>/stdin.md`` so the basename is stable.
-        if source.strip() == "-":
-            try:
-                sys.stdin.seek(0)
-                body = sys.stdin.read()
-            except Exception as exc:
-                raise IngestSourceUnreachable(source="stdin", reason=str(exc)) from exc
-            target = raw_root / "stdin.md"
-            target.write_text(body, encoding="utf-8")
-            return target
-
-        # URL branch: fetch via the project's WebScraper. The fetcher
-        # already handles llms.txt / llms-full.txt walking and rejects
-        # HTML / redirect-to-marketing responses; we just persist its
-        # bytes under a stable basename.
-        if source.startswith(("http://", "https://")):
-            from lies.scrapers.web import WebScraper
-
-            try:
-                body = WebScraper().fetch(source)
-            except Exception as exc:
-                raise IngestSourceUnreachable(source=source, reason=str(exc)) from exc
-            basename = _url_basename(source)
-            target = raw_root / basename
-            target.write_bytes(body)
-            return target
-
-        # Local-path branch: must exist on disk. Pass through when the
-        # caller already pointed at the destination (avoids a redundant
-        # copy that would otherwise wipe the file's mtime).
-        path = Path(source).expanduser().resolve()
-        if not path.is_file():
-            raise IngestSourceUnreachable(source=source, reason="local path missing")
-        basename = path.name
-        target = raw_root / basename
-        if path != target:
-            shutil.copy2(path, target)
-        return target

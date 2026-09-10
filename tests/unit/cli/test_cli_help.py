@@ -28,11 +28,10 @@ PARAMETRIZE_HELP_SUBSTRINGS = [
     (
         ["ingest"],
         [
-            "Ingest a source",
-            "Wiki to ingest into (default: $LIES_WIKI_NAME).",
-            "Path, URL, or '-' for stdin",
-            "Override the model id",
-            "requires TTY",
+            "Deterministic ingest into the library",
+            "Two modes supported",
+            "batch",
+            "No LLM call on the ingest path",
         ],
     ),
     (
@@ -87,8 +86,7 @@ PARAMETRIZE_COMMAND_HELP_SUBSTRINGS = [
     (["migrate-xdg"], ["Migrate a legacy"]),
     (["config"], ["Print active model"]),
     (["init"], ["Initialize a new wiki"]),
-    (["ingest"], ["Ingest a source"]),
-    (["ingest-source"], ["Atomic ingest"]),
+    (["ingest"], ["Deterministic ingest"]),
     (["query"], ["Query the wiki"]),
     (["lint"], ["Run lint"]),
     (["status"], ["Show qmd status"]),

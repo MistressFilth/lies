@@ -7,6 +7,7 @@ markdown renderer (markdown-it is ~30ms of cold-start).
 
 from __future__ import annotations
 
+import sqlite3
 from typing import Annotated
 
 import typer
@@ -204,6 +205,35 @@ def status(
     if memory_limit < 0:
         raise typer.BadParameter("--memory-limit must be >= 0", param_hint="--memory-limit")
     configure_logging()
+    # Library section surfaces before wiki resolution so the line still
+    # appears on a fresh wiki (no catalog yet → graceful indicator). The
+    # library is independent of any specific wiki, so it does not depend
+    # on ``resolve_wiki`` succeeding.
+    try:
+        from lies.library.catalog import list_pages, open_catalog
+        from lies.library.errors import LibraryError
+        from lies.library.paths import Library
+
+        lib = Library.open()
+        conn = open_catalog(lib)
+        try:
+            rows = list_pages(conn, section="library")
+            quarantine = list_pages(conn, section="library-migrated")
+            typer.echo(
+                f"library: catalog: {len(rows)} pages in section=library, "
+                f"{len(quarantine)} migrated"
+            )
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+    except (OSError, sqlite3.Error, LibraryError):
+        # Status is observability; we still want to surface the wiki
+        # section. Narrow catch so a regression that mis-spells
+        # ``list_pages`` (e.g. ``NameError``) surfaces instead of being
+        # silently masked as ``(no catalog yet)``.
+        typer.echo("library: (no catalog yet)")
     wiki = resolve_wiki(name)
     root = wiki.data_root
     layout = WikiLayout(root)

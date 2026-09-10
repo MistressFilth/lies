@@ -16,7 +16,53 @@ All notable changes to LIES are documented here. The format follows
   into `make check`; the same hook is registered in
   `.pre-commit-config.yaml`. The `vendor/` directory is removed.
 
+## [0.19.0] - 2026-09-08
+
+### Added
+- Library split: ingested sources land in
+  `$XDG_DATA_HOME/lies/library/collections/<collection>/`, never under
+  `wiki/`. The wiki is now the agent's markdown; the library is the
+  deterministic, immutable mirror of curated sources.
+- New `lies ingest` CLI (`src/lies/library/cli.py`) with `--source`
+  (single) and `--batch` (multi) modes; deterministic 5-step pipeline
+  (fetch → ETL → filter → mirror → catalog+commit). No LLM call on
+  the ingest path. New flags: `--slug-prefix`, `--collection`,
+  `--slug`, `--title`, `--exclude-stem`, `--exclude-dir`, `--force`,
+  `--dry-run`.
+- New `lies migrate ingest-to-library` script
+  (`src/lies/library/cli_migrate.py`): moves wiki-resident ingests
+  into the library; backup duplicates at
+  `<wiki>/.lies/migration-backup/<date>/`. `--dry-run` previews the
+  moves; `--apply` performs the atomic-commit envelope (one commit
+  per collection) and registers each library-side collection with
+  qmd.
+- `LibraryWriter` atomic-commit envelope
+  (`src/lies/library/writer.py`), mirroring
+  `WikiMemoryService.apply_plan` semantics on the library git root.
+- Library catalog DB at `<library>/.lies/catalog.db` (sqlite WAL,
+  `busy_timeout=5000`, schema v2 with `library` and
+  `library-migrated` sections).
+- `lies status` output gains library catalog count + migrated tally.
+
+### Changed
+- Wiki-write surface narrowed to F39 page-author + LLM-driven paths
+  (MemoryEnricher, F3 file-back). Ingest no longer writes under
+  `wiki/<collection>/`.
+- `lies sync` retargeted: writes to library, not wiki. Honors
+  `Collection.scraper_cmd` end-to-end (bespoke scrapers via
+  `module:attr` / `path.py:attr`); routes REGISTRY-registered source
+  formats (sphinx / liquid / bespoke) through their builders before
+  falling back to `format_dispatch`. Exits non-zero when the
+  underlying `BatchIngestResult.errors` is non-empty, so a wholly-
+  failed batch no longer exits 0.
+
 ### Fixed
+- `library/fetcher.py`: `_normalize_body` now routes registered
+  source formats (sphinx / liquid / bespoke / etc.) through the
+  `REGISTRY` builder before falling back to `format_dispatch.dispatch`,
+  mirroring `etl/stages/normalize.py:83-90`. Without the REGISTRY
+  first-pass, builder-handled formats raised `UnknownFormatError` and
+  the doc was quarantined even when a valid builder was registered.
 - `cli/ingestion.py` NameError on `ingest-source` — bare-name `Orchestrator(wiki)`
   lookup does not consult the module `__getattr__` (PEP 562 fires on
   `module.attr` / `from M import X`, not on function-body global lookup).

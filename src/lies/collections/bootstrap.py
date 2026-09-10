@@ -1,8 +1,8 @@
-"""Idempotent wiki + collection bootstrap for ingest/sync/ingest_source.
+"""Idempotent wiki + collection bootstrap for ingest/sync.
 
-Three CLI commands (``ingest``, ``sync``, ``ingest_source``) call
-``ensure_wiki`` then ``bootstrap_collection`` before their normal sync or
-ingest path. Both helpers are safe to call when the target already exists.
+Two CLI commands (``ingest``, ``sync``) call ``ensure_wiki`` then
+``bootstrap_collection`` before their normal ingest or sync path. Both
+helpers are safe to call when the target already exists.
 """
 
 from __future__ import annotations

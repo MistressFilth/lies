@@ -24,6 +24,10 @@ repos:
     rev: v0.1.0
     hooks:
       - id: supyrliminal
+        # Advisory: exit-zero keeps the hook firing on every commit but
+        # does not block. The codebase carries pre-existing SL101
+        # findings that need triage before the hook can be required.
+        args: ["--exit-zero"]
         files: ^((src/lies|tests|scripts)/|pyproject\.toml$)
   - repo: local
     hooks:

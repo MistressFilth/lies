@@ -238,8 +238,8 @@ async def test_file_knowledge_with_explicit_name_uses_that_wiki(ctx_overwrite):
     """``name`` kwarg must be forwarded to ``resolve_wiki`` verbatim.
 
     Mirrors the pattern every other MCP tool uses (``init_wiki``,
-    ``ingest_source``, ``query``, ``lint``, ``wiki_search``,
-    ``wiki_read``, ``wiki_changes``) so an operator can target a
+    ``query``, ``lint``, ``wiki_search``, ``wiki_read``,
+    ``wiki_changes``) so an operator can target a
     specific wiki instead of falling back to ``LIES_WIKI_NAME``.
     """
     from unittest.mock import patch

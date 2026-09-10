@@ -55,6 +55,7 @@ from lies.cli.collections import collections_app  # noqa: E402
 from lies.cli.memory import memory_app  # noqa: E402
 from lies.cli.operator import flock_app, mcp_app, providers_app  # noqa: E402
 from lies.cli.page import page_app  # noqa: E402
+from lies.library import cli as library_cli  # noqa: E402
 
 app.add_typer(mcp_app, name="mcp", rich_help_panel="Operator tooling")
 app.add_typer(flock_app, name="flock", rich_help_panel="Operator tooling")
@@ -137,6 +138,17 @@ def main(
 # re-executing this __init__.py.
 from lies import xdg  # noqa: E402
 from lies.cli import _core, ingestion, operator, query  # noqa: E402,F401
+
+# Register the ``ingest`` command on the root app after the group modules
+# have run their @app.command(...) decorators. ``library_cli.register`` is
+# also @app.command-based, so it needs the root ``app`` to be defined first
+# (it is -- bound in step 1 above).
+library_cli.register(app)
+
+# Register the ``ingest-to-library`` migration command (Task 13). The
+# module's top-level ``@app.command(...)`` decorator needs the root
+# ``app`` to be defined first (it is -- bound in step 1 above).
+from lies.library import cli_migrate  # noqa: E402,F401
 
 # Re-exports for test compat. ``test_cli_flock.py`` monkeypatches
 # ``cli_module.acquire_create_lock``; ``test_cli_lint_force_repair.py``

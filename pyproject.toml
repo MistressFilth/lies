@@ -1,6 +1,6 @@
 [project]
 name = "lies"
-version = "0.18.0"
+version = "0.19.0"
 description = "Library of Inconsistent Explanations & Sources — a Karpathy-pattern LLM wiki."
 readme = "README.md"
 requires-python = ">=3.14,<3.15"
@@ -67,6 +67,7 @@ include = ["src/lies"]
 dev = [
     "identify>=2.6.19",
     "pre-commit>=4.6.1",
+    "supyrliminal>=0.1.0",
 ]
 
 [tool.uv.sources]
