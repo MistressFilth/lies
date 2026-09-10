@@ -309,3 +309,114 @@ def test_qmd_query_empty_list_still_raises_no_results(tmp_path: Path) -> None:
         )
         with pytest.raises(QmdNoResultsError):
             qmd_query(tmp_path, "nothing", limit=5)
+
+
+# ---------------------------------------------------------------------------
+# qmd_query: post-qmd collection filter (Task 6 / Bundle C)
+# ---------------------------------------------------------------------------
+# The retriever does NOT pass ``--include-collection`` / ``--exclude-collection``
+# to qmd (that flag is not supported on the seam we call). The collection
+# filter is applied post-qmd in lies: any hit whose path's first segment is
+# not in ``collection_filter`` is dropped. The path's first segment is the
+# collection name (``qmd://<collection>/<rest>`` -> ``<collection>/<rest>``).
+#
+# The filter must work regardless of qmd CLI version (per pre-flight
+# resolution 2026-09-09).
+
+
+def test_qmd_query_collection_filter_drops_non_matching_first_segments(tmp_path: Path) -> None:
+    """Hits whose first path segment is not in ``collection_filter`` are dropped."""
+    payload = json.dumps(
+        [
+            {"docid": "#a", "score": 0.9, "file": "qmd://airflow/dag.md"},
+            {"docid": "#b", "score": 0.5, "file": "qmd://amazon/s3.md"},
+            {"docid": "#c", "score": 0.4, "file": "qmd://pyspark/rdd.md"},
+        ]
+    )
+    with (
+        patch("lies.qmd.cli.shutil.which", return_value="/usr/bin/qmd"),
+        patch("lies.qmd.cli.subprocess.run") as mock_run,
+    ):
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout=payload, stderr=""
+        )
+        results = qmd_query(
+            tmp_path,
+            "any",
+            limit=10,
+            collection_filter={"airflow", "pyspark"},
+        )
+    assert [r["path"] for r in results] == ["airflow/dag.md", "pyspark/rdd.md"]
+
+
+def test_qmd_query_collection_filter_none_returns_all_hits(tmp_path: Path) -> None:
+    """``collection_filter=None`` preserves the existing no-filter behavior."""
+    payload = json.dumps(
+        [
+            {"docid": "#a", "score": 0.9, "file": "qmd://airflow/dag.md"},
+            {"docid": "#b", "score": 0.5, "file": "qmd://amazon/s3.md"},
+        ]
+    )
+    with (
+        patch("lies.qmd.cli.shutil.which", return_value="/usr/bin/qmd"),
+        patch("lies.qmd.cli.subprocess.run") as mock_run,
+    ):
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout=payload, stderr=""
+        )
+        results = qmd_query(tmp_path, "any", limit=10)
+    assert [r["path"] for r in results] == ["airflow/dag.md", "amazon/s3.md"]
+
+
+def test_qmd_query_collection_filter_drops_empty_path_rows(tmp_path: Path) -> None:
+    """A hit whose ``path`` is empty after normalization is dropped silently.
+
+    The pre-existing warning emission (missing ``qmd://`` URI) already
+    surfaces the degradation; the collection filter adds no new
+    diagnostics — it just excludes the row.
+    """
+    payload = json.dumps(
+        [
+            {"docid": "#a", "score": 0.9, "file": "qmd://airflow/dag.md"},
+            {"docid": "#orphan", "score": 0.1, "title": "No file"},
+        ]
+    )
+    with (
+        patch("lies.qmd.cli.shutil.which", return_value="/usr/bin/qmd"),
+        patch("lies.qmd.cli.subprocess.run") as mock_run,
+    ):
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout=payload, stderr=""
+        )
+        with pytest.warns(UserWarning, match="defaults to empty"):
+            results = qmd_query(
+                tmp_path,
+                "any",
+                limit=10,
+                collection_filter={"airflow"},
+            )
+    assert [r["path"] for r in results] == ["airflow/dag.md"]
+
+
+def test_qmd_query_collection_filter_empty_set_drops_everything(tmp_path: Path) -> None:
+    """An explicit empty filter set drops every hit.
+
+    The retriever only constructs an empty filter when ``_collections_matching``
+    resolves to the empty set (no collection matched the filter). In that
+    case qmd should still be called (the CLI invocation is unconditional)
+    and every row should be dropped before reaching the synthesizer.
+    """
+    payload = json.dumps(
+        [
+            {"docid": "#a", "score": 0.9, "file": "qmd://airflow/dag.md"},
+        ]
+    )
+    with (
+        patch("lies.qmd.cli.shutil.which", return_value="/usr/bin/qmd"),
+        patch("lies.qmd.cli.subprocess.run") as mock_run,
+    ):
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout=payload, stderr=""
+        )
+        with pytest.raises(QmdNoResultsError):
+            qmd_query(tmp_path, "any", limit=10, collection_filter=set())

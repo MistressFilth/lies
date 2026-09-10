@@ -6,6 +6,7 @@ import pytest
 from pydantic_ai.models.test import TestModel
 
 from lies.orchestrator import Orchestrator
+from lies.query.tag_expr import Include, ResolvedTagFilter
 from tests.conftest import make_wiki, models_for_tests
 
 
@@ -157,3 +158,51 @@ def test_orchestrator_uses_qmd_http_transport(
     assert built[0]["transport"] == "http"
     assert built[0]["url"] == "http://127.0.0.1:8181"
     assert built[0]["wiki"] is orch.wiki
+
+
+# --- Task 6 / Bundle C — tag_filter plumbing ------------------------------
+
+
+def test_run_query_threads_tag_filter_through_retriever(
+    wiki_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``Orchestrator.run_query(tag_filter=...)`` passes the filter down
+    into :func:`retrieve_pages`. The retriever resolves it against the
+    collection set; this test pins the wiring, not the resolution."""
+    from lies.query.synthesizer import PageRead
+
+    captured: dict[str, object] = {}
+
+    def fake_retrieve_pages(*_a: object, **kw: object) -> tuple[list[PageRead], str]:
+        captured["tag_filter"] = kw.get("tag_filter")
+        return [], ""
+
+    monkeypatch.setattr("lies.orchestrator.retrieve_pages", fake_retrieve_pages)
+
+    # Skip the synthesizer agent (the empty-pages branch never calls it).
+    tf = ResolvedTagFilter(include=Include("airflow"))
+    orch = Orchestrator(wiki=wiki_root, models=models_for_tests("test"))
+    orch.run_query("what is X?", tag_filter=tf)
+
+    assert captured["tag_filter"] == tf
+
+
+def test_run_query_without_tag_filter_passes_none(
+    wiki_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Back-compat: ``run_query`` without a ``tag_filter`` keyword
+    passes ``None`` into :func:`retrieve_pages`."""
+    from lies.query.synthesizer import PageRead
+
+    captured: dict[str, object] = {}
+
+    def fake_retrieve_pages(*_a: object, **kw: object) -> tuple[list[PageRead], str]:
+        captured["tag_filter"] = kw.get("tag_filter")
+        return [], ""
+
+    monkeypatch.setattr("lies.orchestrator.retrieve_pages", fake_retrieve_pages)
+
+    orch = Orchestrator(wiki=wiki_root, models=models_for_tests("test"))
+    orch.run_query("what is X?")
+
+    assert captured["tag_filter"] is None

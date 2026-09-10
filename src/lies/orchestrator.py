@@ -1267,7 +1267,7 @@ class Orchestrator:
         if not question or not question.strip():
             return synthesize_answer(question, self.wiki)
 
-        pages, fallback_reason = retrieve_pages(question, self.wiki)
+        pages, fallback_reason = retrieve_pages(question, self.wiki, tag_filter=tag_filter)
 
         # Nothing to synthesize: don't spend a model call on an empty wiki.
         # ``synthesis_reason="no pages retrieved"`` surfaces the bypass to

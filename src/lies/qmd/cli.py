@@ -235,6 +235,8 @@ def qmd_query(
     question: str,
     limit: int = 5,
     timeout: int = 60,
+    *,
+    collection_filter: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Run `qmd query` and return parsed JSON results.
 
@@ -242,11 +244,32 @@ def qmd_query(
     path of the matching page). The synthesizer only consumes ``path``;
     additional keys are preserved for callers that need scores/snippets.
 
+    ``collection_filter`` is the resolved set of collection names the
+    retriever is allowed to consider. The seam for per-collection
+    filtering is **post-qmd in lies** (not upstream): qmd's CLI does not
+    support ``--include-collection`` on the call shape we use, so the
+    filter is applied here by dropping any hit whose ``path`` first
+    segment is not in ``collection_filter``. The path's first segment is
+    the collection name (``qmd://<collection>/<rest>`` normalizes to
+    ``<collection>/<rest>``). This works regardless of qmd CLI version.
+
+    When ``collection_filter`` is None, every hit is returned as-is so
+    the existing no-filter behavior is preserved. When it is an empty
+    set, every hit is dropped — the retriever only ever constructs an
+    empty filter when the resolved tag filter matches zero collections,
+    so qmd is still invoked (the CLI call is unconditional) and every
+    row is dropped before reaching the synthesizer; with zero hits left
+    the post-filter list is empty, the not-empty pre-condition still
+    holds (qmd returned data, even if all dropped), so the function
+    raises :class:`QmdNoResultsError` to signal "no usable hits" to the
+    synthesizer's fallback path.
+
     Raises:
         QmdNotInstalledError: If `qmd` is not on PATH.
         QmdCommandError: If the qmd command exits non-zero or returns
             malformed output.
-        QmdNoResultsError: If qmd returns an empty result list.
+        QmdNoResultsError: If qmd returns an empty result list (after
+            the post-filter is applied).
     """
     if not is_qmd_installed():
         raise QmdNotInstalledError("`qmd` not found on PATH")
@@ -285,7 +308,35 @@ def qmd_query(
     if not data:
         raise QmdNoResultsError(f"qmd query returned no results for: {question!r}")
 
-    return [_normalize_qmd_result(item) for item in data]
+    normalized = [_normalize_qmd_result(item) for item in data]
+    if collection_filter is None:
+        return normalized
+    allowed = collection_filter
+    filtered: list[dict[str, Any]] = []
+    for hit in normalized:
+        path = hit.get("path", "")
+        # The collection name is the path's first ``/``-separated
+        # segment: ``qmd://<collection>/<rest>`` normalizes to
+        # ``<collection>/<rest>``. A row with an empty path (no
+        # ``qmd://`` URI; the pre-existing warning emission surfaces
+        # the degradation) is dropped here too — it can never match a
+        # collection by definition.
+        first_segment = path.split("/", 1)[0] if path else ""
+        if first_segment and first_segment in allowed:
+            filtered.append(hit)
+    if not filtered:
+        # Post-filter list is empty: the synthesizer's ``_QmdNoResults``
+        # sentinel path (qmd_failed / qmd_unavailable / qmd_no_results
+        # → ``wiki/index.md`` fallback) is the right behavior. Raising
+        # ``QmdNoResultsError`` triggers that fallback rather than
+        # silently returning an empty list and skipping the index
+        # scan, which would be a regression for the tag-filter
+        # branch.
+        raise QmdNoResultsError(
+            f"qmd query returned no results matching collection filter "
+            f"{sorted(allowed)!r} for: {question!r}"
+        )
+    return filtered
 
 
 def _normalize_qmd_result(item: Any) -> dict[str, Any]:

@@ -28,6 +28,12 @@ from pathlib import Path
 from lies.qmd.cli import qmd_query
 from lies.query.index_parser import parse_index_links
 from lies.query.models import SynthesizedAnswer
+from lies.query.tag_expr import (
+    And,
+    Include,
+    Or,
+    ResolvedTagFilter,
+)
 from lies.wiki.wiki import Wiki
 
 DEFAULT_TOP_N = 5
@@ -84,6 +90,7 @@ def retrieve_pages(
     *,
     top_n: int = DEFAULT_TOP_N,
     qmd_search: QmdSearchFn | None = None,
+    tag_filter: ResolvedTagFilter | None = None,
 ) -> tuple[list[PageRead], str]:
     """Retrieve the candidate pages for ``question``.
 
@@ -101,6 +108,23 @@ def retrieve_pages(
     indirection is looked up at call time so a stub rebind actually
     takes effect for subsequent calls.
 
+    ``tag_filter`` (Task 6 / Bundle C) carries the resolved
+    include/exclude expression the caller (CLI or MCP) wants scoped to.
+    The retriever resolves the filter against the wiki's collection
+    registry (``wiki.collections_dir/*.yaml``) via
+    :func:`_collections_matching` and forwards the resulting set as
+    ``collection_filter`` to ``qmd_search``. ``qmd_search`` is
+    responsible for the post-qmd per-collection drop; :func:`retrieve_pages`
+    just threads the resolved set through. When ``tag_filter`` is None,
+    ``collection_filter`` is None too — the no-filter behavior is
+    preserved bit-for-bit (back-compat regression test pins this).
+
+    The implicit-self-tag rule (a collection's name is always an
+    addressable tag regardless of its ``tags`` field) lives at this
+    boundary, not in :func:`lies.query.tag_expr.resolve`. The resolver
+    only validates that every atom exists in the available set; the
+    per-collection semantics are the retriever's concern.
+
     Returns:
         ``(pages, fallback_reason)``. ``fallback_reason`` is ``""``
         when qmd served the query, else one of the ``FALLBACK_REASON_*``
@@ -110,8 +134,17 @@ def retrieve_pages(
     fallback_reason = ""
 
     qmd_search_fn = qmd_search if qmd_search is not None else _qmd_search_default()
+    collection_filter: set[str] | None = None
+    if tag_filter is not None:
+        collection_filter = _collections_matching(wiki, tag_filter)
     try:
-        pages = _qmd_search_dispatch(qmd_search_fn, wiki, question, top_n)
+        pages = _qmd_search_dispatch(
+            qmd_search_fn,
+            wiki,
+            question,
+            top_n,
+            collection_filter=collection_filter,
+        )
     except _QmdUnavailable:
         fallback_reason = FALLBACK_REASON_UNAVAILABLE
     except _QmdNoResults:
@@ -407,22 +440,42 @@ def _empty_answer(question: str, fallback_reason: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _qmd_search_dispatch(fn: QmdSearchFn, wiki: Wiki, question: str, top_n: int) -> list[PageRead]:
+def _qmd_search_dispatch(
+    fn: QmdSearchFn,
+    wiki: Wiki,
+    question: str,
+    top_n: int,
+    *,
+    collection_filter: set[str] | None = None,
+) -> list[PageRead]:
     """Call ``fn`` and translate its real exceptions into sentinels.
 
     The public ``synthesize_answer`` only catches the sentinel
     exceptions above; the real ``lies.qmd.cli`` exception types are
     mapped to them here so the public surface stays narrow and stable.
+
+    ``collection_filter`` (Task 6 / Bundle C) is the resolved set of
+    collection names the caller wants to scope to. It is passed through
+    to ``fn`` as a keyword argument so any qmd_search callable that
+    supports per-collection filtering (notably :func:`lies.qmd.cli.qmd_query`,
+    which applies the filter post-qmd as a per-hit path-prefix drop)
+    can act on it. Stubs using ``*args, **kwargs`` ignore it; the
+    production :func:`qmd_query` honors it.
     """
     # Local imports avoid a circular import at module load time.
-    from lies.qmd.cli import (  # noqa: WPS433
+    from lies.qmd.cli import (  # noqa: PLC0415
         QmdCommandError,
         QmdNoResultsError,
         QmdNotInstalledError,
     )
 
     try:
-        results = fn(wiki.data_root, question, top_n)
+        results = fn(
+            wiki.data_root,
+            question,
+            top_n,
+            collection_filter=collection_filter,
+        )
     except QmdNotInstalledError as exc:
         raise _QmdUnavailable(str(exc)) from exc
     except QmdNoResultsError as exc:
@@ -439,3 +492,60 @@ def _qmd_search_dispatch(fn: QmdSearchFn, wiki: Wiki, question: str, top_n: int)
         # "no results" so the fallback path runs.
         raise _QmdNoResults("qmd returned no readable pages")
     return pages
+
+
+def _collections_matching(wiki: Wiki, tag_filter: ResolvedTagFilter) -> set[str]:
+    """Return the set of collection names that pass ``tag_filter``.
+
+    Implicit self-tag (spec: §"Collection name as implicit self-tag"):
+    a collection matches if its ``name`` is in ``tags ∪ {name}``. The
+    rule lives here at the retriever boundary, not in the resolver —
+    the resolver only validates that every atom is in the available
+    tag set; the per-collection semantics are the retriever's concern.
+
+    Exclude drops a collection whose effective set (``tags ∪ {name}``)
+    contains the excluded tag, regardless of the include result. The
+    exclude wins on collision (a collection listed by an include and
+    the exclude at the same time is dropped).
+
+    Returns the set of *names* (qmd's per-collection filter key, which
+    is the path's first segment) — not the set of
+    :class:`WikiCollectionRef` ids. The qmd seam operates on names.
+
+    Source of truth is ``wiki.collections_dir/*.yaml`` — the same source
+    ``lies collections list`` walks. The :class:`Registry` (the post-
+    sync wiki-collection-ref map) holds :class:`WikiCollectionRef`
+    entries with no ``tags`` field, and a collection that has not been
+    synced yet is still a legitimate filter target. Per Task 5 review
+    (2026-09-09) — same conclusion: read the YAMLs, not the registry.
+    """
+    from lies.collections.record import load_collection
+
+    matching: set[str] = set()
+    cfg_dir = wiki.collections_dir
+    if not cfg_dir.exists():
+        return matching
+
+    exclude = tag_filter.exclude
+    include = tag_filter.include
+
+    def _eval_include(node: object, effective: set[str]) -> bool:
+        if isinstance(node, Include):
+            return node.tag in effective
+        if isinstance(node, And):
+            return _eval_include(node.left, effective) and _eval_include(node.right, effective)
+        if isinstance(node, Or):
+            return _eval_include(node.left, effective) or _eval_include(node.right, effective)
+        return False
+
+    for path in sorted(cfg_dir.glob("*.yaml")):
+        coll = load_collection(wiki, path.stem)
+        effective = set(coll.tags) | {coll.name}
+        if exclude is not None and exclude in effective:
+            continue
+        if include is None:
+            matching.add(coll.name)
+            continue
+        if _eval_include(include, effective):
+            matching.add(coll.name)
+    return matching

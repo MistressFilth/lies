@@ -45,7 +45,7 @@ from lies.wiki.wiki import Wiki
 def _qmd_ok(paths: list[str]):
     """A fake qmd_search that returns the given paths."""
 
-    def _fn(cwd: Path, question: str, top_n: int) -> list[dict[str, Any]]:
+    def _fn(cwd: Path, question: str, top_n: int, **_kwargs: object) -> list[dict[str, Any]]:
         return [{"path": p, "score": 1.0} for p in paths]
 
     return _fn
@@ -62,25 +62,25 @@ def _qmd_ok_real_shape(paths: list[str]):
     so we can prove the synthesizer's contract survives the change.
     """
 
-    def _fn(cwd: Path, question: str, top_n: int) -> list[dict[str, Any]]:
+    def _fn(cwd: Path, question: str, top_n: int, **_kwargs: object) -> list[dict[str, Any]]:
         return [{"file": f"qmd://mywiki/{p}", "score": 1.0, "docid": "#x"} for p in paths]
 
     return _fn
 
 
-def _qmd_unavailable(cwd: Path, question: str, top_n: int) -> list[dict[str, Any]]:
+def _qmd_unavailable(cwd: Path, question: str, top_n: int, **_: object) -> list[dict[str, Any]]:
     raise QmdNotInstalledError("qmd not found on PATH")
 
 
-def _qmd_no_results(cwd: Path, question: str, top_n: int) -> list[dict[str, Any]]:
+def _qmd_no_results(cwd: Path, question: str, top_n: int, **_: object) -> list[dict[str, Any]]:
     raise QmdNoResultsError("no results")
 
 
-def _qmd_failed(cwd: Path, question: str, top_n: int) -> list[dict[str, Any]]:
+def _qmd_failed(cwd: Path, question: str, top_n: int, **_: object) -> list[dict[str, Any]]:
     raise QmdCommandError("qmd query failed (exit 1): boom")
 
 
-def _qmd_empty_list(cwd: Path, question: str, top_n: int) -> list[dict[str, Any]]:
+def _qmd_empty_list(cwd: Path, question: str, top_n: int, **_: object) -> list[dict[str, Any]]:
     """Edge case: qmd returns an empty list instead of raising."""
     return []
 
