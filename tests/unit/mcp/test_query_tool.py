@@ -202,3 +202,51 @@ def test_mcp_query_no_tag_kwargs_back_compat(monkeypatch, fake_wiki_with_collect
 
     call = orch_cls.return_value.run_query.call_args
     assert call.kwargs["tag_filter"] is None
+
+
+def test_mcp_query_parse_error_raises_tool_error(monkeypatch, fake_wiki_with_collections) -> None:
+    """``tag_expr='airflow&'`` (dangling operator) → ``ToolError`` at boundary.
+
+    Spec error model: ``TagExprParseError`` → ``ToolError`` with the
+    verbatim grammar error. The parser's role is grammar; the MCP layer
+    catches parse errors at the boundary so LLM callers see a useful
+    message instead of FastMCP's default ``-32603 internal error``.
+    """
+    from fastmcp.exceptions import ToolError
+
+    from lies.mcp import server
+
+    with mock.patch.object(server, "Orchestrator") as orch_cls:
+        with pytest.raises(ToolError) as exc:
+            server.query(question="what is X?", tag_expr="airflow&")
+
+    msg = str(exc.value).lower()
+    assert "invalid tag expression" in msg or "tag expression" in msg
+    # The orchestrator must not have been invoked — validation lives at
+    # the boundary, before any retrieval runs.
+    orch_cls.return_value.run_query.assert_not_called()
+
+
+def test_mcp_query_empty_tag_expr_raises_tool_error(
+    monkeypatch, fake_wiki_with_collections
+) -> None:
+    """``tag_expr=''`` → ``ToolError`` at boundary.
+
+    Spec error model: ``TagExprEmpty`` → ``ToolError``. An empty include
+    expression is a user error, not a silent no-op; the MCP layer
+    catches it at the boundary so LLM callers see a useful message
+    instead of FastMCP's default ``-32603 internal error``.
+    """
+    from fastmcp.exceptions import ToolError
+
+    from lies.mcp import server
+
+    with mock.patch.object(server, "Orchestrator") as orch_cls:
+        with pytest.raises(ToolError) as exc:
+            server.query(question="what is X?", tag_expr="")
+
+    msg = str(exc.value).lower()
+    assert "empty tag expression" in msg or "tag expression" in msg
+    # The orchestrator must not have been invoked — validation lives at
+    # the boundary, before any retrieval runs.
+    orch_cls.return_value.run_query.assert_not_called()

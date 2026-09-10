@@ -37,7 +37,14 @@ from lies.mcp.resolution import resolve_wiki
 from lies.memory.models import WikiPlanInvalid
 from lies.orchestrator import Orchestrator
 from lies.query.models import SynthesizedAnswer
-from lies.query.tag_expr import ResolvedTagFilter, TagExprUnknown, parse, resolve
+from lies.query.tag_expr import (
+    ResolvedTagFilter,
+    TagExprEmpty,
+    TagExprParseError,
+    TagExprUnknown,
+    parse,
+    resolve,
+)
 from lies.wiki.layout import WikiLayout, copy_default_schema, git_init_initial
 from lies.wiki.wiki import Wiki
 
@@ -369,13 +376,17 @@ def query(
     tag_filter: ResolvedTagFilter | None = None
     try:
         if tag_expr is not None or exclude_tags is not None:
-            include_ast = parse(tag_expr) if tag_expr else None
+            include_ast = parse(tag_expr) if tag_expr is not None else None
             if include_ast is not None:
                 resolved = resolve(include_ast, available=_collect_available_tags_mcp(wiki))
             else:
                 resolved = ResolvedTagFilter()
             exclude_tag = exclude_tags[0] if exclude_tags else None
             tag_filter = ResolvedTagFilter(include=resolved.include, exclude=exclude_tag)
+    except TagExprParseError as exc:
+        raise ToolError(f"invalid tag expression: {exc}") from exc
+    except TagExprEmpty as exc:
+        raise ToolError(f"empty tag expression: {exc}") from exc
     except TagExprUnknown as exc:
         raise ToolError(f"unknown tag: {exc.tag}") from exc
 
