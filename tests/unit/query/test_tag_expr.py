@@ -12,6 +12,7 @@ from lies.query.tag_expr import (
     TagExprEmpty,
     TagExprParseError,
     TagExprUnknown,
+    _render_include,
     parse_include,
     parse_query_argv,
 )
@@ -178,7 +179,49 @@ def test_parse_query_argv_filter_no_question_errors():
         parse_query_argv(["+airflow"])
 
 
-@pytest.mark.parametrize("argv", [["+"], ["-"], ["+"]])
+@pytest.mark.parametrize("argv", [["+"], ["-"], ["+"], ["+a&"]])
 def test_parse_query_argv_dangling_operator_errors(argv):
     with pytest.raises(TagExprParseError):
         parse_query_argv(argv + ["question"])
+
+
+def test_parse_query_argv_dangling_operator_error_message():
+    """The error message identifies the dangling operator explicitly."""
+    from lies.query.tag_expr import TagExprParseError
+
+    with pytest.raises(TagExprParseError) as excinfo:
+        parse_query_argv(["+a&", "what", "is", "X?"])
+    assert "dangling" in str(excinfo.value).lower()
+
+
+def test_parse_query_argv_realistic_bash_quoted_tag():
+    """Real bash strips outer quotes; internal space is preserved as one atom.
+
+    `python script.py +"airflow provider" what is X?` produces
+    argv = ["+airflow provider", "what", "is", "X?"]. The shell
+    word-split on whitespace does NOT split inside a quoted
+    segment; the parser must treat the argv element with
+    internal whitespace as a single atom.
+    """
+    argv = ["+airflow provider", "what", "is", "X?"]
+    question, include_ast, exclude = parse_query_argv(argv)
+    assert question == "what is X?"
+    assert include_ast == Include("airflow provider")
+    assert exclude is None
+
+
+def test_parse_query_argv_realistic_bash_quoted_tag_and_exclude():
+    """Realistic bash: +"airflow provider" -amazon compare X and Y."""
+    argv = ["+airflow provider", "-amazon", "compare", "X", "and", "Y"]
+    question, include_ast, exclude = parse_query_argv(argv)
+    assert question == "compare X and Y"
+    assert include_ast == Include("airflow provider")
+    assert exclude == "amazon"
+
+
+def test_render_include_round_trip_multiatom_with_internal_space():
+    """Rendering then re-parsing yields the same AST."""
+    ast = Include("airflow provider")
+    rendered = _render_include(ast)
+    assert rendered == '"airflow provider"'
+    assert parse_include(rendered) == ast

@@ -210,6 +210,48 @@ def _render_include(node: TagExpr) -> str:
     raise TypeError(f"unexpected node type: {type(node).__name__}")
 
 
+def _split_argv_token_for_ops(token: str) -> list[str]:
+    """Split a single argv chain token into atoms + operators.
+
+    Each argv token is one shell word: shell quoting may have
+    delivered a multi-word atom (e.g. realistic bash's
+    `+airflow provider` — internal whitespace preserved as one
+    token with no surrounding quotes) or an operator-bearing
+    token (e.g. `airflow&provider` or
+    `"airflow provider"&"machine learning"`).
+
+    If the token has no `&` / `|` operator OUTSIDE any quoted
+    segment, the whole token is one atom (internal whitespace
+    is preserved). If an outside-quote operator exists, posix
+    shlex splits operators out while keeping quoted segments
+    intact — so `"airflow provider"&"machine learning"`
+    tokenizes as `["airflow provider", "&", "machine learning"]`.
+    """
+    # Scan for an operator outside quoted segments. Operators
+    # inside quotes (e.g. `"a&b"`) are part of the atom; the
+    # outer atom wrapping decides what happens to them.
+    in_quote = False
+    has_op = False
+    for c in token:
+        if c == '"':
+            in_quote = not in_quote
+        elif not in_quote and c in "&|":
+            has_op = True
+            break
+    if not has_op:
+        return [token]
+    # Operators detected — split with posix shlex. Quoted segments
+    # stay one token; `&` / `|` become their own tokens; `-` is in
+    # wordchars so tag names like `claude-code` stay whole.
+    try:
+        lexer = shlex.shlex(token, posix=True)
+        lexer.wordchars += "-"
+        lexer.commenters = ""
+        return list(lexer)
+    except ValueError as exc:
+        raise TagExprParseError(f"unparseable token {token!r}: {exc}") from exc
+
+
 def parse_query_argv(
     argv: list[str],
 ) -> tuple[str, TagExpr | None, str | None]:
@@ -242,6 +284,16 @@ def parse_query_argv(
         body = argv[0][1:]  # strip leading `+`
         chain_tokens = [body] if body else []
         i = 1
+        # Surface a dangling operator on the very first chain
+        # token BEFORE the extension loop absorbs additional argv
+        # tokens into the chain. argv `["+a&", "what", ...]`
+        # raises "dangling operator at end of chain" instead of
+        # silently consuming "what" and parsing wrong.
+        if chain_tokens and chain_tokens[-1].endswith(("&", "|")):
+            raise TagExprParseError(
+                f"dangling operator at end of chain: {chain_tokens[-1]!r}",
+                position=len(argv) - 1,
+            )
         while i < len(argv):
             tok = argv[i]
             # Extend the chain if the previous chain token ended in & or |.
@@ -257,22 +309,18 @@ def parse_query_argv(
                 f"dangling operator at end of chain: {chain_tokens[-1]!r}",
                 position=len(argv) - 1,
             )
-        # Parse the include chain. Argv tokens are shell-split on
-        # whitespace only, so a token like `"+airflow&provider"` arrives
-        # as a single argv element with `&` embedded. Re-run shlex over
-        # the joined chain so `&` / `|` separate into operators while
-        # quoted segments stay intact.
+        # Parse the include chain. Each argv chain token is one
+        # atom (which may carry internal whitespace from realistic
+        # bash, or operators embedded in a quoted token from
+        # explicit shell quoting). Per-token operator split keeps
+        # internal whitespace whole while separating `&` / `|`
+        # outside any quoted segment.
         if not chain_tokens:
             raise TagExprParseError("'+' without atom", position=0)
-        chain_str = " ".join(chain_tokens)
-        try:
-            re_lexer = shlex.shlex(chain_str, posix=True)
-            re_lexer.wordchars += "-"
-            re_lexer.commenters = ""
-            chain_tokens = list(re_lexer)
-        except ValueError as exc:
-            raise TagExprParseError(f"unparseable chain: {exc}") from exc
-        include_ast = parse_tokens(chain_tokens)
+        flat: list[str] = []
+        for ct in chain_tokens:
+            flat.extend(_split_argv_token_for_ops(ct))
+        include_ast = parse_tokens(flat)
     else:
         include_ast = None
         i = 0
