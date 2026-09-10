@@ -15,6 +15,14 @@ All notable changes to LIES are documented here. The format follows
   explicitly and mirror the MCP tool's argument shape. Bare
   `lies query what is X?` is unchanged. Grammar errors and unknown
   tags exit 2.
+- `lies collections enrich-tags` dry-run helper. Walks the wiki's
+  `collections_dir` and prints one
+  `lies collections modify <name> --set tags=<comma-separated>` line
+  per collection whose `tags` field is empty or missing. Default
+  dry-run never writes; the operator runs the printed commands, or
+  re-uses `lies collections modify --set tags=X,Y` directly.
+  `--apply` is reserved for a future auto-apply and currently raises
+  `BadParameter`.
 
 ### Changed
 - Replaced the vendored `pydantic-guidance` flake8 plugin with the

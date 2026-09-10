@@ -22,10 +22,10 @@ runner = CliRunner()
 
 
 def test_collections_help_lists_every_subcommand() -> None:
-    """``lies collections --help`` enumerates list / show / new / modify / delete."""
+    """``lies collections --help`` enumerates list / show / new / modify / delete / enrich-tags."""
     result = runner.invoke(app, ["collections", "--help"])
     assert result.exit_code == 0, result.output
-    for subcommand in ("list", "show", "new", "modify", "delete"):
+    for subcommand in ("list", "show", "new", "modify", "delete", "enrich-tags"):
         assert subcommand in result.output, f"{subcommand!r} not in help output:\n{result.output}"
 
 
@@ -62,6 +62,14 @@ def test_collections_delete_help_describes_delete() -> None:
     result = runner.invoke(app, ["collections", "delete", "--help"])
     assert result.exit_code == 0, result.output
     assert "Delete a collection" in result.output
+
+
+def test_collections_enrich_tags_help_describes_enrich_tags() -> None:
+    """``lies collections enrich-tags --help`` describes the dry-run hint."""
+    result = runner.invoke(app, ["collections", "enrich-tags", "--help"])
+    assert result.exit_code == 0, result.output
+    assert "tags" in result.output
+    assert "--apply" in result.output
 
 
 def test_collections_list_returns_same_names_as_pre_split(

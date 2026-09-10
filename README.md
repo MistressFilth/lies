@@ -546,6 +546,7 @@ Commands:
 - `lies migrate ingest-to-library [--dry-run|--apply]` — move wiki-resident ingests into the library. Backup duplicates at `<wiki>/.lies/migration-backup/<date>/`. `--dry-run` previews the moves; `--apply` performs one atomic commit per collection (cross-process flock, snapshot/restore on failure) and registers each library-side collection with qmd.
 - `lies reindex --reconcile` — sync each collection.
 - `lies collections list|show|modify` — manage collection configs (modify writes immediately; see `--help`).
+- `lies collections enrich-tags` — print one `lies collections modify <name> --set tags=<comma-separated>` hint per collection whose `tags` field is empty. Dry-run by default; the operator runs the printed commands manually. `--apply` is reserved for a future auto-apply and currently raises.
 
 ## License
 

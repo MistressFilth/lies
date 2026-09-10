@@ -23,6 +23,7 @@ from lies.wiki_settings import resolve_language
 __all__ = (
     "collections_app",
     "collections_delete",
+    "collections_enrich_tags",
     "collections_list",
     "collections_modify",
     "collections_new",
@@ -429,3 +430,53 @@ def collections_delete(
         raise typer.Exit(code=0)
     cfg_path.unlink()
     typer.echo(f"deleted {cfg_path}")
+
+
+@collections_app.command("enrich-tags")
+def collections_enrich_tags(
+    name: Annotated[
+        str | None,
+        typer.Option(
+            "--name",
+            envvar="LIES_WIKI_NAME",
+            help="Wiki to enrich (default: $LIES_WIKI_NAME).",
+        ),
+    ] = None,
+    apply: Annotated[
+        bool,
+        typer.Option(
+            "--apply/--no-apply",
+            help="Apply the proposed --set tags=... invocations; default is dry-run (prints to stdout).",
+        ),
+    ] = False,
+) -> None:
+    """Print ``lies collections modify <name> --set tags=...`` for collections with empty tags.
+
+    Walks the wiki's ``collections_dir`` (mirroring ``lies collections
+    list``) and emits one hint per YAML whose ``tags`` field is empty
+    or missing. Dry-run by default: the operator reviews the printed
+    list, then re-runs ``lies collections modify <name> --set tags=X,Y``
+    for each line. ``--apply`` is reserved for a future auto-apply
+    implementation and currently raises.
+    """
+    from lies.cli import resolve_wiki
+    from lies.collections.errors import CollectionConfigInvalid, CollectionNotFound
+    from lies.collections.record import load_collection
+
+    wiki = resolve_wiki(name)
+    cfg_dir = wiki.collections_dir
+    for cfg_path in sorted(cfg_dir.glob("*.yaml")):
+        try:
+            coll = load_collection(wiki, cfg_path.stem)
+        except (CollectionNotFound, CollectionConfigInvalid):
+            # Skip malformed configs so one bad file does not mask the
+            # rest of the dry-run output.
+            continue
+        if coll.tags:
+            continue
+        typer.echo(f"lies collections modify {coll.name} --set tags=<comma-separated>")
+    if apply:
+        raise typer.BadParameter(
+            "enrich-tags does not auto-apply; run the printed commands, "
+            "or use --set tags=... directly."
+        )
