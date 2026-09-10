@@ -29,8 +29,8 @@ PARAMETRIZE_HELP_SUBSTRINGS = [
         ["ingest"],
         [
             "Deterministic ingest into the library",
-            "Two modes: --source",
-            "--batch",
+            "Two modes supported",
+            "batch",
             "No LLM call on the ingest path",
         ],
     ),

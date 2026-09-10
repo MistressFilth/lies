@@ -54,10 +54,10 @@ def register(app: typer.Typer) -> None:
         name="ingest",
         help=(
             "Deterministic ingest into the library. "
-            "Two modes: --source (single) and --batch (multi). "
+            "Two modes supported: single source and batch. "
             "No LLM call on the ingest path."
         ),
-        short_help="Ingest one source (--source) or many (--batch) into the library.",
+        short_help="Ingest a single source (or many in batch mode) into the library.",
         rich_help_panel="Source ingestion",
     )
     def ingest(
