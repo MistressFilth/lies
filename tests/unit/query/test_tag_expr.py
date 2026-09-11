@@ -277,3 +277,126 @@ def test_resolve_valid_or():
     result = resolve(tree, available={"airflow", "provider", "amazon"})
     assert isinstance(result.include, Or)
     # OR is structurally symmetric with AND; this pins it.
+
+
+# --- F15 t:/c: qualifier prefix ------------------------------------------
+
+
+def test_include_node_default_qualifier_none():
+    node = Include("airflow")
+    assert node.qualifier is None
+
+
+def test_include_node_with_t_qualifier():
+    node = Include("airflow", qualifier="t")
+    assert node.qualifier == "t"
+
+
+def test_include_node_with_c_qualifier():
+    node = Include("airflow", qualifier="c")
+    assert node.qualifier == "c"
+
+
+def test_split_qualifier_t():
+    from lies.query.tag_expr import _split_qualifier
+
+    assert _split_qualifier("t:airflow") == ("t", "airflow")
+
+
+def test_split_qualifier_c():
+    from lies.query.tag_expr import _split_qualifier
+
+    assert _split_qualifier("c:airflow") == ("c", "airflow")
+
+
+def test_split_qualifier_none():
+    from lies.query.tag_expr import _split_qualifier
+
+    assert _split_qualifier("airflow") == (None, "airflow")
+
+
+def test_split_qualifier_with_hyphen():
+    """Qualifier strip works on names that already contain '-'."""
+    from lies.query.tag_expr import _split_qualifier
+
+    assert _split_qualifier("c:claude-code") == ("c", "claude-code")
+
+
+def test_split_qualifier_with_quoted():
+    """Strip works on quoted-tag-with-space; quotes preserved."""
+    from lies.query.tag_expr import _split_qualifier
+
+    assert _split_qualifier('c:"airflow provider"') == ("c", '"airflow provider"')
+
+
+def test_split_qualifier_bad_qualifier():
+    """Bad qualifier 'x:' is NOT matched by the prefix regex (returns None for tag)."""
+    from lies.query.tag_expr import _split_qualifier
+
+    # Regex only matches 't:' or 'c:'. 'x:foo' falls through as no qualifier.
+    assert _split_qualifier("x:foo") == (None, "x:foo")
+
+
+def test_parse_include_t_qualifier():
+    from lies.query.tag_expr import parse_include
+
+    assert parse_include("t:airflow") == Include("airflow", qualifier="t")
+
+
+def test_parse_include_c_qualifier():
+    from lies.query.tag_expr import parse_include
+
+    assert parse_include("c:airflow") == Include("airflow", qualifier="c")
+
+
+def test_parse_include_quoted_c_qualifier():
+    from lies.query.tag_expr import parse_include
+
+    assert parse_include('c:"airflow provider"') == Include("airflow provider", qualifier="c")
+
+
+def test_parse_include_t_and_c_mixed_chain():
+    """t:airflow & c:provider parses with mixed qualifiers."""
+    from lies.query.tag_expr import And, parse_include
+
+    assert parse_include("t:airflow&c:provider") == And(
+        Include("airflow", qualifier="t"),
+        Include("provider", qualifier="c"),
+    )
+
+
+def test_parse_include_bad_qualifier_errors():
+    """x:foo is not a known qualifier — parser raises TagExprParseError."""
+    from lies.query.tag_expr import TagExprParseError, parse_include
+
+    with pytest.raises(TagExprParseError):
+        parse_include("x:foo")
+
+
+def test_render_include_emits_qualifier():
+    """_render_include emits 'c:' prefix when qualifier set."""
+    from lies.query.tag_expr import _render_include
+
+    assert _render_include(Include("airflow", qualifier="c")) == "c:airflow"
+    assert _render_include(Include("airflow", qualifier="t")) == "t:airflow"
+
+
+def test_round_trip_with_qualifier():
+    """parse -> render -> re-parse -> same AST."""
+    from lies.query.tag_expr import _render_include, parse_include
+
+    original = parse_include("t:airflow&c:provider")
+    rendered = _render_include(original)
+    reparsed = parse_include(rendered)
+    assert reparsed == original
+
+
+def test_resolved_tag_filter_default_qualifier():
+    """ResolvedTagFilter accepts the new exclude_qualifier field with default None."""
+    f = ResolvedTagFilter(include=None, exclude="python")
+    assert f.exclude_qualifier is None
+
+
+def test_resolved_tag_filter_with_exclude_qualifier():
+    f = ResolvedTagFilter(include=None, exclude="python", exclude_qualifier="c")
+    assert f.exclude_qualifier == "c"

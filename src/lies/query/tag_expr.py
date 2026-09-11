@@ -13,7 +13,9 @@ resolver, a single AST. See the canonical spec at
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
+from typing import Literal
 
 
 class TagExpr:
@@ -28,9 +30,16 @@ class TagExpr:
 
 @dataclass(frozen=True)
 class Include(TagExpr):
-    """A single `+tag` atom in the include chain."""
+    """A single `+tag` atom in the include chain.
+
+    `qualifier`:
+        - None (default): tag-or-name alias — `tag ∈ coll.tags ∪ {coll.name}`.
+        - "t": explicit tag-or-name alias (same as None).
+        - "c": strict collection-name match — `coll.name == tag`.
+    """
 
     tag: str
+    qualifier: Literal["t", "c"] | None = None
 
 
 @dataclass(frozen=True)
@@ -53,16 +62,17 @@ class Or(TagExpr):
 class ResolvedTagFilter:
     """Flattened form the retriever consumes.
 
-    The include expression is the validated AST tree (may be
-    `Include`, `And`, `Or`, or `None` if no filter was given).
-    The exclude is a single tag string or `None` — the resolver
-    does not validate it against the registry; the retriever
-    does that when it resolves the filter against the collection
-    set.
+    include: the validated include AST tree (may be Include / And / Or, or None).
+    exclude: at most one tag string, or None.
+    exclude_qualifier:
+        - None (default): tag-or-name alias.
+        - "t": explicit alias.
+        - "c": strict collection-name match.
     """
 
     include: TagExpr | None = None
     exclude: str | None = None
+    exclude_qualifier: Literal["t", "c"] | None = None
 
 
 class TagExprParseError(Exception):
@@ -87,6 +97,27 @@ class TagExprUnknown(Exception):
 
 class TagExprEmpty(Exception):
     """Raised when the include chain is present but has no atoms."""
+
+
+# ---------------------------------------------------------------------------
+# Qualifier prefix strip
+# ---------------------------------------------------------------------------
+
+QUALIFIER_PREFIX_RE = re.compile(r"^(t|c):(.+)$")
+
+
+def _split_qualifier(tag: str) -> tuple[Literal["t", "c"] | None, str]:
+    """Strip the leading `t:` or `c:` qualifier from a tag string.
+
+    Returns `(qualifier, tag_without_prefix)`. If no qualifier is present,
+    returns `(None, tag)` unchanged. Bad qualifiers (e.g. `x:foo`) are NOT
+    stripped here — the parser raises `TagExprParseError` for them.
+    """
+    m = QUALIFIER_PREFIX_RE.match(tag)
+    if m is None:
+        return None, tag
+    qualifier: Literal["t", "c"] = m.group(1)  # ty: ignore[invalid-assignment]
+    return qualifier, m.group(2)
 
 
 # ---------------------------------------------------------------------------
@@ -127,7 +158,13 @@ def parse_tokens(tokens: list[str]) -> TagExpr:
         if len(tok) >= 2 and tok.startswith('"') and tok.endswith('"'):
             tok = tok[1:-1]
         pos += 1
-        return Include(tok)
+        qualifier, tag = _split_qualifier(tok)
+        if qualifier is None and ":" in tag and not (tag.startswith('"') and tag.endswith('"')):
+            # Has a colon but not a known qualifier; reject.
+            prefix = tag.split(":", 1)[0]
+            if prefix not in ("t", "c"):
+                raise TagExprParseError(f"unknown qualifier: {prefix!r}", position=pos - 1)
+        return Include(tag, qualifier=qualifier)
 
     def parse_and() -> TagExpr:
         nonlocal pos
@@ -167,8 +204,12 @@ def parse(expr: str) -> TagExpr:
         # still honors quoted segments, which is what the grammar wants.
         # Hyphen is added to wordchars so tag names like `claude-code`
         # stay one token (shlex otherwise splits on `-`).
+        # Colon is added to wordchars so `t:` / `c:` qualifier prefixes
+        # stay attached to their atom (otherwise `t:airflow` would
+        # tokenize as `t`, `:`, `airflow`). Quoted segments are still
+        # treated as one token by shlex regardless of wordchars.
         lexer = shlex.shlex(expr, posix=True)
-        lexer.wordchars += "-"
+        lexer.wordchars += "-:"
         lexer.commenters = ""
         tokens = list(lexer)
     except ValueError as exc:
@@ -199,10 +240,13 @@ def _render_include(node: TagExpr) -> str:
         # wordchars.
         tag = node.tag
         if tag.startswith("-"):
-            return f'"{tag}"'
-        if any(c.isspace() or c in "&|" for c in tag):
-            return f'"{tag}"'
-        return tag
+            rendered_tag = f'"{tag}"'
+        elif any(c.isspace() or c in "&|" for c in tag):
+            rendered_tag = f'"{tag}"'
+        else:
+            rendered_tag = tag
+        prefix = f"{node.qualifier}:" if node.qualifier else ""
+        return f"{prefix}{rendered_tag}"
     if isinstance(node, And):
         return f"{_render_include(node.left)}&{_render_include(node.right)}"
     if isinstance(node, Or):
