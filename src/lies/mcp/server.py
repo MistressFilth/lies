@@ -428,6 +428,7 @@ def _collect_available_tags_mcp(wiki: Wiki) -> set[str]:
     ``wiki.collections_dir/*.yaml`` so the resolver validates against
     the same source the CLI uses.
     """
+    from lies.collections.errors import CollectionConfigInvalid, CollectionNotFound
     from lies.collections.record import load_collection
 
     tags: set[str] = set()
@@ -435,7 +436,13 @@ def _collect_available_tags_mcp(wiki: Wiki) -> set[str]:
     if not cfg_dir.exists():
         return tags
     for path in sorted(cfg_dir.glob("*.yaml")):
-        coll = load_collection(wiki, path.stem)
+        # Skip malformed configs so one bad YAML does not mask the
+        # rest of the available-tag set. Mirrors ``enrich-tags``'s
+        # precedent (collections_cli.py).
+        try:
+            coll = load_collection(wiki, path.stem)
+        except (CollectionNotFound, CollectionConfigInvalid):
+            continue
         tags.add(coll.name)
         tags.update(coll.tags)
     return tags

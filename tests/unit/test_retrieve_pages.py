@@ -243,6 +243,57 @@ def test_collections_matching_unknown_include_tag_returns_empty(
     assert _collections_matching(tagged_wiki, tf) == set()
 
 
+def test_collections_matching_skips_malformed_yaml(tmp_path: Path) -> None:
+    """A malformed YAML among good ones does not break the filter.
+
+    ``load_collection`` raises ``CollectionConfigInvalid`` on broken YAML;
+    the retriever previously propagated the exception out of the loop,
+    so one bad config file masked every well-formed one. The fix wraps
+    ``load_collection`` in a try/except (mirrors ``enrich-tags``'s
+    precedent) so the well-formed collections still match.
+    """
+    import yaml  # type: ignore[import-untyped]
+
+    root = tmp_path / "malformed"
+    root.mkdir()
+    (root / "raw").mkdir()
+    (root / "wiki").mkdir()
+    wiki = make_wiki(name="malformed", data_root=root)
+    wiki.config_root.mkdir(parents=True, exist_ok=True)
+    wiki.collections_dir.mkdir(parents=True, exist_ok=True)
+    _COLLECTIONS = {
+        "airflow": ["airflow", "provider"],
+        "amazon": ["amazon", "aws"],
+    }
+    for name, tags in _COLLECTIONS.items():
+        save_collection(
+            wiki,
+            Collection(
+                name=name,
+                path=wiki.data_root / "raw" / name,
+                source=f"https://example.com/{name}",
+                tags=list(tags),
+                scraper_cmd=None,
+                doc_path=None,
+                mapper_model=None,
+                language="en",
+                version="1.0.0",
+                created_at=_NOW,
+                updated_at=_NOW,
+                config={},
+            ),
+        )
+    # Drop a malformed YAML in the same directory; load_collection
+    # raises CollectionConfigInvalid for it.
+    (wiki.collections_dir / "broken.yaml").write_text(
+        "name: broken\n: not a mapping root\n  bad-indent: x\n", encoding="utf-8"
+    )
+    del yaml  # noqa: F811 - imported only to anchor a deterministic broken-YAML body
+
+    tf = ResolvedTagFilter(include=Include("airflow"))
+    assert _collections_matching(wiki, tf) == {"airflow"}
+
+
 # --- retrieve_pages threads tag_filter → collection_filter -------------
 
 

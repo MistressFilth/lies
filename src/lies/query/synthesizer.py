@@ -519,6 +519,7 @@ def _collections_matching(wiki: Wiki, tag_filter: ResolvedTagFilter) -> set[str]
     synced yet is still a legitimate filter target. Per Task 5 review
     (2026-09-09) — same conclusion: read the YAMLs, not the registry.
     """
+    from lies.collections.errors import CollectionConfigInvalid, CollectionNotFound
     from lies.collections.record import load_collection
 
     matching: set[str] = set()
@@ -539,7 +540,13 @@ def _collections_matching(wiki: Wiki, tag_filter: ResolvedTagFilter) -> set[str]
         return False
 
     for path in sorted(cfg_dir.glob("*.yaml")):
-        coll = load_collection(wiki, path.stem)
+        # Skip malformed configs so one bad YAML does not mask the
+        # rest of the matching set. Mirrors ``enrich-tags``'s
+        # precedent (collections_cli.py).
+        try:
+            coll = load_collection(wiki, path.stem)
+        except (CollectionNotFound, CollectionConfigInvalid):
+            continue
         effective = set(coll.tags) | {coll.name}
         if exclude is not None and exclude in effective:
             continue
@@ -561,13 +568,21 @@ def _all_collection_names(wiki: Wiki) -> list[str]:
     ``name`` is the addressable key throughout (qmd's per-collection
     filter, registry indexes, and the operator-facing surface).
     """
+    from lies.collections.errors import CollectionConfigInvalid, CollectionNotFound
     from lies.collections.record import load_collection
 
     if not wiki.collections_dir.exists():
         return []
-    return sorted(
-        load_collection(wiki, path.stem).name for path in wiki.collections_dir.glob("*.yaml")
-    )
+    names: list[str] = []
+    for path in wiki.collections_dir.glob("*.yaml"):
+        # Skip malformed configs so one bad YAML does not mask the
+        # rest of the registered-name set. Mirrors ``enrich-tags``'s
+        # precedent (collections_cli.py).
+        try:
+            names.append(load_collection(wiki, path.stem).name)
+        except (CollectionNotFound, CollectionConfigInvalid):
+            continue
+    return sorted(names)
 
 
 def _searched_scope(wiki: Wiki, tag_filter: ResolvedTagFilter | None) -> list[str]:
