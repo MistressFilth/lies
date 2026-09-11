@@ -50,7 +50,10 @@ _COLLECTIONS = {
 
 @pytest.fixture
 def wiki(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Wiki:
-    """A real on-disk wiki with three tagged collections."""
+    """A real on-disk wiki with four tagged collections.
+
+    Collections: airflow, amazon, pyspark, python.
+    """
     name = "tagfilter"
     monkeypatch.setenv("LIES_WIKI_NAME", name)
     monkeypatch.setenv("LIES_XDG_DATA_HOME", str(tmp_path / "data"))

@@ -10,10 +10,10 @@ trace.
 Additive: existing callers (no ``tag_expr``) get the unfiltered
 behavior — ``tag_filter=None`` flows straight to the orchestrator.
 
-Tests build a real on-disk wiki with two tagged collections
-(airflow, amazon) so ``_collect_available_tags`` reads real YAML, then
-patch ``Orchestrator.run_query`` so the test does not depend on qmd
-or the LLM.
+Tests build a real on-disk wiki with three tagged collections
+(airflow, amazon, python) so ``_collect_available_tags`` reads real
+YAML, then patch ``Orchestrator.run_query`` so the test does not
+depend on qmd or the LLM.
 """
 
 from __future__ import annotations
@@ -41,7 +41,7 @@ _COLLECTIONS = {
 
 @pytest.fixture
 def fake_wiki_with_collections(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    """A real on-disk wiki with airflow + amazon collections seeded.
+    """A real on-disk wiki with airflow + amazon + python collections seeded.
 
     Patches ``lies.mcp.server.resolve_wiki`` so the MCP tool resolves
     to this wiki without touching ``LIES_XDG_DATA_HOME``. Tests still
