@@ -324,6 +324,8 @@ def test_query_cli_bad_qualifier_on_exclude_exits_2(wiki: Wiki) -> None:
     result, _ = _invoke("+airflow", "-x:foo", "what", "is", "X?")
     assert result.exit_code == 2
     assert "unknown qualifier" in result.output
+
+
 def test_query_explicit_empty_tag_expr_exits_2(wiki: Wiki) -> None:
     """``--tag-expr ""`` raises ``TagExprEmpty`` via CLI → exit 2.
 

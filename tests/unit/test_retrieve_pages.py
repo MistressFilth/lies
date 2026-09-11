@@ -488,6 +488,8 @@ def test_retrieve_pages_tag_filter_with_no_matching_collections_falls_back(
     assert captured["collection_filter"] == set()
     assert reason == FALLBACK_REASON_NO_RESULTS
     assert [p.rel_path for p in pages] == ["wiki/airflow/dag.md"]
+
+
 def test_collections_matching_skips_malformed_yaml(tmp_path: Path) -> None:
     """A malformed YAML among good ones does not break the filter.
 
