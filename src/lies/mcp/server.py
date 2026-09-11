@@ -42,6 +42,7 @@ from lies.query.tag_expr import (
     TagExprEmpty,
     TagExprParseError,
     TagExprUnknown,
+    _split_qualifier,
     parse,
     resolve,
 )
@@ -360,11 +361,13 @@ def query(
     Bundle C (F15) tag filter: ``tag_expr`` is the body of a single
     include expression (no leading ``+``); ``exclude_tags`` is a list of
     size ≤ 1. Either may be set independently; together they build one
-    :class:`ResolvedTagFilter` passed to the orchestrator. An unknown
-    include atom raises a ``ToolError`` with the verbatim spelling; a
-    too-long exclude list raises ``ToolError`` at the boundary. Both
-    kwargs are additive — existing callers (no ``tag_expr``) get the
-    unfiltered behavior.
+    :class:`ResolvedTagFilter` passed to the orchestrator. Each atom
+    (inside ``tag_expr`` and as an ``exclude_tags`` element) may carry
+    a ``t:`` / ``c:`` qualifier prefix. An unknown include atom raises
+    a ``ToolError`` with the verbatim spelling; a too-long exclude
+    list raises ``ToolError`` at the boundary. Both kwargs are
+    additive — existing callers (no ``tag_expr``) get the unfiltered
+    behavior.
     """
     if exclude_tags is not None and len(exclude_tags) > 1:
         raise ToolError(
@@ -381,8 +384,27 @@ def query(
                 resolved = resolve(include_ast, available=_collect_available_tags_mcp(wiki))
             else:
                 resolved = ResolvedTagFilter()
-            exclude_tag = exclude_tags[0] if exclude_tags else None
-            tag_filter = ResolvedTagFilter(include=resolved.include, exclude=exclude_tag)
+            # F15: parse the ``t:`` / ``c:`` prefix on the exclude
+            # element. A bad qualifier raises TagExprParseError and the
+            # outer except turns it into a ToolError at the boundary.
+            exclude_tag_value: str | None = None
+            exclude_qualifier: str | None = None
+            if exclude_tags:
+                raw = exclude_tags[0]
+                exclude_qualifier, exclude_tag_value = _split_qualifier(raw)
+                if (
+                    exclude_qualifier is None
+                    and ":" in raw
+                    and not (raw.startswith('"') and raw.endswith('"'))
+                ):
+                    prefix = raw.split(":", 1)[0]
+                    if prefix not in ("t", "c"):
+                        raise TagExprParseError(f"unknown qualifier: {prefix!r}", position=0)
+            tag_filter = ResolvedTagFilter(
+                include=resolved.include,
+                exclude=exclude_tag_value,
+                exclude_qualifier=exclude_qualifier,  # type: ignore[arg-type]
+            )
     except TagExprParseError as exc:
         raise ToolError(f"invalid tag expression: {exc}") from exc
     except TagExprEmpty as exc:

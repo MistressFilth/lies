@@ -111,7 +111,11 @@ def query(
     exclude_tag: str | None = typer.Option(
         None,
         "--exclude-tag",
-        help="Explicit single tag to exclude. Mirrors the MCP tool's exclude_tags.",
+        help=(
+            "Explicit single tag to exclude. Accepts an optional "
+            "``t:`` or ``c:`` qualifier prefix (F15). Mirrors the "
+            "MCP tool's exclude_tags."
+        ),
     ),
 ) -> None:
     """Query the wiki with LLM synthesis over qmd hits, with an extractive fallback.
@@ -137,6 +141,7 @@ def query(
         TagExprEmpty,
         TagExprParseError,
         TagExprUnknown,
+        _split_qualifier,
         parse,
         parse_query_argv,
         resolve,
@@ -147,6 +152,7 @@ def query(
 
     include_ast: TagExpr | None = None
     exclude: str | None = None
+    exclude_qualifier: str | None = None
     explicit = tag_expr is not None or exclude_tag is not None
     try:
         if explicit:
@@ -157,7 +163,7 @@ def query(
             include_ast = parse(tag_expr) if tag_expr is not None else None
             exclude = exclude_tag
         else:
-            question, include_ast, exclude = parse_query_argv(tokens)
+            question, include_ast, exclude, exclude_qualifier = parse_query_argv(tokens)
     except (TagExprParseError, TagExprEmpty) as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=2) from exc
@@ -177,7 +183,11 @@ def query(
                 raise typer.Exit(code=2) from exc
         # The exclude is deliberately not validated here — the retriever
         # resolves it against the live collection set (spec: Error model).
-        tag_filter = ResolvedTagFilter(include=resolved_include, exclude=exclude)
+        tag_filter = ResolvedTagFilter(
+            include=resolved_include,
+            exclude=exclude,
+            exclude_qualifier=exclude_qualifier,  # type: ignore[arg-type]
+        )
 
     orch = Orchestrator(wiki)
     # Use the host-side ``run_query`` entry point so LLM synthesis runs

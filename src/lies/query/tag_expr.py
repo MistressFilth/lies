@@ -302,7 +302,7 @@ def _split_argv_token_for_ops(token: str) -> list[str]:
 
 def parse_query_argv(
     argv: list[str],
-) -> tuple[str, TagExpr | None, str | None]:
+) -> tuple[str, TagExpr | None, str | None, Literal["t", "c"] | None]:
     """Walk argv, peel off optional `+` chain and optional `-` atom.
 
     The argv here is the post-Typer positional list. Typer has
@@ -313,11 +313,15 @@ def parse_query_argv(
         across subsequent tokens while the previous token ended
         in `&` or `|`.
       - If the next token (immediately after the chain) starts
-        with `-`, it is the exclude atom.
+        with `-`, it is the exclude atom. The atom may carry a
+        ``t:`` / ``c:`` qualifier prefix (F15); the prefix is
+        stripped here and returned as ``exclude_qualifier``.
       - The remaining tokens join with single spaces to form
         the question.
 
-    Returns (question, include_ast, exclude_tag).
+    Returns ``(question, include_ast, exclude_tag, exclude_qualifier)``.
+    ``exclude_qualifier`` is ``None`` for an unqualified exclude
+    (the ``t`` alias) or ``"t"`` / ``"c"`` for an explicit prefix.
 
     Raises TagExprParseError on grammar errors.
     """
@@ -326,6 +330,7 @@ def parse_query_argv(
 
     chain_tokens: list[str] = []
     exclude_tag: str | None = None
+    exclude_qualifier: Literal["t", "c"] | None = None
 
     # Peel the optional `+` chain.
     if argv[0].startswith("+"):
@@ -373,12 +378,23 @@ def parse_query_argv(
         include_ast = None
         i = 0
 
-    # Peel the optional single `-` atom.
+    # Peel the optional single `-` atom. The atom may carry a
+    # ``t:`` / ``c:`` qualifier prefix (F15). Bad qualifiers raise
+    # ``TagExprParseError`` here, mirroring the include chain's
+    # parse_atom error path.
     if i < len(argv) and argv[i].startswith("-"):
         body = argv[i][1:]
         if not body:
             raise TagExprParseError("'-' without atom", position=i)
-        exclude_tag = body
+        exclude_qualifier, exclude_tag = _split_qualifier(body)
+        if (
+            exclude_qualifier is None
+            and ":" in body
+            and not (body.startswith('"') and body.endswith('"'))
+        ):
+            prefix = body.split(":", 1)[0]
+            if prefix not in ("t", "c"):
+                raise TagExprParseError(f"unknown qualifier: {prefix!r}", position=i)
         i += 1
 
     # Remaining tokens are the question.
@@ -387,7 +403,7 @@ def parse_query_argv(
         if not question_tokens:
             raise TagExprParseError("filter present but no question")
     question = " ".join(question_tokens)
-    return question, include_ast, exclude_tag
+    return question, include_ast, exclude_tag, exclude_qualifier
 
 
 # ---------------------------------------------------------------------------

@@ -157,7 +157,7 @@ def test_parse_query_argv_happy(argv, expected_filter, expected_exclude, expecte
     # compare on (question, include_ast.render() if include else None, exclude).
     from lies.query.tag_expr import _render_include  # see step 7
 
-    question, include_ast, exclude = parse_query_argv(argv)
+    question, include_ast, exclude, exclude_qualifier = parse_query_argv(argv)
     assert question == expected_query
     if expected_filter is None:
         assert include_ast is None
@@ -165,13 +165,44 @@ def test_parse_query_argv_happy(argv, expected_filter, expected_exclude, expecte
         assert include_ast is not None
         assert _render_include(include_ast) == expected_filter
     assert exclude == expected_exclude
+    # Unqualified excludes (the t-alias default) yield None.
+    assert exclude_qualifier is None
 
 
 def test_parse_query_argv_with_exclude():
     argv = ["+airflow&provider", "-amazon", "compare", "X", "and", "Y"]
-    question, include_ast, exclude = parse_query_argv(argv)
+    question, include_ast, exclude, exclude_qualifier = parse_query_argv(argv)
     assert question == "compare X and Y"
     assert exclude == "amazon"
+    assert exclude_qualifier is None
+
+
+def test_parse_query_argv_with_c_qualifier_exclude():
+    """``-c:airflow`` strips the prefix and returns qualifier='c'."""
+    argv = ["+t:airflow", "-c:airflow", "what", "is", "X?"]
+    question, include_ast, exclude, exclude_qualifier = parse_query_argv(argv)
+    assert question == "what is X?"
+    assert include_ast == Include("airflow", qualifier="t")
+    assert exclude == "airflow"
+    assert exclude_qualifier == "c"
+
+
+def test_parse_query_argv_with_t_qualifier_exclude():
+    """``-t:airflow`` returns qualifier='t' (the explicit alias)."""
+    argv = ["+airflow", "-t:airflow", "what", "is", "X?"]
+    question, include_ast, exclude, exclude_qualifier = parse_query_argv(argv)
+    assert question == "what is X?"
+    assert include_ast == Include("airflow")
+    assert exclude == "airflow"
+    assert exclude_qualifier == "t"
+
+
+def test_parse_query_argv_bad_exclude_qualifier_errors():
+    """``-x:foo`` on the exclude atom is a parse error."""
+    from lies.query.tag_expr import TagExprParseError
+
+    with pytest.raises(TagExprParseError, match="unknown qualifier"):
+        parse_query_argv(["+airflow", "-x:foo", "what", "is", "X?"])
 
 
 def test_parse_query_argv_filter_no_question_errors():
@@ -206,19 +237,21 @@ def test_parse_query_argv_realistic_bash_quoted_tag():
     internal whitespace as a single atom.
     """
     argv = ["+airflow provider", "what", "is", "X?"]
-    question, include_ast, exclude = parse_query_argv(argv)
+    question, include_ast, exclude, exclude_qualifier = parse_query_argv(argv)
     assert question == "what is X?"
     assert include_ast == Include("airflow provider")
     assert exclude is None
+    assert exclude_qualifier is None
 
 
 def test_parse_query_argv_realistic_bash_quoted_tag_and_exclude():
     """Realistic bash: +"airflow provider" -amazon compare X and Y."""
     argv = ["+airflow provider", "-amazon", "compare", "X", "and", "Y"]
-    question, include_ast, exclude = parse_query_argv(argv)
+    question, include_ast, exclude, exclude_qualifier = parse_query_argv(argv)
     assert question == "compare X and Y"
     assert include_ast == Include("airflow provider")
     assert exclude == "amazon"
+    assert exclude_qualifier is None
 
 
 def test_render_include_round_trip_multiatom_with_internal_space():

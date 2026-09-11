@@ -44,6 +44,7 @@ _COLLECTIONS = {
     "airflow": ["airflow", "provider"],
     "amazon": ["amazon", "aws"],
     "pyspark": ["pyspark"],
+    "python": ["python"],
 }
 
 
@@ -247,6 +248,79 @@ def test_query_dangling_operator_exits_2(wiki: Wiki) -> None:
     assert "dangling operator" in result.output
 
 
+# ---------------------------------------------------------------------------
+# F15 — t:/c: qualifier prefix on argv include + exclude + explicit kwarg
+# ---------------------------------------------------------------------------
+
+
+def test_query_cli_plus_c_qualifier(wiki: Wiki) -> None:
+    """``+c:airflow`` parses to ``Include(tag='airflow', qualifier='c')``.
+
+    The argv splitter peels ``+`` off the front, then ``parse_tokens``
+    strips the ``c:`` qualifier. The resolved include carries the
+    ``c`` qualifier all the way through to the orchestrator's
+    ``tag_filter``.
+    """
+    result, call = _invoke("+c:airflow", "what", "is", "X?")
+    assert result.exit_code == 0, result.output
+    assert call.args[0] == "what is X?"
+    tag_filter = call.kwargs["tag_filter"]
+    assert tag_filter is not None
+    assert tag_filter.include == Include("airflow", qualifier="c")
+    assert tag_filter.exclude is None
+
+
+def test_query_cli_t_python_c_python_exclude(wiki: Wiki) -> None:
+    """Canonical example: ``+t:python -c:python`` resolves both qualifiers.
+
+    The include gets ``qualifier='t'``; the exclude string is stripped
+    of the ``c:`` prefix and the qualifier flows through to
+    ``ResolvedTagFilter.exclude_qualifier='c'``.
+    """
+    result, call = _invoke("+t:python", "-c:python", "what", "is", "X?")
+    assert result.exit_code == 0, result.output
+    assert call.args[0] == "what is X?"
+    tag_filter = call.kwargs["tag_filter"]
+    assert tag_filter is not None
+    assert tag_filter.include == Include("python", qualifier="t")
+    assert tag_filter.exclude == "python"
+    assert tag_filter.exclude_qualifier == "c"
+
+
+def test_query_cli_explicit_tag_expr_with_qualifiers(wiki: Wiki) -> None:
+    """The explicit form accepts prefixes in both ``--tag-expr`` and ``--exclude-tag``."""
+    result, call = _invoke(
+        "what",
+        "is",
+        "X?",
+        "--tag-expr",
+        "t:python&c:provider",
+        "--exclude-tag",
+        "c:python",
+    )
+    assert result.exit_code == 0, result.output
+    assert call.args[0] == "what is X?"
+    tag_filter = call.kwargs["tag_filter"]
+    assert tag_filter.include == And(
+        Include("python", qualifier="t"),
+        Include("provider", qualifier="c"),
+    )
+    assert tag_filter.exclude == "python"
+    assert tag_filter.exclude_qualifier == "c"
+
+
+def test_query_cli_bad_qualifier_exits_2(wiki: Wiki) -> None:
+    """``+x:foo`` is a parse error — ``x:`` is not a known qualifier."""
+    result, _ = _invoke("+x:foo", "what", "is", "X?")
+    assert result.exit_code == 2
+    assert "unknown qualifier" in result.output
+
+
+def test_query_cli_bad_qualifier_on_exclude_exits_2(wiki: Wiki) -> None:
+    """``-x:foo`` on the argv exclude is a parse error."""
+    result, _ = _invoke("+airflow", "-x:foo", "what", "is", "X?")
+    assert result.exit_code == 2
+    assert "unknown qualifier" in result.output
 def test_query_explicit_empty_tag_expr_exits_2(wiki: Wiki) -> None:
     """``--tag-expr ""`` raises ``TagExprEmpty`` via CLI → exit 2.
 
