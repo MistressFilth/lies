@@ -13,6 +13,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+import yaml
 from typer.testing import CliRunner
 
 from lies import xdg
@@ -89,6 +90,21 @@ def fake_wiki_with_empty_tags(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
     return wiki
 
 
+@pytest.fixture
+def fake_empty_wiki(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Wiki:
+    """A wiki with no collection YAMLs at all.
+
+    ``enrich-tags`` should walk to an empty iterable, print nothing,
+    and exit 0 — i.e. the dry-run must be a no-op on an unseeded wiki.
+    """
+    name = "enrichtags-empty"
+    monkeypatch.setenv("LIES_WIKI_NAME", name)
+    wiki = _wiki(name)
+    wiki.data_root.mkdir(parents=True, exist_ok=True)
+    wiki.collections_dir.mkdir(parents=True, exist_ok=True)
+    return wiki
+
+
 def test_collections_enrich_tags_dry_run(fake_wiki_with_empty_tags: Wiki) -> None:
     """``enrich-tags`` prints a hint for empty-tag collections and writes nothing."""
     result = runner.invoke(
@@ -120,3 +136,35 @@ def test_collections_enrich_tags_apply_raises(
     result = runner.invoke(collections_app, ["enrich-tags", "--apply", "--name", name])
     assert result.exit_code != 0
     assert "does not auto-apply" in (result.stdout + result.stderr)
+
+
+def test_collections_enrich_tags_idempotent(fake_wiki_with_empty_tags: Wiki) -> None:
+    """Re-running ``enrich-tags`` produces identical output and does not mutate the YAMLs."""
+    name = fake_wiki_with_empty_tags.name
+    result1 = runner.invoke(
+        collections_app,
+        ["enrich-tags", "--name", name],
+    )
+    result2 = runner.invoke(
+        collections_app,
+        ["enrich-tags", "--name", name],
+    )
+    assert result1.exit_code == 0, result1.stdout
+    assert result2.exit_code == 0, result2.stdout
+    assert result1.stdout == result2.stdout
+    # File state unchanged after both invocations.
+    coll_path = fake_wiki_with_empty_tags.collections_dir / "airflow.yaml"
+    assert coll_path.exists()
+    payload = yaml.safe_load(coll_path.read_text())
+    assert payload["tags"] == []
+
+
+def test_collections_enrich_tags_empty_wiki(fake_empty_wiki: Wiki) -> None:
+    """No collections → no modify-hint output, exit 0."""
+    name = fake_empty_wiki.name
+    result = runner.invoke(
+        collections_app,
+        ["enrich-tags", "--name", name],
+    )
+    assert result.exit_code == 0, result.stdout
+    assert "lies collections modify" not in result.stdout

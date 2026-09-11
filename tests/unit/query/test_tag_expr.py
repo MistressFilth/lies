@@ -162,6 +162,7 @@ def test_parse_query_argv_happy(argv, expected_filter, expected_exclude, expecte
     if expected_filter is None:
         assert include_ast is None
     else:
+        assert include_ast is not None
         assert _render_include(include_ast) == expected_filter
     assert exclude == expected_exclude
 
@@ -269,3 +270,10 @@ def test_resolve_nested_unknown_in_left_subtree():
     tree = parse_tokens(["airflow", "&", "nope", "|", "provider"])
     with pytest.raises(TagExprUnknown):
         resolve(tree, available={"airflow", "provider"})
+
+
+def test_resolve_valid_or():
+    tree = parse_include("airflow|provider")
+    result = resolve(tree, available={"airflow", "provider", "amazon"})
+    assert isinstance(result.include, Or)
+    # OR is structurally symmetric with AND; this pins it.
