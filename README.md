@@ -195,6 +195,20 @@ reaches `parse_query_argv`. The trade-off is that an unknown flag
 Typer layer — it lands in the question text verbatim. Use
 `--tag-expr` / `--exclude-tag` for an explicit, Typer-validated form.
 
+### Qualifier prefixes (`t:` / `c:`)
+
+Disambiguate tag matches from collection-name matches:
+
+```bash
+lies query +t:airflow -c:airflow "what are hooks?"
+# matches every collection with airflow in its tags, except the airflow collection itself
+```
+
+- `t:foo` (or no prefix): match `foo ∈ coll.tags ∪ {coll.name}` — today's implicit-self-tag rule, explicit.
+- `c:foo`: match `coll.name == foo` — strict collection-name only.
+
+Both include and exclude atoms accept the prefixes. Same prefixes work in `mcp_query(tag_expr=..., exclude_tags=...)`.
+
 ## Advanced
 
 ### Manual authoring (advanced)

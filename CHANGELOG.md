@@ -6,6 +6,21 @@ All notable changes to LIES are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.21.0] - 2026-09-11
+
+### Added
+- **Tag-filter `t:` and `c:` qualifier prefixes** for `lies query` and
+  `mcp_query` filter atoms. `t:foo` (or no prefix) matches the
+  existing implicit-self-tag rule (`foo ∈ coll.tags ∪ {coll.name}`);
+  `c:foo` is the strict collection-name match (`coll.name == foo`).
+  Enables disambiguating tag vs collection name without changing
+  storage. Example: `+t:python -c:python` returns every collection
+  with the python tag except the python collection itself. Both
+  include and exclude atoms accept the prefixes; CLI `--exclude-tag`
+  and MCP `exclude_tags` accept prefixed values. Parser rejects
+  unknown qualifiers (`x:foo` → `TagExprParseError("unknown
+  qualifier: 'x'")`).
+
 ## [0.20.0] - 2026-09-10
 
 ### Added
