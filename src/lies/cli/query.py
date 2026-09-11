@@ -26,12 +26,57 @@ __all__ = (
 )
 
 
+def _collect_available_tags(wiki) -> set[str]:  # noqa: ANN001 - Wiki import is lazy
+    """Return every addressable tag for ``wiki``.
+
+    The set is the union of each collection's declared ``tags`` and its
+    own ``name`` — the implicit self-tag, so ``+airflow`` addresses the
+    ``airflow`` collection even when ``airflow`` is not in its tag list.
+
+    Read straight off ``collections_dir/*.yaml`` (the same source
+    ``lies collections list`` walks) rather than the registry: the
+    registry stores ``WikiCollectionRef`` entries, which carry no tags,
+    and a collection that has not been synced yet is still a legitimate
+    filter target.
+    """
+    from lies.collections.errors import CollectionConfigInvalid, CollectionNotFound
+    from lies.collections.record import load_collection
+
+    tags: set[str] = set()
+    cfg_dir = wiki.collections_dir
+    if not cfg_dir.exists():
+        return tags
+    for path in sorted(cfg_dir.glob("*.yaml")):
+        # Skip malformed configs so one bad YAML does not mask the
+        # rest of the available-tag set. Mirrors ``enrich-tags``'s
+        # precedent (collections_cli.py).
+        try:
+            coll = load_collection(wiki, path.stem)
+        except (CollectionNotFound, CollectionConfigInvalid):
+            continue
+        tags.add(coll.name)
+        tags.update(coll.tags)
+    return tags
+
+
 @app.command(
     short_help="Query the wiki with LLM synthesis over qmd hits (extractive fallback).",
     rich_help_panel="Querying and maintenance",
+    # ``-amazon`` (the exclude atom) looks like a short option cluster to
+    # click. Unknown options fall through to the positional list so the
+    # tag-filter grammar owns them; known options are still parsed.
+    context_settings={"ignore_unknown_options": True},
 )
 def query(
-    question: str = typer.Argument(..., help="The question to ask the wiki."),
+    tokens: list[str] = typer.Argument(
+        ...,
+        metavar="[+tag[&|tag]...] [-tag] QUESTION...",
+        help=(
+            "Optional tag filter followed by the question. A leading +tag "
+            "(atoms joined by & or |, & binding tighter) restricts the search; "
+            "a following -tag excludes one tag. Everything left is the question."
+        ),
+    ),
     collection: str | None = typer.Option(
         None,
         "--collection",
@@ -55,16 +100,85 @@ def query(
     name: str | None = typer.Option(
         None, "--name", envvar="LIES_WIKI_NAME", help="Wiki to query (default: $LIES_WIKI_NAME)."
     ),
+    tag_expr: str | None = typer.Option(
+        None,
+        "--tag-expr",
+        help=(
+            "Explicit include expression, body only (no leading '+'), "
+            "e.g. 'airflow&provider'. Mirrors the MCP tool's tag_expr."
+        ),
+    ),
+    exclude_tag: str | None = typer.Option(
+        None,
+        "--exclude-tag",
+        help="Explicit single tag to exclude. Mirrors the MCP tool's exclude_tags.",
+    ),
 ) -> None:
-    """Query the wiki with LLM synthesis over qmd hits, with an extractive fallback."""
+    """Query the wiki with LLM synthesis over qmd hits, with an extractive fallback.
+
+    The positional tokens carry an optional tag filter ahead of the
+    question, e.g. `lies query +airflow&provider -amazon what connectors exist?`.
+    A collection's own name is always an addressable tag.
+
+    `--tag-expr` / `--exclude-tag` express the same filter without the
+    prefix syntax; when either is given the positional tokens are the
+    question verbatim. Both forms converge on one resolved filter.
+    Grammar errors and unknown tags exit 2. See the design doc
+    `2026-09-09-bundle-c-tag-filter-design.md` for the full grammar.
+    """
     from rich.console import Console
     from rich.markdown import Markdown
 
     from lies.cli import Orchestrator, resolve_wiki
     from lies.memory.models import WikiPlanInvalid
+    from lies.query.tag_expr import (
+        ResolvedTagFilter,
+        TagExpr,
+        TagExprEmpty,
+        TagExprParseError,
+        TagExprUnknown,
+        parse,
+        parse_query_argv,
+        resolve,
+    )
 
     configure_logging()
     wiki = resolve_wiki(name)
+
+    include_ast: TagExpr | None = None
+    exclude: str | None = None
+    explicit = tag_expr is not None or exclude_tag is not None
+    try:
+        if explicit:
+            # Explicit form wins outright: the positional tokens stay the
+            # question so a question that legitimately starts with '+' or
+            # '-' is not re-read as a filter.
+            question = " ".join(tokens)
+            include_ast = parse(tag_expr) if tag_expr is not None else None
+            exclude = exclude_tag
+        else:
+            question, include_ast, exclude = parse_query_argv(tokens)
+    except (TagExprParseError, TagExprEmpty) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+
+    tag_filter: ResolvedTagFilter | None = None
+    if include_ast is not None or exclude is not None:
+        # Only touch the collections dir when a filter is actually
+        # present; the back-compat path must not pay for the IO.
+        resolved_include: TagExpr | None = None
+        if include_ast is not None:
+            try:
+                resolved_include = resolve(
+                    include_ast, available=_collect_available_tags(wiki)
+                ).include
+            except TagExprUnknown as exc:
+                typer.echo(f"error: {exc}", err=True)
+                raise typer.Exit(code=2) from exc
+        # The exclude is deliberately not validated here — the retriever
+        # resolves it against the live collection set (spec: Error model).
+        tag_filter = ResolvedTagFilter(include=resolved_include, exclude=exclude)
+
     orch = Orchestrator(wiki)
     # Use the host-side ``run_query`` entry point so LLM synthesis runs
     # with the qmd->index retrieval and the extractive fallback intact.
@@ -77,6 +191,7 @@ def query(
             collection=collection,
             file=not no_file,
             force_file=force_file,
+            tag_filter=tag_filter,
         )
     except WikiPlanInvalid as exc:
         # ``run_query`` raises when the agent/force file marked the answer

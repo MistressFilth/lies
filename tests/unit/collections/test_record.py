@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from unittest import mock
+import warnings
 
 import pytest
 
@@ -23,6 +24,19 @@ def wiki(tmp_path: Path) -> Wiki:
     root = tmp_path / "wiki"
     root.mkdir()
     return make_wiki(name="lang-test", data_root=root)
+
+
+@pytest.fixture
+def wiki_factory():
+    """Factory mirroring the existing test style; returns a `make_wiki`-shaped wiki."""
+    from pathlib import Path as _P
+
+    def _make(tmp: _P) -> Wiki:
+        root = tmp / "wiki"
+        root.mkdir()
+        return make_wiki(name="lang-test", data_root=root)
+
+    return _make
 
 
 def _collection(name: str = "alpha") -> Collection:
@@ -166,3 +180,31 @@ def test_collection_language_non_string_raises(wiki: Wiki) -> None:
     )
     with pytest.raises(CollectionConfigInvalid):
         load_collection(wiki, "demo")
+
+
+def test_load_collection_coerces_non_list_tags_to_empty(tmp_path, wiki_factory):
+    """Non-list tags YAML values coerce to [] with a warning."""
+    from lies.collections.record import load_collection
+
+    wiki = wiki_factory(tmp_path)
+    wiki.collections_dir.mkdir(parents=True, exist_ok=True)
+    (wiki.collections_dir / "demo.yaml").write_text(
+        "name: demo\n"
+        "path: /tmp/x\n"
+        "source: https://example.com\n"
+        "tags: not-a-list\n"
+        "scraper_cmd: null\n"
+        "doc_path: null\n"
+        "mapper_model: null\n"
+        "language: null\n"
+        "version: '1'\n"
+        "created_at: '2026-09-09T00:00:00'\n"
+        "updated_at: '2026-09-09T00:00:00'\n"
+        "config: {}\n",
+        encoding="utf-8",
+    )
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        coll = load_collection(wiki, "demo")
+    assert coll.tags == []
+    assert any("tags" in str(w.message) for w in caught)

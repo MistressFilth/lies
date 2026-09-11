@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest import mock
 
 import pytest
+import yaml
 from typer.testing import CliRunner
 
 from lies import xdg
@@ -123,3 +124,115 @@ def test_collections_new_writes_yaml_with_apply(wiki: Wiki) -> None:
         )
     assert result.exit_code == 0, result.stdout
     assert (wiki.collections_dir / "htmx.yaml").exists()
+
+
+def test_collections_new_with_tag_flag_merges_into_record(wiki: Wiki) -> None:
+    """`--tag X --tag Y` on `collections new` merges into the proposed record's tags list."""
+    proposal = _make_proposal("htmx", wiki.data_root)
+    fake_agent = mock.Mock()
+    fake_agent.run_sync.return_value = mock.Mock(
+        output=proposal,
+        new_messages=list,
+    )
+    with (
+        mock.patch(
+            "lies.agents.collection_author.collection_author_agent",
+            return_value=fake_agent,
+        ),
+        mock.patch("lies.cli.pick_scraper") as m_pick,
+    ):
+        m_pick.return_value.emit_manifest.return_value = wiki.scratch_dir / "manifest.json"
+        result = runner.invoke(
+            app,
+            [
+                "collections",
+                "new",
+                "htmx",
+                "--source",
+                "https://github.com/bigskysoftware/htmx",
+                "--prompt",
+                "the htmx docs",
+                "--tag",
+                "alpha",
+                "--tag",
+                "beta",
+                "--apply",
+            ],
+        )
+    assert result.exit_code == 0, result.stdout
+    coll_path = wiki.collections_dir / "htmx.yaml"
+    assert coll_path.exists()
+    payload = yaml.safe_load(coll_path.read_text())
+    assert set(payload["tags"]) == {"docs", "alpha", "beta"}
+
+
+def test_collections_new_without_tag_keeps_proposal_tags(wiki: Wiki) -> None:
+    """Without `--tag`, the proposal's own tags list survives untouched (no merge artifact)."""
+    proposal = _make_proposal("htmx", wiki.data_root)
+    fake_agent = mock.Mock()
+    fake_agent.run_sync.return_value = mock.Mock(
+        output=proposal,
+        new_messages=list,
+    )
+    with (
+        mock.patch(
+            "lies.agents.collection_author.collection_author_agent",
+            return_value=fake_agent,
+        ),
+        mock.patch("lies.cli.pick_scraper") as m_pick,
+    ):
+        m_pick.return_value.emit_manifest.return_value = wiki.scratch_dir / "manifest.json"
+        result = runner.invoke(
+            app,
+            [
+                "collections",
+                "new",
+                "htmx",
+                "--source",
+                "https://github.com/bigskysoftware/htmx",
+                "--prompt",
+                "the htmx docs",
+                "--apply",
+            ],
+        )
+    assert result.exit_code == 0, result.stdout
+    payload = yaml.safe_load((wiki.collections_dir / "htmx.yaml").read_text())
+    assert payload["tags"] == ["docs"]
+
+
+def test_collections_new_with_single_tag_flag(wiki: Wiki) -> None:
+    """A single `--tag X` (vs multiple) round-trips correctly into the written record."""
+    proposal = _make_proposal("htmx", wiki.data_root)
+    fake_agent = mock.Mock()
+    fake_agent.run_sync.return_value = mock.Mock(
+        output=proposal,
+        new_messages=list,
+    )
+    with (
+        mock.patch(
+            "lies.agents.collection_author.collection_author_agent",
+            return_value=fake_agent,
+        ),
+        mock.patch("lies.cli.pick_scraper") as m_pick,
+    ):
+        m_pick.return_value.emit_manifest.return_value = wiki.scratch_dir / "manifest.json"
+        result = runner.invoke(
+            app,
+            [
+                "collections",
+                "new",
+                "htmx",
+                "--source",
+                "https://github.com/bigskysoftware/htmx",
+                "--prompt",
+                "the htmx docs",
+                "--tag",
+                "alpha",
+                "--apply",
+            ],
+        )
+    assert result.exit_code == 0, result.stdout
+    coll_path = wiki.collections_dir / "htmx.yaml"
+    assert coll_path.exists()
+    payload = yaml.safe_load(coll_path.read_text())
+    assert set(payload["tags"]) == {"docs", "alpha"}

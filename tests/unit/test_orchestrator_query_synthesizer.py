@@ -240,7 +240,9 @@ def test_set_qmd_search_rebinds_retrieve_pages_default(
 
     sentinel_calls: list[tuple[str, object, object, object]] = []
 
-    def sentinel(_cwd: object, _question: object, _limit: object) -> list[dict[str, object]]:
+    def sentinel(
+        _cwd: object, _question: object, _limit: object, **_kwargs: object
+    ) -> list[dict[str, object]]:
         sentinel_calls.append(("sentinel", _cwd, _question, _limit))
         return [{"path": "concepts/alpha.md", "score": 0.9}]
 

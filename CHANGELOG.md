@@ -6,6 +6,30 @@ All notable changes to LIES are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.20.0] - 2026-09-10
+
+### Added
+- **F15 — Tag-filter language** (`+tag&tag|tag -tag`): `lies query`
+  and `mcp_query` accept a filter expression to scope retrieval to
+  collections whose tags match. `Collection.tags` round-trips through
+  YAML with permissive coercion; the parser uses `shlex` for quoted
+  tag names; the resolver validates tags against the available set
+  with no fuzzy match. `SynthesizedAnswer.searched_scope` reports the
+  resolved collection set. CLI: `lies query +airflow what are DAGs?`,
+  `lies query --tag-expr "airflow&provider" --exclude-tag amazon
+  what is X?`. MCP: `mcp_query(tag_expr=..., exclude_tags=...)`.
+  Mirrors the predecessor's `ROUTING.md` §"Tag-filter syntax".
+- `lies collections new --tag X` (repeatable) for attaching tags at
+  creation time.
+- `lies collections enrich-tags` (dry-run) prints
+  `lies collections modify --set tags=...` invocations for
+  collections missing tags. `--apply` is reserved for a future
+  auto-apply and currently raises `BadParameter`.
+
+### Fixed
+- `Collection.tags` non-list YAML values now coerce to `[]` with a
+  warning (mirrors the `language` permissive fallback).
+
 ### Changed
 - Replaced the vendored `pydantic-guidance` flake8 plugin with the
   upstream [`supyrliminal`](https://github.com/MistressFilth/supyrliminal)

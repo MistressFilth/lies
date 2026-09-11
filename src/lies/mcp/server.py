@@ -22,6 +22,7 @@ from typing import Literal, cast
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 from pydantic import BaseModel
+from pydantic import Field
 
 try:
     from fastmcp import Context
@@ -36,6 +37,14 @@ from lies.mcp.resolution import resolve_wiki
 from lies.memory.models import WikiPlanInvalid
 from lies.orchestrator import Orchestrator
 from lies.query.models import SynthesizedAnswer
+from lies.query.tag_expr import (
+    ResolvedTagFilter,
+    TagExprEmpty,
+    TagExprParseError,
+    TagExprUnknown,
+    parse,
+    resolve,
+)
 from lies.wiki.layout import WikiLayout, copy_default_schema, git_init_initial
 from lies.wiki.wiki import Wiki
 
@@ -66,6 +75,9 @@ class SynthesizedMcpAnswer(BaseModel):
     synthesis_reason: str | None = None  # None when the agent answered cleanly
     should_file: bool = False  # F3: agent verdict on whether this earns a page
     file_receipt: dict | None = None  # F3: serialized MemoryReceipt or None
+    searched_scope: list[str] = Field(
+        default_factory=list
+    )  # Bundle C (F15): sorted, unique collection names searched
 
 
 # Re-export the page-author slice for FastMCP serialization.
@@ -327,6 +339,8 @@ def query(
     collection: str | None = None,
     file: bool = True,
     force_file: bool = False,
+    tag_expr: str | None = None,
+    exclude_tags: list[str] | None = None,
 ) -> SynthesizedMcpAnswer:
     """Answer ``question`` from the wiki identified by ``name``.
 
@@ -342,8 +356,40 @@ def query(
     to know where the page lives; without it the orchestrator raises
     :class:`WikiPlanInvalid` and the tool re-raises that as a
     ``ToolError`` so the LLM caller can react.
+
+    Bundle C (F15) tag filter: ``tag_expr`` is the body of a single
+    include expression (no leading ``+``); ``exclude_tags`` is a list of
+    size ≤ 1. Either may be set independently; together they build one
+    :class:`ResolvedTagFilter` passed to the orchestrator. An unknown
+    include atom raises a ``ToolError`` with the verbatim spelling; a
+    too-long exclude list raises ``ToolError`` at the boundary. Both
+    kwargs are additive — existing callers (no ``tag_expr``) get the
+    unfiltered behavior.
     """
+    if exclude_tags is not None and len(exclude_tags) > 1:
+        raise ToolError(
+            f"exclude_tags accepts at most one tag; got {len(exclude_tags)} ({exclude_tags!r})"
+        )
+
     wiki = resolve_wiki(name)
+
+    tag_filter: ResolvedTagFilter | None = None
+    try:
+        if tag_expr is not None or exclude_tags is not None:
+            include_ast = parse(tag_expr) if tag_expr is not None else None
+            if include_ast is not None:
+                resolved = resolve(include_ast, available=_collect_available_tags_mcp(wiki))
+            else:
+                resolved = ResolvedTagFilter()
+            exclude_tag = exclude_tags[0] if exclude_tags else None
+            tag_filter = ResolvedTagFilter(include=resolved.include, exclude=exclude_tag)
+    except TagExprParseError as exc:
+        raise ToolError(f"invalid tag expression: {exc}") from exc
+    except TagExprEmpty as exc:
+        raise ToolError(f"empty tag expression: {exc}") from exc
+    except TagExprUnknown as exc:
+        raise ToolError(f"unknown tag: {exc.tag}") from exc
+
     orch = Orchestrator(wiki=wiki)
     try:
         ans: SynthesizedAnswer = orch.run_query(
@@ -351,6 +397,7 @@ def query(
             collection=collection,
             file=file,
             force_file=force_file,
+            tag_filter=tag_filter,
         )
     except WikiPlanInvalid as exc:
         raise ToolError(
@@ -368,7 +415,37 @@ def query(
         synthesis_reason=ans.synthesis_reason or None,
         should_file=ans.should_file,
         file_receipt=(ans.file_receipt.model_dump() if ans.file_receipt is not None else None),
+        searched_scope=list(ans.searched_scope),
     )
+
+
+def _collect_available_tags_mcp(wiki: Wiki) -> set[str]:
+    """Return every addressable tag for ``wiki`` (MCP surface).
+
+    Mirrors ``lies.cli.query._collect_available_tags``: the union of
+    each collection's declared ``tags`` and its own ``name`` (the
+    implicit self-tag). Read straight off
+    ``wiki.collections_dir/*.yaml`` so the resolver validates against
+    the same source the CLI uses.
+    """
+    from lies.collections.errors import CollectionConfigInvalid, CollectionNotFound
+    from lies.collections.record import load_collection
+
+    tags: set[str] = set()
+    cfg_dir = wiki.collections_dir
+    if not cfg_dir.exists():
+        return tags
+    for path in sorted(cfg_dir.glob("*.yaml")):
+        # Skip malformed configs so one bad YAML does not mask the
+        # rest of the available-tag set. Mirrors ``enrich-tags``'s
+        # precedent (collections_cli.py).
+        try:
+            coll = load_collection(wiki, path.stem)
+        except (CollectionNotFound, CollectionConfigInvalid):
+            continue
+        tags.add(coll.name)
+        tags.update(coll.tags)
+    return tags
 
 
 # ---------------------------------------------------------------------------
