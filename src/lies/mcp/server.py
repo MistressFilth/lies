@@ -16,6 +16,7 @@ to already be registered under ``$LIES_XDG_DATA_HOME``.
 from __future__ import annotations
 
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, cast
 
@@ -189,7 +190,8 @@ _TYPE_PLURAL_MCP: dict[str, str] = {
 }
 
 
-class _CollisionVerdict(BaseModel):
+@dataclass
+class _CollisionVerdict:
     """Pydantic response model for the file_knowledge collision elicit."""
 
     action: Literal["overwrite", "rename", "cancel"]
