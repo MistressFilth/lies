@@ -245,3 +245,16 @@ def test_query_dangling_operator_exits_2(wiki: Wiki) -> None:
     result, _ = _invoke("+airflow&", "what", "is", "X?")
     assert result.exit_code == 2
     assert "dangling operator" in result.output
+
+
+def test_query_explicit_empty_tag_expr_exits_2(wiki: Wiki) -> None:
+    """``--tag-expr ""`` raises ``TagExprEmpty`` via CLI → exit 2.
+
+    Empty string must reach ``parse(...)`` so it raises ``TagExprEmpty``;
+    the falsy-``tag_expr`` shortcut silently swallowed it before, so
+    the explicit form diverged from MCP behavior. MCP already raises
+    ``ToolError("empty tag expression: ...")`` at the same input.
+    """
+    result, _ = _invoke("what", "is", "X?", "--tag-expr", "")
+    assert result.exit_code == 2
+    assert "no atoms" in result.output

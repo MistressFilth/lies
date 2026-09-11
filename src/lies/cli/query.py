@@ -147,7 +147,7 @@ def query(
             # question so a question that legitimately starts with '+' or
             # '-' is not re-read as a filter.
             question = " ".join(tokens)
-            include_ast = parse(tag_expr) if tag_expr else None
+            include_ast = parse(tag_expr) if tag_expr is not None else None
             exclude = exclude_tag
         else:
             question, include_ast, exclude = parse_query_argv(tokens)
