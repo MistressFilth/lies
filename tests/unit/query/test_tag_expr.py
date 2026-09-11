@@ -530,51 +530,51 @@ def test_exclude_atom_matches_no_qualifier_aliases_t():
     assert _exclude_atom_matches(cnn, "airflow", "t") is True
 
 
-# --- F15 _check_qualifier helper (cross-surface unify) -----------------
+# --- F15 check_qualifier helper (cross-surface unify) -------------------
 
 
 def test_check_qualifier_bare_tag():
     """No colon → no qualifier."""
-    from lies.query.tag_expr import _check_qualifier
+    from lies.query.tag_expr import check_qualifier
 
-    assert _check_qualifier("airflow", position=0) == (None, "airflow")
+    assert check_qualifier("airflow", position=0) == (None, "airflow")
 
 
 def test_check_qualifier_t():
-    from lies.query.tag_expr import _check_qualifier
+    from lies.query.tag_expr import check_qualifier
 
-    assert _check_qualifier("t:airflow", position=0) == ("t", "airflow")
+    assert check_qualifier("t:airflow", position=0) == ("t", "airflow")
 
 
 def test_check_qualifier_c():
-    from lies.query.tag_expr import _check_qualifier
+    from lies.query.tag_expr import check_qualifier
 
-    assert _check_qualifier("c:airflow", position=0) == ("c", "airflow")
+    assert check_qualifier("c:airflow", position=0) == ("c", "airflow")
 
 
 def test_check_qualifier_empty_body():
     """`c:` (qualifier, no atom) → TagExprParseError."""
-    from lies.query.tag_expr import TagExprParseError, _check_qualifier
+    from lies.query.tag_expr import TagExprParseError, check_qualifier
 
     with pytest.raises(TagExprParseError) as exc:
-        _check_qualifier("c:", position=0)
+        check_qualifier("c:", position=0)
     assert "qualifier" in str(exc.value).lower() or "atom" in str(exc.value).lower()
 
 
 def test_check_qualifier_bad_prefix():
     """`x:foo` → TagExprParseError('unknown qualifier')."""
-    from lies.query.tag_expr import TagExprParseError, _check_qualifier
+    from lies.query.tag_expr import TagExprParseError, check_qualifier
 
     with pytest.raises(TagExprParseError) as exc:
-        _check_qualifier("x:foo", position=0)
+        check_qualifier("x:foo", position=0)
     assert "unknown qualifier" in str(exc.value)
 
 
 def test_check_qualifier_quoted_atom_preserved():
     """`"airflow provider"` (quoted, no prefix) → (None, '"airflow provider"')."""
-    from lies.query.tag_expr import _check_qualifier
+    from lies.query.tag_expr import check_qualifier
 
-    assert _check_qualifier('"airflow provider"', position=0) == (
+    assert check_qualifier('"airflow provider"', position=0) == (
         None,
         '"airflow provider"',
     )

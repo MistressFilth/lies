@@ -42,7 +42,7 @@ from lies.query.tag_expr import (
     TagExprEmpty,
     TagExprParseError,
     TagExprUnknown,
-    _check_qualifier,
+    check_qualifier,
     parse,
     resolve,
 )
@@ -391,7 +391,7 @@ def query(
             exclude_qualifier: str | None = None
             if exclude_tags:
                 raw = exclude_tags[0]
-                exclude_qualifier, exclude_tag_value = _check_qualifier(raw, position=0)
+                exclude_qualifier, exclude_tag_value = check_qualifier(raw, position=0)
             tag_filter = ResolvedTagFilter(
                 include=resolved.include,
                 exclude=exclude_tag_value,

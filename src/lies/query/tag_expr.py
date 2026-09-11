@@ -124,13 +124,14 @@ def _split_qualifier(tag: str) -> tuple[Literal["t", "c"] | None, str]:
     return qualifier, m.group(2)
 
 
-def _check_qualifier(raw: str, *, position: int) -> tuple[Literal["t", "c"] | None, str]:
+def check_qualifier(raw: str, *, position: int) -> tuple[Literal["t", "c"] | None, str]:
     """Strip `t:` / `c:` prefix from a raw tag string; raise on bad qualifier.
 
-    Used by every surface (CLI argv, CLI explicit, MCP) to validate + split
-    the qualifier from the tag body. Unifies the 8-line duplicate across
-    three sites and makes empty-body qualifiers (`c:`, `t:`) raise
-    `TagExprParseError` consistently.
+    Public qualifier validator used by every surface (CLI argv, CLI
+    explicit, MCP) to validate + split the qualifier from the tag body.
+    Unifies the 8-line duplicate across three sites and makes
+    empty-body qualifiers (`c:`, `t:`) raise `TagExprParseError`
+    consistently.
 
     Returns `(qualifier, tag_without_prefix)`. Raises `TagExprParseError`
     with `position` on:
@@ -421,7 +422,7 @@ def parse_query_argv(
         body = argv[i][1:]
         if not body:
             raise TagExprParseError("'-' without atom", position=i)
-        exclude_qualifier, exclude_tag = _check_qualifier(body, position=i)
+        exclude_qualifier, exclude_tag = check_qualifier(body, position=i)
         i += 1
 
     # Remaining tokens are the question.
