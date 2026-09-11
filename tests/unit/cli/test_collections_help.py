@@ -68,8 +68,13 @@ def test_collections_enrich_tags_help_describes_enrich_tags() -> None:
     """``lies collections enrich-tags --help`` describes the dry-run hint."""
     result = runner.invoke(app, ["collections", "enrich-tags", "--help"])
     assert result.exit_code == 0, result.output
-    assert "tags" in result.output
-    assert "--apply" in result.output
+    # Assert against the description text rather than the OPTIONS panel:
+    # the description is short and wraps consistently; the OPTIONS panel
+    # width depends on terminal width and may be truncated on narrow
+    # CI runners. Combine stdout + stderr to handle stream routing
+    # differences across typer versions.
+    combined = (result.output or "") + (result.stderr or "")
+    assert "Dry-run by default" in combined
 
 
 def test_collections_list_returns_same_names_as_pre_split(
