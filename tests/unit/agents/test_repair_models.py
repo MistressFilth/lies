@@ -22,7 +22,10 @@ def test_repair_plan_is_noop_when_empty() -> None:
 
 
 def test_create_stub_requires_evidence() -> None:
-    with pytest.raises(ValidationError):
+    # CreateStub is a stdlib @dataclass (SL101 conversion); enforcement
+    # in __post_init__ raises plain ValueError instead of pydantic's
+    # ValidationError. The contract — non-empty evidence — is preserved.
+    with pytest.raises(ValueError, match="evidence"):
         CreateStub(
             path="concepts/x.md", title="X", finding_index=0, pages=[], rationale="", evidence=[]
         )

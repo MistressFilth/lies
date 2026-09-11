@@ -21,7 +21,6 @@ from lies.agents.repair_models import (
     CreateStub,
     RepairPlan,
     UpdateIndex,
-    _RepairOp,
 )
 from lies.memory.models import (
     EvidenceAppend,
@@ -107,7 +106,9 @@ def _merge_append_links(wiki: Wiki, append_to: str, links: list[AppendLink]) -> 
     )
 
 
-def _map_non_append_op(op: _RepairOp, wiki: Wiki | None) -> _PlanOperation:
+def _map_non_append_op(
+    op: CreateStub | UpdateIndex | AppendEvidence, wiki: Wiki | None
+) -> _PlanOperation:
     """Translate a non-AppendLink repair op into its MemoryPlan equivalent."""
     if isinstance(op, CreateStub):
         return PageCreate(
@@ -158,7 +159,7 @@ def from_repair_plan(plan: RepairPlan, wiki: Wiki | None = None) -> MemoryPlan:
     """
     operations: list[_PlanOperation] = []
     append_groups: dict[str, list[AppendLink]] = {}
-    non_append_ops: list[_RepairOp] = []
+    non_append_ops: list[CreateStub | UpdateIndex | AppendEvidence] = []
 
     for op in plan.operations:
         if isinstance(op, AppendLink):
