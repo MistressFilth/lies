@@ -1,0 +1,24 @@
+src/lies/agents/repair.py:75:        "\nLint report findings (JSON):\n" + ctx.deps.lint_report.model_dump_json(indent=2),
+src/lies/cli/catalog.py:128:        typer.echo(json.dumps([p.model_dump(mode="json") for p in pages], indent=2))
+src/lies/cli/memory.py:108:            typer.echo(rec.model_dump_json())
+src/lies/collections/registry.py:114:                cid: ref.model_dump(mode="json") for cid, ref in registry.collections.items()
+src/lies/mcp/daemon.py:126:        return PidRecord.model_validate_json(raw)
+src/lies/mcp/daemon.py:137:        tmp.write_text(rec.model_dump_json(), encoding="utf-8")
+src/lies/mcp/server.py:162:    return cast(dict[str, object], result.model_dump())
+src/lies/mcp/server.py:254:            ).model_dump()
+src/lies/mcp/server.py:270:            ).model_dump()
+src/lies/mcp/server.py:297:                ).model_dump()
+src/lies/mcp/server.py:327:        receipt=receipt.model_dump(),
+src/lies/mcp/server.py:328:    ).model_dump()
+src/lies/mcp/server.py:431:        file_receipt=(ans.file_receipt.model_dump() if ans.file_receipt is not None else None),
+src/lies/mcp/server.py:672:    return [row.model_dump() for row in rows]
+src/lies/mcp/server.py:717:    Each row is the JSON-serialized ``CatalogPage.model_dump(mode="json")``
+src/lies/mcp/server.py:733:    return json.dumps([p.model_dump(mode="json") for p in pages], indent=2)
+src/lies/mcp/server.py:751:    cheaply. ``model_dump(mode="json")`` ensures the ``PageSection``
+src/lies/mcp/server.py:768:    return json.dumps(page.model_dump(mode="json"), indent=2)
+src/lies/memory/sidecar.py:138:            fh.write(record.model_dump_json() + "\n")
+src/lies/memory/sidecar.py:146:        return MemoryPlanRecord.model_validate_json(line)
+src/lies/memory/sidecar.py:292:            tmp.write(r.model_dump_json() + "\n")
+src/lies/memory/tools.py:40:    return cast(dict[str, object], result.model_dump())
+src/lies/qmd/mcp_fallback.py:77:                pages=[page.model_dump() for page in result.pages],
+src/lies/qmd/mcp_fallback.py:110:            pages=[page.model_dump() for page in result.pages],
