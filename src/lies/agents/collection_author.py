@@ -13,6 +13,7 @@ plus a rationale.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any, cast
 
 from pydantic import BaseModel, Field
@@ -39,7 +40,8 @@ When you have enough information, return an AuthorProposal.
 """
 
 
-class AuthorQuestion(BaseModel):
+@dataclass
+class AuthorQuestion:
     """A single question the agent needs answered before it can propose."""
 
     id: str
@@ -64,7 +66,8 @@ class AuthorProposal(BaseModel):
 AuthorOutput = AuthorQuestion | AuthorProposal
 
 
-class CollectionAuthorDeps(BaseModel):
+@dataclass
+class CollectionAuthorDeps:
     """Per-run dependencies for the CollectionAuthorAgent.
 
     Carries the manifest of source files available at the source URL,
