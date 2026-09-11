@@ -124,6 +124,32 @@ def _split_qualifier(tag: str) -> tuple[Literal["t", "c"] | None, str]:
     return qualifier, m.group(2)
 
 
+def _check_qualifier(raw: str, *, position: int) -> tuple[Literal["t", "c"] | None, str]:
+    """Strip `t:` / `c:` prefix from a raw tag string; raise on bad qualifier.
+
+    Used by every surface (CLI argv, CLI explicit, MCP) to validate + split
+    the qualifier from the tag body. Unifies the 8-line duplicate across
+    three sites and makes empty-body qualifiers (`c:`, `t:`) raise
+    `TagExprParseError` consistently.
+
+    Returns `(qualifier, tag_without_prefix)`. Raises `TagExprParseError`
+    with `position` on:
+      - Known qualifier followed by empty body (`c:`)
+      - Unknown qualifier prefix (`x:foo`)
+    A bare tag (no `:`) returns `(None, raw)` unchanged.
+    """
+    if not raw or ":" not in raw:
+        return None, raw
+    if raw.startswith('"') and raw.endswith('"'):
+        return None, raw
+    prefix, body = raw.split(":", 1)
+    if prefix in ("t", "c"):
+        if not body:
+            raise TagExprParseError(f"qualifier {prefix!r} without atom", position=position)
+        return prefix, body
+    raise TagExprParseError(f"unknown qualifier: {prefix!r}", position=position)
+
+
 # ---------------------------------------------------------------------------
 # Parser
 # ---------------------------------------------------------------------------
@@ -386,15 +412,7 @@ def parse_query_argv(
         body = argv[i][1:]
         if not body:
             raise TagExprParseError("'-' without atom", position=i)
-        exclude_qualifier, exclude_tag = _split_qualifier(body)
-        if (
-            exclude_qualifier is None
-            and ":" in body
-            and not (body.startswith('"') and body.endswith('"'))
-        ):
-            prefix = body.split(":", 1)[0]
-            if prefix not in ("t", "c"):
-                raise TagExprParseError(f"unknown qualifier: {prefix!r}", position=i)
+        exclude_qualifier, exclude_tag = _check_qualifier(body, position=i)
         i += 1
 
     # Remaining tokens are the question.

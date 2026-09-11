@@ -42,7 +42,7 @@ from lies.query.tag_expr import (
     TagExprEmpty,
     TagExprParseError,
     TagExprUnknown,
-    _split_qualifier,
+    _check_qualifier,
     parse,
     resolve,
 )
@@ -391,15 +391,7 @@ def query(
             exclude_qualifier: str | None = None
             if exclude_tags:
                 raw = exclude_tags[0]
-                exclude_qualifier, exclude_tag_value = _split_qualifier(raw)
-                if (
-                    exclude_qualifier is None
-                    and ":" in raw
-                    and not (raw.startswith('"') and raw.endswith('"'))
-                ):
-                    prefix = raw.split(":", 1)[0]
-                    if prefix not in ("t", "c"):
-                        raise TagExprParseError(f"unknown qualifier: {prefix!r}", position=0)
+                exclude_qualifier, exclude_tag_value = _check_qualifier(raw, position=0)
             tag_filter = ResolvedTagFilter(
                 include=resolved.include,
                 exclude=exclude_tag_value,

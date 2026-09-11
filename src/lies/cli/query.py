@@ -141,7 +141,7 @@ def query(
         TagExprEmpty,
         TagExprParseError,
         TagExprUnknown,
-        _split_qualifier,
+        _check_qualifier,
         parse,
         parse_query_argv,
         resolve,
@@ -162,6 +162,8 @@ def query(
             question = " ".join(tokens)
             include_ast = parse(tag_expr) if tag_expr is not None else None
             exclude = exclude_tag
+            if exclude_tag is not None:
+                exclude_qualifier, exclude = _check_qualifier(exclude_tag, position=0)
         else:
             question, include_ast, exclude, exclude_qualifier = parse_query_argv(tokens)
     except (TagExprParseError, TagExprEmpty) as exc:
