@@ -400,3 +400,98 @@ def test_resolved_tag_filter_default_qualifier():
 def test_resolved_tag_filter_with_exclude_qualifier():
     f = ResolvedTagFilter(include=None, exclude="python", exclude_qualifier="c")
     assert f.exclude_qualifier == "c"
+
+
+# --- F15 atom_matches / _exclude_atom_matches helpers --------------------
+
+
+def _make_collection(name: str, tags: list[str]):
+    """Minimal Collection helper for atom_matches unit tests."""
+    from datetime import datetime, timezone
+    from pathlib import Path
+
+    from lies.collections.record import Collection
+
+    return Collection(
+        name=name,
+        path=Path(f"/tmp/{name}"),
+        source="https://example.com",
+        tags=tags,
+        scraper_cmd=None,
+        doc_path=None,
+        mapper_model=None,
+        language=None,
+        version="1",
+        created_at=datetime(2026, 9, 10, tzinfo=timezone.utc),
+        updated_at=datetime(2026, 9, 10, tzinfo=timezone.utc),
+        config={},
+    )
+
+
+def test_atom_matches_c_qualifier_matches_collection_name():
+    """c:foo matches only collections named foo (NOT collections tagged foo)."""
+    from lies.query.tag_expr import atom_matches
+
+    coll = _make_collection(name="airflow", tags=["provider"])
+    assert atom_matches(coll, Include("airflow", qualifier="c")) is True
+    # A collection named cnn with airflow in its tags does NOT match c:airflow.
+    other = _make_collection(name="cnn", tags=["airflow", "news"])
+    assert atom_matches(other, Include("airflow", qualifier="c")) is False
+
+
+def test_atom_matches_c_qualifier_does_not_match_by_tag():
+    """c:foo does NOT match a collection that has foo in tags but a different name."""
+    from lies.query.tag_expr import atom_matches
+
+    other = _make_collection(name="cnn", tags=["airflow", "news"])
+    assert atom_matches(other, Include("airflow", qualifier="c")) is False
+
+
+def test_atom_matches_t_qualifier_matches_tag_or_name():
+    """t:foo matches collections named foo OR with foo in tags."""
+    from lies.query.tag_expr import atom_matches
+
+    airflow = _make_collection(name="airflow", tags=["provider"])
+    cnn = _make_collection(name="cnn", tags=["airflow", "news"])
+    assert atom_matches(airflow, Include("airflow", qualifier="t")) is True
+    assert atom_matches(cnn, Include("airflow", qualifier="t")) is True
+
+
+def test_atom_matches_no_qualifier_aliases_t():
+    """No qualifier = same as 't' (today's implicit-self-tag behavior)."""
+    from lies.query.tag_expr import atom_matches
+
+    airflow = _make_collection(name="airflow", tags=["provider"])
+    cnn = _make_collection(name="cnn", tags=["airflow", "news"])
+    # No-qualifier Include matches the same set as 't' qualifier.
+    assert atom_matches(airflow, Include("airflow")) is True
+    assert atom_matches(cnn, Include("airflow")) is True
+
+
+def test_atom_matches_c_does_not_match_unrelated():
+    """c:foo does not match collections that don't have foo as name."""
+    from lies.query.tag_expr import atom_matches
+
+    other = _make_collection(name="spark", tags=["provider"])
+    assert atom_matches(other, Include("airflow", qualifier="c")) is False
+
+
+def test_exclude_atom_matches_c_strict():
+    """_exclude_atom_matches with 'c' qualifier matches only the named collection."""
+    from lies.query.tag_expr import _exclude_atom_matches
+
+    airflow = _make_collection(name="airflow", tags=["provider"])
+    cnn = _make_collection(name="cnn", tags=["airflow", "news"])
+    assert _exclude_atom_matches(airflow, "airflow", "c") is True
+    assert _exclude_atom_matches(cnn, "airflow", "c") is False
+
+
+def test_exclude_atom_matches_no_qualifier_aliases_t():
+    from lies.query.tag_expr import _exclude_atom_matches
+
+    airflow = _make_collection(name="airflow", tags=["provider"])
+    cnn = _make_collection(name="cnn", tags=["airflow", "news"])
+    assert _exclude_atom_matches(airflow, "airflow", None) is True
+    assert _exclude_atom_matches(cnn, "airflow", None) is True
+    assert _exclude_atom_matches(airflow, "airflow", "t") is True
+    assert _exclude_atom_matches(cnn, "airflow", "t") is True

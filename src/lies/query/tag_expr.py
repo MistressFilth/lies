@@ -15,7 +15,11 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
+
+
+if TYPE_CHECKING:
+    from lies.collections.record import Collection
 
 
 class TagExpr:
@@ -418,3 +422,38 @@ def resolve(expr: TagExpr, *, available: set[str]) -> ResolvedTagFilter:
         right = resolve(expr.right, available=available)
         return ResolvedTagFilter(include=Or(left.include, right.include))  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
     raise TypeError(f"unexpected node type: {type(expr).__name__}")
+
+
+# ---------------------------------------------------------------------------
+# Retriever helpers
+# ---------------------------------------------------------------------------
+
+
+def atom_matches(coll: "Collection", include: Include) -> bool:
+    """Evaluate one Include atom against one Collection.
+
+    Dispatches on ``include.qualifier``:
+        - ``"c"``: strict collection-name match (``coll.name == include.tag``).
+        - ``"t"`` or ``None``: tag-or-name alias (``include.tag ∈ coll.tags ∪ {coll.name}``).
+
+    Used by the retriever's ``_collections_matching`` only. Validation
+    (``tag ∈ available``) lives in :func:`resolve`.
+    """
+    if include.qualifier == "c":
+        return coll.name == include.tag
+    return include.tag in (set(coll.tags) | {coll.name})
+
+
+def _exclude_atom_matches(
+    coll: "Collection",
+    exclude: str,
+    exclude_qualifier: Literal["t", "c"] | None,
+) -> bool:
+    """Evaluate the exclude atom against one Collection.
+
+    Same dispatch as :func:`atom_matches` but for the flat exclude
+    string field on :class:`ResolvedTagFilter`.
+    """
+    if exclude_qualifier == "c":
+        return coll.name == exclude
+    return exclude in (set(coll.tags) | {coll.name})

@@ -503,8 +503,12 @@ def _collections_matching(wiki: Wiki, tag_filter: ResolvedTagFilter) -> set[str]
     the resolver only validates that every atom is in the available
     tag set; the per-collection semantics are the retriever's concern.
 
-    Exclude drops a collection whose effective set (``tags ∪ {name}``)
-    contains the excluded tag, regardless of the include result. The
+    F15 ``t:`` / ``c:`` qualifier dispatch:
+            - ``t`` (or no qualifier): the implicit-self-tag rule above.
+            - ``c``: strict name match (``coll.name == include.tag``).
+
+    Exclude drops a collection per the same dispatch
+    (``_exclude_atom_matches``); regardless of include result, the
     exclude wins on collision (a collection listed by an include and
     the exclude at the same time is dropped).
 
@@ -521,6 +525,7 @@ def _collections_matching(wiki: Wiki, tag_filter: ResolvedTagFilter) -> set[str]
     """
     from lies.collections.errors import CollectionConfigInvalid, CollectionNotFound
     from lies.collections.record import load_collection
+    from lies.query.tag_expr import _exclude_atom_matches, atom_matches
 
     matching: set[str] = set()
     cfg_dir = wiki.collections_dir
@@ -528,15 +533,16 @@ def _collections_matching(wiki: Wiki, tag_filter: ResolvedTagFilter) -> set[str]
         return matching
 
     exclude = tag_filter.exclude
+    exclude_qualifier = tag_filter.exclude_qualifier
     include = tag_filter.include
 
-    def _eval_include(node: object, effective: set[str]) -> bool:
+    def _eval_include(node: object, coll) -> bool:  # noqa: ANN001 - Collection is lazy
         if isinstance(node, Include):
-            return node.tag in effective
+            return atom_matches(coll, node)
         if isinstance(node, And):
-            return _eval_include(node.left, effective) and _eval_include(node.right, effective)
+            return _eval_include(node.left, coll) and _eval_include(node.right, coll)
         if isinstance(node, Or):
-            return _eval_include(node.left, effective) or _eval_include(node.right, effective)
+            return _eval_include(node.left, coll) or _eval_include(node.right, coll)
         return False
 
     for path in sorted(cfg_dir.glob("*.yaml")):
@@ -547,13 +553,12 @@ def _collections_matching(wiki: Wiki, tag_filter: ResolvedTagFilter) -> set[str]
             coll = load_collection(wiki, path.stem)
         except (CollectionNotFound, CollectionConfigInvalid):
             continue
-        effective = set(coll.tags) | {coll.name}
-        if exclude is not None and exclude in effective:
+        if exclude is not None and _exclude_atom_matches(coll, exclude, exclude_qualifier):
             continue
         if include is None:
             matching.add(coll.name)
             continue
-        if _eval_include(include, effective):
+        if _eval_include(include, coll):
             matching.add(coll.name)
     return matching
 
