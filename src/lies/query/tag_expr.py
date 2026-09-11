@@ -189,6 +189,15 @@ def parse_tokens(tokens: list[str]) -> TagExpr:
             tok = tok[1:-1]
         pos += 1
         qualifier, tag = _split_qualifier(tok)
+        # Empty body after a known qualifier prefix (`c:` / `t:`). Mirror
+        # the exclude-side check in `check_qualifier`: surface as a parse
+        # error rather than letting an empty body slip through to
+        # Include(tag='c:', qualifier=None) and confuse the resolver with
+        # "unknown tag: 'c:'". `_split_qualifier`'s regex requires `.+`
+        # body chars, so it returns (None, "c:") for `c:` — detect that
+        # case here.
+        if qualifier is None and tag in ("c:", "t:"):
+            raise TagExprParseError(f"qualifier {tag[:-1]!r} without atom", position=pos - 1)
         if qualifier is None and ":" in tag and not (tag.startswith('"') and tag.endswith('"')):
             # Has a colon but not a known qualifier; reject.
             prefix = tag.split(":", 1)[0]

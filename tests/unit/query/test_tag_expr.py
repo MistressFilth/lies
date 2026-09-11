@@ -578,3 +578,37 @@ def test_check_qualifier_quoted_atom_preserved():
         None,
         '"airflow provider"',
     )
+
+
+# --- F15 PR-review: empty-body include consistency ------------------------
+
+
+def test_parse_tokens_empty_body_errors():
+    """`c:` and `t:` (empty body) raise TagExprParseError on the include side,
+    mirroring the exclude side's behavior in check_qualifier.
+
+    Per PR #64 review — empty-body include consistency. Before this fix,
+    parse_tokens silently produced Include(tag='c:', qualifier=None) which
+    then confused the resolver with "unknown tag: 'c:'". The exclude side
+    already raised cleanly via check_qualifier.
+    """
+    from lies.query.tag_expr import TagExprParseError, parse_query_argv, parse_tokens
+
+    # Direct token-level access — the include-side parse_atom path.
+    with pytest.raises(TagExprParseError):
+        parse_tokens(["c:"])
+    with pytest.raises(TagExprParseError):
+        parse_tokens(["t:"])
+
+    # Full argv path — include side surfaces the same error via parse_tokens.
+    with pytest.raises(TagExprParseError):
+        parse_query_argv(["+c:", "what", "is", "X?"])
+    with pytest.raises(TagExprParseError):
+        parse_query_argv(["+t:", "what", "is", "X?"])
+
+    # Full argv path — exclude side has raised cleanly since the helper
+    # was extracted; pin that here so the cross-surface symmetry holds.
+    with pytest.raises(TagExprParseError):
+        parse_query_argv(["+airflow", "-c:", "what", "is", "X?"])
+    with pytest.raises(TagExprParseError):
+        parse_query_argv(["+airflow", "-t:", "what", "is", "X?"])
