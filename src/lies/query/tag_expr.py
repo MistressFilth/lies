@@ -13,7 +13,13 @@ resolver, a single AST. See the canonical spec at
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
+from typing import TYPE_CHECKING, Literal
+
+
+if TYPE_CHECKING:
+    from lies.collections.record import Collection
 
 
 class TagExpr:
@@ -28,9 +34,16 @@ class TagExpr:
 
 @dataclass(frozen=True)
 class Include(TagExpr):
-    """A single `+tag` atom in the include chain."""
+    """A single `+tag` atom in the include chain.
+
+    `qualifier`:
+        - None (default): tag-or-name alias — `tag ∈ coll.tags ∪ {coll.name}`.
+        - "t": explicit tag-or-name alias (same as None).
+        - "c": strict collection-name match — `coll.name == tag`.
+    """
 
     tag: str
+    qualifier: Literal["t", "c"] | None = None
 
 
 @dataclass(frozen=True)
@@ -53,16 +66,17 @@ class Or(TagExpr):
 class ResolvedTagFilter:
     """Flattened form the retriever consumes.
 
-    The include expression is the validated AST tree (may be
-    `Include`, `And`, `Or`, or `None` if no filter was given).
-    The exclude is a single tag string or `None` — the resolver
-    does not validate it against the registry; the retriever
-    does that when it resolves the filter against the collection
-    set.
+    include: the validated include AST tree (may be Include / And / Or, or None).
+    exclude: at most one tag string, or None.
+    exclude_qualifier:
+        - None (default): tag-or-name alias.
+        - "t": explicit alias.
+        - "c": strict collection-name match.
     """
 
     include: TagExpr | None = None
     exclude: str | None = None
+    exclude_qualifier: Literal["t", "c"] | None = None
 
 
 class TagExprParseError(Exception):
@@ -87,6 +101,54 @@ class TagExprUnknown(Exception):
 
 class TagExprEmpty(Exception):
     """Raised when the include chain is present but has no atoms."""
+
+
+# ---------------------------------------------------------------------------
+# Qualifier prefix strip
+# ---------------------------------------------------------------------------
+
+QUALIFIER_PREFIX_RE = re.compile(r"^(t|c):(.+)$")
+
+
+def _split_qualifier(tag: str) -> tuple[Literal["t", "c"] | None, str]:
+    """Strip the leading `t:` or `c:` qualifier from a tag string.
+
+    Returns `(qualifier, tag_without_prefix)`. If no qualifier is present,
+    returns `(None, tag)` unchanged. Bad qualifiers (e.g. `x:foo`) are NOT
+    stripped here — the parser raises `TagExprParseError` for them.
+    """
+    m = QUALIFIER_PREFIX_RE.match(tag)
+    if m is None:
+        return None, tag
+    qualifier: Literal["t", "c"] = m.group(1)  # ty: ignore[invalid-assignment]
+    return qualifier, m.group(2)
+
+
+def check_qualifier(raw: str, *, position: int) -> tuple[Literal["t", "c"] | None, str]:
+    """Strip `t:` / `c:` prefix from a raw tag string; raise on bad qualifier.
+
+    Public qualifier validator used by every surface (CLI argv, CLI
+    explicit, MCP) to validate + split the qualifier from the tag body.
+    Unifies the 8-line duplicate across three sites and makes
+    empty-body qualifiers (`c:`, `t:`) raise `TagExprParseError`
+    consistently.
+
+    Returns `(qualifier, tag_without_prefix)`. Raises `TagExprParseError`
+    with `position` on:
+      - Known qualifier followed by empty body (`c:`)
+      - Unknown qualifier prefix (`x:foo`)
+    A bare tag (no `:`) returns `(None, raw)` unchanged.
+    """
+    if not raw or ":" not in raw:
+        return None, raw
+    if raw.startswith('"') and raw.endswith('"'):
+        return None, raw
+    prefix, body = raw.split(":", 1)
+    if prefix in ("t", "c"):
+        if not body:
+            raise TagExprParseError(f"qualifier {prefix!r} without atom", position=position)
+        return prefix, body
+    raise TagExprParseError(f"unknown qualifier: {prefix!r}", position=position)
 
 
 # ---------------------------------------------------------------------------
@@ -127,7 +189,22 @@ def parse_tokens(tokens: list[str]) -> TagExpr:
         if len(tok) >= 2 and tok.startswith('"') and tok.endswith('"'):
             tok = tok[1:-1]
         pos += 1
-        return Include(tok)
+        qualifier, tag = _split_qualifier(tok)
+        # Empty body after a known qualifier prefix (`c:` / `t:`). Mirror
+        # the exclude-side check in `check_qualifier`: surface as a parse
+        # error rather than letting an empty body slip through to
+        # Include(tag='c:', qualifier=None) and confuse the resolver with
+        # "unknown tag: 'c:'". `_split_qualifier`'s regex requires `.+`
+        # body chars, so it returns (None, "c:") for `c:` — detect that
+        # case here.
+        if qualifier is None and tag in ("c:", "t:"):
+            raise TagExprParseError(f"qualifier {tag[:-1]!r} without atom", position=pos - 1)
+        if qualifier is None and ":" in tag and not (tag.startswith('"') and tag.endswith('"')):
+            # Has a colon but not a known qualifier; reject.
+            prefix = tag.split(":", 1)[0]
+            if prefix not in ("t", "c"):
+                raise TagExprParseError(f"unknown qualifier: {prefix!r}", position=pos - 1)
+        return Include(tag, qualifier=qualifier)
 
     def parse_and() -> TagExpr:
         nonlocal pos
@@ -167,8 +244,12 @@ def parse(expr: str) -> TagExpr:
         # still honors quoted segments, which is what the grammar wants.
         # Hyphen is added to wordchars so tag names like `claude-code`
         # stay one token (shlex otherwise splits on `-`).
+        # Colon is added to wordchars so `t:` / `c:` qualifier prefixes
+        # stay attached to their atom (otherwise `t:airflow` would
+        # tokenize as `t`, `:`, `airflow`). Quoted segments are still
+        # treated as one token by shlex regardless of wordchars.
         lexer = shlex.shlex(expr, posix=True)
-        lexer.wordchars += "-"
+        lexer.wordchars += "-:"
         lexer.commenters = ""
         tokens = list(lexer)
     except ValueError as exc:
@@ -199,10 +280,13 @@ def _render_include(node: TagExpr) -> str:
         # wordchars.
         tag = node.tag
         if tag.startswith("-"):
-            return f'"{tag}"'
-        if any(c.isspace() or c in "&|" for c in tag):
-            return f'"{tag}"'
-        return tag
+            rendered_tag = f'"{tag}"'
+        elif any(c.isspace() or c in "&|" for c in tag):
+            rendered_tag = f'"{tag}"'
+        else:
+            rendered_tag = tag
+        prefix = f"{node.qualifier}:" if node.qualifier else ""
+        return f"{prefix}{rendered_tag}"
     if isinstance(node, And):
         return f"{_render_include(node.left)}&{_render_include(node.right)}"
     if isinstance(node, Or):
@@ -254,7 +338,7 @@ def _split_argv_token_for_ops(token: str) -> list[str]:
 
 def parse_query_argv(
     argv: list[str],
-) -> tuple[str, TagExpr | None, str | None]:
+) -> tuple[str, TagExpr | None, str | None, Literal["t", "c"] | None]:
     """Walk argv, peel off optional `+` chain and optional `-` atom.
 
     The argv here is the post-Typer positional list. Typer has
@@ -265,11 +349,15 @@ def parse_query_argv(
         across subsequent tokens while the previous token ended
         in `&` or `|`.
       - If the next token (immediately after the chain) starts
-        with `-`, it is the exclude atom.
+        with `-`, it is the exclude atom. The atom may carry a
+        ``t:`` / ``c:`` qualifier prefix (F15); the prefix is
+        stripped here and returned as ``exclude_qualifier``.
       - The remaining tokens join with single spaces to form
         the question.
 
-    Returns (question, include_ast, exclude_tag).
+    Returns ``(question, include_ast, exclude_tag, exclude_qualifier)``.
+    ``exclude_qualifier`` is ``None`` for an unqualified exclude
+    (the ``t`` alias) or ``"t"`` / ``"c"`` for an explicit prefix.
 
     Raises TagExprParseError on grammar errors.
     """
@@ -278,6 +366,7 @@ def parse_query_argv(
 
     chain_tokens: list[str] = []
     exclude_tag: str | None = None
+    exclude_qualifier: Literal["t", "c"] | None = None
 
     # Peel the optional `+` chain.
     if argv[0].startswith("+"):
@@ -325,12 +414,15 @@ def parse_query_argv(
         include_ast = None
         i = 0
 
-    # Peel the optional single `-` atom.
+    # Peel the optional single `-` atom. The atom may carry a
+    # ``t:`` / ``c:`` qualifier prefix (F15). Bad qualifiers raise
+    # ``TagExprParseError`` here, mirroring the include chain's
+    # parse_atom error path.
     if i < len(argv) and argv[i].startswith("-"):
         body = argv[i][1:]
         if not body:
             raise TagExprParseError("'-' without atom", position=i)
-        exclude_tag = body
+        exclude_qualifier, exclude_tag = check_qualifier(body, position=i)
         i += 1
 
     # Remaining tokens are the question.
@@ -339,7 +431,7 @@ def parse_query_argv(
         if not question_tokens:
             raise TagExprParseError("filter present but no question")
     question = " ".join(question_tokens)
-    return question, include_ast, exclude_tag
+    return question, include_ast, exclude_tag, exclude_qualifier
 
 
 # ---------------------------------------------------------------------------
@@ -374,3 +466,38 @@ def resolve(expr: TagExpr, *, available: set[str]) -> ResolvedTagFilter:
         right = resolve(expr.right, available=available)
         return ResolvedTagFilter(include=Or(left.include, right.include))  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
     raise TypeError(f"unexpected node type: {type(expr).__name__}")
+
+
+# ---------------------------------------------------------------------------
+# Retriever helpers
+# ---------------------------------------------------------------------------
+
+
+def atom_matches(coll: "Collection", include: Include) -> bool:
+    """Evaluate one Include atom against one Collection.
+
+    Dispatches on ``include.qualifier``:
+        - ``"c"``: strict collection-name match (``coll.name == include.tag``).
+        - ``"t"`` or ``None``: tag-or-name alias (``include.tag ∈ coll.tags ∪ {coll.name}``).
+
+    Used by the retriever's ``_collections_matching`` only. Validation
+    (``tag ∈ available``) lives in :func:`resolve`.
+    """
+    if include.qualifier == "c":
+        return coll.name == include.tag
+    return include.tag in (set(coll.tags) | {coll.name})
+
+
+def _exclude_atom_matches(
+    coll: "Collection",
+    exclude: str,
+    exclude_qualifier: Literal["t", "c"] | None,
+) -> bool:
+    """Evaluate the exclude atom against one Collection.
+
+    Same dispatch as :func:`atom_matches` but for the flat exclude
+    string field on :class:`ResolvedTagFilter`.
+    """
+    if exclude_qualifier == "c":
+        return coll.name == exclude
+    return exclude in (set(coll.tags) | {coll.name})

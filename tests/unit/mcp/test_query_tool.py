@@ -10,10 +10,10 @@ trace.
 Additive: existing callers (no ``tag_expr``) get the unfiltered
 behavior — ``tag_filter=None`` flows straight to the orchestrator.
 
-Tests build a real on-disk wiki with two tagged collections
-(airflow, amazon) so ``_collect_available_tags`` reads real YAML, then
-patch ``Orchestrator.run_query`` so the test does not depend on qmd
-or the LLM.
+Tests build a real on-disk wiki with three tagged collections
+(airflow, amazon, python) so ``_collect_available_tags`` reads real
+YAML, then patch ``Orchestrator.run_query`` so the test does not
+depend on qmd or the LLM.
 """
 
 from __future__ import annotations
@@ -35,12 +35,13 @@ _NOW = datetime(2026, 9, 9, tzinfo=UTC)
 _COLLECTIONS = {
     "airflow": ["airflow", "provider"],
     "amazon": ["amazon", "aws"],
+    "python": ["python"],
 }
 
 
 @pytest.fixture
 def fake_wiki_with_collections(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    """A real on-disk wiki with airflow + amazon collections seeded.
+    """A real on-disk wiki with airflow + amazon + python collections seeded.
 
     Patches ``lies.mcp.server.resolve_wiki`` so the MCP tool resolves
     to this wiki without touching ``LIES_XDG_DATA_HOME``. Tests still
@@ -249,4 +250,98 @@ def test_mcp_query_empty_tag_expr_raises_tool_error(
     assert "empty tag expression" in msg or "tag expression" in msg
     # The orchestrator must not have been invoked — validation lives at
     # the boundary, before any retrieval runs.
+    orch_cls.return_value.run_query.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# F15 — t:/c: qualifier prefix on tag_expr body and exclude_tags element
+# ---------------------------------------------------------------------------
+
+
+def test_mcp_query_tag_expr_with_t_and_c_qualifiers(
+    monkeypatch, fake_wiki_with_collections
+) -> None:
+    """``tag_expr='t:python&c:provider'`` parses with mixed qualifiers.
+
+    The MCP layer's parse + resolve strips the ``t:`` / ``c:``
+    prefix on each atom and the orchestrator receives an
+    ``And(Include('python', qualifier='t'), Include('provider', qualifier='c'))``.
+    """
+    from lies.mcp import server
+
+    fake = _answer()
+
+    with mock.patch.object(server, "Orchestrator") as orch_cls:
+        orch_cls.return_value.run_query.return_value = fake
+        server.query(
+            question="what is X?",
+            tag_expr="t:python&c:provider",
+            exclude_tags=["c:python"],
+        )
+
+    call = orch_cls.return_value.run_query.call_args
+    tag_filter = call.kwargs["tag_filter"]
+    assert tag_filter is not None
+    assert tag_filter.include == And(
+        Include("python", qualifier="t"),
+        Include("provider", qualifier="c"),
+    )
+    assert tag_filter.exclude == "python"
+    assert tag_filter.exclude_qualifier == "c"
+
+
+def test_mcp_query_exclude_tags_with_c_qualifier(monkeypatch, fake_wiki_with_collections) -> None:
+    """``exclude_tags=['c:amazon']`` alone — prefix flows through."""
+    from lies.mcp import server
+
+    fake = _answer()
+
+    with mock.patch.object(server, "Orchestrator") as orch_cls:
+        orch_cls.return_value.run_query.return_value = fake
+        server.query(question="what is X?", exclude_tags=["c:amazon"])
+
+    call = orch_cls.return_value.run_query.call_args
+    tag_filter = call.kwargs["tag_filter"]
+    assert tag_filter is not None
+    assert tag_filter.include is None
+    assert tag_filter.exclude == "amazon"
+    assert tag_filter.exclude_qualifier == "c"
+
+
+def test_mcp_query_bad_qualifier_in_tag_expr_raises_tool_error(
+    monkeypatch, fake_wiki_with_collections
+) -> None:
+    """``tag_expr='x:foo'`` → ``ToolError`` at boundary.
+
+    ``x:`` is not a known qualifier (only ``t:`` / ``c:`` are). The
+    parser raises ``TagExprParseError``; the MCP layer converts it to
+    ``ToolError`` with the verbatim message.
+    """
+    from fastmcp.exceptions import ToolError
+
+    from lies.mcp import server
+
+    with mock.patch.object(server, "Orchestrator") as orch_cls:
+        with pytest.raises(ToolError) as exc:
+            server.query(question="what is X?", tag_expr="x:foo")
+
+    msg = str(exc.value).lower()
+    assert "unknown qualifier" in msg or "qualifier" in msg
+    orch_cls.return_value.run_query.assert_not_called()
+
+
+def test_mcp_query_bad_qualifier_in_exclude_tags_raises_tool_error(
+    monkeypatch, fake_wiki_with_collections
+) -> None:
+    """``exclude_tags=['x:foo']`` → ``ToolError`` at boundary."""
+    from fastmcp.exceptions import ToolError
+
+    from lies.mcp import server
+
+    with mock.patch.object(server, "Orchestrator") as orch_cls:
+        with pytest.raises(ToolError) as exc:
+            server.query(question="what is X?", exclude_tags=["x:foo"])
+
+    msg = str(exc.value).lower()
+    assert "unknown qualifier" in msg or "qualifier" in msg
     orch_cls.return_value.run_query.assert_not_called()

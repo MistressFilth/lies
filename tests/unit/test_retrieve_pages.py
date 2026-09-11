@@ -243,27 +243,27 @@ def test_collections_matching_unknown_include_tag_returns_empty(
     assert _collections_matching(tagged_wiki, tf) == set()
 
 
-def test_collections_matching_skips_malformed_yaml(tmp_path: Path) -> None:
-    """A malformed YAML among good ones does not break the filter.
+# --- F15 t:/c: qualifier dispatch in _collections_matching ----------------
 
-    ``load_collection`` raises ``CollectionConfigInvalid`` on broken YAML;
-    the retriever previously propagated the exception out of the loop,
-    so one bad config file masked every well-formed one. The fix wraps
-    ``load_collection`` in a try/except (mirrors ``enrich-tags``'s
-    precedent) so the well-formed collections still match.
+
+@pytest.fixture
+def airflow_cnn_wiki(tmp_path: Path) -> Wiki:
+    """Spec fixture: airflow (tags=[airflow, provider]) + cnn (tags=[airflow, news]).
+
+    The two collections share the ``airflow`` tag but differ on name;
+    the F15 dispatch lets ``+t:airflow`` match both while ``+c:airflow``
+    matches only airflow.
     """
-    import yaml  # type: ignore[import-untyped]
-
-    root = tmp_path / "malformed"
+    root = tmp_path / "tagged"
     root.mkdir()
     (root / "raw").mkdir()
     (root / "wiki").mkdir()
-    wiki = make_wiki(name="malformed", data_root=root)
+    wiki = make_wiki(name="airflow-cnn", data_root=root)
     wiki.config_root.mkdir(parents=True, exist_ok=True)
     wiki.collections_dir.mkdir(parents=True, exist_ok=True)
     _COLLECTIONS = {
         "airflow": ["airflow", "provider"],
-        "amazon": ["amazon", "aws"],
+        "cnn": ["airflow", "news"],
     }
     for name, tags in _COLLECTIONS.items():
         save_collection(
@@ -283,15 +283,86 @@ def test_collections_matching_skips_malformed_yaml(tmp_path: Path) -> None:
                 config={},
             ),
         )
-    # Drop a malformed YAML in the same directory; load_collection
-    # raises CollectionConfigInvalid for it.
-    (wiki.collections_dir / "broken.yaml").write_text(
-        "name: broken\n: not a mapping root\n  bad-indent: x\n", encoding="utf-8"
-    )
-    del yaml  # noqa: F811 - imported only to anchor a deterministic broken-YAML body
+    return wiki
 
-    tf = ResolvedTagFilter(include=Include("airflow"))
-    assert _collections_matching(wiki, tf) == {"airflow"}
+
+@pytest.fixture
+def python_django_wiki(tmp_path: Path) -> Wiki:
+    """Spec fixture for the canonical self-tag-exclusion example.
+
+    python (tags=[python]) + django (tags=[python, web]).
+    ``+t:python -c:python`` returns only django.
+    """
+    root = tmp_path / "tagged"
+    root.mkdir()
+    (root / "raw").mkdir()
+    (root / "wiki").mkdir()
+    wiki = make_wiki(name="python-django", data_root=root)
+    wiki.config_root.mkdir(parents=True, exist_ok=True)
+    wiki.collections_dir.mkdir(parents=True, exist_ok=True)
+    _COLLECTIONS = {
+        "python": ["python"],
+        "django": ["python", "web"],
+    }
+    for name, tags in _COLLECTIONS.items():
+        save_collection(
+            wiki,
+            Collection(
+                name=name,
+                path=wiki.data_root / "raw" / name,
+                source=f"https://example.com/{name}",
+                tags=list(tags),
+                scraper_cmd=None,
+                doc_path=None,
+                mapper_model=None,
+                language="en",
+                version="1.0.0",
+                created_at=_NOW,
+                updated_at=_NOW,
+                config={},
+            ),
+        )
+    return wiki
+
+
+def test_collections_matching_t_qualifier_includes_tag_carriers(
+    airflow_cnn_wiki: Wiki,
+) -> None:
+    """t:airflow matches both the airflow collection AND any collection carrying the airflow tag."""
+    tf = ResolvedTagFilter(include=Include("airflow", qualifier="t"))
+    assert _collections_matching(airflow_cnn_wiki, tf) == {"airflow", "cnn"}
+
+
+def test_collections_matching_c_qualifier_strict_name(
+    airflow_cnn_wiki: Wiki,
+) -> None:
+    """c:airflow matches only the collection named airflow."""
+    tf = ResolvedTagFilter(include=Include("airflow", qualifier="c"))
+    assert _collections_matching(airflow_cnn_wiki, tf) == {"airflow"}
+
+
+def test_collections_matching_t_then_c_exclude(
+    airflow_cnn_wiki: Wiki,
+) -> None:
+    """+t:airflow -c:airflow matches cnn (tagged airflow, name != airflow)."""
+    tf = ResolvedTagFilter(
+        include=Include("airflow", qualifier="t"),
+        exclude="airflow",
+        exclude_qualifier="c",
+    )
+    assert _collections_matching(airflow_cnn_wiki, tf) == {"cnn"}
+
+
+def test_collections_matching_t_python_c_python_excludes_self(
+    python_django_wiki: Wiki,
+) -> None:
+    """The canonical example: +t:python -c:python → all collections tagged python except python itself."""
+    tf = ResolvedTagFilter(
+        include=Include("python", qualifier="t"),
+        exclude="python",
+        exclude_qualifier="c",
+    )
+    assert _collections_matching(python_django_wiki, tf) == {"django"}
 
 
 # --- retrieve_pages threads tag_filter → collection_filter -------------
@@ -417,3 +488,54 @@ def test_retrieve_pages_tag_filter_with_no_matching_collections_falls_back(
     assert captured["collection_filter"] == set()
     assert reason == FALLBACK_REASON_NO_RESULTS
     assert [p.rel_path for p in pages] == ["wiki/airflow/dag.md"]
+
+
+def test_collections_matching_skips_malformed_yaml(tmp_path: Path) -> None:
+    """A malformed YAML among good ones does not break the filter.
+
+    ``load_collection`` raises ``CollectionConfigInvalid`` on broken YAML;
+    the retriever previously propagated the exception out of the loop,
+    so one bad config file masked every well-formed one. The fix wraps
+    ``load_collection`` in a try/except (mirrors ``enrich-tags``'s
+    precedent) so the well-formed collections still match.
+    """
+    import yaml  # type: ignore[import-untyped]
+
+    root = tmp_path / "malformed"
+    root.mkdir()
+    (root / "raw").mkdir()
+    (root / "wiki").mkdir()
+    wiki = make_wiki(name="malformed", data_root=root)
+    wiki.config_root.mkdir(parents=True, exist_ok=True)
+    wiki.collections_dir.mkdir(parents=True, exist_ok=True)
+    _COLLECTIONS = {
+        "airflow": ["airflow", "provider"],
+        "amazon": ["amazon", "aws"],
+    }
+    for name, tags in _COLLECTIONS.items():
+        save_collection(
+            wiki,
+            Collection(
+                name=name,
+                path=wiki.data_root / "raw" / name,
+                source=f"https://example.com/{name}",
+                tags=list(tags),
+                scraper_cmd=None,
+                doc_path=None,
+                mapper_model=None,
+                language="en",
+                version="1.0.0",
+                created_at=_NOW,
+                updated_at=_NOW,
+                config={},
+            ),
+        )
+    # Drop a malformed YAML in the same directory; load_collection
+    # raises CollectionConfigInvalid for it.
+    (wiki.collections_dir / "broken.yaml").write_text(
+        "name: broken\n: not a mapping root\n  bad-indent: x\n", encoding="utf-8"
+    )
+    del yaml  # noqa: F811 - imported only to anchor a deterministic broken-YAML body
+
+    tf = ResolvedTagFilter(include=Include("airflow"))
+    assert _collections_matching(wiki, tf) == {"airflow"}

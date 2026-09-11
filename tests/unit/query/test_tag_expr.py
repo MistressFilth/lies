@@ -157,7 +157,7 @@ def test_parse_query_argv_happy(argv, expected_filter, expected_exclude, expecte
     # compare on (question, include_ast.render() if include else None, exclude).
     from lies.query.tag_expr import _render_include  # see step 7
 
-    question, include_ast, exclude = parse_query_argv(argv)
+    question, include_ast, exclude, exclude_qualifier = parse_query_argv(argv)
     assert question == expected_query
     if expected_filter is None:
         assert include_ast is None
@@ -165,13 +165,44 @@ def test_parse_query_argv_happy(argv, expected_filter, expected_exclude, expecte
         assert include_ast is not None
         assert _render_include(include_ast) == expected_filter
     assert exclude == expected_exclude
+    # Unqualified excludes (the t-alias default) yield None.
+    assert exclude_qualifier is None
 
 
 def test_parse_query_argv_with_exclude():
     argv = ["+airflow&provider", "-amazon", "compare", "X", "and", "Y"]
-    question, include_ast, exclude = parse_query_argv(argv)
+    question, include_ast, exclude, exclude_qualifier = parse_query_argv(argv)
     assert question == "compare X and Y"
     assert exclude == "amazon"
+    assert exclude_qualifier is None
+
+
+def test_parse_query_argv_with_c_qualifier_exclude():
+    """``-c:airflow`` strips the prefix and returns qualifier='c'."""
+    argv = ["+t:airflow", "-c:airflow", "what", "is", "X?"]
+    question, include_ast, exclude, exclude_qualifier = parse_query_argv(argv)
+    assert question == "what is X?"
+    assert include_ast == Include("airflow", qualifier="t")
+    assert exclude == "airflow"
+    assert exclude_qualifier == "c"
+
+
+def test_parse_query_argv_with_t_qualifier_exclude():
+    """``-t:airflow`` returns qualifier='t' (the explicit alias)."""
+    argv = ["+airflow", "-t:airflow", "what", "is", "X?"]
+    question, include_ast, exclude, exclude_qualifier = parse_query_argv(argv)
+    assert question == "what is X?"
+    assert include_ast == Include("airflow")
+    assert exclude == "airflow"
+    assert exclude_qualifier == "t"
+
+
+def test_parse_query_argv_bad_exclude_qualifier_errors():
+    """``-x:foo`` on the exclude atom is a parse error."""
+    from lies.query.tag_expr import TagExprParseError
+
+    with pytest.raises(TagExprParseError, match="unknown qualifier"):
+        parse_query_argv(["+airflow", "-x:foo", "what", "is", "X?"])
 
 
 def test_parse_query_argv_filter_no_question_errors():
@@ -206,19 +237,21 @@ def test_parse_query_argv_realistic_bash_quoted_tag():
     internal whitespace as a single atom.
     """
     argv = ["+airflow provider", "what", "is", "X?"]
-    question, include_ast, exclude = parse_query_argv(argv)
+    question, include_ast, exclude, exclude_qualifier = parse_query_argv(argv)
     assert question == "what is X?"
     assert include_ast == Include("airflow provider")
     assert exclude is None
+    assert exclude_qualifier is None
 
 
 def test_parse_query_argv_realistic_bash_quoted_tag_and_exclude():
     """Realistic bash: +"airflow provider" -amazon compare X and Y."""
     argv = ["+airflow provider", "-amazon", "compare", "X", "and", "Y"]
-    question, include_ast, exclude = parse_query_argv(argv)
+    question, include_ast, exclude, exclude_qualifier = parse_query_argv(argv)
     assert question == "compare X and Y"
     assert include_ast == Include("airflow provider")
     assert exclude == "amazon"
+    assert exclude_qualifier is None
 
 
 def test_render_include_round_trip_multiatom_with_internal_space():
@@ -277,3 +310,305 @@ def test_resolve_valid_or():
     result = resolve(tree, available={"airflow", "provider", "amazon"})
     assert isinstance(result.include, Or)
     # OR is structurally symmetric with AND; this pins it.
+
+
+# --- F15 t:/c: qualifier prefix ------------------------------------------
+
+
+def test_include_node_default_qualifier_none():
+    node = Include("airflow")
+    assert node.qualifier is None
+
+
+def test_include_node_with_t_qualifier():
+    node = Include("airflow", qualifier="t")
+    assert node.qualifier == "t"
+
+
+def test_include_node_with_c_qualifier():
+    node = Include("airflow", qualifier="c")
+    assert node.qualifier == "c"
+
+
+def test_split_qualifier_t():
+    from lies.query.tag_expr import _split_qualifier
+
+    assert _split_qualifier("t:airflow") == ("t", "airflow")
+
+
+def test_split_qualifier_c():
+    from lies.query.tag_expr import _split_qualifier
+
+    assert _split_qualifier("c:airflow") == ("c", "airflow")
+
+
+def test_split_qualifier_none():
+    from lies.query.tag_expr import _split_qualifier
+
+    assert _split_qualifier("airflow") == (None, "airflow")
+
+
+def test_split_qualifier_with_hyphen():
+    """Qualifier strip works on names that already contain '-'."""
+    from lies.query.tag_expr import _split_qualifier
+
+    assert _split_qualifier("c:claude-code") == ("c", "claude-code")
+
+
+def test_split_qualifier_with_quoted():
+    """Strip works on quoted-tag-with-space; quotes preserved."""
+    from lies.query.tag_expr import _split_qualifier
+
+    assert _split_qualifier('c:"airflow provider"') == ("c", '"airflow provider"')
+
+
+def test_split_qualifier_bad_qualifier():
+    """Bad qualifier 'x:' is NOT matched by the prefix regex (returns None for tag)."""
+    from lies.query.tag_expr import _split_qualifier
+
+    # Regex only matches 't:' or 'c:'. 'x:foo' falls through as no qualifier.
+    assert _split_qualifier("x:foo") == (None, "x:foo")
+
+
+def test_parse_include_t_qualifier():
+    from lies.query.tag_expr import parse_include
+
+    assert parse_include("t:airflow") == Include("airflow", qualifier="t")
+
+
+def test_parse_include_c_qualifier():
+    from lies.query.tag_expr import parse_include
+
+    assert parse_include("c:airflow") == Include("airflow", qualifier="c")
+
+
+def test_parse_include_quoted_c_qualifier():
+    from lies.query.tag_expr import parse_include
+
+    assert parse_include('c:"airflow provider"') == Include("airflow provider", qualifier="c")
+
+
+def test_parse_include_t_and_c_mixed_chain():
+    """t:airflow & c:provider parses with mixed qualifiers."""
+    from lies.query.tag_expr import And, parse_include
+
+    assert parse_include("t:airflow&c:provider") == And(
+        Include("airflow", qualifier="t"),
+        Include("provider", qualifier="c"),
+    )
+
+
+def test_parse_include_bad_qualifier_errors():
+    """x:foo is not a known qualifier — parser raises TagExprParseError."""
+    from lies.query.tag_expr import TagExprParseError, parse_include
+
+    with pytest.raises(TagExprParseError):
+        parse_include("x:foo")
+
+
+def test_render_include_emits_qualifier():
+    """_render_include emits 'c:' prefix when qualifier set."""
+    from lies.query.tag_expr import _render_include
+
+    assert _render_include(Include("airflow", qualifier="c")) == "c:airflow"
+    assert _render_include(Include("airflow", qualifier="t")) == "t:airflow"
+
+
+def test_round_trip_with_qualifier():
+    """parse -> render -> re-parse -> same AST."""
+    from lies.query.tag_expr import _render_include, parse_include
+
+    original = parse_include("t:airflow&c:provider")
+    rendered = _render_include(original)
+    reparsed = parse_include(rendered)
+    assert reparsed == original
+
+
+def test_resolved_tag_filter_default_qualifier():
+    """ResolvedTagFilter accepts the new exclude_qualifier field with default None."""
+    f = ResolvedTagFilter(include=None, exclude="python")
+    assert f.exclude_qualifier is None
+
+
+def test_resolved_tag_filter_with_exclude_qualifier():
+    f = ResolvedTagFilter(include=None, exclude="python", exclude_qualifier="c")
+    assert f.exclude_qualifier == "c"
+
+
+# --- F15 atom_matches / _exclude_atom_matches helpers --------------------
+
+
+def _make_collection(name: str, tags: list[str]):
+    """Minimal Collection helper for atom_matches unit tests."""
+    from datetime import datetime, timezone
+    from pathlib import Path
+
+    from lies.collections.record import Collection
+
+    return Collection(
+        name=name,
+        path=Path(f"/tmp/{name}"),
+        source="https://example.com",
+        tags=tags,
+        scraper_cmd=None,
+        doc_path=None,
+        mapper_model=None,
+        language=None,
+        version="1",
+        created_at=datetime(2026, 9, 10, tzinfo=timezone.utc),
+        updated_at=datetime(2026, 9, 10, tzinfo=timezone.utc),
+        config={},
+    )
+
+
+def test_atom_matches_c_qualifier_matches_collection_name():
+    """c:foo matches only collections named foo (NOT collections tagged foo)."""
+    from lies.query.tag_expr import atom_matches
+
+    coll = _make_collection(name="airflow", tags=["provider"])
+    assert atom_matches(coll, Include("airflow", qualifier="c")) is True
+    # A collection named cnn with airflow in its tags does NOT match c:airflow.
+    other = _make_collection(name="cnn", tags=["airflow", "news"])
+    assert atom_matches(other, Include("airflow", qualifier="c")) is False
+
+
+def test_atom_matches_c_qualifier_does_not_match_by_tag():
+    """c:foo does NOT match a collection that has foo in tags but a different name."""
+    from lies.query.tag_expr import atom_matches
+
+    other = _make_collection(name="cnn", tags=["airflow", "news"])
+    assert atom_matches(other, Include("airflow", qualifier="c")) is False
+
+
+def test_atom_matches_t_qualifier_matches_tag_or_name():
+    """t:foo matches collections named foo OR with foo in tags."""
+    from lies.query.tag_expr import atom_matches
+
+    airflow = _make_collection(name="airflow", tags=["provider"])
+    cnn = _make_collection(name="cnn", tags=["airflow", "news"])
+    assert atom_matches(airflow, Include("airflow", qualifier="t")) is True
+    assert atom_matches(cnn, Include("airflow", qualifier="t")) is True
+
+
+def test_atom_matches_no_qualifier_aliases_t():
+    """No qualifier = same as 't' (today's implicit-self-tag behavior)."""
+    from lies.query.tag_expr import atom_matches
+
+    airflow = _make_collection(name="airflow", tags=["provider"])
+    cnn = _make_collection(name="cnn", tags=["airflow", "news"])
+    # No-qualifier Include matches the same set as 't' qualifier.
+    assert atom_matches(airflow, Include("airflow")) is True
+    assert atom_matches(cnn, Include("airflow")) is True
+
+
+def test_atom_matches_c_does_not_match_unrelated():
+    """c:foo does not match collections that don't have foo as name."""
+    from lies.query.tag_expr import atom_matches
+
+    other = _make_collection(name="spark", tags=["provider"])
+    assert atom_matches(other, Include("airflow", qualifier="c")) is False
+
+
+def test_exclude_atom_matches_c_strict():
+    """_exclude_atom_matches with 'c' qualifier matches only the named collection."""
+    from lies.query.tag_expr import _exclude_atom_matches
+
+    airflow = _make_collection(name="airflow", tags=["provider"])
+    cnn = _make_collection(name="cnn", tags=["airflow", "news"])
+    assert _exclude_atom_matches(airflow, "airflow", "c") is True
+    assert _exclude_atom_matches(cnn, "airflow", "c") is False
+
+
+def test_exclude_atom_matches_no_qualifier_aliases_t():
+    from lies.query.tag_expr import _exclude_atom_matches
+
+    airflow = _make_collection(name="airflow", tags=["provider"])
+    cnn = _make_collection(name="cnn", tags=["airflow", "news"])
+    assert _exclude_atom_matches(airflow, "airflow", None) is True
+    assert _exclude_atom_matches(cnn, "airflow", None) is True
+    assert _exclude_atom_matches(airflow, "airflow", "t") is True
+    assert _exclude_atom_matches(cnn, "airflow", "t") is True
+
+
+# --- F15 check_qualifier helper (cross-surface unify) -------------------
+
+
+def test_check_qualifier_bare_tag():
+    """No colon → no qualifier."""
+    from lies.query.tag_expr import check_qualifier
+
+    assert check_qualifier("airflow", position=0) == (None, "airflow")
+
+
+def test_check_qualifier_t():
+    from lies.query.tag_expr import check_qualifier
+
+    assert check_qualifier("t:airflow", position=0) == ("t", "airflow")
+
+
+def test_check_qualifier_c():
+    from lies.query.tag_expr import check_qualifier
+
+    assert check_qualifier("c:airflow", position=0) == ("c", "airflow")
+
+
+def test_check_qualifier_empty_body():
+    """`c:` (qualifier, no atom) → TagExprParseError."""
+    from lies.query.tag_expr import TagExprParseError, check_qualifier
+
+    with pytest.raises(TagExprParseError) as exc:
+        check_qualifier("c:", position=0)
+    assert "qualifier" in str(exc.value).lower() or "atom" in str(exc.value).lower()
+
+
+def test_check_qualifier_bad_prefix():
+    """`x:foo` → TagExprParseError('unknown qualifier')."""
+    from lies.query.tag_expr import TagExprParseError, check_qualifier
+
+    with pytest.raises(TagExprParseError) as exc:
+        check_qualifier("x:foo", position=0)
+    assert "unknown qualifier" in str(exc.value)
+
+
+def test_check_qualifier_quoted_atom_preserved():
+    """`"airflow provider"` (quoted, no prefix) → (None, '"airflow provider"')."""
+    from lies.query.tag_expr import check_qualifier
+
+    assert check_qualifier('"airflow provider"', position=0) == (
+        None,
+        '"airflow provider"',
+    )
+
+
+# --- F15 PR-review: empty-body include consistency ------------------------
+
+
+def test_parse_tokens_empty_body_errors():
+    """`c:` and `t:` (empty body) raise TagExprParseError on the include side,
+    mirroring the exclude side's behavior in check_qualifier.
+
+    Per PR #64 review — empty-body include consistency. Before this fix,
+    parse_tokens silently produced Include(tag='c:', qualifier=None) which
+    then confused the resolver with "unknown tag: 'c:'". The exclude side
+    already raised cleanly via check_qualifier.
+    """
+    from lies.query.tag_expr import TagExprParseError, parse_query_argv, parse_tokens
+
+    # Direct token-level access — the include-side parse_atom path.
+    with pytest.raises(TagExprParseError):
+        parse_tokens(["c:"])
+    with pytest.raises(TagExprParseError):
+        parse_tokens(["t:"])
+
+    # Full argv path — include side surfaces the same error via parse_tokens.
+    with pytest.raises(TagExprParseError):
+        parse_query_argv(["+c:", "what", "is", "X?"])
+    with pytest.raises(TagExprParseError):
+        parse_query_argv(["+t:", "what", "is", "X?"])
+
+    # Full argv path — exclude side has raised cleanly since the helper
+    # was extracted; pin that here so the cross-surface symmetry holds.
+    with pytest.raises(TagExprParseError):
+        parse_query_argv(["+airflow", "-c:", "what", "is", "X?"])
+    with pytest.raises(TagExprParseError):
+        parse_query_argv(["+airflow", "-t:", "what", "is", "X?"])
