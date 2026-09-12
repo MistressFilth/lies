@@ -50,7 +50,6 @@ from lies.memory.models import (
     WikiPlanInvalid,
     WikiSearchResult,
     WikiWriteConflict,
-    _PlanOperation,
 )
 from lies.memory.retrieval import _path_for_id, read_pages, search_wiki
 from lies.memory.sidecar import append_log_entry
@@ -250,7 +249,7 @@ def translate_page_diffs_to_plan(
     op path to sit under ``wiki/<collection>/`` so the wiki's per-collection
     subdir layout (PR #39) is preserved regardless of what the LLM emits.
     """
-    operations: list[_PlanOperation] = []
+    operations: list[PageCreate | PageUpdate | EvidenceAppend | PageDelete] = []
     for diff in diffs:
         rel = diff.path.as_posix() if isinstance(diff.path, Path) else str(diff.path)
         # Normalize the collection prefix.
@@ -358,7 +357,11 @@ def _run_git(
     )
 
 
-def _upsert_or_remove_catalog_row(wiki: Wiki, op: _PlanOperation, kind: OperationKind) -> None:
+def _upsert_or_remove_catalog_row(
+    wiki: Wiki,
+    op: PageCreate | PageUpdate | EvidenceAppend | PageDelete,
+    kind: OperationKind,
+) -> None:
     """Apply one op to ``catalog.db``. Best-effort; non-fatal.
 
     Mirrors the on-disk write/delete the apply envelope just performed:

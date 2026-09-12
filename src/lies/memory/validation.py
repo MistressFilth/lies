@@ -15,10 +15,10 @@ import frontmatter
 from lies.memory.models import (
     EvidenceAppend,
     PageCreate,
+    PageDelete,
     PageUpdate,
     WikiEvidenceMissing,
     WikiPlanInvalid,
-    _PlanOperation,
 )
 from lies.wiki.wiki import Wiki
 
@@ -93,7 +93,9 @@ def validate_frontmatter(frontmatter_dict: dict[str, Any], *, page_type: str) ->
 
 
 def validate_operation_evidence(
-    op: _PlanOperation, *, known_references: set[str] | None = None
+    op: PageCreate | PageUpdate | EvidenceAppend | PageDelete,
+    *,
+    known_references: set[str] | None = None,
 ) -> None:
     """Validate evidence against references authenticated during this turn."""
     if not op.evidence:

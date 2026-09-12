@@ -26,8 +26,8 @@ from lies.memory.models import (
     EvidenceAppend,
     MemoryPlan,
     PageCreate,
+    PageDelete,
     PageUpdate,
-    _PlanOperation,
 )
 from lies.memory.service import _page_type_from_dir
 from lies.wiki.wiki import Wiki
@@ -108,7 +108,7 @@ def _merge_append_links(wiki: Wiki, append_to: str, links: list[AppendLink]) -> 
 
 def _map_non_append_op(
     op: CreateStub | UpdateIndex | AppendEvidence, wiki: Wiki | None
-) -> _PlanOperation:
+) -> PageCreate | PageUpdate | EvidenceAppend | PageDelete:
     """Translate a non-AppendLink repair op into its MemoryPlan equivalent."""
     if isinstance(op, CreateStub):
         return PageCreate(
@@ -157,7 +157,7 @@ def from_repair_plan(plan: RepairPlan, wiki: Wiki | None = None) -> MemoryPlan:
     are emitted first. AppendLink groups are emitted afterward, one
     ``PageUpdate`` per unique ``append_to`` path.
     """
-    operations: list[_PlanOperation] = []
+    operations: list[PageCreate | PageUpdate | EvidenceAppend | PageDelete] = []
     append_groups: dict[str, list[AppendLink]] = {}
     non_append_ops: list[CreateStub | UpdateIndex | AppendEvidence] = []
 

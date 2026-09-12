@@ -13,11 +13,12 @@ from typing import Callable, Literal
 from pydantic import BaseModel, ConfigDict
 
 from lies.memory.models import (
+    EvidenceAppend,
     MemoryPlan,
     PageCreate,
+    PageDelete,
     PageUpdate,
     WikiPlanInvalid,
-    _PlanOperation,
 )
 
 
@@ -171,7 +172,7 @@ def build_author_plan(
     if exists(rel_path):
         if sha_lookup is None:
             raise WikiPlanInvalid(f"collision on {rel_path} but sha_lookup not provided")
-        op: _PlanOperation = PageUpdate(
+        op: PageCreate | PageUpdate | EvidenceAppend | PageDelete = PageUpdate(
             path=rel_path,
             expected_sha256=sha_lookup(rel_path),
             content=body_md,

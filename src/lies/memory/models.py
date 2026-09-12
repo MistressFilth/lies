@@ -7,6 +7,7 @@ FastMCP adapter.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from enum import Enum
 from pathlib import PurePosixPath
 from typing import Literal
@@ -139,11 +140,19 @@ class _PlanOperation(BaseModel):
     kind: OperationKind
 
 
-class PageCreate(_PlanOperation):
+@dataclass(frozen=True)
+class PageCreate:
     """Create a new wiki page."""
 
+    path: str
+    evidence: list[str]
     content: str
+    tag: str = "memory"
     kind: Literal[OperationKind.CREATE] = OperationKind.CREATE
+
+    def __post_init__(self) -> None:
+        if not self.evidence:
+            raise ValueError("evidence must contain at least one item")
 
 
 class PageUpdate(_PlanOperation):
@@ -162,10 +171,18 @@ class EvidenceAppend(_PlanOperation):
     kind: Literal[OperationKind.APPEND] = OperationKind.APPEND
 
 
-class PageDelete(_PlanOperation):
+@dataclass(frozen=True)
+class PageDelete:
     """Remove an existing wiki page. No-op if the page does not exist."""
 
+    path: str
+    evidence: list[str]
+    tag: str = "memory"
     kind: Literal[OperationKind.DELETE] = OperationKind.DELETE
+
+    def __post_init__(self) -> None:
+        if not self.evidence:
+            raise ValueError("evidence must contain at least one item")
 
 
 class MemoryPlan(BaseModel):
@@ -173,7 +190,7 @@ class MemoryPlan(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    operations: list[_PlanOperation]
+    operations: list[PageCreate | PageUpdate | EvidenceAppend | PageDelete]
     rationale: str
     evidence: list[str]
 
