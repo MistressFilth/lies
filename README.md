@@ -368,10 +368,11 @@ The pre-commit chain wraps `make unit-test`, so a commit that lands
 in the repo has already passed the local gate.
 
 `make lint-supyrliminal` runs `flake8 --select=SL,PYD`; the same
-check fires on every commit via `.pre-commit-config.yaml`. Supyrliminal
-is opt-in at the CI gate — its findings are not yet treated as
-blocking because the codebase carries pre-existing SL101 findings that
-need triage before it can be required.
+check fires on every commit via `.pre-commit-config.yaml` and in CI.
+Supyrliminal is required — commits fail if a new SL/PYD finding
+lands. The pre-existing 12 SL101 findings were resolved in
+[#65](https://github.com/MistressFilth/lies/pull/65); the hook now
+enforces zero findings.
 
 ## Architecture
 

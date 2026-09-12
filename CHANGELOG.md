@@ -4,6 +4,13 @@ All notable changes to LIES are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/) adapted for
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+- **SL101 conversions — 12 BaseModel subclasses now stdlib `@dataclass`** (#65). `AuthorQuestion`, `CollectionAuthorDeps`, `LintFinding`, `LintReport`, `PageDiff`, `QueryAnswer`, `SourceExtraction`, `_CollisionVerdict`, `PidRecord`, `CreateStub`, `PageCreate`, `PageDelete`. Internal data carriers only; pydantic-ai `output_type=` validated dataclasses end-to-end (probed in spec §"Background"). No agent system prompts or `output_type=` call sites changed. `repair.py:75` JSON builder and `mcp/daemon.py:126,137` pid round-trip swapped to `json.dumps(asdict(...), default=str)` + `datetime.fromisoformat` re-parse (preserves prior `model_dump_json` output contract byte-for-byte). 1492 unit tests + 1 warning (baseline 1461 + 31 pin tests; pre-existing `wikilink-collision` warning unrelated). `_RepairOp` and `_PlanOperation` parent classes stay `BaseModel` (have `Field(min_length=1)` / `model_validator`); only the flagged leaves converted.
+
+- **Supyrliminal hook now blocking** (#66). The `--exit-zero` advisory flag is dropped; commits fail if a new SL/PYD finding lands. Pre-PR conversion reduced 12 → 0 findings; the hook now enforces the policy on every commit locally + in CI.
+
 ## [0.21.0] - 2026-09-11
 
 ### Added
