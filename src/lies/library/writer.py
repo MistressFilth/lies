@@ -44,11 +44,7 @@ if TYPE_CHECKING:
     # below. The runtime imports live in ``__getattr__`` so that
     # ``import lies.cli`` does not pull pydantic_ai / fastmcp into
     # ``sys.modules`` (pinned by ``test_cli_lazy_imports``).
-    from lies.qmd.cli import (  # noqa: TC004
-        qmd_collection_add_or_update,
-        qmd_embed,
-        qmd_update,
-    )
+    pass
 
 
 def __getattr__(name: str):
@@ -245,6 +241,17 @@ class LibraryWriter:
         # Failures are non-fatal — the library commit already landed and
         # is authoritative. Skip on a no-op commit (sha is None) since
         # there is nothing new to register.
+        #
+        # Bare-name resolution matters here. The qmd helpers are exposed
+        # via :PEP:`562` module-level ``__getattr__`` (so ``import lies``
+        # does not pull pydantic_ai / fastmcp into ``sys.modules``).
+        # Python ``LOAD_GLOBAL`` bytecode does NOT consult
+        # ``__getattr__`` — bare-name lookup inside a function body
+        # raises ``NameError`` against ``module.__dict__`` and skips the
+        # fallback. Mirror the workaround :mod:`lies.cli.page` uses for
+        # its lazy ``Orchestrator`` import
+        # (``globals().get(name) or __getattr__(name)``): explicit dict
+        # access with manual ``__getattr__`` re-invocation on miss.
         if sha is not None and qmd_collection is not None:
             coll_dir = self._library.collections_root / qmd_collection
             # Positional ``path`` is the library ``collections_root``
@@ -254,8 +261,13 @@ class LibraryWriter:
             # set. Passing a deliberately distinct value here lets the
             # wire test distinguish the positional from the kwarg and
             # catch a regression that silently drops ``library_target``.
+            _qaou = globals().get("qmd_collection_add_or_update") or __getattr__(
+                "qmd_collection_add_or_update"
+            )
+            _qupd = globals().get("qmd_update") or __getattr__("qmd_update")
+            _qemb = globals().get("qmd_embed") or __getattr__("qmd_embed")
             try:
-                qmd_collection_add_or_update(
+                _qaou(
                     self._library.git_root,
                     self._library.collections_root,
                     qmd_collection,
@@ -268,7 +280,7 @@ class LibraryWriter:
                     file=sys.stderr,
                 )
             try:
-                qmd_update(self._library.git_root)
+                _qupd(self._library.git_root)
             except Exception as exc:  # noqa: BLE001 - qmd is derived; failures must not roll back the commit
                 print(
                     f"warning: qmd index update failed: {exc}; "
@@ -276,7 +288,7 @@ class LibraryWriter:
                     file=sys.stderr,
                 )
             try:
-                qmd_embed(self._library.git_root, qmd_collection)
+                _qemb(self._library.git_root, qmd_collection)
             except Exception as exc:  # noqa: BLE001 - qmd is derived; failures must not roll back the commit
                 print(
                     f"warning: qmd embed failed for {qmd_collection!r}: {exc}; "
