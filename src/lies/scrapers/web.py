@@ -192,24 +192,23 @@ class WebScraper(BaseScraper):
     def _parse_index(self, text: str) -> list[ParsedDoc]:
         """Follow every doc URL listed in the llms.txt index, return one ParsedDoc per fetched page.
 
-        The index body itself is also emitted as ``_index.md`` so the
-        table of contents survives even if a downstream stage wants to
-        cite specific entries. Pages whose fetch fails (404, redirect,
-        HTML, timeout) are dropped silently -- partial ingestion is
-        better than a hard failure when the index lists 70+ pages.
+        Pages whose fetch fails (404, redirect, HTML, timeout) are
+        dropped silently -- partial ingestion is better than a hard
+        failure when the index lists 70+ pages.
+
+        The earlier implementation appended a ``_index.md``
+        ``ParsedDoc`` for the index body itself ("table of contents
+        survives for downstream reference"). No consumer of that
+        emission ever materialised; the library's slug regex
+        (``^[a-z0-9]...``) rejects underscore-prefixed stems, so
+        emitting ``_index.md`` forced a ``SlugError`` that propagated
+        uncaught out of ``_process_item`` and aborted every
+        ``lies ingest --source <llms.txt URL>`` run on item #0. The
+        emission was dropped; downstream stages that want the index
+        contents can read the source URL themselves.
         """
         docs: list[ParsedDoc] = []
         used: set[str] = set()
-
-        # The index itself, for downstream reference.
-        index_doc = ParsedDoc(
-            path="_index.md",
-            content=text.encode("utf-8"),
-            source_sha256=hashlib.sha256(text.encode("utf-8")).hexdigest(),
-            source_format="markdown",
-        )
-        docs.append(index_doc)
-        used.add(index_doc.path)
 
         links = self._extract_llms_links(text)
         for idx, (_title, url) in enumerate(links):
