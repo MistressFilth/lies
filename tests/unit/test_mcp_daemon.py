@@ -162,6 +162,48 @@ def test_port_free_false_when_bound() -> None:
         assert daemon.port_free("127.0.0.1", port) is False
 
 
+def test_port_free_probe_socket_sets_so_reuseaddr() -> None:
+    """`port_free` probe sets ``SO_REUSEADDR`` so daemon-bind survives TIME_WAIT.
+
+    Regression for the post-`down`-then-`up` EADDRINUSE race:
+    after the daemon's SIGTERM, the kernel holds the daemon's
+    listen socket in TIME_WAIT for ~60s. A fresh probe (and a
+    fresh daemon bind) without ``SO_REUSEADDR`` fails with
+    EADDRINUSE during that window. ``lies mcp up`` reports "already
+    in use" until TIME_WAIT expires — every ~60s on each restart.
+
+    Direct contract assertion: intercept ``socket.setsockopt`` to
+    record calls on the probe socket and assert ``SO_REUSEADDR`` is
+    set during the ``port_free`` call. ``port_free`` closes its
+    socket on context exit, so a post-hoc ``getsockopt`` would
+    raise ``EBADF`` — instrument the option setter instead. Standard
+    daemon-socket hygiene (uvicorn / http.server / aiohttp all set
+    it on the listening socket for exactly this reason).
+    """
+    setsockopts: list[tuple[int, int, int]] = []
+    real_setsockopt = socket.socket.setsockopt
+
+    def recording_setsockopt(self, level, optname, value, *args, **kwargs):  # type: ignore[no-untyped-def]
+        setsockopts.append((level, optname, value))
+        return real_setsockopt(self, level, optname, value, *args, **kwargs)
+
+    monkeypatch = pytest.MonkeyPatch()
+    try:
+        monkeypatch.setattr(socket.socket, "setsockopt", recording_setsockopt)
+        daemon.port_free("127.0.0.1", 0)  # port 0 → OS-assigned
+    finally:
+        monkeypatch.undo()
+
+    assert any(
+        level == socket.SOL_SOCKET and optname == socket.SO_REUSEADDR
+        for level, optname, _value in setsockopts
+    ), (
+        f"port_free probe socket must set SO_REUSEADDR before bind — "
+        f"otherwise `lies mcp up` after `lies mcp down` fails on TIME_WAIT "
+        f"for ~60s. setsockopt calls observed: {setsockopts!r}"
+    )
+
+
 def test_tail_log_returns_last_lines(tmp_path: Path) -> None:
     wiki = _wiki(tmp_path)
     log = daemon.log_path(wiki)

@@ -229,6 +229,13 @@ def port_free(host: str, port: int) -> bool:
 
     Probed before spawning so a non-LIES process squatting the port
     surfaces as a clear error rather than a confusing readiness timeout.
+
+    The probe socket sets ``SO_REUSEADDR`` so the post-``down``-then-
+    ``up`` race — the daemon's prior listen socket lingers in TIME_WAIT
+    for ~60s after SIGTERM — does not surface as a misleading
+    EADDRINUSE. Standard daemon-socket hygiene; uvicorn / http.server /
+    aiohttp all set it on the listening socket for exactly this
+    reason.
     """
     try:
         address = ipaddress.ip_address(host)
@@ -236,6 +243,7 @@ def port_free(host: str, port: int) -> bool:
         address = None
     family = socket.AF_INET6 if address is not None and address.version == 6 else socket.AF_INET
     with socket.socket(family, socket.SOCK_STREAM) as sock:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             sock.bind((host, port))
         except OSError:
