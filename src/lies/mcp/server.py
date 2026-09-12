@@ -192,7 +192,7 @@ _TYPE_PLURAL_MCP: dict[str, str] = {
 
 @dataclass
 class _CollisionVerdict:
-    """Pydantic response model for the file_knowledge collision elicit."""
+    """Response model for the file_knowledge collision elicit."""
 
     action: Literal["overwrite", "rename", "cancel"]
     new_slug: str | None = None

@@ -1,4 +1,4 @@
-from dataclasses import fields, is_dataclass
+from dataclasses import is_dataclass
 
 from lies.agents.source_reader import SourceExtraction
 
@@ -41,9 +41,3 @@ def test_source_reader_agent_accepts_prompted_dataclass_output() -> None:
     assert agent is not None
     # Output type annotation still resolves.
     assert agent._output_type is not None  # type: ignore[attr-defined]
-
-
-# Silence "imported but unused" — `fields` is part of the brief's verbatim
-# dataclass-detection surface and stays imported for symmetry with the
-# other pin tests' introspection imports.
-_ = fields

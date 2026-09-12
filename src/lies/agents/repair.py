@@ -8,9 +8,8 @@ output when no findings are safe to fix.
 
 from __future__ import annotations
 
-import dataclasses
 import json
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from enum import Enum
 
 from pydantic_ai import Agent
@@ -92,13 +91,13 @@ def _lint_report_to_json(report: LintReport) -> str:
     ``dict_factory`` unwraps them to ``.value`` for JSON.
     """
     return json.dumps(
-        dataclasses.asdict(report, dict_factory=_enum_value_factory),
+        asdict(report, dict_factory=_enum_value_factory),
         indent=2,
     )
 
 
 def _enum_value_factory(items: list[tuple[str, object]]) -> dict[str, object]:
-    """dict_factory for ``dataclasses.asdict`` that unwraps str-valued Enums to their .value."""
+    """dict_factory for ``asdict`` that unwraps str-valued Enums to their .value."""
     return {k: (v.value if isinstance(v, Enum) else v) for k, v in items}
 
 
