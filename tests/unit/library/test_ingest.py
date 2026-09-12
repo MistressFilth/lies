@@ -345,6 +345,74 @@ def test_run_batch_ingest_walks_dir(lib_with_git: Library, tmp_path: Path) -> No
     assert result.skipped >= 1  # LICENSE filtered by filename gate
 
 
+def test_run_batch_ingest_production_fetcher_walks_directory(
+    lib_with_git: Library, tmp_path: Path
+) -> None:
+    """``ScraperFetcher`` (the production fetcher wired into the CLI) must
+    walk a directory and yield one ``FetchItem`` per file.
+
+    Regression pin for the ``--batch`` dispatch defect: the prior
+    ``ScraperFetcher.fetch_sources`` called
+    ``pick_scraper(source)`` unconditionally, and ``pick_scraper`` had no
+    directory branch — so any directory input raised
+    ``ScraperUnavailable`` at the dispatch step before ``_process_item``
+    ever saw an item.  The existing ``test_run_batch_ingest_walks_dir``
+    above masked the defect by using ``_StaticFetcher`` (a test double
+    that hand-rolls ``FetchItem``s); this test drives the production
+    fetcher end-to-end.
+
+    The fetcher is responsible for: reading each entry, hashing the
+    bytes, and yielding a ``FetchItem`` per file with ``url=None`` and
+    ``fetched_via="local"``.  Per-doc slug derivation, skip/quarantine
+    filters, mirror write, and atomic commit remain ``_process_item``
+    and ``_finalize``'s job.
+    """
+    from lies.library.fetcher import ScraperFetcher
+
+    (tmp_path / "alpha.md").write_text("alpha body\n" * 12)
+    (tmp_path / "beta.md").write_text("beta body\n" * 12)
+    (tmp_path / "LICENSE").write_text("License\n" * 12)
+    (tmp_path / "ignored").mkdir()
+    (tmp_path / "ignored" / "skip-me.md").write_text("nested body\n" * 12)
+
+    fetcher = ScraperFetcher(lib_with_git)
+    result = run_batch_ingest(lib_with_git, "claude", tmp_path, fetcher=fetcher)
+
+    # Two mirror files written; LICENSE filtered by filename stem gate;
+    # nested file NOT walked (depth-1 only — see dispatch contract).
+    assert result.created == 2, (
+        f"expected 2 mirrors written, got created={result.created} "
+        f"skipped={result.skipped} errors={result.errors}"
+    )
+    coll_dir = lib_with_git.collections_root / "claude"
+    written = {p.name for p in coll_dir.iterdir() if p.is_file()}
+    assert written == {"alpha.md", "beta.md"}, written
+
+
+def test_run_batch_ingest_empty_directory_is_noop(lib_with_git: Library, tmp_path: Path) -> None:
+    """Empty ``--batch`` directory is a no-op (spec L400: exit 0, no commit).
+
+    Regression pin for the directory-walk dispatch: before the fix, an
+    empty directory raised ``LibraryFetchUnreachable`` because
+    ``pick_scraper(source)`` rejected directory inputs entirely; the
+    CLI would exit non-zero on ``lies ingest --batch <empty-dir>``.
+    """
+    from lies.library.fetcher import ScraperFetcher
+
+    (tmp_path / "junk").mkdir()  # Subdirectories are skipped, not yielded.
+
+    fetcher = ScraperFetcher(lib_with_git)
+    result = run_batch_ingest(lib_with_git, "claude", tmp_path, fetcher=fetcher)
+    assert result.created == 0
+    assert result.updated == 0
+    assert result.errors == 0
+    coll_dir = lib_with_git.collections_root / "claude"
+    assert not coll_dir.exists() or not any(coll_dir.iterdir()), (
+        f"empty batch must not write any mirrors, found: "
+        f"{list(coll_dir.iterdir()) if coll_dir.exists() else 'no coll_dir'}"
+    )
+
+
 def test_run_source_ingest_dispatch_failure_quarantines_and_continues(
     lib_with_git: Library,
 ) -> None:

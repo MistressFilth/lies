@@ -316,6 +316,20 @@ class ScraperFetcher:
         self._collection = collection
 
     def fetch_sources(self, source: Path | str) -> Iterator[FetchItem]:
+        # ``--batch <DIR>`` walks a directory at depth 1, yielding one
+        # ``FetchItem`` per regular file. ``pick_scraper(source)`` only
+        # matches URLs / existing files / PDFs and raises
+        # ``ScraperUnavailable`` for a directory; handle the directory
+        # case here so the dispatcher below stays URL/file-shaped.
+        # Subdirectories are skipped: the spec's batch contract is a
+        # flat walk, and nested files would collide on the slug. Files
+        # that fail to read (permission, vanished) are dropped silently —
+        # mirroring the llms.txt "Pages whose fetch fails are dropped
+        # silently" stance in ``WebScraper._parse_index``.
+        if isinstance(source, Path) and source.is_dir():
+            yield from self._iter_directory(source)
+            return
+
         if self._scraper_cmd is not None:
             # Minor 44: wrap bespoke-loader ``ScraperUnavailable`` into
             # ``LibraryFetchUnreachable`` at the call site (not inside
@@ -362,6 +376,28 @@ class ScraperFetcher:
             emitted += 1
         if emitted == 0:
             raise LibraryFetchUnreachable(f"scraper produced 0 items for {source}")
+
+    @staticmethod
+    def _iter_directory(directory: Path) -> Iterator[FetchItem]:
+        """Depth-1 walk of ``directory``; yield one ``FetchItem`` per file.
+
+        See the comment above ``fetch_sources`` for the rationale
+        (depth-1, skip subdirs, swallow read errors).
+        """
+        for entry in sorted(directory.iterdir()):
+            if not entry.is_file():
+                continue
+            try:
+                body_bytes = entry.read_bytes()
+            except OSError:
+                continue
+            yield FetchItem(
+                path=entry,
+                url=None,
+                body=body_bytes.decode("utf-8", errors="replace"),
+                source_hash=hashlib.sha256(body_bytes).hexdigest(),
+                fetched_via="local",
+            )
 
 
 __all__ = ("ScraperFetcher",)
