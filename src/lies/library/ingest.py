@@ -450,8 +450,20 @@ def run_batch_ingest(
     """
     result = BatchIngestResult()
     items = list(_iter_fetch_items(fetcher, source_dir, result))
+    # Empty batch is a no-op (spec: "lies ingest --batch <empty-dir> →
+    # no-op run, exit 0"). Return the empty BatchIngestResult so the
+    # caller sees ``errors==0`` and skips the commit. A *directory*
+    # dispatch failure (``ScraperUnavailable`` etc.) still raises through
+    # ``_iter_fetch_items`` because of the ``LibraryFetchUnreachable``
+    # pass-through in ``_iter_fetch_items``'s outer catch.
     if not items and not result.quarantine_records:
-        raise LibraryFetchUnreachable(f"no items fetched from {source_dir}")
+        return _finalize(
+            library,
+            collection_name,
+            result,
+            dry_run=dry_run,
+            message=f"ingest: {collection_name} +0",
+        )
     for item in items:
         _process_item(
             item,
