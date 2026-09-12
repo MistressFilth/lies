@@ -43,6 +43,58 @@ def lib_with_git(lib: Library) -> Library:
     return lib
 
 
+def test_writer_auto_bootstrap_init_repo_on_first_commit(lib: Library) -> None:
+    """Fresh library (no ``.git``) gets bootstrapped transparently on first commit.
+
+    Regression for defect 2 from systematic-debugging triage: a fresh
+    library is a plain directory; ``LibraryWriter.commit`` called
+    against it raised ``LibraryAtomicCommitFailed("git add failed:
+    fatal: not a git repository")``, but the CLI swallowed the failure
+    (the ``typer.Exit(code=1)`` fires only on ``result.errors > 0``,
+    not on library envelope exceptions) and exited 0 with 628 mirror
+    files on disk and an empty catalog.  Today the writer bootstraps a
+    git repo on first ``__init__``; the commit path then runs normally.
+
+    Mirrors the wiki-side ``git_init_initial`` precedent at
+    ``src/lies/wiki/layout.py:56``.  No-change for callers against an
+    already-initialized repo (``.git`` already present → bootstrap
+    skipped).
+    """
+    # Sanity: the fixture provides a bare library, no .git yet.
+    assert not (lib.git_root / ".git").exists(), (
+        f"test fixture should start with no .git, found one at {lib.git_root}"
+    )
+
+    writer = LibraryWriter(lib)
+    # Writer __init__ ran the bootstrap.
+    assert (lib.git_root / ".git").exists(), (
+        f"LibraryWriter should have bootstrapped .git at {lib.git_root}"
+    )
+    # Initial commit has at least the catalog seed.
+    git_log = subprocess.run(
+        ["git", "-C", str(lib.git_root), "log", "--oneline"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert any("init" in ln.lower() for ln in git_log.stdout.splitlines()), git_log.stdout
+
+    target = lib.collections_root / "claude" / "x.md"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("body\n")
+    sha = writer.commit([target], message="after-bootstrap +1")
+    assert sha is not None
+    assert len(sha) == 40
+    # Second commit lands.
+    git_log2 = subprocess.run(
+        ["git", "-C", str(lib.git_root), "log", "--oneline"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert any("after-bootstrap" in ln for ln in git_log2.stdout.splitlines())
+
+
 def test_writer_commit_absolute_paths_are_coerced(lib_with_git: Library) -> None:
     """I12: absolute paths under ``git_root`` round-trip to repo-relative strings."""
     target = lib_with_git.collections_root / "claude" / "x.md"

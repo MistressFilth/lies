@@ -21,6 +21,7 @@ Differences from wiki-side write path:
 from __future__ import annotations
 
 import sqlite3
+import subprocess
 import sys
 from collections.abc import Iterable
 from pathlib import Path
@@ -94,6 +95,79 @@ def __getattr__(name: str):
 class LibraryWriter:
     def __init__(self, library: Library) -> None:
         self._library = library
+        # Idempotent git repo bootstrap. A fresh library directory
+        # (no ``.git``) gets a bootstrapped repo on first writer
+        # creation so the atomic-commit envelope can land. Mirrors the
+        # wiki-side ``git_init_initial`` precedent at
+        # ``src/lies/wiki/layout.py:56``. Repos that are already
+        # initialised are left alone — the ``.git`` subdir is the
+        # short-circuit.
+        #
+        # Without this, the first ``lies ingest`` against a fresh
+        # library wrote mirror files on disk but raised
+        # ``LibraryAtomicCommitFailed`` at the ``git add`` step, and
+        # the CLI exited 0 with the failure swallowed.
+        if not (library.git_root / ".git").exists():
+            self._bootstrap_git_repo()
+
+    def _bootstrap_git_repo(self) -> None:
+        """Initialise a git repo at ``library.git_root`` with a baseline commit.
+
+        The library already has ``.lies/catalog.db`` from
+        ``Library.open()``; that, plus the ``poison_root`` and
+        ``collections_root`` directories, is what gets staged.
+        """
+        root = self._library.git_root
+        root.mkdir(parents=True, exist_ok=True)
+        subprocess.run(
+            ["git", "init", "--initial-branch=main", str(root)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(root), "config", "user.email", "lies@localhost"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(root), "config", "user.name", "lies"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        # ``.lies/catalog.db`` may not exist yet on a brand-new library,
+        # but the seed commit must contain something for ``git add .``
+        # to be a non-empty stage. ``.gitkeep`` markers under the
+        # poison_root / collections_root subdirs are the cheapest
+        # non-functional content; remove them after the init commit
+        # so the canonical layout stays clean.
+        self._library.poison_root.mkdir(parents=True, exist_ok=True)
+        self._library.collections_root.mkdir(parents=True, exist_ok=True)
+        poison_keep = self._library.poison_root / ".gitkeep"
+        collections_keep = self._library.collections_root / ".gitkeep"
+        poison_keep.write_text("")
+        collections_keep.write_text("")
+        try:
+            subprocess.run(
+                ["git", "-C", str(root), "add", "."],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(root), "commit", "-m", "init"],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        finally:
+            # Tidy: never leave .gitkeep placeholders in poison / collections.
+            if poison_keep.exists():
+                poison_keep.unlink()
+            if collections_keep.exists():
+                collections_keep.unlink()
 
     def commit(
         self,
