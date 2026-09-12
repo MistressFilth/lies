@@ -6,6 +6,9 @@ All notable changes to LIES are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+- **Library / scrapers: `lies ingest --source <llms.txt URL>` no longer aborts on the first doc.** `WebScraper._parse_index` previously emitted a `_index.md` `ParsedDoc` for the llms.txt index body itself ("table of contents survives"). The library's slug regex rejects underscore-prefixed stems (`^[a-z0-9][a-z0-9_-]{0,127}$`); emitting `_index.md` forced a `SlugError` that propagated uncaught out of `_process_item` (the slug-derivation call sits outside the `try/except ValueError` block in `_process_item`). The run aborted on item #0 with the slug derived from `_index.md` → `-index` (after `replace("_","-")`). Today the parser drops the unused `_index.md` emission and returns one `ParsedDoc` per child URL only. New `tests/unit/ingestion/test_scrapers_web.py::test_web_scraper_parse_index_does_not_emit_index_marker` pins the absence; the existing `test_web_scraper_parse_index_follows_links` + `test_web_scraper_parse_index_skips_failed_fetches` were updated to drop the `_index.md` assertions. Library-side `_process_item` defensive hardening (catch `ValueError` around the entire slug-derivation block, not just `validate_slug`) is **deferred** to a follow-up per the systematic-debugging "one change at a time" rule. 1496 unit / 0 integration pass.
+
 ### Added
 - **Test-suite timing Makefile targets** (`make time-unit-tests`,
   `make time-features-tests`). Mirror `pydantic-guidance`'s targets:

@@ -255,13 +255,12 @@ def test_web_scraper_parse_index_follows_links(
     raw = s.fetch("https://example.com/llms.txt")
     docs = s.parse(raw, source="https://example.com/llms.txt")
 
-    assert len(docs) == 4  # _index.md + 3 pages
+    assert len(docs) == 3
     paths = sorted(d.path for d in docs)
-    assert paths == ["_index.md", "hooks.md", "overview.md", "quickstart.md"]
+    assert paths == ["hooks.md", "overview.md", "quickstart.md"]
     # Each doc's content is the fetched page, not the index entry.
     by_path = {d.path: d.content.decode("utf-8") for d in docs}
     assert by_path["overview.md"].startswith("# overview")
-    assert by_path["_index.md"].startswith("# Claude Code Docs")
     # Format and sha256 set on every doc.
     for d in docs:
         assert d.source_format == "markdown"
@@ -270,6 +269,53 @@ def test_web_scraper_parse_index_follows_links(
     assert any(u.endswith("/overview.md") for u in fetched_urls)
     assert any(u.endswith("/quickstart.md") for u in fetched_urls)
     assert any(u.endswith("/hooks.md") for u in fetched_urls)
+
+
+def test_web_scraper_parse_index_does_not_emit_index_marker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`WebScraper._parse_index` does not emit `_index.md` (defect-3 root-cause fix).
+
+    Regression pin: the prior implementation appended a
+    ``ParsedDoc(path="_index.md", content=<llms.txt body>)`` to the
+    emitted docs, on the rationale that "the index body should survive
+    for downstream reference". No consumer of `_index.md` exists. The
+    library's slug regex (``^[a-z0-9][a-z0-9_-]{0,127}$``) rejects
+    underscore-prefixed stems — emitting `_index.md` therefore forces
+    a ``SlugError`` that propagates uncaught out of ``_process_item``,
+    aborting the whole `lies ingest` run on item #0. The fix drops
+    the unused emission in the parser; today `_parse_index` returns
+    one doc per child URL only.
+    """
+    fetched_urls: list[str] = []
+
+    def fake_urlopen(req, *args, **kwargs):
+        fetched_urls.append(req.full_url)
+        if req.full_url == "https://example.com/llms.txt":
+            return _FakeResp(_INDEX_BODY, req.full_url)
+        slug = req.full_url.rsplit("/", 1)[-1].removesuffix(".md")
+        body = f"# {slug}\nbody\n".encode()
+        return _FakeResp(body, req.full_url)
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    s = WebScraper()
+    raw = s.fetch("https://example.com/llms.txt")
+    docs = s.parse(raw, source="https://example.com/llms.txt")
+    paths = [d.path for d in docs]
+    assert "_index.md" not in paths, f"_index.md must not be emitted; got {paths!r}"
+    # Each emitted doc corresponds to a fetched URL — not the index body.
+    for p in paths:
+        assert not p.startswith("_"), (
+            f"emitted path {p!r} starts with `_`; slug regex rejects "
+            f"underscore-leading names — see SlugError trace from "
+            f"`_parse_index`_index.md emission"
+        )
+    assert len(docs) == 3
+    # The fetched-URL set is what we expect; the index body itself is
+    # NOT in the fetch list (only the llms.txt index URL was fetched
+    # at the top level; each child URL is fetched once).
+    assert "https://example.com/llms.txt" in fetched_urls
+    assert not any(u.endswith("/_index.md") for u in fetched_urls)
 
 
 def test_web_scraper_parse_index_skips_failed_fetches(
@@ -294,7 +340,7 @@ def test_web_scraper_parse_index_skips_failed_fetches(
     docs = s.parse(raw, source="https://example.com/llms.txt")
 
     paths = sorted(d.path for d in docs)
-    assert paths == ["_index.md", "overview.md"], f"only overview+index survive, got {paths}"
+    assert paths == ["overview.md"], f"only overview survives (no _index marker); got {paths}"
 
 
 def test_web_scraper_parse_chunked_when_source_is_full(
