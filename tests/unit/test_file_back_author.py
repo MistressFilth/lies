@@ -49,13 +49,17 @@ def _receipt_ok() -> MemoryReceipt:
 
 
 @pytest.fixture
-def orch(tmp_path: Path) -> Orchestrator:
+def orch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Orchestrator:
     """Bypass ``Orchestrator.__init__`` and stub ``_memory_service``.
 
     The wrapper only depends on ``self._memory_service.apply_plan`` and
     the typed-error imports, so we bypass the heavy ``_build`` (which
     constructs a real agent, registers sub-agents, etc.) and inject a
     ``MagicMock`` for the memory service.
+
+    Also stubs ``time.sleep`` in the orchestrator module so the
+    retry-backoff ``sleep(0.1)`` between attempts doesn't dominate the
+    wall-clock for tests that exhaust all three retries.
     """
     wiki = MagicMock()
     wiki.wiki_dir = tmp_path
@@ -64,6 +68,7 @@ def orch(tmp_path: Path) -> Orchestrator:
     orch.wiki = wiki
     orch._memory_service = MagicMock(register_evidence=MagicMock())
     orch._memory_service.apply_plan = MagicMock(return_value=_receipt_ok())
+    monkeypatch.setattr("lies.orchestrator.time.sleep", lambda *_a, **_kw: None)
     return orch
 
 

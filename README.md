@@ -374,6 +374,22 @@ lands. The pre-existing 12 SL101 findings were resolved in
 [#65](https://github.com/MistressFilth/lies/pull/65); the hook now
 enforces zero findings.
 
+### Test timing
+
+`make time-unit-tests` runs the unit suite with
+`--durations=0 --durations-min=0 -vv --tb=short --no-header` and
+prints every test's wall-clock time, slowest first. Pass `--runslow`
+to include the `@pytest.mark.slow` tests (CLI status rendering,
+subprocess-bound daemon reap); without it, the slow tests are
+skipped. `make time-features-tests` does the same for the
+integration suite and short-circuits unless `INTEGRATION=1` is set
+in the environment.
+
+Integration tests are gated by `INTEGRATION=1` via a single
+collection hook in `tests/integration/conftest.py`. Default
+`make test` and `make check` skip them; CI runs them with
+`INTEGRATION=1 uv run pytest tests/integration/`.
+
 ## Architecture
 
 The agent maintains the wiki invisibly during normal interaction. See [Invisible memory](#invisible-memory) for the contract.

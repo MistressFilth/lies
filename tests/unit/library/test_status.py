@@ -8,21 +8,38 @@ independent of any specific wiki).
 
 from __future__ import annotations
 
-import subprocess
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from lies.cli import app
 
 runner = CliRunner()
 
+pytestmark = pytest.mark.slow
+
+
+@pytest.fixture(autouse=True)
+def _mock_external_services(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stub git + qmd so the status command's library path never shells out."""
+    monkeypatch.setattr(
+        "lies.library.writer.atomic_commit",
+        lambda *_a, **_kw: "deadbeef" * 5,
+    )
+    monkeypatch.setattr("lies.library.writer.qmd_update", lambda *_a, **_kw: None)
+    monkeypatch.setattr("lies.library.writer.qmd_collection_add_or_update", lambda *_a, **_kw: None)
+    monkeypatch.setattr("lies.library.writer.qmd_embed", lambda *_a, **_kw: None)
+
 
 def _setup_library(tmp_path: Path, monkeypatch) -> object:
-    """Provision an isolated library root with an initial git commit.
+    """Provision an isolated library root with the on-disk shape the CLI expects.
 
-    Returns the ``Library`` singleton. Mirrors the fixture plumbing from
-    ``test_status_reports_library_catalog_count`` so both tests share it.
+    No real ``git init`` runs — the autouse ``_mock_external_services``
+    fixture stubs the commit path. The ``.gitkeep`` placeholder is
+    still created so the catalog DB gets a sibling file inside the
+    git_root (otherwise ``Library.open`` complains the dir is untracked
+    in ways the CLI doesn't expect).
     """
     from lies import xdg
     from lies.library.paths import Library
@@ -36,35 +53,7 @@ def _setup_library(tmp_path: Path, monkeypatch) -> object:
     Library.open.cache_clear()
     lib = Library.open()
     lib.git_root.mkdir(parents=True, exist_ok=True)
-    subprocess.run(
-        ["git", "init", "-b", "main", str(lib.git_root)],
-        check=True,
-        capture_output=True,
-    )
-    subprocess.run(
-        ["git", "-C", str(lib.git_root), "config", "user.email", "t@t"],
-        check=True,
-        capture_output=True,
-    )
-    subprocess.run(
-        ["git", "-C", str(lib.git_root), "config", "user.name", "t"],
-        check=True,
-        capture_output=True,
-    )
-    # Make an initial commit so the git repo is non-empty; an empty
-    # initial tree plus the catalog DB created below would otherwise
-    # leave git with nothing to commit (empty dirs aren't tracked).
     (lib.git_root / ".gitkeep").write_text("placeholder\n")
-    subprocess.run(
-        ["git", "-C", str(lib.git_root), "add", "."],
-        check=True,
-        capture_output=True,
-    )
-    subprocess.run(
-        ["git", "-C", str(lib.git_root), "commit", "-m", "init"],
-        check=True,
-        capture_output=True,
-    )
     return lib
 
 

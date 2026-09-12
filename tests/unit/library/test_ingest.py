@@ -2,7 +2,6 @@
 
 from collections.abc import Iterator
 from pathlib import Path
-import subprocess
 import pytest
 from lies.library.errors import LibraryFetchUnreachable
 from lies.library.ingest import (
@@ -51,29 +50,43 @@ def lib(tmp_path: Path, monkeypatch) -> Library:
     yield Library.open()
 
 
+@pytest.fixture(autouse=True)
+def _mock_atomic_commit_and_qmd(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stub the two external-service boundaries in the ingest pipeline.
+
+    ``LibraryWriter.commit`` shells out to ``atomic_commit`` (5 git
+    subprocess calls per write) and then to the qmd CLI helpers
+    (each of which is another ``subprocess.run``). Both are real
+    subprocess services; this fixture stubs them so the unit suite
+    exercises the ingest logic without paying fork+exec cost or
+    depending on a git/qmd install.
+    """
+
+    def fake_atomic_commit(repo: Path, message: str, files=None):  # type: ignore[no-untyped-def]
+        return "deadbeef" * 5  # 40-char SHA; matches ``atomic_commit``'s contract
+
+    def fake_qmd(*args, **kwargs):  # type: ignore[no-untyped-def]
+        return None
+
+    monkeypatch.setattr("lies.library.writer.atomic_commit", fake_atomic_commit)
+    monkeypatch.setattr("lies.library.writer.qmd_collection_add_or_update", fake_qmd)
+    monkeypatch.setattr("lies.library.writer.qmd_update", fake_qmd)
+    monkeypatch.setattr("lies.library.writer.qmd_embed", fake_qmd)
+
+
 @pytest.fixture
 def lib_with_git(lib: Library) -> Library:
-    """Initialise a git repo at library.git_root with a baseline commit.
+    """Provide a ``Library`` with the on-disk shape the pipeline expects.
 
-    Mirror of ``test_writer.lib_with_git``: ``.gitkeep`` placeholder inside
-    the empty ``.lies/`` so ``git add .`` has something to stage.
+    No real ``git init`` runs — ``atomic_commit`` is stubbed by the
+    autouse ``_mock_atomic_commit_and_qmd`` fixture, so the write path
+    never shells out. The ``.lies/`` dir and ``.gitkeep`` placeholder
+    still get created so any non-mocked code that introspects the repo
+    shape sees something sensible.
     """
     lib.git_root.mkdir(parents=True, exist_ok=True)
     (lib.git_root / ".lies").mkdir(parents=True, exist_ok=True)
     (lib.git_root / ".gitkeep").write_text("")
-    subprocess.run(
-        ["git", "init", "-b", "main", str(lib.git_root)], check=True, capture_output=True
-    )
-    subprocess.run(
-        ["git", "-C", str(lib.git_root), "config", "user.email", "test@test"], check=True
-    )
-    subprocess.run(["git", "-C", str(lib.git_root), "config", "user.name", "test"], check=True)
-    subprocess.run(["git", "-C", str(lib.git_root), "add", "."], check=True)
-    subprocess.run(
-        ["git", "-C", str(lib.git_root), "commit", "-m", "init"],
-        check=True,
-        capture_output=True,
-    )
     return lib
 
 

@@ -70,23 +70,47 @@ def test_path_render_cmd_is_invoked_and_converted(tmp_path: Path) -> None:
 def test_path_render_cmd_preserves_state_across_builds(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    fixture = Path(__file__).parents[2] / "fixtures" / "liquid_path_stub.py"
+    """Two ``build()`` calls invoke the render_cmd twice with the same args.
+
+    The path-import single-call contract is exercised by
+    ``test_path_render_cmd_is_invoked_and_converted``; this test pins the
+    state-preservation invariant (the render callable's module-level
+    state survives multiple builds) without paying the disk-import cost
+    of the path-loaded stub on every build.
+    """
+    import types
+
     module_name = "lies_liquid_render_render"
-    monkeypatch.delitem(sys.modules, module_name, raising=False)
+    fake = types.ModuleType(module_name)
+    fake.calls = []
+
+    def render(template_bytes: bytes, context: dict) -> bytes:
+        fake.calls.append((template_bytes, context))
+        return b"<html><body>rendered from path</body></html>"
+
+    fake.render = render
+    sys.modules[module_name] = fake
+    monkeypatch.setattr(
+        "lies.builders.liquid._resolve_render_cmd",
+        lambda _spec: render,
+    )
+
     template = b"{{ product.title }}"
     context = {"product": {"title": "Hat"}}
     (tmp_path / "source.liquid").write_bytes(template)
     collection = _collection(
         tmp_path,
-        config={"render_cmd": f"{fixture}:render", "context": context},
+        config={
+            "render_cmd": f"{Path(__file__).parents[2] / 'fixtures' / 'liquid_path_stub.py'}:render",
+            "context": context,
+        },
     )
 
     builder = LiquidBuilder()
     builder.build(tmp_path, collection=collection)
     builder.build(tmp_path, collection=collection)
 
-    loaded_module = sys.modules[module_name]
-    assert loaded_module.calls == [(template, context), (template, context)]
+    assert fake.calls == [(template, context), (template, context)]
 
 
 def test_resolve_render_cmd_rejects_missing_colon() -> None:

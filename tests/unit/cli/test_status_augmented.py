@@ -45,6 +45,7 @@ def wiki_with_rows(tmp_path: Path, monkeypatch):
     return wiki
 
 
+@pytest.mark.slow
 def test_status_includes_recent_writes_section(runner, wiki_with_rows) -> None:
     result = runner.invoke(app, ["status"])
     assert result.exit_code == 0
@@ -52,12 +53,14 @@ def test_status_includes_recent_writes_section(runner, wiki_with_rows) -> None:
     assert "create entity page for Postgres" in result.output
 
 
+@pytest.mark.slow
 def test_status_memory_limit_flag(runner, wiki_with_rows) -> None:
     result = runner.invoke(app, ["status", "--memory-limit", "0"])
     assert result.exit_code == 0
     assert "recent invisible writes" not in result.output
 
 
+@pytest.mark.slow
 def test_status_handles_missing_sidecar_gracefully(runner, tmp_path, monkeypatch) -> None:
     from lies.wiki.wiki import Wiki
 
@@ -100,6 +103,7 @@ def test_status_rejects_negative_memory_limit(runner, tmp_path, monkeypatch) -> 
     assert ">=" in text
 
 
+@pytest.mark.slow
 def test_status_includes_catalog_count(runner, tmp_path, monkeypatch) -> None:
     """`lies status` surfaces the catalog row count + schema version."""
     from lies.memory.catalog import count_pages, open_catalog, upsert_page

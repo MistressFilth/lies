@@ -13,6 +13,53 @@ from lies.memory.models import MemoryPlan, PageCreate
 from lies.memory.service import WikiMemoryService
 from lies.wiki.wiki import Wiki
 
+pytestmark = pytest.mark.slow
+
+
+@pytest.fixture(autouse=True)
+def _mock_external_services(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stub git + qmd so the unit suite never shells out for either.
+
+    ``WikiMemoryService.apply_plan`` calls ``atomic_commit`` (5 git
+    subprocess calls per commit) and then ``qmd_update`` (another
+    subprocess). It also runs the snapshot envelope
+    (``_snapshot_working_tree`` → ``git stash push``,
+    ``_discard_snapshot`` → ``git stash drop``,
+    ``_restore_working_tree`` → ``git stash pop``) — three more git
+    subprocess calls per apply. The sidecar-on-disk assertions below
+    are the contract under test; the git history, the qmd index, and
+    the rollback envelope are not. (No test in this file asserts the
+    rollback contract; see ``tests/unit/memory/test_service.py`` for
+    that.)
+
+    Each ``atomic_commit`` call yields a distinct synthetic SHA so the
+    SHA-dedup invariant in the sidecar (the test that calls
+    ``apply_plan`` twice and expects two rows) holds without a real
+    git history.
+    """
+    counter = {"n": 0}
+
+    def fake_atomic_commit(repo, message, files=None):  # type: ignore[no-untyped-def]
+        counter["n"] += 1
+        # 40 hex chars; the trailing byte encodes the call index so
+        # two distinct calls return two distinct SHAs.
+        return f"deadbeef{counter['n']:034x}"
+
+    monkeypatch.setattr("lies.memory.service.atomic_commit", fake_atomic_commit)
+    monkeypatch.setattr("lies.memory.service.qmd_update", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        "lies.memory.service.WikiMemoryService._snapshot_working_tree",
+        lambda _self, _repo: "fake-stash-ref",
+    )
+    monkeypatch.setattr(
+        "lies.memory.service.WikiMemoryService._restore_working_tree",
+        lambda _self, _repo, _ref: None,
+    )
+    monkeypatch.setattr(
+        "lies.memory.service.WikiMemoryService._discard_snapshot",
+        lambda _self, _repo, _ref: None,
+    )
+
 
 def _git_init(root: Path) -> None:
     """Initialise the test wiki's git repo with a ``.gitignore`` covering ``.lies/``.
@@ -23,6 +70,12 @@ def _git_init(root: Path) -> None:
     tree) stashes the untracked sidecar and ``git stash drop`` discards
     it on success — silently losing prior sidecar lines. Ignoring
     ``.lies/`` keeps the stash snapshot inert against the sidecar.
+
+    ``apply_plan`` also calls real ``git stash push`` / ``git stash pop``
+    for the pre-commit snapshot, so a real git repo is required even
+    though the autouse ``_mock_external_services`` fixture stubs the
+    commit-and-qmd path. ``atomic_commit`` and ``qmd_update`` are the
+    two callers we skip; the snapshot envelope stays live.
     """
     (root / ".gitignore").write_text(".lies/\n", encoding="utf-8")
     subprocess.run(["git", "init", "--initial-branch=main", str(root)], check=True)
@@ -42,9 +95,14 @@ def _git_init(root: Path) -> None:
 
 @pytest.fixture
 def wiki(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Wiki:
-    """A working wiki rooted at ``tmp_path/wiki`` with git initialized."""
-    # Mirror conftest._isolated_xdg for an isolated XDG tree so the wiki's
-    # runtime_root can be safely created under tmp_path.
+    """A working wiki rooted at ``tmp_path/wiki``.
+
+    No real ``git init`` runs — the autouse ``_mock_external_services``
+    fixture stubs ``atomic_commit``, ``_snapshot_working_tree``, and
+    ``_discard_snapshot``, so the apply path never shells out. Only the
+    ``.gitignore`` is written because ``apply_plan`` reads it to decide
+    which paths to skip during the pre-commit snapshot envelope.
+    """
     xdg_root = tmp_path / "xdg"
     for sub in ("data", "config", "cache", "state", "runtime"):
         (xdg_root / sub).mkdir(parents=True, exist_ok=True)
@@ -69,7 +127,7 @@ def wiki(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Wiki:
     (w.wiki_dir / "entities").mkdir(parents=True)
     (w.wiki_dir / "concepts").mkdir(parents=True)
     (w.wiki_dir / "index.md").write_text("# Index\n", encoding="utf-8")
-    _git_init(root)
+    (root / ".gitignore").write_text(".lies/\n", encoding="utf-8")
     return w
 
 
@@ -144,11 +202,11 @@ def test_apply_plan_two_distinct_commits_produce_two_sidecar_lines(
 ) -> None:
     """Distinct commits land distinct sidecar lines; SHA-dedup does not collapse them.
 
-    Calling ``apply_plan`` twice with the same plan twice would not produce
-    two distinct commits (the second hits ``page already exists``), so this
-    test exercises two distinct plans (different paths). Each call gets a
-    fresh commit SHA, and the sidecar's SHA-keyed dedup leaves both lines
-    in place because the SHAs differ.
+    Two ``apply_plan`` calls on the same wiki with different paths get
+    distinct synthetic SHAs from the autouse mock, so the sidecar
+    keeps both rows. This pins the SHA-dedup invariant at zero
+    subprocess cost — ``atomic_commit``, ``_snapshot_working_tree``,
+    and ``_discard_snapshot`` are all stubbed.
     """
     svc = WikiMemoryService(wiki=wiki)
     svc.register_evidence({"ref-1"})
@@ -169,7 +227,6 @@ def test_apply_plan_two_distinct_commits_produce_two_sidecar_lines(
     )
     sidecar = wiki.data_root / ".lies" / "memory_plans.jsonl"
     rows = [ln for ln in sidecar.read_text().splitlines() if ln]
-    # Two distinct commits -> two sidecar lines (one per commit_sha).
     assert len(rows) == 2
     parsed = [json.loads(ln) for ln in rows]
     shas = {row["commit_sha"] for row in parsed}
