@@ -7,7 +7,6 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel
 from pydantic_ai import Agent
 from pydantic_ai.models import Model
 from pydantic_ai.output import PromptedOutput
@@ -22,12 +21,14 @@ class PageOperation(str, Enum):
     DELETE = "delete"
 
 
-class PageDiff(BaseModel):
-    """A proposed change to a single wiki page."""
+@dataclass
+class PageDiff:
+    """A proposed change to a single wiki page.
+
+    `path` is relative to the wiki root, e.g. 'wiki/entities/postgres.md'.
+    """
 
     path: Path
-    """Path relative to the wiki root, e.g., 'wiki/entities/postgres.md'."""
-
     operation: PageOperation
 
     old_content: str | None = None

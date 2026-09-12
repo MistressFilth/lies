@@ -8,6 +8,7 @@ same path are rejected; the apply-plan envelope is single-commit.
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Literal
 
@@ -34,12 +35,21 @@ class _RepairOp(BaseModel):
     evidence: list[str] = Field(min_length=1)
 
 
-class CreateStub(_RepairOp):
+@dataclass(frozen=True)
+class CreateStub:
     """Create a stub page for a missing entity or concept."""
 
+    finding_index: int
+    rationale: str
+    evidence: list[str]
     path: str
     title: str
+    pages: list[str] = field(default_factory=list)
     kind: Literal[RepairOpKind.CREATE_STUB] = RepairOpKind.CREATE_STUB
+
+    def __post_init__(self) -> None:
+        if not self.evidence:
+            raise ValueError("evidence must contain at least one item")
 
 
 class AppendLink(_RepairOp):
@@ -92,7 +102,7 @@ class RepairPlan(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    operations: list[_RepairOp]
+    operations: list[CreateStub | AppendLink | UpdateIndex | AppendEvidence]
     rationale: str
     evidence: list[str] = Field(min_length=1)
 
@@ -103,7 +113,7 @@ class RepairPlan(BaseModel):
     def _no_conflicting_ops(self) -> RepairPlan:
         seen: dict[str, str] = {}
         for op in self.operations:
-            path = op.path  # type: ignore[attr-defined]  # ty: ignore[unresolved-attribute]
+            path = op.path  # type: ignore[attr-defined]
             kind = type(op).__name__
             prev = seen.get(path)
             if prev is not None and prev != "AppendLink":

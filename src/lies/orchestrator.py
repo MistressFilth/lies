@@ -1596,7 +1596,7 @@ class Orchestrator:
                 errors=[f"apply_failed: {type(exc).__name__}: {exc!s}"],
             )
         kinds = [
-            op.kind.value  # type: ignore[attr-defined]  # ty: ignore[unresolved-attribute]
+            op.kind.value  # type: ignore[attr-defined]
             for op in plan.operations
         ]
         skipped_drops = [

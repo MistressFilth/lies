@@ -96,9 +96,16 @@ def test_validate_operation_evidence_present() -> None:
 
 
 def test_validate_operation_evidence_missing() -> None:
-    op = PageCreate.model_construct(
-        path="x.md", content="# X", evidence=[], kind=OperationKind.CREATE
-    )
+    # PageCreate is a frozen stdlib @dataclass (SL101 conversion) whose
+    # __post_init__ rejects empty evidence. Build a validation-bypass
+    # instance via object.__new__ + __setattr__ so we can exercise the
+    # validator's own check.
+    op = object.__new__(PageCreate)
+    object.__setattr__(op, "path", "x.md")
+    object.__setattr__(op, "content", "# X")
+    object.__setattr__(op, "evidence", [])
+    object.__setattr__(op, "tag", "memory")
+    object.__setattr__(op, "kind", OperationKind.CREATE)
     with pytest.raises(WikiEvidenceMissing):
         validate_operation_evidence(op)
 

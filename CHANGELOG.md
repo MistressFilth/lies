@@ -4,8 +4,6 @@ All notable changes to LIES are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/) adapted for
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
-
 ## [0.21.0] - 2026-09-11
 
 ### Added

@@ -47,11 +47,12 @@ def test_question_carries_id_and_prompt() -> None:
         options=["alpha", "beta"],
         default="alpha",
     )
-    payload = question.model_dump()
-    assert payload["id"] == "name"
-    assert payload["prompt"] == "What name should the collection use?"
-    assert payload["options"] == ["alpha", "beta"]
-    assert payload["default"] == "alpha"
+    # AuthorQuestion is now a dataclass (SL101 conversion); verify via attribute
+    # access rather than model_dump (which is a BaseModel-only method).
+    assert question.id == "name"
+    assert question.prompt == "What name should the collection use?"
+    assert question.options == ["alpha", "beta"]
+    assert question.default == "alpha"
 
 
 def test_deps_carry_manifest() -> None:
@@ -76,7 +77,13 @@ def test_agent_runs_with_test_model() -> None:
     result = agent.run_sync("add docs", deps=deps)
     out = result.output
     assert isinstance(out, (AuthorQuestion, AuthorProposal))
-    # AuthorQuestion and AuthorProposal both have model_dump; verify dispatch.
-    assert hasattr(out, "model_dump")
-    payload = out.model_dump()
-    assert isinstance(payload, dict)
+    # AuthorQuestion is now a dataclass (SL101 conversion); AuthorProposal
+    # is still a BaseModel. Verify dispatch without assuming model_dump.
+    if isinstance(out, AuthorQuestion):
+        # dataclass: attribute access
+        assert out.id
+        assert out.prompt
+    else:
+        # AuthorProposal (BaseModel): model_dump() still works
+        payload = out.model_dump()
+        assert isinstance(payload, dict)

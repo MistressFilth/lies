@@ -8,7 +8,9 @@ output when no findings are safe to fix.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import json
+from dataclasses import asdict, dataclass
+from enum import Enum
 
 from pydantic_ai import Agent
 from pydantic_ai.models import Model
@@ -72,11 +74,31 @@ def _build_repair_prompt(ctx: RunContext[RepairAgentDeps]) -> str:
         return REPAIR_AGENT_SYSTEM_PROMPT
     parts: list[str] = [
         REPAIR_AGENT_SYSTEM_PROMPT,
-        "\nLint report findings (JSON):\n" + ctx.deps.lint_report.model_dump_json(indent=2),
+        "\nLint report findings (JSON):\n" + _lint_report_to_json(ctx.deps.lint_report),
     ]
     for path, text in ctx.deps.page_texts.items():
         parts.append(f"\n--- {path} ---\n{text}")
     return "\n".join(parts)
+
+
+def _lint_report_to_json(report: LintReport) -> str:
+    """Serialize a LintReport to JSON for the repair agent's system prompt.
+
+    LintReport / LintFinding are stdlib ``@dataclass`` (SL101 conversion);
+    Pydantic's ``model_dump_json`` is gone, so reimplement the equivalent
+    on top of ``dataclasses.asdict`` + ``json.dumps``. ``LintSeverity`` is
+    a str-valued Enum; ``asdict`` leaves Enum instances untouched, so the
+    ``dict_factory`` unwraps them to ``.value`` for JSON.
+    """
+    return json.dumps(
+        asdict(report, dict_factory=_enum_value_factory),
+        indent=2,
+    )
+
+
+def _enum_value_factory(items: list[tuple[str, object]]) -> dict[str, object]:
+    """dict_factory for ``asdict`` that unwraps str-valued Enums to their .value."""
+    return {k: (v.value if isinstance(v, Enum) else v) for k, v in items}
 
 
 def repair_agent(model: Model | str | None = None) -> Agent[RepairAgentDeps, RepairPlan]:

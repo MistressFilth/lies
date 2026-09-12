@@ -1,5 +1,6 @@
 from pathlib import PurePosixPath
 
+import dataclasses
 import pytest
 from pydantic import ValidationError
 
@@ -66,7 +67,10 @@ def test_search_result_serializes_with_evidence() -> None:
 
 
 def test_page_create_requires_evidence() -> None:
-    with pytest.raises(ValidationError):
+    # PageCreate is a stdlib @dataclass (SL101 conversion); enforcement
+    # in __post_init__ raises plain ValueError instead of pydantic's
+    # ValidationError. The contract — non-empty evidence — is preserved.
+    with pytest.raises(ValueError, match="evidence"):
         PageCreate(path="concepts/x.md", content="# X", evidence=[])
 
 
@@ -144,7 +148,10 @@ def test_page_create_with_custom_tag_is_frozen() -> None:
         tag="ingest",
     )
     assert op.tag == "ingest"
-    with pytest.raises(ValidationError):
+    # PageCreate is a frozen stdlib @dataclass; assignment raises
+    # FrozenInstanceError (dataclasses.FrozenInstanceError) rather than
+    # pydantic's ValidationError. The immutability contract is preserved.
+    with pytest.raises(dataclasses.FrozenInstanceError):
         op.tag = "synthesis"  # type: ignore[misc]
 
 
@@ -210,5 +217,8 @@ def test_page_delete_carries_evidence_and_kind() -> None:
 
 
 def test_page_delete_requires_evidence() -> None:
-    with pytest.raises(ValidationError):
+    # PageDelete is a stdlib @dataclass (SL101 conversion); enforcement
+    # in __post_init__ raises plain ValueError instead of pydantic's
+    # ValidationError. The contract — non-empty evidence — is preserved.
+    with pytest.raises(ValueError, match="evidence"):
         PageDelete(path="wiki/foo.md", evidence=[])

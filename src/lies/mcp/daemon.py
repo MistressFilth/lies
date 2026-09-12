@@ -18,18 +18,18 @@ clean stop.
 from __future__ import annotations
 
 import ipaddress
+import json
 import os
 import signal as signal_module
 import socket
 import subprocess
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
 import typer
-from pydantic import BaseModel, ValidationError
 
 from lies import __version__
 from lies.utils.exclusive import acquire_create_lock, release_create_lock
@@ -81,7 +81,8 @@ class DaemonStopFailed(DaemonError):
     """The daemon process survived SIGKILL."""
 
 
-class PidRecord(BaseModel):
+@dataclass
+class PidRecord:
     """On-disk description of a running daemon.
 
     A record on disk means "this daemon accepted a connection at least
@@ -123,8 +124,15 @@ def read_record(wiki: Wiki) -> PidRecord | None:
     except (FileNotFoundError, OSError):
         return None
     try:
-        return PidRecord.model_validate_json(raw)
-    except ValidationError:
+        data = json.loads(raw)
+        # ``json.dumps(..., default=str)`` round-trips ``datetime`` through
+        # ``str(obj)`` (an ISO-8601-formatted string Python 3.11+ understands);
+        # Pydantic re-parsed this on the way back. Restore the field so
+        # arithmetic in :func:`daemon_status` keeps working.
+        if isinstance(data.get("started_at"), str):
+            data["started_at"] = datetime.fromisoformat(data["started_at"])
+        return PidRecord(**data)
+    except (json.JSONDecodeError, TypeError, ValueError):
         return None
 
 
@@ -134,7 +142,7 @@ def write_record(wiki: Wiki, rec: PidRecord) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f"{path.name}.tmp")
     try:
-        tmp.write_text(rec.model_dump_json(), encoding="utf-8")
+        tmp.write_text(json.dumps(asdict(rec), default=str), encoding="utf-8")
         os.replace(tmp, path)
     except BaseException:
         try:
