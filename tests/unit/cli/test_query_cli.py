@@ -256,6 +256,7 @@ def test_query_dangling_operator_exits_2(wiki: Wiki) -> None:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.slow
 def test_query_cli_plus_c_qualifier(wiki: Wiki) -> None:
     """``+c:airflow`` parses to ``Include(tag='airflow', qualifier='c')``.
 

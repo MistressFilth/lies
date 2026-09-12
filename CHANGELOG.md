@@ -6,15 +6,125 @@ All notable changes to LIES are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- **Test-suite timing Makefile targets** (`make time-unit-tests`,
+  `make time-features-tests`). Mirror `pydantic-guidance`'s targets:
+  pytest runs with `--durations=0 --durations-min=0 -vv --tb=short
+  --no-header` so every test's wall-clock time prints, sorted slowest
+  first. `time-unit-tests` runs `tests/unit/` (always); the features
+  target short-circuits unless `INTEGRATION=1` is set, matching the
+  new integration gate.
+
 ### Fixed
 - **`lies ingest --batch <DIR>` now walks the directory end-to-end.** Phase 2 PR #62 listed `--batch` in the CLI surface (spec §"CLI surface"`/L31/L400) but the production fetcher (`ScraperFetcher.fetch_sources`) routed every input through `pick_scraper(source)`, which only matched URLs / existing files / PDFs and raised `ScraperUnavailable` for a directory. The `lies ingest --batch <dir> --slug-prefix X` form had no end-to-end path; the unit test `test_run_batch_ingest_walks_dir` masked the defect behind a `_StaticFetcher` test double. Today `ScraperFetcher.fetch_sources` carries a depth-1 `source.is_dir()` branch that yields one `FetchItem` per regular file (subdirectories skipped; `OSError` on read swallowed silently per the `WebScraper._parse_index` precedent). `run_batch_ingest` treats an empty directory as a no-op run (exits 0) per spec L400; previously it raised `LibraryFetchUnreachable` and the CLI exited non-zero on `lies ingest --batch <empty-dir>`. New `tests/integration/library/test_ingest_batch_e2e.py` (spec L372, integration-gated) covers the CLI end-to-end; `tests/unit/library/test_ingest.py::test_run_batch_ingest_production_fetcher_walks_directory` + `::test_run_batch_ingest_empty_directory_is_noop` pin the dispatch contract on the production fetcher + the no-op behavior. 587 unit / 1 integration pass.
 
 - **Library bootstrap: `LibraryWriter` now initialises a git repo on first commit.** Phase 2 PR #62 left library repo creation implicit — a fresh `$XDG_DATA_HOME/lies/library/` had no `.git`, so the first `lies ingest` raised `LibraryAtomicCommitFailed("git add failed: fatal: not a git repository")` at the atomic-commit envelope. The CLI swallowed the failure (only `result.errors > 0` triggers `typer.Exit(code=1)`; library envelope exceptions are not classified) and exited 0 with mirror files on disk and an empty catalog. Today `LibraryWriter.__init__` boots an idempotent git repo when `.git` is absent, mirroring `git_init_initial` (`src/lies/wiki/layout.py:56`). Subsequent writers against an already-initialised repo no-op. New test `tests/unit/library/test_writer.py::test_writer_auto_bootstrap_init_repo_on_first_commit` pins the contract. 1493 unit pass.
 
+- **`run_source_ingest` pipeline no longer shells out for git or qmd
+  in unit tests.** `tests/unit/library/test_ingest.py` adds an
+  autouse fixture that stubs `atomic_commit`, `qmd_collection_add_or_update`,
+  `qmd_update`, and `qmd_embed` in `lies.library.writer`. The 10
+  slowest unit tests (45s → 0.15s each, was the dominant share of the
+  219s unit wall) now exercise the ingest logic without forking git.
+  `WikiMemoryService.apply_plan` tests get the parallel mock set
+  (`atomic_commit`, `_snapshot_working_tree`, `_restore_working_tree`,
+  `_discard_snapshot`, `qmd_update`) in
+  `tests/unit/test_apply_plan_sidecar.py`.
+- **Daemon reap tests no longer wait on a 30s sleep.** The
+  SIGTERM-ignored escalation test (`test_reap_qmd_daemon_escalates_to_sigkill_when_sigterm_ignored`)
+  shrinks the SIGTERM grace window from 0.5s to 0.05s and the
+  handler-install sleep from 0.3s to 0.1s. Wall drops from 0.83s to
+  0.17s; the assertion still pins the SIGKILL-after-grace invariant.
+- **`file_back_author` retry tests no longer wait on the
+  `time.sleep(0.1)` backoff** between retry attempts. The `orch`
+  fixture stubs `lies.orchestrator.time.sleep`; the retry LOGIC is
+  still pinned (3-attempt exhaustion surfaces as
+  `file_back_failed_after_3_attempts`), but the wall-clock backoff
+  no longer dominates (0.22s → <0.15s per test).
+- **`test_path_render_cmd_preserves_state_across_builds` no longer
+  re-imports the path-loaded stub from disk on every build.** Mocks
+  `lies.builders.liquid._resolve_render_cmd` with an in-memory
+  recording module installed in `sys.modules`; the
+  path-import single-call contract remains covered by the sibling
+  `test_path_render_cmd_is_invoked_and_converted` test.
+
 ### Changed
 - **SL101 conversions — 12 BaseModel subclasses now stdlib `@dataclass`** (#65). `AuthorQuestion`, `CollectionAuthorDeps`, `LintFinding`, `LintReport`, `PageDiff`, `QueryAnswer`, `SourceExtraction`, `_CollisionVerdict`, `PidRecord`, `CreateStub`, `PageCreate`, `PageDelete`. Internal data carriers only; pydantic-ai `output_type=` validated dataclasses end-to-end (probed in spec §"Background"). No agent system prompts or `output_type=` call sites changed. `repair.py:75` JSON builder and `mcp/daemon.py:126,137` pid round-trip swapped to `json.dumps(asdict(...), default=str)` + `datetime.fromisoformat` re-parse (preserves prior `model_dump_json` output contract byte-for-byte). 1492 unit tests + 1 warning (baseline 1461 + 31 pin tests; pre-existing `wikilink-collision` warning unrelated). `_RepairOp` and `_PlanOperation` parent classes stay `BaseModel` (have `Field(min_length=1)` / `model_validator`); only the flagged leaves converted.
+- **`make check` now mirrors the full pre-commit stack** (lint +
+  format + typecheck + supyrliminal + unit-test). Was only lint +
+  typecheck + format; the local `test` pre-commit hook and the
+  supyrliminal hook were outside the Makefile envelope. Pre-commit
+  hooks wrap `make unit-test`, so a commit that lands in the repo has
+  now passed every gate via one target.
+- **Integration tests gated by `INTEGRATION=1`** via a single
+  `pytest_collection_modifyitems` hook in
+  `tests/integration/conftest.py`. Replaces the per-file
+  `pytest.mark.skipif(os.environ.get("INTEGRATION") != "1", ...)``
+  decorators scattered across the integration suite. `make test`,
+  `make check`, `make features-test`, and `make time-features-tests`
+  all skip integration tests unless the env var is set; CI runs them
+  with `INTEGRATION=1`.
+- **`slow` pytest marker + `--runslow` opt-in.** Tests over the 0.15s
+  unit-test budget (CLI status rendering, integration-gated shell
+  start-up, subprocess-bound daemon reap) carry `@pytest.mark.slow`.
+  Default `make unit-test` skips them; `make time-unit-tests` passes
+  `--runslow` so the timing report covers every test. Marker is
+  registered in `pyproject.toml`; the skip hook lives in
+  `tests/unit/conftest.py`. 13 tests marked slow; the default run
+  drops from 33s (all tests) to 23s (slow skipped).
 
-- **Supyrliminal hook now blocking** (#66). The `--exit-zero` advisory flag is dropped; commits fail if a new SL/PYD finding lands. Pre-PR conversion reduced 12 → 0 findings; the hook now enforces the policy on every commit locally + in CI.
+### Changed
+- **`make check` now mirrors the full pre-commit stack** (lint +
+  format + typecheck + supyrliminal + unit-test). Was only lint +
+  typecheck + format; the local `test` pre-commit hook and the
+  supyrliminal hook were outside the Makefile envelope. Pre-commit
+  hooks wrap `make unit-test`, so a commit that lands in the repo has
+  now passed every gate via one target.
+- **Integration tests gated by `INTEGRATION=1`** via a single
+  `pytest_collection_modifyitems` hook in
+  `tests/integration/conftest.py`. Replaces the per-file
+  `pytest.mark.skipif(os.environ.get("INTEGRATION") != "1", ...)`
+  decorators scattered across the integration suite. `make test`,
+  `make check`, `make features-test`, and `make time-features-tests`
+  all skip integration tests unless the env var is set; CI runs them
+  with `INTEGRATION=1`.
+- **`slow` pytest marker + `--runslow` opt-in.** Tests over the 0.15s
+  unit-test budget (CLI status rendering, integration-gated shell
+  start-up, subprocess-bound daemon reap) carry `@pytest.mark.slow`.
+  Default `make unit-test` skips them; `make time-unit-tests` passes
+  `--runslow` so the timing report covers every test. Marker is
+  registered in `pyproject.toml`; the skip hook lives in
+  `tests/unit/conftest.py`. 13 tests marked slow; the default run
+  drops from 33s (all tests) to 23s (slow skipped).
+
+### Fixed
+- **`run_source_ingest` pipeline no longer shells out for git or qmd
+  in unit tests.** `tests/unit/library/test_ingest.py` adds an
+  autouse fixture that stubs `atomic_commit`, `qmd_collection_add_or_update`,
+  `qmd_update`, and `qmd_embed` in `lies.library.writer`. The 10
+  slowest unit tests (45s → 0.15s each, was the dominant share of the
+  219s unit wall) now exercise the ingest logic without forking git.
+  `WikiMemoryService.apply_plan` tests get the parallel mock set
+  (`atomic_commit`, `_snapshot_working_tree`, `_restore_working_tree`,
+  `_discard_snapshot`, `qmd_update`) in
+  `tests/unit/test_apply_plan_sidecar.py`.
+- **Daemon reap tests no longer wait on a 30s sleep.** The
+  SIGTERM-ignored escalation test (`test_reap_qmd_daemon_escalates_to_sigkill_when_sigterm_ignored`)
+  shrinks the SIGTERM grace window from 0.5s to 0.05s and the
+  handler-install sleep from 0.3s to 0.1s. Wall drops from 0.83s to
+  0.17s; the assertion still pins the SIGKILL-after-grace invariant.
+- **`file_back_author` retry tests no longer wait on the
+  `time.sleep(0.1)` backoff** between retry attempts. The `orch`
+  fixture stubs `lies.orchestrator.time.sleep`; the retry LOGIC is
+  still pinned (3-attempt exhaustion surfaces as
+  `file_back_failed_after_3_attempts`), but the wall-clock backoff
+  no longer dominates (0.22s → <0.15s per test).
+- **`test_path_render_cmd_preserves_state_across_builds` no longer
+  re-imports the path-loaded stub from disk on every build.** Mocks
+  `lies.builders.liquid._resolve_render_cmd` with an in-memory
+  recording module installed in `sys.modules`; the
+  path-import single-call contract remains covered by the sibling
+  `test_path_render_cmd_is_invoked_and_converted` test.
 
 ## [0.21.0] - 2026-09-11
 
@@ -30,6 +140,10 @@ All notable changes to LIES are documented here. The format follows
   and MCP `exclude_tags` accept prefixed values. Parser rejects
   unknown qualifiers (`x:foo` → `TagExprParseError("unknown
   qualifier: 'x'")`).
+- **SL101 conversions — 12 BaseModel subclasses now stdlib `@dataclass`** (#65). `AuthorQuestion`, `CollectionAuthorDeps`, `LintFinding`, `LintReport`, `PageDiff`, `QueryAnswer`, `SourceExtraction`, `_CollisionVerdict`, `PidRecord`, `CreateStub`, `PageCreate`, `PageDelete`. Internal data carriers only; pydantic-ai `output_type=` validated dataclasses end-to-end (probed in spec §"Background"). No agent system prompts or `output_type=` call sites changed. `repair.py:75` JSON builder and `mcp/daemon.py:126,137` pid round-trip swapped to `json.dumps(asdict(...), default=str)` + `datetime.fromisoformat` re-parse (preserves prior `model_dump_json` output contract byte-for-byte). 1492 unit tests + 1 warning (baseline 1461 + 31 pin tests; pre-existing `wikilink-collision` warning unrelated). `_RepairOp` and `_PlanOperation` parent classes stay `BaseModel` (have `Field(min_length=1)` / `model_validator`); only the flagged leaves converted.
+
+### Changed
+- **Supyrliminal hook now blocking** (#66). The `--exit-zero` advisory flag is dropped; commits fail if a new SL/PYD finding lands. Pre-PR conversion reduced 12 → 0 findings; the hook now enforces the policy on every commit locally + in CI.
 
 ### Fixed
 - **Empty-body qualifier (`c:` / `t:`) now errors consistently on include + exclude.** The include path previously produced `Include(tag='c:', qualifier=None)` and confused the operator with `unknown tag: 'c:'` at the resolver; the exclude path raised cleanly. Unify by checking empty body in `parse_atom` (mirrors `_check_qualifier` on the exclude side). `_check_qualifier` promoted to public API as `check_qualifier` (drop underscore prefix; three call sites in CLI + MCP now use the public name).

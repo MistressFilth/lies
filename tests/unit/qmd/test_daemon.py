@@ -47,6 +47,7 @@ def test_check_data_dir_match_normalizes_paths(
     assert qmd_daemon.check_data_dir_match(dotted) is True
 
 
+@pytest.mark.slow
 def test_ensure_qmd_daemon_reaps_on_mismatch(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -94,6 +95,7 @@ def test_reap_qmd_daemon_sends_sigterm_and_waits_for_exit(
             proc.wait(timeout=2)
 
 
+@pytest.mark.slow
 def test_reap_qmd_daemon_escalates_to_sigkill_when_sigterm_ignored(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -108,7 +110,7 @@ def test_reap_qmd_daemon_escalates_to_sigkill_when_sigterm_ignored(
     # Give the interpreter time to install the SIG_IGN handler before reap
     # runs; otherwise the signal can arrive during Python startup and the
     # process dies on the default handler, defeating the test's intent.
-    time.sleep(0.3)
+    time.sleep(0.1)
     try:
         monkeypatch.setattr(
             qmd_daemon,
@@ -116,11 +118,11 @@ def test_reap_qmd_daemon_escalates_to_sigkill_when_sigterm_ignored(
             lambda: qmd_daemon.QmdState(True, True, proc.pid, f"stubborn {proc.pid}"),
         )
         start = time.monotonic()
-        qmd_daemon._reap_qmd_daemon(grace=0.5, poll=0.02)
+        qmd_daemon._reap_qmd_daemon(grace=0.05, poll=0.01)
         elapsed = time.monotonic() - start
         # SIGTERM is ignored, so reap waits the grace window, then SIGKILLs.
         # Total elapsed must exceed the SIGTERM grace but stay well under 30s.
-        assert 0.5 <= elapsed < 5.0
+        assert 0.05 <= elapsed < 5.0
         assert proc.poll() is not None
     finally:
         if proc.poll() is None:

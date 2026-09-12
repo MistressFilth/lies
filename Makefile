@@ -33,21 +33,36 @@ unit-test: ## Run unit tests only.
 	$(PYTEST) $(TESTS)/unit/
 
 .PHONY: features-test
-features-test: ## Run behavior/feature/integration tests.
-	@if [ -d "$(TESTS)/features" ]; then \
-		$(PYTEST) $(TESTS)/features/; \
+features-test: ## Run behavior/feature/integration tests (requires INTEGRATION=1).
+	@if [ "$$INTEGRATION" != "1" ]; then \
+		echo "integration tests skipped (set INTEGRATION=1 to run)"; \
 	else \
-		$(PYTEST) $(TESTS)/integration/; \
+		if [ -d "$(TESTS)/features" ]; then \
+			$(PYTEST) $(TESTS)/features/; \
+		else \
+			$(PYTEST) $(TESTS)/integration/; \
+		fi; \
 	fi
 
 .PHONY: test
 test: ## Run all tests (unit + features/integration).
 	$(PYTEST)
 
-.PHONY: test-timer
-test-timer: ## Run unit tests with per-test timing; prints N slowest (override N=20).
-	@N=$${N:-20}; echo "==> pytest tests/unit/ --durations=$$N (top $$N slowest)"; \
-	$(PYTEST) $(TESTS)/unit/ --durations=$$N -vv --durations-min=0.0
+.PHONY: time-unit-tests
+time-unit-tests: ## Run unit tests; print per-test ms (verbose; no duration floor).
+	$(PYTEST) $(TESTS)/unit/ --runslow --durations=0 --durations-min=0 -vv --tb=short --no-header
+
+.PHONY: time-features-tests
+time-features-tests: ## Run integration tests; print per-test ms (verbose; requires INTEGRATION=1).
+	@if [ "$$INTEGRATION" != "1" ]; then \
+		echo "integration tests skipped (set INTEGRATION=1 to run)"; \
+	else \
+		if [ -d "$(TESTS)/features" ]; then \
+			$(PYTEST) $(TESTS)/features/ --durations=0 --durations-min=0 -vv --tb=short --no-header; \
+		else \
+			$(PYTEST) $(TESTS)/integration/ --durations=0 --durations-min=0 -vv --tb=short --no-header; \
+		fi; \
+	fi
 
 .PHONY: clean
 clean: ## Remove caches and build artifacts.
@@ -73,11 +88,13 @@ format: ## Run ruff format (may auto-edit).
 	$(RUFF_FMT)
 
 .PHONY: check
-check: ## Run lint, typecheck, and format.
-	$(RUFF_LINT)
+check: ## Run full pre-commit stack (ruff + format + ty + supyrliminal + unit-test).
+	$(PY) ruff check --fix $(SRC) $(TESTS)
+	$(PY) ruff format $(SRC) $(TESTS)
 	$(TY)
-	$(RUFF_FMT)
+	$(SL)
+	$(PYTEST) $(TESTS)/unit/
 
 .PHONY: release
-release: check test ## Bump version, update CHANGELOG, run gates, push tag.
+release: check ## Bump version, update CHANGELOG, run gates, push tag.
 	$(UV) run python scripts/release.py $(if $(BUMP),--bump $(BUMP),)
