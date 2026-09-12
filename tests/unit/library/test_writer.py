@@ -43,6 +43,76 @@ def lib_with_git(lib: Library) -> Library:
     return lib
 
 
+def test_writer_commit_qmd_post_commit_hook_invokes_helpers(
+    lib_with_git: Library, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``commit(qmd_collection=X)`` invokes the qmd post-commit helpers.
+
+    Regression pin for the defect where bare-name qmd lookups
+    (``qmd_collection_add_or_update`` / ``qmd_update`` / ``qmd_embed``)
+    inside ``LibraryWriter.commit`` raise ``NameError`` because
+    Python ``LOAD_GLOBAL`` bytecode does NOT consult module-level
+    ``__getattr__`` — the helpers are installed via
+    :PEP:`562`'s ``__getattr__`` for *attribute access* only.
+    Each call was caught by the ``except Exception`` wrapper,
+    printed the "name '...' is not defined" warning, and committed
+    without registering with qmd.  Library mirrors existed on disk but
+    the qmd index never saw them, so every ``lies mcp query`` against
+    library content fell back to the wiki ``index.md``.
+
+    Today ``commit(qmd_collection=...)`` resolves the bare-name lookup
+    via the same ``globals().get(...) or __getattr__(...)`` workaround
+    :mod:`lies.cli.page` uses for its lazy ``Orchestrator`` import.
+    The stubs below replace the real qmd helpers; the test asserts the
+    stubs were each invoked (not the bare-name NameError swallowed).
+    """
+    calls: list[tuple[str, tuple]] = []
+
+    def _stub_add_or_update(git_root, *args, **kwargs):
+        calls.append(("qmd_collection_add_or_update", (git_root, args, kwargs)))
+
+    def _stub_update(git_root, *args, **kwargs):
+        calls.append(("qmd_update", (git_root, args, kwargs)))
+
+    def _stub_embed(git_root, collection, *args, **kwargs):
+        calls.append(("qmd_embed", (git_root, collection, args, kwargs)))
+
+    # Patch at the qmd-module level so ``__getattr__`` in
+    # ``lies.library.writer`` imports our stubs on first call.
+    import lies.qmd.cli as qmd_mod
+
+    monkeypatch.setattr(qmd_mod, "qmd_collection_add_or_update", _stub_add_or_update)
+    monkeypatch.setattr(qmd_mod, "qmd_update", _stub_update)
+    monkeypatch.setattr(qmd_mod, "qmd_embed", _stub_embed)
+    # Force the writer module to re-import on next access (so the
+    # patched references resolve rather than any cached ones).
+    import lies.library.writer as writer_mod
+
+    for cached in (
+        "qmd_collection_add_or_update",
+        "qmd_update",
+        "qmd_embed",
+    ):
+        monkeypatch.delattr(writer_mod, cached, raising=False)
+
+    file = lib_with_git.collections_root / "claude" / "qmd-hook-test.md"
+    file.parent.mkdir(parents=True, exist_ok=True)
+    file.write_text("body\n")
+    rel = file.relative_to(lib_with_git.git_root)
+
+    writer = LibraryWriter(lib_with_git)
+    writer.commit([rel], message="ingest: claude +qmd-test", qmd_collection="claude")
+
+    by_name = {n for n, _ in calls}
+    assert by_name == {"qmd_collection_add_or_update", "qmd_update", "qmd_embed"}, (
+        f"qmd helpers must each be invoked exactly once; got {calls!r}"
+    )
+    # ``qmd_embed`` carries the collection name; assert it observed the
+    # right collection (the operator-supplied name, not a derivation).
+    embed_calls = [(n, args) for n, args in calls if n == "qmd_embed"]
+    assert embed_calls and embed_calls[0][1][1] == "claude", embed_calls
+
+
 def test_writer_auto_bootstrap_init_repo_on_first_commit(lib: Library) -> None:
     """Fresh library (no ``.git``) gets bootstrapped transparently on first commit.
 
