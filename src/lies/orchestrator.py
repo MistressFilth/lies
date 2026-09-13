@@ -1390,10 +1390,31 @@ class Orchestrator:
         verbatim quotation and disagreement-surfacing, neither of which
         survives truncation.
 
-        ``rel_path`` is ``data_root``-relative (it carries the ``wiki/``
-        prefix), so it joins onto ``self.wiki.data_root``. Joining onto
-        ``wiki_dir`` would silently produce ``wiki/wiki/...`` and read
-        nothing.
+        Path resolution branches on ``page.source``:
+
+        - ``source == "library"`` → resolve against
+          ``Library.open().collections_root``. The rel_path is the
+          qmd URI form (``<coll>/<file>``) per spec §"Path resolution";
+          library files live outside ``wiki.data_root`` so a naive join
+          there would ``OSError`` silently and the LLM would never see
+          library content (the branch's primary-source promise broken).
+        - ``source == "wiki"`` → resolve against
+          ``self.wiki.data_root``. rel_path is data_root-relative
+          (carries the ``wiki/`` prefix); ``data_root / rel_path``
+          resolves correctly. Joining onto ``wiki_dir`` would silently
+          produce ``wiki/wiki/...`` and read nothing — the convention
+          is documented in :func:`_try_read` (``PageRead.rel_path``
+          constructor).
+
+        ``OSError`` / ``FileNotFoundError`` / ``UnicodeDecodeError`` on
+        any single page is skipped with a warning so a missing file
+        cannot crash the synthesis path. The agent still runs with
+        whatever did read cleanly.
+
+        ``page_sources`` is populated in lockstep with ``page_texts``
+        so the LLM prompt can render ``[library]`` / ``[wiki]`` source
+        tags inline per page. The LLM uses these tags to apply the
+        library-wins-on-conflict rule from the prompt body.
 
         Returns ``(output, "")`` on success and ``(None, reason)`` on
         any failure, where ``reason`` is ``"<ExcType>: <msg>"``. One
@@ -1403,16 +1424,32 @@ class Orchestrator:
         """
         import logging
 
+        # Local import: same rationale as ``_resolve_qmd_path_in_library``
+        # in :mod:`lies.query.synthesizer` — keeps ``Library`` import out
+        # of module-load order at import time.
+        from lies.library.paths import Library
+
         page_texts: dict[str, str] = {}
+        page_sources: dict[str, Literal["library", "wiki"]] = {}
         for page in pages:
             try:
-                page_texts[page.rel_path] = (self.wiki.data_root / page.rel_path).read_text(
-                    encoding="utf-8"
+                if page.source == "library":
+                    resolved = Library.open().collections_root / page.rel_path
+                else:
+                    resolved = self.wiki.data_root / page.rel_path
+                page_texts[page.rel_path] = resolved.read_text(encoding="utf-8")
+                page_sources[page.rel_path] = cast(Literal["library", "wiki"], page.source)
+            except (OSError, UnicodeDecodeError) as exc:
+                logging.getLogger(__name__).warning(
+                    "query_synthesizer: skipping unreadable %s page %s: %s: %s",
+                    page.source,
+                    page.rel_path,
+                    type(exc).__name__,
+                    exc,
                 )
-            except (OSError, UnicodeDecodeError):
                 continue
 
-        deps = QueryDeps(question=question, page_texts=page_texts)
+        deps = QueryDeps(question=question, page_texts=page_texts, page_sources=page_sources)
         try:
             result = self._query_synthesizer_agent.run_sync(question, deps=deps)
         except Exception as exc:  # noqa: BLE001 - broad catch; extractive is the safety net

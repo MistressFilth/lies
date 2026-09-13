@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal
 
 from pydantic_ai import Agent
 from pydantic_ai.models import Model
@@ -31,6 +32,7 @@ using only what the LIES wiki contains.
 You receive:
 - The user's question
 - A list of pages (top-N from qmd hybrid search), each with its content
+  and a `[library]` / `[wiki]` source tag
 
 Read each page carefully. Synthesize a markdown answer that:
 
@@ -76,6 +78,11 @@ class QueryDeps:
     retrieved set without translation. This deliberately differs from
     ``LintDeps.page_texts``, which is wiki-dir-relative.
 
+    ``page_sources`` carries the same keys as ``page_texts`` with the
+    source discriminator (``"library"`` / ``"wiki"``) the LLM needs to
+    apply the library-wins-on-conflict rule. Required (no default) so
+    a caller that forgets to populate it fails fast at construction.
+
     Full bodies, not excerpts: the prompt requires the agent to quote
     the wiki verbatim and to present both sides when two pages disagree,
     and neither is possible from a truncated excerpt.
@@ -83,6 +90,7 @@ class QueryDeps:
 
     question: str
     page_texts: dict[str, str]
+    page_sources: dict[str, Literal["library", "wiki"]]
 
 
 def _build_query_prompt(ctx: RunContext[QueryDeps]) -> str:
@@ -93,6 +101,15 @@ def _build_query_prompt(ctx: RunContext[QueryDeps]) -> str:
     the agent unable to read any page. Mirrors
     ``lies.agents.linter._build_linter_prompt``.
 
+    Each page is rendered with its source tag inline (``[library]`` /
+    ``[wiki]``) before the path so the LLM can apply the
+    library-wins-on-conflict rule from the prompt body itself, not
+    from a separate header. ``page_sources`` keys mirror
+    ``page_texts`` keys by construction (the orchestrator populates
+    them in lockstep); the renderer falls back to ``"wiki"`` if a
+    missing key is ever encountered so a stale ``page_texts`` entry
+    doesn't crash the prompt.
+
     Defensive against ``ctx.deps is None`` for callers that drive the
     agent without deps.
     """
@@ -101,7 +118,8 @@ def _build_query_prompt(ctx: RunContext[QueryDeps]) -> str:
         return parts[0]
     parts.append(f"\nQuestion: {ctx.deps.question}")
     for path, text in ctx.deps.page_texts.items():
-        parts.append(f"\n--- {path} ---\n{text}")
+        source = ctx.deps.page_sources.get(path, "wiki")
+        parts.append(f"\n--- [{source}] {path} ---\n{text}")
     return "\n".join(parts)
 
 
