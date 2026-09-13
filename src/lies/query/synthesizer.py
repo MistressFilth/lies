@@ -570,7 +570,12 @@ def build_answer_from_pages(
         excerpt = page.excerpt or "(no extractable content)"
         bullets.append(f"- {page.title} — {excerpt} — [{page.title}]({page.rel_path})")
 
-    if fallback_reason:
+    if fallback_reason == FALLBACK_REASON_WIKI_ONLY:
+        preamble = (
+            "_Note: not grounded in primary sources (library returned no matches); "
+            "answered from wiki._\n\n"
+        )
+    elif fallback_reason:
         preamble = (
             f"_Note: qmd unavailable ({fallback_reason}); answered from `wiki/index.md`._\n\n"
         )
