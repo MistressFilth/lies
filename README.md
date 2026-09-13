@@ -316,6 +316,9 @@ Environment variables:
 - `LIES_QMD_TRANSPORT` — how the agent reaches qmd: `http` (default, uses
   the qmd daemon) or `stdio` (spawns a `qmd` process per agent)
 - `LIES_QMD_URL` — qmd daemon URL (default: `http://127.0.0.1:8181`)
+- `LIES_QMD_LOCK_PATH` — overrides the default
+  `${XDG_STATE_HOME:-~/.local/state}/lies/qmd.lock` lock path; useful for
+  sandboxing or per-wiki isolation
 - `LIES_XDG_DATA_HOME` — overrides `$XDG_DATA_HOME` for LIES
 - `LIES_XDG_CONFIG_HOME` — overrides `$XDG_CONFIG_HOME` for LIES
 - `LIES_XDG_RUNTIME_DIR` — overrides `$XDG_RUNTIME_DIR` for LIES
