@@ -42,9 +42,13 @@ def __getattr__(name: str):
 class WikiLayout:
     """Thin wrapper around the wiki's content directory."""
 
-    def __init__(self, root: Path, name: str = "default") -> None:
+    def __init__(self, root: Path) -> None:
         self.root = root
-        self.name = name
+        # The wiki name is the data root's basename by convention
+        # (``Wiki.data_root_for(name) = .../<LIES_DATA_SUBDIR>/<name>``).
+        # Deriving it here keeps callers in sync with the qmd collection
+        # name (``wiki_<name>``) the dispatcher queries.
+        self.name = root.name
 
     @property
     def raw_dir(self) -> Path:
