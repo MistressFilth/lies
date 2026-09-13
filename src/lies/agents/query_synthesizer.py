@@ -44,6 +44,11 @@ Read each page carefully. Synthesize a markdown answer that:
 5. **Decides whether to file** — set `should_file=True` if the answer is a
    novel synthesis, comparison, or analysis that future readers would value.
    Set `should_file=False` for one-off factual lookups.
+6. **Applies the source rule** — Source rule: library is the primary source
+   of truth. Wiki content is supplementary. When sources contradict, agree with library.
+   Each citation carries a `[library]` or `[wiki]` tag reflecting its source;
+   preserve these tags in your answer (e.g., as a `[library]` prefix on the
+   `[name](path)` link so the operator sees the provenance inline).
 
 Return a `QueryAnswer` with:
 - **`answer`**: the markdown body
