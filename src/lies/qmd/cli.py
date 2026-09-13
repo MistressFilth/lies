@@ -16,6 +16,8 @@ import warnings
 from pathlib import Path
 from typing import Any
 
+from lies.qmd.lock import with_qmd_lock
+
 # Real `qmd query --format json` returns each hit's `file` field as
 # ``qmd://<collection>/<path-within-collection>``. Downstream consumers
 # (synthesizer, memory retrieval) consume a flat ``path`` key, so we strip
@@ -63,6 +65,7 @@ def _run(args: list[str], cwd: Path, timeout: int = 300) -> subprocess.Completed
         raise QmdNotInstalledError("`qmd` not found on PATH") from exc
 
 
+@with_qmd_lock()
 def qmd_update(cwd: Path) -> None:
     """Run ``qmd update`` in ``cwd``.
 
@@ -76,6 +79,7 @@ def qmd_update(cwd: Path) -> None:
         raise QmdError(f"qmd update failed: {result.stderr.strip()}")
 
 
+@with_qmd_lock()
 def qmd_status(cwd: Path) -> str:
     """Return qmd's status output for the collections under `cwd`."""
     result = _run(["status"], cwd=cwd)
@@ -84,6 +88,7 @@ def qmd_status(cwd: Path) -> str:
     return str(result.stdout)
 
 
+@with_qmd_lock()
 def qmd_collection_add(cwd: Path, path: Path, name: str) -> None:
     """Register a collection with qmd."""
     result = _run(["collection", "add", str(path), "--name", name], cwd=cwd)
@@ -91,6 +96,7 @@ def qmd_collection_add(cwd: Path, path: Path, name: str) -> None:
         raise QmdError(f"qmd collection add failed: {result.stderr.strip()}")
 
 
+@with_qmd_lock()
 def qmd_collection_add_if_missing(cwd: Path, path: Path, name: str) -> None:
     """Register ``name`` with qmd, treating "already exists" as success.
 
@@ -107,6 +113,7 @@ def qmd_collection_add_if_missing(cwd: Path, path: Path, name: str) -> None:
     raise QmdError(f"qmd collection add failed: {stderr}")
 
 
+@with_qmd_lock()
 def qmd_collection_remove(cwd: Path, name: str) -> None:
     """Run ``qmd collection remove <name>`` in ``cwd``.
 
@@ -121,6 +128,7 @@ def qmd_collection_remove(cwd: Path, name: str) -> None:
         raise QmdError(f"qmd collection remove failed: {result.stderr.strip()}")
 
 
+@with_qmd_lock()
 def qmd_collection_show(cwd: Path, name: str) -> dict[str, str] | None:
     """Return parsed ``qmd collection show <name>`` output, or None if missing.
 
@@ -154,6 +162,7 @@ def qmd_collection_show(cwd: Path, name: str) -> dict[str, str] | None:
     return {"path": info["path"]}
 
 
+@with_qmd_lock()
 def qmd_collection_add_or_update(
     cwd: Path,
     path: Path,
@@ -200,6 +209,7 @@ def qmd_collection_add_or_update(
     qmd_collection_add(cwd, register_path, name)
 
 
+@with_qmd_lock()
 def qmd_embed(cwd: Path, collection_name: str, *, timeout: int = 1800) -> None:
     """Run ``qmd embed -c <collection_name>`` in ``cwd``.
 
@@ -217,6 +227,7 @@ def qmd_embed(cwd: Path, collection_name: str, *, timeout: int = 1800) -> None:
         raise QmdError(f"qmd embed failed: {result.stderr.strip()}")
 
 
+@with_qmd_lock()
 def qmd_ls(cwd: Path, collection: str) -> str:
     """List files in a qmd collection."""
     result = _run(["ls", collection], cwd=cwd)
@@ -230,6 +241,7 @@ def is_qmd_installed() -> bool:
     return shutil.which("qmd") is not None
 
 
+@with_qmd_lock()
 def qmd_query(
     cwd: Path,
     question: str,

@@ -260,3 +260,38 @@ def test_stale_holder_recovery_via_dead_pid(monkeypatch, tmp_path):
         assert fd >= 0
     finally:
         mod._release(fd)
+
+
+"""Meta-tests: every qmd_* helper in src/lies/qmd/cli.py is wrapped."""
+
+
+def test_every_qmd_helper_is_with_qmd_lock_wrapped():
+    from lies.qmd import cli as qmd_cli
+
+    qmd_callables = [
+        (name, obj)
+        for name, obj in vars(qmd_cli).items()
+        if name.startswith("qmd_")
+        and callable(obj)
+        and name != "is_qmd_installed"  # doesn't shell out
+    ]
+
+    # Whitelist exception: helpers that legitimately don't shell out
+    # and don't need the flock. Today only is_qmd_installed.
+    expected_wrapped = {name for name, _ in qmd_callables if name != "is_qmd_installed"}
+
+    missing: list[str] = []
+    for name, obj in qmd_callables:
+        if name not in expected_wrapped:
+            continue
+        wrapped = getattr(obj, "__wrapped__", None)
+        if wrapped is None:
+            missing.append(name)
+    assert not missing, f"qmd helpers missing @with_qmd_lock: {missing}"
+
+
+def test_is_qmd_installed_does_not_have_lock_wrapper():
+    """``is_qmd_installed`` is a stub probe with no subprocess; no flock needed."""
+    from lies.qmd.cli import is_qmd_installed
+
+    assert getattr(is_qmd_installed, "__wrapped__", None) is None
