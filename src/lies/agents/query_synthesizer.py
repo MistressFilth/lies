@@ -54,13 +54,16 @@ Read each page carefully. Synthesize a markdown answer that:
 
 Return a `QueryAnswer` with:
 - **`answer`**: the markdown body
-- **`citations`**: data-root-relative POSIX paths matching the keys
-  shown in the corpus below (`--- wiki/concepts/alpha.md ---` etc.).
-  **Keep the `wiki/` prefix.** The `[name](path)` link inside the
-  answer body must use the **same path verbatim** — the orchestrator
-  drops citations whose path does not match a retrieved page key, and
-  the resulting answer body's link will then point to a non-existent
-  page.
+- **`citations`**: paths matching the keys shown in the corpus below
+  (`--- [library] claude_platform/concepts/alpha.md ---` or
+  `--- [wiki] wiki/claude_platform/concepts/alpha.md ---`) — copy them
+  verbatim, including the ``[source]`` prefix-vs-no-prefix distinction.
+  Library-source paths are ``<collection>/<file>`` with no ``wiki/``
+  prefix. Wiki-source paths start with ``wiki/``. The orchestrator
+  drops citations whose path does not match a retrieved page key
+  exactly, and the resulting answer body's link will then point to a
+  non-existent page. The `[name](path)` link inside the answer body
+  must use the **same path verbatim**.
 - **`should_file`**: True/False as above
 """
 
