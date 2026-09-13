@@ -4,8 +4,11 @@ Finding 11 — `lint` (CLI smoke) and `run_query` are not covered by an
 integration test that drives the public `Orchestrator` API end-to-end.
 This test exercises the full LIES flow on a real fixture wiki:
 
-    1. Query fallback — ``Orchestrator.run_query`` synthesizes a deterministic
-       answer from ``wiki/index.md`` when qmd is unavailable.
+    1. Query fallback — ``Orchestrator.run_query`` and
+       ``synthesize_answer`` return an empty answer with
+       ``fallback_reason="qmd_unavailable"`` when qmd is unavailable.
+       The two-pass refactor retired the ``wiki/index.md`` fallback, so
+       no index scan happens on qmd failure.
     2. Lint — ``Orchestrator.run_lint`` writes ``wiki/lint-report.md`` and
        appends a parseable entry to ``wiki/log.md``.
 
@@ -25,8 +28,9 @@ import pytest
 
 from lies.agents.linter import LintReport
 from lies.orchestrator import Orchestrator
-from lies.qmd.cli import QmdNotInstalledError
+from lies.qmd.cli import QmdNotInstalledError, qmd_query
 from lies.query import synthesize_answer
+from lies.query.synthesizer import set_qmd_search
 from lies.schema import load_schema
 from tests.conftest import make_wiki, models_for_tests
 
@@ -125,59 +129,75 @@ def test_orchestrator_constructs(wiki_copy: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Query fallback — synthesize_answer from wiki/index.md
+# Query fallback — synthesize_answer + run_query on qmd_unavailable
 # ---------------------------------------------------------------------------
 
 
-def test_run_query_falls_back_to_index_when_qmd_unavailable(
+def test_run_query_returns_empty_when_qmd_unavailable(
     wiki_copy: Path,
 ) -> None:
-    """Query with no qmd installed reads from wiki/index.md and returns a
-    SynthesizedAnswer whose fallback fields are populated correctly.
+    """``Orchestrator.run_query`` returns an empty answer when qmd is unavailable.
+
+    The two-pass refactor retired the ``wiki/index.md`` fallback: when
+    qmd registration fails or qmd is missing, the orchestrator now
+    returns an extractive answer with ``fallback_reason="qmd_unavailable"``
+    and no citations. The ``wiki/index.md`` is never consulted on the
+    qmd-unavailable path.
     """
     from lies.agents.query_synthesizer import QueryAnswer
 
     wiki = make_wiki(name="sample", data_root=wiki_copy)
     orch = Orchestrator(wiki=wiki, models=models_for_tests("test"))
 
-    # The agent is stubbed to a deterministic cited answer so the test
-    # exercises the orchestrator's wiring (retrieval + synthesis merge +
-    # fallback_reason propagation) without depending on TestModel's
-    # unpredictable output.
-    cited_answer = QueryAnswer(
-        answer="### How does Postgres handle concurrency?\n\n- Postgres uses MVCC.",
-        citations=["wiki/entities/postgres.md"],
-        should_file=False,
-    )
+    # Stub the qmd search callable so this test exercises the
+    # qmd_unavailable branch regardless of whether the real qmd binary
+    # is on PATH. ``set_qmd_search`` rebinds the module-level
+    # indirection that ``Orchestrator.run_query`` consumes via
+    # ``retrieve_pages``.
+    def boom(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        raise QmdNotInstalledError("simulated: qmd unavailable")
 
-    def fake_synth(self, prompt: str, **kwargs: object):  # type: ignore[no-untyped-def]
-        return mock.Mock(output=cited_answer)
+    set_qmd_search(boom)
+    try:
+        # The agent's run_sync is patched for symmetry with the legacy
+        # test: under the new contract the agent is not invoked when
+        # pages is empty, but a future refactor could re-route that
+        # branch through the agent — the patch keeps the test
+        # deterministic either way.
+        cited_answer = QueryAnswer(
+            answer="### How does Postgres handle concurrency?\n\n- Postgres uses MVCC.",
+            citations=["wiki/entities/postgres.md"],
+            should_file=False,
+        )
 
-    with mock.patch.object(type(orch._query_synthesizer_agent), "run_sync", new=fake_synth):
-        answer = orch.run_query("How does Postgres handle concurrency?")
+        def fake_synth(self, prompt: str, **kwargs: object):  # type: ignore[no-untyped-def]
+            return mock.Mock(output=cited_answer)
 
-    if shutil.which("qmd") is None:
-        # qmd unavailable → fallback path.
-        assert answer.fallback_used is True
-        assert answer.fallback_reason == "qmd_unavailable"
-    else:
-        # qmd happened to be installed; either path is acceptable as long
-        # as the contract (answer is non-empty) is met.
-        assert answer.answer
+        with mock.patch.object(type(orch._query_synthesizer_agent), "run_sync", new=fake_synth):
+            answer = orch.run_query("How does Postgres handle concurrency?")
+    finally:
+        # Reset the indirection so subsequent tests see the real qmd.
+        set_qmd_search(qmd_query)
 
-    # The answer is markdown; it includes the question heading and at
-    # least one bullet for the read pages.
+    # New contract: qmd_unavailable → empty answer, no index scan.
+    assert answer.fallback_used is True
+    assert answer.fallback_reason == "qmd_unavailable"
+    # The body contains the qmd-unavailable preamble (the orchestrator's
+    # extractive builder emits the same ``_Note: qmd unavailable``
+    # prefix when ``fallback_reason`` is set; the empty-pages branch
+    # here still surfaces the question heading + preamble).
     assert "### " in answer.answer
-    # citations are now ``list[Citation]`` (Task 6) — non-empty means
-    # the agent's answer cited at least one retrieved page.
-    assert answer.citations, "expected at least one cited page"
-    assert answer.synthesis_used is True
-    assert answer.synthesis_reason == ""
-    assert answer.should_file is False
+    assert "qmd_unavailable" in answer.answer
+    # No citations: the index fallback was retired; no qmd hit, no
+    # entity citations to surface.
+    assert answer.citations == []
 
 
-def test_synthesizer_reads_index_pages(wiki_copy: Path) -> None:
-    """Direct call to ``synthesize_answer`` exercises the index-driven path."""
+def test_synthesizer_returns_empty_when_qmd_unavailable(wiki_copy: Path) -> None:
+    """Direct call to ``synthesize_answer`` returns an empty answer when qmd
+    is unavailable — the ``wiki/index.md`` is no longer consulted as a
+    fallback.
+    """
     wiki = make_wiki(name="sample", data_root=wiki_copy)
 
     def boom(*_args, **_kwargs):  # type: ignore[no-untyped-def]
@@ -188,14 +208,18 @@ def test_synthesizer_reads_index_pages(wiki_copy: Path) -> None:
         wiki,
         qmd_search=boom,
     )
+    # New contract: qmd_unavailable → empty answer, no index scan.
     assert answer.fallback_used is True
     assert answer.fallback_reason == "qmd_unavailable"
-    # The index lists Postgres + MySQL entities; the synthesizer reads
-    # the top-N pages referenced from index.md and cites them. Citations
-    # are now ``list[Citation]`` (Task 6); check the ``.path`` attribute.
-    assert any(
-        "entities/postgres.md" in c.path or "entities/mysql.md" in c.path for c in answer.citations
-    ), f"expected entity citations, got {answer.citations!r}"
+    # The body is ``_empty_answer``'s qmd_unavailable branch — the
+    # exact wording is the operator-facing contract:
+    #   ### <question>
+    #   _qmd is not installed (qmd_unavailable); no readable pages._
+    #   No pages found.
+    assert "### What is MVCC?" in answer.answer
+    assert "qmd_unavailable" in answer.answer
+    # No citations: the index fallback was retired; no entity citations.
+    assert answer.citations == []
 
 
 # ---------------------------------------------------------------------------
