@@ -416,15 +416,34 @@ def _resolve_qmd_path_in_library(wiki: Wiki, raw: str) -> Path | None:
 def _resolve_qmd_path_in_wiki(wiki: Wiki, raw: str) -> Path | None:
     """Resolve ``raw`` strictly under ``wiki.wiki_dir``.
 
+    The wiki-rooted qmd collection (``wiki_<wikiname>`` per
+    :meth:`WikiLayout.init`) registers at ``wiki.wiki_dir``. Every
+    qmd hit from the wiki pass is normalized into the qmd URI form
+    minus the ``qmd://`` prefix, so the path's first segment is the
+    collection name (``wiki_<wikiname>/<rest>``). Joining that onto
+    ``wiki.wiki_dir`` blindly would land at
+    ``wiki.wiki_dir / wiki_<wikiname> / <rest>`` — which doesn't exist
+    (the real file is at ``wiki.wiki_dir / <rest>``).
+
+    Strip the ``wiki_<wikiname>/`` prefix when present; leave other
+    paths unchanged so the wiki pass still resolves paths that lack
+    the prefix (defensive against a qmd shape change or a stub
+    fixture).
+
     Mirrors the path-traversal defense the pre-Task-3 helper
     enforced: any candidate that escapes ``wiki.wiki_dir`` is
     dropped (returns None).
     """
-    candidate = Path(raw)
+    wiki_prefix = f"wiki_{wiki.name}/"
+    if raw.startswith(wiki_prefix):
+        stripped = raw[len(wiki_prefix) :]
+    else:
+        stripped = raw
+    candidate = Path(stripped)
     if candidate.is_absolute():
         wiki_candidate = candidate
     else:
-        wiki_candidate = (wiki.wiki_dir / raw).resolve()
+        wiki_candidate = (wiki.wiki_dir / stripped).resolve()
     try:
         wiki_candidate.relative_to(wiki.wiki_dir.resolve())
     except ValueError:

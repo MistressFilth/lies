@@ -14,6 +14,7 @@ from lies.query.synthesizer import (
     FALLBACK_REASON_FAILED,
     FALLBACK_REASON_NO_RESULTS,
     FALLBACK_REASON_UNAVAILABLE,
+    FALLBACK_REASON_WIKI_ONLY,
     _collections_matching,
     retrieve_pages,
     synthesize_answer,
@@ -678,6 +679,117 @@ def test_resolve_qmd_pages_path_traversal_blocked_for_library(tmp_path: Path) ->
     pages = _resolve_qmd_pages(wiki, ["../../etc/passwd"], 5)
 
     assert pages == []
+
+
+# ---------------------------------------------------------------------------
+# Critical 3: _resolve_qmd_path_in_wiki strips the wiki_<wikiname>/ prefix
+# that qmd prepends to every hit from the wiki-rooted collection. Without
+# the strip, the resolver joins ``wiki.wiki_dir / wiki_default/concepts/x.md``
+# and reads nothing (the real file is at ``wiki.wiki_dir/concepts/x.md``).
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_qmd_path_in_wiki_strips_wiki_collection_prefix(tmp_path: Path) -> None:
+    """A qmd hit ``wiki_default/concepts/local.md`` resolves to
+    ``wiki.wiki_dir / concepts/local.md`` — not
+    ``wiki.wiki_dir / wiki_default / concepts/local.md``.
+    """
+    from lies.query.synthesizer import _resolve_qmd_path_in_wiki
+
+    root = tmp_path / "wiki"
+    wiki_dir = root / "wiki"
+    wiki_dir.mkdir(parents=True)
+    wiki = make_wiki(name="default", data_root=root)
+
+    (wiki_dir / "concepts").mkdir(parents=True)
+    (wiki_dir / "concepts" / "local.md").write_text(
+        "# Local\n\nLocal wiki content.\n", encoding="utf-8"
+    )
+
+    # The wiki pass filter is {wiki_default}; qmd returns the path with
+    # the collection name as the first segment (the qmd URI form minus
+    # the qmd:// prefix).
+    resolved = _resolve_qmd_path_in_wiki(wiki, "wiki_default/concepts/local.md")
+    assert resolved is not None
+    assert resolved == (wiki_dir / "concepts" / "local.md").resolve()
+
+
+def test_resolve_qmd_path_in_wiki_strips_prefix_for_non_default_wiki(
+    tmp_path: Path,
+) -> None:
+    """The strip is parameterized by the wiki's name, not hard-coded to
+    ``default`` — a wiki named ``research`` strips ``wiki_research/``."""
+    from lies.query.synthesizer import _resolve_qmd_path_in_wiki
+
+    root = tmp_path / "wiki"
+    wiki_dir = root / "wiki"
+    wiki_dir.mkdir(parents=True)
+    wiki = make_wiki(name="research", data_root=root)
+
+    (wiki_dir / "concepts").mkdir(parents=True)
+    (wiki_dir / "concepts" / "x.md").write_text("# X\n", encoding="utf-8")
+
+    resolved = _resolve_qmd_path_in_wiki(wiki, "wiki_research/concepts/x.md")
+    assert resolved is not None
+    assert resolved == (wiki_dir / "concepts" / "x.md").resolve()
+
+
+def test_resolve_qmd_path_in_wiki_unchanged_when_no_collection_prefix(
+    tmp_path: Path,
+) -> None:
+    """A path without the ``wiki_<name>/`` prefix still resolves cleanly —
+    the strip is a no-op when the prefix is absent."""
+    from lies.query.synthesizer import _resolve_qmd_path_in_wiki
+
+    root = tmp_path / "wiki"
+    wiki_dir = root / "wiki"
+    wiki_dir.mkdir(parents=True)
+    wiki = make_wiki(name="default", data_root=root)
+
+    (wiki_dir / "concepts").mkdir(parents=True)
+    (wiki_dir / "concepts" / "local.md").write_text(
+        "# Local\n\nLocal wiki content.\n", encoding="utf-8"
+    )
+
+    resolved = _resolve_qmd_path_in_wiki(wiki, "concepts/local.md")
+    assert resolved is not None
+    assert resolved == (wiki_dir / "concepts" / "local.md").resolve()
+
+
+def test_retrieve_pages_wiki_pass_with_collection_prefix_resolves(
+    tmp_path: Path,
+) -> None:
+    """End-to-end: when the wiki pass returns paths with the
+    ``wiki_<name>/`` prefix, ``retrieve_pages`` still surfaces the
+    underlying file. Catches the regression where
+    ``_resolve_qmd_path_in_wiki`` joined ``wiki.wiki_dir / raw``
+    blindly and produced a non-existent path."""
+    from lies.library.paths import Library
+
+    Library.open.cache_clear()
+
+    root = tmp_path / "wiki"
+    (root / "wiki").mkdir(parents=True)
+    wiki = make_wiki(name="default", data_root=root)
+
+    (root / "wiki" / "concepts").mkdir(parents=True)
+    (root / "wiki" / "concepts" / "local.md").write_text(
+        "---\ntitle: Local\n---\nLocal wiki content.\n", encoding="utf-8"
+    )
+
+    def fake_qmd_query(cwd, q, limit, *, collection_filter=None, **_kw):
+        # Library pass returns nothing; wiki pass returns the hit WITH
+        # the ``wiki_default/`` prefix that real qmd produces.
+        if collection_filter and "wiki_default" in collection_filter:
+            return [{"path": "wiki_default/concepts/local.md", "score": 0.9}]
+        return []
+
+    pages, reason = retrieve_pages("q", wiki, qmd_search=fake_qmd_query)
+
+    assert reason == FALLBACK_REASON_WIKI_ONLY
+    assert len(pages) == 1
+    assert pages[0].source == "wiki"
+    assert pages[0].rel_path == "wiki/concepts/local.md"
 
 
 # ---------------------------------------------------------------------------
