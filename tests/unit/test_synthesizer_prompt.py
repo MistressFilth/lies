@@ -12,9 +12,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-PROMPT_FILE = Path(
-    "/home/divinefilth/code/github/MistressFilth/lies/mcp-query-library-as-primary/src/lies/agents/query_synthesizer.py"
-)
+import lies.agents.query_synthesizer as _prompt_module
+
+PROMPT_FILE = Path(_prompt_module.__file__).resolve()
 
 
 def test_synthesizer_prompt_includes_source_rule() -> None:
