@@ -161,6 +161,7 @@ def test_run_query_calls_retrieve_pages_at_most_once_per_branch(
             rel_path="wiki/concepts/alpha.md",
             title="Alpha",
             excerpt="Alpha is the first letter.",
+            source="wiki",
         ),
     ]
 
@@ -211,6 +212,7 @@ def test_call_query_synthesizer_handles_unreadable_pages_silently(
                     rel_path="wiki/concepts/alpha.md",
                     title="Alpha",
                     excerpt="Alpha is the first letter.",
+                    source="wiki",
                 ),
             ],
         )

@@ -77,11 +77,18 @@ def _qmd_search_default() -> QmdSearchFn:
 
 @dataclass(frozen=True)
 class PageRead:
-    """A page read during retrieval."""
+    """A page read during retrieval.
+
+    ``source`` discriminates between the two physical roots the
+    dispatcher reads from. Same path from both roots produces two
+    distinct PageRead objects; the operator sees both with source
+    tags in the answer body.
+    """
 
     rel_path: str  # wiki-relative, POSIX
     title: str
     excerpt: str
+    source: str  # "library" | "wiki" — required, no default (hard cutover)
 
 
 def retrieve_pages(
@@ -276,7 +283,12 @@ def _resolve_qmd_pages(wiki: Wiki, qmd_paths: list[str], top_n: int) -> list[Pag
 
 
 def _try_read(path: Path, wiki: Wiki, *, title_override: str | None = None) -> PageRead | None:
-    """Read a page; return None if missing/unreadable."""
+    """Read a page; return None if missing/unreadable.
+
+    Pages resolved from ``wiki.wiki_dir`` carry ``source="wiki"``.
+    Library-sourced pages are constructed by callers via the new
+    library-resolution helper (Task 3) with ``source="library"``.
+    """
     if not path.exists() or not path.is_file():
         return None
     try:
@@ -287,7 +299,7 @@ def _try_read(path: Path, wiki: Wiki, *, title_override: str | None = None) -> P
     rel = path.relative_to(wiki.data_root).as_posix()
     title = title_override or _extract_title(content) or path.stem
     excerpt = _first_meaningful_paragraph(content)
-    return PageRead(rel_path=rel, title=title, excerpt=excerpt)
+    return PageRead(rel_path=rel, title=title, excerpt=excerpt, source="wiki")
 
 
 def _extract_title(content: str) -> str | None:
