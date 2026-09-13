@@ -143,7 +143,14 @@ def test_qmd_happy_path_uses_qmd_results(sample_wiki: Wiki) -> None:
 
 
 def test_qmd_results_capped_at_top_n(sample_wiki: Wiki) -> None:
-    paths = ["entities/postgres.md"] * 10  # more than top_n
+    # Three distinct, on-disk pages, more than top_n=2. ``retrieve_pages``
+    # caps at top_n after the per-pass resolver; the dedup on
+    # (rel_path, source) doesn't fire here because every path is unique.
+    paths = [
+        "entities/postgres.md",
+        "entities/mysql.md",
+        "concepts/mvcc.md",
+    ]
     result = synthesize_answer(
         "anything",
         sample_wiki,

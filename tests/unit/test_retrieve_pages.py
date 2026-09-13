@@ -872,3 +872,48 @@ def test_retrieve_pages_wiki_only_fallback_reason(tmp_path: Path) -> None:
     assert reason == FALLBACK_REASON_WIKI_ONLY
     assert len(pages) == 1
     assert pages[0].source == "wiki"
+
+
+# ---------------------------------------------------------------------------
+# Important 5: retrieve_pages dedupes on (rel_path, source)
+# ---------------------------------------------------------------------------
+# When the same wiki-only path comes back from both qmd passes (since
+# ``_resolve_qmd_path_in_wiki`` resolves paths under ``wiki.wiki_dir``
+# regardless of which pass produced the hit, and library doesn't mirror
+# the path), the retriever must dedupe on (rel_path, source) so the
+# orchestrator's ``pages_read`` / ``page_links`` lists don't carry
+# duplicates and the extractive body says "Based on 1 wiki page(s)"
+# instead of 2.
+
+
+def test_retrieve_pages_dedupes_wiki_hits_across_passes(tmp_path: Path) -> None:
+    """The same wiki-only path returned by both qmd passes surfaces as
+    one ``PageRead`` — not two with the same ``(rel_path, source)``."""
+    from lies.library.paths import Library
+
+    Library.open.cache_clear()
+
+    root = tmp_path / "wiki"
+    wiki_dir = root / "wiki"
+    wiki_dir.mkdir(parents=True)
+    wiki = make_wiki(name="default", data_root=root)
+    (wiki_dir / "concepts").mkdir(parents=True)
+    (wiki_dir / "concepts" / "x.md").write_text("---\ntitle: X\n---\nLocal.\n", encoding="utf-8")
+
+    def fake_qmd_query(cwd, q, limit, *, collection_filter=None, **_kw):
+        # BOTH passes return the same wiki path; no library mirror
+        # exists, so the resolver drops the library pass and surfaces
+        # the wiki path from both. Without the dedup fix, the retriever
+        # returns two PageRead objects with identical (rel_path, source).
+        return [{"path": "concepts/x.md", "score": 0.9}]
+
+    pages, reason = retrieve_pages("q", wiki, qmd_search=fake_qmd_query)
+
+    # One page, not two — both passes produced the same wiki-sourced
+    # PageRead and the dedup collapsed them to a single entry.
+    assert len(pages) == 1
+    assert pages[0].rel_path == "wiki/concepts/x.md"
+    assert pages[0].source == "wiki"
+    # ``(rel_path, source)`` is the dedup key — both copies collapse to one entry.
+    seen_keys = {(p.rel_path, p.source) for p in pages}
+    assert len(seen_keys) == 1

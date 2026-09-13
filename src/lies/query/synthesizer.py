@@ -212,6 +212,25 @@ def retrieve_pages(
 
     pages = primary_pages + wiki_pages
 
+    # Dedupe on ``(rel_path, source)`` so the same wiki-only path
+    # returned by both qmd passes (the library resolver drops the path
+    # when no library mirror exists; the wiki resolver surfaces it from
+    # both passes because both routes resolve under wiki.wiki_dir) does
+    # not yield duplicate ``PageRead`` objects. The orchestrator's
+    # ``pages_read`` / ``page_links`` lists and the extractive body
+    # count must agree — without the dedup, the body says "Based on 2
+    # wiki page(s)" while ``page_texts`` (the dict the synthesizer
+    # agent reads) has only one entry, contradicting itself.
+    deduped_pages: list[PageRead] = []
+    seen: set[tuple[str, str]] = set()
+    for page in pages:
+        key = (page.rel_path, page.source)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped_pages.append(page)
+    pages = deduped_pages
+
     if not pages:
         # Decide fallback reason from the failure pattern.
         if (

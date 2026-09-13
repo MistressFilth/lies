@@ -102,16 +102,13 @@ def test_run_query_falls_back_to_extractive_when_agent_raises(orch: Orchestrator
     assert result.synthesis_used is False
     assert result.synthesis_reason == "RuntimeError: model exploded"
     # Two-pass retrieval surfaces the same wiki hit once per pass
-    # (library + wiki) — both resolve to the same wiki page.
-    # (Important 5 dedup collapses these to a single entry; the
-    # dedup is asserted separately in test_retrieve_pages.py.)
-    assert "Based on 2 wiki page(s)" in result.answer
+    # (library + wiki) — both resolve to the same wiki page; the retriever
+    # dedupes on ``(rel_path, source)`` so the extractive body reports
+    # one page, not two (Important 5).
+    assert "Based on 1 wiki page(s)" in result.answer
     from lies.query.citation import Citation
 
-    assert result.citations == [
-        Citation(path="wiki/concepts/alpha.md", source="wiki"),
-        Citation(path="wiki/concepts/alpha.md", source="wiki"),
-    ]
+    assert result.citations == [Citation(path="wiki/concepts/alpha.md", source="wiki")]
 
 
 def test_run_query_drops_citations_the_agent_never_received(orch: Orchestrator) -> None:
