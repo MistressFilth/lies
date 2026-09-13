@@ -103,7 +103,9 @@ def main(
         if line in ("/exit", "/quit"):
             break
         if line == "/help":
-            console.print(
+            # Use ``typer.echo`` (stdout-bound) rather than ``console.print``
+            # (Rich-buffers, not captured by ``CliRunner`` in tests).
+            typer.echo(
                 "Commands:\n"
                 "  /ingest <source>   Add a source to the wiki\n"
                 "  /query <question>  Ask a question\n"

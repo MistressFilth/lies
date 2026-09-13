@@ -442,6 +442,42 @@ def query(
     )
 
 
+@mcp.tool
+def answer(
+    question: str,
+    name: str | None = None,
+    collection: str | None = None,
+    tag_expr: str | None = None,
+    exclude_tags: list[str] | None = None,
+) -> str:
+    """Answer ``question`` from the wiki as plain text.
+
+    Surface alias for the ``query`` tool that returns ONLY the answer
+    body. ``query`` returns a structured envelope (``answer`` plus
+    metadata: ``citations``, ``pages_read``, ``synthesis_reason``,
+    ``fallback_used``); ``answer`` returns just the ``answer`` string so
+    the tool result renders as the actual response text in chat.
+
+    Use ``answer`` when the caller wants the answer body surfaced in
+    chat. Use ``query`` when the caller needs the structured envelope
+    (citations to follow up on, file-receipt details, scope).
+
+    Same tag-filter surface as ``query``. ``collection`` is only
+    required if the synthesis path wants to file the answer back; by
+    default this tool runs with ``file=False``.
+    """
+    result = query(
+        question=question,
+        name=name,
+        collection=collection,
+        file=False,
+        force_file=False,
+        tag_expr=tag_expr,
+        exclude_tags=exclude_tags,
+    )
+    return result.answer
+
+
 def _collect_available_tags_mcp(wiki: Wiki) -> set[str]:
     """Return every addressable tag for ``wiki`` (MCP surface).
 
