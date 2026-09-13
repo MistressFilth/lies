@@ -28,13 +28,15 @@ def test_wizard_dry_run(tmp_path):
     env["LIES_PROVIDERS_PRESET"] = ""  # placeholder
 
     answers = (
-        "anthropic:claude-opus-4-7\n"  # default_model
-        "yes\n"  # edit providers catalog?
+        "anthropic\n"  # provider name
+        "anthropic\n"  # type
+        "ANTHROPIC_API_KEY\n"  # api_key_env
         "minimax\n"  # provider name
         "anthropic_compatible\n"  # type
         "MINIMAX_API_KEY\n"  # api_key_env
         "https://api.minimax.io/anthropic\n"  # base_url
         "\n"  # blank -> stop providers
+        "anthropic:claude-opus-4-7\n"  # default_model (anthropic is in providers)
         "yes\n"  # assign to all agents
         "yes\n"  # confirm write
     )
