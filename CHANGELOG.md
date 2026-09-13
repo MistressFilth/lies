@@ -6,15 +6,40 @@ All notable changes to LIES are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- `mcp__lies__answer` tool returns the synthesized answer body as plain text (was buried inside `query`'s structured envelope). Chat surfaces that hide JSON tool results now render the answer verbatim; `query` keeps the structured path for callers that need citations / file-receipt / scope.
+- `WebScraper` preserves nested source paths from `llms.txt` indexes: strips a leading `/docs/<lang>/` site prefix and mirrors the remaining hierarchy under the collection root. `agents-and-tools/agent-skills/best-practices.md` lands at `claude_platform/agents-and-tools/agent-skills/best-practices.md`.
+- `derive_nested_slug` helper for source-relative paths; `derive_slug` keeps its flat single-segment contract so existing fixtures stay green.
+
 ### Changed
-- **BREAKING**: `SynthesizedAnswer.citations` and `.pages_read` are now `list[Citation]` (was `list[str]`); each citation carries a `source: "library" | "wiki"` discriminator. Library collections are the primary source of truth; wiki content is supplementary. The synthesis prompt instructs the LLM that library wins on conflict.
+- `WebScraper._LLMS_LINK_RE` accepts the dash-separated description form (`- [Title](url) - description`) that platform.claude.com and other publishers emit, in addition to the colon form.
+- `query_synthesizer` prompt clarifies that library-source paths use `<coll>/<file>` without a `wiki/` prefix; wiki-source paths carry the prefix. Quote paths verbatim from the corpus block headers.
+- REPL `/help` command now uses `typer.echo` (stdout-bound) instead of `Console.print` (Rich-buffers, bypasses test capture).
+
+### Fixed
+- Synthesizer LLM emitted library-source citations with a phantom `wiki/` prefix; the orchestrator dropped them all, leaving the answer with no valid citations and the dropped-warning in `synthesis_reason`. `Orchestrator._normalize` now strips a leading `wiki/` from emitted citations and matches in both directions (with/without prefix) before constructing `Citation` objects. Defense-in-depth alongside the prompt fix.
+- Library pages now land under nested mirror directories: `write_mirror` calls `target.parent.mkdir(parents=True, exist_ok=True)`.
+- Pre-existing REPL help test (`tests/unit/test_cli.py::test_repl_help_command`) failed because Rich's `Console.print` bypasses `CliRunner` capture; replacing with `typer.echo` lets `assert "/ingest" in result.stdout` pass.
+
+## [0.22.0] - 2026-09-13
+
+### Changed
+- **BREAKING**: `SynthesizedAnswer.citations` and `.pages_read` are now `list[Citation]` (was `list[str]`); each citation carries a `source: "library" | "wiki"` discriminator. Library collections are the primary source of truth; wiki content is supplementary. The synthesis prompt instructs the LLM that library wins on conflict. (Minor-bumped despite breaking shape change per explicit user override — see commit `chore(release): 0.22.0`.)
 - `lies-mcp-query` resolves qmd hits against library collections first (`Library.collections_root/<coll>/<file>`) and falls back to `wiki.wiki_dir`. Same path from both roots surfaces as two citations with distinct sources.
-- `retrieve_pages` runs two qmd passes — one scoped to library collections, one scoped to the new `wiki_<wikiname>` qmd collection registered at `WikiLayout.init`.
+- `retrieve_pages` runs two qmd passes — one scoped to library collections, one scoped to the new `wiki_<wikiname>` qmd collection registered at `WikiLayout.init`. Pages deduped on `(rel_path, source)` post-merge; library pass wins on collision.
 - New fallback reason `wiki_only`: library returned 0 hits, wiki returned hits; answer opens with `_Note: not grounded in primary sources (library returned no matches); answered from wiki._`.
+- `Orchestrator._call_query_synthesizer` reads library pages from `Library.open().collections_root` (was silently swallowing OSError on `wiki.data_root / <lib-uri>`).
+- `query_synthesizer` prompt gains library-wins-on-conflict rule + `[library]`/`[wiki]` tag preservation instructions; `QueryDeps` carries `page_sources: dict[str, Literal["library", "wiki"]]` rendered inline per corpus block.
+- `WikiLayout.name` derived from `root.name` (was hard-coded `"default"`); idempotent `WikiLayout.init` registration via PEP 562 lazy `__getattr__`.
 
 ### Added
-- `src/lies/query/citation.py`: `Citation` frozen dataclass with `path` and `source` fields.
-- Wiki-rooted qmd collection `wiki_<wikiname>` registered at `WikiLayout.init` via `qmd_collection_add_or_update`. Existing post-commit hook (`WikiMemoryService._refresh_qmd`) re-indexes it on every wiki write.
+- `src/lies/query/citation.py`: `Citation` frozen dataclass with `path` and `source` fields (re-exported from `lies.query`).
+- Wiki-rooted qmd collection `wiki_<wikiname>` registered at `WikiLayout.init` via `qmd_collection_add_or_update`. Existing post-commit hook (`WikiMemoryService._refresh_qmd`) re-indexes it on every wiki write. Self-heal sentinel at `<wiki.data_root>/.lies/wiki_qmd_registered` for wikis that pre-date the registration call.
+- `lies.query.__init__` re-exports `Citation` and `FALLBACK_REASON_WIKI_ONLY`.
+
+### Fixed
+- `tests/unit/test_synthesizer_prompt.py` corpus assertion now pins the new `[source]` prefix format (was passing for the wrong reason).
+- `_resolve_qmd_path_in_wiki` strips `wiki_<name>/` URI prefix before joining onto `wiki.wiki_dir` (was producing `wiki.wiki_dir/wiki_<name>/...` which never exists).
 
 ### Fixed
 - **qmd concurrent-subprocess CUDA pool race** (#74). Wraps
