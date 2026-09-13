@@ -68,6 +68,7 @@ def write_mirror(
     if target.exists() and not force:
         raise FileExistsError(f"mirror already exists: {target}")
     collection.dir.mkdir(parents=True, exist_ok=True)
+    target.parent.mkdir(parents=True, exist_ok=True)
     text = render_mirror(
         slug=slug,
         body=body,

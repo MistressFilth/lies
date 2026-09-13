@@ -31,10 +31,12 @@ from lies.scrapers.base import BaseScraper, ParsedDoc
 from lies.scrapers.errors import ScraperFetchFailed, ScraperParseError
 
 _LLM_TXT_BASENAMES = ("llms-full.txt", "llms.txt")
-# Matches `- [Title](url): description` lines in an llms.txt index.
+# Matches `- [Title](url): description` and `- [Title](url) - description`
+# lines in an llms.txt index. Some llms.txt publishers (e.g. platform.claude.com)
+# emit a dash separator instead of a colon; both forms are valid.
 # Captures title (1), url (2), and description (3); description may be empty.
 _LLMS_LINK_RE = re.compile(
-    r"^\s*-\s*\[([^\]]+)\]\(([^)]+)\)\s*(?::\s*(.*?))?\s*$",
+    r"^\s*-\s*\[([^\]]+)\]\(([^)]+)\)\s*(?:[:\-]\s+(.*?))?\s*$",
     re.MULTILINE,
 )
 
@@ -139,32 +141,37 @@ class WebScraper(BaseScraper):
 
     @staticmethod
     def _url_to_path(url: str, idx: int, used: set[str]) -> str:
-        """Derive a unique relative path for raw/<collection>/ storage.
+        """Derive a unique relative path that mirrors the source URL's hierarchy.
 
-        Uses the URL's last path component. Falls back to ``doc-NNNN.md``
-        for paths that have no useful tail. Disambiguates collisions by
-        prefixing with the parent path segment until the name is unique.
+        Strips a leading ``/docs/<lang>/`` site prefix when present (so
+        ``https://platform.claude.com/docs/en/agents-and-tools/agent-skills/best-practices.md``
+        becomes ``agents-and-tools/agent-skills/best-practices.md``).
+        Falls back to ``doc-NNNN.md`` for paths that have no useful tail.
+        Appends an index suffix for any remaining collisions.
         """
         p = urlparse(url)
         parts = [seg for seg in p.path.split("/") if seg]
+        # Strip site-prefix: ``/docs/<lang>/...`` → ``...``
+        if len(parts) >= 2 and parts[0] == "docs" and len(parts[1]) <= 5:
+            parts = parts[2:]
         if not parts:
             name = f"doc-{idx:04d}.md"
         else:
-            name = parts[-1]
-            if not name.endswith((".md", ".mdx", ".markdown")):
-                name = f"{name}.md"
-            # Disambiguate: try parent prefix if already used.
-            if name in used and len(parts) >= 2:
-                candidate = f"{parts[-2]}-{name}"
-                if candidate not in used:
-                    name = candidate
-        # Last-resort uniqueness via index suffix.
-        original = name
+            *dirs, tail = parts
+            if not tail.endswith((".md", ".mdx", ".markdown")):
+                tail = f"{tail}.md"
+            name = "/".join(dirs + [tail]) if dirs else tail
+        # Last-resort uniqueness via index suffix on the tail.
         n = 1
         while name in used:
-            stem = original.rsplit(".", 1)[0]
-            suffix = original.rsplit(".", 1)[-1]
-            name = f"{stem}-{n}.{suffix}"
+            if "/" in name:
+                dirs, tail = name.rsplit("/", 1)
+            else:
+                dirs, tail = "", name
+            stem = tail.rsplit(".", 1)[0]
+            suffix = tail.rsplit(".", 1)[-1]
+            suffixed = f"{stem}-{n}.{suffix}"
+            name = f"{dirs}/{suffixed}" if dirs else suffixed
             n += 1
         return name
 
