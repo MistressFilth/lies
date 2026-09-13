@@ -275,6 +275,36 @@ uv run lies collections show htmx
 Re-runs are idempotent. The registry is in-memory only; restart
 loses it; the next `sync` re-registers.
 
+### Operator: qmd flock
+
+When two or more lies processes touch qmd concurrently (CI
+parallel `lies ingest`, `lies mcp` server concurrent commits,
+`xargs -P N lies ingest`), the CUDA VMM pool reservation can race
+and OOM-abort the qmd subprocess. lies serializes all `qmd_*` CLI
+helpers through a site-wide flock at
+`${XDG_STATE_HOME:-~/.local/state}/lies/qmd.lock` (override the
+full path via `LIES_QMD_LOCK_PATH`).
+
+Inspect a live holder:
+
+```bash
+lies flock qmd status
+```
+
+Force-reap the qmd flock envelope. Safe to run when no qmd
+subprocess is running; if a live contender re-acquires the
+lock between reap and retry, the command exits 1 with
+`qmd flock still held; live contender survives force-repair`.
+
+```bash
+lies flock qmd force-repair
+```
+
+If a `qmd_*` call times out past the 30 s wait budget,
+`LibraryWriter.commit` raises `QmdLockBusy` with the holder PID.
+Wait a few seconds and retry, or inspect with
+`lies flock qmd status` first.
+
 ## Configuration
 
 Environment variables:
@@ -288,6 +318,9 @@ Environment variables:
 - `LIES_QMD_TRANSPORT` — how the agent reaches qmd: `http` (default, uses
   the qmd daemon) or `stdio` (spawns a `qmd` process per agent)
 - `LIES_QMD_URL` — qmd daemon URL (default: `http://127.0.0.1:8181`)
+- `LIES_QMD_LOCK_PATH` — overrides the default
+  `${XDG_STATE_HOME:-~/.local/state}/lies/qmd.lock` lock path; useful for
+  sandboxing or per-wiki isolation
 - `LIES_XDG_DATA_HOME` — overrides `$XDG_DATA_HOME` for LIES
 - `LIES_XDG_CONFIG_HOME` — overrides `$XDG_CONFIG_HOME` for LIES
 - `LIES_XDG_RUNTIME_DIR` — overrides `$XDG_RUNTIME_DIR` for LIES

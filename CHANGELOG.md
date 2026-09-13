@@ -7,6 +7,21 @@ All notable changes to LIES are documented here. The format follows
 ## [Unreleased]
 
 ### Fixed
+- **qmd concurrent-subprocess CUDA pool race** (#74). Wraps
+  every `qmd_*` CLI helper in `src/lies/qmd/cli.py` with a
+  site-wide cross-process flock. Concurrent lies processes (CI
+  parallel ingest, `lies mcp` server concurrent commits,
+  `xargs -P N lies ingest`) now serialize through one inode at
+  `${XDG_STATE_HOME:-~/.local/state}/lies/qmd.lock` instead of
+  racing `cuMemAddressReserve(CUDA_POOL_VVM_MAX_SIZE)` and OOM-aborting.
+  Past a 30 s wait, raises `QmdLockBusy(WikiFlockError)` with
+  holder PID; `LibraryWriter.commit` surfaces the lock error
+  distinctly from other qmd-spawn failures. Operator override:
+  `lies flock qmd status` / `lies flock qmd force-repair`.
+  See `superpowers/specs/2026-09-13-qmd-flock-envelope-design.md`
+  and `issues/2026-09-13-qmd-concurrent-subprocess-race.md`.
+
+### Fixed (earlier in [Unreleased])
 - **MCP: `lies mcp up` no longer races against TCP `TIME_WAIT` after `lies mcp down`.** `port_free` (the pre-spawn probe in `src/lies/mcp/daemon.py`) did not set `SO_REUSEADDR` on its probe socket. After `down` sends `SIGTERM` to the daemon, the kernel holds the daemon's listen socket in `TIME_WAIT` for ~60s; the next probe `bind()` failed with `EADDRINUSE` and `lies mcp up` reported "127.0.0.1:8737 is already in use" until the timer expired — every restart was at risk of a ~60s failure window. Today the probe calls `sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)` before `bind()`, matching the daemon-socket hygiene `uvicorn` / `http.server` / `aiohttp` all follow. New `tests/unit/test_mcp_daemon.py::test_port_free_probe_socket_sets_so_reuseaddr` records every `setsockopt` call on the probe socket and asserts `SO_REUSEADDR` is set during the `port_free` invocation. End-to-end verification: two consecutive `lies mcp down && lies mcp up` cycles succeed immediately (pre-fix: second `up` blocked on TIME_WAIT). Bumps version 0.21.5 → 0.21.6 (patch per Conventional Commits `fix:` rule).
 
 ### Fixed (earlier in [Unreleased])

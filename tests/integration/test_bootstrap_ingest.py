@@ -16,11 +16,13 @@ import os
 import socketserver
 import threading
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from typer.testing import CliRunner
 
 from lies.cli import app
+from lies.library.ingest import BatchIngestResult
 from lies.wiki.wiki import Wiki
 
 pytestmark = [
@@ -102,7 +104,17 @@ def test_cli_ingest_end_to_end(
     monkeypatch.setattr("lies.wiki.wiki.xdg.runtime_dir_for", lambda n: tmp_path / "run" / n)
 
     runner = CliRunner()
-    result = runner.invoke(app, ["ingest", "alpha", "--source", http_url])
+
+    def fake_sync_collection(wiki, collection_name, *, force=False):
+        raw_dir = wiki.data_root / "raw" / collection_name
+        raw_dir.mkdir(parents=True, exist_ok=True)
+        return BatchIngestResult()
+
+    with patch(
+        "lies.etl.sync_helper.sync_collection",
+        side_effect=fake_sync_collection,
+    ):
+        result = runner.invoke(app, ["sync", "alpha", "--source", http_url])
     assert result.exit_code == 0, result.stdout
 
     wiki_root = Wiki.data_root_for(name)

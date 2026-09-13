@@ -23,21 +23,33 @@ pytestmark = [
 ]
 
 
-def test_real_repo_wikilink_corpus(tmp_path: Path) -> None:
+def test_real_repo_wikilink_corpus(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Scrape a small real repo (g-Research/ahocorasick_rs) and verify the
     corpus build matches the on-disk markdown count."""
     from lies.scrapers.github import GitHubScraper  # type: ignore[import-not-found]
 
+    # ``_isolated_xdg`` in ``tests/conftest.py`` redirects
+    # ``XDG_CONFIG_HOME`` to ``tmp_path/xdg/config``, which makes the
+    # ``gh`` CLI fail with "To get started with GitHub CLI, please run:
+    # gh auth login" because it cannot find its auth config. Unset it
+    # for the duration of the test so ``gh`` falls back to
+    # ``~/.config/gh/hosts.yml``.
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+
     wiki_root = tmp_path / "wiki"
     wiki_root.mkdir()
     (wiki_root / "wiki").mkdir()
-    (wiki_root / "raw").mkdir()
+    out_dir = wiki_root / "raw" / "ahocorasick_rs"
+    out_dir.mkdir(parents=True)
 
-    scraper = GitHubScraper(  # type: ignore[no-untyped-call]
-        source="https://github.com/g-Research/ahocorasick_rs",
-        out_root=wiki_root / "raw" / "ahocorasick_rs",
-    )
-    scraper.fetch()
+    scraper = GitHubScraper()  # type: ignore[no-untyped-call]
+    raw_bytes = scraper.fetch("https://github.com/g-Research/ahocorasick_rs")
+    docs = scraper.parse(raw_bytes)
+    for doc in docs:
+        target = out_dir / doc.path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(doc.content)
+    scraper.emit_manifest(docs, out_dir)
 
     resolver = WikiLinkResolver.build((wiki_root / "wiki", wiki_root / "raw"))
     wiki_pages = list((wiki_root / "wiki").rglob("*.md"))
