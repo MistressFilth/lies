@@ -4,15 +4,47 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import sys
 from importlib import resources
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from lies.qmd.cli import qmd_collection_add_or_update
+
+
+def __getattr__(name: str):
+    """Lazy import of the qmd registration helper.
+
+    :mod:`lies.qmd.cli` pulls in :mod:`lies.qmd`'s ``__init__``, which
+    transitively imports :mod:`pydantic_ai` + :mod:`fastmcp`. Keeping
+    the import lazy means ``WikiLayout`` stays import-cheap for code
+    paths that never reach the registration block (the existing
+    ``test_wiki_layout.py`` smoke tests, the CLI's pre-init layout
+    inspection, etc.).
+
+    Mirrors the PEP 562 pattern in :mod:`lies.library.writer` /
+    :mod:`lies.cli.page` / :mod:`lies.cli.ingestion` /
+    :mod:`lies.mcp`. Tests that ``mock.patch(
+    "lies.wiki.layout.qmd_collection_add_or_update", ...)`` rely on
+    this ``__getattr__`` to materialise the module attribute on first
+    access; the patch then ``setattr``s on top of the cached binding,
+    so subsequent ``init()`` calls observe the patched function.
+    """
+    if name == "qmd_collection_add_or_update":
+        from lies.qmd.cli import qmd_collection_add_or_update as _qmd_add_or_update
+
+        globals()["qmd_collection_add_or_update"] = _qmd_add_or_update
+        return _qmd_add_or_update
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 class WikiLayout:
     """Thin wrapper around the wiki's content directory."""
 
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, name: str = "default") -> None:
         self.root = root
+        self.name = name
 
     @property
     def raw_dir(self) -> Path:
@@ -23,10 +55,34 @@ class WikiLayout:
         return self.root / "wiki"
 
     def init(self) -> None:
-        """Create ``raw/`` and ``wiki/`` under ``root``."""
+        """Create ``raw/`` and ``wiki/`` under ``root`` and register
+        ``wiki_<name>`` with qmd so retrieval can query the wiki-rooted
+        collection alongside library collections."""
         self.root.mkdir(parents=True, exist_ok=True)
         self.raw_dir.mkdir(parents=True, exist_ok=True)
         self.wiki_dir.mkdir(parents=True, exist_ok=True)
+        # Register the wiki-rooted qmd collection so retrieval can
+        # query it. Mirrors ``LibraryWriter.qmd_post_commit`` pattern
+        # (PR #72). The ``qmd_collection_add_or_update`` helper is
+        # idempotent: re-running init on an already-registered wiki is
+        # a no-op when the path matches. The existing post-commit hook
+        # (``WikiMemoryService._refresh_qmd``) calls ``qmd update``
+        # which re-indexes this collection alongside the library
+        # collections — no new post-commit hook is needed for the wiki
+        # side.
+        try:
+            qmd_collection_add_or_update(
+                self.root,
+                self.wiki_dir,
+                f"wiki_{self.name}",
+            )
+        except Exception as exc:  # noqa: BLE001 - qmd is derived; init must not fail closed
+            print(
+                f"warning: qmd wiki collection registration failed for "
+                f"'wiki_{self.name}': {exc}; queries will fall back to library-only. "
+                f"Run `lies status` for state.",
+                file=sys.stderr,
+            )
 
 
 def copy_default_schema(target: Path) -> None:
