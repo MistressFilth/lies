@@ -24,6 +24,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal, cast
 
 from lies.qmd.cli import qmd_query
 from lies.query.index_parser import parse_index_links
@@ -42,6 +43,10 @@ DEFAULT_TOP_N = 5
 FALLBACK_REASON_UNAVAILABLE = "qmd_unavailable"
 FALLBACK_REASON_NO_RESULTS = "qmd_no_results"
 FALLBACK_REASON_FAILED = "qmd_failed"
+# Library pass returned 0 hits but the wiki pass surfaced content. The
+# answer is not grounded in primary (library) sources — see the
+# Bundle-C preamble that callers render when this reason is set.
+FALLBACK_REASON_WIKI_ONLY = "wiki_only"
 
 # Qmd search callable signature: (cwd, question, limit) -> list[dict].
 QmdSearchFn = Callable[..., list[dict[str, object]]]
@@ -77,11 +82,18 @@ def _qmd_search_default() -> QmdSearchFn:
 
 @dataclass(frozen=True)
 class PageRead:
-    """A page read during retrieval."""
+    """A page read during retrieval.
+
+    ``source`` discriminates between the two physical roots the
+    dispatcher reads from. Same path from both roots produces two
+    distinct PageRead objects; the operator sees both with source
+    tags in the answer body.
+    """
 
     rel_path: str  # wiki-relative, POSIX
     title: str
     excerpt: str
+    source: str  # "library" | "wiki" — required, no default (hard cutover)
 
 
 def retrieve_pages(
@@ -94,8 +106,19 @@ def retrieve_pages(
 ) -> tuple[list[PageRead], str]:
     """Retrieve the candidate pages for ``question``.
 
-    Tries ``qmd_search`` first; on any qmd failure falls back to the
-    top-N pages referenced by ``wiki/index.md``.
+    Runs two ``qmd_query`` passes when both roots are populated:
+
+    1. **Primary pass**: qmd scoped to the resolved library collection
+       set (``collection_filter`` derived from ``tag_filter``).
+       Library collections are the primary source of truth.
+    2. **Secondary pass**: qmd scoped to the wiki-rooted collection
+       (``wiki_<wikiname>``). Surfaces local edits and author-only
+       content as supplementary material.
+
+    Both result sets resolve through ``_resolve_qmd_pages``, which
+    prefers the library root and falls back to the wiki root for
+    each path. Pages are tagged with ``source`` so the synthesizer
+    can apply the library-wins-on-conflict rule at answer time.
 
     This is the single retrieval path for the query layer. Both the
     extractive ``synthesize_answer`` and the orchestrator's LLM
@@ -113,17 +136,25 @@ def retrieve_pages(
     The retriever resolves the filter against the wiki's collection
     registry (``wiki.collections_dir/*.yaml``) via
     :func:`_collections_matching` and forwards the resulting set as
-    ``collection_filter`` to ``qmd_search``. ``qmd_search`` is
-    responsible for the post-qmd per-collection drop; :func:`retrieve_pages`
-    just threads the resolved set through. When ``tag_filter`` is None,
-    ``collection_filter`` is None too — the no-filter behavior is
-    preserved bit-for-bit (back-compat regression test pins this).
+    ``collection_filter`` to ``qmd_search`` for the **primary pass**.
+    The secondary pass always uses the wiki-rooted ``wiki_<name>``
+    collection, independent of ``tag_filter`` — local wiki content is
+    always supplementary, never gated by the caller's filter.
 
     The implicit-self-tag rule (a collection's name is always an
     addressable tag regardless of its ``tags`` field) lives at this
     boundary, not in :func:`lies.query.tag_expr.resolve`. The resolver
     only validates that every atom exists in the available set; the
     per-collection semantics are the retriever's concern.
+
+    Fallback reasons:
+
+    - ``""`` — qmd served at least one pass and we have readable pages.
+    - ``FALLBACK_REASON_UNAVAILABLE`` — qmd binary missing.
+    - ``FALLBACK_REASON_FAILED`` — qmd errored on both passes.
+    - ``FALLBACK_REASON_NO_RESULTS`` — both passes returned 0 hits.
+    - ``FALLBACK_REASON_WIKI_ONLY`` — library returned 0, wiki
+      returned hits. Answer is not grounded in primary sources.
 
     Returns:
         ``(pages, fallback_reason)``. ``fallback_reason`` is ``""``
@@ -137,8 +168,18 @@ def retrieve_pages(
     collection_filter: set[str] | None = None
     if tag_filter is not None:
         collection_filter = _collections_matching(wiki, tag_filter)
+
+    wiki_collection = f"wiki_{wiki.name}"
+    wiki_filter: set[str] = {wiki_collection}
+
+    primary_pages: list[PageRead] = []
+    wiki_pages: list[PageRead] = []
+    primary_failure: str | None = None
+    wiki_failure: str | None = None
+
+    # Primary: library collections.
     try:
-        pages = _qmd_search_dispatch(
+        primary_pages = _qmd_search_dispatch(
             qmd_search_fn,
             wiki,
             question,
@@ -146,14 +187,80 @@ def retrieve_pages(
             collection_filter=collection_filter,
         )
     except _QmdUnavailable:
-        fallback_reason = FALLBACK_REASON_UNAVAILABLE
+        primary_failure = FALLBACK_REASON_UNAVAILABLE
     except _QmdNoResults:
-        fallback_reason = FALLBACK_REASON_NO_RESULTS
+        primary_failure = FALLBACK_REASON_NO_RESULTS
     except _QmdOtherFailure:
-        fallback_reason = FALLBACK_REASON_FAILED
+        primary_failure = FALLBACK_REASON_FAILED
 
-    if fallback_reason:
-        pages = _read_pages_from_index(wiki, top_n=top_n)
+    # Secondary: wiki-rooted collection. Always attempted; the wiki
+    # may carry content even when library is empty (or vice versa).
+    try:
+        wiki_pages = _qmd_search_dispatch(
+            qmd_search_fn,
+            wiki,
+            question,
+            top_n,
+            collection_filter=wiki_filter,
+        )
+    except _QmdUnavailable:
+        wiki_failure = FALLBACK_REASON_UNAVAILABLE
+    except _QmdNoResults:
+        wiki_failure = FALLBACK_REASON_NO_RESULTS
+    except _QmdOtherFailure:
+        wiki_failure = FALLBACK_REASON_FAILED
+
+    pages = primary_pages + wiki_pages
+
+    # Dedupe on ``(rel_path, source)`` so the same wiki-only path
+    # returned by both qmd passes (the library resolver drops the path
+    # when no library mirror exists; the wiki resolver surfaces it from
+    # both passes because both routes resolve under wiki.wiki_dir) does
+    # not yield duplicate ``PageRead`` objects. The orchestrator's
+    # ``pages_read`` / ``page_links`` lists and the extractive body
+    # count must agree — without the dedup, the body says "Based on 2
+    # wiki page(s)" while ``page_texts`` (the dict the synthesizer
+    # agent reads) has only one entry, contradicting itself.
+    deduped_pages: list[PageRead] = []
+    seen: set[tuple[str, str]] = set()
+    for page in pages:
+        key = (page.rel_path, page.source)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped_pages.append(page)
+    pages = deduped_pages
+
+    if not pages:
+        # Decide fallback reason from the failure pattern.
+        if (
+            primary_failure == FALLBACK_REASON_UNAVAILABLE
+            or wiki_failure == FALLBACK_REASON_UNAVAILABLE
+        ):
+            fallback_reason = FALLBACK_REASON_UNAVAILABLE
+        elif primary_failure == FALLBACK_REASON_FAILED or wiki_failure == FALLBACK_REASON_FAILED:
+            fallback_reason = FALLBACK_REASON_FAILED
+        elif (
+            primary_failure == FALLBACK_REASON_NO_RESULTS
+            and wiki_failure == FALLBACK_REASON_NO_RESULTS
+        ):
+            fallback_reason = FALLBACK_REASON_NO_RESULTS
+        elif primary_failure and not wiki_failure:
+            # Library failed but wiki succeeded? Per the dispatch above
+            # this case can't reach ``pages == []`` — wiki_pages would
+            # be non-empty. Defensive default.
+            fallback_reason = primary_failure
+        elif not primary_failure and wiki_failure:
+            # Library succeeded (returned empty list, not an exception),
+            # wiki raised. Treat as library empty.
+            fallback_reason = FALLBACK_REASON_NO_RESULTS
+        else:
+            fallback_reason = FALLBACK_REASON_NO_RESULTS
+    elif not primary_pages and wiki_pages:
+        # Library returned nothing; wiki surfaced content. Mark
+        # answer as not grounded in primary sources.
+        fallback_reason = FALLBACK_REASON_WIKI_ONLY
+    # else: at least one primary page exists; no fallback flag.
 
     return pages, fallback_reason
 
@@ -255,28 +362,144 @@ def _read_pages_from_index(wiki: Wiki, top_n: int) -> list[PageRead]:
 def _resolve_qmd_pages(wiki: Wiki, qmd_paths: list[str], top_n: int) -> list[PageRead]:
     """Resolve qmd-returned paths to actual readable pages on disk.
 
-    Defends against path traversal: any returned path that escapes
-    ``wiki.data_root`` is silently dropped.
+    Each qmd hit is matched against both physical roots:
+
+    - ``Library.collections_root/<first-segment>/<rest>`` — library is
+      the canonical source of truth.
+    - ``wiki.wiki_dir/<rest>`` — wiki is the local override / author-
+      only content.
+
+    The same path from both roots yields two distinct ``PageRead``
+    objects with distinct ``source`` fields; the LLM synthesis step
+    applies the library-wins-on-conflict rule at answer time. A
+    library hit is reported with its qmd URI form (``<coll>/<file>``)
+    as ``rel_path`` because library files live outside ``wiki.data_root``
+    — a data_root-relative path would lie about filesystem layout.
+
+    Defends against path traversal per root: any candidate that escapes
+    its root is dropped, the next root is tried.
     """
     pages: list[PageRead] = []
     for raw in qmd_paths:
         if len(pages) >= top_n:
             break
-        candidate = Path(raw)
-        if not candidate.is_absolute():
-            candidate = (wiki.wiki_dir / raw).resolve()
-        try:
-            candidate.relative_to(wiki.wiki_dir)
-        except ValueError:
+        # Library first: primary source of truth.
+        lib_path = _resolve_qmd_path_in_library(wiki, raw)
+        if lib_path is not None:
+            lib_page = _build_library_page_read(lib_path)
+            if lib_page is not None:
+                pages.append(lib_page)
+        # Wiki: surfaces overrides and collision cases. Library is
+        # canonical but a wiki file at the same path is preserved as a
+        # distinct PageRead for the local-override rule.
+        if len(pages) >= top_n:
             continue
-        read = _try_read(candidate, wiki)
-        if read is not None:
-            pages.append(read)
+        wiki_path = _resolve_qmd_path_in_wiki(wiki, raw)
+        if wiki_path is not None:
+            wiki_page = _try_read(wiki_path, wiki)
+            if wiki_page is not None:
+                pages.append(wiki_page)
     return pages
 
 
+def _resolve_qmd_path_in_library(wiki: Wiki, raw: str) -> Path | None:
+    """Resolve ``raw`` strictly under ``Library.collections_root``.
+
+    Library files live at ``<coll>/<file>`` relative to the
+    collections root, so the qmd hit's first path segment is the
+    collection name. An absolute path or a path with no first segment
+    yields no library candidate (the path is wiki-only by
+    construction).
+
+    Path traversal defense: any candidate that escapes
+    ``Library.collections_root`` is dropped (returns None).
+    """
+    if Path(raw).is_absolute():
+        return None
+    first, _, rest = raw.partition("/")
+    if not first:
+        return None
+    # Local import to avoid a circular import at module load time
+    # (matches the existing pattern for qmd.cli imports below).
+    from lies.library.paths import Library  # noqa: PLC0415
+
+    lib_root = Library.open().collections_root
+    lib_candidate = (lib_root / first / rest).resolve()
+    try:
+        lib_candidate.relative_to(lib_root.resolve())
+    except ValueError:
+        return None
+    return lib_candidate if lib_candidate.is_file() else None
+
+
+def _resolve_qmd_path_in_wiki(wiki: Wiki, raw: str) -> Path | None:
+    """Resolve ``raw`` strictly under ``wiki.wiki_dir``.
+
+    The wiki-rooted qmd collection (``wiki_<wikiname>`` per
+    :meth:`WikiLayout.init`) registers at ``wiki.wiki_dir``. Every
+    qmd hit from the wiki pass is normalized into the qmd URI form
+    minus the ``qmd://`` prefix, so the path's first segment is the
+    collection name (``wiki_<wikiname>/<rest>``). Joining that onto
+    ``wiki.wiki_dir`` blindly would land at
+    ``wiki.wiki_dir / wiki_<wikiname> / <rest>`` — which doesn't exist
+    (the real file is at ``wiki.wiki_dir / <rest>``).
+
+    Strip the ``wiki_<wikiname>/`` prefix when present; leave other
+    paths unchanged so the wiki pass still resolves paths that lack
+    the prefix (defensive against a qmd shape change or a stub
+    fixture).
+
+    Mirrors the path-traversal defense the pre-Task-3 helper
+    enforced: any candidate that escapes ``wiki.wiki_dir`` is
+    dropped (returns None).
+    """
+    wiki_prefix = f"wiki_{wiki.name}/"
+    if raw.startswith(wiki_prefix):
+        stripped = raw[len(wiki_prefix) :]
+    else:
+        stripped = raw
+    candidate = Path(stripped)
+    if candidate.is_absolute():
+        wiki_candidate = candidate
+    else:
+        wiki_candidate = (wiki.wiki_dir / stripped).resolve()
+    try:
+        wiki_candidate.relative_to(wiki.wiki_dir.resolve())
+    except ValueError:
+        return None
+    return wiki_candidate if wiki_candidate.is_file() else None
+
+
+def _build_library_page_read(path: Path) -> PageRead | None:
+    """Build a ``PageRead`` for a library-side path.
+
+    ``rel_path`` is the qmd URI form (``<coll>/<file>``) — library
+    files live under ``Library.collections_root`` which is NOT under
+    ``wiki.data_root``, so a data_root-relative path would lie about
+    filesystem layout. Returns ``None`` on read failure (mirrors
+    :func:`_try_read`).
+    """
+    # Local import: same rationale as ``_resolve_qmd_path_in_library``.
+    from lies.library.paths import Library  # noqa: PLC0415
+
+    try:
+        content = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+    lib_root = Library.open().collections_root.resolve()
+    rel = path.relative_to(lib_root).as_posix()
+    title = _extract_title(content) or path.stem
+    excerpt = _first_meaningful_paragraph(content)
+    return PageRead(rel_path=rel, title=title, excerpt=excerpt, source="library")
+
+
 def _try_read(path: Path, wiki: Wiki, *, title_override: str | None = None) -> PageRead | None:
-    """Read a page; return None if missing/unreadable."""
+    """Read a page; return None if missing/unreadable.
+
+    Pages resolved from ``wiki.wiki_dir`` carry ``source="wiki"``.
+    Library-sourced pages are constructed by callers via the new
+    library-resolution helper (Task 3) with ``source="library"``.
+    """
     if not path.exists() or not path.is_file():
         return None
     try:
@@ -287,7 +510,7 @@ def _try_read(path: Path, wiki: Wiki, *, title_override: str | None = None) -> P
     rel = path.relative_to(wiki.data_root).as_posix()
     title = title_override or _extract_title(content) or path.stem
     excerpt = _first_meaningful_paragraph(content)
-    return PageRead(rel_path=rel, title=title, excerpt=excerpt)
+    return PageRead(rel_path=rel, title=title, excerpt=excerpt, source="wiki")
 
 
 def _extract_title(content: str) -> str | None:
@@ -360,6 +583,11 @@ def build_answer_from_pages(
     answer has empty citations / pages_read / page_links and a body
     describing why.
 
+    Each ``PageRead`` carries a ``source`` discriminator
+    (``"library"`` / ``"wiki"``); we wrap it in a
+    :class:`lies.query.citation.Citation` so the answer carries the
+    source through to downstream consumers.
+
     Args:
         question: The user's natural-language question.
         pages: The pages already retrieved for ``question``. Empty is
@@ -375,18 +603,37 @@ def build_answer_from_pages(
         since this function has no opinion on whether the LLM was
         invoked.
     """
-    citations: list[str] = []
-    pages_read: list[str] = []
+    from lies.query.citation import Citation
+
+    citations: list[Citation] = []
+    pages_read: list[Citation] = []
     page_links: list[str] = []
     bullets: list[str] = []
     for page in pages:
-        citations.append(page.rel_path)
-        pages_read.append(page.rel_path)
+        # ``PageRead.source`` is typed ``str`` for ease of construction
+        # across callers; ``Citation.source`` narrows to
+        # ``Literal["library", "wiki"]`` at the data-shape boundary.
+        # The two values are produced from the same closed set
+        # (``_build_library_page_read`` → ``"library"``, ``_try_read``
+        # → ``"wiki"``), so the cast is safe.
+        c = Citation(
+            path=page.rel_path,
+            source=cast(Literal["library", "wiki"], page.source),
+        )
+        citations.append(c)
+        pages_read.append(c)
         page_links.append(f"[{page.title}]({page.rel_path})")
         excerpt = page.excerpt or "(no extractable content)"
-        bullets.append(f"- {page.title} — {excerpt} — [{page.title}]({page.rel_path})")
+        bullets.append(
+            f"- [{page.source}] {page.title} — {excerpt} — [{page.title}]({page.rel_path})"
+        )
 
-    if fallback_reason:
+    if fallback_reason == FALLBACK_REASON_WIKI_ONLY:
+        preamble = (
+            "_Note: not grounded in primary sources (library returned no matches); "
+            "answered from wiki._\n\n"
+        )
+    elif fallback_reason:
         preamble = (
             f"_Note: qmd unavailable ({fallback_reason}); answered from `wiki/index.md`._\n\n"
         )
@@ -410,26 +657,45 @@ def build_answer_from_pages(
 
 
 def _empty_answer(question: str, fallback_reason: str) -> str:
-    """The 'no pages found' answer body."""
+    """The 'no pages found' answer body.
+
+    Renders when both qmd passes failed to surface any readable page.
+    The two-pass refactor retired the ``wiki/index.md`` fallback, so the
+    body now states the qmd failure reason (e.g. ``qmd_unavailable``)
+    without promising that the index was tried.
+
+    The ``FALLBACK_REASON_WIKI_ONLY`` branch is defensive: ``WIKI_ONLY``
+    is only set when the wiki pass *did* surface readable pages, so
+    this function is unreachable in that case. Kept for symmetry with
+    :func:`build_answer_from_pages` so the operator-facing message set
+    is closed.
+    """
     if fallback_reason == FALLBACK_REASON_NO_RESULTS:
         return (
             f"### {question.strip()}\n\n"
-            "_qmd query returned no results, and `wiki/index.md` "
-            "contains no readable pages._\n\n"
+            f"_qmd query returned no results ({fallback_reason}); "
+            "no readable pages._\n\n"
+            "No pages found."
+        )
+    if fallback_reason == FALLBACK_REASON_WIKI_ONLY:
+        return (
+            f"### {question.strip()}\n\n"
+            f"_Not grounded in primary sources (library returned no matches) "
+            f"({fallback_reason}); no readable pages._\n\n"
             "No pages found."
         )
     if fallback_reason == FALLBACK_REASON_UNAVAILABLE:
         return (
             f"### {question.strip()}\n\n"
-            "_qmd is not installed, and `wiki/index.md` contains no "
-            "readable pages._\n\n"
+            f"_qmd is not installed ({fallback_reason}); "
+            "no readable pages._\n\n"
             "No pages found."
         )
     if fallback_reason == FALLBACK_REASON_FAILED:
         return (
             f"### {question.strip()}\n\n"
-            "_qmd query failed, and `wiki/index.md` contains no "
-            "readable pages._\n\n"
+            f"_qmd query failed ({fallback_reason}); "
+            "no readable pages._\n\n"
             "No pages found."
         )
     return f"### {question.strip()}\n\nNo pages found."

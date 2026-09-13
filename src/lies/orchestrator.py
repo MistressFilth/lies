@@ -10,6 +10,7 @@ import time
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Literal, cast
 
 from pydantic_ai import Agent
 from pydantic_ai.models import Model
@@ -48,6 +49,7 @@ from lies.query import (
     retrieve_pages,
     synthesize_answer,
 )
+from lies.query.citation import Citation
 from lies.query.tag_expr import ResolvedTagFilter
 from lies.query.synthesizer import _searched_scope
 from lies.schema import load_schema
@@ -1096,7 +1098,7 @@ class Orchestrator:
                 slug=slug,
                 title=title,
                 body=answer.answer,
-                derived_from=list(answer.pages_read),
+                derived_from=[c.path for c in answer.pages_read],
                 tags=["synthesis"],
                 sources=[],
                 exists=lambda r: (self.wiki.wiki_dir / r).exists(),
@@ -1281,6 +1283,18 @@ class Orchestrator:
         # documented at ``SynthesizedAnswer.searched_scope``).
         searched_scope = _searched_scope(self.wiki, tag_filter)
 
+        # Self-heal: ensure ``wiki_<name>`` is registered with qmd
+        # before retrieval runs. Wikis created before 0.22.0 skip this
+        # registration in ``WikiLayout.init`` because
+        # ``WikiAlreadyExists`` blocks re-init; without this hook the
+        # wiki pass returns zero hits forever. The helper is idempotent
+        # (sentinel short-circuits after the first successful call) and
+        # never raises; a qmd outage prints a warning and returns False
+        # so the answer still synthesizes.
+        from lies.wiki.layout import ensure_wiki_qmd_registered
+
+        ensure_wiki_qmd_registered(self.wiki)
+
         if not question or not question.strip():
             return replace(
                 synthesize_answer(question, self.wiki),
@@ -1320,11 +1334,30 @@ class Orchestrator:
                 f"dropped {len(dropped)} unretrieved citation(s): {', '.join(dropped)}"
             )
 
+        # Build the ``Citation`` lists from the retrieved ``pages`` so the
+        # source discriminator rides with each citation. ``kept`` are the
+        # subset the LLM agent returned whose paths match retrieved pages;
+        # look up the source by path on the retrieved set. ``cast`` is
+        # safe: ``PageRead.source`` values are produced from the closed
+        # ``"library"`` / ``"wiki"`` set at the resolver boundary.
+        page_source_by_path: dict[str, str] = {page.rel_path: page.source for page in pages}
+        citations: list[Citation] = [
+            Citation(path=c, source=cast(Literal["library", "wiki"], page_source_by_path[c]))
+            for c in kept
+        ]
+        pages_read: list[Citation] = [
+            Citation(
+                path=page.rel_path,
+                source=cast(Literal["library", "wiki"], page.source),
+            )
+            for page in pages
+        ]
+
         ans = SynthesizedAnswer(
             question=question,
             answer=output.answer,
-            citations=kept,
-            pages_read=[page.rel_path for page in pages],
+            citations=citations,
+            pages_read=pages_read,
             fallback_used=bool(fallback_reason),
             fallback_reason=fallback_reason,
             page_links=[f"[{page.title}]({page.rel_path})" for page in pages],
@@ -1352,7 +1385,9 @@ class Orchestrator:
             # otherwise ``apply_plan`` rejects the plan with
             # ``WikiEvidenceMissing`` before any disk write happens. Mirrors
             # the ``register_evidence`` call in ``_run_enrichment``.
-            self._memory_service.register_evidence(set(ans.pages_read))
+            # ``register_evidence`` takes string paths, so unwrap the
+            # ``Citation`` envelope before passing.
+            self._memory_service.register_evidence({c.path for c in ans.pages_read})
             ans = replace(ans, file_receipt=self.file_back_synthesis(ans, collection))
 
         return ans
@@ -1367,10 +1402,31 @@ class Orchestrator:
         verbatim quotation and disagreement-surfacing, neither of which
         survives truncation.
 
-        ``rel_path`` is ``data_root``-relative (it carries the ``wiki/``
-        prefix), so it joins onto ``self.wiki.data_root``. Joining onto
-        ``wiki_dir`` would silently produce ``wiki/wiki/...`` and read
-        nothing.
+        Path resolution branches on ``page.source``:
+
+        - ``source == "library"`` → resolve against
+          ``Library.open().collections_root``. The rel_path is the
+          qmd URI form (``<coll>/<file>``) per spec §"Path resolution";
+          library files live outside ``wiki.data_root`` so a naive join
+          there would ``OSError`` silently and the LLM would never see
+          library content (the branch's primary-source promise broken).
+        - ``source == "wiki"`` → resolve against
+          ``self.wiki.data_root``. rel_path is data_root-relative
+          (carries the ``wiki/`` prefix); ``data_root / rel_path``
+          resolves correctly. Joining onto ``wiki_dir`` would silently
+          produce ``wiki/wiki/...`` and read nothing — the convention
+          is documented in :func:`_try_read` (``PageRead.rel_path``
+          constructor).
+
+        ``OSError`` / ``FileNotFoundError`` / ``UnicodeDecodeError`` on
+        any single page is skipped with a warning so a missing file
+        cannot crash the synthesis path. The agent still runs with
+        whatever did read cleanly.
+
+        ``page_sources`` is populated in lockstep with ``page_texts``
+        so the LLM prompt can render ``[library]`` / ``[wiki]`` source
+        tags inline per page. The LLM uses these tags to apply the
+        library-wins-on-conflict rule from the prompt body.
 
         Returns ``(output, "")`` on success and ``(None, reason)`` on
         any failure, where ``reason`` is ``"<ExcType>: <msg>"``. One
@@ -1380,16 +1436,32 @@ class Orchestrator:
         """
         import logging
 
+        # Local import: same rationale as ``_resolve_qmd_path_in_library``
+        # in :mod:`lies.query.synthesizer` — keeps ``Library`` import out
+        # of module-load order at import time.
+        from lies.library.paths import Library
+
         page_texts: dict[str, str] = {}
+        page_sources: dict[str, Literal["library", "wiki"]] = {}
         for page in pages:
             try:
-                page_texts[page.rel_path] = (self.wiki.data_root / page.rel_path).read_text(
-                    encoding="utf-8"
+                if page.source == "library":
+                    resolved = Library.open().collections_root / page.rel_path
+                else:
+                    resolved = self.wiki.data_root / page.rel_path
+                page_texts[page.rel_path] = resolved.read_text(encoding="utf-8")
+                page_sources[page.rel_path] = cast(Literal["library", "wiki"], page.source)
+            except (OSError, UnicodeDecodeError) as exc:
+                logging.getLogger(__name__).warning(
+                    "query_synthesizer: skipping unreadable %s page %s: %s: %s",
+                    page.source,
+                    page.rel_path,
+                    type(exc).__name__,
+                    exc,
                 )
-            except (OSError, UnicodeDecodeError):
                 continue
 
-        deps = QueryDeps(question=question, page_texts=page_texts)
+        deps = QueryDeps(question=question, page_texts=page_texts, page_sources=page_sources)
         try:
             result = self._query_synthesizer_agent.run_sync(question, deps=deps)
         except Exception as exc:  # noqa: BLE001 - broad catch; extractive is the safety net

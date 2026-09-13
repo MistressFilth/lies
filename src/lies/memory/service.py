@@ -660,6 +660,17 @@ class WikiMemoryService:
                     f"Ops: {ops_str}\n"
                     f"Evidence: {evidence_count}\n"
                 )
+                # Self-heal: ensure ``wiki_<name>`` is registered with qmd
+                # before the commit. Wikis created before 0.22.0 skip
+                # this registration in ``WikiLayout.init`` because
+                # ``WikiAlreadyExists`` blocks re-init; without this hook
+                # the wiki pass returns zero hits forever. The helper is
+                # idempotent (sentinel short-circuits after the first
+                # successful call) and never raises; a qmd outage prints
+                # a warning and returns False so the commit still lands.
+                from lies.wiki.layout import ensure_wiki_qmd_registered
+
+                ensure_wiki_qmd_registered(self._wiki)
                 commit_sha = atomic_commit(
                     self._wiki.data_root,
                     commit_message,

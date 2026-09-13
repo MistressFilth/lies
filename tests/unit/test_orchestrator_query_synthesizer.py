@@ -82,7 +82,11 @@ def test_run_query_uses_agent_answer_on_success(orch: Orchestrator) -> None:
     assert result.synthesis_used is True
     assert result.synthesis_reason == ""
     assert result.answer == "Alpha is the first letter. [Alpha](wiki/concepts/alpha.md)"
-    assert result.citations == ["wiki/concepts/alpha.md"]
+    # citations are now ``list[Citation]`` (Task 6); the wiki pass
+    # resolves to source="wiki" for this fixture.
+    from lies.query.citation import Citation
+
+    assert result.citations == [Citation(path="wiki/concepts/alpha.md", source="wiki")]
     assert result.should_file is True
     assert result.file_receipt is None
 
@@ -97,8 +101,14 @@ def test_run_query_falls_back_to_extractive_when_agent_raises(orch: Orchestrator
 
     assert result.synthesis_used is False
     assert result.synthesis_reason == "RuntimeError: model exploded"
+    # Two-pass retrieval surfaces the same wiki hit once per pass
+    # (library + wiki) — both resolve to the same wiki page; the retriever
+    # dedupes on ``(rel_path, source)`` so the extractive body reports
+    # one page, not two (Important 5).
     assert "Based on 1 wiki page(s)" in result.answer
-    assert result.citations == ["wiki/concepts/alpha.md"]
+    from lies.query.citation import Citation
+
+    assert result.citations == [Citation(path="wiki/concepts/alpha.md", source="wiki")]
 
 
 def test_run_query_drops_citations_the_agent_never_received(orch: Orchestrator) -> None:
@@ -111,7 +121,9 @@ def test_run_query_drops_citations_the_agent_never_received(orch: Orchestrator) 
         result = orch.run_query("what is alpha?")
 
     assert result.synthesis_used is True
-    assert result.citations == ["wiki/concepts/alpha.md"]
+    from lies.query.citation import Citation
+
+    assert result.citations == [Citation(path="wiki/concepts/alpha.md", source="wiki")]
     assert "wiki/concepts/ghost.md" in result.synthesis_reason
     assert result.synthesis_reason.startswith("dropped 1 unretrieved citation(s)")
 
@@ -161,6 +173,7 @@ def test_run_query_calls_retrieve_pages_at_most_once_per_branch(
             rel_path="wiki/concepts/alpha.md",
             title="Alpha",
             excerpt="Alpha is the first letter.",
+            source="wiki",
         ),
     ]
 
@@ -211,6 +224,7 @@ def test_call_query_synthesizer_handles_unreadable_pages_silently(
                     rel_path="wiki/concepts/alpha.md",
                     title="Alpha",
                     excerpt="Alpha is the first letter.",
+                    source="wiki",
                 ),
             ],
         )
@@ -220,6 +234,175 @@ def test_call_query_synthesizer_handles_unreadable_pages_silently(
     assert reason == ""
     # The unreadable page was silently skipped; deps has no entry for it.
     assert captured["deps"].page_texts == {}  # type: ignore[attr-defined]
+    assert captured["deps"].page_sources == {}  # type: ignore[attr-defined]
+
+
+# ---------------------------------------------------------------------------
+# Critical 1 + Critical 4: path resolver branches on ``source`` and the
+# deps carry a per-path source discriminator.
+# ---------------------------------------------------------------------------
+
+
+def test_call_query_synthesizer_reads_library_pages_from_collections_root(
+    orch: Orchestrator,
+) -> None:
+    """A library-sourced page is resolved against
+    ``Library.open().collections_root`` — not ``wiki.data_root``.
+
+    Without the fix, the resolver joins ``self.wiki.data_root / rel_path``
+    and reads nothing (the file lives under the library collections root).
+    """
+    import os
+    from unittest import mock as _mock
+
+    from lies.library.paths import Library
+
+    Library.open.cache_clear()
+    lib = Library.open()
+    rel_path = "claude_platform/skills.md"
+    lib_root = lib.collections_root
+    (lib_root / "claude_platform").mkdir(parents=True, exist_ok=True)
+    (lib_root / "claude_platform" / "skills.md").write_text(
+        "# Skills\n\nLibrary body.\n", encoding="utf-8"
+    )
+
+    captured: dict[str, object] = {}
+
+    def capture(_self: object, _prompt: str, **kwargs: object) -> _mock.Mock:
+        captured["deps"] = kwargs["deps"]
+        return _mock.Mock(output=_answer(citations=[rel_path]))
+
+    try:
+        with _mock.patch.object(type(orch._query_synthesizer_agent), "run_sync", capture):
+            output, reason = orch._call_query_synthesizer(
+                "anything",
+                [
+                    PageRead(
+                        rel_path=rel_path,
+                        title="Skills",
+                        excerpt="Library body.",
+                        source="library",
+                    ),
+                ],
+            )
+        assert output is not None
+        assert reason == ""
+        deps = captured["deps"]
+        # The library page text is the file body — proving the resolver
+        # landed at the right path (Library.open().collections_root/<rel>).
+        assert deps.page_texts[rel_path] == "# Skills\n\nLibrary body.\n"  # type: ignore[attr-defined]
+        assert deps.page_sources[rel_path] == "library"  # type: ignore[attr-defined]
+    finally:
+        # Restore the env so other tests aren't disturbed.
+        for key in ("XDG_DATA_HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME"):
+            if key in os.environ:
+                del os.environ[key]
+
+
+def test_call_query_synthesizer_reads_wiki_pages_from_data_root(
+    orch: Orchestrator,
+) -> None:
+    """A wiki-sourced page is resolved against ``self.wiki.data_root``.
+
+    ``wiki/concepts/alpha.md`` is a data_root-relative path with the
+    ``wiki/`` prefix; the resolver joins onto ``wiki.data_root`` (which
+    is one segment above ``wiki.wiki_dir``) so the prefix is preserved.
+    Joining onto ``wiki_dir`` would silently produce
+    ``wiki/wiki/...`` and read nothing.
+    """
+    captured: dict[str, object] = {}
+
+    def capture(_self: object, _prompt: str, **kwargs: object) -> mock.Mock:
+        captured["deps"] = kwargs["deps"]
+        return mock.Mock(output=_answer())
+
+    with mock.patch.object(type(orch._query_synthesizer_agent), "run_sync", capture):
+        output, reason = orch._call_query_synthesizer(
+            "what is alpha?",
+            [
+                PageRead(
+                    rel_path="wiki/concepts/alpha.md",
+                    title="Alpha",
+                    excerpt="Alpha is the first letter.",
+                    source="wiki",
+                ),
+            ],
+        )
+
+    assert output is not None
+    assert reason == ""
+    deps = captured["deps"]
+    assert deps.page_texts["wiki/concepts/alpha.md"] == (  # type: ignore[attr-defined]
+        "---\ntitle: Alpha\n---\n\nAlpha is the first letter.\n"
+    )
+    assert deps.page_sources["wiki/concepts/alpha.md"] == "wiki"  # type: ignore[attr-defined]
+
+
+def test_call_query_synthesizer_silently_skips_unreadable_library_pages(
+    orch: Orchestrator,
+) -> None:
+    """A library-sourced page whose file is missing is skipped, not crashed on.
+
+    Mirrors the wiki-side defensive read loop: ``OSError`` /
+    ``FileNotFoundError`` on one page must not bubble out of
+    ``_call_query_synthesizer``. The agent still runs with whatever did
+    read cleanly."""
+    from unittest import mock as _mock
+
+    captured: dict[str, object] = {}
+
+    def capture(_self: object, _prompt: str, **kwargs: object) -> _mock.Mock:
+        captured["deps"] = kwargs["deps"]
+        return _mock.Mock(output=_answer())
+
+    with _mock.patch.object(type(orch._query_synthesizer_agent), "run_sync", capture):
+        output, reason = orch._call_query_synthesizer(
+            "anything",
+            [
+                PageRead(
+                    rel_path="claude_platform/missing.md",
+                    title="Missing",
+                    excerpt="missing",
+                    source="library",
+                ),
+            ],
+        )
+
+    assert output is not None
+    assert reason == ""
+    assert captured["deps"].page_texts == {}  # type: ignore[attr-defined]
+    assert captured["deps"].page_sources == {}  # type: ignore[attr-defined]
+
+
+def test_call_query_synthesizer_populates_page_sources_for_each_read_page(
+    orch: Orchestrator,
+) -> None:
+    """Every successfully-read page appears in both ``page_texts`` and
+    ``page_sources`` so the LLM prompt carries the discriminator for
+    every page the agent sees."""
+    captured: dict[str, object] = {}
+
+    def capture(_self: object, _prompt: str, **kwargs: object) -> mock.Mock:
+        captured["deps"] = kwargs["deps"]
+        return mock.Mock(output=_answer())
+
+    with mock.patch.object(type(orch._query_synthesizer_agent), "run_sync", capture):
+        orch._call_query_synthesizer(
+            "what is alpha?",
+            [
+                PageRead(
+                    rel_path="wiki/concepts/alpha.md",
+                    title="Alpha",
+                    excerpt="Alpha is the first letter.",
+                    source="wiki",
+                ),
+            ],
+        )
+
+    deps = captured["deps"]
+    # Both keys line up: every page_texts entry has a source entry.
+    assert set(deps.page_texts.keys()) == set(deps.page_sources.keys())  # type: ignore[attr-defined]
+    assert deps.page_sources["wiki/concepts/alpha.md"] == "wiki"  # type: ignore[attr-defined]
 
 
 def test_set_qmd_search_rebinds_retrieve_pages_default(
@@ -233,6 +416,10 @@ def test_set_qmd_search_rebinds_retrieve_pages_default(
     silently failed because `qmd_search=qmd_query` was evaluated at
     function-definition time. Each test then shelled out to the real
     qmd binary (~40s/test on systems where qmd is on PATH).
+
+    After the two-pass refactor, ``retrieve_pages`` invokes the qmd
+    callable twice (library pass + wiki-rooted pass); the indirection
+    must reach both calls.
     """
     from lies.query import synthesize_answer
     from lies.query.synthesizer import retrieve_pages
@@ -249,10 +436,13 @@ def test_set_qmd_search_rebinds_retrieve_pages_default(
     direct_set_qmd_search(sentinel)
     try:
         # Both functions honor the rebind when no kwarg is supplied.
+        # ``retrieve_pages`` issues two qmd calls (library + wiki passes).
         retrieve_pages("what is alpha?", orch.wiki)
-        assert len(sentinel_calls) == 1
-        synthesize_answer("what is alpha?", orch.wiki)
         assert len(sentinel_calls) == 2
+        # ``synthesize_answer`` calls ``retrieve_pages`` once, which makes
+        # two more qmd calls.
+        synthesize_answer("what is alpha?", orch.wiki)
+        assert len(sentinel_calls) == 4
     finally:
         # Restore the real binary so other tests aren't broken.
         direct_set_qmd_search(qmd_query)
@@ -263,6 +453,9 @@ def test_set_qmd_search_propagates_through_orchestrator(
 ) -> None:
     """`run_query` honors the indirection even though it doesn't pass
     the kwarg explicitly to ``retrieve_pages``.
+
+    Two-pass retrieval invokes the qmd callable twice (library + wiki
+    passes); both invocations must reach the rebind.
     """
     from lies.query.synthesizer import set_qmd_search as direct_set_qmd_search
 
@@ -283,7 +476,7 @@ def test_set_qmd_search_propagates_through_orchestrator(
     finally:
         direct_set_qmd_search(qmd_query)
 
-    assert called == ["fake"]
+    assert called == ["fake", "fake"]
 
 
 def test_run_query_passes_full_page_bodies_not_excerpts(orch: Orchestrator) -> None:

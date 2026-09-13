@@ -6,6 +6,16 @@ All notable changes to LIES are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+- **BREAKING**: `SynthesizedAnswer.citations` and `.pages_read` are now `list[Citation]` (was `list[str]`); each citation carries a `source: "library" | "wiki"` discriminator. Library collections are the primary source of truth; wiki content is supplementary. The synthesis prompt instructs the LLM that library wins on conflict.
+- `lies-mcp-query` resolves qmd hits against library collections first (`Library.collections_root/<coll>/<file>`) and falls back to `wiki.wiki_dir`. Same path from both roots surfaces as two citations with distinct sources.
+- `retrieve_pages` runs two qmd passes — one scoped to library collections, one scoped to the new `wiki_<wikiname>` qmd collection registered at `WikiLayout.init`.
+- New fallback reason `wiki_only`: library returned 0 hits, wiki returned hits; answer opens with `_Note: not grounded in primary sources (library returned no matches); answered from wiki._`.
+
+### Added
+- `src/lies/query/citation.py`: `Citation` frozen dataclass with `path` and `source` fields.
+- Wiki-rooted qmd collection `wiki_<wikiname>` registered at `WikiLayout.init` via `qmd_collection_add_or_update`. Existing post-commit hook (`WikiMemoryService._refresh_qmd`) re-indexes it on every wiki write.
+
 ### Fixed
 - **qmd concurrent-subprocess CUDA pool race** (#74). Wraps
   every `qmd_*` CLI helper in `src/lies/qmd/cli.py` with a
