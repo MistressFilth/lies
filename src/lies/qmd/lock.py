@@ -18,24 +18,27 @@ from __future__ import annotations
 import functools
 import logging
 import os
+import time
 from pathlib import Path
 from typing import Any, Callable
 
-from lies.lock_errors import (  # noqa: F401 — Task 3 will use these from this module.
+from lies.lock_errors import (
     QmdLockBusy,
     WikiFlockIndeterminate,
 )
 from lies.utils.exclusive import (
-    acquire_create_lock,  # noqa: F401 — Task 3 will use this.
+    acquire_create_lock,
     release_create_lock,
 )
 from lies.utils.lock_heartbeat import (
-    Heartbeat,  # noqa: F401 — Task 3 will use this.
-    write_heartbeat,  # noqa: F401 — Task 3 will use this.
-    write_owner_pid,  # noqa: F401 — Task 3 will use this.
+    Heartbeat,
+    write_heartbeat,
+    write_owner_pid,
 )
 
 _log = logging.getLogger(__name__)
+
+_POLL_INTERVAL_S = 0.1
 
 
 def _default_lock_dir() -> Path:
@@ -71,21 +74,83 @@ def _lock_paths() -> tuple[Path, Path, Path]:
 _LOCK_PATH, _PID_PATH, _STATE_PATH = _lock_paths()
 
 
+def _register_holder(fd: int) -> None:
+    """Write the holder pid + heartbeat so contending callers see us as a live holder.
+
+    Best-effort: failures (e.g., transient ``OSError`` on a full disk) are
+    logged at WARN and swallowed. The create-lock already serializes
+    contenders, so the *caller* is safe; the envelope files are advisory
+    metadata that diagnostic tools and ``pid_alive_fn`` read to decide
+    whether to reap a stale holder.
+    """
+    try:
+        pid = os.getpid()
+        write_owner_pid(_PID_PATH, pid)
+        write_heartbeat(
+            _STATE_PATH,
+            Heartbeat(pid=pid, started_at=time.time(), scope="qmd-cli"),
+        )
+    except OSError as exc:
+        _log.warning("qmd lock holder registration failed: %s", exc)
+
+
 def _acquire_with_poll(
     retry_budget_s: float,
     max_age_s: float,
 ) -> int:
-    """Poll-retry until ``acquire_create_lock`` returns ``acquired``.
+    """Poll-retry until the qmd flock is acquired.
 
     Returns the fd on success. Raises:
-    - :class:`QmdLockBusy` after ``retry_budget_s`` elapses while contended.
-    - :class:`WikiFlockIndeterminate` if the envelope reports indeterminate.
+    - :class:`QmdLockBusy` after ``retry_budget_s`` elapses while contended
+      against a live holder. Carries ``holder_pid``, ``waited_s``, and
+      ``max_s`` fields for diagnostics.
+    - :class:`WikiFlockIndeterminate` if the envelope reports indeterminate
+      — operator must run ``lies flock qmd force-repair``.
 
-    Implementation note: real ``_acquire_with_poll`` lives in Task 3.
-    This placeholder is the minimum scaffolding the path-resolution
-    tests need.
+    Poll cadence: 100 ms. Deadline check happens before each sleep, so a
+    single contended call near the boundary resolves in at most one poll
+    interval past ``retry_budget_s``.
     """
-    raise NotImplementedError("filled in by Task 3")
+    deadline = time.monotonic() + retry_budget_s
+    started_at = time.monotonic()
+    while True:
+        result = acquire_create_lock(
+            _LOCK_PATH,
+            max_age_s=max_age_s,
+            pid_path=_PID_PATH,
+            state_json_path=_STATE_PATH,
+        )
+        if result is None:
+            # Legacy path: only hit if ``exclusive.py`` raises the
+            # non-envelope ``None``-on-busy. We always pass the
+            # envelope (pid_path + state_json_path), so this branch
+            # is defensive.
+            if time.monotonic() >= deadline:
+                raise QmdLockBusy(
+                    waited_s=time.monotonic() - started_at,
+                    max_s=retry_budget_s,
+                )
+            time.sleep(_POLL_INTERVAL_S)
+            continue
+
+        if result.status in ("acquired", "dead_reaped"):
+            _register_holder(result.fd)
+            return result.fd
+
+        if result.status == "indeterminate":
+            raise WikiFlockIndeterminate(
+                f"qmd lock holder pid {result.holder_pid} indeterminate; "
+                f"run `lies flock qmd force-repair`"
+            )
+
+        # status == "busy"
+        if time.monotonic() >= deadline:
+            raise QmdLockBusy(
+                holder_pid=result.holder_pid,
+                waited_s=time.monotonic() - started_at,
+                max_s=retry_budget_s,
+            )
+        time.sleep(_POLL_INTERVAL_S)
 
 
 def _release(fd: int) -> None:
