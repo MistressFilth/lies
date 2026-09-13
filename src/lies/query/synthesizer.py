@@ -24,6 +24,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal, cast
 
 from lies.qmd.cli import qmd_query
 from lies.query.index_parser import parse_index_links
@@ -544,6 +545,11 @@ def build_answer_from_pages(
     answer has empty citations / pages_read / page_links and a body
     describing why.
 
+    Each ``PageRead`` carries a ``source`` discriminator
+    (``"library"`` / ``"wiki"``); we wrap it in a
+    :class:`lies.query.citation.Citation` so the answer carries the
+    source through to downstream consumers.
+
     Args:
         question: The user's natural-language question.
         pages: The pages already retrieved for ``question``. Empty is
@@ -559,16 +565,30 @@ def build_answer_from_pages(
         since this function has no opinion on whether the LLM was
         invoked.
     """
-    citations: list[str] = []
-    pages_read: list[str] = []
+    from lies.query.citation import Citation
+
+    citations: list[Citation] = []
+    pages_read: list[Citation] = []
     page_links: list[str] = []
     bullets: list[str] = []
     for page in pages:
-        citations.append(page.rel_path)
-        pages_read.append(page.rel_path)
+        # ``PageRead.source`` is typed ``str`` for ease of construction
+        # across callers; ``Citation.source`` narrows to
+        # ``Literal["library", "wiki"]`` at the data-shape boundary.
+        # The two values are produced from the same closed set
+        # (``_build_library_page_read`` → ``"library"``, ``_try_read``
+        # → ``"wiki"``), so the cast is safe.
+        c = Citation(
+            path=page.rel_path,
+            source=cast(Literal["library", "wiki"], page.source),
+        )
+        citations.append(c)
+        pages_read.append(c)
         page_links.append(f"[{page.title}]({page.rel_path})")
         excerpt = page.excerpt or "(no extractable content)"
-        bullets.append(f"- {page.title} — {excerpt} — [{page.title}]({page.rel_path})")
+        bullets.append(
+            f"- [{page.source}] {page.title} — {excerpt} — [{page.title}]({page.rel_path})"
+        )
 
     if fallback_reason == FALLBACK_REASON_WIKI_ONLY:
         preamble = (
@@ -605,12 +625,25 @@ def _empty_answer(question: str, fallback_reason: str) -> str:
     The two-pass refactor retired the ``wiki/index.md`` fallback, so the
     body now states the qmd failure reason (e.g. ``qmd_unavailable``)
     without promising that the index was tried.
+
+    The ``FALLBACK_REASON_WIKI_ONLY`` branch is defensive: ``WIKI_ONLY``
+    is only set when the wiki pass *did* surface readable pages, so
+    this function is unreachable in that case. Kept for symmetry with
+    :func:`build_answer_from_pages` so the operator-facing message set
+    is closed.
     """
     if fallback_reason == FALLBACK_REASON_NO_RESULTS:
         return (
             f"### {question.strip()}\n\n"
             f"_qmd query returned no results ({fallback_reason}); "
             "no readable pages._\n\n"
+            "No pages found."
+        )
+    if fallback_reason == FALLBACK_REASON_WIKI_ONLY:
+        return (
+            f"### {question.strip()}\n\n"
+            f"_Not grounded in primary sources (library returned no matches) "
+            f"({fallback_reason}); no readable pages._\n\n"
             "No pages found."
         )
     if fallback_reason == FALLBACK_REASON_UNAVAILABLE:

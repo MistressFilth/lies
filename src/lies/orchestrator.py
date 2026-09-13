@@ -10,6 +10,7 @@ import time
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Literal, cast
 
 from pydantic_ai import Agent
 from pydantic_ai.models import Model
@@ -48,6 +49,7 @@ from lies.query import (
     retrieve_pages,
     synthesize_answer,
 )
+from lies.query.citation import Citation
 from lies.query.tag_expr import ResolvedTagFilter
 from lies.query.synthesizer import _searched_scope
 from lies.schema import load_schema
@@ -1096,7 +1098,7 @@ class Orchestrator:
                 slug=slug,
                 title=title,
                 body=answer.answer,
-                derived_from=list(answer.pages_read),
+                derived_from=[c.path for c in answer.pages_read],
                 tags=["synthesis"],
                 sources=[],
                 exists=lambda r: (self.wiki.wiki_dir / r).exists(),
@@ -1320,11 +1322,30 @@ class Orchestrator:
                 f"dropped {len(dropped)} unretrieved citation(s): {', '.join(dropped)}"
             )
 
+        # Build the ``Citation`` lists from the retrieved ``pages`` so the
+        # source discriminator rides with each citation. ``kept`` are the
+        # subset the LLM agent returned whose paths match retrieved pages;
+        # look up the source by path on the retrieved set. ``cast`` is
+        # safe: ``PageRead.source`` values are produced from the closed
+        # ``"library"`` / ``"wiki"`` set at the resolver boundary.
+        page_source_by_path: dict[str, str] = {page.rel_path: page.source for page in pages}
+        citations: list[Citation] = [
+            Citation(path=c, source=cast(Literal["library", "wiki"], page_source_by_path[c]))
+            for c in kept
+        ]
+        pages_read: list[Citation] = [
+            Citation(
+                path=page.rel_path,
+                source=cast(Literal["library", "wiki"], page.source),
+            )
+            for page in pages
+        ]
+
         ans = SynthesizedAnswer(
             question=question,
             answer=output.answer,
-            citations=kept,
-            pages_read=[page.rel_path for page in pages],
+            citations=citations,
+            pages_read=pages_read,
             fallback_used=bool(fallback_reason),
             fallback_reason=fallback_reason,
             page_links=[f"[{page.title}]({page.rel_path})" for page in pages],
@@ -1352,7 +1373,9 @@ class Orchestrator:
             # otherwise ``apply_plan`` rejects the plan with
             # ``WikiEvidenceMissing`` before any disk write happens. Mirrors
             # the ``register_evidence`` call in ``_run_enrichment``.
-            self._memory_service.register_evidence(set(ans.pages_read))
+            # ``register_evidence`` takes string paths, so unwrap the
+            # ``Citation`` envelope before passing.
+            self._memory_service.register_evidence({c.path for c in ans.pages_read})
             ans = replace(ans, file_receipt=self.file_back_synthesis(ans, collection))
 
         return ans

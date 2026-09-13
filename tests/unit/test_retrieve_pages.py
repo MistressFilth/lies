@@ -9,6 +9,7 @@ import pytest
 
 from lies.collections.record import Collection, save_collection
 from lies.qmd.cli import QmdCommandError, QmdNoResultsError, QmdNotInstalledError
+from lies.query.citation import Citation
 from lies.query.synthesizer import (
     FALLBACK_REASON_FAILED,
     FALLBACK_REASON_NO_RESULTS,
@@ -126,10 +127,11 @@ def test_synthesize_answer_output_unchanged_by_the_lift(wiki: Wiki) -> None:
     assert answer.answer == (
         "### what is alpha?\n\n"
         "Based on 1 wiki page(s):\n\n"
-        "- alpha — Alpha is the first letter. — [alpha](wiki/concepts/alpha.md)"
+        "- [wiki] alpha — Alpha is the first letter. — [alpha](wiki/concepts/alpha.md)"
     )
-    assert answer.citations == ["wiki/concepts/alpha.md"]
-    assert answer.pages_read == ["wiki/concepts/alpha.md"]
+    # citations are now ``list[Citation]`` (Task 6); wiki-sourced.
+    assert answer.citations == [Citation(path="wiki/concepts/alpha.md", source="wiki")]
+    assert answer.pages_read == [Citation(path="wiki/concepts/alpha.md", source="wiki")]
     assert answer.fallback_used is False
     assert answer.fallback_reason == ""
     assert answer.page_links == ["[alpha](wiki/concepts/alpha.md)"]

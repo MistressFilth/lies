@@ -37,6 +37,7 @@ from lies.lock_errors import WikiFlockUnrepairable, WikiLockBusy
 from lies.mcp.resolution import resolve_wiki
 from lies.memory.models import WikiPlanInvalid
 from lies.orchestrator import Orchestrator
+from lies.query.citation import Citation
 from lies.query.models import SynthesizedAnswer
 from lies.query.tag_expr import (
     ResolvedTagFilter,
@@ -65,13 +66,19 @@ class SynthesizedMcpAnswer(BaseModel):
     whether the answer earns a wiki page; ``file_receipt`` is the
     structured outcome of the file-back attempt (or ``None`` when
     filing was skipped / failed-soft).
+
+    ``citations`` and ``pages_read`` mirror the underlying
+    :class:`SynthesizedAnswer` shape (``list[Citation]``) — each
+    carries the source discriminator (``"library"`` / ``"wiki"``)
+    so downstream consumers can apply the library-wins-on-conflict
+    rule without re-deriving the source from the path.
     """
 
     answer: str
     fallback_used: bool
     fallback_reason: str | None  # None when qmd served the query
-    citations: list[str]
-    pages_read: list[str]
+    citations: list[Citation]
+    pages_read: list[Citation]
     changed_pages: list[str]
     synthesis_used: bool = False
     synthesis_reason: str | None = None  # None when the agent answered cleanly

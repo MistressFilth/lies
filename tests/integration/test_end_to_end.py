@@ -168,6 +168,8 @@ def test_run_query_falls_back_to_index_when_qmd_unavailable(
     # The answer is markdown; it includes the question heading and at
     # least one bullet for the read pages.
     assert "### " in answer.answer
+    # citations are now ``list[Citation]`` (Task 6) — non-empty means
+    # the agent's answer cited at least one retrieved page.
     assert answer.citations, "expected at least one cited page"
     assert answer.synthesis_used is True
     assert answer.synthesis_reason == ""
@@ -189,10 +191,11 @@ def test_synthesizer_reads_index_pages(wiki_copy: Path) -> None:
     assert answer.fallback_used is True
     assert answer.fallback_reason == "qmd_unavailable"
     # The index lists Postgres + MySQL entities; the synthesizer reads
-    # the top-N pages referenced from index.md and cites them.
-    assert any("entities/postgres.md" in c or "entities/mysql.md" in c for c in answer.citations), (
-        f"expected entity citations, got {answer.citations!r}"
-    )
+    # the top-N pages referenced from index.md and cites them. Citations
+    # are now ``list[Citation]`` (Task 6); check the ``.path`` attribute.
+    assert any(
+        "entities/postgres.md" in c.path or "entities/mysql.md" in c.path for c in answer.citations
+    ), f"expected entity citations, got {answer.citations!r}"
 
 
 # ---------------------------------------------------------------------------

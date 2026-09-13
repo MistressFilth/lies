@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from lies.memory.models import MemoryReceipt
+from lies.query.citation import Citation
 
 
 @dataclass(frozen=True)
@@ -13,14 +14,20 @@ class SynthesizedAnswer:
 
     Attributes:
         answer: The answer body in markdown.
-        citations: Wiki-relative paths of pages cited in the answer.
-        pages_read: Wiki-relative paths of pages actually read for the
-            synthesis (subset of citations that contributed content).
+        citations: ``Citation`` objects for pages cited in the answer.
+            Each carries the ``source`` discriminator (``"library"`` /
+            ``"wiki"``) so downstream consumers can apply the
+            library-wins-on-conflict rule without re-deriving the
+            source from the path.
+        pages_read: ``Citation`` objects for pages actually read for
+            the synthesis (the retrieved set, not just the cited
+            subset). The same ``source`` discriminator rides here.
         fallback_used: True if qmd was unavailable, returned no results,
             or failed for some other reason and we fell back to index.md.
         fallback_reason: One of ``""``, ``"qmd_unavailable"``,
-            ``"qmd_no_results"``, ``"qmd_failed"`` — why the fallback
-            was triggered (empty when qmd served the query).
+            ``"qmd_no_results"``, ``"qmd_failed"``, ``"wiki_only"`` —
+            why the fallback was triggered (empty when qmd served
+            the query).
         page_links: Full markdown link markup for each cited page
             (``[Title](path)``), suitable for direct inclusion in
             markdown output.
@@ -50,8 +57,8 @@ class SynthesizedAnswer:
     """
 
     answer: str
-    citations: list[str] = field(default_factory=list)
-    pages_read: list[str] = field(default_factory=list)
+    citations: list[Citation] = field(default_factory=list)
+    pages_read: list[Citation] = field(default_factory=list)
     fallback_used: bool = False
     fallback_reason: str = ""
     changed_pages: list[str] = field(default_factory=list)

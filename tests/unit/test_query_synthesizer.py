@@ -124,11 +124,14 @@ def test_qmd_happy_path_uses_qmd_results(sample_wiki: Wiki) -> None:
     )
     assert result.fallback_used is False
     assert result.fallback_reason == ""
-    # citations and pages_read are data_root-relative (the synthesizer
-    # preserves the "wiki/" prefix for backward compatibility with the
-    # CLI's existing markdown-link contract).
-    assert result.citations == ["wiki/" + p for p in paths]
-    assert result.pages_read == ["wiki/" + p for p in paths]
+    # citations and pages_read are now ``list[Citation]`` (Task 6);
+    # each entry carries the path + source discriminator. The wiki
+    # path is preserved with the "wiki/" prefix for backward
+    # compatibility with the CLI's existing markdown-link contract.
+    from lies.query.citation import Citation
+
+    assert result.citations == [Citation(path="wiki/" + p, source="wiki") for p in paths]
+    assert result.pages_read == [Citation(path="wiki/" + p, source="wiki") for p in paths]
     assert result.page_links == [
         "[Postgres](wiki/entities/postgres.md)",
         "[MVCC](wiki/concepts/mvcc.md)",
@@ -265,7 +268,9 @@ def test_qmd_real_query_end_to_end(sample_wiki: Wiki, monkeypatch) -> None:
     # The hit was preserved through qmd_query → synthesizer; no fallback.
     assert result.fallback_used is False
     assert result.fallback_reason == ""
-    assert "wiki/mywiki/entities/postgres.md" in result.citations
+    # citations are now ``list[Citation]`` (Task 6); the path rides on
+    # ``Citation.path``.
+    assert any(c.path == "wiki/mywiki/entities/postgres.md" for c in result.citations)
 
 
 # ---------------------------------------------------------------------------
@@ -452,16 +457,21 @@ def test_qmd_failure_with_index_only_returns_empty_citations(
 
 
 def test_citations_are_wiki_relative_paths(sample_wiki: Wiki) -> None:
-    """With qmd available, citations follow the wiki-relative contract."""
+    """With qmd available, citations follow the wiki-relative contract.
+
+    citations are now ``list[Citation]`` (Task 6); each Citation
+    carries its path on ``.path`` and the source on ``.source``.
+    """
     result = synthesize_answer(
         "anything",
         sample_wiki,
         qmd_search=_qmd_ok(["entities/postgres.md"]),
     )
     for citation in result.citations:
-        assert not citation.startswith("/")
-        assert not citation.startswith("..")
-        assert citation.endswith(".md")
+        assert not citation.path.startswith("/")
+        assert not citation.path.startswith("..")
+        assert citation.path.endswith(".md")
+        assert citation.source in ("library", "wiki")
 
 
 def test_page_links_markdown_format(sample_wiki: Wiki) -> None:

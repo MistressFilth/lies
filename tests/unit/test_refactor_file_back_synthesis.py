@@ -24,6 +24,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from lies.memory.models import MemoryReceipt
+from lies.query.citation import Citation
 from lies.query.models import SynthesizedAnswer
 
 
@@ -63,10 +64,12 @@ def orch(tmp_path: Path):
 
 
 def _answer() -> SynthesizedAnswer:
+    # pages_read is ``list[Citation]`` since Task 6; wiki-sourced for
+    # this fixture.
     return SynthesizedAnswer(
         answer="answer body",
         citations=[],
-        pages_read=["claude-code/concepts/hooks"],
+        pages_read=[Citation(path="claude-code/concepts/hooks", source="wiki")],
         should_file=True,
         question="What is a hook?",
     )

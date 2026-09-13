@@ -82,7 +82,11 @@ def test_run_query_uses_agent_answer_on_success(orch: Orchestrator) -> None:
     assert result.synthesis_used is True
     assert result.synthesis_reason == ""
     assert result.answer == "Alpha is the first letter. [Alpha](wiki/concepts/alpha.md)"
-    assert result.citations == ["wiki/concepts/alpha.md"]
+    # citations are now ``list[Citation]`` (Task 6); the wiki pass
+    # resolves to source="wiki" for this fixture.
+    from lies.query.citation import Citation
+
+    assert result.citations == [Citation(path="wiki/concepts/alpha.md", source="wiki")]
     assert result.should_file is True
     assert result.file_receipt is None
 
@@ -100,7 +104,12 @@ def test_run_query_falls_back_to_extractive_when_agent_raises(orch: Orchestrator
     # Two-pass retrieval surfaces the same wiki hit once per pass
     # (library + wiki) — both resolve to the same wiki page.
     assert "Based on 2 wiki page(s)" in result.answer
-    assert result.citations == ["wiki/concepts/alpha.md", "wiki/concepts/alpha.md"]
+    from lies.query.citation import Citation
+
+    assert result.citations == [
+        Citation(path="wiki/concepts/alpha.md", source="wiki"),
+        Citation(path="wiki/concepts/alpha.md", source="wiki"),
+    ]
 
 
 def test_run_query_drops_citations_the_agent_never_received(orch: Orchestrator) -> None:
@@ -113,7 +122,9 @@ def test_run_query_drops_citations_the_agent_never_received(orch: Orchestrator) 
         result = orch.run_query("what is alpha?")
 
     assert result.synthesis_used is True
-    assert result.citations == ["wiki/concepts/alpha.md"]
+    from lies.query.citation import Citation
+
+    assert result.citations == [Citation(path="wiki/concepts/alpha.md", source="wiki")]
     assert "wiki/concepts/ghost.md" in result.synthesis_reason
     assert result.synthesis_reason.startswith("dropped 1 unretrieved citation(s)")
 

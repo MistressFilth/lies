@@ -232,12 +232,15 @@ def test_query_tool_reports_synthesis_provenance(monkeypatch: pytest.MonkeyPatch
     from unittest import mock
 
     from lies.mcp import server
+    from lies.query.citation import Citation
     from lies.query.models import SynthesizedAnswer
 
+    # citations and pages_read are ``list[Citation]`` since Task 6;
+    # wiki-sourced for this fixture.
     answer = SynthesizedAnswer(
         answer="Alpha.",
-        citations=["wiki/concepts/alpha.md"],
-        pages_read=["wiki/concepts/alpha.md"],
+        citations=[Citation(path="wiki/concepts/alpha.md", source="wiki")],
+        pages_read=[Citation(path="wiki/concepts/alpha.md", source="wiki")],
         synthesis_used=True,
         synthesis_reason="",
     )

@@ -1,0 +1,49 @@
+"""Tests for the SynthesizedAnswer citations/pages_read shape (Task 6).
+
+The Bundle C refactor hard-cuts the shape from ``list[str]`` to
+``list[Citation]`` so the source discriminator rides with each
+citation. These tests pin the new shape.
+
+The runtime tests pass against the pre-change implementation too
+(Python does not enforce dataclass field types at runtime), so we
+additionally assert the field annotation explicitly via
+:func:`typing.get_type_hints` to make the cutover observable without
+the type checker in the loop.
+"""
+
+from __future__ import annotations
+
+import typing
+
+from lies.query.citation import Citation
+from lies.query.models import SynthesizedAnswer
+
+
+def test_synthesized_answer_citations_is_list_of_citation() -> None:
+    ans = SynthesizedAnswer(
+        answer="x",
+        citations=[Citation(path="a.md", source="library")],
+        pages_read=[Citation(path="a.md", source="library")],
+    )
+    assert isinstance(ans.citations[0], Citation)
+    assert ans.citations[0].source == "library"
+
+
+def test_synthesized_answer_empty_lists_default() -> None:
+    ans = SynthesizedAnswer(answer="x")
+    assert ans.citations == []
+    assert ans.pages_read == []
+
+
+def test_synthesized_answer_annotations_are_list_of_citation() -> None:
+    """The annotations must be ``list[Citation]``, not ``list[str]``.
+
+    Runtime field assignment accepts any object regardless of the
+    annotation, so a runtime-only test would pass against both the
+    pre- and post-change implementations. Inspecting the annotation
+    surfaces the cutover: ``list[Citation]`` requires ``Citation``,
+    ``list[str]`` does not.
+    """
+    hints = typing.get_type_hints(SynthesizedAnswer)
+    assert hints["citations"] == list[Citation]
+    assert hints["pages_read"] == list[Citation]
