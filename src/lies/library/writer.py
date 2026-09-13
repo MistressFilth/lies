@@ -37,6 +37,7 @@ from lies.library.errors import (
     LibraryCatalogLocked,
 )
 from lies.library.paths import Library
+from lies.lock_errors import QmdLockBusy
 from lies.wiki.git import atomic_commit
 
 if TYPE_CHECKING:
@@ -289,6 +290,24 @@ class LibraryWriter:
                 )
             try:
                 _qemb(self._library.git_root, qmd_collection)
+            except QmdLockBusy as exc:
+                # Re-raise with the spec-mandated message that names the
+                # holder PID and tells the operator to wait-and-retry.
+                # Comes through the MCP error path so the agent sees an
+                # actionable message instead of
+                # ``qmd embed failed; continuing (library commit stands)``.
+                raise QmdLockBusy(
+                    holder_pid=exc.holder_pid,
+                    waited_s=exc.waited_s,
+                    max_s=exc.max_s,
+                    message=(
+                        f"qmd embed lock contention: another process holds the qmd flock"
+                        f" (holder PID {exc.holder_pid}, waited {exc.waited_s:.1f}s,"
+                        f" max {exc.max_s:.0f}s)."
+                        f" Run `lies flock qmd status` to inspect the live holder,"
+                        f" or wait and retry the operation."
+                    ),
+                ) from exc
             except Exception as exc:  # noqa: BLE001 - qmd is derived; failures must not roll back the commit
                 print(
                     f"warning: qmd embed failed for {qmd_collection!r}: {exc}; "

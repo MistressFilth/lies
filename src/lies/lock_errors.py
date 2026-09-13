@@ -76,10 +76,13 @@ class QmdLockBusy(WikiFlockError):
         *,
         waited_s: float | None = None,
         max_s: float = 30.0,
+        message: str | None = None,
     ) -> None:
         self.holder_pid = holder_pid
         self.waited_s = waited_s
         self.max_s = max_s
-        super().__init__(
-            f"qmd flock contention: holder PID {holder_pid}, waited {waited_s}s, max {max_s}s"
-        )
+        if message is None:
+            message = (
+                f"qmd flock contention: holder PID {holder_pid}, waited {waited_s}s, max {max_s}s"
+            )
+        super().__init__(message)
