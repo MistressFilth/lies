@@ -291,8 +291,10 @@ Inspect a live holder:
 lies flock qmd status
 ```
 
-Force-reap a stuck holder (only when no live qmd subprocess is
-running — force-repair cannot break a live contender):
+Force-reap the qmd flock envelope. Safe to run when no qmd
+subprocess is running; if a live contender re-acquires the
+lock between reap and retry, the command exits 1 with
+`qmd flock still held; live contender survives force-repair`.
 
 ```bash
 lies flock qmd force-repair
