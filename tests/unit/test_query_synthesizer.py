@@ -45,7 +45,14 @@ from lies.wiki.wiki import Wiki
 def _qmd_ok(paths: list[str]):
     """A fake qmd_search that returns the given paths."""
 
-    def _fn(cwd: Path, question: str, top_n: int, **_kwargs: object) -> list[dict[str, Any]]:
+    def _fn(cwd: Path, question: str, top_n: int, **kwargs: object) -> list[dict[str, Any]]:
+        # The wiki pass is scoped to the ``wiki_<name>`` collection; in
+        # these tests there's no qmd-indexed wiki content, so the wiki
+        # pass returns no hits. Only the library pass contributes pages.
+        if kwargs.get("collection_filter") and any(
+            "wiki_" in str(s) for s in kwargs["collection_filter"]
+        ):
+            return []
         return [{"path": p, "score": 1.0} for p in paths]
 
     return _fn
@@ -144,26 +151,26 @@ def test_qmd_results_capped_at_top_n(sample_wiki: Wiki) -> None:
     assert len(result.citations) == 2
 
 
-def test_qmd_returns_unreadable_paths_triggers_fallback(sample_wiki: Wiki) -> None:
-    """qmd returned paths but none of them exist on disk → fallback."""
+def test_qmd_returns_unreadable_paths_returns_empty_answer(sample_wiki: Wiki) -> None:
+    """qmd returned paths but none of them exist on disk → both passes
+    fail to resolve readable pages → no fallback to ``wiki/index.md``
+    (the two-pass refactor retired that fallback) → empty answer."""
     paths = ["does-not-exist.md", "also-missing.md"]
     result = synthesize_answer(
         "anything",
         sample_wiki,
         qmd_search=_qmd_ok(paths),
     )
-    # The synthesizer treats "qmd returned hits but no readable files"
-    # as a no-results signal, so it falls back.
     assert result.fallback_used is True
     assert result.fallback_reason == FALLBACK_REASON_NO_RESULTS
-    # The fallback path found the real pages from the index.
-    assert "wiki/entities/postgres.md" in result.citations
+    assert result.citations == []
 
 
 def test_qmd_path_traversal_is_dropped(sample_wiki: Wiki) -> None:
     """Defense in depth: paths that escape the wiki root are skipped.
 
-    With nothing readable from qmd, the fallback runs.
+    Both passes drop the traversal path → no readable pages → empty
+    answer (no ``wiki/index.md`` fallback in the two-pass refactor).
     """
     paths = ["../../etc/passwd"]
     result = synthesize_answer(
@@ -171,10 +178,8 @@ def test_qmd_path_traversal_is_dropped(sample_wiki: Wiki) -> None:
         sample_wiki,
         qmd_search=_qmd_ok(paths),
     )
-    # The traversal path was dropped → qmd gave 0 readable → fallback.
     assert result.fallback_used is True
-    # Fallback found pages from the index.
-    assert any("entities/" in c for c in result.citations)
+    assert result.citations == []
 
 
 def test_qmd_real_shape_with_file_only_triggers_fallback(
@@ -268,7 +273,9 @@ def test_qmd_real_query_end_to_end(sample_wiki: Wiki, monkeypatch) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_qmd_unavailable_falls_back_to_index(sample_wiki: Wiki) -> None:
+def test_qmd_unavailable_returns_empty_answer(sample_wiki: Wiki) -> None:
+    """Both qmd passes fail with QmdNotInstalledError; no
+    ``wiki/index.md`` fallback in the two-pass refactor → empty answer."""
     result = synthesize_answer(
         "anything",
         sample_wiki,
@@ -276,11 +283,8 @@ def test_qmd_unavailable_falls_back_to_index(sample_wiki: Wiki) -> None:
     )
     assert result.fallback_used is True
     assert result.fallback_reason == FALLBACK_REASON_UNAVAILABLE
-    # Index lists 4 pages; default top_n=5 covers all of them.
-    assert len(result.citations) == 4
-    assert "wiki/entities/postgres.md" in result.citations
-    assert "wiki/concepts/mvcc.md" in result.citations
-    # The answer body surfaces that we used the fallback.
+    assert result.citations == []
+    assert result.pages_read == []
     assert "qmd_unavailable" in result.answer
 
 
@@ -289,7 +293,7 @@ def test_qmd_unavailable_falls_back_to_index(sample_wiki: Wiki) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_qmd_no_results_falls_back_to_index(sample_wiki: Wiki) -> None:
+def test_qmd_no_results_returns_empty_answer(sample_wiki: Wiki) -> None:
     result = synthesize_answer(
         "anything",
         sample_wiki,
@@ -297,11 +301,11 @@ def test_qmd_no_results_falls_back_to_index(sample_wiki: Wiki) -> None:
     )
     assert result.fallback_used is True
     assert result.fallback_reason == FALLBACK_REASON_NO_RESULTS
-    assert len(result.citations) == 4
+    assert result.citations == []
     assert "qmd_no_results" in result.answer
 
 
-def test_qmd_empty_list_falls_back_to_index(sample_wiki: Wiki) -> None:
+def test_qmd_empty_list_returns_empty_answer(sample_wiki: Wiki) -> None:
     """Edge case: qmd returns [] instead of raising."""
     result = synthesize_answer(
         "anything",
@@ -317,7 +321,7 @@ def test_qmd_empty_list_falls_back_to_index(sample_wiki: Wiki) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_qmd_command_error_falls_back_to_index(sample_wiki: Wiki) -> None:
+def test_qmd_command_error_returns_empty_answer(sample_wiki: Wiki) -> None:
     result = synthesize_answer(
         "anything",
         sample_wiki,
@@ -325,8 +329,8 @@ def test_qmd_command_error_falls_back_to_index(sample_wiki: Wiki) -> None:
     )
     assert result.fallback_used is True
     assert result.fallback_reason == FALLBACK_REASON_FAILED
+    assert result.citations == []
     assert "qmd_failed" in result.answer
-    assert len(result.citations) == 4
 
 
 # ---------------------------------------------------------------------------
@@ -380,17 +384,20 @@ def test_command_failure_with_missing_index_returns_empty_answer(
 # ---------------------------------------------------------------------------
 
 
-def test_fallback_skips_missing_pages_silently(
+def test_qmd_unavailable_with_index_only_returns_empty_citations(
     wiki_with_missing_pages: Wiki,
 ) -> None:
+    """The ``wiki/index.md`` fallback was retired with the two-pass
+    refactor. A wiki with index.md but no qmd-served content yields
+    empty citations — both passes fail, and the answer body explains
+    the failure rather than silently reading the index."""
     result = synthesize_answer(
         "anything",
         wiki_with_missing_pages,
         qmd_search=_qmd_unavailable,
     )
     assert result.fallback_used is True
-    # Only 1 of the 3 referenced pages actually exists.
-    assert result.citations == ["wiki/entities/real.md"]
+    assert result.citations == []
 
 
 # ---------------------------------------------------------------------------
@@ -398,7 +405,9 @@ def test_fallback_skips_missing_pages_silently(
 # ---------------------------------------------------------------------------
 
 
-def test_fallback_respects_top_n(sample_wiki: Wiki) -> None:
+def test_qmd_failure_does_not_fall_back_to_index_with_top_n(sample_wiki: Wiki) -> None:
+    """``wiki/index.md`` fallback was retired; top_n no longer applies
+    to the index path because the index is no longer read on qmd failure."""
     result = synthesize_answer(
         "anything",
         sample_wiki,
@@ -406,13 +415,7 @@ def test_fallback_respects_top_n(sample_wiki: Wiki) -> None:
         qmd_search=_qmd_unavailable,
     )
     assert result.fallback_used is True
-    # 4 pages exist, but top_n=2 caps the read.
-    assert len(result.citations) == 2
-    # The first two links in the index are Postgres, MySQL.
-    assert result.citations == [
-        "wiki/entities/postgres.md",
-        "wiki/entities/mysql.md",
-    ]
+    assert result.citations == []
 
 
 def test_default_top_n_is_five(sample_wiki: Wiki) -> None:
@@ -420,7 +423,7 @@ def test_default_top_n_is_five(sample_wiki: Wiki) -> None:
     assert DEFAULT_TOP_N == 5
 
 
-def test_fallback_with_six_pages_only_reads_five(
+def test_qmd_failure_with_index_only_returns_empty_citations(
     tmp_path: Path,
 ) -> None:
     from tests.conftest import make_wiki
@@ -440,7 +443,7 @@ def test_fallback_with_six_pages_only_reads_five(
         qmd_search=_qmd_unavailable,
     )
     assert result.fallback_used is True
-    assert len(result.citations) == 5
+    assert result.citations == []
 
 
 # ---------------------------------------------------------------------------
@@ -449,10 +452,11 @@ def test_fallback_with_six_pages_only_reads_five(
 
 
 def test_citations_are_wiki_relative_paths(sample_wiki: Wiki) -> None:
+    """With qmd available, citations follow the wiki-relative contract."""
     result = synthesize_answer(
         "anything",
         sample_wiki,
-        qmd_search=_qmd_unavailable,
+        qmd_search=_qmd_ok(["entities/postgres.md"]),
     )
     for citation in result.citations:
         assert not citation.startswith("/")
@@ -461,10 +465,11 @@ def test_citations_are_wiki_relative_paths(sample_wiki: Wiki) -> None:
 
 
 def test_page_links_markdown_format(sample_wiki: Wiki) -> None:
+    """With qmd available, page links follow the [Title](path) format."""
     result = synthesize_answer(
         "anything",
         sample_wiki,
-        qmd_search=_qmd_unavailable,
+        qmd_search=_qmd_ok(["entities/postgres.md"]),
     )
     # Each link is [Title](path).
     for link in result.page_links:
@@ -493,11 +498,12 @@ def test_answer_body_omits_fallback_note_on_happy_path(sample_wiki: Wiki) -> Non
 
 
 def test_answer_body_includes_excerpt(sample_wiki: Wiki) -> None:
-    """At least one excerpt from a real page should appear in the answer."""
+    """At least one excerpt from a real page should appear in the answer
+    when qmd serves hits."""
     result = synthesize_answer(
         "anything",
         sample_wiki,
-        qmd_search=_qmd_unavailable,
+        qmd_search=_qmd_ok(["entities/postgres.md"]),
     )
     # The Postgres page contains the phrase "MVCC".
     assert "MVCC" in result.answer or "Multi-Version" in result.answer

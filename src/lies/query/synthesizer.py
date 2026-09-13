@@ -42,6 +42,10 @@ DEFAULT_TOP_N = 5
 FALLBACK_REASON_UNAVAILABLE = "qmd_unavailable"
 FALLBACK_REASON_NO_RESULTS = "qmd_no_results"
 FALLBACK_REASON_FAILED = "qmd_failed"
+# Library pass returned 0 hits but the wiki pass surfaced content. The
+# answer is not grounded in primary (library) sources — see the
+# Bundle-C preamble that callers render when this reason is set.
+FALLBACK_REASON_WIKI_ONLY = "wiki_only"
 
 # Qmd search callable signature: (cwd, question, limit) -> list[dict].
 QmdSearchFn = Callable[..., list[dict[str, object]]]
@@ -101,8 +105,19 @@ def retrieve_pages(
 ) -> tuple[list[PageRead], str]:
     """Retrieve the candidate pages for ``question``.
 
-    Tries ``qmd_search`` first; on any qmd failure falls back to the
-    top-N pages referenced by ``wiki/index.md``.
+    Runs two ``qmd_query`` passes when both roots are populated:
+
+    1. **Primary pass**: qmd scoped to the resolved library collection
+       set (``collection_filter`` derived from ``tag_filter``).
+       Library collections are the primary source of truth.
+    2. **Secondary pass**: qmd scoped to the wiki-rooted collection
+       (``wiki_<wikiname>``). Surfaces local edits and author-only
+       content as supplementary material.
+
+    Both result sets resolve through ``_resolve_qmd_pages``, which
+    prefers the library root and falls back to the wiki root for
+    each path. Pages are tagged with ``source`` so the synthesizer
+    can apply the library-wins-on-conflict rule at answer time.
 
     This is the single retrieval path for the query layer. Both the
     extractive ``synthesize_answer`` and the orchestrator's LLM
@@ -120,17 +135,25 @@ def retrieve_pages(
     The retriever resolves the filter against the wiki's collection
     registry (``wiki.collections_dir/*.yaml``) via
     :func:`_collections_matching` and forwards the resulting set as
-    ``collection_filter`` to ``qmd_search``. ``qmd_search`` is
-    responsible for the post-qmd per-collection drop; :func:`retrieve_pages`
-    just threads the resolved set through. When ``tag_filter`` is None,
-    ``collection_filter`` is None too — the no-filter behavior is
-    preserved bit-for-bit (back-compat regression test pins this).
+    ``collection_filter`` to ``qmd_search`` for the **primary pass**.
+    The secondary pass always uses the wiki-rooted ``wiki_<name>``
+    collection, independent of ``tag_filter`` — local wiki content is
+    always supplementary, never gated by the caller's filter.
 
     The implicit-self-tag rule (a collection's name is always an
     addressable tag regardless of its ``tags`` field) lives at this
     boundary, not in :func:`lies.query.tag_expr.resolve`. The resolver
     only validates that every atom exists in the available set; the
     per-collection semantics are the retriever's concern.
+
+    Fallback reasons:
+
+    - ``""`` — qmd served at least one pass and we have readable pages.
+    - ``FALLBACK_REASON_UNAVAILABLE`` — qmd binary missing.
+    - ``FALLBACK_REASON_FAILED`` — qmd errored on both passes.
+    - ``FALLBACK_REASON_NO_RESULTS`` — both passes returned 0 hits.
+    - ``FALLBACK_REASON_WIKI_ONLY`` — library returned 0, wiki
+      returned hits. Answer is not grounded in primary sources.
 
     Returns:
         ``(pages, fallback_reason)``. ``fallback_reason`` is ``""``
@@ -144,8 +167,18 @@ def retrieve_pages(
     collection_filter: set[str] | None = None
     if tag_filter is not None:
         collection_filter = _collections_matching(wiki, tag_filter)
+
+    wiki_collection = f"wiki_{wiki.name}"
+    wiki_filter: set[str] = {wiki_collection}
+
+    primary_pages: list[PageRead] = []
+    wiki_pages: list[PageRead] = []
+    primary_failure: str | None = None
+    wiki_failure: str | None = None
+
+    # Primary: library collections.
     try:
-        pages = _qmd_search_dispatch(
+        primary_pages = _qmd_search_dispatch(
             qmd_search_fn,
             wiki,
             question,
@@ -153,14 +186,61 @@ def retrieve_pages(
             collection_filter=collection_filter,
         )
     except _QmdUnavailable:
-        fallback_reason = FALLBACK_REASON_UNAVAILABLE
+        primary_failure = FALLBACK_REASON_UNAVAILABLE
     except _QmdNoResults:
-        fallback_reason = FALLBACK_REASON_NO_RESULTS
+        primary_failure = FALLBACK_REASON_NO_RESULTS
     except _QmdOtherFailure:
-        fallback_reason = FALLBACK_REASON_FAILED
+        primary_failure = FALLBACK_REASON_FAILED
 
-    if fallback_reason:
-        pages = _read_pages_from_index(wiki, top_n=top_n)
+    # Secondary: wiki-rooted collection. Always attempted; the wiki
+    # may carry content even when library is empty (or vice versa).
+    try:
+        wiki_pages = _qmd_search_dispatch(
+            qmd_search_fn,
+            wiki,
+            question,
+            top_n,
+            collection_filter=wiki_filter,
+        )
+    except _QmdUnavailable:
+        wiki_failure = FALLBACK_REASON_UNAVAILABLE
+    except _QmdNoResults:
+        wiki_failure = FALLBACK_REASON_NO_RESULTS
+    except _QmdOtherFailure:
+        wiki_failure = FALLBACK_REASON_FAILED
+
+    pages = primary_pages + wiki_pages
+
+    if not pages:
+        # Decide fallback reason from the failure pattern.
+        if (
+            primary_failure == FALLBACK_REASON_UNAVAILABLE
+            or wiki_failure == FALLBACK_REASON_UNAVAILABLE
+        ):
+            fallback_reason = FALLBACK_REASON_UNAVAILABLE
+        elif primary_failure == FALLBACK_REASON_FAILED or wiki_failure == FALLBACK_REASON_FAILED:
+            fallback_reason = FALLBACK_REASON_FAILED
+        elif (
+            primary_failure == FALLBACK_REASON_NO_RESULTS
+            and wiki_failure == FALLBACK_REASON_NO_RESULTS
+        ):
+            fallback_reason = FALLBACK_REASON_NO_RESULTS
+        elif primary_failure and not wiki_failure:
+            # Library failed but wiki succeeded? Per the dispatch above
+            # this case can't reach ``pages == []`` — wiki_pages would
+            # be non-empty. Defensive default.
+            fallback_reason = primary_failure
+        elif not primary_failure and wiki_failure:
+            # Library succeeded (returned empty list, not an exception),
+            # wiki raised. Treat as library empty.
+            fallback_reason = FALLBACK_REASON_NO_RESULTS
+        else:
+            fallback_reason = FALLBACK_REASON_NO_RESULTS
+    elif not primary_pages and wiki_pages:
+        # Library returned nothing; wiki surfaced content. Mark
+        # answer as not grounded in primary sources.
+        fallback_reason = FALLBACK_REASON_WIKI_ONLY
+    # else: at least one primary page exists; no fallback flag.
 
     return pages, fallback_reason
 
@@ -514,26 +594,32 @@ def build_answer_from_pages(
 
 
 def _empty_answer(question: str, fallback_reason: str) -> str:
-    """The 'no pages found' answer body."""
+    """The 'no pages found' answer body.
+
+    Renders when both qmd passes failed to surface any readable page.
+    The two-pass refactor retired the ``wiki/index.md`` fallback, so the
+    body now states the qmd failure reason (e.g. ``qmd_unavailable``)
+    without promising that the index was tried.
+    """
     if fallback_reason == FALLBACK_REASON_NO_RESULTS:
         return (
             f"### {question.strip()}\n\n"
-            "_qmd query returned no results, and `wiki/index.md` "
-            "contains no readable pages._\n\n"
+            f"_qmd query returned no results ({fallback_reason}); "
+            "no readable pages._\n\n"
             "No pages found."
         )
     if fallback_reason == FALLBACK_REASON_UNAVAILABLE:
         return (
             f"### {question.strip()}\n\n"
-            "_qmd is not installed, and `wiki/index.md` contains no "
-            "readable pages._\n\n"
+            f"_qmd is not installed ({fallback_reason}); "
+            "no readable pages._\n\n"
             "No pages found."
         )
     if fallback_reason == FALLBACK_REASON_FAILED:
         return (
             f"### {question.strip()}\n\n"
-            "_qmd query failed, and `wiki/index.md` contains no "
-            "readable pages._\n\n"
+            f"_qmd query failed ({fallback_reason}); "
+            "no readable pages._\n\n"
             "No pages found."
         )
     return f"### {question.strip()}\n\nNo pages found."

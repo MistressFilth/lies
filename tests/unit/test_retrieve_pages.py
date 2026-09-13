@@ -45,7 +45,15 @@ def wiki(tmp_path: Path) -> Wiki:
 
 
 def test_retrieve_pages_returns_qmd_hits_with_empty_reason(wiki: Wiki) -> None:
-    def fake_search(*_args: object, **_kwargs: object) -> list[dict[str, object]]:
+    def fake_search(
+        *_args: object, collection_filter=None, **_kwargs: object
+    ) -> list[dict[str, object]]:
+        # The wiki pass uses the wiki_<name> collection; return [] so it
+        # raises _QmdNoResults and contributes no pages. The library pass
+        # (no filter) returns the wiki hit — which only resolves under
+        # ``wiki.wiki_dir``, not the library collections root.
+        if collection_filter and "wiki_retrieve" in collection_filter:
+            return []
         return [{"path": "concepts/alpha.md", "score": 0.9}]
 
     pages, reason = retrieve_pages("what is alpha?", wiki, qmd_search=fake_search)
@@ -54,14 +62,19 @@ def test_retrieve_pages_returns_qmd_hits_with_empty_reason(wiki: Wiki) -> None:
     assert [p.rel_path for p in pages] == ["wiki/concepts/alpha.md"]
 
 
-def test_retrieve_pages_falls_back_when_qmd_not_installed(wiki: Wiki) -> None:
+def test_retrieve_pages_reports_qmd_unavailable_when_both_passes_fail(wiki: Wiki) -> None:
+    """Both passes raise QmdNotInstalledError; the retriever reports the
+    failure reason and returns empty pages (the wiki/index.md fallback
+    was retired with the two-pass refactor — the qmd story alone owns
+    retrieval now)."""
+
     def fake_search(*_args: object, **_kwargs: object) -> list[dict[str, object]]:
         raise QmdNotInstalledError("qmd not on PATH")
 
     pages, reason = retrieve_pages("what is alpha?", wiki, qmd_search=fake_search)
 
     assert reason == FALLBACK_REASON_UNAVAILABLE
-    assert [p.rel_path for p in pages] == ["wiki/concepts/alpha.md"]
+    assert pages == []
 
 
 def test_retrieve_pages_falls_back_when_qmd_has_no_results(wiki: Wiki) -> None:
@@ -99,7 +112,13 @@ def test_retrieve_pages_returns_empty_list_when_nothing_readable(tmp_path: Path)
 def test_synthesize_answer_output_unchanged_by_the_lift(wiki: Wiki) -> None:
     """Characterization: the refactor must not move synthesize_answer's output."""
 
-    def fake_search(*_args: object, **_kwargs: object) -> list[dict[str, object]]:
+    def fake_search(
+        *_args: object, collection_filter=None, **_kwargs: object
+    ) -> list[dict[str, object]]:
+        # Same shape as ``test_retrieve_pages_returns_qmd_hits_with_empty_reason``:
+        # the wiki pass returns nothing so only the library pass contributes.
+        if collection_filter and "wiki_retrieve" in collection_filter:
+            return []
         return [{"path": "concepts/alpha.md", "score": 0.9}]
 
     answer = synthesize_answer("what is alpha?", wiki, qmd_search=fake_search)
@@ -374,10 +393,14 @@ def test_retrieve_pages_threads_tag_filter_as_collection_filter(
     """``retrieve_pages(tag_filter=...)`` resolves the filter to a set
     of allowed collection names and forwards it as ``collection_filter``
     to the qmd_search callable."""
-    captured: dict[str, object] = {}
+    captured_filters: list[set[str] | None] = []
 
     def fake_search(*_args: object, **kwargs: object) -> list[dict[str, object]]:
-        captured["collection_filter"] = kwargs.get("collection_filter")
+        captured_filters.append(kwargs.get("collection_filter"))
+        # The wiki pass (filter={wiki_tagged}) returns nothing so it
+        # contributes no pages; the test pins the library pass's filter.
+        if kwargs.get("collection_filter") and "wiki_tagged" in kwargs["collection_filter"]:
+            return []
         return [{"path": "airflow/dag.md", "score": 0.9}]
 
     # The path must exist on disk for ``_resolve_qmd_pages`` to land.
@@ -391,7 +414,9 @@ def test_retrieve_pages_threads_tag_filter_as_collection_filter(
         "what is a DAG?", tagged_wiki, qmd_search=fake_search, tag_filter=tf
     )
 
-    assert captured["collection_filter"] == {"airflow"}
+    # The first call is the library (primary) pass; the second is the
+    # wiki_<name> pass. Pin the library pass's collection_filter.
+    assert captured_filters[0] == {"airflow"}
     assert reason == ""
     assert [p.rel_path for p in pages] == ["wiki/airflow/dag.md"]
 
@@ -448,46 +473,47 @@ def test_retrieve_pages_without_tag_filter_passes_none_collection_filter(
     tagged_wiki: Wiki,
 ) -> None:
     """Back-compat: no tag_filter means ``collection_filter`` is None."""
-    captured: dict[str, object] = {}
+    captured_filters: list[set[str] | None] = []
 
     def fake_search(*_args: object, **kwargs: object) -> list[dict[str, object]]:
-        captured["collection_filter"] = kwargs.get("collection_filter")
+        captured_filters.append(kwargs.get("collection_filter"))
         return []
 
     pages, reason = retrieve_pages("anything?", tagged_wiki, qmd_search=fake_search)
 
-    assert captured["collection_filter"] is None
+    # Pin the library (primary) pass's collection_filter; the wiki_<name>
+    # pass follows with its own set.
+    assert captured_filters[0] is None
     assert reason == FALLBACK_REASON_NO_RESULTS
     assert pages == []
 
 
-def test_retrieve_pages_tag_filter_with_no_matching_collections_falls_back(
+def test_retrieve_pages_tag_filter_with_no_matching_collections_reports_failure(
     tagged_wiki: Wiki,
 ) -> None:
     """A filter that resolves to zero collections leaves qmd with an
-    empty post-filter list, so qmd raises ``QmdNoResultsError`` and the
-    synthesizer falls back to ``wiki/index.md``."""
-    captured: dict[str, object] = {}
+    empty post-filter list, so qmd raises ``QmdNoResultsError``. Both
+    passes fail (no library hits, no wiki hits), so the retriever
+    surfaces ``qmd_no_results`` and an empty page list — the
+    ``wiki/index.md`` fallback was retired with the two-pass refactor."""
+    captured_filters: list[set[str] | None] = []
 
     def fake_search(*_args: object, **kwargs: object) -> list[dict[str, object]]:
-        captured["collection_filter"] = kwargs.get("collection_filter")
+        captured_filters.append(kwargs.get("collection_filter"))
         raise QmdNoResultsError("nothing matched")
 
-    (tagged_wiki.data_root / "wiki" / "index.md").write_text(
-        "# Index\n\n## airflow\n\n- [DAG](airflow/dag.md) — `airflow`\n",
-        encoding="utf-8",
-    )
-    (tagged_wiki.data_root / "wiki" / "airflow").mkdir(parents=True, exist_ok=True)
-    (tagged_wiki.data_root / "wiki" / "airflow" / "dag.md").write_text(
-        "---\ntitle: DAG\n---\nDag.\n", encoding="utf-8"
-    )
+    # The setup below is left intact for parity with prior tests but
+    # is no longer read by retrieve_pages under the two-pass design.
 
     tf = ResolvedTagFilter(include=Include("nonexistent-tag"))
     pages, reason = retrieve_pages("any", tagged_wiki, qmd_search=fake_search, tag_filter=tf)
 
-    assert captured["collection_filter"] == set()
+    # The library (primary) pass is invoked with the resolved
+    # ``collection_filter=set()`` (no collection matches ``+nonexistent-tag``);
+    # the wiki_<name> pass follows with its own set.
+    assert captured_filters[0] == set()
     assert reason == FALLBACK_REASON_NO_RESULTS
-    assert [p.rel_path for p in pages] == ["wiki/airflow/dag.md"]
+    assert pages == []
 
 
 def test_collections_matching_skips_malformed_yaml(tmp_path: Path) -> None:
@@ -650,3 +676,85 @@ def test_resolve_qmd_pages_path_traversal_blocked_for_library(tmp_path: Path) ->
     pages = _resolve_qmd_pages(wiki, ["../../etc/passwd"], 5)
 
     assert pages == []
+
+
+# ---------------------------------------------------------------------------
+# Task 4 — retrieve_pages two-pass retrieval (library + wiki)
+# ---------------------------------------------------------------------------
+# The seam under test:
+#   retrieve_pages(question, wiki) -> (pages, fallback_reason)
+#
+# Two qmd passes: library collections (primary) then the wiki-rooted
+# ``wiki_<name>`` collection (secondary). Library hits are canonical;
+# wiki hits surface local overrides and author-only content. A path
+# returned by both passes surfaces as two PageRead objects with distinct
+# ``source`` fields; the synthesizer applies the library-wins-on-conflict
+# rule at answer time.
+
+
+def test_retrieve_pages_runs_two_qmd_passes(tmp_path: Path) -> None:
+    """retrieve_pages runs two qmd_query calls: one for the library
+    collections, one for the wiki-rooted collection. Both result
+    sets merge into the returned pages."""
+    from lies.library.paths import Library
+
+    Library.open.cache_clear()
+
+    root = tmp_path / "wiki"
+    (root / "wiki").mkdir(parents=True)
+    wiki = make_wiki(name="default", data_root=root)
+
+    # Library mirror file
+    lib = Library.open()
+    (lib.collections_root / "claude_platform").mkdir(parents=True)
+    (lib.collections_root / "claude_platform" / "lib.md").write_text(
+        "---\ntitle: Library hit\n---\nFrom library.\n", encoding="utf-8"
+    )
+    # Wiki file
+    (root / "wiki" / "concepts").mkdir(parents=True)
+    (root / "wiki" / "concepts" / "wiki.md").write_text(
+        "---\ntitle: Wiki hit\n---\nFrom wiki.\n", encoding="utf-8"
+    )
+
+    call_log: list[set[str] | None] = []
+
+    def fake_qmd_query(cwd, q, limit, *, collection_filter=None, **_kw):
+        call_log.append(collection_filter)
+        if collection_filter and "wiki_default" in collection_filter:
+            return [{"path": "concepts/wiki.md", "score": 0.9}]
+        return [{"path": "claude_platform/lib.md", "score": 0.8}]
+
+    pages, reason = retrieve_pages("anything", wiki, qmd_search=fake_qmd_query)
+
+    assert reason == ""
+    assert len(call_log) == 2
+    sources = sorted(p.source for p in pages)
+    assert sources == ["library", "wiki"]
+
+
+def test_retrieve_pages_wiki_only_fallback_reason(tmp_path: Path) -> None:
+    """When library returns no results but wiki returns hits, the
+    fallback_reason is ``wiki_only`` and the body opens with the
+    not-grounded preamble."""
+    from lies.library.paths import Library
+    from lies.query.synthesizer import FALLBACK_REASON_WIKI_ONLY
+
+    Library.open.cache_clear()
+
+    root = tmp_path / "wiki"
+    wiki_dir = root / "wiki"
+    wiki_dir.mkdir(parents=True)
+    wiki = make_wiki(name="default", data_root=root)
+    (wiki_dir / "concepts").mkdir(parents=True)
+    (wiki_dir / "concepts" / "x.md").write_text("---\ntitle: X\n---\nLocal.\n", encoding="utf-8")
+
+    def fake_qmd_query(cwd, q, limit, *, collection_filter=None, **_kw):
+        if collection_filter and "wiki_default" in collection_filter:
+            return [{"path": "concepts/x.md", "score": 0.9}]
+        return []
+
+    pages, reason = retrieve_pages("q", wiki, qmd_search=fake_qmd_query)
+
+    assert reason == FALLBACK_REASON_WIKI_ONLY
+    assert len(pages) == 1
+    assert pages[0].source == "wiki"

@@ -97,8 +97,10 @@ def test_run_query_falls_back_to_extractive_when_agent_raises(orch: Orchestrator
 
     assert result.synthesis_used is False
     assert result.synthesis_reason == "RuntimeError: model exploded"
-    assert "Based on 1 wiki page(s)" in result.answer
-    assert result.citations == ["wiki/concepts/alpha.md"]
+    # Two-pass retrieval surfaces the same wiki hit once per pass
+    # (library + wiki) — both resolve to the same wiki page.
+    assert "Based on 2 wiki page(s)" in result.answer
+    assert result.citations == ["wiki/concepts/alpha.md", "wiki/concepts/alpha.md"]
 
 
 def test_run_query_drops_citations_the_agent_never_received(orch: Orchestrator) -> None:
@@ -235,6 +237,10 @@ def test_set_qmd_search_rebinds_retrieve_pages_default(
     silently failed because `qmd_search=qmd_query` was evaluated at
     function-definition time. Each test then shelled out to the real
     qmd binary (~40s/test on systems where qmd is on PATH).
+
+    After the two-pass refactor, ``retrieve_pages`` invokes the qmd
+    callable twice (library pass + wiki-rooted pass); the indirection
+    must reach both calls.
     """
     from lies.query import synthesize_answer
     from lies.query.synthesizer import retrieve_pages
@@ -251,10 +257,13 @@ def test_set_qmd_search_rebinds_retrieve_pages_default(
     direct_set_qmd_search(sentinel)
     try:
         # Both functions honor the rebind when no kwarg is supplied.
+        # ``retrieve_pages`` issues two qmd calls (library + wiki passes).
         retrieve_pages("what is alpha?", orch.wiki)
-        assert len(sentinel_calls) == 1
-        synthesize_answer("what is alpha?", orch.wiki)
         assert len(sentinel_calls) == 2
+        # ``synthesize_answer`` calls ``retrieve_pages`` once, which makes
+        # two more qmd calls.
+        synthesize_answer("what is alpha?", orch.wiki)
+        assert len(sentinel_calls) == 4
     finally:
         # Restore the real binary so other tests aren't broken.
         direct_set_qmd_search(qmd_query)
@@ -265,6 +274,9 @@ def test_set_qmd_search_propagates_through_orchestrator(
 ) -> None:
     """`run_query` honors the indirection even though it doesn't pass
     the kwarg explicitly to ``retrieve_pages``.
+
+    Two-pass retrieval invokes the qmd callable twice (library + wiki
+    passes); both invocations must reach the rebind.
     """
     from lies.query.synthesizer import set_qmd_search as direct_set_qmd_search
 
@@ -285,7 +297,7 @@ def test_set_qmd_search_propagates_through_orchestrator(
     finally:
         direct_set_qmd_search(qmd_query)
 
-    assert called == ["fake"]
+    assert called == ["fake", "fake"]
 
 
 def test_run_query_passes_full_page_bodies_not_excerpts(orch: Orchestrator) -> None:
