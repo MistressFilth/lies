@@ -7,7 +7,7 @@ All notable changes to LIES are documented here. The format follows
 ## [Unreleased]
 
 ### Fixed
-- **qmd concurrent-subprocess CUDA pool race** (PR TBD). Wraps
+- **qmd concurrent-subprocess CUDA pool race** (#74). Wraps
   every `qmd_*` CLI helper in `src/lies/qmd/cli.py` with a
   site-wide cross-process flock. Concurrent lies processes (CI
   parallel ingest, `lies mcp` server concurrent commits,
