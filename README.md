@@ -122,7 +122,10 @@ After registration, Claude Code sees these tools:
 
 - `init_wiki(name)` — bootstrap a new wiki by name (creates XDG role-routed dirs).
 - `query(question, name?)` — synthesized answer (structured result
-  with `fallback_used` and `fallback_reason`).
+  with `fallback_used`, `fallback_reason`, and `citations:
+  list[Citation]` where each `Citation` carries a `source:
+  "library" | "wiki"` discriminator; library citations are the
+  primary source of truth, wiki citations are supplementary).
 - `lint(name?)` — health-check the wiki.
 - `migrate_xdg(legacy_path, name)` — one-shot bridge from legacy `<wiki>/.lies/` to XDG.
 
@@ -548,7 +551,11 @@ CLI commands (`src/lies/cli/`):
 - `lies sync [<collection>] [--source URL] [--wizard]` — sync one collection into the library, or every collection in the wiki when no positional is given. Pass `--source` to bootstrap a missing YAML (single-collection mode only); `--wizard` routes the bootstrap through `collection_author_agent`. Honors `Collection.scraper_cmd` (bespoke scrapers via `module:attr` / `path.py:attr`) and routes REGISTRY-registered source formats (sphinx / liquid / bespoke) through their builders before falling back to `format_dispatch`. Exits non-zero when the batch reports any `errors`.
 - `lies query [+tag[&|tag]...] [-tag] <question> [--collection NAME] [--no-file] [--force-file] [--tag-expr EXPR] [--exclude-tag TAG]`
   — ask a question of the wiki; answers are LLM-synthesized with
-  citations over qmd-retrieved pages, falling back to the previous
+  `citations: list[Citation]` over qmd-retrieved pages (each
+  `Citation` carries a `source: "library" | "wiki"` tag — library
+  collections are the primary source of truth, wiki content is
+  supplementary; the synthesis prompt instructs the LLM that
+  library wins on conflict), falling back to the previous
   extractive output when no model is available. A leading `+tag`
   restricts the search to collections carrying that tag (atoms joined
   by `&` / `|`, with `&` binding tighter, e.g.
