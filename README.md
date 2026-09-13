@@ -275,6 +275,34 @@ uv run lies collections show htmx
 Re-runs are idempotent. The registry is in-memory only; restart
 loses it; the next `sync` re-registers.
 
+### Operator: qmd flock
+
+When two or more lies processes touch qmd concurrently (CI
+parallel `lies ingest`, `lies mcp` server concurrent commits,
+`xargs -P N lies ingest`), the CUDA VMM pool reservation can race
+and OOM-abort the qmd subprocess. lies serializes all `qmd_*` CLI
+helpers through a site-wide flock at
+`${XDG_STATE_HOME:-~/.local/state}/lies/qmd.lock` (override the
+full path via `LIES_QMD_LOCK_PATH`).
+
+Inspect a live holder:
+
+```bash
+lies flock qmd status
+```
+
+Force-reap a stuck holder (only when no live qmd subprocess is
+running — force-repair cannot break a live contender):
+
+```bash
+lies flock qmd force-repair
+```
+
+If a `qmd_*` call times out past the 30 s wait budget,
+`LibraryWriter.commit` raises `QmdLockBusy` with the holder PID.
+Wait a few seconds and retry, or inspect with
+`lies flock qmd status` first.
+
 ## Configuration
 
 Environment variables:
