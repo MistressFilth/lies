@@ -256,6 +256,56 @@ def test_query_tool_reports_synthesis_provenance(monkeypatch: pytest.MonkeyPatch
     assert result.fallback_used is False
 
 
+def test_query_tool_serializes_citations_as_dicts_with_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The MCP wire format exposes ``citations`` / ``pages_read`` as plain
+    dicts carrying ``path`` and ``source``.
+
+    Bundle C / Task 6: the dispatcher stamps each citation with a
+    ``"library"`` / ``"wiki"`` source discriminator. FastMCP serializes
+    Pydantic models via ``model_dump``, which coerces the frozen
+    :class:`Citation` dataclass into a ``{"path", "source"}`` dict —
+    downstream MCP consumers (LLM agents, IDE integrations) read the
+    wire shape, not the Python type. Pin both fields here so a future
+    change to ``SynthesizedMcpAnswer`` cannot silently drop the
+    discriminator.
+    """
+    from unittest import mock
+
+    from lies.mcp import server
+    from lies.query.citation import Citation
+    from lies.query.models import SynthesizedAnswer
+
+    answer = SynthesizedAnswer(
+        answer="Beta.",
+        citations=[
+            Citation(path="concepts/beta.md", source="library"),
+            Citation(path="wiki/concepts/beta.md", source="wiki"),
+        ],
+        pages_read=[Citation(path="concepts/beta.md", source="library")],
+    )
+    with (
+        mock.patch.object(server, "resolve_wiki"),
+        mock.patch.object(server, "Orchestrator") as orch_cls,
+    ):
+        orch_cls.return_value.run_query.return_value = answer
+        result = query(question="what is beta?", name="w")
+
+    wire = result.model_dump()
+    assert wire["citations"] == [
+        {"path": "concepts/beta.md", "source": "library"},
+        {"path": "wiki/concepts/beta.md", "source": "wiki"},
+    ]
+    assert wire["pages_read"] == [
+        {"path": "concepts/beta.md", "source": "library"},
+    ]
+    # The on-instance type stays Citation (Pydantic validates the input
+    # field type) — the wire format is what downstream consumers see.
+    assert all(isinstance(c, Citation) for c in result.citations)
+    assert all(isinstance(c, Citation) for c in result.pages_read)
+
+
 # ---------------------------------------------------------------------------
 # lint — deterministic health-check
 # ---------------------------------------------------------------------------
