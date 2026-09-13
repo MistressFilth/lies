@@ -227,8 +227,8 @@ def test_holder_pid_in_qmd_lock_busy_when_holder_writes_heartbeat(monkeypatch, t
         # Confirm the holder's pid was registered to the pid file before
         # we attempt the contended acquire; this verifies the write path
         # is engaged by ``_acquire_with_poll`` (not just the decorator).
-        _wait_for_marker(tmp_path / "qmd.lock.pid", timeout=5.0)
-        holder_pid = int((tmp_path / "qmd.lock.pid").read_text(encoding="utf-8").strip())
+        _wait_for_marker(mod._PID_PATH, timeout=5.0)
+        holder_pid = int(mod._PID_PATH.read_text(encoding="utf-8").strip())
         assert holder_pid != os.getpid(), "holder pid should differ from the test pid"
 
         @mod.with_qmd_lock(timeout_s=0.3, max_age_s=1800.0)
