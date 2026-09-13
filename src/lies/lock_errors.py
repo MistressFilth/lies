@@ -53,3 +53,33 @@ class WikiFlockIndeterminate(WikiFlockError):
     window. The caller must run ``lies flock <name> force-repair`` to
     override; the primitive does not reap.
     """
+
+
+class QmdLockBusy(WikiFlockError):
+    """Another process holds the site-wide qmd CLI flock; 30 s wait exhausted.
+
+    Distinct from WikiLockBusy because (a) the qmd flock is site-wide, not
+    per-wiki; (b) the operator recovery is to wait and retry the operation
+    (concurrent CLI subprocesses are expected transient contention), not
+    to run ``lies flock qmd force-repair``.
+
+    Attributes:
+        holder_pid: PID of the live holder, when known. ``None`` if unknown
+            (e.g., the contention pre-dates the heartbeat envelope).
+        waited_s: Wall-clock seconds spent polling before raising.
+        max_s: Configured timeout (default ``30.0`` per the spec).
+    """
+
+    def __init__(
+        self,
+        holder_pid: int | None = None,
+        *,
+        waited_s: float | None = None,
+        max_s: float = 30.0,
+    ) -> None:
+        self.holder_pid = holder_pid
+        self.waited_s = waited_s
+        self.max_s = max_s
+        super().__init__(
+            f"qmd flock contention: holder PID {holder_pid}, waited {waited_s}s, max {max_s}s"
+        )
