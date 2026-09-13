@@ -19,6 +19,14 @@ pytestmark = pytest.mark.skipif(
 )
 
 
+# The F0 surface-lift worktree the test originally targeted has been
+# merged into ``main``; point at this worktree's root so ``uv run``
+# resolves ``pyproject.toml`` regardless of which worktree is checked
+# out at runtime. ``parents[2]`` is the worktree root (this file is at
+# ``tests/integration/test_invisible_maintenance_surface.py``).
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
 def test_query_writes_sidecar_visible_via_all_three_surfaces(tmp_path: Path) -> None:
     # 1. Init a wiki via the CLI.
     name = "smoke"
@@ -41,7 +49,7 @@ def test_query_writes_sidecar_visible_via_all_three_surfaces(tmp_path: Path) -> 
         ["uv", "run", "lies", "init", name],
         check=True,
         env=env,
-        cwd="/home/divinefilth/code/github/MistressFilth/lies/f0-surface-lift",
+        cwd=str(REPO_ROOT),
         capture_output=True,
     )
 
@@ -53,7 +61,7 @@ def test_query_writes_sidecar_visible_via_all_three_surfaces(tmp_path: Path) -> 
         ["uv", "run", "lies", "query", "what is in the wiki?"],
         check=False,
         env=env,
-        cwd="/home/divinefilth/code/github/MistressFilth/lies/f0-surface-lift",
+        cwd=str(REPO_ROOT),
         capture_output=True,
         text=True,
     )
@@ -75,7 +83,7 @@ def test_query_writes_sidecar_visible_via_all_three_surfaces(tmp_path: Path) -> 
         ["uv", "run", "lies", "memory", "--limit", "1"],
         check=False,
         env=env,
-        cwd="/home/divinefilth/code/github/MistressFilth/lies/f0-surface-lift",
+        cwd=str(REPO_ROOT),
         capture_output=True,
         text=True,
     )
