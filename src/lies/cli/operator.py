@@ -256,7 +256,14 @@ class _FlockGroup(typer.main.TyperGroup):
         ctx: _ClickContext,
         args: list[str],
     ) -> list[str]:
-        if args and self.commands and args[0] in self.commands:
+        # Narrow the bypass to the nested ``qmd`` sub-app only. Legacy
+        # wiki-flock subcommands (``status``, ``force-repair``) must keep
+        # the standard Click path so the parent's ``name`` callback arg
+        # is consumed as the wiki name — without this narrow, a bare
+        # ``lies flock status`` would crash with ``TypeError: 'NoneType'
+        # object is not subscriptable`` because the legacy
+        # ``flock_status`` runs with empty ``ctx.obj``.
+        if args and args[0] == "qmd" and "qmd" in self.commands:
             setattr(ctx, "_is_subcommand_dispatch", True)
             ctx._protected_args = [args[0]]
             ctx.args = args[1:]
@@ -282,7 +289,7 @@ class _FlockGroup(typer.main.TyperGroup):
 
 flock_app = typer.Typer(
     cls=_FlockGroup,
-    help="Inspect or repair a wiki's memory flock.",
+    help="Inspect or repair a wiki's memory flock or the site-wide qmd CLI flock (use the `qmd` subcommand for the latter).",
 )
 
 
