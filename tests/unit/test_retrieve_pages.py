@@ -539,3 +539,114 @@ def test_collections_matching_skips_malformed_yaml(tmp_path: Path) -> None:
 
     tf = ResolvedTagFilter(include=Include("airflow"))
     assert _collections_matching(wiki, tf) == {"airflow"}
+
+
+# ---------------------------------------------------------------------------
+# Task 3 — _resolve_qmd_pages library-first resolution
+# ---------------------------------------------------------------------------
+# The seam under test:
+#   qmd_path -> _resolve_qmd_pages -> PageRead with `source` set per root
+#
+# Library (``Library.collections_root/<coll>/<file>``) is canonical; wiki
+# (``wiki.wiki_dir/<rest>``) is the local override. A path that lands in
+# both roots surfaces as two distinct PageRead objects with distinct
+# sources; the synthesis step applies the library-wins-on-conflict rule.
+
+
+def test_resolve_qmd_pages_library_first(tmp_path: Path) -> None:
+    """qmd hit at ``claude_platform/foo.md`` resolves to the library
+    collections root, not ``wiki.wiki_dir``. Source is ``library``."""
+    from lies.library.paths import Library
+    from lies.query.synthesizer import _resolve_qmd_pages
+
+    Library.open.cache_clear()
+
+    root = tmp_path / "wiki"
+    (root / "wiki").mkdir(parents=True)
+    wiki = make_wiki(name="default", data_root=root)
+
+    lib = Library.open()
+    mirror_dir = lib.collections_root / "claude_platform"
+    mirror_dir.mkdir(parents=True)
+    (mirror_dir / "skills.md").write_text("# Skills\n\nHow to build skills.\n", encoding="utf-8")
+
+    pages = _resolve_qmd_pages(wiki, ["claude_platform/skills.md"], 5)
+
+    assert len(pages) == 1
+    assert pages[0].source == "library"
+    assert pages[0].title == "Skills"
+
+
+def test_resolve_qmd_pages_wiki_when_library_missing(tmp_path: Path) -> None:
+    """When the library has no file at the qmd path, fall back to
+    ``wiki.wiki_dir``. Source is ``wiki``."""
+    from lies.library.paths import Library
+    from lies.query.synthesizer import _resolve_qmd_pages
+
+    Library.open.cache_clear()
+
+    root = tmp_path / "wiki"
+    wiki_dir = root / "wiki"
+    wiki_dir.mkdir(parents=True)
+    wiki = make_wiki(name="default", data_root=root)
+
+    # Wiki has the page; library mirror is empty.
+    (wiki_dir / "concepts").mkdir(parents=True)
+    (wiki_dir / "concepts" / "local.md").write_text(
+        "# Local\n\nLocal wiki content.\n", encoding="utf-8"
+    )
+
+    pages = _resolve_qmd_pages(wiki, ["concepts/local.md"], 5)
+
+    assert len(pages) == 1
+    assert pages[0].source == "wiki"
+    assert pages[0].title == "Local"
+
+
+def test_resolve_qmd_pages_collision_keeps_both_sources(tmp_path: Path) -> None:
+    """Same path in both roots surfaces as two PageRead objects with
+    distinct sources. Library is canonical; wiki is the override."""
+    from lies.library.paths import Library
+    from lies.query.synthesizer import _resolve_qmd_pages
+
+    Library.open.cache_clear()
+
+    root = tmp_path / "wiki"
+    wiki_dir = root / "wiki"
+    wiki_dir.mkdir(parents=True)
+    wiki = make_wiki(name="default", data_root=root)
+
+    lib = Library.open()
+    (lib.collections_root / "shared").mkdir(parents=True)
+    (lib.collections_root / "shared" / "x.md").write_text(
+        "# Library version\n\nUpstream.\n", encoding="utf-8"
+    )
+    (wiki_dir / "shared").mkdir(parents=True)
+    (wiki_dir / "shared" / "x.md").write_text(
+        "# Wiki version\n\nEdited locally.\n", encoding="utf-8"
+    )
+
+    pages = _resolve_qmd_pages(wiki, ["shared/x.md"], 5)
+
+    sources = sorted(p.source for p in pages)
+    assert sources == ["library", "wiki"]
+    titles = {p.source: p.title for p in pages}
+    assert titles["library"] == "Library version"
+    assert titles["wiki"] == "Wiki version"
+
+
+def test_resolve_qmd_pages_path_traversal_blocked_for_library(tmp_path: Path) -> None:
+    """A qmd hit whose path escapes the library collections root is
+    dropped (path traversal defense, mirrors existing wiki-side check)."""
+    from lies.library.paths import Library
+    from lies.query.synthesizer import _resolve_qmd_pages
+
+    Library.open.cache_clear()
+
+    root = tmp_path / "wiki"
+    (root / "wiki").mkdir(parents=True)
+    wiki = make_wiki(name="default", data_root=root)
+
+    pages = _resolve_qmd_pages(wiki, ["../../etc/passwd"], 5)
+
+    assert pages == []

@@ -262,24 +262,116 @@ def _read_pages_from_index(wiki: Wiki, top_n: int) -> list[PageRead]:
 def _resolve_qmd_pages(wiki: Wiki, qmd_paths: list[str], top_n: int) -> list[PageRead]:
     """Resolve qmd-returned paths to actual readable pages on disk.
 
-    Defends against path traversal: any returned path that escapes
-    ``wiki.data_root`` is silently dropped.
+    Each qmd hit is matched against both physical roots:
+
+    - ``Library.collections_root/<first-segment>/<rest>`` — library is
+      the canonical source of truth.
+    - ``wiki.wiki_dir/<rest>`` — wiki is the local override / author-
+      only content.
+
+    The same path from both roots yields two distinct ``PageRead``
+    objects with distinct ``source`` fields; the LLM synthesis step
+    applies the library-wins-on-conflict rule at answer time. A
+    library hit is reported with its qmd URI form (``<coll>/<file>``)
+    as ``rel_path`` because library files live outside ``wiki.data_root``
+    — a data_root-relative path would lie about filesystem layout.
+
+    Defends against path traversal per root: any candidate that escapes
+    its root is dropped, the next root is tried.
     """
     pages: list[PageRead] = []
     for raw in qmd_paths:
         if len(pages) >= top_n:
             break
-        candidate = Path(raw)
-        if not candidate.is_absolute():
-            candidate = (wiki.wiki_dir / raw).resolve()
-        try:
-            candidate.relative_to(wiki.wiki_dir)
-        except ValueError:
+        # Library first: primary source of truth.
+        lib_path = _resolve_qmd_path_in_library(wiki, raw)
+        if lib_path is not None:
+            lib_page = _build_library_page_read(lib_path)
+            if lib_page is not None:
+                pages.append(lib_page)
+        # Wiki: surfaces overrides and collision cases. Library is
+        # canonical but a wiki file at the same path is preserved as a
+        # distinct PageRead for the local-override rule.
+        if len(pages) >= top_n:
             continue
-        read = _try_read(candidate, wiki)
-        if read is not None:
-            pages.append(read)
+        wiki_path = _resolve_qmd_path_in_wiki(wiki, raw)
+        if wiki_path is not None:
+            wiki_page = _try_read(wiki_path, wiki)
+            if wiki_page is not None:
+                pages.append(wiki_page)
     return pages
+
+
+def _resolve_qmd_path_in_library(wiki: Wiki, raw: str) -> Path | None:
+    """Resolve ``raw`` strictly under ``Library.collections_root``.
+
+    Library files live at ``<coll>/<file>`` relative to the
+    collections root, so the qmd hit's first path segment is the
+    collection name. An absolute path or a path with no first segment
+    yields no library candidate (the path is wiki-only by
+    construction).
+
+    Path traversal defense: any candidate that escapes
+    ``Library.collections_root`` is dropped (returns None).
+    """
+    if Path(raw).is_absolute():
+        return None
+    first, _, rest = raw.partition("/")
+    if not first:
+        return None
+    # Local import to avoid a circular import at module load time
+    # (matches the existing pattern for qmd.cli imports below).
+    from lies.library.paths import Library  # noqa: PLC0415
+
+    lib_root = Library.open().collections_root
+    lib_candidate = (lib_root / first / rest).resolve()
+    try:
+        lib_candidate.relative_to(lib_root.resolve())
+    except ValueError:
+        return None
+    return lib_candidate if lib_candidate.is_file() else None
+
+
+def _resolve_qmd_path_in_wiki(wiki: Wiki, raw: str) -> Path | None:
+    """Resolve ``raw`` strictly under ``wiki.wiki_dir``.
+
+    Mirrors the path-traversal defense the pre-Task-3 helper
+    enforced: any candidate that escapes ``wiki.wiki_dir`` is
+    dropped (returns None).
+    """
+    candidate = Path(raw)
+    if candidate.is_absolute():
+        wiki_candidate = candidate
+    else:
+        wiki_candidate = (wiki.wiki_dir / raw).resolve()
+    try:
+        wiki_candidate.relative_to(wiki.wiki_dir.resolve())
+    except ValueError:
+        return None
+    return wiki_candidate if wiki_candidate.is_file() else None
+
+
+def _build_library_page_read(path: Path) -> PageRead | None:
+    """Build a ``PageRead`` for a library-side path.
+
+    ``rel_path`` is the qmd URI form (``<coll>/<file>``) — library
+    files live under ``Library.collections_root`` which is NOT under
+    ``wiki.data_root``, so a data_root-relative path would lie about
+    filesystem layout. Returns ``None`` on read failure (mirrors
+    :func:`_try_read`).
+    """
+    # Local import: same rationale as ``_resolve_qmd_path_in_library``.
+    from lies.library.paths import Library  # noqa: PLC0415
+
+    try:
+        content = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+    lib_root = Library.open().collections_root.resolve()
+    rel = path.relative_to(lib_root).as_posix()
+    title = _extract_title(content) or path.stem
+    excerpt = _first_meaningful_paragraph(content)
+    return PageRead(rel_path=rel, title=title, excerpt=excerpt, source="library")
 
 
 def _try_read(path: Path, wiki: Wiki, *, title_override: str | None = None) -> PageRead | None:
