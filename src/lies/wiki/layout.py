@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import sys
@@ -10,7 +11,13 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from lies.qmd.cli import qmd_collection_add_or_update
+    from lies.wiki.wiki import Wiki
+
+# Sentinel file name: marks ``wiki_<name>`` as already registered with
+# qmd. Lives at ``<wiki.data_root>/.lies/<name>``, alongside the catalog
+# DB and sidecar. The directory is gitignored (see ``_gitignore_lines``)
+# so the sentinel never lands in a commit.
+QMD_REGISTRATION_SENTINEL = "wiki_qmd_registered"
 
 
 def __getattr__(name: str):
@@ -74,8 +81,23 @@ class WikiLayout:
         # which re-indexes this collection alongside the library
         # collections — no new post-commit hook is needed for the wiki
         # side.
+        #
+        # On success, the sentinel file is written atomically so the
+        # first-write / first-query self-heal hook
+        # (:func:`ensure_wiki_qmd_registered`) skips the subprocess on
+        # subsequent operations. The sentinel is gitignored (see
+        # ``_gitignore_lines``) so it never lands in a commit.
         try:
-            qmd_collection_add_or_update(
+            # Resolve the lazy ``__getattr__`` binding explicitly: PEP 562
+            # module-level ``__getattr__`` does NOT fire for
+            # ``LOAD_GLOBAL`` inside a function/method body. The bare
+            # name below would otherwise raise ``NameError`` in a fresh
+            # process and emit a spurious warning. See
+            # :func:`ensure_wiki_qmd_registered` for the same pattern.
+            _qaou = globals().get("qmd_collection_add_or_update") or __getattr__(
+                "qmd_collection_add_or_update"
+            )
+            _qaou(
                 self.root,
                 self.wiki_dir,
                 f"wiki_{self.name}",
@@ -87,6 +109,113 @@ class WikiLayout:
                 f"Run `lies status` for state.",
                 file=sys.stderr,
             )
+            return
+        _write_sentinel(self.root)
+
+
+def qmd_sentinel_path(data_root: Path) -> Path:
+    """Path to the per-wiki qmd-registration sentinel file."""
+    return data_root / ".lies" / QMD_REGISTRATION_SENTINEL
+
+
+def _write_sentinel(data_root: Path) -> None:
+    """Atomically write the qmd-registration sentinel.
+
+    Writes to ``<data_root>/.lies/.wiki_qmd_registered.tmp`` first and
+    then renames into place so concurrent writers (the write path and
+    the query path can race on a cold start) cannot truncate each
+    other's sentinel mid-write. The parent ``.lies/`` directory is
+    created on demand so callers do not have to pre-create it.
+    """
+    sentinel = qmd_sentinel_path(data_root)
+    sentinel.parent.mkdir(parents=True, exist_ok=True)
+    # ``os.replace`` is atomic on POSIX when source and destination are
+    # on the same filesystem; the sentinel and its tmp live under the
+    # same ``.lies/`` directory so that holds. ``fd, path`` pair avoids
+    # a TOCTOU where a concurrent writer could delete + replace between
+    # ``open`` and ``replace``.
+    tmp = sentinel.with_name(sentinel.name + ".tmp")
+    fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.close(fd)
+        os.replace(tmp, sentinel)
+    except BaseException:
+        # Tidy the tmp if rename failed (the tmp file may have been
+        # left behind by a crashed writer).
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
+
+
+def ensure_wiki_qmd_registered(wiki: Wiki) -> bool:
+    """Self-heal: register ``wiki_<name>`` with qmd if not yet registered.
+
+    Wikis created before 0.22.0 have no ``wiki_<name>`` qmd collection
+    because the ``WikiAlreadyExists`` guard in the init path blocked
+    re-registration. This function is the migration hook: it is called
+    from every wiki write (``WikiMemoryService.apply_plan``) and every
+    MCP query (``Orchestrator.run_query``). On a cold start the
+    sentinel is absent; we register via
+    :func:`lies.qmd.cli.qmd_collection_add_or_update` and write the
+    sentinel atomically. On every subsequent call the sentinel short
+    circuits the subprocess.
+
+    Failures are non-fatal: a qmd outage must not roll back the wiki
+    commit or fail the answer. The function prints a warning to
+    stderr and returns False; the absence of a written sentinel means
+    the next call retries automatically.
+
+    Returns:
+        True if the collection is registered (sentinel existed or the
+        registration attempt succeeded). False if the registration
+        failed and a retry will happen on the next call.
+    """
+    sentinel = qmd_sentinel_path(wiki.data_root)
+    if sentinel.exists():
+        return True
+
+    # Resolve the lazy ``__getattr__`` binding explicitly. ``LOAD_GLOBAL``
+    # inside a function does NOT fall through to the module's
+    # ``__getattr__`` (PEP 562); it only fires for ``module.name``
+    # attribute access. Without the explicit lookup here the call
+    # raises ``NameError`` in a fresh process. Same pattern as
+    # :mod:`lies.library.writer`.
+    _qaou = globals().get("qmd_collection_add_or_update") or __getattr__(
+        "qmd_collection_add_or_update"
+    )
+    try:
+        _qaou(
+            wiki.data_root,
+            wiki.wiki_dir,
+            f"wiki_{wiki.name}",
+        )
+    except Exception as exc:  # noqa: BLE001 - qmd is derived; self-heal must not roll back the caller's commit / answer
+        print(
+            f"warning: qmd wiki collection self-heal failed for "
+            f"'wiki_{wiki.name}': {exc}; next write/query will retry. "
+            f"Run `lies status` for state.",
+            file=sys.stderr,
+        )
+        return False
+
+    try:
+        _write_sentinel(wiki.data_root)
+    except OSError as exc:
+        # Sentinel write failed but the registration may have
+        # succeeded; on the next call ``qmd_collection_add_or_update``
+        # is idempotent (no-op when path matches), so the cost of a
+        # re-attempt is bounded. Surface the warning so the operator
+        # knows the wiki will keep retrying the qmd subprocess on
+        # every write/query.
+        print(
+            f"warning: could not write qmd registration sentinel at {sentinel}: {exc}; "
+            f"next write/query will retry the qmd subprocess.",
+            file=sys.stderr,
+        )
+        return False
+    return True
 
 
 def copy_default_schema(target: Path) -> None:

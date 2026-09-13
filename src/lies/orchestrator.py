@@ -1283,6 +1283,18 @@ class Orchestrator:
         # documented at ``SynthesizedAnswer.searched_scope``).
         searched_scope = _searched_scope(self.wiki, tag_filter)
 
+        # Self-heal: ensure ``wiki_<name>`` is registered with qmd
+        # before retrieval runs. Wikis created before 0.22.0 skip this
+        # registration in ``WikiLayout.init`` because
+        # ``WikiAlreadyExists`` blocks re-init; without this hook the
+        # wiki pass returns zero hits forever. The helper is idempotent
+        # (sentinel short-circuits after the first successful call) and
+        # never raises; a qmd outage prints a warning and returns False
+        # so the answer still synthesizes.
+        from lies.wiki.layout import ensure_wiki_qmd_registered
+
+        ensure_wiki_qmd_registered(self.wiki)
+
         if not question or not question.strip():
             return replace(
                 synthesize_answer(question, self.wiki),
