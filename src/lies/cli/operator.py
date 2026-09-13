@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Annotated, Any, cast
 
 import typer
+from typer._click.core import Context as _ClickContext
 
 from lies import xdg
 from lies.cli._helpers import (
@@ -236,7 +237,53 @@ def _mcp_status(
 # flock sub-app + commands
 # ---------------------------------------------------------------------------
 
-flock_app = typer.Typer(help="Inspect or repair a wiki's memory flock.")
+
+class _FlockGroup(typer.main.TyperGroup):
+    """TyperGroup that prefers subcommand dispatch over the wiki-name callback arg.
+
+    Click's default ``Group.parse_args`` greedily consumes the first
+    positional as the parent's ``name`` callback arg before matching
+    any subcommand. That makes ``lies flock qmd status`` dispatch into
+    the existing ``flock_status`` with ``name="qmd"`` instead of the
+    nested ``_qmd_flock_app`` we attach below. We peek at ``args`` first:
+    if ``args[0]`` is a known subcommand, we bypass the parent's
+    callback arg entirely and let ``resolve_command`` find the
+    subcommand directly.
+    """
+
+    def parse_args(  # type: ignore[override]
+        self,
+        ctx: _ClickContext,
+        args: list[str],
+    ) -> list[str]:
+        if args and self.commands and args[0] in self.commands:
+            setattr(ctx, "_is_subcommand_dispatch", True)
+            ctx._protected_args = [args[0]]
+            ctx.args = args[1:]
+            return ctx.args
+        setattr(ctx, "_is_subcommand_dispatch", False)
+        return super().parse_args(ctx, args)
+
+    def invoke(self, ctx: _ClickContext):  # type: ignore[override]
+        # When dispatching to a subcommand, skip the parent's callback
+        # so the sub-app's own callback (or none) runs in its own scope.
+        if getattr(ctx, "_is_subcommand_dispatch", False):
+            args = [*ctx._protected_args, *ctx.args]
+            ctx.args = []
+            ctx._protected_args = []
+            cmd_name, cmd, args = self.resolve_command(ctx, args)
+            assert cmd is not None
+            ctx.invoked_subcommand = cmd_name
+            sub_ctx = cmd.make_context(cmd_name, args, parent=ctx, allow_extra_args=True)
+            with sub_ctx:
+                return sub_ctx.command.invoke(sub_ctx)
+        return super().invoke(ctx)
+
+
+flock_app = typer.Typer(
+    cls=_FlockGroup,
+    help="Inspect or repair a wiki's memory flock.",
+)
 
 
 @flock_app.callback(invoke_without_command=True)
@@ -390,6 +437,96 @@ def flock_force_repair(ctx: typer.Context) -> None:
     os.close(result.fd)
     typer.echo("retry    : acquired memory.lock.create")
     typer.echo("result   : ok (recovery succeeded)")
+
+
+# ---------------------------------------------------------------------------
+# flock qmd sub-app + commands (nested under flock_app)
+# ---------------------------------------------------------------------------
+
+
+def _pid_alive(pid: int) -> bool:
+    """Return ``True`` iff ``os.kill(pid, 0)`` succeeds or raises EPERM.
+
+    ESRCH (process gone) returns ``False``; EPERM (alive but unreadable)
+    and any other OSError return ``False`` here too — the operator
+    CLI is advisory, not a reap path. Reap decisions belong in
+    ``acquire_create_lock`` / ``pid_alive_fn`` of
+    :mod:`lies.utils.exclusive`.
+    """
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+_qmd_flock_app = typer.Typer(
+    name="qmd",
+    help="Inspect or repair the site-wide qmd CLI flock.",
+    no_args_is_help=True,
+)
+
+
+@_qmd_flock_app.command("status")
+def _qmd_flock_status() -> None:
+    """Show the current site-wide qmd flock holder, if any.
+
+    Prints lock / pid / state paths, the holder's pid with an
+    ``(alive)/(dead)`` annotation, and ``started_at`` + age from the
+    heartbeat. Exits 2 when no flock is held so shell callers can
+    branch on it without parsing text.
+    """
+    from lies.qmd.lock import _LOCK_PATH, _PID_PATH, _STATE_PATH
+    from lies.utils.lock_heartbeat import read_heartbeat, read_owner_pid
+
+    typer.echo(f"lock path:    {_LOCK_PATH}")
+    typer.echo(f"pid path:     {_PID_PATH}")
+    typer.echo(f"state path:   {_STATE_PATH}")
+    if not _LOCK_PATH.exists():
+        typer.echo("no flock held; qmd CLI is unlocked.")
+        raise typer.Exit(code=2)
+
+    pid = read_owner_pid(_PID_PATH)
+    heartbeat = read_heartbeat(_STATE_PATH)
+    if pid is not None:
+        typer.echo(f"holder pid:   {pid} {'(alive)' if _pid_alive(pid) else '(dead)'}")
+    if heartbeat is not None:
+        age_s = time.time() - heartbeat.started_at
+        typer.echo(f"started_at:   {heartbeat.started_at} (age {age_s:.0f}s)")
+
+
+@_qmd_flock_app.command("force-repair")
+def _qmd_flock_force_repair() -> None:
+    """Unconditionally reap the qmd flock envelope (lock + pid + state).
+
+    Calls :func:`acquire_create_lock` with ``force_repair=True`` so any
+    live contender is reaped before the operator takes the lock; the
+    lock we just took is released immediately after so the envelope is
+    empty when the command exits. Exits 1 if a live contender survives
+    the reap so shell callers can branch on it.
+    """
+    from lies.qmd.lock import _LOCK_PATH, _PID_PATH, _STATE_PATH
+    from lies.utils.exclusive import acquire_create_lock, release_create_lock
+
+    result = acquire_create_lock(
+        _LOCK_PATH,
+        max_age_s=1800.0,
+        pid_path=_PID_PATH,
+        state_json_path=_STATE_PATH,
+        force_repair=True,
+    )
+    if result is None:
+        typer.echo("qmd flock still held; live contender survives force-repair.")
+        raise typer.Exit(code=1)
+    release_create_lock(_LOCK_PATH, result.fd, pid_path=_PID_PATH, state_json_path=_STATE_PATH)
+    typer.echo("qmd flock reaped.")
+
+
+flock_app.add_typer(_qmd_flock_app, name="qmd")
 
 
 # ---------------------------------------------------------------------------
