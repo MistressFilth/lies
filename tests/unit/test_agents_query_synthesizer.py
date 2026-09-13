@@ -39,7 +39,7 @@ def test_query_synthesizer_returns_answer() -> None:
 def test_build_query_prompt_includes_page_corpus() -> None:
     ctx = RunContext(deps=_deps(), model=TestModel(), usage=None, prompt="")
     rendered = _build_query_prompt(ctx)
-    assert "--- wiki/concepts/alpha.md ---" in rendered
+    assert "--- [wiki] wiki/concepts/alpha.md ---" in rendered
     assert "Alpha is the first letter." in rendered
 
 
