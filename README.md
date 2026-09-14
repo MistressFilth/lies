@@ -126,6 +126,10 @@ After registration, Claude Code sees these tools:
   list[Citation]` where each `Citation` carries a `source:
   "library" | "wiki"` discriminator; library citations are the
   primary source of truth, wiki citations are supplementary).
+- `answer(question, name?)` — same synthesized answer body as plain
+  text. Use this when the chat surface needs to render the answer
+  verbatim (the structured `query` tool returns a JSON envelope that
+  some surfaces hide behind collapsible blocks).
 - `lint(name?)` — health-check the wiki.
 - `migrate_xdg(legacy_path, name)` — one-shot bridge from legacy `<wiki>/.lies/` to XDG.
 

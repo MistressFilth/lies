@@ -1327,23 +1327,47 @@ class Orchestrator:
             )
 
         retrieved = {page.rel_path for page in pages}
-        kept = [c for c in output.citations if c in retrieved]
-        dropped = [c for c in output.citations if c not in retrieved]
+
+        # Defense-in-depth: the synthesizer LLM sometimes emits a phantom
+        # ``wiki/`` prefix on library-source citations. Library pages have
+        # ``rel_path`` = ``<coll>/<file>``; wiki pages have ``wiki/...``.
+        # Normalize the LLM's output to whichever form matches a retrieved
+        # page key. The original emit is preserved in the answer body so the
+        # user sees what the LLM produced; we only correct the citation
+        # matching that decides which citations survive.
+        def _normalize(citation: str) -> str | None:
+            if citation in retrieved:
+                return citation
+            stripped = citation.removeprefix("wiki/")
+            if stripped in retrieved:
+                return stripped
+            if citation not in retrieved and "wiki/" not in citation:
+                prefixed = f"wiki/{citation}"
+                if prefixed in retrieved:
+                    return prefixed
+            return None
+
+        normalized = [(_c, _normalize(_c)) for _c in output.citations]
+        # ``kept_paths`` are the NORMALIZED paths (matching ``page.rel_path``)
+        # so the source-discriminator lookup below finds the right page.
+        # ``dropped`` keeps the original-emit form for the diagnostic warning.
+        kept_paths = [norm for _, norm in normalized if norm is not None]
+        dropped = [c for c, norm in normalized if norm is None]
         if dropped:
             synthesis_reason = (
                 f"dropped {len(dropped)} unretrieved citation(s): {', '.join(dropped)}"
             )
 
         # Build the ``Citation`` lists from the retrieved ``pages`` so the
-        # source discriminator rides with each citation. ``kept`` are the
-        # subset the LLM agent returned whose paths match retrieved pages;
+        # source discriminator rides with each citation. ``kept_paths`` are
+        # the normalized (post-prefix-strip) paths matching retrieved pages;
         # look up the source by path on the retrieved set. ``cast`` is
         # safe: ``PageRead.source`` values are produced from the closed
         # ``"library"`` / ``"wiki"`` set at the resolver boundary.
         page_source_by_path: dict[str, str] = {page.rel_path: page.source for page in pages}
         citations: list[Citation] = [
-            Citation(path=c, source=cast(Literal["library", "wiki"], page_source_by_path[c]))
-            for c in kept
+            Citation(path=p, source=cast(Literal["library", "wiki"], page_source_by_path[p]))
+            for p in kept_paths
         ]
         pages_read: list[Citation] = [
             Citation(

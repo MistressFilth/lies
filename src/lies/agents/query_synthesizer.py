@@ -51,16 +51,24 @@ Read each page carefully. Synthesize a markdown answer that:
    Each citation carries a `[library]` or `[wiki]` tag reflecting its source;
    preserve these tags in your answer (e.g., as a `[library]` prefix on the
    `[name](path)` link so the operator sees the provenance inline).
+7. **Cites every page in the corpus** — include every retrieved page in the
+   `citations` list, even if it contributed only supporting context. The user
+   should be able to see which pages informed the answer; selective citation
+   hides the corpus's breadth. Prefer linking at the section end if the page
+   contributed background rather than a specific claim.
 
 Return a `QueryAnswer` with:
 - **`answer`**: the markdown body
-- **`citations`**: data-root-relative POSIX paths matching the keys
-  shown in the corpus below (`--- wiki/concepts/alpha.md ---` etc.).
-  **Keep the `wiki/` prefix.** The `[name](path)` link inside the
-  answer body must use the **same path verbatim** — the orchestrator
-  drops citations whose path does not match a retrieved page key, and
-  the resulting answer body's link will then point to a non-existent
-  page.
+- **`citations`**: paths matching the keys shown in the corpus below
+  (`--- [library] claude_platform/concepts/alpha.md ---` or
+  `--- [wiki] wiki/claude_platform/concepts/alpha.md ---`) — copy them
+  verbatim, including the ``[source]`` prefix-vs-no-prefix distinction.
+  Library-source paths are ``<collection>/<file>`` with no ``wiki/``
+  prefix. Wiki-source paths start with ``wiki/``. The orchestrator
+  drops citations whose path does not match a retrieved page key
+  exactly, and the resulting answer body's link will then point to a
+  non-existent page. The `[name](path)` link inside the answer body
+  must use the **same path verbatim**.
 - **`should_file`**: True/False as above
 """
 

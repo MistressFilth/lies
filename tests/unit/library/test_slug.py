@@ -1,6 +1,6 @@
 import pytest
 from pathlib import Path
-from lies.library.slug import derive_slug, validate_slug
+from lies.library.slug import derive_nested_slug, derive_slug, validate_slug
 
 
 @pytest.mark.parametrize(
@@ -48,7 +48,7 @@ def test_derive_slug_with_override(tmp_path: Path) -> None:
     assert derive_slug(src, override="custom-name") == "custom-name"
 
 
-@pytest.mark.parametrize("bad", ["", "../etc", "with space", "with/slash", "with.dot"])
+@pytest.mark.parametrize("bad", ["", "../etc", "with space", "with.dot"])
 def test_validate_slug_rejects(bad: str) -> None:
     with pytest.raises(ValueError):
         validate_slug(bad)
@@ -57,3 +57,29 @@ def test_validate_slug_rejects(bad: str) -> None:
 def test_validate_slug_accepts_normal() -> None:
     assert validate_slug("normal-slug") == "normal-slug"
     assert validate_slug("with_under") == "with_under"
+
+
+def test_validate_slug_accepts_nested_paths() -> None:
+    """Nested paths (``<coll>/<file>``) are valid slugs.
+
+    Used by the WebScraper when preserving source hierarchy under the
+    collection root. Each segment must independently match the single
+    segment regex; total length ≤1024 chars.
+    """
+    assert (
+        validate_slug("agents-and-tools/agent-skills/best-practices")
+        == "agents-and-tools/agent-skills/best-practices"
+    )
+
+
+def test_derive_nested_slug_strips_extension_and_normalizes() -> None:
+    """Nested slug derivation: ``agents-and-tools/agent-skills/best-practices.md``
+    becomes ``agents-and-tools/agent-skills/best-practices``."""
+    assert (
+        derive_nested_slug("agents-and-tools/agent-skills/best-practices.md")
+        == "agents-and-tools/agent-skills/best-practices"
+    )
+    # Underscores and trailing dashes collapse.
+    assert (
+        derive_nested_slug("Build_With-Claude_/quick_start.md") == "build-with-claude/quick-start"
+    )

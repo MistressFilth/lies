@@ -34,7 +34,7 @@ from lies.library.errors import LibraryFetchUnreachable
 from lies.library.filter import should_skip_content, should_skip_filename
 from lies.library.mirror import write_mirror
 from lies.library.paths import Library, LibraryCollection
-from lies.library.slug import derive_slug, validate_slug
+from lies.library.slug import derive_nested_slug, derive_slug, validate_slug
 from lies.library.writer import LibraryWriter
 
 
@@ -198,7 +198,11 @@ def _process_item(
         if skip_reason:
             _record_skip(result, skip_reason)
             return
-        slug = derive_slug(path, override=slug_override)
+        slug = (
+            derive_nested_slug(path)
+            if str(path).count("/") > 0 and not str(path).startswith("/")
+            else derive_slug(path, override=slug_override)
+        )
     else:
         if slug_override is not None:
             slug = validate_slug(slug_override)
