@@ -51,6 +51,11 @@ Read each page carefully. Synthesize a markdown answer that:
    Each citation carries a `[library]` or `[wiki]` tag reflecting its source;
    preserve these tags in your answer (e.g., as a `[library]` prefix on the
    `[name](path)` link so the operator sees the provenance inline).
+7. **Cites every page in the corpus** — include every retrieved page in the
+   `citations` list, even if it contributed only supporting context. The user
+   should be able to see which pages informed the answer; selective citation
+   hides the corpus's breadth. Prefer linking at the section end if the page
+   contributed background rather than a specific claim.
 
 Return a `QueryAnswer` with:
 - **`answer`**: the markdown body
