@@ -844,3 +844,24 @@ def ask_wiki(question: str) -> str:
         f"answer came from the index fallback (not qmd search) and "
         f"include the `fallback_reason`."
     )
+
+
+@mcp.prompt(name="answer")
+def ask_wiki_answer(question: str) -> str:
+    """Starter prompt that templates an ``answer`` tool invocation.
+
+    Chat-surface counterpart to ``ask_wiki``: the LLM calls the
+    ``answer`` tool (returns plain text) instead of ``query`` (returns
+    structured envelope). Use this when the response needs to render
+    verbatim in chat rather than behind a collapsible JSON block.
+
+    The ``name="answer"`` override registers the prompt as the
+    ``/answer`` slash command even though the Python function is named
+    ``ask_wiki_answer`` (the bare name conflicts with the ``answer``
+    tool defined elsewhere in this module).
+    """
+    return (
+        f"Use the `answer` tool to ask the wiki the following question, "
+        f"then surface the answer body verbatim in your reply:\n\n"
+        f"  question: {question}"
+    )
