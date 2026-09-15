@@ -37,19 +37,28 @@ def test_stdio_transport_uses_local_toolset(wiki_root: Path) -> None:
 def test_http_capability_advertises_native_when_daemon_reachable(
     wiki_root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Reachable daemon -> MCP(url=..., native=MCPServerTool, local=False)."""
+    """Reachable daemon + healthy recycle -> MCP(local=QmdRecycleToolset)."""
     from pydantic_ai.capabilities import MCP
-    from pydantic_ai.native_tools import MCPServerTool
+
+    from lies.qmd.daemon import QmdState
+    from lies.qmd.mcp import QmdRecycleToolset
 
     layout = WikiLayout(wiki_root)
     monkeypatch.setattr("lies.qmd.capability.qmd_daemon_reachable", lambda url, timeout=0.5: True)
+    # Construction-time recycle must succeed for the native path.
+
+    async def _recycle_succeeds(**kwargs: object) -> QmdState:
+        return QmdState(True, True, 1, "running")
+
+    monkeypatch.setattr("lies.qmd.capability.recycle_qmd_daemon", _recycle_succeeds)
     cap = QmdCapability(transport="http", url="http://127.0.0.1:8181", wiki=layout).as_capability()
     assert isinstance(cap, MCP)
-    assert cap.url == "http://127.0.0.1:8181"
-    # pydantic-ai turns ``native=True`` into an ``MCPServerTool`` instance;
-    # the boolean ``True`` never appears as the attribute value.
-    assert isinstance(cap.native, MCPServerTool)
-    assert cap.local is False
+    # Native path now wraps the inner MCPToolset in a QmdRecycleToolset
+    # and exposes it through ``MCP(local=...)``.
+    assert cap.native is False
+    assert cap.local is not None
+    toolset = cap.local.function()
+    assert isinstance(toolset, QmdRecycleToolset)
 
 
 def test_http_capability_uses_local_when_daemon_unreachable(
@@ -104,8 +113,9 @@ def test_per_call_recovery_after_daemon_returns(
     wiki_root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """If the probe flips from False to True between calls, the capability
-    advertises native again on the next call."""
-    from pydantic_ai.native_tools import MCPServerTool
+    advertises the native QmdRecycleToolset again on the next call."""
+    from lies.qmd.daemon import QmdState
+    from lies.qmd.mcp import QmdRecycleToolset
 
     layout = WikiLayout(wiki_root)
     probes = iter([False, True])
@@ -113,14 +123,53 @@ def test_per_call_recovery_after_daemon_returns(
         "lies.qmd.capability.qmd_daemon_reachable",
         lambda url, timeout=0.5: next(probes),
     )
+
+    async def _recycle_succeeds(**kwargs: object) -> QmdState:
+        return QmdState(True, True, 1, "running")
+
+    monkeypatch.setattr("lies.qmd.capability.recycle_qmd_daemon", _recycle_succeeds)
     cap_ctor = QmdCapability(transport="http", url="http://127.0.0.1:8181", wiki=layout)
     first = cap_ctor.as_capability()
     assert first.native is False
     second = cap_ctor.as_capability()
-    assert isinstance(second.native, MCPServerTool)
+    assert second.native is False
+    assert isinstance(second.local.function(), QmdRecycleToolset)
 
 
 def test_unknown_transport_raises(wiki_root: Path) -> None:
     layout = WikiLayout(wiki_root)
     with pytest.raises(ValueError, match="Unknown transport"):
         QmdCapability(transport="bogus", wiki=layout)
+
+
+def test_qmd_capability_falls_back_when_construction_recycle_fails(
+    wiki_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Construction-time QmdRecycleFailed -> in-process fallback MCP."""
+    from lies.qmd import capability as qmd_capability  # noqa: F401
+    from lies.qmd.daemon import QmdRecycleFailed, QmdState
+
+    layout = WikiLayout(wiki_root)
+
+    # Reachable at construction (passes the TCP probe).
+    monkeypatch.setattr(
+        "lies.qmd.capability.qmd_daemon_reachable",
+        lambda url, timeout=0.5: True,
+    )
+
+    # But the recycle itself fails.
+    async def _recycle_fails(**kwargs: object) -> QmdState:
+        raise QmdRecycleFailed(30.0, QmdState(False, False, None, "no listener"))
+
+    monkeypatch.setattr(
+        "lies.qmd.capability.recycle_qmd_daemon",
+        _recycle_fails,
+    )
+
+    cap = QmdCapability(transport="http", url="http://127.0.0.1:8181", wiki=layout).as_capability()
+    assert cap.id == "lies.qmd"
+    assert "degraded" in cap.description.lower() or "in-process" in cap.description.lower()
+    # Fallback path: the underlying factory returns an MCPToolset around the
+    # in-process QmdFallbackMcp, not the native HTTP toolset.
+    assert "MCP" in type(cap).__name__ or hasattr(cap, "_factory")

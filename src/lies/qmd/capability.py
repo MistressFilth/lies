@@ -17,12 +17,16 @@ and we only vary which arguments we pass it.
 
 from __future__ import annotations
 
+import asyncio
 import sys
-from typing import TYPE_CHECKING, Any
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, cast
 
 from pydantic_ai.capabilities import MCP
 
+from lies.qmd.daemon import QmdRecycleFailed, QmdState, recycle_qmd_daemon
 from lies.qmd.health import qmd_daemon_reachable
+from lies.qmd.mcp import QmdRecycleToolset, _build_qmd_http_toolset
 
 if TYPE_CHECKING:
     from lies.wiki.wiki import Wiki
@@ -47,6 +51,12 @@ class QmdCapability:
         self._transport = transport
         self._url = url
         self._wiki = wiki
+        # ``WikiLayout`` exposes ``root``; ``Wiki`` exposes ``data_root``.
+        # Both name the on-disk path the qmd sidecar belongs to. Pick
+        # whichever exists; the second ``getattr`` is lazy because the
+        # first already short-circuits when ``data_root`` is present.
+        _data_root = getattr(wiki, "data_root", None) or getattr(wiki, "root", None)
+        self._data_dir: Path = cast("Path", _data_root)
         self._timeout = timeout
 
     def as_capability(self) -> MCP:
@@ -55,17 +65,43 @@ class QmdCapability:
         if not qmd_daemon_reachable(self._url, timeout=self._timeout):
             _warn_degraded(self._url)
             return _build_fallback_mcp(self._wiki)
-        return _build_native_mcp(self._url)
+        try:
+            return _build_native_mcp(self._url, self._data_dir)
+        except QmdRecycleFailed:
+            _warn_degraded(self._url)
+            return _build_fallback_mcp(self._wiki)
 
 
-def _build_native_mcp(url: str) -> MCP:
-    """MCP(url=..., native=True, local=False) — same shape as today."""
+def _build_native_mcp(url: str, data_dir: Path) -> MCP:
+    """MCP wrapping a QmdRecycleToolset around an inner MCPToolset.
+
+    Construction-time recycle ensures the daemon is up before the
+    toolset is advertised; failure surfaces as :class:`QmdRecycleFailed`
+    so the caller can fall back to the in-process :class:`QmdFallbackMcp`.
+    The wrapper's ``recycle_cb`` re-enters the recycle path on transport
+    errors at call time.
+    """
+    inner = _build_qmd_http_toolset(url)
+
+    async def _recycle() -> QmdState:
+        return await recycle_qmd_daemon(data_dir=data_dir, daemon_url=url)
+
+    # Synchronous construction-time probe. The TCP probe above only
+    # confirms a listener exists; this reap+spawn+list_tools round-trip
+    # is the real readiness check, so any failure here means we can't
+    # serve via the native path.
+    asyncio.run(recycle_qmd_daemon(data_dir=data_dir, daemon_url=url))
+
+    wrapped = QmdRecycleToolset(wrapped=inner, recycle_cb=_recycle)
     return MCP(
-        url=url,
-        native=True,
-        local=False,
+        local=lambda: wrapped,
         id="lies.qmd",
-        description=("qmd MCP daemon. Search the wiki, read pages, and check collection status."),
+        description=(
+            "qmd MCP daemon. Search the wiki, read pages, and check "
+            "collection status. Auto-recycles on transport errors; "
+            "falls back to the in-process index scan when the daemon "
+            "cannot be restarted."
+        ),
     )
 
 

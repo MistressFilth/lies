@@ -15,6 +15,21 @@ from tests.conftest import make_wiki, models_for_tests
 _NOW = datetime(2026, 9, 10, tzinfo=UTC)
 
 
+@pytest.fixture(autouse=True)
+def _stub_qmd_recycle(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stub the qmd daemon recycle so Orchestrator construction doesn't hit the
+    real daemon. Orchestrator tests don't exercise qmd behavior — that's
+    `test_qmd_capability.py`'s job. The recycle is wired through
+    `QmdCapability.as_capability()` (Task 4) and would otherwise attempt a real
+    recycle against the dev environment's running daemon."""
+    from lies.qmd.daemon import QmdState
+
+    async def _stub_recycle(*, data_dir: Path, daemon_url: str, **kwargs: object) -> QmdState:
+        return QmdState(True, True, 1, "test stub")
+
+    monkeypatch.setattr("lies.qmd.capability.recycle_qmd_daemon", _stub_recycle)
+
+
 @pytest.fixture
 def wiki_root(tmp_path: Path):
     (tmp_path / "raw").mkdir()
