@@ -26,6 +26,58 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+import httpx
+
+import fastmcp
+from fastmcp.client.transports import StreamableHttpTransport
+
+try:
+    from pydantic_ai.mcp import MCPToolset  # type: ignore[import-not-found]
+except ImportError:  # pragma: no cover — pydantic_ai[mcp] is a runtime extra
+    MCPToolset: Any = None
+
+
+_DEFAULT_HTTPX_TIMEOUTS = httpx.Timeout(connect=2.0, read=60.0, write=10.0, pool=5.0)
+
+
+def _build_qmd_httpx_client(
+    headers: dict[str, str] | None = None,
+    timeout: httpx.Timeout | None = None,
+    auth: httpx.Auth | None = None,
+) -> httpx.AsyncClient:
+    """Custom httpx factory with explicit connect/read/write timeouts.
+
+    The qmd daemon's first HyDE query after fresh start can wedge the
+    call handler for ~60 s (qexpander cold-start latency, not event-loop
+    deadlock; see spec §"Problem"). The default fastmcp http transport
+    uses no explicit timeouts, so a wedged daemon surfaces as
+    httpx.ReadTimeout only after whatever httpx considers "infinite."
+    Setting read=60s bounds the wedge to a single recycle round-trip.
+    """
+    return httpx.AsyncClient(
+        headers=headers,
+        timeout=timeout or _DEFAULT_HTTPX_TIMEOUTS,
+        auth=auth,
+    )
+
+
+def _build_qmd_http_toolset(url: str) -> Any:
+    """Inner HTTP toolset; custom httpx client; no recycle logic.
+
+    Consumed by Task 5's ``QmdRecycleToolset`` wrapper. Separated here
+    so the wrapper is testable without a live daemon — the wrapper
+    only needs to know about ``call_tool``.
+    """
+    assert MCPToolset is not None
+    return MCPToolset(
+        fastmcp.Client(
+            StreamableHttpTransport(
+                url,
+                httpx_client_factory=_build_qmd_httpx_client,  # type: ignore
+            )
+        )
+    )
+
 
 @dataclass
 class QmdMcpClient:
