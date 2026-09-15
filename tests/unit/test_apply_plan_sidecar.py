@@ -261,3 +261,73 @@ def test_apply_plan_passes_evidence_count_to_sidecar_record(wiki: Wiki) -> None:
     rows = [json.loads(ln) for ln in sidecar_path.read_text().splitlines() if ln]
     assert len(rows) == 1
     assert rows[0]["evidence_count"] == 3
+
+
+def test_apply_plan_touches_f14_last_write_marker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``WikiMemoryService.apply_plan`` must touch <XDG_CACHE_HOME>/qmd/last-write-marker.
+
+    F14 sentinel: the qmd daemon's staleness check reads this marker to
+    decide whether to reap+respawn. The wiki-side envelope must touch it
+    on every successful commit so any wiki write (not just library
+    writes) bumps the daemon-staleness freshness. The library-side
+    coverage lives in ``tests/unit/library/test_writer.py``.
+    """
+    # Build a fresh wiki + cache root and stub the same external services
+    # the autouse fixture already mocks. We re-mock explicitly because
+    # this test does not use the ``wiki`` fixture — F14 cares about the
+    # machine-global cache marker, not the wiki's sidecar.
+    from lies.wiki.wiki import Wiki
+
+    xdg_root = tmp_path / "xdg"
+    for sub in ("data", "config", "cache", "state", "runtime"):
+        (xdg_root / sub).mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("XDG_DATA_HOME", str(xdg_root / "data"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg_root / "config"))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(xdg_root / "cache"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(xdg_root / "state"))
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(xdg_root / "runtime"))
+
+    root = tmp_path / "wiki"
+    (root / "wiki").mkdir(parents=True)
+    (root / "raw").mkdir(parents=True)
+    w = Wiki(
+        name="t",
+        data_root=root,
+        config_root=xdg_root / "config" / "lies" / "t",
+        cache_root=xdg_root / "cache" / "lies" / "t",
+        state_root=xdg_root / "state" / "lies" / "t",
+        runtime_root=xdg_root / "runtime" / "lies" / "t",
+    )
+    w.config_root.mkdir(parents=True, exist_ok=True)
+    (w.wiki_dir / "entities").mkdir(parents=True)
+    (w.wiki_dir / "concepts").mkdir(parents=True)
+    (w.wiki_dir / "index.md").write_text("# Index\n", encoding="utf-8")
+    (root / ".gitignore").write_text(".lies/\n", encoding="utf-8")
+
+    marker = xdg_root / "cache" / "qmd" / "last-write-marker"
+    assert not marker.exists()
+
+    svc = WikiMemoryService(wiki=w)
+    svc.register_evidence({"ref-1"})
+    plan = MemoryPlan(
+        rationale="f14 wiki marker",
+        operations=[
+            PageCreate(
+                path="entities/postgres.md",
+                content=_SAMPLE_CONTENT,
+                evidence=["ref-1"],
+            )
+        ],
+        evidence=["ref-1"],
+    )
+    receipt = svc.apply_plan(plan)
+    assert receipt.changed_pages, "wiki really did change"
+
+    assert marker.exists(), (
+        f"WikiMemoryService.apply_plan did not touch {marker}; "
+        "F14 staleness check will report the daemon as fresh even "
+        "when it isn't."
+    )

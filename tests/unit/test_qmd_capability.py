@@ -37,20 +37,21 @@ def test_stdio_transport_uses_local_toolset(wiki_root: Path) -> None:
 def test_http_capability_advertises_native_when_daemon_reachable(
     wiki_root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Reachable daemon + healthy recycle -> MCP(local=QmdRecycleToolset)."""
+    """Reachable daemon + healthy liveness probe -> MCP(local=QmdRecycleToolset)."""
     from pydantic_ai.capabilities import MCP
 
-    from lies.qmd.daemon import QmdState
     from lies.qmd.mcp import QmdRecycleToolset
 
     layout = WikiLayout(wiki_root)
     monkeypatch.setattr("lies.qmd.capability.qmd_daemon_reachable", lambda url, timeout=0.5: True)
-    # Construction-time recycle must succeed for the native path.
+    # Construction-time liveness probe (a fastmcp.Client.list_tools()
+    # round-trip) must succeed for the native path. Stub the probe so
+    # the test never opens a real socket.
 
-    async def _recycle_succeeds(**kwargs: object) -> QmdState:
-        return QmdState(True, True, 1, "running")
+    async def _probe_ok(url: str) -> None:
+        return None
 
-    monkeypatch.setattr("lies.qmd.capability.recycle_qmd_daemon", _recycle_succeeds)
+    monkeypatch.setattr("lies.qmd.capability._probe_liveness", _probe_ok)
     cap = QmdCapability(transport="http", url="http://127.0.0.1:8181", wiki=layout).as_capability()
     assert isinstance(cap, MCP)
     # Native path now wraps the inner MCPToolset in a QmdRecycleToolset
@@ -114,7 +115,6 @@ def test_per_call_recovery_after_daemon_returns(
 ) -> None:
     """If the probe flips from False to True between calls, the capability
     advertises the native QmdRecycleToolset again on the next call."""
-    from lies.qmd.daemon import QmdState
     from lies.qmd.mcp import QmdRecycleToolset
 
     layout = WikiLayout(wiki_root)
@@ -124,10 +124,10 @@ def test_per_call_recovery_after_daemon_returns(
         lambda url, timeout=0.5: next(probes),
     )
 
-    async def _recycle_succeeds(**kwargs: object) -> QmdState:
-        return QmdState(True, True, 1, "running")
+    async def _probe_ok(url: str) -> None:
+        return None
 
-    monkeypatch.setattr("lies.qmd.capability.recycle_qmd_daemon", _recycle_succeeds)
+    monkeypatch.setattr("lies.qmd.capability._probe_liveness", _probe_ok)
     cap_ctor = QmdCapability(transport="http", url="http://127.0.0.1:8181", wiki=layout)
     first = cap_ctor.as_capability()
     assert first.native is False
@@ -142,15 +142,25 @@ def test_unknown_transport_raises(wiki_root: Path) -> None:
         QmdCapability(transport="bogus", wiki=layout)
 
 
-def test_qmd_capability_falls_back_when_construction_recycle_fails(
+def test_qmd_capability_falls_back_when_liveness_probe_fails(
     wiki_root: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Construction-time QmdRecycleFailed -> in-process fallback MCP."""
-    from lies.qmd import capability as qmd_capability  # noqa: F401
-    from lies.qmd.daemon import QmdRecycleFailed, QmdState
+    """Construction-time liveness probe failure -> in-process fallback MCP.
 
-    layout = WikiLayout(wiki_root)
+    Replaces the older ``QmdRecycleFailed`` assertion: construction is
+    now a non-destructive fastmcp.Client.list_tools() round-trip. A
+    probe failure (httpx.ConnectError, MCPError, OSError) flips us
+    to the in-process :class:`QmdFallbackMcp` and logs ``_warn_degraded``.
+    """
+    import httpx
+
+    from tests.conftest import make_wiki
+
+    # Build a real Wiki (``WikiLayout`` lacks ``registry_path`` which
+    # the fallback factory needs when it dereferences the registry)
+    # using the test conftest's ``make_wiki`` factory.
+    wiki = make_wiki(name="probe-fallback", data_root=wiki_root)
 
     # Reachable at construction (passes the TCP probe).
     monkeypatch.setattr(
@@ -158,18 +168,34 @@ def test_qmd_capability_falls_back_when_construction_recycle_fails(
         lambda url, timeout=0.5: True,
     )
 
-    # But the recycle itself fails.
-    async def _recycle_fails(**kwargs: object) -> QmdState:
-        raise QmdRecycleFailed(30.0, QmdState(False, False, None, "no listener"))
+    # But the JSON-RPC probe itself fails (e.g. daemon accepted the TCP
+    # connection but never finished initializing). httpx.ConnectError
+    # is a realistic transport-level signal — it covers refused, reset,
+    # and unreachable daemons.
+    async def _probe_fails(url: str) -> None:
+        raise httpx.ConnectError("probed daemon refused / reset")
 
-    monkeypatch.setattr(
-        "lies.qmd.capability.recycle_qmd_daemon",
-        _recycle_fails,
-    )
+    monkeypatch.setattr("lies.qmd.capability._probe_liveness", _probe_fails)
 
-    cap = QmdCapability(transport="http", url="http://127.0.0.1:8181", wiki=layout).as_capability()
+    cap = QmdCapability(transport="http", url="http://127.0.0.1:8181", wiki=wiki).as_capability()
+    # Positive assertion: the fallback MCP describes the in-process path,
+    # NOT the native qmd daemon. This pins the branch we picked.
     assert cap.id == "lies.qmd"
-    assert "degraded" in cap.description.lower() or "in-process" in cap.description.lower()
-    # Fallback path: the underlying factory returns an MCPToolset around the
-    # in-process QmdFallbackMcp, not the native HTTP toolset.
-    assert "MCP" in type(cap).__name__ or hasattr(cap, "_factory")
+    assert "Falls back to a degraded in-process index scan" in cap.description
+    assert not cap.description.startswith(
+        "qmd MCP daemon. Search the wiki, read pages, and check collection status."
+    )
+    # The factory under ``cap.local`` must resolve to the fallback's
+    # MCPToolset, not the native QmdRecycleToolset.
+    from pydantic_ai.mcp import MCPToolset
+    from pydantic_ai.tools import Tool
+
+    assert isinstance(cap.local, (Tool, MCPToolset)) or callable(cap.local)
+    if isinstance(cap.local, Tool):
+        toolset = cap.local.function()
+        assert isinstance(toolset, MCPToolset)
+    elif isinstance(cap.local, MCPToolset):
+        # Already a toolset.
+        pass
+    # The MCP we built is the fallback, not the native one — confirmed
+    # by the description substring above.

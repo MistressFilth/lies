@@ -22,9 +22,11 @@ import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
+import fastmcp
+import httpx
+import mcp
 from pydantic_ai.capabilities import MCP
 
-from lies.qmd.daemon import QmdRecycleFailed, QmdState, recycle_qmd_daemon
 from lies.qmd.health import qmd_daemon_reachable
 from lies.qmd.mcp import QmdRecycleToolset, _build_qmd_http_toolset
 
@@ -33,6 +35,17 @@ if TYPE_CHECKING:
 
 
 _DEFAULT_TIMEOUT_S = 0.5
+
+
+# Errors the construction-time liveness probe (a fastmcp.Client
+# session + list_tools() round-trip) treats as "daemon not actually
+# serving", which trips the in-process fallback. Broader than what
+# :func:`recycle_qmd_daemon` catches because the probe does not
+# retry — any one error means we cannot advertise the native toolset.
+_MCP_PROBE_ERRORS: tuple[type[BaseException], ...] = (
+    mcp.MCPError,
+    OSError,
+)
 
 
 class QmdCapability:
@@ -67,7 +80,7 @@ class QmdCapability:
             return _build_fallback_mcp(self._wiki)
         try:
             return _build_native_mcp(self._url, self._data_dir)
-        except QmdRecycleFailed:
+        except (httpx.HTTPError, *_MCP_PROBE_ERRORS):
             _warn_degraded(self._url)
             return _build_fallback_mcp(self._wiki)
 
@@ -75,22 +88,41 @@ class QmdCapability:
 def _build_native_mcp(url: str, data_dir: Path) -> MCP:
     """MCP wrapping a QmdRecycleToolset around an inner MCPToolset.
 
-    Construction-time recycle ensures the daemon is up before the
-    toolset is advertised; failure surfaces as :class:`QmdRecycleFailed`
-    so the caller can fall back to the in-process :class:`QmdFallbackMcp`.
-    The wrapper's ``recycle_cb`` re-enters the recycle path on transport
-    errors at call time.
+    Construction is non-destructive: a fastmcp liveness probe (a
+    one-shot ``Client.list_tools()`` round-trip) confirms the daemon
+    is actually serving before we advertise the native toolset. If
+    the probe fails we raise and the caller falls back to the
+    in-process :class:`QmdFallbackMcp`. The actual reap+spawn path
+    lives in :class:`QmdRecycleToolset.call_tool` — that is where
+    per-call recovery belongs.
+
+    Args:
+        url: The qmd daemon's HTTP base URL.
+        data_dir: The on-disk wiki root; passed to the recycle callback
+            so a per-call recycle can write the sidecar correctly.
+
+    Raises:
+        httpx.HTTPError: probe transport failure.
+        mcp.MCPError: probe protocol-level rejection.
+        OSError: probe transport-level failure (e.g. refused connection).
     """
+    # ``TYPE_CHECKING`` keeps the fastmcp import out of the module
+    # top; the probe constructs a real client here so a daemon-side
+    # failure surfaces to the caller, not to module import.
     inner = _build_qmd_http_toolset(url)
 
-    async def _recycle() -> QmdState:
+    async def _recycle() -> Any:
+        from lies.qmd.daemon import recycle_qmd_daemon
+
         return await recycle_qmd_daemon(data_dir=data_dir, daemon_url=url)
 
-    # Synchronous construction-time probe. The TCP probe above only
-    # confirms a listener exists; this reap+spawn+list_tools round-trip
-    # is the real readiness check, so any failure here means we can't
-    # serve via the native path.
-    asyncio.run(recycle_qmd_daemon(data_dir=data_dir, daemon_url=url))
+    # Synchronous construction-time liveness probe. The TCP probe
+    # in :meth:`as_capability` only confirms a listener exists; this
+    # proves the daemon actually serves a JSON-RPC session. The probe
+    # runs synchronously via ``asyncio.run``; any async caller MUST
+    # construct the capability outside the loop (``asyncio.run``
+    # raises ``RuntimeError`` when an event loop is already running).
+    asyncio.run(_probe_liveness(url))
 
     wrapped = QmdRecycleToolset(wrapped=inner, recycle_cb=_recycle)
     return MCP(
@@ -103,6 +135,15 @@ def _build_native_mcp(url: str, data_dir: Path) -> MCP:
             "cannot be restarted."
         ),
     )
+
+
+async def _probe_liveness(url: str) -> None:
+    """Open a one-shot fastmcp.Client + call ``list_tools`` to prove
+    the daemon is actually serving. Raises on transport / protocol /
+    OS errors so the caller can fall back to the in-process toolset.
+    """
+    async with fastmcp.Client(url) as client:  # type: ignore[attr-defined]
+        await client.list_tools()
 
 
 def _build_fallback_mcp(wiki: Wiki) -> MCP:

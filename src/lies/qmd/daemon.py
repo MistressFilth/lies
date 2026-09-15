@@ -357,7 +357,7 @@ async def recycle_qmd_daemon(
             assert fastmcp is not None  # type: ignore[assertion-that-fails]
             async with fastmcp.Client(daemon_url) as client:  # type: ignore[attr-defined]
                 await client.list_tools()
-            _log.info(
+            _log.debug(
                 "recycle_qmd_daemon: probe succeeded after %gs",
                 ready_timeout - (deadline - asyncio.get_event_loop().time()),
             )
