@@ -311,6 +311,7 @@ def synthesize_answer(
             pages_read=[],
             fallback_used=bool(fallback_reason),
             fallback_reason=fallback_reason,
+            format="md",
         )
 
     return build_answer_from_pages(question, pages, fallback_reason)
@@ -574,7 +575,11 @@ def _first_meaningful_paragraph(content: str, max_chars: int = 400) -> str:
 
 
 def build_answer_from_pages(
-    question: str, pages: list[PageRead], fallback_reason: str
+    question: str,
+    pages: list[PageRead],
+    fallback_reason: str,
+    *,
+    format_hint: Literal["md", "table", "marp"] = "md",
 ) -> SynthesizedAnswer:
     """Assemble the final SynthesizedAnswer from already-retrieved ``pages``.
 
@@ -597,16 +602,26 @@ def build_answer_from_pages(
             valid; the returned body explains what was missing.
         fallback_reason: One of the ``FALLBACK_REASON_*`` constants;
             empty when qmd served the query.
+        format_hint: The synthesizer's auto-routed format intent
+            (``"md"`` / ``"table"`` / ``"marp"``). Validated against
+            the answer body via
+            :func:`lies.query.format_validator.validate_format`; on
+            parse failure the validator silently demotes to ``"md"``.
+            Defaults to ``"md"`` so the orchestrator's no-pages and
+            LLM-failure fallback paths keep compiling without
+            forwarding a hint.
 
     Returns:
         A :class:`SynthesizedAnswer` whose ``fallback_used`` /
-        ``fallback_reason`` mirror the inputs. ``synthesis_used`` is
-        always False here — the orchestrator wraps this with the
-        synthesis metadata (``synthesis_used``, ``synthesis_reason``)
-        since this function has no opinion on whether the LLM was
-        invoked.
+        ``fallback_reason`` mirror the inputs and whose ``format``
+        field is the validator's verdict on ``format_hint``.
+        ``synthesis_used`` is always False here — the orchestrator
+        wraps this with the synthesis metadata (``synthesis_used``,
+        ``synthesis_reason``) since this function has no opinion on
+        whether the LLM was invoked.
     """
     from lies.query.citation import Citation
+    from lies.query.format_validator import validate_format
 
     citations: list[Citation] = []
     pages_read: list[Citation] = []
@@ -649,6 +664,8 @@ def build_answer_from_pages(
         f"Based on {len(pages)} wiki page(s):\n\n" + "\n".join(bullets)
     )
 
+    validated_format = validate_format(answer, format_hint)
+
     return SynthesizedAnswer(
         answer=answer,
         citations=citations,
@@ -656,6 +673,7 @@ def build_answer_from_pages(
         fallback_used=bool(fallback_reason),
         fallback_reason=fallback_reason,
         page_links=page_links,
+        format=validated_format,
     )
 
 
