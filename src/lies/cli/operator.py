@@ -533,6 +533,50 @@ def _qmd_flock_force_repair() -> None:
     typer.echo("qmd flock reaped.")
 
 
+@_qmd_flock_app.command("recycle")
+def _qmd_flock_recycle(
+    name: str = typer.Option(
+        ..., "--name", "-n", help="Wiki whose data_dir to recycle qmd against."
+    ),
+    ready_timeout: float = typer.Option(
+        30.0,
+        "--ready-timeout",
+        help="Seconds to wait for the recycled daemon to serve list_tools().",
+    ),
+) -> None:
+    """Manually trigger a qmd daemon recycle (operator escape hatch).
+
+    Reaps the running qmd daemon and spawns a fresh one against the
+    wiki's ``data_root``, then probes ``daemon_url`` until the daemon
+    serves a JSON-RPC session or ``ready_timeout`` expires. Prints the
+    final :class:`QmdState` as indented JSON on stdout.
+
+    Exits 2 when ``QmdRecycleFailed`` is raised (reap+spawn+probe never
+    served within ``ready_timeout``) so shell callers can branch on it
+    without parsing text.
+    """
+    import asyncio
+    import dataclasses
+
+    from lies.config import get_qmd_url
+    from lies.qmd.daemon import QmdRecycleFailed, QmdState, recycle_qmd_daemon
+    from lies.wiki.wiki import Wiki
+
+    wiki = Wiki.require(name)
+    try:
+        state: QmdState = asyncio.run(
+            recycle_qmd_daemon(
+                data_dir=wiki.data_root,
+                daemon_url=get_qmd_url(),
+                ready_timeout=ready_timeout,
+            )
+        )
+    except QmdRecycleFailed:
+        typer.echo("error: qmd daemon failed to serve within --ready-timeout", err=True)
+        raise typer.Exit(code=2)
+    print(json.dumps(dataclasses.asdict(state), indent=2))
+
+
 flock_app.add_typer(_qmd_flock_app, name="qmd")
 
 
