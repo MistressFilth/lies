@@ -28,7 +28,8 @@ from lies.qmd.cli import (
     qmd_status,
     qmd_update,
 )
-from lies.qmd.mcp import QmdMcpClient
+from lies.qmd.daemon import QmdRecycleFailed  # noqa: F401
+from lies.qmd.mcp import QmdMcpClient, QmdRecycleToolset  # noqa: F401
 
 __all__ = [
     "QmdCapability",
@@ -37,6 +38,8 @@ __all__ = [
     "QmdMcpClient",
     "QmdNoResultsError",
     "QmdNotInstalledError",
+    "QmdRecycleFailed",
+    "QmdRecycleToolset",
     "is_qmd_installed",
     "qmd_collection_add",
     "qmd_collection_add_if_missing",
