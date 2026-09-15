@@ -52,8 +52,16 @@ _COLLECTIONS = {
 def wiki(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Wiki:
     """A real on-disk wiki with four tagged collections.
 
-    Collections: airflow, amazon, pyspark, python.
+    Tag resolution is library-first, so this fixture seeds both the
+    wiki's yaml configs (legacy layout) AND the library's
+    collections_root (current layout). Collections: airflow, amazon,
+    pyspark, python.
     """
+    import shutil
+
+    from lies.constants import LIES_DATA_SUBDIR
+    from lies.library.paths import Library
+
     name = "tagfilter"
     monkeypatch.setenv("LIES_WIKI_NAME", name)
     monkeypatch.setenv("LIES_XDG_DATA_HOME", str(tmp_path / "data"))
@@ -61,6 +69,7 @@ def wiki(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Wiki:
     monkeypatch.setenv("LIES_XDG_CACHE_HOME", str(tmp_path / "cache"))
     monkeypatch.setenv("LIES_XDG_STATE_HOME", str(tmp_path / "state"))
     monkeypatch.setenv("LIES_XDG_RUNTIME_DIR", str(tmp_path / "runtime"))
+    Library.open.cache_clear()
     w = Wiki(
         name=name,
         data_root=xdg.data_home() / "lies" / name,
@@ -89,6 +98,17 @@ def wiki(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Wiki:
                 config={},
             ),
         )
+
+    # Seed the library with the same collection names so tag
+    # resolution (library-first) finds them.
+    lib_root = xdg.data_home() / LIES_DATA_SUBDIR / "library"
+    if lib_root.exists():
+        shutil.rmtree(lib_root)
+    lib_root.mkdir(parents=True, exist_ok=True)
+    (lib_root / "collections").mkdir(parents=True, exist_ok=True)
+    for coll_name in _COLLECTIONS:
+        (lib_root / "collections" / coll_name).mkdir()
+
     return w
 
 
@@ -144,13 +164,13 @@ def test_query_with_plus_tag(wiki: Wiki) -> None:
 
 
 def test_query_with_and_chain_and_exclude(wiki: Wiki) -> None:
-    """``+airflow&provider -amazon compare X and Y`` — chain, exclude, question."""
-    result, call = _invoke("+airflow&provider", "-amazon", "compare", "X", "and", "Y")
+    """``+airflow&amazon -python compare X and Y`` — chain, exclude, question."""
+    result, call = _invoke("+airflow&amazon", "-python", "compare", "X", "and", "Y")
     assert result.exit_code == 0, result.output
     assert call.args[0] == "compare X and Y"
     tag_filter = call.kwargs["tag_filter"]
-    assert tag_filter.include == And(Include("airflow"), Include("provider"))
-    assert tag_filter.exclude == "amazon"
+    assert tag_filter.include == And(Include("airflow"), Include("amazon"))
+    assert tag_filter.exclude == "python"
 
 
 def test_query_with_or_chain(wiki: Wiki) -> None:
@@ -183,15 +203,15 @@ def test_query_explicit_tag_expr_and_exclude_tag(wiki: Wiki) -> None:
         "is",
         "X?",
         "--tag-expr",
-        "airflow&provider",
+        "airflow&amazon",
         "--exclude-tag",
-        "amazon",
+        "python",
     )
     assert result.exit_code == 0, result.output
     assert call.args[0] == "what is X?"
     tag_filter = call.kwargs["tag_filter"]
-    assert tag_filter.include == And(Include("airflow"), Include("provider"))
-    assert tag_filter.exclude == "amazon"
+    assert tag_filter.include == And(Include("airflow"), Include("amazon"))
+    assert tag_filter.exclude == "python"
 
 
 def test_query_explicit_exclude_tag_only(wiki: Wiki) -> None:
@@ -298,7 +318,7 @@ def test_query_cli_explicit_tag_expr_with_qualifiers(wiki: Wiki) -> None:
         "is",
         "X?",
         "--tag-expr",
-        "t:python&c:provider",
+        "t:python&c:amazon",
         "--exclude-tag",
         "c:python",
     )
@@ -307,7 +327,7 @@ def test_query_cli_explicit_tag_expr_with_qualifiers(wiki: Wiki) -> None:
     tag_filter = call.kwargs["tag_filter"]
     assert tag_filter.include == And(
         Include("python", qualifier="t"),
-        Include("provider", qualifier="c"),
+        Include("amazon", qualifier="c"),
     )
     assert tag_filter.exclude == "python"
     assert tag_filter.exclude_qualifier == "c"

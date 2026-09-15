@@ -411,7 +411,7 @@ def query(
     except TagExprEmpty as exc:
         raise ToolError(f"empty tag expression: {exc}") from exc
     except TagExprUnknown as exc:
-        raise ToolError(f"unknown tag: {exc.tag}") from exc
+        raise ToolError(format_unknown_tag_error(exc)) from exc
 
     orch = Orchestrator(wiki=wiki)
     try:
@@ -479,32 +479,59 @@ def answer(
 
 
 def _collect_available_tags_mcp(wiki: Wiki) -> set[str]:
-    """Return every addressable tag for ``wiki`` (MCP surface).
+    """Return every addressable tag in the library (MCP surface).
 
-    Mirrors ``lies.cli.query._collect_available_tags``: the union of
-    each collection's declared ``tags`` and its own ``name`` (the
-    implicit self-tag). Read straight off
-    ``wiki.collections_dir/*.yaml`` so the resolver validates against
-    the same source the CLI uses.
+    The library is the source of truth for tag expressions — wikis
+    do not own collections. A tag like ``opencode`` is valid iff the
+    library has a ``collections_root/opencode/`` directory, regardless
+    of which wiki the operator's MCP daemon is bound to.
+
+    Reads ``Library.collections_root`` directly — library collections
+    carry no YAML config (they are canonical source docs, not wikis),
+    so the directory name is the only metadata we need.
+
+    Returns an empty set when the library has not been initialized.
+    ``wiki`` is accepted for signature uniformity with the legacy
+    per-wiki resolution but is intentionally ignored: collections live
+    in the library, not in any wiki.
     """
-    from lies.collections.errors import CollectionConfigInvalid, CollectionNotFound
-    from lies.collections.record import load_collection
+    from lies.library.paths import Library
+    from lies.query.synthesizer import _library_initialized
 
-    tags: set[str] = set()
-    cfg_dir = wiki.collections_dir
-    if not cfg_dir.exists():
-        return tags
-    for path in sorted(cfg_dir.glob("*.yaml")):
-        # Skip malformed configs so one bad YAML does not mask the
-        # rest of the available-tag set. Mirrors ``enrich-tags``'s
-        # precedent (collections_cli.py).
-        try:
-            coll = load_collection(wiki, path.stem)
-        except (CollectionNotFound, CollectionConfigInvalid):
-            continue
-        tags.add(coll.name)
-        tags.update(coll.tags)
-    return tags
+    if not _library_initialized():
+        return set()
+    root = Library.open().collections_root
+    return {entry.name for entry in root.iterdir() if entry.is_dir()}
+
+
+def format_unknown_tag_error(exc: TagExprUnknown) -> str:
+    """Build a self-explanatory ``unknown tag`` ToolError message.
+
+    Library-first surface. Two lines (each omit-able):
+
+      - offending tag spelling (``'opencode'``)
+      - the library's collections sorted (``the library's collections: ...``)
+      - when the library has not been initialized, a distinct line that
+        tells the operator the library is empty / absent so they can
+        fix it instead of guessing at tag spellings.
+
+    The library is NOT a wiki and is never referred to as one. The
+    original ``unknown tag: <tag>`` prefix is preserved so log
+    scrapers and existing tests that grep on the literal string keep
+    working.
+    """
+    parts: list[str] = [f"unknown tag: {exc.tag!r}"]
+    from lies.query.synthesizer import _library_initialized
+
+    if exc.available:
+        sorted_tags = sorted(exc.available)
+        parts.append(f"the library's collections: {', '.join(sorted_tags)}")
+    elif not _library_initialized():
+        parts.append(
+            "the library is not initialized; collections live in the library, "
+            "not in wikis. Initialize it before querying with tag filters."
+        )
+    return "\n".join(parts)
 
 
 # ---------------------------------------------------------------------------

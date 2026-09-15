@@ -23,9 +23,11 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal, cast
 
+from lies.collections.record import Collection
 from lies.qmd.cli import qmd_query
 from lies.query.index_parser import parse_index_links
 from lies.query.models import SynthesizedAnswer
@@ -760,8 +762,72 @@ def _qmd_search_dispatch(
     return pages
 
 
+def _library_collection_configs() -> list[Collection]:
+    """Every collection registered in the library, as :class:`Collection`.
+
+    Library collections live as directories under
+    ``Library.collections_root/<name>/``. There is no per-collection
+    YAML config in the library layout — collections are source docs,
+    not wikis, and carry no `tags` / `source` / `mapper_model` metadata
+    here. We synthesize a minimal :class:`Collection` whose only
+    meaningful field for the tag-expression surface is ``name`` (the
+    directory name); ``tags`` is empty so the implicit-self-tag rule
+    (a collection's name is always an addressable tag) is the only
+    rule that fires. The retriever's downstream code consumes only
+    ``coll.name``, so the rest of the record's emptiness is harmless.
+
+    Library is the source of truth for tag resolution — wikis do not
+    own collections. ``wiki`` is accepted for signature uniformity
+    with the legacy ``_collections_matching(wiki, ...)`` callers but
+    is intentionally ignored.
+
+    Returns an empty list when the library has not been initialized
+    (``Library.open().collections_root`` does not exist). Callers that
+    must surface the empty case to operators (the MCP / CLI error
+    path) should call :func:`_library_initialized` first.
+    """
+    from lies.library.paths import Library
+
+    root = Library.open().collections_root
+    if not root.exists():
+        return []
+    out: list[Collection] = []
+    for entry in sorted(root.iterdir()):
+        if not entry.is_dir():
+            continue
+        out.append(
+            Collection(
+                name=entry.name,
+                path=entry,
+                source="",
+                tags=[],
+                scraper_cmd=None,
+                doc_path=None,
+                mapper_model=None,
+                language=None,
+                version="",
+                created_at=datetime.min.replace(tzinfo=UTC),
+                updated_at=datetime.min.replace(tzinfo=UTC),
+                config={},
+            )
+        )
+    return out
+
+
+def _library_initialized() -> bool:
+    """True iff the library's ``collections_root`` exists on disk."""
+    from lies.library.paths import Library
+
+    return Library.open().collections_root.exists()
+
+
 def _collections_matching(wiki: Wiki, tag_filter: ResolvedTagFilter) -> set[str]:
-    """Return the set of collection names that pass ``tag_filter``.
+    """Return the set of library collection names that pass ``tag_filter``.
+
+    Library collections are the source of truth for tag expression
+    resolution — wikis do not own collections. A ``+c:opencode`` filter
+    matches every library collection named ``opencode``, regardless of
+    which wiki the operator's MCP daemon is bound to.
 
     Implicit self-tag (spec: §"Collection name as implicit self-tag"):
     a collection matches if its ``name`` is in ``tags ∪ {name}``. The
@@ -779,30 +845,25 @@ def _collections_matching(wiki: Wiki, tag_filter: ResolvedTagFilter) -> set[str]
     the exclude at the same time is dropped).
 
     Returns the set of *names* (qmd's per-collection filter key, which
-    is the path's first segment) — not the set of
-    :class:`WikiCollectionRef` ids. The qmd seam operates on names.
+    is the path's first segment). Empty when the library is not
+    initialized — the operator-facing surfaces (MCP / CLI) detect that
+    separately and tell the operator to initialize the library.
 
-    Source of truth is ``wiki.collections_dir/*.yaml`` — the same source
-    ``lies collections list`` walks. The :class:`Registry` (the post-
-    sync wiki-collection-ref map) holds :class:`WikiCollectionRef`
-    entries with no ``tags`` field, and a collection that has not been
-    synced yet is still a legitimate filter target. Per Task 5 review
-    (2026-09-09) — same conclusion: read the YAMLs, not the registry.
+    The ``wiki`` parameter is retained for signature uniformity with
+    legacy callers but is intentionally unused: collections live in
+    the library, not in the active wiki.
     """
-    from lies.collections.errors import CollectionConfigInvalid, CollectionNotFound
-    from lies.collections.record import load_collection
     from lies.query.tag_expr import _exclude_atom_matches, atom_matches
 
     matching: set[str] = set()
-    cfg_dir = wiki.collections_dir
-    if not cfg_dir.exists():
+    if not _library_initialized():
         return matching
 
     exclude = tag_filter.exclude
     exclude_qualifier = tag_filter.exclude_qualifier
     include = tag_filter.include
 
-    def _eval_include(node: object, coll) -> bool:  # noqa: ANN001 - Collection is lazy
+    def _eval_include(node: object, coll: Collection) -> bool:
         if isinstance(node, Include):
             return atom_matches(coll, node)
         if isinstance(node, And):
@@ -811,14 +872,7 @@ def _collections_matching(wiki: Wiki, tag_filter: ResolvedTagFilter) -> set[str]
             return _eval_include(node.left, coll) or _eval_include(node.right, coll)
         return False
 
-    for path in sorted(cfg_dir.glob("*.yaml")):
-        # Skip malformed configs so one bad YAML does not mask the
-        # rest of the matching set. Mirrors ``enrich-tags``'s
-        # precedent (collections_cli.py).
-        try:
-            coll = load_collection(wiki, path.stem)
-        except (CollectionNotFound, CollectionConfigInvalid):
-            continue
+    for coll in _library_collection_configs():
         if exclude is not None and _exclude_atom_matches(coll, exclude, exclude_qualifier):
             continue
         if include is None:
@@ -830,30 +884,17 @@ def _collections_matching(wiki: Wiki, tag_filter: ResolvedTagFilter) -> set[str]
 
 
 def _all_collection_names(wiki: Wiki) -> list[str]:
-    """Every collection registered in ``wiki``, sorted by name.
+    """Every collection in the library, sorted by name.
 
     The "no tag_filter" scope per the Bundle C spec
     (§"Retriever consumption" — "without a filter, the scope is all
-    registered collections"). Walks ``wiki.collections_dir/*.yaml``,
-    the same source :func:`_collections_matching` walks; collection
-    ``name`` is the addressable key throughout (qmd's per-collection
-    filter, registry indexes, and the operator-facing surface).
+    registered collections"). The library is the universe; wikis do
+    not contribute to the addressable collection set. ``wiki`` is
+    accepted for signature uniformity but ignored.
     """
-    from lies.collections.errors import CollectionConfigInvalid, CollectionNotFound
-    from lies.collections.record import load_collection
-
-    if not wiki.collections_dir.exists():
+    if not _library_initialized():
         return []
-    names: list[str] = []
-    for path in wiki.collections_dir.glob("*.yaml"):
-        # Skip malformed configs so one bad YAML does not mask the
-        # rest of the registered-name set. Mirrors ``enrich-tags``'s
-        # precedent (collections_cli.py).
-        try:
-            names.append(load_collection(wiki, path.stem).name)
-        except (CollectionNotFound, CollectionConfigInvalid):
-            continue
-    return sorted(names)
+    return sorted(c.name for c in _library_collection_configs())
 
 
 def _searched_scope(wiki: Wiki, tag_filter: ResolvedTagFilter | None) -> list[str]:

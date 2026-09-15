@@ -43,12 +43,31 @@ _COLLECTIONS = {
 def fake_wiki_with_collections(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """A real on-disk wiki with airflow + amazon + python collections seeded.
 
+    Tag resolution is library-first (the library is the source of
+    truth for tag expressions), so this fixture seeds both the wiki's
+    yaml configs (legacy layout, retained for back-compat) AND the
+    library's collections_root (current layout). Tests patch
+    ``Orchestrator.run_query`` so no real retrieval runs.
+
     Patches ``lies.mcp.server.resolve_wiki`` so the MCP tool resolves
-    to this wiki without touching ``LIES_XDG_DATA_HOME``. Tests still
-    patch ``Orchestrator.run_query`` so no real retrieval runs.
+    to this wiki without touching ``LIES_XDG_DATA_HOME``. XDG paths
+    are pinned to ``tmp_path`` so the library singleton lands inside
+    the test sandbox instead of leaking into the user's home.
     """
+    import shutil
+
+    from lies import xdg
+    from lies.constants import LIES_DATA_SUBDIR
+    from lies.library.paths import Library
     from lies.mcp import server
     from lies.wiki.wiki import Wiki
+
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg_data"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg_config"))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg_cache"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "xdg_state"))
+    monkeypatch.delenv("LIES_WIKI_NAME", raising=False)
+    Library.open.cache_clear()
 
     config_root = tmp_path / "config"
     collections_dir = config_root / "collections"
@@ -81,6 +100,16 @@ def fake_wiki_with_collections(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
             ),
         )
 
+    # Seed the library with the same collection names so tag
+    # resolution (which walks Library.collections_root) finds them.
+    lib_root = xdg.data_home() / LIES_DATA_SUBDIR / "library"
+    if lib_root.exists():
+        shutil.rmtree(lib_root)
+    lib_root.mkdir(parents=True, exist_ok=True)
+    (lib_root / "collections").mkdir(parents=True, exist_ok=True)
+    for coll_name in _COLLECTIONS:
+        (lib_root / "collections" / coll_name).mkdir()
+
     monkeypatch.setattr(server, "resolve_wiki", lambda _name=None: wiki)
     return wiki
 
@@ -96,12 +125,12 @@ def _answer(**kwargs) -> SynthesizedAnswer:
 
 
 def test_mcp_query_tag_expr(monkeypatch, fake_wiki_with_collections) -> None:
-    """``tag_expr='airflow&provider'`` parses + resolves to an And include.
+    """``tag_expr='airflow&amazon'`` parses + resolves to an And include.
 
     The MCP layer routes the include expression through
-    ``parse`` + ``resolve`` against the wiki's available-tag set and
-    hands ``Orchestrator.run_query`` a ``ResolvedTagFilter`` whose
-    ``include`` is ``And(Include('airflow'), Include('provider'))``.
+    ``parse`` + ``resolve`` against the library's available-collection
+    set and hands ``Orchestrator.run_query`` a ``ResolvedTagFilter``
+    whose ``include`` is ``And(Include('airflow'), Include('amazon'))``.
     """
     from lies.mcp import server
 
@@ -111,13 +140,13 @@ def test_mcp_query_tag_expr(monkeypatch, fake_wiki_with_collections) -> None:
         orch_cls.return_value.run_query.return_value = fake
         result = server.query(
             question="what is X?",
-            tag_expr="airflow&provider",
+            tag_expr="airflow&amazon",
         )
 
     call = orch_cls.return_value.run_query.call_args
     tag_filter = call.kwargs["tag_filter"]
     assert tag_filter is not None
-    assert tag_filter.include == And(Include("airflow"), Include("provider"))
+    assert tag_filter.include == And(Include("airflow"), Include("amazon"))
     assert tag_filter.exclude is None
     # No exception propagated; the fake SynthesizedAnswer came back.
     assert isinstance(result, server.SynthesizedMcpAnswer)
@@ -158,7 +187,7 @@ def test_mcp_query_unknown_tag(monkeypatch, fake_wiki_with_collections) -> None:
     from lies.mcp import server
 
     with mock.patch.object(server, "Orchestrator") as orch_cls:
-        with pytest.raises(ToolError, match="unknown tag: nope"):
+        with pytest.raises(ToolError, match=r"unknown tag: '?nope'?"):
             server.query(question="what is X?", tag_expr="nope")
 
     orch_cls.return_value.run_query.assert_not_called()
@@ -261,11 +290,11 @@ def test_mcp_query_empty_tag_expr_raises_tool_error(
 def test_mcp_query_tag_expr_with_t_and_c_qualifiers(
     monkeypatch, fake_wiki_with_collections
 ) -> None:
-    """``tag_expr='t:python&c:provider'`` parses with mixed qualifiers.
+    """``tag_expr='t:python&c:amazon'`` parses with mixed qualifiers.
 
     The MCP layer's parse + resolve strips the ``t:`` / ``c:``
     prefix on each atom and the orchestrator receives an
-    ``And(Include('python', qualifier='t'), Include('provider', qualifier='c'))``.
+    ``And(Include('python', qualifier='t'), Include('amazon', qualifier='c'))``.
     """
     from lies.mcp import server
 
@@ -275,7 +304,7 @@ def test_mcp_query_tag_expr_with_t_and_c_qualifiers(
         orch_cls.return_value.run_query.return_value = fake
         server.query(
             question="what is X?",
-            tag_expr="t:python&c:provider",
+            tag_expr="t:python&c:amazon",
             exclude_tags=["c:python"],
         )
 
@@ -284,7 +313,7 @@ def test_mcp_query_tag_expr_with_t_and_c_qualifiers(
     assert tag_filter is not None
     assert tag_filter.include == And(
         Include("python", qualifier="t"),
-        Include("provider", qualifier="c"),
+        Include("amazon", qualifier="c"),
     )
     assert tag_filter.exclude == "python"
     assert tag_filter.exclude_qualifier == "c"

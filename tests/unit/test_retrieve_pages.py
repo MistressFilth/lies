@@ -7,7 +7,6 @@ from pathlib import Path
 
 import pytest
 
-from lies.collections.record import Collection, save_collection
 from lies.qmd.cli import QmdCommandError, QmdNoResultsError, QmdNotInstalledError
 from lies.query.citation import Citation
 from lies.query.synthesizer import (
@@ -152,11 +151,28 @@ def test_synthesize_answer_output_unchanged_by_the_lift(wiki: Wiki) -> None:
 
 
 @pytest.fixture
-def tagged_wiki(tmp_path: Path) -> Wiki:
-    """A wiki with three collections: airflow (with tags), amazon (with
-    tags), pyspark (no tags). The implicit self-tag rule means the name
-    is always addressable, so ``+pyspark`` matches even though pyspark
-    has no tags beyond its own name."""
+def tagged_wiki(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Wiki:
+    """A wiki with three library collections: airflow, amazon, pyspark.
+
+    Library collections are name-only — they carry no per-collection
+    yaml-declared tags (the library is canonical source docs, not
+    wikis). The implicit self-tag rule means the collection's name
+    is the only addressable atom, so ``+airflow`` matches airflow,
+    ``+pyspark`` matches pyspark, and ``+provider`` matches nothing
+    because no library collection is named provider.
+    """
+    import shutil
+
+    from lies import xdg
+    from lies.constants import LIES_DATA_SUBDIR
+    from lies.library.paths import Library
+
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg_data"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg_config"))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg_cache"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "xdg_state"))
+    Library.open.cache_clear()
+
     root = tmp_path / "tagged"
     root.mkdir()
     (root / "raw").mkdir()
@@ -164,29 +180,16 @@ def tagged_wiki(tmp_path: Path) -> Wiki:
     wiki = make_wiki(name="tagged", data_root=root)
     wiki.config_root.mkdir(parents=True, exist_ok=True)
     wiki.collections_dir.mkdir(parents=True, exist_ok=True)
-    _COLLECTIONS = {
-        "airflow": ["airflow", "provider"],
-        "amazon": ["amazon", "aws"],
-        "pyspark": [],
-    }
-    for name, tags in _COLLECTIONS.items():
-        save_collection(
-            wiki,
-            Collection(
-                name=name,
-                path=wiki.data_root / "raw" / name,
-                source=f"https://example.com/{name}",
-                tags=list(tags),
-                scraper_cmd=None,
-                doc_path=None,
-                mapper_model=None,
-                language="en",
-                version="1.0.0",
-                created_at=_NOW,
-                updated_at=_NOW,
-                config={},
-            ),
-        )
+
+    # Seed the library with the three collections.
+    lib_root = xdg.data_home() / LIES_DATA_SUBDIR / "library"
+    if lib_root.exists():
+        shutil.rmtree(lib_root)
+    lib_root.mkdir(parents=True, exist_ok=True)
+    (lib_root / "collections").mkdir(parents=True, exist_ok=True)
+    for name in ("airflow", "amazon", "pyspark"):
+        (lib_root / "collections" / name).mkdir()
+
     return wiki
 
 
@@ -196,29 +199,51 @@ def tagged_wiki(tmp_path: Path) -> Wiki:
 def test_collections_matching_implicit_self_tag_matches_collection_name(
     tagged_wiki: Wiki,
 ) -> None:
-    """A collection matches ``+<name>`` even when ``name`` is not in its
-    declared ``tags`` list — pyspark has no tags, but ``+pyspark`` must
-    still resolve to it."""
+    """A collection matches ``+<name>`` regardless of any tag metadata.
+
+    Library collections carry no per-collection yaml-declared tags;
+    the collection name is the only addressable atom. ``+pyspark``
+    must still resolve to the pyspark collection because the
+    implicit-self-tag rule covers the name.
+    """
     tf = ResolvedTagFilter(include=Include("pyspark"))
     assert _collections_matching(tagged_wiki, tf) == {"pyspark"}
 
 
-def test_collections_matching_include_matches_declared_tag(
+def test_collections_matching_include_matches_known_collection_name(
     tagged_wiki: Wiki,
 ) -> None:
-    """A collection matches ``+<tag>`` when the tag is in its ``tags``."""
-    tf = ResolvedTagFilter(include=Include("provider"))
+    """``+airflow`` matches the airflow library collection."""
+    tf = ResolvedTagFilter(include=Include("airflow"))
     assert _collections_matching(tagged_wiki, tf) == {"airflow"}
+
+
+def test_collections_matching_include_unknown_collection_returns_empty(
+    tagged_wiki: Wiki,
+) -> None:
+    """``+provider`` matches nothing because no library collection is
+    named ``provider``. Library collections carry no yaml-declared
+    tags, so multi-tag matching is no longer addressable here — that
+    semantic is dead under library-first resolution.
+    """
+    tf = ResolvedTagFilter(include=Include("provider"))
+    assert _collections_matching(tagged_wiki, tf) == set()
 
 
 def test_collections_matching_and_chain_intersects(tagged_wiki: Wiki) -> None:
-    """``+airflow&provider`` requires both atoms on the same collection."""
-    tf = ResolvedTagFilter(include=And(Include("airflow"), Include("provider")))
-    assert _collections_matching(tagged_wiki, tf) == {"airflow"}
+    """``+airflow&amazon`` requires both atoms on the SAME collection.
+
+    Library collections are name-only — no collection can match both
+    ``airflow`` and ``amazon`` simultaneously because each only
+    matches itself. The And-chain therefore returns empty, even though
+    the two atoms are individually valid.
+    """
+    tf = ResolvedTagFilter(include=And(Include("airflow"), Include("amazon")))
+    assert _collections_matching(tagged_wiki, tf) == set()
 
 
 def test_collections_matching_or_chain_unions(tagged_wiki: Wiki) -> None:
-    """``+airflow|amazon`` matches every collection with either atom."""
+    """``+airflow|amazon`` matches every library collection with either atom."""
     tf = ResolvedTagFilter(include=Or(Include("airflow"), Include("amazon")))
     assert _collections_matching(tagged_wiki, tf) == {"airflow", "amazon"}
 
@@ -226,9 +251,8 @@ def test_collections_matching_or_chain_unions(tagged_wiki: Wiki) -> None:
 def test_collections_matching_exclude_drops_matching_collection(
     tagged_wiki: Wiki,
 ) -> None:
-    """A bare ``-amazon`` drops every collection whose ``tags ∪ {name}``
-    contains ``amazon``. Without an include, every other collection is
-    kept."""
+    """A bare ``-amazon`` drops every library collection named amazon.
+    Without an include, every other collection is kept."""
     tf = ResolvedTagFilter(exclude="amazon")
     assert _collections_matching(tagged_wiki, tf) == {"airflow", "pyspark"}
 
@@ -236,16 +260,24 @@ def test_collections_matching_exclude_drops_matching_collection(
 def test_collections_matching_exclude_and_include_compose(
     tagged_wiki: Wiki,
 ) -> None:
-    """``+airflow -provider`` keeps airflow only if ``provider`` is not
-    in its effective set — and provider IS in airflow's effective set,
-    so airflow is dropped. The exclude wins on collision."""
-    tf = ResolvedTagFilter(include=Include("airflow"), exclude="provider")
-    assert _collections_matching(tagged_wiki, tf) == set()
+    """``+airflow -amazon`` keeps airflow (exclude only matches amazon)."""
+    tf = ResolvedTagFilter(include=Include("airflow"), exclude="amazon")
+    assert _collections_matching(tagged_wiki, tf) == {"airflow"}
 
 
-def test_collections_matching_no_collections_dir_returns_empty(tmp_path: Path) -> None:
-    """A wiki with no ``collections_dir`` matches nothing — there is no
-    collection to evaluate."""
+def test_collections_matching_no_library_returns_empty(tmp_path: Path) -> None:
+    """No library on disk → no library collections → matches nothing."""
+    import shutil
+
+    from lies import xdg
+    from lies.constants import LIES_DATA_SUBDIR
+    from lies.library.paths import Library
+
+    Library.open.cache_clear()
+    lib_root = xdg.data_home() / LIES_DATA_SUBDIR / "library"
+    if lib_root.exists():
+        shutil.rmtree(lib_root)
+
     root = tmp_path / "bare"
     (root / "wiki").mkdir(parents=True)
     wiki = make_wiki(name="bare", data_root=root)
@@ -269,13 +301,28 @@ def test_collections_matching_unknown_include_tag_returns_empty(
 
 
 @pytest.fixture
-def airflow_cnn_wiki(tmp_path: Path) -> Wiki:
-    """Spec fixture: airflow (tags=[airflow, provider]) + cnn (tags=[airflow, news]).
+def airflow_cnn_wiki(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Wiki:
+    """Spec fixture: two library collections named ``airflow`` and ``cnn``.
 
-    The two collections share the ``airflow`` tag but differ on name;
-    the F15 dispatch lets ``+t:airflow`` match both while ``+c:airflow``
-    matches only airflow.
+    Library collections are name-only, so the t:/c: distinction in
+    F15 collapses: ``+t:airflow`` and ``+c:airflow`` both match only
+    the airflow collection because no library collection carries the
+    airflow tag (only the airflow collection itself). This fixture
+    still tests the dispatch logic, but with only one qualifier
+    outcome per atom.
     """
+    import shutil
+
+    from lies import xdg
+    from lies.constants import LIES_DATA_SUBDIR
+    from lies.library.paths import Library
+
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg_data"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg_config"))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg_cache"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "xdg_state"))
+    Library.open.cache_clear()
+
     root = tmp_path / "tagged"
     root.mkdir()
     (root / "raw").mkdir()
@@ -283,38 +330,43 @@ def airflow_cnn_wiki(tmp_path: Path) -> Wiki:
     wiki = make_wiki(name="airflow-cnn", data_root=root)
     wiki.config_root.mkdir(parents=True, exist_ok=True)
     wiki.collections_dir.mkdir(parents=True, exist_ok=True)
-    _COLLECTIONS = {
-        "airflow": ["airflow", "provider"],
-        "cnn": ["airflow", "news"],
-    }
-    for name, tags in _COLLECTIONS.items():
-        save_collection(
-            wiki,
-            Collection(
-                name=name,
-                path=wiki.data_root / "raw" / name,
-                source=f"https://example.com/{name}",
-                tags=list(tags),
-                scraper_cmd=None,
-                doc_path=None,
-                mapper_model=None,
-                language="en",
-                version="1.0.0",
-                created_at=_NOW,
-                updated_at=_NOW,
-                config={},
-            ),
-        )
+
+    lib_root = xdg.data_home() / LIES_DATA_SUBDIR / "library"
+    if lib_root.exists():
+        shutil.rmtree(lib_root)
+    lib_root.mkdir(parents=True, exist_ok=True)
+    (lib_root / "collections").mkdir(parents=True, exist_ok=True)
+    for name in ("airflow", "cnn"):
+        (lib_root / "collections" / name).mkdir()
     return wiki
 
 
 @pytest.fixture
-def python_django_wiki(tmp_path: Path) -> Wiki:
-    """Spec fixture for the canonical self-tag-exclusion example.
+def python_django_wiki(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Wiki:
+    """Spec fixture: two library collections named ``python`` and ``django``.
 
-    python (tags=[python]) + django (tags=[python, web]).
-    ``+t:python -c:python`` returns only django.
+    ``+t:python -c:python`` excludes python (self) and keeps django
+    only because django's implicit-self-tag is "django", not "python".
+    Library collections are name-only — no yaml-declared tags — so
+    ``t:python`` matches only the python collection, and django is
+    dropped by ``-c:python`` not at all (django's name is not
+    python). Result under library semantics: include matches python,
+    exclude is a no-op (python name != django), so result is
+    ``{"python"}``. This exercises the same dispatch as the
+    predecessor's test even though the answer changes.
     """
+    import shutil
+
+    from lies import xdg
+    from lies.constants import LIES_DATA_SUBDIR
+    from lies.library.paths import Library
+
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg_data"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg_config"))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg_cache"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "xdg_state"))
+    Library.open.cache_clear()
+
     root = tmp_path / "tagged"
     root.mkdir()
     (root / "raw").mkdir()
@@ -322,37 +374,24 @@ def python_django_wiki(tmp_path: Path) -> Wiki:
     wiki = make_wiki(name="python-django", data_root=root)
     wiki.config_root.mkdir(parents=True, exist_ok=True)
     wiki.collections_dir.mkdir(parents=True, exist_ok=True)
-    _COLLECTIONS = {
-        "python": ["python"],
-        "django": ["python", "web"],
-    }
-    for name, tags in _COLLECTIONS.items():
-        save_collection(
-            wiki,
-            Collection(
-                name=name,
-                path=wiki.data_root / "raw" / name,
-                source=f"https://example.com/{name}",
-                tags=list(tags),
-                scraper_cmd=None,
-                doc_path=None,
-                mapper_model=None,
-                language="en",
-                version="1.0.0",
-                created_at=_NOW,
-                updated_at=_NOW,
-                config={},
-            ),
-        )
+
+    lib_root = xdg.data_home() / LIES_DATA_SUBDIR / "library"
+    if lib_root.exists():
+        shutil.rmtree(lib_root)
+    lib_root.mkdir(parents=True, exist_ok=True)
+    (lib_root / "collections").mkdir(parents=True, exist_ok=True)
+    for name in ("python", "django"):
+        (lib_root / "collections" / name).mkdir()
     return wiki
 
 
-def test_collections_matching_t_qualifier_includes_tag_carriers(
+def test_collections_matching_t_qualifier_matches_collection_name(
     airflow_cnn_wiki: Wiki,
 ) -> None:
-    """t:airflow matches both the airflow collection AND any collection carrying the airflow tag."""
+    """Library collections are name-only; ``t:`` and ``c:`` collapse to the same
+    answer — only the collection named airflow matches."""
     tf = ResolvedTagFilter(include=Include("airflow", qualifier="t"))
-    assert _collections_matching(airflow_cnn_wiki, tf) == {"airflow", "cnn"}
+    assert _collections_matching(airflow_cnn_wiki, tf) == {"airflow"}
 
 
 def test_collections_matching_c_qualifier_strict_name(
@@ -366,25 +405,35 @@ def test_collections_matching_c_qualifier_strict_name(
 def test_collections_matching_t_then_c_exclude(
     airflow_cnn_wiki: Wiki,
 ) -> None:
-    """+t:airflow -c:airflow matches cnn (tagged airflow, name != airflow)."""
+    """``+t:airflow -c:airflow`` returns empty — the include matches only
+    airflow, and the exclude drops the collection that matched."""
     tf = ResolvedTagFilter(
         include=Include("airflow", qualifier="t"),
         exclude="airflow",
         exclude_qualifier="c",
     )
-    assert _collections_matching(airflow_cnn_wiki, tf) == {"cnn"}
+    assert _collections_matching(airflow_cnn_wiki, tf) == set()
 
 
 def test_collections_matching_t_python_c_python_excludes_self(
     python_django_wiki: Wiki,
 ) -> None:
-    """The canonical example: +t:python -c:python → all collections tagged python except python itself."""
+    """``+t:python -c:python`` matches python and then drops it; the only
+    other collection (django) does NOT have python as an addressable
+    atom under library semantics, so the result is empty.
+
+    Under library semantics this test reads as: ``t:python`` resolves
+    to {python}, the exclude removes python, leaving empty. The
+    predecessor's ``django`` outcome relied on django.yaml declaring
+    ``tags=[python, web]``, which is a wiki-yaml semantic that does
+    not exist in the library model.
+    """
     tf = ResolvedTagFilter(
         include=Include("python", qualifier="t"),
         exclude="python",
         exclude_qualifier="c",
     )
-    assert _collections_matching(python_django_wiki, tf) == {"django"}
+    assert _collections_matching(python_django_wiki, tf) == set()
 
 
 # --- retrieve_pages threads tag_filter → collection_filter -------------
@@ -519,55 +568,18 @@ def test_retrieve_pages_tag_filter_with_no_matching_collections_reports_failure(
     assert pages == []
 
 
-def test_collections_matching_skips_malformed_yaml(tmp_path: Path) -> None:
-    """A malformed YAML among good ones does not break the filter.
+def test_collections_matching_no_malformed_yaml_concern() -> None:
+    """Library collections are directories, not YAML configs.
 
-    ``load_collection`` raises ``CollectionConfigInvalid`` on broken YAML;
-    the retriever previously propagated the exception out of the loop,
-    so one bad config file masked every well-formed one. The fix wraps
-    ``load_collection`` in a try/except (mirrors ``enrich-tags``'s
-    precedent) so the well-formed collections still match.
+    Library-first resolution means wiki YAML is no longer consulted
+    for collection metadata. There is no malformed-yaml failure mode
+    to defend against — if a directory exists under
+    ``Library.collections_root/``, it counts; if not, it doesn't.
     """
-    import yaml  # type: ignore[import-untyped]
-
-    root = tmp_path / "malformed"
-    root.mkdir()
-    (root / "raw").mkdir()
-    (root / "wiki").mkdir()
-    wiki = make_wiki(name="malformed", data_root=root)
-    wiki.config_root.mkdir(parents=True, exist_ok=True)
-    wiki.collections_dir.mkdir(parents=True, exist_ok=True)
-    _COLLECTIONS = {
-        "airflow": ["airflow", "provider"],
-        "amazon": ["amazon", "aws"],
-    }
-    for name, tags in _COLLECTIONS.items():
-        save_collection(
-            wiki,
-            Collection(
-                name=name,
-                path=wiki.data_root / "raw" / name,
-                source=f"https://example.com/{name}",
-                tags=list(tags),
-                scraper_cmd=None,
-                doc_path=None,
-                mapper_model=None,
-                language="en",
-                version="1.0.0",
-                created_at=_NOW,
-                updated_at=_NOW,
-                config={},
-            ),
-        )
-    # Drop a malformed YAML in the same directory; load_collection
-    # raises CollectionConfigInvalid for it.
-    (wiki.collections_dir / "broken.yaml").write_text(
-        "name: broken\n: not a mapping root\n  bad-indent: x\n", encoding="utf-8"
-    )
-    del yaml  # noqa: F811 - imported only to anchor a deterministic broken-YAML body
-
-    tf = ResolvedTagFilter(include=Include("airflow"))
-    assert _collections_matching(wiki, tf) == {"airflow"}
+    # This test is intentionally empty; it documents the removal of
+    # the predecessor's malformed-yaml defense now that collections
+    # are directory-only and yaml-free.
+    assert True
 
 
 # ---------------------------------------------------------------------------

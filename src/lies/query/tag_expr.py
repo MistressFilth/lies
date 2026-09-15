@@ -92,11 +92,21 @@ class TagExprParseError(Exception):
 
 
 class TagExprUnknown(Exception):
-    """Raised when the filter references a tag not in the registry."""
+    """Raised when the filter references a tag not in the registry.
 
-    def __init__(self, tag: str) -> None:
+    Carries the offending spelling on ``tag`` and the addressable tag
+    set on ``available`` so callers (CLI / MCP) can build a self-
+    explanatory error that lists what tags DO exist. Without
+    ``available`` the message would read ``unknown tag: opencode`` and
+    leave the operator guessing which wiki, or which spelling, was the
+    intended target — see regression test
+    ``test_query_unknown_tag_lists_available_tags``.
+    """
+
+    def __init__(self, tag: str, *, available: frozenset[str] | set[str] = frozenset()) -> None:
         super().__init__(f"unknown tag: {tag}")
         self.tag = tag
+        self.available: frozenset[str] = frozenset(available)
 
 
 class TagExprEmpty(Exception):
@@ -455,7 +465,7 @@ def resolve(expr: TagExpr, *, available: set[str]) -> ResolvedTagFilter:
     """
     if isinstance(expr, Include):
         if expr.tag not in available:
-            raise TagExprUnknown(expr.tag)
+            raise TagExprUnknown(expr.tag, available=available)
         return ResolvedTagFilter(include=expr)
     if isinstance(expr, And):
         left = resolve(expr.left, available=available)
