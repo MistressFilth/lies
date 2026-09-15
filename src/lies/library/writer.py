@@ -20,6 +20,7 @@ Differences from wiki-side write path:
 
 from __future__ import annotations
 
+import os
 import sqlite3
 import subprocess
 import sys
@@ -237,6 +238,23 @@ class LibraryWriter:
 
         if updates:
             self._upsert_catalog(updates)
+
+        # F14 sentinel: mark that any library has been written since the qmd
+        # daemon started. Touched at the machine-global path so the daemon's
+        # staleness check reflects the union of every library + wiki write
+        # envelope, not just the current git_root. Best-effort; the touch is
+        # idempotent. The parent directory may not exist on a fresh install
+        # (qmd has not yet run), so we mkdir -p it before the touch.
+        # Goes BEFORE the qmd post-commit hook so the daemon's mtime-vs-marker
+        # comparison sees this commit's mtime, not the hook's.
+        if sha is not None:
+            try:
+                _cache = Path(os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache")))
+                _marker = _cache / "qmd" / "last-write-marker"
+                _marker.parent.mkdir(parents=True, exist_ok=True)
+                _marker.touch(exist_ok=True)
+            except OSError:
+                pass  # F14 is best-effort; do not fail the commit
 
         # Post-commit qmd hook: mirrors the wiki-side write.py contract.
         # Failures are non-fatal — the library commit already landed and
