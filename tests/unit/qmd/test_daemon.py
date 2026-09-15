@@ -5,6 +5,7 @@ import sys
 import time
 from pathlib import Path
 
+import httpx
 import pytest
 
 from lies.qmd import daemon as qmd_daemon
@@ -178,3 +179,141 @@ def test_ensure_qmd_daemon_runs_real_spawn_after_mocked_reap(
     assert reap_calls == [True]
     # Sidecar recorded the new data-dir only after spawn returned.
     assert qmd_daemon.read_sidecar_data_dir() == tmp_path / "fresh"
+
+
+@pytest.mark.asyncio
+async def test_recycle_qmd_daemon_probes_with_list_tools(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """recycle_qmd_daemon polls list_tools() until the daemon serves."""
+    from lies.qmd import daemon as qmd_daemon
+
+    reap_calls: list[bool] = []
+    spawn_calls: list[bool] = []
+
+    monkeypatch.setattr(qmd_daemon, "_reap_qmd_daemon", lambda: reap_calls.append(True))
+    monkeypatch.setattr(qmd_daemon, "_spawn_qmd_daemon", lambda: spawn_calls.append(True))
+    monkeypatch.setattr(
+        qmd_daemon,
+        "write_sidecar_data_dir",
+        lambda data_dir: None,
+    )
+    monkeypatch.setattr(
+        qmd_daemon,
+        "qmd_daemon_state",
+        lambda: qmd_daemon.QmdState(True, True, 1234, "running"),
+    )
+
+    list_tools_attempts = {"n": 0}
+
+    class _FakeFastmcpClient:
+        def __init__(self, url: str) -> None:
+            self.url = url
+
+        async def __aenter__(self) -> "_FakeFastmcpClient":
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+        async def list_tools(self) -> list[object]:
+            list_tools_attempts["n"] += 1
+            if list_tools_attempts["n"] < 2:
+                raise httpx.ConnectError("not yet")
+            return []
+
+    monkeypatch.setattr("lies.qmd.daemon.fastmcp.Client", _FakeFastmcpClient)
+
+    state = await qmd_daemon.recycle_qmd_daemon(
+        data_dir=tmp_path,
+        daemon_url="http://127.0.0.1:8181",
+        ready_timeout=5.0,
+    )
+    assert state.running is True
+    assert state.pid == 1234
+    assert reap_calls == [True]
+    assert spawn_calls == [True]
+    assert list_tools_attempts["n"] == 2  # one failure + one success
+
+
+@pytest.mark.asyncio
+async def test_recycle_qmd_daemon_raises_qmd_recycle_failed_when_probe_never_serves(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """recycle_qmd_daemon raises QmdRecycleFailed after ready_timeout."""
+    from lies.qmd import daemon as qmd_daemon
+
+    monkeypatch.setattr(qmd_daemon, "_reap_qmd_daemon", lambda: None)
+    monkeypatch.setattr(qmd_daemon, "_spawn_qmd_daemon", lambda: None)
+    monkeypatch.setattr(qmd_daemon, "write_sidecar_data_dir", lambda data_dir: None)
+    monkeypatch.setattr(
+        qmd_daemon,
+        "qmd_daemon_state",
+        lambda: qmd_daemon.QmdState(True, False, None, "no listener"),
+    )
+
+    class _AlwaysFailing:
+        def __init__(self, url: str) -> None: ...
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return None
+
+        async def list_tools(self) -> list[object]:
+            raise httpx.ConnectError("never serves")
+
+    monkeypatch.setattr("lies.qmd.daemon.fastmcp.Client", _AlwaysFailing)
+
+    with pytest.raises(qmd_daemon.QmdRecycleFailed) as excinfo:
+        await qmd_daemon.recycle_qmd_daemon(
+            data_dir=tmp_path,
+            daemon_url="http://127.0.0.1:8181",
+            ready_timeout=0.2,
+            poll_interval=0.05,
+        )
+    assert excinfo.value.ready_timeout_s == 0.2
+    assert "no listener" in excinfo.value.last_state.detail
+
+
+@pytest.mark.asyncio
+async def test_ensure_qmd_daemon_reaps_stale_via_mtime_check(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """ensure_qmd_daemon reaps when marker mtime > daemon start time."""
+    from lies.qmd import daemon as qmd_daemon
+
+    # Marker is newer than the daemon start time.
+    import os
+
+    daemon_start = time.time() - 60.0
+
+    # Sidecar matches (so the existing check is a no-op).
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+    marker = tmp_path / "qmd" / "last-write-marker"
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.touch()
+    marker_time = time.time()
+    os.utime(marker, (marker_time, marker_time))
+
+    reap_calls: list[bool] = []
+    spawn_calls: list[bool] = []
+
+    monkeypatch.setattr(qmd_daemon, "SIDECAR_PATH", tmp_path / "sidecar")
+    (tmp_path / "sidecar").write_text(str(tmp_path))  # match by default
+    monkeypatch.setattr(
+        qmd_daemon,
+        "_daemon_start_time",
+        lambda: daemon_start,
+    )
+    monkeypatch.setattr(qmd_daemon, "_reap_qmd_daemon", lambda: reap_calls.append(True))
+    monkeypatch.setattr(qmd_daemon, "_spawn_qmd_daemon", lambda: spawn_calls.append(True))
+    monkeypatch.setattr(qmd_daemon, "write_sidecar_data_dir", lambda dd: None)
+    monkeypatch.setattr(qmd_daemon, "qmd_installed", lambda: True)
+
+    qmd_daemon.ensure_qmd_daemon(data_dir=tmp_path)
+    assert reap_calls == [True], "F14 staleness should trigger reap+respawn"
+    assert spawn_calls == [True]

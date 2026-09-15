@@ -93,3 +93,44 @@ def test_qmd_extra_locked_in_uv_lock() -> None:
         if package.get("marker") == "extra == 'qmd'"
     ]
     assert qmd_marked == [], f"qmd extra should be empty, got {qmd_marked!r}"
+
+
+def test_build_qmd_http_toolset_uses_custom_httpx_client(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """_build_qmd_http_toolset must pass httpx_client_factory to the transport."""
+    from lies.qmd import mcp as qmd_mcp
+
+    captured: dict[str, object] = {}
+
+    class _FakeStreamableHttpTransport:
+        def __init__(self, url: str, httpx_client_factory=None) -> None:
+            captured["url"] = url
+            captured["httpx_client_factory"] = httpx_client_factory
+
+    class _FakeClient:
+        def __init__(self, transport: object) -> None:
+            captured["client_transport"] = transport
+
+    class _FakeToolset:
+        def __init__(self, client: object) -> None:
+            captured["toolset_client"] = client
+
+    monkeypatch.setattr(qmd_mcp, "StreamableHttpTransport", _FakeStreamableHttpTransport)
+    monkeypatch.setattr(qmd_mcp, "fastmcp", type("M", (), {"Client": _FakeClient}))
+    monkeypatch.setattr(qmd_mcp, "MCPToolset", _FakeToolset)
+
+    qmd_mcp._build_qmd_http_toolset("http://127.0.0.1:8181")
+    assert captured["url"] == "http://127.0.0.1:8181"
+    assert captured["httpx_client_factory"] is qmd_mcp._build_qmd_httpx_client
+
+
+def test_build_qmd_httpx_client_uses_default_timeouts() -> None:
+    """_build_qmd_httpx_client must use connect=2.0, read=60.0, write=10.0."""
+    from lies.qmd import mcp as qmd_mcp
+
+    client = qmd_mcp._build_qmd_httpx_client()
+    assert client.timeout.connect == 2.0
+    assert client.timeout.read == 60.0
+    assert client.timeout.write == 10.0
+    assert client.timeout.pool is not None  # httpx default for pool

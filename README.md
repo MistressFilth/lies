@@ -114,6 +114,30 @@ fixed port, one index shared across every wiki and any other tool using
 it — so stopping it would break sessions LIES knows nothing about. Use
 `qmd mcp stop` yourself if you really want it down.
 
+### QMD daemon recycle
+
+`lies` recycles the qmd daemon automatically when a tool call
+surfaces a transport error (qexpander cold-start wedge, daemon down,
+or fastmcp-wrapped timeout). The recycle path is wrapped around the
+underlying `MCPToolset` via `QmdRecycleToolset`; see
+`src/lies/qmd/mcp.py` for the ReadTimeout-vs-TransportError
+distinction. Explicit timeouts (`connect=2.0, read=60.0, write=10.0`)
+are set via `httpx_client_factory` so a wedged daemon surfaces
+within one budget window.
+
+Manual operator trigger:
+
+```bash
+lies flock qmd recycle --name <wiki> --ready-timeout 30
+```
+
+If the daemon is serving a stale index (any wiki or library wrote to
+disk since the daemon was spawned), `ensure_qmd_daemon` reaps and
+respawns it on the next call. The `LibraryWriter` envelope touches
+the global `<XDG_CACHE_HOME>/qmd/last-write-marker` sentinel on every
+successful commit; `ensure_qmd_daemon` reads its mtime to detect
+staleness.
+
 The daemon has no authentication, so `up` and the internal `_serve`
 command refuse non-loopback bind hosts. Put an authenticated reverse
 proxy in front if remote access is required.

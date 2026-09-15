@@ -1,6 +1,7 @@
 """Tests for LibraryWriter (atomic-commit envelope)."""
 
 from pathlib import Path
+import importlib
 import sqlite3
 import pytest
 import subprocess
@@ -401,3 +402,40 @@ def test_writer_upsert_catalog_raises_locked_when_commit_locked(
     # closed by the stub. Verify nothing leaked by re-opening cleanly.
     conn = open_catalog(lib_with_git)
     conn.close()
+
+
+def test_writer_commit_touches_f14_last_write_marker(
+    lib_with_git: Library,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``LibraryWriter.commit`` must touch <XDG_CACHE_HOME>/qmd/last-write-marker.
+
+    F14 sentinel: the qmd daemon's staleness check reads this marker to
+    decide whether to reap+respawn. The touch must happen after the
+    underlying git commit succeeds and before the qmd post-commit hook
+    fires, so the daemon's mtime comparison sees this commit.
+    """
+    cache_dir = tmp_path / "cache"
+    monkeypatch.setenv("XDG_CACHE_HOME", str(cache_dir))
+
+    marker = cache_dir / "qmd" / "last-write-marker"
+    assert not marker.exists()
+
+    # Stub the qmd post-commit hooks so we don't need a live daemon.
+    writer_mod = importlib.import_module("lies.library.writer")
+    for cached in ("qmd_collection_add_or_update", "qmd_update", "qmd_embed"):
+        monkeypatch.delattr(writer_mod, cached, raising=False)
+
+    file = lib_with_git.collections_root / "claude" / "f14-marker-test.md"
+    file.parent.mkdir(parents=True, exist_ok=True)
+    file.write_text("body\n")
+    rel = file.relative_to(lib_with_git.git_root)
+
+    writer = LibraryWriter(lib_with_git)
+    writer.commit([rel], message="ingest: claude +f14-marker-test", qmd_collection="claude")
+
+    assert marker.exists(), (
+        f"LibraryWriter.commit did not touch {marker}; F14 staleness check "
+        "will report the daemon as fresh even when it isn't."
+    )

@@ -695,6 +695,20 @@ class WikiMemoryService:
                 append_receipt(self._wiki, plan, commit_sha, evidence_count=evidence_count)
             except Exception as exc:  # noqa: BLE001 - non-fatal: receipt surface
                 sidecar_errors.append(f"sidecar_append_failed: {exc}")
+            # F14 sentinel: touch the machine-global qmd last-write-marker
+            # so the qmd daemon's staleness check sees this wiki write
+            # too (the library-side envelope touches it in writer.py).
+            # Best-effort; the commit already landed and the receipt is
+            # authoritative. The parent dir may not exist on a fresh
+            # install (qmd has not yet run), so mkdir -p before touch.
+            if commit_sha is not None:
+                try:
+                    _cache = Path(os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache")))
+                    _marker = _cache / "qmd" / "last-write-marker"
+                    _marker.parent.mkdir(parents=True, exist_ok=True)
+                    _marker.touch(exist_ok=True)
+                except OSError:
+                    pass  # F14 is best-effort; do not fail the commit
             qmd_ok, qmd_msg = self._refresh_qmd()
             errors = list(sidecar_errors)
             if not qmd_ok:
