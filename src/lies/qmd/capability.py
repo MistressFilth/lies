@@ -35,6 +35,10 @@ if TYPE_CHECKING:
 
 
 _DEFAULT_TIMEOUT_S = 0.5
+# TCP-connect probe: a half-second is enough to confirm a listener exists on
+# the qmd daemon port (connect is a fast, binary yes/no — 0.5s vs the 60s
+# JSON-RPC read budget is a 120× gap, justified because the read budget covers
+# the wedge *after* connect where the daemon must answer ``list_tools``).
 
 
 # Errors the construction-time liveness probe (a fastmcp.Client

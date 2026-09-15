@@ -288,7 +288,6 @@ async def test_ensure_qmd_daemon_reaps_stale_via_mtime_check(
 
     # Marker is newer than the daemon start time.
     import os
-    import time
 
     daemon_start = time.time() - 60.0
 
