@@ -21,6 +21,45 @@ All notable changes to LIES are documented here. The format follows
 - Library pages now land under nested mirror directories: `write_mirror` calls `target.parent.mkdir(parents=True, exist_ok=True)`.
 - Pre-existing REPL help test (`tests/unit/test_cli.py::test_repl_help_command`) failed because Rich's `Console.print` bypasses `CliRunner` capture; replacing with `typer.echo` lets `assert "/ingest" in result.stdout` pass.
 
+### Added
+- **QMD daemon HTTP recycle on transport errors.** `QmdCapability` now
+  wraps the underlying `MCPToolset` in a `QmdRecycleToolset` that
+  auto-recycles the qmd daemon on `httpx.ReadTimeout` (qexpander wedge),
+  `httpx.TransportError`, and `mcp.McpError(code=REQUEST_TIMEOUT)`.
+  ReadTimeout surfaces as `ModelRetry` (no inner retry — the same
+  payload re-wedges the fresh daemon); TransportError / McpError
+  surface as recycle + retry-once, then `ToolFailed` on second
+  failure. Construction-time `QmdRecycleFailed` falls back to the
+  in-process `QmdFallbackMcp` so the agent stays functional under
+  the failure mode. New `recycle_qmd_daemon(data_dir, daemon_url)`
+  async helper exposes the reap+spawn+probe sequence for direct
+  callers. Explicit timeouts (`connect=2.0, read=60.0, write=10.0`)
+  added via `httpx_client_factory` so a wedged daemon surfaces
+  within one budget window instead of hanging until httpx's default
+  timeout. Issue: `features/qmd-daemon-recycle/README.md`.
+
+### Added
+- **F14 — Stale qmd daemon detection.** `ensure_qmd_daemon` now
+  reaps+respawns the daemon when `<XDG_CACHE_HOME>/qmd/last-write-marker`
+  mtime is newer than qmd's `mcp.pid` mtime, catching the case where
+  any wiki or library wrote to disk after the daemon was last
+  spawned. `LibraryWriter.commit` touches the marker after every
+  successful commit (best-effort). Bundled with the recycle PR since
+  the reap+spawn sequence is shared.
+
+### Added
+- **`lies flock qmd recycle --name <wiki> [--ready-timeout 30]`**
+  operator escape hatch. Manual trigger for the same probe-backed
+  recycle that `QmdCapability` runs at construction time. Reuses
+  the `flock qmd` sub-app from PR #74.
+
+### Fixed
+- **Long-running lies agents hung on qexpander cold start.** The
+  qmd daemon's first HyDE query after fresh start used to wedge the
+  call handler for ~60s with no automatic recovery; now the next
+  call against the wedged daemon recycles and the model retries
+  against the fresh one.
+
 ## [0.22.0] - 2026-09-13
 
 ### Changed
