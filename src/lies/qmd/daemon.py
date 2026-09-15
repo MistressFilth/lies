@@ -26,6 +26,8 @@ rather than raised.
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import os
 import re
 import signal
@@ -34,6 +36,13 @@ import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path as _Path
+
+import httpx
+
+import fastmcp
+import mcp
+
+_log = logging.getLogger(__name__)
 
 _QMD_BIN = "qmd"
 _MCP_LINE = re.compile(r"^MCP:\s+running\s+\(PID\s+(\d+)\)", re.MULTILINE)
@@ -75,6 +84,42 @@ def check_data_dir_match(expected: _Path) -> bool:
     if actual is None:
         return True
     return actual.resolve() == expected.resolve()
+
+
+def _daemon_start_time() -> float | None:
+    """mtime of qmd's mcp.pid (proxy for daemon launch time)."""
+    raw = os.environ.get("XDG_CACHE_HOME", "")
+    cache = _Path(raw) if raw and not raw.startswith("${") else _Path.home() / ".cache"
+    pid_path = cache / "qmd" / "mcp.pid"
+    try:
+        return pid_path.stat().st_mtime
+    except OSError:
+        return None
+
+
+def _global_last_write_marker() -> _Path:
+    """Single machine-global sentinel, sibling of qmd's mcp.pid and mcp.data-dir.
+
+    The qmd daemon is machine-global and indexes whatever libraries +
+    wikis the operator mounts. A per-data-dir marker would miss the
+    case where the daemon serves wiki A but wiki B (or any library)
+    was written since the daemon started. One marker, touched by every
+    write envelope (``LibraryWriter.commit`` +
+    ``WikiMemoryService.apply_plan``), reflects the union of "anything
+    has been written."
+    """
+    raw = os.environ.get("XDG_CACHE_HOME", "")
+    cache = _Path(raw) if raw and not raw.startswith("${") else _Path.home() / ".cache"
+    return cache / "qmd" / "last-write-marker"
+
+
+def _is_daemon_stale() -> bool:
+    """True when any wiki or library has been written since the daemon started."""
+    marker = _global_last_write_marker()
+    daemon_start = _daemon_start_time()
+    if daemon_start is None or not marker.exists():
+        return False
+    return marker.stat().st_mtime > daemon_start
 
 
 @dataclass(frozen=True)
@@ -212,16 +257,30 @@ def _spawn_qmd_daemon() -> None:
 
 def ensure_qmd_daemon(*, data_dir: _Path, timeout: float = 15.0) -> QmdState:
     """Start qmd's http daemon if not already up; reap and respawn if the
-    sidecar records a different ``data-dir``.
+    sidecar records a different ``data-dir`` OR the daemon is serving a
+    stale index (F14: marker mtime > daemon pidfile mtime).
     """
     if not qmd_installed():
         return _not_installed()
+
     if not check_data_dir_match(data_dir):
         # Foreign daemon serving the wrong index; reap and respawn.
         _reap_qmd_daemon()
         _spawn_qmd_daemon()
         write_sidecar_data_dir(data_dir)
         return qmd_daemon_state()
+
+    if _is_daemon_stale():
+        # F14: the wiki has been written since the daemon started.
+        # Reap+respawn via the sync path (no probe poll — ensure_qmd_daemon
+        # is sync and called from sync CLI + LibraryWriter envelopes; making
+        # it async would ripple into every caller).
+        _log.info("ensure_qmd_daemon: daemon stale by marker; reaping via F14")
+        _reap_qmd_daemon()
+        _spawn_qmd_daemon()
+        write_sidecar_data_dir(data_dir)
+        return qmd_daemon_state()
+
     # Normal path: idempotent start.
     try:
         proc = subprocess.run(
@@ -245,3 +304,66 @@ def ensure_qmd_daemon(*, data_dir: _Path, timeout: float = 15.0) -> QmdState:
         first = output.strip().splitlines()[0] if output.strip() else "no output"
         return QmdState(True, False, None, f"qmd exited {proc.returncode}: {first}")
     return qmd_daemon_state()
+
+
+# --- Added for the qmd-daemon-recycle spec (2026-09-14) ---
+
+
+class QmdRecycleFailed(RuntimeError):
+    """qmd daemon recycled but never served within ready_timeout.
+
+    Carries the last observed ``QmdState`` so callers can branch on the
+    concrete failure reason (no listener, exit code, timeout) without
+    parsing the message string.
+    """
+
+    def __init__(self, ready_timeout_s: float, last_state: "QmdState") -> None:
+        super().__init__(
+            f"qmd daemon recycled but never served within "
+            f"{ready_timeout_s:g}s (last state: {last_state.detail})"
+        )
+        self.ready_timeout_s = ready_timeout_s
+        self.last_state = last_state
+
+
+async def recycle_qmd_daemon(
+    *,
+    data_dir: "_Path",
+    daemon_url: str,
+    ready_timeout: float = 30.0,
+    poll_interval: float = 0.5,
+) -> "QmdState":
+    """Restart qmd's daemon; poll list_tools() until it serves or budget expires.
+
+    Always reap first (idempotent when not running), then spawn. The
+    probe is a ``fastmcp.Client.list_tools()`` call against
+    ``daemon_url`` — proves the JSON-RPC session is alive (not whether
+    qexpander is warm; warm-up latency is borne by the first real call).
+
+    Raises:
+        QmdRecycleFailed: reap+spawn+probe never served within ready_timeout.
+    """
+    _log.debug("recycle_qmd_daemon: reaping")
+    _reap_qmd_daemon()
+    _log.debug("recycle_qmd_daemon: spawning")
+    _spawn_qmd_daemon()
+    _log.debug("recycle_qmd_daemon: writing sidecar for %s", data_dir)
+    write_sidecar_data_dir(data_dir)
+
+    deadline = asyncio.get_event_loop().time() + ready_timeout
+    last_state = qmd_daemon_state()
+    while asyncio.get_event_loop().time() < deadline:
+        try:
+            assert fastmcp is not None  # type: ignore[assertion-that-fails]
+            async with fastmcp.Client(daemon_url) as client:  # type: ignore[attr-defined]
+                await client.list_tools()
+            _log.info(
+                "recycle_qmd_daemon: probe succeeded after %gs",
+                ready_timeout - (deadline - asyncio.get_event_loop().time()),
+            )
+            return qmd_daemon_state()
+        except (httpx.HTTPError, mcp.MCPError, OSError) as exc:
+            _log.debug("recycle_qmd_daemon: probe failed (%s); retrying", exc)
+            last_state = qmd_daemon_state()
+            await asyncio.sleep(poll_interval)
+    raise QmdRecycleFailed(ready_timeout, last_state)
