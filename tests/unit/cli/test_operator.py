@@ -51,3 +51,29 @@ def test_lies_flock_qmd_recycle_invokes_recycle_helper(
     assert "manual recycle complete" in (result.stdout or "")
     assert captured["data_dir"] == "/fake/data/root"
     assert captured["ready_timeout"] == 30.0
+
+
+def test_lies_flock_qmd_recycle_exits_2_on_recycle_failed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`lies flock qmd recycle` exits 2 when recycle_qmd_daemon raises QmdRecycleFailed."""
+    from lies.qmd.daemon import QmdRecycleFailed, QmdState
+
+    async def _fake_recycle_fails(**kwargs: object) -> QmdState:
+        raise QmdRecycleFailed(
+            ready_timeout_s=30.0,
+            last_state=QmdState(False, False, None, "no listener"),
+        )
+
+    monkeypatch.setattr("lies.qmd.daemon.recycle_qmd_daemon", _fake_recycle_fails)
+
+    fake_wiki = type("W", (), {"data_root": "/fake/data/root"})()
+    monkeypatch.setattr(
+        "lies.wiki.wiki.Wiki.require",
+        classmethod(lambda cls, name: fake_wiki),
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(_qmd_flock_app, ["recycle", "--name", "default"])
+
+    assert result.exit_code == 2, result.output
