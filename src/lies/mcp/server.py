@@ -38,7 +38,7 @@ from lies.mcp.instructions_loader import load_instructions, load_prompt
 from lies.mcp.resolution import resolve_wiki
 from lies.memory.models import WikiPlanInvalid
 from lies.orchestrator import Orchestrator
-from lies.query.citation import Citation
+from lies.query.citation import Citation, ClaimCitation
 from lies.query.models import SynthesizedAnswer
 from lies.query.tag_expr import (
     ResolvedTagFilter,
@@ -83,6 +83,7 @@ class SynthesizedMcpAnswer(BaseModel):
     fallback_reason: str | None  # None when qmd served the query
     citations: list[Citation]
     pages_read: list[Citation]
+    claim_citations: list[ClaimCitation] = []
     changed_pages: list[str]
     synthesis_used: bool = False
     synthesis_reason: str | None = None  # None when the agent answered cleanly
@@ -440,6 +441,7 @@ def query(
         fallback_reason=ans.fallback_reason or None,
         citations=ans.citations,
         pages_read=ans.pages_read,
+        claim_citations=list(ans.claim_citations),
         changed_pages=ans.changed_pages,
         synthesis_used=ans.synthesis_used,
         synthesis_reason=ans.synthesis_reason or None,
