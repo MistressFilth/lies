@@ -722,6 +722,74 @@ def merge_lint_reports(
     return LintReport(findings=merged, report_markdown=""), llm_fallback_reason
 
 
+def _slugify_section(section: str) -> str:
+    """Lowercase, hyphenate spaces and punctuation for a URL-friendly anchor.
+
+    Strips characters that don't survive a URL fragment. Returns
+    lowercase alphanumerics joined by single hyphens.
+    """
+    out: list[str] = []
+    for ch in section.lower():
+        if ch.isalnum():
+            out.append(ch)
+        elif out and out[-1] != "-":
+            out.append("-")
+    return "".join(out).strip("-")
+
+
+def _render_footnote_line(
+    n: int,
+    citation: "Citation",
+    *,
+    title: str | None = None,
+) -> str:
+    """Render one footnote line.
+
+    Format: ``[^N]: [title](path#anchor) — section``
+
+    Anchor rules:
+    - line present → ``#L<line>``
+    - section present, line absent → ``#<slugified-section>``
+    - both absent → no anchor
+
+    Section rules:
+    - section present → `` — section``
+    - section absent → omit suffix
+
+    When ``title`` is ``None``, falls back to the path's last segment
+    (the basename) for a readable link label.
+    """
+    display_title = title or citation.path.rsplit("/", 1)[-1]
+    anchor = ""
+    if citation.line is not None:
+        anchor = f"#L{citation.line}"
+    elif citation.section:
+        anchor = f"#{_slugify_section(citation.section)}"
+
+    link = f"[{display_title}]({citation.path}{anchor})"
+    if citation.section:
+        return f"[^{n}]: {link} — {citation.section}"
+    return f"[^{n}]: {link}"
+
+
+def _render_footnotes(
+    citations: list["Citation"],
+    *,
+    page_titles: dict[str, str],
+) -> str:
+    """Render the full `Footnotes:` block.
+
+    Returns an empty string when ``citations`` is empty.
+    """
+    if not citations:
+        return ""
+    lines = ["Footnotes:", ""]
+    for i, c in enumerate(citations, 1):
+        title = page_titles.get(c.path)
+        lines.append(_render_footnote_line(i, c, title=title))
+    return "\n".join(lines)
+
+
 class Orchestrator:
     """The top-level agent that maintains a LIES wiki.
 
