@@ -191,6 +191,13 @@ def test_run_query_returns_empty_when_qmd_unavailable(
     # No citations: the index fallback was retired; no qmd hit, no
     # entity citations to surface.
     assert answer.citations == []
+    # F1 regression pin (spec § 13): the validated ``format`` field
+    # defaults to ``"md"`` on every code path, including this
+    # qmd-unavailable fallback. Without it the CLI / MCP wire format
+    # cannot dispatch on the validated shape and downstream consumers
+    # fall back to a literal ``getattr(answer, "format", "md")``,
+    # silently masking a missing field.
+    assert answer.format == "md"
 
 
 def test_synthesizer_returns_empty_when_qmd_unavailable(wiki_copy: Path) -> None:

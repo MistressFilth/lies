@@ -1288,6 +1288,8 @@ class Orchestrator:
         # this method returns a ``SynthesizedAnswer`` and each must
         # carry the same scope (spec §"Retriever consumption",
         # documented at ``SynthesizedAnswer.searched_scope``).
+        from lies.query.format_validator import validate_format as _validate_format
+
         searched_scope = _searched_scope(self.wiki, tag_filter)
 
         # Self-heal: ensure ``wiki_<name>`` is registered with qmd
@@ -1396,6 +1398,7 @@ class Orchestrator:
             synthesis_reason=synthesis_reason,
             should_file=output.should_file,
             searched_scope=list(searched_scope),
+            format=_validate_format(output.answer, output.format_hint),
         )
 
         # File-back decision (F3). ``should_file`` is the agent's own
