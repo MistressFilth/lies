@@ -8,10 +8,14 @@ Targets:
 
 Regex:
 
-    ^lies [a-z][a-z0-9-]+(( [a-z][a-z0-9-]+){1,2})?$
+    \blies [a-z][a-z0-9-]+(( [a-z][a-z0-9-]+){1,2})?\b
 
-The two-segment allowance catches ``lies query format``,
-``lies catalog render``, etc.
+Word-boundary anchors (``\b...``) match ``lies <cmd>`` as a substring
+anywhere it appears in the markdown — inline references like
+``lies sync <collection> --source <source>``, ``lies init <name>``,
+``lies lint [--fix]`` all count, not just lines whose whole content
+matches the command. The two-segment allowance catches
+``lies query format``, ``lies catalog render``, etc.
 
 Exit codes:
 
@@ -32,8 +36,7 @@ INSTRUCTIONS_PATH = MCP_ROOT / "instructions.md"
 PROMPTS_DIR = MCP_ROOT / "prompts"
 
 COMMAND_RE = re.compile(
-    r"^lies [a-z][a-z0-9-]+(( [a-z][a-z0-9-]+){1,2})?$",
-    re.MULTILINE,
+    r"\blies [a-z][a-z0-9-]+(( [a-z][a-z0-9-]+){1,2})?\b"
 )
 
 
