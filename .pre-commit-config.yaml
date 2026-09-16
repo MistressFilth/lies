@@ -52,3 +52,10 @@ repos:
         language: system
         stages: [commit-msg]
         always_run: true
+      - id: lies-commands-exist
+        name: "lies mcp orientation: lies <cmd> references resolve"
+        entry: uv run python tools/check_lies_commands.py
+        language: system
+        files: '^(src/lies/mcp/instructions\.md|src/lies/mcp/prompts/.*\.md)$'
+        pass_filenames: false
+        stages: [pre-commit]

@@ -680,6 +680,25 @@ CLI commands (`src/lies/cli/`):
 - `lies` (no subcommand) — enter the REPL (`/ingest`, `/query`, `/lint`,
   `/status`, `/commit`, `/exit`).
 
+## MCP server orientation
+
+The LIES MCP server ships an orientation payload at every
+`initialize` handshake plus six reference-prose MCP prompts:
+
+- `instructions=` field: path/env facts, tool inventory,
+  resource list, prompt index. The agent sees this on attach
+  regardless of cwd.
+- Prompts: `orient(wiki=...)`, `ingest(source=...)`,
+  `query(question=...)`, `lint()`, `sync(collection=...)`,
+  `file-back(wiki=...)`. Plus the pre-existing
+  `ask_wiki(question)` and `ask_wiki_answer(question)`
+  (= slash `/answer`) tool-call templates.
+
+The payload lives at `src/lies/mcp/instructions.md` plus
+`src/lies/mcp/prompts/*.md`. A pre-commit hook
+(`tools/check_lies_commands.py`) blocks commits that
+introduce unresolved `lies <cmd>` references.
+
 ## Parsing and Ingestion
 
 LIES ingests documentation sources through a deterministic 5-step

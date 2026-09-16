@@ -34,6 +34,7 @@ from lies import __version__, xdg
 from lies.constants import LIES_DATA_SUBDIR
 from lies.errors import WikiAlreadyExists
 from lies.lock_errors import WikiFlockUnrepairable, WikiLockBusy
+from lies.mcp.instructions_loader import load_instructions, load_prompt
 from lies.mcp.resolution import resolve_wiki
 from lies.memory.models import WikiPlanInvalid
 from lies.orchestrator import Orchestrator
@@ -51,7 +52,10 @@ from lies.query.tag_expr import (
 from lies.wiki.layout import WikiLayout, copy_default_schema, git_init_initial
 from lies.wiki.wiki import Wiki
 
-mcp = FastMCP("lies")
+mcp = FastMCP(
+    "lies",
+    instructions=load_instructions(),
+)
 
 
 class SynthesizedMcpAnswer(BaseModel):
@@ -894,3 +898,68 @@ def ask_wiki_answer(question: str) -> str:
         f"then surface the answer body verbatim in your reply:\n\n"
         f"  question: {question}"
     )
+
+
+@mcp.prompt(name="orient")
+def orient(wiki: str | None = None) -> str:
+    """Return LIES orientation prose. Root of the prompts surface.
+
+    Args:
+        wiki: Wiki name to substitute into the prompt body; ``None``
+            renders an ``(unspecified)`` placeholder.
+
+    Returns:
+        Rendered markdown body the LLM reads for orientation.
+    """
+    body = load_prompt("orient")
+    return body.format(version=__version__, wiki=wiki or "(unspecified)")
+
+
+@mcp.prompt(name="ingest")
+def ingest(source: str) -> str:
+    """Return the source-ingestion walkthrough prose.
+
+    ``source`` is captured for MCP introspection only; the reference
+    prose is static and does not substitute this value.
+    """
+    return load_prompt("ingest").format(version=__version__, source=source)
+
+
+@mcp.prompt(name="query")
+def query_prompt(question: str) -> str:
+    """Return the query-tool recipes prose.
+
+    ``question`` is captured for MCP introspection only; the reference
+    prose is static and does not substitute this value.
+
+    Named ``query_prompt`` in Python to avoid clashing with the
+    ``query`` MCP tool already registered in this module;
+    registered as the ``/query`` prompt via ``name="query"``.
+    """
+    return load_prompt("query").format(version=__version__, question=question)
+
+
+@mcp.prompt(name="lint")
+def lint_prompt() -> str:
+    """Return the lint walkthrough prose."""
+    return load_prompt("lint").format(version=__version__)
+
+
+@mcp.prompt(name="sync")
+def sync_prompt(collection: str) -> str:
+    """Return the sync walkthrough prose.
+
+    ``collection`` is captured for MCP introspection only; the
+    reference prose is static and does not substitute this value.
+    """
+    return load_prompt("sync").format(version=__version__, collection=collection)
+
+
+@mcp.prompt(name="file-back")
+def file_back(wiki: str) -> str:
+    """Return the F3 file-back walkthrough prose.
+
+    ``wiki`` is captured for MCP introspection only; the reference
+    prose is static and does not substitute this value.
+    """
+    return load_prompt("file-back").format(version=__version__, wiki=wiki)
