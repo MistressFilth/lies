@@ -240,14 +240,14 @@ def test_query_unknown_tag_exits_2(wiki: Wiki) -> None:
     """An include atom outside the registry exits 2 with the exact spelling."""
     result, _ = _invoke("+nope", "what", "is", "X?")
     assert result.exit_code == 2
-    assert "unknown tag: nope" in result.output
+    assert "unknown tag: 'nope'" in result.output
 
 
 def test_query_explicit_unknown_tag_exits_2(wiki: Wiki) -> None:
     """The explicit form validates against the same available set."""
     result, _ = _invoke("what is X?", "--tag-expr", "nope")
     assert result.exit_code == 2
-    assert "unknown tag: nope" in result.output
+    assert "unknown tag: 'nope'" in result.output
 
 
 def test_query_filter_without_question_exits_2(wiki: Wiki) -> None:

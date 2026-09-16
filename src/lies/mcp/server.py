@@ -481,55 +481,53 @@ def answer(
 def _collect_available_tags_mcp(wiki: Wiki) -> set[str]:
     """Return every addressable tag in the library (MCP surface).
 
-    The library is the source of truth for tag expressions — wikis
-    do not own collections. A tag like ``opencode`` is valid iff the
-    library has a ``collections_root/opencode/`` directory, regardless
-    of which wiki the operator's MCP daemon is bound to.
-
-    Reads ``Library.collections_root`` directly — library collections
-    carry no YAML config (they are canonical source docs, not wikis),
-    so the directory name is the only metadata we need.
-
-    Returns an empty set when the library has not been initialized.
-    ``wiki`` is accepted for signature uniformity with the legacy
-    per-wiki resolution but is intentionally ignored: collections live
-    in the library, not in any wiki.
+    Thin shim over :func:`lies.library.registry.library_collection_names`
+    — kept so the MCP ``query`` / ``answer`` boundary has the same
+    helper name as its CLI counterpart. ``wiki`` is accepted for
+    signature uniformity with the legacy per-wiki resolution but is
+    intentionally ignored: collections live in the library, not in
+    any wiki.
     """
-    from lies.library.paths import Library
-    from lies.query.synthesizer import _library_initialized
+    from lies.library.registry import library_collection_names
 
-    if not _library_initialized():
-        return set()
-    root = Library.open().collections_root
-    return {entry.name for entry in root.iterdir() if entry.is_dir()}
+    return set(library_collection_names())
 
 
 def format_unknown_tag_error(exc: TagExprUnknown) -> str:
     """Build a self-explanatory ``unknown tag`` ToolError message.
 
-    Library-first surface. Two lines (each omit-able):
+    Library-first surface. Up to three lines:
 
       - offending tag spelling (``'opencode'``)
-      - the library's collections sorted (``the library's collections: ...``)
-      - when the library has not been initialized, a distinct line that
-        tells the operator the library is empty / absent so they can
-        fix it instead of guessing at tag spellings.
+      - the library's collections sorted (``the library's collections: ...``),
+        when the library is initialized with at least one collection
+      - when the library is empty / absent, a distinct line that
+        tells the operator whether to initialize the library or to
+        ingest something into it (two separate failure modes).
 
     The library is NOT a wiki and is never referred to as one. The
     original ``unknown tag: <tag>`` prefix is preserved so log
     scrapers and existing tests that grep on the literal string keep
     working.
     """
-    parts: list[str] = [f"unknown tag: {exc.tag!r}"]
-    from lies.query.synthesizer import _library_initialized
+    from lies.library.registry import (
+        library_has_no_collections,
+        library_initialized,
+    )
 
+    parts: list[str] = [f"unknown tag: {exc.tag!r}"]
     if exc.available:
         sorted_tags = sorted(exc.available)
         parts.append(f"the library's collections: {', '.join(sorted_tags)}")
-    elif not _library_initialized():
+    elif not library_initialized():
         parts.append(
             "the library is not initialized; collections live in the library, "
             "not in wikis. Initialize it before querying with tag filters."
+        )
+    elif library_has_no_collections():
+        parts.append(
+            "the library has no collections; ingest something first "
+            "(see `lies ingest --help`) before querying with tag filters."
         )
     return "\n".join(parts)
 

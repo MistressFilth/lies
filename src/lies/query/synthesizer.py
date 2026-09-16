@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Literal, cast
 
 from lies.collections.record import Collection
+from lies.library.registry import LibraryCollectionMeta
 from lies.qmd.cli import qmd_query
 from lies.query.index_parser import parse_index_links
 from lies.query.models import SynthesizedAnswer
@@ -169,7 +170,7 @@ def retrieve_pages(
     qmd_search_fn = qmd_search if qmd_search is not None else _qmd_search_default()
     collection_filter: set[str] | None = None
     if tag_filter is not None:
-        collection_filter = _collections_matching(wiki, tag_filter)
+        collection_filter = _collections_matching(tag_filter)
 
     wiki_collection = f"wiki_{wiki.name}"
     wiki_filter: set[str] = {wiki_collection}
@@ -765,42 +766,36 @@ def _qmd_search_dispatch(
 def _library_collection_configs() -> list[Collection]:
     """Every collection registered in the library, as :class:`Collection`.
 
-    Library collections live as directories under
-    ``Library.collections_root/<name>/``. There is no per-collection
-    YAML config in the library layout — collections are source docs,
-    not wikis, and carry no `tags` / `source` / `mapper_model` metadata
-    here. We synthesize a minimal :class:`Collection` whose only
-    meaningful field for the tag-expression surface is ``name`` (the
-    directory name); ``tags`` is empty so the implicit-self-tag rule
-    (a collection's name is always an addressable tag) is the only
-    rule that fires. The retriever's downstream code consumes only
-    ``coll.name``, so the rest of the record's emptiness is harmless.
+    Deprecated: prefer :func:`lies.library.registry.library_collection_metas`.
+    Retained as a thin adapter for legacy callers that still need a
+    full :class:`Collection` shape (the retriever's matching code
+    accepts :class:`LibraryCollectionMeta` directly, so this adapter
+    is only needed where a downstream consumer reads wiki-yaml fields
+    such as ``source`` / ``scraper_cmd` — and the library layout has
+    none of those).
 
-    Library is the source of truth for tag resolution — wikis do not
-    own collections. ``wiki`` is accepted for signature uniformity
-    with the legacy ``_collections_matching(wiki, ...)`` callers but
-    is intentionally ignored.
+    Synthesizes a minimal :class:`Collection` whose only meaningful
+    fields for tag resolution are ``name`` and ``tags``. ``tags`` is
+    empty so the implicit-self-tag rule covers every addressable
+    collection by its directory name. The rest of the record's
+    fields are populated with safe sentinels; downstream code that
+    reads ``coll.name`` (the only consumer today) is unaffected.
 
-    Returns an empty list when the library has not been initialized
-    (``Library.open().collections_root`` does not exist). Callers that
-    must surface the empty case to operators (the MCP / CLI error
-    path) should call :func:`_library_initialized` first.
+    Returns an empty list when the library has not been initialized.
     """
     from lies.library.paths import Library
+    from lies.library.registry import library_collection_metas
 
     root = Library.open().collections_root
-    if not root.exists():
-        return []
+    metas = list(library_collection_metas())
     out: list[Collection] = []
-    for entry in sorted(root.iterdir()):
-        if not entry.is_dir():
-            continue
+    for meta in metas:
         out.append(
             Collection(
-                name=entry.name,
-                path=entry,
+                name=meta.name,
+                path=root / meta.name,
                 source="",
-                tags=[],
+                tags=list(meta.tags),
                 scraper_cmd=None,
                 doc_path=None,
                 mapper_model=None,
@@ -815,13 +810,18 @@ def _library_collection_configs() -> list[Collection]:
 
 
 def _library_initialized() -> bool:
-    """True iff the library's ``collections_root`` exists on disk."""
-    from lies.library.paths import Library
+    """True iff the library's ``collections_root`` exists on disk.
 
-    return Library.open().collections_root.exists()
+    Deprecated: prefer :func:`lies.library.registry.library_initialized`.
+    Kept as a thin shim so any external caller of the synthesizer
+    private helper does not break.
+    """
+    from lies.library.registry import library_initialized
+
+    return library_initialized()
 
 
-def _collections_matching(wiki: Wiki, tag_filter: ResolvedTagFilter) -> set[str]:
+def _collections_matching(tag_filter: ResolvedTagFilter) -> set[str]:
     """Return the set of library collection names that pass ``tag_filter``.
 
     Library collections are the source of truth for tag expression
@@ -848,22 +848,17 @@ def _collections_matching(wiki: Wiki, tag_filter: ResolvedTagFilter) -> set[str]
     is the path's first segment). Empty when the library is not
     initialized — the operator-facing surfaces (MCP / CLI) detect that
     separately and tell the operator to initialize the library.
-
-    The ``wiki`` parameter is retained for signature uniformity with
-    legacy callers but is intentionally unused: collections live in
-    the library, not in the active wiki.
     """
+    from lies.library.registry import library_collection_metas
     from lies.query.tag_expr import _exclude_atom_matches, atom_matches
 
     matching: set[str] = set()
-    if not _library_initialized():
-        return matching
 
     exclude = tag_filter.exclude
     exclude_qualifier = tag_filter.exclude_qualifier
     include = tag_filter.include
 
-    def _eval_include(node: object, coll: Collection) -> bool:
+    def _eval_include(node: object, coll: LibraryCollectionMeta) -> bool:
         if isinstance(node, Include):
             return atom_matches(coll, node)
         if isinstance(node, And):
@@ -872,7 +867,7 @@ def _collections_matching(wiki: Wiki, tag_filter: ResolvedTagFilter) -> set[str]
             return _eval_include(node.left, coll) or _eval_include(node.right, coll)
         return False
 
-    for coll in _library_collection_configs():
+    for coll in library_collection_metas():
         if exclude is not None and _exclude_atom_matches(coll, exclude, exclude_qualifier):
             continue
         if include is None:
@@ -883,18 +878,17 @@ def _collections_matching(wiki: Wiki, tag_filter: ResolvedTagFilter) -> set[str]
     return matching
 
 
-def _all_collection_names(wiki: Wiki) -> list[str]:
+def _all_collection_names() -> list[str]:
     """Every collection in the library, sorted by name.
 
     The "no tag_filter" scope per the Bundle C spec
     (§"Retriever consumption" — "without a filter, the scope is all
     registered collections"). The library is the universe; wikis do
-    not contribute to the addressable collection set. ``wiki`` is
-    accepted for signature uniformity but ignored.
+    not contribute to the addressable collection set.
     """
-    if not _library_initialized():
-        return []
-    return sorted(c.name for c in _library_collection_configs())
+    from lies.library.registry import library_collection_names
+
+    return sorted(library_collection_names())
 
 
 def _searched_scope(wiki: Wiki, tag_filter: ResolvedTagFilter | None) -> list[str]:
@@ -902,15 +896,19 @@ def _searched_scope(wiki: Wiki, tag_filter: ResolvedTagFilter | None) -> list[st
 
     With a filter: the resolved collection set from
     :func:`_collections_matching` (sorted, unique). Without a filter:
-    every collection registered in ``wiki`` per
+    every collection registered in the library per
     :func:`_all_collection_names`. Empty in either case when no
     collections are registered.
 
     The result is the Bundle C answer-shape contract: the
     orchestrator populates ``SynthesizedAnswer.searched_scope`` from
     this helper so downstream surfaces (F12 elicitation, F16 catalog
-    pages_read_by_collection) can react to the effective scope.
+    pages_read_by_collection) can react to the effective scope. The
+    ``wiki`` parameter is retained for signature uniformity with the
+    Bundle C spec contract (``searched_scope(wiki, tag_filter)``); the
+    implementation reads the library, not the wiki, because the
+    library is the source of truth.
     """
     if tag_filter is not None:
-        return sorted(_collections_matching(wiki, tag_filter))
-    return _all_collection_names(wiki)
+        return sorted(_collections_matching(tag_filter))
+    return _all_collection_names()

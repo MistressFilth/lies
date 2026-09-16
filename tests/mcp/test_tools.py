@@ -280,10 +280,8 @@ def test_query_unknown_tag_mentions_uninitialized_library(
 
     from lies import xdg
     from lies.constants import LIES_DATA_SUBDIR
-    from lies.library.paths import Library
 
-    Library.open.cache_clear()
-    # Drop the library dir so ``_library_initialized()`` returns False.
+    # Drop the library dir so ``library_initialized()`` returns False.
     lib_root = xdg.data_home() / LIES_DATA_SUBDIR / "library"
     if lib_root.exists():
         shutil.rmtree(lib_root)
@@ -295,6 +293,37 @@ def test_query_unknown_tag_mentions_uninitialized_library(
     assert "unknown tag" in msg
     assert "'opencode'" in msg
     assert "the library is not initialized" in msg
+
+
+def test_query_unknown_tag_mentions_empty_library(
+    registered_wiki: Wiki,
+    wiki_name: str,
+) -> None:
+    """When the library is initialized but has zero collections, the
+    error tells the operator to ingest something — distinct from the
+    uninitialized case so the operator knows which fix applies.
+    """
+    import shutil
+
+    from lies import xdg
+    from lies.constants import LIES_DATA_SUBDIR
+
+    # Library is initialized (parent + collections_root exist) but
+    # has no collection subdirs. Reset to a fresh empty state.
+    lib_root = xdg.data_home() / LIES_DATA_SUBDIR / "library"
+    if lib_root.exists():
+        shutil.rmtree(lib_root)
+    lib_root.mkdir(parents=True, exist_ok=True)
+    (lib_root / "collections").mkdir(parents=True, exist_ok=True)
+
+    with pytest.raises(ToolError) as excinfo:
+        query("anything", name=wiki_name, tag_expr="c:opencode")
+
+    msg = str(excinfo.value)
+    assert "unknown tag" in msg
+    assert "'opencode'" in msg
+    assert "the library has no collections" in msg
+    assert "ingest" in msg
 
 
 def test_query_c_prefix_resolves_against_library(

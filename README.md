@@ -233,7 +233,7 @@ collection list:
 
 ```
 unknown tag: 'opencode'
-the library's collections: claude_code, fastmcp, minimax_docs, opencode
+the library's collections: example_a, example_b, example_c
 ```
 
 When the library has not been initialized, the error names the gap
@@ -243,6 +243,22 @@ so the operator knows to initialize the library before filtering:
 unknown tag: 'opencode'
 the library is not initialized; collections live in the library, not in wikis.
 ```
+
+When the library is initialized but has zero collections (empty
+`collections_root`), the error tells the operator to ingest first:
+
+```
+unknown tag: 'opencode'
+the library has no collections; ingest something first (see `lies ingest --help`) before querying with tag filters.
+```
+
+> **Note:** `lies collections list`, `lies collections show`, the
+> ETL sync helper, and the registry under `<wiki>/.lies/` still
+> surface the legacy `wiki.collections_dir/*.yaml` layout for
+> collection management (CRUD, sync, enrichment). The wiki-yaml
+> layout is **legacy** and is no longer consulted for tag
+> resolution. New content goes to the library via
+> `lies ingest --source ...`.
 
 Notes on the CLI parser: Typer is configured with
 `ignore_unknown_options=True` so the leading `+tag...` token chain

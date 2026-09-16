@@ -29,25 +29,15 @@ __all__ = (
 def _collect_available_tags(wiki) -> set[str]:  # noqa: ANN001 - Wiki import is lazy
     """Return every addressable tag in the library.
 
-    The library is the source of truth for tag expressions — wikis do
-    not own collections. A tag like ``opencode`` is valid iff the
-    library has a ``collections_root/opencode/`` directory, regardless
-    of which wiki the operator is querying against. Library
-    collections carry no YAML config (they are canonical source docs,
-    not wikis), so the directory name is the only metadata the
-    addressable-tag surface needs.
-
-    Returns an empty set when the library has not been initialized.
-    ``wiki`` is accepted for signature uniformity with the legacy
-    per-wiki resolution but is intentionally ignored.
+    Thin shim over :func:`lies.library.registry.library_collection_names`
+    — kept so the CLI ``query`` boundary has the same helper name as
+    its MCP counterpart. ``wiki`` is accepted for signature uniformity
+    with the legacy per-wiki resolution but is intentionally ignored:
+    collections live in the library, not in any wiki.
     """
-    from lies.library.paths import Library
-    from lies.query.synthesizer import _library_initialized
+    from lies.library.registry import library_collection_names
 
-    if not _library_initialized():
-        return set()
-    root = Library.open().collections_root
-    return {entry.name for entry in root.iterdir() if entry.is_dir()}
+    return set(library_collection_names())
 
 
 @app.command(
@@ -172,22 +162,18 @@ def query(
                     include_ast, available=_collect_available_tags(wiki)
                 ).include
             except TagExprUnknown as exc:
-                typer.echo(f"error: {exc}", err=True)
-                if exc.available:
-                    typer.echo(
-                        f"  the library's collections: {', '.join(sorted(exc.available))}",
-                        err=True,
-                    )
-                else:
-                    from lies.query.synthesizer import _library_initialized
+                # Surface the shared library-first message (see
+                # ``format_unknown_tag_error`` in the MCP server).
+                # Strip the leading "unknown tag: 'foo'" line for the
+                # CLI's two-line stderr contract; re-print it as
+                # ``error: unknown tag: foo`` to keep the existing CLI
+                # test regex (``error: unknown tag: <name>``) intact.
+                from lies.mcp.server import format_unknown_tag_error
 
-                    if not _library_initialized():
-                        typer.echo(
-                            "  the library is not initialized; collections "
-                            "live in the library, not in wikis. Initialize "
-                            "it before querying with tag filters.",
-                            err=True,
-                        )
+                full = format_unknown_tag_error(exc).splitlines()
+                typer.echo(f"error: {full[0]}", err=True)
+                for line in full[1:]:
+                    typer.echo(f"  {line}", err=True)
                 raise typer.Exit(code=2) from exc
         # The exclude is deliberately not validated here — the retriever
         # resolves it against the live collection set (spec: Error model).

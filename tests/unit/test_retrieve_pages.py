@@ -207,7 +207,7 @@ def test_collections_matching_implicit_self_tag_matches_collection_name(
     implicit-self-tag rule covers the name.
     """
     tf = ResolvedTagFilter(include=Include("pyspark"))
-    assert _collections_matching(tagged_wiki, tf) == {"pyspark"}
+    assert _collections_matching(tf) == {"pyspark"}
 
 
 def test_collections_matching_include_matches_known_collection_name(
@@ -215,7 +215,7 @@ def test_collections_matching_include_matches_known_collection_name(
 ) -> None:
     """``+airflow`` matches the airflow library collection."""
     tf = ResolvedTagFilter(include=Include("airflow"))
-    assert _collections_matching(tagged_wiki, tf) == {"airflow"}
+    assert _collections_matching(tf) == {"airflow"}
 
 
 def test_collections_matching_include_unknown_collection_returns_empty(
@@ -227,7 +227,7 @@ def test_collections_matching_include_unknown_collection_returns_empty(
     semantic is dead under library-first resolution.
     """
     tf = ResolvedTagFilter(include=Include("provider"))
-    assert _collections_matching(tagged_wiki, tf) == set()
+    assert _collections_matching(tf) == set()
 
 
 def test_collections_matching_and_chain_intersects(tagged_wiki: Wiki) -> None:
@@ -239,13 +239,13 @@ def test_collections_matching_and_chain_intersects(tagged_wiki: Wiki) -> None:
     the two atoms are individually valid.
     """
     tf = ResolvedTagFilter(include=And(Include("airflow"), Include("amazon")))
-    assert _collections_matching(tagged_wiki, tf) == set()
+    assert _collections_matching(tf) == set()
 
 
 def test_collections_matching_or_chain_unions(tagged_wiki: Wiki) -> None:
     """``+airflow|amazon`` matches every library collection with either atom."""
     tf = ResolvedTagFilter(include=Or(Include("airflow"), Include("amazon")))
-    assert _collections_matching(tagged_wiki, tf) == {"airflow", "amazon"}
+    assert _collections_matching(tf) == {"airflow", "amazon"}
 
 
 def test_collections_matching_exclude_drops_matching_collection(
@@ -254,7 +254,7 @@ def test_collections_matching_exclude_drops_matching_collection(
     """A bare ``-amazon`` drops every library collection named amazon.
     Without an include, every other collection is kept."""
     tf = ResolvedTagFilter(exclude="amazon")
-    assert _collections_matching(tagged_wiki, tf) == {"airflow", "pyspark"}
+    assert _collections_matching(tf) == {"airflow", "pyspark"}
 
 
 def test_collections_matching_exclude_and_include_compose(
@@ -262,7 +262,7 @@ def test_collections_matching_exclude_and_include_compose(
 ) -> None:
     """``+airflow -amazon`` keeps airflow (exclude only matches amazon)."""
     tf = ResolvedTagFilter(include=Include("airflow"), exclude="amazon")
-    assert _collections_matching(tagged_wiki, tf) == {"airflow"}
+    assert _collections_matching(tf) == {"airflow"}
 
 
 def test_collections_matching_no_library_returns_empty(tmp_path: Path) -> None:
@@ -280,9 +280,9 @@ def test_collections_matching_no_library_returns_empty(tmp_path: Path) -> None:
 
     root = tmp_path / "bare"
     (root / "wiki").mkdir(parents=True)
-    wiki = make_wiki(name="bare", data_root=root)
+    make_wiki(name="bare", data_root=root)
     tf = ResolvedTagFilter(include=Include("airflow"))
-    assert _collections_matching(wiki, tf) == set()
+    assert _collections_matching(tf) == set()
 
 
 def test_collections_matching_unknown_include_tag_returns_empty(
@@ -294,7 +294,7 @@ def test_collections_matching_unknown_include_tag_returns_empty(
     says ``+airflow`` exists; the retriever says no collection's
     effective set contains it (would be a bug elsewhere)."""
     tf = ResolvedTagFilter(include=Include("nope"))
-    assert _collections_matching(tagged_wiki, tf) == set()
+    assert _collections_matching(tf) == set()
 
 
 # --- F15 t:/c: qualifier dispatch in _collections_matching ----------------
@@ -391,7 +391,7 @@ def test_collections_matching_t_qualifier_matches_collection_name(
     """Library collections are name-only; ``t:`` and ``c:`` collapse to the same
     answer — only the collection named airflow matches."""
     tf = ResolvedTagFilter(include=Include("airflow", qualifier="t"))
-    assert _collections_matching(airflow_cnn_wiki, tf) == {"airflow"}
+    assert _collections_matching(tf) == {"airflow"}
 
 
 def test_collections_matching_c_qualifier_strict_name(
@@ -399,7 +399,7 @@ def test_collections_matching_c_qualifier_strict_name(
 ) -> None:
     """c:airflow matches only the collection named airflow."""
     tf = ResolvedTagFilter(include=Include("airflow", qualifier="c"))
-    assert _collections_matching(airflow_cnn_wiki, tf) == {"airflow"}
+    assert _collections_matching(tf) == {"airflow"}
 
 
 def test_collections_matching_t_then_c_exclude(
@@ -412,7 +412,7 @@ def test_collections_matching_t_then_c_exclude(
         exclude="airflow",
         exclude_qualifier="c",
     )
-    assert _collections_matching(airflow_cnn_wiki, tf) == set()
+    assert _collections_matching(tf) == set()
 
 
 def test_collections_matching_t_python_c_python_excludes_self(
@@ -433,7 +433,7 @@ def test_collections_matching_t_python_c_python_excludes_self(
         exclude="python",
         exclude_qualifier="c",
     )
-    assert _collections_matching(python_django_wiki, tf) == set()
+    assert _collections_matching(tf) == set()
 
 
 # --- retrieve_pages threads tag_filter → collection_filter -------------
