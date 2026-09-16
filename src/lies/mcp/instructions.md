@@ -31,7 +31,7 @@ yourself. The wiki you are talking to is selected by the
 
 - `wiki://status`, `wiki://index`, `wiki://log`,
   `wiki://lint-report`, `wiki://memory-changes`,
-  `wiki://catalog/{slug}`,
+  `wiki://catalog`, `wiki://catalog/{slug}`,
   `wiki://page/{path}`.
 
 ## Prompts

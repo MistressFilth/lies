@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from lies import __version__
 from lies.mcp.instructions_loader import (
     INSTRUCTIONS_PATH,
     PROMPTS_DIR,
@@ -39,7 +40,7 @@ def test_load_instructions_renders_literal_braces(
     monkeypatch.setattr("lies.mcp.instructions_loader.INSTRUCTIONS_PATH", fake)
     body = load_instructions()
     assert "{slug}" in body, "literal {slug} should survive Template substitution"
-    assert "0.25.0" in body
+    assert __version__ in body
 
 
 def test_load_prompt_stamps_version(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -47,7 +48,7 @@ def test_load_prompt_stamps_version(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     fake.write_text("hello $version\n", encoding="utf-8")
     monkeypatch.setattr("lies.mcp.instructions_loader.PROMPTS_DIR", tmp_path)
     body = load_prompt("fake")
-    assert body == "hello 0.25.0\n"
+    assert body == f"hello {__version__}\n"
 
 
 def test_load_prompt_missing_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
