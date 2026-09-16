@@ -14,6 +14,9 @@ All notable changes to LIES are documented here. The format follows
   envelope returns a new `claim_citations` list of `(claim,
   citation_index)` pairs for downstream consumers.
 
+### Fixed
+- qmd daemon staleness between `Orchestrator` runs is now reaped before the first search; closes the silent-failure mode where a stale-but-serving daemon returned pre-write results. The check runs at `QmdCapability.as_capability` after the TCP probe, before the native toolset is advertised.
+
 ## [0.26.0] - 2026-09-15
 
 ### Added
