@@ -136,7 +136,10 @@ disk since the daemon was spawned), `ensure_qmd_daemon` reaps and
 respawns it on the next call. The `LibraryWriter` envelope touches
 the global `<XDG_CACHE_HOME>/qmd/last-write-marker` sentinel on every
 successful commit; `ensure_qmd_daemon` reads its mtime to detect
-staleness.
+staleness. The construction-time check in `QmdCapability.as_capability`
+closes the gap between out-of-band writes and the agent's first search:
+if the marker indicates staleness when the capability is built, the
+daemon is reaped and respawned before the native toolset is advertised.
 
 The daemon has no authentication, so `up` and the internal `_serve`
 command refuse non-loopback bind hosts. Put an authenticated reverse
