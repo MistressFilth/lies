@@ -20,10 +20,20 @@ All notable changes to LIES are documented here. The format follows
 - `build_answer_from_pages` validates the synthesizer's format_hint against the body via `validate_format` and sets `SynthesizedAnswer.format` accordingly.
 
 ### Fixed
-- Synthesizer LLM emitted library-source citations with a phantom `wiki/` prefix; the orchestrator dropped them all, leaving the answer with no valid citations and the dropped-warning in `synthesis_reason`. `Orchestrator._normalize` now strips a leading `wiki/` from emitted citations and matches in both directions (with/without prefix) before constructing `Citation` objects. Defense-in-depth alongside the prompt fix.
-- Library pages now land under nested mirror directories: `write_mirror` calls `target.parent.mkdir(parents=True, exist_ok=True)`.
-- Pre-existing REPL help test (`tests/unit/test_cli.py::test_repl_help_command`) failed because Rich's `Console.print` bypasses `CliRunner` capture; replacing with `typer.echo` lets `assert "/ingest" in result.stdout` pass.
+- `render_format` frontmatter value is now double-quoted (`src/lies/page/author.py:_format_author_body`) to neutralize YAML-significant characters (`:` / `[` / `#` / embedded quotes / backslashes) a future caller might pass; mirrors the existing `title_q` / `collection_q` quote-and-escape pattern. The three known values (`md` / `table` / `marp`) parse unchanged; the broader type contract (`str | None`) is now safe by construction.
+
+### Performance
+- `format_validator.validate_format()` is pure; ~5ms overhead per call.
+- `render_marp` subprocess call: 1-3s (gated on `--format=marp` opt-in).
+
+## [0.24.1] - 2026-09-16
+
+### Fixed
 - **Tag-expression resolution is now library-first.** The library is the source of truth for collections — wikis do not own them. `_collections_matching`, `_all_collection_names`, `_collect_available_tags`, and `_collect_available_tags_mcp` now walk `Library.collections_root` (a directory of source-doc folders) instead of `wiki.collections_dir/*.yaml`. Library collections carry no per-collection yaml-declared tags — they are canonical source docs, not wikis — so the addressable tag set is exactly the set of library-collection directory names. `+c:opencode` resolves regardless of which wiki the operator's MCP daemon is bound to, because the opencode directory lives in the library. The `unknown tag: <name>` error now lists the library's collections instead of the active wiki's yaml-declared tags, and a distinct line ("the library is not initialized; collections live in the library, not in wikis") tells the operator when the library is absent. The library is never referred to as a wiki in the error surface. CLI mirrors the same enrichment on stderr before exit 2. This fixes the `+c:opencode ...` silent failure where the operator saw only `unknown tag: opencode` because the active wiki did not declare opencode; the opencode collection lives in the library and is now reachable from any wiki.
+
+## [0.24.0] - 2026-09-15
+
+### Added
 - **QMD daemon HTTP recycle on transport errors.** `QmdCapability` now
   wraps the underlying `MCPToolset` in a `QmdRecycleToolset` that
   auto-recycles the qmd daemon on `httpx.ReadTimeout` (qexpander wedge),
@@ -51,16 +61,29 @@ All notable changes to LIES are documented here. The format follows
   recycle that `QmdCapability` runs at construction time. Reuses
   the `flock qmd` sub-app from PR #74.
 
-### Performance
-- `format_validator.validate_format()` is pure; ~5ms overhead per call.
-- `render_marp` subprocess call: 1-3s (gated on `--format=marp` opt-in).
-
 ### Fixed
 - **Long-running lies agents hung on qexpander cold start.** The
   qmd daemon's first HyDE query after fresh start used to wedge the
   call handler for ~60s with no automatic recovery; now the next
   call against the wedged daemon recycles and the model retries
   against the fresh one.
+
+## [0.23.0] - 2026-09-14
+
+### Added
+- `mcp__lies__answer` tool returns the synthesized answer body as plain text (was buried inside `query`'s structured envelope). Chat surfaces that hide JSON tool results now render the answer verbatim; `query` keeps the structured path for callers that need citations / file-receipt / scope.
+- `WebScraper` preserves nested source paths from `llms.txt` indexes: strips a leading `/docs/<lang>/` site prefix and mirrors the remaining hierarchy under the collection root. `agents-and-tools/agent-skills/best-practices.md` lands at `claude_platform/agents-and-tools/agent-skills/best-practices.md`.
+- `derive_nested_slug` helper for source-relative paths; `derive_slug` keeps its flat single-segment contract so existing fixtures stay green.
+
+### Changed
+- `WebScraper._LLMS_LINK_RE` accepts the dash-separated description form (`- [Title](url) - description`) that platform.claude.com and other publishers emit, in addition to the colon form.
+- `query_synthesizer` prompt clarifies that library-source paths use `<coll>/<file>` without a `wiki/` prefix; wiki-source paths carry the prefix. Quote paths verbatim from the corpus block headers.
+- REPL `/help` command now uses `typer.echo` (stdout-bound) instead of `Console.print` (Rich-buffers, bypasses test capture).
+
+### Fixed
+- Synthesizer LLM emitted library-source citations with a phantom `wiki/` prefix; the orchestrator dropped them all, leaving the answer with no valid citations and the dropped-warning in `synthesis_reason`. `Orchestrator._normalize` now strips a leading `wiki/` from emitted citations and matches in both directions (with/without prefix) before constructing `Citation` objects. Defense-in-depth alongside the prompt fix.
+- Library pages now land under nested mirror directories: `write_mirror` calls `target.parent.mkdir(parents=True, exist_ok=True)`.
+- Pre-existing REPL help test (`tests/unit/test_cli.py::test_repl_help_command`) failed because Rich's `Console.print` bypasses `CliRunner` capture; replacing with `typer.echo` lets `assert "/ingest" in result.stdout` pass.
 
 ## [0.22.0] - 2026-09-13
 
