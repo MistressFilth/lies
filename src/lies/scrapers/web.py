@@ -116,22 +116,31 @@ class WebScraper(BaseScraper):
 
         return body
 
-    def _fetch_doc(self, url: str) -> bytes | None:
+    def _fetch_doc(self, url: str, base: str | None = None) -> bytes | None:
         """Fetch a single doc URL referenced from an llms.txt index.
 
         Same redirect / HTML / error semantics as ``_fetch_candidate`` but
         a higher timeout is acceptable (these are real doc pages, not
         50-byte index probes).
+
+        ``base`` is the source URL (the llms.txt manifest URL);
+        relative link targets (e.g. ``/docs/foo.md``) are resolved
+        against it via :func:`urllib.parse.urljoin` before fetching.
+        Without that resolution, ``urllib.request.Request`` rejects
+        non-absolute URLs with ``ValueError: unknown url type``.
         """
+        from urllib.parse import urljoin
+
+        resolved = urljoin(base, url) if base else url
         try:
-            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            req = urllib.request.Request(resolved, headers={"User-Agent": "Mozilla/5.0"})
             with urllib.request.urlopen(req, timeout=30) as resp:
                 final_url = resp.geturl()
                 body: bytes = resp.read()
-        except (HTTPError, URLError, TimeoutError, OSError):
+        except (HTTPError, URLError, TimeoutError, OSError, ValueError):
             return None
 
-        if final_url.rstrip("/") != url.rstrip("/"):
+        if final_url.rstrip("/") != resolved.rstrip("/"):
             return None
         if not body.strip():
             return None
@@ -192,16 +201,17 @@ class WebScraper(BaseScraper):
         is_index = basename == "llms.txt" and basename != "llms-full.txt"
 
         if is_index:
-            return self._parse_index(text)
+            return self._parse_index(text, source=source)
 
         return self._parse_chunked(text)
 
-    def _parse_index(self, text: str) -> list[ParsedDoc]:
+    def _parse_index(self, text: str, *, source: str | Path | None = None) -> list[ParsedDoc]:
         """Follow every doc URL listed in the llms.txt index, return one ParsedDoc per fetched page.
 
-        Pages whose fetch fails (404, redirect, HTML, timeout) are
-        dropped silently -- partial ingestion is better than a hard
-        failure when the index lists 70+ pages.
+        Pages whose fetch fails (404, redirect, HTML, timeout,
+        relative URL with no base) are dropped silently -- partial
+        ingestion is better than a hard failure when the index lists
+        70+ pages.
 
         The earlier implementation appended a ``_index.md``
         ``ParsedDoc`` for the index body itself ("table of contents
@@ -213,13 +223,22 @@ class WebScraper(BaseScraper):
         ``lies ingest --source <llms.txt URL>`` run on item #0. The
         emission was dropped; downstream stages that want the index
         contents can read the source URL themselves.
+
+        Relative link handling: many llms.txt publishers emit
+        ``/docs/path/page.md`` (path-only) rather than the full URL.
+        Such links are resolved against the ``source`` URL via
+        :func:`urllib.parse.urljoin` before fetching; without that
+        resolution, ``urllib.request.Request(url)`` raises
+        ``ValueError: unknown url type`` and every page drops.
         """
         docs: list[ParsedDoc] = []
         used: set[str] = set()
 
+        base_str = str(source) if source is not None else (self._last_resolved_url or None)
+
         links = self._extract_llms_links(text)
         for idx, (_title, url) in enumerate(links):
-            body = self._fetch_doc(url)
+            body = self._fetch_doc(url, base=base_str)
             if body is None:
                 continue
             path = self._url_to_path(url, idx, used)
