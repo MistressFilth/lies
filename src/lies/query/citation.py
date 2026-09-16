@@ -24,3 +24,5 @@ class Citation:
 
     path: str
     source: Literal["library", "wiki"]
+    line: int | None = None
+    section: str | None = None

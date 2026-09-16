@@ -434,11 +434,11 @@ def test_query_tool_serializes_citations_as_dicts_with_source(
 
     wire = result.model_dump()
     assert wire["citations"] == [
-        {"path": "concepts/beta.md", "source": "library"},
-        {"path": "wiki/concepts/beta.md", "source": "wiki"},
+        {"path": "concepts/beta.md", "source": "library", "line": None, "section": None},
+        {"path": "wiki/concepts/beta.md", "source": "wiki", "line": None, "section": None},
     ]
     assert wire["pages_read"] == [
-        {"path": "concepts/beta.md", "source": "library"},
+        {"path": "concepts/beta.md", "source": "library", "line": None, "section": None},
     ]
     # The on-instance type stays Citation (Pydantic validates the input
     # field type) — the wire format is what downstream consumers see.
