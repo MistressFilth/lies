@@ -3,11 +3,11 @@ from lies.query.citation import ClaimCitation
 
 
 def test_validate_keeps_valid_entries() -> None:
-    answer = "Each subagent runs in its own context."
+    answer = "Each subagent runs in its own context. See b.md for details."
     citations = ["a.md", "b.md"]
     entries = [
         ClaimCitation(claim="Each subagent runs in its own context.", citation_index=0),
-        ClaimCitation(claim="b.md", citation_index=1),
+        ClaimCitation(claim="See b.md for details.", citation_index=1),
     ]
     kept, dropped = _validate_claim_citations(entries, citations, answer)
     assert len(kept) == 2

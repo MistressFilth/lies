@@ -806,15 +806,12 @@ def _validate_claim_citations(
     - ``citation_index`` is out of range for ``citations``
     - ``citation_index`` is negative
     - ``claim`` does not appear verbatim as a substring of ``answer``
-      and does not equal any entry in ``citations`` (a claim that is
-      itself a citation path is treated as a self-reference and kept)
 
     Returns ``(kept, drop_reasons)``. ``drop_reasons`` are short
     diagnostic strings suitable for joining into ``synthesis_reason``.
     """
     kept: list[ClaimCitation] = []
     drops: list[str] = []
-    citation_set = set(citations)
     n_citations = len(citations)
     for entry in claim_citations:
         if not (0 <= entry.citation_index < n_citations):
@@ -823,7 +820,7 @@ def _validate_claim_citations(
                 f"(citations has {n_citations} entries)"
             )
             continue
-        if entry.claim and entry.claim not in answer and entry.claim not in citation_set:
+        if entry.claim and entry.claim not in answer:
             drops.append(f"claim_citation claim not in body: {entry.claim!r}")
             continue
         kept.append(entry)
