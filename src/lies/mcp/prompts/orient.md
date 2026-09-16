@@ -31,6 +31,8 @@ tools respectively; use them when you only need to ask.
 
 ## What NOT to do
 
-Do not write collection storage paths by analogy with the page-write
-target `wiki/<collection>/<page-type>/<slug>.md` — that is the
-`lies page write` destination, not the source collection location.
+Do not write collection storage paths by analogy with any other
+wiki-side surface. The page-write target (the destination of
+`lies page write`) is a separate concern from where source
+collection YAMLs and raw mirrors live — use the four path
+facts above as the only source of truth.
