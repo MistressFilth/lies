@@ -50,7 +50,7 @@ yourself. The wiki you are talking to is selected by the
 - `lies init <name>` — bootstrap wiki + schema.
 - `lies sync <collection> --source <url>` — bootstrap + ingest.
 - `lies sync` — sync every collection.
-- `lies query format` — render an answer as md/table/marp.
+- `lies query --format=auto|md|table|marp` — render the answer as md, table, or marp.
 - `lies lint [--fix]` — deterministic health-check.
-- `lies collections add|modify|list` — manage collection YAMLs.
+- `lies collections new|modify|list` — manage collection YAMLs.
 - `lies mcp up|down|status` — daemon lifecycle.
