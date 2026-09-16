@@ -292,3 +292,39 @@ def test_as_capability_does_not_reap_when_daemon_is_fresh(
     assert reap_calls == []
     assert spawn_calls == []
     assert sidecar_calls == []
+
+
+def test_as_capability_falls_back_when_native_probe_fails_after_reap(
+    wiki_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Stale + reap succeeds + JSON-RPC probe fails -> in-process fallback.
+
+    Pins the recovery path: even when the reap envelope fires, if
+    the freshly-spawned daemon does not serve JSON-RPC, the
+    existing fallback path takes over (no regression in error
+    handling).
+    """
+    import httpx
+
+    from tests.conftest import make_wiki
+
+    wiki = make_wiki(name="capability-reap-then-fallback", data_root=wiki_root)
+    monkeypatch.setattr("lies.qmd.capability.qmd_daemon_reachable", lambda url, timeout=0.5: True)
+    monkeypatch.setattr("lies.qmd.capability._is_daemon_stale", lambda: True)
+    monkeypatch.setattr(
+        "lies.qmd.capability._reap_qmd_daemon", lambda *, grace=2.0, poll=0.05: None
+    )
+    monkeypatch.setattr("lies.qmd.capability._spawn_qmd_daemon", lambda: None)
+    monkeypatch.setattr("lies.qmd.capability.write_sidecar_data_dir", lambda data_dir: None)
+
+    async def _probe_fails(url: str) -> None:
+        raise httpx.ConnectError("freshly-spawned daemon refused connection")
+
+    monkeypatch.setattr("lies.qmd.capability._probe_liveness", _probe_fails)
+
+    cap = QmdCapability(transport="http", url="http://127.0.0.1:8181", wiki=wiki).as_capability()
+    assert cap.id == "lies.qmd"
+    assert "Falls back to a degraded in-process index scan" in cap.description
+    assert not cap.description.startswith(
+        "qmd MCP daemon. Search the wiki, read pages, and check collection status."
+    )
