@@ -49,7 +49,7 @@ from lies.query import (
     retrieve_pages,
     synthesize_answer,
 )
-from lies.query.citation import Citation
+from lies.query.citation import Citation, ClaimCitation
 from lies.query.tag_expr import ResolvedTagFilter
 from lies.query.synthesizer import _searched_scope
 from lies.schema import load_schema
@@ -788,6 +788,41 @@ def _render_footnotes(
         title = page_titles.get(c.path)
         lines.append(_render_footnote_line(i, c, title=title))
     return "\n".join(lines)
+
+
+def _validate_claim_citations(
+    claim_citations: list["ClaimCitation"],
+    citations: list[str],
+    answer: str,
+) -> tuple[list["ClaimCitation"], list[str]]:
+    """Validate ``claim_citations`` against ``answer`` and ``citations``.
+
+    Drops entries where:
+    - ``citation_index`` is out of range for ``citations``
+    - ``citation_index`` is negative
+    - ``claim`` does not appear verbatim as a substring of ``answer``
+      and does not equal any entry in ``citations`` (a claim that is
+      itself a citation path is treated as a self-reference and kept)
+
+    Returns ``(kept, drop_reasons)``. ``drop_reasons`` are short
+    diagnostic strings suitable for joining into ``synthesis_reason``.
+    """
+    kept: list[ClaimCitation] = []
+    drops: list[str] = []
+    citation_set = set(citations)
+    n_citations = len(citations)
+    for entry in claim_citations:
+        if not (0 <= entry.citation_index < n_citations):
+            drops.append(
+                f"claim_citation index {entry.citation_index} out of range "
+                f"(citations has {n_citations} entries)"
+            )
+            continue
+        if entry.claim and entry.claim not in answer and entry.claim not in citation_set:
+            drops.append(f"claim_citation claim not in body: {entry.claim!r}")
+            continue
+        kept.append(entry)
+    return kept, drops
 
 
 class Orchestrator:
