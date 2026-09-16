@@ -374,3 +374,44 @@ def test_mcp_query_bad_qualifier_in_exclude_tags_raises_tool_error(
     msg = str(exc.value).lower()
     assert "unknown qualifier" in msg or "qualifier" in msg
     orch_cls.return_value.run_query.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# F1 — ``format`` field propagated from ``SynthesizedAnswer`` to MCP wire shape
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("fmt", ["md", "table", "marp"])
+def test_mcp_query_propagates_format_field(
+    monkeypatch, fake_wiki_with_collections, fmt: str
+) -> None:
+    """The MCP wire format carries the validated ``format`` from the synthesizer.
+
+    Spec § 8 promises the MCP wrapper propagates ``format`` via the
+    ``SynthesizedAnswer.format`` -> ``SynthesizedMcpAnswer.format``
+    handoff. Without it, downstream LLM callers cannot dispatch on the
+    validated format (e.g. for a chat render vs. a slide-deck render).
+    Pins the contract for all three documented values.
+    """
+    from lies.mcp import server
+
+    fake = _answer(format=fmt)
+
+    with mock.patch.object(server, "Orchestrator") as orch_cls:
+        orch_cls.return_value.run_query.return_value = fake
+        result = server.query(question="what is X?")
+
+    assert isinstance(result, server.SynthesizedMcpAnswer)
+    assert result.format == fmt
+    # The default-fall-through is also pinned: a constructed MCP
+    # answer without an explicit ``format`` defaults to ``"md"`` so
+    # existing callers compile unchanged.
+    default_answer = server.SynthesizedMcpAnswer(
+        answer="",
+        fallback_used=False,
+        fallback_reason=None,
+        citations=[],
+        pages_read=[],
+        changed_pages=[],
+    )
+    assert default_answer.format == "md"

@@ -282,6 +282,16 @@ without a grammar change. Both include and exclude atoms accept the
 prefixes; the same prefixes work in `mcp_query(tag_expr=...,
 exclude_tags=...)`.
 
+### Output formats
+
+`lies query` accepts `--format=auto|md|table|marp` (default `auto`). The synthesizer picks the format at composition time based on the answer content; explicit values force re-synthesis with a constrained prompt if the auto-route differs.
+
+- **`md`** (default fallback): plain markdown body.
+- **`table`**: GFM pipe table with header + separator + data rows.
+- **`marp`**: Marp-flavored markdown with `marp: true` frontmatter + slide breaks. When the `marp` CLI is on `$PATH`, the body is rendered to HTML at `${XDG_CACHE_HOME:-~/.cache}/lies/query-<timestamp>.html`. When `marp` is not installed, the body is written to a `.md` file and the path is printed with a render hint.
+
+The format is also exposed on the MCP `query` response via the `format` field (`"md"`, `"table"`, or `"marp"`). Synthesis pages gain a `render_format` frontmatter field recording the body shape for future curators.
+
 ## Advanced
 
 ### Manual authoring (advanced)

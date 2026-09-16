@@ -1,6 +1,9 @@
 from dataclasses import is_dataclass
 
-from lies.agents.query_synthesizer import QueryAnswer
+from lies.agents.query_synthesizer import (
+    QUERY_SYNTHESIZER_SYSTEM_PROMPT,
+    QueryAnswer,
+)
 
 
 def test_query_answer_is_dataclass() -> None:
@@ -15,6 +18,36 @@ def test_query_answer_constructs() -> None:
     )
     assert a.should_file is False
     assert a.citations == ["wiki/x.md"]
+
+
+def test_query_answer_defaults_format_hint_md() -> None:
+    """``format_hint`` defaults to "md" so existing callers compile."""
+    qa = QueryAnswer(answer="x", citations=[], should_file=False)
+    assert qa.format_hint == "md"
+
+
+def test_query_answer_explicit_format_hint() -> None:
+    """``format_hint`` accepts the three documented values."""
+    for hint in ("md", "table", "marp"):
+        qa = QueryAnswer(answer="x", citations=[], should_file=False, format_hint=hint)
+        assert qa.format_hint == hint
+
+
+def test_query_answer_format_hint_default_is_md() -> None:
+    """Regression pin: default matches spec § 13."""
+    assert QueryAnswer(answer="x", citations=[], should_file=False).format_hint == "md"
+
+
+def test_query_synthesizer_prompt_includes_format_taxonomy() -> None:
+    """The system prompt teaches the format_hint taxonomy."""
+    assert "format_hint" in QUERY_SYNTHESIZER_SYSTEM_PROMPT
+    assert "table" in QUERY_SYNTHESIZER_SYSTEM_PROMPT
+    assert "marp" in QUERY_SYNTHESIZER_SYSTEM_PROMPT
+    # Hybrid taxonomy: instructions AND shape examples both present.
+    assert (
+        "Pick the format" in QUERY_SYNTHESIZER_SYSTEM_PROMPT
+        or "pick the format" in QUERY_SYNTHESIZER_SYSTEM_PROMPT.lower()
+    )
 
 
 def test_query_synthesizer_agent_accepts_dataclass_output() -> None:

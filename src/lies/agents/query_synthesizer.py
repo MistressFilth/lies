@@ -25,6 +25,14 @@ class QueryAnswer:
     should_file: bool
     """True if the answer is worth keeping as a new wiki page."""
 
+    format_hint: Literal["md", "table", "marp"] = "md"
+    """The auto-routed format. Default "md" keeps existing callers compiling.
+
+    The synthesizer picks this at composition time based on the answer
+    content; the orchestrator's --format override re-synthesizes with a
+    stronger prompt when the operator disagrees with the auto-route.
+    """
+
 
 QUERY_SYNTHESIZER_SYSTEM_PROMPT = """Your job is to answer the user's question
 using only what the LIES wiki contains.
@@ -57,8 +65,30 @@ Read each page carefully. Synthesize a markdown answer that:
    hides the corpus's breadth. Prefer linking at the section end if the page
    contributed background rather than a specific claim.
 
+Pick the format that best fits your answer:
+
+- **`md`** — prose explanations, single-source summaries, narrative
+  answers, anything that isn't naturally tabular or slide-shaped.
+- **`table`** — comparisons across 2+ items along 2+ axes
+  (features, versions, options, pros/cons with rows), feature
+  matrices, anything where columns line up cleanly.
+- **`marp`** — step-by-step procedures, onboarding flows,
+  presentations, anything that reads as a slide deck (numbered
+  steps, sequential phases, intro/body/conclusion shape).
+
+Shape reference (generic, no content examples):
+
+- `md`: plain markdown body, headings + paragraphs + bullets.
+- `table`: GFM pipe table with `| col1 | col2 |` header,
+  `| --- | --- |` separator, data rows below.
+- `marp`: `marp: true` frontmatter + slide breaks on `---`
+  outside the frontmatter.
+
+Set `format_hint` to your choice.
+
 Return a `QueryAnswer` with:
-- **`answer`**: the markdown body
+- **`answer`**: the body in the chosen format. Tables are GFM pipe
+  tables; Marp bodies start with the `marp: true` frontmatter block.
 - **`citations`**: paths matching the keys shown in the corpus below
   (`--- [library] claude_platform/concepts/alpha.md ---` or
   `--- [wiki] wiki/claude_platform/concepts/alpha.md ---`) — copy them
@@ -70,6 +100,7 @@ Return a `QueryAnswer` with:
   non-existent page. The `[name](path)` link inside the answer body
   must use the **same path verbatim**.
 - **`should_file`**: True/False as above
+- **`format_hint`**: "md" | "table" | "marp"
 """
 
 
