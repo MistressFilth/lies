@@ -1,14 +1,19 @@
 """Load + version-stamp the LIES MCP orientation payloads.
 
 Reads ``instructions.md`` and ``prompts/*.md`` from disk and
-substitutes ``{version}`` from :data:`lies.__version__` into the
-rendered text. Used by :mod:`lies.mcp.server` at MCP server boot.
+substitutes ``$version`` from :data:`lies.__version__` into the
+rendered text via :class:`string.Template`. ``string.Template``
+uses ``$variable`` (or ``${variable}``) so literal ``{...}``
+tokens in the source files — e.g. the ``{slug}`` and ``{path}``
+URI-template placeholders in the Resources section — render
+unchanged. Used by :mod:`lies.mcp.server` at MCP server boot.
 
 Tested by ``tests/mcp/test_instructions_loader.py``.
 """
 
 from __future__ import annotations
 
+import string
 from pathlib import Path
 
 from lies import __version__
@@ -23,7 +28,7 @@ def load_instructions() -> str:
     Raises ``FileNotFoundError`` if ``instructions.md`` is missing.
     """
     raw = INSTRUCTIONS_PATH.read_text(encoding="utf-8")
-    return raw.format(version=__version__)
+    return string.Template(raw).safe_substitute(version=__version__)
 
 
 def load_prompt(name: str) -> str:
@@ -32,4 +37,6 @@ def load_prompt(name: str) -> str:
     Raises ``FileNotFoundError`` if ``prompts/<name>.md`` is missing.
     """
     path = PROMPTS_DIR / f"{name}.md"
-    return path.read_text(encoding="utf-8").format(version=__version__)
+    return string.Template(path.read_text(encoding="utf-8")).safe_substitute(
+        version=__version__,
+    )

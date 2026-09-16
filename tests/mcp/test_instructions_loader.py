@@ -26,13 +26,25 @@ def test_prompts_dir_resolves_under_mcp_package() -> None:
 
 def test_load_instructions_stamps_version() -> None:
     body = load_instructions()
-    assert "{version}" not in body, "unrendered template placeholder leaked"
+    assert "$version" not in body, "unrendered template placeholder leaked"
     assert "LIES" in body or "lies" in body
+
+
+def test_load_instructions_renders_literal_braces(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`{...}` tokens in instructions.md render as literals, not format placeholders."""
+    fake = tmp_path / "instructions.md"
+    fake.write_text("path {slug} with $version\n", encoding="utf-8")
+    monkeypatch.setattr("lies.mcp.instructions_loader.INSTRUCTIONS_PATH", fake)
+    body = load_instructions()
+    assert "{slug}" in body, "literal {slug} should survive Template substitution"
+    assert "0.25.0" in body
 
 
 def test_load_prompt_stamps_version(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     fake = tmp_path / "fake.md"
-    fake.write_text("hello {version}\n", encoding="utf-8")
+    fake.write_text("hello $version\n", encoding="utf-8")
     monkeypatch.setattr("lies.mcp.instructions_loader.PROMPTS_DIR", tmp_path)
     body = load_prompt("fake")
     assert body == "hello 0.25.0\n"

@@ -1,4 +1,4 @@
-# LIES orientation (v{version})
+# LIES orientation (v$version)
 
 You are attached to the LIES MCP server. Use this payload to orient
 yourself. The wiki you are talking to is selected by the
@@ -31,8 +31,8 @@ yourself. The wiki you are talking to is selected by the
 
 - `wiki://status`, `wiki://index`, `wiki://log`,
   `wiki://lint-report`, `wiki://memory-changes`,
-  `wiki://catalog`, `wiki://catalog/{{slug}}`,
-  `wiki://page/{{path}}`.
+  `wiki://catalog/{slug}`,
+  `wiki://page/{path}`.
 
 ## Prompts
 
