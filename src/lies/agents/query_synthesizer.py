@@ -59,33 +59,36 @@ Read each page carefully. Synthesize a markdown answer that:
    where N is the 1-based index into the `citations` list you return.
    The marker goes immediately after the claim it supports (end of
    sentence or clause, no space before the marker).
-2. **End your answer with a `Footnotes:` heading followed by `[^N]:`
-   blocks.** Each footnote text is
-   `[name](path#L<line>) — <section>` when the page was retrieved with
-   a qmd line, or `[name](path) — <section>` when no line was
-   provided. The path matches the verbatim corpus tag (e.g.
-   `claude_code/context-window.md` for `[library]`,
-   `wiki/claude_code/context-window.md` for `[wiki]`).
-3. **Return `claim_citations`** as a list of
+2. **Return `claim_citations`** as a list of
    `{claim: "<exact substring from body>", citation_index: <int>}`.
    `claim` must appear verbatim in the answer body. `citation_index`
    is 0-based into your `citations` list. The orchestrator validates
    and drops entries that fail either check.
-4. **Quotes the wiki verbatim** when the wording matters. Don't paraphrase
+
+   **Do not write a `Footnotes:` block yourself.** The orchestrator
+   appends a deterministic `Footnotes:` block at the end of every
+   prose answer based on the `citations` list and the retrieved
+   page metadata (line numbers, section headings). You do not have
+   line numbers or section headings in your context — the
+   orchestrator does, and produces authoritative anchors of the form
+   `[^N]: [name](path#L<line>) — <section>`. Just write `[^N]` markers
+   in the body and the matching `claim_citations` entries; the rest
+   is handled for you.
+3. **Quotes the wiki verbatim** when the wording matters. Don't paraphrase
    technical terms, version numbers, or quoted material.
-5. **Surfaces disagreements** — if two pages disagree, present both views and
+4. **Surfaces disagreements** — if two pages disagree, present both views and
    note the disagreement explicitly.
-6. **Says what the wiki does NOT know** — if the corpus is silent on something,
+5. **Says what the wiki does NOT know** — if the corpus is silent on something,
    say so. Don't hallucinate.
-7. **Decides whether to file** — set `should_file=True` if the answer is a
+6. **Decides whether to file** — set `should_file=True` if the answer is a
    novel synthesis, comparison, or analysis that future readers would value.
    Set `should_file=False` for one-off factual lookups.
-8. **Applies the source rule** — Source rule: library is the primary source
+7. **Applies the source rule** — Source rule: library is the primary source
    of truth. Wiki content is supplementary. When sources contradict, agree with library.
    Each citation carries a `[library]` or `[wiki]` tag reflecting its source;
    preserve these tags in your answer (e.g., as a `[library]` prefix on the
    `[name](path)` link so the operator sees the provenance inline).
-9. **Cites every page in the corpus** — include every retrieved page in the
+8. **Cites every page in the corpus** — include every retrieved page in the
    `citations` list, even if it contributed only supporting context. The user
    should be able to see which pages informed the answer; selective citation
    hides the corpus's breadth. Prefer linking at the section end if the page

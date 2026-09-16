@@ -805,6 +805,7 @@ def _validate_claim_citations(
     Drops entries where:
     - ``citation_index`` is out of range for ``citations``
     - ``citation_index`` is negative
+    - ``claim`` is empty (degenerate; ``"" in any_string`` is always True)
     - ``claim`` does not appear verbatim as a substring of ``answer``
 
     Returns ``(kept, drop_reasons)``. ``drop_reasons`` are short
@@ -820,7 +821,10 @@ def _validate_claim_citations(
                 f"(citations has {n_citations} entries)"
             )
             continue
-        if entry.claim and entry.claim not in answer:
+        if not entry.claim:
+            drops.append("claim_citation claim is empty")
+            continue
+        if entry.claim not in answer:
             drops.append(f"claim_citation claim not in body: {entry.claim!r}")
             continue
         kept.append(entry)

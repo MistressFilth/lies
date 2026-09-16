@@ -58,3 +58,13 @@ def test_validate_empty_input() -> None:
     kept, dropped = _validate_claim_citations([], [], "")
     assert kept == []
     assert dropped == []
+
+
+def test_validate_drops_empty_claim() -> None:
+    """An empty-string claim is degenerate and must be dropped."""
+    citations = ["a.md"]
+    entries = [ClaimCitation(claim="", citation_index=0)]
+    kept, dropped = _validate_claim_citations(entries, citations, "any body")
+    assert kept == []
+    assert len(dropped) == 1
+    assert "empty" in dropped[0]
