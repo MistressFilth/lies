@@ -24,3 +24,19 @@ class Citation:
 
     path: str
     source: Literal["library", "wiki"]
+    line: int | None = None
+    section: str | None = None
+
+
+@dataclass(frozen=True)
+class ClaimCitation:
+    """A (claim, citation) binding emitted by the synthesizer agent.
+
+    ``claim`` must appear verbatim as a substring of the synthesized
+    answer body. ``citation_index`` is 0-based into the agent's
+    ``citations`` list. The orchestrator validates both constraints
+    and drops entries that fail.
+    """
+
+    claim: str
+    citation_index: int

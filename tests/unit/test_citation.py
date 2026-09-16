@@ -1,4 +1,6 @@
-from lies.query.citation import Citation
+from typing import get_type_hints
+
+from lies.query.citation import Citation, ClaimCitation
 
 
 def test_citation_construction() -> None:
@@ -17,3 +19,63 @@ def test_citation_distinct_sources_unequal() -> None:
     a = Citation(path="x.md", source="wiki")
     b = Citation(path="x.md", source="library")
     assert a != b
+
+
+def test_citation_accepts_line_and_section() -> None:
+    c = Citation(
+        path="claude_platform/foo.md",
+        source="library",
+        line=42,
+        section="Context isolation",
+    )
+    assert c.line == 42
+    assert c.section == "Context isolation"
+
+
+def test_citation_line_and_section_default_none() -> None:
+    c = Citation(path="x.md", source="wiki")
+    assert c.line is None
+    assert c.section is None
+
+
+def test_citation_equality_includes_line_and_section() -> None:
+    a = Citation(path="x.md", source="wiki", line=10, section="S")
+    b = Citation(path="x.md", source="wiki", line=10, section="S")
+    c = Citation(path="x.md", source="wiki", line=11, section="S")
+    assert a == b
+    assert a != c
+
+
+def test_citation_annotations_include_line_and_section() -> None:
+    hints = get_type_hints(Citation)
+    assert hints["line"] == int | None
+    assert hints["section"] == str | None
+
+
+def test_claim_citation_construction() -> None:
+    cc = ClaimCitation(claim="Each subagent runs in its own context.", citation_index=0)
+    assert cc.claim == "Each subagent runs in its own context."
+    assert cc.citation_index == 0
+
+
+def test_claim_citation_equality() -> None:
+    a = ClaimCitation(claim="x", citation_index=1)
+    b = ClaimCitation(claim="x", citation_index=1)
+    assert a == b
+
+
+def test_claim_citation_frozen() -> None:
+    cc = ClaimCitation(claim="x", citation_index=0)
+    try:
+        cc.citation_index = 99  # type: ignore[misc]
+    except Exception:
+        return
+    raise AssertionError("ClaimCitation should be frozen")
+
+
+def test_claim_citation_annotations() -> None:
+    from typing import get_type_hints
+
+    hints = get_type_hints(ClaimCitation)
+    assert hints["claim"] is str
+    assert hints["citation_index"] is int

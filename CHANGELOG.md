@@ -6,6 +6,14 @@ All notable changes to LIES are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- Citations now carry `(path, line, section)` so each cited claim points
+  to the specific passage it relies on, not just the page. Synthesis
+  outputs render a `Footnotes:` block at the bottom with anchors of
+  the form `[name](path#L<line>) — <section>`. The MCP `query`
+  envelope returns a new `claim_citations` list of `(claim,
+  citation_index)` pairs for downstream consumers.
+
 ## [0.26.0] - 2026-09-15
 
 ### Added

@@ -49,7 +49,7 @@ from lies.query import (
     retrieve_pages,
     synthesize_answer,
 )
-from lies.query.citation import Citation
+from lies.query.citation import Citation, ClaimCitation
 from lies.query.tag_expr import ResolvedTagFilter
 from lies.query.synthesizer import _searched_scope
 from lies.schema import load_schema
@@ -722,6 +722,115 @@ def merge_lint_reports(
     return LintReport(findings=merged, report_markdown=""), llm_fallback_reason
 
 
+def _slugify_section(section: str) -> str:
+    """Lowercase, hyphenate spaces and punctuation for a URL-friendly anchor.
+
+    Strips characters that don't survive a URL fragment. Returns
+    lowercase alphanumerics joined by single hyphens.
+    """
+    out: list[str] = []
+    for ch in section.lower():
+        if ch.isalnum():
+            out.append(ch)
+        elif out and out[-1] != "-":
+            out.append("-")
+    return "".join(out).strip("-")
+
+
+def _render_footnote_line(
+    n: int,
+    citation: "Citation",
+    *,
+    title: str | None = None,
+) -> str:
+    """Render one footnote line.
+
+    Format: ``[^N]: [title](path#anchor) — section``
+
+    Anchor rules:
+    - line present → ``#L<line>``
+    - section present, line absent → ``#<slugified-section>``
+    - both absent → no anchor
+
+    Section rules:
+    - section present → `` — section``
+    - section absent → omit suffix
+
+    When ``title`` is ``None``, falls back to the path's last segment
+    (the basename) for a readable link label.
+    """
+    display_title = title or citation.path.rsplit("/", 1)[-1]
+    anchor = ""
+    if citation.line is not None:
+        anchor = f"#L{citation.line}"
+    elif citation.section:
+        slug = _slugify_section(citation.section)
+        # Heading may be only punctuation (e.g. ``---`` / ``—``); the
+        # slug is empty and a bare ``#`` fragment would dangle. Omit
+        # the anchor in that case.
+        if slug:
+            anchor = f"#{slug}"
+
+    link = f"[{display_title}]({citation.path}{anchor})"
+    if citation.section:
+        return f"[^{n}]: {link} — {citation.section}"
+    return f"[^{n}]: {link}"
+
+
+def _render_footnotes(
+    citations: list["Citation"],
+    *,
+    page_titles: dict[str, str],
+) -> str:
+    """Render the full `Footnotes:` block.
+
+    Returns an empty string when ``citations`` is empty.
+    """
+    if not citations:
+        return ""
+    lines = ["Footnotes:", ""]
+    for i, c in enumerate(citations, 1):
+        title = page_titles.get(c.path)
+        lines.append(_render_footnote_line(i, c, title=title))
+    return "\n".join(lines)
+
+
+def _validate_claim_citations(
+    claim_citations: list["ClaimCitation"],
+    citations: list[str],
+    answer: str,
+) -> tuple[list["ClaimCitation"], list[str]]:
+    """Validate ``claim_citations`` against ``answer`` and ``citations``.
+
+    Drops entries where:
+    - ``citation_index`` is out of range for ``citations``
+    - ``citation_index`` is negative
+    - ``claim`` is empty (degenerate; ``"" in any_string`` is always True)
+    - ``claim`` does not appear verbatim as a substring of ``answer``
+
+    Returns ``(kept, drop_reasons)``. ``drop_reasons`` are short
+    diagnostic strings suitable for joining into ``synthesis_reason``.
+    """
+    kept: list[ClaimCitation] = []
+    drops: list[str] = []
+    n_citations = len(citations)
+    for entry in claim_citations:
+        if not (0 <= entry.citation_index < n_citations):
+            drops.append(
+                f"claim_citation index {entry.citation_index} out of range "
+                f"(citations has {n_citations} entries)"
+            )
+            continue
+        if not entry.claim:
+            drops.append("claim_citation claim is empty")
+            continue
+        if entry.claim not in answer:
+            drops.append(f"claim_citation claim not in body: {entry.claim!r}")
+            continue
+        kept.append(entry)
+    return kept, drops
+
+
 class Orchestrator:
     """The top-level agent that maintains a LIES wiki.
 
@@ -1373,22 +1482,58 @@ class Orchestrator:
         # look up the source by path on the retrieved set. ``cast`` is
         # safe: ``PageRead.source`` values are produced from the closed
         # ``"library"`` / ``"wiki"`` set at the resolver boundary.
-        page_source_by_path: dict[str, str] = {page.rel_path: page.source for page in pages}
+        page_by_path: dict[str, PageRead] = {page.rel_path: page for page in pages}
         citations: list[Citation] = [
-            Citation(path=p, source=cast(Literal["library", "wiki"], page_source_by_path[p]))
+            Citation(
+                path=p,
+                source=cast(Literal["library", "wiki"], page_by_path[p].source),
+                line=page_by_path[p].line,
+                section=page_by_path[p].section,
+            )
             for p in kept_paths
         ]
         pages_read: list[Citation] = [
             Citation(
                 path=page.rel_path,
                 source=cast(Literal["library", "wiki"], page.source),
+                line=page.line,
+                section=page.section,
             )
             for page in pages
         ]
 
+        # Validate the agent's claim_citations. Survivors land in the
+        # response envelope. Drop counts join synthesis_reason so the
+        # operator sees the truncation in the receipt.
+        kept_claim_citations, claim_drop_reasons = _validate_claim_citations(
+            output.claim_citations,
+            kept_paths,
+            output.answer,
+        )
+        if claim_drop_reasons:
+            existing = synthesis_reason + "; " if synthesis_reason else ""
+            synthesis_reason = (
+                existing + "dropped claim_citations: " + "; ".join(claim_drop_reasons)
+            )
+
+        # Render the footnote block for prose answers only. Tables and
+        # Marp bodies skip it; their citation surface is the structured
+        # envelope. Gating on ``kept_claim_citations`` mirrors the
+        # agent's own choice: the synthesizer prompt pairs footnote
+        # markers in the body with ``claim_citations``; when the agent
+        # didn't emit any, the body has no ``[^N]`` markers and the
+        # block would be a stray surface.
+        body_answer = output.answer
+        fmt = _validate_format(output.answer, output.format_hint)
+        if fmt == "md" and kept_claim_citations:
+            page_titles = {p.rel_path: p.title for p in pages}
+            block = _render_footnotes(citations, page_titles=page_titles)
+            if block:
+                body_answer = output.answer + "\n\n" + block
+
         ans = SynthesizedAnswer(
             question=question,
-            answer=output.answer,
+            answer=body_answer,
             citations=citations,
             pages_read=pages_read,
             fallback_used=bool(fallback_reason),
@@ -1398,7 +1543,8 @@ class Orchestrator:
             synthesis_reason=synthesis_reason,
             should_file=output.should_file,
             searched_scope=list(searched_scope),
-            format=_validate_format(output.answer, output.format_hint),
+            format=fmt,
+            claim_citations=tuple(kept_claim_citations),
         )
 
         # File-back decision (F3). ``should_file`` is the agent's own
@@ -1577,22 +1723,60 @@ class Orchestrator:
                 f"dropped {len(dropped)} unretrieved citation(s): {', '.join(dropped)}"
             )
 
-        page_source_by_path: dict[str, str] = {page.rel_path: page.source for page in pages}
+        page_by_path: dict[str, PageRead] = {page.rel_path: page for page in pages}
         citations: list[Citation] = [
-            Citation(path=p, source=cast(Literal["library", "wiki"], page_source_by_path[p]))
+            Citation(
+                path=p,
+                source=cast(Literal["library", "wiki"], page_by_path[p].source),
+                line=page_by_path[p].line,
+                section=page_by_path[p].section,
+            )
             for p in kept_paths
         ]
         pages_read: list[Citation] = [
             Citation(
                 path=page.rel_path,
                 source=cast(Literal["library", "wiki"], page.source),
+                line=page.line,
+                section=page.section,
             )
             for page in pages
         ]
 
+        # Validate the agent's claim_citations. Survivors land in the
+        # response envelope. Drop counts join synthesis_reason so the
+        # operator sees the truncation in the receipt.
+        kept_claim_citations, claim_drop_reasons = _validate_claim_citations(
+            output.claim_citations,
+            kept_paths,
+            output.answer,
+        )
+        if claim_drop_reasons:
+            existing = synthesis_reason + "; " if synthesis_reason else ""
+            synthesis_reason = (
+                existing + "dropped claim_citations: " + "; ".join(claim_drop_reasons)
+            )
+
+        # Render the footnote block for prose answers only. Tables and
+        # Marp bodies skip it; their citation surface is the structured
+        # envelope. The format validator is keyed on ``cli_format`` (not
+        # ``output.format_hint``) because the operator pinned the format
+        # for this call. Gating on ``kept_claim_citations`` mirrors
+        # ``run_query`` and the synthesizer prompt: the agent pairs
+        # ``[^N]`` markers in the body with ``claim_citations``; when it
+        # didn't emit any, the body has no markers and the block would
+        # be a stray surface.
+        body_answer = output.answer
+        fmt = validate_format(output.answer, cli_format)
+        if fmt == "md" and kept_claim_citations:
+            page_titles = {p.rel_path: p.title for p in pages}
+            block = _render_footnotes(citations, page_titles=page_titles)
+            if block:
+                body_answer = output.answer + "\n\n" + block
+
         ans = SynthesizedAnswer(
             question=question,
-            answer=output.answer,
+            answer=body_answer,
             citations=citations,
             pages_read=pages_read,
             fallback_used=bool(fallback_reason),
@@ -1602,7 +1786,8 @@ class Orchestrator:
             synthesis_reason=synthesis_reason,
             should_file=output.should_file,
             searched_scope=list(searched_scope),
-            format=validate_format(output.answer, output.format_hint),
+            format=fmt,
+            claim_citations=tuple(kept_claim_citations),
         )
 
         # File-back decision (same envelope as ``run_query``).

@@ -611,7 +611,7 @@ def test_resolve_qmd_pages_library_first(tmp_path: Path) -> None:
     mirror_dir.mkdir(parents=True)
     (mirror_dir / "skills.md").write_text("# Skills\n\nHow to build skills.\n", encoding="utf-8")
 
-    pages = _resolve_qmd_pages(wiki, ["claude_platform/skills.md"], 5)
+    pages = _resolve_qmd_pages(wiki, [{"path": "claude_platform/skills.md"}], 5)
 
     assert len(pages) == 1
     assert pages[0].source == "library"
@@ -637,7 +637,7 @@ def test_resolve_qmd_pages_wiki_when_library_missing(tmp_path: Path) -> None:
         "# Local\n\nLocal wiki content.\n", encoding="utf-8"
     )
 
-    pages = _resolve_qmd_pages(wiki, ["concepts/local.md"], 5)
+    pages = _resolve_qmd_pages(wiki, [{"path": "concepts/local.md"}], 5)
 
     assert len(pages) == 1
     assert pages[0].source == "wiki"
@@ -667,7 +667,7 @@ def test_resolve_qmd_pages_collision_keeps_both_sources(tmp_path: Path) -> None:
         "# Wiki version\n\nEdited locally.\n", encoding="utf-8"
     )
 
-    pages = _resolve_qmd_pages(wiki, ["shared/x.md"], 5)
+    pages = _resolve_qmd_pages(wiki, [{"path": "shared/x.md"}], 5)
 
     sources = sorted(p.source for p in pages)
     assert sources == ["library", "wiki"]
@@ -688,7 +688,7 @@ def test_resolve_qmd_pages_path_traversal_blocked_for_library(tmp_path: Path) ->
     (root / "wiki").mkdir(parents=True)
     wiki = make_wiki(name="default", data_root=root)
 
-    pages = _resolve_qmd_pages(wiki, ["../../etc/passwd"], 5)
+    pages = _resolve_qmd_pages(wiki, [{"path": "../../etc/passwd"}], 5)
 
     assert pages == []
 

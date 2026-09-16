@@ -10,6 +10,7 @@ from lies.agents.query_synthesizer import (
     _build_query_prompt,
     query_synthesizer_agent,
 )
+from lies.query.citation import ClaimCitation
 
 
 def _deps() -> QueryDeps:
@@ -116,3 +117,24 @@ def test_build_query_prompt_renders_source_tag_inline() -> None:
     # The wiki-sourced path renders with the [wiki] tag.
     assert "[wiki] wiki/concepts/local.md" in rendered
     assert "wiki body" in rendered
+
+
+# ---------------------------------------------------------------------------
+# Citation granularity: QueryAnswer carries claim_citations.
+# ---------------------------------------------------------------------------
+
+
+def test_query_answer_claim_citations_default_empty() -> None:
+    qa = QueryAnswer(answer="x", citations=[], should_file=False)
+    assert qa.claim_citations == []
+
+
+def test_query_answer_accepts_claim_citations() -> None:
+    cc = ClaimCitation(claim="c", citation_index=0)
+    qa = QueryAnswer(
+        answer="c",
+        citations=["x.md"],
+        should_file=False,
+        claim_citations=[cc],
+    )
+    assert qa.claim_citations == [cc]

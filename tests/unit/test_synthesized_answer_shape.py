@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import typing
 
-from lies.query.citation import Citation
+from lies.query.citation import Citation, ClaimCitation
 from lies.query.models import SynthesizedAnswer
 
 
@@ -47,3 +47,46 @@ def test_synthesized_answer_annotations_are_list_of_citation() -> None:
     hints = typing.get_type_hints(SynthesizedAnswer)
     assert hints["citations"] == list[Citation]
     assert hints["pages_read"] == list[Citation]
+
+
+def test_synthesized_answer_claim_citations_default_empty() -> None:
+    ans = SynthesizedAnswer(answer="x")
+    assert ans.claim_citations == ()
+
+
+def test_synthesized_answer_accepts_claim_citations() -> None:
+    cc = ClaimCitation(claim="foo", citation_index=0)
+    ans = SynthesizedAnswer(
+        answer="foo bar",
+        citations=[Citation(path="x.md", source="wiki")],
+        claim_citations=[cc],
+    )
+    assert ans.claim_citations == (cc,)
+
+
+def test_synthesized_answer_claim_citations_annotation() -> None:
+    hints = typing.get_type_hints(SynthesizedAnswer)
+    assert hints["claim_citations"] == tuple[ClaimCitation, ...]
+
+
+def test_pages_read_carries_line_and_section() -> None:
+    """``pages_read`` entries thread ``line`` and ``section`` per spec.
+
+    Both ``run_query`` and ``run_query_with_format`` must populate
+    ``line`` and ``section`` from the underlying ``PageRead`` so
+    downstream consumers (footnote renderer, MCP response envelope)
+    can render per-passage anchors without re-querying.
+    """
+    cc = Citation(
+        path="a.md",
+        source="library",
+        line=42,
+        section="Context isolation",
+    )
+    ans = SynthesizedAnswer(
+        answer="x",
+        pages_read=[cc],
+    )
+    assert ans.pages_read == [cc]
+    assert ans.pages_read[0].line == 42
+    assert ans.pages_read[0].section == "Context isolation"

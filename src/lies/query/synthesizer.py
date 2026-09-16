@@ -32,6 +32,7 @@ from lies.library.registry import LibraryCollectionMeta
 from lies.qmd.cli import qmd_query
 from lies.query.index_parser import parse_index_links
 from lies.query.models import SynthesizedAnswer
+from lies.query.section import _extract_section_at
 from lies.query.tag_expr import (
     And,
     Include,
@@ -97,6 +98,8 @@ class PageRead:
     title: str
     excerpt: str
     source: str  # "library" | "wiki" — required, no default (hard cutover)
+    line: int | None = None  # qmd's per-hit line (1-indexed); None for index-fallback paths
+    section: str | None = None  # last ATX heading at or before `line`
 
 
 def retrieve_pages(
@@ -363,8 +366,12 @@ def _read_pages_from_index(wiki: Wiki, top_n: int) -> list[PageRead]:
     return pages
 
 
-def _resolve_qmd_pages(wiki: Wiki, qmd_paths: list[str], top_n: int) -> list[PageRead]:
-    """Resolve qmd-returned paths to actual readable pages on disk.
+def _resolve_qmd_pages(
+    wiki: Wiki,
+    qmd_hits: list[dict[str, object]],
+    top_n: int,
+) -> list[PageRead]:
+    """Resolve qmd hits to actual readable pages on disk.
 
     Each qmd hit is matched against both physical roots:
 
@@ -380,17 +387,27 @@ def _resolve_qmd_pages(wiki: Wiki, qmd_paths: list[str], top_n: int) -> list[Pag
     as ``rel_path`` because library files live outside ``wiki.data_root``
     — a data_root-relative path would lie about filesystem layout.
 
+    Each hit's ``line`` field (1-indexed qmd line of best match) is
+    threaded into the constructed ``PageRead``. ``section`` is then
+    derived by reading the page body and scanning for the last ATX
+    heading at or before that line via ``_extract_section_at``.
+
     Defends against path traversal per root: any candidate that escapes
     its root is dropped, the next root is tried.
     """
     pages: list[PageRead] = []
-    for raw in qmd_paths:
+    for hit in qmd_hits:
         if len(pages) >= top_n:
             break
+        raw = hit.get("path")
+        if not isinstance(raw, str):
+            continue
+        raw_line = hit.get("line")
+        hit_line: int | None = raw_line if isinstance(raw_line, int) else None
         # Library first: primary source of truth.
         lib_path = _resolve_qmd_path_in_library(wiki, raw)
         if lib_path is not None:
-            lib_page = _build_library_page_read(lib_path)
+            lib_page = _build_library_page_read(lib_path, hit_line=hit_line)
             if lib_page is not None:
                 pages.append(lib_page)
         # Wiki: surfaces overrides and collision cases. Library is
@@ -400,7 +417,7 @@ def _resolve_qmd_pages(wiki: Wiki, qmd_paths: list[str], top_n: int) -> list[Pag
             continue
         wiki_path = _resolve_qmd_path_in_wiki(wiki, raw)
         if wiki_path is not None:
-            wiki_page = _try_read(wiki_path, wiki)
+            wiki_page = _try_read(wiki_path, wiki, hit_line=hit_line)
             if wiki_page is not None:
                 pages.append(wiki_page)
     return pages
@@ -474,7 +491,11 @@ def _resolve_qmd_path_in_wiki(wiki: Wiki, raw: str) -> Path | None:
     return wiki_candidate if wiki_candidate.is_file() else None
 
 
-def _build_library_page_read(path: Path) -> PageRead | None:
+def _build_library_page_read(
+    path: Path,
+    *,
+    hit_line: int | None = None,
+) -> PageRead | None:
     """Build a ``PageRead`` for a library-side path.
 
     ``rel_path`` is the qmd URI form (``<coll>/<file>``) — library
@@ -482,6 +503,10 @@ def _build_library_page_read(path: Path) -> PageRead | None:
     ``wiki.data_root``, so a data_root-relative path would lie about
     filesystem layout. Returns ``None`` on read failure (mirrors
     :func:`_try_read`).
+
+    When ``hit_line`` is provided, ``section`` is computed via
+    ``_extract_section_at`` so the citation carries the heading the
+    LLM relied on.
     """
     # Local import: same rationale as ``_resolve_qmd_path_in_library``.
     from lies.library.paths import Library  # noqa: PLC0415
@@ -494,15 +519,32 @@ def _build_library_page_read(path: Path) -> PageRead | None:
     rel = path.relative_to(lib_root).as_posix()
     title = _extract_title(content) or path.stem
     excerpt = _first_meaningful_paragraph(content)
-    return PageRead(rel_path=rel, title=title, excerpt=excerpt, source="library")
+    section = _extract_section_at(content, hit_line) if hit_line is not None else None
+    return PageRead(
+        rel_path=rel,
+        title=title,
+        excerpt=excerpt,
+        source="library",
+        line=hit_line,
+        section=section,
+    )
 
 
-def _try_read(path: Path, wiki: Wiki, *, title_override: str | None = None) -> PageRead | None:
+def _try_read(
+    path: Path,
+    wiki: Wiki,
+    *,
+    title_override: str | None = None,
+    hit_line: int | None = None,
+) -> PageRead | None:
     """Read a page; return None if missing/unreadable.
 
     Pages resolved from ``wiki.wiki_dir`` carry ``source="wiki"``.
     Library-sourced pages are constructed by callers via the new
     library-resolution helper (Task 3) with ``source="library"``.
+
+    When ``hit_line`` is provided, ``section`` is computed via
+    ``_extract_section_at`` from the page body.
     """
     if not path.exists() or not path.is_file():
         return None
@@ -514,7 +556,15 @@ def _try_read(path: Path, wiki: Wiki, *, title_override: str | None = None) -> P
     rel = path.relative_to(wiki.data_root).as_posix()
     title = title_override or _extract_title(content) or path.stem
     excerpt = _first_meaningful_paragraph(content)
-    return PageRead(rel_path=rel, title=title, excerpt=excerpt, source="wiki")
+    section = _extract_section_at(content, hit_line) if hit_line is not None else None
+    return PageRead(
+        rel_path=rel,
+        title=title,
+        excerpt=excerpt,
+        source="wiki",
+        line=hit_line,
+        section=section,
+    )
 
 
 def _extract_title(content: str) -> str | None:
@@ -770,10 +820,13 @@ def _qmd_search_dispatch(
     except QmdCommandError as exc:
         raise _QmdOtherFailure(str(exc)) from exc
 
-    qmd_paths = [
-        path for r in results if isinstance(r, dict) and isinstance((path := r.get("path")), str)
+    # Carry qmd hit metadata through to _resolve_qmd_pages so each
+    # PageRead can capture the line number qmd returned. Hits without
+    # a `line` key still surface; their PageRead carries line=None.
+    qmd_hits: list[dict[str, object]] = [
+        r for r in results if isinstance(r, dict) and isinstance(r.get("path"), str)
     ]
-    pages = _resolve_qmd_pages(wiki, qmd_paths, top_n)
+    pages = _resolve_qmd_pages(wiki, qmd_hits, top_n)
     if not pages:
         # qmd gave us hits but none of the files are readable — treat as
         # "no results" so the fallback path runs.
