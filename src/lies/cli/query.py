@@ -98,6 +98,15 @@ def query(
             "MCP tool's exclude_tags."
         ),
     ),
+    format_: str = typer.Option(
+        "auto",
+        "--format",
+        help=(
+            "Output format: auto | md | table | marp. Default 'auto' uses "
+            "the synthesizer's format_hint. Explicit values force re-"
+            "synthesis with a constrained prompt if the auto-route differs."
+        ),
+    ),
 ) -> None:
     """Query the wiki with LLM synthesis over qmd hits, with an extractive fallback.
 
@@ -110,11 +119,17 @@ def query(
     question verbatim. Both forms converge on one resolved filter.
     Grammar errors and unknown tags exit 2. See the design doc
     `2026-09-09-bundle-c-tag-filter-design.md` for the full grammar.
-    """
-    from rich.console import Console
-    from rich.markdown import Markdown
 
-    from lies.cli import Orchestrator, resolve_wiki
+    `--format` selects the output renderer. Default 'auto' uses the
+    synthesizer's ``format_hint``. Explicit values force re-synthesis
+    with a constrained prompt if the auto-route differs; if the
+    orchestrator's override entry point is unavailable (Task 7 not
+    yet landed) the command falls back to the first call's answer and
+    warns on stderr.
+    """
+    import sys
+
+    from lies.cli.query_format import render_answer, validate_format_flag
     from lies.memory.models import WikiPlanInvalid
     from lies.query.tag_expr import (
         ResolvedTagFilter,
@@ -127,6 +142,15 @@ def query(
         parse_query_argv,
         resolve,
     )
+
+    # Resolve ``Orchestrator`` / ``resolve_wiki`` through
+    # ``lies.cli.__init__`` so the project's existing
+    # ``mock.patch("lies.cli.<name>")`` test discipline intercepts
+    # the call without per-module indirection. The ``sys.modules``
+    # lookup avoids a circular import (this module is itself imported
+    # by ``lies.cli.__init__``).
+    Orchestrator = sys.modules["lies.cli"].Orchestrator
+    resolve_wiki = sys.modules["lies.cli"].resolve_wiki
 
     configure_logging()
     wiki = resolve_wiki(name)
@@ -149,6 +173,12 @@ def query(
             question, include_ast, exclude, exclude_qualifier = parse_query_argv(tokens)
     except (TagExprParseError, TagExprEmpty) as exc:
         typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+
+    try:
+        cli_format = validate_format_flag(format_)
+    except typer.BadParameter as exc:
+        typer.echo(f"error: {exc.message}", err=True)
         raise typer.Exit(code=2) from exc
 
     tag_filter: ResolvedTagFilter | None = None
@@ -208,17 +238,49 @@ def query(
             err=True,
         )
         raise typer.Exit(code=2) from exc
-    console = Console()
-    console.print(Markdown(answer.answer))
+
+    # F1: handle --format override. If the operator's choice differs from
+    # the synthesizer's format_hint, re-synthesize with a constrained
+    # prompt. The orchestrator exposes a new ``run_query_with_format``
+    # entry point for the override; if it raises, fall back to the
+    # first call's answer.
+    if cli_format != "auto" and answer.format != cli_format:
+        try:
+            answer = orch.run_query_with_format(
+                question,
+                collection=collection,
+                file=not no_file,
+                force_file=force_file,
+                tag_filter=tag_filter,
+                cli_format=cli_format,
+            )
+        except Exception as exc:  # noqa: BLE001 - second call is best-effort
+            import logging
+
+            logging.getLogger(__name__).warning(
+                "format override re-synthesis failed for --format=%s; "
+                "using auto-route (format=%s): %s: %s",
+                cli_format,
+                answer.format,
+                type(exc).__name__,
+                exc,
+            )
+            typer.echo(
+                f"warning: re-synthesis for --format={cli_format} failed; "
+                f"using auto-route (format={answer.format}).",
+                err=True,
+            )
+
+    render_format = answer.format if cli_format == "auto" else cli_format
+    render_answer(render_format, answer.answer)
+
     if answer.synthesis_reason:
         if answer.synthesis_used:
-            console.print(Markdown(f"_Note: {answer.synthesis_reason}._"))
+            typer.echo(f"_Note: {answer.synthesis_reason}._")
         else:
-            console.print(
-                Markdown(
-                    f"_Note: LLM synthesis unavailable ({answer.synthesis_reason}); "
-                    f"answered extractively._"
-                )
+            typer.echo(
+                f"_Note: LLM synthesis unavailable ({answer.synthesis_reason}); "
+                "answered extractively._"
             )
     # F3 file-back receipt. Printed only when there is something to say
     # (durable change or error); an empty receipt is silent so the no-op

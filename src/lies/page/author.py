@@ -75,6 +75,7 @@ def build_author_plan(
     sources: list[str],
     exists: Callable[[str], bool],
     sha_lookup: Callable[[str], str] | None = None,
+    render_format: str | None = None,
 ) -> MemoryPlan:
     """Build a single-op MemoryPlan that writes one page to the wiki.
 
@@ -100,6 +101,7 @@ def build_author_plan(
             derived_from=derived_from,
             tags=tags,
             sources=sources,
+            render_format=render_format,
         )
         evidence = ["wiki/overview"]
         if exists(rel_path):
@@ -132,6 +134,7 @@ def build_author_plan(
             derived_from=derived_from,
             tags=tags,
             sources=sources,
+            render_format=render_format,
         )
         evidence = [f"{collection}/{slug}"]
         if exists(rel_path):
@@ -166,6 +169,7 @@ def build_author_plan(
         derived_from=derived_from,
         tags=tags,
         sources=sources,
+        render_format=render_format,
     )
     evidence = [f"{collection}/{slug}"]
 
@@ -198,6 +202,7 @@ def _format_author_body(
     derived_from: list[str],
     tags: list[str],
     sources: list[str],
+    render_format: str | None = None,
 ) -> str:
     """Frontmatter + body assembly for an authored page.
 
@@ -205,6 +210,13 @@ def _format_author_body(
     lists render as ``[]``. The body is the operator's content verbatim
     (synthesis branch overrides this in Task 5 with the ``## Evidence``
     codepath).
+
+    ``render_format`` (Task 7) records the body shape on synthesis
+    frontmatter (``"md"`` / ``"table"`` / ``"marp"``) so a future
+    curator knows the answer's intended output format without parsing
+    the body. Omitted from frontmatter when ``None`` to preserve
+    backwards-compat with non-synthesis callers (which have no format
+    notion).
     """
     title_q = '"' + title.replace("\\", "\\\\").replace('"', '\\"') + '"'
     collection_q = '"' + collection.replace("\\", "\\\\").replace('"', '\\"') + '"'
@@ -216,6 +228,14 @@ def _format_author_body(
     parts.append(_yaml_list("tags", tags))
     parts.append(_yaml_list("sources", sources))
     parts.append(_yaml_list("derived_from", derived_from))
+    if render_format is not None:
+        # YAML safety: render_format is operator-supplied free-form text
+        # (the type is ``str | None``), so quote it to neutralise any
+        # ``:``, ``[``, ``#`` or other YAML-significant characters a
+        # future caller might pass. Mirrors the title_q / collection_q
+        # quote-and-escape pattern above.
+        render_format_q = '"' + render_format.replace("\\", "\\\\").replace('"', '\\"') + '"'
+        parts.append(f"render_format: {render_format_q}")
     parts.append("---")
     parts.append("")
 

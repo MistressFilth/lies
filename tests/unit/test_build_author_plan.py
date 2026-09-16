@@ -306,3 +306,95 @@ def test_body_at_10mb_passes():
         exists=_exists_always_false,
     )
     assert len(plan.operations) == 1
+
+
+# ---------- render_format (Task 7) ----------
+
+
+def test_format_author_body_includes_render_format_for_synthesis():
+    """Synthesis frontmatter carries render_format when provided (quoted)."""
+    from lies.page.author import _format_author_body
+
+    body_md = _format_author_body(
+        type="synthesis",
+        collection="claude",
+        title="Q",
+        body="answer body\n",
+        derived_from=["x.md"],
+        tags=["synthesis"],
+        sources=[],
+        render_format="table",
+    )
+    # Quoted for YAML safety (mirrors title_q / collection_q).
+    assert 'render_format: "table"' in body_md
+
+
+def test_format_author_body_omits_render_format_when_none():
+    """No render_format key when not provided (backwards compat)."""
+    from lies.page.author import _format_author_body
+
+    body_md = _format_author_body(
+        type="synthesis",
+        collection="claude",
+        title="Q",
+        body="answer body\n",
+        derived_from=["x.md"],
+        tags=["synthesis"],
+        sources=[],
+    )
+    assert "render_format:" not in body_md
+
+
+def test_build_author_plan_threads_render_format_to_synthesis_frontmatter():
+    """build_author_plan passes render_format through to synthesis frontmatter."""
+    plan = build_author_plan(
+        type="synthesis",
+        collection="claude",
+        slug="q-abcd1234",
+        title="Q",
+        body="answer",
+        derived_from=["claude/concepts/x"],
+        tags=["synthesis"],
+        sources=[],
+        exists=_exists_always_false,
+        render_format="marp",
+    )
+    op = plan.operations[0]
+    assert 'render_format: "marp"' in op.content
+
+
+def test_format_author_body_render_format_quotes_hostile_values():
+    """render_format is double-quoted so YAML-significant characters in
+    the value do not break parsing.
+
+    Today only ``md``/``table``/``marp`` flow through, but the type is
+    ``str | None``; a future caller passing ``m:p`` (a colon inside),
+    ``a #b`` (a comment marker), or ``[a, b]`` (a flow indicator) must
+    still produce parseable YAML.
+    """
+    import yaml
+
+    from lies.page.author import _format_author_body
+
+    for hostile in ("m:p", "a #b", "[a, b]", 'has "quote" inside', "back\\slash"):
+        body_md = _format_author_body(
+            type="synthesis",
+            collection="claude",
+            title="Q",
+            body="answer body\n",
+            derived_from=["x.md"],
+            tags=["synthesis"],
+            sources=[],
+            render_format=hostile,
+        )
+        # Slice just the frontmatter (first ``---`` block). ``safe_load_all``
+        # handles the multi-doc shape the surrounding body creates.
+        fm_end = body_md.index("\n---\n", 4)
+        fm = body_md[: fm_end + 4]
+        # Extract the first YAML document; tolerate a trailing body block.
+        docs = list(yaml.safe_load_all(fm))
+        assert docs, f"frontmatter did not parse: {fm!r}"
+        parsed = docs[0]
+        assert parsed["render_format"] == hostile, (
+            f"render_format={hostile!r} round-trip failed; parsed={parsed!r}"
+        )

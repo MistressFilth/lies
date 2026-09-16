@@ -1077,6 +1077,12 @@ class Orchestrator:
         ``build_author_plan(type="synthesis", ...)`` + ``file_back_author``.
         Inline 3-attempt retry on transient persistence errors lives in
         :meth:`file_back_author`. Never raises.
+
+        ``answer.format`` is threaded into the synthesis frontmatter as
+        ``render_format`` so a future curator knows the body shape.
+        Defaults to ``"md"`` if the answer has no ``format`` attribute
+        (backwards compat with callers that built the answer before
+        Task 6 added the field).
         """
         import hashlib
         import re
@@ -1103,6 +1109,7 @@ class Orchestrator:
                 sources=[],
                 exists=lambda r: (self.wiki.wiki_dir / r).exists(),
                 sha_lookup=lambda r: self._memory_service.current_state(r)[0],
+                render_format=getattr(answer, "format", "md"),
             )
         except WikiPlanInvalid as exc:
             return MemoryReceipt(
@@ -1281,6 +1288,8 @@ class Orchestrator:
         # this method returns a ``SynthesizedAnswer`` and each must
         # carry the same scope (spec §"Retriever consumption",
         # documented at ``SynthesizedAnswer.searched_scope``).
+        from lies.query.format_validator import validate_format as _validate_format
+
         searched_scope = _searched_scope(self.wiki, tag_filter)
 
         # Self-heal: ensure ``wiki_<name>`` is registered with qmd
@@ -1389,6 +1398,7 @@ class Orchestrator:
             synthesis_reason=synthesis_reason,
             should_file=output.should_file,
             searched_scope=list(searched_scope),
+            format=_validate_format(output.answer, output.format_hint),
         )
 
         # File-back decision (F3). ``should_file`` is the agent's own
@@ -1411,6 +1421,195 @@ class Orchestrator:
             # the ``register_evidence`` call in ``_run_enrichment``.
             # ``register_evidence`` takes string paths, so unwrap the
             # ``Citation`` envelope before passing.
+            self._memory_service.register_evidence({c.path for c in ans.pages_read})
+            ans = replace(ans, file_receipt=self.file_back_synthesis(ans, collection))
+
+        return ans
+
+    def run_query_with_format(
+        self,
+        question: str,
+        *,
+        cli_format: Literal["md", "table", "marp"],
+        collection: str | None = None,
+        file: bool = True,
+        force_file: bool = False,
+        tag_filter: ResolvedTagFilter | None = None,
+    ) -> SynthesizedAnswer:
+        """Run the synthesizer with a hard format constraint.
+
+        Mirrors :meth:`run_query` but appends a constraint to the
+        synthesizer's prompt before the second agent call. Used by the
+        CLI's ``--format`` override path.
+
+        The constraint:
+
+            The operator explicitly requested ``format=<cli_format>``.
+            You MUST emit ``format_hint="<cli_format>"`` and shape your
+            body accordingly.
+
+        This call always re-runs the synthesizer (no first-call-then-
+        fallback shape). The CLI wraps it in a try/except so a
+        provider failure falls back to the first call's auto-route
+        answer.
+
+        Retrieval mirrors :meth:`run_query`: qmd, falling back to
+        ``wiki/index.md``; the synthesizer reads each page's FULL body
+        (not the 400-char excerpt). The resulting ``SynthesizedAnswer``
+        carries ``format=validate_format(answer, format_hint)`` so a
+        malformed body is demoted to ``"md"`` rather than poisoning
+        the filing path's ``render_format`` frontmatter.
+
+        File-back (F3): identical semantics to :meth:`run_query` —
+        ``file=False`` opts out; ``force_file`` flips ``should_file``
+        on; ``collection`` is required to file and raises
+        ``WikiPlanInvalid`` when missing.
+        """
+        import logging
+
+        from lies.library.paths import Library
+        from lies.query.format_validator import validate_format
+
+        pages, fallback_reason = retrieve_pages(question, self.wiki, tag_filter=tag_filter)
+
+        # Resolve searched scope once so every branch carries the same
+        # value (mirrors ``run_query``).
+        searched_scope = _searched_scope(self.wiki, tag_filter)
+
+        # Self-heal qmd registration on first call (idempotent, never raises).
+        from lies.wiki.layout import ensure_wiki_qmd_registered
+
+        ensure_wiki_qmd_registered(self.wiki)
+
+        if not question or not question.strip():
+            return replace(
+                build_answer_from_pages(question, [], ""),
+                searched_scope=list(searched_scope),
+            )
+
+        # Read each page's full body (mirrors ``_call_query_synthesizer``).
+        page_texts: dict[str, str] = {}
+        page_sources: dict[str, Literal["library", "wiki"]] = {}
+        for page in pages:
+            try:
+                if page.source == "library":
+                    resolved = Library.open().collections_root / page.rel_path
+                else:
+                    resolved = self.wiki.data_root / page.rel_path
+                page_texts[page.rel_path] = resolved.read_text(encoding="utf-8")
+                page_sources[page.rel_path] = cast(Literal["library", "wiki"], page.source)
+            except (OSError, UnicodeDecodeError) as exc:
+                logging.getLogger(__name__).warning(
+                    "run_query_with_format: skipping unreadable %s page %s: %s: %s",
+                    page.source,
+                    page.rel_path,
+                    type(exc).__name__,
+                    exc,
+                )
+                continue
+
+        # Nothing to synthesize — emit the extractive answer with the
+        # constrained format hint so the validator applies the override.
+        if not pages:
+            extractive = build_answer_from_pages(
+                question,
+                pages,
+                fallback_reason,
+                format_hint=cli_format,
+            )
+            return replace(
+                extractive,
+                synthesis_used=False,
+                synthesis_reason="no pages retrieved",
+                searched_scope=list(searched_scope),
+            )
+
+        constraint = (
+            f"\n\nThe operator explicitly requested `format={cli_format}`. "
+            f'You MUST emit `format_hint="{cli_format}"` and shape your '
+            f"body accordingly."
+        )
+        deps = QueryDeps(question=question, page_texts=page_texts, page_sources=page_sources)
+        try:
+            result = self._query_synthesizer_agent.run_sync(question + constraint, deps=deps)
+        except Exception as exc:  # noqa: BLE001 - CLI wraps in try/except; let it propagate
+            logging.getLogger(__name__).warning(
+                "run_query_with_format: synthesizer failed: %s: %s",
+                type(exc).__name__,
+                exc,
+            )
+            raise
+
+        output = result.output
+        if output is None:
+            # Agent returned no parseable answer. The CLI's
+            # ``except Exception`` catches this; surface an empty
+            # ``md`` answer so callers can still see a body.
+            return replace(
+                build_answer_from_pages(question, pages, fallback_reason, format_hint=cli_format),
+                synthesis_used=False,
+                synthesis_reason="override re-synthesis failed",
+                searched_scope=list(searched_scope),
+            )
+
+        # Build citations / pages_read from the retrieved set (same
+        # prefix-strip normalization as ``run_query``).
+        retrieved = {page.rel_path for page in pages}
+
+        def _normalize(citation: str) -> str | None:
+            if citation in retrieved:
+                return citation
+            stripped = citation.removeprefix("wiki/")
+            if stripped in retrieved:
+                return stripped
+            if citation not in retrieved and "wiki/" not in citation:
+                prefixed = f"wiki/{citation}"
+                if prefixed in retrieved:
+                    return prefixed
+            return None
+
+        normalized = [(_c, _normalize(_c)) for _c in output.citations]
+        kept_paths = [norm for _, norm in normalized if norm is not None]
+        synthesis_reason = ""
+        dropped = [c for c, norm in normalized if norm is None]
+        if dropped:
+            synthesis_reason = (
+                f"dropped {len(dropped)} unretrieved citation(s): {', '.join(dropped)}"
+            )
+
+        page_source_by_path: dict[str, str] = {page.rel_path: page.source for page in pages}
+        citations: list[Citation] = [
+            Citation(path=p, source=cast(Literal["library", "wiki"], page_source_by_path[p]))
+            for p in kept_paths
+        ]
+        pages_read: list[Citation] = [
+            Citation(
+                path=page.rel_path,
+                source=cast(Literal["library", "wiki"], page.source),
+            )
+            for page in pages
+        ]
+
+        ans = SynthesizedAnswer(
+            question=question,
+            answer=output.answer,
+            citations=citations,
+            pages_read=pages_read,
+            fallback_used=bool(fallback_reason),
+            fallback_reason=fallback_reason,
+            page_links=[f"[{page.title}]({page.rel_path})" for page in pages],
+            synthesis_used=True,
+            synthesis_reason=synthesis_reason,
+            should_file=output.should_file,
+            searched_scope=list(searched_scope),
+            format=validate_format(output.answer, output.format_hint),
+        )
+
+        # File-back decision (same envelope as ``run_query``).
+        should_file = ans.should_file or force_file
+        if should_file and file and collection is None:
+            raise WikiPlanInvalid("collection required to file synthesis")
+        if should_file and file and collection is not None:
             self._memory_service.register_evidence({c.path for c in ans.pages_read})
             ans = replace(ans, file_receipt=self.file_back_synthesis(ans, collection))
 

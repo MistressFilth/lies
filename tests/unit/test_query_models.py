@@ -74,3 +74,16 @@ def test_synthesized_answer_default_question_is_empty_string() -> None:
     """``question`` defaults to ``""`` to preserve call sites that don't supply it."""
     ans = SynthesizedAnswer(answer="...")
     assert ans.question == ""
+
+
+def test_synthesized_answer_format_defaults_to_md() -> None:
+    """``format`` defaults to "md" so existing callers compile."""
+    ans = SynthesizedAnswer(answer="x")
+    assert ans.format == "md"
+
+
+def test_synthesized_answer_format_round_trip() -> None:
+    """``format`` accepts the three documented values."""
+    for fmt in ("md", "table", "marp"):
+        ans = SynthesizedAnswer(answer="x", format=fmt)
+        assert ans.format == fmt

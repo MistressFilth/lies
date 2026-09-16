@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Literal
 
 from lies.memory.models import MemoryReceipt
 from lies.query.citation import Citation
@@ -13,7 +14,10 @@ class SynthesizedAnswer:
     """The result of synthesizing an answer from wiki pages.
 
     Attributes:
-        answer: The answer body in markdown.
+        answer: The answer body. The shape matches ``format``:
+            ``format="md"`` is plain markdown; ``format="table"`` is a
+            GFM table; ``format="marp"`` is Marp-flavored markdown with
+            the ``marp: true`` frontmatter.
         citations: ``Citation`` objects for pages cited in the answer.
             Each carries the ``source`` discriminator (``"library"`` /
             ``"wiki"``) so downstream consumers can apply the
@@ -54,6 +58,12 @@ class SynthesizedAnswer:
             surfaces (F12 elicitation, F16 catalog
             ``pages_read_by_collection``, F1 output-format routing)
             can react to the effective scope.
+        format: The validated format of ``answer``. The synthesizer's
+            auto-routed ``format_hint`` is verified against the body
+            via :func:`lies.query.format_validator.validate_format`;
+            on parse failure the validator silently demotes to "md".
+            MCP consumers and the CLI render path dispatch on this
+            field.
     """
 
     answer: str
@@ -69,3 +79,4 @@ class SynthesizedAnswer:
     question: str = ""
     file_receipt: MemoryReceipt | None = None
     searched_scope: list[str] = field(default_factory=list)
+    format: Literal["md", "table", "marp"] = "md"
