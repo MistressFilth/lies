@@ -150,6 +150,11 @@ After registration, Claude Code sees these tools:
   list[Citation]` where each `Citation` carries a `source:
   "library" | "wiki"` discriminator; library citations are the
   primary source of truth, wiki citations are supplementary).
+
+Citations include the page, line, and section. The synthesized answer
+ends with a `Footnotes:` block; each line reads
+`[^N]: [title](path#L<line>) — <section>` so you can jump straight to
+the passage a claim relied on.
 - `answer(question, name?)` — same synthesized answer body as plain
   text. Use this when the chat surface needs to render the answer
   verbatim (the structured `query` tool returns a JSON envelope that
