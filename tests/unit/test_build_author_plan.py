@@ -306,3 +306,57 @@ def test_body_at_10mb_passes():
         exists=_exists_always_false,
     )
     assert len(plan.operations) == 1
+
+
+# ---------- render_format (Task 7) ----------
+
+
+def test_format_author_body_includes_render_format_for_synthesis():
+    """Synthesis frontmatter carries render_format when provided."""
+    from lies.page.author import _format_author_body
+
+    body_md = _format_author_body(
+        type="synthesis",
+        collection="claude",
+        title="Q",
+        body="answer body\n",
+        derived_from=["x.md"],
+        tags=["synthesis"],
+        sources=[],
+        render_format="table",
+    )
+    assert "render_format: table" in body_md
+
+
+def test_format_author_body_omits_render_format_when_none():
+    """No render_format key when not provided (backwards compat)."""
+    from lies.page.author import _format_author_body
+
+    body_md = _format_author_body(
+        type="synthesis",
+        collection="claude",
+        title="Q",
+        body="answer body\n",
+        derived_from=["x.md"],
+        tags=["synthesis"],
+        sources=[],
+    )
+    assert "render_format:" not in body_md
+
+
+def test_build_author_plan_threads_render_format_to_synthesis_frontmatter():
+    """build_author_plan passes render_format through to synthesis frontmatter."""
+    plan = build_author_plan(
+        type="synthesis",
+        collection="claude",
+        slug="q-abcd1234",
+        title="Q",
+        body="answer",
+        derived_from=["claude/concepts/x"],
+        tags=["synthesis"],
+        sources=[],
+        exists=_exists_always_false,
+        render_format="marp",
+    )
+    op = plan.operations[0]
+    assert "render_format: marp" in op.content

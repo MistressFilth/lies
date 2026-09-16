@@ -128,3 +128,27 @@ def test_file_back_synthesis_plan_invalid_returns_error_receipt(orch):
     receipt = orch.file_back_synthesis(bad, collection="claude-code")
     assert any("plan_invalid" in e for e in receipt.errors)
     assert orch._memory_service.apply_plan.call_count == 0
+
+
+def test_file_back_synthesis_includes_render_format(orch):
+    """``file_back_synthesis`` writes the answer's format into the frontmatter.
+
+    Task 7: ``answer.format`` is threaded as ``render_format`` through
+    ``build_author_plan`` so the synthesized page's frontmatter records
+    the body shape (md / table / marp).
+    """
+    answer = SynthesizedAnswer(
+        answer="| col1 | col2 |\n| --- | --- |\n| a | b |\n",
+        format="table",
+        question="q",
+        should_file=True,
+        synthesis_used=True,
+        pages_read=[Citation(path="claude-code/concepts/hooks", source="wiki")],
+    )
+
+    orch.file_back_synthesis(answer, "claude")
+
+    plan = orch._memory_service.apply_plan.call_args[0][0]
+    synthesis_op = plan.operations[0]
+    # Frontmatter must contain render_format: table.
+    assert "render_format: table" in synthesis_op.content
