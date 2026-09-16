@@ -34,7 +34,7 @@ from lies import __version__, xdg
 from lies.constants import LIES_DATA_SUBDIR
 from lies.errors import WikiAlreadyExists
 from lies.lock_errors import WikiFlockUnrepairable, WikiLockBusy
-from lies.mcp.instructions_loader import load_instructions
+from lies.mcp.instructions_loader import load_instructions, load_prompt
 from lies.mcp.resolution import resolve_wiki
 from lies.memory.models import WikiPlanInvalid
 from lies.orchestrator import Orchestrator
@@ -898,3 +898,18 @@ def ask_wiki_answer(question: str) -> str:
         f"then surface the answer body verbatim in your reply:\n\n"
         f"  question: {question}"
     )
+
+
+@mcp.prompt(name="orient")
+def orient(wiki: str | None = None) -> str:
+    """Return LIES orientation prose. Root of the prompts surface.
+
+    Args:
+        wiki: Wiki name to substitute into the prompt body; ``None``
+            renders an ``(unspecified)`` placeholder.
+
+    Returns:
+        Rendered markdown body the LLM reads for orientation.
+    """
+    body = load_prompt("orient")
+    return body.format(version=__version__, wiki=wiki or "(unspecified)")
