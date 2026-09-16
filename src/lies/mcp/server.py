@@ -34,6 +34,7 @@ from lies import __version__, xdg
 from lies.constants import LIES_DATA_SUBDIR
 from lies.errors import WikiAlreadyExists
 from lies.lock_errors import WikiFlockUnrepairable, WikiLockBusy
+from lies.mcp.instructions_loader import load_instructions
 from lies.mcp.resolution import resolve_wiki
 from lies.memory.models import WikiPlanInvalid
 from lies.orchestrator import Orchestrator
@@ -51,7 +52,10 @@ from lies.query.tag_expr import (
 from lies.wiki.layout import WikiLayout, copy_default_schema, git_init_initial
 from lies.wiki.wiki import Wiki
 
-mcp = FastMCP("lies")
+mcp = FastMCP(
+    "lies",
+    instructions=load_instructions(),
+)
 
 
 class SynthesizedMcpAnswer(BaseModel):
