@@ -200,3 +200,91 @@ def test_footnote_block_appended_for_md_format(
     assert ans.synthesis_used is True
     assert ans.fallback_used is False
     assert ans.format == "md"
+
+
+def test_footnote_block_absent_for_table_format(
+    sample_wiki: Wiki, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Format-constrained override: table answers skip the footnote block;
+    prose answers still render one.
+
+    Stubs :func:`retrieve_pages` so no qmd subprocess runs and stubs
+    ``Orchestrator._query_synthesizer_agent.run_sync`` to return a
+    ``QueryAnswer`` with one ``ClaimCitation``. The two cases share a
+    single agent stub via parameterization on the answer body and the
+    ``cli_format`` override.
+    """
+    from unittest import mock
+
+    from lies.agents.query_synthesizer import QueryAnswer
+    from lies.orchestrator import Orchestrator
+    from lies.query.synthesizer import PageRead
+    from tests.conftest import models_for_tests
+
+    page = PageRead(
+        rel_path="wiki/concepts/alpha.md",
+        title="Alpha",
+        excerpt="Alpha is the first letter.",
+        source="wiki",
+        line=1,
+        section="Alpha",
+    )
+
+    monkeypatch.setattr(
+        "lies.orchestrator.retrieve_pages",
+        lambda *a, **kw: ([page], ""),
+    )
+
+    orch = Orchestrator(wiki=sample_wiki, models=models_for_tests("test"))
+
+    # 1. ``cli_format="table"`` — agent emits a table body with no
+    #    ``[^N]`` markers; orchestrator must NOT append a ``Footnotes:``
+    #    block, and the surface format stays "table".
+    table_output = QueryAnswer(
+        answer="| A | B |\n| --- | --- |\n| 1 | 2 |",
+        citations=["wiki/concepts/alpha.md"],
+        should_file=False,
+        format_hint="table",
+        claim_citations=[],
+    )
+    with mock.patch.object(
+        type(orch._query_synthesizer_agent),
+        "run_sync",
+        return_value=mock.Mock(output=table_output),
+    ):
+        table_ans = orch.run_query_with_format("anything", cli_format="table", file=False)
+
+    assert "Footnotes:" not in table_ans.answer
+    assert table_ans.format == "table"
+
+    # 2. ``cli_format="md"`` — agent emits a prose body with ``[^1]``
+    #    and a paired ``ClaimCitation``; orchestrator MUST append the
+    #    ``Footnotes:`` block, just like the unconstrained ``run_query``
+    #    path (see ``test_footnote_block_appended_for_md_format``).
+    md_output = QueryAnswer(
+        answer="Alpha is the first letter.[^1]",
+        citations=["wiki/concepts/alpha.md"],
+        should_file=False,
+        format_hint="md",
+        claim_citations=[
+            ClaimCitation(
+                claim="Alpha is the first letter",
+                citation_index=0,
+            ),
+        ],
+    )
+    with mock.patch.object(
+        type(orch._query_synthesizer_agent),
+        "run_sync",
+        return_value=mock.Mock(output=md_output),
+    ):
+        md_ans = orch.run_query_with_format("anything", cli_format="md", file=False)
+
+    assert "Footnotes:" in md_ans.answer
+    assert "[^1]:" in md_ans.answer
+    assert "wiki/concepts/alpha.md#L1" in md_ans.answer
+    assert md_ans.format == "md"
+    # The validated claim_citations list is forwarded.
+    assert len(md_ans.claim_citations) == 1
+    assert md_ans.claim_citations[0].claim == "Alpha is the first letter"
+    assert md_ans.claim_citations[0].citation_index == 0

@@ -1715,9 +1715,14 @@ class Orchestrator:
                 f"dropped {len(dropped)} unretrieved citation(s): {', '.join(dropped)}"
             )
 
-        page_source_by_path: dict[str, str] = {page.rel_path: page.source for page in pages}
+        page_by_path: dict[str, PageRead] = {page.rel_path: page for page in pages}
         citations: list[Citation] = [
-            Citation(path=p, source=cast(Literal["library", "wiki"], page_source_by_path[p]))
+            Citation(
+                path=p,
+                source=cast(Literal["library", "wiki"], page_by_path[p].source),
+                line=page_by_path[p].line,
+                section=page_by_path[p].section,
+            )
             for p in kept_paths
         ]
         pages_read: list[Citation] = [
@@ -1728,9 +1733,40 @@ class Orchestrator:
             for page in pages
         ]
 
+        # Validate the agent's claim_citations. Survivors land in the
+        # response envelope. Drop counts join synthesis_reason so the
+        # operator sees the truncation in the receipt.
+        kept_claim_citations, claim_drop_reasons = _validate_claim_citations(
+            output.claim_citations,
+            kept_paths,
+            output.answer,
+        )
+        if claim_drop_reasons:
+            existing = synthesis_reason + "; " if synthesis_reason else ""
+            synthesis_reason = (
+                existing + "dropped claim_citations: " + "; ".join(claim_drop_reasons)
+            )
+
+        # Render the footnote block for prose answers only. Tables and
+        # Marp bodies skip it; their citation surface is the structured
+        # envelope. The format validator is keyed on ``cli_format`` (not
+        # ``output.format_hint``) because the operator pinned the format
+        # for this call. Gating on ``kept_claim_citations`` mirrors
+        # ``run_query`` and the synthesizer prompt: the agent pairs
+        # ``[^N]`` markers in the body with ``claim_citations``; when it
+        # didn't emit any, the body has no markers and the block would
+        # be a stray surface.
+        body_answer = output.answer
+        fmt = validate_format(output.answer, cli_format)
+        if fmt == "md" and kept_claim_citations:
+            page_titles = {p.rel_path: p.title for p in pages}
+            block = _render_footnotes(citations, page_titles=page_titles)
+            if block:
+                body_answer = output.answer + "\n\n" + block
+
         ans = SynthesizedAnswer(
             question=question,
-            answer=output.answer,
+            answer=body_answer,
             citations=citations,
             pages_read=pages_read,
             fallback_used=bool(fallback_reason),
@@ -1740,7 +1776,8 @@ class Orchestrator:
             synthesis_reason=synthesis_reason,
             should_file=output.should_file,
             searched_scope=list(searched_scope),
-            format=validate_format(output.answer, output.format_hint),
+            format=fmt,
+            claim_citations=tuple(kept_claim_citations),
         )
 
         # File-back decision (same envelope as ``run_query``).
