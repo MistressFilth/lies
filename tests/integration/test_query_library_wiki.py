@@ -8,6 +8,7 @@ import pytest
 from lies import xdg
 from lies.constants import LIES_DATA_SUBDIR
 from lies.library.paths import Library
+from lies.query.citation import ClaimCitation
 from lies.query.synthesizer import FALLBACK_REASON_WIKI_ONLY
 from lies.wiki.wiki import Wiki
 
@@ -93,3 +94,109 @@ def test_query_wiki_only_when_library_empty(mixed_wiki: Wiki) -> None:
     assert reason == FALLBACK_REASON_WIKI_ONLY
     assert len(pages) == 1
     assert pages[0].source == "wiki"
+
+
+@pytest.fixture
+def subagents_library_wiki(tmp_path: Path) -> Wiki:
+    """A wiki whose library mirror has a single page at
+    ``claude_code/agent-sdk/subagents.md`` with a `Context isolation`
+    heading. Used by the footnote-block integration test."""
+    Library.open.cache_clear()
+
+    root = tmp_path / "wiki"
+    (root / "wiki").mkdir(parents=True)
+    (root / "wiki" / "index.md").write_text("# Index\n", encoding="utf-8")
+    wiki = Wiki(
+        name="subagents",
+        data_root=root,
+        config_root=xdg.config_home() / LIES_DATA_SUBDIR / "subagents",
+        cache_root=xdg.cache_home() / LIES_DATA_SUBDIR / "subagents",
+        state_root=xdg.state_home() / LIES_DATA_SUBDIR / "subagents",
+        runtime_root=xdg.runtime_dir_for("subagents"),
+    )
+
+    lib = Library.open()
+    mirror_dir = lib.collections_root / "claude_code" / "agent-sdk"
+    mirror_dir.mkdir(parents=True)
+    (mirror_dir / "subagents.md").write_text(
+        "---\ntitle: Subagents in the SDK\n---\n\n"
+        "## Context isolation\n\n"
+        "Each subagent runs in its own context window.\n",
+        encoding="utf-8",
+    )
+
+    return wiki
+
+
+def test_footnote_block_appended_for_md_format(
+    subagents_library_wiki: Wiki, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """End-to-end: orchestrator renders the footnote block for prose answers.
+
+    Stubs :func:`retrieve_pages` so no qmd subprocess runs, and stubs
+    :meth:`Orchestrator._call_query_synthesizer` so the synthesizer
+    agent never executes. The stub returns a ``QueryAnswer`` with one
+    citation and a corresponding ``ClaimCitation``; the orchestrator
+    is responsible for appending the ``Footnotes:`` block to the body
+    and for forwarding the validated ``ClaimCitation`` into
+    ``SynthesizedAnswer.claim_citations``.
+    """
+    from lies.agents.query_synthesizer import QueryAnswer
+    from lies.orchestrator import Orchestrator
+    from lies.query.synthesizer import PageRead
+    from tests.conftest import models_for_tests
+
+    page = PageRead(
+        rel_path="claude_code/agent-sdk/subagents.md",
+        title="Subagents in the SDK",
+        excerpt="Each subagent runs in its own context.",
+        source="library",
+        line=42,
+        section="Context isolation",
+    )
+
+    output = QueryAnswer(
+        answer="Each subagent runs in its own context.[^1]",
+        citations=["claude_code/agent-sdk/subagents.md"],
+        should_file=False,
+        format_hint="md",
+        claim_citations=[
+            ClaimCitation(
+                claim="Each subagent runs in its own context",
+                citation_index=0,
+            ),
+        ],
+    )
+
+    monkeypatch.setattr(
+        "lies.orchestrator.retrieve_pages",
+        lambda *a, **kw: ([page], ""),
+    )
+
+    def _stub_synth(self: Orchestrator, question: str, pages: list[PageRead]):
+        return output, ""
+
+    monkeypatch.setattr(Orchestrator, "_call_query_synthesizer", _stub_synth)
+
+    orch = Orchestrator(
+        wiki=subagents_library_wiki,
+        models=models_for_tests("test"),
+    )
+    ans = orch.run_query("anything", file=False)
+
+    # Footnote block appended to the answer body.
+    assert "Footnotes:" in ans.answer
+    assert "[^1]:" in ans.answer
+    assert "claude_code/agent-sdk/subagents.md#L42" in ans.answer
+    assert "Context isolation" in ans.answer
+    # The synthesized body comes through unchanged above the block.
+    assert "Each subagent runs in its own context.[^1]" in ans.answer
+    # The validated claim_citations list is forwarded.
+    assert len(ans.claim_citations) == 1
+    assert ans.claim_citations[0].claim == "Each subagent runs in its own context"
+    assert ans.claim_citations[0].citation_index == 0
+    # Retrieval + synthesis both succeeded: searched_scope reflects the
+    # wiki's collection set, format is md, no fallback, no drops.
+    assert ans.synthesis_used is True
+    assert ans.fallback_used is False
+    assert ans.format == "md"
