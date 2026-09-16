@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import typing
 
-from lies.query.citation import Citation
+from lies.query.citation import Citation, ClaimCitation
 from lies.query.models import SynthesizedAnswer
 
 
@@ -47,3 +47,23 @@ def test_synthesized_answer_annotations_are_list_of_citation() -> None:
     hints = typing.get_type_hints(SynthesizedAnswer)
     assert hints["citations"] == list[Citation]
     assert hints["pages_read"] == list[Citation]
+
+
+def test_synthesized_answer_claim_citations_default_empty() -> None:
+    ans = SynthesizedAnswer(answer="x")
+    assert ans.claim_citations == ()
+
+
+def test_synthesized_answer_accepts_claim_citations() -> None:
+    cc = ClaimCitation(claim="foo", citation_index=0)
+    ans = SynthesizedAnswer(
+        answer="foo bar",
+        citations=[Citation(path="x.md", source="wiki")],
+        claim_citations=[cc],
+    )
+    assert ans.claim_citations == (cc,)
+
+
+def test_synthesized_answer_claim_citations_annotation() -> None:
+    hints = typing.get_type_hints(SynthesizedAnswer)
+    assert hints["claim_citations"] == tuple[ClaimCitation, ...]
