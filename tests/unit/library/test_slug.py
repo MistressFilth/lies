@@ -83,3 +83,45 @@ def test_derive_nested_slug_strips_extension_and_normalizes() -> None:
     assert (
         derive_nested_slug("Build_With-Claude_/quick_start.md") == "build-with-claude/quick-start"
     )
+
+
+@pytest.mark.parametrize(
+    "source,expected",
+    [
+        # Dotted version tokens collapse to dashes (``3.14`` -> ``3-14``).
+        # Repro: Python 3.16 docs include ``deprecations/
+        # c-api-pending-removal-in-3.14.txt`` and similar. Without this,
+        # the nested slug contains a ``.`` which the regex rejects and the
+        # ingest quarantines the file.
+        (
+            "deprecations/c-api-pending-removal-in-3.14.txt",
+            "deprecations/c-api-pending-removal-in-3-14",
+        ),
+        (
+            "library/c-api-pending-removal-in-future.txt",
+            "library/c-api-pending-removal-in-future",
+        ),
+        # Leading dashes stripped per segment. Repro: Python docs
+        # ``library/__future__.txt`` ( ``__future__`` -> ``--future``
+        # after underscore-to-dash ) must collapse to ``future`` so the
+        # per-segment ``[a-z0-9]`` prefix requirement is met.
+        ("library/__future__.txt", "library/future"),
+        ("library/__thread__.txt", "library/thread"),
+        ("library/__main__.txt", "library/main"),
+        # Combined: both leading dashes and dotted tokens.
+        (
+            "deprecations/c-api-pending-removal-in-3-19.txt",
+            "deprecations/c-api-pending-removal-in-3-19",
+        ),
+    ],
+)
+def test_derive_nested_slug_collapse_dots_and_leading_dashes(source: str, expected: str) -> None:
+    """``derive_nested_slug`` collapses ``.`` and strips leading/trailing dashes
+    per segment, matching what ``derive_slug`` does for the flat path.
+
+    Without this, doc archives whose filenames include version numbers
+    (Python docs, ``*.3.14.txt``) or dunder prefixes (Python docs,
+    ``__future__.txt``) produce invalid slugs that the ingest pipeline
+    quarantines one-by-one, aborting the run.
+    """
+    assert derive_nested_slug(source) == expected
