@@ -60,13 +60,36 @@ def _all_typer_commands() -> set[str]:
 
     out: set[str] = set()
 
+    def _name(info) -> str:
+        """Resolve a TyperInfo's command name; fall back to callback.__name__.
+
+        Typer derives the command name from ``callback.__name__`` when the
+        decorator omits an explicit ``name=``; in that case ``info.name`` is
+        ``None``. Without this fallback, ``' '.join((prefix, info.name))``
+        raises ``TypeError`` and the gate exits 2 instead of catching drift.
+        """
+        if info.name:
+            return info.name
+        if info.callback is not None and hasattr(info.callback, "__name__"):
+            return info.callback.__name__
+        return ""
+
     def _walk(node, prefix: tuple[str, ...]) -> None:
-        for sub in getattr(node, "registered_groups", []):
-            seg = "lies " + " ".join((*prefix, sub.name))
-            out.add(seg)
-            _walk(sub, (*prefix, sub.name))
-        for cmd in getattr(node, "registered_commands", []):
-            out.add("lies " + " ".join((*prefix, cmd.name)))
+        # Sub-groups: recurse into each TyperInfo's typer_instance.
+        for sub_info in getattr(node, "registered_groups", []):
+            sub_name = _name(sub_info)
+            if not sub_name:
+                continue
+            out.add("lies " + " ".join((*prefix, sub_name)))
+            sub_typer = getattr(sub_info, "typer_instance", None)
+            if sub_typer is not None:
+                _walk(sub_typer, (*prefix, sub_name))
+        # Direct commands: leaf-level TyperInfo; typer_instance is None here.
+        for cmd_info in getattr(node, "registered_commands", []):
+            cmd_name = _name(cmd_info)
+            if not cmd_name:
+                continue
+            out.add("lies " + " ".join((*prefix, cmd_name)))
 
     _walk(app, ())
     return out
