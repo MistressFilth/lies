@@ -6,6 +6,14 @@ All notable changes to LIES are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.26.0] - 2026-09-15
+
+### Added
+- MCP server orientation payload: handshake `instructions=` field carries the four path/env facts plus the tool inventory, so agents attaching from any cwd get correct LIES context without relying on `AGENTS.md` loading. Driven by `src/lies/mcp/instructions.md` + `prompts/*.md` rendered through the new `lies.mcp.instructions_loader`.
+- Six new MCP prompts: `orient`, `ingest`, `query`, `lint`, `sync`, `file-back`. Reference-prose complement to the existing `ask_wiki` / `ask_wiki_answer` tool-call templates.
+- Pre-commit hook `lies-commands-exist` (`tools/check_lies_commands.py`) blocks commits that introduce unresolved `lies <cmd>` references in the orientation payload.
+- Regression test pinning the orientation payload away from the 2f320888 wrong-path bug.
+
 ## [0.25.0] - 2026-09-16
 
 ### Added
