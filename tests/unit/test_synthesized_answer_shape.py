@@ -67,3 +67,26 @@ def test_synthesized_answer_accepts_claim_citations() -> None:
 def test_synthesized_answer_claim_citations_annotation() -> None:
     hints = typing.get_type_hints(SynthesizedAnswer)
     assert hints["claim_citations"] == tuple[ClaimCitation, ...]
+
+
+def test_pages_read_carries_line_and_section() -> None:
+    """``pages_read`` entries thread ``line`` and ``section`` per spec.
+
+    Both ``run_query`` and ``run_query_with_format`` must populate
+    ``line`` and ``section`` from the underlying ``PageRead`` so
+    downstream consumers (footnote renderer, MCP response envelope)
+    can render per-passage anchors without re-querying.
+    """
+    cc = Citation(
+        path="a.md",
+        source="library",
+        line=42,
+        section="Context isolation",
+    )
+    ans = SynthesizedAnswer(
+        answer="x",
+        pages_read=[cc],
+    )
+    assert ans.pages_read == [cc]
+    assert ans.pages_read[0].line == 42
+    assert ans.pages_read[0].section == "Context isolation"

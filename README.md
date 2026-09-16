@@ -148,13 +148,11 @@ After registration, Claude Code sees these tools:
 - `query(question, name?)` — synthesized answer (structured result
   with `fallback_used`, `fallback_reason`, and `citations:
   list[Citation]` where each `Citation` carries a `source:
-  "library" | "wiki"` discriminator; library citations are the
-  primary source of truth, wiki citations are supplementary).
-
-Citations include the page, line, and section. The synthesized answer
-ends with a `Footnotes:` block; each line reads
-`[^N]: [title](path#L<line>) — <section>` so you can jump straight to
-the passage a claim relied on.
+  "library" | "wiki"` discriminator, plus optional `line` and
+  `section` so each footnote can point at the passage a claim relied on;
+  library citations are the primary source of truth, wiki citations are
+  supplementary). The synthesized answer ends with a `Footnotes:` block;
+  each line reads `[^N]: [title](path#L<line>) — <section>`.
 - `answer(question, name?)` — same synthesized answer body as plain
   text. Use this when the chat surface needs to render the answer
   verbatim (the structured `query` tool returns a JSON envelope that

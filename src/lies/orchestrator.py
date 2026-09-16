@@ -764,7 +764,12 @@ def _render_footnote_line(
     if citation.line is not None:
         anchor = f"#L{citation.line}"
     elif citation.section:
-        anchor = f"#{_slugify_section(citation.section)}"
+        slug = _slugify_section(citation.section)
+        # Heading may be only punctuation (e.g. ``---`` / ``—``); the
+        # slug is empty and a bare ``#`` fragment would dangle. Omit
+        # the anchor in that case.
+        if slug:
+            anchor = f"#{slug}"
 
     link = f"[{display_title}]({citation.path}{anchor})"
     if citation.section:
@@ -1490,6 +1495,8 @@ class Orchestrator:
             Citation(
                 path=page.rel_path,
                 source=cast(Literal["library", "wiki"], page.source),
+                line=page.line,
+                section=page.section,
             )
             for page in pages
         ]
@@ -1729,6 +1736,8 @@ class Orchestrator:
             Citation(
                 path=page.rel_path,
                 source=cast(Literal["library", "wiki"], page.source),
+                line=page.line,
+                section=page.section,
             )
             for page in pages
         ]
