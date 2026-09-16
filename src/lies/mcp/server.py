@@ -913,3 +913,38 @@ def orient(wiki: str | None = None) -> str:
     """
     body = load_prompt("orient")
     return body.format(version=__version__, wiki=wiki or "(unspecified)")
+
+
+@mcp.prompt(name="ingest")
+def ingest(source: str) -> str:
+    """Return the source-ingestion walkthrough prose."""
+    return load_prompt("ingest").format(version=__version__, source=source)
+
+
+@mcp.prompt(name="query")
+def query_prompt(question: str) -> str:
+    """Return the query-tool recipes prose.
+
+    Named ``query_prompt`` in Python to avoid clashing with the
+    ``query`` MCP tool already registered in this module;
+    registered as the ``/query`` prompt via ``name="query"``.
+    """
+    return load_prompt("query").format(version=__version__, question=question)
+
+
+@mcp.prompt(name="lint")
+def lint_prompt() -> str:
+    """Return the lint walkthrough prose."""
+    return load_prompt("lint").format(version=__version__)
+
+
+@mcp.prompt(name="sync")
+def sync_prompt(collection: str) -> str:
+    """Return the sync walkthrough prose."""
+    return load_prompt("sync").format(version=__version__, collection=collection)
+
+
+@mcp.prompt(name="file-back")
+def file_back(wiki: str) -> str:
+    """Return the F3 file-back walkthrough prose."""
+    return load_prompt("file-back").format(version=__version__, wiki=wiki)

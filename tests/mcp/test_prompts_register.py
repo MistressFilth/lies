@@ -12,7 +12,16 @@ from __future__ import annotations
 from lies.mcp.server import mcp
 
 
-EXPECTED_PROMPTS = {"orient"}
+EXPECTED_PROMPTS = {
+    "ask_wiki",
+    "answer",
+    "orient",
+    "ingest",
+    "query",
+    "lint",
+    "sync",
+    "file-back",
+}
 
 
 def _registered_prompt_names() -> set[str]:
