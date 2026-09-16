@@ -204,7 +204,7 @@ def test_qmd_capability_falls_back_when_liveness_probe_fails(
 def test_as_capability_reaps_when_daemon_is_stale(
     wiki_root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Stale daemon at construction -> reap+respawn+sidecar envelope.
+    """Stale daemon at construction -> reap+respawn before advertising toolset.
 
     Closes the silent-failure mode where a stale-but-serving qmd daemon
     passes the TCP probe in QmdCapability.as_capability and serves
@@ -246,3 +246,49 @@ def test_as_capability_reaps_when_daemon_is_stale(
     assert len(spawn_calls) == 1
     assert len(sidecar_calls) == 1
     assert sidecar_calls[0] == wiki.data_root
+
+
+def test_as_capability_does_not_reap_when_daemon_is_fresh(
+    wiki_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fresh daemon at construction -> no reap envelope, native toolset advertised.
+
+    Pins the no-op path: a healthy daemon (marker mtime <= daemon
+    pidfile mtime) sees the existing behavior unchanged. The new
+    reap block must not run on the fresh path.
+    """
+    from pydantic_ai.capabilities import MCP
+
+    from tests.conftest import make_wiki
+
+    wiki = make_wiki(name="capability-fresh-noop", data_root=wiki_root)
+    monkeypatch.setattr("lies.qmd.capability.qmd_daemon_reachable", lambda url, timeout=0.5: True)
+
+    reap_calls: list[bool] = []
+    spawn_calls: list[bool] = []
+    sidecar_calls: list[Path] = []
+
+    monkeypatch.setattr(
+        "lies.qmd.capability._reap_qmd_daemon",
+        lambda *, grace=2.0, poll=0.05: reap_calls.append(True),
+    )
+    monkeypatch.setattr(
+        "lies.qmd.capability._spawn_qmd_daemon",
+        lambda: spawn_calls.append(True),
+    )
+    monkeypatch.setattr(
+        "lies.qmd.capability.write_sidecar_data_dir",
+        lambda data_dir: sidecar_calls.append(data_dir),
+    )
+    monkeypatch.setattr("lies.qmd.capability._is_daemon_stale", lambda: False)
+
+    async def _probe_ok(url: str) -> None:
+        return None
+
+    monkeypatch.setattr("lies.qmd.capability._probe_liveness", _probe_ok)
+
+    cap = QmdCapability(transport="http", url="http://127.0.0.1:8181", wiki=wiki).as_capability()
+    assert isinstance(cap, MCP)
+    assert reap_calls == []
+    assert spawn_calls == []
+    assert sidecar_calls == []
