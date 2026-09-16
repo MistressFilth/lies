@@ -365,6 +365,61 @@ def test_web_scraper_parse_chunked_when_source_is_full(
     assert b"Page Two" in docs[2].content
 
 
+def test_web_scraper_resolves_relative_links_against_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """llms.txt with relative link targets (e.g. ``/docs/foo.md``) resolves against source URL.
+
+    Repro for the bug where every relative link in the manifest
+    failed with ``urllib.request.Request`` raising ``ValueError:
+    unknown url type`` and the index yielded zero docs.
+
+    Each relative link must be resolved via :func:`urllib.parse.urljoin`
+    against the source URL before the fetch; the resolved absolute
+    URL is what ``urlopen`` sees.
+    """
+    index_body = (
+        "# MiniMax Docs\n\n"
+        "- [Page A](/docs/api/overview.md): first page\n"
+        "- [Page B](docs/quickstart.md): relative path, no leading slash\n"
+        "- [Page C](https://other.example.com/page.md): already absolute\n"
+    )
+    pages: dict[str, str] = {
+        "https://platform.minimax.io/llms.txt": index_body,
+        "https://platform.minimax.io/docs/api/overview.md": "# A\n",
+        "https://platform.minimax.io/docs/quickstart.md": "# B\n",
+        "https://other.example.com/page.md": "# C\n",
+    }
+    fetched: list[str] = []
+
+    def fake_urlopen(req, *args, **kwargs):
+        fetched.append(req.full_url)
+        body = pages.get(req.full_url)
+        if body is None:
+            raise HTTPError(req.full_url, 404, "Not Found", {}, None)
+        return _FakeResp(body, req.full_url)
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    s = WebScraper()
+    raw = s.fetch("https://platform.minimax.io/llms.txt")
+    docs = s.parse(raw, source="https://platform.minimax.io/llms.txt")
+    assert len(docs) == 3, f"all three pages resolved; got {len(docs)}: {[d.path for d in docs]}"
+    # `fetched` includes the source URL (fetched once by fetch()) plus the
+    # three pages (fetched by parse()/_parse_index()). The order below
+    # is the index order: source, page A, page B, page C.
+    assert fetched == [
+        "https://platform.minimax.io/llms.txt",
+        "https://platform.minimax.io/docs/api/overview.md",
+        "https://platform.minimax.io/docs/quickstart.md",
+        "https://other.example.com/page.md",
+    ], f"relative links resolved against source base; got {fetched}"
+    assert sorted(d.path for d in docs) == [
+        "docs/quickstart.md",
+        "overview.md",  # /docs/api/overview.md has /docs/<lang>/ stripped
+        "page.md",
+    ]
+
+
 def test_web_scraper_parse_chunked_when_no_source(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
