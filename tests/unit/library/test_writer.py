@@ -29,7 +29,16 @@ def lib_with_git(lib: Library) -> Library:
     """Initialise a git repo at library.git_root with a baseline commit."""
     lib.git_root.mkdir(parents=True, exist_ok=True)
     (lib.git_root / ".lies").mkdir(parents=True, exist_ok=True)
-    (lib.git_root / ".gitkeep").write_text("")
+    # ``.gitkeep`` placeholder has >= 5 non-blank lines so the recursive
+    # batch walker doesn't trip the thin-content filter when the batch
+    # root lives under ``lib.git_root`` (see test_ingest.lib_with_git).
+    (lib.git_root / ".gitkeep").write_text(
+        "# placeholder line 1\n"
+        "# placeholder line 2\n"
+        "# placeholder line 3\n"
+        "# placeholder line 4\n"
+        "# placeholder line 5\n"
+    )
     subprocess.run(
         ["git", "init", "-b", "main", str(lib.git_root)], check=True, capture_output=True
     )

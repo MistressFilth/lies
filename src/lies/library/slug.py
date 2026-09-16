@@ -72,7 +72,16 @@ def derive_nested_slug(source: Path | str) -> str:
     *parents, tail = raw.rsplit("/", 1)
     stem = tail.rsplit(".", 1)[0] if "." in tail else tail
     normalized_parts = [
-        seg.lower().replace("_", "-").rstrip("-") for seg in parents + [stem] if seg
+        # ``.txt`` / version-like tokens (``3.14``) inside source paths
+        # must collapse to dashes -- the nested slug regex
+        # (``_NESTED_RE``) accepts only ``[a-z0-9_-]``. ``derive_slug``
+        # already does this for the flat path; mirror it here. Leading
+        # dashes are stripped so segments like ``__future__`` (which
+        # become ``--future`` after underscore-to-dash) still match
+        # the per-segment ``[a-z0-9]`` prefix requirement.
+        seg.lower().replace("_", "-").replace(".", "-").strip("-")
+        for seg in parents + [stem]
+        if seg
     ]
     if not normalized_parts or any(not p for p in normalized_parts):
         raise SlugError(f"derive_nested_slug produced an invalid slug from {source!r}")

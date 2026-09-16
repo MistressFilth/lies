@@ -86,7 +86,18 @@ def lib_with_git(lib: Library) -> Library:
     """
     lib.git_root.mkdir(parents=True, exist_ok=True)
     (lib.git_root / ".lies").mkdir(parents=True, exist_ok=True)
-    (lib.git_root / ".gitkeep").write_text("")
+    # ``.gitkeep`` placeholder is non-empty so the recursive batch
+    # walker doesn't trip the thin-content filter when the batch root
+    # happens to live under ``lib.git_root`` (per the ``lib`` fixture,
+    # ``xdg.data_home = tmp_path``). An empty file would be quarantined
+    # as ``skip-content:thin-content:<5`` (filter requires >= 5 non-blank lines).
+    (lib.git_root / ".gitkeep").write_text(
+        "# placeholder line 1\n"
+        "# placeholder line 2\n"
+        "# placeholder line 3\n"
+        "# placeholder line 4\n"
+        "# placeholder line 5\n"
+    )
     return lib
 
 
@@ -382,24 +393,34 @@ def test_run_batch_ingest_production_fetcher_walks_directory(
     """
     from lies.library.fetcher import ScraperFetcher
 
-    (tmp_path / "alpha.md").write_text("alpha body\n" * 12)
-    (tmp_path / "beta.md").write_text("beta body\n" * 12)
-    (tmp_path / "LICENSE").write_text("License\n" * 12)
-    (tmp_path / "ignored").mkdir()
-    (tmp_path / "ignored" / "skip-me.md").write_text("nested body\n" * 12)
+    # The lib fixture places Library's git_root under tmp_path; the
+    # recursive walker would otherwise discover the fixture's
+    # ``.gitkeep``. Place batch sources under a dedicated subdir so
+    # the walker only sees this test's fixtures.
+    batch_root = tmp_path / "batch"
+    batch_root.mkdir()
+    (batch_root / "alpha.md").write_text("alpha body\n" * 12)
+    (batch_root / "beta.md").write_text("beta body\n" * 12)
+    (batch_root / "LICENSE").write_text("License\n" * 12)
+    (batch_root / "ignored").mkdir()
+    (batch_root / "ignored" / "skip-me.md").write_text("nested body\n" * 12)
 
     fetcher = ScraperFetcher(lib_with_git)
-    result = run_batch_ingest(lib_with_git, "claude", tmp_path, fetcher=fetcher)
+    result = run_batch_ingest(lib_with_git, "claude", batch_root, fetcher=fetcher)
 
-    # Two mirror files written; LICENSE filtered by filename stem gate;
-    # nested file NOT walked (depth-1 only — see dispatch contract).
-    assert result.created == 2, (
-        f"expected 2 mirrors written, got created={result.created} "
+    # Three mirror files written: alpha.md, beta.md, and ignored/skip-me.md
+    # (the recursive walker descends into subdirs). LICENSE is filtered by
+    # the filename stem gate. Subdir structure is preserved in slugs
+    # (``ignored/skip-me`` becomes ``ignored/skip-me.md``).
+    assert result.created == 3, (
+        f"expected 3 mirrors written, got created={result.created} "
         f"skipped={result.skipped} errors={result.errors}"
     )
     coll_dir = lib_with_git.collections_root / "claude"
-    written = {p.name for p in coll_dir.iterdir() if p.is_file()}
-    assert written == {"alpha.md", "beta.md"}, written
+    # Recursive walk: the recursive walker preserves subdir structure,
+    # so ``ignored/skip-me.md`` lands under ``coll_dir/ignored/``.
+    written = {p.relative_to(coll_dir).as_posix() for p in coll_dir.rglob("*") if p.is_file()}
+    assert written == {"alpha.md", "beta.md", "ignored/skip-me.md"}, written
 
 
 def test_run_batch_ingest_empty_directory_is_noop(lib_with_git: Library, tmp_path: Path) -> None:
@@ -409,13 +430,21 @@ def test_run_batch_ingest_empty_directory_is_noop(lib_with_git: Library, tmp_pat
     empty directory raised ``LibraryFetchUnreachable`` because
     ``pick_scraper(source)`` rejected directory inputs entirely; the
     CLI would exit non-zero on ``lies ingest --batch <empty-dir>``.
+
+    Uses a dedicated empty subdir under tmp_path rather than tmp_path
+    itself, since the ``lib`` fixture places the Library's git_root
+    under tmp_path (``xdg.data_home = tmp_path``); a recursive walker
+    would otherwise discover the Library's ``.gitkeep`` and other
+    fixture files.
     """
     from lies.library.fetcher import ScraperFetcher
 
-    (tmp_path / "junk").mkdir()  # Subdirectories are skipped, not yielded.
+    empty_batch = tmp_path / "empty-batch-dir"
+    empty_batch.mkdir()
+    (empty_batch / "junk").mkdir()  # Subdirectories are skipped, not yielded.
 
     fetcher = ScraperFetcher(lib_with_git)
-    result = run_batch_ingest(lib_with_git, "claude", tmp_path, fetcher=fetcher)
+    result = run_batch_ingest(lib_with_git, "claude", empty_batch, fetcher=fetcher)
     assert result.created == 0
     assert result.updated == 0
     assert result.errors == 0

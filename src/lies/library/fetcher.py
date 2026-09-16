@@ -379,25 +379,45 @@ class ScraperFetcher:
 
     @staticmethod
     def _iter_directory(directory: Path) -> Iterator[FetchItem]:
-        """Depth-1 walk of ``directory``; yield one ``FetchItem`` per file.
+        """Recursive walk of ``directory``; yield one ``FetchItem`` per file.
 
-        See the comment above ``fetch_sources`` for the rationale
-        (depth-1, skip subdirs, swallow read errors).
+        Each yielded ``FetchItem.path`` is the file's full path relative
+        to ``directory`` (e.g. ``c-api/foo.md``), so the ingest pipeline
+        can derive nested slugs that mirror the source tree. Depth-1
+        walks lose subdir structure; recursive walks preserve it.
+        Subdirectories are descended in sorted order. Files that fail
+        to read are dropped silently, mirroring the llms.txt stance in
+        ``WebScraper._parse_index``.
+
+        Repro for the depth-1 bug: ``lies ingest --batch <dir>`` only
+        picked up files at the batch root and silently skipped every
+        subdirectory. Whole-tree doc archives (e.g. Python 3.16 docs
+        plain-text tarball, with hundreds of files under ``library/``,
+        ``tutorial/``, etc.) yielded mirror files at flat top-level
+        only, losing the source's section structure.
         """
-        for entry in sorted(directory.iterdir()):
-            if not entry.is_file():
-                continue
-            try:
-                body_bytes = entry.read_bytes()
-            except OSError:
-                continue
-            yield FetchItem(
-                path=entry,
-                url=None,
-                body=body_bytes.decode("utf-8", errors="replace"),
-                source_hash=hashlib.sha256(body_bytes).hexdigest(),
-                fetched_via="local",
-            )
+        base = directory.resolve()
+
+        def _walk(rel: Path) -> Iterator[FetchItem]:
+            for entry in sorted(rel.iterdir()):
+                if entry.is_dir():
+                    yield from _walk(entry)
+                    continue
+                if not entry.is_file():
+                    continue
+                try:
+                    body_bytes = entry.read_bytes()
+                except OSError:
+                    continue
+                yield FetchItem(
+                    path=entry.relative_to(base),
+                    url=None,
+                    body=body_bytes.decode("utf-8", errors="replace"),
+                    source_hash=hashlib.sha256(body_bytes).hexdigest(),
+                    fetched_via="local",
+                )
+
+        yield from _walk(base)
 
 
 __all__ = ("ScraperFetcher",)
