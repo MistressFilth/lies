@@ -6,7 +6,6 @@ from pathlib import Path
 import pytest
 from pydantic_ai.models.test import TestModel
 
-from lies.collections.record import Collection, save_collection
 from lies.orchestrator import Orchestrator
 from lies.query.tag_expr import Include, ResolvedTagFilter
 from lies.wiki.wiki import Wiki
@@ -226,8 +225,26 @@ def test_run_query_without_tag_filter_passes_none(
 
 
 @pytest.fixture
-def tagged_orch_wiki(tmp_path: Path) -> Wiki:
-    """A wiki with two tagged collections for the searched_scope tests."""
+def tagged_orch_wiki(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Wiki:
+    """A wiki with two library collections for the searched_scope tests.
+
+    Library-first resolution: the wiki's yaml configs are no longer
+    consulted for collection metadata. The library is seeded with
+    ``airflow`` and ``amazon`` directories; the wiki itself only
+    needs a data_root.
+    """
+    import shutil
+
+    from lies import xdg
+    from lies.constants import LIES_DATA_SUBDIR
+    from lies.library.paths import Library
+
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg_data"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg_config"))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg_cache"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "xdg_state"))
+    Library.open.cache_clear()
+
     root = tmp_path / "tagged-orch"
     root.mkdir()
     (root / "raw").mkdir()
@@ -235,28 +252,15 @@ def tagged_orch_wiki(tmp_path: Path) -> Wiki:
     wiki = make_wiki(name="tagged-orch", data_root=root)
     wiki.config_root.mkdir(parents=True, exist_ok=True)
     wiki.collections_dir.mkdir(parents=True, exist_ok=True)
-    _COLLECTIONS = {
-        "airflow": ["airflow", "provider"],
-        "amazon": ["amazon", "aws"],
-    }
-    for name, tags in _COLLECTIONS.items():
-        save_collection(
-            wiki,
-            Collection(
-                name=name,
-                path=wiki.data_root / "raw" / name,
-                source=f"https://example.com/{name}",
-                tags=list(tags),
-                scraper_cmd=None,
-                doc_path=None,
-                mapper_model=None,
-                language="en",
-                version="1.0.0",
-                created_at=_NOW,
-                updated_at=_NOW,
-                config={},
-            ),
-        )
+
+    lib_root = xdg.data_home() / LIES_DATA_SUBDIR / "library"
+    if lib_root.exists():
+        shutil.rmtree(lib_root)
+    lib_root.mkdir(parents=True, exist_ok=True)
+    (lib_root / "collections").mkdir(parents=True, exist_ok=True)
+    for name in ("airflow", "amazon"):
+        (lib_root / "collections" / name).mkdir()
+
     return wiki
 
 
@@ -303,8 +307,18 @@ def test_run_query_searched_scope_without_tag_filter_is_all_collections(
 def test_run_query_searched_scope_with_empty_collections_dir_is_empty(
     wiki_root: Wiki, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A wiki with no collections registered reports ``searched_scope = []``."""
+    """A wiki with no library collections reports ``searched_scope = []``."""
+    import shutil
+
+    from lies import xdg
+    from lies.constants import LIES_DATA_SUBDIR
+    from lies.library.paths import Library
     from lies.query.synthesizer import PageRead
+
+    Library.open.cache_clear()
+    lib_root = xdg.data_home() / LIES_DATA_SUBDIR / "library"
+    if lib_root.exists():
+        shutil.rmtree(lib_root)
 
     def fake_retrieve_pages(*_a: object, **_kw: object) -> tuple[list[PageRead], str]:
         return [], ""

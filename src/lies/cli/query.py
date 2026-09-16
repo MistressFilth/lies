@@ -27,36 +27,17 @@ __all__ = (
 
 
 def _collect_available_tags(wiki) -> set[str]:  # noqa: ANN001 - Wiki import is lazy
-    """Return every addressable tag for ``wiki``.
+    """Return every addressable tag in the library.
 
-    The set is the union of each collection's declared ``tags`` and its
-    own ``name`` — the implicit self-tag, so ``+airflow`` addresses the
-    ``airflow`` collection even when ``airflow`` is not in its tag list.
-
-    Read straight off ``collections_dir/*.yaml`` (the same source
-    ``lies collections list`` walks) rather than the registry: the
-    registry stores ``WikiCollectionRef`` entries, which carry no tags,
-    and a collection that has not been synced yet is still a legitimate
-    filter target.
+    Thin shim over :func:`lies.library.registry.library_collection_names`
+    — kept so the CLI ``query`` boundary has the same helper name as
+    its MCP counterpart. ``wiki`` is accepted for signature uniformity
+    with the legacy per-wiki resolution but is intentionally ignored:
+    collections live in the library, not in any wiki.
     """
-    from lies.collections.errors import CollectionConfigInvalid, CollectionNotFound
-    from lies.collections.record import load_collection
+    from lies.library.registry import library_collection_names
 
-    tags: set[str] = set()
-    cfg_dir = wiki.collections_dir
-    if not cfg_dir.exists():
-        return tags
-    for path in sorted(cfg_dir.glob("*.yaml")):
-        # Skip malformed configs so one bad YAML does not mask the
-        # rest of the available-tag set. Mirrors ``enrich-tags``'s
-        # precedent (collections_cli.py).
-        try:
-            coll = load_collection(wiki, path.stem)
-        except (CollectionNotFound, CollectionConfigInvalid):
-            continue
-        tags.add(coll.name)
-        tags.update(coll.tags)
-    return tags
+    return set(library_collection_names())
 
 
 @app.command(
@@ -181,7 +162,18 @@ def query(
                     include_ast, available=_collect_available_tags(wiki)
                 ).include
             except TagExprUnknown as exc:
-                typer.echo(f"error: {exc}", err=True)
+                # Surface the shared library-first message (see
+                # ``format_unknown_tag_error`` in the MCP server).
+                # Strip the leading "unknown tag: 'foo'" line for the
+                # CLI's two-line stderr contract; re-print it as
+                # ``error: unknown tag: foo`` to keep the existing CLI
+                # test regex (``error: unknown tag: <name>``) intact.
+                from lies.mcp.server import format_unknown_tag_error
+
+                full = format_unknown_tag_error(exc).splitlines()
+                typer.echo(f"error: {full[0]}", err=True)
+                for line in full[1:]:
+                    typer.echo(f"  {line}", err=True)
                 raise typer.Exit(code=2) from exc
         # The exclude is deliberately not validated here — the retriever
         # resolves it against the live collection set (spec: Error model).

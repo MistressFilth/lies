@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
     from lies.collections.record import Collection
+    from lies.library.registry import LibraryCollectionMeta
 
 
 class TagExpr:
@@ -92,11 +93,21 @@ class TagExprParseError(Exception):
 
 
 class TagExprUnknown(Exception):
-    """Raised when the filter references a tag not in the registry."""
+    """Raised when the filter references a tag not in the registry.
 
-    def __init__(self, tag: str) -> None:
+    Carries the offending spelling on ``tag`` and the addressable tag
+    set on ``available`` so callers (CLI / MCP) can build a self-
+    explanatory error that lists what tags DO exist. Without
+    ``available`` the message would read ``unknown tag: opencode`` and
+    leave the operator guessing which wiki, or which spelling, was the
+    intended target — see regression test
+    ``test_query_unknown_tag_lists_available_tags``.
+    """
+
+    def __init__(self, tag: str, *, available: frozenset[str] | set[str] = frozenset()) -> None:
         super().__init__(f"unknown tag: {tag}")
         self.tag = tag
+        self.available: frozenset[str] = frozenset(available)
 
 
 class TagExprEmpty(Exception):
@@ -455,7 +466,7 @@ def resolve(expr: TagExpr, *, available: set[str]) -> ResolvedTagFilter:
     """
     if isinstance(expr, Include):
         if expr.tag not in available:
-            raise TagExprUnknown(expr.tag)
+            raise TagExprUnknown(expr.tag, available=available)
         return ResolvedTagFilter(include=expr)
     if isinstance(expr, And):
         left = resolve(expr.left, available=available)
@@ -473,12 +484,19 @@ def resolve(expr: TagExpr, *, available: set[str]) -> ResolvedTagFilter:
 # ---------------------------------------------------------------------------
 
 
-def atom_matches(coll: "Collection", include: Include) -> bool:
+def atom_matches(coll: "Collection | LibraryCollectionMeta", include: Include) -> bool:
     """Evaluate one Include atom against one Collection.
 
     Dispatches on ``include.qualifier``:
         - ``"c"``: strict collection-name match (``coll.name == include.tag``).
         - ``"t"`` or ``None``: tag-or-name alias (``include.tag ∈ coll.tags ∪ {coll.name}``).
+
+    Accepts the legacy :class:`lies.collections.record.Collection` (wiki
+    yaml shape) and the library-first
+    :class:`lies.library.registry.LibraryCollectionMeta` interchangeably.
+    Both expose ``name`` and ``tags``, the only two attributes the
+    resolver reads; the library model is the canonical source going
+    forward and the wiki-yaml shape is legacy.
 
     Used by the retriever's ``_collections_matching`` only. Validation
     (``tag ∈ available``) lives in :func:`resolve`.
@@ -489,14 +507,17 @@ def atom_matches(coll: "Collection", include: Include) -> bool:
 
 
 def _exclude_atom_matches(
-    coll: "Collection",
+    coll: "Collection | LibraryCollectionMeta",
     exclude: str,
     exclude_qualifier: Literal["t", "c"] | None,
 ) -> bool:
     """Evaluate the exclude atom against one Collection.
 
     Same dispatch as :func:`atom_matches` but for the flat exclude
-    string field on :class:`ResolvedTagFilter`.
+    string field on :class:`ResolvedTagFilter`. Accepts the legacy
+    wiki-yaml ``Collection`` and the library-first
+    :class:`LibraryCollectionMeta` interchangeably — see
+    :func:`atom_matches` for the structural contract.
     """
     if exclude_qualifier == "c":
         return coll.name == exclude

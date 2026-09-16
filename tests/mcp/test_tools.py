@@ -27,6 +27,8 @@ import pytest
 from lies import __version__, xdg
 from lies.agents.linter import LintReport
 from lies.errors import WikiAlreadyExists
+from fastmcp.exceptions import ToolError
+
 from lies.mcp.server import (
     SynthesizedMcpAnswer,
     init_wiki,
@@ -225,6 +227,144 @@ def test_query_propagates_fallback_reason(
 
     assert result.fallback_used is True
     assert result.fallback_reason == "qmd_unavailable"
+
+
+def test_query_unknown_tag_lists_library_collections(
+    registered_wiki: Wiki,
+    wiki_name: str,
+) -> None:
+    """``unknown tag: <name>`` lists the library's collections.
+
+    Regression for the silent failure mode where the operator saw only
+    ``unknown tag: opencode`` with no hint about which collections
+    actually live in the library.
+    """
+    import shutil
+
+    from lies import xdg
+    from lies.constants import LIES_DATA_SUBDIR
+    from lies.library.paths import Library
+
+    # Force a clean library layout under the test XDG root.
+    Library.open.cache_clear()
+    lib_root = xdg.data_home() / LIES_DATA_SUBDIR / "library"
+    if lib_root.exists():
+        shutil.rmtree(lib_root)
+    lib_root.mkdir(parents=True, exist_ok=True)
+    (lib_root / "collections").mkdir(parents=True, exist_ok=True)
+    for name in ("claude_code", "opencode"):
+        (lib_root / "collections" / name).mkdir()
+
+    with pytest.raises(ToolError) as excinfo:
+        query("anything", name=wiki_name, tag_expr="c:missing")
+
+    msg = str(excinfo.value)
+    assert "unknown tag" in msg
+    assert "'missing'" in msg
+    assert "the library's collections" in msg
+    assert "claude_code" in msg
+    assert "opencode" in msg
+
+
+def test_query_unknown_tag_mentions_uninitialized_library(
+    registered_wiki: Wiki,
+    wiki_name: str,
+) -> None:
+    """When the library has not been initialized, the error names it.
+
+    The operator is told the library is the source of truth and that
+    it is empty / absent, instead of seeing a bare ``unknown tag``
+    with no clue that they need to initialize the library.
+    """
+    import shutil
+
+    from lies import xdg
+    from lies.constants import LIES_DATA_SUBDIR
+
+    # Drop the library dir so ``library_initialized()`` returns False.
+    lib_root = xdg.data_home() / LIES_DATA_SUBDIR / "library"
+    if lib_root.exists():
+        shutil.rmtree(lib_root)
+
+    with pytest.raises(ToolError) as excinfo:
+        query("anything", name=wiki_name, tag_expr="c:opencode")
+
+    msg = str(excinfo.value)
+    assert "unknown tag" in msg
+    assert "'opencode'" in msg
+    assert "the library is not initialized" in msg
+
+
+def test_query_unknown_tag_mentions_empty_library(
+    registered_wiki: Wiki,
+    wiki_name: str,
+) -> None:
+    """When the library is initialized but has zero collections, the
+    error tells the operator to ingest something — distinct from the
+    uninitialized case so the operator knows which fix applies.
+    """
+    import shutil
+
+    from lies import xdg
+    from lies.constants import LIES_DATA_SUBDIR
+
+    # Library is initialized (parent + collections_root exist) but
+    # has no collection subdirs. Reset to a fresh empty state.
+    lib_root = xdg.data_home() / LIES_DATA_SUBDIR / "library"
+    if lib_root.exists():
+        shutil.rmtree(lib_root)
+    lib_root.mkdir(parents=True, exist_ok=True)
+    (lib_root / "collections").mkdir(parents=True, exist_ok=True)
+
+    with pytest.raises(ToolError) as excinfo:
+        query("anything", name=wiki_name, tag_expr="c:opencode")
+
+    msg = str(excinfo.value)
+    assert "unknown tag" in msg
+    assert "'opencode'" in msg
+    assert "the library has no collections" in msg
+    assert "ingest" in msg
+
+
+def test_query_c_prefix_resolves_against_library(
+    registered_wiki: Wiki,
+    wiki_name: str,
+) -> None:
+    """`+c:opencode` against the default wiki resolves the library's opencode.
+
+    The active wiki is irrelevant for tag-expression resolution: the
+    library is the source of truth. A wiki with no yaml configs can
+    still resolve ``c:opencode`` if the library has a
+    ``collections_root/opencode/`` directory.
+    """
+    import shutil
+
+    from lies import xdg
+    from lies.constants import LIES_DATA_SUBDIR
+    from lies.library.paths import Library
+
+    Library.open.cache_clear()
+    lib_root = xdg.data_home() / LIES_DATA_SUBDIR / "library"
+    if lib_root.exists():
+        shutil.rmtree(lib_root)
+    lib_root.mkdir(parents=True, exist_ok=True)
+    (lib_root / "collections").mkdir(parents=True, exist_ok=True)
+    (lib_root / "collections" / "opencode").mkdir()
+
+    fake = SynthesizedAnswer(
+        answer="x",
+        fallback_used=False,
+        fallback_reason="",
+    )
+
+    with mock.patch.object(Orchestrator, "run_query", return_value=fake) as run_mock:
+        query("anything", name=wiki_name, tag_expr="c:opencode")
+
+    # The filter passed through without raising — the library resolved it.
+    run_mock.assert_called_once()
+    kwargs = run_mock.call_args.kwargs
+    assert kwargs["tag_filter"] is not None
+    assert kwargs["tag_filter"].include is not None
 
 
 def test_query_tool_reports_synthesis_provenance(monkeypatch: pytest.MonkeyPatch) -> None:

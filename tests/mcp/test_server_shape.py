@@ -24,6 +24,7 @@ async def test_tools_registered(client: Client) -> None:
     assert names == {
         "init_wiki",
         "query",
+        "answer",
         "lint",
         "wiki_search",
         "wiki_read",

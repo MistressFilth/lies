@@ -100,6 +100,14 @@ def _isolated_xdg(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         "GIT_DIR",
     ]:
         monkeypatch.delenv(key, raising=False)
+    # Library is a ``lru_cache(maxsize=1)`` singleton (Library.open). The
+    # cache is built once against whichever XDG path was current at the
+    # first call; every later call returns the cached Library even when
+    # XDG has been repointed. Clear it here so the per-test XDG redirect
+    # takes effect for every test that touches the library.
+    from lies.library.paths import Library
+
+    Library.open.cache_clear()
     xdg_root = tmp_path / "xdg"
     for sub in ("data", "config", "cache", "state", "runtime"):
         (xdg_root / sub).mkdir(parents=True, exist_ok=True)

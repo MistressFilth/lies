@@ -200,24 +200,65 @@ overwrite/rename/cancel on slug collision via `ctx.elicit`.
 
 ## Tag-filter language
 
-Filter `lies query` to collections whose tags match a `+tag&tag|tag`
-expression. `&` binds tighter than `|`; `-tag` excludes; quoted tags
-(`+"airflow provider"`) allow spaces.
+Filter `lies query` to library collections by name. `&` binds tighter
+than `|`; `-tag` excludes; quoted tags (`+"airflow provider"`) allow
+spaces.
 
 ```bash
 lies query +airflow what are DAGs?
-lies query +airflow&provider -amazon what connectors?
+lies query +airflow&amazon -python what connectors?
 lies query --tag-expr "airflow|spark" --exclude-tag aws what is X?
 ```
 
-`Collection.name` is an implicit self-tag: `+airflow` matches a
-collection named `airflow` even without `airflow` in its tags. Set
-tags at creation (`lies collections new airflow --tag airflow --tag
-provider`) or modify (`lies collections modify airflow --tag provider`).
+**The library is the source of truth for collections.** Library
+collections live as directories under
+`$XDG_DATA_HOME/lies/library/collections/<name>/`; they are canonical
+source docs, not wikis, and carry no per-collection yaml-declared
+tags. The addressable tag set is the set of library-collection
+directory names — `+airflow` matches the airflow library collection,
+`+provider` matches nothing because no library collection is named
+`provider`. Wikis do not own collections; a wiki's local yaml
+configs are legacy and not consulted for tag resolution. A
+`+c:opencode` filter resolves from any wiki because the opencode
+collection lives in the library.
 
 The MCP `query` tool accepts `tag_expr` and `exclude_tags` (size ≤ 1)
 kwargs. `SynthesizedMcpAnswer.searched_scope` reports the resolved
-collection set; with no filter, it reports all collections.
+library-collection set; with no filter, it reports every library
+collection.
+
+When the active wiki's `tag_expr` references a collection the
+library does not declare, the error surfaces the library's actual
+collection list:
+
+```
+unknown tag: 'opencode'
+the library's collections: example_a, example_b, example_c
+```
+
+When the library has not been initialized, the error names the gap
+so the operator knows to initialize the library before filtering:
+
+```
+unknown tag: 'opencode'
+the library is not initialized; collections live in the library, not in wikis.
+```
+
+When the library is initialized but has zero collections (empty
+`collections_root`), the error tells the operator to ingest first:
+
+```
+unknown tag: 'opencode'
+the library has no collections; ingest something first (see `lies ingest --help`) before querying with tag filters.
+```
+
+> **Note:** `lies collections list`, `lies collections show`, the
+> ETL sync helper, and the registry under `<wiki>/.lies/` still
+> surface the legacy `wiki.collections_dir/*.yaml` layout for
+> collection management (CRUD, sync, enrichment). The wiki-yaml
+> layout is **legacy** and is no longer consulted for tag
+> resolution. New content goes to the library via
+> `lies ingest --source ...`.
 
 Notes on the CLI parser: Typer is configured with
 `ignore_unknown_options=True` so the leading `+tag...` token chain
@@ -228,17 +269,18 @@ Typer layer — it lands in the question text verbatim. Use
 
 ### Qualifier prefixes (`t:` / `c:`)
 
-Disambiguate tag matches from collection-name matches:
+Both prefixes are accepted but currently collapse to the same
+answer: only the library-collection directory name is addressable, so
+`+t:airflow` and `+c:airflow` both match only the airflow collection.
 
-```bash
-lies query +t:airflow -c:airflow "what are hooks?"
-# matches every collection with airflow in its tags, except the airflow collection itself
-```
+- `t:foo` (or no prefix): match the library collection named `foo`.
+- `c:foo`: match the library collection named `foo` (strict name).
 
-- `t:foo` (or no prefix): match `foo ∈ coll.tags ∪ {coll.name}` — today's implicit-self-tag rule, explicit.
-- `c:foo`: match `coll.name == foo` — strict collection-name only.
-
-Both include and exclude atoms accept the prefixes. Same prefixes work in `mcp_query(tag_expr=..., exclude_tags=...)`.
+The prefix survives the parser so future tag metadata (per-collection
+frontmatter, etc.) can reintroduce the `t:` / `c:` distinction
+without a grammar change. Both include and exclude atoms accept the
+prefixes; the same prefixes work in `mcp_query(tag_expr=...,
+exclude_tags=...)`.
 
 ## Advanced
 
