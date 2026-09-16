@@ -1,6 +1,6 @@
 from typing import get_type_hints
 
-from lies.query.citation import Citation
+from lies.query.citation import Citation, ClaimCitation
 
 
 def test_citation_construction() -> None:
@@ -50,3 +50,32 @@ def test_citation_annotations_include_line_and_section() -> None:
     hints = get_type_hints(Citation)
     assert hints["line"] == int | None
     assert hints["section"] == str | None
+
+
+def test_claim_citation_construction() -> None:
+    cc = ClaimCitation(claim="Each subagent runs in its own context.", citation_index=0)
+    assert cc.claim == "Each subagent runs in its own context."
+    assert cc.citation_index == 0
+
+
+def test_claim_citation_equality() -> None:
+    a = ClaimCitation(claim="x", citation_index=1)
+    b = ClaimCitation(claim="x", citation_index=1)
+    assert a == b
+
+
+def test_claim_citation_frozen() -> None:
+    cc = ClaimCitation(claim="x", citation_index=0)
+    try:
+        cc.citation_index = 99  # type: ignore[misc]
+    except Exception:
+        return
+    raise AssertionError("ClaimCitation should be frozen")
+
+
+def test_claim_citation_annotations() -> None:
+    from typing import get_type_hints
+
+    hints = get_type_hints(ClaimCitation)
+    assert hints["claim"] is str
+    assert hints["citation_index"] is int
