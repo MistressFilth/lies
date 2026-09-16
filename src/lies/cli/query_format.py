@@ -67,22 +67,4 @@ def validate_format_flag(value: str) -> FormatLiteral:
     return cast(FormatLiteral, value)
 
 
-def register_format_option(query_command: object) -> None:
-    """Attach the --format flag to the ``query`` Typer command.
-
-    Mirrors the pattern in :mod:`lies.cli.query`: the Typer option is
-    declared here and the value is read in the command body via
-    ``typer.Option``.
-    """
-    # Typer doesn't have a clean "register option on existing command"
-    # API; the cleanest path is to add the option to the command in
-    # :mod:`lies.cli.query` directly. This function is a placeholder
-    # for future per-flag helpers; see Task 6 Step 3 below for the
-    # direct edit on the query command.
-    raise NotImplementedError(
-        "register_format_option is a placeholder; the --format option "
-        "is added directly to the query command in lies/cli/query.py"
-    )
-
-
 __all__ = ("FormatLiteral", "render_answer", "validate_format_flag")
