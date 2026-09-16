@@ -87,6 +87,9 @@ class SynthesizedMcpAnswer(BaseModel):
     searched_scope: list[str] = Field(
         default_factory=list
     )  # Bundle C (F15): sorted, unique collection names searched
+    format: Literal["md", "table", "marp"] = (
+        "md"  # F1: validated output format (auto-route resolves to one of these)
+    )
 
 
 # Re-export the page-author slice for FastMCP serialization.
@@ -439,6 +442,7 @@ def query(
         should_file=ans.should_file,
         file_receipt=(ans.file_receipt.model_dump() if ans.file_receipt is not None else None),
         searched_scope=list(ans.searched_scope),
+        format=ans.format,
     )
 
 
