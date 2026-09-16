@@ -917,13 +917,20 @@ def orient(wiki: str | None = None) -> str:
 
 @mcp.prompt(name="ingest")
 def ingest(source: str) -> str:
-    """Return the source-ingestion walkthrough prose."""
+    """Return the source-ingestion walkthrough prose.
+
+    ``source`` is captured for MCP introspection only; the reference
+    prose is static and does not substitute this value.
+    """
     return load_prompt("ingest").format(version=__version__, source=source)
 
 
 @mcp.prompt(name="query")
 def query_prompt(question: str) -> str:
     """Return the query-tool recipes prose.
+
+    ``question`` is captured for MCP introspection only; the reference
+    prose is static and does not substitute this value.
 
     Named ``query_prompt`` in Python to avoid clashing with the
     ``query`` MCP tool already registered in this module;
@@ -940,11 +947,19 @@ def lint_prompt() -> str:
 
 @mcp.prompt(name="sync")
 def sync_prompt(collection: str) -> str:
-    """Return the sync walkthrough prose."""
+    """Return the sync walkthrough prose.
+
+    ``collection`` is captured for MCP introspection only; the
+    reference prose is static and does not substitute this value.
+    """
     return load_prompt("sync").format(version=__version__, collection=collection)
 
 
 @mcp.prompt(name="file-back")
 def file_back(wiki: str) -> str:
-    """Return the F3 file-back walkthrough prose."""
+    """Return the F3 file-back walkthrough prose.
+
+    ``wiki`` is captured for MCP introspection only; the reference
+    prose is static and does not substitute this value.
+    """
     return load_prompt("file-back").format(version=__version__, wiki=wiki)

@@ -29,9 +29,6 @@ from lies.mcp.instructions_loader import (
     load_prompt,
 )
 
-# The user prompt that surfaced the bug.
-BUG_PROMPT = "Let's ingest the OpenCode docs with LIES: https://opencode.ai/docs"
-
 # The wrong path the bug picked. page-write target, not collection storage.
 WRONG_PATH = "wiki/<collection>/<page-type>/<slug>.md"
 
@@ -46,13 +43,6 @@ RIGHT_PATHS = (
 def _orientation_text() -> str:
     """Concatenate the handshake + the root orient prompt body."""
     return load_instructions() + "\n\n" + load_prompt("orient")
-
-
-def test_orientation_payload_documents_bug_prompt() -> None:
-    """Sanity: the fixture references the actual 2f320888 prompt."""
-    # No assertion on the payload itself here; this just pins the
-    # fixture so a future cleanup does not silently rewrite history.
-    assert "OpenCode" in BUG_PROMPT
 
 
 @pytest.mark.parametrize("right_path", RIGHT_PATHS)
