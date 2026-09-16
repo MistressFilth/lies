@@ -229,7 +229,13 @@ def _format_author_body(
     parts.append(_yaml_list("sources", sources))
     parts.append(_yaml_list("derived_from", derived_from))
     if render_format is not None:
-        parts.append(f"render_format: {render_format}")
+        # YAML safety: render_format is operator-supplied free-form text
+        # (the type is ``str | None``), so quote it to neutralise any
+        # ``:``, ``[``, ``#`` or other YAML-significant characters a
+        # future caller might pass. Mirrors the title_q / collection_q
+        # quote-and-escape pattern above.
+        render_format_q = '"' + render_format.replace("\\", "\\\\").replace('"', '\\"') + '"'
+        parts.append(f"render_format: {render_format_q}")
     parts.append("---")
     parts.append("")
 

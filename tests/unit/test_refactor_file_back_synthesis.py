@@ -150,5 +150,6 @@ def test_file_back_synthesis_includes_render_format(orch):
 
     plan = orch._memory_service.apply_plan.call_args[0][0]
     synthesis_op = plan.operations[0]
-    # Frontmatter must contain render_format: table.
-    assert "render_format: table" in synthesis_op.content
+    # Frontmatter must contain render_format: table (double-quoted for
+    # YAML safety, mirroring title / collection).
+    assert 'render_format: "table"' in synthesis_op.content
