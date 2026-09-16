@@ -34,6 +34,8 @@ from lies.query.synthesizer import (
     FALLBACK_REASON_NO_RESULTS,
     FALLBACK_REASON_UNAVAILABLE,
     PageRead,
+    _qmd_search_dispatch,
+    set_qmd_search,
     synthesize_answer,
 )
 from lies.wiki.wiki import Wiki
@@ -565,3 +567,52 @@ def test_pages_with_yaml_frontmatter_are_read_correctly(
     # body, not "title: Postgres".
     assert "title: Postgres" not in result.answer
     assert "PostgreSQL" in result.answer or "MVCC" in result.answer
+
+
+# ---------------------------------------------------------------------------
+# qmd hit metadata threading (Task 5)
+# ---------------------------------------------------------------------------
+
+
+def _qmd_with_lines():
+    """Stub qmd_search that returns hits with line numbers."""
+
+    def _fn(cwd, question, top_n, **_kwargs):
+        return [
+            {"path": "entities/postgres.md", "score": 0.9, "line": 12},
+        ]
+
+    return _fn
+
+
+def test_qmd_hit_line_threads_into_page_read(sample_wiki) -> None:
+    """End-to-end: qmd_search returns line → PageRead carries line + section."""
+    set_qmd_search(_qmd_with_lines())
+    try:
+        pages = _qmd_search_dispatch(
+            _qmd_with_lines(),
+            sample_wiki,
+            "anything",
+            5,
+        )
+        assert len(pages) >= 1
+        pg = pages[0]
+        assert pg.line == 12
+        # The fixture has a Postgres page; check section was extracted.
+        assert pg.section is not None
+    finally:
+        from lies.query.synthesizer import qmd_query
+
+        set_qmd_search(qmd_query)
+
+
+def test_qmd_hit_no_line_yields_none(sample_wiki) -> None:
+    """qmd hit without `line` → PageRead.line stays None."""
+
+    def _fn(cwd, question, top_n, **_kwargs):
+        return [{"path": "entities/postgres.md", "score": 0.9}]
+
+    pages = _qmd_search_dispatch(_fn, sample_wiki, "anything", 5)
+    assert len(pages) >= 1
+    assert pages[0].line is None
+    assert pages[0].section is None
