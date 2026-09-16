@@ -33,9 +33,30 @@ from lies.query.synthesizer import (
     FALLBACK_REASON_FAILED,
     FALLBACK_REASON_NO_RESULTS,
     FALLBACK_REASON_UNAVAILABLE,
+    PageRead,
     synthesize_answer,
 )
 from lies.wiki.wiki import Wiki
+
+
+def test_page_read_accepts_line_and_section() -> None:
+    pr = PageRead(
+        rel_path="x.md",
+        title="X",
+        excerpt="excerpt",
+        source="wiki",
+        line=42,
+        section="Section",
+    )
+    assert pr.line == 42
+    assert pr.section == "Section"
+
+
+def test_page_read_line_section_default_none() -> None:
+    pr = PageRead(rel_path="x.md", title="X", excerpt="e", source="wiki")
+    assert pr.line is None
+    assert pr.section is None
+
 
 # ---------------------------------------------------------------------------
 # Helpers — fake qmd implementations covering each failure mode

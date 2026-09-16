@@ -97,6 +97,8 @@ class PageRead:
     title: str
     excerpt: str
     source: str  # "library" | "wiki" — required, no default (hard cutover)
+    line: int | None = None  # qmd's per-hit line (1-indexed); None for index-fallback paths
+    section: str | None = None  # last ATX heading at or before `line`
 
 
 def retrieve_pages(
