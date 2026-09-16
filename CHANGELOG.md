@@ -6,6 +6,8 @@ All notable changes to LIES are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.25.0] - 2026-09-16
+
 ### Added
 - F1: `lies query --format=auto|md|table|marp` (default `auto`). Auto-routes via the synthesizer's `format_hint`; explicit values trigger re-synthesis with a constrained prompt.
 - New `format` field on `SynthesizedAnswer` (additive; MCP wire format gains one field).
