@@ -21,6 +21,8 @@ import asyncio
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
+import logging
+
 
 import fastmcp
 import httpx
@@ -29,6 +31,8 @@ from pydantic_ai.capabilities import MCP
 
 from lies.qmd.health import qmd_daemon_reachable
 from lies.qmd.mcp import QmdRecycleToolset, _build_qmd_http_toolset
+
+_log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from lies.wiki.wiki import Wiki
