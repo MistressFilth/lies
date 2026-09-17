@@ -1,74 +1,65 @@
-"""Integration tests for `lies collections modify` end-to-end behavior."""
+"""Integration tests for `lies library modify` end-to-end behavior."""
 
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from unittest import mock
 
 import pytest
 from typer.testing import CliRunner
 
-from lies import xdg
 from lies.cli import app
-from lies.cli.collections import (
-    _Collection,
-    _load_collection,
-    _save_collection,
-)
-from lies.wiki.wiki import Wiki
+from lies.library.config_io import config_path_for, load_config, save_config
+from lies.library.record import LibraryCollectionConfig
 
 runner = CliRunner()
 
 
 @pytest.fixture
-def wiki(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Wiki:
-    name = "modify"
-    monkeypatch.setenv("LIES_WIKI_NAME", name)
+def library_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Pin XDG to ``tmp_path`` and clear the Library cache.
+
+    The library CLI's :func:`config_path_for` reads through
+    :meth:`lies.library.paths.Library.open`, an ``lru_cache(maxsize=1)``
+    singleton. Clearing the cache and pointing XDG at ``tmp_path`` lets
+    the test invoke the real CLI without leaking state between runs.
+    """
     monkeypatch.setenv("LIES_XDG_DATA_HOME", str(tmp_path / "data"))
     monkeypatch.setenv("LIES_XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.setenv("LIES_XDG_CACHE_HOME", str(tmp_path / "cache"))
     monkeypatch.setenv("LIES_XDG_STATE_HOME", str(tmp_path / "state"))
     monkeypatch.setenv("LIES_XDG_RUNTIME_DIR", str(tmp_path / "runtime"))
-    wiki = Wiki(
+    from lies.library.paths import Library
+
+    Library.open.cache_clear()
+    return tmp_path
+
+
+def _seed(name: str) -> LibraryCollectionConfig:
+    rec = LibraryCollectionConfig(
         name=name,
-        data_root=xdg.data_home() / "lies" / name,
-        config_root=xdg.config_home() / "lies" / name,
-        cache_root=xdg.cache_home() / "lies" / name,
-        state_root=xdg.state_home() / "lies" / name,
-        runtime_root=xdg.runtime_dir_for(name),
+        source="https://old.example.com",
+        tags=("old",),
+        scraper_cmd=None,
+        doc_path=None,
+        mapper_model=None,
+        language=None,
+        version="1",
+        created_at=datetime(2026, 1, 1, tzinfo=UTC),
+        updated_at=datetime(2026, 1, 1, tzinfo=UTC),
+        config={},
     )
-    wiki.data_root.mkdir(parents=True, exist_ok=True)
-    wiki.collections_dir.mkdir(parents=True, exist_ok=True)
-    return wiki
+    save_config(rec)
+    return rec
 
 
-def _seed(wiki: Wiki, name: str) -> None:
-    _save_collection(
-        wiki,
-        _Collection(
-            name=name,
-            path=PurePosixPath(f"/raw/{name}"),
-            source="https://old.example.com",
-            tags=["old"],
-            scraper_cmd=None,
-            doc_path=None,
-            mapper_model=None,
-            language=None,
-            version="1",
-            created_at=datetime(2026, 1, 1, tzinfo=UTC),
-            updated_at=datetime(2026, 1, 1, tzinfo=UTC),
-            config={},
-        ),
-    )
-
-
-def test_modify_round_trip(wiki: Wiki) -> None:
-    _seed(wiki, "cpython")
+def test_modify_round_trip(library_root: Path) -> None:
+    _seed("cpython")
     result = runner.invoke(
         app,
         [
-            "collections",
+            "library",
             "modify",
             "cpython",
             "--set",
@@ -79,28 +70,29 @@ def test_modify_round_trip(wiki: Wiki) -> None:
     )
     assert result.exit_code == 0, result.output
 
-    show = runner.invoke(app, ["collections", "show", "cpython"])
-    assert "tags=['stdlib', 'core']" in show.output
-    assert "language=en" not in show.output or "source=" in show.output
+    show = runner.invoke(app, ["library", "show", "cpython"])
+    assert "tags=" in show.output
+    assert "stdlib" in show.output
+    assert "core" in show.output
 
-    loaded = _load_collection(wiki, "cpython")
-    assert loaded.tags == ["stdlib", "core"]
+    loaded = load_config("cpython")
+    assert loaded.tags == ("stdlib", "core")
     assert loaded.language == "en"
     assert loaded.source == "https://old.example.com"  # preserved
     assert loaded.created_at == datetime(2026, 1, 1, tzinfo=UTC)
     assert loaded.updated_at > datetime(2026, 1, 1, tzinfo=UTC)
 
 
-def test_modify_atomic_write_no_partial_file(wiki: Wiki) -> None:
-    _seed(wiki, "cpython")
-    target = _Collection.config_path(wiki, "cpython")
+def test_modify_atomic_write_no_partial_file(library_root: Path) -> None:
+    _seed("cpython")
+    target = config_path_for("cpython")
     before = target.read_text(encoding="utf-8")
 
     # Simulate crash: tmp writes fine, os.replace raises
     with mock.patch("os.replace", side_effect=OSError("simulated crash")):
         result = runner.invoke(
             app,
-            ["collections", "modify", "cpython", "--set", "tags=broken"],
+            ["library", "modify", "cpython", "--set", "tags=broken"],
         )
     assert result.exit_code != 0
 
@@ -113,5 +105,5 @@ def test_modify_atomic_write_no_partial_file(wiki: Wiki) -> None:
     assert not sibling_tmp.exists()
 
     # Reload still works
-    loaded = _load_collection(wiki, "cpython")
-    assert loaded.tags == ["old"]
+    loaded = load_config("cpython")
+    assert loaded.tags == ("old",)

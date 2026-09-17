@@ -25,7 +25,8 @@ from unittest import mock
 import pytest
 
 from lies.agents.query_synthesizer import QueryAnswer
-from lies.cli.collections import _Collection as Collection, _save_collection as save_collection
+from lies.library.config_io import config_path_for, save_config
+from lies.library.record import LibraryCollectionConfig as Collection
 from lies.orchestrator import Orchestrator
 from lies.query.tag_expr import (
     And,
@@ -39,6 +40,21 @@ from lies.qmd.cli import (
     qmd_embed,
 )
 from lies.wiki.wiki import Wiki
+
+
+def _save_collection(_wiki: Wiki, c: Collection) -> None:
+    """Adapter shim: persist a library record to the library singleton.
+
+    The test fixture seeds a collection into the library singleton at
+    ``<library>/collections/<slug>/config.yaml`` so the sync pipeline can
+    resolve it. ``wiki`` is accepted for signature parity with the legacy
+    wiki-yaml shim but is unused: the library record carries its own
+    slug and writes through ``config_path_for(slug)``.
+    """
+    target = config_path_for(c.name)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    save_config(c, force=True)
+
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("INTEGRATION") != "1",
@@ -183,24 +199,23 @@ def _build_tag_filter_library(tmp_path: Path, *, name: str) -> Wiki:
 
     # Collection YAMLs (source of truth for filter resolution).
     tags_per = {
-        "airflow": ["airflow", "provider"],
-        "amazon": ["amazon", "aws"],
-        "pyspark": ["pyspark", "spark"],
-        "prefect": ["prefect", "airflow"],
+        "airflow": ("airflow", "provider"),
+        "amazon": ("amazon", "aws"),
+        "pyspark": ("pyspark", "spark"),
+        "prefect": ("prefect", "airflow"),
     }
     for coll, tags in tags_per.items():
-        save_collection(
+        _save_collection(
             wiki,
             Collection(
                 name=coll,
-                path=Path(f"/raw/{coll}"),
                 source=f"https://example.com/{coll}",
-                tags=list(tags),
+                tags=tags,
                 scraper_cmd=None,
                 doc_path=None,
                 mapper_model=None,
                 language="en",
-                version="1.0.0",
+                version="1",
                 created_at=_NOW,
                 updated_at=_NOW,
                 config={},

@@ -8,13 +8,28 @@ from unittest import mock
 import pymupdf
 import pytest
 
-from lies.cli.collections import _Collection as Collection, _save_collection as save_collection
+from lies.library.config_io import config_path_for, save_config
+from lies.library.record import LibraryCollectionConfig as Collection
 from lies.wiki.hash_manifest import HashManifest
 from lies.etl.cost import CostBudget
 from lies.etl.pipeline import SyncOrchestrator
 from lies.etl.telemetry import SyncTelemetry
 from lies.wiki.wiki import Wiki
 from tests.conftest import make_wiki
+
+
+def _save_collection(wiki: Wiki, c: Collection) -> None:
+    """Adapter shim: persist a library record to the library singleton.
+
+    The test fixture seeds a collection into the library singleton at
+    ``<library>/collections/<slug>/config.yaml`` so the sync pipeline can
+    resolve it. ``wiki`` is accepted for signature parity with the legacy
+    wiki-yaml shim but is unused: the library record carries its own
+    slug and writes through ``config_path_for(slug)``.
+    """
+    target = config_path_for(c.name)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    save_config(c, force=True)
 
 
 def _git_init(root: Path) -> None:
@@ -62,19 +77,18 @@ def test_sync_pdf_collection_registers_ref(wiki: Wiki) -> None:
     _make_pdf(pdf, "the quick brown fox")
     c = Collection(
         name="manual",
-        path=pdf.parent,
         source=str(pdf),
-        tags=[],
+        tags=(),
         scraper_cmd=None,
         doc_path=None,
         mapper_model=None,
         language=None,
-        version="1.0.0",
+        version="1",
         created_at=datetime.now(tz=UTC),
         updated_at=datetime.now(tz=UTC),
         config={},
     )
-    save_collection(wiki, c)
+    _save_collection(wiki, c)
     telemetry = SyncTelemetry(wiki, c.name)
     manifest = HashManifest(wiki, c.name)
     budget = CostBudget()
@@ -103,19 +117,18 @@ def test_sync_liquid_collection_quarantines_everything(wiki: Wiki) -> None:
     liquid.write_text("{% if x %}", encoding="utf-8")
     c = Collection(
         name="liquid_test",
-        path=liquid.parent,
         source="https://example.com",
-        tags=[],
+        tags=(),
         scraper_cmd=None,
         doc_path=None,
         mapper_model=None,
         language=None,
-        version="1.0.0",
+        version="1",
         created_at=datetime.now(tz=UTC),
         updated_at=datetime.now(tz=UTC),
         config={},
     )
-    save_collection(wiki, c)
+    _save_collection(wiki, c)
     telemetry = SyncTelemetry(wiki, c.name)
     manifest = HashManifest(wiki, c.name)
     budget = CostBudget()
@@ -209,14 +222,13 @@ def test_sync_htmx_sphinx_with_excludes(wiki: Wiki) -> None:
     raw_dir.mkdir(parents=True, exist_ok=True)
     c = Collection(
         name="htmx",
-        path=raw_dir,
         source="https://github.com/bigskysoftware/htmx/tree/master/www/content",
-        tags=["htmx"],
+        tags=("htmx",),
         scraper_cmd=None,
         doc_path=None,
         mapper_model=None,
         language=None,
-        version="1.0.0",
+        version="1",
         created_at=datetime.now(tz=UTC),
         updated_at=datetime.now(tz=UTC),
         config={
@@ -224,7 +236,7 @@ def test_sync_htmx_sphinx_with_excludes(wiki: Wiki) -> None:
             "sphinx_excludes": ["base_template.rst", "demo_example.rst"],
         },
     )
-    save_collection(wiki, c)
+    _save_collection(wiki, c)
 
     fake_scraper = mock.Mock()
     fake_scraper.fetch.return_value = b""
