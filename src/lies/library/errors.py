@@ -93,9 +93,28 @@ class WizardRequiresTTY(CollectionError):
         )
 
 
+class WikiLayoutInitFailed(Exception):
+    """Wiki layout bootstrap raised during auto-init."""
+
+    def __init__(self, wiki_name: str, cause: BaseException) -> None:
+        super().__init__(f"failed to auto-init wiki {wiki_name!r}: {cause}")
+        self.wiki_name = wiki_name
+        self.__cause__ = cause
+
+
 __all__ = (
+    "CollectionAlreadyExists",
+    "CollectionConfigInvalid",
+    "CollectionError",
+    "CollectionMismatch",
+    "CollectionNameRejected",
+    "CollectionNotFound",
+    "CollectionWriteFailed",
+    "LibraryAtomicCommitFailed",
+    "LibraryCatalogLocked",
     "LibraryError",
     "LibraryFetchUnreachable",
-    "LibraryCatalogLocked",
-    "LibraryAtomicCommitFailed",
+    "WikiLayoutInitFailed",
+    "WizardAborted",
+    "WizardRequiresTTY",
 )
