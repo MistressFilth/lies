@@ -1,0 +1,103 @@
+from datetime import UTC, datetime
+from pathlib import Path
+
+import pytest
+
+from lies.library.config_io import load_config
+from lies.library.migrate_collection_configs import (
+    MigrationConflictError,
+    plan_migration,
+    apply_migration,
+)
+from lies.library.paths import Library
+
+
+@pytest.fixture
+def library(tmp_path, monkeypatch):
+    lib = Library(
+        collections_root=tmp_path / "collections",
+        catalog_path=tmp_path / ".lies" / "catalog.db",
+        log_path=tmp_path / "log.md",
+        poison_root=tmp_path / "poison",
+        git_root=tmp_path,
+    )
+    monkeypatch.setattr(Library, "open", classmethod(lambda cls: lib))
+    (tmp_path / "collections").mkdir(parents=True)
+    return lib
+
+
+@pytest.fixture
+def wikis_root(tmp_path, monkeypatch):
+    from lies import xdg
+
+    root = tmp_path / "config" / "lies"
+    root.mkdir(parents=True)
+    monkeypatch.setattr(xdg, "config_home", lambda: tmp_path / "config")
+    return root
+
+
+def _write_yaml(path: Path, name: str = "claude_code") -> None:
+    from lies.library.record import LibraryCollectionConfig
+    import yaml
+
+    rec = LibraryCollectionConfig(
+        name=name,
+        source="https://example.com/llms.txt",
+        tags=("skills",),
+        scraper_cmd=None,
+        doc_path=None,
+        mapper_model=None,
+        language=None,
+        version="1",
+        created_at=datetime(2026, 9, 13, tzinfo=UTC),
+        updated_at=datetime(2026, 9, 13, tzinfo=UTC),
+        config={},
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "name": rec.name,
+        "source": rec.source,
+        "tags": list(rec.tags),
+        "scraper_cmd": rec.scraper_cmd,
+        "doc_path": str(rec.doc_path) if rec.doc_path else None,
+        "mapper_model": rec.mapper_model,
+        "language": rec.language,
+        "version": rec.version,
+        "created_at": rec.created_at.isoformat(),
+        "updated_at": rec.updated_at.isoformat(),
+        "config": rec.config,
+        # Legacy `path` field; must be dropped by the migrator.
+        "path": "/home/divinefilth/.local/share/lies/default/raw/" + name,
+    }
+    path.write_text(yaml.safe_dump(payload, sort_keys=True))
+
+
+def test_migration_copies_yaml_to_library(library: Library, wikis_root: Path) -> None:
+    wiki_dir = wikis_root / "default"
+    wiki_dir.mkdir()
+    _write_yaml(wiki_dir / "collections" / "claude_code.yaml")
+    apply_migration(plan_migration(wikis_root))
+    assert load_config("claude_code").source == "https://example.com/llms.txt"
+    assert not (wiki_dir / "collections").exists()
+
+
+def test_migration_aborts_on_duplicate(library: Library, wikis_root: Path) -> None:
+    a = wikis_root / "wiki_a"
+    b = wikis_root / "wiki_b"
+    a.mkdir()
+    b.mkdir()
+    _write_yaml(a / "collections" / "claude_code.yaml")
+    _write_yaml(b / "collections" / "claude_code.yaml")
+    with pytest.raises(MigrationConflictError):
+        apply_migration(plan_migration(wikis_root))
+
+
+def test_migration_idempotent(library: Library, wikis_root: Path) -> None:
+    wiki_dir = wikis_root / "default"
+    wiki_dir.mkdir()
+    _write_yaml(wiki_dir / "collections" / "claude_code.yaml")
+    plan_migration(wikis_root)
+    apply_migration(plan_migration(wikis_root))
+    # Second run after first moved: nothing to do, no error.
+    plan_migration(wikis_root)
+    apply_migration(plan_migration(wikis_root))

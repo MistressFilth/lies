@@ -32,6 +32,8 @@ The order of imports below is load-bearing:
 
 from __future__ import annotations
 
+from typing import Annotated
+
 import typer
 
 # Step 1: define the root typer app.
@@ -151,6 +153,33 @@ library_cli.register(app)
 # module's top-level ``@app.command(...)`` decorator needs the root
 # ``app`` to be defined first (it is -- bound in step 1 above).
 from lies.library import cli_migrate  # noqa: E402,F401
+
+# Register the ``migrate-collection-configs`` command (Task 9).
+from lies.library import migrate_collection_configs as _migrate_cfg  # noqa: E402
+
+
+@app.command(
+    name="migrate-collection-configs",
+    short_help="Move per-wiki collection YAMLs into the library.",
+    rich_help_panel="Migration",
+)
+def migrate_collection_configs(
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run/--apply", help="Dry-run (default) or apply.")
+    ] = True,
+    force: Annotated[bool, typer.Option("--force", help="Overwrite conflicting targets.")] = False,
+) -> None:
+    """One-shot migration script. See spec section 'Migration procedure'."""
+    plan = _migrate_cfg.plan_migration()
+    typer.echo(f"plan: {len(plan.moves)} YAMLs to move; {len(plan.duplicates)} duplicate slugs")
+    if plan.duplicates:
+        raise typer.Exit(code=2)
+    if dry_run:
+        typer.echo("(dry-run; pass --apply to mutate)")
+        return
+    _migrate_cfg.apply_migration(plan, force=force)
+    typer.echo("done.")
+
 
 # Re-exports for test compat. ``test_cli_flock.py`` monkeypatches
 # ``cli_module.acquire_create_lock``; ``test_cli_lint_force_repair.py``
