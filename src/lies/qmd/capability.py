@@ -18,9 +18,11 @@ and we only vary which arguments we pass it.
 from __future__ import annotations
 
 import asyncio
+import logging
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
+
 
 import fastmcp
 import httpx
@@ -29,6 +31,21 @@ from pydantic_ai.capabilities import MCP
 
 from lies.qmd.health import qmd_daemon_reachable
 from lies.qmd.mcp import QmdRecycleToolset, _build_qmd_http_toolset
+
+# F14-residual: the construction-time reap block in
+# ``QmdCapability.as_capability`` reads these names off
+# ``lies.qmd.capability`` at import time so that tests can
+# ``monkeypatch.setattr`` them before the method runs. Local imports
+# inside the method would not survive ``monkeypatch.setattr`` because
+# the attributes wouldn't exist on the module yet.
+from lies.qmd.daemon import (
+    _is_daemon_stale,
+    _reap_qmd_daemon,
+    _spawn_qmd_daemon,
+    write_sidecar_data_dir,
+)
+
+_log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from lies.wiki.wiki import Wiki
@@ -82,6 +99,19 @@ class QmdCapability:
         if not qmd_daemon_reachable(self._url, timeout=self._timeout):
             _warn_degraded(self._url)
             return _build_fallback_mcp(self._wiki)
+
+        # F14-residual: if the daemon is serving a pre-write index
+        # (marker mtime > daemon pidfile mtime), reap+respawn before
+        # advertising the toolset. Cheap (two stat() calls); runs once
+        # per Orchestrator init. The orchestrator's own writes cannot
+        # make itself stale — see spec
+        # superpowers/specs/2026-09-16-bundle-d-construction-staleness-reap-design.md.
+        if _is_daemon_stale():
+            _log.info("qmd daemon stale at construction; reaping before advertising toolset")
+            _reap_qmd_daemon()
+            _spawn_qmd_daemon()
+            write_sidecar_data_dir(self._data_dir)
+
         try:
             return _build_native_mcp(self._url, self._data_dir)
         except (httpx.HTTPError, *_MCP_PROBE_ERRORS):
