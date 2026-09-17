@@ -42,7 +42,10 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
+from lies.library.config_io import config_path_for
+from lies.library.errors import CollectionConfigInvalid, CollectionNotFound
 from lies.library.paths import Library
+from lies.library.record import LibraryCollectionConfig
 
 
 @dataclass(frozen=True)
@@ -132,10 +135,48 @@ def library_collection_metas() -> Iterator[LibraryCollectionMeta]:
             yield LibraryCollectionMeta(name=entry.name)
 
 
+def library_collection_records() -> Iterator[LibraryCollectionConfig]:
+    """Yield a :class:`LibraryCollectionConfig` per collection with a valid config.
+
+    Skips directories without ``config.yaml`` (e.g. fresh ingests that
+    haven't been bootstrapped yet). Skips collections whose config
+    fails validation; logs a warning per skip.
+    """
+    import logging
+
+    from lies.library.config_io import load_config
+
+    log = logging.getLogger(__name__)
+    root = _collections_root()
+    if not root.exists():
+        return
+    for entry in sorted(root.iterdir()):
+        if not entry.is_dir():
+            continue
+        if not config_path_for(entry.name).exists():
+            continue
+        try:
+            yield load_config(entry.name)
+        except (CollectionConfigInvalid, CollectionNotFound) as exc:
+            log.warning("skipping malformed collection %s: %s", entry.name, exc)
+
+
+def library_collection_record(slug: str) -> LibraryCollectionConfig | None:
+    """Return the config record for ``slug`` if it exists, else ``None``."""
+    from lies.library.config_io import load_config
+
+    try:
+        return load_config(slug)
+    except CollectionNotFound:
+        return None
+
+
 __all__ = (
     "LibraryCollectionMeta",
     "library_collection_metas",
     "library_collection_names",
+    "library_collection_record",
+    "library_collection_records",
     "library_has_no_collections",
     "library_initialized",
 )
