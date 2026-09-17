@@ -23,13 +23,13 @@ import hashlib
 import sys
 from typing import TYPE_CHECKING
 
-from lies.collections.hash_manifest import HashManifest
 from lies.etl.quarantine import quarantine as move_to_poison
 from lies.library.record import LibraryCollectionConfig as Collection
 from lies.memory.catalog import open_catalog, upsert_pages
 from lies.memory.catalog_models import CatalogPage
 from lies.qmd.cli import qmd_collection_add_or_update, qmd_embed, qmd_update
 from lies.wiki.git import atomic_commit
+from lies.wiki.hash_manifest import HashManifest
 from lies.wiki.wiki import Wiki
 
 if TYPE_CHECKING:

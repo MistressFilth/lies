@@ -13,9 +13,9 @@ call site (CLI ``query`` / MCP ``query`` and ``answer`` / retriever's
     and ``tags`` (always empty under the library layout, but the
     ``tags`` field is retained for forward compat with a future
     per-collection metadata sidecar). The dataclass is structurally
-    compatible with :class:`lies.collections.record.Collection` for
-    the two fields the resolver reads (``name``, ``tags``), so the
-    retriever's matching code passes it through without a shim.
+    compatible with the legacy wiki-yaml Collection shape for the two
+    fields the resolver reads (``name``, ``tags``), so the retriever's
+    matching code passes it through without a shim.
 
   - :func:`library_collection_names` — sorted tuple of every
     addressable collection directory name. The resolver validates
@@ -61,7 +61,7 @@ class LibraryCollectionMeta:
     The structural shape (``name: str``, ``tags: Sequence[str]``)
     matches what :func:`lies.query.tag_expr.atom_matches` and
     :func:`lies.query.tag_expr._exclude_atom_matches` read off a
-    collection, so :class:`lies.collections.record.Collection` and
+    collection, so the legacy wiki-yaml Collection and
     :class:`LibraryCollectionMeta` are interchangeable at the
     resolver boundary. This keeps the library-first migration
     additive — no rewrites to the matching code — while preventing
@@ -122,10 +122,10 @@ def library_collection_metas() -> Iterator[LibraryCollectionMeta]:
     """Yield a :class:`LibraryCollectionMeta` per directory in the library.
 
     Used by the retriever's :func:`_collections_matching`. The
-    resolver's matching code is structurally compatible with both
-    :class:`lies.collections.record.Collection` (legacy wiki-yaml
-    shape) and :class:`LibraryCollectionMeta` (library-first shape);
-    the library model is the canonical source going forward.
+    resolver's matching code is structurally compatible with both the
+    legacy wiki-yaml Collection shape and :class:`LibraryCollectionMeta`
+    (library-first shape); the library model is the canonical source
+    going forward.
     """
     root = _collections_root()
     if not root.exists():

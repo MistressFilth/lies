@@ -11,7 +11,7 @@ from typer.testing import CliRunner
 
 from lies import xdg
 from lies.cli import app
-from lies.collections.record import Collection, save_collection
+from lies.cli.collections import _save_collection, _Collection
 from lies.wiki.wiki import Wiki
 
 runner = CliRunner()
@@ -40,23 +40,21 @@ def wiki(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Wiki:
 
 
 def test_collections_show_reports_pending(wiki: Wiki) -> None:
-    save_collection(
-        wiki,
-        Collection(
-            name="htmx",
-            path=wiki.data_root / "raw" / "htmx",
-            source="",
-            tags=[],
-            scraper_cmd=None,
-            doc_path=None,
-            mapper_model=None,
-            language=None,
-            version="1.0.0",
-            created_at=datetime.now(tz=UTC),
-            updated_at=datetime.now(tz=UTC),
-            config={},
-        ),
+    coll = _Collection(
+        name="htmx",
+        path=wiki.data_root / "raw" / "htmx",
+        source="",
+        tags=[],
+        scraper_cmd=None,
+        doc_path=None,
+        mapper_model=None,
+        language=None,
+        version="1.0.0",
+        created_at=datetime.now(tz=UTC),
+        updated_at=datetime.now(tz=UTC),
+        config={},
     )
+    _save_collection(wiki, coll)
     with mock.patch(
         "lies.memory.service.WikiMemoryService.registered_collections",
         return_value=[],
@@ -67,23 +65,21 @@ def test_collections_show_reports_pending(wiki: Wiki) -> None:
 
 
 def test_collections_show_reports_registered(wiki: Wiki) -> None:
-    save_collection(
-        wiki,
-        Collection(
-            name="htmx",
-            path=wiki.data_root / "raw" / "htmx",
-            source="",
-            tags=[],
-            scraper_cmd=None,
-            doc_path=None,
-            mapper_model=None,
-            language=None,
-            version="1.0.0",
-            created_at=datetime.now(tz=UTC),
-            updated_at=datetime.now(tz=UTC),
-            config={},
-        ),
+    coll = _Collection(
+        name="htmx",
+        path=wiki.data_root / "raw" / "htmx",
+        source="",
+        tags=[],
+        scraper_cmd=None,
+        doc_path=None,
+        mapper_model=None,
+        language=None,
+        version="1.0.0",
+        created_at=datetime.now(tz=UTC),
+        updated_at=datetime.now(tz=UTC),
+        config={},
     )
+    _save_collection(wiki, coll)
     from lies.memory.models import WikiCollectionRef
 
     ref = WikiCollectionRef(

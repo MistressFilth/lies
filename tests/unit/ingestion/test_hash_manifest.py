@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from lies.collections.hash_manifest import HashManifest
+from lies.wiki.hash_manifest import HashManifest
 from lies.wiki.wiki import Wiki
 
 

@@ -12,7 +12,6 @@ from datetime import UTC, datetime
 from enum import Enum
 from typing import TYPE_CHECKING
 
-from lies.collections.hash_manifest import HashManifest
 from lies.etl.cost import CostBudget
 from lies.etl.errors import BudgetExceeded
 from lies.etl.stages.normalize import run_normalize
@@ -21,6 +20,7 @@ from lies.etl.stages.scrape import run_scrape
 from lies.etl.stages.write import run_write
 from lies.etl.telemetry import SyncTelemetry
 from lies.library.record import LibraryCollectionConfig as Collection
+from lies.wiki.hash_manifest import HashManifest
 from lies.wiki.wiki import Wiki
 
 if TYPE_CHECKING:

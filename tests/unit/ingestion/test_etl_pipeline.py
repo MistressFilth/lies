@@ -278,7 +278,7 @@ def test_pipeline_runs_register_stage(wiki: Wiki, monkeypatch: pytest.MonkeyPatc
         config={},
     )
     telemetry = SyncTelemetry(wiki, c.name)
-    from lies.collections.hash_manifest import HashManifest
+    from lies.wiki.hash_manifest import HashManifest
 
     manifest = HashManifest(wiki, c.name)
     budget = CostBudget()

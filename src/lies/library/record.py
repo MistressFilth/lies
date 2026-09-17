@@ -2,10 +2,10 @@
 
 The record is the canonical shape of a library collection's metadata,
 held at ``<library>/collections/<slug>/config.yaml``. The ``path``
-field that the legacy ``lies.collections.record.Collection`` carried
-pointed at a per-wiki raw dir that never existed on disk; library
-collections hold their content directly under ``<library>/collections/<slug>/``,
-and the record no longer needs to name an alternate location.
+field that the legacy wiki-yaml Collection carried pointed at a
+per-wiki raw dir that never existed on disk; library collections hold
+their content directly under ``<library>/collections/<slug>/``, and the
+record no longer needs to name an alternate location.
 """
 
 from __future__ import annotations

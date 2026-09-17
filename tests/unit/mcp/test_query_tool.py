@@ -24,7 +24,7 @@ from unittest import mock
 
 import pytest
 
-from lies.collections.record import Collection, save_collection
+from lies.cli.collections import _Collection as Collection, _save_collection as save_collection
 from lies.query.models import SynthesizedAnswer
 from lies.query.tag_expr import And, Include
 

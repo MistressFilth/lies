@@ -21,7 +21,7 @@ class LibraryAtomicCommitFailed(LibraryError):
     """git commit failed after files staged; staged files preserved for forensics."""
 
 
-"""Library-collection config error types (replaces lies.collections.errors)."""
+"""Library-collection config error types (replaces the legacy wiki-yaml collection error module)."""
 
 
 class CollectionError(Exception):

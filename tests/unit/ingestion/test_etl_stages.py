@@ -480,7 +480,7 @@ def test_run_write_invokes_qmd_refresh_update_and_embed(
     # HashManifest's actual signature is (wiki, collection), not (path). The
     # brief specified a single-path constructor that does not exist; force=True
     # bypasses compare() so the manifest only needs update() and flush().
-    from lies.collections.hash_manifest import HashManifest
+    from lies.wiki.hash_manifest import HashManifest
 
     manifest = HashManifest(wiki, "t")
     run_write(wiki, coll, [("hello.md", "# hello")], manifest=manifest, force=True)

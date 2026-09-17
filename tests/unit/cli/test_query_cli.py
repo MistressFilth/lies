@@ -28,7 +28,7 @@ from typer.testing import CliRunner
 
 from lies import xdg
 from lies.cli import app
-from lies.collections.record import Collection, save_collection
+from lies.cli.collections import _Collection as Collection, _save_collection as save_collection
 from lies.query.models import SynthesizedAnswer
 from lies.query.tag_expr import And, Include, Or
 from lies.wiki.wiki import Wiki

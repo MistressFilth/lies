@@ -8,8 +8,8 @@ from unittest import mock
 import pymupdf
 import pytest
 
-from lies.collections.hash_manifest import HashManifest
-from lies.collections.record import Collection, save_collection
+from lies.cli.collections import _Collection as Collection, _save_collection as save_collection
+from lies.wiki.hash_manifest import HashManifest
 from lies.etl.cost import CostBudget
 from lies.etl.pipeline import SyncOrchestrator
 from lies.etl.telemetry import SyncTelemetry

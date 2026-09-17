@@ -5,11 +5,14 @@ from pathlib import Path, PurePosixPath
 from unittest.mock import patch
 
 import pytest
+import yaml
 from typer.testing import CliRunner
 
 from lies import __version__, xdg
 from lies.cli import app
-from lies.collections.record import Collection, load_collection, save_collection
+from lies.cli.collections import (
+    _load_collection,
+)
 from lies.wiki.wiki import Wiki
 
 runner = CliRunner()
@@ -570,25 +573,25 @@ def wiki(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Wiki:
     return wiki
 
 
-def _seed_collection(wiki_obj: Wiki, name: str) -> Collection:
-    save_collection(
-        wiki_obj,
-        Collection(
-            name=name,
-            path=PurePosixPath(f"/raw/{name}"),
-            source="https://old.example.com",
-            tags=["old"],
-            scraper_cmd=None,
-            doc_path=None,
-            mapper_model=None,
-            language=None,
-            version="1",
-            created_at=datetime(2026, 1, 1, tzinfo=UTC),
-            updated_at=datetime(2026, 1, 1, tzinfo=UTC),
-            config={},
-        ),
-    )
-    return load_collection(wiki_obj, name)
+def _seed_collection(wiki_obj: Wiki, name: str):
+    payload = {
+        "name": name,
+        "path": str(PurePosixPath(f"/raw/{name}")),
+        "source": "https://old.example.com",
+        "tags": ["old"],
+        "scraper_cmd": None,
+        "doc_path": None,
+        "mapper_model": None,
+        "language": None,
+        "version": "1",
+        "created_at": datetime(2026, 1, 1, tzinfo=UTC).isoformat(),
+        "updated_at": datetime(2026, 1, 1, tzinfo=UTC).isoformat(),
+        "config": {},
+    }
+    cfg_path = wiki_obj.collections_dir / f"{name}.yaml"
+    cfg_path.parent.mkdir(parents=True, exist_ok=True)
+    cfg_path.write_text(yaml.safe_dump(payload, sort_keys=True), encoding="utf-8")
+    return _load_collection(wiki_obj, name)
 
 
 def test_modify_set_tags_comma_split(wiki: Wiki) -> None:
@@ -598,7 +601,7 @@ def test_modify_set_tags_comma_split(wiki: Wiki) -> None:
         ["collections", "modify", "alpha", "--set", "tags=stdlib,core"],
     )
     assert result.exit_code == 0, result.output
-    loaded = load_collection(wiki, "alpha")
+    loaded = _load_collection(wiki, "alpha")
     assert loaded.tags == ["stdlib", "core"]
 
 
@@ -609,7 +612,7 @@ def test_modify_set_config_dotted(wiki: Wiki) -> None:
         ["collections", "modify", "alpha", "--set", "config.render_cmd=foo"],
     )
     assert result.exit_code == 0, result.output
-    loaded = load_collection(wiki, "alpha")
+    loaded = _load_collection(wiki, "alpha")
     assert loaded.config == {"render_cmd": "foo"}
 
 
@@ -662,7 +665,7 @@ def test_modify_from_file_applies_editable_fields(wiki: Wiki, tmp_path: Path) ->
         ["collections", "modify", "alpha", "--from-file", str(patch)],
     )
     assert result.exit_code == 0, result.output
-    loaded = load_collection(wiki, "alpha")
+    loaded = _load_collection(wiki, "alpha")
     assert loaded.tags == ["stdlib", "core"]
     assert loaded.language == "en"
     assert loaded.config == {"render_cmd": "foo"}

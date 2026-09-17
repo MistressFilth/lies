@@ -1,8 +1,8 @@
 """Idempotent library-collection config bootstrap.
 
-Mirrors the contract of the legacy
-:func:`lies.collections.bootstrap.bootstrap_collection` but without a
-``Wiki`` argument: collections are library-global, so bootstrap is too.
+Mirrors the contract of the legacy wiki-scoped bootstrap helper but
+without a ``Wiki`` argument: collections are library-global, so
+bootstrap is too.
 
 Behavior:
 

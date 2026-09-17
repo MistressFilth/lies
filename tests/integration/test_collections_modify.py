@@ -11,10 +11,10 @@ from typer.testing import CliRunner
 
 from lies import xdg
 from lies.cli import app
-from lies.collections.record import (
-    Collection,
-    load_collection,
-    save_collection,
+from lies.cli.collections import (
+    _Collection,
+    _load_collection,
+    _save_collection,
 )
 from lies.wiki.wiki import Wiki
 
@@ -44,9 +44,9 @@ def wiki(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Wiki:
 
 
 def _seed(wiki: Wiki, name: str) -> None:
-    save_collection(
+    _save_collection(
         wiki,
-        Collection(
+        _Collection(
             name=name,
             path=PurePosixPath(f"/raw/{name}"),
             source="https://old.example.com",
@@ -83,7 +83,7 @@ def test_modify_round_trip(wiki: Wiki) -> None:
     assert "tags=['stdlib', 'core']" in show.output
     assert "language=en" not in show.output or "source=" in show.output
 
-    loaded = load_collection(wiki, "cpython")
+    loaded = _load_collection(wiki, "cpython")
     assert loaded.tags == ["stdlib", "core"]
     assert loaded.language == "en"
     assert loaded.source == "https://old.example.com"  # preserved
@@ -93,7 +93,7 @@ def test_modify_round_trip(wiki: Wiki) -> None:
 
 def test_modify_atomic_write_no_partial_file(wiki: Wiki) -> None:
     _seed(wiki, "cpython")
-    target = Collection.config_path(wiki, "cpython")
+    target = _Collection.config_path(wiki, "cpython")
     before = target.read_text(encoding="utf-8")
 
     # Simulate crash: tmp writes fine, os.replace raises
@@ -113,5 +113,5 @@ def test_modify_atomic_write_no_partial_file(wiki: Wiki) -> None:
     assert not sibling_tmp.exists()
 
     # Reload still works
-    loaded = load_collection(wiki, "cpython")
+    loaded = _load_collection(wiki, "cpython")
     assert loaded.tags == ["old"]

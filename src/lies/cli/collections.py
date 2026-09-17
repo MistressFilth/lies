@@ -11,12 +11,18 @@ and that is cheap.
 
 from __future__ import annotations
 
+import contextlib
 import json
+import os
+import re
+import warnings
+from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any, cast
 
 import typer
+import yaml  # type: ignore[import-untyped]
 
 from lies.wiki_settings import resolve_language
 
@@ -29,6 +35,161 @@ __all__ = (
     "collections_new",
     "collections_show",
 )
+
+
+# ---------------------------------------------------------------------------
+# Private wiki-yaml Collection helpers.
+#
+# These are the surviving implementation of the legacy wiki-yaml
+# collection module. The library cutover moved canonical collection
+# configs to ``<library>/collections/<slug>/config.yaml``
+# (LibraryCollectionConfig + lies.library.config_io), but the wiki CLI
+# sub-app here still operates on per-wiki YAML configs at
+# ``wiki.collections_dir/<name>.yaml`` to preserve operator muscle memory
+# for the existing CLI surface. The classes are private (``_`` prefix) and
+# module-local: callers outside this file should use ``LibraryCollectionConfig``
+# / ``lies.library.config_io`` instead.
+# ---------------------------------------------------------------------------
+
+_OPERATOR_CHARS_RE = re.compile(r"[+&|\-]")
+
+
+class _CollectionError(Exception):
+    """Base class for wiki-yaml collection-level errors."""
+
+
+class _CollectionNotFound(_CollectionError):
+    """Requested collection does not exist in the wiki."""
+
+
+class _CollectionConfigInvalid(_CollectionError):
+    """Collection config is malformed or fails validation."""
+
+
+@dataclass(frozen=True)
+class _Collection:
+    """Per-wiki YAML collection config record.
+
+    Mirrors the legacy wiki-yaml Collection shape so the
+    wiki CLI commands keep the same observable behavior. The ``path``
+    field was dropped from the library config because the per-wiki raw
+    directory it pointed at never existed on disk; the wiki CLI keeps it
+    as a stored field for backward compatibility with existing YAMLs.
+    """
+
+    name: str
+    path: Path
+    source: str
+    tags: list[str]
+    scraper_cmd: str | None
+    doc_path: Path | None
+    mapper_model: str | None
+    language: str | None
+    version: str
+    created_at: datetime
+    updated_at: datetime
+    config: dict[str, Any] = field(default_factory=dict)
+
+    def rejects_operator_chars(self) -> None:
+        """Reject names containing reserved QMD operator characters."""
+        if _OPERATOR_CHARS_RE.search(self.name):
+            raise _CollectionConfigInvalid(
+                f"collection name contains reserved characters: {self.name!r}"
+            )
+
+    @staticmethod
+    def config_path(wiki: Any, name: str) -> Path:
+        """Return the on-disk YAML path for a collection under ``wiki``."""
+        return wiki.collections_dir / f"{name}.yaml"
+
+
+def _parse_dt(value: object) -> datetime:
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str):
+        return datetime.fromisoformat(value)
+    raise _CollectionConfigInvalid(f"invalid datetime: {value!r}")
+
+
+def _load_collection(wiki: Any, name: str) -> _Collection:
+    config_path = _Collection.config_path(wiki, name)
+    if not config_path.exists():
+        raise _CollectionNotFound(f"collection {name!r} not found at {config_path}")
+    try:
+        payload = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+    except yaml.YAMLError as exc:
+        raise _CollectionConfigInvalid(f"invalid YAML in {config_path}: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise _CollectionConfigInvalid(f"config root must be a mapping: {config_path}")
+    try:
+        raw_lang = payload.get("language")
+        if raw_lang is None:
+            language: str | None = None
+        elif isinstance(raw_lang, str):
+            stripped = raw_lang.strip()
+            language = stripped if stripped else None
+        else:
+            raise _CollectionConfigInvalid(
+                f"language must be a string, got {type(raw_lang).__name__}"
+            )
+        raw_tags = payload.get("tags", [])
+        if isinstance(raw_tags, list):
+            tags = [str(t) for t in raw_tags]
+        elif raw_tags is None:
+            tags = []
+        else:
+            warnings.warn(
+                f"tags must be a list, got {type(raw_tags).__name__}; coercing to empty list",
+                UserWarning,
+                stacklevel=2,
+            )
+            tags = []
+        collection = _Collection(
+            name=payload["name"],
+            path=Path(payload["path"]),
+            source=payload["source"],
+            tags=tags,
+            scraper_cmd=payload.get("scraper_cmd"),
+            doc_path=Path(payload["doc_path"]) if payload.get("doc_path") else None,
+            mapper_model=payload.get("mapper_model"),
+            language=language,
+            version=payload["version"],
+            created_at=_parse_dt(payload["created_at"]),
+            updated_at=_parse_dt(payload["updated_at"]),
+            config=payload.get("config") or {},
+        )
+    except KeyError as exc:
+        raise _CollectionConfigInvalid(f"missing field {exc} in {config_path}") from exc
+    collection.rejects_operator_chars()
+    return collection
+
+
+def _save_collection(wiki: Any, collection: _Collection) -> None:
+    collection.rejects_operator_chars()
+    payload = asdict(collection)
+    payload["path"] = str(collection.path)
+    payload["doc_path"] = str(collection.doc_path) if collection.doc_path else None
+    payload["created_at"] = collection.created_at.isoformat()
+    payload["updated_at"] = collection.updated_at.isoformat()
+    config_path = _Collection.config_path(wiki, collection.name)
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = config_path.with_suffix(config_path.suffix + ".tmp")
+    try:
+        with tmp.open("w", encoding="utf-8") as fh:
+            yaml.safe_dump(payload, fh, sort_keys=True)
+            fh.flush()
+            if hasattr(os, "fsync"):
+                os.fsync(fh.fileno())
+        os.replace(tmp, config_path)
+    except BaseException as exc:
+        with contextlib.suppress(OSError):
+            tmp.unlink()
+        if isinstance(exc, OSError):
+            raise _CollectionConfigInvalid(f"failed to write {config_path}: {exc}") from exc
+        raise
+
+
+# ---------------------------------------------------------------------------
 
 
 collections_app = typer.Typer(
@@ -56,7 +217,6 @@ def collections_list(
 ) -> None:
     """List every collection in the wiki's collections dir with source, tags, and sync status."""
     from lies.cli import resolve_wiki
-    from lies.collections.record import load_collection
     from lies.memory.service import WikiMemoryService
 
     wiki = resolve_wiki(name)
@@ -68,7 +228,7 @@ def collections_list(
         registered_ids = {r.collection_id for r in registered}
         rows: list[dict[str, object]] = []
         for stem in stems:
-            c = load_collection(wiki, stem)
+            c = _load_collection(wiki, stem)
             rows.append(
                 {
                     "name": c.name,
@@ -100,11 +260,10 @@ def collections_show(
 ) -> None:
     """Show a single collection's full configuration: source, tags, language, registered status."""
     from lies.cli import resolve_wiki
-    from lies.collections.record import load_collection
     from lies.memory.service import WikiMemoryService
 
     wiki = resolve_wiki(name)
-    c = load_collection(wiki, collection_name)
+    c = _load_collection(wiki, collection_name)
     typer.echo(f"name={c.name} source={c.source} tags={c.tags}")
     typer.echo(f"language: {resolve_language(wiki, c)}")  # ty: ignore[invalid-argument-type]
     # The CLI doesn't know whether sync has run in this process;
@@ -157,7 +316,6 @@ def collections_new(
     ] = None,
 ) -> None:
     """Create a new collection via the interactive wizard."""
-    import yaml  # type: ignore[import-untyped]
     from rich.prompt import Prompt
 
     # Import the agent inside the body so that tests can mock
@@ -177,7 +335,6 @@ def collections_new(
         collection_author_agent as _factory,
     )
     from lies.cli import pick_scraper, resolve_wiki
-    from lies.collections.record import Collection, save_collection
 
     wiki = resolve_wiki(name)
     cfg_dir = wiki.collections_dir
@@ -199,8 +356,8 @@ def collections_new(
     deps = _AuthorDeps(manifest=manifest)
     while True:
         # ``message_history`` expects a typed Sequence of model
-        # messages; we accept arbitrary user-prompt injections from
-        # the rich-prompt loop, so cast to Any at the boundary.
+        # messages; we accept arbitrary user-prompt injections from the
+        # rich-prompt loop, so cast to Any at the boundary.
         result = agent.run_sync(
             prompt,
             deps=deps,
@@ -242,7 +399,7 @@ def collections_new(
                             merged.append(t)
                     payload["tags"] = merged
                 # The agent may emit ISO strings; coerce to datetime
-                # so Collection's typed fields and save_collection's
+                # so _Collection's typed fields and _save_collection's
                 # .isoformat() call work either way.
                 created = payload.get("created_at")
                 updated = payload.get("updated_at")
@@ -254,8 +411,8 @@ def collections_new(
                 doc_path = payload.get("doc_path")
                 if doc_path is not None:
                     payload["doc_path"] = Path(doc_path)
-                collection = Collection(**payload)
-                save_collection(wiki, collection)
+                collection = _Collection(**payload)
+                _save_collection(wiki, collection)
                 typer.echo(f"wrote {cfg_dir / (collection_name + '.yaml')}")
             return
         raise typer.BadParameter("agent returned unexpected output")
@@ -297,12 +454,7 @@ def collections_modify(
     ] = None,
 ) -> None:
     """Mutate an existing collection's source, tags, or other fields."""
-    from dataclasses import replace as _dc_replace
-
-    import yaml  # type: ignore[import-untyped]
-
     from lies.cli import resolve_wiki
-    from lies.collections.record import Collection, load_collection, save_collection
 
     wiki = resolve_wiki(name)
     if from_file is not None and set_:
@@ -310,7 +462,7 @@ def collections_modify(
     if from_file is None and not set_ and not tag and not untag:
         raise typer.BadParameter("modify requires --from-file, --set, --tag, or --untag")
 
-    existing = load_collection(wiki, collection_name)
+    existing = _load_collection(wiki, collection_name)
 
     editable_top = {
         "source",
@@ -397,9 +549,9 @@ def collections_modify(
         updates["tags"] = cur_tags
 
     updates["updated_at"] = datetime.now(tz=UTC)
-    new = _dc_replace(existing, **updates)
-    save_collection(wiki, new)
-    typer.echo(f"updated {Collection.config_path(wiki, collection_name)}")
+    new = replace(existing, **updates)
+    _save_collection(wiki, new)
+    typer.echo(f"updated {_Collection.config_path(wiki, collection_name)}")
 
 
 @collections_app.command("delete")
@@ -460,15 +612,13 @@ def collections_enrich_tags(
     implementation and currently raises.
     """
     from lies.cli import resolve_wiki
-    from lies.collections.errors import CollectionConfigInvalid, CollectionNotFound
-    from lies.collections.record import load_collection
 
     wiki = resolve_wiki(name)
     cfg_dir = wiki.collections_dir
     for cfg_path in sorted(cfg_dir.glob("*.yaml")):
         try:
-            coll = load_collection(wiki, cfg_path.stem)
-        except (CollectionNotFound, CollectionConfigInvalid):
+            coll = _load_collection(wiki, cfg_path.stem)
+        except (_CollectionNotFound, _CollectionConfigInvalid):
             # Skip malformed configs so one bad file does not mask the
             # rest of the dry-run output.
             continue

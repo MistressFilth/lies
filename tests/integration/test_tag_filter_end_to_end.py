@@ -25,7 +25,7 @@ from unittest import mock
 import pytest
 
 from lies.agents.query_synthesizer import QueryAnswer
-from lies.collections.record import Collection, save_collection
+from lies.cli.collections import _Collection as Collection, _save_collection as save_collection
 from lies.orchestrator import Orchestrator
 from lies.query.tag_expr import (
     And,
