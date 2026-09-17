@@ -45,7 +45,12 @@ def test_sync_single_collection_bootstrap_missing(
         )
     assert result.exit_code == 0
     mock_sync.assert_called_once()
-    assert (wiki.collections_dir / "alpha.yaml").exists()
+    # Task 8: bootstrap now writes the library config (post-cutover),
+    # not the wiki-yaml surface. ``Library.collections_root`` resolves
+    # via the XDG redirect in ``conftest._isolated_xdg``.
+    from lies.library.config_io import config_path_for
+
+    assert config_path_for("alpha").exists()
 
 
 def test_sync_all_collections_no_bootstrap(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -81,15 +86,30 @@ def test_sync_all_collections_no_bootstrap(tmp_path: Path, monkeypatch: pytest.M
 def test_sync_existing_collection_mismatched_source_errors(
     wiki: Wiki, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    from datetime import UTC, datetime as _dt
+
+    from lies.library.config_io import save_config
+    from lies.library.record import LibraryCollectionConfig
+
     monkeypatch.setenv("LIES_WIKI_NAME", wiki.name)
-    wiki.collections_dir.mkdir(parents=True, exist_ok=True)
-    (wiki.collections_dir / "alpha.yaml").write_text(
-        "name: alpha\npath: /raw/alpha\nsource: https://OLD.example.com\n"
-        "tags: []\nscraper_cmd: null\ndoc_path: null\nmapper_model: null\n"
-        "language: null\nversion: '1'\n"
-        "created_at: 2026-01-01T00:00:00+00:00\nupdated_at: 2026-01-01T00:00:00+00:00\n"
-        "config: {}\n",
-        encoding="utf-8",
+    now = _dt(2026, 1, 1, tzinfo=UTC)
+    # Task 8: bootstrap reads the library config (post-cutover). Seed
+    # the library config with a source that disagrees with the
+    # CLI's --source to exercise the mismatch path.
+    save_config(
+        LibraryCollectionConfig(
+            name="alpha",
+            source="https://OLD.example.com",
+            tags=(),
+            scraper_cmd=None,
+            doc_path=None,
+            mapper_model=None,
+            language=None,
+            version="1",
+            created_at=now,
+            updated_at=now,
+            config={},
+        )
     )
     with mock.patch("lies.etl.sync_helper.sync_collection") as mock_sync:
         result = runner.invoke(

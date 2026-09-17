@@ -8,13 +8,12 @@ ingest lives at ``lies ingest`` (``lies.library.cli``).
 from __future__ import annotations
 
 import sys
-from datetime import UTC, datetime
-from pathlib import Path
-from typing import Annotated, Any, cast
+from typing import Annotated
 
 import typer
 
 from lies.cli import app
+from lies.library.errors import WizardRequiresTTY as _WikiLibraryWizardRequiresTTY
 
 __all__ = ("sync", "reindex")
 
@@ -86,10 +85,10 @@ class _WikiLayoutInitFailed(Exception):
 
 
 class _WikiCollectionMismatch(Exception):
-    """Existing wiki-yaml collection has a different source than requested.
+    """Existing library collection has a different source than requested.
 
-    Private to this module; mirrors the public ``CollectionMismatch``
-    contract from the legacy wiki-yaml bootstrap helper (with the same
+    Private to this module; mirrors the public :class:`CollectionMismatch`
+    contract from :mod:`lies.library.errors` (with the same
     ``existing_source`` / ``requested_source`` attributes the sync
     command prints to stderr on collision).
     """
@@ -103,135 +102,41 @@ class _WikiCollectionMismatch(Exception):
         self.requested_source = requested_source
 
 
-class _WizardRequiresTTY(Exception):
-    """--wizard requires an interactive TTY (private to this module)."""
-
-
 def _bootstrap_wiki_collection(
-    wiki: Any,
     name: str,
     source: str,
     *,
     wizard: bool = False,
 ) -> None:
-    """Wiki-scoped bootstrap helper for ``lies sync --source``.
+    """Idempotently ensure a library-collection config exists for ``name``.
 
-    Idempotently ensures a wiki-yaml collection config exists for
-    ``(wiki, name)``. Mirrors the legacy wiki-yaml bootstrap contract so
-    ``lies sync <name> --source <url>`` keeps writing
-    ``wiki.collections_dir/<name>.yaml`` for callers that still rely on
-    the wiki-yaml surface.
+    Thin wrapper over :func:`bootstrap_library_collection` that keeps the
+    ``_WikiCollectionMismatch`` / :class:`WizardRequiresTTY` exceptions
+    the CLI's ``sync`` command translates into non-zero exits. The
+    wiki-yaml collection surface is gone post-cutover (Task 8); the
+    sync command bootstraps configs at
+    ``<library>/collections/<slug>/config.yaml`` instead.
 
-    - YAML exists + ``source`` matches → return.
-    - YAML exists + ``source`` differs → raise :class:`_WikiCollectionMismatch`.
-    - YAML missing + ``wizard=False`` → write a minimal record.
-    - YAML missing + ``wizard=True`` → drive the
+    - config exists + ``source`` matches → return.
+    - config exists + ``source`` differs → raise :class:`CollectionMismatch`.
+    - config missing + ``wizard=False`` → write a minimal record.
+    - config missing + ``wizard=True`` → drive the
       ``collection_author_agent`` interactively.
     """
 
+    from lies.library.bootstrap import bootstrap_library_collection
+    from lies.library.errors import CollectionMismatch as _LibraryCollectionMismatch
+
     if wizard and not sys.stdin.isatty():
-        raise _WizardRequiresTTY()
+        raise _WikiLibraryWizardRequiresTTY()
 
-    cfg_path = wiki.collections_dir / f"{name}.yaml"
-    if cfg_path.exists():
-        from lies.cli.collections import _load_collection
-
-        existing = _load_collection(wiki, name)
-        existing_source = (existing.source or "").strip()
-        if existing_source and existing_source != source:
-            raise _WikiCollectionMismatch(
-                existing_source=existing.source,
-                requested_source=source,
-            )
-        return
-
-    if wizard:
-        _bootstrap_via_wizard(wiki, name, source)
-        return
-    _bootstrap_bare(wiki, name, source)
-
-
-def _bootstrap_bare(wiki: Any, name: str, source: str) -> None:
-    """Write a minimal wiki-yaml record for ``(wiki, name)``."""
-    from lies.cli.collections import _Collection, _save_collection
-
-    now = datetime.now(tz=UTC)
-    new = _Collection(
-        name=name,
-        path=wiki.data_root / "raw" / name,
-        source=source,
-        tags=[],
-        scraper_cmd=None,
-        doc_path=None,
-        mapper_model=None,
-        language=None,
-        version="1",
-        created_at=now,
-        updated_at=now,
-        config={},
-    )
-    _save_collection(wiki, new)
-
-
-def _bootstrap_via_wizard(wiki: Any, name: str, source: str) -> None:
-    """Drive :func:`collection_author_agent` interactively, then save."""
-    from rich.prompt import Prompt
-
-    from lies.agents.collection_author import (
-        AuthorProposal,
-        AuthorQuestion,
-        CollectionAuthorDeps,
-        collection_author_agent,
-    )
-    from lies.cli.collections import _Collection, _save_collection
-
-    prompt = (
-        f"{source} — describe how to ingest this corpus. Use tags to mark "
-        f"sections; set scraper_cmd only if the default scraper is wrong."
-    )
-    agent = collection_author_agent()
-    history: list[object] = []
-    deps = CollectionAuthorDeps(manifest=[])
-    while True:
-        result = agent.run_sync(
-            prompt,
-            deps=deps,
-            message_history=cast(Any, history),
-        )
-        history.append(result.new_messages())
-        out = result.output
-        if isinstance(out, AuthorQuestion):
-            if out.options:
-                answer = Prompt.ask(
-                    out.prompt,
-                    choices=out.options,
-                    default=out.default or out.options[0],
-                )
-            elif out.default is not None:
-                answer = Prompt.ask(out.prompt, default=out.default)
-            else:
-                answer = Prompt.ask(out.prompt)
-            history.append({"role": "user", "content": f"{out.id}: {answer}"})
-            continue
-        if isinstance(out, AuthorProposal):
-            now = datetime.now(tz=UTC)
-            payload = dict(out.collection)
-            payload.setdefault("name", name)
-            payload.setdefault("path", str(wiki.data_root / "raw" / name))
-            payload.setdefault("created_at", now)
-            payload.setdefault("updated_at", now)
-            for key in ("created_at", "updated_at"):
-                if isinstance(payload.get(key), str):
-                    payload[key] = datetime.fromisoformat(cast(str, payload[key]))
-            payload["path"] = Path(payload["path"])
-            doc_path = payload.get("doc_path")
-            if doc_path is not None:
-                payload["doc_path"] = Path(doc_path)
-            coll = _Collection(**payload)
-            _save_collection(wiki, coll)
-            return
-        # Any other agent output aborts the wizard.
-        return
+    try:
+        bootstrap_library_collection(name, source, wizard=wizard)
+    except _LibraryCollectionMismatch as exc:
+        raise _WikiCollectionMismatch(
+            existing_source=exc.existing_source,
+            requested_source=exc.requested_source,
+        ) from exc
 
 
 @app.command(
@@ -313,8 +218,8 @@ def sync(
     try:
         if collection is not None and source is not None:
             try:
-                _bootstrap_wiki_collection(wiki, collection, source, wizard=wizard)
-            except _WizardRequiresTTY:
+                _bootstrap_wiki_collection(collection, source, wizard=wizard)
+            except _WikiLibraryWizardRequiresTTY:
                 typer.echo(
                     "error: --wizard needs a TTY; run interactively "
                     "or omit --wizard for bare scaffold",
@@ -325,7 +230,7 @@ def sync(
                 typer.echo(
                     f"error: collection {collection!r} exists with source "
                     f"{exc.existing_source!r}; requested {exc.requested_source!r}. "
-                    f"Use `lies collections modify --set source=...` to change.",
+                    f"Use `lies library modify {collection} --set source=...` to change.",
                     err=True,
                 )
                 raise typer.Exit(code=3)

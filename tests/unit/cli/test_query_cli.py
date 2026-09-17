@@ -28,7 +28,9 @@ from typer.testing import CliRunner
 
 from lies import xdg
 from lies.cli import app
-from lies.cli.collections import _Collection as Collection, _save_collection as save_collection
+from lies.library.config_io import save_config
+from lies.library.paths import Library
+from lies.library.record import LibraryCollectionConfig
 from lies.query.models import SynthesizedAnswer
 from lies.query.tag_expr import And, Include, Or
 from lies.wiki.wiki import Wiki
@@ -60,7 +62,6 @@ def wiki(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Wiki:
     import shutil
 
     from lies.constants import LIES_DATA_SUBDIR
-    from lies.library.paths import Library
 
     name = "tagfilter"
     monkeypatch.setenv("LIES_WIKI_NAME", name)
@@ -80,34 +81,31 @@ def wiki(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Wiki:
     )
     w.data_root.mkdir(parents=True, exist_ok=True)
     w.collections_dir.mkdir(parents=True, exist_ok=True)
-    for coll_name, tags in _COLLECTIONS.items():
-        save_collection(
-            w,
-            Collection(
-                name=coll_name,
-                path=w.data_root / "raw" / coll_name,
-                source=f"https://example.com/{coll_name}",
-                tags=list(tags),
-                scraper_cmd=None,
-                doc_path=None,
-                mapper_model=None,
-                language="en",
-                version="1.0.0",
-                created_at=_NOW,
-                updated_at=_NOW,
-                config={},
-            ),
-        )
 
-    # Seed the library with the same collection names so tag
-    # resolution (library-first) finds them.
+    # Seed the library with the collection names + tags so tag
+    # resolution (library-first) finds them. Post-cutover (Task 8) the
+    # wiki-yaml configs in ``wiki.collections_dir/`` are no longer the
+    # resolver's source of truth, so the wiki-yaml seeding the legacy
+    # test fixture did is intentionally dropped here.
     lib_root = xdg.data_home() / LIES_DATA_SUBDIR / "library"
     if lib_root.exists():
         shutil.rmtree(lib_root)
     lib_root.mkdir(parents=True, exist_ok=True)
     (lib_root / "collections").mkdir(parents=True, exist_ok=True)
     for coll_name in _COLLECTIONS:
-        (lib_root / "collections" / coll_name).mkdir()
+        coll_dir = lib_root / "collections" / coll_name
+        coll_dir.mkdir()
+        config = LibraryCollectionConfig(
+            name=coll_name,
+            source=f"https://example.com/{coll_name}",
+            tags=tuple(_COLLECTIONS[coll_name]),
+            language="en",
+            version="1.0.0",
+            created_at=_NOW,
+            updated_at=_NOW,
+            config={},
+        )
+        save_config(config)
 
     return w
 
