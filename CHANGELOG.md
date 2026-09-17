@@ -17,6 +17,24 @@ All notable changes to LIES are documented here. The format follows
 ### Fixed
 - qmd daemon staleness between `Orchestrator` runs is now reaped before the first search; closes the silent-failure mode where a stale-but-serving daemon returned pre-write results. The check runs at `QmdCapability.as_capability` after the TCP probe, before the native toolset is advertised.
 
+## [1.0.0] - 2026-09-17
+
+### Changed (breaking)
+- **BREAKING:** Collection configurations moved from per-wiki `~/.config/lies/<wiki>/collections/<slug>.yaml` to library-resident `~/.local/share/lies/library/collections/<slug>/config.yaml`. Collections are now library-global; wikis no longer bind collections.
+- **BREAKING:** `src/lies/collections/{record,bootstrap,scraper_manifest,hash_manifest,document,errors}` removed. Import from `lies.library.record`, `lies.library.bootstrap`, `lies.library.errors` instead. Per-wiki JSON registry moved to `lies.wiki.registry`.
+- **BREAKING:** `lies collections` CLI group removed; use `lies library {list,show,where,new,modify,delete,enrich-tags}` instead.
+- **BREAKING:** `Collection.path` field removed (pointed at per-wiki raw dir that never existed).
+
+### Added
+- `lies library` sub-app with `list`, `show`, `where`, `new`, `modify`, `delete`, `enrich-tags`.
+- `lies migrate-collection-configs` one-shot migration command.
+- `LibraryCollectionConfig` dataclass, `ConfigYAML` Pydantic schema, atomic `config_io.load_config`/`save_config`.
+- `library_collection_records()` registry iterator yielding full records.
+- `bootstrap_library_collection()` idempotent helper (replaces wiki-side bootstrap).
+
+### Migration
+Run `uv tool upgrade lies` to 1.0.0, then `lies migrate-collection-configs --dry-run` to preview and `lies migrate-collection-configs --apply` to relocate the YAMLs.
+
 ## [0.26.0] - 2026-09-15
 
 ### Added
