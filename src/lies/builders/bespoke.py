@@ -22,7 +22,7 @@ import shutil
 from pathlib import Path
 
 from lies.builders.base import REGISTRY, Builder, BuilderRegistry
-from lies.collections.record import Collection
+from lies.library.record import LibraryCollectionConfig as Collection
 from lies.scrapers.base import ParsedDoc
 
 

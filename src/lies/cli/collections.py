@@ -74,7 +74,7 @@ def collections_list(
                     "name": c.name,
                     "source": c.source,
                     "tags": c.tags,
-                    "language": resolve_language(wiki, c),
+                    "language": resolve_language(wiki, c),  # ty: ignore[invalid-argument-type]
                     "sync_status": "registered" if stem in registered_ids else "pending",
                 }
             )
@@ -106,7 +106,7 @@ def collections_show(
     wiki = resolve_wiki(name)
     c = load_collection(wiki, collection_name)
     typer.echo(f"name={c.name} source={c.source} tags={c.tags}")
-    typer.echo(f"language: {resolve_language(wiki, c)}")
+    typer.echo(f"language: {resolve_language(wiki, c)}")  # ty: ignore[invalid-argument-type]
     # The CLI doesn't know whether sync has run in this process;
     # an empty registry means the in-process WikiMemoryService for
     # this wiki root has not registered any collection yet.

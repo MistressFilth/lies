@@ -12,14 +12,13 @@ import pytest
 
 from lies.builders.errors import BuilderFetchFailed
 from lies.builders.liquid import LiquidBuilder, _resolve_render_cmd
-from lies.collections.record import Collection
+from lies.library.record import LibraryCollectionConfig as Collection
 
 
 def _collection(tmp_path: Path, *, config: dict | None = None) -> Collection:
     now = datetime.now(tz=UTC)
     return Collection(
         name="liquid-test",
-        path=tmp_path,
         source="",
         tags=[],
         scraper_cmd=None,

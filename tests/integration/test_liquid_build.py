@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from lies.builders.bespoke import BespokeBuilder
-from lies.collections.record import Collection
+from lies.library.record import LibraryCollectionConfig as Collection
 
 
 @pytest.fixture
@@ -35,7 +35,6 @@ def _collection(tmp_path: Path, *, config: dict | None = None) -> Collection:
     now = datetime.now(tz=UTC)
     return Collection(
         name="liquid-fixture",
-        path=tmp_path,
         source="",
         tags=[],
         scraper_cmd=None,

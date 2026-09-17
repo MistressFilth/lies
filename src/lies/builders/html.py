@@ -12,7 +12,7 @@ from pathlib import Path
 
 from lies.builders.base import REGISTRY, Builder
 from lies.builders.errors import BuilderFetchFailed
-from lies.collections.record import Collection
+from lies.library.record import LibraryCollectionConfig as Collection
 from lies.etl.normalize.pandoc_daemon import PandocDaemon
 from lies.scrapers.base import ParsedDoc
 

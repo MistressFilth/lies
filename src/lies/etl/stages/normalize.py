@@ -89,7 +89,7 @@ def run_normalize(wiki: Wiki, collection: Collection, docs: list[ParsedDoc]) -> 
                         _materialize(workspace, doc.source_format, doc.content)
                     built = REGISTRY.resolve(doc.source_format).build(
                         workspace,
-                        collection=collection,  # ty: ignore[invalid-argument-type]
+                        collection=collection,
                     )
                 if not built:
                     quarantined.append((doc.path, "builder produced no docs"))

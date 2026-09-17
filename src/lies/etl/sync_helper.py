@@ -167,7 +167,7 @@ def sync_collection(
     fetcher = ScraperFetcher(
         library=library,
         scraper_cmd=collection.scraper_cmd,
-        collection=collection,  # ty: ignore[invalid-argument-type]
+        collection=collection,
     )
     return _library_ingest.run_batch_ingest(
         library=library,

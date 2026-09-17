@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING, Literal
 
 
 if TYPE_CHECKING:
-    from lies.collections.record import Collection
+    from lies.library.record import LibraryCollectionConfig as Collection
     from lies.library.registry import LibraryCollectionMeta
 
 

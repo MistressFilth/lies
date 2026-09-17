@@ -17,7 +17,7 @@ import pymupdf
 
 from lies.builders.base import REGISTRY, Builder
 from lies.builders.errors import BuilderParseError
-from lies.collections.record import Collection
+from lies.library.record import LibraryCollectionConfig as Collection
 from lies.scrapers.base import ParsedDoc
 
 

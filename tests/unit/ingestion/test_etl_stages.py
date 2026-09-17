@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from lies.collections.record import Collection
+from lies.library.record import LibraryCollectionConfig as Collection
 from lies.etl.stages.normalize import run_normalize
 from lies.etl.stages.scrape import run_scrape
 from lies.etl.stages.write import run_write
@@ -33,7 +33,6 @@ def _wiki(tmp_path: Path) -> Wiki:
 def _collection(tmp_path: Path) -> Collection:
     return Collection(
         name="cpython",
-        path=tmp_path / "raw" / "cpython",
         source="https://example.com",
         tags=[],
         scraper_cmd=None,
@@ -374,7 +373,6 @@ def test_scrape_uses_bespoke_scraper_via_scraper_cmd(tmp_path: Path) -> None:
     try:
         c = Collection(
             name="bespoke",
-            path=tmp_path / "raw" / "bespoke",
             source="",
             tags=[],
             scraper_cmd=f"{mod_path}:SCRAPER",
@@ -399,7 +397,6 @@ def test_scrape_scraper_cmd_import_failure_raises_scraper_unavailable(tmp_path: 
 
     c = Collection(
         name="missing",
-        path=tmp_path,
         source="",
         tags=[],
         scraper_cmd="nonexistent.module:thing",
@@ -422,7 +419,7 @@ def test_run_write_invokes_qmd_refresh_update_and_embed(
     calls in order: collection_add_or_update, qmd_update, qmd_embed. Each is
     wrapped in try/except so an individual failure does not abort the run.
     """
-    from lies.collections.record import Collection
+    from lies.library.record import LibraryCollectionConfig as Collection
     from lies.etl.stages.write import run_write
     from lies.wiki.wiki import Wiki
 
@@ -439,7 +436,6 @@ def test_run_write_invokes_qmd_refresh_update_and_embed(
 
     coll = Collection(
         name="t",
-        path=tmp_path / "raw" / "t",
         source="https://example.com",
         tags=[],
         scraper_cmd=None,

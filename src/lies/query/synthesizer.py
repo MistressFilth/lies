@@ -27,7 +27,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal, cast
 
-from lies.collections.record import Collection
+from lies.library.record import LibraryCollectionConfig as Collection
 from lies.library.registry import LibraryCollectionMeta
 from lies.qmd.cli import qmd_query
 from lies.query.index_parser import parse_index_links
@@ -854,19 +854,16 @@ def _library_collection_configs() -> list[Collection]:
 
     Returns an empty list when the library has not been initialized.
     """
-    from lies.library.paths import Library
     from lies.library.registry import library_collection_metas
 
-    root = Library.open().collections_root
     metas = list(library_collection_metas())
     out: list[Collection] = []
     for meta in metas:
         out.append(
             Collection(
                 name=meta.name,
-                path=root / meta.name,
                 source="",
-                tags=list(meta.tags),
+                tags=meta.tags,
                 scraper_cmd=None,
                 doc_path=None,
                 mapper_model=None,
