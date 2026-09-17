@@ -8,12 +8,12 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from lies.collections.errors import (
+from lies.memory.models import WikiCollectionRef
+from lies.wiki.registry import Registry
+from lies.wiki.registry_errors import (
     RegistryCorrupt,
     RegistryVersionUnsupported,
 )
-from lies.collections.registry import Registry
-from lies.memory.models import WikiCollectionRef
 from tests.conftest import make_wiki
 
 if TYPE_CHECKING:
@@ -143,7 +143,7 @@ def test_save_cleans_temp_on_failure(tmp_path: Path, monkeypatch) -> None:
         "os.replace",
         lambda *_a, **_k: (_ for _ in ()).throw(OSError("boom")),
     )
-    from lies.collections.errors import RegistryWriteFailed
+    from lies.wiki.registry_errors import RegistryWriteFailed
 
     with pytest.raises(RegistryWriteFailed):
         Registry.save(wiki, Registry(collections={"x": _ref("x")}))

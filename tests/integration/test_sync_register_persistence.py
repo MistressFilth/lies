@@ -1,9 +1,9 @@
 """Integration: registry survives across process boundaries."""
 
 # ruff: noqa: I001  Import order is load-bearing: ``WikiMemoryService`` is imported first so the
-# lies.memory package finishes loading before ``lies.collections.registry`` triggers the
-# package's __init__; otherwise the lies.collections -> lies.memory chain races the
-# lies.memory -> lies.collections reentry.
+# lies.memory package finishes loading before ``lies.wiki.registry`` triggers the
+# package's __init__; otherwise the lies.wiki -> lies.memory chain races the
+# lies.memory -> lies.wiki reentry.
 from __future__ import annotations
 
 import subprocess
@@ -12,7 +12,7 @@ import textwrap
 from pathlib import Path, PurePosixPath
 
 from lies.memory.service import WikiMemoryService  # noqa: F401 - cycle-break; see module-level comment
-from lies.collections.registry import Registry
+from lies.wiki.registry import Registry
 from lies.memory.models import WikiCollectionRef
 from tests.conftest import make_wiki
 

@@ -586,9 +586,9 @@ def test_is_registered_false_for_unknown() -> None:
 
 
 def test_init_hydrates_registered_from_disk(tmp_path) -> None:
-    from lies.collections.registry import Registry
     from lies.memory.models import WikiCollectionRef
     from lies.memory.service import WikiMemoryService
+    from lies.wiki.registry import Registry
 
     wiki = make_wiki(name="hyd", data_root=tmp_path / "wiki")
     wiki.registry_path.parent.mkdir(parents=True, exist_ok=True)
@@ -615,9 +615,9 @@ def test_init_hydrates_registered_from_disk(tmp_path) -> None:
 def test_init_filters_stale_entries(tmp_path) -> None:
     from pathlib import PurePosixPath
 
-    from lies.collections.registry import Registry
     from lies.memory.models import WikiCollectionRef
     from lies.memory.service import WikiMemoryService
+    from lies.wiki.registry import Registry
 
     wiki = make_wiki(name="stale", data_root=tmp_path / "wiki")
     wiki.registry_path.parent.mkdir(parents=True, exist_ok=True)
@@ -673,9 +673,9 @@ def test_register_collection_persists_to_disk(tmp_path) -> None:
 def test_register_collection_idempotent_on_disk(tmp_path) -> None:
     from pathlib import PurePosixPath
 
-    from lies.collections.registry import Registry
     from lies.memory.models import WikiCollectionRef
     from lies.memory.service import WikiMemoryService
+    from lies.wiki.registry import Registry
 
     wiki = make_wiki(name="idem", data_root=tmp_path / "wiki")
     wiki.collections_dir.mkdir(parents=True, exist_ok=True)
@@ -697,9 +697,9 @@ def test_register_collection_preserves_other_entries_on_disk(tmp_path) -> None:
     """Read-merge-write union: an in-memory register must not clobber other writers."""
     from pathlib import PurePosixPath
 
-    from lies.collections.registry import Registry
     from lies.memory.models import WikiCollectionRef
     from lies.memory.service import WikiMemoryService
+    from lies.wiki.registry import Registry
 
     wiki = make_wiki(name="union", data_root=tmp_path / "wiki")
     wiki.registry_path.parent.mkdir(parents=True, exist_ok=True)

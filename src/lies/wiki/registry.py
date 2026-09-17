@@ -29,11 +29,11 @@ import sys
 from dataclasses import dataclass
 from typing import Literal
 
-from lies.collections.errors import (
+from lies.memory.models import WikiCollectionRef
+from lies.wiki.registry_errors import (
     RegistryCorrupt,
     RegistryVersionUnsupported,
 )
-from lies.memory.models import WikiCollectionRef
 
 _SUPPORTED_VERSION = 1
 
@@ -103,7 +103,7 @@ class Registry:
         ``os.replace`` and the directory-entry fsync costs at most one
         registration.
         """
-        from lies.collections.errors import RegistryWriteFailed
+        from lies.wiki.registry_errors import RegistryWriteFailed
 
         path = wiki.registry_path
         tmp = path.with_suffix(path.suffix + ".tmp")
