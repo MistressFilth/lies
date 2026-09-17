@@ -20,9 +20,9 @@ from typing import TYPE_CHECKING
 
 from lies.builders.base import REGISTRY
 from lies.builders.errors import BuilderError
-from lies.collections.record import Collection
 from lies.etl.normalize import format_dispatch, obsidian
 from lies.etl.normalize.format_dispatch import UnknownFormatError
+from lies.library.record import LibraryCollectionConfig as Collection
 from lies.scrapers.base import ParsedDoc
 from lies.wiki.wiki import Wiki
 
@@ -88,7 +88,8 @@ def run_normalize(wiki: Wiki, collection: Collection, docs: list[ParsedDoc]) -> 
                     else:
                         _materialize(workspace, doc.source_format, doc.content)
                     built = REGISTRY.resolve(doc.source_format).build(
-                        workspace, collection=collection
+                        workspace,
+                        collection=collection,  # ty: ignore[invalid-argument-type]
                     )
                 if not built:
                     quarantined.append((doc.path, "builder produced no docs"))

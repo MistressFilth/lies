@@ -23,7 +23,7 @@ runner = CliRunner()
 
 @pytest.fixture
 def wiki_with_collection(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Wiki:
-    """Wiki + library + one collection YAML, fully hermetic under tmp_path."""
+    """Wiki + library + one collection config, fully hermetic under tmp_path."""
     name = "synccli"
     monkeypatch.setenv("LIES_WIKI_NAME", name)
     monkeypatch.setenv("LIES_XDG_DATA_HOME", str(tmp_path / "data"))
@@ -40,9 +40,16 @@ def wiki_with_collection(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Wik
         runtime_root=xdg.runtime_dir_for(name),
     )
     wiki.collections_dir.mkdir(parents=True, exist_ok=True)
-    (wiki.collections_dir / "alpha.yaml").write_text(
+    # Library under the same XDG_DATA_HOME; the helper opens it via
+    # ``Library.open()`` which honours the env override.
+    lib = Library.open()
+    lib.git_root.mkdir(parents=True, exist_ok=True)
+    # ``sync_helper.collection_names`` (Task 4) reads from the library
+    # registry, not the wiki YAML dir. Seed the library-side config so
+    # the CLI's ``lies sync`` (multi-collection mode) discovers ``alpha``.
+    (lib.collections_root / "alpha").mkdir(parents=True, exist_ok=True)
+    (lib.collections_root / "alpha" / "config.yaml").write_text(
         "name: alpha\n"
-        "path: raw/alpha\n"
         "source: https://example.com/alpha\n"
         "tags: []\n"
         "version: '1'\n"
@@ -50,10 +57,6 @@ def wiki_with_collection(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Wik
         "updated_at: 2026-01-01T00:00:00\n",
         encoding="utf-8",
     )
-    # Library under the same XDG_DATA_HOME; the helper opens it via
-    # ``Library.open()`` which honours the env override.
-    lib = Library.open()
-    lib.git_root.mkdir(parents=True, exist_ok=True)
     return wiki
 
 
@@ -103,10 +106,12 @@ def test_sync_aggregates_errors_across_collections(
     wiki_with_collection: Wiki, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Per-collection errors aggregate across the multi-collection run."""
-    # Seed a second collection YAML.
-    (wiki_with_collection.collections_dir / "beta.yaml").write_text(
+    # Seed a second collection in the library registry (Task 4 reads
+    # multi-collection mode from the library, not the wiki YAML dir).
+    lib = Library.open()
+    (lib.collections_root / "beta").mkdir(parents=True, exist_ok=True)
+    (lib.collections_root / "beta" / "config.yaml").write_text(
         "name: beta\n"
-        "path: raw/beta\n"
         "source: https://example.com/beta\n"
         "tags: []\n"
         "version: '1'\n"

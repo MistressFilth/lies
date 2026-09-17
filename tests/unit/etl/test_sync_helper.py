@@ -104,11 +104,22 @@ def _stub_wiki(fixture_lib: Library):
 
 
 def _seed_collection(wiki, *, name: str = "claude") -> None:
-    """Drop a minimal collection YAML that ``load_collection`` can read."""
-    wiki.collections_dir.mkdir(parents=True, exist_ok=True)
-    (wiki.collections_dir / f"{name}.yaml").write_text(
+    """Drop a minimal library collection config that ``load_config`` can read.
+
+    ``sync_helper.sync_collection`` now reads the collection's source
+    from the library singleton at
+    ``<library>/collections/<slug>/config.yaml`` (not the wiki's
+    per-collection YAML). Seed the library location so the test helper
+    continues to exercise the same code path.
+    """
+    from datetime import datetime
+
+    from lies.library.config_io import config_path_for
+
+    config_path = config_path_for(name)
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(
         "name: {name}\n"
-        "path: raw/{name}\n"
         "source: https://example.com/{name}\n"
         "tags: []\n"
         "version: '1'\n"
@@ -116,6 +127,12 @@ def _seed_collection(wiki, *, name: str = "claude") -> None:
         "updated_at: 2026-01-01T00:00:00\n".format(name=name),
         encoding="utf-8",
     )
+    # Suppress unused-binding: ``wiki`` is part of the helper's signature
+    # for backward compatibility with callers that still pass it (the
+    # wiki's data_root is the flock anchor, but the collection config
+    # itself is library-scoped). Keeping the parameter keeps the test
+    # call sites unchanged.
+    del wiki, datetime
 
 
 class _StaticFetcher:

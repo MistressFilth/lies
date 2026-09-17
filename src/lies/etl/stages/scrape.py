@@ -16,7 +16,7 @@ import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from lies.collections.record import Collection
+from lies.library.record import LibraryCollectionConfig as Collection
 from lies.scrapers.base import BaseScraper, pick_scraper
 from lies.scrapers.errors import ScraperUnavailable
 from lies.wiki.wiki import Wiki

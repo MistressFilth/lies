@@ -24,8 +24,8 @@ import sys
 from typing import TYPE_CHECKING
 
 from lies.collections.hash_manifest import HashManifest
-from lies.collections.record import Collection
 from lies.etl.quarantine import quarantine as move_to_poison
+from lies.library.record import LibraryCollectionConfig as Collection
 from lies.memory.catalog import open_catalog, upsert_pages
 from lies.memory.catalog_models import CatalogPage
 from lies.qmd.cli import qmd_collection_add_or_update, qmd_embed, qmd_update
@@ -116,7 +116,7 @@ def run_write(
             # commit already landed and is authoritative.
             try:
                 qmd_collection_add_or_update(
-                    wiki.data_root, wiki.wiki_dir / collection.name, collection.qmd_name()
+                    wiki.data_root, wiki.wiki_dir / collection.name, collection.name
                 )
             except Exception as exc:  # noqa: BLE001 - qmd is derived; failures must not roll back the wiki commit
                 print(
@@ -133,7 +133,7 @@ def run_write(
                     file=sys.stderr,
                 )
             try:
-                qmd_embed(wiki.data_root, collection.qmd_name())
+                qmd_embed(wiki.data_root, collection.name)
             except Exception as exc:  # noqa: BLE001 - qmd is derived; failures must not roll back the wiki commit
                 print(
                     f"warning: qmd embed failed for {collection.name!r}: {exc}; "

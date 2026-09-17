@@ -107,7 +107,6 @@ def test_full_pipeline_idempotent(
 
     cfg = {
         "name": "sample",
-        "path": "./raw/sample",
         "source": "https://example.com/llms-full.txt",
         "tags": ["test"],
         "scraper_cmd": None,
@@ -118,10 +117,15 @@ def test_full_pipeline_idempotent(
         "created_at": "2026-08-01T00:00:00Z",
         "updated_at": "2026-08-01T00:00:00Z",
     }
+    # ``sync_helper.sync_collection`` (Task 4) reads the collection's
+    # source from the library singleton at
+    # ``<library>/collections/<slug>/config.yaml``. Drop the YAML there
+    # so the CLI's ``sync <name>`` resolves through ``load_config``
+    # instead of the legacy wiki-side ``load_collection``.
+    # ``config_io.load_config`` ignores ``path`` if it sneaks in, so the
+    # legacy field is harmless; we drop it so the seeded yaml matches
+    # the post-Phase-2 library schema.
     (wiki.collections_dir / "sample.yaml").write_text(yaml.safe_dump(cfg), encoding="utf-8")
-    (wiki.data_root / ".lies" / "collections" / "sample.yaml").write_text(
-        yaml.safe_dump(cfg), encoding="utf-8"
-    )
 
     canned = (
         b"# Doc 1\n"
@@ -202,6 +206,16 @@ def test_full_pipeline_idempotent(
         ["git", "-C", str(lib.git_root), "commit", "-m", "init"],
         check=True,
         capture_output=True,
+    )
+
+    # ``sync_helper.sync_collection`` now reads the collection config
+    # from the library singleton at
+    # ``<library>/collections/<slug>/config.yaml`` (Task 4). Seed the
+    # library-side config so the CLI's ``sync <name>`` resolves through
+    # ``load_config`` instead of the legacy wiki-side ``load_collection``.
+    (lib.collections_root / "sample").mkdir(parents=True, exist_ok=True)
+    (lib.collections_root / "sample" / "config.yaml").write_text(
+        yaml.safe_dump(cfg), encoding="utf-8"
     )
 
     with mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
