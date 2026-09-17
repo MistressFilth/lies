@@ -13,7 +13,10 @@ from typing import Annotated
 import typer
 
 from lies.cli import app
-from lies.library.errors import WizardRequiresTTY as _WikiLibraryWizardRequiresTTY
+from lies.library.errors import (
+    WikiLayoutInitFailed,
+    WizardRequiresTTY as _WikiLibraryWizardRequiresTTY,
+)
 
 __all__ = ("sync", "reindex")
 
@@ -71,17 +74,8 @@ def _ensure_wiki(name: str):
     try:
         _init_wiki_internal(wiki)
     except Exception as exc:
-        raise _WikiLayoutInitFailed(name, exc) from exc
+        raise WikiLayoutInitFailed(name, exc) from exc
     return resolve_wiki(name)
-
-
-class _WikiLayoutInitFailed(Exception):
-    """WikiLayout.init() raised during auto-init (private to this module)."""
-
-    def __init__(self, wiki_name: str, cause: BaseException) -> None:
-        super().__init__(f"failed to auto-init wiki {wiki_name!r}: {cause}")
-        self.wiki_name = wiki_name
-        self.__cause__ = cause
 
 
 class _WikiCollectionMismatch(Exception):
@@ -206,7 +200,7 @@ def sync(
 
     try:
         wiki = _ensure_wiki(name or get_wiki_name())
-    except _WikiLayoutInitFailed as exc:
+    except WikiLayoutInitFailed as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=5)
     if acquire_heartbeat(wiki, wait=wait, fail_busy=fail_busy) is None:
