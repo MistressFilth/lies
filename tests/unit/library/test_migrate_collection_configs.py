@@ -2,7 +2,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+from typer.testing import CliRunner
 
+from lies.cli import app
 from lies.library.config_io import load_config
 from lies.library.migrate_collection_configs import (
     MigrationConflictError,
@@ -101,3 +103,29 @@ def test_migration_idempotent(library: Library, wikis_root: Path) -> None:
     # Second run after first moved: nothing to do, no error.
     plan_migration(wikis_root)
     apply_migration(plan_migration(wikis_root))
+
+
+def test_cli_duplicate_surfaces_paths(
+    library: Library, wikis_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Operator-actionable output: each duplicate-slug conflict prints
+    one line listing all colliding source paths BEFORE the command exits 2.
+    """
+    from lies import xdg
+
+    monkeypatch.setattr(xdg, "config_home", lambda: wikis_root.parent)
+
+    a = wikis_root / "wiki_a"
+    b = wikis_root / "wiki_b"
+    a.mkdir()
+    b.mkdir()
+    _write_yaml(a / "collections" / "llms.yaml", name="llms")
+    _write_yaml(b / "collections" / "llms.yaml", name="llms")
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["migrate-collection-configs"])
+
+    assert result.exit_code == 2, result.output
+    assert "duplicate: llms" in result.output
+    assert str(a / "collections" / "llms.yaml") in result.output
+    assert str(b / "collections" / "llms.yaml") in result.output

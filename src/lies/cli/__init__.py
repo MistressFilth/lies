@@ -173,6 +173,8 @@ def migrate_collection_configs(
     plan = _migrate_cfg.plan_migration()
     typer.echo(f"plan: {len(plan.moves)} YAMLs to move; {len(plan.duplicates)} duplicate slugs")
     if plan.duplicates:
+        for slug, paths in plan.duplicates:
+            typer.echo(f"duplicate: {slug} in {', '.join(str(p) for p in paths)}")
         raise typer.Exit(code=2)
     if dry_run:
         typer.echo("(dry-run; pass --apply to mutate)")
