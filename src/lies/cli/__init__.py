@@ -171,15 +171,35 @@ def migrate_collection_configs(
 ) -> None:
     """One-shot migration script. See spec section 'Migration procedure'."""
     plan = _migrate_cfg.plan_migration()
-    typer.echo(f"plan: {len(plan.moves)} YAMLs to move; {len(plan.duplicates)} duplicate slugs")
+    typer.echo(
+        f"plan: {len(plan.moves)} YAMLs to move; "
+        f"{len(plan.duplicates)} duplicate slugs; "
+        f"{len(plan.library_collisions)} library collisions"
+    )
     if plan.duplicates:
         for slug, paths in plan.duplicates:
             typer.echo(f"duplicate: {slug} in {', '.join(str(p) for p in paths)}")
         raise typer.Exit(code=2)
+    if plan.library_collisions:
+        for slug, target in plan.library_collisions:
+            typer.echo(f"collision: {slug} already at {target}")
+        if not force:
+            typer.echo(
+                "(library collisions present; pass --force to overwrite, "
+                "or remove the library entries and re-run)",
+                err=True,
+            )
+            raise typer.Exit(code=2)
     if dry_run:
+        for source, target in plan.moves:
+            typer.echo(f"would move {source} -> {target}")
         typer.echo("(dry-run; pass --apply to mutate)")
         return
-    _migrate_cfg.apply_migration(plan, force=force)
+    try:
+        _migrate_cfg.apply_migration(plan, force=force)
+    except _migrate_cfg.MigrationConflictError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
     typer.echo("done.")
 
 

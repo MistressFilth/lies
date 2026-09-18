@@ -129,3 +129,118 @@ def test_cli_duplicate_surfaces_paths(
     assert "duplicate: llms" in result.output
     assert str(a / "collections" / "llms.yaml") in result.output
     assert str(b / "collections" / "llms.yaml") in result.output
+
+
+def test_plan_surfaces_library_collision(library: Library, wikis_root: Path) -> None:
+    """A pre-existing library config under the same slug is a pre-flight
+    collision; partial-state re-run surfaces the same conflict before any
+    write instead of raising ``CollectionAlreadyExists`` mid-Phase-2.
+    """
+    from lies.library.config_io import save_config
+    from lies.library.record import LibraryCollectionConfig
+
+    wiki_dir = wikis_root / "default"
+    wiki_dir.mkdir()
+    _write_yaml(wiki_dir / "collections" / "claude_code.yaml")
+    # Seed the library with the same slug — simulates a prior partial run.
+    save_config(
+        LibraryCollectionConfig(
+            name="claude_code",
+            source="https://other.example.com/llms.txt",
+            tags=(),
+            scraper_cmd=None,
+            doc_path=None,
+            mapper_model=None,
+            language=None,
+            version="1",
+            created_at=datetime(2026, 9, 13, tzinfo=UTC),
+            updated_at=datetime(2026, 9, 13, tzinfo=UTC),
+            config={},
+        )
+    )
+
+    plan = plan_migration(wikis_root)
+    assert plan.duplicates == ()
+    assert len(plan.library_collisions) == 1
+    slug, target = plan.library_collisions[0]
+    assert slug == "claude_code"
+    assert target.exists()
+
+
+def test_apply_aborts_on_library_collision_without_force(
+    library: Library, wikis_root: Path
+) -> None:
+    wiki_dir = wikis_root / "default"
+    wiki_dir.mkdir()
+    _write_yaml(wiki_dir / "collections" / "claude_code.yaml")
+    # Pre-populate the library with the same slug.
+    from lies.library.config_io import save_config
+    from lies.library.record import LibraryCollectionConfig
+
+    save_config(
+        LibraryCollectionConfig(
+            name="claude_code",
+            source="https://other.example.com/llms.txt",
+            tags=(),
+            scraper_cmd=None,
+            doc_path=None,
+            mapper_model=None,
+            language=None,
+            version="1",
+            created_at=datetime(2026, 9, 13, tzinfo=UTC),
+            updated_at=datetime(2026, 9, 13, tzinfo=UTC),
+            config={},
+        )
+    )
+
+    with pytest.raises(MigrationConflictError):
+        apply_migration(plan_migration(wikis_root))
+    # Source YAML untouched because apply aborted pre-write.
+    assert (wiki_dir / "collections" / "claude_code.yaml").exists()
+
+
+def test_apply_force_overwrites_library_collision(library: Library, wikis_root: Path) -> None:
+    """`--force` overwrites a colliding library config; the wiki YAML
+    is consumed and the library record now reflects the wiki source.
+    """
+    wiki_dir = wikis_root / "default"
+    wiki_dir.mkdir()
+    _write_yaml(wiki_dir / "collections" / "claude_code.yaml")
+    from lies.library.config_io import save_config
+    from lies.library.record import LibraryCollectionConfig
+
+    save_config(
+        LibraryCollectionConfig(
+            name="claude_code",
+            source="https://other.example.com/llms.txt",
+            tags=(),
+            scraper_cmd=None,
+            doc_path=None,
+            mapper_model=None,
+            language=None,
+            version="1",
+            created_at=datetime(2026, 9, 13, tzinfo=UTC),
+            updated_at=datetime(2026, 9, 13, tzinfo=UTC),
+            config={},
+        )
+    )
+
+    apply_migration(plan_migration(wikis_root), force=True)
+    assert load_config("claude_code").source == "https://example.com/llms.txt"
+    assert not (wiki_dir / "collections" / "claude_code.yaml").exists()
+
+
+def test_apply_skips_vanished_source(
+    library: Library, wikis_root: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A wiki YAML deleted between plan and apply is logged and skipped."""
+    wiki_dir = wikis_root / "default"
+    wiki_dir.mkdir()
+    src = wiki_dir / "collections" / "claude_code.yaml"
+    _write_yaml(src)
+    plan = plan_migration(wikis_root)
+    src.unlink()  # source vanished between plan and apply
+    with caplog.at_level("INFO", logger="lies.library.migrate_collection_configs"):
+        apply_migration(plan)
+    # No error raised; library untouched; no crash.
+    assert not src.exists()
