@@ -5,7 +5,7 @@ from typer.testing import CliRunner
 
 from lies.cli import app
 from lies.library.collections_cli import library_collections_app
-from lies.library.config_io import save_config
+from lies.library.config_io import load_config, save_config
 from lies.library.paths import Library
 from lies.library.record import LibraryCollectionConfig
 
@@ -50,3 +50,97 @@ def test_list_emits_names(library: Library) -> None:
     assert result.exit_code == 0
     assert "alpha" in result.stdout
     assert "beta" in result.stdout
+
+
+def test_modify_dotted_key_writes_into_config_dict(library: Library) -> None:
+    """`--set config.<subkey>=value` (Liquid/Sphinx builder knobs) round-trips.
+
+    Regression: c828a18 documented dotted keys in README but the new CLI
+    rejected them. Restore the legacy dotted-key path so
+    `config.render_cmd`, `config.sphinx_excludes`, etc. are editable again.
+    """
+    save_config(_cfg("liquid"))
+    runner = CliRunner()
+    app.add_typer(library_collections_app, name="library")
+    result = runner.invoke(
+        app,
+        [
+            "library",
+            "modify",
+            "liquid",
+            "--set",
+            "config.render_cmd=liquid_renderer:render",
+            "--set",
+            "config.preserve_case=true",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    loaded = load_config("liquid")
+    assert loaded.config == {
+        "render_cmd": "liquid_renderer:render",
+        "preserve_case": True,
+    }
+
+
+def test_modify_from_file_missing_path_errors(library: Library, tmp_path) -> None:
+    save_config(_cfg("alpha"))
+    runner = CliRunner()
+    app.add_typer(library_collections_app, name="library")
+    result = runner.invoke(
+        app,
+        ["library", "modify", "alpha", "--from-file", str(tmp_path / "no-such.yaml")],
+    )
+    assert result.exit_code != 0
+    assert "not found" in (result.output or "")
+
+
+def test_modify_from_file_malformed_yaml_errors(library: Library, tmp_path) -> None:
+    save_config(_cfg("alpha"))
+    bad = tmp_path / "bad.yaml"
+    bad.write_text("name: alpha\nsource: [unterminated\n", encoding="utf-8")
+    runner = CliRunner()
+    app.add_typer(library_collections_app, name="library")
+    result = runner.invoke(
+        app,
+        ["library", "modify", "alpha", "--from-file", str(bad)],
+    )
+    assert result.exit_code != 0
+    assert "invalid YAML" in (result.output or "")
+
+
+def test_modify_from_file_null_config_normalizes_to_empty_dict(library: Library, tmp_path) -> None:
+    save_config(_cfg("alpha"))
+    patch = tmp_path / "patch.yaml"
+    # `config:` with no value (parsed as None) must not crash the schema.
+    # Only editable fields go in the patch; name/source come from the
+    # existing record (set by `_seed`).
+    patch.write_text("config:\n", encoding="utf-8")
+    runner = CliRunner()
+    app.add_typer(library_collections_app, name="library")
+    result = runner.invoke(
+        app,
+        ["library", "modify", "alpha", "--from-file", str(patch)],
+    )
+    assert result.exit_code == 0, result.output
+    loaded = load_config("alpha")
+    assert loaded.config == {}
+
+
+def test_modify_set_source_round_trip(library: Library) -> None:
+    """`--set source=URL` writes through; load_config returns the new source."""
+    save_config(_cfg("alpha"))
+    runner = CliRunner()
+    app.add_typer(library_collections_app, name="library")
+    result = runner.invoke(
+        app,
+        [
+            "library",
+            "modify",
+            "alpha",
+            "--set",
+            "source=https://new.example.com/alpha",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    loaded = load_config("alpha")
+    assert loaded.source == "https://new.example.com/alpha"

@@ -129,9 +129,18 @@ def modify_cmd(
     if from_file is not None and set_:
         raise typer.BadParameter("modify accepts --from-file or --set, not both")
     if from_file is not None:
-        payload = yaml.safe_load(from_file.read_text(encoding="utf-8"))
+        if not from_file.exists():
+            raise typer.BadParameter(f"--from-file not found: {from_file}")
+        try:
+            payload = yaml.safe_load(from_file.read_text(encoding="utf-8"))
+        except yaml.YAMLError as exc:
+            raise typer.BadParameter(f"--from-file invalid YAML: {exc}") from exc
         if not isinstance(payload, dict):
             raise typer.BadParameter("--from-file root must be a mapping")
+        # YAML `config:` with no value, or explicit `null`, becomes None;
+        # the schema's default_factory expects `{}`.
+        if "config" in payload and payload["config"] is None:
+            payload["config"] = {}
         for k in payload:
             if k not in editable:
                 raise typer.BadParameter(f"--from-file key {k!r} not editable")
@@ -142,8 +151,18 @@ def modify_cmd(
                 raise typer.BadParameter(f"--set expects KEY=VALUE, got {raw!r}")
             key, value = raw.split("=", 1)
             key, value = key.strip(), value.strip()
+            if key.startswith("config."):
+                subkey = key[len("config.") :]
+                if not subkey:
+                    raise typer.BadParameter(f"--set config. requires a subkey; got {raw!r}")
+                parsed: Any = yaml.safe_load(value)
+                updates.setdefault("config", {})[subkey] = parsed
+                continue
             if key not in editable:
-                raise typer.BadParameter(f"key {key!r} not editable; allowed: {sorted(editable)}")
+                raise typer.BadParameter(
+                    f"key {key!r} not editable; allowed: {sorted(editable)} "
+                    "or dotted keys like 'config.<subkey>'"
+                )
             if key == "tags":
                 updates["tags"] = [p for p in (s.strip() for s in value.split(",")) if p]
             elif key == "doc_path":
