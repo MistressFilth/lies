@@ -14,6 +14,7 @@ import typer
 
 from lies.cli import app
 from lies.library.errors import (
+    CollectionMismatch,
     WikiLayoutInitFailed,
     WizardRequiresTTY as _WikiLibraryWizardRequiresTTY,
 )
@@ -78,24 +79,6 @@ def _ensure_wiki(name: str):
     return resolve_wiki(name)
 
 
-class _WikiCollectionMismatch(Exception):
-    """Existing library collection has a different source than requested.
-
-    Private to this module; mirrors the public :class:`CollectionMismatch`
-    contract from :mod:`lies.library.errors` (with the same
-    ``existing_source`` / ``requested_source`` attributes the sync
-    command prints to stderr on collision).
-    """
-
-    def __init__(self, existing_source: str, requested_source: str) -> None:
-        super().__init__(
-            f"collection source mismatch: existing={existing_source!r}, "
-            f"requested={requested_source!r}"
-        )
-        self.existing_source = existing_source
-        self.requested_source = requested_source
-
-
 def _bootstrap_wiki_collection(
     name: str,
     source: str,
@@ -105,10 +88,9 @@ def _bootstrap_wiki_collection(
     """Idempotently ensure a library-collection config exists for ``name``.
 
     Thin wrapper over :func:`bootstrap_library_collection` that keeps the
-    ``_WikiCollectionMismatch`` / :class:`WizardRequiresTTY` exceptions
-    the CLI's ``sync`` command translates into non-zero exits. The
-    wiki-yaml collection surface is gone post-cutover (Task 8); the
-    sync command bootstraps configs at
+    :class:`WizardRequiresTTY` exception the CLI's ``sync`` command
+    translates into a non-zero exit. The wiki-yaml collection surface is
+    gone post-cutover (Task 8); the sync command bootstraps configs at
     ``<library>/collections/<slug>/config.yaml`` instead.
 
     - config exists + ``source`` matches → return.
@@ -119,18 +101,11 @@ def _bootstrap_wiki_collection(
     """
 
     from lies.library.bootstrap import bootstrap_library_collection
-    from lies.library.errors import CollectionMismatch as _LibraryCollectionMismatch
 
     if wizard and not sys.stdin.isatty():
         raise _WikiLibraryWizardRequiresTTY()
 
-    try:
-        bootstrap_library_collection(name, source, wizard=wizard)
-    except _LibraryCollectionMismatch as exc:
-        raise _WikiCollectionMismatch(
-            existing_source=exc.existing_source,
-            requested_source=exc.requested_source,
-        ) from exc
+    bootstrap_library_collection(name, source, wizard=wizard)
 
 
 @app.command(
@@ -220,7 +195,7 @@ def sync(
                     err=True,
                 )
                 raise typer.Exit(code=4)
-            except _WikiCollectionMismatch as exc:
+            except CollectionMismatch as exc:
                 typer.echo(
                     f"error: collection {collection!r} exists with source "
                     f"{exc.existing_source!r}; requested {exc.requested_source!r}. "

@@ -29,6 +29,7 @@ import sys
 from dataclasses import dataclass
 from typing import Literal
 
+from lies.library.config_io import config_path_for
 from lies.memory.models import WikiCollectionRef
 from lies.wiki.registry_errors import (
     RegistryCorrupt,
@@ -151,14 +152,11 @@ class Registry:
 
         ``wiki`` intentionally untyped: see ``Registry.load``.
         """
-        from lies.library.paths import Library
-
-        library_root = Library.open().collections_root
 
         def _alive(cid: str) -> bool:
             if (wiki.collections_dir / f"{cid}.yaml").exists():
                 return True
-            return (library_root / cid / "config.yaml").exists()
+            return config_path_for(cid).exists()
 
         kept = {cid: ref for cid, ref in registry.collections.items() if _alive(cid)}
         return Registry(collections=kept)
