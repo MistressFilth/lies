@@ -290,6 +290,20 @@ exclude_tags=...)`.
 
 The format is also exposed on the MCP `query` response via the `format` field (`"md"`, `"table"`, or `"marp"`). Synthesis pages gain a `render_format` frontmatter field recording the body shape for future curators.
 
+### `lies wiki provenance`
+
+Lists every synthesised page's `derived_from` set, one row per page by default. Reads from the sqlite catalog — read-only; does not modify the wiki.
+
+```bash
+lies wiki provenance                       # TSV (slug, title, type, source_pkg, updated, csv(sources))
+lies wiki provenance --json                # JSON array of objects (matches `lies catalog dump --json`)
+lies wiki provenance --page <slug>         # drill in to one page; always JSON
+lies wiki provenance --page <slug> --json  # explicit JSON
+lies wiki provenance --orphan              # only pages whose derived_from cites a missing slug
+```
+
+Exit codes: `0` on success (including empty result), `2` when `--page <slug>` does not resolve or the slug is invalid. Errors print to stderr; JSON output stays machine-readable on stdout.
+
 ## Advanced
 
 ### Library collections
