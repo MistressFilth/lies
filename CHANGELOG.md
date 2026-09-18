@@ -17,7 +17,7 @@ All notable changes to LIES are documented here. The format follows
 ### Fixed
 - qmd daemon staleness between `Orchestrator` runs is now reaped before the first search; closes the silent-failure mode where a stale-but-serving daemon returned pre-write results. The check runs at `QmdCapability.as_capability` after the TCP probe, before the native toolset is advertised.
 
-## [1.0.0] - 2026-09-17
+## [0.28.0] - 2026-09-17
 
 ### Changed (breaking)
 - **BREAKING:** Collection configurations moved from per-wiki `~/.config/lies/<wiki>/collections/<slug>.yaml` to library-resident `~/.local/share/lies/library/collections/<slug>/config.yaml`. Collections are now library-global; wikis no longer bind collections.
@@ -33,7 +33,7 @@ All notable changes to LIES are documented here. The format follows
 - `bootstrap_library_collection()` idempotent helper (replaces wiki-side bootstrap).
 
 ### Migration
-Run `uv tool upgrade lies` to 1.0.0, then `lies migrate-collection-configs --dry-run` to preview and `lies migrate-collection-configs --apply` to relocate the YAMLs.
+Run `uv tool upgrade lies` to 0.28.0, then `lies migrate-collection-configs --dry-run` to preview and `lies migrate-collection-configs --apply` to relocate the YAMLs.
 
 ## [0.26.0] - 2026-09-15
 

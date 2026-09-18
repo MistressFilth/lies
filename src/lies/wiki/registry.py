@@ -139,8 +139,8 @@ class Registry:
     def filter_stale(registry: Registry, wiki) -> Registry:
         """Drop entries whose backing collection config is missing.
 
-        Pre-1.0.0 collections lived at
-        ``wiki.collections_dir / f"{cid}.yaml"``; 1.0.0+ stores them
+        Pre-0.28.0 collections lived at
+        ``wiki.collections_dir / f"{cid}.yaml"``; 0.28.0+ stores them
         under the library at
         ``<Library.collections_root> / cid / "config.yaml"``. The
         dual check keeps a registry entry alive if either location

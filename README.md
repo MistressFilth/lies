@@ -333,7 +333,7 @@ uv run lies library where htmx
 
 ### Migrating from per-wiki configs
 
-LIES 1.0.0 moves collection configs out of per-wiki YAMLs and into the
+LIES 0.28.0 moves collection configs out of per-wiki YAMLs and into the
 library. The migration is a one-shot, atomic-per-collection rename:
 
 ```bash
@@ -353,9 +353,9 @@ library untouched. A wiki without any per-wiki collection YAMLs is
 a no-op success. Re-runs are idempotent; already-migrated collections
 are skipped.
 
-**Upgrading:** run `uv tool upgrade lies` to 1.0.0 first, then run
+**Upgrading:** run `uv tool upgrade lies` to 0.28.0 first, then run
 the migration above for each install before invoking any
-`lies library` command — fresh installs on 1.0.0+ have no per-wiki
+`lies library` command — fresh installs on 0.28.0+ have no per-wiki
 YAMLs and need no migration.
 
 ### Manual authoring (advanced)
@@ -821,7 +821,7 @@ Commands:
   library (`$XDG_DATA_HOME/lies/library/collections/<slug>/config.yaml`).
   `--dry-run` previews the move list; `--apply` performs one atomic
   rename per collection and updates any wiki-side references. Run this
-  after upgrading to 1.0.0 to lift your existing wikis onto the
+  after upgrading to 0.28.0 to lift your existing wikis onto the
   library-resident layout. See "Migrating from per-wiki configs"
   below.
 
