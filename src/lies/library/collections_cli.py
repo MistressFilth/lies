@@ -7,6 +7,7 @@ same verbs (list / show / new / modify / delete / enrich-tags) plus a
 
 from __future__ import annotations
 
+import contextlib
 import json
 from datetime import UTC, datetime
 from pathlib import Path
@@ -80,10 +81,13 @@ def new_cmd(
     *,
     source: Annotated[str | None, typer.Option(help="Source URL or path.")] = None,
     prompt: Annotated[str | None, typer.Option(help="Prompt file (wizard mode).")] = None,
-    apply: Annotated[bool, typer.Option("--apply/--no-apply", help="Persist to disk.")] = False,
     tag: Annotated[list[str] | None, typer.Option("--tag", help="Tag (repeatable).")] = None,
 ) -> None:
-    """Create a new collection config."""
+    """Create a new collection config.
+
+    The config is always persisted to disk on success; ``bootstrap_library_collection``
+    is the single source of truth for "did this get written?".
+    """
     from lies.library.bootstrap import bootstrap_library_collection
 
     if not source:
@@ -202,19 +206,25 @@ def delete_cmd(
         typer.echo("aborted")
         raise typer.Exit(code=0)
     path.unlink()
+    # Remove the now-empty per-slug directory so a future `library new` does
+    # not collide with the ghost container.
+    parent = path.parent
+    with contextlib.suppress(OSError):
+        if parent.is_dir() and not any(parent.iterdir()):
+            parent.rmdir()
     typer.echo(f"deleted {path}")
 
 
 @library_collections_app.command("enrich-tags")
-def enrich_tags_cmd(
-    apply: Annotated[bool, typer.Option("--apply/--no-apply")] = False,
-) -> None:
-    """Print hints for collections with empty tags."""
+def enrich_tags_cmd() -> None:
+    """Print hints for collections with empty tags.
+
+    Dry-run only; the operator runs the printed ``lies library modify``
+    commands by hand. Reserved for a future auto-apply.
+    """
     from lies.library.registry import library_collection_records
 
     for rec in library_collection_records():
         if rec.tags:
             continue
         typer.echo(f"lies library modify {rec.name} --set tags=<comma-separated>")
-    if apply:
-        raise typer.BadParameter("enrich-tags does not auto-apply; run the printed commands")
