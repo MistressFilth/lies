@@ -27,15 +27,23 @@ import typer
 __all__ = ("wiki_app",)
 
 
+_FORBIDDEN_SLUG_CHARS = ("\t", "\n", "\r", "\x0b", "\x0c")
+
+
 def _validate_page_slug(raw: str) -> str:
     """Trim + reject empty / whitespace-only; return the cleaned slug.
 
     Slashes ARE allowed because catalog slugs are path-shaped
     (``claude-code/concepts/hooks``). Whitespace inside a slug is not
     legal in the catalog, so any embedded whitespace is rejected.
+    Newline / tab / CR are also rejected: they break the TSV renderer
+    (column alignment) and have no legitimate use in a slug.
     """
     cleaned = raw.strip()
     if not cleaned or any(c.isspace() for c in cleaned):
+        typer.echo(f"error: invalid page slug: {raw!r}", err=True)
+        raise typer.Exit(code=2)
+    if any(c in cleaned for c in _FORBIDDEN_SLUG_CHARS):
         typer.echo(f"error: invalid page slug: {raw!r}", err=True)
         raise typer.Exit(code=2)
     return cleaned
@@ -82,7 +90,7 @@ def provenance(
 ) -> None:
     """List every page's ``derived_from`` list (default: synthesised pages only)."""
     from lies.cli import resolve_wiki
-    from lies.memory.catalog import open_catalog
+    from lies.memory.catalog import open_catalog, slug_exists
     from lies.memory.provenance import (
         list_provenance_pages,
         render_provenance_json,
@@ -94,15 +102,14 @@ def provenance(
 
     conn = open_catalog(wiki)
     try:
+        if cleaned_page is not None and not slug_exists(conn, cleaned_page):
+            # ``list_provenance_pages`` only returns rows with non-empty
+            # ``derived_from``; a source page (no derived_from) would
+            # otherwise look identical to a missing slug. Use the bare
+            # catalog existence check so source pages are addressable.
+            typer.echo(f"error: page {cleaned_page} not found", err=True)
+            raise typer.Exit(code=2)
         records = list_provenance_pages(conn, page=cleaned_page, orphan=orphan)
-        if cleaned_page is not None and not records:
-            # Distinguish "slug doesn't exist" from "slug exists but
-            # orphan filter excluded it". Look up the slug directly.
-            any_match = list_provenance_pages(conn, page=cleaned_page, orphan=False)
-            if not any_match:
-                typer.echo(f"error: page {cleaned_page} not found", err=True)
-                raise typer.Exit(code=2)
-            # Page exists but didn't match the orphan filter — return [].
     finally:
         conn.close()
 

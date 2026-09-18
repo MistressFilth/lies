@@ -39,10 +39,16 @@ def list_provenance_pages(
     """Return every page with non-empty ``derived_from``.
 
     ``page`` restricts to a single slug (0–1 records).
-    ``orphan=True`` filters to rows where at least one cited slugs
-    does not resolve to any row in ``conn`` (symmetric with the
-    ``dangling_derived_from`` lint category at
-    ``src/lies/orchestrator.py:336``).
+    ``orphan=True`` filters to rows where at least one cited slug does
+    not resolve to any row in the catalog (i.e. catalog membership only
+    — NOT disk existence). The ``dangling_derived_from`` lint in
+    ``src/lies/orchestrator.py`` instead checks disk existence; the
+    two definitions can diverge when the catalog is stale, when a
+    cited slug points at a system file (``index.md`` / ``log.md`` /
+    ``schema.md`` / ``overview.md`` / ``lint-report.md`` are excluded
+    from the catalog walk), or after a ``reconcile`` that removed a
+    stale row. Run ``lies catalog reconcile`` first if you need
+    lint-style disk parity.
 
     Catalog storage represents ``derived_from`` as a comma-joined
     string; this function splits + filters empty fragments so the
@@ -79,6 +85,14 @@ def render_provenance_tsv(records: Iterable[ProvenanceRecord]) -> str:
     Columns: ``slug\ttitle\ttype\tsource_pkg\tupdated\tcsv(sources)``.
     The trailing comma-joined ``derived_from`` mirrors the catalog's
     storage shape and is awk/grep-friendly.
+
+    The CLI rejects slugs containing ``\\t`` / ``\\n`` / ``\\r`` /
+    ``\\x0b`` / ``\\x0c`` at validation time, so the renderer can
+    safely ``\\t``-join raw fields without escaping. Round-tripping
+    caller-supplied ``ProvenanceRecord`` objects directly (e.g. from
+    tests or future MCP surfaces) does NOT enforce the same
+    constraint — callers that bypass ``_validate_page_slug`` are
+    responsible for sanitising their inputs.
     """
     lines: list[str] = []
     for rec in records:
@@ -101,9 +115,12 @@ def render_provenance_tsv(records: Iterable[ProvenanceRecord]) -> str:
 def render_provenance_json(records: Iterable[ProvenanceRecord]) -> str:
     """Render records as a JSON array of objects.
 
-    Shape matches ``lies catalog dump --json`` precedent;
-    ``derived_from`` is a JSON array (not the comma-joined storage
-    string), mirroring the in-memory tuple.
+    Shape is a subset of ``lies catalog dump --json``: provenance
+    surfaces only the columns a reader needs to trace a synthesis
+    back to its sources (``slug``, ``title``, ``type``, ``source_pkg``,
+    ``updated``, ``derived_from``); ``section`` and ``hash`` are
+    omitted. ``derived_from`` is a JSON array (not the comma-joined
+    storage string), mirroring the in-memory tuple.
     """
     payload = [
         {

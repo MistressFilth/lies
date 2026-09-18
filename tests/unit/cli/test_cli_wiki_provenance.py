@@ -146,6 +146,60 @@ def test_page_with_slash_passes_validation(runner: CliRunner, wiki: Path) -> Non
     assert "error: page embedded/slash not found" in result.output
 
 
+def test_page_existing_source_page_emits_empty_provenance(runner: CliRunner, wiki: Path) -> None:
+    """Regression: an existing source page (no derived_from) must NOT
+    be reported as 'not found'. ``list_provenance_pages`` only returns
+    rows with non-empty derived_from, so a source page yields an
+    empty array — the CLI distinguishes "exists but not synthesised"
+    from "doesn't exist" by checking catalog membership first.
+    """
+    from lies.memory.catalog import open_catalog, upsert_page
+    from lies.memory.catalog_models import CatalogPage
+
+    class _StubWiki:
+        pass
+
+    w = _StubWiki()
+    w.wiki_dir = wiki
+    conn = open_catalog(w)
+    try:
+        upsert_page(
+            conn,
+            CatalogPage(
+                slug="claude-code/concepts/hooks",
+                title="Hooks",
+                type="concept",
+            ),
+        )
+    finally:
+        conn.close()
+
+    result = runner.invoke(wiki_app, ["--page", "claude-code/concepts/hooks"])
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output) == []
+
+
+def test_page_tab_in_slug_rejected(runner: CliRunner, wiki: Path) -> None:
+    """Tabs in a slug would break the TSV renderer (extra column)."""
+    result = runner.invoke(wiki_app, ["--page", "bad\tslug"])
+    assert result.exit_code == 2
+    assert "invalid page slug" in result.output
+
+
+def test_page_newline_in_slug_rejected(runner: CliRunner, wiki: Path) -> None:
+    """Newlines in a slug would break the TSV renderer (extra row)."""
+    result = runner.invoke(wiki_app, ["--page", "bad\nslug"])
+    assert result.exit_code == 2
+    assert "invalid page slug" in result.output
+
+
+def test_page_carriage_return_in_slug_rejected(runner: CliRunner, wiki: Path) -> None:
+    """CR in a slug would break the TSV renderer (extra row)."""
+    result = runner.invoke(wiki_app, ["--page", "bad\rslug"])
+    assert result.exit_code == 2
+    assert "invalid page slug" in result.output
+
+
 def test_page_empty_after_trim_exits_2(runner: CliRunner, wiki: Path) -> None:
     result = runner.invoke(wiki_app, ["--page", "   "])
     assert result.exit_code == 2

@@ -153,6 +153,99 @@ def test_list_derived_from_is_tuple_not_list(catalog_conn) -> None:
         assert isinstance(r.derived_from, tuple)
 
 
+def test_list_returns_empty_when_catalog_empty(tmp_path: Path) -> None:
+    """Pin: a freshly opened catalog with zero rows yields no records."""
+    from lies.wiki.wiki import Wiki
+
+    data_root = tmp_path / "empty-wiki"
+    wiki_root = data_root / "wiki"
+    wiki_root.mkdir(parents=True)
+    wiki = Wiki(
+        name="empty-wiki",
+        data_root=data_root,
+        config_root=tmp_path / "config",
+        cache_root=tmp_path / "cache",
+        state_root=tmp_path / "state",
+        runtime_root=tmp_path / "runtime",
+    )
+    conn = open_catalog(wiki)
+    try:
+        assert list_provenance_pages(conn) == []
+        assert list_provenance_pages(conn, page="anything") == []
+        assert list_provenance_pages(conn, orphan=True) == []
+    finally:
+        conn.close()
+
+
+def test_list_orphan_uses_catalog_membership_not_disk_existence(tmp_path: Path) -> None:
+    """Pin: ``orphan=True`` reflects catalog membership only.
+
+    Cited slugs that resolve to a system file on disk (``index.md``,
+    ``log.md``, ``schema.md``, ``overview.md``, ``lint-report.md``)
+    are NOT in the catalog walk — they are filtered out by
+    ``_iter_disk_slugs`` / ``rebuild_from_disk``. So a synthesis page
+    citing one of those names will be flagged as orphan by this
+    helper even when the file exists on disk. The
+    ``dangling_derived_from`` lint may or may not flag the same page
+    depending on its disk-existence semantics; if you need lint-style
+    parity, run ``lies catalog reconcile`` first.
+    """
+    from lies.wiki.wiki import Wiki
+
+    data_root = tmp_path / "orphan-pinning-wiki"
+    wiki_root = data_root / "wiki"
+    wiki_root.mkdir(parents=True)
+    # A disk file that the catalog walk excludes as a system file.
+    (wiki_root / "index.md").write_text("# Index\n", encoding="utf-8")
+    wiki = Wiki(
+        name="orphan-pinning-wiki",
+        data_root=data_root,
+        config_root=tmp_path / "config",
+        cache_root=tmp_path / "cache",
+        state_root=tmp_path / "state",
+        runtime_root=tmp_path / "runtime",
+    )
+    conn = open_catalog(wiki)
+    try:
+        upsert_page(
+            conn,
+            CatalogPage(
+                slug="claude-code/synthesis/cites-system",
+                title="Cites System",
+                type="synthesis",
+                derived_from="index",
+            ),
+        )
+        records = list_provenance_pages(conn, orphan=True)
+        assert {r.slug for r in records} == {"claude-code/synthesis/cites-system"}
+    finally:
+        conn.close()
+
+
+def test_list_comma_in_cited_slug_splits_ambiguously(catalog_conn) -> None:
+    """Pin current behavior: ``derived_from`` is comma-joined in storage;
+    ``list_provenance_pages`` splits on ``,`` with no escaping. A cited
+    slug containing a comma will be split into multiple synthetic
+    fragments. This is a pre-existing storage format hazard; the
+    helper exposes it without mitigation. Track a follow-up to
+    migrate ``derived_from`` to a JSON-array column or forbid ``,``
+    in slug validation.
+    """
+    upsert_page(
+        catalog_conn,
+        CatalogPage(
+            slug="claude-code/synthesis/comma",
+            title="Comma",
+            type="synthesis",
+            derived_from="weird,slug,another",
+        ),
+    )
+    records = list_provenance_pages(catalog_conn, page="claude-code/synthesis/comma")
+    assert len(records) == 1
+    # Pinned: comma-split into 3 synthetic fragments (NOT escaped).
+    assert records[0].derived_from == ("weird", "slug", "another")
+
+
 def _sample_records() -> list[ProvenanceRecord]:
     return [
         ProvenanceRecord(
