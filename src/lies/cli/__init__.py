@@ -57,6 +57,7 @@ from lies.library.collections_cli import library_collections_app  # noqa: E402
 from lies.cli.memory import memory_app  # noqa: E402
 from lies.cli.operator import flock_app, mcp_app, providers_app  # noqa: E402
 from lies.cli.page import page_app  # noqa: E402
+from lies.cli.wiki import wiki_app  # noqa: E402
 from lies.library import cli as library_cli  # noqa: E402
 
 app.add_typer(mcp_app, name="mcp", rich_help_panel="Operator tooling")
@@ -66,6 +67,7 @@ app.add_typer(memory_app, name="memory", rich_help_panel="Querying and maintenan
 app.add_typer(catalog_app, name="catalog", rich_help_panel="Querying and maintenance")
 app.add_typer(library_collections_app, name="library", rich_help_panel="Library")
 app.add_typer(page_app, name="page", rich_help_panel="Wiki management")
+app.add_typer(wiki_app, name="wiki", rich_help_panel="Wiki management")
 
 
 # REPL callback: invoked when ``lies`` is run with no subcommand.

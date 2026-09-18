@@ -6,7 +6,10 @@ All notable changes to LIES are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.29.0] - 2026-09-18
+
 ### Added
+- `lies wiki provenance` CLI (F29) — list every synthesised page's `derived_from` set with `--orphan` (filter to pages with dangling source slugs) and `--page <slug>` (drill into a single page; JSON output) flags. Default output is TSV; `--json` switches to a JSON array matching `lies catalog dump --json`. Read-only over the existing sqlite catalog.
 - Citations now carry `(path, line, section)` so each cited claim points
   to the specific passage it relies on, not just the page. Synthesis
   outputs render a `Footnotes:` block at the bottom with anchors of
@@ -15,6 +18,7 @@ All notable changes to LIES are documented here. The format follows
   citation_index)` pairs for downstream consumers.
 
 ### Fixed
+- Catalog first-open backfill (`rebuild_from_disk` → `CatalogPage.from_path`) now parses the `derived_from` YAML list from each page's frontmatter. Previously the parser extracted only `(title, type, updated)` and silently dropped `derived_from`, so pages written via `Orchestrator.file_back_author` had empty provenance in the catalog row after a rebuild.
 - qmd daemon staleness between `Orchestrator` runs is now reaped before the first search; closes the silent-failure mode where a stale-but-serving daemon returned pre-write results. The check runs at `QmdCapability.as_capability` after the TCP probe, before the native toolset is advertised.
 
 ## [0.28.0] - 2026-09-17

@@ -59,6 +59,33 @@ def test_from_path_parses_frontmatter(tmp_path: Path) -> None:
     assert page.hash != ""  # sha256 of body
 
 
+def test_from_path_extracts_derived_from_frontmatter(tmp_path: Path) -> None:
+    """``from_path`` reads the ``derived_from`` list from YAML frontmatter.
+
+    Synthesis pages persist ``derived_from`` as a YAML list in their
+    frontmatter; the catalog row must reflect that list (comma-joined)
+    so the F29 provenance helper can surface the page.
+    """
+    wiki_root = tmp_path / "test-wiki"
+    wiki_root.mkdir()
+    page_dir = wiki_root / "wiki" / "claude-code" / "synthesis"
+    page_dir.mkdir(parents=True)
+    page_file = page_dir / "first.md"
+    page_file.write_text(
+        "---\n"
+        'title: "First"\n'
+        "type: synthesis\n"
+        "derived_from: [default/concepts/x, default/concepts/y]\n"
+        "---\n\n# Body\n",
+        encoding="utf-8",
+    )
+    wiki = _wiki(wiki_root)
+
+    page = CatalogPage.from_path(wiki, "claude-code/synthesis/first")
+
+    assert page.derived_from == "default/concepts/x,default/concepts/y"
+
+
 def test_from_path_handles_missing_file(tmp_path: Path) -> None:
     """Missing file → today() as updated, empty title, empty hash, no raise."""
     wiki_root = tmp_path / "test-wiki"
