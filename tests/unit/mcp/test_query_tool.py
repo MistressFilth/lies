@@ -24,7 +24,8 @@ from unittest import mock
 
 import pytest
 
-from lies.collections.record import Collection, save_collection
+from lies.library.config_io import save_config
+from lies.library.record import LibraryCollectionConfig
 from lies.query.models import SynthesizedAnswer
 from lies.query.tag_expr import And, Include
 
@@ -81,34 +82,27 @@ def fake_wiki_with_collections(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         state_root=tmp_path / "state",
         runtime_root=tmp_path / "runtime",
     )
-    for coll_name, tags in _COLLECTIONS.items():
-        save_collection(
-            wiki,
-            Collection(
-                name=coll_name,
-                path=tmp_path / coll_name,
-                source=f"https://example.com/{coll_name}",
-                tags=list(tags),
-                scraper_cmd=None,
-                doc_path=None,
-                mapper_model=None,
-                language="en",
-                version="1.0.0",
-                created_at=_NOW,
-                updated_at=_NOW,
-                config={},
-            ),
-        )
 
-    # Seed the library with the same collection names so tag
-    # resolution (which walks Library.collections_root) finds them.
+    # Seed the library with the collection names + tags. Post-cutover
+    # (Task 8) the wiki-yaml configs the legacy fixture wrote here are
+    # dropped — the library is the resolver's source of truth.
     lib_root = xdg.data_home() / LIES_DATA_SUBDIR / "library"
     if lib_root.exists():
         shutil.rmtree(lib_root)
     lib_root.mkdir(parents=True, exist_ok=True)
     (lib_root / "collections").mkdir(parents=True, exist_ok=True)
     for coll_name in _COLLECTIONS:
-        (lib_root / "collections" / coll_name).mkdir()
+        config = LibraryCollectionConfig(
+            name=coll_name,
+            source=f"https://example.com/{coll_name}",
+            tags=tuple(_COLLECTIONS[coll_name]),
+            language="en",
+            version="1.0.0",
+            created_at=_NOW,
+            updated_at=_NOW,
+            config={},
+        )
+        save_config(config)
 
     monkeypatch.setattr(server, "resolve_wiki", lambda _name=None: wiki)
     return wiki

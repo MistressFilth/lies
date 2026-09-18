@@ -441,13 +441,11 @@ def test_resolved_tag_filter_with_exclude_qualifier():
 def _make_collection(name: str, tags: list[str]):
     """Minimal Collection helper for atom_matches unit tests."""
     from datetime import datetime, timezone
-    from pathlib import Path
 
-    from lies.collections.record import Collection
+    from lies.library.record import LibraryCollectionConfig as Collection
 
     return Collection(
         name=name,
-        path=Path(f"/tmp/{name}"),
         source="https://example.com",
         tags=tags,
         scraper_cmd=None,

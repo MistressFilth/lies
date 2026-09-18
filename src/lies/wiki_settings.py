@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from lies.collections.record import Collection
+    from lies.library.record import LibraryCollectionConfig as Collection
     from lies.wiki.wiki import Wiki
 
 

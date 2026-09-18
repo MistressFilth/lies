@@ -742,12 +742,11 @@ def test_fetcher_passes_collection_to_registry_builder(monkeypatch, tmp_path: Pa
     monkeypatch.setattr(REGISTRY, "formats", lambda: formats)
     monkeypatch.setattr(REGISTRY, "resolve", lambda fmt: _FakeBuilder())
 
-    from lies.collections.record import Collection
+    from lies.library.record import LibraryCollectionConfig as Collection
     from datetime import datetime
 
     coll = Collection(
         name="x",
-        path=tmp_path,
         source="https://example.com/x",
         tags=[],
         scraper_cmd=None,

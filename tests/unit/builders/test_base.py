@@ -10,7 +10,7 @@ from lies.builders.base import (
     PassThroughBuilder,
 )
 from lies.builders.errors import BuilderUnavailable
-from lies.collections.record import Collection
+from lies.library.record import LibraryCollectionConfig as Collection
 
 
 @pytest.fixture
@@ -38,7 +38,6 @@ def test_pass_through_returns_single_doc(workspace: Path) -> None:
     now = datetime.now(tz=UTC)
     c = Collection(
         name="x",
-        path=workspace,
         source="",
         tags=[],
         scraper_cmd=None,

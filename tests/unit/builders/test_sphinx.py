@@ -8,7 +8,7 @@ import pytest
 
 from lies.builders.errors import BuilderFetchFailed
 from lies.builders.sphinx import SphinxBuilder
-from lies.collections.record import Collection
+from lies.library.record import LibraryCollectionConfig as Collection
 
 
 @pytest.fixture
@@ -16,7 +16,6 @@ def collection_factory(tmp_path: Path):
     def _make(config: dict) -> Collection:
         return Collection(
             name="sphinx_test",
-            path=tmp_path / "raw" / "sphinx_test",
             source="",
             tags=[],
             scraper_cmd=None,

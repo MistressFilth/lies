@@ -142,12 +142,32 @@ def test_quarantine_writes_under_state_root(wiki: Wiki) -> None:
     assert not (wiki.data_root / ".lies" / "poison").exists()
 
 
-def test_collection_names_globs_under_config_root(wiki: Wiki) -> None:
-    """collection_names(wiki) globs ``$XDG_CONFIG_HOME/lies/<wiki>/collections/*.yaml``."""
+def test_collection_names_globs_under_library_root(wiki: Wiki) -> None:
+    """``collection_names(wiki)`` reads from the library registry (Task 4).
+
+    Task 4 relocated the collection config from the wiki's
+    ``$XDG_CONFIG_HOME/lies/<wiki>/collections/*.yaml`` to the library
+    singleton's ``<library>/collections/<slug>/config.yaml``. ``.tmp``
+    files in the wiki YAML dir are still ignored (legacy defensive
+    code), but they no longer affect the answer.
+    """
+    from lies.library.paths import Library
+
+    lib = Library.open()
+    for name in ("alpha", "beta"):
+        (lib.collections_root / name).mkdir(parents=True, exist_ok=True)
+        (lib.collections_root / name / "config.yaml").write_text(
+            f"name: {name}\n"
+            "source: https://example.com/x\n"
+            "tags: []\n"
+            "version: '1'\n"
+            "created_at: 2026-01-01T00:00:00\n"
+            "updated_at: 2026-01-01T00:00:00\n",
+            encoding="utf-8",
+        )
+    # Legacy wiki YAMLs are still ignored by ``collection_names``.
     wiki.collections_dir.mkdir(parents=True, exist_ok=True)
-    (wiki.collections_dir / "alpha.yaml").write_text("name: alpha\n", encoding="utf-8")
-    (wiki.collections_dir / "beta.yaml").write_text("name: beta\n", encoding="utf-8")
-    (wiki.collections_dir / "gamma.yaml.tmp").write_text("", encoding="utf-8")
+    (wiki.collections_dir / "wiki-only.yaml").write_text("name: wiki-only\n", encoding="utf-8")
     assert collection_names(wiki, None) == ["alpha", "beta"]
     assert collection_names(wiki, "alpha") == ["alpha"]
 

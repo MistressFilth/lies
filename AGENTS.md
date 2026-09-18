@@ -49,6 +49,17 @@ src/lies/
 ├── cli/             # Typer CLI package (init / ingest / query / lint / mcp / REPL)
 │   └── catalog.py   # `lies catalog` group: status/dump/reconcile/rebuild/render
 ├── config.py        # env-driven config (model, wiki root, log level)
+├── library/         # global corpus of collection configs and deterministic
+│   │                # mirrors. Per-cutover the library is the source of
+│   │                # truth for collection metadata; wikis no longer own
+│   │                # per-collection YAMLs.
+│   ├── record.py                # LibraryCollectionConfig dataclass
+│   ├── schema.py                # ConfigYAML Pydantic schema
+│   ├── config_io.py             # atomic load_config / save_config helpers
+│   ├── bootstrap.py             # idempotent bootstrap_library_collection
+│   ├── collections_cli.py       # `lies library` sub-app
+│   │                            # (list/show/where/new/modify/delete/enrich-tags)
+│   └── migrate_collection_configs.py  # `lies migrate-collection-configs`
 ├── mcp/             # FastMCP server (src/lies/mcp/server.py) — thin adapter
 │                    # around WikiMemoryService; tools: init_wiki, ingest_source,
 │                    # query, lint, wiki_search, wiki_read; resources include
@@ -68,6 +79,8 @@ src/lies/
 ├── utils/           # logging, shell helpers, exclusive.py (create-lock +
 │                    # gitignore guard shared by heartbeat and mcp daemon)
 └── wiki/            # git + layout primitives
+    ├── registry.py          # WikiCollectionRef registry (per-wiki, in-memory)
+    └── registry_errors.py   # typed errors for registry lookups
 ```
 
 Tests mirror the layout:

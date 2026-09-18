@@ -29,11 +29,12 @@ import sys
 from dataclasses import dataclass
 from typing import Literal
 
-from lies.collections.errors import (
+from lies.library.config_io import config_path_for
+from lies.memory.models import WikiCollectionRef
+from lies.wiki.registry_errors import (
     RegistryCorrupt,
     RegistryVersionUnsupported,
 )
-from lies.memory.models import WikiCollectionRef
 
 _SUPPORTED_VERSION = 1
 
@@ -103,7 +104,7 @@ class Registry:
         ``os.replace`` and the directory-entry fsync costs at most one
         registration.
         """
-        from lies.collections.errors import RegistryWriteFailed
+        from lies.wiki.registry_errors import RegistryWriteFailed
 
         path = wiki.registry_path
         tmp = path.with_suffix(path.suffix + ".tmp")
@@ -137,13 +138,25 @@ class Registry:
 
     @staticmethod
     def filter_stale(registry: Registry, wiki) -> Registry:
-        """Drop entries whose ``<id>.yaml`` is missing under ``wiki.collections_dir``.
+        """Drop entries whose backing collection config is missing.
+
+        Pre-0.28.0 collections lived at
+        ``wiki.collections_dir / f"{cid}.yaml"``; 0.28.0+ stores them
+        under the library at
+        ``<Library.collections_root> / cid / "config.yaml"``. The
+        dual check keeps a registry entry alive if either location
+        has a config, so post-migration wikis do not silently drop
+        their refs to library-side collections (which would force a
+        full re-registration on every ``WikiMemoryService``
+        instantiation). Drop only when both checks fail.
 
         ``wiki`` intentionally untyped: see ``Registry.load``.
         """
-        kept = {
-            cid: ref
-            for cid, ref in registry.collections.items()
-            if (wiki.collections_dir / f"{cid}.yaml").exists()
-        }
+
+        def _alive(cid: str) -> bool:
+            if (wiki.collections_dir / f"{cid}.yaml").exists():
+                return True
+            return config_path_for(cid).exists()
+
+        kept = {cid: ref for cid, ref in registry.collections.items() if _alive(cid)}
         return Registry(collections=kept)

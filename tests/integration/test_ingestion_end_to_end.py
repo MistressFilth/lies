@@ -73,9 +73,6 @@ def test_full_pipeline_idempotent(
     wiki.wiki_dir.mkdir(parents=True, exist_ok=True)
     (wiki.config_root / "schema.md").write_text("# schema\n", encoding="utf-8")
     (wiki.collections_dir).mkdir(parents=True, exist_ok=True)
-    # load_collection (still pre-XDG) reads from ``<wiki_root>/.lies/collections``
-    # for now; mirror the YAML there so the CLI's bootstrap path resolves it.
-    (wiki.data_root / ".lies" / "collections").mkdir(parents=True, exist_ok=True)
     # ``data_root`` is a git repo for atomic_commit; we just need an initial
     # commit so the working tree is clean. ``git commit --allow-empty`` works
     # even when there is nothing staged yet (the test seed runs after git init).
@@ -107,7 +104,6 @@ def test_full_pipeline_idempotent(
 
     cfg = {
         "name": "sample",
-        "path": "./raw/sample",
         "source": "https://example.com/llms-full.txt",
         "tags": ["test"],
         "scraper_cmd": None,
@@ -118,10 +114,6 @@ def test_full_pipeline_idempotent(
         "created_at": "2026-08-01T00:00:00Z",
         "updated_at": "2026-08-01T00:00:00Z",
     }
-    (wiki.collections_dir / "sample.yaml").write_text(yaml.safe_dump(cfg), encoding="utf-8")
-    (wiki.data_root / ".lies" / "collections" / "sample.yaml").write_text(
-        yaml.safe_dump(cfg), encoding="utf-8"
-    )
 
     canned = (
         b"# Doc 1\n"
@@ -202,6 +194,16 @@ def test_full_pipeline_idempotent(
         ["git", "-C", str(lib.git_root), "commit", "-m", "init"],
         check=True,
         capture_output=True,
+    )
+
+    # ``sync_helper.sync_collection`` now reads the collection config
+    # from the library singleton at
+    # ``<library>/collections/<slug>/config.yaml`` (Task 4). Seed the
+    # library-side config so the CLI's ``sync <name>`` resolves through
+    # ``load_config`` instead of the legacy wiki-side ``load_collection``.
+    (lib.collections_root / "sample").mkdir(parents=True, exist_ok=True)
+    (lib.collections_root / "sample" / "config.yaml").write_text(
+        yaml.safe_dump(cfg), encoding="utf-8"
     )
 
     with mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):

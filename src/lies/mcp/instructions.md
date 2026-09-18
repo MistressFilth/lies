@@ -6,16 +6,19 @@ yourself. The wiki you are talking to is selected by the
 
 ## Paths
 
-- `collections_dir` — `$XDG_CONFIG_HOME/lies/<wiki>/collections/`
-  YAML files describing each source collection. One file per
-  collection; bootstrapped via `lies sync <name> --source <url>`.
 - `wiki_dir` — `$XDG_DATA_HOME/lies/<wiki>/wiki/`
   Derived pages (`<page-type>/<slug>.md`).
 - `raw_dir` — `$XDG_DATA_HOME/lies/<wiki>/raw/<collection>/`
   Immutable source mirrors; written by the scrape stage.
-- `library_root` — `$XDG_DATA_HOME/lies/library/`
-  Shared across wikis; mirrors live here, one directory per
-  collection. The library is the source of truth post-cutover.
+
+Collections are global library artifacts. Each named unit lives at
+`$XDG_DATA_HOME/lies/library/collections/<slug>/` and contains the
+scraped content plus a `config.yaml` (source URL, tags, scraper
+settings). No per-wiki collection config exists; any wiki can read any
+library collection on demand. New collections land via
+`lies ingest --source <URL> --collection <slug>` (writes content +
+bootstraps config) or `lies library new <slug> --source <URL>` (config
+only).
 
 ## Tools
 
@@ -52,5 +55,8 @@ yourself. The wiki you are talking to is selected by the
 - `lies sync` — sync every collection.
 - `lies query --format=auto|md|table|marp` — render the answer as md, table, or marp.
 - `lies lint [--fix]` — deterministic health-check.
-- `lies collections new|modify|list` — manage collection YAMLs.
+- `lies library new|modify|list|show|where|delete|enrich-tags` — manage
+  library collection configs.
+- `lies migrate-collection-configs` — one-shot migration of legacy
+  per-wiki collection YAMLs into the library.
 - `lies mcp up|down|status` — daemon lifecycle.

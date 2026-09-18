@@ -9,7 +9,7 @@ from unittest import mock
 import pytest
 
 from lies import xdg
-from lies.collections.record import Collection
+from lies.library.record import LibraryCollectionConfig as Collection
 from lies.etl.cost import CostBudget
 from lies.etl.errors import BudgetExceeded
 from lies.etl.pipeline import PipelineState, StageResult, SyncOrchestrator
@@ -43,7 +43,6 @@ def wiki(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Wiki:
 def _collection(wiki: Wiki) -> Collection:
     return Collection(
         name="cpython",
-        path=wiki.data_root / "raw" / "cpython",
         source="https://example.com",
         tags=[],
         scraper_cmd=None,
@@ -267,7 +266,6 @@ def test_pipeline_runs_register_stage(wiki: Wiki, monkeypatch: pytest.MonkeyPatc
     (wiki.collections_dir).mkdir(parents=True, exist_ok=True)
     c = Collection(
         name="reg_test",
-        path=wiki.data_root / "raw" / "reg_test",
         source="",
         tags=[],
         scraper_cmd=None,
@@ -280,7 +278,7 @@ def test_pipeline_runs_register_stage(wiki: Wiki, monkeypatch: pytest.MonkeyPatc
         config={},
     )
     telemetry = SyncTelemetry(wiki, c.name)
-    from lies.collections.hash_manifest import HashManifest
+    from lies.wiki.hash_manifest import HashManifest
 
     manifest = HashManifest(wiki, c.name)
     budget = CostBudget()

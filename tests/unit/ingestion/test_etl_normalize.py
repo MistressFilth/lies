@@ -5,7 +5,7 @@ from unittest import mock
 
 import pytest
 
-from lies.collections.record import Collection
+from lies.library.record import LibraryCollectionConfig as Collection
 from lies.etl.normalize.format_dispatch import UnknownFormatError, dispatch
 from lies.etl.normalize.obsidian import apply
 from lies.etl.stages.normalize import run_normalize
@@ -30,7 +30,6 @@ def _wiki(tmp_path) -> Wiki:
 def _collection(tmp_path) -> Collection:
     return Collection(
         name="x",
-        path=tmp_path,
         source="",
         tags=[],
         scraper_cmd=None,
@@ -94,7 +93,6 @@ def test_normalize_routes_bespoke_through_builder(tmp_path) -> None:
 
     c = Collection(
         name="mycoll",
-        path=tmp_path,
         source="",
         tags=["topic"],
         scraper_cmd=None,

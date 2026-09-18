@@ -18,7 +18,7 @@ The order of imports below is load-bearing:
 
 1. The root ``app = typer.Typer(...)`` is defined first.
 2. The sub-app objects (``mcp_app``, ``flock_app``, ``providers_app``,
-   ``collections_app``) are imported and ``app.add_typer(...)`` is
+   ``library_collections_app``) are imported and ``app.add_typer(...)`` is
    called for each. The sub-app modules run their decorator
    registrations at this point (each sub-app's decorators target its
    own sub-app instance, not the root ``app``).
@@ -31,6 +31,8 @@ The order of imports below is load-bearing:
 """
 
 from __future__ import annotations
+
+from typing import Annotated
 
 import typer
 
@@ -51,7 +53,7 @@ app = typer.Typer(
 # Step 2: import the sub-app objects (cheap -- just typer.Typer instances)
 # and wire them under the root app.
 from lies.cli.catalog import catalog_app  # noqa: E402
-from lies.cli.collections import collections_app  # noqa: E402
+from lies.library.collections_cli import library_collections_app  # noqa: E402
 from lies.cli.memory import memory_app  # noqa: E402
 from lies.cli.operator import flock_app, mcp_app, providers_app  # noqa: E402
 from lies.cli.page import page_app  # noqa: E402
@@ -62,7 +64,7 @@ app.add_typer(flock_app, name="flock", rich_help_panel="Operator tooling")
 app.add_typer(providers_app, name="providers", rich_help_panel="Operator tooling")
 app.add_typer(memory_app, name="memory", rich_help_panel="Querying and maintenance")
 app.add_typer(catalog_app, name="catalog", rich_help_panel="Querying and maintenance")
-app.add_typer(collections_app, name="collections", rich_help_panel="Wiki management")
+app.add_typer(library_collections_app, name="library", rich_help_panel="Library")
 app.add_typer(page_app, name="page", rich_help_panel="Wiki management")
 
 
@@ -152,6 +154,55 @@ library_cli.register(app)
 # ``app`` to be defined first (it is -- bound in step 1 above).
 from lies.library import cli_migrate  # noqa: E402,F401
 
+# Register the ``migrate-collection-configs`` command (Task 9).
+from lies.library import migrate_collection_configs as _migrate_cfg  # noqa: E402
+
+
+@app.command(
+    name="migrate-collection-configs",
+    short_help="Move per-wiki collection YAMLs into the library.",
+    rich_help_panel="Migration",
+)
+def migrate_collection_configs(
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run/--apply", help="Dry-run (default) or apply.")
+    ] = True,
+    force: Annotated[bool, typer.Option("--force", help="Overwrite conflicting targets.")] = False,
+) -> None:
+    """One-shot migration script. See spec section 'Migration procedure'."""
+    plan = _migrate_cfg.plan_migration()
+    typer.echo(
+        f"plan: {len(plan.moves)} YAMLs to move; "
+        f"{len(plan.duplicates)} duplicate slugs; "
+        f"{len(plan.library_collisions)} library collisions"
+    )
+    if plan.duplicates:
+        for slug, paths in plan.duplicates:
+            typer.echo(f"duplicate: {slug} in {', '.join(str(p) for p in paths)}")
+        raise typer.Exit(code=2)
+    if plan.library_collisions:
+        for slug, target in plan.library_collisions:
+            typer.echo(f"collision: {slug} already at {target}")
+        if not force:
+            typer.echo(
+                "(library collisions present; pass --force to overwrite, "
+                "or remove the library entries and re-run)",
+                err=True,
+            )
+            raise typer.Exit(code=2)
+    if dry_run:
+        for source, target in plan.moves:
+            typer.echo(f"would move {source} -> {target}")
+        typer.echo("(dry-run; pass --apply to mutate)")
+        return
+    try:
+        _migrate_cfg.apply_migration(plan, force=force)
+    except _migrate_cfg.MigrationConflictError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    typer.echo("done.")
+
+
 # Re-exports for test compat. ``test_cli_flock.py`` monkeypatches
 # ``cli_module.acquire_create_lock``; ``test_cli_lint_force_repair.py``
 # reaches ``WikiFlockUnrepairable`` / ``WikiLockBusy`` through the same
@@ -212,8 +263,8 @@ __all__ = (
     "WikiLockBusy",
     "acquire_create_lock",
     "app",
-    "collections_app",
     "flock_app",
+    "library_collections_app",
     "mcp_app",
     "providers_app",
     "xdg",

@@ -13,9 +13,9 @@ call site (CLI ``query`` / MCP ``query`` and ``answer`` / retriever's
     and ``tags`` (always empty under the library layout, but the
     ``tags`` field is retained for forward compat with a future
     per-collection metadata sidecar). The dataclass is structurally
-    compatible with :class:`lies.collections.record.Collection` for
-    the two fields the resolver reads (``name``, ``tags``), so the
-    retriever's matching code passes it through without a shim.
+    compatible with the legacy wiki-yaml Collection shape for the two
+    fields the resolver reads (``name``, ``tags``), so the retriever's
+    matching code passes it through without a shim.
 
   - :func:`library_collection_names` — sorted tuple of every
     addressable collection directory name. The resolver validates
@@ -42,7 +42,10 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
+from lies.library.config_io import config_path_for
+from lies.library.errors import CollectionConfigInvalid, CollectionNotFound
 from lies.library.paths import Library
+from lies.library.record import LibraryCollectionConfig
 
 
 @dataclass(frozen=True)
@@ -58,7 +61,7 @@ class LibraryCollectionMeta:
     The structural shape (``name: str``, ``tags: Sequence[str]``)
     matches what :func:`lies.query.tag_expr.atom_matches` and
     :func:`lies.query.tag_expr._exclude_atom_matches` read off a
-    collection, so :class:`lies.collections.record.Collection` and
+    collection, so the legacy wiki-yaml Collection and
     :class:`LibraryCollectionMeta` are interchangeable at the
     resolver boundary. This keeps the library-first migration
     additive — no rewrites to the matching code — while preventing
@@ -119,10 +122,10 @@ def library_collection_metas() -> Iterator[LibraryCollectionMeta]:
     """Yield a :class:`LibraryCollectionMeta` per directory in the library.
 
     Used by the retriever's :func:`_collections_matching`. The
-    resolver's matching code is structurally compatible with both
-    :class:`lies.collections.record.Collection` (legacy wiki-yaml
-    shape) and :class:`LibraryCollectionMeta` (library-first shape);
-    the library model is the canonical source going forward.
+    resolver's matching code is structurally compatible with both the
+    legacy wiki-yaml Collection shape and :class:`LibraryCollectionMeta`
+    (library-first shape); the library model is the canonical source
+    going forward.
     """
     root = _collections_root()
     if not root.exists():
@@ -132,10 +135,48 @@ def library_collection_metas() -> Iterator[LibraryCollectionMeta]:
             yield LibraryCollectionMeta(name=entry.name)
 
 
+def library_collection_records() -> Iterator[LibraryCollectionConfig]:
+    """Yield a :class:`LibraryCollectionConfig` per collection with a valid config.
+
+    Skips directories without ``config.yaml`` (e.g. fresh ingests that
+    haven't been bootstrapped yet). Skips collections whose config
+    fails validation; logs a warning per skip.
+    """
+    import logging
+
+    from lies.library.config_io import load_config
+
+    log = logging.getLogger(__name__)
+    root = _collections_root()
+    if not root.exists():
+        return
+    for entry in sorted(root.iterdir()):
+        if not entry.is_dir():
+            continue
+        if not config_path_for(entry.name).exists():
+            continue
+        try:
+            yield load_config(entry.name)
+        except (CollectionConfigInvalid, CollectionNotFound) as exc:
+            log.warning("skipping malformed collection %s: %s", entry.name, exc)
+
+
+def library_collection_record(slug: str) -> LibraryCollectionConfig | None:
+    """Return the config record for ``slug`` if it exists, else ``None``."""
+    from lies.library.config_io import load_config
+
+    try:
+        return load_config(slug)
+    except CollectionNotFound:
+        return None
+
+
 __all__ = (
     "LibraryCollectionMeta",
     "library_collection_metas",
     "library_collection_names",
+    "library_collection_record",
+    "library_collection_records",
     "library_has_no_collections",
     "library_initialized",
 )

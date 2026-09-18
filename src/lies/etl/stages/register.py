@@ -15,8 +15,8 @@ from lies.memory.service import WikiMemoryService
 from lies.wiki.wiki import Wiki
 
 if TYPE_CHECKING:
-    from lies.collections.record import Collection
     from lies.etl.pipeline import StageResult
+    from lies.library.record import LibraryCollectionConfig as Collection
 
 
 def run_register(wiki: Wiki, collection: Collection, service: WikiMemoryService) -> StageResult:
@@ -32,7 +32,7 @@ def run_register(wiki: Wiki, collection: Collection, service: WikiMemoryService)
     ref = WikiCollectionRef(
         collection_id=collection.name,
         root=(wiki.wiki_dir / collection.name).resolve().as_posix(),
-        qmd_collection=collection.qmd_name(),
+        qmd_collection=collection.name,
         schema_path=wiki.schema_path.resolve().as_posix(),
     )
     service.register_collection(ref)

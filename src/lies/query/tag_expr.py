@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING, Literal
 
 
 if TYPE_CHECKING:
-    from lies.collections.record import Collection
+    from lies.library.record import LibraryCollectionConfig as Collection
     from lies.library.registry import LibraryCollectionMeta
 
 
@@ -491,8 +491,7 @@ def atom_matches(coll: "Collection | LibraryCollectionMeta", include: Include) -
         - ``"c"``: strict collection-name match (``coll.name == include.tag``).
         - ``"t"`` or ``None``: tag-or-name alias (``include.tag ∈ coll.tags ∪ {coll.name}``).
 
-    Accepts the legacy :class:`lies.collections.record.Collection` (wiki
-    yaml shape) and the library-first
+    Accepts the legacy wiki-yaml Collection shape and the library-first
     :class:`lies.library.registry.LibraryCollectionMeta` interchangeably.
     Both expose ``name`` and ``tags``, the only two attributes the
     resolver reads; the library model is the canonical source going

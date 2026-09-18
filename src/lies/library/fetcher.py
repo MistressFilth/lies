@@ -58,7 +58,7 @@ from lies.scrapers.base import BaseScraper, ParsedDoc
 from lies.scrapers.errors import ScraperUnavailable
 
 if TYPE_CHECKING:
-    from lies.collections.record import Collection
+    from lies.library.record import LibraryCollectionConfig as Collection
 
 
 def _hash_bytes(raw: bytes) -> str:

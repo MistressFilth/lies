@@ -9,7 +9,7 @@ import pytest
 from lies.builders.base import BuilderRegistry  # noqa: F401
 from lies.builders.errors import BuilderParseError
 from lies.builders.pdf import PDFBuilder
-from lies.collections.record import Collection
+from lies.library.record import LibraryCollectionConfig as Collection
 
 
 def _make_pdf(tmp_path: Path, pages: list[str]) -> Path:
@@ -26,7 +26,6 @@ def _make_pdf(tmp_path: Path, pages: list[str]) -> Path:
 def _collection(tmp_path: Path) -> Collection:
     return Collection(
         name="x",
-        path=tmp_path,
         source="",
         tags=[],
         scraper_cmd=None,

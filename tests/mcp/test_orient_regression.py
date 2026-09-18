@@ -10,7 +10,7 @@ surface the wrong one.
 
 This test pins both halves of that contract:
 
-- Right path: ``$XDG_CONFIG_HOME/lies/<wiki>/collections/``
+- Right path: ``$XDG_DATA_HOME/lies/library/collections/<slug>/``
   appears in the orientation text.
 - Wrong path: ``wiki/<collection>/<page-type>/<slug>.md``
   does NOT appear in the orientation text.
@@ -34,7 +34,7 @@ WRONG_PATH = "wiki/<collection>/<page-type>/<slug>.md"
 
 # The right paths the orientation payload must surface.
 RIGHT_PATHS = (
-    "$XDG_CONFIG_HOME/lies/<wiki>/collections/",
+    "$XDG_DATA_HOME/lies/library/collections/<slug>/",
     "$XDG_DATA_HOME/lies/<wiki>/wiki/",
     "$XDG_DATA_HOME/lies/<wiki>/raw/<collection>/",
 )

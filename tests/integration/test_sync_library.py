@@ -48,15 +48,24 @@ def _stub_wiki(fixture_lib: Library):
     )
 
 
-def _seed_collection(wiki, *, name: str = "claude", scraper_cmd: str | None = None) -> None:
-    wiki.collections_dir.mkdir(parents=True, exist_ok=True)
+def _seed_collection(
+    fixture_lib: Library, *, name: str = "claude", scraper_cmd: str | None = None
+) -> None:
+    """Drop a minimal library collection config that ``load_config`` can read.
+
+    ``sync_helper.sync_collection`` now reads the collection's source
+    from the library singleton at
+    ``<library>/collections/<slug>/config.yaml`` (Task 4). Seed the
+    library location so the test fixture continues to exercise the
+    same code path.
+    """
     scraper_line = f"scraper_cmd: {scraper_cmd}\n" if scraper_cmd else ""
-    (wiki.collections_dir / f"{name}.yaml").write_text(
-        "name: {name}\n"
-        "path: raw/{name}\n"
-        "source: https://example.com/{name}\n"
-        "tags: []\n"
-        "{scraper}".format(name=name, scraper=scraper_line)
+    coll_dir = fixture_lib.collections_root / name
+    coll_dir.mkdir(parents=True, exist_ok=True)
+    (coll_dir / "config.yaml").write_text(
+        "name: {name}\nsource: https://example.com/{name}\ntags: []\n{scraper}".format(
+            name=name, scraper=scraper_line
+        )
         + "version: '1'\n"
         "created_at: 2026-01-01T00:00:00\n"
         "updated_at: 2026-01-01T00:00:00\n",
@@ -86,7 +95,7 @@ def test_sync_collection_writes_to_library(fixture_lib: Library, monkeypatch) ->
     from lies.library.ingest import FetchItem
 
     wiki = _stub_wiki(fixture_lib)
-    _seed_collection(wiki)
+    _seed_collection(fixture_lib)
 
     body = (
         "# Hello\n"
@@ -167,7 +176,7 @@ def test_sync_collection_threads_scraper_cmd_into_fetcher(
     bespoke builders).
     """
     wiki = _stub_wiki(fixture_lib)
-    _seed_collection(wiki, scraper_cmd="lies.scrapers.web:WebScraper")
+    _seed_collection(fixture_lib, scraper_cmd="lies.scrapers.web:WebScraper")
 
     seen = {}
 
@@ -198,7 +207,7 @@ def test_sync_collection_no_scraper_cmd_uses_pick_scraper(
 ) -> None:
     """Without ``scraper_cmd`` the fetcher is built with ``scraper_cmd=None``."""
     wiki = _stub_wiki(fixture_lib)
-    _seed_collection(wiki)
+    _seed_collection(fixture_lib)
 
     seen = {}
 
@@ -224,7 +233,7 @@ def test_sync_collection_propagates_errors(fixture_lib: Library, monkeypatch) ->
     signal the CLI uses to exit non-zero.
     """
     wiki = _stub_wiki(fixture_lib)
-    _seed_collection(wiki)
+    _seed_collection(fixture_lib)
 
     def fake_run_batch(*args, **kwargs):
         return BatchIngestResult(errors=2, quarantine_records=[("x:u", "broken")])

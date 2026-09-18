@@ -1,15 +1,14 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 from typer.testing import CliRunner
 
-from lies import __version__, xdg
+from lies import __version__
 from lies.cli import app
-from lies.collections.record import Collection, load_collection, save_collection
 from lies.wiki.wiki import Wiki
 
 runner = CliRunner()
@@ -193,8 +192,6 @@ def _register_wiki(name: str) -> None:
 
 
 def test_up_ensures_the_qmd_daemon(monkeypatch, tmp_path: Path) -> None:
-    from datetime import datetime
-
     from lies.mcp import daemon
     from lies.qmd import daemon as qmd_daemon
 
@@ -224,8 +221,6 @@ def test_up_ensures_the_qmd_daemon(monkeypatch, tmp_path: Path) -> None:
 
 
 def test_up_skips_qmd_with_no_qmd_flag(monkeypatch, tmp_path: Path) -> None:
-    from datetime import datetime
-
     from lies.mcp import daemon
     from lies.qmd import daemon as qmd_daemon
 
@@ -250,7 +245,6 @@ def test_up_skips_qmd_with_no_qmd_flag(monkeypatch, tmp_path: Path) -> None:
 
 def test_up_succeeds_when_qmd_is_unavailable(monkeypatch, tmp_path: Path) -> None:
     """qmd is a search backend, not a prerequisite."""
-    from datetime import datetime
 
     from lies.mcp import daemon
     from lies.qmd import daemon as qmd_daemon
@@ -342,8 +336,6 @@ def test_serve_rejects_non_loopback_host(monkeypatch) -> None:
 
 
 def test_up_prints_url_on_success(monkeypatch, tmp_path: Path) -> None:
-    from datetime import datetime
-
     from lies.mcp import daemon
 
     name = "cli-up-print-url"
@@ -365,8 +357,6 @@ def test_up_prints_url_on_success(monkeypatch, tmp_path: Path) -> None:
 
 
 def test_up_is_idempotent_when_already_running(monkeypatch, tmp_path: Path) -> None:
-    from datetime import datetime
-
     from lies.mcp import daemon
 
     name = "cli-up-already"
@@ -499,8 +489,6 @@ def test_status_exits_1_when_stopped(monkeypatch, tmp_path: Path) -> None:
 
 
 def test_status_exits_0_when_running(monkeypatch, tmp_path: Path) -> None:
-    from datetime import datetime
-
     from lies.mcp import daemon
 
     name = "cli-status-running"
@@ -532,179 +520,6 @@ def test_status_exits_0_when_running(monkeypatch, tmp_path: Path) -> None:
     assert "55" in result.stdout
 
 
-# Tests for `lies collections modify` (Task 3).
-#
-# The `modify` subcommand accepts either `--from-file PATH` (a YAML
-# patch) or `--set KEY=VALUE` (one or more). Both flags are mutually
-# exclusive; at least one is required. The fixture mirrors the pattern
-# in `tests/unit/test_cli_collections_show.py`: it sets
-# `LIES_WIKI_NAME` and the LIES-specific XDG overrides so the test's
-# `_seed_collection` and the CLI's `resolve_wiki` agree on the same
-# wiki root under `tmp_path`.
-
-
-def _combined_output(result) -> str:
-    """Click 8.2+ splits stderr from `.output`; tolerate either layout."""
-    return result.output + (result.stderr if result.stderr_bytes else "")
-
-
-@pytest.fixture
-def wiki(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Wiki:
-    name = "modify"
-    monkeypatch.setenv("LIES_WIKI_NAME", name)
-    monkeypatch.setenv("LIES_XDG_DATA_HOME", str(tmp_path / "data"))
-    monkeypatch.setenv("LIES_XDG_CONFIG_HOME", str(tmp_path / "config"))
-    monkeypatch.setenv("LIES_XDG_CACHE_HOME", str(tmp_path / "cache"))
-    monkeypatch.setenv("LIES_XDG_STATE_HOME", str(tmp_path / "state"))
-    monkeypatch.setenv("LIES_XDG_RUNTIME_DIR", str(tmp_path / "runtime"))
-    wiki = Wiki(
-        name=name,
-        data_root=xdg.data_home() / "lies" / name,
-        config_root=xdg.config_home() / "lies" / name,
-        cache_root=xdg.cache_home() / "lies" / name,
-        state_root=xdg.state_home() / "lies" / name,
-        runtime_root=xdg.runtime_dir_for(name),
-    )
-    wiki.data_root.mkdir(parents=True, exist_ok=True)
-    wiki.collections_dir.mkdir(parents=True, exist_ok=True)
-    return wiki
-
-
-def _seed_collection(wiki_obj: Wiki, name: str) -> Collection:
-    save_collection(
-        wiki_obj,
-        Collection(
-            name=name,
-            path=PurePosixPath(f"/raw/{name}"),
-            source="https://old.example.com",
-            tags=["old"],
-            scraper_cmd=None,
-            doc_path=None,
-            mapper_model=None,
-            language=None,
-            version="1",
-            created_at=datetime(2026, 1, 1, tzinfo=UTC),
-            updated_at=datetime(2026, 1, 1, tzinfo=UTC),
-            config={},
-        ),
-    )
-    return load_collection(wiki_obj, name)
-
-
-def test_modify_set_tags_comma_split(wiki: Wiki) -> None:
-    _seed_collection(wiki, "alpha")
-    result = runner.invoke(
-        app,
-        ["collections", "modify", "alpha", "--set", "tags=stdlib,core"],
-    )
-    assert result.exit_code == 0, result.output
-    loaded = load_collection(wiki, "alpha")
-    assert loaded.tags == ["stdlib", "core"]
-
-
-def test_modify_set_config_dotted(wiki: Wiki) -> None:
-    _seed_collection(wiki, "alpha")
-    result = runner.invoke(
-        app,
-        ["collections", "modify", "alpha", "--set", "config.render_cmd=foo"],
-    )
-    assert result.exit_code == 0, result.output
-    loaded = load_collection(wiki, "alpha")
-    assert loaded.config == {"render_cmd": "foo"}
-
-
-def test_modify_set_rejects_unknown_key(wiki: Wiki) -> None:
-    _seed_collection(wiki, "alpha")
-    result = runner.invoke(
-        app,
-        ["collections", "modify", "alpha", "--set", "path=foo"],
-    )
-    assert result.exit_code != 0
-    assert "not editable" in _combined_output(result)
-
-
-def test_modify_set_and_from_file_conflict(wiki: Wiki, tmp_path: Path) -> None:
-    _seed_collection(wiki, "alpha")
-    patch = tmp_path / "p.yaml"
-    patch.write_text("tags: []\n", encoding="utf-8")
-    result = runner.invoke(
-        app,
-        [
-            "collections",
-            "modify",
-            "alpha",
-            "--from-file",
-            str(patch),
-            "--set",
-            "tags=foo",
-        ],
-    )
-    assert result.exit_code != 0
-    assert "not both" in _combined_output(result)
-
-
-def test_modify_no_flags_errors(wiki: Wiki) -> None:
-    _seed_collection(wiki, "alpha")
-    result = runner.invoke(app, ["collections", "modify", "alpha"])
-    assert result.exit_code != 0
-    assert "requires" in _combined_output(result)
-
-
-def test_modify_from_file_applies_editable_fields(wiki: Wiki, tmp_path: Path) -> None:
-    _seed_collection(wiki, "alpha")
-    patch = tmp_path / "p.yaml"
-    patch.write_text(
-        "tags: [stdlib, core]\nlanguage: en\nconfig:\n  render_cmd: foo\n",
-        encoding="utf-8",
-    )
-    result = runner.invoke(
-        app,
-        ["collections", "modify", "alpha", "--from-file", str(patch)],
-    )
-    assert result.exit_code == 0, result.output
-    loaded = load_collection(wiki, "alpha")
-    assert loaded.tags == ["stdlib", "core"]
-    assert loaded.language == "en"
-    assert loaded.config == {"render_cmd": "foo"}
-    assert loaded.created_at == datetime(2026, 1, 1, tzinfo=UTC)
-
-
-def test_modify_from_file_rejects_name_field(wiki: Wiki, tmp_path: Path) -> None:
-    _seed_collection(wiki, "alpha")
-    patch = tmp_path / "p.yaml"
-    patch.write_text("name: other\n", encoding="utf-8")
-    result = runner.invoke(
-        app,
-        ["collections", "modify", "alpha", "--from-file", str(patch)],
-    )
-    assert result.exit_code != 0
-    assert "name" in _combined_output(result)
-
-
-def test_modify_from_file_rejects_invalid_yaml(wiki: Wiki, tmp_path: Path) -> None:
-    _seed_collection(wiki, "alpha")
-    patch = tmp_path / "p.yaml"
-    patch.write_text("not: a: mapping: at: all", encoding="utf-8")
-    result = runner.invoke(
-        app,
-        ["collections", "modify", "alpha", "--from-file", str(patch)],
-    )
-    assert result.exit_code != 0
-    combined = _combined_output(result)
-    assert "invalid YAML" in combined or "mapping" in combined
-
-
-def test_modify_from_file_not_found(wiki: Wiki, tmp_path: Path) -> None:
-    _seed_collection(wiki, "alpha")
-    patch = tmp_path / "missing.yaml"
-    result = runner.invoke(
-        app,
-        ["collections", "modify", "alpha", "--from-file", str(patch)],
-    )
-    assert result.exit_code != 0
-    assert "not found" in _combined_output(result)
-
-
 # Task 7: `lies lint` must build a WikiLinkResolver and pass it to the
 # orchestrator. When neither wiki/ nor raw/ exists under the wiki's
 # data_root, the resolver raises WikiLinkCorpusMissing; the CLI must
@@ -733,12 +548,6 @@ def test_lint_missing_roots_errors_with_exit_2(
     assert "no wiki/ or raw/ directory" in result.stderr
 
 
-# Task 4: `lies config` and `lies collections show` must surface the
-# resolved language. `lies config` reads ``resolve_language(wiki)``;
-# `lies collections show <name>` reads ``resolve_language(wiki, coll)``
-# so per-collection overrides win.
-
-
 def test_lies_config_includes_language(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """``lies config`` output includes ``language: <resolved>``."""
     from typer.testing import CliRunner
@@ -759,38 +568,3 @@ def test_lies_config_includes_language(monkeypatch: pytest.MonkeyPatch, tmp_path
     result = runner.invoke(app, ["config"], catch_exceptions=False)
     assert result.exit_code == 0
     assert "language: ja" in result.stdout
-
-
-def test_lies_collections_show_includes_effective_language(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """``lies collections show <name>`` output includes effective language."""
-    from typer.testing import CliRunner
-
-    from lies.cli import app
-    from tests.conftest import make_wiki
-
-    root = tmp_path / "wiki"
-    root.mkdir()
-    wiki = make_wiki(name="show-lang-test", data_root=root)
-
-    # Seed a collection YAML with a per-collection language override.
-    yaml_path = wiki.collections_dir / "demo.yaml"
-    yaml_path.parent.mkdir(parents=True, exist_ok=True)
-    yaml_path.write_text(
-        "name: demo\npath: /tmp/demo\nsource: https://example.com\n"
-        "tags: []\nscraper_cmd: null\ndoc_path: null\nmapper_model: null\n"
-        "language: de\nversion: 0.0.0\ncreated_at: 2026-01-01T00:00:00Z\n"
-        "updated_at: 2026-01-01T00:00:00Z\nconfig: {}\n",
-        encoding="utf-8",
-    )
-
-    from lies import cli as cli_mod
-
-    monkeypatch.setattr(cli_mod, "resolve_wiki", lambda name=None: wiki)
-    monkeypatch.setenv("LIES_LANG", "fr")
-
-    runner = CliRunner()
-    result = runner.invoke(app, ["collections", "show", "demo"], catch_exceptions=False)
-    assert result.exit_code == 0
-    assert "language: de" in result.stdout  # collection overrides wiki-global

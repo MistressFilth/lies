@@ -17,6 +17,6 @@ def test_instructions_payload_matches_loaded_file() -> None:
     assert instr == load_instructions()
 
 
-def test_instructions_payload_mentions_collections_dir() -> None:
+def test_instructions_payload_mentions_library_root() -> None:
     instr = getattr(mcp, "_instructions", None) or getattr(mcp, "instructions", None)
-    assert "$XDG_CONFIG_HOME/lies/<wiki>/collections/" in instr
+    assert "$XDG_DATA_HOME/lies/library/collections/<slug>/" in instr

@@ -23,11 +23,9 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal, cast
 
-from lies.collections.record import Collection
 from lies.library.registry import LibraryCollectionMeta
 from lies.qmd.cli import qmd_query
 from lies.query.index_parser import parse_index_links
@@ -832,64 +830,6 @@ def _qmd_search_dispatch(
         # "no results" so the fallback path runs.
         raise _QmdNoResults("qmd returned no readable pages")
     return pages
-
-
-def _library_collection_configs() -> list[Collection]:
-    """Every collection registered in the library, as :class:`Collection`.
-
-    Deprecated: prefer :func:`lies.library.registry.library_collection_metas`.
-    Retained as a thin adapter for legacy callers that still need a
-    full :class:`Collection` shape (the retriever's matching code
-    accepts :class:`LibraryCollectionMeta` directly, so this adapter
-    is only needed where a downstream consumer reads wiki-yaml fields
-    such as ``source`` / ``scraper_cmd` — and the library layout has
-    none of those).
-
-    Synthesizes a minimal :class:`Collection` whose only meaningful
-    fields for tag resolution are ``name`` and ``tags``. ``tags`` is
-    empty so the implicit-self-tag rule covers every addressable
-    collection by its directory name. The rest of the record's
-    fields are populated with safe sentinels; downstream code that
-    reads ``coll.name`` (the only consumer today) is unaffected.
-
-    Returns an empty list when the library has not been initialized.
-    """
-    from lies.library.paths import Library
-    from lies.library.registry import library_collection_metas
-
-    root = Library.open().collections_root
-    metas = list(library_collection_metas())
-    out: list[Collection] = []
-    for meta in metas:
-        out.append(
-            Collection(
-                name=meta.name,
-                path=root / meta.name,
-                source="",
-                tags=list(meta.tags),
-                scraper_cmd=None,
-                doc_path=None,
-                mapper_model=None,
-                language=None,
-                version="",
-                created_at=datetime.min.replace(tzinfo=UTC),
-                updated_at=datetime.min.replace(tzinfo=UTC),
-                config={},
-            )
-        )
-    return out
-
-
-def _library_initialized() -> bool:
-    """True iff the library's ``collections_root`` exists on disk.
-
-    Deprecated: prefer :func:`lies.library.registry.library_initialized`.
-    Kept as a thin shim so any external caller of the synthesizer
-    private helper does not break.
-    """
-    from lies.library.registry import library_initialized
-
-    return library_initialized()
 
 
 def _collections_matching(tag_filter: ResolvedTagFilter) -> set[str]:

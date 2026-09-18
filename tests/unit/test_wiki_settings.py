@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from lies.collections.record import Collection
+from lies.library.record import LibraryCollectionConfig as Collection
 from lies.wiki_settings import DEFAULT_LANGUAGE, WikiSettings, resolve_language
 from tests.conftest import make_wiki
 
@@ -121,7 +121,6 @@ def _make_collection(wiki, name: str = "test-coll", language: str | None = None)
 
     return Collection(
         name=name,
-        path=wiki.collections_dir / name,
         source="https://example.com",
         tags=[],
         scraper_cmd=None,

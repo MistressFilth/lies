@@ -92,16 +92,16 @@ PARAMETRIZE_COMMAND_HELP_SUBSTRINGS = [
     (["status"], ["Show qmd status"]),
     (["sync"], ["Sync one or all"]),
     (["reindex"], ["Reindex QMD"]),
-    (["collections"], ["Inspect, modify, and author"]),
+    (["library"], ["Inspect and author library-collection configs."]),
     (["mcp"], ["Run the MCP server"]),
     (["flock"], ["Inspect or repair"]),
     (["providers"], ["Manage the user-level providers.toml"]),
-    # collections subcommands
-    (["collections", "list"], ["List every collection"]),
-    (["collections", "show", "mywiki"], ["Show a single collection"]),
-    (["collections", "new"], ["Create a new collection"]),
-    (["collections", "modify", "mywiki"], ["Mutate an existing collection"]),
-    (["collections", "delete", "mywiki"], ["Delete a collection"]),
+    # library subcommands (Task 8: replaces the legacy `collections` sub-app)
+    (["library", "list"], ["List every library collection"]),
+    (["library", "show", "myslug"], ["Show a single collection"]),
+    (["library", "new"], ["Create a new collection config."]),
+    (["library", "modify", "myslug"], ["Mutate an existing collection"]),
+    (["library", "delete", "myslug"], ["Delete a collection's config"]),
     # providers subcommands (existing + new)
     (["providers", "init"], ["Bootstrap providers.toml"]),
     (["providers", "add"], ["Append a provider entry"]),

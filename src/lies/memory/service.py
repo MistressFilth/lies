@@ -424,12 +424,12 @@ class WikiMemoryService:
         self._qmd_update = qmd_update
         self._lock = threading.Lock()
         self._known_evidence: set[str] = set()
-        # Local import: ``lies.collections.registry`` re-exports through
-        # ``lies.collections.__init__`` which imports this module's
+        # Local import: ``lies.wiki.registry`` re-exports through
+        # ``lies.wiki.__init__`` which imports this module's
         # ``WikiMemoryService`` via ``lies.memory.__init__`` — keeping the
         # import at module scope creates a cycle when test files load the
         # registry module in isolation.
-        from lies.collections.registry import Registry
+        from lies.wiki.registry import Registry
 
         on_disk = Registry.load(wiki)
         live = Registry.filter_stale(on_disk, wiki)
@@ -467,7 +467,7 @@ class WikiMemoryService:
         registration immediately.
         """
         # Local import: see ``__init__`` for the cycle rationale.
-        from lies.collections.registry import Registry
+        from lies.wiki.registry import Registry
 
         self._registered[ref.collection_id] = ref
         on_disk = Registry.load(self._wiki)

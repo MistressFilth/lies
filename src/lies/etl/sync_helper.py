@@ -12,7 +12,6 @@ import time
 from datetime import UTC, datetime
 from pathlib import Path
 
-from lies.collections.record import Collection, load_collection
 from lies.etl.heartbeat import (
     MAX_SYNC_AGE_S,
     Heartbeat,
@@ -24,9 +23,11 @@ from lies.etl.heartbeat import (
     write_heartbeat,
 )
 from lies.library import ingest as _library_ingest
+from lies.library.config_io import load_config
 from lies.library.fetcher import ScraperFetcher
 from lies.library.ingest import BatchIngestResult
 from lies.library.paths import Library
+from lies.library.record import LibraryCollectionConfig
 from lies.lock_errors import WikiFlockIndeterminate
 from lies.utils.exclusive import acquire_create_lock
 from lies.wiki.wiki import Wiki
@@ -121,8 +122,9 @@ def release_heartbeat(wiki: Wiki) -> None:
 def collection_names(wiki: Wiki, only: str | None) -> list[str]:
     if only:
         return [only]
-    cfg_dir = wiki.collections_dir
-    return sorted(p.stem for p in cfg_dir.glob("*.yaml"))
+    from lies.library.registry import library_collection_records
+
+    return sorted(r.name for r in library_collection_records())
 
 
 def sync_collection(
@@ -134,27 +136,26 @@ def sync_collection(
     """Sync a single collection into the library.
 
     Wiki is kept as the first parameter for ``--wait`` / ``--fail-busy``
-    semantics and ``--name`` qmd-side resolution (the flock lives on the
-    wiki's ``data_root``), but the WRITE TARGET is the library singleton
-    at ``xdg.data_home() / LIES_DATA_SUBDIR / library``. The collection's
-    registered source (``Collection.source``) is resolved from the wiki's
-    ``collections_dir/<name>.yaml`` and handed to ``run_batch_ingest``
-    along with the library instance and a ``ScraperFetcher``.
+    semantics and qmd-side resolution (the flock lives on the wiki's
+    ``data_root``). The collection's source is resolved from the library's
+    ``<library>/collections/<slug>/config.yaml`` and handed to
+    ``run_batch_ingest`` along with the library instance and a
+    ``ScraperFetcher``.
 
     Returns the :class:`BatchIngestResult` from ``run_batch_ingest`` so
     the CLI can surface non-zero ``result.errors`` to the operator
     instead of silently exiting 0 on a wholly-failed batch.
 
-    ``Collection.scraper_cmd`` is honored: when set, the
+    ``LibraryCollectionConfig.scraper_cmd`` is honored: when set, the
     ``ScraperFetcher`` loads the bespoke scraper instead of falling
-    through to ``pick_scraper``. The :class:`Collection` itself is
-    threaded through so REGISTRY builders (sphinx, liquid, bespoke)
-    that read ``collection.config`` keep working.
+    through to ``pick_scraper``. The record itself is threaded through
+    so REGISTRY builders (sphinx, liquid, bespoke) that read
+    ``collection.config`` keep working.
     """
-    collection: Collection = load_collection(wiki, collection_name)
-    # ``Collection.source`` is a string — either a URL (``http(s)://`` /
-    # ``git@``) or a local filesystem path. ``Path(...)`` mangles
-    # ``https://`` to ``https:/`` on POSIX, which breaks the
+    collection: LibraryCollectionConfig = load_config(collection_name)
+    # ``LibraryCollectionConfig.source`` is a string — either a URL
+    # (``http(s)://`` / ``git@``) or a local filesystem path. ``Path(...)``
+    # mangles ``https://`` to ``https:/`` on POSIX, which breaks the
     # ``pick_scraper`` URL prefix check; keep the URL as a string and
     # wrap local paths in ``Path`` for the ``source_dir`` parameter.
     source = collection.source

@@ -258,14 +258,6 @@ unknown tag: 'opencode'
 the library has no collections; ingest something first (see `lies ingest --help`) before querying with tag filters.
 ```
 
-> **Note:** `lies collections list`, `lies collections show`, the
-> ETL sync helper, and the registry under `<wiki>/.lies/` still
-> surface the legacy `wiki.collections_dir/*.yaml` layout for
-> collection management (CRUD, sync, enrichment). The wiki-yaml
-> layout is **legacy** and is no longer consulted for tag
-> resolution. New content goes to the library via
-> `lies ingest --source ...`.
-
 Notes on the CLI parser: Typer is configured with
 `ignore_unknown_options=True` so the leading `+tag...` token chain
 reaches `parse_query_argv`. The trade-off is that an unknown flag
@@ -300,13 +292,84 @@ The format is also exposed on the MCP `query` response via the `format` field (`
 
 ## Advanced
 
+### Library collections
+
+Collections are global library artifacts. Each named unit lives at
+`$XDG_DATA_HOME/lies/library/collections/<slug>/` and contains:
+
+- The deterministic scraped content (`<slug>.md` mirrors produced by
+  `lies ingest`).
+- A `config.yaml` holding the source URL, tags, scraper settings, and
+  any builder-specific knobs (`Collection.config`).
+
+No per-wiki collection config exists; any wiki can read any library
+collection on demand. Wikis do not own collections — the library is the
+source of truth for collection metadata.
+
+Management surface (`lies library {list,show,where,new,modify,delete,enrich-tags}`):
+
+- `list` / `show` / `where` — read-only: enumerate, summarize, print
+  the on-disk path of every library collection.
+- `new` — bootstrap a fresh collection config from `--source` (URL or
+  path); does not ingest content (use `lies ingest` for that).
+- `modify` — edit one or more `key=value` pairs (`--set KEY=VALUE`,
+  with dotted keys like `config.<subkey>`) or replace the whole record
+  via `--from-file PATH`. Writes immediately through an atomic
+  tmp+rename envelope.
+- `delete` — remove a collection's `config.yaml` (mirror files are not
+  touched; re-ingest with `--force` to overwrite).
+- `enrich-tags` — print one `lies library modify <slug> --set tags=...`
+  hint per collection whose `tags` field is empty. Dry-run by default;
+  the operator runs the printed commands manually. `--apply` is reserved
+  for a future auto-apply and currently raises.
+
+Inspect anything locally:
+
+```bash
+uv run lies library list
+uv run lies library show htmx
+uv run lies library where htmx
+```
+
+### Migrating from per-wiki configs
+
+LIES 0.28.0 moves collection configs out of per-wiki YAMLs and into the
+library. The migration is a one-shot, atomic-per-collection rename:
+
+```bash
+# Preview the moves (no writes):
+uv run lies migrate-collection-configs --dry-run
+
+# Apply the relocation:
+uv run lies migrate-collection-configs --apply
+```
+
+`--apply` walks every wiki under `$XDG_CONFIG_HOME/lies/`, relocates
+each `<wiki>/collections/<slug>.yaml` into the library at
+`$XDG_DATA_HOME/lies/library/collections/<slug>/config.yaml`, and
+deletes the source YAML on success. Each `save_config` is atomic per
+slug via tmp+rename; the full plan is not atomic — a non-collision
+failure in the middle leaves partial state (some library configs
+written, all source YAMLs still on disk). The pre-flight check
+surfaces two abort conditions before any write: duplicate slugs
+across wikis, and library-side collisions (a partial-state re-run
+where some library configs already exist). Pass `--force` to
+overwrite the colliding library configs. A wiki without any per-wiki
+collection YAMLs is a no-op success.
+
+**Upgrading:** run `uv tool upgrade lies` to 0.28.0 first, then run
+the migration above for each install before invoking any
+`lies library` command — fresh installs on 0.28.0+ have no per-wiki
+YAMLs and need no migration.
+
 ### Manual authoring (advanced)
 
 The bootstrap path covers the common case (URL → bare YAML → sync). For
-non-URL corpora or hand-tuned scrapers, write the YAML directly:
+non-URL corpora or hand-tuned scrapers, write the library YAML
+directly:
 
 ```bash
-$EDITOR "$XDG_CONFIG_HOME/lies/$LIES_WIKI_NAME/collections/<name>.yaml"
+$EDITOR "$XDG_DATA_HOME/lies/library/collections/<name>/config.yaml"
 uv run lies sync <name>
 ```
 
@@ -331,7 +394,7 @@ fallback, so a Liquid collection syncs end-to-end without bespoke
 plumbing.
 
 ```yaml
-# <wiki>/.lies/collections/liquid-theme.yaml
+# $XDG_DATA_HOME/lies/library/collections/liquid-theme/config.yaml
 name: liquid-theme
 source: ./raw/themes/dawn
 source_format: liquid
@@ -351,18 +414,16 @@ pandoc unchanged. Liquid tags are preserved as HTML in the rendered
 markdown. This is the zero-config path for collections that already
 deliver pre-rendered HTML.
 
-After the first successful sync, the collection's
-`WikiCollectionRef` is registered with `WikiMemoryService` for this
-wiki root. Inspect with:
+After the first successful sync, the collection's library record is
+registered with the library registry and is addressable from any wiki.
+Inspect with:
 
 ```bash
-uv run lies collections show htmx
+uv run lies library show htmx
 # name=htmx source=https://... tags=['docs']
-# status: registered
 ```
 
-Re-runs are idempotent. The registry is in-memory only; restart
-loses it; the next `sync` re-registers.
+Re-runs are idempotent.
 
 ### Operator: qmd flock
 
@@ -749,8 +810,24 @@ Commands:
 - `lies sync <collection> [--source URL] [--wizard]` — sync one collection into the library, or every collection in the wiki when no positional is given. Pass `--source` to bootstrap a missing YAML (single-collection mode only); `--wizard` routes the bootstrap through `collection_author_agent`. Honors `Collection.scraper_cmd` (bespoke scrapers via `module:attr` / `path.py:attr`) and routes REGISTRY-registered source formats (sphinx / liquid / bespoke) through their builders before falling back to `format_dispatch`. Exits non-zero when the batch reports any `errors`.
 - `lies migrate ingest-to-library [--dry-run|--apply]` — move wiki-resident ingests into the library. Backup duplicates at `<wiki>/.lies/migration-backup/<date>/`. `--dry-run` previews the moves; `--apply` performs one atomic commit per collection (cross-process flock, snapshot/restore on failure) and registers each library-side collection with qmd.
 - `lies reindex --reconcile` — sync each collection.
-- `lies collections list|show|modify` — manage collection configs (modify writes immediately; see `--help`).
-- `lies collections enrich-tags` — print one `lies collections modify <name> --set tags=<comma-separated>` hint per collection whose `tags` field is empty. Dry-run by default; the operator runs the printed commands manually. `--apply` is reserved for a future auto-apply and currently raises.
+- `lies library {list,show,where,new,modify,delete,enrich-tags}` — manage
+  library collection configs (one directory per collection at
+  `$XDG_DATA_HOME/lies/library/collections/<slug>/`, with the config in
+  `config.yaml`). `list` / `show` / `where` are read-only; `new` /
+  `modify` / `delete` mutate (modify writes immediately; see `--help`);
+  `enrich-tags` prints one `lies library modify <slug> --set tags=<comma-separated>`
+  hint per collection whose `tags` field is empty. Dry-run by default;
+  the operator runs the printed commands manually. `--apply` is
+  reserved for a future auto-apply and currently raises.
+- `lies migrate-collection-configs [--dry-run|--apply]` — one-shot
+  relocation of legacy per-wiki collection YAMLs
+  (`$XDG_CONFIG_HOME/lies/<wiki>/collections/<slug>.yaml`) into the
+  library (`$XDG_DATA_HOME/lies/library/collections/<slug>/config.yaml`).
+  `--dry-run` previews the move list; `--apply` performs one atomic
+  rename per collection and updates any wiki-side references. Run this
+  after upgrading to 0.28.0 to lift your existing wikis onto the
+  library-resident layout. See "Migrating from per-wiki configs"
+  below.
 
 ## License
 

@@ -15,7 +15,7 @@ anywhere it appears in the markdown — inline references like
 ``lies sync <collection> --source <source>``, ``lies init <name>``,
 ``lies lint [--fix]`` all count, not just lines whose whole content
 matches the command. The two-segment allowance catches 2-segment subcommands like
-``lies collections new``, ``lies mcp up``, ``lies catalog render``.
+``lies library new``, ``lies mcp up``, ``lies catalog render``.
 
 Exit codes:
 

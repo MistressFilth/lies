@@ -7,15 +7,19 @@ from page-write targets.
 
 ## Path facts
 
-- `collections_dir` — `$XDG_CONFIG_HOME/lies/<wiki>/collections/`
-  YAML files. One per collection; bootstrapped via
-  `lies sync <name> --source <url>`.
 - `wiki_dir` — `$XDG_DATA_HOME/lies/<wiki>/wiki/`
   Derived pages.
 - `raw_dir` — `$XDG_DATA_HOME/lies/<wiki>/raw/<collection>/`
   Immutable source mirrors.
-- `library_root` — `$XDG_DATA_HOME/lies/library/`
-  Cross-wiki raw mirror.
+
+Collections are global library artifacts. Each named unit lives at
+`$XDG_DATA_HOME/lies/library/collections/<slug>/` and contains the
+scraped content plus a `config.yaml` (source URL, tags, scraper
+settings). No per-wiki collection config exists; any wiki can read any
+library collection on demand. New collections land via
+`lies ingest --source <URL> --collection <slug>` (writes content +
+bootstraps config) or `lies library new <slug> --source <URL>` (config
+only).
 
 ## Prompt index
 
@@ -34,5 +38,7 @@ tools respectively; use them when you only need to ask.
 Do not write collection storage paths by analogy with any other
 wiki-side surface. The page-write target (the destination of
 `lies page write`) is a separate concern from where source
-collection YAMLs and raw mirrors live — use the four path
-facts above as the only source of truth.
+collection configs and raw mirrors live — use the path facts
+above as the only source of truth. Collections live in the
+library, not in wikis; there is no per-wiki collection
+directory anymore.

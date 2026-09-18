@@ -8,14 +8,13 @@ import pytest
 
 from lies.builders.errors import BuilderFetchFailed
 from lies.builders.html import HTMLBuilder
-from lies.collections.record import Collection
+from lies.library.record import LibraryCollectionConfig as Collection
 
 
 @pytest.fixture
 def collection(tmp_path: Path) -> Collection:
     return Collection(
         name="x",
-        path=tmp_path,
         source="",
         tags=[],
         scraper_cmd=None,

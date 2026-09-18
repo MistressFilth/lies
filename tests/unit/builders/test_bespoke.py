@@ -9,7 +9,7 @@ import pytest
 
 from lies.builders.base import BuilderRegistry, PassThroughBuilder
 from lies.builders.bespoke import BespokeBuilder, _ext_for
-from lies.collections.record import Collection
+from lies.library.record import LibraryCollectionConfig as Collection
 
 
 def test_ext_for_liquid() -> None:
@@ -20,7 +20,6 @@ def test_ext_for_liquid() -> None:
 def collection(tmp_path: Path) -> Collection:
     return Collection(
         name="bespoke",
-        path=tmp_path,
         source="",
         tags=[],
         scraper_cmd=None,

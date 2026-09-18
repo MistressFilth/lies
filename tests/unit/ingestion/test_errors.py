@@ -1,11 +1,5 @@
 """Typed exception hierarchy for collections, scrapers, and etl packages."""
 
-from lies.collections.errors import (
-    CollectionConfigInvalid,
-    CollectionError,
-    CollectionNameRejected,
-    CollectionNotFound,
-)
 from lies.etl.errors import (
     AtomicCommitFailed,
     BudgetExceeded,
@@ -14,6 +8,12 @@ from lies.etl.errors import (
     QmdStale,
     SyncBusy,
     WriteError,
+)
+from lies.library.errors import (
+    CollectionConfigInvalid,
+    CollectionError,
+    CollectionNameRejected,
+    CollectionNotFound,
 )
 from lies.scrapers.errors import (
     ScraperError,

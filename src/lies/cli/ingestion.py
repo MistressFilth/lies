@@ -7,11 +7,17 @@ ingest lives at ``lies ingest`` (``lies.library.cli``).
 
 from __future__ import annotations
 
+import sys
 from typing import Annotated
 
 import typer
 
 from lies.cli import app
+from lies.library.errors import (
+    CollectionMismatch,
+    WikiLayoutInitFailed,
+    WizardRequiresTTY as _WikiLibraryWizardRequiresTTY,
+)
 
 __all__ = ("sync", "reindex")
 
@@ -37,6 +43,69 @@ def __getattr__(name: str):
 
 def __dir__() -> list[str]:
     return sorted(set(globals().keys()) | {"Orchestrator"})
+
+
+def _ensure_wiki(name: str):
+    """Resolve ``name`` to a Wiki, auto-initializing it if missing.
+
+    Local mirror of the legacy wiki-bootstrap helper. The library
+    cutover dropped the wiki-scoped YAML config bootstrap module that
+    previously owned this function; the body is the same one-liner
+    wrapper over :func:`lies.cli._core._init_wiki_internal`.
+    """
+    from lies import xdg
+    from lies.cli import resolve_wiki
+    from lies.cli._core import _init_wiki_internal
+    from lies.constants import LIES_DATA_SUBDIR
+    from lies.errors import WikiNotRegistered
+    from lies.wiki.wiki import Wiki
+
+    try:
+        return resolve_wiki(name)
+    except WikiNotRegistered:
+        pass
+    wiki = Wiki(
+        name=name,
+        data_root=Wiki.data_root_for(name),
+        config_root=xdg.config_home() / LIES_DATA_SUBDIR / name,
+        cache_root=xdg.cache_home() / LIES_DATA_SUBDIR / name,
+        state_root=xdg.state_home() / LIES_DATA_SUBDIR / name,
+        runtime_root=xdg.runtime_dir_for(name),
+    )
+    try:
+        _init_wiki_internal(wiki)
+    except Exception as exc:
+        raise WikiLayoutInitFailed(name, exc) from exc
+    return resolve_wiki(name)
+
+
+def _bootstrap_wiki_collection(
+    name: str,
+    source: str,
+    *,
+    wizard: bool = False,
+) -> None:
+    """Idempotently ensure a library-collection config exists for ``name``.
+
+    Thin wrapper over :func:`bootstrap_library_collection` that keeps the
+    :class:`WizardRequiresTTY` exception the CLI's ``sync`` command
+    translates into a non-zero exit. The wiki-yaml collection surface is
+    gone post-cutover (Task 8); the sync command bootstraps configs at
+    ``<library>/collections/<slug>/config.yaml`` instead.
+
+    - config exists + ``source`` matches → return.
+    - config exists + ``source`` differs → raise :class:`CollectionMismatch`.
+    - config missing + ``wizard=False`` → write a minimal record.
+    - config missing + ``wizard=True`` → drive the
+      ``collection_author_agent`` interactively.
+    """
+
+    from lies.library.bootstrap import bootstrap_library_collection
+
+    if wizard and not sys.stdin.isatty():
+        raise _WikiLibraryWizardRequiresTTY()
+
+    bootstrap_library_collection(name, source, wizard=wizard)
 
 
 @app.command(
@@ -96,12 +165,6 @@ def sync(
 
     Multi-collection mode (no positional) only iterates existing YAMLs.
     """
-    from lies.collections.bootstrap import bootstrap_collection, ensure_wiki
-    from lies.collections.errors import (
-        CollectionMismatch,
-        WikiLayoutInitFailed,
-        WizardRequiresTTY,
-    )
     from lies.config import get_wiki_name
     from lies.etl.sync_helper import (
         acquire_heartbeat,
@@ -111,7 +174,7 @@ def sync(
     )
 
     try:
-        wiki = ensure_wiki(name or get_wiki_name())
+        wiki = _ensure_wiki(name or get_wiki_name())
     except WikiLayoutInitFailed as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=5)
@@ -124,8 +187,8 @@ def sync(
     try:
         if collection is not None and source is not None:
             try:
-                bootstrap_collection(wiki, collection, source, wizard=wizard)
-            except WizardRequiresTTY:
+                _bootstrap_wiki_collection(collection, source, wizard=wizard)
+            except _WikiLibraryWizardRequiresTTY:
                 typer.echo(
                     "error: --wizard needs a TTY; run interactively "
                     "or omit --wizard for bare scaffold",
@@ -136,7 +199,7 @@ def sync(
                 typer.echo(
                     f"error: collection {collection!r} exists with source "
                     f"{exc.existing_source!r}; requested {exc.requested_source!r}. "
-                    f"Use `lies collections modify --set source=...` to change.",
+                    f"Use `lies library modify {collection} --set source=...` to change.",
                     err=True,
                 )
                 raise typer.Exit(code=3)

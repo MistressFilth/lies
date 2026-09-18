@@ -8,12 +8,12 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from lies.collections.errors import (
+from lies.memory.models import WikiCollectionRef
+from lies.wiki.registry import Registry
+from lies.wiki.registry_errors import (
     RegistryCorrupt,
     RegistryVersionUnsupported,
 )
-from lies.collections.registry import Registry
-from lies.memory.models import WikiCollectionRef
 from tests.conftest import make_wiki
 
 if TYPE_CHECKING:
@@ -143,7 +143,7 @@ def test_save_cleans_temp_on_failure(tmp_path: Path, monkeypatch) -> None:
         "os.replace",
         lambda *_a, **_k: (_ for _ in ()).throw(OSError("boom")),
     )
-    from lies.collections.errors import RegistryWriteFailed
+    from lies.wiki.registry_errors import RegistryWriteFailed
 
     with pytest.raises(RegistryWriteFailed):
         Registry.save(wiki, Registry(collections={"x": _ref("x")}))
@@ -183,3 +183,60 @@ def test_filter_stale_keeps_all_when_all_yamls_exist(tmp_path: Path) -> None:
     reg = Registry(collections={"a": _ref("a"), "b": _ref("b")})
     live = Registry.filter_stale(reg, wiki)
     assert set(live.collections.keys()) == {"a", "b"}
+
+
+def _patch_library(monkeypatch, tmp_path: Path):
+    """Point ``Library.open`` at a tmp collections root."""
+    from lies.library.paths import Library
+
+    lib = Library(
+        collections_root=tmp_path / "library_collections",
+        catalog_path=tmp_path / "library_catalog.db",
+        log_path=tmp_path / "library_log.md",
+        poison_root=tmp_path / "library_poison",
+        git_root=tmp_path,
+    )
+    (lib.collections_root).mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(Library, "open", classmethod(lambda cls: lib))
+    return lib
+
+
+def test_filter_stale_keeps_library_only_post_migration(tmp_path: Path, monkeypatch) -> None:
+    """Post-migration: only library-side config.yaml exists → kept."""
+    _patch_library(monkeypatch, tmp_path)
+    wiki = _wiki(tmp_path)
+    # No wiki-yaml — the migration deleted it. The library config is
+    # the new source of truth.
+    lib_root = tmp_path / "library_collections"
+    (lib_root / "alive").mkdir(parents=True)
+    (lib_root / "alive" / "config.yaml").write_text("name: alive\n", encoding="utf-8")
+    reg = Registry(collections={"alive": _ref("alive"), "ghost": _ref("ghost")})
+    live = Registry.filter_stale(reg, wiki)
+    assert set(live.collections.keys()) == {"alive"}
+
+
+def test_filter_stale_keeps_when_both_wiki_yaml_and_library_config_exist(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Both legacy wiki-yaml and library config.yaml → kept (no double drop)."""
+    _patch_library(monkeypatch, tmp_path)
+    wiki = _wiki(tmp_path)
+    wiki.collections_dir.mkdir(parents=True, exist_ok=True)
+    (wiki.collections_dir / "alive.yaml").write_text("name: alive\n", encoding="utf-8")
+    lib_root = tmp_path / "library_collections"
+    (lib_root / "alive").mkdir(parents=True)
+    (lib_root / "alive" / "config.yaml").write_text("name: alive\n", encoding="utf-8")
+    reg = Registry(collections={"alive": _ref("alive")})
+    live = Registry.filter_stale(reg, wiki)
+    assert set(live.collections.keys()) == {"alive"}
+
+
+def test_filter_stale_drops_when_neither_wiki_yaml_nor_library_config_exists(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Neither location has a config → dropped (genuinely stale)."""
+    _patch_library(monkeypatch, tmp_path)
+    wiki = _wiki(tmp_path)
+    reg = Registry(collections={"ghost": _ref("ghost")})
+    live = Registry.filter_stale(reg, wiki)
+    assert set(live.collections.keys()) == set()
