@@ -93,7 +93,7 @@ class WizardRequiresTTY(CollectionError):
         )
 
 
-class WikiLayoutInitFailed(Exception):
+class WikiLayoutInitFailed(LibraryError):
     """Wiki layout bootstrap raised during auto-init."""
 
     def __init__(self, wiki_name: str, cause: BaseException) -> None:
