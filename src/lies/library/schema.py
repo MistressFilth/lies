@@ -6,7 +6,10 @@ The schema drops two legacy fields at parse time:
   Library collections hold content directly under
   ``<library>/collections/<slug>/``; the record no longer names an
   alternate location.
-- ``config``: dropped when it is empty (``{}`` or absent); non-empty
+- ``config``: empty (``{}``) or absent values are normalized to ``{}``
+  by :func:`lies.library.config_io.load_config` before model validation
+  (the field's ``default_factory=dict`` expects a dict). On dump,
+  ``config`` is always serialized — as ``{}`` when empty. Non-empty
   values are preserved verbatim.
 """
 
