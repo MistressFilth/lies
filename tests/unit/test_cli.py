@@ -548,13 +548,6 @@ def test_lint_missing_roots_errors_with_exit_2(
     assert "no wiki/ or raw/ directory" in result.stderr
 
 
-# Task 4: `lies config` must surface the resolved language.
-# `lies config` reads ``resolve_language(wiki)``; the legacy
-# `lies collections show <name>` test (which read
-# ``resolve_language(wiki, coll)``) was removed when the ``collections``
-# sub-app moved to ``lies library`` (Task 8).
-
-
 def test_lies_config_includes_language(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """``lies config`` output includes ``language: <resolved>``."""
     from typer.testing import CliRunner
