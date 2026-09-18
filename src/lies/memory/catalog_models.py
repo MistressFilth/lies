@@ -78,7 +78,11 @@ class CatalogPage(BaseModel):
 
         if file_path.exists():
             content = file_path.read_text(encoding="utf-8")
-            parsed_title, parsed_type, parsed_updated = _parse_frontmatter(content)
+            parsed = _parse_frontmatter(content)
+            parsed_title = parsed.get("title", "")
+            parsed_type = parsed.get("type", "")
+            parsed_updated = parsed.get("updated", "")
+            parsed_derived_from = parsed.get("derived_from", "")
             body_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
             updated = parsed_updated or date.today().isoformat()  # noqa: DTZ011
             title = parsed_title or slug
@@ -88,6 +92,13 @@ class CatalogPage(BaseModel):
             title = ""
             page_type = ""
             body_hash = ""
+            parsed_derived_from = ""
+
+        # Caller-supplied ``derived_from`` wins over frontmatter so the
+        # in-memory plan (which already knows the cited slugs from
+        # ``build_author_plan``) is the source of truth; only fall back to
+        # the frontmatter extraction when the caller didn't pass one.
+        derived_from_str = derived_from or parsed_derived_from
 
         return cls(
             slug=slug,
@@ -97,30 +108,46 @@ class CatalogPage(BaseModel):
             section=PageSection.wiki,
             updated=updated,
             hash=body_hash,
-            derived_from=derived_from,
+            derived_from=derived_from_str,
         )
 
 
-def _parse_frontmatter(content: str) -> tuple[str, str, str]:
-    """Return (title, type, updated) from the first YAML frontmatter block.
+def _parse_frontmatter(content: str) -> dict[str, str]:
+    """Return the parsed frontmatter dict from the first YAML block.
 
-    Tolerates unparseable input by returning three empty strings.
+    Keys are coerced to strings; the ``derived_from`` list field is
+    normalised to a comma-joined string for storage parity with the
+    catalog column. Tolerates unparseable input by returning an empty
+    dict — callers fall back to slug-as-title / today() / empty strings
+    rather than raise.
     """
     if not content.startswith("---"):
-        return ("", "", "")
+        return {}
     # Start searching past the opening "---\n" (positions 0-3) so we find the
     # closing "\n---" rather than the opening one.
     end = content.find("\n---", 4)
     if end == -1:
-        return ("", "", "")
+        return {}
     fm_text = content[4:end]
     try:
         loaded = yaml.safe_load(fm_text) or {}
     except yaml.YAMLError:
-        return ("", "", "")
+        return {}
     if not isinstance(loaded, dict):
-        return ("", "", "")
-    title = str(loaded.get("title", ""))
-    page_type = str(loaded.get("type", ""))
-    updated = str(loaded.get("updated", ""))
-    return (title, page_type, updated)
+        return {}
+    out: dict[str, str] = {
+        "title": str(loaded.get("title", "")),
+        "type": str(loaded.get("type", "")),
+        "updated": str(loaded.get("updated", "")),
+    }
+    # ``derived_from`` is a list of slugs (per the author-plan frontmatter
+    # shape). Coerce to a comma-joined string so the catalog column's
+    # storage shape (and ``list_provenance_pages``' ``split``) stays consistent.
+    df = loaded.get("derived_from")
+    if isinstance(df, list):
+        out["derived_from"] = ",".join(str(s) for s in df if s)
+    elif df is None:
+        out["derived_from"] = ""
+    else:
+        out["derived_from"] = str(df)
+    return out
