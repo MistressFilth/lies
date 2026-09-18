@@ -347,9 +347,11 @@ uv run lies migrate-collection-configs --apply
 `--apply` walks every wiki under `$XDG_CONFIG_HOME/lies/`, relocates
 each `<wiki>/collections/<slug>.yaml` into the library at
 `$XDG_DATA_HOME/lies/library/collections/<slug>/config.yaml`, and
-updates any in-wiki references in one atomic commit per wiki. A wiki
-without any per-wiki collection YAMLs is a no-op success. Re-runs are
-idempotent; already-migrated collections are skipped.
+deletes the source YAML on success. The migration is atomic per
+slug; a failed relocation leaves the source YAML in place and the
+library untouched. A wiki without any per-wiki collection YAMLs is
+a no-op success. Re-runs are idempotent; already-migrated collections
+are skipped.
 
 **Upgrading:** run `uv tool upgrade lies` to 1.0.0 first, then run
 the migration above for each install before invoking any
