@@ -12,7 +12,9 @@ structured to support it without modification.
 
 from __future__ import annotations
 
+import json
 import sqlite3
+from collections.abc import Iterable
 from dataclasses import dataclass
 
 
@@ -71,4 +73,55 @@ def list_provenance_pages(
     return records
 
 
-__all__ = ("ProvenanceRecord", "list_provenance_pages")
+def render_provenance_tsv(records: Iterable[ProvenanceRecord]) -> str:
+    """Render records as header-less TSV, one row per page.
+
+    Columns: ``slug\ttitle\ttype\tsource_pkg\tupdated\tcsv(sources)``.
+    The trailing comma-joined ``derived_from`` mirrors the catalog's
+    storage shape and is awk/grep-friendly.
+    """
+    lines: list[str] = []
+    for rec in records:
+        sources_csv = ",".join(rec.derived_from)
+        lines.append(
+            "\t".join(
+                (
+                    rec.slug,
+                    rec.title,
+                    rec.type,
+                    rec.source_pkg,
+                    rec.updated,
+                    sources_csv,
+                )
+            )
+        )
+    return "\n".join(lines)
+
+
+def render_provenance_json(records: Iterable[ProvenanceRecord]) -> str:
+    """Render records as a JSON array of objects.
+
+    Shape matches ``lies catalog dump --json`` precedent;
+    ``derived_from`` is a JSON array (not the comma-joined storage
+    string), mirroring the in-memory tuple.
+    """
+    payload = [
+        {
+            "slug": rec.slug,
+            "title": rec.title,
+            "type": rec.type,
+            "source_pkg": rec.source_pkg,
+            "updated": rec.updated,
+            "derived_from": list(rec.derived_from),
+        }
+        for rec in records
+    ]
+    return json.dumps(payload, indent=2)
+
+
+__all__ = (
+    "ProvenanceRecord",
+    "list_provenance_pages",
+    "render_provenance_json",
+    "render_provenance_tsv",
+)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -11,6 +12,8 @@ from lies.memory.catalog_models import CatalogPage
 from lies.memory.provenance import (
     ProvenanceRecord,
     list_provenance_pages,
+    render_provenance_json,
+    render_provenance_tsv,
 )
 
 
@@ -148,3 +151,78 @@ def test_list_derived_from_is_tuple_not_list(catalog_conn) -> None:
     records = list_provenance_pages(catalog_conn)
     for r in records:
         assert isinstance(r.derived_from, tuple)
+
+
+def _sample_records() -> list[ProvenanceRecord]:
+    return [
+        ProvenanceRecord(
+            slug="synthesis/a",
+            title="A title",
+            type="synthesis",
+            source_pkg="default",
+            updated="2026-09-18T00:00:00Z",
+            derived_from=("concept/x", "concept/y"),
+        ),
+        ProvenanceRecord(
+            slug="synthesis/b",
+            title="B title",
+            type="synthesis",
+            source_pkg="default",
+            updated="2026-09-18T01:00:00Z",
+            derived_from=("concept/z",),
+        ),
+    ]
+
+
+def test_render_tsv_one_row_per_page() -> None:
+    out = render_provenance_tsv(_sample_records())
+    assert out.splitlines() == [
+        "synthesis/a\tA title\tsynthesis\tdefault\t2026-09-18T00:00:00Z\tconcept/x,concept/y",
+        "synthesis/b\tB title\tsynthesis\tdefault\t2026-09-18T01:00:00Z\tconcept/z",
+    ]
+
+
+def test_render_tsv_empty_records_is_empty_string() -> None:
+    assert render_provenance_tsv([]) == ""
+
+
+def test_render_tsv_single_source_no_trailing_comma() -> None:
+    recs = [
+        ProvenanceRecord(
+            slug="x",
+            title="X",
+            type="synthesis",
+            source_pkg="p",
+            updated="",
+            derived_from=("only",),
+        ),
+    ]
+    out = render_provenance_tsv(recs)
+    assert out == "x\tX\tsynthesis\tp\t\tonly"
+
+
+def test_render_json_emits_array_of_objects() -> None:
+    out = render_provenance_json(_sample_records())
+    payload = json.loads(out)
+    assert isinstance(payload, list)
+    assert len(payload) == 2
+    assert payload[0] == {
+        "slug": "synthesis/a",
+        "title": "A title",
+        "type": "synthesis",
+        "source_pkg": "default",
+        "updated": "2026-09-18T00:00:00Z",
+        "derived_from": ["concept/x", "concept/y"],
+    }
+
+
+def test_render_json_derived_from_is_array_not_string() -> None:
+    out = render_provenance_json(_sample_records())
+    for row in json.loads(out):
+        assert isinstance(row["derived_from"], list)
+        for s in row["derived_from"]:
+            assert isinstance(s, str)
+
+
+def test_render_json_empty_records_is_empty_array() -> None:
+    assert json.loads(render_provenance_json([])) == []
