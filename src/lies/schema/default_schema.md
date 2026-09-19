@@ -23,6 +23,22 @@ The wiki supports the following page types. Each page lives at
   from a query. Example: `wiki/synthesis/what-is-a-hook.md`. Always
   carries a `derived_from:` list citing the pages that fed it.
 
+## Section contract
+
+Each page type must carry the following `## <Heading>` lines. Lint
+surfaces pages that omit them; the writer refuses to file a page
+that omits them. Sections may appear in any order; additional
+sections are permitted after the required ones. The match is
+literal-substring — `## Evidence` matches, but `### Evidence`,
+`##Evidence`, and `## evidence` do not. Use the exact form below.
+
+- **overview** — `## Scope`, `## Page types`, `## Conventions`
+- **entity** — `## Overview`, `## Description`, `## References`
+- **concept** — `## Definition`, `## Examples`, `## Related`
+- **comparison** — `## Compared`, `## Differences`, `## When to use which`
+- **source** — `## Source`, `## Summary`, `## Pages informed`
+- **synthesis** — `## Thesis`, `## Evidence`, `## Open Questions`
+
 ## Invisible maintenance contract
 
 The agent maintains the wiki invisibly during every interaction. After you ask a question or add a source, the agent proposes a structured `MemoryPlan` (page creates, updates, evidence appends). The host validates the plan, applies it through `WikiMemoryService`, emits one git commit, and appends one line to `<wiki>/.lies/memory_plans.jsonl`.
