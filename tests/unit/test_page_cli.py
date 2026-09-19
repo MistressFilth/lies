@@ -11,6 +11,12 @@ Coverage:
 - ``--force`` overwrites an existing page (one ``file_back_author`` call).
 - ``--dry-run`` validates the plan but never calls ``file_back_author``.
 - ``--collection`` missing exits 2 (typer enforces required options).
+- F17 (Task 5): ``_SectionRefusal`` from ``build_author_plan`` exits 2
+  with the missing-heading message on stderr; ``file_back_author`` is
+  never invoked.
+- F17 (Task 5): ``wiki.section_contract`` is threaded into the
+  ``build_author_plan`` call (production callers see enforcement;
+  the default ``None`` is a no-op per Task 3).
 
 The ``lies.cli.page`` module imports ``Orchestrator`` lazily via a
 module-level ``__getattr__``; tests mock the symbol at the
@@ -81,15 +87,20 @@ def mock_orchestrator() -> MagicMock:
         yield instance
 
 
-def _mock_resolve_wiki(wiki_dir: Path) -> MagicMock:
+def _mock_resolve_wiki(wiki_dir: Path, section_contract=None) -> MagicMock:
     """Return a ``MagicMock`` standing in for the resolved wiki.
 
     Only ``wiki_dir`` is read by the page-write command (and by
-    ``build_author_plan`` via the ``exists`` closure). Other attributes
-    are stubbed so attribute access never raises.
+    ``build_author_plan`` via the ``exists`` closure). The F17 refusal
+    tests pass ``section_contract`` explicitly so the contract check
+    actually fires (a MagicMock's ``__iter__`` yields nothing — Task 3
+    + 4 reports both note the brittleness). Other attributes are
+    stubbed so attribute access never raises.
     """
     wiki = MagicMock()
     wiki.wiki_dir = wiki_dir
+    if section_contract is not None:
+        wiki.section_contract = section_contract
     return wiki
 
 
@@ -261,3 +272,144 @@ def test_write_missing_collection_exits_2(runner: CliRunner, tmp_path: Path) -> 
         ],
     )
     assert result.exit_code == 2
+
+
+# ---------------------------------------------------------------------------
+# F17 Task 5 — refusal surface for ``lies page write``
+# ---------------------------------------------------------------------------
+
+
+def test_write_refuses_missing_sections(
+    runner: CliRunner, mock_orchestrator: MagicMock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F17 Task 5: ``_SectionRefusal`` from ``build_author_plan`` exits 2.
+
+    Mirrors ``test_file_knowledge_refuses_missing_sections`` (Task 4).
+    When the wiki's section contract requires headings the body
+    omits, ``build_author_plan`` returns a ``_SectionRefusal``. The
+    CLI must short-circuit with exit 2 and the missing-heading
+    message preserved on stderr — *before* touching
+    ``Orchestrator.file_back_author``. Without this the refusal would
+    flow through the orchestrator's defensive seam and produce a
+    misleading success-shaped receipt (page_path set, op="create").
+    """
+    from lies.page.author import _SectionRefusal
+
+    refusal = _SectionRefusal(
+        error=("missing required section(s) for synthesis: ## Evidence, ## Open Questions"),
+        page_type="synthesis",
+        slug="what-is-x",
+        title="What is X",
+    )
+    monkeypatch.setattr("lies.cli.page.build_author_plan", lambda **_: refusal)
+
+    body_file = tmp_path / "body.md"
+    body_file.write_text("## Thesis\n\nx\n")
+    wiki_dir = tmp_path / "wiki"
+    wiki_dir.mkdir()
+
+    _register_app()
+    with patch("lies.cli.resolve_wiki", return_value=_mock_resolve_wiki(wiki_dir)):
+        result = runner.invoke(
+            app,
+            [
+                "page",
+                "write",
+                "--collection",
+                "default",
+                "--type",
+                "synthesis",
+                "--slug",
+                "what-is-x",
+                "--title",
+                "What is X",
+                "--body-file",
+                str(body_file),
+            ],
+        )
+
+    # Refusal: exit 2 with the missing-heading message on stderr.
+    assert result.exit_code == 2, result.output
+    joined = result.output
+    assert "## Evidence" in joined
+    assert "## Open Questions" in joined
+    assert "synthesis" in joined
+    # ``file_back_author`` must NOT have been invoked — the CLI
+    # short-circuits before the orchestrator, matching the MCP
+    # behaviour from Task 4.
+    assert mock_orchestrator.file_back_author.call_count == 0
+
+
+def test_write_threads_section_contract_to_plan_builder(
+    runner: CliRunner, mock_orchestrator: MagicMock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F17 Task 5: ``wiki.section_contract`` must reach ``build_author_plan``.
+
+    The wiki's resolved contract (Task 2) is the per-wiki source of
+    truth for required headings. The CLI must thread it into
+    ``build_author_plan`` so production wikis see enforcement; the
+    default-``None`` path (Task 3) is a no-op. We pin the contract
+    on identity (``is``) because ``SectionContract`` is a frozen
+    Pydantic model with structural equality.
+    """
+    from lies.memory.models import (
+        EvidenceAppend,
+        MemoryPlan,
+        PageCreate,
+        PageDelete,
+        PageUpdate,
+    )
+    from lies.page.author import _SectionRefusal
+    from lies.schema.sections import SectionContract
+
+    contract = SectionContract(
+        synthesis=["## Thesis", "## Evidence", "## Open Questions"],
+    )
+    captured: dict[str, object] = {}
+
+    def _capture(**kwargs):
+        captured.update(kwargs)
+        # Return a plan that satisfies everything so the call proceeds.
+        op: PageCreate | PageUpdate | EvidenceAppend | PageDelete = PageCreate(
+            path="default/synthesis/what-is-x.md",
+            content="stub",
+            evidence=["default/what-is-x"],
+            tag="synthesis",
+        )
+        return MemoryPlan(operations=[op], rationale="stub", evidence=["default/what-is-x"])
+
+    monkeypatch.setattr("lies.cli.page.build_author_plan", _capture)
+
+    body_file = tmp_path / "body.md"
+    body_file.write_text("## Thesis\n\nx\n\n## Evidence\n\n[[e]]\n\n## Open Questions\n\nx\n")
+    wiki_dir = tmp_path / "wiki"
+    wiki_dir.mkdir()
+
+    _register_app()
+    with patch(
+        "lies.cli.resolve_wiki",
+        return_value=_mock_resolve_wiki(wiki_dir, section_contract=contract),
+    ):
+        result = runner.invoke(
+            app,
+            [
+                "page",
+                "write",
+                "--collection",
+                "default",
+                "--type",
+                "synthesis",
+                "--slug",
+                "what-is-x",
+                "--title",
+                "What is X",
+                "--body-file",
+                str(body_file),
+            ],
+        )
+
+    assert result.exit_code == 0, result.output
+    assert captured["section_contract"] is contract
+    # Sanity: defensive type-pinning so a future refactor doesn't
+    # silently downgrade to ``None``.
+    assert not isinstance(captured["section_contract"], _SectionRefusal)
