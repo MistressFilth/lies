@@ -119,7 +119,7 @@ class Wiki:
         from lies.schema.sections import SectionContract
 
         # Per-wiki override takes precedence.
-        override_path = self.config_root / "schema.md"
+        override_path = self.schema_path
         if override_path.exists():
             text = override_path.read_text(encoding="utf-8")
             parsed = parse_section_contract(text)
