@@ -282,8 +282,19 @@ def test_empty_corpus_flags_every_wikilink(wiki) -> None:
     assert any("Gamma" in m for m in flagged)
 
 
-def test_lint_flags_synthesis_missing_evidence(wiki) -> None:
-    """A synthesis page without ## Evidence triggers synthesis_missing_evidence."""
+def test_lint_flags_missing_required_section_for_synthesis(wiki) -> None:
+    """A synthesis page lacking the required ``## Thesis`` / ``## Evidence`` /
+    ``## Open Questions`` headings triggers the generalized
+    ``missing_required_section`` finding.
+
+    Replaces the previous synthesis-only ``synthesis_missing_evidence``
+    check (which only watched for ``## Evidence``). The full
+    per-type coverage of the generalized check lives in
+    ``tests/unit/lint/test_missing_required_section.py``; this test
+    stays here as the regression pin against the lint shell's
+    synthesis branch — the original Task 6 retirement of
+    ``synthesis_missing_evidence`` must never be re-emitted.
+    """
     _write(
         wiki,
         "wiki/claude-code/synthesis/what-is-a-hook.md",
@@ -294,11 +305,27 @@ def test_lint_flags_synthesis_missing_evidence(wiki) -> None:
     subprocess.run(["git", "commit", "-m", "seed"], cwd=wiki.data_root, check=True)
 
     report = _build_lint_report(wiki)
-    findings = [f for f in report.findings if f.category == "synthesis_missing_evidence"]
+    # Retired category must never be emitted (Task 6 design).
+    retired = [f for f in report.findings if f.category == "synthesis_missing_evidence"]
+    assert retired == [], (
+        f"synthesis_missing_evidence category was retired in Task 6; got {retired!r}"
+    )
+    # The generalized finding fires instead, naming all three missing
+    # synthesis sections.
+    findings = [f for f in report.findings if f.category == "missing_required_section"]
     assert len(findings) == 1
     finding = findings[0]
     assert "claude-code/synthesis/what-is-a-hook.md" in finding.pages
-    assert finding.safe_to_fix is True
+    # safe_to_fix=False: a missing section is a content gap the
+    # operator must fill — the repair agent's HARD RULE forbids ops on
+    # these. The previous synthesis_missing_evidence finding was
+    # safe_to_fix=True (a heading stub could be inserted); that
+    # ``True`` flag is intentionally retired with the category.
+    assert finding.safe_to_fix is False
+    # All three required headings must be named in the message.
+    assert "## Thesis" in finding.message
+    assert "## Evidence" in finding.message
+    assert "## Open Questions" in finding.message
 
 
 def test_lint_flags_dangling_derived_from(wiki) -> None:

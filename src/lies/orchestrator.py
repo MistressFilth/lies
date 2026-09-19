@@ -54,6 +54,7 @@ from lies.query.citation import Citation, ClaimCitation
 from lies.query.tag_expr import ResolvedTagFilter
 from lies.query.synthesizer import _searched_scope
 from lies.schema import load_schema
+from lies.schema.sections import _missing_required_sections
 from lies.wiki.wiki import Wiki
 from lies.wikilinks import WikiLinkResolver
 from lies.wikilinks import extract_wikilinks as _extract_wikilinks
@@ -159,10 +160,18 @@ def _build_lint_report(
     # nothing (the page lives at ``wiki/concepts/a.md``, not
     # ``wiki/wiki/concepts/a.md``).
     pages: set[str] = set()
+    # ``overview.md`` is the singleton overview page; it is skipped from
+    # the orphan / missing_xref / missing_page universe below (no other
+    # page is expected to link to it as a normal content page) but
+    # re-added to the section-contract scan below, where its
+    # ``type: overview`` contract is in scope.
+    overview_page: str | None = None
     if wiki.wiki_dir.exists():
         for path in wiki.wiki_dir.rglob("*.md"):
             rel = path.relative_to(wiki.wiki_dir).as_posix()
             if rel in {"index.md", "log.md", "lint-report.md", "overview.md"}:
+                if rel == "overview.md":
+                    overview_page = rel
                 continue
             pages.add(rel)
 
@@ -295,40 +304,59 @@ def _build_lint_report(
                     )
                 )
 
-    # Synthesis-page mechanical checks: synthesis_missing_evidence and
-    # dangling_derived_from. A synthesis page's contract (see
-    # ``src/lies/schema/default_schema.md`` and
-    # ``lies.page.build_author_plan``) is: frontmatter ``type: synthesis``
-    # + ``derived_from: list[str]`` of wiki-relative slugs, plus a body
-    # ``## Evidence`` section. The spec'd repairs are mechanical:
-    # ``synthesis_missing_evidence`` appends a ``## Evidence`` block
-    # listing every ``derived_from`` slug (empty section if the list is
-    # empty); ``dangling_derived_from`` removes the dangling slug from
-    # the frontmatter list. Both flip ``safe_to_fix=True`` so the
-    # repair agent can auto-close them.
+    # Generalized per-page section-contract check + synthesis-only
+    # ``dangling_derived_from``. The contract (see
+    # ``src/lies/schema/default_schema.md`` → ``## Section contract``,
+    # resolved via ``Wiki.section_contract``) declares per-type
+    # required ``## <Heading>`` lines for all six page types. A page
+    # whose ``type:`` is in the contract but whose body is missing one
+    # or more required headings emits a single ``missing_required_section``
+    # finding naming every missing heading. ``safe_to_fix=False``: a
+    # missing section is a content gap the operator must fill — the
+    # repair agent's HARD RULE forbids ops on these.
     #
-    # Read each synthesis page once: a single ``read_text`` per page
-    # feeds the type check, the body ``## Evidence`` check, and the
-    # ``derived_from`` slug resolution — the previous 3-pass loop
-    # opened and closed each file three times, which adds up on large
-    # wikis without any semantic gain.
-    for page in pages:
+    # ``dangling_derived_from`` stays synthesis-only and mechanical:
+    # removing a dangling slug from the frontmatter list is a
+    # reversible string edit, so it stays ``safe_to_fix=True``.
+    #
+    # A single ``read_text`` per page feeds both checks: the body
+    # section scan and the ``derived_from`` slug resolution share
+    # one disk read — the previous 3-pass loop opened and closed each
+    # file three times without semantic gain.
+    section_contract = wiki.section_contract
+    # Section-contract scan covers the regular ``pages`` set PLUS the
+    # singleton ``overview.md`` (re-added above; it's skipped from the
+    # orphan / xref / page checks because no content page is expected
+    # to link to it). The ``dangling_derived_from`` scan is synthesis-
+    # only and stays tied to ``pages``.
+    section_pages = set(pages)
+    if overview_page is not None:
+        section_pages.add(overview_page)
+    for page in section_pages:
         try:
             text = (wiki.wiki_dir / page).read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError):
             continue
-        if _extract_frontmatter_type(text) != "synthesis":
-            continue
-        if "## Evidence" not in _strip_frontmatter(text):
-            findings.append(
-                LintFinding(
-                    severity=LintSeverity.MEDIUM,
-                    category="synthesis_missing_evidence",
-                    pages=[page],
-                    message=f"synthesis page {page} lacks ## Evidence section",
-                    safe_to_fix=True,
-                )
+        page_type = _extract_frontmatter_type(text)
+        if page_type is not None:
+            missing = _missing_required_sections(
+                page_type, section_contract, _strip_frontmatter(text)
             )
+            if missing:
+                findings.append(
+                    LintFinding(
+                        severity=LintSeverity.MEDIUM,
+                        category="missing_required_section",
+                        pages=[page],
+                        message=(
+                            f"{page} ({page_type}) missing required section(s): "
+                            f"{', '.join(missing)}"
+                        ),
+                        safe_to_fix=False,
+                    )
+                )
+        if page_type != "synthesis":
+            continue
         for slug in _extract_frontmatter_derived_from(text):
             if not (wiki.wiki_dir / f"{slug}.md").exists():
                 findings.append(
