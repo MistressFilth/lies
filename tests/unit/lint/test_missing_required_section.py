@@ -11,10 +11,10 @@ Coverage matrix:
 |--------------|--------------------------------------------------|
 | overview     | Scope, Page types, Conventions                    |
 | entity       | Overview, Description, References                 |
-| concept      | Definition, Examples, Related                    |
+| concept      | Definition, Examples, Related                     |
 | comparison   | Compared, Differences, When to use which         |
-| source       | Source, Summary, Pages informed                  |
-| synthesis    | Thesis, Evidence, Open Questions                 |
+| source       | Source, Summary, Pages informed                   |
+| synthesis    | Thesis, Evidence, Open Questions                  |
 
 The deterministic shell emits one ``missing_required_section`` finding per
 violating page, with all missing headings named in the message and
@@ -72,15 +72,64 @@ def _commit(wiki) -> None:
     subprocess.run(["git", "commit", "-m", "seed"], cwd=wiki.data_root, check=True)
 
 
-# ---------- per-type coverage ----------
+# ---------- per-type coverage (parametrized over the contract matrix) ----------
 
 
-def test_flags_missing_required_section_for_concept(wiki) -> None:
-    """A concept page missing ## Definition / ## Examples / ## Related triggers the finding."""
+@pytest.mark.parametrize(
+    ("page_type", "rel_path", "frontmatter", "missing_headings"),
+    [
+        (
+            "concept",
+            "concepts/hooks.md",
+            "title: Hooks\ntype: concept",
+            ["## Definition", "## Examples", "## Related"],
+        ),
+        (
+            "entity",
+            "entities/postgres.md",
+            "title: Postgres\ntype: entity",
+            ["## Overview", "## Description", "## References"],
+        ),
+        (
+            "comparison",
+            "comparisons/postgres-vs-mysql.md",
+            "title: Postgres vs MySQL\ntype: comparison",
+            ["## Compared", "## Differences", "## When to use which"],
+        ),
+        (
+            "source",
+            "sources/karpathy.md",
+            "title: Karpathy\ntype: source",
+            ["## Source", "## Summary", "## Pages informed"],
+        ),
+        (
+            "synthesis",
+            "claude-code/synthesis/what-is-a-hook.md",
+            "title: What is a hook\ntype: synthesis\ntags: [synthesis]\nderived_from:\n  - claude-code/concepts/hooks",
+            ["## Thesis", "## Evidence", "## Open Questions"],
+        ),
+        (
+            "overview",
+            "overview.md",
+            "title: Overview\ntype: overview",
+            ["## Scope", "## Page types", "## Conventions"],
+        ),
+    ],
+    ids=["concept", "entity", "comparison", "source", "synthesis", "overview"],
+)
+def test_flags_missing_required_section_per_type(
+    wiki, page_type, rel_path, frontmatter, missing_headings
+) -> None:
+    """A page whose ``type:`` has a contract but whose body omits every
+    required heading emits one ``missing_required_section`` finding naming
+    every missing heading. ``safe_to_fix=False`` — a contract violation is
+    a content gap the operator must write; the repair agent's HARD RULE
+    forbids ops on these.
+    """
     _write(
         wiki,
-        "wiki/concepts/hooks.md",
-        "---\ntitle: Hooks\ntype: concept\n---\n# Hooks\n\nSome prose.\n",
+        f"wiki/{rel_path}",
+        f"---\n{frontmatter}\n---\n# body\n\nprose.\n",
     )
     _commit(wiki)
 
@@ -90,121 +139,11 @@ def test_flags_missing_required_section_for_concept(wiki) -> None:
         f"{[f.message for f in findings]}"
     )
     finding = findings[0]
-    assert "concepts/hooks.md" in finding.pages
-    # All three required headings must be named in the message — the
-    # operator gets a single-shot checklist rather than three separate
-    # findings to wade through.
-    assert "## Definition" in finding.message
-    assert "## Examples" in finding.message
-    assert "## Related" in finding.message
-    # A contract violation is content the operator must write; the
-    # repair agent's HARD RULE forbids ops on these.
-    assert finding.safe_to_fix is False
-
-
-def test_flags_missing_required_section_for_entity(wiki) -> None:
-    """An entity page missing ## Overview / ## Description / ## References triggers the finding."""
-    _write(
-        wiki,
-        "wiki/entities/postgres.md",
-        "---\ntitle: Postgres\ntype: entity\n---\n# Postgres\n\nprose.\n",
-    )
-    _commit(wiki)
-
-    findings = _missing_required_section_findings(_build_lint_report(wiki))
-    assert len(findings) == 1
-    finding = findings[0]
-    assert "entities/postgres.md" in finding.pages
-    assert "## Overview" in finding.message
-    assert "## Description" in finding.message
-    assert "## References" in finding.message
-    assert finding.safe_to_fix is False
-
-
-def test_flags_missing_required_section_for_comparison(wiki) -> None:
-    """A comparison page missing all three required sections triggers the finding."""
-    _write(
-        wiki,
-        "wiki/comparisons/postgres-vs-mysql.md",
-        "---\ntitle: Postgres vs MySQL\ntype: comparison\n---\n# Postgres vs MySQL\n\nprose.\n",
-    )
-    _commit(wiki)
-
-    findings = _missing_required_section_findings(_build_lint_report(wiki))
-    assert len(findings) == 1
-    finding = findings[0]
-    assert "comparisons/postgres-vs-mysql.md" in finding.pages
-    assert "## Compared" in finding.message
-    assert "## Differences" in finding.message
-    assert "## When to use which" in finding.message
-    assert finding.safe_to_fix is False
-
-
-def test_flags_missing_required_section_for_source(wiki) -> None:
-    """A source page missing ## Source / ## Summary / ## Pages informed triggers the finding."""
-    _write(
-        wiki,
-        "wiki/sources/karpathy.md",
-        "---\ntitle: Karpathy\ntype: source\n---\n# Karpathy\n\nprose.\n",
-    )
-    _commit(wiki)
-
-    findings = _missing_required_section_findings(_build_lint_report(wiki))
-    assert len(findings) == 1
-    finding = findings[0]
-    assert "sources/karpathy.md" in finding.pages
-    assert "## Source" in finding.message
-    assert "## Summary" in finding.message
-    assert "## Pages informed" in finding.message
-    assert finding.safe_to_fix is False
-
-
-def test_flags_missing_required_section_for_synthesis(wiki) -> None:
-    """A synthesis page missing all three required sections triggers the finding.
-
-    Replaces the old ``synthesis_missing_evidence`` check (which only
-    looked for ``## Evidence``). The generalized check covers the full
-    synthesis contract: ``## Thesis`` / ``## Evidence`` /
-    ``## Open Questions``.
-    """
-    _write(
-        wiki,
-        "wiki/claude-code/synthesis/what-is-a-hook.md",
-        "---\ntitle: What is a hook\ntype: synthesis\ntags: [synthesis]\n"
-        "derived_from:\n  - claude-code/concepts/hooks\n---\n"
-        "# What is a hook\n\nA hook intercepts events.\n",
-    )
-    _commit(wiki)
-
-    findings = _missing_required_section_findings(_build_lint_report(wiki))
-    assert len(findings) == 1
-    finding = findings[0]
-    assert "claude-code/synthesis/what-is-a-hook.md" in finding.pages
-    assert "## Thesis" in finding.message
-    assert "## Evidence" in finding.message
-    assert "## Open Questions" in finding.message
-    assert finding.safe_to_fix is False
-
-
-def test_flags_missing_required_section_for_overview(wiki) -> None:
-    """The single overview page missing required sections triggers the finding.
-
-    Overview lives at ``wiki/overview.md`` (singleton per Task 3).
-    """
-    _write(
-        wiki,
-        "wiki/overview.md",
-        "---\ntitle: Overview\ntype: overview\n---\n# Overview\n\nprose.\n",
-    )
-    _commit(wiki)
-
-    findings = _missing_required_section_findings(_build_lint_report(wiki))
-    assert len(findings) == 1
-    finding = findings[0]
-    assert "overview.md" in finding.pages
-    assert "## Scope" in finding.message
-    assert "## Page types" in finding.message
-    assert "## Conventions" in finding.message
+    assert rel_path in finding.pages
+    for heading in missing_headings:
+        assert heading in finding.message, (
+            f"missing heading {heading!r} must appear in finding.message"
+        )
     assert finding.safe_to_fix is False
 
 
@@ -257,38 +196,28 @@ def test_no_finding_when_all_required_sections_present(wiki) -> None:
 # ---------- type-less / unknown-type / empty-contract edges ----------
 
 
-def test_typeless_page_is_skipped(wiki) -> None:
-    """A page without a ``type:`` frontmatter is skipped silently.
-
-    The lint shell cannot know which contract to apply, and the
-    writer-level refusal seam (``build_author_plan``) raises
-    ``WikiPlanInvalid`` for typeless writes before they ever reach disk
-    in the production flow. Pages without a ``type:`` that survived to
-    the lint pass are out-of-band — surfacing them here would be noise.
+@pytest.mark.parametrize(
+    ("rel_path", "frontmatter"),
+    [
+        # No ``type:`` field — the lint shell has nothing to look up
+        # in the contract. The writer-level refusal seam
+        # (``build_author_plan``) raises ``WikiPlanInvalid`` for
+        # typeless writes before they ever reach disk in production.
+        ("wiki/concepts/anonymous.md", "---\ntitle: Anonymous\n---\n# Anonymous\n\nprose.\n"),
+        # ``type: widget`` is not in the six-page-type contract. The
+        # shell yields an empty required list and emits no finding —
+        # other categories like ``orphan`` still apply.
+        ("wiki/concepts/exotic.md", "---\ntitle: Exotic\ntype: widget\n---\n# Exotic\n\nprose.\n"),
+    ],
+    ids=["typeless_page", "unknown_type"],
+)
+def test_out_of_band_type_is_skipped(wiki, rel_path, frontmatter) -> None:
+    """A page with no resolvable ``type:`` (missing, or pointing at a
+    value outside the six-page-type contract) is silently skipped by
+    the lint shell. Surfacing it here would be noise — the writer
+    refusal seam is the production gate for these cases.
     """
-    _write(
-        wiki,
-        "wiki/concepts/anonymous.md",
-        "---\ntitle: Anonymous\n---\n# Anonymous\n\nprose.\n",
-    )
-    _commit(wiki)
-
-    assert _missing_required_section_findings(_build_lint_report(wiki)) == []
-
-
-def test_unknown_type_is_skipped(wiki) -> None:
-    """A page whose ``type:`` is not in the contract is skipped silently.
-
-    The six-page-type contract is the lint shell's source of truth; an
-    out-of-band ``type:`` value yields an empty required list and no
-    finding — the operator gets a clean pass for that page (other
-    categories like ``orphan`` still apply).
-    """
-    _write(
-        wiki,
-        "wiki/concepts/exotic.md",
-        "---\ntitle: Exotic\ntype: widget\n---\n# Exotic\n\nprose.\n",
-    )
+    _write(wiki, rel_path, frontmatter)
     _commit(wiki)
 
     assert _missing_required_section_findings(_build_lint_report(wiki)) == []

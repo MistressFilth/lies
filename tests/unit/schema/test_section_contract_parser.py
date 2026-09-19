@@ -59,28 +59,24 @@ def test_absent_block_returns_empty():
     assert contract.for_type("entity") == []
 
 
-def test_unknown_type_raises():
-    bad = "## Section contract\n\n- **widget** — `## Foo`\n"
+@pytest.mark.parametrize(
+    "bad_doc",
+    [
+        "## Section contract\n\n- **widget** — `## Foo`\n",  # unknown type
+        "## Section contract\n\n- **entity** — `## Overview`\n- **entity** — `## Notes`\n",  # duplicate type
+        "## Section contract\n\n- **entity** — Overview, Description\n",  # missing backticks
+        "## Section contract\n\n- **entity** — `## `, `## Notes`\n",  # empty heading
+    ],
+    ids=["unknown_type", "duplicate_type", "missing_backticks", "empty_heading"],
+)
+def test_malformed_block_raises(bad_doc: str):
+    """Every malformed ``## Section contract`` block raises
+    ``SchemaSectionContractInvalid`` — the parser is strict about page
+    type membership, duplicates, backtick wrapping, and non-empty
+    headings. Each id pins a distinct failure mode.
+    """
     with pytest.raises(SchemaSectionContractInvalid):
-        parse_section_contract(bad)
-
-
-def test_duplicate_type_raises():
-    bad = "## Section contract\n\n- **entity** — `## Overview`\n- **entity** — `## Notes`\n"
-    with pytest.raises(SchemaSectionContractInvalid):
-        parse_section_contract(bad)
-
-
-def test_missing_backticks_raises():
-    bad = "## Section contract\n\n- **entity** — Overview, Description\n"
-    with pytest.raises(SchemaSectionContractInvalid):
-        parse_section_contract(bad)
-
-
-def test_empty_heading_inside_backticks_raises():
-    bad = "## Section contract\n\n- **entity** — `## `, `## Notes`\n"
-    with pytest.raises(SchemaSectionContractInvalid):
-        parse_section_contract(bad)
+        parse_section_contract(bad_doc)
 
 
 def test_two_blocks_second_wins():

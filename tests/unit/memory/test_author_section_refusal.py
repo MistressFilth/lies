@@ -96,18 +96,30 @@ def test_build_author_plan_passes_when_complete(contract: SectionContract) -> No
     assert plan.operations  # plan built normally
 
 
-def test_build_author_plan_no_contract_means_no_enforcement() -> None:
-    """Default (None) section_contract skips enforcement entirely.
-
-    Existing F39 callers don't pass ``section_contract``; their
-    bodies don't carry the required headings. To avoid a behaviour
-    change for those callers, ``None`` (the default) disables the
-    refusal seam — the writer behaves as before. Tasks 4 and 5 wire
-    the wiki-level contract through the MCP/CLI call sites.
+@pytest.mark.parametrize(
+    ("page_type", "body", "section_contract"),
+    [
+        # No section_contract (default-None): existing F39 callers that
+        # don't pass ``section_contract`` see no behaviour change —
+        # the refusal seam is disabled.
+        ("entity", "## Overview\n\nx\n", None),
+        # Empty contract: the per-wiki schema has no required
+        # headings, so any body passes.
+        ("entity", "anything goes", SectionContract()),
+    ],
+    ids=["no_contract_default", "empty_contract"],
+)
+def test_build_author_plan_no_enforcement_when_contract_allows(
+    page_type: str, body: str, section_contract: SectionContract | None
+) -> None:
+    """When the contract permits the body — either ``None`` (no
+    contract threaded) or an explicitly empty contract — ``build_author_plan``
+    returns a ``MemoryPlan`` and never a ``_SectionRefusal``. The two
+    ids pin distinct contract-resolution paths (default vs explicit
+    empty) that callers depend on.
     """
-    body = "## Overview\n\nx\n"  # incomplete; would be refused with a contract
     plan = build_author_plan(
-        type="entity",
+        type=page_type,
         collection="default",
         slug="widget",
         title="Widget",
@@ -117,28 +129,7 @@ def test_build_author_plan_no_contract_means_no_enforcement() -> None:
         sources=[],
         exists=_exists_always_false,
         sha_lookup=_sha_lookup,
-        # section_contract omitted intentionally
-    )
-    assert isinstance(plan, MemoryPlan)
-    assert not isinstance(plan, _SectionRefusal)
-
-
-def test_build_author_plan_empty_contract_passes() -> None:
-    """Empty contract (all lists empty) is a no-op — passes any body."""
-    body = "anything goes"
-    empty = SectionContract()
-    plan = build_author_plan(
-        type="entity",
-        collection="c",
-        slug="s",
-        title="T",
-        body=body,
-        derived_from=[],
-        tags=[],
-        sources=[],
-        exists=_exists_always_false,
-        sha_lookup=_sha_lookup,
-        section_contract=empty,
+        section_contract=section_contract,
     )
     assert isinstance(plan, MemoryPlan)
     assert not isinstance(plan, _SectionRefusal)
@@ -180,8 +171,8 @@ def orch_with_magic_memory(monkeypatch: pytest.MonkeyPatch):
 
     The defensive seam only inspects the plan type; if it's a
     ``_SectionRefusal`` the receipt is returned without touching the
-    memory service. We stub ``apply_plan`` so we can confirm that
-    branch is skipped.
+    memory service. ``apply_plan`` is stubbed so the test confirms
+    that branch is skipped on refusal.
     """
     wiki = MagicMock()
     with patch("lies.orchestrator.Orchestrator.__init__", lambda self, wiki: None):
@@ -194,13 +185,9 @@ def orch_with_magic_memory(monkeypatch: pytest.MonkeyPatch):
 def test_file_back_author_refuses_when_plan_carries_refusal(
     orch_with_magic_memory: Orchestrator, contract: SectionContract
 ) -> None:
-    """A refusal passed into ``file_back_author`` short-circuits to a receipt.
-
-    This is the defensive belt-and-braces seam: even if a
-    ``_SectionRefusal`` reaches ``file_back_author`` from somewhere
-    other than ``build_author_plan`` (e.g. a future caller), the
-    orchestrator must surface it as an errors-as-value receipt
-    rather than crashing the apply-with-retry loop.
+    """Defensive seam: a ``_SectionRefusal`` reaching ``file_back_author``
+    (e.g. from a future caller) must surface as an errors-as-value
+    ``MemoryReceipt`` rather than crashing the apply-with-retry loop.
     """
     refusal = _SectionRefusal(
         error="missing required section(s) for synthesis: ## Evidence, ## Open Questions",
@@ -259,15 +246,11 @@ def test_file_back_author_normal_path_unchanged(
 def orch_with_real_section_contract(tmp_path):
     """Stub orchestrator whose ``wiki`` carries a real ``SectionContract``.
 
-    The existing ``orch_with_magic_memory`` fixture uses
-    ``MagicMock()`` for ``wiki``, which means
-    ``self.wiki.section_contract`` is itself a ``MagicMock`` whose
-    ``__iter__`` yields nothing — so ``_missing_required_sections``
-    returns ``[]`` and the refusal seam never fires through
-    ``file_back_synthesis``. This fixture swaps in a real
-    ``SectionContract`` so the production wiring
-    (``Orchestrator.file_back_synthesis`` threading
-    ``section_contract=self.wiki.section_contract`` into
+    ``orch_with_magic_memory`` uses ``MagicMock()`` for ``wiki``, so
+    ``self.wiki.section_contract.__iter__`` yields nothing and the
+    refusal seam never fires through ``file_back_synthesis``. This
+    fixture swaps in a real ``SectionContract`` so the production
+    wiring (threading ``self.wiki.section_contract`` into
     ``build_author_plan``) is exercised end-to-end.
     """
     contract = SectionContract(
