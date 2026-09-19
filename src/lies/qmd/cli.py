@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from lies.qmd import _proc
+from lies.qmd._models import ReindexResult
 from lies.qmd.lock import with_qmd_lock
 
 # Real `qmd query --format json` returns each hit's `file` field as
@@ -253,6 +254,75 @@ def qmd_cleanup(cwd: Path) -> None:
             output=result.stdout,
             stderr=result.stderr,
         )
+
+
+@with_qmd_lock()
+def qmd_reindex(
+    cwd: Path,
+    *,
+    embed: bool = False,
+    cleanup: bool = False,
+    all_: bool = False,
+    force: bool = False,
+) -> ReindexResult:
+    """Restore the qmd index; gate destructive stages.
+
+    PR #17 deleted this as dead code. F38 restores it as the work
+    layer for ``lies reindex`` and the MCP ``reindex`` tool.
+
+    Flags:
+        embed — re-embed stale chunks (non-destructive).
+        cleanup — drop orphan rows before reindex (destructive).
+        all_ — full rebuild: cleanup + reindex + embed (destructive).
+        force — drop qmd's cached state and rebuild from scratch
+                (non-destructive per ask's classification; the cache
+                rebuild is idempotent).
+
+    Returns ``ReindexResult`` with the stages that ran. Failures are
+    collected as ``errors`` rather than raised; the caller decides
+    whether to surface them. Subsequent stages are skipped on prior
+    failure so the envelope doesn't accumulate cascading errors from
+    a half-broken qmd state.
+    """
+    result = ReindexResult()
+    errors: list[str] = []
+
+    if cleanup or all_:
+        cleanup_result = _proc.run(["cleanup"], cwd=cwd)
+        if cleanup_result.returncode != 0:
+            errors.append(f"cleanup: {cleanup_result.stderr.strip()}")
+        else:
+            result.cleaned = True
+
+    # Subsequent stages only run if no prior stage failed. ``force``
+    # itself is non-destructive (cache rebuild is idempotent), so it
+    # runs even after a cleanup failure — the operator still wants
+    # the cache cleared regardless.
+    if force:
+        cache_dir = cwd / ".qmd" / "cache"
+        if cache_dir.exists():
+            import shutil
+
+            shutil.rmtree(cache_dir)
+
+    if not errors:
+        update_result = _proc.run(["update"], cwd=cwd)
+        if update_result.returncode != 0:
+            errors.append(f"update: {update_result.stderr.strip()}")
+        else:
+            result.indexed = True
+
+    if (all_ or embed) and not errors:
+        # Without a collection name, qmd embed accepts no -c; we invoke
+        # ``qmd embed`` to re-embed every registered collection.
+        embed_result = _proc.run(["embed"], cwd=cwd, timeout=1800)
+        if embed_result.returncode != 0:
+            errors.append(f"embed: {embed_result.stderr.strip()}")
+        else:
+            result.embedded = True
+
+    result.errors = errors
+    return result
 
 
 def is_qmd_installed() -> bool:
