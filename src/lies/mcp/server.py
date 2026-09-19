@@ -22,6 +22,7 @@ from typing import Any, Literal, cast
 
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
+from mcp.types import ToolAnnotations
 from pydantic import BaseModel, ConfigDict
 from pydantic import Field
 
@@ -248,6 +249,75 @@ async def _confirm_destructive(ctx: Context, message: str) -> str | None:
     if result.data is None or not result.data.confirm:
         return "operation declined by user"
     return None
+
+
+# ---------------------------------------------------------------------------
+# reindex — rebuild qmd index; gate destructive flags (F38)
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool(
+    description=(
+        "Reindex QMD collections. --cleanup/--all are destructive and "
+        "elicit confirmation. Returns ReindexResult with reconciled/"
+        "indexed/embedded/cleaned flags and errors list."
+    ),
+    annotations=ToolAnnotations(
+        title="Reindex: rebuild QMD index",
+        destructive_hint=True,
+    ),
+)
+async def reindex(
+    cleanup: bool = False,
+    all_: bool = False,
+    embed: bool = False,
+    force: bool = False,
+    reconcile: bool = False,
+    name: str | None = None,
+    ctx: Context | None = None,  # type: ignore[valid-type]
+) -> dict[str, object]:
+    """Rebuild qmd index; gate destructive flags.
+
+    Mirrors ``lies reindex`` CLI. Destructive flags (``cleanup`` /
+    ``all_``) elicit confirmation via ``_confirm_destructive``. Decline
+    or elicit unavailable → no work runs, error returned in the
+    ``ReindexResult`` envelope. ``ToolAnnotations(destructive_hint=True)``
+    signals the destructive nature to host UIs even when the user hasn't
+    passed the destructive flags yet (the gate runs before qmd).
+    """
+    from lies.etl.sync_helper import collection_names, sync_collection
+    from lies.qmd import _models
+    from lies.qmd.cli import qmd_reindex
+
+    wiki = resolve_wiki(name)
+
+    # Optional pre-step: sync each collection before reindex so the
+    # rebuild sees fresh raw mirrors. Mirrors ``lies reindex --reconcile``.
+    if reconcile:
+        for coll_name in collection_names(wiki, None):
+            sync_collection(wiki, coll_name, force=False)
+
+    # Gate destructive flags. Skip the elicit when no ``ctx`` is
+    # available (e.g. programmatic invocations through a non-MCP path)
+    # — that mirrors the CLI's "no TTY" branch in spirit: the operator
+    # must explicitly opt in, but a missing host cannot elicit.
+    if (cleanup or all_) and ctx is not None:
+        if all_:
+            prompt = "Reindex --all will run cleanup + reindex + embed (full rebuild). Confirm?"
+        else:
+            prompt = "Cleanup will vacuum the FTS5 db and drop orphan rows. Confirm?"
+        decision = await _confirm_destructive(ctx, prompt)
+        if decision is not None:
+            return _models.ReindexResult(errors=[decision]).model_dump()
+
+    result = qmd_reindex(
+        wiki.wiki_dir,
+        embed=embed,
+        cleanup=cleanup,
+        all_=all_,
+        force=force,
+    )
+    return result.model_dump()
 
 
 @mcp.tool(
