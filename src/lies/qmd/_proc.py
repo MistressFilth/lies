@@ -19,5 +19,10 @@ def run(args: list[str], cwd: Path, timeout: int = 300) -> subprocess.CompletedP
     ``_proc.run`` does not raise. Tests mock this function.
     """
     return subprocess.run(
-        args, cwd=cwd, timeout=timeout, check=False, capture_output=True, text=True
+        ["qmd", *args],
+        cwd=cwd,
+        timeout=timeout,
+        check=False,
+        capture_output=True,
+        text=True,
     )

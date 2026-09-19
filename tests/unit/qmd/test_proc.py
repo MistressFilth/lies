@@ -21,7 +21,7 @@ def test_run_invokes_subprocess_run_with_args_and_cwd(tmp_path: Path) -> None:
         result = _proc.run(["status"], cwd=tmp_path, timeout=10)
     mock_run.assert_called_once()
     args, kwargs = mock_run.call_args
-    assert args[0] == ["status"]
+    assert args[0] == ["qmd", "status"]
     assert kwargs["cwd"] == tmp_path
     assert kwargs["timeout"] == 10
     assert kwargs["check"] is False
