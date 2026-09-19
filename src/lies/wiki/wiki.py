@@ -4,12 +4,17 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from functools import cached_property
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from lies import xdg
 from lies.constants import LIES_DATA_SUBDIR
 from lies.errors import WikiNotRegistered
 from lies.wiki.validation import validate_name
+
+if TYPE_CHECKING:
+    from lies.schema.sections import SectionContract
 
 
 # Per-name migration fallback table. Maps wiki name -> a no-arg callable
@@ -80,6 +85,57 @@ class Wiki:
     @property
     def schema_path(self) -> Path:
         return self.config_root / "schema.md"
+
+    @cached_property
+    def section_contract(self) -> SectionContract:
+        """Resolved per-type required-section contract.
+
+        Resolution order:
+          1. per-wiki ``schema.md`` (operator override)
+          2. shipped ``default_schema.md``
+          3. empty contract (no enforcement)
+
+        Cached for the lifetime of the :class:`Wiki` instance; one
+        parser call per wiki open.
+
+        Override semantics (per F17 design): full-replacement, not
+        merge. An override file with a ``## Section contract`` block
+        replaces the default wholesale — types omitted from the
+        block lose their required sections. An override file
+        without the block falls back to the default.
+
+        Limitation: detection of "block present" uses the heuristic
+        ``any(for_type(t) for t in fields)``. An override declaring
+        every type as ``(none)`` will fall back to default. This is
+        not exercised by the override tests; if it matters, add
+        a sibling ``has_section_contract_block(markdown)`` helper
+        to ``lies.schema.loader`` and switch this check to it.
+        """
+        # Local import to keep the monkeypatch target
+        # (``lies.schema.loader.parse_section_contract``) effective
+        # against the caching test, and to defer the import past
+        # wiki-class definition (loader.py imports :class:`Wiki`).
+        from lies.schema.loader import parse_section_contract
+        from lies.schema.sections import SectionContract
+
+        # Per-wiki override takes precedence.
+        override_path = self.schema_path
+        if override_path.exists():
+            text = override_path.read_text(encoding="utf-8")
+            parsed = parse_section_contract(text)
+            if any(parsed.for_type(t) for t in SectionContract.model_fields.keys()):
+                # Override block present (at least one type carries
+                # required headings). Full-replacement semantics.
+                return parsed
+            # Override file exists but has no Section contract block;
+            # fall back to default.
+        # Default schema lives in the package.
+        from importlib.resources import files
+
+        default_text = (
+            files("lies.schema").joinpath("default_schema.md").read_text(encoding="utf-8")
+        )
+        return parse_section_contract(default_text)
 
     @property
     def collections_dir(self) -> Path:

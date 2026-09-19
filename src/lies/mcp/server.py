@@ -195,6 +195,7 @@ def wiki_read(
 # ---------------------------------------------------------------------------
 
 from lies.page import build_author_plan  # noqa: E402
+from lies.page.author import _SectionRefusal  # noqa: E402,F401
 
 _TYPE_PLURAL_MCP: dict[str, str] = {
     "entity": "entities",
@@ -329,9 +330,46 @@ async def file_knowledge(
             sources=sources or [],
             exists=lambda r: (wiki.wiki_dir / r).exists(),
             sha_lookup=lambda r: orch._memory_service.current_state(r)[0],
+            # F17 (Task 4): thread the wiki's resolved section contract
+            # into the plan builder. ``Wiki.section_contract`` is the
+            # per-wiki resolved contract (override → default → empty);
+            # production wikis see enforcement. The default contract
+            # for an unresolved wiki yields an empty SectionContract
+            # that the helper short-circuits to ``[]`` — no refusal
+            # fires.
+            section_contract=wiki.section_contract,
         )
     except WikiPlanInvalid as exc:
         raise ToolError(f"plan_invalid: {exc}") from exc
+
+    # F17 (Task 4) refusal surface. ``build_author_plan`` returns a
+    # ``_SectionRefusal`` (an errors-as-value sentinel) when the body
+    # omits a heading required by the wiki's section contract. We
+    # short-circuit before reaching ``Orchestrator.file_back_author``
+    # and translate the refusal into a refusal-shaped
+    # ``WriteKnowledgeResult`` (``op="none"``, ``page_path=None``,
+    # error preserved verbatim in ``receipt["errors"]``). The shape
+    # mirrors the cancel/decline elicit branches above; LLM callers
+    # already pattern-match on these fields, so we keep the surface
+    # uniform. ``Orchestrator.file_back_author`` also has a defensive
+    # ``isinstance(plan, _SectionRefusal)`` seam, but that one writes
+    # a misleading ``page_path=rel_path`` / ``op="create"`` envelope —
+    # the MCP layer must own this translation.
+    if isinstance(plan, _SectionRefusal):
+        return WriteKnowledgeResult(
+            page_path=None,
+            page_type=plan.page_type,
+            slug=plan.slug,
+            collection=collection,
+            op="none",
+            receipt={
+                "changed_pages": [],
+                "deferred": [],
+                "fallback_used": False,
+                "fallback_reason": "",
+                "errors": [plan.error],
+            },
+        ).model_dump()
 
     receipt = orch.file_back_author(plan)
     op_kind = "update" if any(p.op.name == "UPDATE" for p in receipt.changed_pages) else "create"

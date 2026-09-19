@@ -37,6 +37,19 @@ sources. The schema (a per-wiki markdown file) defines page types,
 conventions, and workflows. The human curates sources and asks
 questions; the agent does all bookkeeping.
 
+## Page-type conventions
+
+Per-type required `## <Heading>` sections are declared in
+`src/lies/schema/default_schema.md` under "Section contract" and
+parsed at wiki-open time. Lint surfaces
+`missing_required_section` findings (`safe_to_fix=False`); the
+writer (`lies page write` CLI + MCP `file_knowledge`) refuses
+writes that omit required sections. Override per-wiki via
+`<wiki>/schema.md`. Match is literal-substring — `## Evidence`
+matches, but `### Evidence`, `##Evidence`, and `## evidence` do
+not. Full design at
+`~/code/project-notes/lies/superpowers/specs/2026-09-18-f17-page-type-conventions-design.md`.
+
 ## Source layout
 
 ```

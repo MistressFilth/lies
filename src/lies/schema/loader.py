@@ -10,6 +10,7 @@ pages, without value validation.
 
 from __future__ import annotations
 
+import re
 import sys
 from dataclasses import dataclass
 from importlib import resources
@@ -18,6 +19,7 @@ from typing import Any
 
 import frontmatter  # type: ignore[import-untyped]
 
+from lies.schema.sections import SectionContract
 from lies.wiki.wiki import Wiki
 
 
@@ -96,3 +98,68 @@ def dump_page(parsed: ParsedPage, path: Path) -> str:
     dumped = frontmatter.dumps(post)
     path.write_text(dumped, encoding="utf-8")
     return dumped
+
+
+class SchemaSectionContractInvalid(ValueError):
+    """Raised when the ``## Section contract`` block is malformed."""
+
+
+_VALID_SECTION_TYPES = frozenset(SectionContract.model_fields.keys())
+
+# - **<type>** — `## <heading>`, `## <heading>`, ...
+_SECTION_ITEM_RE = re.compile(
+    r"^\s*-\s+\*\*(\w+)\*\*\s+—\s+(.+?)\s*$",
+    re.MULTILINE,
+)
+
+# `## <heading>` (greedy until backtick)
+_SECTION_HEADING_RE = re.compile(r"`##\s*([^`]+?)`")
+
+_SECTION_BLOCK_RE = re.compile(
+    r"^##\s+Section contract\s*\n(.*?)(?=^##\s|\Z)",
+    re.MULTILINE | re.DOTALL,
+)
+
+
+def parse_section_contract(markdown: str) -> SectionContract:
+    """Parse the ``## Section contract`` block from a schema doc.
+
+    Returns an empty :class:`SectionContract` when the block is absent.
+    Raises :class:`SchemaSectionContractInvalid` on malformed input:
+    unknown type, duplicate type, missing backticks, or empty heading.
+
+    When two ``## Section contract`` blocks exist, the second wins.
+    Independent of the existing ``derived_from`` round-trip.
+    """
+    matches = list(_SECTION_BLOCK_RE.finditer(markdown))
+    if not matches:
+        return SectionContract()
+    block = matches[-1].group(1)
+    fields: dict[str, list[str]] = {t: [] for t in _VALID_SECTION_TYPES}
+    for item_match in _SECTION_ITEM_RE.finditer(block):
+        type_name = item_match.group(1)
+        rest = item_match.group(2)
+        if type_name not in _VALID_SECTION_TYPES:
+            raise SchemaSectionContractInvalid(
+                f"unknown page type '{type_name}' in Section contract; "
+                f"expected one of {sorted(_VALID_SECTION_TYPES)}"
+            )
+        if fields[type_name]:
+            raise SchemaSectionContractInvalid(
+                f"duplicate page type '{type_name}' in Section contract"
+            )
+        # Allow (none) as the "no required sections" sentinel.
+        if rest.strip() == "(none)":
+            continue
+        headings = _SECTION_HEADING_RE.findall(rest)
+        if not headings:
+            raise SchemaSectionContractInvalid(
+                f"page type '{type_name}' has no `## <Heading>` tokens; "
+                f"use '(none)' to declare zero required sections"
+            )
+        for raw in headings:
+            heading = raw.strip()
+            if not heading:
+                raise SchemaSectionContractInvalid(f"empty heading in page type '{type_name}'")
+            fields[type_name].append(f"## {heading}")
+    return SectionContract(**fields)

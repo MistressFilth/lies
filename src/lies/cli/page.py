@@ -41,6 +41,15 @@ def __getattr__(name: str):
     Same contract that :mod:`lies.cli.ingestion` and :mod:`lies.cli.memory`
     follow — ``import lies.cli`` does not pull pydantic_ai / fastmcp /
     anthropic into ``sys.modules``.
+
+    ``_SectionRefusal`` (F17 Task 5) lives in ``lies.page.author``;
+    importing the author module top-level would pull the entire
+    ``lies.memory`` package (which imports :mod:`lies.memory.enricher`,
+    a pydantic_ai agent) into ``lies.cli`` at import time — breaking
+    the lazy-imports contract. Routing the lookup through
+    ``__getattr__`` keeps the refusal check lazy: only a body that
+    actually gets sent through ``build_author_plan`` triggers the
+    import.
     """
     if name == "Orchestrator":
         from lies.orchestrator import Orchestrator as _Orchestrator
@@ -57,6 +66,11 @@ def __getattr__(name: str):
 
         globals()[name] = _build_author_plan
         return _build_author_plan
+    if name == "_SectionRefusal":
+        from lies.page.author import _SectionRefusal as _Refusal
+
+        globals()[name] = _Refusal
+        return _Refusal
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
@@ -145,6 +159,7 @@ def write(
     # Orchestrator", ...)`` when present so the patched symbol wins.
     orch_cls = globals().get("Orchestrator") or __getattr__("Orchestrator")
     plan_builder = globals().get("build_author_plan") or __getattr__("build_author_plan")
+    refusal_cls = globals().get("_SectionRefusal") or __getattr__("_SectionRefusal")
     from lies.cli import resolve_wiki
 
     wiki = resolve_wiki(name)
@@ -178,10 +193,33 @@ def write(
             sources=sources,
             exists=lambda r: (wiki.wiki_dir / r).exists(),
             sha_lookup=lambda r: orch._memory_service.current_state(r)[0],
+            # F17 (Task 5): thread the wiki's resolved section contract
+            # into the plan builder. ``Wiki.section_contract`` is the
+            # per-wiki resolved contract (override → default → empty);
+            # production wikis see enforcement. The default contract
+            # for an unresolved wiki yields an empty SectionContract
+            # that the helper short-circuits to ``[]`` — no refusal
+            # fires. Mirrors the MCP server (mcp/server.py:340) and the
+            # orchestrator's ``file_back_synthesis`` (orchestrator.py:1227).
+            section_contract=wiki.section_contract,
         )
     except Exception as exc:  # noqa: BLE001 - plan validation surfaces as exit 2
         typer.echo(f"error: plan_invalid: {exc}", err=True)
         raise typer.Exit(code=2) from exc
+
+    # F17 (Task 5) refusal surface. ``build_author_plan`` returns a
+    # ``_SectionRefusal`` (an errors-as-value sentinel) when the body
+    # omits a heading required by the wiki's section contract. We
+    # short-circuit before reaching ``Orchestrator.file_back_author``
+    # and translate the refusal into an exit-2 stderr line — mirroring
+    # the collision (above) and ``WikiPlanInvalid`` (below) branches so
+    # the operator sees a uniform error envelope. The defensive seam
+    # in ``Orchestrator.file_back_author`` also handles ``_SectionRefusal``
+    # but emits a misleading success-shaped receipt (page_path set,
+    # op="create"); the CLI must own this translation.
+    if isinstance(plan, refusal_cls):
+        typer.echo(f"error: {plan.error}", err=True)
+        raise typer.Exit(code=2)
 
     if dry_run:
         typer.echo(f"(dry-run: validated — would write {rel_path})")
