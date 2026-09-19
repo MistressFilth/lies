@@ -18,11 +18,11 @@ from __future__ import annotations
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, cast
+from typing import Any, Literal, cast
 
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from pydantic import Field
 
 try:
@@ -212,6 +212,42 @@ class _CollisionVerdict:
 
     action: Literal["overwrite", "rename", "cancel"]
     new_slug: str | None = None
+
+
+class _ConfirmDestructive(BaseModel):
+    """Schema for the destructive-flag elicit prompt.
+
+    Mirrors ask's ``_ConfirmDestructive``
+    (``ask/scripts/_server_helpers.py:228``).
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    confirm: bool
+    reason: str = ""
+
+
+async def _confirm_destructive(ctx: Context, message: str) -> str | None:
+    """Prompt the user; return ``None`` to proceed or an error string to abort.
+
+    Mirrors ask's ``_confirm_destructive``
+    (``ask/scripts/_server_helpers.py:237``). Hosts that don't implement
+    ``ctx.elicit`` raise on the call; we return a clear error string so
+    the caller treats it as decline (no work runs).
+    """
+    try:
+        result: Any = await ctx.elicit(  # ty: ignore[unresolved-attribute]
+            message,
+            response_type=cast(Any, _ConfirmDestructive),
+        )
+    except Exception as exc:  # pragma: no cover — host-dependent
+        return f"elicitation unavailable: {exc}"
+
+    if result.action != "accept":
+        return "operation declined by user"
+    if result.data is None or not result.data.confirm:
+        return "operation declined by user"
+    return None
 
 
 @mcp.tool(
