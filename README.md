@@ -204,6 +204,14 @@ lies page write --collection claude-code --type concept \
 The MCP equivalent (`mcp__plugin_lies__file_knowledge`) elicits
 overwrite/rename/cancel on slug collision via `ctx.elicit`.
 
+Each page type carries a set of required `## <Heading>` sections (see
+`src/lies/schema/default_schema.md` → "Section contract"). The CLI
+and MCP `file_knowledge` refuse writes that omit them; `lies lint`
+surfaces them as `missing_required_section` findings
+(`safe_to_fix=False`). Override per-wiki via `<wiki>/schema.md`. The
+match is literal-substring — `## Evidence` matches, but `### Evidence`,
+`##Evidence`, and `## evidence` do not.
+
 ## Tag-filter language
 
 Filter `lies query` to library collections by name. `&` binds tighter

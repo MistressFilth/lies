@@ -6,6 +6,14 @@ All notable changes to LIES are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- **F17 — Page-type conventions**: schema-declared required `## <Heading>`
+  sections per page type. Lint surfaces `missing_required_section`
+  findings (`safe_to_fix=False`); the writer (CLI/MCP) refuses writes
+  that omit required sections. Six page types covered (overview, entity,
+  concept, comparison, source, synthesis). Override per-wiki via
+  `<wiki>/schema.md`.
+
 ## [0.29.0] - 2026-09-18
 
 ### Added
