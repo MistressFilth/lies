@@ -16,6 +16,7 @@ import warnings
 from pathlib import Path
 from typing import Any
 
+from lies.qmd import _proc
 from lies.qmd.lock import with_qmd_lock
 
 # Real `qmd query --format json` returns each hit's `file` field as
@@ -234,6 +235,24 @@ def qmd_ls(cwd: Path, collection: str) -> str:
     if result.returncode != 0:
         raise QmdError(f"qmd ls failed: {result.stderr.strip()}")
     return str(result.stdout)
+
+
+@with_qmd_lock()
+def qmd_cleanup(cwd: Path) -> None:
+    """Drop orphan rows from qmd's FTS5 db.
+
+    Restored from PR #17 (which deleted it as dead code). F38 wires
+    this into ``qmd_reindex(cleanup=True, ...)`` and the
+    ``lies reindex --cleanup`` CLI flag.
+    """
+    result = _proc.run(["cleanup"], cwd=cwd)
+    if result.returncode != 0:
+        raise subprocess.CalledProcessError(
+            returncode=result.returncode,
+            cmd=result.args,
+            output=result.stdout,
+            stderr=result.stderr,
+        )
 
 
 def is_qmd_installed() -> bool:
