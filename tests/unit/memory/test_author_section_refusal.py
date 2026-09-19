@@ -13,14 +13,17 @@ their own error envelopes in Tasks 4 and 5.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from lies.memory.models import MemoryPlan, PageCreate
+from lies.memory.models import MemoryPlan, MemoryReceipt, PageCreate
 from lies.orchestrator import Orchestrator
 from lies.page import build_author_plan
 from lies.page.author import _SectionRefusal
+from lies.query.citation import Citation
+from lies.query.models import SynthesizedAnswer
 from lies.schema.sections import SectionContract
 
 
@@ -247,3 +250,87 @@ def test_file_back_author_normal_path_unchanged(
     receipt = orch_with_magic_memory.file_back_author(plan)
     orch_with_magic_memory._memory_service.apply_plan.assert_called_once()
     assert receipt.errors == []
+
+
+# ---------- file_back_synthesis end-to-end refusal path ----------
+
+
+@pytest.fixture
+def orch_with_real_section_contract(tmp_path):
+    """Stub orchestrator whose ``wiki`` carries a real ``SectionContract``.
+
+    The existing ``orch_with_magic_memory`` fixture uses
+    ``MagicMock()`` for ``wiki``, which means
+    ``self.wiki.section_contract`` is itself a ``MagicMock`` whose
+    ``__iter__`` yields nothing — so ``_missing_required_sections``
+    returns ``[]`` and the refusal seam never fires through
+    ``file_back_synthesis``. This fixture swaps in a real
+    ``SectionContract`` so the production wiring
+    (``Orchestrator.file_back_synthesis`` threading
+    ``section_contract=self.wiki.section_contract`` into
+    ``build_author_plan``) is exercised end-to-end.
+    """
+    contract = SectionContract(
+        entity=["## Overview", "## Description", "## References"],
+        synthesis=["## Thesis", "## Evidence", "## Open Questions"],
+    )
+    wiki = SimpleNamespace(section_contract=contract)
+    wiki.wiki_dir = tmp_path
+    with patch("lies.orchestrator.Orchestrator.__init__", lambda self, wiki: None):
+        orch = Orchestrator.__new__(Orchestrator)
+    orch.wiki = wiki
+    orch._memory_service = MagicMock()
+    # ``sha_lookup`` inside ``file_back_synthesis`` calls
+    # ``self._memory_service.current_state(r)[0]``; return a tuple
+    # whose index 0 is a valid sha-like string. The synthesis branch
+    # also passes a non-existent slug so ``exists`` is False and the
+    # builder takes the PageCreate path (not the PageUpdate path that
+    # would also need the sha).
+    orch._memory_service.current_state = MagicMock(return_value=("f" * 64, ""))
+    orch._memory_service.apply_plan = MagicMock(
+        return_value=MemoryReceipt(
+            changed_pages=[],
+            deferred=[],
+            fallback_used=False,
+            fallback_reason="",
+            errors=[],
+        )
+    )
+    return orch
+
+
+def test_file_back_synthesis_refuses_missing_required_sections(
+    orch_with_real_section_contract: Orchestrator,
+) -> None:
+    """End-to-end: synthesis body missing required sections -> refusal receipt.
+
+    With a real ``SectionContract`` on the wiki (the production wiring
+    that the MagicMock-based test could not exercise), a synthesis body
+    that lacks the required ``## Thesis`` / ``## Evidence`` /
+    ``## Open Questions`` headings must short-circuit to a refusal
+    receipt through ``Orchestrator.file_back_synthesis`` — not a
+    silently-written page. The refusal seam lives in
+    :func:`build_author_plan`; ``file_back_synthesis`` threads
+    ``self.wiki.section_contract`` through to the builder, so a real
+    contract on the wiki is the only way to reach it from the
+    orchestrator.
+    """
+    answer = SynthesizedAnswer(
+        answer="Some prose that does not carry any of the required synthesis headings.",
+        citations=[],
+        pages_read=[Citation(path="claude-code/concepts/hooks", source="wiki")],
+        should_file=True,
+        question="What is a hook?",
+    )
+    receipt = orch_with_real_section_contract.file_back_synthesis(answer, collection="claude-code")
+    # Refusal: no write happened, errors list names the missing headings.
+    assert receipt.changed_pages == []
+    assert receipt.errors
+    joined = " ".join(receipt.errors)
+    assert "## Thesis" in joined
+    assert "## Evidence" in joined
+    assert "## Open Questions" in joined
+    # The memory service is never called on the refusal branch —
+    # ``file_back_synthesis`` delegates to ``file_back_author`` whose
+    # defensive refusal seam short-circuits before ``apply_plan``.
+    orch_with_real_section_contract._memory_service.apply_plan.assert_not_called()
