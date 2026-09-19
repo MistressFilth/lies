@@ -20,6 +20,7 @@ from lies.memory.models import (
     PageUpdate,
     WikiPlanInvalid,
 )
+from lies.schema.sections import SectionContract, _missing_required_sections
 
 
 class WriteKnowledgeResult(BaseModel):
@@ -50,6 +51,35 @@ class WriteKnowledgeResult(BaseModel):
 _ALLOWED_TYPES: frozenset[str] = frozenset(
     {"overview", "entity", "concept", "comparison", "source", "synthesis"}
 )
+
+
+class _SectionRefusal(BaseModel):
+    """Sentinel returned by :func:`build_author_plan` when the body omits
+    a heading required by the wiki's section contract.
+
+    Underscore-prefixed: the refusal is an internal seam between
+    :func:`build_author_plan` and the orchestrator/MCP/CLI call sites.
+    Callers translate it into their own error envelope (an
+    errors-as-value ``MemoryReceipt`` from
+    :meth:`Orchestrator.file_back_author`, or an MCP
+    ``WriteKnowledgeResult``/CLI exit 2 — Tasks 4 and 5).
+
+    Attributes:
+        error: Human-readable refusal message; names the missing headings.
+        page_type: Page type the operator attempted to write.
+        slug: Slug the operator supplied (echoed back so callers can
+            include it in their error envelope without re-deriving it).
+        title: Title the operator supplied (same echo rationale).
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    error: str
+    page_type: str
+    slug: str
+    title: str
+
+
 _TYPE_PLURAL: dict[str, str] = {
     "entity": "entities",
     "concept": "concepts",
@@ -76,13 +106,23 @@ def build_author_plan(
     exists: Callable[[str], bool],
     sha_lookup: Callable[[str], str] | None = None,
     render_format: str | None = None,
-) -> MemoryPlan:
+    section_contract: SectionContract | None = None,
+) -> MemoryPlan | _SectionRefusal:
     """Build a single-op MemoryPlan that writes one page to the wiki.
 
     Returns ``PageCreate`` if the slug does not exist; ``PageUpdate``
     (with ``expected_sha256``) if it does.
 
     The synthesis branch is added in Task 5; overview lands in Task 3.
+
+    When ``section_contract`` is provided, the body is checked against
+    the per-type required-heading contract (F17). Missing sections
+    short-circuit with a :class:`_SectionRefusal` instead of
+    producing a plan — the orchestrator-level refusal seam in
+    :meth:`Orchestrator.file_back_author` translates that into an
+    errors-as-value ``MemoryReceipt``. ``section_contract=None`` (the
+    default) skips the check entirely; production call sites in
+    Tasks 4 and 5 thread the wiki's resolved contract through.
 
     Raises:
         WikiPlanInvalid: ``type`` not in ALLOWED_PAGE_TYPES.
@@ -91,6 +131,17 @@ def build_author_plan(
     """
     if type not in _ALLOWED_TYPES:
         raise WikiPlanInvalid(f"page type {type!r} not in ALLOWED_PAGE_TYPES")
+    # F17 refusal seam: contract may be absent (None) or empty
+    # (no required sections for any type); both cases are no-ops.
+    if section_contract is not None:
+        missing = _missing_required_sections(type, section_contract, body)
+        if missing:
+            return _SectionRefusal(
+                error=(f"missing required section(s) for {type}: {', '.join(missing)}"),
+                page_type=type,
+                slug=slug,
+                title=title,
+            )
     if type == "overview":
         rel_path = "wiki/overview.md"
         body_md = _format_author_body(

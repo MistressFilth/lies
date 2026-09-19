@@ -41,6 +41,7 @@ from lies.memory.retry import EnrichmentQueue
 from lies.memory.service import WikiMemoryService
 from lies.memory.tools import WikiMemoryDeps, register_read_tools
 from lies.page import build_author_plan
+from lies.page.author import _SectionRefusal
 from lies.qmd import QmdCapability
 from lies.query import (
     PageRead,
@@ -1219,6 +1220,11 @@ class Orchestrator:
                 exists=lambda r: (self.wiki.wiki_dir / r).exists(),
                 sha_lookup=lambda r: self._memory_service.current_state(r)[0],
                 render_format=getattr(answer, "format", "md"),
+                # F17 (Task 3): thread the wiki-level section contract
+                # so file-back synthesis respects the per-type required
+                # headings. Empty contract (no override + no default
+                # contract) is a no-op and preserves prior behaviour.
+                section_contract=self.wiki.section_contract,
             )
         except WikiPlanInvalid as exc:
             return MemoryReceipt(
@@ -1231,7 +1237,10 @@ class Orchestrator:
 
         return self.file_back_author(plan)
 
-    def file_back_author(self, plan: MemoryPlan) -> MemoryReceipt:
+    def file_back_author(
+        self,
+        plan: MemoryPlan | _SectionRefusal,
+    ) -> MemoryReceipt:
         """Apply a pre-built ``plan`` with inline 3-attempt retry on transient errors.
 
         Sibling of :meth:`file_back_synthesis`. The plan is pre-built by
@@ -1239,11 +1248,28 @@ class Orchestrator:
         apply-with-retry envelope. Never raises — the operator always
         sees a receipt, even on exhaustion or unexpected exceptions.
 
+        Defensive refusal seam: when ``plan`` is a
+        :class:`lies.page.author._SectionRefusal` (F17), the orchestrator
+        short-circuits and surfaces the refusal as an errors-as-value
+        ``MemoryReceipt`` without touching the memory service. The
+        primary refusal lives in :func:`build_author_plan`; this seam
+        catches the case where a refusal arrives from a future caller
+        without going through the plan builder.
+
         Pre-registers plan evidence with ``_memory_service.register_evidence``
         before each apply attempt so ``validate_operation_evidence`` accepts
         the plan; without this the receipt carries ``WikiEvidenceMissing``
         and ``apply_plan`` rejects the plan before any disk write.
         """
+        # F17 defensive refusal seam (Task 3).
+        if isinstance(plan, _SectionRefusal):
+            return MemoryReceipt(
+                changed_pages=[],
+                deferred=[],
+                fallback_used=False,
+                fallback_reason="",
+                errors=[plan.error],
+            )
         self._memory_service.register_evidence(
             {ref for op in plan.operations for ref in op.evidence}
         )
