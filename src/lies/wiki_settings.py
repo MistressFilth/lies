@@ -10,6 +10,13 @@ Resolution order (matches the spec chain):
 2. ``$XDG_CONFIG_HOME/lies/<name>/lies.toml`` — parse ``[settings].lang``.
 3. ``DEFAULT_LANGUAGE`` fallback.
 
+``[settings].version`` is parsed alongside ``lang`` and exposed as
+:attr:`WikiSettings.settings_version`. When the stored value differs
+from :data:`CURRENT_SETTINGS_VERSION`, a ``UserWarning`` is emitted
+advising the user to check release notes for migration guidance.
+Missing, empty, or non-string ``version`` values each emit a warning
+and surface as ``settings_version=None``; the load never raises.
+
 Every failure mode is permissive: stderr warning + defaults. No typed
 errors are raised from ``WikiSettings.load`` or ``resolve_language``.
 """
@@ -20,6 +27,7 @@ import os
 import tomllib
 import warnings
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -29,6 +37,11 @@ if TYPE_CHECKING:
 
 DEFAULT_LANGUAGE = "en"
 
+# Bumped when the ``[settings]`` schema in ``lies.toml`` changes
+# incompatibly. Older pinned values trigger a ``UserWarning`` at load
+# time; the load itself never refuses.
+CURRENT_SETTINGS_VERSION = "1"
+
 
 @dataclass(frozen=True)
 class WikiSettings:
@@ -36,9 +49,19 @@ class WikiSettings:
 
     Fields are always populated; missing values fall back to module-level
     defaults. Loaded lazily via :meth:`WikiSettings.load`.
+
+    Attributes:
+        language: Effective wiki language (resolved ``LIES_LANG`` >
+            ``[settings].lang`` > ``DEFAULT_LANGUAGE``).
+        settings_version: ``[settings].version`` from ``lies.toml``, or
+            ``None`` when the file is absent, the field is missing, or
+            the value is empty/non-string. A non-``None`` value that
+            differs from :data:`CURRENT_SETTINGS_VERSION` triggers a
+            warning at load time.
     """
 
     language: str
+    settings_version: str | None = None
 
     @classmethod
     def load(cls, wiki: Wiki) -> WikiSettings:
@@ -89,7 +112,45 @@ class WikiSettings:
                 stacklevel=2,
             )
             return cls(language=DEFAULT_LANGUAGE)
-        return cls(language=stripped)
+
+        # [settings].version — parsed alongside lang, never raises.
+        settings_version = _parse_settings_version(settings, path)
+
+        return cls(language=stripped, settings_version=settings_version)
+
+
+def _parse_settings_version(settings: dict, path: Path) -> str | None:
+    """Resolve and validate ``[settings].version``.
+
+    Returns the stripped value when it parses as a non-empty string,
+    or ``None`` when missing/empty/non-string. Emits a ``UserWarning``
+    on type errors, empty values, and version mismatches against
+    :data:`CURRENT_SETTINGS_VERSION`. Never raises.
+    """
+    version = settings.get("version") if isinstance(settings, dict) else None
+    if version is not None and not isinstance(version, str):
+        warnings.warn(
+            "lies.toml [settings].version must be a string; ignoring",
+            stacklevel=2,
+        )
+        return None
+    if not isinstance(version, str):
+        return None
+    stripped_version = version.strip()
+    if not stripped_version:
+        warnings.warn(
+            "lies.toml [settings].version is empty; ignoring",
+            stacklevel=2,
+        )
+        return None
+    if stripped_version != CURRENT_SETTINGS_VERSION:
+        warnings.warn(
+            f"lies.toml at {path} has settings.version={stripped_version!r} "
+            f"but current is {CURRENT_SETTINGS_VERSION!r}; "
+            "check release notes for migration guidance",
+            stacklevel=2,
+        )
+    return stripped_version
 
 
 def resolve_language(wiki: Wiki, collection: Collection | None = None) -> str:
