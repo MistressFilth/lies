@@ -172,7 +172,7 @@ def test_run_query_calls_retrieve_pages_at_most_once_per_branch(
         PageRead(
             rel_path="wiki/concepts/alpha.md",
             title="Alpha",
-            excerpt="Alpha is the first letter.",
+            spans=[],
             source="wiki",
         ),
     ]
@@ -223,7 +223,7 @@ def test_call_query_synthesizer_handles_unreadable_pages_silently(
                 PageRead(
                     rel_path="wiki/concepts/alpha.md",
                     title="Alpha",
-                    excerpt="Alpha is the first letter.",
+                    spans=[],
                     source="wiki",
                 ),
             ],
@@ -280,7 +280,7 @@ def test_call_query_synthesizer_reads_library_pages_from_collections_root(
                     PageRead(
                         rel_path=rel_path,
                         title="Skills",
-                        excerpt="Library body.",
+                        spans=[],
                         source="library",
                     ),
                 ],
@@ -323,7 +323,7 @@ def test_call_query_synthesizer_reads_wiki_pages_from_data_root(
                 PageRead(
                     rel_path="wiki/concepts/alpha.md",
                     title="Alpha",
-                    excerpt="Alpha is the first letter.",
+                    spans=[],
                     source="wiki",
                 ),
             ],
@@ -362,7 +362,7 @@ def test_call_query_synthesizer_silently_skips_unreadable_library_pages(
                 PageRead(
                     rel_path="claude_platform/missing.md",
                     title="Missing",
-                    excerpt="missing",
+                    spans=[],
                     source="library",
                 ),
             ],
@@ -393,7 +393,7 @@ def test_call_query_synthesizer_populates_page_sources_for_each_read_page(
                 PageRead(
                     rel_path="wiki/concepts/alpha.md",
                     title="Alpha",
-                    excerpt="Alpha is the first letter.",
+                    spans=[],
                     source="wiki",
                 ),
             ],

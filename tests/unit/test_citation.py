@@ -79,3 +79,36 @@ def test_claim_citation_annotations() -> None:
     hints = get_type_hints(ClaimCitation)
     assert hints["claim"] is str
     assert hints["citation_index"] is int
+
+
+# ---------------------------------------------------------------------------
+# F19: heading_path on Citation, quote on ClaimCitation
+# ---------------------------------------------------------------------------
+
+
+def test_citation_has_heading_path_default_none() -> None:
+    c = Citation(path="wiki/x.md", source="wiki")
+    assert c.heading_path is None
+
+
+def test_citation_heading_path_settable() -> None:
+    c = Citation(path="wiki/x.md", source="wiki", heading_path=["H1", "H2"])
+    assert c.heading_path == ["H1", "H2"]
+
+
+def test_citation_frozen() -> None:
+    c = Citation(path="wiki/x.md", source="wiki")
+    import pytest
+
+    with pytest.raises(Exception):
+        c.heading_path = ["H1"]  # type: ignore[misc]
+
+
+def test_claim_citation_has_quote_default_empty() -> None:
+    cc = ClaimCitation(claim="x", citation_index=0)
+    assert cc.quote == ""
+
+
+def test_claim_citation_quote_settable() -> None:
+    cc = ClaimCitation(claim="x", citation_index=0, quote='verbatim "quoted"')
+    assert cc.quote == 'verbatim "quoted"'

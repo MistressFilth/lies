@@ -149,7 +149,7 @@ def test_footnote_block_appended_for_md_format(
     page = PageRead(
         rel_path="claude_code/agent-sdk/subagents.md",
         title="Subagents in the SDK",
-        excerpt="Each subagent runs in its own context.",
+        spans=[],
         source="library",
         line=42,
         section="Context isolation",
@@ -224,7 +224,7 @@ def test_footnote_block_absent_for_table_format(
     page = PageRead(
         rel_path="wiki/concepts/alpha.md",
         title="Alpha",
-        excerpt="Alpha is the first letter.",
+        spans=[],
         source="wiki",
         line=1,
         section="Alpha",

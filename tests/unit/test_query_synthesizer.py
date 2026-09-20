@@ -45,7 +45,7 @@ def test_page_read_accepts_line_and_section() -> None:
     pr = PageRead(
         rel_path="x.md",
         title="X",
-        excerpt="excerpt",
+        spans=[],
         source="wiki",
         line=42,
         section="Section",
@@ -55,7 +55,7 @@ def test_page_read_accepts_line_and_section() -> None:
 
 
 def test_page_read_line_section_default_none() -> None:
-    pr = PageRead(rel_path="x.md", title="X", excerpt="e", source="wiki")
+    pr = PageRead(rel_path="x.md", title="X", spans=[], source="wiki")
     assert pr.line is None
     assert pr.section is None
 

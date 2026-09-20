@@ -111,7 +111,15 @@ def test_retrieve_pages_returns_empty_list_when_nothing_readable(tmp_path: Path)
 
 
 def test_synthesize_answer_output_unchanged_by_the_lift(wiki: Wiki) -> None:
-    """Characterization: the refactor must not move synthesize_answer's output."""
+    """Characterization: pins the extractive bullet the synthesizer emits.
+
+    The bullet body comes from :func:`_excerpt_from_spans` (F19) — the
+    first non-code-fence span's body. The fixture page has YAML
+    frontmatter and no headings; ``parse_spans`` emits a single span
+    whose body is the entire file content, so the bullet carries the
+    frontmatter text. Pre-F19 the paragraph helper skipped the
+    frontmatter; F19 supersedes that, so the bullet is the whole span.
+    """
 
     def fake_search(
         *_args: object, collection_filter=None, **_kwargs: object
@@ -127,7 +135,8 @@ def test_synthesize_answer_output_unchanged_by_the_lift(wiki: Wiki) -> None:
     assert answer.answer == (
         "### what is alpha?\n\n"
         "Based on 1 wiki page(s):\n\n"
-        "- [wiki] alpha — Alpha is the first letter. — [alpha](wiki/concepts/alpha.md)"
+        "- [wiki] alpha — ---\ntitle: Alpha\n---\n\nAlpha is the first letter. — "
+        "[alpha](wiki/concepts/alpha.md)"
     )
     # citations are now ``list[Citation]`` (Task 6); wiki-sourced.
     assert answer.citations == [Citation(path="wiki/concepts/alpha.md", source="wiki")]

@@ -29,7 +29,7 @@ def test_build_answer_from_pages_wiki_only_preamble() -> None:
     page = PageRead(
         rel_path="concepts/x.md",
         title="X",
-        excerpt="excerpt",
+        spans=[],
         source="wiki",
     )
     ans = build_answer_from_pages(
@@ -49,7 +49,7 @@ def test_build_answer_from_pages_format_hint_kwarg_defaults_to_md() -> None:
     page = PageRead(
         rel_path="concepts/x.md",
         title="X",
-        excerpt="excerpt",
+        spans=[],
         source="wiki",
     )
     ans = build_answer_from_pages(question="test", pages=[page], fallback_reason="")
@@ -67,7 +67,7 @@ def test_build_answer_from_pages_format_hint_kwarg_validates_body() -> None:
     page = PageRead(
         rel_path="concepts/x.md",
         title="X",
-        excerpt="excerpt",
+        spans=[],
         source="wiki",
     )
     ans = build_answer_from_pages(
@@ -81,7 +81,7 @@ def test_build_answer_from_pages_format_hint_kwarg_passes_through_md() -> None:
     page = PageRead(
         rel_path="concepts/x.md",
         title="X",
-        excerpt="excerpt",
+        spans=[],
         source="wiki",
     )
     ans = build_answer_from_pages(
