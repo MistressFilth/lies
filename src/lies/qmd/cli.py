@@ -301,8 +301,6 @@ def qmd_reindex(
     if force:
         cache_dir = cwd / ".qmd" / "cache"
         if cache_dir.exists():
-            import shutil
-
             shutil.rmtree(cache_dir)
 
     if not errors:

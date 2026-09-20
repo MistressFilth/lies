@@ -1,8 +1,10 @@
 """Tests for the _qmd_proc subprocess seam.
 
 The seam wraps ``subprocess.run`` so qmd library functions can be
-tested without shelling out to a real ``qmd`` binary. Future tasks
-(``qmd_cleanup``, ``qmd_reindex``) will mock ``_qmd_proc.run``.
+tested without shelling out to a real ``qmd`` binary. Tests for
+``qmd_cleanup`` and ``qmd_reindex`` (F38) patch ``_qmd_proc.run`` to
+exercise the per-stage sequencing, error handling, and the force
+cache-wipe path without invoking a real qmd binary.
 """
 
 from __future__ import annotations
@@ -28,7 +30,7 @@ def test_run_invokes_subprocess_run_with_args_and_cwd(tmp_path: Path) -> None:
     assert result is fake
 
 
-def test_run_raises_on_nonzero_returncode(tmp_path: Path) -> None:
+def test_run_returns_completed_process_on_nonzero_returncode(tmp_path: Path) -> None:
     """Returns the CompletedProcess even when returncode != 0 (caller decides)."""
     fake = subprocess.CompletedProcess(args=["qmd", "bad"], returncode=2, stdout="", stderr="err")
     with patch("lies.qmd._proc.subprocess.run", return_value=fake):
