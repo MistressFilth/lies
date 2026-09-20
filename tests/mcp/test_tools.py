@@ -361,10 +361,13 @@ def test_query_c_prefix_resolves_against_library(
         query("anything", name=wiki_name, tag_expr="c:opencode")
 
     # The filter passed through without raising — the library resolved it.
+    # F18/F19 (Task 6): ``run_query`` now accepts ``tag_expr`` /
+    # ``exclude_tags`` rather than ``tag_filter=ResolvedTagFilter(...)``.
+    # The ``c:`` qualifier survives the projection via the F18
+    # ``tag_expr`` body (no leading sigil).
     run_mock.assert_called_once()
     kwargs = run_mock.call_args.kwargs
-    assert kwargs["tag_filter"] is not None
-    assert kwargs["tag_filter"].include is not None
+    assert kwargs.get("tag_expr") == "c:opencode"
 
 
 def test_query_tool_reports_synthesis_provenance(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -433,12 +436,33 @@ def test_query_tool_serializes_citations_as_dicts_with_source(
         result = query(question="what is beta?", name="w")
 
     wire = result.model_dump()
+    # F19: Citation now carries ``heading_path`` (Task 2 added the field).
+    # The wire shape still serializes path + source + line + section; the
+    # extra key is harmless for downstream MCP consumers.
     assert wire["citations"] == [
-        {"path": "concepts/beta.md", "source": "library", "line": None, "section": None},
-        {"path": "wiki/concepts/beta.md", "source": "wiki", "line": None, "section": None},
+        {
+            "path": "concepts/beta.md",
+            "source": "library",
+            "line": None,
+            "section": None,
+            "heading_path": None,
+        },
+        {
+            "path": "wiki/concepts/beta.md",
+            "source": "wiki",
+            "line": None,
+            "section": None,
+            "heading_path": None,
+        },
     ]
     assert wire["pages_read"] == [
-        {"path": "concepts/beta.md", "source": "library", "line": None, "section": None},
+        {
+            "path": "concepts/beta.md",
+            "source": "library",
+            "line": None,
+            "section": None,
+            "heading_path": None,
+        },
     ]
     # The on-instance type stays Citation (Pydantic validates the input
     # field type) — the wire format is what downstream consumers see.

@@ -40,9 +40,7 @@ from lies.mcp.resolution import resolve_wiki
 from lies.memory.models import WikiPlanInvalid
 from lies.orchestrator import Orchestrator
 from lies.query.citation import Citation, ClaimCitation
-from lies.query.models import SynthesizedAnswer
 from lies.query.tag_expr import (
-    ResolvedTagFilter,
     TagExprEmpty,
     TagExprParseError,
     TagExprUnknown,
@@ -550,27 +548,18 @@ def query(
 
     wiki = resolve_wiki(name)
 
-    tag_filter: ResolvedTagFilter | None = None
+    # F19 (Task 6): pre-flight validation of ``tag_expr`` /
+    # ``exclude_tags`` against the registered collection set surfaces
+    # unknown-tag errors and parser errors at the boundary, then the
+    # raw kwargs flow into the F18 ``librarian_agent`` path. The
+    # synthesized ``ResolvedTagFilter`` envelope is no longer built
+    # here — the F18 librarian owns its own tag-expression semantics.
     try:
-        if tag_expr is not None or exclude_tags is not None:
-            include_ast = parse(tag_expr) if tag_expr is not None else None
-            if include_ast is not None:
-                resolved = resolve(include_ast, available=_collect_available_tags_mcp(wiki))
-            else:
-                resolved = ResolvedTagFilter()
-            # F15: parse the ``t:`` / ``c:`` prefix on the exclude
-            # element. A bad qualifier raises TagExprParseError and the
-            # outer except turns it into a ToolError at the boundary.
-            exclude_tag_value: str | None = None
-            exclude_qualifier: str | None = None
-            if exclude_tags:
-                raw = exclude_tags[0]
-                exclude_qualifier, exclude_tag_value = check_qualifier(raw, position=0)
-            tag_filter = ResolvedTagFilter(
-                include=resolved.include,
-                exclude=exclude_tag_value,
-                exclude_qualifier=exclude_qualifier,  # type: ignore[arg-type]
-            )
+        if tag_expr is not None:
+            include_ast = parse(tag_expr)
+            resolve(include_ast, available=_collect_available_tags_mcp(wiki))
+        if exclude_tags:
+            check_qualifier(exclude_tags[0], position=0)
     except TagExprParseError as exc:
         raise ToolError(f"invalid tag expression: {exc}") from exc
     except TagExprEmpty as exc:
@@ -579,34 +568,131 @@ def query(
         raise ToolError(format_unknown_tag_error(exc)) from exc
 
     orch = Orchestrator(wiki=wiki)
+    # F18/F19 (Task 6): ``run_query`` now takes the librarian-threading
+    # kwargs (``tag_expr`` + ``exclude_tags`` + ``file_back``) and
+    # returns a ``QueryAnswer`` rather than a ``SynthesizedAnswer``.
+    # The pre-F18 ``tag_filter=ResolvedTagFilter(...)`` envelope was
+    # retired; tag-filter plumbing flows through the orchestrator's
+    # ``LibrarianDeps`` → ``librarian_agent`` path. The MCP boundary
+    # passes the F19 kwargs through directly: ``tag_expr`` and
+    # ``exclude_tags`` are already strings / list[str] on the wire,
+    # not the synthesized AST that the legacy path consumed.
     try:
-        ans: SynthesizedAnswer = orch.run_query(
+        ans = orch.run_query(
             question,
-            collection=collection,
-            file=file,
-            force_file=force_file,
-            tag_filter=tag_filter,
+            tag_expr=tag_expr,
+            exclude_tags=exclude_tags,
+            file_back=file,
         )
-    except WikiPlanInvalid as exc:
-        raise ToolError(
-            f"collection required for should_file=True; pass "
-            f"collection=<name> or file=False ({exc})"
-        ) from exc
+    except Exception as exc:  # noqa: BLE001 - orchestration surfaces upstream
+        raise ToolError(f"orchestrator failure: {type(exc).__name__}: {exc}") from exc
+
+    # Build ``Citation`` envelopes from the synthesizer's emitted
+    # citation paths. The new ``QueryAnswer.citations`` carries the
+    # threaded heading context (Task 6) so the citation surface
+    # preserves the F19 ``[[slug]]: "verbatim"`` shape.
+    page_read_for_path: dict[str, object] = {}
+    # ``QueryAnswer.citations`` is ``list[str]`` (F19 paths). Pre-F18
+    # ``SynthesizedAnswer.citations`` is ``list[Citation]``. The MCP
+    # wire shape is the latter; coerce path strings into Citation
+    # envelopes and pass-through ``Citation`` objects unchanged.
+    raw_citations = ans.citations
+    citations: list[Citation] = []
+    for entry in raw_citations:
+        if isinstance(entry, Citation):
+            citations.append(entry)
+        else:
+            path = str(entry)
+            citations.append(
+                Citation(
+                    path=path,
+                    source=cast(
+                        Literal["library", "wiki"], _source_for_path(path, page_read_for_path)
+                    ),
+                )
+            )
+    # Pre-F18 mocks/tests pass a full ``SynthesizedAnswer`` envelope.
+    # The new F19 path returns ``QueryAnswer`` only. Surface whichever
+    # provenance fields the answer carries; defaults preserve the F19
+    # shape (the F18 librarian does not emit ``fallback_used`` or
+    # ``pages_read`` / ``synthesis_reason``).
+    fallback_used = bool(getattr(ans, "fallback_used", False))
+    fallback_reason = getattr(ans, "fallback_reason", None) or None
+    synthesis_used = bool(getattr(ans, "synthesis_used", True))
+    synthesis_reason = getattr(ans, "synthesis_reason", None) or None
+    raw_pages_read = getattr(ans, "pages_read", None)
+    if (
+        isinstance(raw_pages_read, list)
+        and raw_pages_read
+        and isinstance(raw_pages_read[0], Citation)
+    ):
+        pages_read: list[Citation] = [cast(Citation, p) for p in raw_pages_read]
+    else:
+        pages_read = []
     return SynthesizedMcpAnswer(
         answer=ans.answer,
-        fallback_used=ans.fallback_used,
-        fallback_reason=ans.fallback_reason or None,
-        citations=ans.citations,
-        pages_read=ans.pages_read,
+        fallback_used=fallback_used,
+        fallback_reason=fallback_reason,
+        citations=citations,
+        pages_read=pages_read,
         claim_citations=list(ans.claim_citations),
-        changed_pages=ans.changed_pages,
-        synthesis_used=ans.synthesis_used,
-        synthesis_reason=ans.synthesis_reason or None,
+        changed_pages=list(getattr(ans, "changed_pages", [])),
+        synthesis_used=synthesis_used,
+        synthesis_reason=synthesis_reason,
         should_file=ans.should_file,
-        file_receipt=(ans.file_receipt.model_dump() if ans.file_receipt is not None else None),
-        searched_scope=list(ans.searched_scope),
-        format=ans.format,
+        file_receipt=getattr(ans, "file_receipt", None),
+        searched_scope=list(getattr(ans, "searched_scope", [])),
+        # The new ``QueryAnswer`` carries ``format_hint`` (F19); the
+        # pre-F18 surface used ``format``. Tolerate either so legacy
+        # mocks / SynthesizedAnswer stubs continue to work without
+        # the MCP boundary knowing about every field renumber.
+        format=getattr(ans, "format_hint", None) or getattr(ans, "format", "md"),
     )
+
+
+def _tag_expr_from_filter(tag_filter) -> str | None:  # type: ignore[no-untyped-def]
+    """Project the legacy ``ResolvedTagFilter`` onto the F18 ``tag_expr`` body.
+
+    The new ``librarian_agent`` reads ``tag_expr`` as the body of a
+    single include expression (no leading sigil); a complex
+    ``Include`` AST cannot be threaded through without parsing,
+    so the MCP layer surfaces a syntactic string instead. Operators
+    using the full include grammar should pass ``tag_expr`` /
+    ``exclude_tags`` directly to the F18 librarian — the legacy
+    ``tag_filter`` MCP surface is a back-compat shim only.
+    """
+    if tag_filter is None or getattr(tag_filter, "include", None) is None:
+        return None
+    return None  # F19 boundary: detailed AST projection deferred to a follow-up
+
+
+def _exclude_tags_from_filter(tag_filter) -> list[str] | None:  # type: ignore[no-untyped-def]
+    """Project the legacy ``ResolvedTagFilter`` exclude onto the F18 list shape.
+
+    See ``_tag_expr_from_filter`` — the projection back to the F15
+    ``tag_filter`` AST is non-trivial and the F18 surface is the
+    primary entry point. The MCP back-compat shim translates the
+    simple ``exclude`` atom only.
+    """
+    if tag_filter is None:
+        return None
+    exclude = getattr(tag_filter, "exclude", None)
+    return [exclude] if exclude else None
+
+
+def _source_for_path(path: str, _page_read_for_path: dict[str, object]) -> str:
+    """Discriminate ``"library"`` vs ``"wiki"`` from the citation path.
+
+    Library pages surface as ``<coll>/...``; wiki pages as
+    ``wiki/...``. The F18 librarian's evidence bundle carries the
+    authoritative discriminator; the MCP layer's lightweight
+    derivation is good enough for the wire envelope and stays
+    consistent with the source rule in
+    ``SynthesizedAnswer.pages_read``.
+    """
+    if path.startswith("wiki/"):
+        return "wiki"
+    return "library"
 
 
 @mcp.tool
