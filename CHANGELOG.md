@@ -6,6 +6,18 @@ All notable changes to LIES are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.33.0] - 2026-09-20
+
+### Added
+
+- **`[settings].version` field in `lies.toml`** for schema versioning.
+  `WikiSettings` carries `settings_version: str | None`; parser reads
+  `version = "1"` (or higher) from the `[settings]` block. Mismatched
+  or unrecognized `version` triggers a `UserWarning` so old configs
+  surface migration guidance without breaking the load path. Bump
+  `CURRENT_SETTINGS_VERSION` in `src/lies/wiki_settings.py` when the
+  `[settings]` schema changes incompatibly.
+
 ## [0.32.1] - 2026-09-20
 
 ### Fixed
