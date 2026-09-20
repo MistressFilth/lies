@@ -2,6 +2,18 @@
 
 Gated on ``INTEGRATION=1`` like other integration tests in this repo
 (``tests/integration/test_sync_register_persistence.py``).
+
+The single ``test_query_writes_sidecar_visible_via_all_three_surfaces``
+test additionally requires a real provider API key (see the per-test
+``skipif`` below). It shells out to ``uv run lies query``, which
+loads the configured ``provider`` and hits the real network. Without
+a key the orchestrator's AnthropicProvider constructor crashes (or
+the request returns HTTP 401 once it does reach the wire); either
+way the test fails on environments that don't have a key configured,
+which is most local developer machines. The other surfaces exercised
+here (the CLI ``init`` step and ``lies memory``) don't talk to the
+provider, but they're entangled with the same subprocess so the
+whole flow is gated on the key.
 """
 
 from __future__ import annotations
@@ -27,6 +39,10 @@ pytestmark = pytest.mark.skipif(
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
+@pytest.mark.skipif(
+    os.environ.get("ANTHROPIC_API_KEY") in (None, "", "test"),
+    reason="requires ANTHROPIC_API_KEY configured (network call to provider)",
+)
 def test_query_writes_sidecar_visible_via_all_three_surfaces(tmp_path: Path) -> None:
     # 1. Init a wiki via the CLI.
     name = "smoke"
