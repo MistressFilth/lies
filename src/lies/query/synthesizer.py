@@ -589,26 +589,6 @@ def _extract_title(content: str) -> str | None:
     return None
 
 
-def _excerpt_from_spans(spans: list[Span], max_chars: int = 400) -> str:
-    """Return a short prose excerpt from the first non-code-fence span.
-
-    Used by :func:`build_answer_from_pages` as a placeholder until the
-    F19 per-claim span picker (Task 5+) replaces this single-bullet
-    excerpt with a synthesized body that picks one span per claim.
-    Code-fence spans are excluded because their contents are not prose.
-    """
-    for span in spans:
-        if span.code_fence:
-            continue
-        text = span.body.strip()
-        if not text:
-            continue
-        if len(text) > max_chars:
-            text = text[: max_chars - 3].rstrip() + "..."
-        return text
-    return "(no extractable content)"
-
-
 # ---------------------------------------------------------------------------
 # Answer assembly
 # ---------------------------------------------------------------------------
@@ -681,10 +661,26 @@ def build_answer_from_pages(
         citations.append(c)
         pages_read.append(c)
         page_links.append(f"[{page.title}]({page.rel_path})")
-        excerpt = _excerpt_from_spans(page.spans)
-        bullets.append(
-            f"- [{page.source}] {page.title} — {excerpt} — [{page.title}]({page.rel_path})"
+        # F19: pick the first non-empty prose span as the per-page excerpt.
+        prose_span = next(
+            (s for s in page.spans if s.body.strip() and not s.code_fence),
+            None,
         )
+        if prose_span is None:
+            excerpt = "(no extractable content)"
+            heading_path: list[str] = []
+        else:
+            # Trim trailing whitespace + cap at first paragraph
+            excerpt = prose_span.body.strip().split("\n\n", 1)[0]
+            heading_path = prose_span.heading_path
+        heading_str = " > ".join(heading_path) if heading_path else "top of page"
+        # Per-page bullet uses the [[slug]]: "verbatim" form (F19). For
+        # multi-page summaries this gives each citation a heading context;
+        # for the [[slug]] rendering we use the bare slug (no collection
+        # prefix).
+        bare_slug = page.rel_path.split("/", 1)[1] if "/" in page.rel_path else page.rel_path
+        bare_slug = bare_slug.removesuffix(".md")
+        bullets.append(f'- [[{bare_slug}]] ({heading_str}): "{excerpt}"')
 
     if fallback_reason == FALLBACK_REASON_WIKI_ONLY:
         preamble = (
