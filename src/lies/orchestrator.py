@@ -1762,7 +1762,15 @@ class Orchestrator:
             and librarian_out_for_filing is not None
             and self._should_file(answer, librarian_out_for_filing)
         ):
-            self._file_back(question, answer, librarian_out_for_filing)
+            receipt = self._file_back(question, answer, librarian_out_for_filing)
+            # Thread the file-back receipt onto the returned answer so
+            # callers (CLI / MCP / integration tests) can render the
+            # operator-visible block without re-running the plan.
+            # ``_file_back`` returns ``None`` when the F17 section-
+            # contract refusal short-circuits the plan build; in that
+            # case ``file_receipt`` stays ``None`` and the answer rides
+            # back as if filing-back had never fired.
+            answer.file_receipt = receipt
         return answer
 
     def run_query_with_format(
@@ -1834,14 +1842,15 @@ class Orchestrator:
         # synthesizer emits ``format_hint`` and the F1 CLI override
         # path wants the caller's choice to win. Replace the field
         # rather than constructing a new answer so the validated
-        # ``claim_citations`` and threaded citations ride through
-        # unchanged.
+        # ``claim_citations``, threaded citations, and the F3
+        # ``file_receipt`` ride through unchanged.
         return QueryAnswer(
             answer=answer.answer,
             citations=answer.citations,
             should_file=answer.should_file,
             format_hint=format_hint,
             claim_citations=answer.claim_citations,
+            file_receipt=answer.file_receipt,
         )
 
     def _call_synthesizer(
@@ -1984,20 +1993,27 @@ class Orchestrator:
         question: str,
         answer: QueryAnswer,
         librarian_output: LibrarianOutput,
-    ) -> None:
+    ) -> MemoryReceipt | None:
         """Write a synthesis page for the answer.
 
         Page type: ``synthesis`` when ``distinct_pages >= 2``,
         ``concept`` otherwise. Body shape per spec Section 5:
         ``## Thesis`` (the answer), ``## Evidence`` (per-claim span
         heading inline), ``## Open Questions`` (or "(none)").
+
+        Returns the ``MemoryReceipt`` from the underlying
+        :meth:`file_back_author` envelope (or ``None`` when the
+        F17 section-contract refusal short-circuits the plan build).
+        The caller (``run_query``) threads the receipt onto
+        ``QueryAnswer.file_receipt`` so the F19 file-back envelope
+        is observable to the operator / CLI / MCP layer.
         """
         slug = _slugify(question)
         page_type = "synthesis" if librarian_output.distinct_pages >= 2 else "concept"
         title = question.strip().rstrip("?").strip() or slug
         body = self._build_filed_body(question, answer, librarian_output, page_type)
         sources = [e.slug for e in librarian_output.excerpts]
-        self._file_knowledge(
+        return self._file_knowledge(
             page_type=page_type,
             slug=slug,
             title=title,
@@ -2042,7 +2058,7 @@ class Orchestrator:
         title: str,
         body: str,
         sources: list[str],
-    ) -> None:
+    ) -> MemoryReceipt | None:
         """Write a knowledge page via ``WikiMemoryService.apply_plan``.
 
         Builds a ``MemoryPlan`` through :func:`build_author_plan` and
@@ -2063,6 +2079,12 @@ class Orchestrator:
         and its ``apply_plan`` is an instance method (no
         ``wiki_dir`` kwarg). Delegating to ``file_back_author``
         reuses the canonical envelope rather than duplicating it.
+
+        Returns the ``MemoryReceipt`` from ``file_back_author`` so the
+        caller (``_file_back`` -> ``run_query``) can thread it onto
+        ``QueryAnswer.file_receipt``. The F17 refusal path returns
+        ``None`` so the operator sees the warning, not a synthetic
+        empty receipt.
         """
         from lies.page.author import _SectionRefusal, build_author_plan
 
@@ -2083,10 +2105,9 @@ class Orchestrator:
         # F17 defensive refusal seam: the plan builder returned a
         # refusal rather than a plan when the body is missing a
         # required section. Mirror ``file_back_author`` and surface
-        # the refusal as an errors-as-value receipt. ``run_query``
-        # ignores ``file_receipt`` for the F19 surface, so the
-        # caller-visible effect is a logged refusal rather than a
-        # raised exception.
+        # the refusal as a logged warning — ``file_receipt`` stays
+        # ``None`` so the caller can distinguish "filing-back never
+        # ran" from "filing-back ran and durably filed pages".
         if isinstance(plan, _SectionRefusal):
             import logging
 
@@ -2096,8 +2117,8 @@ class Orchestrator:
                 slug,
                 plan.error,
             )
-            return
-        self.file_back_author(plan)
+            return None
+        return self.file_back_author(plan)
 
     def _register_librarian_tools(self) -> None:
         """Register ``wiki_search`` / ``wiki_read`` / ``wiki_catalog`` on the librarian agent.

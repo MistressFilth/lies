@@ -11,6 +11,7 @@ from pydantic_ai.tools import RunContext
 
 from lies.agents.base import make_sub_agent
 from lies.agents.librarian import LibrarianOutput
+from lies.memory.models import MemoryReceipt
 from lies.query.citation import ClaimCitation
 
 
@@ -43,6 +44,19 @@ class QueryAnswer:
     the ``citations`` list and each ``claim`` against the answer body,
     dropping entries that fail either check. Survivors are forwarded
     to ``SynthesizedAnswer.claim_citations`` for downstream consumers.
+    """
+
+    file_receipt: MemoryReceipt | None = None
+    """F3 file-back envelope returned by ``Orchestrator.run_query`` when
+    filing-back runs.
+
+    ``None`` when filing-back was disabled (``file_back=False``), the
+    gate rejected the answer, or the canned-``QueryAnswer`` path was
+    exercised (test fixtures). Populated by the orchestrator after
+    ``file_back_author`` returns so the operator / CLI / MCP layer
+    can render a receipt block listing the created/updated pages and
+    any errors (e.g. ``file_back_failed_after_3_attempts`` on a held
+    cross-process flock).
     """
 
     @property

@@ -24,6 +24,15 @@ offers ``_lock`` (an in-process ``threading.Lock``) but the cross-process
 flock the orchestrator's file-back path actually races is the
 ``acquire_create_lock`` envelope, so that's what the busy scenario
 exercises.
+
+The librarian and synthesizer agent ``run_sync`` methods are stubbed
+at the per-instance boundary (matching the
+``tests/integration/test_tier2_query_path.py`` pattern) so pydantic-ai's
+``TestModel`` does not iterate the librarian's registered ``wiki_read``
+tool with random string args (which would surface ``WikiPageNotFound``
+before any synthesis runs). The canned ``LibrarianOutput`` exercises
+the F18 4-step contract shape; this test pins the F3 file-back envelope,
+not retrieval.
 """
 
 from __future__ import annotations
@@ -35,10 +44,14 @@ import sys
 import textwrap
 import time
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 from pydantic_ai.models.test import TestModel
 
+from lies.agents.librarian import LibrarianOutput, PageExcerpt
+from lies.agents.query_synthesizer import QueryAnswer
+from lies.markdown_spans import Span
 from lies.orchestrator import Orchestrator
 from lies.wiki.wiki import Wiki
 from tests.conftest import make_wiki, models_for_tests
@@ -91,6 +104,112 @@ def wiki_dir(tmp_path: Path) -> Wiki:
     return wiki
 
 
+def _canned_librarian_output(wiki: Wiki, *, page_count: int = 2) -> LibrarianOutput:
+    """Build a deterministic canned ``LibrarianOutput`` against ``wiki``.
+
+    ``page_count`` distinct excerpts drawn from the wiki's concepts tree
+    so the filing-back gate (``distinct_pages >= 2`` for synthesis,
+    ``>= 1`` for concept) fires deterministically. Each excerpt's span
+    carries the page body verbatim so the synthesizer's
+    ``_validate_claim_citations`` quote-substring check (when threaded
+    by ``_call_synthesizer``) has realistic content to match.
+
+    Skips system files (``index.md`` / ``log.md`` /
+    ``lint-report.md`` / ``overview.md``) so the canned bundle never
+    accidentally cites a system page.
+
+    ``distinct_pages`` is pinned to 2 (independent of the excerpts the
+    fixture actually yields) so the synthesis-vs-concept gate in
+    ``Orchestrator._should_file`` always resolves to a synthesis write
+    even when the wiki fixture has a single page. The F3 file-back
+    test pins that path; the F18 librarian retrieval contract is
+    exercised separately in ``test_tier2_query_path``.
+    """
+    pages = sorted(wiki.wiki_dir.rglob("*.md"))
+    excerpts: list[PageExcerpt] = []
+    for path in pages:
+        if len(excerpts) >= page_count:
+            break
+        rel = path.relative_to(wiki.wiki_dir).as_posix()
+        if rel in {"index.md", "log.md", "lint-report.md", "overview.md"}:
+            continue
+        body = path.read_text(encoding="utf-8")
+        # Strip frontmatter for the canned span body so the first
+        # non-empty line is content, not the YAML delimiter.
+        if body.startswith("---"):
+            end = body.find("\n---", 3)
+            if end != -1:
+                body = body[end + 4 :].lstrip("\n")
+        slug = rel.removesuffix(".md")
+        excerpts.append(
+            PageExcerpt(
+                collection=wiki.name,
+                slug=slug,
+                title=slug.rsplit("/", 1)[-1],
+                spans=[Span(heading_path=[], body=body, code_fence=False, start_line=1)],
+            )
+        )
+    return LibrarianOutput(
+        tag_expr=None,
+        exclude_tags=[],
+        excerpts=excerpts,
+        distinct_pages=2,
+    )
+
+
+def _canned_synth_answer(excerpts: list[PageExcerpt]) -> QueryAnswer:
+    """Build a canned ``QueryAnswer`` for the canned librarian bundle.
+
+    Multi-line body (so the ``>= 3 lines of non-whitespace text`` gate
+    in ``Orchestrator._should_file`` passes), ``should_file=True`` (so
+    the gate's first condition is met), and bare-slug citations
+    matching ``PageExcerpt.slug`` (so ``_call_synthesizer``'s threaded
+    ``Citation`` set and the orchestrator's filing-back
+    ``derived_from`` resolve cleanly).
+    """
+    body = (
+        "A hook intercepts events at fixed points in a program's flow.\n"
+        "Hooks are wired into the lifecycle so consumers can react.\n"
+        "Without a hook the framework would have no extension point.\n"
+    )
+    return QueryAnswer(
+        answer=body,
+        citations=[e.slug for e in excerpts],
+        should_file=True,
+        format_hint="md",
+        # Empty ``claim_citations`` keeps the canned answer independent
+        # of the canned excerpt bodies; ``_call_synthesizer``'s drop-on-
+        # fail validation trivially passes on an empty list, and the
+        # filed body's ``## Evidence`` block is the empty join (the
+        # F3 file-back assertion only checks ``changed_pages`` /
+        # ``errors``, not the rendered body).
+        claim_citations=[],
+    )
+
+
+def _stub_dispatch(
+    orch: Orchestrator,
+    canned_lib: LibrarianOutput,
+    canned_synth: QueryAnswer,
+) -> None:
+    """Stub the librarian + synthesizer ``run_sync`` methods.
+
+    Patches per-instance (not per-class) so the same orchestrator's
+    other agents can be patched independently if a future test needs
+    finer control. Both stubs return ``Mock(output=...)`` so the
+    orchestrator's ``result.output`` attribute accesses resolve.
+    """
+
+    def _librarian_run_sync(*args: object, **kwargs: object) -> Mock:
+        return Mock(output=canned_lib)
+
+    def _synthesizer_run_sync(*args: object, **kwargs: object) -> Mock:
+        return Mock(output=canned_synth)
+
+    orch._librarian_agent.run_sync = _librarian_run_sync  # type: ignore[method-assign]
+    orch._query_synthesizer_agent.run_sync = _synthesizer_run_sync  # type: ignore[method-assign]
+
+
 def test_two_queries_with_same_question_collide_to_page_update(wiki_dir: Wiki) -> None:
     """First query writes PageCreate; second writes PageUpdate at the same slug.
 
@@ -98,8 +217,16 @@ def test_two_queries_with_same_question_collide_to_page_update(wiki_dir: Wiki) -
     means the second ``run_query`` resolves to a ``PageUpdate`` against the
     page the first call just created. Both file-receipts report zero
     errors.
+
+    Both sub-agent ``run_sync`` calls are stubbed so pydantic-ai's
+    ``TestModel`` never reaches the librarian's ``wiki_read`` tool
+    (which would otherwise raise ``WikiPageNotFound`` on the random
+    page_ids ``TestModel`` invents during its first iteration).
     """
     orch = Orchestrator(wiki=wiki_dir, models=models_for_tests(TestModel()))
+    canned_lib = _canned_librarian_output(wiki_dir, page_count=2)
+    canned_synth = _canned_synth_answer(canned_lib.excerpts)
+    _stub_dispatch(orch, canned_lib, canned_synth)
 
     ans_a = orch.run_query(
         "what is a hook?",
@@ -186,6 +313,10 @@ def test_lock_busy_simulated_yields_three_attempts(wiki_dir: Wiki, tmp_path: Pat
     retries inline 3 times before returning a receipt whose
     ``errors`` carry the documented ``file_back_failed_after_3_attempts``
     marker.
+
+    Both sub-agent ``run_sync`` calls are stubbed so the filing-back
+    path is reached without an intervening LLM iteration against the
+    librarian's ``wiki_read`` tool.
     """
     create_lock = wiki_dir.memory_create_lock_path
     pid_path = wiki_dir.memory_pid_path
@@ -207,6 +338,10 @@ def test_lock_busy_simulated_yields_three_attempts(wiki_dir: Wiki, tmp_path: Pat
         _wait_for_holder(ready_marker)
 
         orch = Orchestrator(wiki=wiki_dir, models=models_for_tests(TestModel()))
+        canned_lib = _canned_librarian_output(wiki_dir, page_count=2)
+        canned_synth = _canned_synth_answer(canned_lib.excerpts)
+        _stub_dispatch(orch, canned_lib, canned_synth)
+
         ans = orch.run_query(
             "what is a hook?",
             tag_expr="c:claude-code",
