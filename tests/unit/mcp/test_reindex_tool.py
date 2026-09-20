@@ -142,3 +142,23 @@ async def test_reindex_destructive_hint_annotation() -> None:
     # at registration — to sidestep alias-resolution differences across
     # mcp SDK versions.
     assert tool.annotations.destructive_hint is True
+
+
+@pytest.mark.asyncio
+async def test_reindex_reconcile_sets_reconciled_true(
+    ctx_accept, mock_qmd_reindex, mock_resolve_wiki
+) -> None:
+    """``reconcile=True`` runs ``sync_collection`` per collection and
+    populates ``result.reconciled = True`` in the returned envelope.
+    Pins the F38 fix that wired the reconcile block into the
+    ``ReindexResult.reconciled`` field.
+    """
+    from lies.etl import sync_helper
+
+    with (
+        patch.object(sync_helper, "sync_collection", return_value=MagicMock(errors=0)),
+        patch.object(sync_helper, "collection_names", return_value=["c1"]),
+    ):
+        result = await reindex_tool(reconcile=True, ctx=ctx_accept, name="t")
+    assert result["reconciled"] is True
+    assert result["indexed"] is True

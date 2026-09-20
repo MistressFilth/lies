@@ -228,13 +228,16 @@ class _ConfirmDestructive(BaseModel):
     reason: str = ""
 
 
-async def _confirm_destructive(ctx: Context, message: str) -> str | None:
+async def _confirm_destructive(ctx: Context | None, message: str) -> str | None:  # type: ignore[valid-type]
     """Prompt the user; return ``None`` to proceed or an error string to abort.
 
     Mirrors ask's ``_confirm_destructive``
     (``ask/scripts/_server_helpers.py:237``). Hosts that don't implement
     ``ctx.elicit`` raise on the call; we return a clear error string so
-    the caller treats it as decline (no work runs).
+    the caller treats it as decline (no work runs). ``ctx`` may be
+    ``None`` for programmatic callers; the ``try/except`` below catches
+    the resulting ``AttributeError`` and surfaces the same "elicitation
+    unavailable" error path the existing callers rely on.
     """
     try:
         result: Any = await ctx.elicit(  # ty: ignore[unresolved-attribute]
@@ -291,11 +294,14 @@ async def reindex(
 
     wiki = resolve_wiki(name)
 
+    result = _models.ReindexResult()
+
     # Optional pre-step: sync each collection before reindex so the
     # rebuild sees fresh raw mirrors. Mirrors ``lies reindex --reconcile``.
     if reconcile:
         for coll_name in collection_names(wiki, None):
             sync_collection(wiki, coll_name, force=False)
+        result.reconciled = True
 
     # Gate destructive flags. When ``ctx`` is None (programmatic caller)
     # ``_confirm_destructive`` raises on ``ctx.elicit`` and the helper
@@ -309,15 +315,21 @@ async def reindex(
             prompt = "Cleanup will vacuum the FTS5 db and drop orphan rows. Confirm?"
         decision = await _confirm_destructive(ctx, prompt)
         if decision is not None:
-            return _models.ReindexResult(errors=[decision]).model_dump()
+            return _models.ReindexResult(
+                reconciled=result.reconciled, errors=[decision]
+            ).model_dump()
 
-    result = qmd_reindex(
+    reindex_outcome = qmd_reindex(
         wiki.wiki_dir,
         embed=embed,
         cleanup=cleanup,
         all_=all_,
         force=force,
     )
+    result.indexed = reindex_outcome.indexed
+    result.embedded = reindex_outcome.embedded
+    result.cleaned = reindex_outcome.cleaned
+    result.errors = reindex_outcome.errors
     return result.model_dump()
 
 
