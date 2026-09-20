@@ -4,20 +4,42 @@ import pytest
 from pydantic_ai.models.test import TestModel
 from pydantic_ai.tools import RunContext
 
+from lies.agents.librarian import LibrarianOutput, PageExcerpt
 from lies.agents.query_synthesizer import (
     QueryAnswer,
     QueryDeps,
     _build_query_prompt,
     query_synthesizer_agent,
 )
+from lies.markdown_spans import Span
 from lies.query.citation import ClaimCitation
 
 
 def _deps() -> QueryDeps:
+    """Build a QueryDeps carrying a wiki-sourced excerpt via LibrarianOutput.
+
+    F19 (Task 5): the legacy ``page_texts`` / ``page_sources``
+    constructor fields were dropped in favour of a single
+    ``librarian_output`` field with derived properties. Tests that
+    exercise the prompt-renderer contract (rendered corpus block,
+    source tag inline) construct the deps through the F19 surface.
+    """
+    excerpt = PageExcerpt(
+        collection="wiki",
+        slug="wiki/concepts/alpha.md",
+        title="Alpha",
+        spans=[
+            Span(heading_path=[], body="Alpha is the first letter.", code_fence=False, start_line=1)
+        ],
+    )
     return QueryDeps(
         question="What is alpha?",
-        page_texts={"wiki/concepts/alpha.md": "Alpha is the first letter."},
-        page_sources={"wiki/concepts/alpha.md": "wiki"},
+        librarian_output=LibrarianOutput(
+            tag_expr=None,
+            exclude_tags=[],
+            excerpts=[excerpt],
+            distinct_pages=1,
+        ),
     )
 
 
@@ -69,17 +91,36 @@ def test_build_query_prompt_survives_missing_deps() -> None:
 def test_query_deps_carries_page_sources() -> None:
     """``QueryDeps`` exposes ``page_sources`` keyed by the same path as
     ``page_texts`` so the prompt can render ``[library]``/``[wiki]``
-    tags inline."""
+    tags inline.
+
+    F19 (Task 5): ``page_sources`` is now a derived property over
+    ``LibrarianOutput.excerpts``. The discriminator carries through
+    ``PageExcerpt.collection`` (``"library"`` / ``"wiki"`` / any
+    other string → ``"library"``) so a librarian-built deps renders
+    correctly. The legacy direct-field shape is gone.
+    """
+    excerpts = [
+        PageExcerpt(
+            collection="claude_platform",
+            slug="claude_platform/skills.md",
+            title="Skills",
+            spans=[Span(heading_path=[], body="lib body", code_fence=False, start_line=1)],
+        ),
+        PageExcerpt(
+            collection="wiki",
+            slug="wiki/concepts/local.md",
+            title="Local",
+            spans=[Span(heading_path=[], body="wiki body", code_fence=False, start_line=1)],
+        ),
+    ]
     deps = QueryDeps(
         question="q",
-        page_texts={
-            "claude_platform/skills.md": "lib body",
-            "wiki/concepts/local.md": "wiki body",
-        },
-        page_sources={
-            "claude_platform/skills.md": "library",
-            "wiki/concepts/local.md": "wiki",
-        },
+        librarian_output=LibrarianOutput(
+            tag_expr=None,
+            exclude_tags=[],
+            excerpts=excerpts,
+            distinct_pages=2,
+        ),
     )
     assert deps.page_sources == {
         "claude_platform/skills.md": "library",
@@ -87,27 +128,49 @@ def test_query_deps_carries_page_sources() -> None:
     }
 
 
-def test_query_deps_page_sources_required() -> None:
-    """``page_sources`` is required (not defaulted) so a caller that
-    forgets to populate it fails fast at construction rather than
-    silently dropping source info from the prompt."""
+def test_query_deps_librarian_output_required() -> None:
+    """``librarian_output`` is required (not defaulted) so a caller
+    that forgets to populate it fails fast at construction rather
+    than silently dropping the F19 evidence bundle from the prompt.
+
+    Replaces the pre-F19 ``test_query_deps_page_sources_required``
+    pin: the legacy fields are gone, the new required field is
+    ``librarian_output``.
+    """
     with pytest.raises(TypeError):
-        QueryDeps(question="q", page_texts={})  # type: ignore[call-arg]
+        QueryDeps(question="q")  # type: ignore[call-arg]
 
 
 def test_build_query_prompt_renders_source_tag_inline() -> None:
     """The rendered corpus carries a ``[library]`` / ``[wiki]`` tag
-    inline before each path so the LLM can apply the library-wins rule."""
+    inline before each path so the LLM can apply the library-wins rule.
+
+    F19 (Task 5): the corpus is derived from
+    ``LibrarianOutput.excerpts`` (not direct ``page_texts`` /
+    ``page_sources`` maps), but the rendered shape is unchanged.
+    """
+    excerpts = [
+        PageExcerpt(
+            collection="claude_platform",
+            slug="claude_platform/skills.md",
+            title="Skills",
+            spans=[Span(heading_path=[], body="lib body", code_fence=False, start_line=1)],
+        ),
+        PageExcerpt(
+            collection="wiki",
+            slug="wiki/concepts/local.md",
+            title="Local",
+            spans=[Span(heading_path=[], body="wiki body", code_fence=False, start_line=1)],
+        ),
+    ]
     deps = QueryDeps(
         question="anything",
-        page_texts={
-            "claude_platform/skills.md": "lib body",
-            "wiki/concepts/local.md": "wiki body",
-        },
-        page_sources={
-            "claude_platform/skills.md": "library",
-            "wiki/concepts/local.md": "wiki",
-        },
+        librarian_output=LibrarianOutput(
+            tag_expr=None,
+            exclude_tags=[],
+            excerpts=excerpts,
+            distinct_pages=2,
+        ),
     )
     ctx = RunContext(deps=deps, model=TestModel(), usage=None, prompt="")
     rendered = _build_query_prompt(ctx)

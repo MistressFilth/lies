@@ -196,120 +196,21 @@ def test_run_query_calls_retrieve_pages_at_most_once_per_branch(
     assert result.synthesis_reason == "RuntimeError: model exploded"
 
 
-def test_call_query_synthesizer_handles_unreadable_pages_silently(
+def test_call_query_synthesizer_runs_with_in_memory_spans_only(
     orch: Orchestrator,
 ) -> None:
-    """An unreadable page must be silently skipped, not raised.
+    """F19 (Task 5): ``_call_query_synthesizer`` no longer reads files —
+    the defensive read loop is gone. ``PageRead.spans`` already carries
+    the parsed body from retrieval, and the synthesizer's
+    ``QueryDeps.page_texts`` is derived from ``LibrarianOutput.excerpts``.
 
-    Mirrors `_call_linter`'s defensive read loop: a single
-    `OSError` / `UnicodeDecodeError` on one page must not bubble out of
-    `_call_query_synthesizer` and crash the synthesis path. The agent
-    still runs with the pages that did read cleanly.
+    Regression pin: a missing-on-disk page that arrived with empty
+    spans must NOT crash the synthesis path. The synthesizer still
+    runs (the agent receives an empty-spans deps) and the
+    ``page_texts`` / ``page_sources`` derived properties reflect
+    the in-memory spans verbatim.
     """
 
-    captured: dict[str, object] = {}
-
-    def capture(_self: object, _prompt: str, **kwargs: object) -> mock.Mock:
-        captured["deps"] = kwargs["deps"]
-        return mock.Mock(output=_answer())
-
-    with (
-        mock.patch.object(type(orch._query_synthesizer_agent), "run_sync", capture),
-        mock.patch.object(Path, "read_text", side_effect=OSError("disk gone")),
-    ):
-        output, reason = orch._call_query_synthesizer(
-            "what is alpha?",
-            [
-                PageRead(
-                    rel_path="wiki/concepts/alpha.md",
-                    title="Alpha",
-                    spans=[],
-                    source="wiki",
-                ),
-            ],
-        )
-
-    # Agent ran, returned its answer, no failure surfaced.
-    assert output is not None
-    assert reason == ""
-    # The unreadable page was silently skipped; deps has no entry for it.
-    assert captured["deps"].page_texts == {}  # type: ignore[attr-defined]
-    assert captured["deps"].page_sources == {}  # type: ignore[attr-defined]
-
-
-# ---------------------------------------------------------------------------
-# Critical 1 + Critical 4: path resolver branches on ``source`` and the
-# deps carry a per-path source discriminator.
-# ---------------------------------------------------------------------------
-
-
-def test_call_query_synthesizer_reads_library_pages_from_collections_root(
-    orch: Orchestrator,
-) -> None:
-    """A library-sourced page is resolved against
-    ``Library.open().collections_root`` — not ``wiki.data_root``.
-
-    Without the fix, the resolver joins ``self.wiki.data_root / rel_path``
-    and reads nothing (the file lives under the library collections root).
-    """
-    import os
-    from unittest import mock as _mock
-
-    from lies.library.paths import Library
-
-    Library.open.cache_clear()
-    lib = Library.open()
-    rel_path = "claude_platform/skills.md"
-    lib_root = lib.collections_root
-    (lib_root / "claude_platform").mkdir(parents=True, exist_ok=True)
-    (lib_root / "claude_platform" / "skills.md").write_text(
-        "# Skills\n\nLibrary body.\n", encoding="utf-8"
-    )
-
-    captured: dict[str, object] = {}
-
-    def capture(_self: object, _prompt: str, **kwargs: object) -> _mock.Mock:
-        captured["deps"] = kwargs["deps"]
-        return _mock.Mock(output=_answer(citations=[rel_path]))
-
-    try:
-        with _mock.patch.object(type(orch._query_synthesizer_agent), "run_sync", capture):
-            output, reason = orch._call_query_synthesizer(
-                "anything",
-                [
-                    PageRead(
-                        rel_path=rel_path,
-                        title="Skills",
-                        spans=[],
-                        source="library",
-                    ),
-                ],
-            )
-        assert output is not None
-        assert reason == ""
-        deps = captured["deps"]
-        # The library page text is the file body — proving the resolver
-        # landed at the right path (Library.open().collections_root/<rel>).
-        assert deps.page_texts[rel_path] == "# Skills\n\nLibrary body.\n"  # type: ignore[attr-defined]
-        assert deps.page_sources[rel_path] == "library"  # type: ignore[attr-defined]
-    finally:
-        # Restore the env so other tests aren't disturbed.
-        for key in ("XDG_DATA_HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME"):
-            if key in os.environ:
-                del os.environ[key]
-
-
-def test_call_query_synthesizer_reads_wiki_pages_from_data_root(
-    orch: Orchestrator,
-) -> None:
-    """A wiki-sourced page is resolved against ``self.wiki.data_root``.
-
-    ``wiki/concepts/alpha.md`` is a data_root-relative path with the
-    ``wiki/`` prefix; the resolver joins onto ``wiki.data_root`` (which
-    is one segment above ``wiki.wiki_dir``) so the prefix is preserved.
-    Joining onto ``wiki_dir`` would silently produce
-    ``wiki/wiki/...`` and read nothing.
-    """
     captured: dict[str, object] = {}
 
     def capture(_self: object, _prompt: str, **kwargs: object) -> mock.Mock:
@@ -329,24 +230,127 @@ def test_call_query_synthesizer_reads_wiki_pages_from_data_root(
             ],
         )
 
+    # Agent ran, returned its answer, no failure surfaced.
+    assert output is not None
+    assert reason == ""
+    # Empty-spans page yields a derived empty-string body, not a
+    # missing entry — the old behavior was to skip on read failure,
+    # which doesn't apply post-F19 since the synthesizer doesn't
+    # touch disk.
+    deps = captured["deps"]
+    assert deps.page_texts == {"wiki/concepts/alpha.md": ""}  # type: ignore[attr-defined]
+    assert deps.page_sources == {"wiki/concepts/alpha.md": "wiki"}  # type: ignore[attr-defined]
+
+
+# ---------------------------------------------------------------------------
+# Critical 1 + Critical 4: path resolver branches on ``source`` and the
+# deps carry a per-path source discriminator.
+# ---------------------------------------------------------------------------
+
+
+def test_call_query_synthesizer_threads_library_pages_through_excerpts(
+    orch: Orchestrator,
+) -> None:
+    """F19 (Task 5): a library-sourced page carries ``source="library"``
+    through to ``PageExcerpt.collection`` and onto
+    ``QueryDeps.page_sources`` — the synthesizer sees the discriminator
+    without re-reading the file from ``Library.collections_root``.
+
+    The pre-F19 implementation read the file at this seam to verify
+    the resolver landed at the library root; that contract is gone —
+    retrieval populates ``PageRead.spans`` and the synthesizer just
+    forwards them.
+    """
+    from lies.markdown_spans import Span
+
+    rel_path = "claude_platform/skills.md"
+    spans = [
+        Span(heading_path=["Skills"], body="Library body.", code_fence=False, start_line=3),
+    ]
+    captured: dict[str, object] = {}
+
+    def capture(_self: object, _prompt: str, **kwargs: object) -> mock.Mock:
+        captured["deps"] = kwargs["deps"]
+        return mock.Mock(output=_answer(citations=[rel_path]))
+
+    with mock.patch.object(type(orch._query_synthesizer_agent), "run_sync", capture):
+        output, reason = orch._call_query_synthesizer(
+            "anything",
+            [
+                PageRead(
+                    rel_path=rel_path,
+                    title="Skills",
+                    spans=spans,
+                    source="library",
+                ),
+            ],
+        )
     assert output is not None
     assert reason == ""
     deps = captured["deps"]
+    # Library-sourced page flows through to the wiki/library discriminator.
+    assert deps.page_sources[rel_path] == "library"  # type: ignore[attr-defined]
+    # page_texts is derived from span bodies (code-fence excluded).
+    assert deps.page_texts[rel_path] == "Library body."  # type: ignore[attr-defined]
+
+
+def test_call_query_synthesizer_threads_wiki_pages_through_excerpts(
+    orch: Orchestrator,
+) -> None:
+    """F19 (Task 5): a wiki-sourced page carries ``source="wiki"``
+    through to ``QueryDeps.page_sources``. ``page_texts`` is derived
+    from the in-memory ``PageRead.spans`` list (no disk read).
+    """
+    from lies.markdown_spans import Span
+
+    captured: dict[str, object] = {}
+
+    def capture(_self: object, _prompt: str, **kwargs: object) -> mock.Mock:
+        captured["deps"] = kwargs["deps"]
+        return mock.Mock(output=_answer())
+
+    with mock.patch.object(type(orch._query_synthesizer_agent), "run_sync", capture):
+        output, reason = orch._call_query_synthesizer(
+            "what is alpha?",
+            [
+                PageRead(
+                    rel_path="wiki/concepts/alpha.md",
+                    title="Alpha",
+                    spans=[
+                        Span(
+                            heading_path=[],
+                            body="---\ntitle: Alpha\n---\n\nAlpha is the first letter.\n",
+                            code_fence=False,
+                            start_line=1,
+                        ),
+                    ],
+                    source="wiki",
+                ),
+            ],
+        )
+
+    assert output is not None
+    assert reason == ""
+    deps = captured["deps"]
+    assert deps.page_sources["wiki/concepts/alpha.md"] == "wiki"  # type: ignore[attr-defined]
     assert deps.page_texts["wiki/concepts/alpha.md"] == (  # type: ignore[attr-defined]
         "---\ntitle: Alpha\n---\n\nAlpha is the first letter.\n"
     )
-    assert deps.page_sources["wiki/concepts/alpha.md"] == "wiki"  # type: ignore[attr-defined]
 
 
-def test_call_query_synthesizer_silently_skips_unreadable_library_pages(
+def test_call_query_synthesizer_passes_through_empty_span_library_pages(
     orch: Orchestrator,
 ) -> None:
-    """A library-sourced page whose file is missing is skipped, not crashed on.
+    """F19 (Task 5): a library-sourced page with empty spans flows
+    through the synthesizer with an empty-string body — the
+    defensive read loop is gone (no disk I/O here), and the agent
+    still runs with the in-memory state the caller provided.
 
-    Mirrors the wiki-side defensive read loop: ``OSError`` /
-    ``FileNotFoundError`` on one page must not bubble out of
-    ``_call_query_synthesizer``. The agent still runs with whatever did
-    read cleanly."""
+    Pre-F19 this test asserted the page was silently skipped on
+    read failure; that semantic is now retrieval's responsibility
+    (``parse_spans`` either succeeds or the page never reaches
+    ``_call_query_synthesizer``).
+    """
     from unittest import mock as _mock
 
     captured: dict[str, object] = {}
@@ -370,16 +374,19 @@ def test_call_query_synthesizer_silently_skips_unreadable_library_pages(
 
     assert output is not None
     assert reason == ""
-    assert captured["deps"].page_texts == {}  # type: ignore[attr-defined]
-    assert captured["deps"].page_sources == {}  # type: ignore[attr-defined]
+    deps = captured["deps"]
+    # Empty-spans page yields empty body, not skipped.
+    assert deps.page_texts == {"claude_platform/missing.md": ""}  # type: ignore[attr-defined]
+    assert deps.page_sources == {"claude_platform/missing.md": "library"}  # type: ignore[attr-defined]
 
 
-def test_call_query_synthesizer_populates_page_sources_for_each_read_page(
+def test_call_query_synthesizer_populates_page_sources_for_each_excerpt(
     orch: Orchestrator,
 ) -> None:
-    """Every successfully-read page appears in both ``page_texts`` and
-    ``page_sources`` so the LLM prompt carries the discriminator for
-    every page the agent sees."""
+    """F19 (Task 5): every ``PageRead`` arriving at the synthesizer
+    carries through to ``QueryDeps.page_texts`` and
+    ``QueryDeps.page_sources`` so the LLM prompt can render the
+    discriminator for every page the agent sees."""
     captured: dict[str, object] = {}
 
     def capture(_self: object, _prompt: str, **kwargs: object) -> mock.Mock:

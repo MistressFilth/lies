@@ -1,4 +1,4 @@
-"""query-synthesizer sub-agent: turn qmd search results into a cited answer."""
+"""query-synthesizer sub-agent: turn librarian-curated excerpts into a cited answer."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ from pydantic_ai.models import Model
 from pydantic_ai.tools import RunContext
 
 from lies.agents.base import make_sub_agent
+from lies.agents.librarian import LibrarianOutput
 from lies.query.citation import ClaimCitation
 
 
@@ -46,124 +47,121 @@ class QueryAnswer:
 
 
 QUERY_SYNTHESIZER_SYSTEM_PROMPT = """Your job is to answer the user's question
-using only what the LIES wiki contains.
+using only the LIES wiki excerpts the librarian subagent returned.
 
 You receive:
 - The user's question
-- A list of pages (top-N from qmd hybrid search), each with its content
-  and a `[library]` / `[wiki]` source tag
+- A list of excerpts (top-K from the librarian), each with its
+  content, heading_path spans, and a `[library]` / `[wiki]` source tag
 
-Read each page carefully. Synthesize a markdown answer that:
+Read each excerpt carefully. Synthesize a markdown answer that:
 
-1. **Cite every claim with a footnote marker.** Write `[^N]` in the body
-   where N is the 1-based index into the `citations` list you return.
-   The marker goes immediately after the claim it supports (end of
-   sentence or clause, no space before the marker).
+1. **Cite every factual claim with inline `[[slug]]: "verbatim"` form.**
+   For each factual claim, append a citation of the form:
+   `[[page-slug]]: "verbatim text from the excerpt that supports the claim"`.
+   Example:
+   `[[concepts/pydantic]]: "Nested models are validated recursively."`
+   The `verbatim text` MUST appear as a substring of the cited
+   excerpt's body. The citation goes immediately after the claim
+   (end of sentence or clause, no space before).
+
 2. **Return `claim_citations`** as a list of
-   `{claim: "<exact substring from body>", citation_index: <int>}`.
-   `claim` must appear verbatim in the answer body. `citation_index`
-   is 0-based into your `citations` list. The orchestrator validates
-   and drops entries that fail either check.
+   `{claim: "<exact substring from body>", citation_index: <int>,
+   quote: "<verbatim excerpt text>"}`.
+   - `claim` must appear verbatim in the answer body.
+   - `citation_index` is 0-based into your `citations` list.
+   - `quote` is the verbatim text from the cited excerpt's body
+     that supports the claim.
+   The orchestrator validates all three checks and drops entries
+   that fail.
 
-   **Do not write a `Footnotes:` block yourself.** The orchestrator
-   appends a deterministic `Footnotes:` block at the end of every
-   prose answer based on the `citations` list and the retrieved
-   page metadata (line numbers, section headings). You do not have
-   line numbers or section headings in your context — the
-   orchestrator does, and produces authoritative anchors of the form
-   `[^N]: [name](path#L<line>) — <section>`. Just write `[^N]` markers
-   in the body and the matching `claim_citations` entries; the rest
-   is handled for you.
-3. **Quotes the wiki verbatim** when the wording matters. Don't paraphrase
-   technical terms, version numbers, or quoted material.
-4. **Surfaces disagreements** — if two pages disagree, present both views and
-   note the disagreement explicitly.
-5. **Says what the wiki does NOT know** — if the corpus is silent on something,
-   say so. Don't hallucinate.
-6. **Decides whether to file** — set `should_file=True` if the answer is a
-   novel synthesis, comparison, or analysis that future readers would value.
-   Set `should_file=False` for one-off factual lookups.
-7. **Applies the source rule** — Source rule: library is the primary source
-   of truth. Wiki content is supplementary. When sources contradict, agree with library.
-   Each citation carries a `[library]` or `[wiki]` tag reflecting its source;
-   preserve these tags in your answer (e.g., as a `[library]` prefix on the
-   `[name](path)` link so the operator sees the provenance inline).
-8. **Cites every page in the corpus** — include every retrieved page in the
-   `citations` list, even if it contributed only supporting context. The user
-   should be able to see which pages informed the answer; selective citation
-   hides the corpus's breadth. Prefer linking at the section end if the page
-   contributed background rather than a specific claim.
+3. **Verification step** (mandatory — before returning): for each
+   `claim_citations` entry, confirm:
+   - `claim` substring appears verbatim in the answer body.
+   - `citation_index` is a valid index into `citations`.
+   - `quote` substring appears verbatim in the cited excerpt body.
+   Drop entries that fail any check. Never emit unverified citations.
+
+4. **Cross-references** (no claim support) use `[[page-slug]]` alone,
+   without a quote.
+
+5. **Quotes the wiki verbatim** when the wording matters. Don't
+   paraphrase technical terms, version numbers, or quoted material.
+
+6. **Surfaces disagreements** — if two excerpts disagree, cite both
+   and note the disagreement explicitly.
+
+7. **Says what the wiki does NOT know** — if the corpus is silent on
+   something, say so. Don't hallucinate.
+
+8. **Decides whether to file** — set `should_file=True` if the
+   answer is a novel synthesis, comparison, or analysis that future
+   readers would value (2+ distinct excerpts + no existing wiki
+   page + substantive). Set `should_file=False` for one-off
+   factual lookups.
+
+9. **Applies the source rule** — library is the primary source of
+   truth. Wiki content is supplementary. When sources contradict,
+   agree with library. Preserve `[library]` / `[wiki]` source tags
+   in your answer (e.g., as a `[library]` prefix on the
+   `[name](path)` link).
+
+10. **Cites every page in the excerpts** — include every excerpt in
+    the `citations` list, even if it contributed only supporting
+    context. The user should see which excerpts informed the
+    answer.
+
+**Do not write a footnote block.** The orchestrator does not
+append footnotes — the inline `[[slug]]: "verbatim"` form is the
+canonical citation surface.
 
 Pick the format that best fits your answer:
+- `md` — prose explanations, single-source summaries, narrative
+- `table` — comparisons across 2+ items along 2+ axes
+- `marp` — step-by-step procedures, presentations
 
-- **`md`** — prose explanations, single-source summaries, narrative
-  answers, anything that isn't naturally tabular or slide-shaped.
-- **`table`** — comparisons across 2+ items along 2+ axes
-  (features, versions, options, pros/cons with rows), feature
-  matrices, anything where columns line up cleanly.
-- **`marp`** — step-by-step procedures, onboarding flows,
-  presentations, anything that reads as a slide deck (numbered
-  steps, sequential phases, intro/body/conclusion shape).
-
-Shape reference (generic, no content examples):
-
-- `md`: plain markdown body, headings + paragraphs + bullets,
-  followed by a `Footnotes:` block. Tables and Marp bodies do not
-  get a `Footnotes:` block; their citation surface is the structured
-  envelope only.
-- `table`: GFM pipe table with `| col1 | col2 |` header,
-  `| --- | --- |` separator, data rows below.
-- `marp`: `marp: true` frontmatter + slide breaks on `---`
-  outside the frontmatter.
-
-Set `format_hint` to your choice.
+Shape reference:
+- `md`: markdown body with `[[slug]]: "verbatim"` per claim.
+- `table`: GFM pipe table; citations in a footer row.
+- `marp`: `marp: true` frontmatter + slide breaks on `---`.
 
 Return a `QueryAnswer` with:
-- **`answer`**: the body in the chosen format. Tables are GFM pipe
-  tables; Marp bodies start with the `marp: true` frontmatter block.
-- **`citations`**: paths matching the keys shown in the corpus below
-  (`--- [library] claude_platform/concepts/alpha.md ---` or
-  `--- [wiki] wiki/claude_platform/concepts/alpha.md ---`) — copy them
-  verbatim, including the ``[source]`` prefix-vs-no-prefix distinction.
-  Library-source paths are ``<collection>/<file>`` with no ``wiki/``
-  prefix. Wiki-source paths start with ``wiki/``. The orchestrator
-  drops citations whose path does not match a retrieved page key
-  exactly, and the resulting answer body's link will then point to a
-  non-existent page. The `[name](path)` link inside the answer body
-  must use the **same path verbatim**.
-- **`claim_citations`**: list of `{claim: str, citation_index: int}`
-  per rule 3 above.
-- **`should_file`**: True/False as above
-- **`format_hint`**: "md" | "table" | "marp"
+- `answer`: the body in the chosen format
+- `citations`: paths matching excerpt keys
+- `claim_citations`: validated per rule 2 + 3
+- `should_file`: True/False per rule 8
+- `format_hint`: "md" | "table" | "marp"
 """
 
 
 @dataclass
 class QueryDeps:
-    """Dependencies the query-synthesizer needs to answer without tool calls.
+    """Dependencies the query-synthesizer needs to answer.
 
-    ``page_texts`` is a ``data_root``-relative POSIX path → full
-    markdown body map, collected by
-    ``Orchestrator._call_query_synthesizer``. Keys carry the ``wiki/``
-    prefix (``wiki/concepts/alpha.md``) because that is the convention
-    ``PageRead.rel_path`` and ``SynthesizedAnswer.citations`` already
-    use — the agent's returned citations must be comparable against the
-    retrieved set without translation. This deliberately differs from
-    ``LintDeps.page_texts``, which is wiki-dir-relative.
-
-    ``page_sources`` carries the same keys as ``page_texts`` with the
-    source discriminator (``"library"`` / ``"wiki"``) the LLM needs to
-    apply the library-wins-on-conflict rule. Required (no default) so
-    a caller that forgets to populate it fails fast at construction.
-
-    Full bodies, not excerpts: the prompt requires the agent to quote
-    the wiki verbatim and to present both sides when two pages disagree,
-    and neither is possible from a truncated excerpt.
+    F19: takes ``librarian_output`` (the librarian's curated
+    evidence bundle) instead of pre-loaded ``page_texts`` and
+    ``page_sources``. The two derived properties below keep the
+    prompt-renderer code path compatible with pre-F19 callers —
+    code-fence spans are excluded from ``page_texts`` per the F37
+    + F19 spec.
     """
 
     question: str
-    page_texts: dict[str, str]
-    page_sources: dict[str, Literal["library", "wiki"]]
+    librarian_output: LibrarianOutput
+
+    @property
+    def page_texts(self) -> dict[str, str]:
+        return {
+            e.slug: "\n\n".join(s.body for s in e.spans if not s.code_fence)
+            for e in self.librarian_output.excerpts
+        }
+
+    @property
+    def page_sources(self) -> dict[str, Literal["library", "wiki"]]:
+        return {
+            e.slug: "library" if e.collection != "wiki" else "wiki"
+            for e in self.librarian_output.excerpts
+        }
 
 
 def _build_query_prompt(ctx: RunContext[QueryDeps]) -> str:

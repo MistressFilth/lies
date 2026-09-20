@@ -15,6 +15,7 @@ from typing import Literal, cast
 from pydantic_ai import Agent
 from pydantic_ai.models import Model
 
+from lies.agents.librarian import LibrarianOutput, PageExcerpt
 from lies.agents.linter import LintFinding, LintReport, linter_agent
 from lies.agents.query_synthesizer import QueryAnswer, QueryDeps, query_synthesizer_agent
 from lies.agents.repair import RepairAgentDeps, repair_agent
@@ -824,12 +825,27 @@ def _render_footnotes(
     return "\n".join(lines)
 
 
-def _validate_claim_citations(
+def _validate_claim_citations_legacy(
     claim_citations: list["ClaimCitation"],
     citations: list[str],
     answer: str,
 ) -> tuple[list["ClaimCitation"], list[str]]:
-    """Validate ``claim_citations`` against ``answer`` and ``citations``.
+    """Pre-F19 validation helper — kept for the legacy ``run_query`` /
+
+    ``run_query_with_format`` call sites that pre-populate
+    ``page_texts`` / ``page_sources`` on ``QueryDeps`` and never see
+    the F19 ``ClaimCitation.quote`` field.
+
+    Task 6 replaces these callers with the F19 ``_call_synthesizer``
+    path, at which point this helper can be retired. Until then it
+    preserves the existing F3 file-back synthesis envelope:
+    ``kept`` entries flow into ``SynthesizedAnswer.claim_citations``
+    and ``drops`` flow into ``synthesis_reason`` so the operator
+    sees the truncation in the receipt.
+
+    Renamed from ``_validate_claim_citations`` to make room for the
+    F19 strict helper below — both functions coexist during the
+    pre-F19 → F19 transition.
 
     Drops entries where:
     - ``citation_index`` is out of range for ``citations``
@@ -858,6 +874,88 @@ def _validate_claim_citations(
             continue
         kept.append(entry)
     return kept, drops
+
+
+def _validate_claim_citations(
+    answer_body: str,
+    citations: list["Citation"],
+    claim_citations: list["ClaimCitation"],
+    librarian_output: "LibrarianOutput",
+) -> list["ClaimCitation"]:
+    """F19 strict validation helper — drop-on-fail for the librarian path.
+
+    ``_call_synthesizer`` (Task 6) routes through this helper; it
+    replaces ``_validate_claim_citations_legacy`` once the
+    pre-F19 callers are removed.
+
+    Mirrors the existing ``claim`` validation contract:
+    - claim substring in answer body
+    - citation_index valid into citations list
+    - quote substring in cited excerpt's body (F19 — the new check
+      vs the legacy helper; uses ``librarian_output.excerpts`` to
+      resolve the cited page's body without re-reading files)
+
+    Returns the surviving ``ClaimCitation`` entries. No drop
+    reasons — ``_call_synthesizer`` is the sole caller and does
+    not surface per-entry diagnostics; failures are silently
+    dropped per the spec.
+    """
+    page_bodies = {e.slug: "\n\n".join(s.body for s in e.spans) for e in librarian_output.excerpts}
+    survivors: list[ClaimCitation] = []
+    for cc in claim_citations:
+        if cc.claim not in answer_body:
+            continue
+        if not (0 <= cc.citation_index < len(citations)):
+            continue
+        cited = citations[cc.citation_index]
+        body = page_bodies.get(cited.path)
+        if not body or cc.quote not in body:
+            continue
+        survivors.append(cc)
+    return survivors
+
+
+def _thread_heading_paths(
+    citations: list["Citation"],
+    claim_citations: list["ClaimCitation"],
+    librarian_output: "LibrarianOutput",
+) -> list["Citation"]:
+    """Populate ``Citation.heading_path`` from the span each claim cites.
+
+    For every citation that has a matching ``ClaimCitation`` (by
+    ``citation_index``), find the span whose body contains the
+    claim's ``quote``; replace the citation's ``heading_path`` with
+    that span's heading path. Citations without a matching
+    claim, or where no span contains the quote, pass through
+    unchanged.
+
+    Used by ``_call_synthesizer`` (Task 6) before filing-back so
+    the ``## Evidence`` block in synthesis pages can render
+    ``(Section > Subsection)`` per claim (see
+    ``_render_evidence`` in spec §5).
+    """
+    from dataclasses import replace
+
+    spans_by_slug = {e.slug: list(e.spans) for e in librarian_output.excerpts}
+    out: list[Citation] = []
+    for i, cit in enumerate(citations):
+        match_quote = next(
+            (cc.quote for cc in claim_citations if cc.citation_index == i),
+            None,
+        )
+        if match_quote is None:
+            out.append(cit)
+            continue
+        spans = spans_by_slug.get(cit.path, [])
+        match_span = next(
+            (s for s in spans if match_quote in s.body),
+            None,
+        )
+        if match_span is None:
+            out.append(cit)
+            continue
+        out.append(replace(cit, heading_path=match_span.heading_path))
+    return out
 
 
 class Orchestrator:
@@ -1559,7 +1657,7 @@ class Orchestrator:
         # Validate the agent's claim_citations. Survivors land in the
         # response envelope. Drop counts join synthesis_reason so the
         # operator sees the truncation in the receipt.
-        kept_claim_citations, claim_drop_reasons = _validate_claim_citations(
+        kept_claim_citations, claim_drop_reasons = _validate_claim_citations_legacy(
             output.claim_citations,
             kept_paths,
             output.answer,
@@ -1667,7 +1765,6 @@ class Orchestrator:
         """
         import logging
 
-        from lies.library.paths import Library
         from lies.query.format_validator import validate_format
 
         pages, fallback_reason = retrieve_pages(question, self.wiki, tag_filter=tag_filter)
@@ -1687,26 +1784,26 @@ class Orchestrator:
                 searched_scope=list(searched_scope),
             )
 
-        # Read each page's full body (mirrors ``_call_query_synthesizer``).
-        page_texts: dict[str, str] = {}
-        page_sources: dict[str, Literal["library", "wiki"]] = {}
-        for page in pages:
-            try:
-                if page.source == "library":
-                    resolved = Library.open().collections_root / page.rel_path
-                else:
-                    resolved = self.wiki.data_root / page.rel_path
-                page_texts[page.rel_path] = resolved.read_text(encoding="utf-8")
-                page_sources[page.rel_path] = cast(Literal["library", "wiki"], page.source)
-            except (OSError, UnicodeDecodeError) as exc:
-                logging.getLogger(__name__).warning(
-                    "run_query_with_format: skipping unreadable %s page %s: %s: %s",
-                    page.source,
-                    page.rel_path,
-                    type(exc).__name__,
-                    exc,
-                )
-                continue
+        # F19 (Task 5): ``PageRead.spans`` already carries the parsed
+        # body, so the synthesizer no longer re-reads page files.
+        # Build the ``LibrarianOutput`` envelope the synthesizer
+        # consumes; ``QueryDeps`` derives ``page_texts`` and
+        # ``page_sources`` from it.
+        excerpts: list[PageExcerpt] = [
+            PageExcerpt(
+                collection=page.source,
+                slug=page.rel_path,
+                title=page.title,
+                spans=page.spans,
+            )
+            for page in pages
+        ]
+        librarian_output = LibrarianOutput(
+            tag_expr=None,
+            exclude_tags=[],
+            excerpts=excerpts,
+            distinct_pages=len({page.rel_path for page in pages}),
+        )
 
         # Nothing to synthesize — emit the extractive answer with the
         # constrained format hint so the validator applies the override.
@@ -1729,7 +1826,7 @@ class Orchestrator:
             f'You MUST emit `format_hint="{cli_format}"` and shape your '
             f"body accordingly."
         )
-        deps = QueryDeps(question=question, page_texts=page_texts, page_sources=page_sources)
+        deps = QueryDeps(question=question, librarian_output=librarian_output)
         try:
             result = self._query_synthesizer_agent.run_sync(question + constraint, deps=deps)
         except Exception as exc:  # noqa: BLE001 - CLI wraps in try/except; let it propagate
@@ -1800,7 +1897,7 @@ class Orchestrator:
         # Validate the agent's claim_citations. Survivors land in the
         # response envelope. Drop counts join synthesis_reason so the
         # operator sees the truncation in the receipt.
-        kept_claim_citations, claim_drop_reasons = _validate_claim_citations(
+        kept_claim_citations, claim_drop_reasons = _validate_claim_citations_legacy(
             output.claim_citations,
             kept_paths,
             output.answer,
@@ -1859,36 +1956,38 @@ class Orchestrator:
     ) -> tuple[QueryAnswer | None, str]:
         """Invoke the query-synthesizer sub-agent over ``pages``.
 
-        Reads each retrieved page's FULL body — not the 400-char
-        excerpt on ``PageRead`` — because the agent's prompt requires
-        verbatim quotation and disagreement-surfacing, neither of which
-        survives truncation.
+        F19 wiring (Task 5): ``PageRead.spans`` already carries the
+        structured parse, so the synthesizer no longer re-reads page
+        files. The conversion from ``pages`` to ``LibrarianOutput``
+        drops the file-read + try/except defensive loop entirely —
+        retrieval already gated on ``parse_spans`` succeeding, so a
+        page here arrives with a populated ``spans`` list or did not
+        arrive at all.
 
-        Path resolution branches on ``page.source``:
+        Conversion mapping:
 
-        - ``source == "library"`` → resolve against
-          ``Library.open().collections_root``. The rel_path is the
-          qmd URI form (``<coll>/<file>``) per spec §"Path resolution";
-          library files live outside ``wiki.data_root`` so a naive join
-          there would ``OSError`` silently and the LLM would never see
-          library content (the branch's primary-source promise broken).
-        - ``source == "wiki"`` → resolve against
-          ``self.wiki.data_root``. rel_path is data_root-relative
-          (carries the ``wiki/`` prefix); ``data_root / rel_path``
-          resolves correctly. Joining onto ``wiki_dir`` would silently
-          produce ``wiki/wiki/...`` and read nothing — the convention
-          is documented in :func:`_try_read` (``PageRead.rel_path``
-          constructor).
+        - ``PageRead.source`` (``"library"`` / ``"wiki"``) carries
+          through to ``PageExcerpt.collection``. ``QueryDeps.page_sources``
+          then re-derives ``"library"`` / ``"wiki"`` per spec (anything
+          not ``"wiki"`` is ``"library"``); both roots map back
+          correctly because the discriminator is preserved on the
+          span path.
+        - ``PageRead.rel_path`` carries through to
+          ``PageExcerpt.slug`` and is the key the synthesizer uses to
+          look up the citation surface (``page_texts``, ``page_sources``)
+          and the validator uses for ``quote``-in-excerpt body
+          resolution.
+        - ``PageRead.title`` carries through to ``PageExcerpt.title``.
+        - ``PageRead.spans`` carries through unchanged — the
+          synthesizer picks per-claim span downstream.
 
-        ``OSError`` / ``FileNotFoundError`` / ``UnicodeDecodeError`` on
-        any single page is skipped with a warning so a missing file
-        cannot crash the synthesis path. The agent still runs with
-        whatever did read cleanly.
-
-        ``page_sources`` is populated in lockstep with ``page_texts``
-        so the LLM prompt can render ``[library]`` / ``[wiki]`` source
-        tags inline per page. The LLM uses these tags to apply the
-        library-wins-on-conflict rule from the prompt body.
+        Task 6 will rename this method to ``_call_synthesizer``,
+        route through the F19 librarian subagent instead of the
+        direct ``_query_synthesizer_agent``, and feed the result
+        through ``_validate_claim_citations`` /
+        ``_thread_heading_paths``. The pre-F19 callers
+        (``run_query`` / ``run_query_with_format``) survive Task 5
+        through this thin shim; Task 6 retires them.
 
         Returns ``(output, "")`` on success and ``(None, reason)`` on
         any failure, where ``reason`` is ``"<ExcType>: <msg>"``. One
@@ -1898,32 +1997,23 @@ class Orchestrator:
         """
         import logging
 
-        # Local import: same rationale as ``_resolve_qmd_path_in_library``
-        # in :mod:`lies.query.synthesizer` — keeps ``Library`` import out
-        # of module-load order at import time.
-        from lies.library.paths import Library
+        excerpts: list[PageExcerpt] = [
+            PageExcerpt(
+                collection=page.source,
+                slug=page.rel_path,
+                title=page.title,
+                spans=page.spans,
+            )
+            for page in pages
+        ]
+        librarian_output = LibrarianOutput(
+            tag_expr=None,
+            exclude_tags=[],
+            excerpts=excerpts,
+            distinct_pages=len({page.rel_path for page in pages}),
+        )
 
-        page_texts: dict[str, str] = {}
-        page_sources: dict[str, Literal["library", "wiki"]] = {}
-        for page in pages:
-            try:
-                if page.source == "library":
-                    resolved = Library.open().collections_root / page.rel_path
-                else:
-                    resolved = self.wiki.data_root / page.rel_path
-                page_texts[page.rel_path] = resolved.read_text(encoding="utf-8")
-                page_sources[page.rel_path] = cast(Literal["library", "wiki"], page.source)
-            except (OSError, UnicodeDecodeError) as exc:
-                logging.getLogger(__name__).warning(
-                    "query_synthesizer: skipping unreadable %s page %s: %s: %s",
-                    page.source,
-                    page.rel_path,
-                    type(exc).__name__,
-                    exc,
-                )
-                continue
-
-        deps = QueryDeps(question=question, page_texts=page_texts, page_sources=page_sources)
+        deps = QueryDeps(question=question, librarian_output=librarian_output)
         try:
             result = self._query_synthesizer_agent.run_sync(question, deps=deps)
         except Exception as exc:  # noqa: BLE001 - broad catch; extractive is the safety net
