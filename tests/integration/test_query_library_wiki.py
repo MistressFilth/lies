@@ -128,6 +128,17 @@ def subagents_library_wiki(tmp_path: Path) -> Wiki:
     return wiki
 
 
+@pytest.mark.xfail(
+    strict=False,
+    reason=(
+        "F19 hard-cutover retired the `[^N]` footnote-block rendering in favor "
+        'of the inline `[[slug]]: "verbatim"` form (spec §1). This test '
+        "pins pre-F19 behavior the F19 cutover intentionally removed; the "
+        "F19 inline form is pinned by `test_inline_citation_form_emitted_*`. "
+        "TODO(F32): post-ingest lint-remediation follow-up may revisit "
+        "retired-form rendering for migration paths from the footnote era."
+    ),
+)
 def test_footnote_block_appended_for_md_format(
     subagents_library_wiki: Wiki, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -202,6 +213,17 @@ def test_footnote_block_appended_for_md_format(
     assert ans.format == "md"
 
 
+@pytest.mark.xfail(
+    strict=False,
+    reason=(
+        "F19 hard-cutover retired the `[^N]` footnote-block rendering in favor "
+        'of the inline `[[slug]]: "verbatim"` form (spec §1). This test '
+        "pins pre-F19 behavior the F19 cutover intentionally removed; the "
+        "F19 inline form is pinned by `test_inline_citation_form_emitted_*`. "
+        "TODO(F32): post-ingest lint-remediation follow-up may revisit "
+        "retired-form rendering for migration paths from the footnote era."
+    ),
+)
 def test_footnote_block_absent_for_table_format(
     sample_wiki: Wiki, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -288,3 +310,107 @@ def test_footnote_block_absent_for_table_format(
     assert len(md_ans.claim_citations) == 1
     assert md_ans.claim_citations[0].claim == "Alpha is the first letter"
     assert md_ans.claim_citations[0].citation_index == 0
+
+
+# ---------------------------------------------------------------------------
+# F19 reality pins: inline `[[slug]]: "verbatim"` citation form (spec §1).
+# Replaces the pre-F18 footnote-block tests' coverage with the F19-correct
+# emission. The retired form is xfailed above; these tests pin what F19
+# actually emits.
+# ---------------------------------------------------------------------------
+
+
+def test_inline_citation_form_emitted_for_md_format(
+    subagents_library_wiki: Wiki, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F19 inline citation form for prose ``md`` answers (spec §1).
+
+    Stubs :func:`Orchestrator._query_synthesizer_agent.run_sync` so the
+    canned synth answer rides through verbatim, and asserts the F19
+    surface: the body carries inline ``[[slug]]: "verbatim"`` citations
+    per claim and does NOT carry the retired ``[^N]`` footnote-block
+    rendering F19 replaced.
+    """
+    from lies.agents.query_synthesizer import QueryAnswer
+    from lies.orchestrator import Orchestrator
+    from tests.conftest import models_for_tests
+
+    body = (
+        "Each subagent runs in its own context window.[["
+        'claude_code/agent-sdk/subagents]]: "Each subagent runs in '
+        'its own context window."'
+    )
+    synth_answer = QueryAnswer(
+        answer=body,
+        citations=["claude_code/agent-sdk/subagents"],
+        should_file=False,
+        format_hint="md",
+        claim_citations=[],
+    )
+
+    wiki = subagents_library_wiki
+    orch = Orchestrator(wiki=wiki, models=models_for_tests("test"))
+
+    from unittest import mock
+
+    monkeypatch.setattr(
+        type(orch._query_synthesizer_agent),
+        "run_sync",
+        lambda *a, **kw: mock.Mock(output=synth_answer),
+    )
+    ans = orch.run_query("anything", file=False)
+
+    # F19 canonical: inline `[[slug]]: "verbatim"` form on the body.
+    assert "[[claude_code/agent-sdk/subagents]]:" in ans.answer
+    assert '"Each subagent runs in its own context window."' in ans.answer
+    # F19 retired: no `Footnotes:` block, no `[^N]` markers.
+    assert "Footnotes:" not in ans.answer
+    assert "[^1]" not in ans.answer
+    assert ans.format == "md"
+
+
+def test_inline_citation_form_emitted_for_table_format(
+    sample_wiki: Wiki, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F19 inline citation form for table answers (spec §1).
+
+    Pins the F19 surface on the table format path:
+    ``Orchestrator.run_query_with_format(cli_format="table")`` returns
+    a ``QueryAnswer`` whose body carries inline ``[[slug]]: "verbatim"``
+    citations, NOT the retired ``[^N]`` footnote-block.
+    """
+    from unittest import mock
+
+    from lies.agents.query_synthesizer import QueryAnswer
+    from lies.orchestrator import Orchestrator
+    from tests.conftest import models_for_tests
+
+    body = (
+        "| A | B |\n| --- | --- |\n| 1 | 2 |\n\n"
+        '[[wiki/concepts/alpha]]: "Alpha is the first letter."'
+    )
+    synth_answer = QueryAnswer(
+        answer=body,
+        citations=["wiki/concepts/alpha"],
+        should_file=False,
+        format_hint="table",
+        claim_citations=[],
+    )
+
+    wiki = sample_wiki
+    orch = Orchestrator(wiki=wiki, models=models_for_tests("test"))
+
+    monkeypatch.setattr(
+        type(orch._query_synthesizer_agent),
+        "run_sync",
+        lambda *a, **kw: mock.Mock(output=synth_answer),
+    )
+    ans = orch.run_query_with_format("anything", cli_format="table", file=False)
+
+    # F19 canonical: inline `[[slug]]: "verbatim"` form on the body.
+    assert "[[wiki/concepts/alpha]]:" in ans.answer
+    assert '"Alpha is the first letter."' in ans.answer
+    # F19 retired: no `Footnotes:` block, no `[^N]` markers.
+    assert "Footnotes:" not in ans.answer
+    assert "[^1]" not in ans.answer
+    assert ans.format == "table"
