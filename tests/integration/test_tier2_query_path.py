@@ -263,7 +263,12 @@ def test_synthesize_emits_inline_citation_form(
             "inner BaseModel hooks. SQLAlchemy provides the Session "
             "as a database gateway."
         ),
-        citations=[f"wiki/{e.slug}.md" for e in two_excerpts],
+        # Important 4 (F19): the real synthesizer emits bare slugs
+        # (``e.slug``), NOT the pre-F19 ``wiki/<slug>.md`` form.
+        # Stub citations match the real emission so the threaded
+        # Citation objects come back with the bare-slug path the
+        # filed body expects.
+        citations=[e.slug for e in two_excerpts],
         should_file=True,
         format_hint="md",
         claim_citations=[
@@ -297,16 +302,24 @@ def test_synthesize_emits_inline_citation_form(
     assert answer.citations  # threaded list[str | Citation]
     assert answer.claim_citations
 
-    # The rendered evidence (used by filing-back) emits the inline
-    # citation form on the threaded Citation set. The orchestrator
-    # threads ``Citation`` objects (with ``.path`` populated) into
-    # ``answer.citations``; pass them straight through to
-    # ``_render_evidence`` so the production renderer is exercised.
+    # Important 4: the threaded Citation set carries the bare-slug
+    # form the F19 real synthesizer emits. ``_render_evidence`` and
+    # the filing-back path both look the slug up via
+    # ``_validate_claim_citations`` and ``_thread_heading_paths``;
+    # the mirror in ``_thread_heading_paths`` ensures the stub shape
+    # would still resolve, but the canonical emission is bare slug.
     from lies.orchestrator import _render_evidence
 
     threaded_cits = [
         c if isinstance(c, Citation) else Citation(path=c, source="wiki") for c in answer.citations
     ]
+    # Pin the bare-slug form: every threaded Citation's path is the
+    # bare ``e.slug``, no ``wiki/`` prefix and no ``.md`` suffix.
+    for cit, excerpt in zip(threaded_cits, two_excerpts):
+        assert cit.path == excerpt.slug, (
+            f"threaded citation path={cit.path!r} should be bare slug form {excerpt.slug!r}"
+        )
+
     body = _render_evidence(threaded_cits, answer.claim_citations)
     assert "[[" in body and "]]" in body
     # The fixture wiki's two pages both live under ``concepts/``;
@@ -350,7 +363,10 @@ def test_file_back_writes_synthesis_page(tmp_path: Path, monkeypatch: pytest.Mon
             "SQLAlchemy's Session is the gateway to the database.\n\n"
             "PostgreSQL uses MVCC for concurrent reads and writes."
         ),
-        citations=[f"wiki/{e.slug}.md" for e in canned_lo.excerpts],
+        # Important 4 (F19): bare-slug citations match the real
+        # synthesizer emission (see ``test_synthesize_emits_inline_citation_form``
+        # above for the same migration).
+        citations=[e.slug for e in canned_lo.excerpts],
         should_file=True,
         format_hint="md",
         claim_citations=[
@@ -495,7 +511,9 @@ def test_old_footnote_pages_remain_unchanged(
             "SQLAlchemy's Session is the gateway to the database.\n\n"
             "PostgreSQL uses MVCC for concurrent reads and writes."
         ),
-        citations=[f"wiki/{e.slug}.md" for e in canned_lo.excerpts],
+        # Important 4 (F19): bare-slug citations match the real
+        # synthesizer emission.
+        citations=[e.slug for e in canned_lo.excerpts],
         should_file=True,
         format_hint="md",
         claim_citations=[

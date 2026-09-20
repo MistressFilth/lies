@@ -14,12 +14,45 @@ from lies.orchestrator import (
 
 
 def test_format_heading_path_empty() -> None:
-    assert _format_heading_path(None) == "(top of page)"
-    assert _format_heading_path([]) == "(top of page)"
+    # Minor 6: empty / None returns the bare ``top of page`` phrase
+    # (no parens). ``_render_evidence`` wraps the result in ``( )``
+    # for inline display; the extractive fallback uses the same
+    # wrap. Single-paren rendering for both paths.
+    assert _format_heading_path(None) == "top of page"
+    assert _format_heading_path([]) == "top of page"
 
 
 def test_format_heading_path_joins() -> None:
     assert _format_heading_path(["H1", "H2"]) == "H1 > H2"
+
+
+def test_render_evidence_empty_heading_path_renders_single_paren() -> None:
+    """Regression: empty ``heading_path`` must render as ``(top of page)``.
+
+    ``_format_heading_path`` returns the bare ``top of page`` phrase;
+    ``_render_evidence`` wraps it in ``( )``. Pin the exact rendered
+    form so future edits don't reintroduce the
+    ``((top of page))`` double-paren.
+    """
+    from lies.query.citation import Citation, ClaimCitation
+
+    citations = [
+        Citation(
+            path="concepts/empty",
+            source="wiki",
+            heading_path=[],
+        ),
+    ]
+    ccs = [
+        ClaimCitation(
+            claim="verbatim",
+            citation_index=0,
+            quote="verbatim",
+        ),
+    ]
+    evidence = _render_evidence(citations, ccs)
+    assert "(top of page)" in evidence
+    assert "((top of page))" not in evidence
 
 
 def test_slug_from_path_strips_collection_prefix() -> None:

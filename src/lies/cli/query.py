@@ -8,7 +8,7 @@ markdown renderer (markdown-it is ~30ms of cold-start).
 from __future__ import annotations
 
 import sqlite3
-from typing import Annotated
+from typing import TYPE_CHECKING, Annotated
 
 import typer
 
@@ -18,6 +18,14 @@ from lies.cli._helpers import (
     WikiLockBusy,
     configure_logging,
 )
+
+if TYPE_CHECKING:
+    # Imported only for the type annotations on the
+    # ``_build_compat_run_query_kwargs`` helper. Importing at module
+    # top-level transitively pulls in ``pydantic_ai`` and ``fastmcp``,
+    # which the CLI must keep off its lazy-import path (see
+    # ``tests/unit/cli/test_cli_lazy_imports``).
+    from lies.query.tag_expr import ResolvedTagFilter
 
 __all__ = (
     "lint",
@@ -38,6 +46,61 @@ def _collect_available_tags(wiki) -> set[str]:  # noqa: ANN001 - Wiki import is 
     from lies.library.registry import library_collection_names
 
     return set(library_collection_names())
+
+
+def _build_compat_run_query_kwargs(
+    *,
+    tag_filter: ResolvedTagFilter | None,
+    collection: str | None,
+    file_back: bool,
+) -> dict[str, object]:
+    """Build the F18/F19 ``Orchestrator.run_query`` kwargs from the CLI's legacy surface.
+
+    Translates the pre-F18 / Bundle-C kwargs to the new orchestrator
+    surface:
+
+    - ``tag_filter.include`` (a ``TagExpr`` AST) → ``tag_expr`` (the
+      body of a single include expression, rendered from the AST).
+    - ``tag_filter.exclude`` (a single string) →
+      ``exclude_tags=[<exclude>]`` (the F18 librarian's list
+      contract).
+    - ``collection=<name>`` → ``tag_expr="c:<name>"`` (the F15
+      strict-name prefix; matches what the MCP ``query`` tool does
+      for the same kwarg). When the user passed a tag filter, the
+      CLI merges them by OR-ing the collection include into the
+      tag_expr string (rare but allowed by the F15 grammar).
+    - ``file_back`` flows straight through (the F19 setter for the
+      filing-back gate).
+
+    Returns the kwargs dict the caller unpacks into ``run_query``.
+
+    The ``tag_filter`` annotation is a forward reference
+    (``"ResolvedTagFilter | None"``) so the helper's type signature
+    documents the contract without importing ``lies.query.tag_expr``
+    at CLI startup — that module transitively pulls in
+    ``pydantic_ai`` and ``fastmcp``, which the CLI must keep off its
+    lazy-import path (see ``tests/unit/cli/test_cli_lazy_imports``).
+    The annotation is consumed by static type checkers; runtime
+    callers pass the real ``ResolvedTagFilter`` object.
+    """
+    from lies.query.tag_expr import _render_include
+
+    include_body: str | None = None
+    if tag_filter is not None and tag_filter.include is not None:
+        include_body = _render_include(tag_filter.include)
+    if collection is not None:
+        coll_atom = f"c:{collection}"
+        include_body = f"{coll_atom}|{include_body}" if include_body else coll_atom
+
+    exclude_list: list[str] = []
+    if tag_filter is not None and tag_filter.exclude is not None:
+        exclude_list = [tag_filter.exclude]
+
+    return {
+        "tag_expr": include_body,
+        "exclude_tags": exclude_list or None,
+        "file_back": file_back,
+    }
 
 
 @app.command(
@@ -213,20 +276,25 @@ def query(
             exclude_qualifier=exclude_qualifier,  # type: ignore[arg-type]
         )
 
+    # F18/F19: translate the CLI's legacy kwargs to the new
+    # ``Orchestrator.run_query`` surface. ``collection`` (a single
+    # collection name) maps to ``tag_expr="c:<name>"`` (the F15
+    # ``c:`` strict-name prefix — matches what the MCP ``query``
+    # tool does for the same kwarg). ``--force-file`` forces
+    # ``file_back=True``; ``--no-file`` flips it off. ``tag_filter``
+    # is split into ``tag_expr`` (include body, rendered from the
+    # AST) + ``exclude_tags`` (the NOT list, at most one entry per
+    # the F15 grammar). The pre-F18 ``collection=`` / ``file=`` /
+    # ``force_file=`` / ``tag_filter=`` kwargs were retired in
+    # Task 6.
     orch = Orchestrator(wiki)
-    # Use the host-side ``run_query`` entry point so LLM synthesis runs
-    # with the qmd->index retrieval and the extractive fallback intact.
-    # ``--no-file`` maps to ``file=False``; ``--force-file`` to
-    # ``force_file=True``; ``--collection`` flows straight through so the
-    # orchestrator can route the new page under the right wiki subdir.
+    orch_kwargs = _build_compat_run_query_kwargs(
+        tag_filter=tag_filter,
+        collection=collection,
+        file_back=force_file or not no_file,
+    )
     try:
-        answer = orch.run_query(
-            question,
-            collection=collection,
-            file=not no_file,
-            force_file=force_file,
-            tag_filter=tag_filter,
-        )
+        answer = orch.run_query(question, **orch_kwargs)
     except WikiPlanInvalid as exc:
         # ``run_query`` raises when the agent/force file marked the answer
         # for filing but the caller did not supply ``--collection``.
@@ -239,20 +307,20 @@ def query(
         )
         raise typer.Exit(code=2) from exc
 
+    answer_format = getattr(answer, "format_hint", None) or getattr(answer, "format", "md")
     # F1: handle --format override. If the operator's choice differs from
     # the synthesizer's format_hint, re-synthesize with a constrained
-    # prompt. The orchestrator exposes a new ``run_query_with_format``
+    # prompt. The orchestrator exposes a compat ``run_query_with_format``
     # entry point for the override; if it raises, fall back to the
     # first call's answer.
-    if cli_format != "auto" and answer.format != cli_format:
+    if cli_format != "auto" and answer_format != cli_format:
         try:
             answer = orch.run_query_with_format(
                 question,
-                collection=collection,
-                file=not no_file,
-                force_file=force_file,
-                tag_filter=tag_filter,
-                cli_format=cli_format,
+                tag_expr=orch_kwargs.get("tag_expr"),
+                exclude_tags=orch_kwargs.get("exclude_tags"),
+                file_back=orch_kwargs["file_back"],
+                format_hint=cli_format,
             )
         except Exception as exc:  # noqa: BLE001 - second call is best-effort
             import logging
@@ -261,39 +329,52 @@ def query(
                 "format override re-synthesis failed for --format=%s; "
                 "using auto-route (format=%s): %s: %s",
                 cli_format,
-                answer.format,
+                answer_format,
                 type(exc).__name__,
                 exc,
             )
             typer.echo(
                 f"warning: re-synthesis for --format={cli_format} failed; "
-                f"using auto-route (format={answer.format}).",
+                f"using auto-route (format={answer_format}).",
                 err=True,
             )
 
-    render_format = answer.format if cli_format == "auto" else cli_format
+    render_format = getattr(answer, "format_hint", None) or getattr(answer, "format", "md")
+    if cli_format != "auto":
+        render_format = cli_format
     render_answer(render_format, answer.answer)
 
-    if answer.synthesis_reason:
-        if answer.synthesis_used:
-            typer.echo(f"_Note: {answer.synthesis_reason}._")
+    # F19: ``QueryAnswer`` no longer carries the pre-F18
+    # ``synthesis_reason`` / ``synthesis_used`` envelope. The F19
+    # librarian+synthesizer pair always runs synthesis, so the
+    # fallback note only surfaces when the orchestrator's CLI form
+    # called back into the pre-F18 extractive path (which the F18
+    # orchestrator does not expose). Tolerate the field's absence
+    # so the new surface keeps the CLI's printing contract.
+    synthesis_reason = getattr(answer, "synthesis_reason", None)
+    if synthesis_reason:
+        if getattr(answer, "synthesis_used", True):
+            typer.echo(f"_Note: {synthesis_reason}._")
         else:
             typer.echo(
-                f"_Note: LLM synthesis unavailable ({answer.synthesis_reason}); "
-                "answered extractively._"
+                f"_Note: LLM synthesis unavailable ({synthesis_reason}); answered extractively._"
             )
     # F3 file-back receipt. Printed only when there is something to say
     # (durable change or error); an empty receipt is silent so the no-op
-    # case stays clean.
-    if answer.file_receipt:
-        if answer.file_receipt.changed_pages:
+    # case stays clean. The F19 ``QueryAnswer`` does not surface a
+    # ``file_receipt`` (filing-back is best-effort and logs at
+    # WARNING on refusal; the CLI is intentionally silent on the
+    # success path). Tolerate the field's absence for the F19 surface.
+    file_receipt = getattr(answer, "file_receipt", None)
+    if file_receipt:
+        if file_receipt.changed_pages:
             lines = ["(synthesis: durably filed"]
-            for ref in answer.file_receipt.changed_pages:
+            for ref in file_receipt.changed_pages:
                 lines.append(f"  - {ref.op.value}: {ref.path}")
             lines.append(")")
             typer.echo("\n".join(lines))
-        elif answer.file_receipt.errors:
-            typer.echo(f"(synthesis: error — {answer.file_receipt.errors[0]})")
+        elif file_receipt.errors:
+            typer.echo(f"(synthesis: error — {file_receipt.errors[0]})")
 
 
 @app.command(

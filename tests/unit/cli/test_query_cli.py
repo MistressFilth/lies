@@ -32,7 +32,6 @@ from lies.library.config_io import save_config
 from lies.library.paths import Library
 from lies.library.record import LibraryCollectionConfig
 from lies.query.models import SynthesizedAnswer
-from lies.query.tag_expr import And, Include, Or
 from lies.wiki.wiki import Wiki
 
 runner = CliRunner()
@@ -129,7 +128,11 @@ def test_query_quoted_question_back_compat(wiki: Wiki) -> None:
     result, call = _invoke("what is X?")
     assert result.exit_code == 0, result.output
     assert call.args[0] == "what is X?"
-    assert call.kwargs["tag_filter"] is None
+    # F18/F19: the CLI translates the legacy ``ResolvedTagFilter`` into
+    # ``tag_expr`` / ``exclude_tags`` kwargs on ``Orchestrator.run_query``.
+    # No filter parsed → both are None.
+    assert call.kwargs["tag_expr"] is None
+    assert call.kwargs["exclude_tags"] is None
 
 
 def test_query_shell_split_bare_form(wiki: Wiki) -> None:
@@ -142,7 +145,8 @@ def test_query_shell_split_bare_form(wiki: Wiki) -> None:
     result, call = _invoke("what", "is", "X?")
     assert result.exit_code == 0, result.output
     assert call.args[0] == "what is X?"
-    assert call.kwargs["tag_filter"] is None
+    assert call.kwargs["tag_expr"] is None
+    assert call.kwargs["exclude_tags"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -155,10 +159,8 @@ def test_query_with_plus_tag(wiki: Wiki) -> None:
     result, call = _invoke("+airflow", "what", "are", "DAGs?")
     assert result.exit_code == 0, result.output
     assert call.args[0] == "what are DAGs?"
-    tag_filter = call.kwargs["tag_filter"]
-    assert tag_filter is not None
-    assert tag_filter.include == Include("airflow")
-    assert tag_filter.exclude is None
+    assert call.kwargs["tag_expr"] == "airflow"
+    assert call.kwargs["exclude_tags"] is None
 
 
 def test_query_with_and_chain_and_exclude(wiki: Wiki) -> None:
@@ -166,17 +168,15 @@ def test_query_with_and_chain_and_exclude(wiki: Wiki) -> None:
     result, call = _invoke("+airflow&amazon", "-python", "compare", "X", "and", "Y")
     assert result.exit_code == 0, result.output
     assert call.args[0] == "compare X and Y"
-    tag_filter = call.kwargs["tag_filter"]
-    assert tag_filter.include == And(Include("airflow"), Include("amazon"))
-    assert tag_filter.exclude == "python"
+    assert call.kwargs["tag_expr"] == "airflow&amazon"
+    assert call.kwargs["exclude_tags"] == ["python"]
 
 
 def test_query_with_or_chain(wiki: Wiki) -> None:
     """``|`` binds looser than ``&`` and resolves both branches."""
     result, call = _invoke("+airflow|pyspark", "what", "is", "X?")
     assert result.exit_code == 0, result.output
-    tag_filter = call.kwargs["tag_filter"]
-    assert tag_filter.include == Or(Include("airflow"), Include("pyspark"))
+    assert call.kwargs["tag_expr"] == "airflow|pyspark"
 
 
 def test_query_bare_exclude_only(wiki: Wiki) -> None:
@@ -184,9 +184,8 @@ def test_query_bare_exclude_only(wiki: Wiki) -> None:
     result, call = _invoke("-amazon", "what", "is", "S3?")
     assert result.exit_code == 0, result.output
     assert call.args[0] == "what is S3?"
-    tag_filter = call.kwargs["tag_filter"]
-    assert tag_filter.include is None
-    assert tag_filter.exclude == "amazon"
+    assert call.kwargs["tag_expr"] is None
+    assert call.kwargs["exclude_tags"] == ["amazon"]
 
 
 # ---------------------------------------------------------------------------
@@ -207,18 +206,15 @@ def test_query_explicit_tag_expr_and_exclude_tag(wiki: Wiki) -> None:
     )
     assert result.exit_code == 0, result.output
     assert call.args[0] == "what is X?"
-    tag_filter = call.kwargs["tag_filter"]
-    assert tag_filter.include == And(Include("airflow"), Include("amazon"))
-    assert tag_filter.exclude == "python"
+    assert call.kwargs["tag_expr"] == "airflow&amazon"
+    assert call.kwargs["exclude_tags"] == ["python"]
 
 
 def test_query_explicit_exclude_tag_only(wiki: Wiki) -> None:
     """``--exclude-tag`` alone yields an include-less filter."""
     result, call = _invoke("what is X?", "--exclude-tag", "amazon")
     assert result.exit_code == 0, result.output
-    tag_filter = call.kwargs["tag_filter"]
-    assert tag_filter.include is None
-    assert tag_filter.exclude == "amazon"
+    assert call.kwargs["exclude_tags"] == ["amazon"]
 
 
 def test_query_explicit_form_does_not_split_prefixes(wiki: Wiki) -> None:
@@ -226,7 +222,7 @@ def test_query_explicit_form_does_not_split_prefixes(wiki: Wiki) -> None:
     result, call = _invoke("+airflow", "is", "cool", "--tag-expr", "amazon")
     assert result.exit_code == 0, result.output
     assert call.args[0] == "+airflow is cool"
-    assert call.kwargs["tag_filter"].include == Include("amazon")
+    assert call.kwargs["tag_expr"] == "amazon"
 
 
 # ---------------------------------------------------------------------------
@@ -279,34 +275,30 @@ def test_query_cli_plus_c_qualifier(wiki: Wiki) -> None:
     """``+c:airflow`` parses to ``Include(tag='airflow', qualifier='c')``.
 
     The argv splitter peels ``+`` off the front, then ``parse_tokens``
-    strips the ``c:`` qualifier. The resolved include carries the
-    ``c`` qualifier all the way through to the orchestrator's
-    ``tag_filter``.
+    strips the ``c:`` qualifier. The CLI's compat layer renders the
+    include AST back to ``tag_expr='c:airflow'`` so the F18
+    ``librarian_agent`` sees the qualified atom.
     """
     result, call = _invoke("+c:airflow", "what", "is", "X?")
     assert result.exit_code == 0, result.output
     assert call.args[0] == "what is X?"
-    tag_filter = call.kwargs["tag_filter"]
-    assert tag_filter is not None
-    assert tag_filter.include == Include("airflow", qualifier="c")
-    assert tag_filter.exclude is None
+    assert call.kwargs["tag_expr"] == "c:airflow"
+    assert call.kwargs["exclude_tags"] is None
 
 
 def test_query_cli_t_python_c_python_exclude(wiki: Wiki) -> None:
     """Canonical example: ``+t:python -c:python`` resolves both qualifiers.
 
-    The include gets ``qualifier='t'``; the exclude string is stripped
-    of the ``c:`` prefix and the qualifier flows through to
-    ``ResolvedTagFilter.exclude_qualifier='c'``.
+    The CLI renders ``t:python`` into ``tag_expr`` and strips the
+    ``c:`` prefix from the exclude (the F18 ``librarian_agent``
+    consumes the body, not the qualifier; only the MCP path keeps
+    the ``exclude_qualifier`` on the wire).
     """
     result, call = _invoke("+t:python", "-c:python", "what", "is", "X?")
     assert result.exit_code == 0, result.output
     assert call.args[0] == "what is X?"
-    tag_filter = call.kwargs["tag_filter"]
-    assert tag_filter is not None
-    assert tag_filter.include == Include("python", qualifier="t")
-    assert tag_filter.exclude == "python"
-    assert tag_filter.exclude_qualifier == "c"
+    assert call.kwargs["tag_expr"] == "t:python"
+    assert call.kwargs["exclude_tags"] == ["python"]
 
 
 def test_query_cli_explicit_tag_expr_with_qualifiers(wiki: Wiki) -> None:
@@ -322,13 +314,8 @@ def test_query_cli_explicit_tag_expr_with_qualifiers(wiki: Wiki) -> None:
     )
     assert result.exit_code == 0, result.output
     assert call.args[0] == "what is X?"
-    tag_filter = call.kwargs["tag_filter"]
-    assert tag_filter.include == And(
-        Include("python", qualifier="t"),
-        Include("amazon", qualifier="c"),
-    )
-    assert tag_filter.exclude == "python"
-    assert tag_filter.exclude_qualifier == "c"
+    assert call.kwargs["tag_expr"] == "t:python&c:amazon"
+    assert call.kwargs["exclude_tags"] == ["python"]
 
 
 def test_query_cli_bad_qualifier_exits_2(wiki: Wiki) -> None:

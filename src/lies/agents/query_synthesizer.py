@@ -45,6 +45,30 @@ class QueryAnswer:
     to ``SynthesizedAnswer.claim_citations`` for downstream consumers.
     """
 
+    @property
+    def format(self) -> Literal["md", "table", "marp"]:
+        """F1 back-compat alias for ``format_hint``.
+
+        The pre-F18 ``SynthesizedAnswer`` surface named the validated
+        output format ``format``; the F19 dataclass uses
+        ``format_hint`` to make room for the F1 override path's
+        distinction between agent-pick and caller-driven format. Down-
+        level callers (CLI render, integration tests that predate the
+        rename) read ``answer.format``; the F19 MCP wire still reads
+        ``format_hint`` directly.
+        """
+        return self.format_hint
+
+    @property
+    def synthesis_used(self) -> bool:
+        """F18 compat shim — the F19 path always synthesizes, so True."""
+        return True
+
+    @property
+    def fallback_used(self) -> bool:
+        """F18 compat shim — no extractive fallback in the F19 path."""
+        return False
+
 
 QUERY_SYNTHESIZER_SYSTEM_PROMPT = """Your job is to answer the user's question
 using only the LIES wiki excerpts the librarian subagent returned.
