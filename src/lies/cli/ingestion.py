@@ -301,9 +301,9 @@ def reindex(
     # Gate destructive flags before any qmd work.
     if cleanup or all_:
         if all_:
-            prompt = "Confirm destructive reindex (all+cleanup+drop orphans)? [y/N]"
+            prompt = "Confirm destructive reindex (all+cleanup+drop orphans)?"
         else:
-            prompt = "Confirm destructive reindex (cleanup+drop orphans)? [y/N]"
+            prompt = "Confirm destructive reindex (cleanup+drop orphans)?"
         _confirm_destructive_cli(prompt, assume_yes=yes)
 
     result = qmd_reindex(
