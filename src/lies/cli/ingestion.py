@@ -288,15 +288,18 @@ def reindex(
     from lies.cli import WikiLinkResolver, resolve_wiki
     from lies.cli._helpers import _confirm_destructive_cli
     from lies.etl.sync_helper import collection_names, sync_collection
+    from lies.qmd._models import ReindexResult
     from lies.qmd.cli import qmd_reindex
 
     wiki = resolve_wiki(name)
+    result = ReindexResult()
     if reconcile:
         for coll_name in collection_names(wiki, None):
             sync_collection(wiki, coll_name, force=False)
         # Spec: reindex rebuilds the corpus. No in-process consumer today
         # (YAGNI); held for the lifetime of this process.
         WikiLinkResolver.build((wiki.wiki_dir, wiki.raw_dir))
+        result.reconciled = True
 
     # Gate destructive flags before any qmd work.
     if cleanup or all_:
@@ -306,13 +309,17 @@ def reindex(
             prompt = "Confirm destructive reindex (cleanup+drop orphans)?"
         _confirm_destructive_cli(prompt, assume_yes=yes)
 
-    result = qmd_reindex(
+    reindex_outcome = qmd_reindex(
         wiki.wiki_dir,
         embed=embed,
         cleanup=cleanup,
         all_=all_,
         force=force,
     )
+    result.indexed = reindex_outcome.indexed
+    result.embedded = reindex_outcome.embedded
+    result.cleaned = reindex_outcome.cleaned
+    result.errors = reindex_outcome.errors
     summary = (
         f"reconciled={result.reconciled} indexed={result.indexed} "
         f"embedded={result.embedded} cleaned={result.cleaned} "

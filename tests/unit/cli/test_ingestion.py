@@ -9,6 +9,7 @@ import pytest
 from typer.testing import CliRunner
 
 from lies.cli import app
+from lies.etl import sync_helper
 from lies.qmd import _models, cli as qmd_cli
 
 
@@ -175,3 +176,24 @@ def test_reindex_all_tty_yes_proceeds(
     assert result.exit_code == 0, result.output
     kwargs = mock_qmd_reindex.call_args.kwargs
     assert kwargs.get("all_") is True
+
+
+def test_reindex_reconcile_sets_reconciled_true(
+    tty_runner: CliRunner,
+    mock_resolve_wiki: MagicMock,
+    mock_qmd_reindex: MagicMock,
+) -> None:
+    """``--reconcile`` populates ``result.reconciled = True`` in the printed
+    summary. Pins the F38 fix that wired ``sync_collection`` + wikilink build
+    into the ``ReindexResult.reconciled`` field.
+    """
+    with (
+        patch.object(sync_helper, "sync_collection", return_value=MagicMock(errors=0)),
+        patch.object(sync_helper, "collection_names", return_value=["c1"]),
+        patch("lies.cli.WikiLinkResolver.build") as mock_build,
+    ):
+        result = tty_runner.invoke(app, ["reindex", "--name", "t", "--reconcile"])
+    assert result.exit_code == 0, result.output
+    mock_qmd_reindex.assert_called_once()
+    mock_build.assert_called_once()
+    assert "reconciled=True" in result.output
