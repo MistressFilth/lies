@@ -103,8 +103,8 @@ def test_two_queries_with_same_question_collide_to_page_update(wiki_dir: Wiki) -
 
     ans_a = orch.run_query(
         "what is a hook?",
-        collection="claude-code",
-        force_file=True,
+        tag_expr="c:claude-code",
+        file_back=True,
     )
     assert ans_a.file_receipt is not None
     assert ans_a.file_receipt.errors == []
@@ -117,8 +117,8 @@ def test_two_queries_with_same_question_collide_to_page_update(wiki_dir: Wiki) -
 
     ans_b = orch.run_query(
         "what is a hook?",
-        collection="claude-code",
-        force_file=True,
+        tag_expr="c:claude-code",
+        file_back=True,
     )
     assert ans_b.file_receipt is not None
     assert ans_b.file_receipt.errors == []
@@ -209,8 +209,8 @@ def test_lock_busy_simulated_yields_three_attempts(wiki_dir: Wiki, tmp_path: Pat
         orch = Orchestrator(wiki=wiki_dir, models=models_for_tests(TestModel()))
         ans = orch.run_query(
             "what is a hook?",
-            collection="claude-code",
-            force_file=True,
+            tag_expr="c:claude-code",
+            file_back=True,
         )
     finally:
         holder.terminate()
