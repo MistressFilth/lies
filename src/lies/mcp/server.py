@@ -297,11 +297,12 @@ async def reindex(
         for coll_name in collection_names(wiki, None):
             sync_collection(wiki, coll_name, force=False)
 
-    # Gate destructive flags. Skip the elicit when no ``ctx`` is
-    # available (e.g. programmatic invocations through a non-MCP path)
-    # — that mirrors the CLI's "no TTY" branch in spirit: the operator
-    # must explicitly opt in, but a missing host cannot elicit.
-    if (cleanup or all_) and ctx is not None:
+    # Gate destructive flags. When ``ctx`` is None (programmatic caller)
+    # ``_confirm_destructive`` raises on ``ctx.elicit`` and the helper
+    # returns ``elicitation unavailable``; we treat that as decline so
+    # no work runs (safety preserved through the helper's exception
+    # path, symmetric with the CLI's refuse-on-non-TTY-without-yes).
+    if cleanup or all_:
         if all_:
             prompt = "Reindex --all will run cleanup + reindex + embed (full rebuild). Confirm?"
         else:

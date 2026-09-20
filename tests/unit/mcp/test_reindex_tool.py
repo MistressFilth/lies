@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastmcp.server.elicitation import AcceptedElicitation
 
-from lies.mcp.server import _ConfirmDestructive, reindex as reindex_tool
+from lies.mcp.server import _ConfirmDestructive, mcp, reindex as reindex_tool
 from lies.qmd import _models, cli as qmd_cli
 
 
@@ -118,3 +118,27 @@ async def test_reindex_all_elicit_with_all_text(
     elicit_args = ctx_accept.elicit.call_args
     msg = elicit_args[0][0]  # first positional arg
     assert "all" in msg.lower()
+
+
+@pytest.mark.asyncio
+async def test_reindex_cleanup_no_ctx_no_work(mock_resolve_wiki, mock_qmd_reindex) -> None:
+    """ctx=None + cleanup=True: gate runs; helper raises on ctx.elicit;
+    qmd_reindex NOT called; result carries 'elicitation unavailable'."""
+    result = await reindex_tool(cleanup=True, ctx=None, name="t")
+    mock_qmd_reindex.assert_not_called()
+    assert result["indexed"] is False
+    assert len(result["errors"]) == 1
+    assert "elicitation unavailable" in result["errors"][0]
+
+
+@pytest.mark.asyncio
+async def test_reindex_destructive_hint_annotation() -> None:
+    """The registered reindex tool advertises destructiveHint=True so
+    host UIs can flag the surface even before the user passes the
+    destructive flags."""
+    tool = await mcp.get_tool("reindex")
+    assert tool.annotations is not None
+    # Access via the snake_case source name — the same name we passed
+    # at registration — to sidestep alias-resolution differences across
+    # mcp SDK versions.
+    assert tool.annotations.destructive_hint is True
