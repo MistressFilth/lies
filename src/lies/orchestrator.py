@@ -828,10 +828,9 @@ def _validate_claim_citations(
     """F19 strict validation helper — drop-on-fail for the librarian path.
 
     ``Orchestrator._call_synthesizer`` (Task 6) routes through this
-    helper. Task 6 also retired the pre-F19 callers (``run_query``
-    and ``run_query_with_format`` carrying ``list[PageRead]``); the
-    legacy helper that returned ``(kept, drops)`` is no longer
-    needed.
+    helper. Pre-F19 callers (``run_query`` and ``run_query_with_format``
+    carrying ``list[PageRead]``) are retired; the legacy helper that
+    returned ``(kept, drops)`` is gone.
 
     Drops entries where:
     - ``claim`` is not a substring of ``answer_body``
@@ -925,19 +924,23 @@ def _format_heading_path(heading_path: list[str] | None) -> str:
     return " > ".join(heading_path)
 
 
-def _slug_from_path(path: str) -> str:
-    """Strip the collection prefix to a bare slug for ``[[slug]]`` form.
+_KNOWN_COLLECTION_PREFIXES: tuple[str, ...] = ("wiki/",)
 
-    ``Citation.path`` is ``"wiki/<rest>.md"`` for wiki hits and
-    ``"<collection>/<rest>.md"`` for library hits. The inline
-    citation form takes the bare slug — both the leading
-    collection segment and the ``.md`` extension stripped. No-slash
-    paths return verbatim — used for callers that pass an
-    already-bare slug.
+
+def _slug_from_path(path: str) -> str:
+    """Render the ``[[slug]]`` form from a ``Citation.path``.
+
+    Strips the leading collection segment when the path is the
+    spec-compliant form ``<collection>/<rest>``. Bare slugs (no
+    recognized collection prefix, or no slash at all) pass through
+    unchanged so the real-synthesizer emission path (which emits
+    ``"concepts/pydantic"`` from ``e.slug``) renders as
+    ``[[concepts/pydantic]]`` rather than ``[[pydantic]]``.
     """
+    if not path.startswith(_KNOWN_COLLECTION_PREFIXES):
+        return path.removesuffix(".md")
     parts = path.split("/", 1)
-    base = parts[1] if len(parts) == 2 else path
-    return base.removesuffix(".md")
+    return parts[1].removesuffix(".md")
 
 
 def _render_evidence(
@@ -950,13 +953,15 @@ def _render_evidence(
     Drop-on-fail has already happened upstream in
     ``_validate_claim_citations``; surviving entries are guaranteed
     to have a valid ``citation_index`` and a non-empty ``quote``.
-    The ``.md`` suffix is stripped from the slug for a cleaner
-    ``[[concepts/pydantic]]`` citation form.
+    ``_slug_from_path`` strips the ``.md`` suffix when present so
+    the rendered slug is the bare ``concepts/pydantic`` form for
+    both ``"wiki/concepts/pydantic.md"`` paths and bare-slug
+    ``"concepts/pydantic"`` emission from the synthesizer.
     """
     lines: list[str] = []
     for cc in claim_citations:
         cit = citations[cc.citation_index]
-        slug = _slug_from_path(cit.path).removesuffix(".md")
+        slug = _slug_from_path(cit.path)
         heading = _format_heading_path(cit.heading_path)
         lines.append(f'[[{slug}]] ({heading}): "{cc.quote}"')
     return "\n".join(lines)
@@ -1652,9 +1657,10 @@ class Orchestrator:
         Citations before returning the synthesized answer.
 
         Replaces the pre-F18 ``_call_query_synthesizer(question, pages)``
-        that took pre-retrieved ``list[PageRead]``. The orchestrator
-        now passes ``LibrarianOutput`` directly so the synthesizer sees
-        the librarian's curated span-aware excerpts.
+        signature — the pre-F18 helper required pre-retrieved
+        ``list[PageRead]``. The orchestrator passes ``LibrarianOutput``
+        directly so the synthesizer sees the librarian's curated
+        span-aware excerpts.
 
         The synthesizer emits citations as path strings (``list[str]``)
         per the F19 prompt; ``_validate_claim_citations`` and
@@ -1842,10 +1848,10 @@ class Orchestrator:
     ) -> None:
         """Write a knowledge page via ``WikiMemoryService.apply_plan``.
 
-                Builds a ``MemoryPlan`` through :func:`build_author_plan` and
-                applies it through :meth:`file_back_author` (the same envelope
-                the F3 ``file_back_synthesis`` path uses), so the
-                filing-back path keeps:
+        Builds a ``MemoryPlan`` through :func:`build_author_plan` and
+        applies it through :meth:`file_back_author` (the same envelope
+        the F3 ``file_back_synthesis`` path uses), so the
+        filing-back path keeps:
 
         - the per-type required section check (F17),
         - the ``PageCreate`` vs ``PageUpdate`` shape derived from on-disk
@@ -1854,12 +1860,12 @@ class Orchestrator:
         - the per-op catalog upsert that runs inside the
           ``WikiMemoryService`` apply envelope.
 
-                The brief's snippet (``WikiMemoryService.apply_plan(plan,
-                wiki_dir=...)``) doesn't match the real ``WikiMemoryService``
-                API: the service is a per-wiki instance (``self._memory_service``)
-                and its ``apply_plan`` is an instance method (no
-                ``wiki_dir`` kwarg). Delegating to ``file_back_author``
-                reuses the canonical envelope rather than duplicating it.
+        The brief's snippet (``WikiMemoryService.apply_plan(plan,
+        wiki_dir=...)``) doesn't match the real ``WikiMemoryService``
+        API: the service is a per-wiki instance (``self._memory_service``)
+        and its ``apply_plan`` is an instance method (no
+        ``wiki_dir`` kwarg). Delegating to ``file_back_author``
+        reuses the canonical envelope rather than duplicating it.
         """
         from lies.page.author import _SectionRefusal, build_author_plan
 

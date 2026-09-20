@@ -650,36 +650,6 @@ def query(
     )
 
 
-def _tag_expr_from_filter(tag_filter) -> str | None:  # type: ignore[no-untyped-def]
-    """Project the legacy ``ResolvedTagFilter`` onto the F18 ``tag_expr`` body.
-
-    The new ``librarian_agent`` reads ``tag_expr`` as the body of a
-    single include expression (no leading sigil); a complex
-    ``Include`` AST cannot be threaded through without parsing,
-    so the MCP layer surfaces a syntactic string instead. Operators
-    using the full include grammar should pass ``tag_expr`` /
-    ``exclude_tags`` directly to the F18 librarian — the legacy
-    ``tag_filter`` MCP surface is a back-compat shim only.
-    """
-    if tag_filter is None or getattr(tag_filter, "include", None) is None:
-        return None
-    return None  # F19 boundary: detailed AST projection deferred to a follow-up
-
-
-def _exclude_tags_from_filter(tag_filter) -> list[str] | None:  # type: ignore[no-untyped-def]
-    """Project the legacy ``ResolvedTagFilter`` exclude onto the F18 list shape.
-
-    See ``_tag_expr_from_filter`` — the projection back to the F15
-    ``tag_filter`` AST is non-trivial and the F18 surface is the
-    primary entry point. The MCP back-compat shim translates the
-    simple ``exclude`` atom only.
-    """
-    if tag_filter is None:
-        return None
-    exclude = getattr(tag_filter, "exclude", None)
-    return [exclude] if exclude else None
-
-
 def _source_for_path(path: str, _page_read_for_path: dict[str, object]) -> str:
     """Discriminate ``"library"`` vs ``"wiki"`` from the citation path.
 

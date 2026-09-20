@@ -24,8 +24,19 @@ def test_format_heading_path_joins() -> None:
 
 def test_slug_from_path_strips_collection_prefix() -> None:
     assert _slug_from_path("wiki/concepts/pydantic.md") == "concepts/pydantic"
-    assert _slug_from_path("claude_platform/concepts/alpha.md") == "concepts/alpha"
+    # ``claude_platform/`` is not a recognized collection prefix (only
+    # ``wiki/`` is), so the path passes through unchanged apart from the
+    # ``.md`` strip. The real synthesizer emits bare slugs (see
+    # ``test_render_evidence_emits_bare_slug``) — this case is a
+    # stub-synthesizer surface that pins the pass-through behavior.
+    assert _slug_from_path("claude_platform/concepts/alpha.md") == "claude_platform/concepts/alpha"
     assert _slug_from_path("no-slash") == "no-slash"
+    # Bare-slug emission (what the real F19 synthesizer produces) passes
+    # through unchanged. Regression pin for the
+    # ``_slug_from_path("concepts/pydantic") == "concepts/pydantic"``
+    # behavior so future edits don't reintroduce the segment-drop bug.
+    assert _slug_from_path("concepts/pydantic") == "concepts/pydantic"
+    assert _slug_from_path("concepts/pydantic.md") == "concepts/pydantic"
 
 
 def test_render_evidence_emits_span_heading_inline() -> None:
@@ -38,7 +49,7 @@ def test_render_evidence_emits_span_heading_inline() -> None:
             heading_path=["Definition", "Nested Models"],
         ),
         Citation(
-            path="claude_platform/concepts/alpha.md",
+            path="concepts/alpha",
             source="library",
             heading_path=["Core API"],
         ),
@@ -61,6 +72,35 @@ def test_render_evidence_emits_span_heading_inline() -> None:
         in evidence
     )
     assert '[[concepts/alpha]] (Core API): "A Session is the gateway to the database."' in evidence
+
+
+def test_render_evidence_emits_bare_slug() -> None:
+    """Regression: real F19 synthesizer emits ``e.slug`` (bare) as the citation path.
+
+    ``Citation(path="concepts/pydantic", source="wiki", ...)`` must
+    render as ``[[concepts/pydantic]] (H1): "verbatim"`` — NOT
+    ``[[pydantic]]`` (the previous ``_slug_from_path`` regression
+    dropped the first segment when the bare slug contained a slash).
+    """
+    from lies.query.citation import Citation, ClaimCitation
+
+    citations = [
+        Citation(
+            path="concepts/pydantic",
+            source="wiki",
+            heading_path=["H1"],
+        ),
+    ]
+    ccs = [
+        ClaimCitation(
+            claim="verbatim claim",
+            citation_index=0,
+            quote="verbatim claim",
+        ),
+    ]
+    evidence = _render_evidence(citations, ccs)
+    assert '[[concepts/pydantic]] (H1): "verbatim claim"' in evidence
+    assert "[[pydantic]]" not in evidence
 
 
 # --- _should_file ----------------------------------------------------------

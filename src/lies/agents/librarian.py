@@ -165,7 +165,7 @@ relevant to the question. Return a few hundred words per page —
 the verbatim passage that can back a claim — not the whole body.
 
 On a read failure, log and continue with the rest. If every hit
-fails, fall back to `wiki_search.ask` and excerpt from its
+fails, fall back to the `wiki_search` tool and excerpt from its
 `pages_read`.
 
 ## 4. Return
