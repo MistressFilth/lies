@@ -12,7 +12,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal, cast
 
-from pydantic_ai import Agent
+from pydantic_ai import Agent, RunContext
 from pydantic_ai.models import Model
 
 from lies.agents.librarian import LibrarianDeps, LibrarianOutput, librarian_agent
@@ -847,6 +847,15 @@ def _validate_claim_citations(
     validators.
     """
     page_bodies = {e.slug: "\n\n".join(s.body for s in e.spans) for e in librarian_output.excerpts}
+    # Library vs wiki slug key mismatch risk flagged in Task 6's
+    # review: the synthesizer emits ``Citation.path`` in either
+    # ``wiki/<slug>.md`` form (wiki hits) or ``<slug>.md`` /
+    # bare-slug form (library / pre-F18 callers), but the canonical
+    # ``page_bodies`` key is the bare slug (``e.slug``). Mirror
+    # each canonical entry under the ``wiki/``-prefixed form so the
+    # drop-on-fail check works uniformly for both shapes without
+    # forcing callers to pre-normalize.
+    page_bodies.update({f"wiki/{slug}.md": body for slug, body in list(page_bodies.items())})
     survivors: list[ClaimCitation] = []
     for cc in claim_citations:
         if cc.claim not in answer_body:
@@ -1084,6 +1093,21 @@ class Orchestrator:
         self._query_synthesizer_agent = query_synthesizer_agent(
             model=self.models["query_synthesizer"]
         )
+        # Librarian agent: ``librarian`` is not in :data:`AGENT_ROSTER`
+        # (it predates the per-agent model resolver), so the
+        # ``self.models`` dict does not carry a dedicated entry. Fall
+        # back to the query-synthesizer model — both agents are part of
+        # the same Tier-2 query path, share the same retrieval envelope,
+        # and tests that pass ``models_for_tests(TestModel())`` or
+        # ``models_for_tests("test")`` get a deterministic librarian
+        # without having to special-case it. Operators wanting a
+        # different model for the librarian override via
+        # ``models={"librarian": "..."}``; the rest of the dict flows
+        # through ``_resolve_default_models`` unchanged.
+        self._librarian_agent = librarian_agent(
+            model=self.models.get("librarian", self.models["query_synthesizer"])
+        )
+        self._register_librarian_tools()
         register_read_tools(self._agent)
 
     def run(self, command: str) -> str:
@@ -1605,7 +1629,11 @@ class Orchestrator:
         # The librarian consumes ``LibrarianDeps`` via the typed deps
         # envelope. The prompt is empty — the deps already carry the
         # question; the agent's 4-step contract reads it from there.
-        librarian_result = librarian_agent().run_sync(question, deps=deps)
+        # ``self._librarian_agent`` is the registered-tools instance
+        # built in ``_build``; ``_register_librarian_tools`` adds the
+        # wiki_search / wiki_read / wiki_catalog trio on top of the
+        # bare agent so the 4-step contract sees the wiki context.
+        librarian_result = self._librarian_agent.run_sync(question, deps=deps)
         librarian_out: LibrarianOutput = librarian_result.output
         answer = self._call_synthesizer(question, librarian_out)
         if file_back and self._should_file(answer, librarian_out):
@@ -1640,7 +1668,7 @@ class Orchestrator:
         ``## Evidence`` block.
         """
         deps = QueryDeps(question=question, librarian_output=librarian_output)
-        result = query_synthesizer_agent().run_sync(question, deps=deps)
+        result = self._query_synthesizer_agent.run_sync(question, deps=deps)
         answer: QueryAnswer = result.output
         # The synthesizer emits ``citations: list[str]`` (paths). Build
         # ``Citation`` envelopes with the source discriminator from the
@@ -1708,16 +1736,45 @@ class Orchestrator:
         return _should_file(answer, librarian_output)
 
     def _has_existing_concept_page(self, answer: QueryAnswer) -> bool:
-        """Stub: query the catalog for a matching concept page.
+        """Query the catalog for a row matching the question-derived slug.
 
-        Wired in Task 7 (integration) to consult the live catalog.
-        Returns False here so the unit tests pass without filesystem
-        side effects — task 7 wires this against
-        ``WikiMemoryService`` / catalog reads so a duplicate
-        question-derived concept slug is treated as "already filed"
-        and the synthesis is skipped.
+        Returns True when the live catalog at
+        ``<wiki.wiki_dir>/.lies/catalog.db`` has at least one row
+        whose slug equals or ends with ``/<slugified question>``. The
+        filing-back path derives the catalog slug from the slugified
+        question text (``_file_back`` / ``build_author_plan``), so a
+        duplicate filing would re-use the same slug under
+        ``<collection>/<type-plural>/<slug>``; the ``endswith(/{slug})``
+        check matches the catalog's per-collection prefix shape and
+        ignores the prefix branch (``concept-`` vs
+        ``<collection>/concept/``). Falls back to False on any catalog
+        exception so the gate stays fail-open for the unit suite and
+        for fresh wikis whose catalog file hasn't been created yet.
         """
-        return False
+        from lies.memory.catalog import list_slugs, open_catalog
+
+        # Match the same slug key ``_validate_claim_citations`` uses
+        # for ``page_bodies`` (``:e.slug`` = bare ``concepts/x`` form).
+        # The library-vs-wiki slug-key mismatch risk flagged in
+        # Task 6's review is harmless here because the catalog is
+        # wiki-scoped (``section='wiki'`` by default) and never
+        # indexes library mirrors — same namespace.
+        slug = _slugify(answer.answer.split("\n", 1)[0])
+        wiki_dir = self.wiki.wiki_dir
+        db_path = wiki_dir / ".lies" / "catalog.db"
+        if not db_path.exists():
+            return False
+        try:
+            conn = open_catalog(self.wiki)
+        except Exception:
+            return False
+        try:
+            existing = set(list_slugs(conn))
+        finally:
+            conn.close()
+        if not slug:
+            return False
+        return any(s == slug or s.endswith(f"/{slug}") for s in existing)
 
     def _file_back(
         self,
@@ -1783,18 +1840,61 @@ class Orchestrator:
         body: str,
         sources: list[str],
     ) -> None:
-        """Stub: write to wiki + upsert catalog + trigger qmd update.
+        """Write a knowledge page via ``WikiMemoryService.apply_plan``.
 
-        Wired in Task 7 (integration) to call
-        :meth:`WikiMemoryService.apply_plan`. Raises
-        ``NotImplementedError`` so unit tests can't accidentally rely
-        on a partially-wired write path; the integration test in Task
-        7 drives the real flow against a real wiki.
+                Builds a ``MemoryPlan`` through :func:`build_author_plan` and
+                applies it through :meth:`file_back_author` (the same envelope
+                the F3 ``file_back_synthesis`` path uses), so the
+                filing-back path keeps:
+
+        - the per-type required section check (F17),
+        - the ``PageCreate`` vs ``PageUpdate`` shape derived from on-disk
+          presence,
+        - the 3-attempt inline retry on transient persistence errors,
+        - the per-op catalog upsert that runs inside the
+          ``WikiMemoryService`` apply envelope.
+
+                The brief's snippet (``WikiMemoryService.apply_plan(plan,
+                wiki_dir=...)``) doesn't match the real ``WikiMemoryService``
+                API: the service is a per-wiki instance (``self._memory_service``)
+                and its ``apply_plan`` is an instance method (no
+                ``wiki_dir`` kwarg). Delegating to ``file_back_author``
+                reuses the canonical envelope rather than duplicating it.
         """
-        # Placeholder: integration test in Task 7 verifies the full
-        # write path against a real wiki. The stub exists so unit
-        # tests can run without filesystem side effects.
-        raise NotImplementedError("Wired in Task 7 (integration)")
+        from lies.page.author import _SectionRefusal, build_author_plan
+
+        plan = build_author_plan(
+            type=page_type,  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
+            collection=self.wiki.name,
+            slug=slug,
+            title=title,
+            body=body,
+            derived_from=sources,
+            tags=[page_type],
+            sources=[],
+            exists=lambda rel: (self.wiki.wiki_dir / rel).exists(),
+            sha_lookup=lambda rel: self._memory_service.current_state(rel)[0],
+            render_format="md",
+            section_contract=self.wiki.section_contract,
+        )
+        # F17 defensive refusal seam: the plan builder returned a
+        # refusal rather than a plan when the body is missing a
+        # required section. Mirror ``file_back_author`` and surface
+        # the refusal as an errors-as-value receipt. ``run_query``
+        # ignores ``file_receipt`` for the F19 surface, so the
+        # caller-visible effect is a logged refusal rather than a
+        # raised exception.
+        if isinstance(plan, _SectionRefusal):
+            import logging
+
+            logging.getLogger(__name__).warning(
+                "file-back refusal for %s/%s: %s",
+                page_type,
+                slug,
+                plan.error,
+            )
+            return
+        self.file_back_author(plan)
 
     def _register_librarian_tools(self) -> None:
         """Register ``wiki_search`` / ``wiki_read`` / ``wiki_catalog`` on the librarian agent.
@@ -1802,20 +1902,87 @@ class Orchestrator:
         Tools are defined per the librarian's 4-step contract
         (classify → search → read → return). The orchestrator owns
         this registration rather than the librarian module so the
-        wiring crosses the wiki context boundary; the librarian
-        agent sees a ``WikiMemoryDeps``-shaped deps it never
-        declares itself (the agent's ``deps_type`` is
-        ``LibrarianDeps`` per spec §3; tooling carries the actual
-        wiki context).
+        wiring crosses the wiki context boundary: the librarian
+        agent's declared deps type is :class:`LibrarianDeps`
+        (question / tag_expr / exclude_tags / top_k), but the
+        tools need the per-wiki :class:`WikiMemoryService` and the
+        :class:`Wiki` itself. Closures over ``self._memory_service``
+        and ``self.wiki`` carry that context without forcing the
+        librarian's deps type to widen.
 
-        Task 7 wires ``wiki_knowledge`` (F19) and the deeper
-        tool-set; this stub defines the F18 catalog+search+read
-        trio so the librarian has its full 4-step surface.
+        The brief's reference to ``wiki_knowledge`` (F19) is left
+        for the deeper F19 wiring pass — the F18 trio (search /
+        read / catalog) covers the 4-step contract as scoped in this
+        task.
         """
-        # Stub: real wiring lands in Task 7 once
-        # ``WikiMemoryService.apply_plan`` / catalog reads
-        # thread through.
-        return
+        from lies.memory.catalog import list_pages as _list_pages
+        from lies.memory.catalog import open_catalog as _open_catalog
+
+        service = self._memory_service
+        wiki = self.wiki
+
+        def _wiki_search(
+            ctx: RunContext[LibrarianDeps],
+            question: str,
+            limit: int = 5,
+        ) -> dict[str, object]:
+            """Search this wiki for project knowledge relevant to ``question``.
+
+            Wraps :meth:`WikiMemoryService.search` so the authenticated
+            evidence set threads into the librarian's run state.
+            """
+            result = service.search(question, limit=limit)
+            return cast(dict[str, object], result.model_dump())
+
+        def _wiki_read(
+            ctx: RunContext[LibrarianDeps],
+            page_ids: list[str],
+        ) -> dict[str, str]:
+            """Read full page bodies for the given page IDs.
+
+            Thin wrapper around :meth:`WikiMemoryService.read` — IDs
+            must already be authenticated by ``wiki_search`` in the
+            same run.
+            """
+            return service.read(page_ids)
+
+        def _wiki_catalog(ctx: RunContext[LibrarianDeps]) -> str:
+            """List every wiki catalog row as JSON.
+
+            Mirrors :func:`_wiki_catalog_impl` in the MCP server so
+            the librarian has the same registry view the catalog
+            MCP resource exposes to the main agent.
+            """
+            import json
+
+            conn = _open_catalog(wiki)
+            try:
+                pages = _list_pages(conn)
+            finally:
+                conn.close()
+            return json.dumps([p.model_dump(mode="json") for p in pages], indent=2)
+
+        self._librarian_agent.tool(
+            name="wiki_search",
+            description=(
+                "Search this wiki for project knowledge relevant to a question. "
+                "Returns bounded evidence with page_id values that can be passed to wiki_read."
+            ),
+        )(_wiki_search)
+        self._librarian_agent.tool(
+            name="wiki_read",
+            description=(
+                "Read the full markdown body of wiki pages identified by page_id. "
+                "Accepts only IDs returned by a recent wiki_search call."
+            ),
+        )(_wiki_read)
+        self._librarian_agent.tool(
+            name="wiki_catalog",
+            description=(
+                "List every wiki catalog row as JSON. Each entry carries name, tags, "
+                "scope_keywords, and section. Use this for the classify step in the 4-step contract."
+            ),
+        )(_wiki_catalog)
 
     def run_lint(
         self,
