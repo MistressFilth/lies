@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Literal, cast
 
 from lies.library.registry import LibraryCollectionMeta
+from lies.markdown_spans import Span, parse_spans
 from lies.qmd.cli import qmd_query
 from lies.query.index_parser import parse_index_links
 from lies.query.models import SynthesizedAnswer
@@ -90,11 +91,17 @@ class PageRead:
     dispatcher reads from. Same path from both roots produces two
     distinct PageRead objects; the operator sees both with source
     tags in the answer body.
+
+    ``spans`` (F19): structured view of the page body, replacing the
+    single-paragraph ``excerpt`` field. Synthesizer picks per-claim
+    span from this list. Code-fence spans are emitted with
+    ``code_fence=True``; downstream consumers exclude them from
+    prose excerpts.
     """
 
     rel_path: str  # wiki-relative, POSIX
     title: str
-    excerpt: str
+    spans: list[Span]
     source: str  # "library" | "wiki" — required, no default (hard cutover)
     line: int | None = None  # qmd's per-hit line (1-indexed); None for index-fallback paths
     section: str | None = None  # last ATX heading at or before `line`
@@ -502,9 +509,9 @@ def _build_library_page_read(
     filesystem layout. Returns ``None`` on read failure (mirrors
     :func:`_try_read`).
 
-    When ``hit_line`` is provided, ``section`` is computed via
-    ``_extract_section_at`` so the citation carries the heading the
-    LLM relied on.
+    ``spans`` is the structured parse of the page body (F19). The
+    ``section`` field is preserved for back-compat with the
+    pre-F19 single-line section derivation.
     """
     # Local import: same rationale as ``_resolve_qmd_path_in_library``.
     from lies.library.paths import Library  # noqa: PLC0415
@@ -516,12 +523,12 @@ def _build_library_page_read(
     lib_root = Library.open().collections_root.resolve()
     rel = path.relative_to(lib_root).as_posix()
     title = _extract_title(content) or path.stem
-    excerpt = _first_meaningful_paragraph(content)
+    spans = parse_spans(content)
     section = _extract_section_at(content, hit_line) if hit_line is not None else None
     return PageRead(
         rel_path=rel,
         title=title,
-        excerpt=excerpt,
+        spans=spans,
         source="library",
         line=hit_line,
         section=section,
@@ -553,12 +560,12 @@ def _try_read(
 
     rel = path.relative_to(wiki.data_root).as_posix()
     title = title_override or _extract_title(content) or path.stem
-    excerpt = _first_meaningful_paragraph(content)
+    spans = parse_spans(content)
     section = _extract_section_at(content, hit_line) if hit_line is not None else None
     return PageRead(
         rel_path=rel,
         title=title,
-        excerpt=excerpt,
+        spans=spans,
         source="wiki",
         line=hit_line,
         section=section,
@@ -580,41 +587,6 @@ def _extract_title(content: str) -> str | None:
         if line.startswith("# "):
             return line[2:].strip()
     return None
-
-
-def _first_meaningful_paragraph(content: str, max_chars: int = 400) -> str:
-    """Return the first non-heading, non-empty paragraph, truncated.
-
-    Skips YAML frontmatter and headings. Concatenates consecutive
-    non-empty lines into a single paragraph, up to ``max_chars``.
-    """
-    in_fm = False
-    seen_fm = False
-    para: list[str] = []
-    for line in content.splitlines():
-        if not seen_fm and line.strip() == "---":
-            in_fm = not in_fm
-            if not in_fm:
-                seen_fm = True
-            continue
-        if in_fm:
-            continue
-        stripped = line.strip()
-        if not stripped:
-            if para:
-                break
-            continue
-        if stripped.startswith("#"):
-            if para:
-                break
-            continue
-        para.append(stripped)
-        if len(" ".join(para)) >= max_chars:
-            break
-    text = " ".join(para).strip()
-    if len(text) > max_chars:
-        text = text[: max_chars - 3].rstrip() + "..."
-    return text
 
 
 # ---------------------------------------------------------------------------
@@ -689,10 +661,26 @@ def build_answer_from_pages(
         citations.append(c)
         pages_read.append(c)
         page_links.append(f"[{page.title}]({page.rel_path})")
-        excerpt = page.excerpt or "(no extractable content)"
-        bullets.append(
-            f"- [{page.source}] {page.title} — {excerpt} — [{page.title}]({page.rel_path})"
+        # F19: pick the first non-empty prose span as the per-page excerpt.
+        prose_span = next(
+            (s for s in page.spans if s.body.strip() and not s.code_fence),
+            None,
         )
+        if prose_span is None:
+            excerpt = "(no extractable content)"
+            heading_path: list[str] = []
+        else:
+            # Trim trailing whitespace + cap at first paragraph
+            excerpt = prose_span.body.strip().split("\n\n", 1)[0]
+            heading_path = prose_span.heading_path
+        heading_str = " > ".join(heading_path) if heading_path else "top of page"
+        # Per-page bullet uses the [[slug]]: "verbatim" form (F19). For
+        # multi-page summaries this gives each citation a heading context;
+        # for the [[slug]] rendering we use the bare slug (no collection
+        # prefix).
+        bare_slug = page.rel_path.split("/", 1)[1] if "/" in page.rel_path else page.rel_path
+        bare_slug = bare_slug.removesuffix(".md")
+        bullets.append(f'- [[{bare_slug}]] ({heading_str}): "{excerpt}"')
 
     if fallback_reason == FALLBACK_REASON_WIKI_ONLY:
         preamble = (

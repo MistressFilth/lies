@@ -20,12 +20,18 @@ class Citation:
 
     Hard cutover — this field is required, no defaults. Same path from
     both roots produces two distinct Citation objects.
+
+    ``heading_path`` (F19): the nested ATX heading path of the span
+    this citation references. Populated by the orchestrator's
+    ``_thread_heading_paths`` step from the claim's quote match.
+    ``None`` when the citation comes from a non-F19 path.
     """
 
     path: str
     source: Literal["library", "wiki"]
     line: int | None = None
     section: str | None = None
+    heading_path: list[str] | None = None
 
 
 @dataclass(frozen=True)
@@ -34,9 +40,12 @@ class ClaimCitation:
 
     ``claim`` must appear verbatim as a substring of the synthesized
     answer body. ``citation_index`` is 0-based into the agent's
-    ``citations`` list. The orchestrator validates both constraints
-    and drops entries that fail.
+    ``citations`` list. ``quote`` (F19) is the verbatim text from the
+    cited excerpt that supports the claim — validated to appear
+    verbatim in the span body by the orchestrator. The orchestrator
+    drops entries that fail any check.
     """
 
     claim: str
     citation_index: int
+    quote: str = ""

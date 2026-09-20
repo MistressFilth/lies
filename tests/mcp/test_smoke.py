@@ -85,10 +85,11 @@ async def test_query_tool_round_trip(
         self,
         question: str,
         *,
-        collection: str | None = None,
-        file: bool = True,
-        force_file: bool = False,
-        tag_filter: object = None,
+        tag_expr: object = None,
+        exclude_tags: object = None,
+        top_n: int = 5,
+        file_back: bool = True,
+        **_kwargs: object,
     ) -> SynthesizedAnswer:
         return fake_answer
 

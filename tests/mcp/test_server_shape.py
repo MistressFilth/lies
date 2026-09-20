@@ -30,6 +30,7 @@ async def test_tools_registered(client: Client) -> None:
         "wiki_read",
         "wiki_changes",
         "file_knowledge",
+        "reindex",
     }
 
 

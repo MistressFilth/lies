@@ -7,8 +7,6 @@ import pytest
 from pydantic_ai.models.test import TestModel
 
 from lies.orchestrator import Orchestrator
-from lies.query.tag_expr import Include, ResolvedTagFilter
-from lies.wiki.wiki import Wiki
 from tests.conftest import make_wiki, models_for_tests
 
 _NOW = datetime(2026, 9, 10, tzinfo=UTC)
@@ -164,179 +162,14 @@ def test_orchestrator_uses_qmd_http_transport(
     assert built[0]["wiki"] is orch.wiki
 
 
-# --- Task 6 / Bundle C — tag_filter plumbing ------------------------------
-
-
-def test_run_query_threads_tag_filter_through_retriever(
-    wiki_root: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """``Orchestrator.run_query(tag_filter=...)`` passes the filter down
-    into :func:`retrieve_pages`. The retriever resolves it against the
-    collection set; this test pins the wiring, not the resolution."""
-    from lies.query.synthesizer import PageRead
-
-    captured: dict[str, object] = {}
-
-    def fake_retrieve_pages(*_a: object, **kw: object) -> tuple[list[PageRead], str]:
-        captured["tag_filter"] = kw.get("tag_filter")
-        return [], ""
-
-    monkeypatch.setattr("lies.orchestrator.retrieve_pages", fake_retrieve_pages)
-
-    # Skip the synthesizer agent (the empty-pages branch never calls it).
-    tf = ResolvedTagFilter(include=Include("airflow"))
-    orch = Orchestrator(wiki=wiki_root, models=models_for_tests("test"))
-    orch.run_query("what is X?", tag_filter=tf)
-
-    assert captured["tag_filter"] == tf
-
-
-def test_run_query_without_tag_filter_passes_none(
-    wiki_root: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Back-compat: ``run_query`` without a ``tag_filter`` keyword
-    passes ``None`` into :func:`retrieve_pages`."""
-    from lies.query.synthesizer import PageRead
-
-    captured: dict[str, object] = {}
-
-    def fake_retrieve_pages(*_a: object, **kw: object) -> tuple[list[PageRead], str]:
-        captured["tag_filter"] = kw.get("tag_filter")
-        return [], ""
-
-    monkeypatch.setattr("lies.orchestrator.retrieve_pages", fake_retrieve_pages)
-
-    orch = Orchestrator(wiki=wiki_root, models=models_for_tests("test"))
-    orch.run_query("what is X?")
-
-    assert captured["tag_filter"] is None
-
-
-# --- Task 7 / Bundle C — searched_scope on SynthesizedAnswer --------------
+# --- Task 6 / F18+F19 — librarian dispatch + filing gate -------------------
 #
-# Spec (2026-09-09-bundle-c-tag-filter-design.md §"Retriever consumption"):
-# > The `searched_scope` field on the answer reports the collections that
-# > were searched. With a filter, the scope is the resolved set; without a
-# > filter, the scope is all registered collections.
-#
-# `Orchestrator.run_query` populates `searched_scope` from the same
-# `_collections_matching` output Task 6 wired up. When no filter is set,
-# the scope is every collection registered in the wiki.
-
-
-@pytest.fixture
-def tagged_orch_wiki(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Wiki:
-    """A wiki with two library collections for the searched_scope tests.
-
-    Library-first resolution: the wiki's yaml configs are no longer
-    consulted for collection metadata. The library is seeded with
-    ``airflow`` and ``amazon`` directories; the wiki itself only
-    needs a data_root.
-    """
-    import shutil
-
-    from lies import xdg
-    from lies.constants import LIES_DATA_SUBDIR
-    from lies.library.paths import Library
-
-    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg_data"))
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg_config"))
-    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg_cache"))
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "xdg_state"))
-    Library.open.cache_clear()
-
-    root = tmp_path / "tagged-orch"
-    root.mkdir()
-    (root / "raw").mkdir()
-    (root / "wiki").mkdir()
-    wiki = make_wiki(name="tagged-orch", data_root=root)
-    wiki.config_root.mkdir(parents=True, exist_ok=True)
-    wiki.collections_dir.mkdir(parents=True, exist_ok=True)
-
-    lib_root = xdg.data_home() / LIES_DATA_SUBDIR / "library"
-    if lib_root.exists():
-        shutil.rmtree(lib_root)
-    lib_root.mkdir(parents=True, exist_ok=True)
-    (lib_root / "collections").mkdir(parents=True, exist_ok=True)
-    for name in ("airflow", "amazon"):
-        (lib_root / "collections" / name).mkdir()
-
-    return wiki
-
-
-def test_run_query_searched_scope_with_tag_filter_is_resolved_set(
-    tagged_orch_wiki: Wiki, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """``run_query(tag_filter=...)`` populates ``searched_scope`` with the
-    resolved collection set (sorted, unique). Task 6 set up the
-    resolver; this test pins the answer-shape."""
-    from lies.query.synthesizer import PageRead
-
-    def fake_retrieve_pages(*_a: object, **_kw: object) -> tuple[list[PageRead], str]:
-        # The empty-pages branch is exercised here — it never reaches
-        # the LLM synthesizer — which makes the assertion focused.
-        return [], ""
-
-    monkeypatch.setattr("lies.orchestrator.retrieve_pages", fake_retrieve_pages)
-
-    tf = ResolvedTagFilter(include=Include("airflow"))
-    orch = Orchestrator(wiki=tagged_orch_wiki, models=models_for_tests("test"))
-    ans = orch.run_query("what is X?", tag_filter=tf)
-
-    assert ans.searched_scope == ["airflow"]
-
-
-def test_run_query_searched_scope_without_tag_filter_is_all_collections(
-    tagged_orch_wiki: Wiki, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """``run_query()`` (no filter) populates ``searched_scope`` with every
-    collection registered in the wiki (sorted)."""
-    from lies.query.synthesizer import PageRead
-
-    def fake_retrieve_pages(*_a: object, **_kw: object) -> tuple[list[PageRead], str]:
-        return [], ""
-
-    monkeypatch.setattr("lies.orchestrator.retrieve_pages", fake_retrieve_pages)
-
-    orch = Orchestrator(wiki=tagged_orch_wiki, models=models_for_tests("test"))
-    ans = orch.run_query("what is X?")
-
-    assert ans.searched_scope == ["airflow", "amazon"]
-
-
-def test_run_query_searched_scope_with_empty_collections_dir_is_empty(
-    wiki_root: Wiki, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A wiki with no library collections reports ``searched_scope = []``."""
-    import shutil
-
-    from lies import xdg
-    from lies.constants import LIES_DATA_SUBDIR
-    from lies.library.paths import Library
-    from lies.query.synthesizer import PageRead
-
-    Library.open.cache_clear()
-    lib_root = xdg.data_home() / LIES_DATA_SUBDIR / "library"
-    if lib_root.exists():
-        shutil.rmtree(lib_root)
-
-    def fake_retrieve_pages(*_a: object, **_kw: object) -> tuple[list[PageRead], str]:
-        return [], ""
-
-    monkeypatch.setattr("lies.orchestrator.retrieve_pages", fake_retrieve_pages)
-
-    orch = Orchestrator(wiki=wiki_root, models=models_for_tests("test"))
-    ans = orch.run_query("what is X?")
-
-    assert ans.searched_scope == []
-
-
-def test_run_query_searched_scope_on_empty_question_path(
-    tagged_orch_wiki: Wiki,
-) -> None:
-    """The empty-question branch still reports the searched scope — the
-    question was rejected, but the operator's filter intent is honored."""
-    orch = Orchestrator(wiki=tagged_orch_wiki, models=models_for_tests("test"))
-    ans = orch.run_query("")
-
-    assert ans.searched_scope == ["airflow", "amazon"]
+# The pre-F18 ``run_query(tag_filter=..., file=..., force_file=...,
+# collection=...)`` shape is retired — see Task 6 brief and
+# ``Orchestrator.run_query``. The new signature is
+# ``run_query(question, *, tag_expr, exclude_tags, top_n, file_back)``
+# and returns ``QueryAnswer`` (not ``SynthesizedAnswer``). The legacy
+# tag-filter / searched_scope plumbing tests were deleted with the
+# legacy surface; the new shape is pinned by
+# ``tests/unit/test_orchestrator_filing.py`` (helpers) and the Task 7
+# integration tests (the synthesized answer shape).

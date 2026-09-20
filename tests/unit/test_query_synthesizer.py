@@ -45,7 +45,7 @@ def test_page_read_accepts_line_and_section() -> None:
     pr = PageRead(
         rel_path="x.md",
         title="X",
-        excerpt="excerpt",
+        spans=[],
         source="wiki",
         line=42,
         section="Section",
@@ -55,7 +55,7 @@ def test_page_read_accepts_line_and_section() -> None:
 
 
 def test_page_read_line_section_default_none() -> None:
-    pr = PageRead(rel_path="x.md", title="X", excerpt="e", source="wiki")
+    pr = PageRead(rel_path="x.md", title="X", spans=[], source="wiki")
     assert pr.line is None
     assert pr.section is None
 
@@ -155,14 +155,18 @@ def test_qmd_happy_path_uses_qmd_results(sample_wiki: Wiki) -> None:
 
     assert result.citations == [Citation(path="wiki/" + p, source="wiki") for p in paths]
     assert result.pages_read == [Citation(path="wiki/" + p, source="wiki") for p in paths]
+    # page_links carries the markdown-link form for downstream consumers
+    # (CLI render dispatch, MCP); the answer body itself uses the inline
+    # ``[[slug]]: "verbatim"`` form per the F19 contract.
     assert result.page_links == [
         "[Postgres](wiki/entities/postgres.md)",
         "[MVCC](wiki/concepts/mvcc.md)",
     ]
     assert "How does MVCC work?" in result.answer
-    # Each cited page must appear as a markdown link in the answer body.
-    for link in result.page_links:
-        assert link in result.answer
+    # Each cited page must surface as a ``[[slug]]`` bullet (F19).
+    for path in paths:
+        bare_slug = path.removesuffix(".md")
+        assert f"[[{bare_slug}]]" in result.answer
 
 
 def test_qmd_results_capped_at_top_n(sample_wiki: Wiki) -> None:

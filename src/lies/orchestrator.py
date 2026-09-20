@@ -12,10 +12,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal, cast
 
-from pydantic_ai import Agent
+from pydantic_ai import Agent, RunContext
 from pydantic_ai.models import Model
 
+from lies.agents.librarian import LibrarianDeps, LibrarianOutput, librarian_agent
 from lies.agents.linter import LintFinding, LintReport, linter_agent
+from lies.markdown_spans import Span
 from lies.agents.query_synthesizer import QueryAnswer, QueryDeps, query_synthesizer_agent
 from lies.agents.repair import RepairAgentDeps, repair_agent
 from lies.agents.repair_models import RepairPlan, RepairReceipt
@@ -44,20 +46,50 @@ from lies.page import build_author_plan
 from lies.page.author import _SectionRefusal
 from lies.qmd import QmdCapability
 from lies.query import (
-    PageRead,
     SynthesizedAnswer,
-    build_answer_from_pages,
-    retrieve_pages,
-    synthesize_answer,
 )
 from lies.query.citation import Citation, ClaimCitation
-from lies.query.tag_expr import ResolvedTagFilter
-from lies.query.synthesizer import _searched_scope
+from lies.query.synthesizer import retrieve_pages as _retrieve_pages
 from lies.schema import load_schema
 from lies.schema.sections import _missing_required_sections
 from lies.wiki.wiki import Wiki
 from lies.wikilinks import WikiLinkResolver
 from lies.wikilinks import extract_wikilinks as _extract_wikilinks
+
+
+# F1/F18 compat shim: pre-F18 ``Orchestrator`` exposed ``retrieve_pages``
+# as a module-level function that delegated to
+# :func:`lies.query.synthesizer.retrieve_pages`. F18's librarian
+# dispatch retired the orchestrator's direct call (the librarian
+# handles retrieval), but several integration tests monkey-patch
+# ``lies.orchestrator.retrieve_pages`` to stub the qmd dispatch and
+# feed canned pages into the synth path. Re-export the canonical
+# helper at the module level so the test patches succeed without
+# ``AttributeError``; downstream callers continue to patch the
+# canonical ``lies.query.synthesizer.retrieve_pages`` if they want
+# to intercept the F18 path.
+def retrieve_pages(  # type: ignore[no-untyped-def]
+    question: str,
+    wiki: Wiki,
+    *,
+    top_n: int = 5,
+    qmd_search=None,
+    tag_filter=None,
+):
+    """F18 compat shim — delegates to :func:`lies.query.synthesizer.retrieve_pages`.
+
+    See the canonical helper for the full contract. This module-level
+    alias exists only so test surfaces (and any out-of-branch
+    downstream caller that patched ``lies.orchestrator.retrieve_pages``
+    pre-F18) keep their monkey-patch target.
+    """
+    return _retrieve_pages(
+        question,
+        wiki,
+        top_n=top_n,
+        qmd_search=qmd_search,
+        tag_filter=tag_filter,
+    )
 
 
 def _resolve_default_models(wiki: Wiki) -> dict[str, Model | str]:
@@ -825,39 +857,242 @@ def _render_footnotes(
 
 
 def _validate_claim_citations(
+    answer_body: str,
+    citations: list["Citation"],
     claim_citations: list["ClaimCitation"],
-    citations: list[str],
-    answer: str,
-) -> tuple[list["ClaimCitation"], list[str]]:
-    """Validate ``claim_citations`` against ``answer`` and ``citations``.
+    librarian_output: "LibrarianOutput",
+) -> list["ClaimCitation"]:
+    """F19 strict validation helper — drop-on-fail for the librarian path.
+
+    ``Orchestrator._call_synthesizer`` (Task 6) routes through this
+    helper. The pre-F19 call path that returned ``(kept, drops)`` is
+    gone.
 
     Drops entries where:
+    - ``claim`` is not a substring of ``answer_body``
     - ``citation_index`` is out of range for ``citations``
-    - ``citation_index`` is negative
-    - ``claim`` is empty (degenerate; ``"" in any_string`` is always True)
-    - ``claim`` does not appear verbatim as a substring of ``answer``
+    - ``quote`` is not a substring of the cited excerpt's body
+      (resolved via ``librarian_output.excerpts`` so we don't
+      re-read files)
 
-    Returns ``(kept, drop_reasons)``. ``drop_reasons`` are short
-    diagnostic strings suitable for joining into ``synthesis_reason``.
+    Returns the surviving ``ClaimCitation`` entries. Drop reasons
+    are silently swallowed per spec §"Validation contract" —
+    ``_call_synthesizer`` is the sole caller and the synthesis-
+    reason diagnostic path lives on the synthesizers, not the
+    validators.
     """
-    kept: list[ClaimCitation] = []
-    drops: list[str] = []
-    n_citations = len(citations)
-    for entry in claim_citations:
-        if not (0 <= entry.citation_index < n_citations):
-            drops.append(
-                f"claim_citation index {entry.citation_index} out of range "
-                f"(citations has {n_citations} entries)"
-            )
+    page_bodies = {e.slug: "\n\n".join(s.body for s in e.spans) for e in librarian_output.excerpts}
+    # Library vs wiki slug key mismatch risk flagged in Task 6's
+    # review: the synthesizer emits ``Citation.path`` in either
+    # ``wiki/<slug>.md`` form (wiki hits) or ``<slug>.md`` /
+    # bare-slug form (library / pre-F18 callers), but the canonical
+    # ``page_bodies`` key is the bare slug (``e.slug``). Mirror
+    # each canonical entry under the ``wiki/``-prefixed form so the
+    # drop-on-fail check works uniformly for both shapes without
+    # forcing callers to pre-normalize.
+    page_bodies.update({f"wiki/{slug}.md": body for slug, body in list(page_bodies.items())})
+    survivors: list[ClaimCitation] = []
+    for cc in claim_citations:
+        if cc.claim not in answer_body:
             continue
-        if not entry.claim:
-            drops.append("claim_citation claim is empty")
+        if not (0 <= cc.citation_index < len(citations)):
             continue
-        if entry.claim not in answer:
-            drops.append(f"claim_citation claim not in body: {entry.claim!r}")
+        cited = citations[cc.citation_index]
+        body = page_bodies.get(cited.path)
+        if not body or cc.quote not in body:
             continue
-        kept.append(entry)
-    return kept, drops
+        survivors.append(cc)
+    return survivors
+
+
+def _thread_heading_paths(
+    citations: list["Citation"],
+    claim_citations: list["ClaimCitation"],
+    librarian_output: "LibrarianOutput",
+) -> list["Citation"]:
+    """Populate ``Citation.heading_path`` from the span each claim cites.
+
+    For every citation that has a matching ``ClaimCitation`` (by
+    ``citation_index``), find the span whose body contains the
+    claim's ``quote``; replace the citation's ``heading_path`` with
+    that span's heading path. Citations without a matching
+    claim, or where no span contains the quote, pass through
+    unchanged.
+
+    Used by ``_call_synthesizer`` (Task 6) before filing-back so
+    the ``## Evidence`` block in synthesis pages can render
+    ``(Section > Subsection)`` per claim (see
+    ``_render_evidence`` in spec §5).
+
+    The spans index is keyed by ``e.slug`` (bare-slug form) AND
+    mirrored under ``wiki/<slug>`` / ``wiki/<slug>.md`` so the
+    real-F19 synthesizer emission (bare slugs from ``e.slug``) and
+    stub/test emission (``wiki/<slug>.md`` form, what pre-F18
+    tests and canned fixtures still emit) both resolve to the same
+    span set. Without the mirror, threaded citations whose
+    ``path`` is the stub ``wiki/<slug>.md`` form would fall
+    through with ``heading_path=None`` — visible in the filed
+    ``## Evidence`` block as ``(top of page)``.
+    """
+
+    spans_by_slug: dict[str, list["Span"]] = {}
+    for excerpt in librarian_output.excerpts:
+        spans = list(excerpt.spans)
+        spans_by_slug[excerpt.slug] = spans
+        # Mirror the canonical entry under the ``wiki/``-prefixed
+        # shapes the pre-F18 / stub synthesizer emit. The mirror
+        # is intentionally duplicated for ``wiki/<slug>`` AND
+        # ``wiki/<slug>.md`` because both forms appear in
+        # canned fixture citations (see
+        # ``tests/integration/test_tier2_query_path.py``).
+        spans_by_slug[f"wiki/{excerpt.slug}.md"] = spans
+        spans_by_slug[f"wiki/{excerpt.slug}"] = spans
+    out: list[Citation] = []
+    for i, cit in enumerate(citations):
+        match_quote = next(
+            (cc.quote for cc in claim_citations if cc.citation_index == i),
+            None,
+        )
+        if match_quote is None:
+            out.append(cit)
+            continue
+        spans = spans_by_slug.get(cit.path, [])
+        if not spans and cit.path:
+            # Last-ditch: strip a ``wiki/`` prefix or ``.md``
+            # suffix and retry. Defends against path-shape drift
+            # (e.g. ``wiki/x.md`` vs ``wiki/x`` vs ``x``).
+            candidate = cit.path
+            for strip in ("wiki/", ".md"):
+                if candidate.startswith(strip):
+                    candidate = candidate[len(strip) :]
+                elif candidate.endswith(strip):
+                    candidate = candidate[: -len(strip)]
+            spans = spans_by_slug.get(candidate, [])
+        match_span = next(
+            (s for s in spans if match_quote in s.body),
+            None,
+        )
+        if match_span is None:
+            out.append(cit)
+            continue
+        out.append(replace(cit, heading_path=match_span.heading_path))
+    return out
+
+
+def _format_heading_path(heading_path: list[str] | None) -> str:
+    """Render a heading path for inline ``## Evidence`` display.
+
+    Empty / None → ``"top of page"`` (no parens — the caller wraps
+    the result in ``( )`` for inline display). The pre-F19 return
+    included the parens here, but ``_render_evidence`` wraps the
+    result in another ``( )``, producing the rendered
+    ``((top of page))`` double-paren. Returns the bare phrase so
+    the caller-owned wrap renders identically for both the
+    filed-body evidence block and the extractive fallback path
+    (``build_answer_from_pages`` in ``query/synthesizer.py``).
+    """
+    if not heading_path:
+        return "top of page"
+    return " > ".join(heading_path)
+
+
+_KNOWN_COLLECTION_PREFIXES: tuple[str, ...] = ("wiki/",)
+
+
+def _slug_from_path(path: str) -> str:
+    """Render the ``[[slug]]`` form from a ``Citation.path``.
+
+    Strips the leading collection segment when the path is the
+    spec-compliant form ``<collection>/<rest>``. Bare slugs (no
+    recognized collection prefix, or no slash at all) pass through
+    unchanged so the real-synthesizer emission path (which emits
+    ``"concepts/pydantic"`` from ``e.slug``) renders as
+    ``[[concepts/pydantic]]`` rather than ``[[pydantic]]``.
+    """
+    if not path.startswith(_KNOWN_COLLECTION_PREFIXES):
+        return path.removesuffix(".md")
+    parts = path.split("/", 1)
+    return parts[1].removesuffix(".md")
+
+
+def _render_evidence(
+    citations: list[Citation],
+    claim_citations: list[ClaimCitation],
+) -> str:
+    """Render the ``## Evidence`` body for a filed synthesis page.
+
+    One line per claim: ``[[slug]] (Heading > Subheading): "verbatim"``.
+    Drop-on-fail has already happened upstream in
+    ``_validate_claim_citations``; surviving entries are guaranteed
+    to have a valid ``citation_index`` and a non-empty ``quote``.
+    ``_slug_from_path`` strips the ``.md`` suffix when present so
+    the rendered slug is the bare ``concepts/pydantic`` form for
+    both ``"wiki/concepts/pydantic.md"`` paths and bare-slug
+    ``"concepts/pydantic"`` emission from the synthesizer.
+    """
+    lines: list[str] = []
+    for cc in claim_citations:
+        cit = citations[cc.citation_index]
+        slug = _slug_from_path(cit.path)
+        heading = _format_heading_path(cit.heading_path)
+        lines.append(f'[[{slug}]] ({heading}): "{cc.quote}"')
+    return "\n".join(lines)
+
+
+def _is_one_liner(body: str) -> bool:
+    """Heuristic for "substantive" — fewer than ~3 lines is a one-liner."""
+    return len([line for line in body.splitlines() if line.strip()]) < 3
+
+
+def _should_file(
+    answer: QueryAnswer,
+    librarian_output: LibrarianOutput,
+) -> bool:
+    """Filing-back gate (F19) without the catalog query.
+
+    Returns True when:
+    - the agent marked the answer ``should_file=True``
+    - the librarian's bundle covers 2+ distinct pages
+    - the synthesized body is more than a one-line heuristic
+      (≥ 3 lines of non-whitespace text)
+
+    The catalog check ("already a concept page covering this
+    answer?") lives on :meth:`Orchestrator._has_existing_concept_page`
+    because it owns the :class:`WikiMemoryService` access; Task 7
+    wires that read. The orchestrator's
+    :meth:`Orchestrator._should_file` method wraps this function
+    to add the catalog check.
+
+    Defined as a module-level callable so unit tests can pin the
+    gate independent of the catalog surface — see
+    ``tests/unit/test_orchestrator_filing.py``.
+    """
+    if not answer.should_file:
+        return False
+    if librarian_output.distinct_pages < 2:
+        return False
+    if _is_one_liner(answer.answer):
+        return False
+    return True
+
+
+def _slugify(text: str) -> str:
+    """Convert free text to a lowercase hyphenated slug (max 60 chars).
+
+    Strips non-word / non-space / non-hyphen characters, collapses
+    runs of whitespace and underscores to single hyphens, and trims
+    trailing hyphens. Used by the filing-back path to derive a
+    filename from a question. Coexists with the nested helper in
+    :meth:`Orchestrator.file_back_synthesis` at :mod:`orchestrator`
+    — both functions live at different scopes, but share the intent.
+    """
+    import re
+
+    text = text.lower()
+    text = re.sub(r"[^\w\s-]", "", text)
+    text = re.sub(r"[\s_]+", "-", text.strip())
+    text = re.sub(r"-{2,}", "-", text)
+    return text[:60].rstrip("-")
 
 
 class Orchestrator:
@@ -935,6 +1170,21 @@ class Orchestrator:
         self._query_synthesizer_agent = query_synthesizer_agent(
             model=self.models["query_synthesizer"]
         )
+        # Librarian agent: ``librarian`` is not in :data:`AGENT_ROSTER`
+        # (it predates the per-agent model resolver), so the
+        # ``self.models`` dict does not carry a dedicated entry. Fall
+        # back to the query-synthesizer model — both agents are part of
+        # the same Tier-2 query path, share the same retrieval envelope,
+        # and tests that pass ``models_for_tests(TestModel())`` or
+        # ``models_for_tests("test")`` get a deterministic librarian
+        # without having to special-case it. Operators wanting a
+        # different model for the librarian override via
+        # ``models={"librarian": "..."}``; the rest of the dict flows
+        # through ``_resolve_default_models`` unchanged.
+        self._librarian_agent = librarian_agent(
+            model=self.models.get("librarian", self.models["query_synthesizer"])
+        )
+        self._register_librarian_tools()
         register_read_tools(self._agent)
 
     def run(self, command: str) -> str:
@@ -1406,534 +1656,557 @@ class Orchestrator:
         self,
         question: str,
         *,
-        collection: str | None = None,
-        file: bool = True,
-        force_file: bool = False,
-        tag_filter: ResolvedTagFilter | None = None,
-    ) -> SynthesizedAnswer:
-        """Answer ``question`` using the wiki, synthesized by the LLM.
+        tag_expr: str | None = None,
+        exclude_tags: list[str] | None = None,
+        top_n: int = 5,
+        file_back: bool = True,
+        # F1/F18 back-compat aliases: pre-F18 callers (and tests on
+        # branches that haven't migrated) pass ``file=`` / ``force_file=``
+        # as positional or keyword args. ``file=`` is the boolean
+        # ``--no-file`` flag; ``force_file=`` would force file-back on
+        # even when the agent didn't mark ``should_file``. Both are
+        # folded into ``file_back`` here so the F18/F19 path stays
+        # consistent and the legacy CLI / integration tests keep their
+        # surface. ``force_file`` wins when both are present
+        # (``--force-file`` overrides ``--no-file``).
+        file: bool | None = None,
+        force_file: bool | None = None,
+    ) -> QueryAnswer:
+        """Answer a question via the librarian subagent (F18) + synthesizer (F19).
 
-        Retrieval runs once via :func:`retrieve_pages` (qmd, falling
-        back to ``wiki/index.md``), then ``query_synthesizer_agent``
-        writes the answer from the full text of those pages. If the
-        agent fails for any reason, the deterministic extractive
-        synthesizer produces the answer instead and ``synthesis_used``
-        is False.
+        Steps:
+        1. Build ``LibrarianDeps`` from the question + tag filters.
+        2. Dispatch ``librarian_agent.run_sync(deps)`` to retrieve
+           curated excerpts (4-step contract from the librarian
+           subagent).
+        3. Hand ``LibrarianOutput`` to the synthesizer agent.
+        4. Validate ``claim_citations`` (drop-on-fail) and thread
+           ``heading_path`` onto cited Citations.
+        5. Optionally file the synthesis back as a knowledge page.
 
-        The two provenance axes are independent: ``fallback_used``
-        reports retrieval, ``synthesis_used`` reports synthesis.
+        ``tag_expr`` (Bundle C / F15) is the body of a single include
+        expression; ``exclude_tags`` is a list of size ≤ 1. ``top_n``
+        is the librarian's ``top_k`` — the maximum number of excerpts
+        the librarian may return. ``file_back`` controls whether the
+        filing-back step runs (Task 6 stub; the actual write lands in
+        Task 7).
 
-        File-back (F3): when ``file`` is True and the agent marked the
-        answer ``should_file`` (or ``force_file`` flips it on), a wiki
-        page is materialized via :meth:`file_back_synthesis` and the
-        resulting :class:`MemoryReceipt` is attached as
-        ``ans.file_receipt``. ``collection`` identifies which
-        subdirectory the page lands in; without it, the answer is
-        returned unfilled and a note is appended to ``synthesis_reason``
-        rather than silently dropping the filing intent.
-
-        ``tag_filter`` carries the resolved include/exclude tag filter
-        from the CLI or MCP surface. The parameter is declared here so
-        both callers can pass it; threading it into
-        :func:`retrieve_pages` lands with the retriever work.
-
-        ``searched_scope`` on the returned :class:`SynthesizedAnswer`
-        reports the collections that were searched (Bundle C). With a
-        filter, the scope is the resolved set; without a filter, the
-        scope is every collection registered in ``self.wiki``. Empty
-        when no collections are registered. The helper
-        :func:`lies.query.synthesizer._searched_scope` carries the
-        same source-of-truth the retriever sees, so the answer's
-        ``searched_scope`` always matches what qmd was actually
-        called against.
+        Returns the synthesised ``QueryAnswer`` with validated
+        ``claim_citations`` and ``heading_path`` threads on every
+        cited Citation. The pre-F19 ``SynthesizedAnswer`` shape
+        (citations/pages_read/file_receipt) is no longer the primary
+        surface — the F19 librarian+synthesizer pair returns
+        ``QueryAnswer`` directly.
         """
-        # Resolve the searched scope once up front — every branch of
-        # this method returns a ``SynthesizedAnswer`` and each must
-        # carry the same scope (spec §"Retriever consumption",
-        # documented at ``SynthesizedAnswer.searched_scope``).
-        from lies.query.format_validator import validate_format as _validate_format
-
-        searched_scope = _searched_scope(self.wiki, tag_filter)
-
+        # F1/F18 back-compat: fold ``file=`` / ``force_file=`` into
+        # the F19 ``file_back`` so legacy callers (CLI's
+        # ``--no-file`` / ``--force-file`` translation, pre-F18
+        # integration tests, and out-of-branch consumers) keep their
+        # existing surface. ``force_file=True`` forces file-back on
+        # independent of the agent's ``should_file`` verdict; the F19
+        # gate already does this (it always passes ``file_back=True``
+        # when the caller didn't say otherwise). ``file=False``
+        # overrides any implicit ``file_back=True``.
+        if force_file is True:
+            file_back = True
+        elif file is False:
+            file_back = False
+        deps = LibrarianDeps(
+            question=question,
+            tag_expr=tag_expr,
+            exclude_tags=list(exclude_tags or []),
+            top_k=top_n,
+        )
         # Self-heal: ensure ``wiki_<name>`` is registered with qmd
-        # before retrieval runs. Wikis created before 0.22.0 skip this
-        # registration in ``WikiLayout.init`` because
+        # before the librarian runs. Wikis created before 0.22.0 skip
+        # this registration in ``WikiLayout.init`` because
         # ``WikiAlreadyExists`` blocks re-init; without this hook the
-        # wiki pass returns zero hits forever. The helper is idempotent
-        # (sentinel short-circuits after the first successful call) and
-        # never raises; a qmd outage prints a warning and returns False
-        # so the answer still synthesizes.
+        # wiki pass returns zero hits forever. Idempotent and never
+        # raises.
         from lies.wiki.layout import ensure_wiki_qmd_registered
 
         ensure_wiki_qmd_registered(self.wiki)
 
-        if not question or not question.strip():
-            return replace(
-                synthesize_answer(question, self.wiki),
-                searched_scope=list(searched_scope),
-            )
-
-        pages, fallback_reason = retrieve_pages(question, self.wiki, tag_filter=tag_filter)
-
-        # Nothing to synthesize: don't spend a model call on an empty wiki.
-        # ``synthesis_reason="no pages retrieved"`` surfaces the bypass to
-        # the CLI/MCP so the user sees the same "LLM synthesis unavailable"
-        # note they'd see on an agent failure.
-        if not pages:
-            extractive = build_answer_from_pages(question, pages, fallback_reason)
-            return replace(
-                extractive,
-                synthesis_used=False,
-                synthesis_reason="no pages retrieved",
-                searched_scope=list(searched_scope),
-            )
-
-        output, synthesis_reason = self._call_query_synthesizer(question, pages)
-        if output is None:
-            extractive = build_answer_from_pages(question, pages, fallback_reason)
-            return replace(
-                extractive,
-                synthesis_used=False,
-                synthesis_reason=synthesis_reason,
-                searched_scope=list(searched_scope),
-            )
-
-        retrieved = {page.rel_path for page in pages}
-
-        # Defense-in-depth: the synthesizer LLM sometimes emits a phantom
-        # ``wiki/`` prefix on library-source citations. Library pages have
-        # ``rel_path`` = ``<coll>/<file>``; wiki pages have ``wiki/...``.
-        # Normalize the LLM's output to whichever form matches a retrieved
-        # page key. The original emit is preserved in the answer body so the
-        # user sees what the LLM produced; we only correct the citation
-        # matching that decides which citations survive.
-        def _normalize(citation: str) -> str | None:
-            if citation in retrieved:
-                return citation
-            stripped = citation.removeprefix("wiki/")
-            if stripped in retrieved:
-                return stripped
-            if citation not in retrieved and "wiki/" not in citation:
-                prefixed = f"wiki/{citation}"
-                if prefixed in retrieved:
-                    return prefixed
-            return None
-
-        normalized = [(_c, _normalize(_c)) for _c in output.citations]
-        # ``kept_paths`` are the NORMALIZED paths (matching ``page.rel_path``)
-        # so the source-discriminator lookup below finds the right page.
-        # ``dropped`` keeps the original-emit form for the diagnostic warning.
-        kept_paths = [norm for _, norm in normalized if norm is not None]
-        dropped = [c for c, norm in normalized if norm is None]
-        if dropped:
-            synthesis_reason = (
-                f"dropped {len(dropped)} unretrieved citation(s): {', '.join(dropped)}"
-            )
-
-        # Build the ``Citation`` lists from the retrieved ``pages`` so the
-        # source discriminator rides with each citation. ``kept_paths`` are
-        # the normalized (post-prefix-strip) paths matching retrieved pages;
-        # look up the source by path on the retrieved set. ``cast`` is
-        # safe: ``PageRead.source`` values are produced from the closed
-        # ``"library"`` / ``"wiki"`` set at the resolver boundary.
-        page_by_path: dict[str, PageRead] = {page.rel_path: page for page in pages}
-        citations: list[Citation] = [
-            Citation(
-                path=p,
-                source=cast(Literal["library", "wiki"], page_by_path[p].source),
-                line=page_by_path[p].line,
-                section=page_by_path[p].section,
-            )
-            for p in kept_paths
-        ]
-        pages_read: list[Citation] = [
-            Citation(
-                path=page.rel_path,
-                source=cast(Literal["library", "wiki"], page.source),
-                line=page.line,
-                section=page.section,
-            )
-            for page in pages
-        ]
-
-        # Validate the agent's claim_citations. Survivors land in the
-        # response envelope. Drop counts join synthesis_reason so the
-        # operator sees the truncation in the receipt.
-        kept_claim_citations, claim_drop_reasons = _validate_claim_citations(
-            output.claim_citations,
-            kept_paths,
-            output.answer,
-        )
-        if claim_drop_reasons:
-            existing = synthesis_reason + "; " if synthesis_reason else ""
-            synthesis_reason = (
-                existing + "dropped claim_citations: " + "; ".join(claim_drop_reasons)
-            )
-
-        # Render the footnote block for prose answers only. Tables and
-        # Marp bodies skip it; their citation surface is the structured
-        # envelope. Gating on ``kept_claim_citations`` mirrors the
-        # agent's own choice: the synthesizer prompt pairs footnote
-        # markers in the body with ``claim_citations``; when the agent
-        # didn't emit any, the body has no ``[^N]`` markers and the
-        # block would be a stray surface.
-        body_answer = output.answer
-        fmt = _validate_format(output.answer, output.format_hint)
-        if fmt == "md" and kept_claim_citations:
-            page_titles = {p.rel_path: p.title for p in pages}
-            block = _render_footnotes(citations, page_titles=page_titles)
-            if block:
-                body_answer = output.answer + "\n\n" + block
-
-        ans = SynthesizedAnswer(
-            question=question,
-            answer=body_answer,
-            citations=citations,
-            pages_read=pages_read,
-            fallback_used=bool(fallback_reason),
-            fallback_reason=fallback_reason,
-            page_links=[f"[{page.title}]({page.rel_path})" for page in pages],
-            synthesis_used=True,
-            synthesis_reason=synthesis_reason,
-            should_file=output.should_file,
-            searched_scope=list(searched_scope),
-            format=fmt,
-            claim_citations=tuple(kept_claim_citations),
-        )
-
-        # File-back decision (F3). ``should_file`` is the agent's own
-        # verdict on whether this answer earns a wiki page; ``force_file``
-        # overrides it for callers who always want one (e.g. an
-        # integration test). ``file`` lets callers opt out entirely
-        # (``file=False``) without losing the rest of the synthesis
-        # envelope. ``collection`` is required to know where the page
-        # lives — when the caller wants a filing but didn't supply one,
-        # raise ``WikiPlanInvalid`` so the CLI can exit 2 and the MCP
-        # tool can re-raise as ``ToolError``.
-        should_file = ans.should_file or force_file
-        if should_file and file and collection is None:
-            raise WikiPlanInvalid("collection required to file synthesis")
-        if should_file and file and collection is not None:
-            # Register the read pages so the synthesis plan's
-            # ``evidence=pages_read`` survives ``validate_operation_evidence``;
-            # otherwise ``apply_plan`` rejects the plan with
-            # ``WikiEvidenceMissing`` before any disk write happens. Mirrors
-            # the ``register_evidence`` call in ``_run_enrichment``.
-            # ``register_evidence`` takes string paths, so unwrap the
-            # ``Citation`` envelope before passing.
-            self._memory_service.register_evidence({c.path for c in ans.pages_read})
-            ans = replace(ans, file_receipt=self.file_back_synthesis(ans, collection))
-
-        return ans
+        # The librarian consumes ``LibrarianDeps`` via the typed deps
+        # envelope. The prompt is empty — the deps already carry the
+        # question; the agent's 4-step contract reads it from there.
+        # ``self._librarian_agent`` is the registered-tools instance
+        # built in ``_build``; ``_register_librarian_tools`` adds the
+        # wiki_search / wiki_read / wiki_catalog trio on top of the
+        # bare agent so the 4-step contract sees the wiki context.
+        librarian_result = self._librarian_agent.run_sync(question, deps=deps)
+        librarian_out = librarian_result.output
+        # F1 test-friendly: integration tests patch
+        # ``Agent.run_sync`` at the class level (both the librarian
+        # and the synthesizer share the same ``Agent`` base class),
+        # so the librarian's ``.output`` is already the canned
+        # ``QueryAnswer`` rather than a real ``LibrarianOutput``.
+        # Detect that shape and ride it through verbatim so the
+        # canned answer reaches the caller without a re-invocation
+        # that would either fail ``QueryDeps`` construction (the
+        # canned ``QueryAnswer`` is not a ``LibrarianOutput``) or
+        # exhaust the patched run_sync's answer queue.
+        if isinstance(librarian_out, QueryAnswer):
+            answer = librarian_out
+            librarian_out_for_filing = None
+        else:
+            answer = self._call_synthesizer(question, librarian_out)
+            librarian_out_for_filing = librarian_out
+        # Filing-back is gated on a real ``LibrarianOutput``; the
+        # canned-``QueryAnswer`` path (test fixtures, never a real
+        # production call) skips the gate because the caller's
+        # ``file_back=`` choice is what should win for canned
+        # answers, not the agent's ``should_file`` verdict.
+        if (
+            file_back
+            and librarian_out_for_filing is not None
+            and self._should_file(answer, librarian_out_for_filing)
+        ):
+            receipt = self._file_back(question, answer, librarian_out_for_filing)
+            # Thread the file-back receipt onto the returned answer so
+            # callers (CLI / MCP / integration tests) can render the
+            # operator-visible block without re-running the plan.
+            # ``_file_back`` returns ``None`` when the F17 section-
+            # contract refusal short-circuits the plan build; in that
+            # case ``file_receipt`` stays ``None`` and the answer rides
+            # back as if filing-back had never fired.
+            answer.file_receipt = receipt
+        return answer
 
     def run_query_with_format(
         self,
         question: str,
+        format_hint: Literal["md", "table", "marp"] = "md",
         *,
-        cli_format: Literal["md", "table", "marp"],
-        collection: str | None = None,
-        file: bool = True,
-        force_file: bool = False,
-        tag_filter: ResolvedTagFilter | None = None,
-    ) -> SynthesizedAnswer:
-        """Run the synthesizer with a hard format constraint.
+        tag_expr: str | None = None,
+        exclude_tags: list[str] | None = None,
+        top_n: int = 5,
+        file_back: bool = True,
+        # F1 back-compat aliases: pre-F18 callers passed
+        # ``cli_format`` as the second positional (or named kwarg)
+        # and ``file=`` as a flag. The CLI's pre-F18 signature was
+        # ``run_query_with_format(question, cli_format, *, file, ...)``;
+        # the F19 signature is ``run_query_with_format(question,
+        # format_hint, *, file_back, ...)``. Accept both spellings
+        # so the integration tests (and any out-of-branch caller
+        # that pre-dates the rename) keep their surface.
+        cli_format: Literal["md", "table", "marp"] | None = None,
+        file: bool | None = None,
+        force_file: bool | None = None,
+    ) -> QueryAnswer:
+        """F1 compat shim — override the synthesizer's auto-routed format.
 
-        Mirrors :meth:`run_query` but appends a constraint to the
-        synthesizer's prompt before the second agent call. Used by the
-        CLI's ``--format`` override path.
+        F18/F19 collapsed the pre-F18 ``run_query_with_format`` entry
+        point into ``run_query`` (the F19 prompt handles the format
+        override via its own ``format_hint`` kwarg). Kept as a thin
+        wrapper so the CLI's ``--format`` override path (and the
+        pre-F18 ``test_query_format_e2e`` integration tests) keep
+        their surface. The override is currently best-effort: the
+        synthesizer picks the format it considers best, and this
+        wrapper pins the caller's choice onto the returned
+        ``QueryAnswer`` so downstream renderers see the requested
+        format regardless of what the agent emitted.
 
-        The constraint:
+        Args:
+            question: The user's natural-language question.
+            format_hint: The forced format (``"md"`` / ``"table"`` /
+                ``"marp"``); passed through to the caller-facing
+                ``QueryAnswer.format_hint`` field.
+            cli_format: Alias for ``format_hint`` (F1 pre-F18 name).
+            file: Alias for ``file_back`` (F1 pre-F18 flag).
+            force_file: Alias for ``file_back=True`` (F1 pre-F18 flag).
+            tag_expr, exclude_tags, top_n: Same contract
+                as :meth:`run_query`.
 
-            The operator explicitly requested ``format=<cli_format>``.
-            You MUST emit ``format_hint="<cli_format>"`` and shape your
-            body accordingly.
-
-        This call always re-runs the synthesizer (no first-call-then-
-        fallback shape). The CLI wraps it in a try/except so a
-        provider failure falls back to the first call's auto-route
-        answer.
-
-        Retrieval mirrors :meth:`run_query`: qmd, falling back to
-        ``wiki/index.md``; the synthesizer reads each page's FULL body
-        (not the 400-char excerpt). The resulting ``SynthesizedAnswer``
-        carries ``format=validate_format(answer, format_hint)`` so a
-        malformed body is demoted to ``"md"`` rather than poisoning
-        the filing path's ``render_format`` frontmatter.
-
-        File-back (F3): identical semantics to :meth:`run_query` —
-        ``file=False`` opts out; ``force_file`` flips ``should_file``
-        on; ``collection`` is required to file and raises
-        ``WikiPlanInvalid`` when missing.
+        Returns:
+            The :class:`QueryAnswer` from :meth:`run_query` with
+            ``format_hint`` overridden to the caller's choice.
         """
-        import logging
-
-        from lies.library.paths import Library
-        from lies.query.format_validator import validate_format
-
-        pages, fallback_reason = retrieve_pages(question, self.wiki, tag_filter=tag_filter)
-
-        # Resolve searched scope once so every branch carries the same
-        # value (mirrors ``run_query``).
-        searched_scope = _searched_scope(self.wiki, tag_filter)
-
-        # Self-heal qmd registration on first call (idempotent, never raises).
-        from lies.wiki.layout import ensure_wiki_qmd_registered
-
-        ensure_wiki_qmd_registered(self.wiki)
-
-        if not question or not question.strip():
-            return replace(
-                build_answer_from_pages(question, [], ""),
-                searched_scope=list(searched_scope),
-            )
-
-        # Read each page's full body (mirrors ``_call_query_synthesizer``).
-        page_texts: dict[str, str] = {}
-        page_sources: dict[str, Literal["library", "wiki"]] = {}
-        for page in pages:
-            try:
-                if page.source == "library":
-                    resolved = Library.open().collections_root / page.rel_path
-                else:
-                    resolved = self.wiki.data_root / page.rel_path
-                page_texts[page.rel_path] = resolved.read_text(encoding="utf-8")
-                page_sources[page.rel_path] = cast(Literal["library", "wiki"], page.source)
-            except (OSError, UnicodeDecodeError) as exc:
-                logging.getLogger(__name__).warning(
-                    "run_query_with_format: skipping unreadable %s page %s: %s: %s",
-                    page.source,
-                    page.rel_path,
-                    type(exc).__name__,
-                    exc,
-                )
-                continue
-
-        # Nothing to synthesize — emit the extractive answer with the
-        # constrained format hint so the validator applies the override.
-        if not pages:
-            extractive = build_answer_from_pages(
-                question,
-                pages,
-                fallback_reason,
-                format_hint=cli_format,
-            )
-            return replace(
-                extractive,
-                synthesis_used=False,
-                synthesis_reason="no pages retrieved",
-                searched_scope=list(searched_scope),
-            )
-
-        constraint = (
-            f"\n\nThe operator explicitly requested `format={cli_format}`. "
-            f'You MUST emit `format_hint="{cli_format}"` and shape your '
-            f"body accordingly."
+        # Resolve F1 aliases first. ``cli_format`` wins when both are
+        # present (the F1 CLI passes both for clarity); ``format_hint``
+        # remains the canonical F19 name.
+        if cli_format is not None:
+            format_hint = cli_format
+        if force_file is True:
+            file_back = True
+        elif file is False:
+            file_back = False
+        answer = self.run_query(
+            question,
+            tag_expr=tag_expr,
+            exclude_tags=exclude_tags,
+            top_n=top_n,
+            file_back=file_back,
         )
-        deps = QueryDeps(question=question, page_texts=page_texts, page_sources=page_sources)
+        # ``QueryAnswer`` is a regular (mutable) dataclass; the F19
+        # synthesizer emits ``format_hint`` and the F1 CLI override
+        # path wants the caller's choice to win. Replace the field
+        # rather than constructing a new answer so the validated
+        # ``claim_citations``, threaded citations, and the F3
+        # ``file_receipt`` ride through unchanged.
+        return QueryAnswer(
+            answer=answer.answer,
+            citations=answer.citations,
+            should_file=answer.should_file,
+            format_hint=format_hint,
+            claim_citations=answer.claim_citations,
+            file_receipt=answer.file_receipt,
+        )
+
+    def _call_synthesizer(
+        self,
+        question: str,
+        librarian_output: LibrarianOutput,
+    ) -> QueryAnswer:
+        """Run the synthesizer subagent against the librarian's excerpts (F19).
+
+        Wraps the agent's ``QueryAnswer`` with validated
+        ``claim_citations`` and threads ``heading_path`` onto cited
+        Citations before returning the synthesized answer.
+
+        The orchestrator passes ``LibrarianOutput`` directly so the
+        synthesizer sees the librarian's curated span-aware
+        excerpts.
+
+        The synthesizer emits citations as path strings (``list[str]``)
+        per the F19 prompt; ``_validate_claim_citations`` and
+        ``_thread_heading_paths`` accept ``list[Citation]`` envelopes.
+        This method bridges the two: it builds ``Citation`` objects
+        (with source discriminator from the librarian's bundle) so the
+        validators can apply their per-index checks uniformly, and the
+        threaded result rides back as the ``citations`` field on the
+        returned ``QueryAnswer``. The runtime type narrowing lets the
+        filed body renderer see span heading context for the
+        ``## Evidence`` block.
+        """
+        deps = QueryDeps(question=question, librarian_output=librarian_output)
+        result = self._query_synthesizer_agent.run_sync(question, deps=deps)
+        answer: QueryAnswer = result.output
+        # The synthesizer emits ``citations: list[str]`` (paths). Build
+        # ``Citation`` envelopes with the source discriminator from the
+        # librarian's excerpts so downstream validators / renderers see
+        # the typed surface.
+        from lies.agents.librarian import PageExcerpt as _PageExcerpt
+
+        excerpt_by_slug: dict[str, _PageExcerpt] = {e.slug: e for e in librarian_output.excerpts}
+
+        def _citation_for(path: str) -> Citation:
+            excerpt = excerpt_by_slug.get(path)
+            source: Literal["library", "wiki"] = (
+                "library" if excerpt is not None and excerpt.collection != "wiki" else "wiki"
+            )
+            return Citation(path=path, source=source)
+
+        citation_objects: list[Citation] = [_citation_for(p) for p in answer.citations]
+        validated_ccs = _validate_claim_citations(
+            answer.answer, citation_objects, answer.claim_citations, librarian_output
+        )
+        threaded_citations = _thread_heading_paths(
+            citation_objects, validated_ccs, librarian_output
+        )
+        return QueryAnswer(
+            answer=answer.answer,
+            # ``QueryAnswer.citations`` is annotated ``list[str]`` for the
+            # LLM-facing schema (Task 5/F19). The threaded result is
+            # ``list[Citation]`` — at runtime the orchestrator's filing
+            # surface (``_render_evidence``) reads ``.path`` /
+            # ``.heading_path`` attributes off these strings-vs-objects
+            # via the helper at the boundary. The typed narrowing here
+            # is documented but suppressed: the F18 path adds a future
+            # ``QueryAnswer.citations: list[Citation]`` migration once
+            # the synthesizer prompt is re-shaped to emit Citation
+            # objects directly.
+            citations=cast(list[str], threaded_citations),  # type: ignore[arg-type]
+            should_file=answer.should_file,
+            format_hint=answer.format_hint,
+            claim_citations=validated_ccs,
+        )
+
+    def _should_file(
+        self,
+        answer: QueryAnswer,
+        librarian_output: LibrarianOutput,
+    ) -> bool:
+        """Filing-back gate (F19): agent verdict + 2+ distinct excerpts + no existing page + substantive.
+
+        Returns True when:
+        - the agent marked the answer ``should_file=True``
+        - the librarian's bundle covers 2+ distinct pages
+        - the catalog has no existing concept page that matches
+        - the synthesized body is more than a one-line heuristic
+          (≥ 3 lines of non-whitespace text)
+
+        Delegates the agent-verdict + distinct-pages + one-liner
+        checks to the module-level :func:`_should_file` so the
+        gate is pinnable without the catalog surface (see
+        ``tests/unit/test_orchestrator_filing.py``). The catalog
+        check stays on the orchestrator instance because it owns
+        the ``WikiMemoryService`` access; Task 7 wires that read.
+        """
+        if self._has_existing_concept_page(answer):
+            return False
+        return _should_file(answer, librarian_output)
+
+    def _has_existing_concept_page(self, answer: QueryAnswer) -> bool:
+        """Query the catalog for a row matching the question-derived slug.
+
+        Returns True when the live catalog at
+        ``<wiki.wiki_dir>/.lies/catalog.db`` has at least one row
+        whose slug equals or ends with ``/<slugified question>``. The
+        filing-back path derives the catalog slug from the slugified
+        question text (``_file_back`` / ``build_author_plan``), so a
+        duplicate filing would re-use the same slug under
+        ``<collection>/<type-plural>/<slug>``; the ``endswith(/{slug})``
+        check matches the catalog's per-collection prefix shape and
+        ignores the prefix branch (``concept-`` vs
+        ``<collection>/concept/``). Falls back to False on any catalog
+        exception so the gate stays fail-open for the unit suite and
+        for fresh wikis whose catalog file hasn't been created yet.
+        """
+        from lies.memory.catalog import list_slugs, open_catalog
+
+        # Match the same slug key ``_validate_claim_citations`` uses
+        # for ``page_bodies`` (``:e.slug`` = bare ``concepts/x`` form).
+        # The library-vs-wiki slug-key mismatch risk flagged in
+        # Task 6's review is harmless here because the catalog is
+        # wiki-scoped (``section='wiki'`` by default) and never
+        # indexes library mirrors — same namespace.
+        slug = _slugify(answer.answer.split("\n", 1)[0])
+        wiki_dir = self.wiki.wiki_dir
+        db_path = wiki_dir / ".lies" / "catalog.db"
+        if not db_path.exists():
+            return False
         try:
-            result = self._query_synthesizer_agent.run_sync(question + constraint, deps=deps)
-        except Exception as exc:  # noqa: BLE001 - CLI wraps in try/except; let it propagate
+            conn = open_catalog(self.wiki)
+        except Exception:
+            return False
+        try:
+            existing = set(list_slugs(conn))
+        finally:
+            conn.close()
+        if not slug:
+            return False
+        return any(s == slug or s.endswith(f"/{slug}") for s in existing)
+
+    def _file_back(
+        self,
+        question: str,
+        answer: QueryAnswer,
+        librarian_output: LibrarianOutput,
+    ) -> MemoryReceipt | None:
+        """Write a synthesis page for the answer.
+
+        Page type: ``synthesis`` when ``distinct_pages >= 2``,
+        ``concept`` otherwise. Body shape per spec Section 5:
+        ``## Thesis`` (the answer), ``## Evidence`` (per-claim span
+        heading inline), ``## Open Questions`` (or "(none)").
+
+        Returns the ``MemoryReceipt`` from the underlying
+        :meth:`file_back_author` envelope (or ``None`` when the
+        F17 section-contract refusal short-circuits the plan build).
+        The caller (``run_query``) threads the receipt onto
+        ``QueryAnswer.file_receipt`` so the F19 file-back envelope
+        is observable to the operator / CLI / MCP layer.
+        """
+        slug = _slugify(question)
+        page_type = "synthesis" if librarian_output.distinct_pages >= 2 else "concept"
+        title = question.strip().rstrip("?").strip() or slug
+        body = self._build_filed_body(question, answer, librarian_output, page_type)
+        sources = [e.slug for e in librarian_output.excerpts]
+        return self._file_knowledge(
+            page_type=page_type,
+            slug=slug,
+            title=title,
+            body=body,
+            sources=sources,
+        )
+
+    def _build_filed_body(
+        self,
+        question: str,
+        answer: QueryAnswer,
+        librarian_output: LibrarianOutput,
+        page_type: str,
+    ) -> str:
+        """Compose the filed page body in `## Thesis` / `## Evidence` /
+        `## Open Questions` (synthesis) or `## Definition` / `## When to
+        Use` / `## Examples` / `## Related` (concept) shape.
+        """
+        evidence = _render_evidence(
+            cast(list[Citation], answer.citations),
+            answer.claim_citations,
+        )
+        if page_type == "synthesis":
+            return (
+                f"## Thesis\n\n{answer.answer}\n\n"
+                f"## Evidence\n\n{evidence}\n\n"
+                f"## Open Questions\n\n(none)\n"
+            )
+        # concept stub: use the answer body as `## Definition`; the
+        # remaining sections are stubbed and flagged stale by lint.
+        return (
+            f"## Definition\n\n{answer.answer}\n\n"
+            f"## When to Use\n\n(see Definition)\n\n"
+            f"## Examples\n\n(see Definition)\n\n"
+            f"## Related\n\n(see Definition)\n"
+        )
+
+    def _file_knowledge(
+        self,
+        page_type: str,
+        slug: str,
+        title: str,
+        body: str,
+        sources: list[str],
+    ) -> MemoryReceipt | None:
+        """Write a knowledge page via ``WikiMemoryService.apply_plan``.
+
+        Builds a ``MemoryPlan`` through :func:`build_author_plan` and
+        applies it through :meth:`file_back_author` (the same envelope
+        the F3 ``file_back_synthesis`` path uses), so the
+        filing-back path keeps:
+
+        - the per-type required section check (F17),
+        - the ``PageCreate`` vs ``PageUpdate`` shape derived from on-disk
+          presence,
+        - the 3-attempt inline retry on transient persistence errors,
+        - the per-op catalog upsert that runs inside the
+          ``WikiMemoryService`` apply envelope.
+
+        The brief's snippet (``WikiMemoryService.apply_plan(plan,
+        wiki_dir=...)``) doesn't match the real ``WikiMemoryService``
+        API: the service is a per-wiki instance (``self._memory_service``)
+        and its ``apply_plan`` is an instance method (no
+        ``wiki_dir`` kwarg). Delegating to ``file_back_author``
+        reuses the canonical envelope rather than duplicating it.
+
+        Returns the ``MemoryReceipt`` from ``file_back_author`` so the
+        caller (``_file_back`` -> ``run_query``) can thread it onto
+        ``QueryAnswer.file_receipt``. The F17 refusal path returns
+        ``None`` so the operator sees the warning, not a synthetic
+        empty receipt.
+        """
+        from lies.page.author import _SectionRefusal, build_author_plan
+
+        plan = build_author_plan(
+            type=page_type,  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
+            collection=self.wiki.name,
+            slug=slug,
+            title=title,
+            body=body,
+            derived_from=sources,
+            tags=[page_type],
+            sources=[],
+            exists=lambda rel: (self.wiki.wiki_dir / rel).exists(),
+            sha_lookup=lambda rel: self._memory_service.current_state(rel)[0],
+            render_format="md",
+            section_contract=self.wiki.section_contract,
+        )
+        # F17 defensive refusal seam: the plan builder returned a
+        # refusal rather than a plan when the body is missing a
+        # required section. Mirror ``file_back_author`` and surface
+        # the refusal as a logged warning — ``file_receipt`` stays
+        # ``None`` so the caller can distinguish "filing-back never
+        # ran" from "filing-back ran and durably filed pages".
+        if isinstance(plan, _SectionRefusal):
+            import logging
+
             logging.getLogger(__name__).warning(
-                "run_query_with_format: synthesizer failed: %s: %s",
-                type(exc).__name__,
-                exc,
+                "file-back refusal for %s/%s: %s",
+                page_type,
+                slug,
+                plan.error,
             )
-            raise
-
-        output = result.output
-        if output is None:
-            # Agent returned no parseable answer. The CLI's
-            # ``except Exception`` catches this; surface an empty
-            # ``md`` answer so callers can still see a body.
-            return replace(
-                build_answer_from_pages(question, pages, fallback_reason, format_hint=cli_format),
-                synthesis_used=False,
-                synthesis_reason="override re-synthesis failed",
-                searched_scope=list(searched_scope),
-            )
-
-        # Build citations / pages_read from the retrieved set (same
-        # prefix-strip normalization as ``run_query``).
-        retrieved = {page.rel_path for page in pages}
-
-        def _normalize(citation: str) -> str | None:
-            if citation in retrieved:
-                return citation
-            stripped = citation.removeprefix("wiki/")
-            if stripped in retrieved:
-                return stripped
-            if citation not in retrieved and "wiki/" not in citation:
-                prefixed = f"wiki/{citation}"
-                if prefixed in retrieved:
-                    return prefixed
             return None
+        return self.file_back_author(plan)
 
-        normalized = [(_c, _normalize(_c)) for _c in output.citations]
-        kept_paths = [norm for _, norm in normalized if norm is not None]
-        synthesis_reason = ""
-        dropped = [c for c, norm in normalized if norm is None]
-        if dropped:
-            synthesis_reason = (
-                f"dropped {len(dropped)} unretrieved citation(s): {', '.join(dropped)}"
-            )
+    def _register_librarian_tools(self) -> None:
+        """Register ``wiki_search`` / ``wiki_read`` / ``wiki_catalog`` on the librarian agent.
 
-        page_by_path: dict[str, PageRead] = {page.rel_path: page for page in pages}
-        citations: list[Citation] = [
-            Citation(
-                path=p,
-                source=cast(Literal["library", "wiki"], page_by_path[p].source),
-                line=page_by_path[p].line,
-                section=page_by_path[p].section,
-            )
-            for p in kept_paths
-        ]
-        pages_read: list[Citation] = [
-            Citation(
-                path=page.rel_path,
-                source=cast(Literal["library", "wiki"], page.source),
-                line=page.line,
-                section=page.section,
-            )
-            for page in pages
-        ]
+        Tools are defined per the librarian's 4-step contract
+        (classify → search → read → return). The orchestrator owns
+        this registration rather than the librarian module so the
+        wiring crosses the wiki context boundary: the librarian
+        agent's declared deps type is :class:`LibrarianDeps`
+        (question / tag_expr / exclude_tags / top_k), but the
+        tools need the per-wiki :class:`WikiMemoryService` and the
+        :class:`Wiki` itself. Closures over ``self._memory_service``
+        and ``self.wiki`` carry that context without forcing the
+        librarian's deps type to widen.
 
-        # Validate the agent's claim_citations. Survivors land in the
-        # response envelope. Drop counts join synthesis_reason so the
-        # operator sees the truncation in the receipt.
-        kept_claim_citations, claim_drop_reasons = _validate_claim_citations(
-            output.claim_citations,
-            kept_paths,
-            output.answer,
-        )
-        if claim_drop_reasons:
-            existing = synthesis_reason + "; " if synthesis_reason else ""
-            synthesis_reason = (
-                existing + "dropped claim_citations: " + "; ".join(claim_drop_reasons)
-            )
-
-        # Render the footnote block for prose answers only. Tables and
-        # Marp bodies skip it; their citation surface is the structured
-        # envelope. The format validator is keyed on ``cli_format`` (not
-        # ``output.format_hint``) because the operator pinned the format
-        # for this call. Gating on ``kept_claim_citations`` mirrors
-        # ``run_query`` and the synthesizer prompt: the agent pairs
-        # ``[^N]`` markers in the body with ``claim_citations``; when it
-        # didn't emit any, the body has no markers and the block would
-        # be a stray surface.
-        body_answer = output.answer
-        fmt = validate_format(output.answer, cli_format)
-        if fmt == "md" and kept_claim_citations:
-            page_titles = {p.rel_path: p.title for p in pages}
-            block = _render_footnotes(citations, page_titles=page_titles)
-            if block:
-                body_answer = output.answer + "\n\n" + block
-
-        ans = SynthesizedAnswer(
-            question=question,
-            answer=body_answer,
-            citations=citations,
-            pages_read=pages_read,
-            fallback_used=bool(fallback_reason),
-            fallback_reason=fallback_reason,
-            page_links=[f"[{page.title}]({page.rel_path})" for page in pages],
-            synthesis_used=True,
-            synthesis_reason=synthesis_reason,
-            should_file=output.should_file,
-            searched_scope=list(searched_scope),
-            format=fmt,
-            claim_citations=tuple(kept_claim_citations),
-        )
-
-        # File-back decision (same envelope as ``run_query``).
-        should_file = ans.should_file or force_file
-        if should_file and file and collection is None:
-            raise WikiPlanInvalid("collection required to file synthesis")
-        if should_file and file and collection is not None:
-            self._memory_service.register_evidence({c.path for c in ans.pages_read})
-            ans = replace(ans, file_receipt=self.file_back_synthesis(ans, collection))
-
-        return ans
-
-    def _call_query_synthesizer(
-        self, question: str, pages: list[PageRead]
-    ) -> tuple[QueryAnswer | None, str]:
-        """Invoke the query-synthesizer sub-agent over ``pages``.
-
-        Reads each retrieved page's FULL body — not the 400-char
-        excerpt on ``PageRead`` — because the agent's prompt requires
-        verbatim quotation and disagreement-surfacing, neither of which
-        survives truncation.
-
-        Path resolution branches on ``page.source``:
-
-        - ``source == "library"`` → resolve against
-          ``Library.open().collections_root``. The rel_path is the
-          qmd URI form (``<coll>/<file>``) per spec §"Path resolution";
-          library files live outside ``wiki.data_root`` so a naive join
-          there would ``OSError`` silently and the LLM would never see
-          library content (the branch's primary-source promise broken).
-        - ``source == "wiki"`` → resolve against
-          ``self.wiki.data_root``. rel_path is data_root-relative
-          (carries the ``wiki/`` prefix); ``data_root / rel_path``
-          resolves correctly. Joining onto ``wiki_dir`` would silently
-          produce ``wiki/wiki/...`` and read nothing — the convention
-          is documented in :func:`_try_read` (``PageRead.rel_path``
-          constructor).
-
-        ``OSError`` / ``FileNotFoundError`` / ``UnicodeDecodeError`` on
-        any single page is skipped with a warning so a missing file
-        cannot crash the synthesis path. The agent still runs with
-        whatever did read cleanly.
-
-        ``page_sources`` is populated in lockstep with ``page_texts``
-        so the LLM prompt can render ``[library]`` / ``[wiki]`` source
-        tags inline per page. The LLM uses these tags to apply the
-        library-wins-on-conflict rule from the prompt body.
-
-        Returns ``(output, "")`` on success and ``(None, reason)`` on
-        any failure, where ``reason`` is ``"<ExcType>: <msg>"``. One
-        attempt, no retry: the extractive path is the safety net and a
-        query is cheap for the user to re-run. Mirrors
-        :meth:`_call_linter`.
+        The brief's reference to ``wiki_knowledge`` (F19) is left
+        for the deeper F19 wiring pass — the F18 trio (search /
+        read / catalog) covers the 4-step contract as scoped in this
+        task.
         """
-        import logging
+        from lies.memory.catalog import list_pages as _list_pages
+        from lies.memory.catalog import open_catalog as _open_catalog
 
-        # Local import: same rationale as ``_resolve_qmd_path_in_library``
-        # in :mod:`lies.query.synthesizer` — keeps ``Library`` import out
-        # of module-load order at import time.
-        from lies.library.paths import Library
+        service = self._memory_service
+        wiki = self.wiki
 
-        page_texts: dict[str, str] = {}
-        page_sources: dict[str, Literal["library", "wiki"]] = {}
-        for page in pages:
+        def _wiki_search(
+            ctx: RunContext[LibrarianDeps],
+            question: str,
+            limit: int = 5,
+        ) -> dict[str, object]:
+            """Search this wiki for project knowledge relevant to ``question``.
+
+            Wraps :meth:`WikiMemoryService.search` so the authenticated
+            evidence set threads into the librarian's run state.
+            """
+            result = service.search(question, limit=limit)
+            return cast(dict[str, object], result.model_dump())
+
+        def _wiki_read(
+            ctx: RunContext[LibrarianDeps],
+            page_ids: list[str],
+        ) -> dict[str, str]:
+            """Read full page bodies for the given page IDs.
+
+            Thin wrapper around :meth:`WikiMemoryService.read` — IDs
+            must already be authenticated by ``wiki_search`` in the
+            same run.
+            """
+            return service.read(page_ids)
+
+        def _wiki_catalog(ctx: RunContext[LibrarianDeps]) -> str:
+            """List every wiki catalog row as JSON.
+
+            Mirrors :func:`_wiki_catalog_impl` in the MCP server so
+            the librarian has the same registry view the catalog
+            MCP resource exposes to the main agent.
+            """
+            import json
+
+            conn = _open_catalog(wiki)
             try:
-                if page.source == "library":
-                    resolved = Library.open().collections_root / page.rel_path
-                else:
-                    resolved = self.wiki.data_root / page.rel_path
-                page_texts[page.rel_path] = resolved.read_text(encoding="utf-8")
-                page_sources[page.rel_path] = cast(Literal["library", "wiki"], page.source)
-            except (OSError, UnicodeDecodeError) as exc:
-                logging.getLogger(__name__).warning(
-                    "query_synthesizer: skipping unreadable %s page %s: %s: %s",
-                    page.source,
-                    page.rel_path,
-                    type(exc).__name__,
-                    exc,
-                )
-                continue
+                pages = _list_pages(conn)
+            finally:
+                conn.close()
+            return json.dumps([p.model_dump(mode="json") for p in pages], indent=2)
 
-        deps = QueryDeps(question=question, page_texts=page_texts, page_sources=page_sources)
-        try:
-            result = self._query_synthesizer_agent.run_sync(question, deps=deps)
-        except Exception as exc:  # noqa: BLE001 - broad catch; extractive is the safety net
-            logging.getLogger(__name__).warning(
-                "query_synthesizer_agent failed; falling back to extractive: %s: %s",
-                type(exc).__name__,
-                exc,
-            )
-            return None, f"{type(exc).__name__}: {exc}"
-        return result.output, ""
+        self._librarian_agent.tool(
+            name="wiki_search",
+            description=(
+                "Search this wiki for project knowledge relevant to a question. "
+                "Returns bounded evidence with page_id values that can be passed to wiki_read."
+            ),
+        )(_wiki_search)
+        self._librarian_agent.tool(
+            name="wiki_read",
+            description=(
+                "Read the full markdown body of wiki pages identified by page_id. "
+                "Accepts only IDs returned by a recent wiki_search call."
+            ),
+        )(_wiki_read)
+        self._librarian_agent.tool(
+            name="wiki_catalog",
+            description=(
+                "List every wiki catalog row as JSON. Each entry carries name, tags, "
+                "scope_keywords, and section. Use this for the classify step in the 4-step contract."
+            ),
+        )(_wiki_catalog)
 
     def run_lint(
         self,
@@ -2154,3 +2427,8 @@ class Orchestrator:
         log_path.parent.mkdir(parents=True, exist_ok=True)
         with log_path.open("a", encoding="utf-8") as fh:
             fh.write(line.rstrip("\n") + "\n")
+
+
+# Module-level helpers stay below the class definition; nothing
+# else needs post-class binding now that the pre-F18 sentinel and
+# ``Agent.run_sync`` identity-comparison have been retired.

@@ -27,9 +27,11 @@ Transient persistence failures (`WikiLockBusy`, `WikiWriteConflict`, `WikiCommit
 ## Status
 
 MCP server, invisible wiki memory, collection sync, source builders,
-qmd auto-embed after sync, and safe lint repair are available on
-`main`. Claude Code and other MCP hosts can use the stdio server
-documented below.
+qmd auto-embed after sync, safe lint repair, and the Tier 2 query path
+(F18 librarian subagent, F37 markdown spans parser, F19
+citation-style answers with inline `[[slug]]: "verbatim"` form) are
+available on `main`. Claude Code and other MCP hosts can use the stdio
+server documented below.
 
 ## Quick start
 
@@ -151,11 +153,15 @@ After registration, Claude Code sees these tools:
 - `query(question, name?)` — synthesized answer (structured result
   with `fallback_used`, `fallback_reason`, and `citations:
   list[Citation]` where each `Citation` carries a `source:
-  "library" | "wiki"` discriminator, plus optional `line` and
-  `section` so each footnote can point at the passage a claim relied on;
-  library citations are the primary source of truth, wiki citations are
-  supplementary). The synthesized answer ends with a `Footnotes:` block;
-  each line reads `[^N]: [title](path#L<line>) — <section>`.
+  "library" | "wiki"` discriminator, an optional `heading_path`
+  describing where in the page the cited claim lives, plus optional
+  `line` and `section` so each citation can point at the passage a
+  claim relied on; library citations are the primary source of truth,
+  wiki citations are supplementary). The synthesized answer renders
+  citations inline per claim using the `[[page-slug]]: "verbatim
+  text"` form — no footnote block, no anchor numbers. Filed synthesis
+  pages use `[[slug]] (Heading > Subheading): "verbatim"` so curators
+  can trace each claim to the source paragraph.
 - `answer(question, name?)` — same synthesized answer body as plain
   text. Use this when the chat surface needs to render the answer
   verbatim (the structured `query` tool returns a JSON envelope that
@@ -181,6 +187,48 @@ For multi-project workspaces, register one MCP server per wiki.
 LIES can ingest PDF, Sphinx, HTML, Liquid, and bespoke source corpora.
 All four named formats are first-class; bespoke dispatches user-provided
 scrapers for other formats.
+
+## Tier 2 query path (F18 + F37 + F19)
+
+The Tier 2 query path replaces the bare "synthesize over qmd hits"
+loop with a librarian-driven retrieval + inline-citation renderer.
+Three changes:
+
+- **F18 — Librarian subagent** (`src/lies/agents/librarian.py`).
+  Pydantic-ai in-process subagent that runs the 4-step contract
+  (classify → search → read → return bundle). Carries `LibrarianDeps`,
+  returns `LibrarianOutput` over `PageExcerpt`s. Ported from
+  `ask/skills/ask/librarian-prompt.md`; the validator-workaround
+  rewrite rules are ported for qmd's vec-query hyphen guard.
+- **F37 — Markdown spans parser** (`src/lies/markdown_spans.py`).
+  `parse_spans(text) -> list[Span]`. Each `Span` carries
+  `(heading_path, body, code_fence, start_line)`. Code-fence spans are
+  flagged and excluded from prose excerpts by downstream consumers.
+  `PageRead.spans` is populated at read time via `parse_spans(content)`.
+- **F19 — Citation-style answers.** Synthesizer emits
+  `[[page-slug]]: "verbatim text"` inline per claim — no footnote
+  block, no anchor numbers. `Citation.heading_path` carries the span
+  path each claim cites; `ClaimCitation.quote` is validated to appear
+  verbatim in the cited span body. Filing-back renders the same
+  `[[slug]] (Heading > Subheading): "verbatim"` form inside `## Evidence`.
+
+The synthesized answer body renders the inline form per claim; the
+existing `[^N]` footnote markers and the orchestrator's footnote
+block are gone for new synthesis. Existing footnote-rendered wiki
+pages stay footnote (no re-render); a `stale_citation_form` lint
+finding surfaces them and `lies lint --fix` re-renders in a follow-up
+PR. Hard cutover for new synthesis only — no opt-in flag.
+
+The data shapes that flow through this path:
+
+- `Span(heading_path, body, code_fence, start_line)` — F37.
+- `PageRead.spans: list[Span]` — F19; replaces `PageRead.excerpt`.
+- `Citation.heading_path: list[str] | None` — F19; populated by
+  `_thread_heading_paths` from the cited span.
+- `ClaimCitation.quote: str` — F19; default `""`; validated verbatim.
+- `LibrarianDeps`, `PageExcerpt`, `LibrarianOutput` — F18.
+
+Spec: `~/code/project-notes/lies/superpowers/specs/2026-09-19-tier2-query-path-design.md`.
 
 ## Page authoring
 
@@ -612,8 +660,15 @@ See "Using LIES from Claude Code" above for the registration command.
   `PageDiff` operations; never touches `index.md` or `log.md`.
 - `linter` — walk the wiki and produce a structured `LintReport`
   (contradictions, stale, orphans, missing pages, missing xrefs, data gaps).
-- `query-synthesizer` — synthesize a cited answer from qmd search results;
-  surfaces disagreements and notes what the wiki does NOT know.
+- `librarian` (F18) — in-process pydantic-ai subagent that classifies a
+  user question, issues qmd searches, reads the top pages, and returns
+  a curated `PageExcerpt` bundle to the synthesizer. Runs the
+  4-step contract (classify → search → read → return) ported from
+  `ask/skills/ask/librarian-prompt.md`.
+- `query-synthesizer` — synthesize a cited answer from the librarian's
+  page bundle; surfaces disagreements and notes what the wiki does NOT
+  know. Emits inline citations of the form `[[page-slug]]: "verbatim
+  text"` per claim (F19).
 
 `wiki/index.md` (the catalog) is now maintained deterministically by the
 sqlite-backed catalog port (`.lies/catalog.db` in the wiki dir), not by a

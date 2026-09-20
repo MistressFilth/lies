@@ -111,7 +111,16 @@ def test_retrieve_pages_returns_empty_list_when_nothing_readable(tmp_path: Path)
 
 
 def test_synthesize_answer_output_unchanged_by_the_lift(wiki: Wiki) -> None:
-    """Characterization: the refactor must not move synthesize_answer's output."""
+    """Characterization: pins the extractive bullet the synthesizer emits.
+
+    Task 3 (F19) replaced the F19 placeholder (``_excerpt_from_spans``)
+    with the per-span pick logic inlined in :func:`build_answer_from_pages`.
+    The bullet shape is now ``[[slug]]: "verbatim"`` per spec §4
+    ("Extractive fallback"). The fixture page has YAML frontmatter and
+    no headings; ``parse_spans`` emits a single span whose body is the
+    entire file content, so the verbatim quote carries the frontmatter
+    text. No ``Footnotes:`` block is appended.
+    """
 
     def fake_search(
         *_args: object, collection_filter=None, **_kwargs: object
@@ -124,16 +133,26 @@ def test_synthesize_answer_output_unchanged_by_the_lift(wiki: Wiki) -> None:
 
     answer = synthesize_answer("what is alpha?", wiki, qmd_search=fake_search)
 
+    # The bullet uses the [[slug]]: "verbatim" form (F19). The span
+    # has no heading path so the marker is "(top of page)". The
+    # excerpt is capped at the first paragraph (split on ``\n\n``),
+    # so the verbatim quote is the frontmatter up to the blank line
+    # before "Alpha is the first letter.".
     assert answer.answer == (
         "### what is alpha?\n\n"
         "Based on 1 wiki page(s):\n\n"
-        "- [wiki] alpha — Alpha is the first letter. — [alpha](wiki/concepts/alpha.md)"
+        '- [[concepts/alpha]] (top of page): "---\ntitle: Alpha\n---"'
     )
+    assert "(top of page)" in answer.answer and "((top of page))" not in answer.answer
+    assert "Footnotes" not in answer.answer
     # citations are now ``list[Citation]`` (Task 6); wiki-sourced.
     assert answer.citations == [Citation(path="wiki/concepts/alpha.md", source="wiki")]
     assert answer.pages_read == [Citation(path="wiki/concepts/alpha.md", source="wiki")]
     assert answer.fallback_used is False
     assert answer.fallback_reason == ""
+    # page_links still carries the markdown-link form for downstream
+    # consumers (CLI render dispatch, MCP); the body uses the inline
+    # [[slug]] form per the F19 contract.
     assert answer.page_links == ["[alpha](wiki/concepts/alpha.md)"]
 
 

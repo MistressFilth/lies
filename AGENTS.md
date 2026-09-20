@@ -55,7 +55,7 @@ not. Full design at
 ```
 src/lies/
 ├── agents/          # sub-agent prompt YAMLs (source-reader, page-writer,
-│                    # linter, query-synthesizer). No indexer — the catalog
+│                    # linter, librarian, query-synthesizer). No indexer — the catalog
 │                    # is deterministic (see below).
 ├── capabilities/    # harness capability adapters (CodeMode, Memory, Planning, ...)
 │   └── memory.py    # Harness Memory capability; per-wiki namespace via WikiIdentity
@@ -87,7 +87,10 @@ src/lies/
 ├── orchestrator.py  # top-level Orchestrator; owns cross-cutting capabilities
 ├── qmd/             # qmd CLI + MCP adapters
 │   └── daemon.py    # ensure/inspect qmd's own daemon (never stops it)
+├── markdown_spans.py # F37 — markdown spans parser (Span dataclass + parse_spans)
 ├── query/           # index.md parser + answer synthesizer
+│   ├── citation.py  # Citation / ClaimCitation dataclasses (F19)
+│   └── ...
 ├── schema/          # default schema + loader
 ├── utils/           # logging, shell helpers, exclusive.py (create-lock +
 │                    # gitignore guard shared by heartbeat and mcp daemon)
@@ -142,6 +145,52 @@ tests/
 The lint repair workflow uses a separate `repair_agent` (in `src/lies/agents/repair.py`) that consumes a `LintReport` and emits a structured `RepairPlan`. The orchestrator applies the plan through `WikiMemoryService.apply_repair_plan`, which routes through the same cross-process flock and atomic-commit envelope as memory plans. The 4 primitives (`CreateStub`, `AppendLink`, `UpdateIndex`, `AppendEvidence`) map onto existing memory operations. The agent never emits ops for `safe_to_fix=False` findings; those stay in the report verbatim. The CLI flag is `lies lint --fix`; the FastMCP toggle is `lint(fix=True)`.
 
 The lint pass composes the deterministic shell (`_build_lint_report`, covering orphan + missing_xref + missing_page) with the linter sub-agent's structured `LintReport` (covering contradiction + stale + data_gap + its own mechanical findings). `merge_lint_reports` unions the two with a `(category, pages, message)` dedup key; the shell wins on collision so the deterministic `safe_to_fix` semantics for mechanical categories are preserved. The LLM sub-agent is fail-soft; when it raises, the shell's findings still reach the repair agent.
+
+## Data shapes (Tier 2 query path)
+
+The retrieval → synthesis → filing-back path threads five data shapes.
+All five are forward-only (additive fields default to safe sentinels;
+no field has been removed from public surfaces, though internal
+helpers `_first_meaningful_paragraph` is gone and `_extract_section_at`
+is deprecated in favor of the span parser):
+
+- **`Span`** (`src/lies/markdown_spans.py`, F37). Frozen dataclass
+  carrying `(heading_path, body, code_fence, start_line)`. `Span.body`
+  is the raw text between heading boundaries; `heading_path` is the
+  ordered list of `## …` / `### …` headings from the page root down
+  to the span's section; `code_fence` flags spans whose body sits
+  inside a fenced code block (downstream consumers exclude these
+  from prose excerpts); `start_line` is the 1-indexed line in the
+  source text where the span begins. `parse_spans(text) -> list[Span]`
+  is the single parser entry point.
+- **`PageRead.spans: list[Span]`** (`src/lies/memory/retrieval.py`,
+  F19). Replaces the prior `PageRead.excerpt`; retrieval populates
+  the field by calling `parse_spans(content)` at read time. The
+  orchestrator and the synthesizer consume only `spans` going forward.
+- **`Citation.heading_path: list[str] | None`** (default `None`,
+  `src/lies/query/citation.py`, F19). Populated by
+  `_thread_heading_paths` from the `Span` each claim cites. Additive —
+  existing citations that the synthesizer never threaded a path for
+  carry `None`. The MCP `query` envelope and the `lies query` JSON
+  output surface this field alongside the existing `path`, `line`,
+  `section`, and `source` discriminator.
+- **`ClaimCitation.quote: str`** (default `""`, F19). The verbatim
+  excerpt from the cited span body. Validated by
+  `_validate_claim_citations` to appear as a substring of the cited
+  span's body; rejected claims surface a synthesis-time warning.
+- **`LibrarianDeps`, `PageExcerpt`, `LibrarianOutput`**
+  (`src/lies/agents/librarian.py`, F18). Pydantic-ai dataclasses for
+  the librarian subagent's deps + output contract.
+  `LibrarianDeps` carries the search/read tools; `PageExcerpt` is
+  one retrieved page (slug, heading_path, body excerpt, code_fence
+  hint); `LibrarianOutput` is the curator's bundle of `PageExcerpt`s
+  passed to the synthesizer.
+
+Filed synthesis pages (F19 filing-back) render the `## Evidence`
+section using the `[[slug]] (Heading > Subheading): "verbatim"`
+form. The `_render_evidence` helper guarantees the section exists
+and is well-formed per the F17 page-type schema contract. Spec:
+`~/code/project-notes/lies/superpowers/specs/2026-09-19-tier2-query-path-design.md`.
 
 ## Quality gates
 

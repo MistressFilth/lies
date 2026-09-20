@@ -6,6 +6,97 @@ All notable changes to LIES are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.33.0] - 2026-09-20
+
+### Added
+
+- **`[settings].version` field in `lies.toml`** for schema versioning.
+  `WikiSettings` carries `settings_version: str | None`; parser reads
+  `version = "1"` (or higher) from the `[settings]` block. Mismatched
+  or unrecognized `version` triggers a `UserWarning` so old configs
+  surface migration guidance without breaking the load path. Bump
+  `CURRENT_SETTINGS_VERSION` in `src/lies/wiki_settings.py` when the
+  `[settings]` schema changes incompatibly.
+
+## [0.32.1] - 2026-09-20
+
+### Fixed
+
+- **`QueryAnswer.file_receipt` surface restored.** F3-era `file_receipt`
+  field on `QueryAnswer` was lost in the Task 6 `run_query`
+  refactor; the CLI receipt block depended on it; the integration
+  tests for `test_synthesis_file_back.py` asserted on it. Restored
+  as `MemoryReceipt | None` (default `None`). Orchestrator captures
+  the receipt from `_file_back(...)` so the F1 CLI `--format`
+  override path preserves it. `run_query_with_format` threads it
+  through the rebuilt `QueryAnswer`.
+- **MCP tool set assertion current.** `tests/mcp/test_server_shape.py`
+  expected MCP tool set did not include `reindex` (F38 PR #88 added
+  it). Updated the expected set.
+- **`test_synthesis_file_back` kwargs migrated to F18/F19 surface.**
+  `collection="..."` → `tag_expr="c:..."`, `force_file=True` →
+  `file_back=True`. Tests stub the librarian dispatch (per the
+  `test_tier2_query_path` per-instance monkeypatch pattern) so
+  the F3 file-back pin exercises against canned page state without
+  touching a real wiki_read tool during `TestModel` iteration.
+- **`test_query_writes_sidecar_visible_via_all_three_surfaces`**
+  gated on `ANTHROPIC_API_KEY` (or equivalent provider key)
+  present in env. Skips cleanly when key absent; runs the
+  subprocess `lies query` integration when key is configured.
+- **Pre-F18 footnote-block integration tests dropped.** Two
+  `tests/integration/test_query_library_wiki.py` tests that pinned
+  the `[^N]` footnote-block form (retired by F19 §1) were deleted
+  rather than xfailed; F19 inline-form pins (`test_inline_citation_form_emitted_*`)
+  replace their coverage.
+
+### Test fixtures
+
+- Three-page wiki fixture at
+  `tests/fixtures/sample_wiki/wiki/{concepts/pydantic.md,concepts/sqlalchemy.md,entities/postgres.md,index.md}`.
+
+## [0.32.0] - 2026-09-20
+
+### Added
+
+- **F18 — Librarian subagent.** New `src/lies/agents/librarian.py` with
+  `LibrarianDeps`, `PageExcerpt`, `LibrarianOutput`. Pydantic-ai in-process
+  subagent that runs the 4-step contract (classify → search → read → return
+  bundle) ported from `ask/skills/ask/librarian-prompt.md`. Validator
+  workaround rewrite rules ported for qmd's vec-query hyphen guard.
+- **F37 — Markdown spans parser.** New `src/lies/markdown_spans.py` with
+  `parse_spans(text) -> list[Span]`. Each `Span` carries
+  `(heading_path, body, code_fence, start_line)`. Code-fence spans are
+  flagged; downstream consumers exclude them from prose excerpts.
+- **F19 — Citation-style answers.** Synthesizer emits
+  `[[page-slug]]: "verbatim text"` inline per claim. New
+  `Citation.heading_path` field; new `ClaimCitation.quote` field.
+  Filing-back renders `## Evidence` with span heading inline.
+  Filed pages use the `[[slug]] (Heading > Subheading): "verbatim"`
+  form.
+
+### Changed
+
+- **Citation form hard-cutover.** `SynthesizedAnswer.answer` body
+  renders `[[slug]]: "verbatim"` per claim instead of `[^N]` footnote
+  markers. Orchestrator no longer appends a footnote block.
+- **`PageRead.excerpt` replaced with `PageRead.spans: list[Span]`.**
+  Retrieval populates spans via `parse_spans(content)` at read time.
+- **`Citation.heading_path`** (additive, default `None`). Populated by
+  `_thread_heading_paths` from the span each claim cites.
+- **`ClaimCitation.quote`** (additive, default `""`). Validated to
+  appear verbatim in the cited span body.
+- **`_first_meaningful_paragraph`** removed. Span parser supersedes.
+- **`_extract_section_at`** deprecated. Use `parse_spans` for new code.
+
+### Migration
+
+- Existing footnote-rendered wiki pages stay footnote (no re-render).
+  New `stale_citation_form` lint finding surfaces them; re-render via
+  `lies lint --fix` (follow-up PR).
+- Hard-cutover for new synthesis only. No opt-in flag.
+
+## [Unreleased]
+
 ### Added
 - **F17 — Page-type conventions**: schema-declared required `## <Heading>`
   sections per page type. Lint surfaces `missing_required_section`

@@ -9,7 +9,12 @@ from pathlib import Path
 import pytest
 
 from lies.library.record import LibraryCollectionConfig as Collection
-from lies.wiki_settings import DEFAULT_LANGUAGE, WikiSettings, resolve_language
+from lies.wiki_settings import (
+    CURRENT_SETTINGS_VERSION,
+    DEFAULT_LANGUAGE,
+    WikiSettings,
+    resolve_language,
+)
 from tests.conftest import make_wiki
 
 
@@ -113,6 +118,82 @@ class TestWikiSettingsLoad:
     def test_default_fallback(self, wiki, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("LIES_LANG", raising=False)
         assert WikiSettings.load(wiki).language == DEFAULT_LANGUAGE
+
+
+class TestWikiSettingsVersion:
+    def test_version_missing_is_none_no_warning(
+        self, wiki, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("LIES_LANG", raising=False)
+        _write_toml(wiki, '[settings]\nlang = "de"\n')
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            settings = WikiSettings.load(wiki)
+        assert settings.settings_version is None
+        assert settings.language == "de"
+        assert caught == []
+
+    def test_version_matches_current_no_warning(
+        self, wiki, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("LIES_LANG", raising=False)
+        _write_toml(wiki, f'[settings]\nlang = "de"\nversion = "{CURRENT_SETTINGS_VERSION}"\n')
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            settings = WikiSettings.load(wiki)
+        assert settings.settings_version == CURRENT_SETTINGS_VERSION
+        assert settings.language == "de"
+        assert caught == []
+
+    def test_version_mismatch_warns_and_keeps_value(
+        self, wiki, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("LIES_LANG", raising=False)
+        _write_toml(wiki, '[settings]\nlang = "de"\nversion = "0"\n')
+        with pytest.warns(UserWarning, match=r"check release notes for migration guidance"):
+            settings = WikiSettings.load(wiki)
+        assert settings.settings_version == "0"
+        assert settings.language == "de"
+
+    def test_version_non_string_warns_and_defaults(
+        self, wiki, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("LIES_LANG", raising=False)
+        _write_toml(wiki, '[settings]\nlang = "de"\nversion = 42\n')
+        with pytest.warns(UserWarning, match=r"must be a string"):
+            settings = WikiSettings.load(wiki)
+        assert settings.settings_version is None
+        assert settings.language == "de"
+
+    def test_version_empty_string_warns_and_defaults(
+        self, wiki, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("LIES_LANG", raising=False)
+        _write_toml(wiki, '[settings]\nlang = "de"\nversion = ""\n')
+        with pytest.warns(UserWarning, match=r"version is empty"):
+            settings = WikiSettings.load(wiki)
+        assert settings.settings_version is None
+        assert settings.language == "de"
+
+    def test_version_whitespace_stripped(self, wiki, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("LIES_LANG", raising=False)
+        _write_toml(wiki, f'[settings]\nlang = "de"\nversion = "  {CURRENT_SETTINGS_VERSION}  "\n')
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            settings = WikiSettings.load(wiki)
+        assert settings.settings_version == CURRENT_SETTINGS_VERSION
+        assert settings.language == "de"
+        assert caught == []
+
+    def test_env_wins_ignores_toml_version(self, wiki, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("LIES_LANG", "ja")
+        _write_toml(wiki, '[settings]\nversion = "0"\n')
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            settings = WikiSettings.load(wiki)
+        assert settings.language == "ja"
+        assert settings.settings_version is None
+        assert caught == []
 
 
 def _make_collection(wiki, name: str = "test-coll", language: str | None = None) -> Collection:

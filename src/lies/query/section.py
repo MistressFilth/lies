@@ -1,8 +1,10 @@
 """Section extraction from markdown bodies.
 
-Pure-function helpers used by the query synthesizer to attach a
-human-readable section name to each citation, derived from the line
-number qmd returns with each hit.
+DEPRECATED (F19): use ``lies.markdown_spans.parse_spans`` for new
+code. This module is retained for back-compat with non-F19 callers.
+The implementation is unchanged; new code should consume
+``PageRead.spans`` (a list of ``Span``) rather than calling
+``_extract_section_at`` directly.
 """
 
 from __future__ import annotations
@@ -11,14 +13,9 @@ from __future__ import annotations
 def _extract_section_at(body: str, line: int) -> str | None:
     """Return the last ATX heading at or before ``line`` (1-indexed).
 
-    Scans ``body`` line by line. An ATX heading is any line whose
-    first non-whitespace character is ``#``, ``##``, ``###``, etc.,
-    followed by space and heading text. Indented ``#`` (4+ spaces)
-    is not a heading. Setext headings (``===`` / ``---`` underlines)
-    are out of scope for v1.
-
-    Returns ``None`` if no ATX heading precedes ``line``. When ``line``
-    is past EOF, returns the last heading seen (or ``None`` if none).
+    .. deprecated::
+        Use ``parse_spans(body)`` and read ``span.heading_path``
+        instead. Retained for back-compat with non-F19 callers.
     """
     if line <= 0:
         return None
