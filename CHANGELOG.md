@@ -13,6 +13,12 @@ All notable changes to LIES are documented here. The format follows
   that omit required sections. Six page types covered (overview, entity,
   concept, comparison, source, synthesis). Override per-wiki via
   `<wiki>/schema.md`.
+- **F38 — Destructive-flag confirmation.**
+  - `lies reindex --cleanup/--all/--force/--embed` flags restored (deleted in PR #17). `--cleanup` and `--all` are destructive and gated.
+  - New MCP `reindex` tool with `destructiveHint=True` annotation. Mirrors the CLI surface; destructive flags gated via `ctx.elicit`.
+  - `_confirm_destructive_cli` (CLI helper) and `_confirm_destructive` (MCP helper) for destructive-flag confirmation. CLI prompts `Confirm destructive reindex (<flag>)? [y/N]` on TTY; non-TTY refuses unless `--yes`. MCP uses FastMCP `ctx.elicit` with `_ConfirmDestructive { confirm, reason }` pydantic schema.
+  - `_qmd_proc` subprocess seam for testability (Bundle E E.2 boundary discipline).
+  - `ReindexResult` Pydantic model returned by `qmd_reindex` and the MCP `reindex` tool.
 
 ## [0.29.0] - 2026-09-18
 
