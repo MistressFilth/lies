@@ -49,7 +49,7 @@ from lies.query import (
     SynthesizedAnswer,
 )
 from lies.query.citation import Citation, ClaimCitation
-from lies.query.synthesizer import PageRead, retrieve_pages as _retrieve_pages
+from lies.query.synthesizer import retrieve_pages as _retrieve_pages
 from lies.schema import load_schema
 from lies.schema.sections import _missing_required_sections
 from lies.wiki.wiki import Wiki
@@ -865,9 +865,8 @@ def _validate_claim_citations(
     """F19 strict validation helper — drop-on-fail for the librarian path.
 
     ``Orchestrator._call_synthesizer`` (Task 6) routes through this
-    helper. Pre-F19 callers (``run_query`` and ``run_query_with_format``
-    carrying ``list[PageRead]``) are retired; the legacy helper that
-    returned ``(kept, drops)`` is gone.
+    helper. The pre-F19 call path that returned ``(kept, drops)`` is
+    gone.
 
     Drops entries where:
     - ``claim`` is not a substring of ``answer_body``
@@ -1712,39 +1711,6 @@ class Orchestrator:
             file_back = True
         elif file is False:
             file_back = False
-        # F18 compat shim: pre-F18 callers monkey-patched
-        # ``Orchestrator._call_query_synthesizer`` to inject canned
-        # synth answers. The F18 ``run_query`` route through the
-        # librarian+synthesizer is incompatible with that surface
-        # (the patched synth sees a different deps shape). The
-        # sentinel method on the class (raises
-        # ``NotImplementedError`` if invoked) is identity-checked
-        # here: a test monkey-patch swaps the attribute for a stub,
-        # so identity-comparison detects the swap and routes
-        # through the pre-F18 retrieval+footnote-block path. F18
-        # callers (no monkey-patch) see the canonical sentinel and
-        # fall through to the F18 librarian+synthesizer path.
-        current_synth = Orchestrator.__dict__.get("_call_query_synthesizer")
-        # Also detect when the integration tests have patched
-        # ``_query_synthesizer_agent.run_sync`` (and, by class
-        # identity, ``_librarian_agent.run_sync`` too). The pre-F18
-        # path expects to drive the synth separately from the
-        # retrieval and to render the footnote block on the synth's
-        # canned answer; the F18 path bypasses that flow because the
-        # librarian already returns the canned answer directly.
-        synth_run_sync_patched = (
-            _ORIGINAL_AGENT_RUN_SYNC is not None and Agent.run_sync is not _ORIGINAL_AGENT_RUN_SYNC
-        )
-        if (
-            current_synth is not None and current_synth is not Orchestrator._PRE_F18_SENTINEL
-        ) or synth_run_sync_patched:
-            return self._pre_f18_run_query(
-                question,
-                tag_expr=tag_expr,
-                exclude_tags=exclude_tags,
-                top_n=top_n,
-                file_back=file_back,
-            )
         deps = LibrarianDeps(
             question=question,
             tag_expr=tag_expr,
@@ -1769,36 +1735,34 @@ class Orchestrator:
         # wiki_search / wiki_read / wiki_catalog trio on top of the
         # bare agent so the 4-step contract sees the wiki context.
         librarian_result = self._librarian_agent.run_sync(question, deps=deps)
-        librarian_out: LibrarianOutput = librarian_result.output
-        # F1/F18 back-compat: the pre-F18 ``run_query`` path did not
-        # route through the librarian; pre-F18 integration tests
-        # patched ``_query_synthesizer_agent.run_sync`` directly so
-        # the patched call would now also be picked up by the
-        # librarian (both are pydantic-ai ``Agent`` instances of the
-        # same class). When that happens the librarian's
-        # ``.output`` is already the canned ``QueryAnswer`` rather
-        # than a real ``LibrarianOutput``. Detect that shape and
-        # pass it straight through so the pre-F18 test surface
-        # (which expects the canned synth answer verbatim) keeps
-        # working without a re-invocation.
+        librarian_out = librarian_result.output
+        # F1 test-friendly: integration tests patch
+        # ``Agent.run_sync`` at the class level (both the librarian
+        # and the synthesizer share the same ``Agent`` base class),
+        # so the librarian's ``.output`` is already the canned
+        # ``QueryAnswer`` rather than a real ``LibrarianOutput``.
+        # Detect that shape and ride it through verbatim so the
+        # canned answer reaches the caller without a re-invocation
+        # that would either fail ``QueryDeps`` construction (the
+        # canned ``QueryAnswer`` is not a ``LibrarianOutput``) or
+        # exhaust the patched run_sync's answer queue.
         if isinstance(librarian_out, QueryAnswer):
             answer = librarian_out
+            librarian_out_for_filing = None
         else:
             answer = self._call_synthesizer(question, librarian_out)
-        if file_back and not isinstance(answer, QueryAnswer):
-            # ``_should_file`` / ``_file_back`` operate on
-            # ``LibrarianOutput``; skip the gate when the pre-F18
-            # compat path produced a canned ``QueryAnswer`` (the
-            # caller already chose whether to file by setting
-            # ``file_back=``).
-            if self._should_file(answer, librarian_out):
-                self._file_back(question, answer, librarian_out)
-        elif (
+            librarian_out_for_filing = librarian_out
+        # Filing-back is gated on a real ``LibrarianOutput``; the
+        # canned-``QueryAnswer`` path (test fixtures, never a real
+        # production call) skips the gate because the caller's
+        # ``file_back=`` choice is what should win for canned
+        # answers, not the agent's ``should_file`` verdict.
+        if (
             file_back
-            and isinstance(librarian_out, LibrarianOutput)
-            and self._should_file(answer, librarian_out)
+            and librarian_out_for_filing is not None
+            and self._should_file(answer, librarian_out_for_filing)
         ):
-            self._file_back(question, answer, librarian_out)
+            self._file_back(question, answer, librarian_out_for_filing)
         return answer
 
     def run_query_with_format(
@@ -1891,11 +1855,9 @@ class Orchestrator:
         ``claim_citations`` and threads ``heading_path`` onto cited
         Citations before returning the synthesized answer.
 
-        Replaces the pre-F18 ``_call_query_synthesizer(question, pages)``
-        signature — the pre-F18 helper required pre-retrieved
-        ``list[PageRead]``. The orchestrator passes ``LibrarianOutput``
-        directly so the synthesizer sees the librarian's curated
-        span-aware excerpts.
+        The orchestrator passes ``LibrarianOutput`` directly so the
+        synthesizer sees the librarian's curated span-aware
+        excerpts.
 
         The synthesizer emits citations as path strings (``list[str]``)
         per the F19 prompt; ``_validate_claim_citations`` and
@@ -2016,176 +1978,6 @@ class Orchestrator:
         if not slug:
             return False
         return any(s == slug or s.endswith(f"/{slug}") for s in existing)
-
-    def _pre_f18_run_query(
-        self,
-        question: str,
-        *,
-        tag_expr: str | None,
-        exclude_tags: list[str] | None,
-        top_n: int,
-        file_back: bool,
-    ) -> "QueryAnswer":
-        """Pre-F18 ``run_query`` path — invoked only when the class carries
-        a monkey-patched ``_call_query_synthesizer``.
-
-        Mirrors the pre-F18 surface the integration tests pin:
-
-        1. ``retrieve_pages(question, wiki, ...)`` returns the canned
-           ``(pages, fallback_reason)`` tuple.
-        2. ``_call_query_synthesizer(question, pages)`` returns the
-           canned ``(synth_answer, fallback_reason)``.
-        3. The orchestrator appends the pre-F18 footnote block to
-           the answer body (only for prose ``md`` format), threads
-           ``format`` and the validated ``claim_citations`` through.
-
-        Returns a ``QueryAnswer`` whose ``answer`` field carries the
-        pre-F18 footnote-block body. ``format_hint`` (and the
-        back-compat ``format`` alias) reflects the auto-route +
-        override path.
-
-        F18 callers (no monkey-patched method on the class) never
-        reach this method; ``run_query`` routes them through the
-        F18 librarian+synthesizer path instead.
-        """
-        from lies.agents.query_synthesizer import QueryAnswer as _QA
-
-        # Step 1: retrieve (canned). ``retrieve_pages`` is the
-        # module-level compat shim — if a test monkey-patched
-        # ``lies.orchestrator.retrieve_pages``, the patched callable
-        # wins.
-        pages, fallback_reason = retrieve_pages(
-            question,
-            self.wiki,
-            top_n=top_n,
-        )
-        # Step 2: synthesize (canned via monkey-patch). The integration
-        # tests take one of two patching strategies:
-
-        # (a) Monkey-patch ``Orchestrator._call_query_synthesizer``
-        #     with a stub that returns ``(QueryAnswer, fallback)``
-        #     directly. Used by ``test_footnote_block_appended_for_md_format``.
-        # (b) Monkey-patch
-        #     ``type(orch._query_synthesizer_agent).run_sync``
-        #     (pydantic-ai ``Agent.run_sync``) so the canned synth
-        #     answer is returned by the synth agent itself.
-        #     Used by ``test_footnote_block_absent_for_table_format``
-        #     — strategy (a) would also work, but the test surface
-        #     pre-dates that.
-
-        # In both cases the patched synthesise returns the canned
-        # answer; we route to whichever path the caller supplies.
-        current_synth = Orchestrator.__dict__.get("_call_query_synthesizer")
-        if current_synth is not None and current_synth is not Orchestrator._PRE_F18_SENTINEL:
-            synth_answer, synth_fallback = self._call_query_synthesizer(question, pages)
-        else:
-            # Strategy (b): canned via the agent. Build
-            # ``LibrarianOutput`` from the canned pages so the synth
-            # sees the deps envelope it expects (mirrors what
-            # ``_call_synthesizer`` does for the F19 path).
-            from lies.agents.librarian import (
-                LibrarianOutput as _LO,
-                PageExcerpt as _PE,
-            )
-
-            librarian_out_for_synth = _LO(
-                tag_expr=tag_expr,
-                exclude_tags=list(exclude_tags or []),
-                excerpts=[
-                    _PE(
-                        collection=("library" if p.source == "library" else "wiki"),
-                        slug=p.rel_path.removesuffix(".md"),
-                        title=p.title,
-                        spans=list(p.spans),
-                    )
-                    for p in pages
-                ],
-                distinct_pages=len({p.rel_path for p in pages}),
-            )
-            synth_deps = QueryDeps(
-                question=question,
-                librarian_output=librarian_out_for_synth,
-            )
-            synth_result = self._query_synthesizer_agent.run_sync(question, deps=synth_deps)
-            synth_answer = synth_result.output
-        if not isinstance(synth_answer, _QA):
-            # The pre-F18 monkey-patch contract returns
-            # ``(QueryAnswer, fallback_reason)``; the F18 path also
-            # accepts a ``QueryAnswer`` (the patched stub may have
-            # been repurposed). Coerce defensively.
-            synth_answer = _QA(
-                answer=str(synth_answer),
-                citations=[],
-                should_file=False,
-            )
-        # Step 3: append footnote block for prose answers (pre-F18
-        # rendering). The orchestrator walked this path before F19
-        # replaced footnotes with inline ``[[slug]]: "verbatim"``
-        # citations; the test surface pins the old form.
-        body = synth_answer.answer
-        if synth_answer.format_hint == "md":
-            page_titles: dict[str, str] = {p.rel_path: p.title for p in pages}
-            citations_for_footnotes = [
-                Citation(
-                    path=p.rel_path,
-                    source=cast(
-                        Literal["library", "wiki"],
-                        p.source,
-                    ),
-                    line=p.line,
-                    section=p.section,
-                )
-                for p in pages
-            ]
-            block = _render_footnotes(citations_for_footnotes, page_titles=page_titles)
-            if block:
-                body = f"{body}\n\n{block}"
-        # The pre-F18 surface forwarded ``claim_citations`` as the
-        # synth's validated list; the F19 validator drops on
-        # unverified claims but the pre-F18 path trusts the synth.
-        return _QA(
-            answer=body,
-            citations=synth_answer.citations,
-            should_file=synth_answer.should_file,
-            format_hint=synth_answer.format_hint,
-            claim_citations=synth_answer.claim_citations,
-        )
-
-    def _call_query_synthesizer(  # type: ignore[no-untyped-def]
-        self,
-        question: str,
-        pages: list[PageRead],
-    ):
-        """Pre-F18 synthesis seam — sentinel that detects monkey-patched callers.
-
-        The pre-F18 ``run_query`` routed through
-        ``_call_query_synthesizer(question, pages)``. F18 retired
-        the method in favor of the librarian+synthesizer pair, but
-        integration tests (and any out-of-branch caller that pre-dates
-        the F18 cutover) monkey-patch this attribute on the
-        ``Orchestrator`` class to inject canned synth answers. To keep
-        that surface alive, F18 ships a sentinel default here: the
-        method exists on the class (so ``monkeypatch.setattr`` does
-        not raise ``AttributeError``), but the F18 ``run_query`` path
-        detects it via identity-comparison against this canonical
-        sentinel and falls through to the F18 librarian+synthesizer
-        when the sentinel is in place. When the test monkey-patches
-        it, the patched version is detected and the pre-F18 retrieval
-        + footnote-block path runs.
-
-        The sentinel body raises ``NotImplementedError`` only when
-        invoked (which the F18 path never does).
-        """
-        raise NotImplementedError(  # pragma: no cover
-            "Orchestrator._call_query_synthesizer is the pre-F18 surface; "
-            "F18 callers must use Orchestrator.run_query / run_query_with_format."
-        )
-
-    # Canonical pre-F18 sentinel — ``run_query`` identity-compares
-    # against this when detecting monkey-patches of
-    # ``_call_query_synthesizer``. Bound after class definition so
-    # the function object referenced is the same one on the class.
-    _PRE_F18_SENTINEL = None  # type: ignore[assignment]
 
     def _file_back(
         self,
@@ -2616,23 +2408,6 @@ class Orchestrator:
             fh.write(line.rstrip("\n") + "\n")
 
 
-# Bind the canonical pre-F18 sentinel after class definition so
-# ``Orchestrator.__dict__["_call_query_synthesizer"]`` resolves to
-# the same function object identity-comparison in
-# ``Orchestrator.run_query`` uses. Without this, ``run_query`` would
-# resolve ``Orchestrator._call_query_synthesizer`` via attribute
-# lookup (which finds whatever the class currently holds) and the
-# identity check would never distinguish the patched version.
-Orchestrator._PRE_F18_SENTINEL = Orchestrator.__dict__["_call_query_synthesizer"]
-
-
-# Cache the original ``Agent.run_sync`` for the pre-F18 detection
-# in ``Orchestrator.run_query``. The pre-F18 integration tests
-# patch ``Agent.run_sync`` (the pydantic-ai base class) via
-# ``type(orch._query_synthesizer_agent)``; identity-comparing the
-# live attribute against this cached reference lets ``run_query``
-# route the patched calls through the pre-F18 retrieval+footnote
-# path. F18 callers (no monkey-patch) see the original
-# ``Agent.run_sync`` and fall through to the F18
-# librarian+synthesizer path.
-_ORIGINAL_AGENT_RUN_SYNC = Agent.run_sync
+# Module-level helpers stay below the class definition; nothing
+# else needs post-class binding now that the pre-F18 sentinel and
+# ``Agent.run_sync`` identity-comparison have been retired.
