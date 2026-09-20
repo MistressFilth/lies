@@ -51,6 +51,14 @@ from lies.query.tag_expr import (
 from lies.wiki.layout import WikiLayout, copy_default_schema, git_init_initial
 from lies.wiki.wiki import Wiki
 
+# Grounding archivist — Task 3 wires the F19 ``ground()`` helper into
+# the MCP tool surface. The function is at module scope (imported from
+# ``lies.mcp.grounding``) so the in-process caller ``from lies.mcp
+# .grounding import ground`` and the FastMCP-registered tool share one
+# implementation. ``dataclasses.asdict`` serializes the frozen
+# ``ArchivistDigest`` to a JSON-safe plain dict for the MCP wire format.
+from lies.mcp.grounding import ground as _ground_digest  # noqa: E402
+
 mcp = FastMCP(
     "lies",
     instructions=load_instructions(),
@@ -98,6 +106,54 @@ class SynthesizedMcpAnswer(BaseModel):
 
 # Re-export the page-author slice for FastMCP serialization.
 from lies.page import WriteKnowledgeResult  # noqa: E402,F401
+
+
+# ---------------------------------------------------------------------------
+# ground — F19 grounding digest (Task 3 of the grounding-archivist plan)
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool
+def ground(
+    question: str,
+    tag_expr: str | None = None,
+    exclude_tags: list[str] | None = None,
+    top_k: int = 3,
+) -> dict:
+    """Return a grounding digest for ``question``.
+
+    Wraps :func:`lies.mcp.grounding.ground` (Task 2) at the MCP tool
+    surface. The tag-filter dispatch (F15) and the F18 librarian run
+    inside the helper; this wrapper only translates the result to a
+    JSON-serializable ``dict`` for the FastMCP wire format.
+
+    Args:
+        question: The user's natural-language question.
+        tag_expr: Body of a single include token (no leading sigil),
+            e.g. ``"airflow&postgres"``. ``None`` for untagged.
+        exclude_tags: NOT tags without leading sigil. The F15 grammar
+            permits at most one; more is forwarded to the librarian
+            unchanged.
+        top_k: Maximum excerpts requested from the librarian (clamped
+            to ``[1, 10]``).
+
+    Returns:
+        A JSON-serializable :class:`ArchivistDigest` carrying up to
+        ``top_k`` citation snippets of ≤200 chars each.
+    """
+    from dataclasses import asdict
+
+    digest = _ground_digest(
+        question=question,
+        tag_expr=tag_expr,
+        exclude_tags=exclude_tags,
+        top_k=top_k,
+    )
+    # MCP tool handlers must return JSON-serializable structures.
+    # ``ArchivistDigest`` is a frozen dataclass with only primitive +
+    # nested dataclass fields; ``asdict`` flattens both layers without
+    # a custom JSON encoder.
+    return asdict(digest)
 
 
 # ---------------------------------------------------------------------------
