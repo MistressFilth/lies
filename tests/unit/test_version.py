@@ -9,5 +9,5 @@ def test_version_consistent_with_pyproject() -> None:
     assert data["project"]["version"] == __version__
 
 
-def test_version_is_0_31_0() -> None:
-    assert __version__ == "0.31.0"
+def test_version_is_0_32_0() -> None:
+    assert __version__ == "0.32.0"

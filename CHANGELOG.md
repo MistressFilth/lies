@@ -6,6 +6,49 @@ All notable changes to LIES are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.32.0] - 2026-09-20
+
+### Added
+
+- **F18 — Librarian subagent.** New `src/lies/agents/librarian.py` with
+  `LibrarianDeps`, `PageExcerpt`, `LibrarianOutput`. Pydantic-ai in-process
+  subagent that runs the 4-step contract (classify → search → read → return
+  bundle) ported from `ask/skills/ask/librarian-prompt.md`. Validator
+  workaround rewrite rules ported for qmd's vec-query hyphen guard.
+- **F37 — Markdown spans parser.** New `src/lies/markdown_spans.py` with
+  `parse_spans(text) -> list[Span]`. Each `Span` carries
+  `(heading_path, body, code_fence, start_line)`. Code-fence spans are
+  flagged; downstream consumers exclude them from prose excerpts.
+- **F19 — Citation-style answers.** Synthesizer emits
+  `[[page-slug]]: "verbatim text"` inline per claim. New
+  `Citation.heading_path` field; new `ClaimCitation.quote` field.
+  Filing-back renders `## Evidence` with span heading inline.
+  Filed pages use the `[[slug]] (Heading > Subheading): "verbatim"`
+  form.
+
+### Changed
+
+- **Citation form hard-cutover.** `SynthesizedAnswer.answer` body
+  renders `[[slug]]: "verbatim"` per claim instead of `[^N]` footnote
+  markers. Orchestrator no longer appends a footnote block.
+- **`PageRead.excerpt` replaced with `PageRead.spans: list[Span]`.**
+  Retrieval populates spans via `parse_spans(content)` at read time.
+- **`Citation.heading_path`** (additive, default `None`). Populated by
+  `_thread_heading_paths` from the span each claim cites.
+- **`ClaimCitation.quote`** (additive, default `""`). Validated to
+  appear verbatim in the cited span body.
+- **`_first_meaningful_paragraph`** removed. Span parser supersedes.
+- **`_extract_section_at`** deprecated. Use `parse_spans` for new code.
+
+### Migration
+
+- Existing footnote-rendered wiki pages stay footnote (no re-render).
+  New `stale_citation_form` lint finding surfaces them; re-render via
+  `lies lint --fix` (follow-up PR).
+- Hard-cutover for new synthesis only. No opt-in flag.
+
+## [Unreleased]
+
 ### Added
 - **F17 — Page-type conventions**: schema-declared required `## <Heading>`
   sections per page type. Lint surfaces `missing_required_section`
