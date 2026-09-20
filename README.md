@@ -769,6 +769,32 @@ CLI commands (`src/lies/cli/`):
 - `lies` (no subcommand) — enter the REPL (`/ingest`, `/query`, `/lint`,
   `/status`, `/commit`, `/exit`).
 
+## Destructive reindex flags
+
+`lies reindex` accepts four flags restored from PR #17:
+
+- `--cleanup` — drop orphan qmd collections; vacuum FTS5 db. **Destructive**.
+- `--all` — full rebuild incl cleanup. **Destructive**.
+- `--force` — drop qmd's cache and rebuild index from scratch. Non-destructive.
+- `--embed` — re-embed stale chunks. Non-destructive.
+
+Destructive flags prompt for confirmation:
+
+```
+$ lies reindex --cleanup
+Confirm destructive reindex (cleanup+drop orphans)? [y/N]: y
+reconciled=False indexed=True embedded=False cleaned=True errors=[]
+```
+
+On a non-TTY (CI, scripts, piped output), the prompt refuses and exits 2 unless `--yes` is passed:
+
+```
+$ lies reindex --cleanup | tee log.txt
+error: Confirm destructive reindex (cleanup+drop orphans)? [y/N] requires --yes when stdout is not a TTY
+```
+
+The MCP `reindex` tool mirrors this with `destructiveHint=True` and uses `ctx.elicit` for the confirmation.
+
 ## MCP server orientation
 
 The LIES MCP server ships an orientation payload at every

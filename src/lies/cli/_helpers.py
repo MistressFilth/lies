@@ -33,6 +33,7 @@ __all__ = (
     "_HINT",
     "WikiFlockUnrepairable",
     "WikiLockBusy",
+    "_confirm_destructive_cli",
     "_emit_missing_providers_hint",
     "_stdout_isatty",
     "acquire_create_lock",
@@ -81,3 +82,33 @@ def _emit_missing_providers_hint(path: Path) -> None:
     if not _cli._stdout_isatty():
         return
     typer.echo(_HINT.format(path=path), err=True)
+
+
+def _confirm_destructive_cli(message: str, *, assume_yes: bool = False) -> None:
+    """Prompt the operator; raise ``typer.Exit(2)`` on decline.
+
+    Mirrors ask's ``_confirm_destructive`` (MCP-side) on the CLI side.
+    Tests monkeypatch ``lies.cli._stdout_isatty`` to simulate TTY.
+
+    Args:
+        message: Human-readable description of the destructive op.
+        assume_yes: If True, skip the prompt. Wired to the CLI's
+            ``--yes`` flag.
+
+    Raises:
+        typer.Exit: code 2 on decline or non-TTY-without-yes.
+    """
+    import lies.cli as _cli
+
+    if not assume_yes and not _cli._stdout_isatty():
+        typer.echo(
+            f"error: {message} requires --yes when stdout is not a TTY",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+    if assume_yes:
+        return
+
+    raw = input(f"{message} [y/N]: ")
+    if raw.strip().lower() not in ("y", "yes"):
+        raise typer.Exit(code=2)

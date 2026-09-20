@@ -225,7 +225,7 @@ def sync(
 
 
 @app.command(
-    short_help="Reindex QMD collections.",
+    short_help="Reindex QMD collections (--cleanup/--all destructive; gated).",
     rich_help_panel="Source ingestion",
 )
 def reindex(
@@ -237,6 +237,41 @@ def reindex(
             help="Reconcile the qmd index with the wiki's collection directory before reindexing (default: just reindex).",
         ),
     ] = False,
+    cleanup: Annotated[
+        bool,
+        typer.Option(
+            "--cleanup/--no-cleanup",
+            help="Drop orphaned qmd collections; vacuum FTS5 db. DESTRUCTIVE — gated by Confirm/[y/N]/--yes.",
+        ),
+    ] = False,
+    all_: Annotated[
+        bool,
+        typer.Option(
+            "--all/--no-all",
+            help="Full rebuild incl cleanup. DESTRUCTIVE — gated.",
+        ),
+    ] = False,
+    embed: Annotated[
+        bool,
+        typer.Option(
+            "--embed/--no-embed",
+            help="Re-embed stale chunks. Non-destructive.",
+        ),
+    ] = False,
+    force: Annotated[
+        bool,
+        typer.Option(
+            "--force/--no-force",
+            help="Rebuild qmd index from scratch (drops cache). Non-destructive.",
+        ),
+    ] = False,
+    yes: Annotated[
+        bool,
+        typer.Option(
+            "--yes/--no-yes",
+            help="Skip the destructive-flag confirmation prompt (CLI only).",
+        ),
+    ] = False,
     name: str | None = typer.Option(
         None, "--name", envvar="LIES_WIKI_NAME", help="Wiki to reindex (default: $LIES_WIKI_NAME)."
     ),
@@ -245,14 +280,51 @@ def reindex(
 
     ``--reconcile`` syncs each collection (running the full pipeline) and
     rebuilds the in-memory wikilink corpus for downstream consumers.
+
+    Destructive flags (``--cleanup``, ``--all``) prompt for confirmation
+    on a TTY (``Confirm destructive reindex (cleanup+drop orphans)? [y/N]``)
+    or refuse on a non-TTY unless ``--yes`` is passed.
     """
     from lies.cli import WikiLinkResolver, resolve_wiki
+    from lies.cli._helpers import _confirm_destructive_cli
     from lies.etl.sync_helper import collection_names, sync_collection
+    from lies.qmd._models import ReindexResult
+    from lies.qmd.cli import qmd_reindex
 
     wiki = resolve_wiki(name)
+    result = ReindexResult()
     if reconcile:
         for coll_name in collection_names(wiki, None):
             sync_collection(wiki, coll_name, force=False)
         # Spec: reindex rebuilds the corpus. No in-process consumer today
         # (YAGNI); held for the lifetime of this process.
         WikiLinkResolver.build((wiki.wiki_dir, wiki.raw_dir))
+        result.reconciled = True
+
+    # Gate destructive flags before any qmd work.
+    if cleanup or all_:
+        if all_:
+            prompt = "Confirm destructive reindex (all+cleanup+drop orphans)?"
+        else:
+            prompt = "Confirm destructive reindex (cleanup+drop orphans)?"
+        _confirm_destructive_cli(prompt, assume_yes=yes)
+
+    reindex_outcome = qmd_reindex(
+        wiki.wiki_dir,
+        embed=embed,
+        cleanup=cleanup,
+        all_=all_,
+        force=force,
+    )
+    result.indexed = reindex_outcome.indexed
+    result.embedded = reindex_outcome.embedded
+    result.cleaned = reindex_outcome.cleaned
+    result.errors = reindex_outcome.errors
+    summary = (
+        f"reconciled={result.reconciled} indexed={result.indexed} "
+        f"embedded={result.embedded} cleaned={result.cleaned} "
+        f"errors={result.errors}"
+    )
+    typer.echo(summary)
+    if result.errors:
+        raise typer.Exit(code=1)
