@@ -132,9 +132,14 @@ def subagents_library_wiki(tmp_path: Path) -> Wiki:
 # Pre-F18 footnote-block tests (``test_footnote_block_appended_for_md_format``
 # and ``test_footnote_block_absent_for_table_format``) were deleted when
 # F19 retired the ``[^N]`` footnote-block rendering. These tests pin what
-# F19 actually emits. TODO(F32): if a lint-remediation follow-up needs
-# migration paths from the footnote era, re-pin those retired-form tests
-# alongside these inline-form pins.
+# F19 actually emits.
+#
+# Note on F32: F32's scope (post-ingest repair tools, per TODO.md §12) is
+# unrelated to footnote-era migration paths. The conditional
+# ``TODO(F32)`` previously attached to this comment block referred to a
+# lint-remediation follow-up that has not materialized and would not
+# belong to F32 if it did. Removed 2026-09-21 during the chart-format
+# addendum review sweep — pre-existing-issue rule per AGENTS.md.
 # ---------------------------------------------------------------------------
 
 

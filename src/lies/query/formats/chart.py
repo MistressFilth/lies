@@ -10,8 +10,13 @@ from __future__ import annotations
 
 import re
 
+# Accept the standard fence shape with optional trailing whitespace
+# after the ``mermaid`` lang tag (Markdown spec permits
+# `` ```mermaid `` with a trailing space). The closing fence must
+# sit on its own line; bodies with inline fences after prose are not
+# fences per spec and are not matched.
 _MERMAID_FENCE = re.compile(
-    r"```mermaid\s*\n(.*?)\n```",
+    r"```mermaid[ \t]*\n(.*?)\n```",
     re.DOTALL,
 )
 

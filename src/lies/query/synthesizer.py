@@ -700,7 +700,9 @@ def build_answer_from_pages(
         f"Based on {len(pages)} wiki page(s):\n\n" + "\n".join(bullets)
     )
 
-    validated_format = validate_format(answer, format_hint)
+    validated_format = (
+        format_hint if format_hint == "chart" else validate_format(answer, format_hint)
+    )
 
     return SynthesizedAnswer(
         answer=answer,

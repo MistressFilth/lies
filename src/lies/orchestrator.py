@@ -1665,6 +1665,12 @@ class Orchestrator:
         exclude_tags: list[str] | None = None,
         top_n: int = 5,
         file_back: bool = True,
+        # F1 override hook: when ``run_query_with_format`` re-enters
+        # ``run_query`` with the operator's forced format, the inner
+        # synth call must use that format so ``render_format`` on the
+        # filed synthesis frontmatter matches the rendered body shape.
+        # ``None`` (default) preserves the auto-route contract.
+        format_hint: Literal["md", "table", "marp", "chart"] | None = None,
         # F1/F18 back-compat aliases: pre-F18 callers (and tests on
         # branches that haven't migrated) pass ``file=`` / ``force_file=``
         # as positional or keyword args. ``file=`` is the boolean
@@ -1769,7 +1775,7 @@ class Orchestrator:
             answer = librarian_out
             librarian_out_for_filing = None
         else:
-            answer = self._call_synthesizer(question, librarian_out)
+            answer = self._call_synthesizer(question, librarian_out, format_hint=format_hint)
             librarian_out_for_filing = librarian_out
         # Filing-back is gated on a real ``LibrarianOutput``; the
         # canned-``QueryAnswer`` path (test fixtures, never a real
@@ -1856,6 +1862,13 @@ class Orchestrator:
             exclude_tags=exclude_tags,
             top_n=top_n,
             file_back=file_back,
+            # F1 chart addendum (Critical #2): thread the caller's
+            # forced format into the inner synth call so the filed
+            # synthesis frontmatter's ``render_format`` matches the
+            # rendered body shape. Without this, an override from
+            # auto=md to --format=chart would file the synthesis with
+            # ``render_format: md`` while the renderer renders chart.
+            format_hint=format_hint,
         )
         # ``QueryAnswer`` is a regular (mutable) dataclass; the F19
         # synthesizer emits ``format_hint`` and the F1 CLI override
