@@ -1795,7 +1795,7 @@ class Orchestrator:
     def run_query_with_format(
         self,
         question: str,
-        format_hint: Literal["md", "table", "marp"] = "md",
+        format_hint: Literal["md", "table", "marp", "chart"] = "md",
         *,
         tag_expr: str | None = None,
         exclude_tags: list[str] | None = None,
@@ -1809,7 +1809,7 @@ class Orchestrator:
         # format_hint, *, file_back, ...)``. Accept both spellings
         # so the integration tests (and any out-of-branch caller
         # that pre-dates the rename) keep their surface.
-        cli_format: Literal["md", "table", "marp"] | None = None,
+        cli_format: Literal["md", "table", "marp", "chart"] | None = None,
         file: bool | None = None,
         force_file: bool | None = None,
     ) -> QueryAnswer:

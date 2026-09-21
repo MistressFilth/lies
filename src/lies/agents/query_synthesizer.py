@@ -28,7 +28,7 @@ class QueryAnswer:
     should_file: bool
     """True if the answer is worth keeping as a new wiki page."""
 
-    format_hint: Literal["md", "table", "marp"] = "md"
+    format_hint: Literal["md", "table", "marp", "chart"] = "md"
     """The auto-routed format. Default "md" keeps existing callers compiling.
 
     The synthesizer picks this at composition time based on the answer
@@ -60,7 +60,7 @@ class QueryAnswer:
     """
 
     @property
-    def format(self) -> Literal["md", "table", "marp"]:
+    def format(self) -> Literal["md", "table", "marp", "chart"]:
         """F1 back-compat alias for ``format_hint``.
 
         The pre-F18 ``SynthesizedAnswer`` surface named the validated

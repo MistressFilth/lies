@@ -80,7 +80,7 @@ class SynthesizedAnswer:
     question: str = ""
     file_receipt: MemoryReceipt | None = None
     searched_scope: list[str] = field(default_factory=list)
-    format: Literal["md", "table", "marp"] = "md"
+    format: Literal["md", "table", "marp", "chart"] = "md"
 
     def __post_init__(self) -> None:
         """Coerce ``claim_citations`` into the declared tuple shape.

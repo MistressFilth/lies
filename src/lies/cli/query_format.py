@@ -1,6 +1,6 @@
 """``--format`` flag + render dispatch for ``lies query``.
 
-Adds the ``--format=auto|md|table|marp`` flag to the ``query`` command.
+Adds the ``--format=auto|md|table|marp|chart`` flag to the ``query`` command.
 Default is ``auto`` (the synthesizer's format_hint is the rendered
 format). Explicit values trigger the override path: if the
 synthesizer's hint differs, re-synthesize with a constrained prompt.
@@ -13,12 +13,12 @@ from typing import Literal, cast
 
 import typer
 
-FormatLiteral = Literal["auto", "md", "table", "marp"]
-_VALID_FORMATS = {"auto", "md", "table", "marp"}
+FormatLiteral = Literal["auto", "md", "table", "marp", "chart"]
+_VALID_FORMATS = {"auto", "md", "table", "marp", "chart"}
 
 
 def render_answer(
-    answer_format: Literal["md", "table", "marp"],
+    answer_format: Literal["md", "table", "marp", "chart"],
     body: str,
     *,
     output_dir: Path | None = None,
@@ -46,6 +46,24 @@ def render_answer(
         from lies.query.formats.table import render_table
 
         typer.echo(render_table(body))
+        return
+
+    if answer_format == "chart":
+        from lies.query.formats.chart import render_chart
+
+        rendered = render_chart(body)
+        if rendered != body:
+            typer.echo(rendered)
+            return
+        # Pass-through: the synth emitted no mermaid block. Surface
+        # the body unchanged and a stderr warning so the operator
+        # can re-query. Matches the override-failure warning shape
+        # at src/lies/cli/query.py:336-340.
+        typer.echo(rendered)
+        typer.echo(
+            "warning: --format=chart produced no mermaid block; emitted body unchanged.",
+            err=True,
+        )
         return
 
     # md

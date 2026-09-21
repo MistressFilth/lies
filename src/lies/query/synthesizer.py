@@ -599,7 +599,7 @@ def build_answer_from_pages(
     pages: list[PageRead],
     fallback_reason: str,
     *,
-    format_hint: Literal["md", "table", "marp"] = "md",
+    format_hint: Literal["md", "table", "marp", "chart"] = "md",
 ) -> SynthesizedAnswer:
     """Assemble the final SynthesizedAnswer from already-retrieved ``pages``.
 

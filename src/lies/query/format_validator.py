@@ -120,13 +120,14 @@ def _validate_marp(body: str) -> bool:
 
 def validate_format(
     body: str,
-    hint: Literal["md", "table", "marp"],
-) -> Literal["md", "table", "marp"]:
+    hint: Literal["md", "table", "marp", "chart"],
+) -> Literal["md", "table", "marp", "chart"]:
     """Validate ``hint`` against ``body``; silently demote to "md" on failure.
 
     The body is preserved unchanged; the returned hint is what callers
     should use downstream (the CLI render path, the MCP wire format,
-    the file-back frontmatter).
+    the file-back frontmatter). ``"chart"`` is validator-bypass: the
+    renderer extracts the mermaid block, no body-shape check.
     """
     if hint == "md":
         return "md"
@@ -134,6 +135,8 @@ def validate_format(
         return "table" if _validate_table(body) else "md"
     if hint == "marp":
         return "marp" if _validate_marp(body) else "md"
+    if hint == "chart":
+        return "chart"
     return "md"
 
 
