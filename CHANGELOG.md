@@ -6,6 +6,17 @@ All notable changes to LIES are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.34.0] - 2026-09-20
+
+### Added
+
+- **`ground` MCP tool + Python function.** Returns an `ArchivistDigest`
+  carrying up to 3 CitationSnippet entries (≤200 chars each) drawn
+  from the LIES wiki collections via the F18 librarian. Caller
+  renders as `[[slug]]: "snippet"` per ask's grounding form. New
+  module `src/lies/mcp/grounding.py`. Tight per-page snippet so the
+  agent can verify corpus coverage before reasoning.
+
 ## [0.33.0] - 2026-09-20
 
 ### Added

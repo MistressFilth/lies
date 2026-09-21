@@ -75,8 +75,11 @@ src/lies/
 │   └── migrate_collection_configs.py  # `lies migrate-collection-configs`
 ├── mcp/             # FastMCP server (src/lies/mcp/server.py) — thin adapter
 │                    # around WikiMemoryService; tools: init_wiki, ingest_source,
-│                    # query, lint, wiki_search, wiki_read; resources include
+│                    # query, lint, ground, wiki_search, wiki_read,
+│                    # file_knowledge, reindex; resources include
 │                    # wiki://catalog and wiki://catalog/{slug}
+│   ├── grounding.py # F19 grounding archivist (CitationSnippet + ArchivistDigest
+│   │                # + truncate_at_word_boundary + pick_first_prose_span + ground())
 │   └── daemon.py    # pidfile lifecycle for `lies mcp up/down/status`
 ├── memory/          # invisible-memory layer (see below)
 │   ├── catalog.py   # sqlite wiki catalog: schema + CRUD + rebuild_from_disk
@@ -191,6 +194,46 @@ section using the `[[slug]] (Heading > Subheading): "verbatim"`
 form. The `_render_evidence` helper guarantees the section exists
 and is well-formed per the F17 page-type schema contract. Spec:
 `~/code/project-notes/lies/superpowers/specs/2026-09-19-tier2-query-path-design.md`.
+
+## Grounding archivist
+
+`src/lies/mcp/grounding.py` exposes a tight, snippet-only view of the
+corpus so the agent can verify coverage before reasoning. It reuses
+the F18 librarian (shipped at v0.33.0) — `ground()` calls the
+librarian, trims each excerpt to ≤200 chars at a word boundary, and
+returns the bundle as an `ArchivistDigest` shaped for
+`[[slug]]: "snippet"` rendering (NOT F19's long
+`[[slug]]: "verbatim"` form).
+
+The module exports:
+
+- **`CitationSnippet(collection, slug, title, snippet)`** — frozen
+  dataclass, one entry per retrieved excerpt. `collection` is
+  `"wiki"` or a library-collection name; `slug` is the bare slug
+  (e.g. `"concepts/pydantic"`); `snippet` is the first ≤200 chars
+  of the first prose span.
+- **`ArchivistDigest(question, tag_expr, exclude_tags, citations,
+  no_coverage, distinct_pages)`** — frozen dataclass. `no_coverage`
+  is true only when the librarian dispatch fails; the F15 coverage
+  gate is the typed `ArchivistCoverageError` raised on unknown
+  include tags (translated to `ToolError` at the MCP layer).
+- **`ArchivistCoverageError`** — raised on unknown tag or unparseable
+  include expression. The MCP `ground` tool catches it and re-raises
+  as a `ToolError` so LLM callers can react.
+- **`truncate_at_word_boundary(text, max_chars)`** — cuts at the last
+  whitespace ≤ `max_chars`; hard-cuts when the candidate has no
+  whitespace. The library is `str.isspace()`-aware (handles spaces,
+  tabs, newlines, and other ASCII whitespace classes).
+- **`pick_first_prose_span(spans)`** — first non-code-fence,
+  non-empty `Span` from the F37 span list.
+- **`ground(question, tag_expr, exclude_tags, top_k)`** — top-level
+  orchestrator. `top_k` is clamped to `[1, 10]`. No LLM call in this
+  module; the librarian owns the model dispatch.
+
+The MCP tool (`@mcp.tool(name="ground")` in `src/lies/mcp/server.py`)
+wraps `ground()` and returns the digest via `dataclasses.asdict` for
+JSON-serializable wire format. Spec:
+`~/code/project-notes/lies/superpowers/specs/2026-09-20-grounding-archivist-design.md`.
 
 ## Quality gates
 

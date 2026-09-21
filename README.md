@@ -167,6 +167,14 @@ After registration, Claude Code sees these tools:
   verbatim (the structured `query` tool returns a JSON envelope that
   some surfaces hide behind collapsible blocks).
 - `lint(name?)` — health-check the wiki.
+- `ground(question, tag_expr?, exclude_tags?, top_k=3)` — return a
+  grounding digest (`ArchivistDigest`) carrying up to `top_k`
+  `CitationSnippet` entries of ≤200 chars each, drawn from LIES
+  wiki collections via the F18 librarian. Caller renders each
+  snippet inline as `[[slug]]: "snippet"` so the agent can verify
+  corpus coverage before reasoning. New module
+  `src/lies/mcp/grounding.py`. See the
+  [Grounding archivist](#grounding-archivist) section below.
 - `migrate_xdg(legacy_path, name)` — one-shot bridge from legacy `<wiki>/.lies/` to XDG.
 
 …and these resources:
@@ -229,6 +237,59 @@ The data shapes that flow through this path:
 - `LibrarianDeps`, `PageExcerpt`, `LibrarianOutput` — F18.
 
 Spec: `~/code/project-notes/lies/superpowers/specs/2026-09-19-tier2-query-path-design.md`.
+
+## Grounding archivist
+
+The `ground` MCP tool (and its Python sibling
+`lies.mcp.grounding.ground`) is the F19 grounding digest: a tight,
+snippet-only view of the corpus so the agent can verify coverage
+before reasoning. It reuses the F18 librarian that the Tier 2 query
+path already runs — `ground` calls the librarian, trims each excerpt
+to ≤200 chars at a word boundary, and returns the bundle as a
+`ArchivistDigest` shaped for `[[slug]]: "snippet"` rendering.
+
+The MCP tool signature:
+
+```python
+ground(
+    question: str,
+    tag_expr: str | None = None,    # F15 include body, no leading sigil
+    exclude_tags: list[str] | None = None,  # F15 NOT atoms
+    top_k: int = 3,                 # clamped to [1, 10]
+) -> dict                            # ArchivistDigest.asdict()
+```
+
+The returned `ArchivistDigest` carries:
+
+- `question`, `tag_expr`, `exclude_tags` — echoed back for caller
+  verification.
+- `citations: list[CitationSnippet]` — one entry per retrieved
+  excerpt. Each carries `(collection, slug, title, snippet)` where
+  `snippet` is the first ≤200 chars of the first prose span.
+- `no_coverage: bool` — true when the librarian dispatch fails (caller
+  may retry untagged or surface). Empty excerpts on a successful
+  dispatch leave `no_coverage=False`; the F15 coverage gate is the
+  `ArchivistCoverageError` raised on unknown include tags.
+- `distinct_pages: int` — `len({c.slug for c in citations})`.
+
+The new module `src/lies/mcp/grounding.py` exports:
+
+- `CitationSnippet(collection, slug, title, snippet)` — frozen dataclass.
+- `ArchivistDigest(question, tag_expr, exclude_tags, citations,
+  no_coverage, distinct_pages)` — frozen dataclass.
+- `ArchivistCoverageError` — typed error for unknown tag / unparseable
+  include. The MCP tool translates it to a `ToolError` so LLM callers
+  can react.
+- `truncate_at_word_boundary(text, max_chars)` — word-boundary trim
+  helper (cuts at the last whitespace ≤ `max_chars`; hard-cuts when
+  the candidate has no whitespace).
+- `pick_first_prose_span(spans)` — first non-code-fence, non-empty
+  span from the F37 span list.
+- `ground(question, tag_expr, exclude_tags, top_k)` — top-level
+  orchestrator. No LLM call in the module itself; the librarian owns
+  the model dispatch.
+
+Spec: `~/code/project-notes/lies/superpowers/specs/2026-09-20-grounding-archivist-design.md`.
 
 ## Page authoring
 
