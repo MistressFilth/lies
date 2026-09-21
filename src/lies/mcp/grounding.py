@@ -4,6 +4,10 @@ Wraps the F18 librarian (shipped at v0.33.0) to return a tight
 grounding digest: up to ``top_k`` CitationSnippet entries (≤200
 chars each), keyed by bare slug for ``[[slug]]: "snippet"``
 rendering. Reuses the F37 span parser and F15 tag-filter dispatch.
+``ArchivistDigest.no_coverage`` flows directly from the F18
+``LibrarianOutput.no_coverage`` bundle field — the catalog probe
+that previously fed it has been retired in favor of the librarian's
+own scope-miss signal.
 
 The MCP tool wrapper around :func:`ground` ships in Task 3. This
 file holds the library function plus the :class:`CitationSnippet`,
@@ -56,8 +60,10 @@ class ArchivistDigest:
         tag_expr: Chosen union (``None`` when untagged).
         exclude_tags: NOT tags the caller passed through.
         citations: Snippets, one per retrieved excerpt.
-        no_coverage: True when the corpus is non-empty AND no hits
-            landed (scope miss on a populated wiki).
+        no_coverage: True when the F18 librarian's bundle reports a
+            scope miss on a populated wiki (corpus non-empty AND no
+            hits landed). Source-of-truth is the librarian's
+            ``LibrarianOutput.no_coverage`` field as of F18 Task 2.
         distinct_pages: ``len({c.slug for c in citations})``.
     """
 
@@ -352,24 +358,12 @@ def ground(
             )
         )
 
-    # ``no_coverage`` per the F19 ground-shape contract (spec §2):
-    # ``True`` when the corpus is non-empty AND no hits landed — the
-    # scope-miss-on-populated-wiki case that distinguishes a populated
-    # wiki that lacks the topic from an empty corpus. ``LibrarianOutput``
-    # at v0.33.0 lacks a ``corpus_page_count`` field, so the ground
-    # function probes the catalog directly. The probe is best-effort:
-    # any failure (wiki unresolvable, catalog unreadable, missing
-    # wiki_dir) leaves ``no_coverage=False`` rather than raising — the
-    # dispatch-exception branch above already handled the hard-error
-    # case. Helper is module-scope so tests can monkeypatch it without
-    # touching the catalog.
-    no_coverage = False
-    if not citations:
-        try:
-            corpus_size = _corpus_page_count()
-        except Exception:
-            corpus_size = 0
-        no_coverage = corpus_size > 0
+    # ``no_coverage`` per the F18 Task 2 contract: the value flows
+    # directly from the librarian's ``LibrarianOutput.no_coverage``
+    # bundle field. The librarian is the source of truth for the
+    # scope-miss signal — the catalog probe that previously fed this
+    # branch has been retired in favor of the F18 bundle field.
+    no_coverage = out.no_coverage
 
     return ArchivistDigest(
         question=question,
@@ -379,29 +373,3 @@ def ground(
         no_coverage=no_coverage,
         distinct_pages=len({c.slug for c in citations}),
     )
-
-
-def _corpus_page_count() -> int:
-    """Return the active wiki's wiki-section page count.
-
-    Probes ``<wiki_dir>/.lies/catalog.db`` for ``section='wiki'``
-    rows. The wiki section is the right corpus for the grounding
-    digest — library mirrors live under ``section='ingested'`` and
-    are not the wiki corpus. Best-effort: any exception (wiki not
-    registered, catalog unreadable, no active wiki) propagates and
-    the caller falls back to ``no_coverage=False``.
-
-    Lazy-imported dependencies keep this helper off the bare
-    pydantic_ai / fastmcp import path so ``ground()`` is cheap on
-    the happy path.
-    """
-    from lies.mcp.resolution import resolve_wiki
-    from lies.memory.catalog import list_pages, open_catalog
-    from lies.memory.catalog_models import PageSection
-
-    wiki = resolve_wiki()
-    conn = open_catalog(wiki)
-    try:
-        return len(list_pages(conn, section=PageSection.wiki))
-    finally:
-        conn.close()
