@@ -113,7 +113,7 @@ def library_has_no_collections() -> bool:
 
 @lru_cache(maxsize=1)
 def library_collection_names() -> frozenset[str]:
-    """Sorted tuple of every addressable library-collection directory name.
+    """Sorted frozenset of every addressable library-collection directory name.
 
     The addressable-tag set for the resolver. Empty when the library
     is uninitialized or empty. Sorted for deterministic error messages.

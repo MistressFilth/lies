@@ -216,6 +216,13 @@ def ground(
             # changes.
             resolve(include_ast, available=set(library_collection_names()))
         except TagExprUnknown as exc:
+            # ``library_collection_names`` already returns a sorted
+            # frozenset (see ``lies.library.registry``), so the
+            # ``sorted(...)`` here is a no-op-on-shape defense against
+            # future cache-shape changes — and ``exc.available`` (the
+            # resolver's set of every known atom) is unsorted by
+            # contract, so we sort it for the deterministic error
+            # envelope below.
             available = (
                 sorted(exc.available) if exc.available else sorted(library_collection_names())
             )
