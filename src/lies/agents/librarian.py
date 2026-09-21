@@ -14,6 +14,7 @@ the librarian returns.
 
 from __future__ import annotations
 
+import contextvars
 import json
 import re
 from dataclasses import dataclass
@@ -70,12 +71,35 @@ class LibrarianOutput:
 
     The librarian does NOT write the answer; the main agent holds
     the cited synthesis.
+
+    Attributes:
+        no_coverage: F18 Task 1 — set by the orchestrator's dispatch
+            site from the :data:`librarian_no_coverage` ContextVar
+            that ``_wiki_search`` populates. ``True`` when the
+            search result carries the flag, signalling a scope miss
+            on a populated wiki. Defaults to ``False`` so existing
+            ``LibrarianOutput(...)`` construction sites and frozen-
+            dataclass consumers stay back-compat.
     """
 
     tag_expr: str | None
     exclude_tags: list[str]
     excerpts: list[PageExcerpt]
     distinct_pages: int
+    no_coverage: bool = False
+
+
+# F18 Task 1 — module-scope ContextVar that ``_wiki_search``
+# populates from the search result's ``no_coverage`` flag and the
+# orchestrator's dispatch site copies onto the returned
+# :class:`LibrarianOutput`. Default ``False`` so any code path that
+# never touches ``_wiki_search`` (canned-answer test fixtures, the
+# exception branch in :func:`lies.mcp.grounding.ground`) reports
+# coverage rather than raising.
+librarian_no_coverage: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "librarian_no_coverage",
+    default=False,
+)
 
 
 # Validator workaround — qmd's validateSemanticQuery guard rejects
@@ -267,9 +291,20 @@ def register_librarian_tools(
 
         Wraps :meth:`WikiMemoryService.search` so the authenticated
         evidence set threads into the librarian's run state.
+
+        F18 Task 1 — also captures the result's ``no_coverage`` flag
+        into the module-scope :data:`librarian_no_coverage`
+        ContextVar. The dispatch site (orchestrator's ``run_query``)
+        reads the ContextVar after ``run_sync`` returns and copies
+        the value onto the returned :class:`LibrarianOutput` via
+        :func:`dataclasses.replace`. Defaults to ``False`` when the
+        underlying ``WikiSearchResult`` doesn't carry the flag yet
+        (F18 Task 2/3 surfaces it; Task 1 just plumbs the path).
         """
         result = memory_service.search(question, limit=limit)
-        return cast(dict[str, object], result.model_dump())
+        dumped = result.model_dump()
+        librarian_no_coverage.set(bool(dumped.get("no_coverage", False)))
+        return cast(dict[str, object], dumped)
 
     def _wiki_read(
         ctx: RunContext[LibrarianDeps],
