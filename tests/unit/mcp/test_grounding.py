@@ -149,17 +149,11 @@ def test_ground_returns_empty_digest_on_librarian_exception(monkeypatch) -> None
     """Librarian dispatch failure → no_coverage=True, citations=[]."""
     from lies.mcp import grounding
 
-    def boom(deps):
-        raise RuntimeError("qmd daemon offline")
-
     class _BoomAgent:
-        def __init__(self, fn):
-            self._fn = fn
+        def run_sync(self, user_prompt, *, deps):
+            raise RuntimeError("qmd daemon offline")
 
-        def run_sync(self, deps):
-            return self._fn(deps)
-
-    monkeypatch.setattr(grounding, "librarian_agent", lambda: _BoomAgent(boom))
+    monkeypatch.setattr(grounding, "librarian_agent", lambda: _BoomAgent())
 
     digest = grounding.ground("what is pydantic?")
     assert digest.no_coverage is True
@@ -180,17 +174,11 @@ def test_ground_librarian_exception_emits_no_logfire_warning(monkeypatch, recwar
     """
     from lies.mcp import grounding
 
-    def boom(deps):
-        raise RuntimeError("qmd daemon offline")
-
     class _BoomAgent:
-        def __init__(self, fn):
-            self._fn = fn
+        def run_sync(self, user_prompt, *, deps):
+            raise RuntimeError("qmd daemon offline")
 
-        def run_sync(self, deps):
-            return self._fn(deps)
-
-    monkeypatch.setattr(grounding, "librarian_agent", lambda: _BoomAgent(boom))
+    monkeypatch.setattr(grounding, "librarian_agent", lambda: _BoomAgent())
 
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
