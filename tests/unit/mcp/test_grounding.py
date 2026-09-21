@@ -17,6 +17,26 @@ from lies.mcp.grounding import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _silence_wiring_skipped_warning() -> None:
+    """Silence the ``ground: tool wiring skipped`` warning by default.
+
+    The pre-Fix-Critical-era test surface monkey-patches
+    ``grounding.librarian_agent`` to fake the dispatch; those tests
+    don't set up a registered wiki, so the new tool-wiring path
+    (``register_librarian_tools`` → ``resolve_wiki``) raises
+    ``WikiNotRegistered`` and emits a UserWarning. Suppress that
+    specific warning here so the existing tests stay quiet. Tests
+    that explicitly exercise the wiring path opt back in via
+    ``warnings.catch_warnings()``.
+    """
+    warnings.filterwarnings(
+        "ignore",
+        message=r"^ground: tool wiring skipped\b",
+        category=UserWarning,
+    )
+
+
 def test_truncate_at_word_boundary_short_text_unchanged() -> None:
     text = "Short text under the cap."
     assert truncate_at_word_boundary(text, 200) == text

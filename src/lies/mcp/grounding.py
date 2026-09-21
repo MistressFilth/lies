@@ -140,6 +140,8 @@ def ground(
     tag_expr: str | None = None,
     exclude_tags: "list[str] | None" = None,
     top_k: int = 3,
+    *,
+    wiki_name: str | None = None,
 ) -> ArchivistDigest:
     """Return a grounding digest for ``question``.
 
@@ -159,6 +161,11 @@ def ground(
         top_k: Maximum excerpts requested from the librarian (clamped
             to ``[1, 10]``). The librarian honors the request;
             ``ground`` does not re-truncate its output.
+        wiki_name: Optional wiki name to resolve against. Defaults to
+            the env-default (``LIES_WIKI_NAME`` or ``"default"``).
+            Tests pass an explicit name so the dispatch layer hits
+            a known fixture wiki; production callers leave it
+            ``None``.
 
     Returns:
         :class:`ArchivistDigest` carrying the librarian's excerpts
@@ -199,6 +206,14 @@ def ground(
         except (TagExprParseError, TagExprEmpty) as exc:
             raise ArchivistCoverageError(f"invalid tag expression: {exc}") from exc
         try:
+            # The registry's lru_cache is populated with a ``frozenset``
+            # so the resolver's ``available=set(...)`` materialization
+            # does not mutate the cache. ``sorted`` re-orders for the
+            # deterministic error-message envelope below — the cache
+            # itself is already an ordered frozenset so re-sorting is
+            # redundant on the happy path but cheap (small N) and keeps
+            # the error message stable against future cache-shape
+            # changes.
             resolve(include_ast, available=set(library_collection_names()))
         except TagExprUnknown as exc:
             available = (
@@ -215,7 +230,42 @@ def ground(
     from lies.agents.librarian import (
         LibrarianDeps,
         LibrarianOutput,
+        register_librarian_tools,
     )
+
+    # Construct the librarian agent and wire its tools BEFORE run_sync.
+    # The bare factory emits ``Agent(tools=[])`` so an unwired agent
+    # has no tools; the F18 4-step contract (classify → search → read
+    # → return) cannot run, and the LLM either emits an empty digest
+    # or attempts the named tools and crashes — the dispatch-exception
+    # branch below would then return ``no_coverage=True``. Wiring the
+    # active wiki's ``WikiMemoryService`` lets the librarian's
+    # ``wiki_search`` / ``wiki_read`` / ``wiki_catalog`` closures see
+    # the per-wiki context.
+    #
+    # Tool wiring is best-effort: when the active wiki cannot be
+    # resolved (no wiki registered, XDG misconfigured) the agent
+    # falls back to the bare-agent path and the dispatch-exception
+    # branch handles any tool-side failure. The user-visible signal
+    # flows through stdlib ``warnings`` so a non-configured logfire
+    # environment does not emit ``LogfireNotConfiguredWarning`` noise.
+    agent = librarian_agent()
+    try:
+        from lies.mcp.resolution import resolve_wiki
+        from lies.memory.service import WikiMemoryService
+
+        resolved_wiki = resolve_wiki(wiki_name)
+        register_librarian_tools(
+            agent,
+            wiki=resolved_wiki,
+            memory_service=WikiMemoryService(resolved_wiki),
+        )
+    except Exception as wiring_exc:
+        warnings.warn(
+            f"ground: tool wiring skipped (bare agent will dispatch): "
+            f"{type(wiring_exc).__name__}: {wiring_exc}",
+            stacklevel=2,
+        )
 
     deps = LibrarianDeps(
         question=question,
@@ -225,7 +275,7 @@ def ground(
     )
 
     try:
-        librarian_result = librarian_agent().run_sync(question, deps=deps)
+        librarian_result = agent.run_sync(question, deps=deps)
         out: LibrarianOutput = librarian_result.output
     except Exception as exc:
         # The codebase's dominant warning surface for runtime

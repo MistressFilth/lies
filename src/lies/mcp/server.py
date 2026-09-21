@@ -112,6 +112,7 @@ def mcp_ground(
     tag_expr: str | None = None,
     exclude_tags: list[str] | None = None,
     top_k: int = 3,
+    name: str | None = None,
 ) -> dict:
     """Return a grounding digest for ``question``.
 
@@ -129,6 +130,11 @@ def mcp_ground(
             unchanged.
         top_k: Maximum excerpts requested from the librarian (clamped
             to ``[1, 10]``).
+        name: Wiki name to resolve against. Defaults to the
+            env-default (``LIES_WIKI_NAME`` or ``"default"``).
+            Threaded to :func:`ground` so the librarian's tool
+            closures bind to the named wiki's
+            :class:`WikiMemoryService`.
 
     Returns:
         A JSON-serializable :class:`ArchivistDigest` carrying up to
@@ -144,6 +150,7 @@ def mcp_ground(
             tag_expr=tag_expr,
             exclude_tags=exclude_tags,
             top_k=top_k,
+            wiki_name=name,
         )
     except ArchivistCoverageError as exc:
         raise ToolError(str(exc)) from exc
