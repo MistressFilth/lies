@@ -358,6 +358,70 @@ def test_ground_no_coverage_false_when_citations_present(monkeypatch) -> None:
     assert len(digest.citations) == 1
 
 
+def test_ground_library_collection_names_cached_across_calls(monkeypatch) -> None:
+    """Regression for Fix 5: library_collection_names memoization.
+
+    Pins that the F15 tag-filter dispatch path in ground() consults
+    the registry's lru_cache rather than re-traversing the library's
+    collections_root via iterdir on every call. Read
+    ``cache_info()`` after a sequence of calls: ``misses`` counts
+    how many times the underlying body actually ran (vs the
+    ``call_count`` if we had replaced the function outright, which
+    would lose the lru_cache wrapping).
+    """
+    from lies.agents.librarian import LibrarianOutput
+    from lies.library import registry
+    from lies.mcp import grounding
+
+    def fake_librarian(deps):
+        return LibrarianOutput(tag_expr=None, exclude_tags=[], excerpts=[], distinct_pages=0)
+
+    _patch_librarian(monkeypatch, grounding, fake_librarian)
+    # Make the underlying body return a stable, non-empty
+    # addressable-tag set so the resolver accepts the ``tag_expr``.
+    # Patching ``_collections_root`` is cleaner than swapping out
+    # the lru_cache-wrapped function (which would lose the cache
+    # itself and break the regression intent).
+    monkeypatch.setattr(registry, "_collections_root", lambda: _FakeRoot())
+    # Reset the cache so the assertion sees only this test's misses.
+    registry.library_collection_names.cache_clear()
+
+    grounding.ground("q")  # tag_expr=None — resolver path skipped
+    grounding.ground("q", tag_expr="a|b")  # resolver consults cache
+    grounding.ground("q", tag_expr="a")  # resolver hits cache
+
+    info = registry.library_collection_names.cache_info()
+    # One underlying body call regardless of how many ground()
+    # invocations crossed the resolver boundary. Without
+    # memoization, every ground() with a tag_expr would force a
+    # fresh iterdir.
+    assert info.misses == 1, f"expected 1 miss (memoized), got {info.misses}"
+
+
+class _FakeRoot:
+    """Fake Path-like for ``_collections_root`` in the cache test.
+
+    Exposes ``.exists()`` returning ``True`` and ``.iterdir()``
+    yielding two fake directory entries so
+    :func:`lies.library.registry.library_collection_names` walks a
+    stable, non-empty set without touching the real library.
+    """
+
+    def exists(self) -> bool:
+        return True
+
+    def iterdir(self):
+        return iter([_FakeEntry("a"), _FakeEntry("b")])
+
+
+class _FakeEntry:
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+    def is_dir(self) -> bool:
+        return True
+
+
 def _patch_librarian(monkeypatch, grounding_module, fake_fn):
     """Replace ``librarian_agent().run_sync(...)`` with ``fake_fn(deps)``.
 
