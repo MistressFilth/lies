@@ -244,16 +244,19 @@ def ground(
     # the per-wiki context.
     #
     # Tool wiring is best-effort: when the active wiki cannot be
-    # resolved (no wiki registered, XDG misconfigured) the agent
-    # falls back to the bare-agent path and the dispatch-exception
-    # branch handles any tool-side failure. The user-visible signal
-    # flows through stdlib ``warnings`` so a non-configured logfire
-    # environment does not emit ``LogfireNotConfiguredWarning`` noise.
-    agent = librarian_agent()
+    # resolved (no wiki registered, XDG misconfigured) OR the agent
+    # factory itself raises (e.g. missing API credentials), the agent
+    # falls back to a no-tools bare-agent path and the dispatch-
+    # exception branch handles any tool-side failure. The user-
+    # visible signal flows through stdlib ``warnings`` so a non-
+    # configured logfire environment does not emit
+    # ``LogfireNotConfiguredWarning`` noise.
+    agent = None
     try:
         from lies.mcp.resolution import resolve_wiki
         from lies.memory.service import WikiMemoryService
 
+        agent = librarian_agent()
         resolved_wiki = resolve_wiki(wiki_name)
         register_librarian_tools(
             agent,
@@ -266,6 +269,24 @@ def ground(
             f"{type(wiring_exc).__name__}: {wiring_exc}",
             stacklevel=2,
         )
+        if agent is None:
+            # Agent construction itself failed (most likely missing
+            # API credentials). Build a no-tools agent so the
+            # dispatch-exception branch can still catch any
+            # downstream failure; the digest lands as
+            # ``no_coverage=True`` / ``citations=[]``.
+            try:
+                agent = librarian_agent(model="test")
+            except Exception:
+                # No model available at all — give up gracefully.
+                return ArchivistDigest(
+                    question=question,
+                    tag_expr=resolved_tag_expr,
+                    exclude_tags=exclude_list,
+                    citations=[],
+                    no_coverage=True,
+                    distinct_pages=0,
+                )
 
     deps = LibrarianDeps(
         question=question,

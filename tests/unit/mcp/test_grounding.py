@@ -7,6 +7,7 @@ import warnings
 
 import pytest
 
+from lies.agents.librarian import LibrarianOutput
 from lies.markdown_spans import Span
 from lies.mcp.grounding import (
     ArchivistCoverageError,
@@ -460,3 +461,219 @@ def _patch_librarian(monkeypatch, grounding_module, fake_fn):
             return _FakeResult(fake_fn(deps))
 
     monkeypatch.setattr(grounding_module, "librarian_agent", lambda: _FakeAgent())
+
+
+# ---------------------------------------------------------------------------
+# Fix Critical regression pins
+# ---------------------------------------------------------------------------
+
+
+def _registered_tool_names(agent: object) -> list[str]:
+    """Collect the names of every tool registered on ``agent``.
+
+    Mirrors the helper in ``tests/unit/memory/test_tools.py`` —
+    pydantic-ai exposes the function toolset via ``agent.toolsets``;
+    iterating each toolset's ``tools`` mapping yields the registered
+    tool names. Inlined here so this test file does not import from
+    a sibling test module.
+    """
+    names: list[str] = []
+    for toolset in getattr(agent, "toolsets", []):
+        names.extend(getattr(toolset, "tools", {}).keys())
+    return sorted(set(names))
+
+
+def test_register_librarian_tools_attaches_three_tools(empty_wiki: object) -> None:
+    """Wiring attaches ``wiki_search`` / ``wiki_read`` / ``wiki_catalog``.
+
+    Pins the canonical wiring contract: ``register_librarian_tools``
+    is the single source of truth for the F18 4-step trio, used by
+    both the orchestrator (delegates from
+    ``Orchestrator._register_librarian_tools``) and the MCP-layer
+    ``ground()`` path. The pre-Fix-Critical-era surface left the
+    orchestrator as the only caller, so any non-orchestrator dispatch
+    (notably ``ground()``) reached the LLM with no tools at all.
+
+    Uses ``"test"`` as the model id so the bare agent factory does
+    not try to instantiate the Anthropic provider — the test only
+    inspects the tool registry, never runs ``run_sync``.
+    """
+    from lies.agents.librarian import librarian_agent, register_librarian_tools
+    from lies.memory.service import WikiMemoryService
+
+    agent = librarian_agent(model="test")
+    # Bare factory has no tools — the F19 ground-digest bug class.
+    assert _registered_tool_names(agent) == []
+
+    register_librarian_tools(
+        agent,
+        wiki=empty_wiki,  # type: ignore[arg-type]
+        memory_service=WikiMemoryService(empty_wiki),  # type: ignore[arg-type]
+    )
+
+    names = _registered_tool_names(agent)
+    assert "wiki_search" in names, f"expected wiki_search in {names}"
+    assert "wiki_read" in names, f"expected wiki_read in {names}"
+    assert "wiki_catalog" in names, f"expected wiki_catalog in {names}"
+
+
+def test_ground_wires_librarian_tools_before_run_sync(
+    monkeypatch: pytest.MonkeyPatch,
+    empty_wiki: object,
+) -> None:
+    """Regression: ``ground()`` must wire tools before dispatching.
+
+    Pins Fix Critical: ``src/lies/mcp/grounding.py:228`` called
+    ``librarian_agent().run_sync(...)`` directly with no wiring. The
+    bare factory emits ``Agent(tools=[])`` so the LLM received an
+    agent with no tools and the 4-step contract (classify → search
+    → read → return) could not run. ``ground()`` must call
+    :func:`register_librarian_tools` against the active wiki's
+    :class:`WikiMemoryService` BEFORE ``run_sync``.
+
+    The spy records every call to ``register_librarian_tools``;
+    the test asserts it was called once with non-null wiki /
+    memory_service kwargs and that the agent passed to the spy is
+    the same instance ``run_sync`` saw (so the wiring landed on
+    the dispatched agent).
+    """
+    from lies.agents import librarian as librarian_mod
+    from lies.mcp import grounding
+    from lies.mcp import resolution as resolution_mod
+
+    # ``resolve_wiki`` is the wiki-name → Wiki resolver. The
+    # ``empty_wiki`` fixture lives outside the XDG redirect, so
+    # patch the resolver to return it directly.
+    monkeypatch.setattr(
+        resolution_mod,
+        "resolve_wiki",
+        lambda name=None: empty_wiki,  # type: ignore[arg-type,return-value]
+    )
+
+    captured: list[dict[str, object]] = []
+
+    def spy(agent: object, *, wiki: object, memory_service: object) -> None:
+        captured.append({"agent": agent, "wiki": wiki, "memory_service": memory_service})
+
+    monkeypatch.setattr(librarian_mod, "register_librarian_tools", spy)
+
+    # Use the ``test`` model id so the bare factory does not try to
+    # instantiate the Anthropic provider. The fake ``run_sync``
+    # below short-circuits the model call entirely.
+    monkeypatch.setattr(librarian_mod, "librarian_agent", lambda model="test": _FakeAgent())
+
+    # Stub the agent factory + ``run_sync`` so we don't need a real
+    # model call. The factory returns a sentinel agent that the spy
+    # captures; ``run_sync`` records the agent instance so we can
+    # confirm the dispatched agent IS the wired one.
+    dispatched_agent: list[object] = []
+
+    class _FakeResult:
+        def __init__(self, output: object) -> None:
+            self.output = output
+
+    class _FakeAgent:
+        def run_sync(self, user_prompt: object, *, deps: object) -> _FakeResult:
+            dispatched_agent.append(self)
+            return _FakeResult(
+                LibrarianOutput(tag_expr=None, exclude_tags=[], excerpts=[], distinct_pages=0)
+            )
+
+    monkeypatch.setattr(grounding, "librarian_agent", lambda: _FakeAgent())
+
+    digest = grounding.ground("test question")
+
+    assert len(captured) == 1, f"register_librarian_tools was not called exactly once: {captured}"
+    assert captured[0]["wiki"] is not None
+    assert captured[0]["memory_service"] is not None
+    # The agent passed to the spy IS the one ``run_sync`` dispatched
+    # — the wiring landed on the dispatched agent.
+    assert dispatched_agent and dispatched_agent[0] is captured[0]["agent"]
+    # Digest shape is non-trivial even with zero excerpts: the
+    # dispatch-exception branch never fires (the spy succeeded), and
+    # the catalog-probe is best-effort.
+    assert digest.no_coverage is False
+    assert digest.question == "test question"
+
+
+def test_corpus_page_count_against_real_catalog(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``_corpus_page_count()`` exercises the real catalog (no monkeypatch).
+
+    Pins the F19 spec contract: the probe reads from
+    ``<wiki_dir>/.lies/catalog.db`` and counts ``section='wiki'``
+    rows. The deferred-fixes report flagged this gap explicitly —
+    the existing unit tests stubbed ``_corpus_page_count`` so the
+    probe's on-disk contract had no coverage.
+
+    Sets up a real wiki under the XDG redirect (so ``resolve_wiki()``
+    finds it via ``Wiki.require``) with one markdown page under
+    ``<data_root>/wiki/``; ``open_catalog`` seeds the catalog on
+    first open via ``rebuild_from_disk``.
+    """
+    import subprocess
+
+    from lies import xdg
+    from lies.constants import LIES_DATA_SUBDIR
+    from lies.mcp.grounding import _corpus_page_count
+
+    wiki_name = "probe-catalog"
+    data_root = xdg.data_home() / LIES_DATA_SUBDIR / wiki_name
+    data_root.mkdir(parents=True, exist_ok=True)
+    (data_root / "wiki").mkdir(parents=True, exist_ok=True)
+    # ``Wiki.require`` only checks ``data_root.exists()``; git state
+    # is irrelevant to the catalog probe. Init the repo so the
+    # working tree is in a healthy state for any follow-on calls.
+    subprocess.run(
+        ["git", "init", "--initial-branch=main", str(data_root)],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"],
+        cwd=data_root,
+        check=True,
+        capture_output=True,
+    )
+    # Write one markdown page — ``rebuild_from_disk`` will pick it
+    # up on the first ``open_catalog`` call.
+    (data_root / "wiki" / "concepts").mkdir(parents=True, exist_ok=True)
+    (data_root / "wiki" / "concepts" / "x.md").write_text(
+        "# X\n\nbody\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("LIES_WIKI_NAME", wiki_name)
+
+    count = _corpus_page_count()
+    assert count >= 1, f"expected at least 1 wiki-section page, got {count}"
+
+
+def test_ground_dispatch_failure_when_wiring_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Wiring failure → bare agent still dispatches → warning surfaces.
+
+    Pins the documented best-effort wiring contract: when wiki
+    resolution OR :class:`WikiMemoryService` construction fails,
+    ``ground()`` logs a stdlib ``UserWarning`` and falls back to a
+    no-tools bare-agent dispatch. The test asserts the warning
+    surfaces — the exact digest shape depends on the bare agent's
+    response, which the wiring failure explicitly does NOT control.
+    """
+    from lies.mcp import grounding
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        digest = grounding.ground("test question")
+
+    wiring_warns = [w for w in caught if "tool wiring skipped" in str(w.message)]
+    assert len(wiring_warns) >= 1, "expected a wiring-skipped warning"
+    # The wiring failure does NOT take down ``ground()`` — the bare
+    # agent dispatches and a digest (possibly non-empty under
+    # ``model='test'``) returns to the caller. We only pin the
+    # user-visible warning; the digest's content depends on the
+    # model response.
+    assert isinstance(digest, ArchivistDigest)
+    assert digest.question == "test question"

@@ -1,6 +1,6 @@
 """Integration tests for the ``ground`` MCP tool.
 
-Three round-trips through a real FastMCP ``Client``:
+Four round-trips through a real FastMCP ``Client``:
 
 1. ``ground`` is registered as a tool on the ``mcp`` server instance.
 2. Calling ``ground`` with a question returns a JSON-serialized
@@ -8,13 +8,19 @@ Three round-trips through a real FastMCP ``Client``:
 3. Calling ``ground`` with ``tag_expr="wiki"`` survives tag-filter
    dispatch (a ``wiki`` library collection is seeded) and surfaces
    only up to ``top_k`` citations.
+4. ``ground`` actually wires ``wiki_search`` / ``wiki_read`` /
+   ``wiki_catalog`` onto the librarian agent before dispatch — a
+   regression pin for the F19 Critical bug at
+   ``src/lies/mcp/grounding.py:228`` (Fix Critical; pre-fix the
+   ``ground`` tool emitted an empty digest in production).
 
-The librarian agent's ``run_sync`` is mocked at the
-``grounding.librarian_agent`` import seam so the test does not
-require a real model round-trip. The library's ``collections_root``
-is seeded with a ``wiki`` directory so the F15 tag-filter dispatch
-in :func:`ground` resolves ``+wiki`` without raising
-:class:`ArchivistCoverageError`.
+Tests 2 and 3 mock the librarian agent's ``run_sync`` at the
+``grounding.librarian_agent`` import seam so they do not require a
+real model round-trip. Test 4 uses pydantic-ai's ``TestModel`` so
+the wiring assertions land on a real :class:`Agent` instance. The
+library's ``collections_root`` is seeded with a ``wiki`` directory
+in test 3 so the F15 tag-filter dispatch in :func:`ground` resolves
+``+wiki`` without raising :class:`ArchivistCoverageError`.
 
 Gated on ``INTEGRATION=1`` per the integration conftest; the
 integration workflow in ``.github/workflows/`` runs with that env
@@ -168,3 +174,145 @@ async def test_ground_tool_with_tag_filter(
     # dispatched, classification verdict not "no coverage").
     assert data["tag_expr"] == "wiki"
     assert data["no_coverage"] is False
+
+
+async def test_ground_tool_wires_librarian_tools(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """End-to-end wiring: ``ground`` calls ``register_librarian_tools`` before dispatch.
+
+    Pins Fix Critical: the F19 ground tool MUST wire
+    ``wiki_search`` / ``wiki_read`` / ``wiki_catalog`` on the
+    librarian agent before invoking ``run_sync``. The pre-fix
+    surface called ``librarian_agent().run_sync(...)`` directly,
+    producing an agent with no tools and an empty digest in
+    production.
+
+    Drives a real FastMCP ``Client`` against ``mcp`` with:
+      - a registered wiki so ``resolve_wiki()`` resolves
+      - ``register_librarian_tools`` patched to a spy that captures
+        the agent's tool names before / after wiring
+      - ``WikiMemoryService`` patched to a stub that returns empty
+        results — ``TestModel`` may invoke the tools, but the
+        assertions pin wiring (not retrieval); a real
+        ``WikiMemoryService`` would force qmd state we don't need
+      - ``grounding.librarian_agent`` replaced with a real
+        ``librarian_agent(model="test")`` factory so the wiring
+        code's call lands on a real pydantic-ai agent
+
+    The test asserts the wiring ran (3 tools registered) and the
+    digest shape round-trips through the MCP tool envelope.
+    """
+    from lies.agents import librarian as librarian_mod
+    from lies.mcp import grounding
+    from lies.mcp import resolution as resolution_mod
+
+    # Set up a wiki at the XDG redirect path so ``resolve_wiki()``
+    # finds it via ``Wiki.require``. The autouse ``_isolated_xdg``
+    # fixture in ``tests/conftest.py`` redirected XDG into
+    # ``tmp_path``; the catalog probe below relies on a registered
+    # wiki so we seed one here.
+    from tests.conftest import make_wiki
+
+    wiki_root = xdg.data_home() / LIES_DATA_SUBDIR / "default"
+    wiki_root.mkdir(parents=True, exist_ok=True)
+    (wiki_root / "wiki").mkdir(parents=True, exist_ok=True)
+    # ``Wiki.require`` only checks ``data_root.exists()``; the
+    # catalog seed reads from disk so one markdown page is enough.
+    (wiki_root / "wiki" / "index.md").write_text("# Index\n", encoding="utf-8")
+    monkeypatch.setenv("LIES_WIKI_NAME", "default")
+    wiki = make_wiki(name="default", data_root=wiki_root)
+
+    monkeypatch.setattr(resolution_mod, "resolve_wiki", lambda name=None: wiki)
+
+    # ``WikiMemoryService.search`` is the wired tool's entry point
+    # for ``wiki_search``; ``TestModel`` may invoke it. Patch it to
+    # a stub that returns an empty result envelope so the tool call
+    # completes without touching qmd. The wiring assertions don't
+    # require any actual retrieval — only that the agent IS wired.
+    from lies.memory import service as service_mod
+    from lies.memory.models import WikiSearchResult
+
+    def stub_search(self: object, question: str, **kwargs: object) -> WikiSearchResult:
+        return WikiSearchResult(
+            query=question,
+            pages=[],
+            truncated=False,
+            fallback_used=False,
+            fallback_reason="stub",
+        )
+
+    monkeypatch.setattr(service_mod.WikiMemoryService, "search", stub_search)
+
+    def stub_read(self: object, page_ids: list[str]) -> dict[str, str]:
+        # Empty body envelope; ``TestModel`` may invoke this with
+        # arbitrary page_ids.
+        return {pid: "" for pid in page_ids}
+
+    monkeypatch.setattr(service_mod.WikiMemoryService, "read", stub_read)
+
+    captured: dict[str, object] = {}
+    original_register = librarian_mod.register_librarian_tools
+
+    def spy(agent: object, *, wiki: object, memory_service: object) -> None:
+        """Wrap ``register_librarian_tools`` so the test can inspect tool names.
+
+        The spy records the agent's tool names BEFORE delegating to
+        the real helper, then again AFTER, so the test pins both the
+        bare-agent empty-tools state and the wired-agent trio. The
+        real helper runs so the agent is genuinely wired (a fake
+        spy that skips registration would let the assertions pass
+        against an unwired agent and miss the regression).
+        """
+        if "agent_before" not in captured:
+            captured["agent_before"] = _registered_tool_names(agent)
+            captured["agent"] = agent
+        original_register(agent, wiki=wiki, memory_service=memory_service)
+        captured["agent_after"] = _registered_tool_names(agent)
+
+    monkeypatch.setattr(librarian_mod, "register_librarian_tools", spy)
+    # Build a real librarian agent (with the ``test`` model so the
+    # factory doesn't try to instantiate an Anthropic provider) —
+    # the spy captures the wiring on the agent this returns.
+    monkeypatch.setattr(
+        grounding,
+        "librarian_agent",
+        lambda model="test": librarian_mod.librarian_agent(model="test"),
+    )
+
+    async with Client(mcp) as client:
+        result = await client.call_tool(
+            "ground",
+            {"question": "what is pydantic?"},
+        )
+
+    # The bare agent had zero tools; wiring added the F18 trio.
+    assert captured["agent_before"] == []
+    assert "wiki_search" in captured["agent_after"]
+    assert "wiki_read" in captured["agent_after"]
+    assert "wiki_catalog" in captured["agent_after"]
+    # The digest envelope round-trips through the MCP tool wire.
+    data = result.data
+    assert "citations" in data
+    assert data["question"] == "what is pydantic?"
+    # ``no_coverage`` is computed against the corpus — the seeded
+    # wiki has one ``index.md`` (a system file excluded from the
+    # catalog), so the catalog has 0 wiki-section rows and
+    # ``no_coverage=False``. The exact shape depends on
+    # ``TestModel``'s canned output, but the envelope is intact.
+    assert "no_coverage" in data
+    assert "distinct_pages" in data
+
+
+def _registered_tool_names(agent: object) -> list[str]:
+    """Collect the names of every tool registered on ``agent``.
+
+    Mirrors the helper in ``tests/unit/memory/test_tools.py`` —
+    pydantic-ai exposes the function toolset via ``agent.toolsets``;
+    iterating each toolset's ``tools`` mapping yields the registered
+    tool names.
+    """
+    names: list[str] = []
+    for toolset in getattr(agent, "toolsets", []):
+        names.extend(getattr(toolset, "tools", {}).keys())
+    return sorted(set(names))
