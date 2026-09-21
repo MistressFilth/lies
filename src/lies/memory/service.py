@@ -51,7 +51,7 @@ from lies.memory.models import (
     WikiSearchResult,
     WikiWriteConflict,
 )
-from lies.memory.retrieval import _path_for_id, read_pages, search_wiki
+from lies.memory.retrieval import _no_coverage_flag, _path_for_id, read_pages, search_wiki
 from lies.memory.sidecar import append_log_entry
 from lies.memory.validation import (
     parse_frontmatter,
@@ -492,12 +492,19 @@ class WikiMemoryService:
 
         collection_id = self._wiki.name
         if collection_ids is not None and collection_id not in collection_ids:
+            # Filter-excluded: empty hits against this wiki. Apply the
+            # ``no_coverage`` contract from ``retrieval._no_coverage_flag``
+            # so the closure capture sees the same shape as a normal
+            # search — populated wiki that excluded itself from the
+            # caller's filter scope is the same "zero hits, non-empty
+            # corpus" condition.
             return WikiSearchResult(
                 query=question,
                 pages=[],
                 truncated=False,
                 fallback_used=False,
                 fallback_reason="collection_filtered",
+                no_coverage=_no_coverage_flag(self._wiki, []),
             )
         result = search_wiki(self._wiki, question, limit=limit)
         for page in result.pages:

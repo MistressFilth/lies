@@ -19,7 +19,12 @@ call site (CLI ``query`` / MCP ``query`` and ``answer`` / retriever's
 
   - :func:`library_collection_names` — sorted tuple of every
     addressable collection directory name. The resolver validates
-    each ``Include`` atom against this set.
+    each ``Include`` atom against this set. Memoized via
+    :func:`functools.lru_cache` so the per-call ``iterdir`` only runs
+    once per process; tools whose hot path calls this surface
+    (notably the F19 ``ground`` tool) avoid redundant disk reads.
+    Cache invalidates on process restart; the registry is small
+    enough that this is acceptable for long-running daemons.
 
   - :func:`library_initialized` — whether the library's
     ``collections_root`` exists on disk. The error surface names the
@@ -30,16 +35,16 @@ call site (CLI ``query`` / MCP ``query`` and ``answer`` / retriever's
     Lets the error surface tell the operator to ingest something
     rather than guess at tag spellings.
 
-All four primitives read the live filesystem; nothing is cached
-beyond :class:`Library.open`'s singleton — re-reading on every call
-is cheap (one ``iterdir`` over a few directories) and avoids
-stale-cache traps when the operator adds a new collection.
+All four primitives read the live filesystem at least once;
+:func:`library_collection_names` memoizes its result so the
+per-call disk walk runs only on the first invocation.
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterator
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 
 from lies.library.config_io import config_path_for
@@ -106,11 +111,22 @@ def library_has_no_collections() -> bool:
     return not any(entry.is_dir() for entry in root.iterdir())
 
 
+@lru_cache(maxsize=1)
 def library_collection_names() -> frozenset[str]:
-    """Sorted tuple of every addressable library-collection directory name.
+    """Sorted frozenset of every addressable library-collection directory name.
 
     The addressable-tag set for the resolver. Empty when the library
     is uninitialized or empty. Sorted for deterministic error messages.
+
+    Memoized via :func:`functools.lru_cache`: the first call walks
+    the library's ``collections_root`` once and returns a frozen
+    snapshot; subsequent calls return the cached snapshot without
+    re-traversing the disk. Cache invalidates on process restart —
+    acceptable because the registry is small and the hot paths
+    (F15 tag-filter dispatch, F19 ground tool, CLI query surface)
+    would otherwise re-do an ``iterdir`` on every invocation. The
+    test surface can clear the cache via
+    ``library_collection_names.cache_clear()``.
     """
     root = _collections_root()
     if not root.exists():

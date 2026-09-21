@@ -159,6 +159,49 @@ def _from_index(wiki: Wiki, question: str, limit: int) -> list[WikiEvidence]:
     return evidences
 
 
+def _corpus_page_count(wiki: Wiki) -> int:
+    """Return the wiki-section page count for ``wiki``.
+
+    Probes ``<wiki_dir>/.lies/catalog.db`` for ``section='wiki'``
+    rows. The wiki section is the right corpus for the search
+    no-coverage flag — library mirrors live under ``section='ingested'``
+    and are not the wiki corpus. Best-effort: any exception (wiki
+    unresolvable, catalog unreadable, missing ``wiki_dir``) propagates
+    and the caller falls back to ``no_coverage=False``.
+
+    Module-scope so tests can monkeypatch it without touching the
+    catalog. Mirrors :func:`lies.mcp.grounding._corpus_page_count`,
+    which serves the F19 ground-shape digest — keeping both paths off
+    one helper preserves the contract across surfaces.
+    """
+    from lies.memory.catalog import list_pages, open_catalog
+    from lies.memory.catalog_models import PageSection
+
+    conn = open_catalog(wiki)
+    try:
+        return len(list_pages(conn, section=PageSection.wiki))
+    finally:
+        conn.close()
+
+
+def _no_coverage_flag(wiki: Wiki, hits: list[WikiEvidence]) -> bool:
+    """Compute the ``no_coverage`` flag for a search result.
+
+    ``True`` when ``hits`` is empty AND the wiki corpus has at least
+    one page. ``False`` when the corpus is empty (an unpopulated wiki
+    is not a no-coverage signal) or when the search returned hits (a
+    successful query is never a no-coverage signal regardless of
+    corpus size). A catalog probe failure degrades to ``False`` —
+    fail-open rather than reporting a false positive.
+    """
+    if hits:
+        return False
+    try:
+        return _corpus_page_count(wiki) > 0
+    except Exception:  # noqa: BLE001 - fail-open: missed probes map to False
+        return False
+
+
 def search_wiki(
     wiki: Wiki,
     question: str,
@@ -180,6 +223,7 @@ def search_wiki(
             truncated=False,
             fallback_used=True,
             fallback_reason="empty_query",
+            no_coverage=_no_coverage_flag(wiki, []),
         )
     evidences, truncated, fallback_reason = _from_qmd(wiki, question, limit, qmd_search)
     if not evidences:
@@ -190,6 +234,7 @@ def search_wiki(
         truncated=truncated,
         fallback_used=bool(fallback_reason),
         fallback_reason=fallback_reason,
+        no_coverage=_no_coverage_flag(wiki, evidences),
     )
 
 

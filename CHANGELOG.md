@@ -6,6 +6,17 @@ All notable changes to LIES are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.34.0] - 2026-09-20
+
+### Added
+
+- **`ground` MCP tool + Python function.** Returns an `ArchivistDigest`
+  carrying up to 3 CitationSnippet entries (≤200 chars each) drawn
+  from the LIES wiki collections via the F18 librarian. Caller
+  renders as `[[slug]]: "snippet"` per ask's grounding form. New
+  module `src/lies/mcp/grounding.py`. Tight per-page snippet so the
+  agent can verify corpus coverage before reasoning.
+
 ## [0.33.0] - 2026-09-20
 
 ### Added
@@ -95,21 +106,27 @@ All notable changes to LIES are documented here. The format follows
   `lies lint --fix` (follow-up PR).
 - Hard-cutover for new synthesis only. No opt-in flag.
 
-## [Unreleased]
+## [0.31.0] - 2026-09-19
 
 ### Added
-- **F17 — Page-type conventions**: schema-declared required `## <Heading>`
-  sections per page type. Lint surfaces `missing_required_section`
-  findings (`safe_to_fix=False`); the writer (CLI/MCP) refuses writes
-  that omit required sections. Six page types covered (overview, entity,
-  concept, comparison, source, synthesis). Override per-wiki via
-  `<wiki>/schema.md`.
+
 - **F38 — Destructive-flag confirmation.**
   - `lies reindex --cleanup/--all/--force/--embed` flags restored (deleted in PR #17). `--cleanup` and `--all` are destructive and gated.
   - New MCP `reindex` tool with `destructiveHint=True` annotation. Mirrors the CLI surface; destructive flags gated via `ctx.elicit`.
   - `_confirm_destructive_cli` (CLI helper) and `_confirm_destructive` (MCP helper) for destructive-flag confirmation. CLI prompts `Confirm destructive reindex (<flag>)? [y/N]` on TTY; non-TTY refuses unless `--yes`. MCP uses FastMCP `ctx.elicit` with `_ConfirmDestructive { confirm, reason }` pydantic schema.
   - `_qmd_proc` subprocess seam for testability (Bundle E E.2 boundary discipline).
   - `ReindexResult` Pydantic model returned by `qmd_reindex` and the MCP `reindex` tool.
+
+## [0.30.0] - 2026-09-18
+
+### Added
+
+- **F17 — Page-type conventions**: schema-declared required `## <Heading>`
+  sections per page type. Lint surfaces `missing_required_section`
+  findings (`safe_to_fix=False`); the writer (CLI/MCP) refuses writes
+  that omit required sections. Six page types covered (overview, entity,
+  concept, comparison, source, synthesis). Override per-wiki via
+  `<wiki>/schema.md`.
 
 ## [0.29.0] - 2026-09-18
 

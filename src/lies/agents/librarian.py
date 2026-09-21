@@ -14,14 +14,21 @@ the librarian returns.
 
 from __future__ import annotations
 
+import contextvars
+import json
 import re
 from dataclasses import dataclass
+from typing import TYPE_CHECKING, cast
 
-from pydantic_ai import Agent
+from pydantic_ai import Agent, RunContext
 from pydantic_ai.models import Model
 
 from lies.agents.base import make_sub_agent
 from lies.markdown_spans import Span
+
+if TYPE_CHECKING:
+    from lies.memory.service import WikiMemoryService
+    from lies.wiki.wiki import Wiki
 
 
 @dataclass(frozen=True)
@@ -64,12 +71,35 @@ class LibrarianOutput:
 
     The librarian does NOT write the answer; the main agent holds
     the cited synthesis.
+
+    Attributes:
+        no_coverage: F18 Task 1 — set by the orchestrator's dispatch
+            site from the :data:`librarian_no_coverage` ContextVar
+            that ``_wiki_search`` populates. ``True`` when the
+            search result carries the flag, signalling a scope miss
+            on a populated wiki. Defaults to ``False`` so existing
+            ``LibrarianOutput(...)`` construction sites and frozen-
+            dataclass consumers stay back-compat.
     """
 
     tag_expr: str | None
     exclude_tags: list[str]
     excerpts: list[PageExcerpt]
     distinct_pages: int
+    no_coverage: bool = False
+
+
+# F18 Task 1 — module-scope ContextVar that ``_wiki_search``
+# populates from the search result's ``no_coverage`` flag and the
+# orchestrator's dispatch site copies onto the returned
+# :class:`LibrarianOutput`. Default ``False`` so any code path that
+# never touches ``_wiki_search`` (canned-answer test fixtures, the
+# exception branch in :func:`lies.mcp.grounding.ground`) reports
+# coverage rather than raising.
+librarian_no_coverage: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "librarian_no_coverage",
+    default=False,
+)
 
 
 # Validator workaround — qmd's validateSemanticQuery guard rejects
@@ -193,9 +223,11 @@ def librarian_agent(
 ) -> Agent[LibrarianDeps, LibrarianOutput]:
     """Construct the librarian subagent.
 
-    Tools: ``wiki_search``, ``wiki_read``, ``wiki_catalog``. Defined
-    by the orchestrator's tool registry — see
-    ``Orchestrator._register_librarian_tools``.
+    Tools: ``wiki_search``, ``wiki_read``, ``wiki_catalog``. Wired by
+    :func:`register_librarian_tools` — the bare factory emits an
+    ``Agent(tools=[])`` so any caller that omits wiring gets an agent
+    with no tools (the F19 ground-digest bug class). See
+    :func:`register_librarian_tools` for the canonical wiring path.
 
     Dispatches via ``run_sync(deps)`` (in-process, not harness
     await-async).
@@ -207,3 +239,117 @@ def librarian_agent(
         system_prompt=LIBRARIAN_SYSTEM_PROMPT,
     )
     return agent
+
+
+def register_librarian_tools(
+    agent: Agent[LibrarianDeps, LibrarianOutput],
+    *,
+    wiki: Wiki,
+    memory_service: WikiMemoryService,
+) -> None:
+    """Register ``wiki_search`` / ``wiki_read`` / ``wiki_catalog`` on the librarian agent.
+
+    Tools are defined per the librarian's 4-step contract
+    (classify → search → read → return). The closures bind ``wiki``
+    and ``memory_service`` so the librarian's deps type
+    (:class:`LibrarianDeps` — question / tag_expr / exclude_tags /
+    top_k) does not widen to carry the wiki context; the agent's
+    typed deps surface stays narrow while the tools see the full
+    per-wiki service.
+
+    Extracted from :meth:`Orchestrator._register_librarian_tools`
+    so MCP-layer call sites (notably :func:`lies.mcp.grounding.ground`,
+    which dispatches in-process rather than via the orchestrator) can
+    wire the same tools without instantiating an :class:`Orchestrator`.
+    The orchestrator's existing call site continues to delegate to
+    this helper so the wiring lives in exactly one place.
+
+    Call once per agent instance after construction. The underlying
+    pydantic-ai decorator raises on double-register with the same
+    name; callers that own an agent lifecycle (e.g. the orchestrator)
+    reuse the existing instance rather than re-wiring.
+
+    The brief's reference to ``wiki_knowledge`` (F19) is left for the
+    deeper F19 wiring pass — the F18 trio (search / read / catalog)
+    covers the 4-step contract as scoped in this task.
+    """
+    # Local imports — these pull in the catalog reader. The catalog
+    # reader sits behind the wiki-side import chain (``pydantic_ai``,
+    # ``fastmcp``), so deferring the import keeps the librarian
+    # module's cheap import cost. ``RunContext`` and the cast helper
+    # are at module scope so pydantic-ai's ``get_type_hints`` resolves
+    # the tool function annotations against the module globals.
+    from lies.memory.catalog import list_pages as _list_pages
+    from lies.memory.catalog import open_catalog as _open_catalog
+
+    def _wiki_search(
+        ctx: RunContext[LibrarianDeps],
+        question: str,
+        limit: int = 5,
+    ) -> dict[str, object]:
+        """Search this wiki for project knowledge relevant to ``question``.
+
+        Wraps :meth:`WikiMemoryService.search` so the authenticated
+        evidence set threads into the librarian's run state.
+
+        F18 Task 1 — also captures the result's ``no_coverage`` flag
+        into the module-scope :data:`librarian_no_coverage`
+        ContextVar. The dispatch site (orchestrator's ``run_query``)
+        reads the ContextVar after ``run_sync`` returns and copies
+        the value onto the returned :class:`LibrarianOutput` via
+        :func:`dataclasses.replace`. Defaults to ``False`` when the
+        underlying ``WikiSearchResult`` doesn't carry the flag yet
+        (F18 Task 2/3 surfaces it; Task 1 just plumbs the path).
+        """
+        result = memory_service.search(question, limit=limit)
+        dumped = result.model_dump()
+        librarian_no_coverage.set(bool(dumped.get("no_coverage", False)))
+        return cast(dict[str, object], dumped)
+
+    def _wiki_read(
+        ctx: RunContext[LibrarianDeps],
+        page_ids: list[str],
+    ) -> dict[str, str]:
+        """Read full page bodies for the given page IDs.
+
+        Thin wrapper around :meth:`WikiMemoryService.read` — IDs
+        must already be authenticated by ``wiki_search`` in the
+        same run.
+        """
+        return memory_service.read(page_ids)
+
+    def _wiki_catalog(ctx: RunContext[LibrarianDeps]) -> str:
+        """List every wiki catalog row as JSON.
+
+        Mirrors :func:`_wiki_catalog_impl` in the MCP server so
+        the librarian has the same registry view the catalog
+        MCP resource exposes to the main agent.
+        """
+        conn = _open_catalog(wiki)
+        try:
+            pages = _list_pages(conn)
+        finally:
+            conn.close()
+        return json.dumps([p.model_dump(mode="json") for p in pages], indent=2)
+
+    agent.tool(
+        name="wiki_search",
+        description=(
+            "Search this wiki for project knowledge relevant to a question. "
+            "Returns bounded evidence with page_id values that can be passed to wiki_read."
+        ),
+    )(_wiki_search)
+    agent.tool(
+        name="wiki_read",
+        description=(
+            "Read the full markdown body of wiki pages identified by page_id. "
+            "Accepts only IDs returned by a recent wiki_search call."
+        ),
+    )(_wiki_read)
+    agent.tool(
+        name="wiki_catalog",
+        description=(
+            "List every wiki catalog row as JSON. Each entry carries name, tags, "
+            "scope_keywords, and section. Use this for the classify step in the 4-step contract."
+        ),
+    )(_wiki_catalog)
