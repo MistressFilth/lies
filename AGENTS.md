@@ -74,10 +74,10 @@ src/lies/
 │   │                            # (list/show/where/new/modify/delete/enrich-tags)
 │   └── migrate_collection_configs.py  # `lies migrate-collection-configs`
 ├── mcp/             # FastMCP server (src/lies/mcp/server.py) — thin adapter
-│                    # around WikiMemoryService; tools: init_wiki, ingest_source,
-│                    # query, lint, ground, wiki_search, wiki_read,
-│                    # file_knowledge, reindex; resources include
-│                    # wiki://catalog and wiki://catalog/{slug}
+│                    # around WikiMemoryService; tools: init_wiki, query,
+│                    # answer, lint, ground, wiki_search, wiki_read,
+│                    # wiki_changes, file_knowledge, reindex; resources
+│                    # include wiki://catalog and wiki://catalog/{slug}
 │   ├── grounding.py # F19 grounding archivist (CitationSnippet + ArchivistDigest
 │   │                # + truncate_at_word_boundary + pick_first_prose_span + ground())
 │   └── daemon.py    # pidfile lifecycle for `lies mcp up/down/status`
