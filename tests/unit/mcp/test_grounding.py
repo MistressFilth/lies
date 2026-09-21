@@ -230,6 +230,81 @@ def test_ground_no_coverage_distinguishes_empty_corpus_from_scope_miss(monkeypat
     assert digest.distinct_pages == 0
 
 
+def test_ground_no_coverage_true_when_corpus_non_empty_but_no_hits(monkeypatch) -> None:
+    """Catalog has wiki pages but librarian returns 0 excerpts → no_coverage=True.
+
+    Pins the F19 spec contract: ``no_coverage=True`` distinguishes the
+    scope-miss-on-populated-wiki case (``corpus_size > 0`` AND zero
+    excerpts) from the empty-corpus case (catalog unreadable or
+    ``corpus_size == 0``). ``ground()`` probes the catalog through
+    :func:`lies.mcp.grounding._corpus_page_count`, which is
+    monkeypatched here to avoid touching the real sqlite catalog.
+    """
+    from lies.agents.librarian import LibrarianOutput
+    from lies.mcp import grounding
+
+    def fake_librarian(deps):
+        return LibrarianOutput(tag_expr=None, exclude_tags=[], excerpts=[], distinct_pages=0)
+
+    _patch_librarian(monkeypatch, grounding, fake_librarian)
+    monkeypatch.setattr(grounding, "_corpus_page_count", lambda: 5)
+    digest = grounding.ground("q")
+    assert digest.no_coverage is True
+    assert digest.citations == []
+
+
+def test_ground_no_coverage_false_when_corpus_also_empty(monkeypatch) -> None:
+    """Both catalog empty AND librarian returns 0 excerpts → no_coverage=False."""
+    from lies.agents.librarian import LibrarianOutput
+    from lies.mcp import grounding
+
+    def fake_librarian(deps):
+        return LibrarianOutput(tag_expr=None, exclude_tags=[], excerpts=[], distinct_pages=0)
+
+    _patch_librarian(monkeypatch, grounding, fake_librarian)
+    monkeypatch.setattr(grounding, "_corpus_page_count", lambda: 0)
+    digest = grounding.ground("q")
+    assert digest.no_coverage is False
+    assert digest.citations == []
+
+
+def test_ground_no_coverage_false_when_corpus_probe_raises(monkeypatch) -> None:
+    """Catalog probe exception → no_coverage=False (fail-open)."""
+    from lies.agents.librarian import LibrarianOutput
+    from lies.mcp import grounding
+
+    def fake_librarian(deps):
+        return LibrarianOutput(tag_expr=None, exclude_tags=[], excerpts=[], distinct_pages=0)
+
+    _patch_librarian(monkeypatch, grounding, fake_librarian)
+
+    def boom() -> int:
+        raise RuntimeError("catalog unreadable")
+
+    monkeypatch.setattr(grounding, "_corpus_page_count", boom)
+    digest = grounding.ground("q")
+    assert digest.no_coverage is False
+    assert digest.citations == []
+
+
+def test_ground_no_coverage_false_when_citations_present(monkeypatch) -> None:
+    """Citations present → no_coverage=False even if corpus probe returns >0."""
+    from lies.agents.librarian import LibrarianOutput, PageExcerpt
+    from lies.markdown_spans import Span
+    from lies.mcp import grounding
+
+    def fake_librarian(deps):
+        spans = [Span(heading_path=[], body="x", code_fence=False, start_line=1)]
+        excerpts = [PageExcerpt(collection="wiki", slug="x", title="X", spans=spans)]
+        return LibrarianOutput(tag_expr=None, exclude_tags=[], excerpts=excerpts, distinct_pages=1)
+
+    _patch_librarian(monkeypatch, grounding, fake_librarian)
+    monkeypatch.setattr(grounding, "_corpus_page_count", lambda: 5)
+    digest = grounding.ground("q")
+    assert digest.no_coverage is False
+    assert len(digest.citations) == 1
+
+
 def _patch_librarian(monkeypatch, grounding_module, fake_fn):
     """Replace ``librarian_agent().run_sync(...)`` with ``fake_fn(deps)``.
 

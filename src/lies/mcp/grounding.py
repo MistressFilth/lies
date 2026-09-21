@@ -267,17 +267,56 @@ def ground(
             )
         )
 
-    # ``LibrarianOutput`` does not carry a ``no_coverage`` field at
-    # v0.33.0 — that flag is the librarian's classification verdict,
-    # not the digest's. Per the F19 ground shape's contract, an empty
-    # excerpts list means "no hits but the corpus state is not
-    # established here" — only a dispatch exception escalates to
-    # ``no_coverage=True`` (handled in the except branch above).
+    # ``no_coverage`` per the F19 ground-shape contract (spec §2):
+    # ``True`` when the corpus is non-empty AND no hits landed — the
+    # scope-miss-on-populated-wiki case that distinguishes a populated
+    # wiki that lacks the topic from an empty corpus. ``LibrarianOutput``
+    # at v0.33.0 lacks a ``corpus_page_count`` field, so the ground
+    # function probes the catalog directly. The probe is best-effort:
+    # any failure (wiki unresolvable, catalog unreadable, missing
+    # wiki_dir) leaves ``no_coverage=False`` rather than raising — the
+    # dispatch-exception branch above already handled the hard-error
+    # case. Helper is module-scope so tests can monkeypatch it without
+    # touching the catalog.
+    no_coverage = False
+    if not citations:
+        try:
+            corpus_size = _corpus_page_count()
+        except Exception:
+            corpus_size = 0
+        no_coverage = corpus_size > 0
+
     return ArchivistDigest(
         question=question,
         tag_expr=resolved_tag_expr,
         exclude_tags=exclude_list,
         citations=citations,
-        no_coverage=False,
+        no_coverage=no_coverage,
         distinct_pages=len({c.slug for c in citations}),
     )
+
+
+def _corpus_page_count() -> int:
+    """Return the active wiki's wiki-section page count.
+
+    Probes ``<wiki_dir>/.lies/catalog.db`` for ``section='wiki'``
+    rows. The wiki section is the right corpus for the grounding
+    digest — library mirrors live under ``section='ingested'`` and
+    are not the wiki corpus. Best-effort: any exception (wiki not
+    registered, catalog unreadable, no active wiki) propagates and
+    the caller falls back to ``no_coverage=False``.
+
+    Lazy-imported dependencies keep this helper off the bare
+    pydantic_ai / fastmcp import path so ``ground()`` is cheap on
+    the happy path.
+    """
+    from lies.mcp.resolution import resolve_wiki
+    from lies.memory.catalog import list_pages, open_catalog
+    from lies.memory.catalog_models import PageSection
+
+    wiki = resolve_wiki()
+    conn = open_catalog(wiki)
+    try:
+        return len(list_pages(conn, section=PageSection.wiki))
+    finally:
+        conn.close()
