@@ -102,6 +102,16 @@ class WikiSearchResult(BaseModel):
     truncated: bool
     fallback_used: bool
     fallback_reason: str
+    no_coverage: bool = False
+    """True when the corpus is non-empty AND the search returned zero
+    hits. Distinct from an empty corpus (where the wiki has no pages
+    to search at all). Producers set this on the closure capture path
+    so downstream callers — the librarian context-vars, the F19
+    ground-shape digest — can distinguish a populated wiki that
+    missed the query from an unpopulated one. Defaults to ``False``
+    for back-compat with callers that construct ``WikiSearchResult``
+    without the flag (the integration stubs in
+    ``tests/integration/test_ground_tool.py``)."""
 
 
 class PageReference(BaseModel):
