@@ -89,3 +89,34 @@ def test_query_format_md_combined_with_collection(
         ["query", "--format", "md", "--collection", "x", "what?"],
     )
     assert result.exit_code == 0
+
+
+def test_query_format_chart_combined_with_collection(
+    cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """--format=chart is accepted at the CLI boundary."""
+
+    orch = MagicMock()
+    orch.run_query.return_value = SynthesizedAnswer(
+        answer="```mermaid\ngraph LR\n  A --> B\n```\n",
+        question="q",
+        format="chart",
+    )
+    monkeypatch.setattr("lies.cli.resolve_wiki", lambda name: MagicMock())
+    monkeypatch.setattr("lies.cli.Orchestrator", lambda wiki: orch)
+
+    result = cli_runner.invoke(
+        app,
+        ["query", "--format", "chart", "--collection", "x", "what?"],
+    )
+    assert result.exit_code == 0
+    assert "graph LR" in strip_ansi(result.stdout)
+
+
+def test_query_format_chart_help_lists_chart(
+    cli_runner: CliRunner,
+) -> None:
+    """The --format help text advertises the chart value."""
+    result = cli_runner.invoke(app, ["query", "--help"])
+    plain = strip_ansi(result.stdout).lower()
+    assert "chart" in plain

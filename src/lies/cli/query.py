@@ -165,9 +165,10 @@ def query(
         "auto",
         "--format",
         help=(
-            "Output format: auto | md | table | marp. Default 'auto' uses "
-            "the synthesizer's format_hint. Explicit values force re-"
-            "synthesis with a constrained prompt if the auto-route differs."
+            "Output format: auto | md | table | marp | chart. Default "
+            "'auto' uses the synthesizer's format_hint. Explicit values "
+            "force re-synthesis with a constrained prompt if the auto-"
+            "route differs."
         ),
     ),
 ) -> None:
