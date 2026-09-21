@@ -24,7 +24,6 @@ conftest's ``pytest_collection_modifyitems`` hook.
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import pytest
@@ -36,12 +35,6 @@ from lies.agents.librarian import LibrarianOutput, PageExcerpt
 from lies.markdown_spans import Span
 from lies.mcp import grounding
 from lies.mcp.server import mcp
-
-
-pytestmark = pytest.mark.skipif(
-    os.environ.get("INTEGRATION") != "1",
-    reason="gated on INTEGRATION=1 (real qmd daemon + fixture wiki)",
-)
 
 
 def _seed_wiki_collection() -> Path:
@@ -75,7 +68,7 @@ def _patch_librarian(
             self.output = output
 
     class _FakeAgent:
-        def run_sync(self, prompt: object, deps: object = None) -> _FakeResult:
+        def run_sync(self, user_prompt: object, *, deps: object) -> _FakeResult:
             tag_expr = getattr(deps, "tag_expr", None)
             exclude_tags = list(getattr(deps, "exclude_tags", []) or [])
             return _FakeResult(

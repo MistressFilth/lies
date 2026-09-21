@@ -16,7 +16,7 @@ to already be registered under ``$LIES_XDG_DATA_HOME``.
 from __future__ import annotations
 
 import sys
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Literal, cast
 
@@ -50,14 +50,7 @@ from lies.query.tag_expr import (
 )
 from lies.wiki.layout import WikiLayout, copy_default_schema, git_init_initial
 from lies.wiki.wiki import Wiki
-
-# Grounding archivist — Task 3 wires the F19 ``ground()`` helper into
-# the MCP tool surface. The function is at module scope (imported from
-# ``lies.mcp.grounding``) so the in-process caller ``from lies.mcp
-# .grounding import ground`` and the FastMCP-registered tool share one
-# implementation. ``dataclasses.asdict`` serializes the frozen
-# ``ArchivistDigest`` to a JSON-safe plain dict for the MCP wire format.
-from lies.mcp.grounding import ground as _ground_digest  # noqa: E402
+from lies.mcp.grounding import ArchivistCoverageError, ground
 
 mcp = FastMCP(
     "lies",
@@ -113,8 +106,8 @@ from lies.page import WriteKnowledgeResult  # noqa: E402,F401
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool
-def ground(
+@mcp.tool(name="ground")
+def mcp_ground(
     question: str,
     tag_expr: str | None = None,
     exclude_tags: list[str] | None = None,
@@ -140,15 +133,20 @@ def ground(
     Returns:
         A JSON-serializable :class:`ArchivistDigest` carrying up to
         ``top_k`` citation snippets of ≤200 chars each.
-    """
-    from dataclasses import asdict
 
-    digest = _ground_digest(
-        question=question,
-        tag_expr=tag_expr,
-        exclude_tags=exclude_tags,
-        top_k=top_k,
-    )
+    Raises:
+        ToolError: when the F15 tag-filter dispatch cannot resolve the
+            include expression (caller may retry untagged or surface).
+    """
+    try:
+        digest = ground(
+            question=question,
+            tag_expr=tag_expr,
+            exclude_tags=exclude_tags,
+            top_k=top_k,
+        )
+    except ArchivistCoverageError as exc:
+        raise ToolError(str(exc)) from exc
     # MCP tool handlers must return JSON-serializable structures.
     # ``ArchivistDigest`` is a frozen dataclass with only primitive +
     # nested dataclass fields; ``asdict`` flattens both layers without
