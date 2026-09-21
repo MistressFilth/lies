@@ -17,8 +17,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from lies.markdown_spans import parse_spans
-
 if TYPE_CHECKING:
     from lies.markdown_spans import Span
 
@@ -247,11 +245,13 @@ def ground(
 
     citations: list[CitationSnippet] = []
     for excerpt in out.excerpts:
-        # PageExcerpt.spans is the canonical v0.33.0 surface; fall back
-        # to ``parse_spans`` only if a legacy blob sneaks through.
-        spans = (
-            excerpt.spans if isinstance(excerpt.spans, list) else parse_spans(str(excerpt.spans))
-        )
+        # ``PageExcerpt.spans`` is ``list[Span]`` at v0.33.0 — the
+        # canonical surface that F37's span parser produced. No legacy
+        # blob shape survives in the current librarian output; a
+        # defensive ``parse_spans(str(excerpt.spans))`` fallback would
+        # only ever produce garbage input. Read the attribute
+        # directly.
+        spans = list(excerpt.spans)
         chosen = pick_first_prose_span(spans)
         if chosen is None:
             continue
