@@ -399,13 +399,14 @@ exclude_tags=...)`.
 
 ### Output formats
 
-`lies query` accepts `--format=auto|md|table|marp` (default `auto`). The synthesizer picks the format at composition time based on the answer content; explicit values force re-synthesis with a constrained prompt if the auto-route differs.
+`lies query` accepts `--format=auto|md|table|marp|chart` (default `auto`). The synthesizer picks the format at composition time based on the answer content; explicit values force re-synthesis with a constrained prompt if the auto-route differs.
 
 - **`md`** (default fallback): plain markdown body.
 - **`table`**: GFM pipe table with header + separator + data rows.
 - **`marp`**: Marp-flavored markdown with `marp: true` frontmatter + slide breaks. When the `marp` CLI is on `$PATH`, the body is rendered to HTML at `${XDG_CACHE_HOME:-~/.cache}/lies/query-<timestamp>.html`. When `marp` is not installed, the body is written to a `.md` file and the path is printed with a render hint.
+- **`chart`**: a single ```` ```mermaid ```` fence (one of `flowchart`, `sequenceDiagram`, or `classDiagram`); the renderer extracts the longest block and emits it unchanged. Validator-bypass: pass-through with a stderr warning when the synth produces no mermaid block.
 
-The format is also exposed on the MCP `query` response via the `format` field (`"md"`, `"table"`, or `"marp"`). Synthesis pages gain a `render_format` frontmatter field recording the body shape for future curators.
+The format is also exposed on the MCP `query` response via the `format` field (`"md"`, `"table"`, `"marp"`, or `"chart"`). Synthesis pages gain a `render_format` frontmatter field recording the body shape for future curators.
 
 ### `lies wiki provenance`
 
