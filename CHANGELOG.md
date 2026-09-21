@@ -6,6 +6,23 @@ All notable changes to LIES are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.35.0] - 2026-09-21
+
+### Added
+
+- **`--format=chart` query output (F1 chart addendum).** Synthesizer
+  emits a single ```mermaid``` fence (flowchart / sequenceDiagram /
+  classDiagram); renderer extracts the longest block and emits it
+  unchanged. Validator-bypass: no parse, no retry, no sidecar file.
+  Pre-grounded at prompt-build time with excerpts from the `mermaid`
+  library collection (`https://github.com/mermaid-js/mermaid.git`).
+  Literal unions widened to `Literal["md","table","marp","chart"]`
+  across the F1 surface (CLI, validator, synthesizer, orchestrator,
+  MCP envelope). `render_chart` lives at
+  `src/lies/query/formats/chart.py`. The chart-variant system
+  prompt lives at `QUERY_SYNTHESIZER_CHART_PROMPT` in
+  `src/lies/agents/query_synthesizer.py`.
+
 ## [0.34.0] - 2026-09-20
 
 ### Added

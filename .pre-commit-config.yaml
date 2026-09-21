@@ -39,6 +39,9 @@ repos:
         entry: env -u GIT_DIR -u GIT_INDEX_FILE -u GIT_WORK_TREE -u GIT_COMMON_DIR uv run make unit-test
         language: system
         pass_filenames: false
+        # `uv sync` regenerates uv.lock; exclude it so the hook's
+        # side-effect doesn't trigger a stash conflict on every commit.
+        exclude: ^uv\.lock$
         stages: [pre-commit]
   - repo: local
     hooks:
