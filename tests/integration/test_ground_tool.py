@@ -77,12 +77,22 @@ def _patch_librarian(
         def run_sync(self, user_prompt: object, *, deps: object) -> _FakeResult:
             tag_expr = getattr(deps, "tag_expr", None)
             exclude_tags = list(getattr(deps, "exclude_tags", []) or [])
+            # F18 Task 3 pin: when the librarian's mock returns zero
+            # excerpts, classify the dispatch as a tag-filter scope
+            # miss (``no_coverage=True``) so the FastMCP surfacing
+            # pin in ``test_ground_tool_with_tag_filter`` exercises
+            # the post-Task-2 ``LibrarianOutput.no_coverage`` →
+            # ``ArchivistDigest.no_coverage`` plumbing. A real
+            # ``WikiSearchResult`` would set this flag from the
+            # corpus-page-count + zero-hits branch; the mock
+            # short-circuits that wiring.
             return _FakeResult(
                 LibrarianOutput(
                     tag_expr=tag_expr,
                     exclude_tags=exclude_tags,
                     excerpts=list(excerpts),
                     distinct_pages=len({e.slug for e in excerpts}),
+                    no_coverage=not excerpts,
                 )
             )
 
@@ -169,11 +179,19 @@ async def test_ground_tool_with_tag_filter(
         assert "slug" in c
         assert "title" in c
         assert "collection" in c
-    # ``tag_expr`` round-trips through the tool; the seed of an empty
-    # excerpt list still surfaces ``no_coverage=False`` (librarian
-    # dispatched, classification verdict not "no coverage").
+    # ``tag_expr`` round-trips through the tool. F18 Task 3 pin: when
+    # the librarian's tag filter excludes every hit on a populated
+    # wiki, ``LibrarianOutput.no_coverage`` surfaces through the
+    # MCP tool as ``no_coverage=True`` (post-Task-2 ``ground()``
+    # reads the field directly from the bundle — the catalog probe
+    # was retired). The mocked librarian's empty-excerpt path
+    # classifies the dispatch as a scope miss, so the surface
+    # must carry ``no_coverage=True``.
     assert data["tag_expr"] == "wiki"
-    assert data["no_coverage"] is False
+    if len(data["citations"]) == 0:
+        assert data["no_coverage"] is True, (
+            f"tag filter excluded all hits; expected no_coverage=True, got {data['no_coverage']}"
+        )
 
 
 async def test_ground_tool_wires_librarian_tools(
