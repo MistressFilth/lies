@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import warnings
 
 import pytest
 
@@ -144,6 +145,43 @@ def test_ground_returns_empty_digest_on_librarian_exception(monkeypatch) -> None
     assert digest.citations == []
     assert digest.question == "what is pydantic?"
     assert digest.distinct_pages == 0
+
+
+def test_ground_librarian_exception_emits_no_logfire_warning(monkeypatch, recwarn) -> None:
+    """Regression for the LogfireNotConfiguredWarning noise on the exception path.
+
+    Pins Fix 4: when the librarian dispatch raises, the warning must
+    flow through stdlib ``warnings`` (not ``logfire.warning``) so a
+    non-configured logfire environment does not emit
+    ``LogfireNotConfiguredWarning`` on every ground() call. The
+    user-visible signal still surfaces via ``recwarn`` — one
+    ``UserWarning`` carrying the librarian's failure reason.
+    """
+    from lies.mcp import grounding
+
+    def boom(deps):
+        raise RuntimeError("qmd daemon offline")
+
+    class _BoomAgent:
+        def __init__(self, fn):
+            self._fn = fn
+
+        def run_sync(self, deps):
+            return self._fn(deps)
+
+    monkeypatch.setattr(grounding, "librarian_agent", lambda: _BoomAgent(boom))
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        digest = grounding.ground("what is pydantic?")
+
+    assert digest.no_coverage is True
+    logfire_warns = [w for w in caught if "LogfireNotConfiguredWarning" in type(w.message).__name__]
+    assert logfire_warns == [], f"unexpected LogfireNotConfiguredWarning: {logfire_warns}"
+    # The user-visible signal still surfaces — but as a stdlib warning,
+    # not a logfire one.
+    user_warns = [w for w in caught if "librarian dispatch failed" in str(w.message)]
+    assert len(user_warns) >= 1
 
 
 def test_ground_clamps_top_k_to_bounds(monkeypatch) -> None:

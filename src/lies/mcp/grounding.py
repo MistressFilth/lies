@@ -14,6 +14,7 @@ span-picking helpers. Library vs wiki discrimination lives on
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -227,13 +228,19 @@ def ground(
         librarian_result = librarian_agent().run_sync(question, deps=deps)
         out: LibrarianOutput = librarian_result.output
     except Exception as exc:
-        # Lazy import — ``logfire`` is not on the bare CLI import path
-        # (``utils.logging`` does the same dance). We only need the
-        # logger when the librarian dispatch fails, so paying the
-        # import cost in the except branch is acceptable.
-        import logfire
-
-        logfire.warning("ground: librarian dispatch failed", exc=exc)
+        # The codebase's dominant warning surface for runtime
+        # anomalies is stdlib ``warnings`` (see e.g.
+        # ``src/lies/wiki_settings.py``), not logfire. logfire is
+        # reserved for instrumentation in :func:`utils.logging.configure_logging`.
+        # ``logfire.warning`` from a non-configured environment
+        # emits ``LogfireNotConfiguredWarning`` on every call, which
+        # is noise in tests and CLI runs without a LOGFIRE_TOKEN.
+        # Switch to ``warnings.warn`` so the user-visible signal
+        # stays out of logfire's wiring entirely.
+        warnings.warn(
+            f"ground: librarian dispatch failed: {type(exc).__name__}: {exc}",
+            stacklevel=2,
+        )
         return ArchivistDigest(
             question=question,
             tag_expr=resolved_tag_expr,
