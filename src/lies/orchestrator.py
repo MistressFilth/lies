@@ -12,7 +12,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal, cast
 
-from pydantic_ai import Agent, RunContext
+from pydantic_ai import Agent
 from pydantic_ai.models import Model
 
 from lies.agents.librarian import LibrarianDeps, LibrarianOutput, librarian_agent
@@ -2123,90 +2123,25 @@ class Orchestrator:
     def _register_librarian_tools(self) -> None:
         """Register ``wiki_search`` / ``wiki_read`` / ``wiki_catalog`` on the librarian agent.
 
-        Tools are defined per the librarian's 4-step contract
-        (classify → search → read → return). The orchestrator owns
-        this registration rather than the librarian module so the
-        wiring crosses the wiki context boundary: the librarian
-        agent's declared deps type is :class:`LibrarianDeps`
-        (question / tag_expr / exclude_tags / top_k), but the
-        tools need the per-wiki :class:`WikiMemoryService` and the
-        :class:`Wiki` itself. Closures over ``self._memory_service``
-        and ``self.wiki`` carry that context without forcing the
-        librarian's deps type to widen.
+        Thin delegator to :func:`lies.agents.librarian.register_librarian_tools`
+        so the wiring lives in exactly one place — both the orchestrator
+        (which builds ``self._librarian_agent`` during ``__init__``) and
+        the MCP-layer :func:`lies.mcp.grounding.ground` (which dispatches
+        in-process without instantiating an :class:`Orchestrator`) reach
+        the same closures over ``self._memory_service`` / ``self.wiki``
+        through this entry point.
 
-        The brief's reference to ``wiki_knowledge`` (F19) is left
-        for the deeper F19 wiring pass — the F18 trio (search /
-        read / catalog) covers the 4-step contract as scoped in this
-        task.
+        See :func:`register_librarian_tools` for the full contract
+        (4-step tools, idempotency caveat, ``wiki_knowledge`` F19
+        follow-up note).
         """
-        from lies.memory.catalog import list_pages as _list_pages
-        from lies.memory.catalog import open_catalog as _open_catalog
+        from lies.agents.librarian import register_librarian_tools
 
-        service = self._memory_service
-        wiki = self.wiki
-
-        def _wiki_search(
-            ctx: RunContext[LibrarianDeps],
-            question: str,
-            limit: int = 5,
-        ) -> dict[str, object]:
-            """Search this wiki for project knowledge relevant to ``question``.
-
-            Wraps :meth:`WikiMemoryService.search` so the authenticated
-            evidence set threads into the librarian's run state.
-            """
-            result = service.search(question, limit=limit)
-            return cast(dict[str, object], result.model_dump())
-
-        def _wiki_read(
-            ctx: RunContext[LibrarianDeps],
-            page_ids: list[str],
-        ) -> dict[str, str]:
-            """Read full page bodies for the given page IDs.
-
-            Thin wrapper around :meth:`WikiMemoryService.read` — IDs
-            must already be authenticated by ``wiki_search`` in the
-            same run.
-            """
-            return service.read(page_ids)
-
-        def _wiki_catalog(ctx: RunContext[LibrarianDeps]) -> str:
-            """List every wiki catalog row as JSON.
-
-            Mirrors :func:`_wiki_catalog_impl` in the MCP server so
-            the librarian has the same registry view the catalog
-            MCP resource exposes to the main agent.
-            """
-            import json
-
-            conn = _open_catalog(wiki)
-            try:
-                pages = _list_pages(conn)
-            finally:
-                conn.close()
-            return json.dumps([p.model_dump(mode="json") for p in pages], indent=2)
-
-        self._librarian_agent.tool(
-            name="wiki_search",
-            description=(
-                "Search this wiki for project knowledge relevant to a question. "
-                "Returns bounded evidence with page_id values that can be passed to wiki_read."
-            ),
-        )(_wiki_search)
-        self._librarian_agent.tool(
-            name="wiki_read",
-            description=(
-                "Read the full markdown body of wiki pages identified by page_id. "
-                "Accepts only IDs returned by a recent wiki_search call."
-            ),
-        )(_wiki_read)
-        self._librarian_agent.tool(
-            name="wiki_catalog",
-            description=(
-                "List every wiki catalog row as JSON. Each entry carries name, tags, "
-                "scope_keywords, and section. Use this for the classify step in the 4-step contract."
-            ),
-        )(_wiki_catalog)
+        register_librarian_tools(
+            self._librarian_agent,
+            wiki=self.wiki,
+            memory_service=self._memory_service,
+        )
 
     def run_lint(
         self,
