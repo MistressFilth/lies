@@ -1876,6 +1876,8 @@ class Orchestrator:
         self,
         question: str,
         librarian_output: LibrarianOutput,
+        *,
+        format_hint: Literal["md", "table", "marp", "chart"] | None = None,
     ) -> QueryAnswer:
         """Run the synthesizer subagent against the librarian's excerpts (F19).
 
@@ -1897,8 +1899,16 @@ class Orchestrator:
         returned ``QueryAnswer``. The runtime type narrowing lets the
         filed body renderer see span heading context for the
         ``## Evidence`` block.
+
+        F1 chart addendum: when ``format_hint`` is ``"chart"`` the
+        synthesizer uses the chart-variant system prompt. Other values
+        fall through to the standard prompt.
         """
-        deps = QueryDeps(question=question, librarian_output=librarian_output)
+        deps = QueryDeps(
+            question=question,
+            librarian_output=librarian_output,
+            format_hint=format_hint,
+        )
         result = self._query_synthesizer_agent.run_sync(question, deps=deps)
         answer: QueryAnswer = result.output
         # The synthesizer emits ``citations: list[str]`` (paths). Build

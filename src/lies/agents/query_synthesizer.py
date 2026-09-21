@@ -172,6 +172,82 @@ Return a `QueryAnswer` with:
 """
 
 
+QUERY_SYNTHESIZER_CHART_PROMPT = """Your job is to answer the user's question
+by emitting a single ```mermaid``` diagram using only the LIES wiki
+excerpts the librarian subagent returned.
+
+You receive:
+- The user's question
+- A list of excerpts (top-K from the librarian), each with its
+  content, heading_path spans, and a `[library]` / `[wiki]` source tag
+
+Read each excerpt carefully. Pick the diagram type that best fits the
+question shape from this allowlist:
+
+- **`flowchart`** (LR or TD) — concept graphs. Nodes are concepts;
+  edges are relationships derived from citations. Use when the
+  question asks "what depends on what" or "how do X and Y relate."
+- **`sequenceDiagram`** — ordered interactions. Use when the question
+  asks about a call/order/timeline of events.
+- **`classDiagram`** — entity taxonomy with fields and inheritance.
+  Use when the question asks about entity structure.
+
+Then emit EXACTLY ONE ```mermaid``` fence. The fence body is the only
+prose you emit. An optional one-line caption MAY appear above the
+fence; no other text surrounds it.
+
+Shape contract:
+- The answer is exactly one ```mermaid``` block.
+- No footnote block. No bullets before or after the fence.
+- Citations live INSIDE the diagram — node labels may carry the page
+  slug (`node["page-slug"]`) or the slug may appear as the label —
+  so the fence stays self-contained.
+- Node labels ≤ 4 words. Edge labels are short verbs when the
+  relationship is non-obvious.
+
+Mermaid syntax grounding (you must follow):
+
+```
+flowchart LR
+  A[concept a] --> B[page slug]
+
+sequenceDiagram
+  participant A
+  participant B
+  A->>B: message
+
+classDiagram
+  class Animal
+  Animal : +name string
+  Animal : +age int
+```
+
+Return a `QueryAnswer` with:
+- `answer`: the single ```mermaid``` fence, with optional one-line caption
+- `citations`: paths matching excerpt keys that contributed to the diagram
+- `claim_citations`: empty list — diagrams carry citations inline
+- `should_file`: True if the diagram is a novel synthesis worth keeping
+- `format_hint`: "chart"
+"""
+
+
+def _system_prompt_for_format(
+    format_hint: Literal["md", "table", "marp", "chart"] | None,
+) -> str:
+    """Return the system prompt for the given format hint.
+
+    ``None`` and ``"md"`` / ``"table"`` / ``"marp"`` all use the
+    standard synthesizer prompt (auto-route and explicit override to
+    one of the three established formats share the same prompt body —
+    the override is enforced via the orchestrator's
+    ``run_query_with_format`` second pass, not via prompt
+    substitution). ``"chart"`` returns the chart-variant prompt.
+    """
+    if format_hint == "chart":
+        return QUERY_SYNTHESIZER_CHART_PROMPT
+    return QUERY_SYNTHESIZER_SYSTEM_PROMPT
+
+
 @dataclass
 class QueryDeps:
     """Dependencies the query-synthesizer needs to answer.
@@ -186,6 +262,7 @@ class QueryDeps:
 
     question: str
     librarian_output: LibrarianOutput
+    format_hint: Literal["md", "table", "marp", "chart"] | None = None
 
     @property
     def page_texts(self) -> dict[str, str]:
@@ -222,7 +299,11 @@ def _build_query_prompt(ctx: RunContext[QueryDeps]) -> str:
     Defensive against ``ctx.deps is None`` for callers that drive the
     agent without deps.
     """
-    parts: list[str] = [QUERY_SYNTHESIZER_SYSTEM_PROMPT]
+    parts: list[str] = [
+        _system_prompt_for_format(
+            getattr(ctx.deps, "format_hint", None) if ctx.deps is not None else None
+        )
+    ]
     if ctx.deps is None:
         return parts[0]
     parts.append(f"\nQuestion: {ctx.deps.question}")
