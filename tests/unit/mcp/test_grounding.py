@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import dataclasses
+
 import pytest
 
 from lies.markdown_spans import Span
@@ -83,11 +85,24 @@ def test_pick_first_prose_span_skips_empty_bodies() -> None:
 
 def test_citation_snippet_frozen() -> None:
     cs = CitationSnippet(collection="wiki", slug="x", title="X", snippet="s")
-    with pytest.raises(Exception):
+    with pytest.raises(dataclasses.FrozenInstanceError):
         cs.snippet = "other"  # type: ignore[misc]
 
 
-def test_archivist_digest_distinct_pages_counts_unique_slugs() -> None:
+def test_archivist_digest_frozen() -> None:
+    digest = ArchivistDigest(
+        question="q",
+        tag_expr=None,
+        exclude_tags=[],
+        citations=[],
+        no_coverage=False,
+        distinct_pages=0,
+    )
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        digest.no_coverage = True  # type: ignore[misc]
+
+
+def test_archivist_digest_distinct_pages_round_trips() -> None:
     digest = ArchivistDigest(
         question="q",
         tag_expr=None,
