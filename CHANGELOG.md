@@ -6,6 +6,69 @@ All notable changes to LIES are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.36.0] - 2026-09-21
+
+### Added
+
+- **N2 — linter sub-agent tool dispatch (F2-shaped rewire).** The
+  linter now retrieves wiki pages on demand via three tool calls
+  (`wiki_list_pages` / `wiki_search` / `wiki_read`) instead of
+  receiving the entire corpus as a single pre-loaded system prompt.
+  Pre-N2 wikis at ~150+ pages overflowed the 128K local cap; the
+  LLM contribution to the merged lint report went empty, silently
+  suppressing contradiction / stale / data_gap findings. Post-N2
+  the linter drives its own read budget via a stop-when-saturated
+  rule and the bug is fixed at any wiki size. New module
+  `src/lies/agents/linter_tools.py`; mirrors the F18 librarian's
+  `register_librarian_tools` pattern. `LintDeps` shrinks to a
+  marker type; `_build_linter_prompt` deletes; `LintReport` /
+  `LintFinding` / `LintSeverity` shapes unchanged. The
+  orchestrator's `_call_linter` shrinks accordingly; tool
+  registration moves into `_build` via the new
+  `_register_linter_tools` delegator. Spec:
+  `superpowers/specs/2026-09-21-n2-linter-tool-dispatch-design.md`.
+
+### Fixed
+
+- **`wiki_list_pages` inventory: `page_id` instead of `path`.** The
+  initial N2 implementation emitted wiki-relative paths in each
+  inventory row and the prompt told the agent to pass them to
+  `wiki_read`. `WikiMemoryService.read` requires SHA-1 page IDs
+  (`page-<sha1(rel)[:12]>`); passing a bare path raised
+  `WikiPageNotFound` for every read. The orchestrator's broad
+  `except Exception` swallowed the failure and returned an empty
+  LLM section, leaving the regression silent. Post-fix the
+  inventory row carries `page_id` (computed via the same
+  `_page_id_for` `WikiMemoryService.read` uses internally), the
+  prompt instructs the linter to pass `page_ids`, and the tool
+  descriptions document the contract. `_wiki_list_pages` also now
+  reads the on-disk file to compute a real `size_estimate_tokens`
+  (bytes / 4, so the 30K-token batch budget is reachable),
+  surfaces `type` and `source_pkg` for clustering
+  (`section` alone is `"wiki"` for every row and useless), and
+  filters catalog-vs-disk drift rows (catalog entries whose file
+  was deleted off-disk after a `lies catalog reconcile` race).
+- **Stop-when-saturated rule tightened with observable cues.** The
+  initial N2 prompt named the stop rule as "no new findings and
+  cross-page comparison complete" — a subjective judgment that a
+  weak model could satisfy after one batch or never satisfy at all.
+  The rule now names two concrete cues: every cluster identified
+  in step 1 has been read at least once via `wiki_read`, AND the
+  most recent `wiki_search` returned zero page_ids the agent has
+  not already loaded. Prompt-side unit pins guard against a
+  regression to the subjective form.
+- **Big-wiki integration test reaches the pre-N2 break point.** The
+  initial integration test seeded 60 pages (well below the 150+
+  threshold that previously overflowed) and asserted only that
+  the markdown report header was present, satisfied by any
+  successful `run_lint()` call. Post-fix the test seeds
+  `_PRE_N2_BREAK_POINT + 50` pages and asserts
+  `memory_service._known_evidence` is non-empty — direct
+  end-to-end proof that `wiki_read` round-tripped page_ids
+  through `WikiMemoryService.read` without raising. The seed
+  also includes subdirectory pages (`concepts/`, `people/`) so
+  the linter's clustering step has real partition signals.
+
 ## [0.35.1] - 2026-09-21
 
 ### Fixed
