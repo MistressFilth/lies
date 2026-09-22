@@ -8,6 +8,16 @@ All notable changes to LIES are documented here. The format follows
 
 ### Changed
 
+- **Dual-source routing for `/cite` and `/answer`.** The librarian
+  and archivist now retrieve from both library collections
+  (`~/.local/share/lies/library/collections/<name>/`) AND wikis
+  (`~/.local/share/lies/<name>/`). Library collections are the
+  primary source; on slug conflict, the library hit replaces the
+  wiki hit. Wiki-only hits carry `source_kind="wiki"` and render
+  with a `[secondary]` prefix so the LLM can flag the snippet as
+  not grounded in a primary source. New field
+  `CitationSnippet.source_kind` (defaults to `"library"` for
+  backward compat).
 - MCP prompt surface: `ask_wiki` and `query_prompt` prompts removed.
   `/answer` slash unchanged (librarian + synthesizer). New `/cite`
   slash templates a `ground()` tool call and renders the
