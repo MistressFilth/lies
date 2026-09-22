@@ -1230,13 +1230,32 @@ def wiki_catalog_slug(slug: str) -> str:
 
 
 @mcp.prompt(name="answer")
-def ask_wiki_answer(question: str) -> str:
+def ask_wiki_answer(
+    question: str,
+    tag_expr: str | None = None,
+    exclude_tags: list[str] | None = None,
+    name: str | None = None,
+    collection: str | None = None,
+) -> str:
     """Starter prompt that templates an ``answer`` tool invocation.
 
     Chat-surface counterpart to the synthesized answer path: the LLM
     calls the ``answer`` tool (returns plain text) instead of ``query``
-    (returns structured envelope). Use this when the response needs to render
-    verbatim in chat rather than behind a collapsible JSON block.
+    (returns structured envelope). Use this when the response needs to
+    render verbatim in chat rather than behind a collapsible JSON block.
+
+    Filter syntax: prefix a tag token with ``+`` to include it in the
+    ``tag_expr`` field; prefix with ``-`` to include it in
+    ``exclude_tags``. Tokens with no sigil are passed through as
+    ``tag_expr`` verbatim. Example::
+
+        /answer +c:opencode +t:linux Where does opencode keep settings?
+
+    The same filter surface as the ``query`` tool and the ``cite``
+    prompt (F15 tag-filter dispatch). Mirrors the ``cite`` prompt's
+    kwarg shape; the difference is that ``answer`` returns just the
+    answer body, while ``cite`` returns the archivist digest as
+    citation lines.
 
     The ``name="answer"`` override registers the prompt as the
     ``/answer`` slash command even though the Python function is named
@@ -1244,9 +1263,18 @@ def ask_wiki_answer(question: str) -> str:
     tool defined elsewhere in this module).
     """
     return (
-        f"Use the `answer` tool to ask the wiki the following question, "
-        f"then surface the answer body verbatim in your reply:\n\n"
-        f"  question: {question}"
+        f"Call the `answer` MCP tool with the following args, then surface "
+        f"the answer body verbatim in your reply:\n\n"
+        f"  question: {question}\n"
+        f"  tag_expr: {tag_expr!r}\n"
+        f"  exclude_tags: {exclude_tags!r}\n"
+        f"  name: {name!r}\n"
+        f"  collection: {collection!r}\n\n"
+        f"Filter syntax: pass tokens prefixed with ``+`` as the ``tag_expr`` "
+        f"include expression (e.g. ``+c:opencode +t:linux``), and tokens "
+        f"prefixed with ``-`` as ``exclude_tags`` (e.g. ``-draft``). "
+        f"The ``+tag_expr`` / ``-exclude_tags`` shorthand from the slash "
+        f"command line maps onto the kwargs above verbatim."
     )
 
 

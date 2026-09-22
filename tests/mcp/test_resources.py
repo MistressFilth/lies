@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from lies.mcp.server import (
+    ask_wiki_answer,
     cite,
     init_wiki,
     wiki_index,
@@ -150,6 +151,36 @@ def test_cite_prompt_documents_secondary_marker() -> None:
         top_k=3,
     )
     assert "secondary" in out.lower()
+
+
+def test_answer_prompt_renders_filter_args() -> None:
+    """The /answer slash prompt must expose tag_expr, exclude_tags, name, collection.
+
+    Pre-fix bug: the prompt only forwarded ``question`` and rendered a
+    single ``question: ...`` field. Filter args arrived as raw text in the
+    question string and the agent had to re-extract them — error-prone
+    and undocumented. This test pins the new shape: all five tool kwargs
+    surface as rendered lines so the calling LLM constructs a correct
+    ``answer`` tool call.
+    """
+    out = ask_wiki_answer(
+        question="Where does opencode keep settings?",
+        tag_expr="c:opencode",
+        exclude_tags=["draft"],
+        name="default",
+        collection="opencode",
+    )
+    assert isinstance(out, str)
+    assert "question: Where does opencode keep settings?" in out
+    assert "tag_expr: 'c:opencode'" in out
+    assert "exclude_tags: ['draft']" in out
+    assert "name: 'default'" in out
+    assert "collection: 'opencode'" in out
+    # The prompt must tell the LLM to call the `answer` tool — not query,
+    # ground, or a generic search — and surface the filter syntax so users
+    # know they can pass ``+tag_expr`` shorthand.
+    assert "`answer`" in out
+    assert "+tag_expr" in out or "+c:opencode" in out
 
 
 def test_init_wiki_round_trips_with_resources(wiki_name: str) -> None:
