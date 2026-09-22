@@ -18,7 +18,7 @@ import contextvars
 import json
 import re
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Literal, cast
 
 from pydantic_ai import Agent, RunContext
 from pydantic_ai.models import Model
@@ -56,12 +56,20 @@ class PageExcerpt:
     ``spans`` (F19) carries the structured span view rather than a
     raw text blob — the synthesizer picks per-claim span from this
     list.
+
+    ``source_kind`` (dual-source-routing) flags which surface the
+    excerpt came from so downstream rendering can distinguish
+    primary-source hits (``"library"``) from wiki-only hits
+    (``"wiki"``) from surfaces that matched on both
+    (``"library+wiki"``). Defaults to ``"library"`` for backward
+    compat against pre-T2F librarian outputs.
     """
 
     collection: str
     slug: str
     title: str
     spans: list[Span]
+    source_kind: Literal["library", "wiki", "library+wiki"] = "library"
 
 
 @dataclass(frozen=True)

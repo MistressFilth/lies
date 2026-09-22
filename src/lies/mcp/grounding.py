@@ -355,12 +355,19 @@ def ground(
         snippet_text = truncate_at_word_boundary(chosen.body.strip(), 200)
         if not snippet_text:
             continue
+        # ``source_kind`` (dual-source-routing) — read from each
+        # ``PageExcerpt`` so the citation preserves the
+        # library-vs-wiki provenance the librarian tagged. Default
+        # to ``"library"`` for any excerpt that doesn't yet carry
+        # the field (forward-compat against pre-T2F fixtures).
+        source_kind = getattr(excerpt, "source_kind", "library")
         citations.append(
             CitationSnippet(
                 collection=excerpt.collection,
                 slug=excerpt.slug,
                 title=excerpt.title,
                 snippet=snippet_text,
+                source_kind=source_kind,
             )
         )
 

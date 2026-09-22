@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import warnings
+from dataclasses import dataclass, field
 
 import pytest
 
@@ -671,3 +672,93 @@ def test_ground_dispatch_failure_when_wiring_raises(
     # model response.
     assert isinstance(digest, ArchivistDigest)
     assert digest.question == "test question"
+
+
+def test_ground_threads_source_kind_from_librarian_output(monkeypatch) -> None:
+    """ground() copies source_kind from each PageExcerpt into CitationSnippet.
+
+    Pins Task 2 of dual-source-routing: the librarian's per-excerpt
+    ``source_kind`` flag (``"library"`` vs ``"wiki"`` vs
+    ``"library+wiki"``) must propagate through to the
+    :class:`CitationSnippet` emitted by :func:`ground` so downstream
+    rendering can distinguish primary-source hits from wiki-only
+    hits. The test fakes the librarian dispatch and feeds two
+    excerpts with distinct ``source_kind`` values; assertions on
+    the resulting ``digest.citations`` pin the propagation.
+    """
+    from lies.markdown_spans import Span
+    from lies.mcp import grounding
+
+    @dataclass(frozen=True)
+    class _FakeExcerpt:
+        # Mirrors PageExcerpt structurally (type-check ignored).
+        collection: str
+        slug: str
+        title: str
+        spans: list
+        source_kind: str = "library"
+
+    @dataclass(frozen=True)
+    class _FakeOutput:
+        tag_expr: object = None
+        exclude_tags: list = field(default_factory=list)
+        excerpts: list = field(default_factory=list)
+        distinct_pages: int = 0
+        no_coverage: bool = False
+
+    lib_excerpt_with_span = _FakeExcerpt(
+        collection="mermaid",
+        slug="syntax/flowchart",
+        title="Flowchart syntax",
+        spans=[Span(heading_path=[], body="flowchart TD; A-->B", code_fence=False, start_line=1)],
+        source_kind="library",
+    )
+    wiki_excerpt_with_span = _FakeExcerpt(
+        collection="default",
+        slug="concepts/pydantic",
+        title="Pydantic concept",
+        spans=[
+            Span(
+                heading_path=[],
+                body="Pydantic is a data validation library.",
+                code_fence=False,
+                start_line=1,
+            )
+        ],
+        source_kind="wiki",
+    )
+    both_excerpt_with_span = _FakeExcerpt(
+        collection="mermaid",
+        slug="syntax/sequence",
+        title="Sequence syntax",
+        spans=[
+            Span(
+                heading_path=[],
+                body="sequenceDiagram; A->>B: hi",
+                code_fence=False,
+                start_line=1,
+            )
+        ],
+        source_kind="library+wiki",
+    )
+    fake = _FakeOutput(
+        excerpts=[
+            lib_excerpt_with_span,
+            wiki_excerpt_with_span,
+            both_excerpt_with_span,
+        ],
+        distinct_pages=3,
+    )
+
+    class _StubAgent:
+        def run_sync(self, user_prompt, *, deps):  # noqa: ARG002
+            class _Result:
+                output = fake
+
+            return _Result()
+
+    monkeypatch.setattr(grounding, "librarian_agent", lambda: _StubAgent())
+
+    digest = grounding.ground("anything")
+    kinds = sorted(c.source_kind for c in digest.citations)
+    assert kinds == ["library", "library+wiki", "wiki"]
