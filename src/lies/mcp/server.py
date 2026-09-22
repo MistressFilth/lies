@@ -776,20 +776,32 @@ def _collect_available_tags_mcp(wiki: Wiki) -> set[str]:
     Each collection name is added with the ``c:`` qualifier prefix so
     the F15 tag-expression validator recognizes ``c:<name>`` atoms as
     addressable on the MCP ``query`` / ``answer`` path (Fix 3 / Task 3
-    brief). The library lookup is wrapped in ``try/except`` so an
+    brief). Each ``LibraryCollectionConfig.tags`` entry is added with
+    the ``t:`` qualifier prefix so ``t:<tag>`` filters against a
+    library-collection tag do not raise ``TagExprUnknown`` (Fix 6 /
+    Task 8 brief). Both lookups are wrapped in ``try/except`` so an
     uninitialized library — or any other registry failure — does not
     break the validator; the function still returns a set, just one
-    that does not include library-collection tags.
+    that does not include library tags of the failed surface.
     """
-    from lies.library.registry import library_collection_names
+    from lies.library.registry import library_collection_names, library_collection_tags
 
     try:
         names = library_collection_names()
     except Exception:
         # Library uninitialized (or any other registry failure) is fine
-        # — the validator just sees no library tags.
-        return set()
-    return set(names) | {f"c:{name}" for name in names}
+        # — the validator just sees no library-collection names.
+        names = frozenset()
+    tags: set[str] = set(names) | {f"c:{name}" for name in names}
+    try:
+        for tag in library_collection_tags():
+            tags.add(f"t:{tag}")
+    except Exception:
+        # ``library_collection_tags`` raises when the library is
+        # uninitialized or its config-yaml surface fails to read. The
+        # validator still works against the wiki side.
+        pass
+    return tags
 
 
 def format_unknown_tag_error(exc: TagExprUnknown) -> str:

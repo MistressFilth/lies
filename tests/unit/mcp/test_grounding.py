@@ -514,6 +514,32 @@ def test_collect_available_tags_mcp_includes_library_collections(monkeypatch) ->
     assert "c:pydantic_ai" in tags
 
 
+def test_collect_available_tags_mcp_includes_library_collection_tags(monkeypatch) -> None:
+    """Each ``LibraryCollectionConfig.tags`` entry must appear in the
+    tag-validator's available set with the ``t:`` qualifier prefix.
+
+    Regression for Task 8: pre-fix the validator only enumerated
+    collection NAMES (with the ``c:`` prefix). The ``tags`` field on
+    each collection's ``config.yaml`` (e.g. ``mermaid`` carrying
+    ``[syntax, docs, mermaid]``) was invisible to the validator, so
+    a ``t:mermaid`` filter against a library-collection tag raised
+    ``TagExprUnknown``. The fix unions each registered collection's
+    ``tags`` (via :func:`library_collection_tags`) into the available
+    set with the ``t:`` prefix.
+    """
+    from lies.mcp.server import _collect_available_tags_mcp
+
+    monkeypatch.setattr(
+        "lies.library.registry.library_collection_tags",
+        lambda: frozenset({"mermaid", "syntax", "docs", "cli"}),
+    )
+    tags = _collect_available_tags_mcp(None)
+    assert "t:mermaid" in tags
+    assert "t:syntax" in tags
+    assert "t:docs" in tags
+    assert "t:cli" in tags
+
+
 def _patch_librarian(monkeypatch, grounding_module, fake_fn):
     """Replace ``librarian_agent().run_sync(...)`` with ``fake_fn(deps)``.
 
