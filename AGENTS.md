@@ -277,6 +277,11 @@ dropped entirely; the merged hit carries `source_kind="library"`.
 This rule was previously applied at synthesis time; dual-source
 routing applies it at retrieval time.
 
+The librarian queries the library's qmd index at `lib.git_root` (with
+a `collection_filter` of registered library names), not at any wiki's
+`wiki_dir`. Library collections and wiki pages share the slug space
+but live in separate qmd indexes.
+
 **Render marker:** when the LLM renders the archivist's digest as
 citation lines, wiki-only hits (where `source_kind="wiki"`) are
 prefixed with `[secondary] ` to flag that the snippet is not

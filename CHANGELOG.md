@@ -12,6 +12,34 @@ All notable changes to LIES are documented here. The format follows
   `ArchivistDigest` as `[[collection/slug]] (Title): "<snippet>"`
   citation lines.
 
+## [0.37.1] - 2026-09-22
+
+### Fixed
+
+- Librarian fan-out: `qmd_query` now hits the library's qmd surface
+  (`lib.git_root`), not just the wiki's. Library collections are
+  reachable from `/answer` and `/cite` again. (`5c1f668`)
+- `/answer` slash prompt exposes `tag_expr`, `exclude_tags`, `name`,
+  `collection` as separate kwargs (was a single opaque `question`
+  string with embedded filter syntax). (`fad2627`)
+- Tag-expression validator's available-set now includes library-
+  collection names with the `c:` qualifier prefix. (`e11b626`)
+- Tag-expression validator's available-set now includes library-
+  collection tags (each `LibraryCollectionConfig.tags` entry) with
+  the `t:` qualifier prefix, in addition to library-collection
+  names with the `c:` prefix. (`134d0bb`)
+- Library commit envelope reconciles deletions of tracked files via
+  `git add -u` after the explicit-files commit. Re-ingests no longer
+  accumulate ghost entries in HEAD. (`df34c89`)
+- `/answer` slash prompt now parses the question argument via
+  `shlex.split()` + `parse_query_argv()` so the calling LLM doesn't
+  hallucinate values for `tag_expr` / `exclude_tags`. Matches the
+  CLI's grammar exactly. (`92e45c2`)
+
+### Changed
+
+- Librarian system prompt documents the dual-surface fan-out.
+
 ## [0.37.0] - 2026-09-22
 
 ### Changed
