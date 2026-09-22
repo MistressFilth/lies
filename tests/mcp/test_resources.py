@@ -8,23 +8,14 @@ from pathlib import Path
 import pytest
 
 from lies.mcp.server import (
-    _wiki_index_impl as wiki_index,
-)
-from lies.mcp.server import (
-    _wiki_lint_report_impl as wiki_lint_report,
-)
-from lies.mcp.server import (
-    _wiki_log_impl as wiki_log,
-)
-from lies.mcp.server import (
-    _wiki_page_impl as wiki_page,
-)
-from lies.mcp.server import (
-    _wiki_status_impl as wiki_status,
-)
-from lies.mcp.server import (
+    cite,
     ask_wiki,
     init_wiki,
+    wiki_index,
+    wiki_lint_report,
+    wiki_log,
+    wiki_page,
+    wiki_status,
 )
 from lies.memory.models import WikiPlanInvalid
 from lies.wiki.wiki import Wiki
@@ -136,6 +127,26 @@ def test_ask_wiki_prompt_includes_question() -> None:
     assert "What is MVCC?" in out
     # The prompt mentions the tool name so the LLM uses it.
     assert "query" in out.lower()
+
+
+def test_cite_prompt_routes_to_ground() -> None:
+    """The cite slash templates a `ground` tool call and the snippet render form.
+
+    Pins the routing contract: the returned string must contain the
+    routed tool name (`ground`) and the citation render marker (`[[`).
+    Regression catches silent re-template to `answer` or rewrites to a
+    non-routing prose form.
+    """
+    out = cite(
+        question="what is pydantic-ai?",
+        tag_expr="python",
+        exclude_tags=["chat"],
+        top_k=3,
+    )
+    assert isinstance(out, str)
+    assert "ground" in out
+    assert "[[" in out
+    assert "ArchivistCoverageError" in out
 
 
 def test_init_wiki_round_trips_with_resources(wiki_name: str) -> None:
