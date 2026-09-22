@@ -33,6 +33,7 @@ from lies.lock_errors import (  # noqa: F401 — Task 5/6/7 will reference these
 from lies.memory.catalog import (
     _SYSTEM_FILES,
     open_catalog as _open_catalog,
+    reconcile_wiki_catalog,
     remove_page as _remove_catalog_page,
     upsert_page as _upsert_catalog_page,
 )
@@ -489,6 +490,12 @@ class WikiMemoryService:
         limit: int = 5,
     ) -> WikiSearchResult:
         """Search this wiki and authenticate the returned evidence references."""
+
+        # Drop ghost catalog rows before any dispatch so a stale row
+        # cannot surface a ``page_id`` the subsequent ``wiki_read``
+        # cannot resolve. Cheap (one stat per row); idempotent. See
+        # ``lies.memory.catalog.reconcile_wiki_catalog``.
+        reconcile_wiki_catalog(self._wiki)
 
         collection_id = self._wiki.name
         if collection_ids is not None and collection_id not in collection_ids:
