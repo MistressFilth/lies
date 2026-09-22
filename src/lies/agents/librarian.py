@@ -207,6 +207,13 @@ queries BOTH the wiki AND the library collection space, returning
 a merged hit list. Library hits are primary; on a slug conflict,
 the library hit wins (the wiki hit is dropped from the merged row).
 
+`_wiki_search` queries two surfaces in sequence: the wiki's qmd
+index at `wiki.wiki_dir` AND the library's qmd index at
+`lib.git_root` (with `collection_filter` of registered library
+collection names). Each hit carries `source_kind` (`"library"` for
+qmd-library hits, `"wiki"` for wiki hits). On slug conflict the
+library hit wins.
+
 - `unknown_tags` non-empty → hard error: surface it to the caller.
   Do NOT silently retry without tags.
 - `no_coverage=True` (or `searched_scope` landed off-domain) → a
@@ -410,17 +417,34 @@ def register_librarian_tools(
     ) -> dict[str, object]:
         """Search the wiki + library for project knowledge relevant to ``question``.
 
-        Dual-source retrieval (Task 3): queries both the wiki via
-        :meth:`WikiMemoryService.search` AND the library collection
-        space via qmd, then merges the two surfaces. Each hit carries
-        a ``source_kind`` discriminator (``"library"`` for qmd hits,
-        ``"wiki"`` for wiki-only hits). On a slug conflict, the
+        Dual-source retrieval: queries BOTH surfaces via qmd in
+        sequence, then merges the two surfaces. Each hit carries a
+        ``source_kind`` discriminator (``"library"`` for qmd-library
+        hits, ``"wiki"`` for qmd-wiki hits). On a slug conflict, the
         library hit wins — the merged row carries the library body
         and is tagged ``source_kind="library"`` rather than emitting
-        both rows. qmd failures (``QmdError`` subclasses — qmd
-        missing, daemon down, etc.) degrade to wiki-only hits; the
-        wiki is the source-of-truth and we never lose coverage
-        because the qmd path raised.
+        both rows.
+
+        The library's qmd index is registered at ``lib.git_root``
+        (``~/.local/share/lies/library/``), NOT at any wiki's
+        ``wiki_dir``. The fan-out therefore calls qmd against TWO
+        cwds in sequence: ``wiki.wiki_dir`` (no filter) for the wiki
+        side, ``library_git_root()`` with
+        ``collection_filter=set(library_collection_names())`` for the
+        library side. A single qmd call against the wiki cwd with a
+        library-collection filter would return zero library hits
+        because the wiki's qmd index has no library pages registered.
+
+        The wiki-side ``no_coverage`` and ``searched_scope`` signals
+        still come from :meth:`WikiMemoryService.search` because qmd
+        has no equivalent: it indexes pages, not corpus-coverage
+        metadata. Library-side failures do not flip ``no_coverage``
+        because a live library is not required for coverage.
+
+        qmd failures (``QmdError`` subclasses — qmd missing, daemon
+        down, etc.) degrade to empty result lists on the affected
+        side; the other side's hits still reach the merged output,
+        so coverage is never lost because one path raised.
 
         F18 Task 1 — also captures the result's ``no_coverage`` flag
         into the module-scope :data:`librarian_no_coverage`
@@ -433,62 +457,119 @@ def register_librarian_tools(
         """
         from lies.qmd.cli import QmdError
 
-        # Wiki side — `WikiSearchResult.model_dump()` produces the
-        # real ``{query, pages, truncated, fallback_used,
-        # fallback_reason, no_coverage, searched_scope}`` shape.
-        # We pluck the wiki hits and re-shape the dict into the
-        # canonical ``{hits, no_coverage, searched_scope}`` envelope
-        # the rest of the librarian chain already consumes. Keeping
-        # the top-level keys stable preserves the F18 test that
-        # asserts the dict-shape contract verbatim.
-        wiki_result = memory_service.search(question, limit=limit)
-        wiki_dump = wiki_result.model_dump()
-        wiki_pages = wiki_dump.get("pages", [])
-        wiki_hits = [{**_dump_hit(page), "source_kind": "wiki"} for page in wiki_pages]
-        no_coverage = bool(wiki_dump.get("no_coverage", False))
-        searched_scope = list(wiki_dump.get("searched_scope", []))
-        librarian_no_coverage.set(no_coverage)
-
-        # Library side — best-effort qmd query. Errors (missing
-        # binary, daemon failures, empty result set) collapse to an
-        # empty library hit list; the wiki-side merge still wins
-        # because library hits are merged by slug rather than
-        # short-circuiting the wiki path.
-        library_hits: list[dict[str, Any]] = []
-        # F15 tag-filter union: every registered library collection
-        # is reachable from the librarian's library path. The F15
-        # filter is applied post-qmd in `qmd_query` itself.
+        # Wiki side — qmd query against the wiki's own qmd index at
+        # ``wiki.wiki_dir``. The wiki corpus is registered as a qmd
+        # collection rooted at ``wiki.wiki_dir``; this is the
+        # canonical way to surface wiki-authored pages alongside
+        # library pages in a single merged result list. NO
+        # collection_filter — the wiki side is unconstrained
+        # because the wiki's qmd index only contains wiki pages.
+        #
+        # ``no_coverage`` and ``searched_scope`` still come from
+        # :meth:`WikiMemoryService.search` because qmd has no
+        # equivalent: it indexes pages, not corpus-coverage
+        # metadata. The qmd call below is the hit source; the
+        # memory-service call supplies the envelope fields the
+        # orchestrator copies onto the returned ``LibrarianOutput``.
         try:
-            from lies.library.registry import library_collection_names
-
-            _lib_collections = set(library_collection_names())
-        except Exception as exc:
-            warnings.warn(
-                f"librarian: library_collection_names() raised {type(exc).__name__}: {exc}",
-                stacklevel=2,
-            )
-            _lib_collections = None
-        try:
-            raw_library = _qmd_query_callable(
+            raw_wiki = _qmd_query_callable(
                 wiki.wiki_dir,
                 question,
                 limit=limit,
-                collection_filter=_lib_collections,
             )
         except QmdError:
-            raw_library = []
+            raw_wiki = []
         except Exception as exc:
             # Defensive — qmd wraps most failure modes in
             # :class:`QmdError`, but a totally unexpected exception
             # (subprocess crash, OS error, TypeError from a future
             # qmd change) must not break the librarian's wiki
             # retrieval path. Surface the unexpected error so
-            # operators can debug empty-library-hit cases without
+            # operators can debug empty-wiki-hit cases without
             # grep'ing the daemon log.
             warnings.warn(
-                f"librarian: library qmd_query raised {type(exc).__name__}: {exc}",
+                f"librarian: wiki qmd_query raised {type(exc).__name__}: {exc}",
                 stacklevel=2,
             )
+            raw_wiki = []
+
+        wiki_hits = [{**hit, "source_kind": "wiki"} for hit in raw_wiki]
+
+        # F18 Task 1 — capture the wiki-side ``no_coverage`` and
+        # ``searched_scope`` signals into the module-scope
+        # :data:`librarian_no_coverage` ContextVar and the result
+        # envelope. The dispatch site (orchestrator's ``run_query``)
+        # reads the ContextVar after ``run_sync`` returns and copies
+        # the value onto the returned :class:`LibrarianOutput` via
+        # :func:`dataclasses.replace`. The ContextVar reflects the
+        # wiki side's signal; library failures do not flip it because
+        # a live library is not required for coverage.
+        wiki_envelope = memory_service.search(question, limit=limit)
+        wiki_dump = wiki_envelope.model_dump()
+        no_coverage = bool(wiki_dump.get("no_coverage", False))
+        searched_scope = list(wiki_dump.get("searched_scope", []))
+        librarian_no_coverage.set(no_coverage)
+
+        # Library side — best-effort qmd query against the library's
+        # own qmd index. Errors (missing binary, daemon failures,
+        # empty result set) collapse to an empty library hit list;
+        # the wiki-side merge still wins because library hits are
+        # merged by slug rather than short-circuiting the wiki path.
+        #
+        # The library's qmd index is registered at ``lib.git_root``,
+        # NOT at any wiki's ``wiki_dir`` — the two surfaces are
+        # distinct indexes. Calling qmd against ``wiki.wiki_dir``
+        # returns zero library hits even when the library is
+        # populated. The dual-source fan-out therefore queries
+        # BOTH surfaces in sequence and merges the two result
+        # lists via ``_merge_wiki_and_library_hits``, which enforces
+        # library-wins-on-slug-conflict.
+        library_hits: list[dict[str, Any]] = []
+        # F15 tag-filter union: every registered library collection
+        # is reachable from the librarian's library path. The F15
+        # filter is applied post-qmd in `qmd_query` itself. The set
+        # of registered names comes from the live library registry
+        # (NOT the wiki catalog) so the filter is the source of
+        # truth for which collection names qmd can return.
+        try:
+            from lies.library.registry import (
+                library_collection_names,
+                library_git_root,
+            )
+
+            _lib_root = library_git_root()
+            _lib_collections: set[str] | None = set(library_collection_names())
+        except Exception as exc:
+            warnings.warn(
+                f"librarian: library registry lookup raised {type(exc).__name__}: {exc}",
+                stacklevel=2,
+            )
+            _lib_root = None
+            _lib_collections = None
+        if _lib_root is not None:
+            try:
+                raw_library = _qmd_query_callable(
+                    _lib_root,
+                    question,
+                    limit=limit,
+                    collection_filter=_lib_collections,
+                )
+            except QmdError:
+                raw_library = []
+            except Exception as exc:
+                # Defensive — qmd wraps most failure modes in
+                # :class:`QmdError`, but a totally unexpected exception
+                # (subprocess crash, OS error, TypeError from a
+                # future qmd change) must not break the librarian's
+                # wiki retrieval path. Surface the unexpected error
+                # so operators can debug empty-library-hit cases
+                # without grep'ing the daemon log.
+                warnings.warn(
+                    f"librarian: library qmd_query raised {type(exc).__name__}: {exc}",
+                    stacklevel=2,
+                )
+                raw_library = []
+        else:
             raw_library = []
 
         for hit in raw_library:

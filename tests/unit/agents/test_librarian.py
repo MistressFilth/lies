@@ -12,6 +12,7 @@ from lies.agents.librarian import (
     PageExcerpt,
     _rewrite_query_for_validator,
 )
+from lies.library.registry import library_collection_names, library_git_root
 
 
 def test_rewrite_query_drops_in_word_hyphens() -> None:
@@ -251,8 +252,15 @@ def _drive_wiki_search(
 
 
 def test_wiki_search_returns_library_hits_with_source_kind_library(monkeypatch) -> None:
-    """_wiki_search surfaces library hits tagged source_kind='library'."""
-    # Wiki side empty; qmd library side returns one hit.
+    """_wiki_search surfaces library hits tagged source_kind='library'.
+
+    Both sides are now qmd-driven (Task 1): the wiki-side qmd call
+    is the wiki hit source, and the library-side qmd call is the
+    library hit source. The fake returns the library hit regardless
+    of cwd; library-wins-on-conflict means the merged row carries
+    the library body's title/excerpt.
+    """
+    # Wiki side empty (no qmd hits); library side returns one hit.
     wiki_service = _FakeMemoryService(pages=[], no_coverage=False)
     qmd_calls: list[dict[str, Any]] = []
 
@@ -270,20 +278,37 @@ def test_wiki_search_returns_library_hits_with_source_kind_library(monkeypatch) 
 
 
 def test_wiki_search_returns_wiki_only_hits_with_source_kind_wiki(monkeypatch) -> None:
-    """_wiki_search surfaces wiki-only hits tagged source_kind='wiki'."""
-    wiki_hit = _FakeWikiEvidence(
-        page_id="wiki-page-1",
-        path="concepts/pydantic",
-        collection_id="default",
-        excerpt="Wiki excerpt about pydantic",
-        score=0.7,
-    )
-    wiki_service = _FakeMemoryService(pages=[wiki_hit], no_coverage=False)
+    """_wiki_search surfaces wiki-only hits tagged source_kind='wiki'.
+
+    The wiki-side qmd call (cwd == wiki.wiki_dir) returns the wiki
+    hit; the library-side qmd call (cwd == lib.git_root) returns
+    nothing. The merged row carries the wiki hit and is tagged
+    ``source_kind="wiki"``.
+    """
+    from lies.library.registry import library_git_root
+
+    wiki_service = _FakeMemoryService(pages=[], no_coverage=False)
+    fake_wiki = _FakeWiki(wiki_dir=Path("/tmp/fake-wiki"))
+    lib_root = library_git_root()
+    wiki_hit = {
+        "path": "concepts/pydantic",
+        "title": "Wiki pydantic",
+        "score": 0.7,
+        "excerpt": "Wiki excerpt about pydantic",
+    }
 
     def fake_qmd_query(cwd: Path, q: str, limit: int = 5, **_kw: Any) -> list[dict[str, Any]]:
+        if Path(cwd) == fake_wiki.wiki_dir:
+            return [wiki_hit]
+        if Path(cwd) == lib_root:
+            return []
         return []
 
-    out = _drive_wiki_search(memory_service=wiki_service, qmd_query_fn=fake_qmd_query)
+    out = _drive_wiki_search(
+        wiki=fake_wiki,
+        memory_service=wiki_service,
+        qmd_query_fn=fake_qmd_query,
+    )
 
     hits = out["hits"]
     assert len(hits) == 1
@@ -292,27 +317,43 @@ def test_wiki_search_returns_wiki_only_hits_with_source_kind_wiki(monkeypatch) -
 
 
 def test_wiki_search_library_wins_on_slug_conflict(monkeypatch) -> None:
-    """When wiki and library both hit the same slug, the library hit wins."""
-    wiki_hit = _FakeWikiEvidence(
-        page_id="wiki-page-1",
-        path="concepts/pydantic",
-        collection_id="default",
-        excerpt="Wiki excerpt about pydantic",
-        score=0.7,
-    )
-    wiki_service = _FakeMemoryService(pages=[wiki_hit], no_coverage=False)
+    """When wiki and library both hit the same slug, the library hit wins.
+
+    The wiki-side qmd call returns the wiki hit; the library-side
+    qmd call returns the library hit. Both carry the same ``path``;
+    the merge drops the wiki copy on slug match and keeps the
+    library row tagged ``source_kind="library"``.
+    """
+    from lies.library.registry import library_git_root
+
+    wiki_service = _FakeMemoryService(pages=[], no_coverage=False)
+    fake_wiki = _FakeWiki(wiki_dir=Path("/tmp/fake-wiki"))
+    lib_root = library_git_root()
+    wiki_hit = {
+        "path": "concepts/pydantic",
+        "title": "Pydantic (wiki)",
+        "score": 0.7,
+        "excerpt": "Wiki excerpt about pydantic",
+    }
+    library_hit = {
+        "path": "concepts/pydantic",
+        "title": "Pydantic (library)",
+        "score": 0.9,
+        "excerpt": "Library excerpt about pydantic",
+    }
 
     def fake_qmd_query(cwd: Path, q: str, limit: int = 5, **_kw: Any) -> list[dict[str, Any]]:
-        return [
-            {
-                "path": "concepts/pydantic",
-                "title": "Pydantic (library)",
-                "score": 0.9,
-                "excerpt": "Library excerpt about pydantic",
-            }
-        ]
+        if Path(cwd) == fake_wiki.wiki_dir:
+            return [wiki_hit]
+        if Path(cwd) == lib_root:
+            return [library_hit]
+        return []
 
-    out = _drive_wiki_search(memory_service=wiki_service, qmd_query_fn=fake_qmd_query)
+    out = _drive_wiki_search(
+        wiki=fake_wiki,
+        memory_service=wiki_service,
+        qmd_query_fn=fake_qmd_query,
+    )
 
     hits = out["hits"]
     assert len(hits) == 1
@@ -323,3 +364,79 @@ def test_wiki_search_library_wins_on_slug_conflict(monkeypatch) -> None:
     assert hit["path"] == "concepts/pydantic"
     assert hit["title"] == "Pydantic (library)"
     assert hit["excerpt"] == "Library excerpt about pydantic"
+
+
+# ---------------------------------------------------------------------------
+# Task 1 — librarian qmd fan-out hits both wiki.wiki_dir AND lib.git_root
+# ---------------------------------------------------------------------------
+
+
+def test_wiki_search_queries_library_git_root() -> None:
+    """Librarian fan-out hits both wiki.wiki_dir and lib.git_root.
+
+    Pre-fix bug: qmd_query was called only against wiki.wiki_dir with
+    a library-collection filter, so library hits were always empty
+    (the wiki's qmd index has no library pages registered). The
+    library's qmd index is registered at lib.git_root
+    (``~/.local/share/lies/library/``), NOT at any wiki's
+    ``wiki_dir``. The fix splits the fan-out so qmd_query is called
+    against both surfaces in parallel; both feed
+    ``_merge_wiki_and_library_hits`` which enforces
+    library-wins-on-slug-conflict.
+
+    Reads the live ``wiki.wiki_dir`` and ``library_git_root()`` paths
+    to build the expected cwd list so the assertion tracks the
+    actual layout, not hard-coded sentinels.
+    """
+    wiki_service = _FakeMemoryService(pages=[], no_coverage=False)
+    fake_wiki = _FakeWiki(wiki_dir=Path("/tmp/fake-wiki"))
+    expected_lib_root = library_git_root()
+    called_cwds: list[Path] = []
+
+    def fake_qmd_query(cwd: Path, q: str, limit: int = 5, **_kw: Any) -> list[dict[str, Any]]:
+        called_cwds.append(Path(cwd))
+        return []
+
+    _drive_wiki_search(
+        wiki=fake_wiki,
+        memory_service=wiki_service,
+        qmd_query_fn=fake_qmd_query,
+    )
+
+    assert called_cwds == [fake_wiki.wiki_dir, expected_lib_root], (
+        f"librarian must fan out to both wiki cwd and library git root; got {called_cwds}"
+    )
+
+
+def test_wiki_search_passes_collection_filter_to_library_side_only() -> None:
+    """Wiki-side qmd_query has no filter; library-side carries the collection_filter.
+
+    Confirms the fan-out semantics the fix introduces: only the
+    library-side call needs ``collection_filter=set(library_collection_names())``
+    because qmd's collection filter restricts results to the named
+    library collections. The wiki-side call indexes wiki pages, not
+    library pages, so applying the filter there would drop every
+    wiki hit on the (correct) theory that no wiki slug matches a
+    library-collection name.
+    """
+    wiki_service = _FakeMemoryService(pages=[], no_coverage=False)
+    fake_wiki = _FakeWiki(wiki_dir=Path("/tmp/fake-wiki"))
+    expected_lib_root = library_git_root()
+    expected_lib_filter = set(library_collection_names())
+    call_log: list[dict[str, Any]] = []
+
+    def fake_qmd_query(cwd: Path, q: str, limit: int = 5, **kw: Any) -> list[dict[str, Any]]:
+        call_log.append({"cwd": Path(cwd), "collection_filter": kw.get("collection_filter")})
+        return []
+
+    _drive_wiki_search(
+        wiki=fake_wiki,
+        memory_service=wiki_service,
+        qmd_query_fn=fake_qmd_query,
+    )
+
+    assert [c["cwd"] for c in call_log] == [fake_wiki.wiki_dir, expected_lib_root]
+    assert call_log[0]["collection_filter"] is None, "wiki side must not pass a filter"
+    assert call_log[1]["collection_filter"] == expected_lib_filter, (
+        "library side must pass collection_filter=set(library_collection_names())"
+    )

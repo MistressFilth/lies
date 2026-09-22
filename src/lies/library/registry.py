@@ -26,6 +26,12 @@ call site (CLI ``query`` / MCP ``query`` and ``answer`` / retriever's
     Cache invalidates on process restart; the registry is small
     enough that this is acceptable for long-running daemons.
 
+  - :func:`library_git_root` — the library's git root. Library
+    collections are registered into qmd at this path, so the
+    dual-source librarian fan-out queries ``qmd_query`` against this
+    cwd for the library side (and against ``wiki.wiki_dir`` for the
+    wiki side).
+
   - :func:`library_initialized` — whether the library's
     ``collections_root`` exists on disk. The error surface names the
     gap when False.
@@ -90,6 +96,23 @@ def _collections_root() -> Path:
     import surface for tag resolution.
     """
     return Library.open().collections_root
+
+
+def library_git_root() -> Path:
+    """The library's git root directory.
+
+    Library collections are registered into qmd at this path, not at
+    any wiki's ``wiki_dir``. The dual-source librarian fan-out calls
+    ``qmd_query`` against this cwd for the library side and against
+    ``wiki.wiki_dir`` for the wiki side. The two surfaces are
+    distinct qmd indexes; collapsing them to a single cwd returns
+    zero library hits even when the library is populated.
+
+    Thin wrapper over :meth:`Library.open` so the registry module
+    stays the single import surface for downstream callers (notably
+    the librarian subagent's ``_wiki_search`` closure).
+    """
+    return Library.open().git_root
 
 
 def library_initialized() -> bool:
@@ -193,6 +216,7 @@ __all__ = (
     "library_collection_names",
     "library_collection_record",
     "library_collection_records",
+    "library_git_root",
     "library_has_no_collections",
     "library_initialized",
 )
