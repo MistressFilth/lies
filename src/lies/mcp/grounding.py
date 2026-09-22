@@ -46,15 +46,16 @@ class CitationSnippet:
         source_kind: Where the snippet came from. ``"library"`` =
             primary source (library collection), ``"wiki"`` = wiki-only
             hit (secondary, not grounded in a primary source),
-            ``"library+wiki"`` = both surfaces matched on the same
-            slug. Defaults to ``"library"`` for backward compat.
+            ``"wiki"`` = wiki-only hit (secondary, not grounded in
+            a primary source). Library-wins-on-conflict means the
+            merged row never carries the wiki discriminator. Defaults to ``"library"`` for backward compat.
     """
 
     collection: str
     slug: str
     title: str
     snippet: str
-    source_kind: Literal["library", "wiki", "library+wiki"] = "library"
+    source_kind: Literal["library", "wiki"] = "library"
 
 
 @dataclass(frozen=True)

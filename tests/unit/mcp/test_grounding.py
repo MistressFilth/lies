@@ -678,13 +678,13 @@ def test_ground_threads_source_kind_from_librarian_output(monkeypatch) -> None:
     """ground() copies source_kind from each PageExcerpt into CitationSnippet.
 
     Pins Task 2 of dual-source-routing: the librarian's per-excerpt
-    ``source_kind`` flag (``"library"`` vs ``"wiki"`` vs
-    ``"library+wiki"``) must propagate through to the
-    :class:`CitationSnippet` emitted by :func:`ground` so downstream
-    rendering can distinguish primary-source hits from wiki-only
-    hits. The test fakes the librarian dispatch and feeds two
-    excerpts with distinct ``source_kind`` values; assertions on
-    the resulting ``digest.citations`` pin the propagation.
+    ``source_kind`` flag (``"library"`` vs ``"wiki"``) must propagate
+    through to the :class:`CitationSnippet` emitted by :func:`ground`
+    so downstream rendering can distinguish primary-source hits
+    from wiki-only hits. The test fakes the librarian dispatch and
+    feeds two excerpts with distinct ``source_kind`` values;
+    assertions on the resulting ``digest.citations`` pin the
+    propagation.
     """
     from lies.markdown_spans import Span
     from lies.mcp import grounding
@@ -727,27 +727,9 @@ def test_ground_threads_source_kind_from_librarian_output(monkeypatch) -> None:
         ],
         source_kind="wiki",
     )
-    both_excerpt_with_span = _FakeExcerpt(
-        collection="mermaid",
-        slug="syntax/sequence",
-        title="Sequence syntax",
-        spans=[
-            Span(
-                heading_path=[],
-                body="sequenceDiagram; A->>B: hi",
-                code_fence=False,
-                start_line=1,
-            )
-        ],
-        source_kind="library+wiki",
-    )
     fake = _FakeOutput(
-        excerpts=[
-            lib_excerpt_with_span,
-            wiki_excerpt_with_span,
-            both_excerpt_with_span,
-        ],
-        distinct_pages=3,
+        excerpts=[lib_excerpt_with_span, wiki_excerpt_with_span],
+        distinct_pages=2,
     )
 
     class _StubAgent:
@@ -761,4 +743,4 @@ def test_ground_threads_source_kind_from_librarian_output(monkeypatch) -> None:
 
     digest = grounding.ground("anything")
     kinds = sorted(c.source_kind for c in digest.citations)
-    assert kinds == ["library", "library+wiki", "wiki"]
+    assert kinds == ["library", "wiki"]

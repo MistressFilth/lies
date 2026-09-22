@@ -61,7 +61,7 @@ class PageExcerpt:
     excerpt came from so downstream rendering can distinguish
     primary-source hits (``"library"``) from wiki-only hits
     (``"wiki"``) from surfaces that matched on both
-    (``"library+wiki"``). Defaults to ``"library"`` for backward
+    (``"wiki"``). Defaults to ``"library"`` for backward
     compat against pre-T2F librarian outputs.
     """
 
@@ -69,7 +69,7 @@ class PageExcerpt:
     slug: str
     title: str
     spans: list[Span]
-    source_kind: Literal["library", "wiki", "library+wiki"] = "library"
+    source_kind: Literal["library", "wiki"] = "library"
 
 
 @dataclass(frozen=True)
@@ -307,16 +307,24 @@ def _merge_wiki_and_library_hits(
     library surface is the primary source of truth.
     """
     merged_by_slug: dict[str, dict[str, Any]] = {}
+    library_anonymous: list[dict[str, Any]] = []
     for hit in library_hits:
         slug = str(hit.get("path", ""))
+        if not slug:
+            # Anonymous library hits have no dedup key — keep them
+            # outside the dedup map for reviewability.
+            library_anonymous.append(hit)
+            continue
         merged_by_slug[slug] = hit
     for hit in wiki_hits:
         slug = str(hit.get("path", ""))
+        if not slug:
+            continue
         if slug in merged_by_slug:
             # Library wins — drop the wiki copy entirely.
             continue
         merged_by_slug[slug] = hit
-    return list(merged_by_slug.values())
+    return list(merged_by_slug.values()) + library_anonymous
 
 
 def register_librarian_tools(
@@ -445,11 +453,21 @@ def register_librarian_tools(
         # because library hits are merged by slug rather than
         # short-circuiting the wiki path.
         library_hits: list[dict[str, Any]] = []
+        # F15 tag-filter union: every registered library collection
+        # is reachable from the librarian's library path. The F15
+        # filter is applied post-qmd in `qmd_query` itself.
+        try:
+            from lies.library.registry import library_collection_names
+
+            _lib_collections = set(library_collection_names())
+        except Exception:
+            _lib_collections = None
         try:
             raw_library = _qmd_query_callable(
                 wiki.wiki_dir,
                 question,
                 limit=limit,
+                collection_filter=_lib_collections,
             )
         except QmdError:
             raw_library = []
