@@ -184,7 +184,7 @@ After registration, Claude Code sees these tools:
 - `wiki://page/{path}` — any page under `wiki/` (relative path; traversal
   rejected).
 
-The server also exposes one prompt (`ask_wiki`) for asking the wiki.
+The server also exposes a `cite` prompt that templates a `ground()` tool call and renders the `ArchivistDigest` as `[[collection/slug]] (Title): "<snippet>"` citation lines.
 
 Wiki selection: every tool accepts an optional `name` parameter.
 Resolution chain: explicit `name` → `LIES_WIKI_NAME` env → `default`.
@@ -921,10 +921,10 @@ The LIES MCP server ships an orientation payload at every
   resource list, prompt index. The agent sees this on attach
   regardless of cwd.
 - Prompts: `orient(wiki=...)`, `ingest(source=...)`,
-  `query(question=...)`, `lint()`, `sync(collection=...)`,
-  `file-back(wiki=...)`. Plus the pre-existing
-  `ask_wiki(question)` and `ask_wiki_answer(question)`
-  (= slash `/answer`) tool-call templates.
+  `lint()`, `sync(collection=...)`,
+  `file-back(wiki=...)`. Plus `cite(question, tag_expr=None,
+  exclude_tags=None, top_k=3)` and the pre-existing
+  `/answer` slash tool-call template.
 
 The payload lives at `src/lies/mcp/instructions.md` plus
 `src/lies/mcp/prompts/*.md`. A pre-commit hook

@@ -6,7 +6,7 @@ import pytest
 
 from lies.mcp.instructions_loader import PROMPTS_DIR, load_prompt
 
-EXPECTED_PROMPTS = {"orient", "ingest", "query", "lint", "sync", "file-back"}
+EXPECTED_PROMPTS = {"orient", "ingest", "lint", "sync", "file-back"}
 
 
 def test_prompts_dir_exists() -> None:

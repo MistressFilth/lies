@@ -39,14 +39,13 @@ only).
 
 ## Prompts
 
-- `ask_wiki(question)` — tool-call template: drive `query`.
 - `ask_wiki_answer(question)` (slash `/answer`) — drive `answer`.
 - `orient(wiki=...)` — reference prose for the four workflows.
 - `ingest(source=...)` — `lies sync <name> --source <source>`.
-- `query(question=...)` — `query` tool call recipes.
 - `lint()` — `lies lint`, `--fix`, repair agent.
 - `sync(collection=...)` — `lies sync`, lock envelope.
 - `file-back(wiki=...)` — F3 file-back from a query synthesis.
+- `cite(question, tag_expr=None, exclude_tags=None, top_k=3)` — tool-call template: drive `ground` and render `[[slug]]: "snippet"` lines.
 
 ## CLI
 

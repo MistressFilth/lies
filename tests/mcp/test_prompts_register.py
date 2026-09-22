@@ -1,10 +1,10 @@
-"""Unit tests: all 8 LIES MCP prompts register on the FastMCP instance.
+"""Unit tests: all 7 LIES MCP prompts register on the FastMCP instance.
 
-Pre-existing prompts (ask_wiki, ask_wiki_answer) plus the 6 new
-reference-prose prompts. Reads the FastMCP internal prompt
-registry; if the API surface changes in a future FastMCP
-version, the assertion message points the implementer at the
-new attribute name.
+Pre-existing prompt (`ask_wiki_answer`, registered as `answer`) plus
+the 6 reference-prose prompts (`orient`, `ingest`, `lint`, `sync`,
+`file-back`, `cite`). Reads the FastMCP internal prompt registry;
+if the API surface changes in a future FastMCP version, the
+assertion message points the implementer at the new attribute name.
 """
 
 from __future__ import annotations
@@ -13,14 +13,13 @@ from lies.mcp.server import mcp
 
 
 EXPECTED_PROMPTS = {
-    "ask_wiki",
     "answer",
     "orient",
     "ingest",
-    "query",
     "lint",
     "sync",
     "file-back",
+    "cite",
 }
 
 
@@ -63,7 +62,7 @@ def _registered_prompt_names() -> set[str]:
     )
 
 
-def test_all_eight_prompts_registered() -> None:
+def test_all_seven_prompts_registered() -> None:
     registered = _registered_prompt_names()
     missing = EXPECTED_PROMPTS - registered
     assert not missing, f"missing prompt registrations: {sorted(missing)}"

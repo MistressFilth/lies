@@ -16,6 +16,7 @@ to already be registered under ``$LIES_XDG_DATA_HOME``.
 from __future__ import annotations
 
 import sys
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Literal, cast
@@ -857,6 +858,34 @@ def lint(
 # direct callers exercise the real logic with an explicit ``name``.
 
 
+def _register_static_resource(
+    uri: str, fn: Callable[..., str], description: str | None = None
+) -> Callable[..., str]:
+    """Register ``fn`` as a *static* MCP resource even when it has params.
+
+    FastMCP's ``@mcp.resource(...)`` decorator auto-routes any callable
+    with parameters to :class:`ResourceTemplate`, which then rejects
+    URIs without ``{...}`` placeholders. The ``query`` / ``answer``
+    tools accept a wiki ``name`` kwarg (resolving through
+    :func:`lies.mcp.resolution.resolve_wiki`); the resource surface
+    needs the same parity for direct Python callers and tests, so we
+    bypass the decorator's auto-routing by registering a
+    :class:`FunctionResource` directly. FastMCP's read path still
+    invokes the registered ``fn`` with no positional arguments; any
+    ``name``-style kwargs are passed only by Python callers (tests,
+    REPL, direct imports), not by the MCP wire.
+    """
+    from fastmcp.resources.function_resource import FunctionResource
+
+    resource = FunctionResource.from_function(
+        fn=fn,
+        uri=uri,
+        description=description,
+    )
+    mcp.add_resource(resource)
+    return fn
+
+
 def _wiki_status_impl(name: str | None = None) -> str:
     """Return qmd status plus the last 10 lines of ``wiki/log.md``.
 
@@ -883,15 +912,34 @@ def _wiki_status_impl(name: str | None = None) -> str:
     return out
 
 
-@mcp.resource("wiki://status")
-def wiki_status() -> str:
-    """qmd status + last 10 log lines.
+def _wiki_status_mcp() -> str:
+    """Zero-arg FastMCP handler for ``wiki://status``.
 
-    Zero-argument forwarder (FastMCP 3.4.5 constraint on static-resource
-    handlers). Real logic in :func:`_wiki_status_impl`; ``name`` is
-    resolved from the env there.
+    FastMCP's read path calls this with no arguments; ``name`` falls
+    back to the env-default wiki (resolved inside the impl). Tests
+    should import the public :func:`wiki_status` instead, which accepts
+    an explicit ``name`` kwarg.
     """
     return _wiki_status_impl()
+
+
+_register_static_resource(
+    "wiki://status",
+    _wiki_status_mcp,
+    description="qmd status + last 10 log lines.",
+)
+
+
+def wiki_status(name: str | None = None) -> str:
+    """qmd status + last 10 log lines.
+
+    Direct Python entry point — accepts an explicit ``name`` kwarg so
+    tests and REPL callers don't have to mutate ``LIES_WIKI_NAME``.
+    Mirrors the ``query`` / ``answer`` / ``init_wiki`` tool surface.
+    The FastMCP wire protocol calls the registered zero-arg handler
+    above; this function is the parity surface for direct callers.
+    """
+    return _wiki_status_impl(name)
 
 
 def _wiki_index_impl(name: str | None = None) -> str:
@@ -902,14 +950,28 @@ def _wiki_index_impl(name: str | None = None) -> str:
     return index_path.read_text(encoding="utf-8")
 
 
-@mcp.resource("wiki://index")
-def wiki_index() -> str:
+def _wiki_index_mcp() -> str:
+    """Zero-arg FastMCP handler for ``wiki://index``."""
+    return _wiki_index_impl()
+
+
+_register_static_resource(
+    "wiki://index",
+    _wiki_index_mcp,
+    description="Raw contents of wiki/index.md.",
+)
+
+
+def wiki_index(name: str | None = None) -> str:
     """Raw contents of ``wiki/index.md`` (empty string if absent).
 
-    Zero-argument forwarder (FastMCP 3.4.5 constraint). Real logic in
-    :func:`_wiki_index_impl`; ``name`` is resolved from the env there.
+    Direct Python entry point — accepts an explicit ``name`` kwarg so
+    tests and REPL callers don't have to mutate ``LIES_WIKI_NAME``.
+    Mirrors the ``query`` / ``answer`` / ``init_wiki`` tool surface.
+    The FastMCP wire protocol calls the registered zero-arg handler
+    above; this function is the parity surface for direct callers.
     """
-    return _wiki_index_impl()
+    return _wiki_index_impl(name)
 
 
 def _wiki_log_impl(name: str | None = None) -> str:
@@ -920,14 +982,28 @@ def _wiki_log_impl(name: str | None = None) -> str:
     return log_path.read_text(encoding="utf-8")
 
 
-@mcp.resource("wiki://log")
-def wiki_log() -> str:
+def _wiki_log_mcp() -> str:
+    """Zero-arg FastMCP handler for ``wiki://log``."""
+    return _wiki_log_impl()
+
+
+_register_static_resource(
+    "wiki://log",
+    _wiki_log_mcp,
+    description="Raw contents of wiki/log.md.",
+)
+
+
+def wiki_log(name: str | None = None) -> str:
     """Raw contents of ``wiki/log.md`` (empty string if absent).
 
-    Zero-argument forwarder (FastMCP 3.4.5 constraint). Real logic in
-    :func:`_wiki_log_impl`; ``name`` is resolved from the env there.
+    Direct Python entry point — accepts an explicit ``name`` kwarg so
+    tests and REPL callers don't have to mutate ``LIES_WIKI_NAME``.
+    Mirrors the ``query`` / ``answer`` / ``init_wiki`` tool surface.
+    The FastMCP wire protocol calls the registered zero-arg handler
+    above; this function is the parity surface for direct callers.
     """
-    return _wiki_log_impl()
+    return _wiki_log_impl(name)
 
 
 def _wiki_lint_report_impl(name: str | None = None) -> str:
@@ -938,15 +1014,28 @@ def _wiki_lint_report_impl(name: str | None = None) -> str:
     return report_path.read_text(encoding="utf-8")
 
 
-@mcp.resource("wiki://lint-report")
-def wiki_lint_report() -> str:
+def _wiki_lint_report_mcp() -> str:
+    """Zero-arg FastMCP handler for ``wiki://lint-report``."""
+    return _wiki_lint_report_impl()
+
+
+_register_static_resource(
+    "wiki://lint-report",
+    _wiki_lint_report_mcp,
+    description="Raw contents of wiki/lint-report.md.",
+)
+
+
+def wiki_lint_report(name: str | None = None) -> str:
     """Raw contents of ``wiki/lint-report.md`` (empty string if absent).
 
-    Zero-argument forwarder (FastMCP 3.4.5 constraint). Real logic in
-    :func:`_wiki_lint_report_impl`; ``name`` is resolved from the env
-    there.
+    Direct Python entry point — accepts an explicit ``name`` kwarg so
+    tests and REPL callers don't have to mutate ``LIES_WIKI_NAME``.
+    Mirrors the ``query`` / ``answer`` / ``init_wiki`` tool surface.
+    The FastMCP wire protocol calls the registered zero-arg handler
+    above; this function is the parity surface for direct callers.
     """
-    return _wiki_lint_report_impl()
+    return _wiki_lint_report_impl(name)
 
 
 def _safe_page_path(wiki: Wiki, path: str) -> Path:
@@ -988,14 +1077,17 @@ def _wiki_page_impl(path: str, name: str | None = None) -> str:
 
 
 @mcp.resource("wiki://page/{path}")
-def wiki_page(path: str) -> str:
+def wiki_page(path: str, name: str | None = None) -> str:
     """Raw markdown of any page under ``wiki/`` (relative ``path``).
 
     Template-resource handler — unlike the static resources above,
     FastMCP passes ``path`` directly so the forwarder forwards it to
-    :func:`_wiki_page_impl`.
+    :func:`_wiki_page_impl`. The optional ``name`` kwarg keeps the
+    Python-callable surface — and the MCP tool parity — consistent with
+    ``query`` / ``answer`` / ``init_wiki``, which all accept ``name``;
+    FastMCP itself never passes it, so the env-default wiki is used.
     """
-    return _wiki_page_impl(path)
+    return _wiki_page_impl(path, name)
 
 
 # ---------------------------------------------------------------------------
@@ -1133,35 +1225,17 @@ def wiki_catalog_slug(slug: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Prompt — starter template for asking the wiki
+# Prompt — starter templates for the synthesizer paths
 # ---------------------------------------------------------------------------
-
-
-@mcp.prompt
-def ask_wiki(question: str) -> str:
-    """Starter prompt that templates a ``query`` tool invocation.
-
-    The LLM receives this prompt and is expected to call the ``query``
-    tool with the templated question, then synthesize a final answer
-    from the structured result.
-    """
-    return (
-        f"Use the `query` tool to ask the wiki the following question, "
-        f"then answer concisely from the structured result:\n\n"
-        f"  question: {question}\n\n"
-        f"If the result's `fallback_used` is true, mention that the "
-        f"answer came from the index fallback (not qmd search) and "
-        f"include the `fallback_reason`."
-    )
 
 
 @mcp.prompt(name="answer")
 def ask_wiki_answer(question: str) -> str:
     """Starter prompt that templates an ``answer`` tool invocation.
 
-    Chat-surface counterpart to ``ask_wiki``: the LLM calls the
-    ``answer`` tool (returns plain text) instead of ``query`` (returns
-    structured envelope). Use this when the response needs to render
+    Chat-surface counterpart to the synthesized answer path: the LLM
+    calls the ``answer`` tool (returns plain text) instead of ``query``
+    (returns structured envelope). Use this when the response needs to render
     verbatim in chat rather than behind a collapsible JSON block.
 
     The ``name="answer"`` override registers the prompt as the
@@ -1201,20 +1275,6 @@ def ingest(source: str) -> str:
     return load_prompt("ingest").format(version=__version__, source=source)
 
 
-@mcp.prompt(name="query")
-def query_prompt(question: str) -> str:
-    """Return the query-tool recipes prose.
-
-    ``question`` is captured for MCP introspection only; the reference
-    prose is static and does not substitute this value.
-
-    Named ``query_prompt`` in Python to avoid clashing with the
-    ``query`` MCP tool already registered in this module;
-    registered as the ``/query`` prompt via ``name="query"``.
-    """
-    return load_prompt("query").format(version=__version__, question=question)
-
-
 @mcp.prompt(name="lint")
 def lint_prompt() -> str:
     """Return the lint walkthrough prose."""
@@ -1229,6 +1289,50 @@ def sync_prompt(collection: str) -> str:
     reference prose is static and does not substitute this value.
     """
     return load_prompt("sync").format(version=__version__, collection=collection)
+
+
+@mcp.prompt(name="cite")
+def cite(
+    question: str,
+    tag_expr: str | None = None,
+    exclude_tags: list[str] | None = None,
+    top_k: int = 3,
+) -> str:
+    """Slash that routes to the Archivist (F34 ground tool) and renders
+    the digest as ``[[collection/slug]] (Title): "<snippet>"`` lines.
+
+    Mirrors ask's ``archivist-prompt.md``: classify → search → read →
+    cite. The parent LLM does the rendering; the prompt only templates
+    the tool call and the render form. On ``ArchivistCoverageError``
+    the prompt tells the LLM to surface verbatim — no silent retry.
+
+    Args:
+        question: Natural-language fragment to ground.
+        tag_expr: Body of a single include token (no leading sigil),
+            e.g. ``"airflow&postgres"``. ``None`` for untagged.
+        exclude_tags: NOT tags without leading sigil. Forwarded to
+            ``ground()`` unchanged.
+        top_k: Maximum citations requested (default 3; ground()
+            clamps to ``[1, 10]``).
+
+    Returns:
+        Prose that templates a ``ground`` tool call and the
+        ``[[collection/slug]] (Title): "<snippet>"`` render form.
+    """
+    return (
+        f"Call the `ground` MCP tool to ground the following fragment:\n"
+        f"  question: {question}\n"
+        f"  tag_expr: {tag_expr!r}\n"
+        f"  exclude_tags: {exclude_tags!r}\n"
+        f"  top_k: {top_k!r}\n\n"
+        f"Render the returned `ArchivistDigest.citations` as one line "
+        f"per citation in this exact form:\n\n"
+        f'  [[collection/slug]] (Title): "<verbatim CitationSnippet.snippet>"\n\n'
+        f"Do NOT fabricate citations. On `ArchivistCoverageError`, "
+        f"surface the error message verbatim in your reply and stop. "
+        f"If `no_coverage` is true on the digest, say so explicitly and "
+        f"render any still-relevant slugs with empty snippets."
+    )
 
 
 @mcp.prompt(name="file-back")

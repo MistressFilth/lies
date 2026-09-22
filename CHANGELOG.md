@@ -6,6 +6,14 @@ All notable changes to LIES are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- MCP prompt surface: `ask_wiki` and `query_prompt` prompts removed.
+  `/answer` slash unchanged (librarian + synthesizer). New `/cite`
+  slash templates a `ground()` tool call and renders the
+  `ArchivistDigest` as `[[collection/slug]] (Title): "<snippet>"`
+  citation lines.
+
 ## [0.36.0] - 2026-09-21
 
 ### Added

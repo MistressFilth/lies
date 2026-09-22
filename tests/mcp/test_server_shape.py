@@ -62,7 +62,7 @@ async def test_resource_templates_registered(client: Client) -> None:
 async def test_prompts_registered(client: Client) -> None:
     prompts = await client.list_prompts()
     names = {p.name for p in prompts}
-    assert "ask_wiki" in names
+    assert "cite" in names
 
 
 def test_query_response_includes_claim_citations() -> None:
