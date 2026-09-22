@@ -9,7 +9,6 @@ import pytest
 
 from lies.mcp.server import (
     cite,
-    ask_wiki,
     init_wiki,
     wiki_index,
     wiki_lint_report,
@@ -120,13 +119,6 @@ def test_wiki_page_returns_empty_for_missing_file(
     """A page path that resolves cleanly under wiki/ but doesn't exist returns ''."""
     out = wiki_page("entities/does-not-exist.md", name=wiki_name)
     assert out == ""
-
-
-def test_ask_wiki_prompt_includes_question() -> None:
-    out = ask_wiki("What is MVCC?")
-    assert "What is MVCC?" in out
-    # The prompt mentions the tool name so the LLM uses it.
-    assert "query" in out.lower()
 
 
 def test_cite_prompt_routes_to_ground() -> None:

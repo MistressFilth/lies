@@ -29,9 +29,10 @@ only).
 - `sync(collection=...)` — `lies sync` envelope + heartbeat.
 - `file-back(wiki=...)` — F3 synthesis filing.
 
-The two existing `ask_wiki(question)` and `ask_wiki_answer`
-(= slash `/answer`) prompts drive the `query` and `answer`
-tools respectively; use them when you only need to ask.
+The two prompts `/answer` (`ask_wiki_answer`) and `/cite`
+template `answer` (librarian + synthesizer) and `ground`
+(archivist) tool calls respectively. `/orient`, `/ingest`,
+`/lint`, `/sync`, `/file-back` return reference prose.
 
 ## What NOT to do
 

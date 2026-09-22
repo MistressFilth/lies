@@ -1133,35 +1133,17 @@ def wiki_catalog_slug(slug: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Prompt — starter template for asking the wiki
+# Prompt — starter templates for the synthesizer paths
 # ---------------------------------------------------------------------------
-
-
-@mcp.prompt
-def ask_wiki(question: str) -> str:
-    """Starter prompt that templates a ``query`` tool invocation.
-
-    The LLM receives this prompt and is expected to call the ``query``
-    tool with the templated question, then synthesize a final answer
-    from the structured result.
-    """
-    return (
-        f"Use the `query` tool to ask the wiki the following question, "
-        f"then answer concisely from the structured result:\n\n"
-        f"  question: {question}\n\n"
-        f"If the result's `fallback_used` is true, mention that the "
-        f"answer came from the index fallback (not qmd search) and "
-        f"include the `fallback_reason`."
-    )
 
 
 @mcp.prompt(name="answer")
 def ask_wiki_answer(question: str) -> str:
     """Starter prompt that templates an ``answer`` tool invocation.
 
-    Chat-surface counterpart to ``ask_wiki``: the LLM calls the
-    ``answer`` tool (returns plain text) instead of ``query`` (returns
-    structured envelope). Use this when the response needs to render
+    Chat-surface counterpart to the synthesized answer path: the LLM
+    calls the ``answer`` tool (returns plain text) instead of ``query``
+    (returns structured envelope). Use this when the response needs to render
     verbatim in chat rather than behind a collapsible JSON block.
 
     The ``name="answer"`` override registers the prompt as the

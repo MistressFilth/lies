@@ -1,10 +1,11 @@
 """Unit tests: all 8 LIES MCP prompts register on the FastMCP instance.
 
-Pre-existing prompts (ask_wiki, ask_wiki_answer) plus the 6 new
-reference-prose prompts. Reads the FastMCP internal prompt
-registry; if the API surface changes in a future FastMCP
-version, the assertion message points the implementer at the
-new attribute name.
+Pre-existing prompt (`ask_wiki_answer`, registered as `answer`) plus
+the 7 reference-prose prompts (`orient`, `ingest`, `query`, `lint`,
+`sync`, `file-back`, `cite`). Reads the FastMCP internal prompt
+registry; if the API surface changes in a future FastMCP version,
+the assertion message points the implementer at the new attribute
+name.
 """
 
 from __future__ import annotations
@@ -13,7 +14,6 @@ from lies.mcp.server import mcp
 
 
 EXPECTED_PROMPTS = {
-    "ask_wiki",
     "answer",
     "orient",
     "ingest",
