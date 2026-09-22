@@ -1960,7 +1960,17 @@ class Orchestrator:
             # objects directly.
             citations=cast(list[str], threaded_citations),  # type: ignore[arg-type]
             should_file=answer.should_file,
-            format_hint=answer.format_hint,
+            # F1 chart addendum: when the caller forces a
+            # ``format_hint`` (``run_query_with_format`` re-entry path)
+            # the caller's value wins over the synthesizer's emitted
+            # ``format_hint``. The synth may emit ``"md"`` as a default
+            # if its chart-variant prompt confuses it; routing the
+            # forced value through here closes the gap so a
+            # ``--format=chart`` override files the synthesis with
+            # ``render_format: "chart"`` even when the synth returned
+            # ``"md"``. ``None`` falls through to the synth's emission
+            # (auto-route contract preserved).
+            format_hint=format_hint or answer.format_hint,
             claim_citations=validated_ccs,
         )
 
