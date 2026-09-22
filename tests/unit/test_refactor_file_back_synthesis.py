@@ -155,6 +155,38 @@ def test_file_back_synthesis_includes_render_format(orch):
     assert 'render_format: "table"' in synthesis_op.content
 
 
+def test_file_back_synthesis_includes_render_format_chart(orch):
+    """Chart-format sister: ``render_format: "chart"`` lands in the frontmatter.
+
+    F1 chart addendum (Critical #2 follow-up): ``run_query_with_format``
+    threads the caller's forced ``format_hint`` into ``_call_synthesizer``
+    so the filed synthesis's ``render_format`` frontmatter matches the
+    rendered body shape. The ``test_run_query_with_format_threads_format_
+    hint_into_call_synthesizer`` test pins the orchestrator plumbing;
+    this test pins the end-to-end frontmatter rendering for the chart
+    path specifically. Without this assertion the threading can regress
+    silently (e.g. a future ``getattr(answer, "format", "md")`` that
+    forgets to consult the caller's forced hint would re-introduce the
+    auto-route md filing bug without any test catching it).
+    """
+    answer = SynthesizedAnswer(
+        answer="```mermaid\ngraph LR\n  A --> B\n```\n",
+        format="chart",
+        question="q",
+        should_file=True,
+        synthesis_used=True,
+        pages_read=[Citation(path="claude-code/concepts/hooks", source="wiki")],
+    )
+
+    orch.file_back_synthesis(answer, "claude")
+
+    plan = orch._memory_service.apply_plan.call_args[0][0]
+    synthesis_op = plan.operations[0]
+    # Frontmatter must contain render_format: chart (double-quoted for
+    # YAML safety, mirroring title / collection).
+    assert 'render_format: "chart"' in synthesis_op.content
+
+
 def test_run_query_with_format_threads_format_hint_into_call_synthesizer(
     tmp_path: Path,
 ) -> None:
