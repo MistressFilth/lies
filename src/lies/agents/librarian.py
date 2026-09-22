@@ -342,6 +342,7 @@ def register_librarian_tools(
     wiki: Wiki,
     memory_service: WikiMemoryService,
     qmd_query: "Callable[..., list[dict[str, Any]]] | None" = None,
+    qmd_get: "Callable[..., str] | None" = None,
 ) -> None:
     """Register ``wiki_search`` / ``wiki_read`` / ``wiki_catalog`` on the librarian agent.
 
@@ -409,6 +410,19 @@ def register_librarian_tools(
         _qmd_query_callable: Callable[..., list[dict[str, Any]]] = _qmd_query_default
     else:
         _qmd_query_callable = qmd_query
+
+    # Task B - source-aware ``_wiki_read`` dispatch reads library-side
+    # bodies via ``qmd get`` against ``library_git_root()``. The
+    # helper is a keyword parameter so tests can inject a stub without
+    # monkeypatching ``lies.qmd.cli.qmd_get`` globally. When omitted
+    # we lazily resolve to the production helper at first call so this
+    # module stays off the qmd import chain until needed.
+    if qmd_get is None:
+        from lies.qmd.cli import qmd_get as _qmd_get_default
+
+        _qmd_get_callable: Callable[..., str] = _qmd_get_default
+    else:
+        _qmd_get_callable = qmd_get
 
     def _wiki_search(
         ctx: RunContext[LibrarianDeps],
@@ -573,7 +587,17 @@ def register_librarian_tools(
             raw_library = []
 
         for hit in raw_library:
-            library_hits.append({**hit, "source_kind": "library"})
+            # Strip qmd-style ``page_id`` from library hits. Library
+            # content is already inlined into the hit body at qmd
+            # search time, so the LLM agent does not need to call
+            # ``wiki_read`` for library hits - and ``wiki_read`` only
+            # knows wiki ``page-`` + sha1-12 IDs, so a qmd docid like
+            # ``#abc123`` would otherwise raise ``WikiPageNotFound``.
+            # Setting ``page_id=None`` here is the contract that
+            # tells the LLM agent to skip the read step for library
+            # hits entirely.
+            clean = {k: v for k, v in hit.items() if k != "page_id"}
+            library_hits.append({**clean, "page_id": None, "source_kind": "library"})
 
         # Merge — dedupe by slug. On conflict, the library hit
         # replaces the wiki hit; the merged row carries the library
@@ -593,11 +617,49 @@ def register_librarian_tools(
     ) -> dict[str, str]:
         """Read full page bodies for the given page IDs.
 
-        Thin wrapper around :meth:`WikiMemoryService.read` — IDs
-        must already be authenticated by ``wiki_search`` in the
-        same run.
+        Source-aware dispatch (Task B):
+
+        - Wiki page IDs (``page-`` + sha1-12) ->
+          ``memory_service.read()``.
+        - Library collection paths (``<collection>/<page>``) ->
+          read from the library's qmd chunks via ``qmd get``.
+        - Unknown format / not found -> ``WikiPageNotFound``.
+
+        The librarian's LLM agent passes either wiki page IDs or
+        library paths based on the ``source_kind`` of the hit it
+        wants to read. Library hits carry ``page_id=None`` (set at
+        search time) so the LLM does not pass qmd docids here;
+        this dispatch is the fallback for the case where the LLM
+        still routes a library path through ``wiki_read`` instead
+        of reading the body it already has in the search result.
         """
-        return memory_service.read(page_ids)
+        from lies.qmd.cli import QmdError
+        from lies.library.registry import library_git_root
+
+        bodies: dict[str, str] = {}
+        unknown: list[str] = []
+        wiki_ids: list[str] = []
+        library_paths: list[str] = []
+        for pid in page_ids:
+            if pid.startswith("page-"):
+                wiki_ids.append(pid)
+            elif "/" in pid:
+                library_paths.append(pid)
+            else:
+                unknown.append(pid)
+        if wiki_ids:
+            bodies.update(memory_service.read(wiki_ids))
+        lib_root = library_git_root()
+        for path in library_paths:
+            try:
+                bodies[path] = _qmd_get_callable(lib_root, f"qmd://{path}")
+            except QmdError:
+                unknown.append(path)
+        if unknown:
+            from lies.memory.models import WikiPageNotFound
+
+            raise WikiPageNotFound(f"unknown page_ids: {unknown}")
+        return bodies
 
     def _wiki_catalog(ctx: RunContext[LibrarianDeps]) -> str:
         """List every wiki catalog row as JSON.

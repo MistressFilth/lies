@@ -440,3 +440,181 @@ def test_wiki_search_passes_collection_filter_to_library_side_only() -> None:
     assert call_log[1]["collection_filter"] == expected_lib_filter, (
         "library side must pass collection_filter=set(library_collection_names())"
     )
+
+
+# ---------------------------------------------------------------------------
+# Task B — strip page_id from library hits; source-aware _wiki_read dispatch
+# ---------------------------------------------------------------------------
+
+
+def test_library_hit_page_id_is_none() -> None:
+    """Library hits must carry page_id=None so wiki_read is not called.
+
+    Pre-fix bug (Task B): library hits came from qmd with
+    ``#abc123``-style page_id values; the librarian's LLM agent
+    called ``wiki_read(['#abc123'])`` which raised WikiPageNotFound
+    because ``memory_service.read`` only knows wiki ``page-`` + sha1-12
+    IDs. The fix strips qmd's docid from library hits so the LLM
+    skips the read step entirely on library hits.
+
+    Drives ``_wiki_search`` end-to-end via the registered tool
+    closure (same pattern as the existing dual-source tests) so the
+    assertion exercises the actual library-hit-stripping code path,
+    not a copy of the strip logic in the test.
+    """
+    from lies.library.registry import library_git_root
+
+    wiki_service = _FakeMemoryService(pages=[], no_coverage=False)
+    qmd_calls: list[dict[str, Any]] = []
+
+    def fake_qmd_query(cwd: Path, q: str, limit: int = 5, **_kw: Any) -> list[dict[str, Any]]:
+        qmd_calls.append({"cwd": cwd, "q": q, "limit": limit})
+        # Library side returns one hit with a qmd-style docid
+        # page_id that the pre-fix code would leak through. Wiki
+        # side returns nothing.
+        if Path(cwd) == library_git_root():
+            return [
+                {
+                    "page_id": "#d75430",
+                    "path": "opencode/config.md",
+                    "title": "Config",
+                    "excerpt": "library excerpt",
+                }
+            ]
+        return []
+
+    out = _drive_wiki_search(memory_service=wiki_service, qmd_query_fn=fake_qmd_query)
+
+    assert qmd_calls, "qmd library path must be queried"
+    hits = out["hits"]
+    assert len(hits) == 1
+    hit = hits[0]
+    # The qmd-style page_id must be stripped; the hit must carry
+    # ``page_id=None`` so the LLM agent never tries
+    # ``wiki_read(['#d75430'])``.
+    assert hit["page_id"] is None
+    assert hit["source_kind"] == "library"
+    # The other library-hit fields survive the strip.
+    assert hit["path"] == "opencode/config.md"
+    assert hit["title"] == "Config"
+    assert hit["excerpt"] == "library excerpt"
+
+
+def _drive_wiki_read(
+    *,
+    memory_service: Any,
+    qmd_get_fn: Any = None,
+) -> Any:
+    """Drive the registered ``wiki_read`` closure end-to-end.
+
+    Mirrors :func:`_drive_wiki_search`: register the librarian tools
+    with the supplied fakes, locate the ``wiki_read`` closure in
+    the agent's toolset, and return the bound function so the
+    caller can invoke it with whatever ``page_ids`` it needs. The
+    returned bodies dict is what the LLM agent sees when it calls
+    ``wiki_read``.
+    """
+    from lies.agents import librarian as librarian_mod
+
+    agent = librarian_mod.librarian_agent(model="test")
+    librarian_mod.register_librarian_tools(
+        agent,
+        wiki=_FakeWiki(wiki_dir=Path("/tmp/fake-wiki")),  # type: ignore[arg-type]
+        memory_service=memory_service,  # type: ignore[arg-type]
+        qmd_get=qmd_get_fn,
+    )
+
+    tool_fn: object | None = None
+    for toolset in agent.toolsets:
+        tool = toolset.tools.get("wiki_read")
+        if tool is not None:
+            tool_fn = tool.function
+            break
+    assert tool_fn is not None, "wiki_read tool not registered"
+
+    return tool_fn  # caller invokes with the page_ids list
+
+
+def test_wiki_read_dispatches_wiki_ids() -> None:
+    """``wiki_read(['page-abc123...'])`` calls ``memory_service.read``.
+
+    Pre-fix behavior was correct for this branch; the test pins the
+    dispatch so the source-aware change does not regress the
+    wiki-only path. The fake ``memory_service.read`` records the
+    IDs it was called with; the test asserts the wiki IDs were
+    routed to it and not to ``qmd_get``.
+    """
+    seen: list[list[str]] = []
+
+    class _WikiReadMemoryService:
+        def read(self, ids: list[str]) -> dict[str, str]:
+            seen.append(list(ids))
+            return {pid: f"<body for {pid}>" for pid in ids}
+
+    tool_fn = _drive_wiki_read(memory_service=_WikiReadMemoryService())
+    bodies = tool_fn(None, ["page-abc123def456"])  # type: ignore[misc]
+
+    assert seen == [["page-abc123def456"]]
+    assert bodies == {"page-abc123def456": "<body for page-abc123def456>"}
+
+
+def test_wiki_read_dispatches_library_paths_to_qmd() -> None:
+    """``wiki_read(['opencode/config.md'])`` reads from the library's qmd chunks.
+
+    Pre-fix bug (Task B fallback): ``wiki_read`` only knew wiki
+    page IDs and raised ``WikiPageNotFound`` on library paths.
+    The fix routes ``<collection>/<page>`` identifiers through
+    ``qmd get`` against ``library_git_root()``.
+    """
+    from lies.library.registry import library_git_root
+
+    qmd_calls: list[dict[str, Any]] = []
+
+    class _EmptyMemoryService:
+        def read(self, ids: list[str]) -> dict[str, str]:
+            raise AssertionError(
+                f"memory_service.read must NOT be called for library paths; got {ids!r}"
+            )
+
+    def fake_qmd_get(cwd: Path, qmd_path: str) -> str:
+        qmd_calls.append({"cwd": cwd, "qmd_path": qmd_path})
+        return f"<body for {qmd_path}>"
+
+    tool_fn = _drive_wiki_read(
+        memory_service=_EmptyMemoryService(),
+        qmd_get_fn=fake_qmd_get,
+    )
+    bodies = tool_fn(None, ["opencode/config.md"])  # type: ignore[misc]
+
+    assert qmd_calls == [{"cwd": library_git_root(), "qmd_path": "qmd://opencode/config.md"}], (
+        "wiki_read must call qmd_get against the library git root"
+    )
+    assert bodies == {"opencode/config.md": "<body for qmd://opencode/config.md>"}
+
+
+def test_wiki_read_unknown_raises() -> None:
+    """``wiki_read(['unknown_format'])`` raises ``WikiPageNotFound``.
+
+    IDs without a ``page-`` prefix and without a ``/`` separator
+    are not wiki IDs and not library paths — the dispatch cannot
+    route them, so the closure raises ``WikiPageNotFound`` (the
+    same exception ``memory_service.read`` raises for unknown
+    wiki IDs) so the LLM agent sees a single error path.
+    """
+    import pytest
+
+    from lies.memory.models import WikiPageNotFound
+
+    class _EmptyMemoryService:
+        def read(self, ids: list[str]) -> dict[str, str]:  # pragma: no cover - unreachable
+            raise AssertionError(f"memory_service.read must NOT be called; got {ids!r}")
+
+    def fake_qmd_get(cwd: Path, qmd_path: str) -> str:  # pragma: no cover - unreachable
+        raise AssertionError(f"qmd_get must NOT be called; got cwd={cwd} path={qmd_path}")
+
+    tool_fn = _drive_wiki_read(
+        memory_service=_EmptyMemoryService(),
+        qmd_get_fn=fake_qmd_get,
+    )
+    with pytest.raises(WikiPageNotFound):
+        tool_fn(None, ["unknown_format"])  # type: ignore[misc]
