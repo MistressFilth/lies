@@ -1190,6 +1190,7 @@ class Orchestrator:
             model=self.models.get("librarian", self.models["query_synthesizer"])
         )
         self._register_librarian_tools()
+        self._register_linter_tools()
         register_read_tools(self._agent)
 
     def run(self, command: str) -> str:
@@ -2294,10 +2295,11 @@ class Orchestrator:
     def _call_linter(self) -> tuple[LintReport, str | None]:
         """Invoke the linter sub-agent; return (report, fallback_reason).
 
-        Collects the wiki's page texts up front and passes them via
-        ``LintDeps`` so the LLM can read every page without tool
-        calls. Page paths are wiki-dir-relative so they dedup cleanly
-        against the deterministic shell's findings.
+        N2 rewire: the agent pulls pages via tools instead of receiving
+        the corpus as a pre-loaded prompt. ``LintDeps`` is a marker
+        type with no fields; the wiki + memory service close over the
+        tool registration site (see
+        :meth:`Orchestrator._register_linter_tools`).
 
         On any exception, logs at WARNING and returns an empty
         ``LintReport`` with a non-None ``fallback_reason``. The
@@ -2308,17 +2310,7 @@ class Orchestrator:
 
         from lies.agents.linter import LintDeps
 
-        page_texts: dict[str, str] = {}
-        if self.wiki.wiki_dir.exists():
-            for path in self.wiki.wiki_dir.rglob("*.md"):
-                rel = path.relative_to(self.wiki.wiki_dir).as_posix()
-                if rel in {"index.md", "log.md", "lint-report.md", "overview.md"}:
-                    continue
-                try:
-                    page_texts[rel] = path.read_text(encoding="utf-8")
-                except (OSError, UnicodeDecodeError):
-                    continue
-        deps = LintDeps(page_texts=page_texts, wiki_root=str(self.wiki.data_root))
+        deps = LintDeps()
         try:
             result = self._linter_agent.run_sync("lint", deps=deps)
         except Exception as exc:  # noqa: BLE001 - broad catch; shell is the safety net
@@ -2329,6 +2321,28 @@ class Orchestrator:
             )
             return LintReport(findings=[], report_markdown=""), f"{type(exc).__name__}: {exc}"
         return result.output, None
+
+    def _register_linter_tools(self) -> None:
+        """Thin delegator to :func:`lies.agents.linter_tools.register_linter_tools`.
+
+        Wires the linter sub-agent's three tool closures
+        (``wiki_list_pages`` / ``wiki_search`` / ``wiki_read``) against
+        ``self.wiki`` + ``self._memory_service``. Mirrors
+        :meth:`_register_librarian_tools` (F18 pattern).
+
+        Called once from :meth:`_build` alongside the librarian wiring.
+        The bare ``linter_agent`` factory emits an agent without
+        tools; the call site owns the tool-registration step.
+
+        See :func:`register_linter_tools` for the full contract.
+        """
+        from lies.agents.linter_tools import register_linter_tools
+
+        register_linter_tools(
+            self._linter_agent,
+            wiki=self.wiki,
+            memory_service=self._memory_service,
+        )
 
     def _apply_repair_plan(
         self,
