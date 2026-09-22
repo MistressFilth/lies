@@ -22,4 +22,15 @@ jobs:
       - name: Install pandoc
         run: sudo apt-get update && sudo apt-get install -y pandoc
       - run: uv sync --all-extras
+      # Pre-commit: hard-limit gate runs locally on a fixed runner
+      # (the pre-commit hook fails the commit on any >0.15s regression).
       - run: uv run pre-commit run --all-files
+      # CI test suite: runs the FULL test surface. The unit gate is
+      # disabled via ``CI=true`` (see tests/unit/conftest.py); slow and
+      # integration tests run together via ``--runslow INTEGRATION=1``.
+      - name: Run full test suite (unit + integration, all slow tests included)
+        run: uv run pytest tests/ --runslow --tb=short -q -p no:cacheprovider
+        env:
+          INTEGRATION: "1"
+          CI: "true"
+

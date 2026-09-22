@@ -251,7 +251,6 @@ def test_holder_pid_in_qmd_lock_busy_when_holder_writes_heartbeat(monkeypatch, t
         _terminate_holder(holder)
 
 
-@pytest.mark.slow
 def test_stale_holder_recovery_via_dead_pid(monkeypatch, tmp_path):
     """A lock file whose stored pid is dead gets reaped on the next acquire."""
     import lies.qmd.lock as lock_mod  # type: ignore[import-not-found]

@@ -15,11 +15,19 @@ the pre-commit ``test`` hook) inherits the failure.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
 
 HARD_LIMIT_S = 0.15
+# CI runs the full test suite (``make test`` with ``--runslow`` and
+# ``INTEGRATION=1``) and is not the place to enforce per-test
+# timing — wall-clock variance across CI runners would flake the gate.
+# Pre-commit (which fires locally with a fixed runner) keeps the
+# enforcement. Set ``LIES_SKIP_BUDGET_GATE=1`` to disable the gate for
+# ad-hoc profiling (``uv run pytest tests/unit/ --runslow LIES_SKIP_BUDGET_GATE=1``).
+_GATE_DISABLED = os.environ.get("LIES_SKIP_BUDGET_GATE") == "1" or os.environ.get("CI") == "true"
 
 
 # Pre-import ``lies.qmd.capability`` so the per-test ``monkeypatch.setattr``
@@ -43,12 +51,6 @@ import lies.wiki.registry  # noqa: E402, F401
 import lies.wiki.registry_errors  # noqa: E402, F401
 import lies.providers  # noqa: E402, F401
 import lies.memory.service  # noqa: E402, F401
-import lies.agents.linter  # noqa: E402, F401
-import lies.agents.page_writer  # noqa: E402, F401
-import lies.agents.query_synthesizer  # noqa: E402, F401
-import lies.agents.source_reader  # noqa: E402, F401
-import lies.agents.collection_author  # noqa: E402, F401
-import lies.agents.repair  # noqa: E402, F401
 
 
 @pytest.fixture(autouse=True)
@@ -135,7 +137,12 @@ def pytest_terminal_summary(
     breaches the 0.15s budget is rejected with a printed remediation
     rubric. Slow-marked tests are exempt: they run only with
     ``--runslow`` and are explicitly opt-in to higher cost.
+
+    Disabled in CI (``CI=true``) and when ``LIES_SKIP_BUDGET_GATE=1``
+    is set — CI runs the full suite without timing enforcement.
     """
+    if _GATE_DISABLED:
+        return
     violations = sorted(
         (
             (duration, nodeid)

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
 from pydantic_ai import Agent
 
 from lies.capabilities.code_mode import code_mode
@@ -17,7 +16,6 @@ def test_code_mode_returns_capability() -> None:
     assert cap is not None
 
 
-@pytest.mark.slow
 def test_memory_returns_capability(tmp_path: Path) -> None:
     cap = memory(tmp_path)
     assert cap is not None

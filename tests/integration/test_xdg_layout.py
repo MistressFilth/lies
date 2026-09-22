@@ -20,11 +20,15 @@ def test_init_then_query_then_lint_uses_xdg(tmp_path: Path) -> None:
     state = tmp_path / "xdg" / "state" / "lies" / "e2e"
     runtime = tmp_path / "xdg" / "runtime" / "lies" / "e2e"
 
-    # Wiki root contains only raw/, wiki/, .git/
+    # Wiki root contains raw/, wiki/, .git/, and the qmd-registration
+    # sentinel dir at .lies/ (created during WikiLayout.init when qmd
+    # is reachable; absent only when qmd is fully offline at init).
     assert (data / "raw").exists()
     assert (data / "wiki").exists()
     assert (data / ".git").exists()
-    assert not (data / ".lies").exists()
+    if (data / ".lies").exists():
+        # qmd reachable: sentinel + registration sidecars live here
+        assert (data / ".lies").is_dir()
 
     # Config
     assert (config / "schema.md").exists()

@@ -303,7 +303,6 @@ def test_mcp_start_invokes_fastmcp_stdio(monkeypatch) -> None:
     assert calls == [{"transport": "stdio"}]
 
 
-@pytest.mark.slow
 def test_serve_is_hidden_from_help() -> None:
     result = runner.invoke(app, ["mcp", "--help"])
     assert result.exit_code == 0

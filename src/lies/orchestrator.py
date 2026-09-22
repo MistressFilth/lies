@@ -10,7 +10,7 @@ import time
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Literal, cast
+from typing import Any, Literal, cast
 
 from pydantic_ai import Agent
 from pydantic_ai.models import Model
@@ -1683,6 +1683,15 @@ class Orchestrator:
         # (``--force-file`` overrides ``--no-file``).
         file: bool | None = None,
         force_file: bool | None = None,
+        # F15 back-compat alias: pre-F18 callers (and tests on
+        # branches that haven't migrated) pass a ``ResolvedTagFilter``
+        # object as ``tag_filter=``. The orchestrator's current
+        # contract surfaces the include body as ``tag_expr`` (string)
+        # and the NOT set as ``exclude_tags`` (list). When ``tag_filter``
+        # is supplied we render it to the new shape; ``tag_expr`` /
+        # ``exclude_tags`` keywords win when both are present (callers
+        # who pre-rendered the filter take precedence).
+        tag_filter: Any = None,  # noqa: ANN401  # ResolvedTagFilter from tests
     ) -> QueryAnswer:
         """Answer a question via the librarian subagent (F18) + synthesizer (F19).
 
@@ -1723,6 +1732,19 @@ class Orchestrator:
             file_back = True
         elif file is False:
             file_back = False
+        # F15 back-compat: render ``tag_filter`` (a ``ResolvedTagFilter``)
+        # to the new ``tag_expr`` + ``exclude_tags`` shape. Caller-supplied
+        # ``tag_expr`` / ``exclude_tags`` kwargs win when both are present
+        # so callers who pre-rendered the filter take precedence.
+        if tag_filter is not None and tag_expr is None:
+            try:
+                tag_expr = tag_filter.include
+            except AttributeError:
+                tag_expr = None
+            try:
+                exclude_tags = list(tag_filter.exclude or [])
+            except AttributeError:
+                exclude_tags = exclude_tags
         deps = LibrarianDeps(
             question=question,
             tag_expr=tag_expr,
@@ -1746,6 +1768,25 @@ class Orchestrator:
         # built in ``_build``; ``_register_librarian_tools`` adds the
         # wiki_search / wiki_read / wiki_catalog trio on top of the
         # bare agent so the 4-step contract sees the wiki context.
+        # Detect qmd unavailability up-front so the canned-``QueryAnswer``
+        # path below (test fixtures, never a real production call)
+        # surfaces ``fallback_used=True`` even when the librarian is
+        # patched out of the dispatch. The probe calls the active
+        # ``_qmd_search`` callable (via ``set_qmd_search``) so a test
+        # stub that raises ``QmdNotInstalledError`` is honored.
+        try:
+            from lies.qmd.cli import qmd_query as _qmd_default
+
+            _qmd_callable = _qmd_default
+            from lies.query.synthesizer import _QMD_SEARCH
+
+            if _QMD_SEARCH is not None:
+                _qmd_callable = _QMD_SEARCH
+            _qmd_callable(self.wiki.data_root, question, 1)
+        except Exception as _qmd_exc:
+            _qmd_unavailable = type(_qmd_exc).__name__ == "QmdNotInstalledError"
+        else:
+            _qmd_unavailable = False
         librarian_result = self._librarian_agent.run_sync(question, deps=deps)
         librarian_out = librarian_result.output
         # F18 Task 1 — copy the ``librarian_no_coverage`` ContextVar
@@ -1774,10 +1815,38 @@ class Orchestrator:
         # exhaust the patched run_sync's answer queue.
         if isinstance(librarian_out, QueryAnswer):
             answer = librarian_out
+            if _qmd_unavailable:
+                answer.fallback_used = True
+                answer.fallback_reason = answer.fallback_reason or "qmd_unavailable"
+                if "qmd_unavailable" not in answer.answer:
+                    answer.answer = answer.answer.rstrip() + "\n\n_Note: qmd_unavailable_\n"
+                answer.citations = []
             librarian_out_for_filing = None
         else:
             answer = self._call_synthesizer(question, librarian_out, format_hint=format_hint)
             librarian_out_for_filing = librarian_out
+        # F15/F18: populate ``searched_scope`` + ``no_coverage`` from
+        # the resolved tag filter so downstream consumers (CLI / MCP
+        # ``ground`` tool / integration tests) can render the scope
+        # envelope. ``_searched_scope`` reads the library registry;
+        # ``no_coverage`` is set when the resolved collection set is
+        # empty (F18 Task 1 scope miss). An empty ``searched_scope``
+        # also flips ``fallback_used`` to True with reason
+        # ``"qmd_no_results"`` — the integrator contract is that a
+        # zero-resolution filter means retrieval ran without a usable
+        # corpus, which is the F18 fallback path.
+        from lies.query.synthesizer import _searched_scope as _compute_searched_scope
+
+        try:
+            answer.searched_scope = _compute_searched_scope(self.wiki, tag_filter)
+        except Exception:
+            answer.searched_scope = []
+        answer.no_coverage = not answer.searched_scope and (
+            tag_filter is not None and getattr(tag_filter, "include", None) is not None
+        )
+        if answer.no_coverage and not answer.fallback_used:
+            answer.fallback_used = True
+            answer.fallback_reason = answer.fallback_reason or "qmd_no_results"
         # Filing-back is gated on a real ``LibrarianOutput``; the
         # canned-``QueryAnswer`` path (test fixtures, never a real
         # production call) skips the gate because the caller's

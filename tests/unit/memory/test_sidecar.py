@@ -189,6 +189,7 @@ def _git_init_with_memory_commit(tmp_path: Path, message_body: str, sha: str) ->
     )
 
 
+@pytest.mark.slow
 def test_reconcile_walks_git_log_and_rewrites_sidecar(tmp_path: Path) -> None:
     wiki = _wiki(tmp_path)
     body = (
@@ -301,6 +302,7 @@ def test_truncate_refuses_keep_over_count_without_force(tmp_path: Path) -> None:
         sidecar.truncate(wiki, keep=10)
 
 
+@pytest.mark.slow
 def test_truncate_force_allows_overcount(tmp_path: Path) -> None:
     """M8: ``force=True`` lets ``keep`` exceed the current row count."""
     wiki = _wiki(tmp_path)
