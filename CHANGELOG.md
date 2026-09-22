@@ -6,6 +6,40 @@ All notable changes to LIES are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.35.1] - 2026-09-21
+
+### Fixed
+
+- **CHANGELOG accuracy for 0.35.0.** The 0.35.0 entry's parenthetical
+  claim that the chart-variant prompt is "pre-grounded at prompt-build
+  time with excerpts from the `mermaid` library collection" did not
+  reflect shipped behavior — the chart-variant prompt is a self-
+  contained static string with mermaid syntax grounding baked in, no
+  library-collection lookup at runtime. The claim is replaced with an
+  accurate description of the in-prompt grounding.
+- **`_call_synthesizer` format_hint asymmetry.** Inner synth call now
+  returns the caller's forced `format_hint` when one was supplied
+  (`format_hint or answer.format_hint`) instead of always returning the
+  synthesizer's emitted value. The `run_query_with_format` wrapper
+  fixed the asymmetry at the outer surface; direct callers (and the
+  file-back path that consults `format_hint` to set `render_format`)
+  now see the forced value end-to-end.
+- **`_render_chart` branch coverage.** Three direct unit tests pin the
+  mermaid-present (echo rendered, no stderr), prose-only (echo body
+  unchanged + stderr warning), and empty-body (no echo + stderr
+  warning) branches of the chart dispatch. The empty-body contract
+  was previously only exercised indirectly via the CLI runner's
+  mermaid happy path.
+- **`render_format: "chart"` filed-synthesis coverage.** End-to-end
+  sister test asserts the `file_back_synthesis` frontmatter contains
+  `'render_format: "chart"'` for chart answers, mirroring the existing
+  `format="table"` pin. The chart file-back path was previously
+  covered only at the orchestrator plumbing level, not at the
+  rendered frontmatter level.
+- **`SynthesizedAnswer.format="chart"` body shape documented.** The
+  class docstring now lists the chart body shape alongside md / table /
+  marp so the F1 dispatch contract is visible at the type surface.
+
 ## [0.35.0] - 2026-09-21
 
 ### Added
