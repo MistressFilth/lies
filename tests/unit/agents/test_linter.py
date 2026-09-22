@@ -38,3 +38,30 @@ def test_linter_prompt_instructs_stop_when_saturated() -> None:
     lower = LINTER_SYSTEM_PROMPT.lower()
     assert "stop" in lower
     assert "saturat" in lower  # "saturated" or "saturation"
+
+
+def test_linter_prompt_routes_wiki_read_through_page_ids() -> None:
+    """Prompt instructs the linter to pass page_ids (SHA-1), not paths.
+
+    Pins Critical #1 prompt-side: pre-fix the prompt told the agent
+    to call ``wiki_read(paths)``. ``WikiMemoryService.read`` rejects
+    paths with ``WikiPageNotFound``; the linter was dead end-to-end.
+    """
+    lower = LINTER_SYSTEM_PROMPT.lower()
+    assert "page_id" in lower
+    # Path-only instruction is gone.
+    assert "wiki_read(paths)" not in lower
+    assert "wiki_read(path)" not in lower
+
+
+def test_linter_prompt_saturation_rule_has_observable_cue() -> None:
+    """Stop-when-saturated rule names concrete observable criteria.
+
+    Pins Important #6: pre-fix the rule was subjective ("no new
+    findings + cross-page comparison complete"), which a weak model
+    could satisfy after a single batch or never satisfy at all.
+    """
+    assert "BOTH of these hold" in LINTER_SYSTEM_PROMPT
+    assert "every cluster" in LINTER_SYSTEM_PROMPT
+    assert "wiki_search" in LINTER_SYSTEM_PROMPT
+    assert "zero page_ids" in LINTER_SYSTEM_PROMPT

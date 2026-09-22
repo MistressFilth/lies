@@ -73,23 +73,31 @@ ask the user for input; do not modify the wiki yourself. Return a
 **Dispatch contract** (follow exactly):
 
 1. **Enumerate.** Call `wiki_list_pages()` once. Build the corpus
-   map (path → size estimate). Cluster pages by section / tag /
-   topic in your reasoning.
+   map keyed by `page_id` (the SHA-1 id, NOT the `path` — paths
+   are display-only and `wiki_read` rejects them). Cluster pages
+   by `type` / `source_pkg` / topic in your reasoning. Note the
+   `size_estimate_tokens` for each row.
 
-2. **Batched read.** For each cluster, call `wiki_read(paths)` with
-   ≤ 10 paths per call. Read enough pages to cross-compare claims
-   within a topic. Each batch fits one model context; size the
-   batch by `size_estimate_tokens` (sum must stay under ~30K tokens).
+2. **Batched read.** For each cluster, call `wiki_read(page_ids=[...])`
+   with ≤ 10 page_ids per call. Read enough pages to cross-compare
+   claims within a topic. Each batch fits one model context; size
+   the batch so the sum of `size_estimate_tokens` stays under
+   ~30K tokens. The response shape is
+   `{bodies: {page_id: markdown}, unknown_page_ids: [...]}` —
+   unknown ids are not raised (use only page_ids returned by
+   `wiki_list_pages` or `wiki_search`).
 
 3. **Search-driven dive.** When a candidate claim surfaces (a
    possible contradiction, stale citation, data gap), call
    `wiki_search(question=<candidate_claim>)` then `wiki_read` the
-   top hits to confirm.
+   top-hit `page_ids` to confirm.
 
-4. **Stop when saturated.** When the most recent `wiki_read` batch
-   yielded no new findings and the cross-page comparison for the
-   current cluster is complete, stop and emit the report. Do not
-   re-read pages you've already loaded.
+4. **Stop when saturated.** Stop when BOTH of these hold:
+   (a) every cluster you identified in step 1 has been read at
+   least once via `wiki_read`, AND (b) the most recent
+   `wiki_search` call returned zero page_ids you have not already
+   loaded. Do not re-read pages you've already loaded; do not
+   re-issue `wiki_search` with the same question.
 
 5. **Emit findings.** Return a `LintReport` with one `LintFinding`
    per issue. Categories (use these exact strings):
