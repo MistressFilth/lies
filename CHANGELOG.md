@@ -111,8 +111,6 @@ All notable changes to LIES are documented here. The format follows
   class docstring now lists the chart body shape alongside md / table /
   marp so the F1 dispatch contract is visible at the type surface.
 
-
-
 ## [0.35.0] - 2026-09-21
 
 ### Added
