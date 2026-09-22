@@ -17,8 +17,9 @@ from __future__ import annotations
 import contextvars
 import json
 import re
+import warnings
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, Callable, Literal
 
 from pydantic_ai import Agent, RunContext
 from pydantic_ai.models import Model
@@ -56,12 +57,21 @@ class PageExcerpt:
     ``spans`` (F19) carries the structured span view rather than a
     raw text blob — the synthesizer picks per-claim span from this
     list.
+
+    ``source_kind`` (dual-source-routing) flags which surface the
+    excerpt came from so downstream rendering can distinguish
+    primary-source hits (``"library"``) from wiki-only hits
+    (``"wiki"``). Library-wins-on-conflict drops the wiki copy on
+    slug match, so there is no merged-row third value. Defaults
+    to ``"library"`` for backward compat against pre-T2F librarian
+    outputs.
     """
 
     collection: str
     slug: str
     title: str
     spans: list[Span]
+    source_kind: Literal["library", "wiki"] = "library"
 
 
 @dataclass(frozen=True)
@@ -161,31 +171,48 @@ excerpts, and return a curated evidence bundle. You do NOT write
 the answer — the parent turn composes the cited synthesis from
 your bundle.
 
-## 1. Classify (registry-driven)
+The wiki has TWO retrieval surfaces:
+  - **Library collections** (canonical primary sources under
+    `library/collections/<name>/`).
+  - **Wiki-authored pages** (derived, under `<wiki>/wiki/`).
+
+Both are reachable via the same `wiki_search` tool. Each hit is
+tagged with `source_kind` — `"library"` for library hits, `"wiki"`
+for wiki-only hits. Library-wins-on-conflict means the wiki copy is
+dropped on slug match, so there is no merged-row discriminator.
+
+## 1. Classify (registry-driven, dual-surface)
 
 Discover which collections the question touches by reading the LIVE
-wiki registry — never a hardcoded map.
+registries — never a hardcoded map. Both registries matter; the
+library is the primary surface and the wiki is the secondary.
 
-1. Call `wiki_catalog` to list every collection. Each entry carries
-   `name`, `tags`, and `scope_keywords`.
-2. Match the question's tokens against those three surfaces.
-3. Build `tag_expr` as a `|`-union of matched tags.
-4. When nothing intersects, run UNTAGGED (`tag_expr=None`). An empty
-   registry is also untagged; note it in the bundle.
+1. Call `wiki_catalog` to list every wiki catalog row. Each entry
+   carries `name`, `tags`, and `scope_keywords`.
+2. Library collection names are exposed via the addressable-tag
+   set the `tag_expr` resolver validates against. Library
+   collections live at `library/collections/<name>/`.
+3. Match the question's tokens against BOTH surfaces' metadata.
+4. Build `tag_expr` as a `|`-union of matched tags. When nothing
+   intersects, run UNTAGGED (`tag_expr=None`). An empty registry is
+   also untagged; note it in the bundle.
 5. Pass the caller's `exclude_tags` through to `wiki_search`
    unchanged so the daemon enforces the exclusion site-side.
 
-## 2. Search
+## 2. Search (dual-surface)
 
-Call `wiki_search` with the question and the `tag_expr` from step 1.
-`wiki_search` is the daemon-backed retrieval surface. It resolves
-`+tag`/`-tag` tokens internally.
+Call `wiki_search` with the question and the `tag_expr` from
+step 1. `wiki_search` is the dual-surface retrieval surface — it
+queries BOTH the wiki AND the library collection space, returning
+a merged hit list. Library hits are primary; on a slug conflict,
+the library hit wins (the wiki hit is dropped from the merged row).
 
 - `unknown_tags` non-empty → hard error: surface it to the caller.
   Do NOT silently retry without tags.
 - `no_coverage=True` (or `searched_scope` landed off-domain) → a
-  scope miss: consult `searched_scope`, re-read the registry, re-
-  scope `tag_expr`, retry once.
+  scope miss on the wiki side: consult `searched_scope`, re-read
+  the registries, re-scope `tag_expr`, retry once. Library hits
+  are unaffected.
 
 ## 3. Read (curated excerpts)
 
@@ -193,6 +220,11 @@ Take the top-K hits from `wiki_search`'s `hits` field (highest
 `score` first), call `wiki_read` on each, and select the sections
 relevant to the question. Return a few hundred words per page —
 the verbatim passage that can back a claim — not the whole body.
+
+Each hit carries a `source_kind` tag. Preserve it on the
+`PageExcerpt.source_kind` field of every emitted excerpt so
+downstream synthesis can mark library-derived claims as primary
+and wiki-only claims as secondary.
 
 On a read failure, log and continue with the rest. If every hit
 fails, fall back to the `wiki_search` tool and excerpt from its
@@ -241,11 +273,68 @@ def librarian_agent(
     return agent
 
 
+def _dump_hit(page: Any) -> dict[str, Any]:
+    """Coerce one wiki-side ``pages`` row into a hit dict.
+
+    The wiki-side :class:`WikiSearchResult.pages` entries come in
+    several shapes — pydantic :class:`WikiEvidence` rows (with
+    ``model_dump``), dataclass stubs (with ``__dict__``), or already-
+    dumped dicts from ``WikiSearchResult.model_dump()``. Coerce each
+    shape to a flat dict while keeping the field set the synthesizer
+    already consumes (``page_id``, ``path``, ``collection_id``,
+    ``excerpt``, ``score``, ``line_start``, ``line_end``).
+    """
+    if isinstance(page, dict):
+        return dict(page)
+    if hasattr(page, "model_dump"):
+        return dict(page.model_dump())
+    return {k: v for k, v in vars(page).items() if not k.startswith("_")}
+
+
+def _merge_wiki_and_library_hits(
+    wiki_hits: list[dict[str, Any]],
+    library_hits: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Merge wiki + library hits, library-wins-on-slug-conflict.
+
+    Each hit dict carries a ``slug``-equivalent (``path`` for qmd
+    hits, ``path`` for wiki hits — both surfaces normalize on the
+    collection/path key) used as the dedup key. Library hits are
+    merged into a ``{slug: hit}`` map first so any wiki hit on the
+    same slug is dropped, then wiki-only hits are appended after.
+
+    Order: library hits first (in their original qmd-returned
+    order), then wiki-only hits in wiki-side order. The downstream
+    ``LibrarianOutput`` honors top-K, so the order matters — the
+    library surface is the primary source of truth.
+    """
+    merged_by_slug: dict[str, dict[str, Any]] = {}
+    library_anonymous: list[dict[str, Any]] = []
+    for hit in library_hits:
+        slug = str(hit.get("path", ""))
+        if not slug:
+            # Anonymous library hits have no dedup key — keep them
+            # outside the dedup map for reviewability.
+            library_anonymous.append(hit)
+            continue
+        merged_by_slug[slug] = hit
+    for hit in wiki_hits:
+        slug = str(hit.get("path", ""))
+        if not slug:
+            continue
+        if slug in merged_by_slug:
+            # Library wins — drop the wiki copy entirely.
+            continue
+        merged_by_slug[slug] = hit
+    return list(merged_by_slug.values()) + library_anonymous
+
+
 def register_librarian_tools(
     agent: Agent[LibrarianDeps, LibrarianOutput],
     *,
     wiki: Wiki,
     memory_service: WikiMemoryService,
+    qmd_query: "Callable[..., list[dict[str, Any]]] | None" = None,
 ) -> None:
     """Register ``wiki_search`` / ``wiki_read`` / ``wiki_catalog`` on the librarian agent.
 
@@ -272,6 +361,23 @@ def register_librarian_tools(
     The brief's reference to ``wiki_knowledge`` (F19) is left for the
     deeper F19 wiring pass — the F18 trio (search / read / catalog)
     covers the 4-step contract as scoped in this task.
+
+    Args:
+        agent: The librarian agent whose toolset to populate.
+        wiki: Per-wiki :class:`Wiki` used by the ``wiki_catalog``
+            tool.
+        memory_service: Per-wiki :class:`WikiMemoryService` that
+            backs ``wiki_search`` / ``wiki_read``.
+        qmd_query: Library-side qmd helper
+            (:func:`lies.qmd.cli.qmd_query` by default). The
+            ``_wiki_search`` closure calls this to retrieve the
+            library-collection hits; the merged result carries
+            ``source_kind`` per hit (``"library"``, ``"wiki"``).
+            Tests inject a stub to keep the librarian unit tests
+            off the qmd subprocess. ``None`` defaults to the real
+            :func:`lies.qmd.cli.qmd_query` helper, lazily imported
+            here so the librarian module stays off the qmd import
+            chain.
     """
     # Local imports — these pull in the catalog reader. The catalog
     # reader sits behind the wiki-side import chain (``pydantic_ai``,
@@ -282,29 +388,123 @@ def register_librarian_tools(
     from lies.memory.catalog import list_pages as _list_pages
     from lies.memory.catalog import open_catalog as _open_catalog
 
+    # Dual-source (Task 3): the ``_wiki_search`` closure queries BOTH
+    # the wiki (:class:`WikiMemoryService.search`) and the library
+    # (qmd index), then merges the two surfaces with library-wins-
+    # on-slug-conflict. The qmd helper is a keyword parameter so
+    # tests can inject a stub without monkeypatching
+    # ``lies.qmd.cli.qmd_query`` globally. When omitted we lazily
+    # resolve to the production helper at first call so this module
+    # stays off the qmd import chain until needed.
+    if qmd_query is None:
+        from lies.qmd.cli import qmd_query as _qmd_query_default
+
+        _qmd_query_callable: Callable[..., list[dict[str, Any]]] = _qmd_query_default
+    else:
+        _qmd_query_callable = qmd_query
+
     def _wiki_search(
         ctx: RunContext[LibrarianDeps],
         question: str,
         limit: int = 5,
     ) -> dict[str, object]:
-        """Search this wiki for project knowledge relevant to ``question``.
+        """Search the wiki + library for project knowledge relevant to ``question``.
 
-        Wraps :meth:`WikiMemoryService.search` so the authenticated
-        evidence set threads into the librarian's run state.
+        Dual-source retrieval (Task 3): queries both the wiki via
+        :meth:`WikiMemoryService.search` AND the library collection
+        space via qmd, then merges the two surfaces. Each hit carries
+        a ``source_kind`` discriminator (``"library"`` for qmd hits,
+        ``"wiki"`` for wiki-only hits). On a slug conflict, the
+        library hit wins — the merged row carries the library body
+        and is tagged ``source_kind="library"`` rather than emitting
+        both rows. qmd failures (``QmdError`` subclasses — qmd
+        missing, daemon down, etc.) degrade to wiki-only hits; the
+        wiki is the source-of-truth and we never lose coverage
+        because the qmd path raised.
 
         F18 Task 1 — also captures the result's ``no_coverage`` flag
         into the module-scope :data:`librarian_no_coverage`
         ContextVar. The dispatch site (orchestrator's ``run_query``)
         reads the ContextVar after ``run_sync`` returns and copies
         the value onto the returned :class:`LibrarianOutput` via
-        :func:`dataclasses.replace`. Defaults to ``False`` when the
-        underlying ``WikiSearchResult`` doesn't carry the flag yet
-        (F18 Task 2/3 surfaces it; Task 1 just plumbs the path).
+        :func:`dataclasses.replace`. The ContextVar reflects the
+        wiki side's signal; library failures do not flip it because a
+        live library is not required for coverage.
         """
-        result = memory_service.search(question, limit=limit)
-        dumped = result.model_dump()
-        librarian_no_coverage.set(bool(dumped.get("no_coverage", False)))
-        return cast(dict[str, object], dumped)
+        from lies.qmd.cli import QmdError
+
+        # Wiki side — `WikiSearchResult.model_dump()` produces the
+        # real ``{query, pages, truncated, fallback_used,
+        # fallback_reason, no_coverage, searched_scope}`` shape.
+        # We pluck the wiki hits and re-shape the dict into the
+        # canonical ``{hits, no_coverage, searched_scope}`` envelope
+        # the rest of the librarian chain already consumes. Keeping
+        # the top-level keys stable preserves the F18 test that
+        # asserts the dict-shape contract verbatim.
+        wiki_result = memory_service.search(question, limit=limit)
+        wiki_dump = wiki_result.model_dump()
+        wiki_pages = wiki_dump.get("pages", [])
+        wiki_hits = [{**_dump_hit(page), "source_kind": "wiki"} for page in wiki_pages]
+        no_coverage = bool(wiki_dump.get("no_coverage", False))
+        searched_scope = list(wiki_dump.get("searched_scope", []))
+        librarian_no_coverage.set(no_coverage)
+
+        # Library side — best-effort qmd query. Errors (missing
+        # binary, daemon failures, empty result set) collapse to an
+        # empty library hit list; the wiki-side merge still wins
+        # because library hits are merged by slug rather than
+        # short-circuiting the wiki path.
+        library_hits: list[dict[str, Any]] = []
+        # F15 tag-filter union: every registered library collection
+        # is reachable from the librarian's library path. The F15
+        # filter is applied post-qmd in `qmd_query` itself.
+        try:
+            from lies.library.registry import library_collection_names
+
+            _lib_collections = set(library_collection_names())
+        except Exception as exc:
+            warnings.warn(
+                f"librarian: library_collection_names() raised {type(exc).__name__}: {exc}",
+                stacklevel=2,
+            )
+            _lib_collections = None
+        try:
+            raw_library = _qmd_query_callable(
+                wiki.wiki_dir,
+                question,
+                limit=limit,
+                collection_filter=_lib_collections,
+            )
+        except QmdError:
+            raw_library = []
+        except Exception as exc:
+            # Defensive — qmd wraps most failure modes in
+            # :class:`QmdError`, but a totally unexpected exception
+            # (subprocess crash, OS error, TypeError from a future
+            # qmd change) must not break the librarian's wiki
+            # retrieval path. Surface the unexpected error so
+            # operators can debug empty-library-hit cases without
+            # grep'ing the daemon log.
+            warnings.warn(
+                f"librarian: library qmd_query raised {type(exc).__name__}: {exc}",
+                stacklevel=2,
+            )
+            raw_library = []
+
+        for hit in raw_library:
+            library_hits.append({**hit, "source_kind": "library"})
+
+        # Merge — dedupe by slug. On conflict, the library hit
+        # replaces the wiki hit; the merged row carries the library
+        # body's title/excerpt/path and the ``source_kind`` is set
+        # to ``"library"`` to reflect the winning surface.
+        merged = _merge_wiki_and_library_hits(wiki_hits, library_hits)
+
+        return {
+            "hits": merged,
+            "no_coverage": no_coverage,
+            "searched_scope": searched_scope,
+        }
 
     def _wiki_read(
         ctx: RunContext[LibrarianDeps],

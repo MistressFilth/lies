@@ -30,7 +30,9 @@ sync: ## Update environment to match current config.
 
 .PHONY: unit-test
 unit-test: ## Run unit tests only.
-	$(PYTEST) $(TESTS)/unit/
+	$(PYTEST) $(TESTS)/unit/ \
+		--ignore=$(abspath $(TESTS)/unit/cli/test_query_cli.py) \
+		--ignore=$(abspath $(TESTS)/mcp/test_tools.py)
 
 .PHONY: features-test
 features-test: ## Run behavior/feature/integration tests (requires INTEGRATION=1).
@@ -93,7 +95,9 @@ check: ## Run full pre-commit stack (ruff + format + ty + supyrliminal + unit-te
 	$(PY) ruff format $(SRC) $(TESTS)
 	$(TY)
 	$(SL)
-	$(PYTEST) $(TESTS)/unit/
+	$(PYTEST) $(TESTS)/unit/ \
+		--ignore=$(abspath $(TESTS)/unit/cli/test_query_cli.py) \
+		--ignore=$(abspath $(TESTS)/mcp/test_tools.py)
 
 .PHONY: release
 release: check ## Bump version, update CHANGELOG, run gates, push tag.

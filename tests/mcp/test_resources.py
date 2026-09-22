@@ -141,6 +141,17 @@ def test_cite_prompt_routes_to_ground() -> None:
     assert "ArchivistCoverageError" in out
 
 
+def test_cite_prompt_documents_secondary_marker() -> None:
+    """The cite prompt prose tells the LLM to prefix wiki-only hits with [secondary]."""
+    out = cite(
+        question="what is pydantic-ai?",
+        tag_expr="python",
+        exclude_tags=["chat"],
+        top_k=3,
+    )
+    assert "secondary" in out.lower()
+
+
 def test_init_wiki_round_trips_with_resources(wiki_name: str) -> None:
     """Resources can read a wiki that ``init_wiki`` just created.
 

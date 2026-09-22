@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import warnings
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
     from lies.markdown_spans import Span
@@ -43,12 +43,20 @@ class CitationSnippet:
             ``"concepts/pydantic"``, ``"entities/postgres"``.
         title: Human-readable page title.
         snippet: First ≤200 chars of the first prose span of the page.
+        source_kind: Where the snippet came from. ``"library"`` =
+            primary source (library collection); ``"wiki"`` =
+            wiki-only hit (secondary, not grounded in a primary
+            source). Library-wins-on-conflict drops the wiki copy
+            on slug match, so the merged row never carries the
+            wiki discriminator. Defaults to ``"library"`` for
+            backward compat.
     """
 
     collection: str
     slug: str
     title: str
     snippet: str
+    source_kind: Literal["library", "wiki"] = "library"
 
 
 @dataclass(frozen=True)
@@ -349,12 +357,19 @@ def ground(
         snippet_text = truncate_at_word_boundary(chosen.body.strip(), 200)
         if not snippet_text:
             continue
+        # ``source_kind`` (dual-source-routing) — read from each
+        # ``PageExcerpt`` so the citation preserves the
+        # library-vs-wiki provenance the librarian tagged. Default
+        # to ``"library"`` for any excerpt that doesn't yet carry
+        # the field (forward-compat against pre-T2F fixtures).
+        source_kind = getattr(excerpt, "source_kind", "library")
         citations.append(
             CitationSnippet(
                 collection=excerpt.collection,
                 slug=excerpt.slug,
                 title=excerpt.title,
                 snippet=snippet_text,
+                source_kind=source_kind,
             )
         )
 

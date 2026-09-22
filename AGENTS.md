@@ -114,6 +114,25 @@ tests/
 └── conftest.py
 ```
 
+## Runtime state (project memory)
+
+The project runtime on the host currently operates
+**knowledge-collections-only** — no wikis are registered under
+`~/.local/share/lies/<name>/`. The MCP `query` / `answer` / `cite` /
+`ground` tools fan out across the global library at
+`~/.local/share/lies/library/collections/<name>/` instead.
+
+When an agent is asked to "look at a lies collection," treat it as a
+reference to a library collection, not a wiki. The library is the
+source of truth for retrieval in this environment.
+
+Wiki code paths (`WikiMemoryService`, `wiki_search`, `wiki_read`,
+`init_wiki`, `file_knowledge`, `WikiIdentity`, `MemoryPlan`,
+page-author agents, `wiki://catalog` resource) remain in source for
+future use. They are dormant — no wiki XDG instance currently exists
+for them to point at. `lies init <name>` will create a new wiki if
+invoked; that's expected for future wiki-mode users.
+
 ## Invisible memory layer
 
 `src/lies/memory/` is the invisible-memory layer:
@@ -234,6 +253,39 @@ The MCP tool (`@mcp.tool(name="ground")` in `src/lies/mcp/server.py`)
 wraps `ground()` and returns the digest via `dataclasses.asdict` for
 JSON-serializable wire format. Spec:
 `~/code/project-notes/lies/superpowers/specs/2026-09-20-grounding-archivist-design.md`.
+
+## Dual-source routing
+
+The librarian (`src/lies/agents/librarian.py`) and the archivist
+(`src/lies/mcp/grounding.py`) retrieve from BOTH surfaces in
+parallel:
+
+1. **Library collections** at
+   `~/.local/share/lies/library/collections/<name>/` — primary
+   source, authoritative.
+2. **Wikis** at `~/.local/share/lies/<name>/` — secondary source,
+   derived.
+
+`CitationSnippet.source_kind: Literal["library", "wiki"]`
+records which surface produced each snippet. Library-wins-on-
+conflict drops the wiki copy entirely on slug match, so there is
+no merged-row third value.
+
+**Library-wins-on-conflict:** when the same `slug` exists in both
+surfaces, the library hit replaces the wiki hit. The wiki copy is
+dropped entirely; the merged hit carries `source_kind="library"`.
+This rule was previously applied at synthesis time; dual-source
+routing applies it at retrieval time.
+
+**Render marker:** when the LLM renders the archivist's digest as
+citation lines, wiki-only hits (where `source_kind="wiki"`) are
+prefixed with `[secondary] ` to flag that the snippet is not
+grounded in a primary source. Library hits render unprefixed.
+
+```
+[[mermaid/syntax/flowchart]] (Flowchart syntax): "flowchart TD; A-->B"     # library (primary)
+[secondary] [[default/concepts/pydantic]] (Pydantic concept): "..."      # wiki-only (secondary)
+```
 
 ## Quality gates
 

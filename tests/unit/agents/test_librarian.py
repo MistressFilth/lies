@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
 from lies.agents.librarian import (
     LibrarianDeps,
     LibrarianOutput,
@@ -138,3 +142,184 @@ def test_register_librarian_tools_captures_no_coverage_from_wiki_search(
 
     assert result == {"hits": [], "no_coverage": True, "searched_scope": []}
     assert librarian_mod.librarian_no_coverage.get() is True
+
+
+# ---------------------------------------------------------------------------
+# Task 3 — dual-source retrieval (wiki + library); library-wins-on-conflict
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class _FakeWikiEvidence:
+    """Minimal WikiEvidence-shape stand-in for the librarian tests.
+
+    Mirrors the four fields ``_wiki_search`` reads from each wiki hit
+    (``page_id``, ``path``, ``collection_id``, ``excerpt``) plus the
+    score used for ranking. The real :class:`WikiEvidence` is a
+    pydantic model; a frozen dataclass with matching attribute names
+    satisfies duck-typing without dragging the full memory chain.
+    """
+
+    page_id: str
+    path: str
+    collection_id: str
+    excerpt: str
+    score: float = 0.5
+    line_start: int = 1
+    line_end: int = 1
+
+
+@dataclass(frozen=True)
+class _FakeWikiSearchResult:
+    """Wiki-side search result carrying pages + no_coverage + searched_scope."""
+
+    pages: list[_FakeWikiEvidence]
+    no_coverage: bool = False
+    searched_scope: tuple[str, ...] = ()
+
+    def model_dump(self) -> dict[str, Any]:
+        return {
+            "pages": [page.__dict__ for page in self.pages],
+            "no_coverage": self.no_coverage,
+            "searched_scope": list(self.searched_scope),
+        }
+
+
+@dataclass(frozen=True)
+class _FakeMemoryService:
+    """Wiki-side memory service that returns a canned search result."""
+
+    pages: list[_FakeWikiEvidence]
+    no_coverage: bool = False
+    searched_scope: tuple[str, ...] = ()
+
+    def search(self, question: str, *, limit: int = 5) -> _FakeWikiSearchResult:
+        return _FakeWikiSearchResult(
+            pages=self.pages,
+            no_coverage=self.no_coverage,
+            searched_scope=self.searched_scope,
+        )
+
+
+@dataclass(frozen=True)
+class _FakeWiki:
+    """Minimal Wiki stand-in — exposes only the ``wiki_dir`` attribute."""
+
+    wiki_dir: Path
+
+
+def _drive_wiki_search(
+    *,
+    memory_service: _FakeMemoryService,
+    qmd_query_fn: Any,
+    wiki: _FakeWiki | None = None,
+) -> dict[str, object]:
+    """Build a librarian agent with dual-source wiring and invoke ``wiki_search``.
+
+    Mirrors the registered-tool exercise in
+    :func:`test_register_librarian_tools_captures_no_coverage_from_wiki_search`
+    so the new dual-source tests don't depend on the LLM stack — they
+    drive the registered ``wiki_search`` closure directly.
+    """
+    from lies.agents import librarian as librarian_mod
+    from pydantic_ai import RunContext
+    from pydantic_ai.models.test import TestModel
+
+    agent = librarian_mod.librarian_agent(model="test")
+    librarian_mod.register_librarian_tools(
+        agent,
+        wiki=wiki if wiki is not None else _FakeWiki(wiki_dir=Path("/tmp/fake-wiki")),  # type: ignore[arg-type]
+        memory_service=memory_service,  # type: ignore[arg-type]
+        qmd_query=qmd_query_fn,
+    )
+
+    tool_fn: object | None = None
+    for toolset in agent.toolsets:
+        tool = toolset.tools.get("wiki_search")
+        if tool is not None:
+            tool_fn = tool.function
+            break
+    assert tool_fn is not None, "wiki_search tool not registered"
+
+    deps = LibrarianDeps(question="q", tag_expr=None, exclude_tags=[], top_k=5)
+    ctx = RunContext(
+        model=TestModel(),
+        deps=deps,
+        usage=None,  # type: ignore[arg-type]
+    )
+    return tool_fn(ctx, "q", 5)  # type: ignore[misc]
+
+
+def test_wiki_search_returns_library_hits_with_source_kind_library(monkeypatch) -> None:
+    """_wiki_search surfaces library hits tagged source_kind='library'."""
+    # Wiki side empty; qmd library side returns one hit.
+    wiki_service = _FakeMemoryService(pages=[], no_coverage=False)
+    qmd_calls: list[dict[str, Any]] = []
+
+    def fake_qmd_query(cwd: Path, q: str, limit: int = 5, **_kw: Any) -> list[dict[str, Any]]:
+        qmd_calls.append({"cwd": cwd, "q": q, "limit": limit})
+        return [{"path": "concepts/pydantic", "title": "Pydantic concept", "score": 0.8}]
+
+    out = _drive_wiki_search(memory_service=wiki_service, qmd_query_fn=fake_qmd_query)
+
+    assert qmd_calls, "qmd library path must be queried"
+    hits = out["hits"]
+    assert len(hits) == 1
+    assert hits[0]["source_kind"] == "library"
+    assert hits[0]["path"] == "concepts/pydantic"
+
+
+def test_wiki_search_returns_wiki_only_hits_with_source_kind_wiki(monkeypatch) -> None:
+    """_wiki_search surfaces wiki-only hits tagged source_kind='wiki'."""
+    wiki_hit = _FakeWikiEvidence(
+        page_id="wiki-page-1",
+        path="concepts/pydantic",
+        collection_id="default",
+        excerpt="Wiki excerpt about pydantic",
+        score=0.7,
+    )
+    wiki_service = _FakeMemoryService(pages=[wiki_hit], no_coverage=False)
+
+    def fake_qmd_query(cwd: Path, q: str, limit: int = 5, **_kw: Any) -> list[dict[str, Any]]:
+        return []
+
+    out = _drive_wiki_search(memory_service=wiki_service, qmd_query_fn=fake_qmd_query)
+
+    hits = out["hits"]
+    assert len(hits) == 1
+    assert hits[0]["source_kind"] == "wiki"
+    assert hits[0]["path"] == "concepts/pydantic"
+
+
+def test_wiki_search_library_wins_on_slug_conflict(monkeypatch) -> None:
+    """When wiki and library both hit the same slug, the library hit wins."""
+    wiki_hit = _FakeWikiEvidence(
+        page_id="wiki-page-1",
+        path="concepts/pydantic",
+        collection_id="default",
+        excerpt="Wiki excerpt about pydantic",
+        score=0.7,
+    )
+    wiki_service = _FakeMemoryService(pages=[wiki_hit], no_coverage=False)
+
+    def fake_qmd_query(cwd: Path, q: str, limit: int = 5, **_kw: Any) -> list[dict[str, Any]]:
+        return [
+            {
+                "path": "concepts/pydantic",
+                "title": "Pydantic (library)",
+                "score": 0.9,
+                "excerpt": "Library excerpt about pydantic",
+            }
+        ]
+
+    out = _drive_wiki_search(memory_service=wiki_service, qmd_query_fn=fake_qmd_query)
+
+    hits = out["hits"]
+    assert len(hits) == 1
+    hit = hits[0]
+    # Library wins on conflict — the merged row carries the library
+    # title/excerpt and is tagged as a library hit.
+    assert hit["source_kind"] == "library"
+    assert hit["path"] == "concepts/pydantic"
+    assert hit["title"] == "Pydantic (library)"
+    assert hit["excerpt"] == "Library excerpt about pydantic"
