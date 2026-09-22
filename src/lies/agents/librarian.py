@@ -17,6 +17,7 @@ from __future__ import annotations
 import contextvars
 import json
 import re
+import warnings
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable, Literal
 
@@ -461,7 +462,11 @@ def register_librarian_tools(
             from lies.library.registry import library_collection_names
 
             _lib_collections = set(library_collection_names())
-        except Exception:
+        except Exception as exc:
+            warnings.warn(
+                f"librarian: library_collection_names() raised {type(exc).__name__}: {exc}",
+                stacklevel=2,
+            )
             _lib_collections = None
         try:
             raw_library = _qmd_query_callable(
@@ -472,11 +477,18 @@ def register_librarian_tools(
             )
         except QmdError:
             raw_library = []
-        except Exception:
+        except Exception as exc:
             # Defensive — qmd wraps most failure modes in
             # :class:`QmdError`, but a totally unexpected exception
-            # (subprocess crash, OS error) must not break the
-            # librarian's wiki retrieval path.
+            # (subprocess crash, OS error, TypeError from a future
+            # qmd change) must not break the librarian's wiki
+            # retrieval path. Surface the unexpected error so
+            # operators can debug empty-library-hit cases without
+            # grep'ing the daemon log.
+            warnings.warn(
+                f"librarian: library qmd_query raised {type(exc).__name__}: {exc}",
+                stacklevel=2,
+            )
             raw_library = []
 
         for hit in raw_library:

@@ -6,6 +6,14 @@ All notable changes to LIES are documented here. The format follows
 
 ## [Unreleased]
 
+- MCP prompt surface: `ask_wiki` and `query_prompt` prompts removed.
+  `/answer` slash unchanged (librarian + synthesizer). New `/cite`
+  slash templates a `ground()` tool call and renders the
+  `ArchivistDigest` as `[[collection/slug]] (Title): "<snippet>"`
+  citation lines.
+
+## [0.37.0] - 2026-09-22
+
 ### Changed
 
 - **Dual-source routing for `/cite` and `/answer`.** The librarian
@@ -18,11 +26,6 @@ All notable changes to LIES are documented here. The format follows
   not grounded in a primary source. New field
   `CitationSnippet.source_kind` (defaults to `"library"` for
   backward compat).
-- MCP prompt surface: `ask_wiki` and `query_prompt` prompts removed.
-  `/answer` slash unchanged (librarian + synthesizer). New `/cite`
-  slash templates a `ground()` tool call and renders the
-  `ArchivistDigest` as `[[collection/slug]] (Title): "<snippet>"`
-  citation lines.
 
 ## [0.36.0] - 2026-09-21
 
