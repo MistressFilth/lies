@@ -53,12 +53,21 @@ def write_atomic(target_path: os.PathLike[str], partial: PartialConfig) -> None:
 
     Raises ``OSError`` on filesystem failure. Never leaves a partial
     file behind because ``os.replace`` is atomic on POSIX.
+
+    ``partial.default_model`` is required — LIES does not hard-code a
+    default. The wizard collects it from the operator before this
+    function runs.
     """
     from lies.providers.editor import to_toml
 
+    if partial.default_model is None:
+        raise ProviderConfigError(
+            "providers.toml write requires `default_model`; the "
+            "wizard must collect it from the operator before commit."
+        )
     cfg = ProvidersConfig(
         providers=partial.providers,
-        default_model=partial.default_model or "anthropic:claude-opus-4-7",
+        default_model=partial.default_model,
         agents=partial.agents,
     )
     target = os.fspath(target_path)
@@ -104,15 +113,23 @@ def step_default_model(partial: PartialConfig, *, prompt: PromptFn) -> None:
 
     Raises ``ProviderConfigError`` when the operator's input references
     an undeclared provider (consistent with ``editor.apply_mutations``).
+
+    No default value is offered. The operator must type a
+    ``provider:model`` string or abort. Hard-coded defaults were
+    removed at the operator's request — every ``lies providers init``
+    run surfaces the choice without pre-selection.
     """
     from lies.providers.config import parse_model_string
 
     raw = prompt(
-        "Default model (provider:model) — blank to keep",
-        "anthropic:claude-opus-4-7",
+        "Default model (provider:model) — required",
+        "",
     ).strip()
     if not raw:
-        return
+        raise BootstrapAborted(
+            "default model is required; aborting bootstrap. "
+            "Re-run `lies providers init` and supply a provider:model."
+        )
     provider_name, _ = parse_model_string(raw)
     if provider_name not in partial.providers:
         msg = (

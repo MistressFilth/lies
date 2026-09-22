@@ -20,7 +20,18 @@ def test_version_command() -> None:
     assert __version__ in result.stdout
 
 
-def test_config_command_defaults() -> None:
+def test_config_command_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Drop the auto-written providers.toml from the shared
+    # ``_isolated_xdg`` autouse so this test exercises the unconfigured
+    # path: ``lies config`` reports ``(no providers.toml)`` and
+    # ``(none configured)`` for the agent models.
+    from lies import xdg
+    from lies.constants import LIES_DATA_SUBDIR
+
+    pp = xdg.config_home() / LIES_DATA_SUBDIR / "providers.toml"
+    if pp.exists():
+        pp.unlink()
+
     result = runner.invoke(app, ["config"])
     assert result.exit_code == 0
     assert "wiki: default" in result.stdout
@@ -31,6 +42,13 @@ def test_config_command_defaults() -> None:
 def test_config_command_overrides(monkeypatch, tmp_path) -> None:
     Wiki.data_root_for("wiki").mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("LIES_WIKI_NAME", "wiki")
+    from lies import xdg
+    from lies.constants import LIES_DATA_SUBDIR
+
+    pp = xdg.config_home() / LIES_DATA_SUBDIR / "providers.toml"
+    if pp.exists():
+        pp.unlink()
+
     result = runner.invoke(app, ["config"])
     assert result.exit_code == 0
     assert "wiki: wiki" in result.stdout

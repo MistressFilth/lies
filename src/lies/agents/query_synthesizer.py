@@ -314,7 +314,7 @@ def _build_query_prompt(ctx: RunContext[QueryDeps]) -> str:
 
 
 def query_synthesizer_agent(
-    model: Model | str = "anthropic:claude-opus-4-7",
+    model: Model | str | None = None,
 ) -> Agent[QueryDeps, QueryAnswer]:
     """Construct the query-synthesizer sub-agent.
 
@@ -322,7 +322,17 @@ def query_synthesizer_agent(
     body of every retrieved page. ``_build_query_prompt`` is registered
     as a ``system_prompt`` callable so that corpus is rendered into the
     prompt at run time.
+
+    ``model`` is required — LIES does not hard-code a default.
     """
+    if model is None:
+        from lies.errors import ModelNotConfigured
+
+        raise ModelNotConfigured(
+            "query_synthesizer_agent requires an explicit model. Pass "
+            "`model=` or configure providers.toml / "
+            "LIES_AGENT_QUERY_SYNTHESIZER_MODEL."
+        )
     agent: Agent[QueryDeps, QueryAnswer] = make_sub_agent(
         model=model,
         output_type=QueryAnswer,

@@ -12,7 +12,29 @@ from lies.constants import LIES_DATA_SUBDIR
 # subclasses :class:`lies.lock_errors.WikiFlockError`.
 from lies.lock_errors import WikiLockBusy
 
-__all__ = ["WikiAlreadyExists", "WikiLockBusy", "WikiNameError", "WikiNotRegistered"]
+
+class ModelNotConfigured(Exception):
+    """Raised when a factory needs an explicit model and none was supplied.
+
+    LIES does not hard-code default models. Every agent factory
+    (``librarian_agent``, ``linter_agent``, …) and the orchestrator's
+    model-resolution path require the operator to configure one of:
+
+      - a ``providers.toml`` (per-wiki or user-level)
+      - a ``LIES_<AGENT>_MODEL`` env var
+
+    A missing config raises this error rather than silently falling
+    back to a vendor-default model. The user owns the choice.
+    """
+
+
+__all__ = [
+    "ModelNotConfigured",
+    "WikiAlreadyExists",
+    "WikiLockBusy",
+    "WikiNameError",
+    "WikiNotRegistered",
+]
 
 
 class WikiAlreadyExists(Exception):

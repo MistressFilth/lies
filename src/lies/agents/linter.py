@@ -143,7 +143,7 @@ the report and continue; the shell still runs.
 """
 
 
-def linter_agent(model: Model | str = "anthropic:claude-opus-4-7") -> Agent[LintDeps, LintReport]:
+def linter_agent(model: Model | str | None = None) -> Agent[LintDeps, LintReport]:
     """Construct the linter sub-agent (N2).
 
     Carries the marker :class:`LintDeps` so the typed deps surface
@@ -151,7 +151,18 @@ def linter_agent(model: Model | str = "anthropic:claude-opus-4-7") -> Agent[Lint
     `wiki_read`) are registered separately by
     :func:`lies.agents.linter_tools.register_linter_tools` after
     construction. The orchestrator's `_build` does the wiring.
+
+    ``model`` is required — LIES does not hard-code a default. The
+    orchestrator passes ``self.models["linter"]``; tests pass
+    ``models_for_tests("test")``.
     """
+    if model is None:
+        from lies.errors import ModelNotConfigured
+
+        raise ModelNotConfigured(
+            "linter_agent requires an explicit model. Pass `model=` "
+            "or configure providers.toml / LIES_AGENT_LINTER_MODEL."
+        )
     agent: Agent[LintDeps, LintReport] = make_sub_agent(
         model=model,
         output_type=LintReport,

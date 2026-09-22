@@ -517,5 +517,5 @@ def test_run_wizard_providers_step_runs_unconditionally(
     name_idx = prompts.index("  provider name (e.g. anthropic)")
     type_idx = prompts.index("  type (anthropic|anthropic_compatible|openai_compatible)")
     api_idx = prompts.index("  api_key_env name (e.g. MINIMAX_API_KEY)")
-    default_model_idx = prompts.index("Default model (provider:model) — blank to keep")
+    default_model_idx = prompts.index("Default model (provider:model) — required")
     assert name_idx < type_idx < api_idx < default_model_idx

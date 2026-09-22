@@ -276,9 +276,17 @@ def ground(
     try:
         from lies.mcp.resolution import resolve_wiki
         from lies.memory.service import WikiMemoryService
+        from lies import orchestrator as _orch_mod
 
-        agent = librarian_agent()
         resolved_wiki = resolve_wiki(wiki_name)
+        # Pick the ``librarian`` slot — the operator's intent for the
+        # archivist path. Lookup at call time so tests can monkey-patch
+        # ``lies.orchestrator._resolve_default_models`` without
+        # re-importing this module. Raises ``ModelNotConfigured`` when
+        # missing; the exception branch catches it and surfaces
+        # ``no_coverage=True``.
+        librarian_model = _orch_mod._resolve_default_models(resolved_wiki).get("librarian")
+        agent = librarian_agent(model=librarian_model)
         register_librarian_tools(
             agent,
             wiki=resolved_wiki,
@@ -291,23 +299,16 @@ def ground(
             stacklevel=2,
         )
         if agent is None:
-            # Agent construction itself failed (most likely missing
-            # API credentials). Build a no-tools agent so the
-            # dispatch-exception branch can still catch any
-            # downstream failure; the digest lands as
-            # ``no_coverage=True`` / ``citations=[]``.
-            try:
-                agent = librarian_agent(model="test")
-            except Exception:
-                # No model available at all — give up gracefully.
-                return ArchivistDigest(
-                    question=question,
-                    tag_expr=resolved_tag_expr,
-                    exclude_tags=exclude_list,
-                    citations=[],
-                    no_coverage=True,
-                    distinct_pages=0,
-                )
+            # No model resolved. Do NOT fall back to a hidden default
+            # — surface the missing-config signal via the digest.
+            return ArchivistDigest(
+                question=question,
+                tag_expr=resolved_tag_expr,
+                exclude_tags=exclude_list,
+                citations=[],
+                no_coverage=True,
+                distinct_pages=0,
+            )
 
     deps = LibrarianDeps(
         question=question,

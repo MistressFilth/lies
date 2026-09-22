@@ -108,6 +108,13 @@ def _isolated_xdg(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     from lies.library.paths import Library
 
     Library.open.cache_clear()
+    # Same caching concern for the collection-name registry — it
+    # caches the set of library collection names so a previous test
+    # that populated the library can leak into a later test that
+    # rmtree'd the dir to simulate an uninitialized library.
+    from lies.library.registry import library_collection_names
+
+    library_collection_names.cache_clear()
     xdg_root = tmp_path / "xdg"
     for sub in ("data", "config", "cache", "state", "runtime"):
         (xdg_root / sub).mkdir(parents=True, exist_ok=True)
@@ -116,6 +123,31 @@ def _isolated_xdg(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("XDG_CACHE_HOME", str(xdg_root / "cache"))
     monkeypatch.setenv("XDG_STATE_HOME", str(xdg_root / "state"))
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(xdg_root / "runtime"))
+    # Write a ``providers.toml`` with every agent slot resolved to the
+    # pydantic-ai ``test`` model id via a stub provider. LIES no longer
+    # hard-codes a vendor default; tests opt into the cheap ``test``
+    # model through a real TOML so both the TOML-path and env-override
+    # resolution paths agree. The provider is named ``stub`` so it
+    # doesn't collide with the real ``anthropic`` provider tests.
+    from lies.providers.agents import AGENT_ROSTER
+    from lies.providers.config import ProvidersConfig, ProviderSpec
+    from lies.providers.editor import to_toml
+
+    stub_provider = ProviderSpec(
+        name="stub",
+        type="anthropic_compatible",
+        api_key_env="STUB_API_KEY",
+        base_url="http://127.0.0.1:0/stub",
+    )
+    cfg = ProvidersConfig(
+        providers={"stub": stub_provider},
+        default_model="stub:test",
+        agents={name: "stub:test" for name in AGENT_ROSTER},
+    )
+    providers_path = xdg_root / "config" / "lies" / "providers.toml"
+    providers_path.parent.mkdir(parents=True, exist_ok=True)
+    providers_path.write_text(to_toml(cfg), encoding="utf-8")
+    monkeypatch.setenv("STUB_API_KEY", "test-stub-key")
 
 
 @pytest.fixture

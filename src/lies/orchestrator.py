@@ -98,7 +98,20 @@ def retrieve_pages(  # type: ignore[no-untyped-def]
 
 
 def _resolve_default_models(wiki: Wiki) -> dict[str, Model | str]:
-    """Load user-level providers.toml and resolve one model per AGENT_ROSTER entry."""
+    """Load user-level providers.toml and resolve one model per AGENT_ROSTER entry.
+
+    Two resolution paths, both fail-loud when nothing is configured:
+
+      1. ``providers.toml`` exists at ``wiki.providers_path``: every
+         agent slot resolves through ``resolve_model`` against the
+         parsed config. Missing slots raise ``ModelNotConfigured``.
+      2. No TOML: each agent slot looks at ``LIES_<AGENT>_MODEL``.
+         Missing env vars raise ``ModelNotConfigured``.
+
+    LIES does not silently fall back to a vendor-default model.
+    Operators own the model choice.
+    """
+    from lies.errors import ModelNotConfigured
     from lies.providers import (
         AGENT_ROSTER,
         env_override,
@@ -108,16 +121,35 @@ def _resolve_default_models(wiki: Wiki) -> dict[str, Model | str]:
 
     config = load_providers_config(wiki.providers_path)
     if config is None:
-        # No TOML — every agent gets default_model, or the env var override.
-        fallback: dict[str, Model | str] = {}
+        resolved: dict[str, Model | str] = {}
+        missing: list[str] = []
         for name in AGENT_ROSTER:
             override = env_override(name)
-            fallback[name] = override or "anthropic:claude-opus-4-7"
-        return fallback
+            if override is None:
+                missing.append(name)
+                continue
+            resolved[name] = override
+        if missing:
+            raise ModelNotConfigured(
+                f"no providers.toml and missing env overrides for: "
+                f"{missing!r}. Configure providers.toml via "
+                f"`lies providers init`, or set LIES_<AGENT>_MODEL "
+                f"for each missing slot."
+            )
+        return resolved
 
     resolved: dict[str, Model | str] = {}
+    missing: list[str] = []
     for name in AGENT_ROSTER:
-        resolved[name] = resolve_model(name, config)
+        try:
+            resolved[name] = resolve_model(name, config)
+        except Exception:
+            missing.append(name)
+    if missing:
+        raise ModelNotConfigured(
+            f"providers.toml missing entries for: {missing!r}. "
+            f"Edit providers.toml or run `lies providers init`."
+        )
     return resolved
 
 
