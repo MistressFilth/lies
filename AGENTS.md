@@ -114,6 +114,25 @@ tests/
 └── conftest.py
 ```
 
+## Runtime state (project memory)
+
+The project runtime on the host currently operates
+**knowledge-collections-only** — no wikis are registered under
+`~/.local/share/lies/<name>/`. The MCP `query` / `answer` / `cite` /
+`ground` tools fan out across the global library at
+`~/.local/share/lies/library/collections/<name>/` instead.
+
+When an agent is asked to "look at a lies collection," treat it as a
+reference to a library collection, not a wiki. The library is the
+source of truth for retrieval in this environment.
+
+Wiki code paths (`WikiMemoryService`, `wiki_search`, `wiki_read`,
+`init_wiki`, `file_knowledge`, `WikiIdentity`, `MemoryPlan`,
+page-author agents, `wiki://catalog` resource) remain in source for
+future use. They are dormant — no wiki XDG instance currently exists
+for them to point at. `lies init <name>` will create a new wiki if
+invoked; that's expected for future wiki-mode users.
+
 ## Invisible memory layer
 
 `src/lies/memory/` is the invisible-memory layer:
