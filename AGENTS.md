@@ -254,6 +254,38 @@ wraps `ground()` and returns the digest via `dataclasses.asdict` for
 JSON-serializable wire format. Spec:
 `~/code/project-notes/lies/superpowers/specs/2026-09-20-grounding-archivist-design.md`.
 
+## Dual-source routing
+
+The librarian (`src/lies/agents/librarian.py`) and the archivist
+(`src/lies/mcp/grounding.py`) retrieve from BOTH surfaces in
+parallel:
+
+1. **Library collections** at
+   `~/.local/share/lies/library/collections/<name>/` — primary
+   source, authoritative.
+2. **Wikis** at `~/.local/share/lies/<name>/` — secondary source,
+   derived.
+
+`CitationSnippet.source_kind: Literal["library", "wiki",
+"library+wiki"]` records which surface produced each snippet.
+
+**Library-wins-on-conflict:** when the same `slug` exists in both
+surfaces, the library hit replaces the wiki hit. The wiki copy is
+dropped entirely; the merged hit carries `source_kind="library"`
+(or `"library+wiki"` when both contribute). This rule was previously
+applied at synthesis time; dual-source routing applies it at
+retrieval time.
+
+**Render marker:** when the LLM renders the archivist's digest as
+citation lines, wiki-only hits (where `source_kind="wiki"`) are
+prefixed with `[secondary] ` to flag that the snippet is not
+grounded in a primary source. Library hits render unprefixed.
+
+```
+[[mermaid/syntax/flowchart]] (Flowchart syntax): "flowchart TD; A-->B"     # library (primary)
+[secondary] [[default/concepts/pydantic]] (Pydantic concept): "..."      # wiki-only (secondary)
+```
+
 ## Quality gates
 
 `make check` runs `lint + typecheck + format`. `make test` runs the full
