@@ -61,6 +61,92 @@ def test_wiki_list_pages_returns_inventory_json(agent, wiki, memory_service) -> 
         assert row["size_estimate_tokens"] >= 1
 
 
+def test_wiki_list_pages_emits_page_id_round_tripping(agent, wiki, memory_service) -> None:
+    """Each inventory row carries a SHA-1 page_id that wiki_read accepts.
+
+    Pins Critical #1 from the N2 review: ``WikiMemoryService.read``
+    requires page_ids, not paths. The inventory must hand the agent
+    values that round-trip through ``_path_for_id``.
+    """
+    from lies.memory.retrieval import _page_id_for
+
+    register_linter_tools(agent, wiki=wiki, memory_service=memory_service)
+    list_tool = next(t for t in agent.toolsets[0].tools.values() if t.name == "wiki_list_pages")
+    rows = json.loads(list_tool.function(None))
+    by_path = {row["path"]: row for row in rows}
+    for path in ("a.md", "b.md", "c.md"):
+        row = by_path[path]
+        assert row["page_id"] == _page_id_for(path)
+        # Round-trip: passing it to wiki_read produces the same body
+        # the underlying read_pages would resolve.
+        assert row["page_id"].startswith("page-")
+        assert len(row["page_id"]) == len("page-") + 12
+
+
+def test_wiki_list_pages_includes_type_and_source_pkg(agent, wiki, memory_service) -> None:
+    """Inventory rows surface cluster signals beyond ``section``.
+
+    Pins Important #7: ``section`` is ``"wiki"`` for every row and
+    useless for clustering. ``type`` and ``source_pkg`` give the
+    linter a usable partition for cross-page comparison.
+    """
+    register_linter_tools(agent, wiki=wiki, memory_service=memory_service)
+    list_tool = next(t for t in agent.toolsets[0].tools.values() if t.name == "wiki_list_pages")
+    rows = json.loads(list_tool.function(None))
+    assert rows, "fixture seeded three pages"
+    for row in rows:
+        assert "type" in row
+        assert "source_pkg" in row
+        assert isinstance(row["type"], str)
+        assert isinstance(row["source_pkg"], str)
+
+
+def test_wiki_list_pages_size_reflects_disk_bytes(agent, wiki, memory_service) -> None:
+    """``size_estimate_tokens`` reflects file bytes, not slug length.
+
+    Pins Important #4: pre-fix the estimate was ``len(slug) // 4``,
+    which produced wildly wrong values (a 5,000-token dense page
+    with a 21-char slug estimated at 5 tokens).
+    """
+    # Overwrite one page with a much larger body so the estimate
+    # must come from disk bytes, not slug length.
+    (wiki.wiki_dir / "a.md").write_text(
+        "# A\n\n" + ("claim content " * 100),
+        encoding="utf-8",
+    )
+    register_linter_tools(agent, wiki=wiki, memory_service=memory_service)
+    list_tool = next(t for t in agent.toolsets[0].tools.values() if t.name == "wiki_list_pages")
+    rows = json.loads(list_tool.function(None))
+    by_path = {row["path"]: row for row in rows}
+    a_tokens = by_path["a.md"]["size_estimate_tokens"]
+    b_tokens = by_path["b.md"]["size_estimate_tokens"]
+    # a.md is now much larger than b.md; the estimates must reflect
+    # that — same slug length (1 char), different content size.
+    assert a_tokens > b_tokens
+    assert a_tokens > 50  # the body has > 1500 chars / 4 ≈ 375 tokens
+
+
+def test_wiki_list_pages_filters_catalog_drift(agent, wiki, memory_service) -> None:
+    """Catalog rows whose on-disk file is deleted are excluded.
+
+    Pins Important #5: pre-fix the inventory returned every catalog
+    row; a ``lies catalog reconcile`` race could leave rows whose
+    files were deleted off-disk. Combined with Critical #1, every
+    stale row's ``wiki_read`` would raise ``WikiPageNotFound``.
+    """
+    register_linter_tools(agent, wiki=wiki, memory_service=memory_service)
+    list_tool = next(t for t in agent.toolsets[0].tools.values() if t.name == "wiki_list_pages")
+    before = {row["path"] for row in json.loads(list_tool.function(None))}
+    assert before == {"a.md", "b.md", "c.md"}
+
+    # Delete one file off-disk; the catalog row stays (the tool
+    # doesn't reconcile), so the on-disk existence check must
+    # filter it.
+    (wiki.wiki_dir / "b.md").unlink()
+    after = {row["path"] for row in json.loads(list_tool.function(None))}
+    assert after == {"a.md", "c.md"}
+
+
 def test_wiki_search_delegates_to_memory_service(agent, wiki, memory_service) -> None:
     from lies.memory.models import WikiSearchResult
 
@@ -80,11 +166,35 @@ def test_wiki_search_delegates_to_memory_service(agent, wiki, memory_service) ->
 
 
 def test_wiki_read_returns_bodies_for_known_paths(agent, wiki, memory_service) -> None:
-    memory_service.read.return_value = {
-        "a.md": "# A\nclaim one",
-        "b.md": "# B\nclaim two",
-    }
+    from lies.memory.retrieval import _page_id_for
+
+    id_a = _page_id_for("a.md")
+    id_b = _page_id_for("b.md")
+    memory_service.read.return_value = {id_a: "# A\nclaim one", id_b: "# B\nclaim two"}
     register_linter_tools(agent, wiki=wiki, memory_service=memory_service)
     read_tool = next(t for t in agent.toolsets[0].tools.values() if t.name == "wiki_read")
-    payload = read_tool.function(None, ["a.md", "b.md"])
-    assert payload == {"a.md": "# A\nclaim one", "b.md": "# B\nclaim two"}
+    payload = read_tool.function(None, [id_a, id_b])
+    assert payload == {
+        "bodies": {id_a: "# A\nclaim one", id_b: "# B\nclaim two"},
+        "unknown_page_ids": [],
+    }
+
+
+def test_wiki_read_reports_unknown_ids_instead_of_raising(agent, wiki, memory_service) -> None:
+    """``wiki_read`` catches ``WikiPageNotFound`` and reports unknown ids.
+
+    Pins production resilience: a hallucinated page_id (an id the
+    agent invented, an id from a stale inventory row, an id whose
+    file was deleted between the inventory and the read) must not
+    fail the whole lint dispatch. ``WikiMemoryService.read`` raises;
+    the linter's wrapper surfaces the partial result instead.
+    """
+    from lies.memory.retrieval import _page_id_for
+    from lies.memory.models import WikiPageNotFound
+
+    id_a = _page_id_for("a.md")
+    memory_service.read.side_effect = WikiPageNotFound(f"unknown page_ids: ['{id_a}']")
+    register_linter_tools(agent, wiki=wiki, memory_service=memory_service)
+    read_tool = next(t for t in agent.toolsets[0].tools.values() if t.name == "wiki_read")
+    payload = read_tool.function(None, [id_a])
+    assert payload == {"bodies": {}, "unknown_page_ids": [id_a]}

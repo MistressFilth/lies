@@ -68,35 +68,67 @@ def register_linter_tools(
     """
     from lies.memory.catalog import list_pages as _list_pages
     from lies.memory.catalog import open_catalog as _open_catalog
+    from lies.memory.retrieval import _page_id_for
 
     def _wiki_list_pages(ctx: RunContext["LintDeps"]) -> str:
-        """List every wiki page with path + size estimate as JSON.
+        """List every wiki page with page_id + path + size + cluster metadata.
 
         Walks the wiki corpus via the catalog reader (mirrors
         ``_wiki_catalog`` in the librarian) and emits one row per
-        page with the wiki-dir-relative path and a character-based
-        size estimate (slugs are short; the estimate seeds the
-        linter's read-budget planning).
+        page whose on-disk file still exists. The catalog may carry
+        stale rows after a ``lies catalog reconcile`` race; the
+        on-disk existence check filters them out so the linter never
+        reads a path that ``WikiMemoryService.read`` would reject.
+
+        Each row carries:
+
+        - ``page_id``: the SHA-1 hash id that
+          :meth:`WikiMemoryService.read` expects. Stable across
+          runs — the linter must pass this back to ``wiki_read``,
+          not the ``path``.
+        - ``path``: the wiki-dir-relative markdown path, for human
+          display and prompt-side reasoning.
+        - ``size_estimate_tokens``: file bytes divided by 4, so a
+          30K-token batch budget is reachable (the linter's
+          batched-read step relies on the estimate).
+        - ``section``, ``type``, ``source_pkg``: cluster signals from
+          the catalog row. ``section`` alone is uninformative (every
+          wiki-origin row is ``"wiki"``); ``type`` and
+          ``source_pkg`` give the linter a usable partition for its
+          cross-page comparison pass.
 
         The linter calls this once per run before any
         ``wiki_read`` batches, so it knows what to cluster and
-        cross-compare. The catalog's ``from_path`` path-walk also
-        filters out non-existent files; the linter's tool only sees
-        real pages.
+        cross-compare.
         """
         conn = _open_catalog(wiki)
         try:
             pages = _list_pages(conn)
         finally:
             conn.close()
-        inventory = [
-            {
-                "path": f"{page.slug}.md" if not page.slug.endswith(".md") else page.slug,
-                "size_estimate_tokens": max(1, len(page.slug) // 4),
-                "section": page.section.value,
-            }
-            for page in pages
-        ]
+        inventory = []
+        for page in pages:
+            rel = f"{page.slug}.md"
+            disk_path = wiki.wiki_dir / rel
+            if not disk_path.exists():
+                # Catalog-vs-disk drift: catalog row exists but the
+                # file does not. The linter must not hand a missing
+                # path to ``wiki_read``.
+                continue
+            try:
+                size_bytes = disk_path.stat().st_size
+            except OSError:
+                continue
+            inventory.append(
+                {
+                    "page_id": _page_id_for(rel),
+                    "path": rel,
+                    "size_estimate_tokens": max(1, size_bytes // 4),
+                    "section": page.section.value,
+                    "type": page.type,
+                    "source_pkg": page.source_pkg,
+                }
+            )
         return json.dumps(inventory, indent=2)
 
     def _wiki_search(
@@ -119,27 +151,60 @@ def register_linter_tools(
     def _wiki_read(
         ctx: RunContext["LintDeps"],
         page_ids: list[str],
-    ) -> dict[str, str]:
-        """Read full markdown bodies for the given wiki-dir-relative paths.
+    ) -> dict[str, object]:
+        """Read full markdown bodies for the given wiki page IDs.
 
-        Thin wrapper around :meth:`WikiMemoryService.read`. Paths
-        must already be authenticated by ``wiki_list_pages`` or
-        ``wiki_search`` in the same run; ``WikiMemoryService.read``
-        raises ``WikiPageNotFound`` for unknown paths which the
-        tool surfaces as a tool error.
+        Thin wrapper around :meth:`WikiMemoryService.read` with a
+        resilience layer: unknown page IDs (a hallucinated id, an
+        id from a stale inventory row that slipped past the
+        ``wiki_list_pages`` disk-existence filter, an id whose file
+        was deleted between the inventory call and the read call)
+        are reported in ``unknown_page_ids`` rather than raised.
+        The linter can keep going on a partial batch instead of
+        failing the whole lint dispatch.
+
+        Page IDs must come from ``wiki_list_pages`` or
+        ``wiki_search`` in the same run. ``WikiMemoryService.read``
+        raises on any unknown id; the linter's contract is to be
+        tolerant — the agent gets a partial result and can correct
+        the next batch.
 
         The linter calls this in batches of ≤10 pages (the
         ``_LINTER_BATCH_LIMIT``); the prompt's stop-when-saturated
         rule gates total batches.
         """
-        return memory_service.read(page_ids)
+        from lies.memory.models import WikiPageNotFound
+
+        try:
+            bodies = memory_service.read(page_ids)
+        except WikiPageNotFound as exc:
+            # The exception message is the only signal
+            # ``WikiMemoryService.read`` emits on the miss path;
+            # parse it for the unknown ids so the agent can
+            # correct the next batch.
+            import re
+
+            match = re.search(r"unknown page_ids: \[(.*?)\]", str(exc), re.DOTALL)
+            if match is None:
+                unknown = list(page_ids)
+            else:
+                unknown = [
+                    token.strip().strip("'\"")
+                    for token in match.group(1).split(",")
+                    if token.strip()
+                ]
+            return {"bodies": {}, "unknown_page_ids": unknown}
+        return {"bodies": bodies, "unknown_page_ids": []}
 
     agent.tool(
         name="wiki_list_pages",
         description=(
-            "List every wiki page with its wiki-dir-relative path and a "
-            "character-based size estimate. Call this once at the start "
-            "of the run to enumerate the corpus before cross-comparison."
+            "List every wiki page as a JSON array. Each row carries "
+            "page_id (the SHA-1 id for wiki_read), path "
+            "(wiki-dir-relative, display only), size_estimate_tokens, "
+            "section, type, and source_pkg. Call this once at the "
+            "start of the run to enumerate the corpus before "
+            "cross-comparison."
         ),
     )(_wiki_list_pages)
     agent.tool(
@@ -155,9 +220,12 @@ def register_linter_tools(
         name="wiki_read",
         description=(
             "Read the full markdown body of wiki pages identified by "
-            "wiki-dir-relative path. Accepts only paths returned by "
-            "wiki_list_pages or wiki_search in the same run. "
-            "Batch size ≤ 10 pages per call to fit one model context."
+            "page_id (the SHA-1 ids returned by wiki_list_pages and "
+            "wiki_search). Pass page_ids, NOT paths. Returns "
+            "{bodies: {page_id: markdown}, unknown_page_ids: [...]} "
+            "— unknown ids are reported (not raised) so a hallucinated "
+            "id does not fail the whole lint dispatch. Batch size ≤ 10 "
+            "pages per call to fit one model context."
         ),
     )(_wiki_read)
 
