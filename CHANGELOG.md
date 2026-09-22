@@ -6,11 +6,39 @@ All notable changes to LIES are documented here. The format follows
 
 ## [Unreleased]
 
-- MCP prompt surface: `ask_wiki` and `query_prompt` prompts removed.
-  `/answer` slash unchanged (librarian + synthesizer). New `/cite`
-  slash templates a `ground()` tool call and renders the
-  `ArchivistDigest` as `[[collection/slug]] (Title): "<snippet>"`
-  citation lines.
+### Changed
+
+- **BREAKING: drop every hard-coded model default.** Every agent
+  factory (`librarian_agent`, `linter_agent`, `source_reader_agent`,
+  `page_writer_agent`, `query_synthesizer_agent`, `enricher_agent`,
+  `collection_author_agent`) and the orchestrator's
+  `_resolve_default_models` previously fell back to a vendor
+  default when no `providers.toml` and no `LIES_<AGENT>_MODEL`
+  override were configured. That silent fallback is gone; missing
+  configuration now raises `lies.errors.ModelNotConfigured` with
+  the list of slots that need a value. Operators must explicitly
+  configure a model. The `lies providers init` wizard no longer
+  pre-selects `anthropic:claude-opus-4-7` either — the default-model
+  prompt is now required.
+
+### Fixed
+
+- **Phantom `page-<hash>` ids in `_from_qmd` crashed tag-filtered
+  queries.** When qmd returned a hit for a library path that had no
+  matching file under `wiki.wiki_dir` (e.g. `opencode/config.md`
+  for an operator who ran the librarian against `c:opencode`),
+  `_from_qmd` minted a synthetic `page-<sha1>[:12]>` id, then
+  `WikiMemoryService.read` raised `WikiPageNotFound` because
+  `_path_for_id` could not find the file. Repro: the 2026-09-22
+  orchestrator transcript. `_from_qmd` now drops hits whose
+  target file is absent on disk before minting any page id.
+
+- **Librarian's `_wiki_search` now threads `tag_expr` to qmd.**
+  Before, the librarian's `LibrarianDeps.tag_expr` was read by
+  the closure but never forwarded to `memory_service.search`,
+  so tag-filtered queries ran unscoped. The tag expression now
+  resolves to a collection set via `_collections_matching` and
+  reaches qmd's post-filter.
 
 ## [0.37.0] - 2026-09-22
 

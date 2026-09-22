@@ -610,6 +610,15 @@ Environment variables:
 - `LIES_XDG_CACHE_HOME` — overrides `$XDG_CACHE_HOME` for LIES
 - `LIES_ORCHESTRATOR_MODEL`, `LIES_SOURCE_READER_MODEL`, `LIES_PAGE_WRITER_MODEL`, `LIES_INDEXER_MODEL`, `LIES_LINTER_MODEL`, `LIES_QUERY_SYNTHESIZER_MODEL`, `LIES_ENRICHER_MODEL`, `LIES_REPAIR_MODEL` — per-agent model override. Non-empty value beats `providers.toml`.
 
+LIES does not ship a default model. If no `providers.toml` is found
+and none of the per-agent env overrides are set, building an
+`Orchestrator` (or running any MCP tool that constructs one)
+raises `ModelNotConfigured` listing every slot that needs a value.
+Configure your model before first use — either via the wizard
+(`uv run lies providers init`) or by exporting each env var
+above. Operators who relied on the previous implicit
+`anthropic:claude-opus-4-7` default must add an explicit value.
+
 Most subcommands accept `--name` to override the wiki name for one
 invocation. The bare `lies` REPL (no subcommand) reads the wiki name
 from `$LIES_WIKI_NAME` only; set the env var to switch wikis in the REPL.
@@ -631,7 +640,7 @@ uv run lies providers add <name> --type anthropic_compatible \
     --base-url https://api.minimax.io/anthropic
 
 uv run lies providers assign source_reader minimax:MiniMax-M3
-uv run lies providers set-default anthropic:claude-opus-4-7
+uv run lies providers set-default minimax:MiniMax-M3
 uv run lies providers unassign linter
 uv run lies providers check
 ```
