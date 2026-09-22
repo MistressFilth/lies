@@ -491,6 +491,29 @@ class _FakeEntry:
         return True
 
 
+def test_collect_available_tags_mcp_includes_library_collections(monkeypatch) -> None:
+    """Library-collection names must appear in the tag-validator's
+    available set with the ``c:`` qualifier prefix.
+
+    Regression for Fix 3 (Task 3 brief): the F15 tag-expression
+    validator on the MCP ``query`` / ``answer`` tool path needs to
+    know which ``c:``-prefixed atoms are addressable so a
+    ``c:opencode`` filter does not raise ``TagExprUnknown``. The MCP
+    tool path is distinct from the ``ground`` archivist's
+    ``grounding.py`` path; the helper lives at
+    ``lies.mcp.server._collect_available_tags_mcp``.
+    """
+    from lies.mcp.server import _collect_available_tags_mcp
+
+    monkeypatch.setattr(
+        "lies.library.registry.library_collection_names",
+        lambda: frozenset({"opencode", "pydantic_ai"}),
+    )
+    tags = _collect_available_tags_mcp(None)
+    assert "c:opencode" in tags
+    assert "c:pydantic_ai" in tags
+
+
 def _patch_librarian(monkeypatch, grounding_module, fake_fn):
     """Replace ``librarian_agent().run_sync(...)`` with ``fake_fn(deps)``.
 

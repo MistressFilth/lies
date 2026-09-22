@@ -772,10 +772,24 @@ def _collect_available_tags_mcp(wiki: Wiki) -> set[str]:
     signature uniformity with the legacy per-wiki resolution but is
     intentionally ignored: collections live in the library, not in
     any wiki.
+
+    Each collection name is added with the ``c:`` qualifier prefix so
+    the F15 tag-expression validator recognizes ``c:<name>`` atoms as
+    addressable on the MCP ``query`` / ``answer`` path (Fix 3 / Task 3
+    brief). The library lookup is wrapped in ``try/except`` so an
+    uninitialized library — or any other registry failure — does not
+    break the validator; the function still returns a set, just one
+    that does not include library-collection tags.
     """
     from lies.library.registry import library_collection_names
 
-    return set(library_collection_names())
+    try:
+        names = library_collection_names()
+    except Exception:
+        # Library uninitialized (or any other registry failure) is fine
+        # — the validator just sees no library tags.
+        return set()
+    return set(names) | {f"c:{name}" for name in names}
 
 
 def format_unknown_tag_error(exc: TagExprUnknown) -> str:
