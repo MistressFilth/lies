@@ -14,8 +14,9 @@ All notable changes to LIES are documented here. The format follows
   emits a single ```mermaid``` fence (flowchart / sequenceDiagram /
   classDiagram); renderer extracts the longest block and emits it
   unchanged. Validator-bypass: no parse, no retry, no sidecar file.
-  Pre-grounded at prompt-build time with excerpts from the `mermaid`
-  library collection (`https://github.com/mermaid-js/mermaid.git`).
+  The chart-variant system prompt ships with mermaid syntax
+  grounding (flowchart / sequenceDiagram / classDiagram) baked into
+  the prompt itself — no library-collection lookup at runtime.
   Literal unions widened to `Literal["md","table","marp","chart"]`
   across the F1 surface (CLI, validator, synthesizer, orchestrator,
   MCP envelope). `render_chart` lives at
