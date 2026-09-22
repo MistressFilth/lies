@@ -292,6 +292,8 @@ grounded in a primary source. Library hits render unprefixed.
 [secondary] [[default/concepts/pydantic]] (Pydantic concept): "..."      # wiki-only (secondary)
 ```
 
+**Read-side dispatch:** `_wiki_read` is source-aware. Wiki page IDs (`page-` + sha1-12) route to `memory_service.read()`. Library paths (`<collection>/<page>`) read from the library's qmd chunks via `qmd_get(library_git_root(), "qmd://<path>")`. Library hits carry `page_id=None` so the calling LLM doesn't try to read them via the wiki service.
+
 ## Quality gates
 
 `make check` runs `lint + typecheck + format`. `make test` runs the full

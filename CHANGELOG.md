@@ -12,6 +12,20 @@ All notable changes to LIES are documented here. The format follows
   `ArchivistDigest` as `[[collection/slug]] (Title): "<snippet>"`
   citation lines.
 
+## [0.37.2] - 2026-09-22
+
+### Fixed
+
+- Librarian: library hits no longer carry qmd `#abc123` page_ids;
+  `page_id` is `None` on library hits so the LLM doesn't try to
+  `wiki_read` them.
+- Librarian: `_wiki_read` now source-aware — wiki IDs go to
+  `memory_service.read()`, library paths (`<collection>/<page>`)
+  read from the library's qmd chunks via `qmd get`.
+- Wiki catalog reconciles before each search — stale rows whose
+  on-disk page is gone are dropped, so `wiki_search` doesn't
+  return ghost page_ids.
+
 ## [0.37.1] - 2026-09-22
 
 ### Fixed
