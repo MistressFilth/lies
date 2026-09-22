@@ -29,6 +29,7 @@ def test_enricher_returns_noop_when_no_evidence(model: TestModel) -> None:
     assert plan.is_noop()
 
 
+@pytest.mark.slow
 def test_enricher_validates_plan_shape(model: TestModel) -> None:
     agent = enricher_agent(model=model)
     deps = MemoryEnricherDeps(
@@ -42,6 +43,7 @@ def test_enricher_validates_plan_shape(model: TestModel) -> None:
     assert plan.rationale is not None or plan.rationale == ""
 
 
+@pytest.mark.slow
 def test_enricher_instructions_include_structured_dependencies(model: TestModel) -> None:
     agent = enricher_agent(model=model)
     deps = MemoryEnricherDeps(

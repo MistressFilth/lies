@@ -8,10 +8,12 @@ from unittest.mock import MagicMock
 import pytest
 from typer.testing import CliRunner
 
-from lies.cli import app
-from lies.lock_errors import WikiFlockUnrepairable, WikiLockBusy
-from lies.memory.service import _acquire_wiki_flock
-from lies.wiki.wiki import Wiki
+pytestmark = pytest.mark.slow
+
+from lies.cli import app  # noqa: E402
+from lies.lock_errors import WikiFlockUnrepairable, WikiLockBusy  # noqa: E402
+from lies.memory.service import _acquire_wiki_flock  # noqa: E402
+from lies.wiki.wiki import Wiki  # noqa: E402
 
 runner = CliRunner()
 

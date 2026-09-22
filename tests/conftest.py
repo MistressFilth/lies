@@ -106,8 +106,10 @@ def _isolated_xdg(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     # XDG has been repointed. Clear it here so the per-test XDG redirect
     # takes effect for every test that touches the library.
     from lies.library.paths import Library
+    from lies.library.registry import library_collection_names
 
     Library.open.cache_clear()
+    library_collection_names.cache_clear()
     xdg_root = tmp_path / "xdg"
     for sub in ("data", "config", "cache", "state", "runtime"):
         (xdg_root / sub).mkdir(parents=True, exist_ok=True)

@@ -27,8 +27,10 @@ from typer.testing import CliRunner
 
 from lies.cli import app
 from lies.providers.agents import AGENT_ROSTER
-from lies.providers.bootstrap import PartialConfig, write_atomic
-from lies.providers.config import ProviderSpec
+
+pytestmark = pytest.mark.slow
+from lies.providers.bootstrap import PartialConfig, write_atomic  # noqa: E402
+from lies.providers.config import ProviderSpec  # noqa: E402
 
 runner = CliRunner()
 

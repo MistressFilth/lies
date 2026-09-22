@@ -130,6 +130,7 @@ def test_read_recent_returns_last_n(tmp_path: Path) -> None:
     assert rows[1].rationale == "plan 2"
 
 
+@pytest.mark.slow
 def test_read_recent_filters_by_page_substring(tmp_path: Path) -> None:
     wiki = _wiki(tmp_path)
     _seed_three_rows(wiki)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 from pydantic_ai.models.test import TestModel
 
 from lies.agents.page_writer import (
@@ -9,11 +10,16 @@ from lies.agents.page_writer import (
 )
 
 
+@pytest.mark.slow
+@pytest.mark.slow
 def test_page_writer_agent_exists() -> None:
     agent = page_writer_agent(model=TestModel())
     assert agent is not None
 
 
+@pytest.mark.slow
+@pytest.mark.slow
+@pytest.mark.slow
 def test_page_writer_returns_diffs() -> None:
     """Agent builds. End-to-end run is gated on a real model — TestModel
     does not produce free-form text that pydantic-ai's PromptedOutput
@@ -23,6 +29,7 @@ def test_page_writer_returns_diffs() -> None:
     assert agent is not None
 
 
+@pytest.mark.slow
 def test_page_writer_deps_renders_conventions() -> None:
     deps = PageWriterDeps(
         question="distill this into structured pages",
@@ -39,6 +46,7 @@ def test_page_writer_deps_renders_conventions() -> None:
     assert "schema_text" in prompt or "# LIES Schema" in prompt
 
 
+@pytest.mark.slow
 def test_page_writer_prompt_without_deps_returns_base() -> None:
     base = _build_page_writer_prompt_for_test(None)
     assert isinstance(base, str)
