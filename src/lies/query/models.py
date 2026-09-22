@@ -17,7 +17,10 @@ class SynthesizedAnswer:
         answer: The answer body. The shape matches ``format``:
             ``format="md"`` is plain markdown; ``format="table"`` is a
             GFM table; ``format="marp"`` is Marp-flavored markdown with
-            the ``marp: true`` frontmatter.
+            the ``marp: true`` frontmatter; ``format="chart"`` is a
+            single ```mermaid``` fence (flowchart / sequenceDiagram /
+            classDiagram) — the renderer extracts the longest block when
+            the body carries multiple fences.
         citations: ``Citation`` objects for pages cited in the answer.
             Each carries the ``source`` discriminator (``"library"`` /
             ``"wiki"``) so downstream consumers can apply the
@@ -80,7 +83,7 @@ class SynthesizedAnswer:
     question: str = ""
     file_receipt: MemoryReceipt | None = None
     searched_scope: list[str] = field(default_factory=list)
-    format: Literal["md", "table", "marp"] = "md"
+    format: Literal["md", "table", "marp", "chart"] = "md"
 
     def __post_init__(self) -> None:
         """Coerce ``claim_citations`` into the declared tuple shape.

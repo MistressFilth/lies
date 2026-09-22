@@ -114,16 +114,16 @@ def _patch_synthesizer(orch: Orchestrator, query_answers: list[QueryAnswer]) -> 
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("fmt", ["md", "table", "marp"])
+@pytest.mark.parametrize("fmt", ["md", "table", "marp", "chart"])
 def test_run_query_happy_path_each_format(wiki_copy: Path, fmt: str) -> None:
     """``Orchestrator.run_query`` returns a ``SynthesizedAnswer`` with the
-    requested ``format`` field set, for each of the three documented values.
+    requested ``format`` field set, for each of the four documented values.
 
     The synthesizer emits ``format_hint=fmt``; the orchestrator's
     success path produces an answer whose ``format`` field matches the
-    validated hint (``md`` always validates; ``table`` and ``marp``
-    validate when the body actually carries the corresponding shape —
-    we feed table/marp-shaped bodies here so the validator passes).
+    validated hint (``md`` and ``chart`` always pass; ``table`` and
+    ``marp`` validate when the body actually carries the corresponding
+    shape — we feed shape-matching bodies here so the validator passes).
     """
     wiki = make_wiki(name="sample", data_root=wiki_copy)
     orch = Orchestrator(wiki=wiki, models=models_for_tests("test"))
@@ -132,8 +132,10 @@ def test_run_query_happy_path_each_format(wiki_copy: Path, fmt: str) -> None:
         body = "### Q\n\nA prose answer with bullets."
     elif fmt == "table":
         body = "| col1 | col2 |\n| --- | --- |\n| a | b |\n| c | d |\n"
-    else:  # marp
+    elif fmt == "marp":
         body = "---\nmarp: true\n---\n\n---\n\n## Slide 1\n\n---\n\n## Slide 2\n"
+    else:  # chart
+        body = "```mermaid\nflowchart LR\n  A[concept a] --> B[concept b]\n```\n"
 
     set_qmd_search(_stub_qmd_search(["entities/postgres.md"]))
     try:

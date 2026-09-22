@@ -153,3 +153,78 @@ def test_file_back_synthesis_includes_render_format(orch):
     # Frontmatter must contain render_format: table (double-quoted for
     # YAML safety, mirroring title / collection).
     assert 'render_format: "table"' in synthesis_op.content
+
+
+def test_file_back_synthesis_includes_render_format_chart(orch):
+    """Chart-format sister: ``render_format: "chart"`` lands in the frontmatter.
+
+    F1 chart addendum (Critical #2 follow-up): ``run_query_with_format``
+    threads the caller's forced ``format_hint`` into ``_call_synthesizer``
+    so the filed synthesis's ``render_format`` frontmatter matches the
+    rendered body shape. The ``test_run_query_with_format_threads_format_
+    hint_into_call_synthesizer`` test pins the orchestrator plumbing;
+    this test pins the end-to-end frontmatter rendering for the chart
+    path specifically. Without this assertion the threading can regress
+    silently (e.g. a future ``getattr(answer, "format", "md")`` that
+    forgets to consult the caller's forced hint would re-introduce the
+    auto-route md filing bug without any test catching it).
+    """
+    answer = SynthesizedAnswer(
+        answer="```mermaid\ngraph LR\n  A --> B\n```\n",
+        format="chart",
+        question="q",
+        should_file=True,
+        synthesis_used=True,
+        pages_read=[Citation(path="claude-code/concepts/hooks", source="wiki")],
+    )
+
+    orch.file_back_synthesis(answer, "claude")
+
+    plan = orch._memory_service.apply_plan.call_args[0][0]
+    synthesis_op = plan.operations[0]
+    # Frontmatter must contain render_format: chart (double-quoted for
+    # YAML safety, mirroring title / collection).
+    assert 'render_format: "chart"' in synthesis_op.content
+
+
+def test_run_query_with_format_threads_format_hint_into_call_synthesizer(
+    tmp_path: Path,
+) -> None:
+    """F1 chart addendum (Critical #2): ``run_query_with_format`` must
+    thread the caller's forced ``format_hint`` into the inner
+    ``_call_synthesizer`` call so a ``--format=chart`` override files
+    the synthesis with ``render_format: chart`` rather than the
+    auto-route's ``render_format: md``.
+    """
+    from lies.agents.query_synthesizer import QueryAnswer
+
+    orch = _orch(tmp_path)
+
+    captured: dict = {}
+
+    def fake_call_synthesizer(question, librarian_output, *, format_hint=None) -> QueryAnswer:
+        captured["format_hint"] = format_hint
+        return QueryAnswer(
+            answer="```mermaid\ngraph LR\n  A --> B\n```\n",
+            citations=[],
+            should_file=True,
+            format_hint=format_hint or "md",
+        )
+
+    orch._call_synthesizer = fake_call_synthesizer
+
+    # Stub the librarian dispatch so ``run_query`` skips straight to
+    # the inner synth call without invoking the librarian agent.
+    from lies.agents.librarian import LibrarianOutput
+
+    orch._librarian_agent = MagicMock()
+    orch._librarian_agent.run_sync = MagicMock(
+        return_value=MagicMock(
+            output=LibrarianOutput(tag_expr=None, exclude_tags=[], excerpts=[], distinct_pages=0)
+        )
+    )
+
+    ans = orch.run_query_with_format("q", format_hint="chart", file_back=False)
+
+    assert captured["format_hint"] == "chart"
+    assert ans.format_hint == "chart"

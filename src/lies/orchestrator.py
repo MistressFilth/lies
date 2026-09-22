@@ -1665,6 +1665,12 @@ class Orchestrator:
         exclude_tags: list[str] | None = None,
         top_n: int = 5,
         file_back: bool = True,
+        # F1 override hook: when ``run_query_with_format`` re-enters
+        # ``run_query`` with the operator's forced format, the inner
+        # synth call must use that format so ``render_format`` on the
+        # filed synthesis frontmatter matches the rendered body shape.
+        # ``None`` (default) preserves the auto-route contract.
+        format_hint: Literal["md", "table", "marp", "chart"] | None = None,
         # F1/F18 back-compat aliases: pre-F18 callers (and tests on
         # branches that haven't migrated) pass ``file=`` / ``force_file=``
         # as positional or keyword args. ``file=`` is the boolean
@@ -1769,7 +1775,7 @@ class Orchestrator:
             answer = librarian_out
             librarian_out_for_filing = None
         else:
-            answer = self._call_synthesizer(question, librarian_out)
+            answer = self._call_synthesizer(question, librarian_out, format_hint=format_hint)
             librarian_out_for_filing = librarian_out
         # Filing-back is gated on a real ``LibrarianOutput``; the
         # canned-``QueryAnswer`` path (test fixtures, never a real
@@ -1795,7 +1801,7 @@ class Orchestrator:
     def run_query_with_format(
         self,
         question: str,
-        format_hint: Literal["md", "table", "marp"] = "md",
+        format_hint: Literal["md", "table", "marp", "chart"] = "md",
         *,
         tag_expr: str | None = None,
         exclude_tags: list[str] | None = None,
@@ -1809,7 +1815,7 @@ class Orchestrator:
         # format_hint, *, file_back, ...)``. Accept both spellings
         # so the integration tests (and any out-of-branch caller
         # that pre-dates the rename) keep their surface.
-        cli_format: Literal["md", "table", "marp"] | None = None,
+        cli_format: Literal["md", "table", "marp", "chart"] | None = None,
         file: bool | None = None,
         force_file: bool | None = None,
     ) -> QueryAnswer:
@@ -1856,6 +1862,13 @@ class Orchestrator:
             exclude_tags=exclude_tags,
             top_n=top_n,
             file_back=file_back,
+            # F1 chart addendum (Critical #2): thread the caller's
+            # forced format into the inner synth call so the filed
+            # synthesis frontmatter's ``render_format`` matches the
+            # rendered body shape. Without this, an override from
+            # auto=md to --format=chart would file the synthesis with
+            # ``render_format: md`` while the renderer renders chart.
+            format_hint=format_hint,
         )
         # ``QueryAnswer`` is a regular (mutable) dataclass; the F19
         # synthesizer emits ``format_hint`` and the F1 CLI override
@@ -1876,6 +1889,8 @@ class Orchestrator:
         self,
         question: str,
         librarian_output: LibrarianOutput,
+        *,
+        format_hint: Literal["md", "table", "marp", "chart"] | None = None,
     ) -> QueryAnswer:
         """Run the synthesizer subagent against the librarian's excerpts (F19).
 
@@ -1897,8 +1912,16 @@ class Orchestrator:
         returned ``QueryAnswer``. The runtime type narrowing lets the
         filed body renderer see span heading context for the
         ``## Evidence`` block.
+
+        F1 chart addendum: when ``format_hint`` is ``"chart"`` the
+        synthesizer uses the chart-variant system prompt. Other values
+        fall through to the standard prompt.
         """
-        deps = QueryDeps(question=question, librarian_output=librarian_output)
+        deps = QueryDeps(
+            question=question,
+            librarian_output=librarian_output,
+            format_hint=format_hint,
+        )
         result = self._query_synthesizer_agent.run_sync(question, deps=deps)
         answer: QueryAnswer = result.output
         # The synthesizer emits ``citations: list[str]`` (paths). Build
@@ -1937,7 +1960,17 @@ class Orchestrator:
             # objects directly.
             citations=cast(list[str], threaded_citations),  # type: ignore[arg-type]
             should_file=answer.should_file,
-            format_hint=answer.format_hint,
+            # F1 chart addendum: when the caller forces a
+            # ``format_hint`` (``run_query_with_format`` re-entry path)
+            # the caller's value wins over the synthesizer's emitted
+            # ``format_hint``. The synth may emit ``"md"`` as a default
+            # if its chart-variant prompt confuses it; routing the
+            # forced value through here closes the gap so a
+            # ``--format=chart`` override files the synthesis with
+            # ``render_format: "chart"`` even when the synth returned
+            # ``"md"``. ``None`` falls through to the synth's emission
+            # (auto-route contract preserved).
+            format_hint=format_hint or answer.format_hint,
             claim_citations=validated_ccs,
         )
 

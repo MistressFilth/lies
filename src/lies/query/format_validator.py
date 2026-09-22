@@ -126,7 +126,11 @@ def validate_format(
 
     The body is preserved unchanged; the returned hint is what callers
     should use downstream (the CLI render path, the MCP wire format,
-    the file-back frontmatter).
+    the file-back frontmatter). ``"chart"`` is validator-bypass and
+    never enters this function — see
+    :func:`lies.cli.query_format.render_answer` for the dispatch-layer
+    bypass. Per F1 chart addendum spec § Validation: the validator's
+    signature is unchanged; chart bypasses validation entirely.
     """
     if hint == "md":
         return "md"

@@ -27,8 +27,8 @@ def test_query_answer_defaults_format_hint_md() -> None:
 
 
 def test_query_answer_explicit_format_hint() -> None:
-    """``format_hint`` accepts the three documented values."""
-    for hint in ("md", "table", "marp"):
+    """``format_hint`` accepts the four documented values."""
+    for hint in ("md", "table", "marp", "chart"):
         qa = QueryAnswer(answer="x", citations=[], should_file=False, format_hint=hint)
         assert qa.format_hint == hint
 

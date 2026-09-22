@@ -83,7 +83,7 @@ def test_synthesized_answer_format_defaults_to_md() -> None:
 
 
 def test_synthesized_answer_format_round_trip() -> None:
-    """``format`` accepts the three documented values."""
-    for fmt in ("md", "table", "marp"):
+    """``format`` accepts the four documented values."""
+    for fmt in ("md", "table", "marp", "chart"):
         ans = SynthesizedAnswer(answer="x", format=fmt)
         assert ans.format == fmt

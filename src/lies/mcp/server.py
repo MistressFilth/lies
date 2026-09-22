@@ -92,7 +92,7 @@ class SynthesizedMcpAnswer(BaseModel):
     searched_scope: list[str] = Field(
         default_factory=list
     )  # Bundle C (F15): sorted, unique collection names searched
-    format: Literal["md", "table", "marp"] = (
+    format: Literal["md", "table", "marp", "chart"] = (
         "md"  # F1: validated output format (auto-route resolves to one of these)
     )
 
