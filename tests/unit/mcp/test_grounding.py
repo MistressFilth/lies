@@ -111,6 +111,33 @@ def test_citation_snippet_frozen() -> None:
         cs.snippet = "other"  # type: ignore[misc]
 
 
+def test_citation_snippet_source_kind_defaults_to_library() -> None:
+    """CitationSnippet defaults source_kind to 'library' for backward compat."""
+    from lies.mcp.grounding import CitationSnippet
+
+    snip = CitationSnippet(
+        collection="mermaid",
+        slug="syntax/flowchart",
+        title="Flowchart syntax",
+        snippet="flowchart TD; A-->B",
+    )
+    assert snip.source_kind == "library"
+
+
+def test_citation_snippet_source_kind_explicit() -> None:
+    """CitationSnippet accepts an explicit source_kind."""
+    from lies.mcp.grounding import CitationSnippet
+
+    snip = CitationSnippet(
+        collection="default",
+        slug="concepts/pydantic",
+        title="Pydantic concept",
+        snippet="Pydantic is a data validation library.",
+        source_kind="wiki",
+    )
+    assert snip.source_kind == "wiki"
+
+
 def test_archivist_digest_frozen() -> None:
     digest = ArchivistDigest(
         question="q",

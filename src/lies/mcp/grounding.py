@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import warnings
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
     from lies.markdown_spans import Span
@@ -43,12 +43,18 @@ class CitationSnippet:
             ``"concepts/pydantic"``, ``"entities/postgres"``.
         title: Human-readable page title.
         snippet: First ≤200 chars of the first prose span of the page.
+        source_kind: Where the snippet came from. ``"library"`` =
+            primary source (library collection), ``"wiki"`` = wiki-only
+            hit (secondary, not grounded in a primary source),
+            ``"library+wiki"`` = both surfaces matched on the same
+            slug. Defaults to ``"library"`` for backward compat.
     """
 
     collection: str
     slug: str
     title: str
     snippet: str
+    source_kind: Literal["library", "wiki", "library+wiki"] = "library"
 
 
 @dataclass(frozen=True)
