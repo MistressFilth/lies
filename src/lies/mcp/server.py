@@ -1183,20 +1183,6 @@ def ingest(source: str) -> str:
     return load_prompt("ingest").format(version=__version__, source=source)
 
 
-@mcp.prompt(name="query")
-def query_prompt(question: str) -> str:
-    """Return the query-tool recipes prose.
-
-    ``question`` is captured for MCP introspection only; the reference
-    prose is static and does not substitute this value.
-
-    Named ``query_prompt`` in Python to avoid clashing with the
-    ``query`` MCP tool already registered in this module;
-    registered as the ``/query`` prompt via ``name="query"``.
-    """
-    return load_prompt("query").format(version=__version__, question=question)
-
-
 @mcp.prompt(name="lint")
 def lint_prompt() -> str:
     """Return the lint walkthrough prose."""
