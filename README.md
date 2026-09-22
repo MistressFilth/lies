@@ -921,7 +921,7 @@ The LIES MCP server ships an orientation payload at every
   resource list, prompt index. The agent sees this on attach
   regardless of cwd.
 - Prompts: `orient(wiki=...)`, `ingest(source=...)`,
-  `query(question=...)`, `lint()`, `sync(collection=...)`,
+  `lint()`, `sync(collection=...)`,
   `file-back(wiki=...)`. Plus `cite(question, tag_expr=None,
   exclude_tags=None, top_k=3)` and the pre-existing
   `/answer` slash tool-call template.

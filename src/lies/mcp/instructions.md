@@ -42,7 +42,6 @@ only).
 - `ask_wiki_answer(question)` (slash `/answer`) — drive `answer`.
 - `orient(wiki=...)` — reference prose for the four workflows.
 - `ingest(source=...)` — `lies sync <name> --source <source>`.
-- `query(question=...)` — `query` tool call recipes.
 - `lint()` — `lies lint`, `--fix`, repair agent.
 - `sync(collection=...)` — `lies sync`, lock envelope.
 - `file-back(wiki=...)` — F3 file-back from a query synthesis.

@@ -24,7 +24,6 @@ only).
 ## Prompt index
 
 - `ingest(source=...)` — full `lies sync` walkthrough.
-- `query(question=...)` — `query` tool recipes + citation rules.
 - `lint()` — `lies lint [--fix]` flow + repair agent.
 - `sync(collection=...)` — `lies sync` envelope + heartbeat.
 - `file-back(wiki=...)` — F3 synthesis filing.
