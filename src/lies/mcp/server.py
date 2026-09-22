@@ -16,6 +16,7 @@ to already be registered under ``$LIES_XDG_DATA_HOME``.
 from __future__ import annotations
 
 import sys
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Literal, cast
@@ -857,6 +858,34 @@ def lint(
 # direct callers exercise the real logic with an explicit ``name``.
 
 
+def _register_static_resource(
+    uri: str, fn: Callable[..., str], description: str | None = None
+) -> Callable[..., str]:
+    """Register ``fn`` as a *static* MCP resource even when it has params.
+
+    FastMCP's ``@mcp.resource(...)`` decorator auto-routes any callable
+    with parameters to :class:`ResourceTemplate`, which then rejects
+    URIs without ``{...}`` placeholders. The ``query`` / ``answer``
+    tools accept a wiki ``name`` kwarg (resolving through
+    :func:`lies.mcp.resolution.resolve_wiki`); the resource surface
+    needs the same parity for direct Python callers and tests, so we
+    bypass the decorator's auto-routing by registering a
+    :class:`FunctionResource` directly. FastMCP's read path still
+    invokes the registered ``fn`` with no positional arguments; any
+    ``name``-style kwargs are passed only by Python callers (tests,
+    REPL, direct imports), not by the MCP wire.
+    """
+    from fastmcp.resources.function_resource import FunctionResource
+
+    resource = FunctionResource.from_function(
+        fn=fn,
+        uri=uri,
+        description=description,
+    )
+    mcp.add_resource(resource)
+    return fn
+
+
 def _wiki_status_impl(name: str | None = None) -> str:
     """Return qmd status plus the last 10 lines of ``wiki/log.md``.
 
@@ -883,15 +912,34 @@ def _wiki_status_impl(name: str | None = None) -> str:
     return out
 
 
-@mcp.resource("wiki://status")
-def wiki_status() -> str:
-    """qmd status + last 10 log lines.
+def _wiki_status_mcp() -> str:
+    """Zero-arg FastMCP handler for ``wiki://status``.
 
-    Zero-argument forwarder (FastMCP 3.4.5 constraint on static-resource
-    handlers). Real logic in :func:`_wiki_status_impl`; ``name`` is
-    resolved from the env there.
+    FastMCP's read path calls this with no arguments; ``name`` falls
+    back to the env-default wiki (resolved inside the impl). Tests
+    should import the public :func:`wiki_status` instead, which accepts
+    an explicit ``name`` kwarg.
     """
     return _wiki_status_impl()
+
+
+_register_static_resource(
+    "wiki://status",
+    _wiki_status_mcp,
+    description="qmd status + last 10 log lines.",
+)
+
+
+def wiki_status(name: str | None = None) -> str:
+    """qmd status + last 10 log lines.
+
+    Direct Python entry point — accepts an explicit ``name`` kwarg so
+    tests and REPL callers don't have to mutate ``LIES_WIKI_NAME``.
+    Mirrors the ``query`` / ``answer`` / ``init_wiki`` tool surface.
+    The FastMCP wire protocol calls the registered zero-arg handler
+    above; this function is the parity surface for direct callers.
+    """
+    return _wiki_status_impl(name)
 
 
 def _wiki_index_impl(name: str | None = None) -> str:
@@ -902,14 +950,28 @@ def _wiki_index_impl(name: str | None = None) -> str:
     return index_path.read_text(encoding="utf-8")
 
 
-@mcp.resource("wiki://index")
-def wiki_index() -> str:
+def _wiki_index_mcp() -> str:
+    """Zero-arg FastMCP handler for ``wiki://index``."""
+    return _wiki_index_impl()
+
+
+_register_static_resource(
+    "wiki://index",
+    _wiki_index_mcp,
+    description="Raw contents of wiki/index.md.",
+)
+
+
+def wiki_index(name: str | None = None) -> str:
     """Raw contents of ``wiki/index.md`` (empty string if absent).
 
-    Zero-argument forwarder (FastMCP 3.4.5 constraint). Real logic in
-    :func:`_wiki_index_impl`; ``name`` is resolved from the env there.
+    Direct Python entry point — accepts an explicit ``name`` kwarg so
+    tests and REPL callers don't have to mutate ``LIES_WIKI_NAME``.
+    Mirrors the ``query`` / ``answer`` / ``init_wiki`` tool surface.
+    The FastMCP wire protocol calls the registered zero-arg handler
+    above; this function is the parity surface for direct callers.
     """
-    return _wiki_index_impl()
+    return _wiki_index_impl(name)
 
 
 def _wiki_log_impl(name: str | None = None) -> str:
@@ -920,14 +982,28 @@ def _wiki_log_impl(name: str | None = None) -> str:
     return log_path.read_text(encoding="utf-8")
 
 
-@mcp.resource("wiki://log")
-def wiki_log() -> str:
+def _wiki_log_mcp() -> str:
+    """Zero-arg FastMCP handler for ``wiki://log``."""
+    return _wiki_log_impl()
+
+
+_register_static_resource(
+    "wiki://log",
+    _wiki_log_mcp,
+    description="Raw contents of wiki/log.md.",
+)
+
+
+def wiki_log(name: str | None = None) -> str:
     """Raw contents of ``wiki/log.md`` (empty string if absent).
 
-    Zero-argument forwarder (FastMCP 3.4.5 constraint). Real logic in
-    :func:`_wiki_log_impl`; ``name`` is resolved from the env there.
+    Direct Python entry point — accepts an explicit ``name`` kwarg so
+    tests and REPL callers don't have to mutate ``LIES_WIKI_NAME``.
+    Mirrors the ``query`` / ``answer`` / ``init_wiki`` tool surface.
+    The FastMCP wire protocol calls the registered zero-arg handler
+    above; this function is the parity surface for direct callers.
     """
-    return _wiki_log_impl()
+    return _wiki_log_impl(name)
 
 
 def _wiki_lint_report_impl(name: str | None = None) -> str:
@@ -938,15 +1014,28 @@ def _wiki_lint_report_impl(name: str | None = None) -> str:
     return report_path.read_text(encoding="utf-8")
 
 
-@mcp.resource("wiki://lint-report")
-def wiki_lint_report() -> str:
+def _wiki_lint_report_mcp() -> str:
+    """Zero-arg FastMCP handler for ``wiki://lint-report``."""
+    return _wiki_lint_report_impl()
+
+
+_register_static_resource(
+    "wiki://lint-report",
+    _wiki_lint_report_mcp,
+    description="Raw contents of wiki/lint-report.md.",
+)
+
+
+def wiki_lint_report(name: str | None = None) -> str:
     """Raw contents of ``wiki/lint-report.md`` (empty string if absent).
 
-    Zero-argument forwarder (FastMCP 3.4.5 constraint). Real logic in
-    :func:`_wiki_lint_report_impl`; ``name`` is resolved from the env
-    there.
+    Direct Python entry point — accepts an explicit ``name`` kwarg so
+    tests and REPL callers don't have to mutate ``LIES_WIKI_NAME``.
+    Mirrors the ``query`` / ``answer`` / ``init_wiki`` tool surface.
+    The FastMCP wire protocol calls the registered zero-arg handler
+    above; this function is the parity surface for direct callers.
     """
-    return _wiki_lint_report_impl()
+    return _wiki_lint_report_impl(name)
 
 
 def _safe_page_path(wiki: Wiki, path: str) -> Path:
@@ -988,14 +1077,17 @@ def _wiki_page_impl(path: str, name: str | None = None) -> str:
 
 
 @mcp.resource("wiki://page/{path}")
-def wiki_page(path: str) -> str:
+def wiki_page(path: str, name: str | None = None) -> str:
     """Raw markdown of any page under ``wiki/`` (relative ``path``).
 
     Template-resource handler — unlike the static resources above,
     FastMCP passes ``path`` directly so the forwarder forwards it to
-    :func:`_wiki_page_impl`.
+    :func:`_wiki_page_impl`. The optional ``name`` kwarg keeps the
+    Python-callable surface — and the MCP tool parity — consistent with
+    ``query`` / ``answer`` / ``init_wiki``, which all accept ``name``;
+    FastMCP itself never passes it, so the env-default wiki is used.
     """
-    return _wiki_page_impl(path)
+    return _wiki_page_impl(path, name)
 
 
 # ---------------------------------------------------------------------------
