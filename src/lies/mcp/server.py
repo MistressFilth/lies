@@ -45,8 +45,10 @@ from lies.query.tag_expr import (
     TagExprEmpty,
     TagExprParseError,
     TagExprUnknown,
+    _render_include,
     check_qualifier,
     parse,
+    parse_query_argv,
     resolve,
 )
 from lies.wiki.layout import WikiLayout, copy_default_schema, git_init_initial
@@ -1258,8 +1260,6 @@ def wiki_catalog_slug(slug: str) -> str:
 @mcp.prompt(name="answer")
 def ask_wiki_answer(
     question: str,
-    tag_expr: str | None = None,
-    exclude_tags: list[str] | None = None,
     name: str | None = None,
     collection: str | None = None,
 ) -> str:
@@ -1270,23 +1270,84 @@ def ask_wiki_answer(
     (returns structured envelope). Use this when the response needs to
     render verbatim in chat rather than behind a collapsible JSON block.
 
-    Filter syntax: prefix a tag token with ``+`` to include it in the
-    ``tag_expr`` field; prefix with ``-`` to include it in
-    ``exclude_tags``. Tokens with no sigil are passed through as
-    ``tag_expr`` verbatim. Example::
+    Filter syntax (parsed out of the ``question`` argument here, so the
+    calling LLM never has to fill ``tag_expr`` / ``exclude_tags``
+    slots — that was the live hallucination bug):
 
-        /answer +c:opencode +t:linux Where does opencode keep settings?
+    - ``+c:<name>`` — include the named library collection
+    - ``+t:<tag>`` — include pages tagged ``<tag>``
+    - ``+a&b`` — AND two include atoms (no spaces)
+    - ``+a|b`` — OR (lower precedence than ``&``)
+    - ``-t:<tag>`` — exclude pages tagged ``<tag>``
+    - ``-"airflow provider"`` — exclude with quoted tag
 
-    The same filter surface as the ``query`` tool and the ``cite``
-    prompt (F15 tag-filter dispatch). Mirrors the ``cite`` prompt's
-    kwarg shape; the difference is that ``answer`` returns just the
-    answer body, while ``cite`` returns the archivist digest as
-    citation lines.
+    Everything after the include chain and the optional exclude is
+    the question text. The parser stops at the first non-filter
+    token.
+
+    Examples::
+
+        /answer +c:opencode Where does opencode keep settings?
+            tag_expr: c:opencode
+            question: Where does opencode keep settings?
+
+        /answer +t:linux +c:opencode -draft how do I configure...
+            tag_expr: c:opencode&t:linux
+            exclude_tags: [draft]
+            question: how do I configure...
+
+    Mirrors the CLI grammar exactly (see
+    ``features/tag-filter-language/2026-09-02-tag-filter-language-design.md``
+    and ``src/lies/query/tag_expr.py:parse_query_argv``).
 
     The ``name="answer"`` override registers the prompt as the
     ``/answer`` slash command even though the Python function is named
     ``ask_wiki_answer`` (the bare name conflicts with the ``answer``
     tool defined elsewhere in this module).
+    """
+    import shlex
+
+    argv = shlex.split(question)
+    if not argv:
+        return _render_answer_prompt_body(
+            question=question,
+            tag_expr=None,
+            exclude_tags=[],
+            name=name,
+            collection=collection,
+        )
+
+    try:
+        parsed_question, include_ast, exclude, _qualifier = parse_query_argv(argv)
+    except (TagExprParseError, TagExprEmpty) as exc:
+        return _filter_parse_error_prompt(question, exc)
+
+    tag_expr = _render_include(include_ast) if include_ast is not None else None
+    exclude_tags = [exclude] if exclude is not None else []
+
+    return _render_answer_prompt_body(
+        question=parsed_question,
+        tag_expr=tag_expr,
+        exclude_tags=exclude_tags,
+        name=name,
+        collection=collection,
+    )
+
+
+def _render_answer_prompt_body(
+    *,
+    question: str,
+    tag_expr: str | None,
+    exclude_tags: list[str],
+    name: str | None,
+    collection: str | None,
+) -> str:
+    """Render the prompt body for the parsed args.
+
+    No fillable slots for ``tag_expr`` / ``exclude_tags``: the slash
+    prompt parses them out of the ``question`` argument before the
+    calling LLM sees the body. The LLM only has to forward the
+    rendered kwargs verbatim to the ``answer`` tool.
     """
     return (
         f"Call the `answer` MCP tool with the following args, then surface "
@@ -1296,11 +1357,27 @@ def ask_wiki_answer(
         f"  exclude_tags: {exclude_tags!r}\n"
         f"  name: {name!r}\n"
         f"  collection: {collection!r}\n\n"
-        f"Filter syntax: pass tokens prefixed with ``+`` as the ``tag_expr`` "
-        f"include expression (e.g. ``+c:opencode +t:linux``), and tokens "
-        f"prefixed with ``-`` as ``exclude_tags`` (e.g. ``-draft``). "
-        f"The ``+tag_expr`` / ``-exclude_tags`` shorthand from the slash "
-        f"command line maps onto the kwargs above verbatim."
+        f"Do NOT modify these values before passing them to the tool. "
+        f"If the parsed args look wrong, surface the parse error verbatim "
+        f"and stop; do not retry with hand-rewritten args."
+    )
+
+
+def _filter_parse_error_prompt(question: str, exc: Exception) -> str:
+    """Render a parse-error prompt body.
+
+    Surfaces the parser's message verbatim — the calling LLM tells
+    the operator what went wrong instead of hallucinating a fix. The
+    fallback would be silent (pass the question through with no
+    filter), which is exactly the bug we're closing.
+    """
+    return (
+        f"Filter parse error: {exc}\n\n"
+        f"Original argument: {question!r}\n\n"
+        f"Filter syntax: tokens prefixed with `+` are include atoms "
+        f"(e.g. `+c:opencode`), tokens prefixed with `-` are exclude "
+        f"atoms (e.g. `-draft`). Use double-quotes for tags with spaces "
+        f'(`-"airflow provider"`). Everything else is the question.'
     )
 
 

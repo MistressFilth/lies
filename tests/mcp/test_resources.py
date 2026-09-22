@@ -153,34 +153,114 @@ def test_cite_prompt_documents_secondary_marker() -> None:
     assert "secondary" in out.lower()
 
 
-def test_answer_prompt_renders_filter_args() -> None:
-    """The /answer slash prompt must expose tag_expr, exclude_tags, name, collection.
+def test_answer_prompt_parses_c_prefix() -> None:
+    """``+c:opencode <question>`` → ``tag_expr='c:opencode'``, no exclude.
 
-    Pre-fix bug: the prompt only forwarded ``question`` and rendered a
-    single ``question: ...`` field. Filter args arrived as raw text in the
-    question string and the agent had to re-extract them — error-prone
-    and undocumented. This test pins the new shape: all five tool kwargs
-    surface as rendered lines so the calling LLM constructs a correct
-    ``answer`` tool call.
+    Regression for the live bug where the calling LLM hallucinated
+    ``exclude_tags='does'`` from the question text. The slash prompt
+    parses the include atom itself; the calling LLM has nothing to fill.
     """
     out = ask_wiki_answer(
-        question="Where does opencode keep settings?",
-        tag_expr="c:opencode",
-        exclude_tags=["draft"],
+        question="+c:opencode where does X keep settings?",
         name="default",
         collection="opencode",
     )
     assert isinstance(out, str)
-    assert "question: Where does opencode keep settings?" in out
+    assert "tag_expr: 'c:opencode'" in out
+    assert "exclude_tags: []" in out
+    assert "question: where does X keep settings?" in out
+
+
+def test_answer_prompt_parses_combined_atom_and_exclude() -> None:
+    """``+c:opencode -draft what...`` → include + single exclude."""
+    out = ask_wiki_answer(
+        question="+c:opencode -draft what is the API?",
+        name="default",
+        collection="opencode",
+    )
     assert "tag_expr: 'c:opencode'" in out
     assert "exclude_tags: ['draft']" in out
-    assert "name: 'default'" in out
-    assert "collection: 'opencode'" in out
-    # The prompt must tell the LLM to call the `answer` tool — not query,
-    # ground, or a generic search — and surface the filter syntax so users
-    # know they can pass ``+tag_expr`` shorthand.
-    assert "`answer`" in out
-    assert "+tag_expr" in out or "+c:opencode" in out
+    assert "question: what is the API?" in out
+
+
+def test_answer_prompt_parses_multi_atom_chain() -> None:
+    """``+airflow&provider how do I...`` → AND chain, two atoms.
+
+    ``_render_include`` preserves left-to-right operator order, so the
+    rendered string is ``airflow&provider`` (not the reversed form).
+    Uses unqualified atoms because ``+t:foo&c:bar`` in a single argv
+    token trips a known ``_split_argv_token_for_ops`` limitation
+    (``:`` is not a shlex wordchar). The CLI grammar splits those as
+    separate argv tokens, but a single-token ``&`` chain is the
+    common form per the spec.
+    """
+    out = ask_wiki_answer(
+        question="+airflow&provider how do I configure?",
+        name="default",
+    )
+    assert "tag_expr: 'airflow&provider'" in out
+    assert "question: how do I configure?" in out
+
+
+def test_answer_prompt_parses_quoted_exclude() -> None:
+    """``+c:opencode -"airflow provider" ...`` → quoted exclude tag.
+
+    shlex unquotes the ``"airflow provider"`` arg so the exclude tag
+    arrives as a single multi-word string; the prompt renders the list
+    with a single element.
+    """
+    out = ask_wiki_answer(
+        question='+c:opencode -"airflow provider" what does it do?',
+        name="default",
+    )
+    assert "tag_expr: 'c:opencode'" in out
+    assert "exclude_tags: ['airflow provider']" in out
+
+
+def test_answer_prompt_surfaces_parse_error() -> None:
+    """``+a&`` (dangling operator) → parser error rendered verbatim.
+
+    The slash prompt must NOT silently fall back to no-filter on a
+    grammar error -- that would let the calling LLM retry with the
+    hand-rewritten args. The fix surfaces the parser's message so the
+    LLM tells the operator what went wrong.
+    """
+    out = ask_wiki_answer(
+        question="+a&",
+        name="default",
+    )
+    assert "Filter parse error" in out
+    assert "dangling operator" in out
+
+
+def test_answer_prompt_plain_question_unchanged() -> None:
+    """Plain question (no filter) → no tag_expr, full text is the question.
+
+    The pre-fix behaviour is preserved when there is no include/exclude
+    prefix in the question argument.
+    """
+    out = ask_wiki_answer(
+        question="Where does opencode keep settings?",
+        name="default",
+    )
+    assert "tag_expr: None" in out
+    assert "exclude_tags: []" in out
+    assert "question: Where does opencode keep settings?" in out
+
+
+def test_answer_prompt_no_false_positive_mid_question() -> None:
+    """``c++ tutorial`` mid-question is NOT a filter.
+
+    The parser only treats ``argv[0]`` as a chain start when it begins
+    with ``+``. A bare ``c++ tutorial`` token in the middle of the
+    question never matches the include/exclude rule.
+    """
+    out = ask_wiki_answer(
+        question="how do I write a c++ tutorial?",
+        name="default",
+    )
+    assert "tag_expr: None" in out
+    assert "question: how do I write a c++ tutorial?" in out
 
 
 def test_init_wiki_round_trips_with_resources(wiki_name: str) -> None:
