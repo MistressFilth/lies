@@ -21,6 +21,7 @@ EXPECTED_PROMPTS = {
     "lint",
     "sync",
     "file-back",
+    "cite",
 }
 
 

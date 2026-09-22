@@ -1231,6 +1231,50 @@ def sync_prompt(collection: str) -> str:
     return load_prompt("sync").format(version=__version__, collection=collection)
 
 
+@mcp.prompt(name="cite")
+def cite(
+    question: str,
+    tag_expr: str | None = None,
+    exclude_tags: list[str] | None = None,
+    top_k: int = 3,
+) -> str:
+    """Slash that routes to the Archivist (F34 ground tool) and renders
+    the digest as ``[[collection/slug]] (Title): "<snippet>"`` lines.
+
+    Mirrors ask's ``archivist-prompt.md``: classify → search → read →
+    cite. The parent LLM does the rendering; the prompt only templates
+    the tool call and the render form. On ``ArchivistCoverageError``
+    the prompt tells the LLM to surface verbatim — no silent retry.
+
+    Args:
+        question: Natural-language fragment to ground.
+        tag_expr: Body of a single include token (no leading sigil),
+            e.g. ``"airflow&postgres"``. ``None`` for untagged.
+        exclude_tags: NOT tags without leading sigil. Forwarded to
+            ``ground()`` unchanged.
+        top_k: Maximum citations requested (default 3; ground()
+            clamps to ``[1, 10]``).
+
+    Returns:
+        Prose that templates a ``ground`` tool call and the
+        ``[[collection/slug]] (Title): "<snippet>"`` render form.
+    """
+    return (
+        f"Call the `ground` MCP tool to ground the following fragment:\n"
+        f"  question: {question}\n"
+        f"  tag_expr: {tag_expr!r}\n"
+        f"  exclude_tags: {exclude_tags!r}\n"
+        f"  top_k: {top_k!r}\n\n"
+        f"Render the returned `ArchivistDigest.citations` as one line "
+        f"per citation in this exact form:\n\n"
+        f'  [[collection/slug]] (Title): "<verbatim CitationSnippet.snippet>"\n\n'
+        f"Do NOT fabricate citations. On `ArchivistCoverageError`, "
+        f"surface the error message verbatim in your reply and stop. "
+        f"If `no_coverage` is true on the digest, say so explicitly and "
+        f"render any still-relevant slugs with empty snippets."
+    )
+
+
 @mcp.prompt(name="file-back")
 def file_back(wiki: str) -> str:
     """Return the F3 file-back walkthrough prose.
