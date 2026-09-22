@@ -81,13 +81,22 @@ class CollectionAuthorDeps:
 def collection_author_agent(
     model: Any | None = None,
 ) -> Agent[CollectionAuthorDeps, AuthorOutput]:
-    """Construct the structured-output CollectionAuthorAgent."""
-    resolved: Any = model if model is not None else "anthropic:claude-opus-4-7"
+    """Construct the structured-output CollectionAuthorAgent.
+
+    ``model`` is required — LIES does not hard-code a default.
+    """
+    if model is None:
+        from lies.errors import ModelNotConfigured
+
+        raise ModelNotConfigured(
+            "collection_author_agent requires an explicit model. "
+            "Pass `model=` or configure providers.toml."
+        )
     # pydantic-ai's Agent constructor overloads don't include `type[X | Y]`
     # for `output_type`; the union is valid at runtime, so we cast to Any
     # to satisfy mypy while preserving the static return-type annotation.
     return Agent(
-        resolved,
+        model,
         deps_type=CollectionAuthorDeps,
         output_type=cast(Any, AuthorOutput),
         system_prompt=AUTHOR_SYSTEM_PROMPT,

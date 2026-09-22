@@ -7,6 +7,7 @@ import warnings
 
 import pytest
 
+from lies.agents import librarian as librarian_mod
 from lies.agents.librarian import LibrarianOutput
 from lies.markdown_spans import Span
 from lies.mcp.grounding import (
@@ -19,7 +20,7 @@ from lies.mcp.grounding import (
 
 
 @pytest.fixture(autouse=True)
-def _silence_wiring_skipped_warning() -> None:
+def _silence_wiring_skipped_warning(monkeypatch: pytest.MonkeyPatch) -> None:
     """Silence the ``ground: tool wiring skipped`` warning by default.
 
     The pre-Fix-Critical-era test surface monkey-patches
@@ -30,11 +31,45 @@ def _silence_wiring_skipped_warning() -> None:
     specific warning here so the existing tests stay quiet. Tests
     that explicitly exercise the wiring path opt back in via
     ``warnings.catch_warnings()``.
+
+    Also stubs ``_resolve_default_models`` so the model-resolution
+    step inside ``ground()`` returns a sentinel ``{"librarian": "test"}``
+    dict. Without this stub, ``_resolve_default_models`` would raise
+    ``ModelNotConfigured`` (the test XDG has no providers.toml and
+    no env override), short-circuiting before the monkey-patched
+    ``librarian_agent`` ever runs.
     """
     warnings.filterwarnings(
         "ignore",
         message=r"^ground: tool wiring skipped\b",
         category=UserWarning,
+    )
+    from lies import orchestrator as _orch_mod
+
+    monkeypatch.setattr(
+        _orch_mod,
+        "_resolve_default_models",
+        lambda wiki: {"librarian": "test"},
+    )
+    # Stub ``resolve_wiki`` so the wiring block doesn't try to look up
+    # a registered wiki in the test XDG. The returned sentinel wiki is
+    # only used as a kwarg pass-through to (the stubbed)
+    # ``register_librarian_tools``, so any Wiki-shaped object works.
+    from lies.mcp import resolution as _resolution_mod
+    from lies.wiki.wiki import Wiki
+
+    _stub_wiki = Wiki(
+        name="stub",
+        data_root=__import__("pathlib").Path("/tmp/stub-wiki"),
+        config_root=__import__("pathlib").Path("/tmp/stub-wiki"),
+        cache_root=__import__("pathlib").Path("/tmp/stub-wiki"),
+        state_root=__import__("pathlib").Path("/tmp/stub-wiki"),
+        runtime_root=__import__("pathlib").Path("/tmp/stub-wiki"),
+    )
+    monkeypatch.setattr(
+        _resolution_mod,
+        "resolve_wiki",
+        lambda name=None: _stub_wiki,
     )
 
 
@@ -153,7 +188,12 @@ def test_ground_returns_empty_digest_on_librarian_exception(monkeypatch) -> None
         def run_sync(self, user_prompt, *, deps):
             raise RuntimeError("qmd daemon offline")
 
-    monkeypatch.setattr(grounding, "librarian_agent", lambda: _BoomAgent())
+    monkeypatch.setattr(grounding, "librarian_agent", lambda model=None: _BoomAgent())
+    monkeypatch.setattr(
+        librarian_mod,
+        "register_librarian_tools",
+        lambda agent, *, wiki, memory_service: None,
+    )
 
     digest = grounding.ground("what is pydantic?")
     assert digest.no_coverage is True
@@ -178,7 +218,12 @@ def test_ground_librarian_exception_emits_no_logfire_warning(monkeypatch, recwar
         def run_sync(self, user_prompt, *, deps):
             raise RuntimeError("qmd daemon offline")
 
-    monkeypatch.setattr(grounding, "librarian_agent", lambda: _BoomAgent())
+    monkeypatch.setattr(grounding, "librarian_agent", lambda model=None: _BoomAgent())
+    monkeypatch.setattr(
+        librarian_mod,
+        "register_librarian_tools",
+        lambda agent, *, wiki, memory_service: None,
+    )
 
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
@@ -305,7 +350,12 @@ def test_ground_no_coverage_true_when_librarian_reports_it(monkeypatch) -> None:
         def __init__(self, output):
             self.output = output
 
-    monkeypatch.setattr(grounding, "librarian_agent", lambda: _FakeAgent())
+    monkeypatch.setattr(grounding, "librarian_agent", lambda model=None: _FakeAgent())
+    monkeypatch.setattr(
+        librarian_mod,
+        "register_librarian_tools",
+        lambda agent, *, wiki, memory_service: None,
+    )
     digest = grounding.ground("q")
     assert digest.no_coverage is True
     assert digest.citations == []
@@ -338,7 +388,12 @@ def test_ground_no_coverage_false_when_librarian_reports_zero(monkeypatch) -> No
         def __init__(self, output):
             self.output = output
 
-    monkeypatch.setattr(grounding, "librarian_agent", lambda: _FakeAgent())
+    monkeypatch.setattr(grounding, "librarian_agent", lambda model=None: _FakeAgent())
+    monkeypatch.setattr(
+        librarian_mod,
+        "register_librarian_tools",
+        lambda agent, *, wiki, memory_service: None,
+    )
     digest = grounding.ground("q")
     assert digest.no_coverage is False
 
@@ -374,7 +429,12 @@ def test_ground_no_coverage_false_when_librarian_returns_hits(monkeypatch) -> No
         def __init__(self, output):
             self.output = output
 
-    monkeypatch.setattr(grounding, "librarian_agent", lambda: _FakeAgent())
+    monkeypatch.setattr(grounding, "librarian_agent", lambda model=None: _FakeAgent())
+    monkeypatch.setattr(
+        librarian_mod,
+        "register_librarian_tools",
+        lambda agent, *, wiki, memory_service: None,
+    )
     digest = grounding.ground("q")
     assert digest.no_coverage is False
     assert len(digest.citations) == 1
@@ -394,7 +454,12 @@ def test_ground_dispatch_failure_still_yields_no_coverage_true(monkeypatch) -> N
         def run_sync(self, user_prompt, *, deps):
             raise RuntimeError("qmd daemon offline")
 
-    monkeypatch.setattr(grounding, "librarian_agent", lambda: _BoomAgent())
+    monkeypatch.setattr(grounding, "librarian_agent", lambda model=None: _BoomAgent())
+    monkeypatch.setattr(
+        librarian_mod,
+        "register_librarian_tools",
+        lambda agent, *, wiki, memory_service: None,
+    )
     digest = grounding.ground("q")
     assert digest.no_coverage is True
 
@@ -470,6 +535,11 @@ def _patch_librarian(monkeypatch, grounding_module, fake_fn):
     ``AgentRunResult`` whose ``.output`` attribute carries the typed
     output. ``ground()`` reads ``result.output``, so the fake mirrors
     that wrapper shape — not the raw ``LibrarianOutput``.
+
+    Also stubs ``register_librarian_tools`` so the wiring step
+    doesn't try to attach pydantic-ai tools to the fake agent (the
+    fake doesn't expose ``.tool()``). Tests that exercise the real
+    wiring path install their own spy and skip this helper.
     """
 
     class _FakeResult:
@@ -480,7 +550,12 @@ def _patch_librarian(monkeypatch, grounding_module, fake_fn):
         def run_sync(self, user_prompt, *, deps):  # noqa: ARG002
             return _FakeResult(fake_fn(deps))
 
-    monkeypatch.setattr(grounding_module, "librarian_agent", lambda: _FakeAgent())
+    monkeypatch.setattr(grounding_module, "librarian_agent", lambda model=None: _FakeAgent())
+    monkeypatch.setattr(
+        librarian_mod,
+        "register_librarian_tools",
+        lambda agent, *, wiki, memory_service: None,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -599,7 +674,10 @@ def test_ground_wires_librarian_tools_before_run_sync(
                 LibrarianOutput(tag_expr=None, exclude_tags=[], excerpts=[], distinct_pages=0)
             )
 
-    monkeypatch.setattr(grounding, "librarian_agent", lambda: _FakeAgent())
+    monkeypatch.setattr(grounding, "librarian_agent", lambda model=None: _FakeAgent())
+    # NB: this test installs its own ``register_librarian_tools`` spy
+    # above (line 623); the autouse-equivalent stub would clobber it.
+    # Do not add the no-op stub here.
 
     digest = grounding.ground("test question")
 
@@ -630,6 +708,15 @@ def test_ground_dispatch_failure_when_wiring_raises(
     response, which the wiring failure explicitly does NOT control.
     """
     from lies.mcp import grounding
+    from lies.mcp import resolution as _resolution_mod
+
+    # Force wiring to raise. The autouse stub returns a sentinel wiki,
+    # which would mask the failure path this test pins.
+    monkeypatch.setattr(
+        _resolution_mod,
+        "resolve_wiki",
+        lambda name=None: (_ for _ in ()).throw(RuntimeError("forced wiring failure")),
+    )
 
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")

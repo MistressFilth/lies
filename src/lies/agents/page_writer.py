@@ -111,9 +111,20 @@ def _build_page_writer_prompt(ctx: RunContext[PageWriterDeps] | Any) -> str:
 
 
 def page_writer_agent(
-    model: Model | str = "anthropic:claude-opus-4-7",
+    model: Model | str | None = None,
 ) -> Agent[PageWriterDeps, list[PageDiff]]:
-    """Construct the page-writer sub-agent."""
+    """Construct the page-writer sub-agent.
+
+    ``model`` is required — LIES does not hard-code a default.
+    """
+    if model is None:
+        from lies.errors import ModelNotConfigured
+
+        raise ModelNotConfigured(
+            "page_writer_agent requires an explicit model. Pass "
+            "`model=` or configure providers.toml / "
+            "LIES_AGENT_PAGE_WRITER_MODEL."
+        )
     # PromptedOutput — same rationale as source_reader_agent. M3
     # ignores tool_choice and response_format=json_schema on both
     # endpoints, so the default ToolOutput mode fails. Schema goes in

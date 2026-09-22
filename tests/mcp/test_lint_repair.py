@@ -18,17 +18,13 @@ from tests.conftest import make_wiki, models_for_tests
 
 @pytest.fixture(autouse=True)
 def mock_lies_model(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Default every agent's model env override to ``"test"`` so the
-    orchestrator can build without a real provider key.
-
-    The orchestrator resolves per-agent models from
-    ``LIES_<AGENT>_MODEL`` env overrides, so this fixture sets every
-    roster entry's override to the placeholder ``"test"`` string.
+    """No-op: model defaults now come from the shared ``_isolated_xdg``
+    autouse fixture in ``tests/conftest.py``, which writes a stub
+    ``providers.toml`` with parseable ``stub:test`` entries. The old
+    per-test env-override fixture conflicted with the providers.toml
+    path (``resolve_model`` consults env before config and ``test``
+    isn't a parseable ``provider:model`` string). Removed.
     """
-    from lies.providers import AGENT_ROSTER
-
-    for name in AGENT_ROSTER:
-        monkeypatch.setenv(f"LIES_{name.upper()}_MODEL", "test")
 
 
 WIKI_NAME = "lint-mcp"

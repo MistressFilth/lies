@@ -73,9 +73,13 @@ def _from_qmd(
     question: str,
     limit: int,
     qmd_search: Callable[..., list[dict[str, object]]],
+    *,
+    collection_filter: set[str] | None = None,
 ) -> tuple[list[WikiEvidence], bool, str]:
     try:
-        results = qmd_search(wiki.data_root, question, limit + 1)
+        results = qmd_search(
+            wiki.data_root, question, limit + 1, collection_filter=collection_filter
+        )
     except QmdNotInstalledError:
         return ([], True, _QMD_FALLBACK_UNAVAILABLE)
     except QmdNoResultsError:
@@ -100,6 +104,17 @@ def _from_qmd(
         try:
             validate_page_path(wiki, wiki_rel)
         except Exception:  # noqa: BLE001, S112 - rejection is the point
+            continue
+        # Phantom-path gate: every well-formed wiki-relative path must
+        # resolve to a real file before we mint a page_id. The wiki
+        # catalog can hold a qmd index for a library collection that is
+        # not actually materialized under ``wiki.wiki_dir``; without this
+        # gate ``_from_qmd`` mints ``page-<sha1>[:12]`` ids for files
+        # that never existed, and the downstream ``wiki_read`` raises
+        # ``WikiPageNotFound``. Repro of the 2026-09-22 transcript bug:
+        # ``opencode/config.md`` (a library path) → ``page-2da7bf8c551d``.
+        resolved_file = wiki.wiki_dir / wiki_rel
+        if not resolved_file.is_file():
             continue
         score_raw = item.get("score", 0.0)
         if isinstance(score_raw, (int, float)):
@@ -208,8 +223,17 @@ def search_wiki(
     *,
     limit: int = 5,
     qmd_search: Callable[..., list[dict[str, object]]] | None = None,
+    collection_filter: set[str] | None = None,
 ) -> WikiSearchResult:
-    """Search the wiki and return bounded evidence."""
+    """Search the wiki and return bounded evidence.
+
+    ``collection_filter`` (F18 Task 6 / Bundle C) threads the resolved
+    tag-expression set down to qmd. qmd applies its post-filter
+    (``qmd://<coll>/<rest>`` first-segment match) before the hits
+    ever leave the CLI, so library collections the operator excluded
+    never produce phantom wiki-side paths. ``None`` keeps the
+    untagged behavior unchanged for every existing caller.
+    """
     if qmd_search is None:
         # Resolve ``qmd_query`` at call time so monkeypatching
         # ``lies.qmd.cli.qmd_query`` takes effect.
@@ -225,7 +249,9 @@ def search_wiki(
             fallback_reason="empty_query",
             no_coverage=_no_coverage_flag(wiki, []),
         )
-    evidences, truncated, fallback_reason = _from_qmd(wiki, question, limit, qmd_search)
+    evidences, truncated, fallback_reason = _from_qmd(
+        wiki, question, limit, qmd_search, collection_filter=collection_filter
+    )
     if not evidences:
         evidences = _from_index(wiki, question, limit)
     return WikiSearchResult(

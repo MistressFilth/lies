@@ -487,8 +487,23 @@ class WikiMemoryService:
         *,
         collection_ids: list[str] | None = None,
         limit: int = 5,
+        qmd_collection_filter: set[str] | None = None,
     ) -> WikiSearchResult:
-        """Search this wiki and authenticate the returned evidence references."""
+        """Search this wiki and authenticate the returned evidence references.
+
+        ``collection_ids`` keeps the per-wiki ``name`` filter: when the
+        wiki's own name is missing from the list, the search returns
+        zero hits (the MCP ``wiki_search`` filter contract). When the
+        caller omits it, the search runs unfiltered.
+
+        ``qmd_collection_filter`` (F18 Task 6 / Bundle C extension)
+        forwards to ``search_wiki`` so the underlying qmd CLI receives
+        the resolved tag expression as a post-filter on
+        ``qmd://<coll>/<rest>`` first segments. Independent of
+        ``collection_ids`` so the librarian's tag-driven path can
+        scope qmd without colliding with the per-wiki ``name``
+        filter. ``None`` keeps the untagged behavior unchanged.
+        """
 
         collection_id = self._wiki.name
         if collection_ids is not None and collection_id not in collection_ids:
@@ -506,7 +521,9 @@ class WikiMemoryService:
                 fallback_reason="collection_filtered",
                 no_coverage=_no_coverage_flag(self._wiki, []),
             )
-        result = search_wiki(self._wiki, question, limit=limit)
+        result = search_wiki(
+            self._wiki, question, limit=limit, collection_filter=qmd_collection_filter
+        )
         for page in result.pages:
             self._known_evidence.update(
                 {

@@ -18,7 +18,7 @@ import contextvars
 import json
 import re
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Literal, cast
 
 from pydantic_ai import Agent, RunContext
 from pydantic_ai.models import Model
@@ -219,7 +219,7 @@ to issue a follow-up, not to fabricate.
 
 
 def librarian_agent(
-    model: Model | str = "anthropic:claude-opus-4-7",
+    model: Model | str | None = None,
 ) -> Agent[LibrarianDeps, LibrarianOutput]:
     """Construct the librarian subagent.
 
@@ -232,6 +232,15 @@ def librarian_agent(
     Dispatches via ``run_sync(deps)`` (in-process, not harness
     await-async).
     """
+    if model is None:
+        from lies.providers.env import env_override
+        from lies.errors import ModelNotConfigured
+
+        raise ModelNotConfigured(
+            "librarian_agent requires an explicit model. Pass `model=` "
+            "or set LIES_AGENT_LIBRARIAN_MODEL / configure providers.toml. "
+            f"env_override: {env_override('librarian')!r}"
+        )
     agent: Agent[LibrarianDeps, LibrarianOutput] = make_sub_agent(
         model=model,
         output_type=LibrarianOutput,
@@ -239,6 +248,81 @@ def librarian_agent(
         system_prompt=LIBRARIAN_SYSTEM_PROMPT,
     )
     return agent
+
+
+def resolve_collection_filter(
+    *,
+    tag_expr: str | None,
+    exclude_tags: list[str],
+    wiki_name: str,
+) -> set[str] | None:
+    """Build the qmd-side ``collection_filter`` set from ``LibrarianDeps``.
+
+    Mirrors the MCP ``query`` boundary (``mcp/server.py``): parse the
+    include expression, validate against the available tag set, build a
+    :class:`ResolvedTagFilter`, resolve to library collection names via
+    :func:`lies.query.synthesizer._collections_matching`, and union in
+    ``wiki_name`` so the wiki's own qmd collection (``wiki_<name>``)
+    keeps participating in the search even when the operator narrowed
+    the call to a library collection. Returns ``None`` for an untagged
+    librarian run — the qmd CLI receives no filter and the existing
+    untagged behavior is preserved.
+
+    Failure modes mirror the MCP boundary:
+      - Parse errors / unknown tags raise and bubble up to the agent
+        run, surfacing as ``ToolError`` at the MCP layer.
+      - Library uninitialized returns an empty set; ``wiki_name`` is
+        added so the wiki's qmd collection is the only target.
+    """
+    from lies.library.registry import library_collection_names
+    from lies.query.synthesizer import _collections_matching
+    from lies.query.tag_expr import (
+        ResolvedTagFilter,
+        parse,
+        resolve as resolve_tag,
+    )
+
+    include_ast = parse(tag_expr) if tag_expr else None
+    available = set(library_collection_names())
+    if include_ast is not None:
+        resolved = resolve_tag(include_ast, available=available)
+    else:
+        resolved = ResolvedTagFilter(include=None)
+
+    exclude: str | None = None
+    exclude_qualifier: str | None = None
+    if exclude_tags:
+        exclude, exclude_qualifier = _split_exclude_qualifier(exclude_tags[0])
+
+    resolved_with_exclude = ResolvedTagFilter(
+        include=resolved.include,
+        exclude=exclude,
+        exclude_qualifier=exclude_qualifier,
+    )
+
+    if resolved_with_exclude.include is None and resolved_with_exclude.exclude is None:
+        return None
+
+    matching = _collections_matching(resolved_with_exclude)
+    matching.add(wiki_name)
+    return matching
+
+
+def _split_exclude_qualifier(raw: str) -> tuple[str, Literal["t", "c"] | None]:
+    """Split a leading ``t:`` / ``c:`` from a raw exclude tag; passthrough otherwise.
+
+    Local mirror of :func:`lies.query.tag_expr.check_qualifier` minus
+    the error path — the librarian surfaces unknown excludes via the
+    same exclude-passes-through-the-resolver contract the MCP layer
+    uses. Errors surface during ``_collections_matching`` instead.
+    """
+    from lies.query.tag_expr import QUALIFIER_PREFIX_RE
+
+    m = QUALIFIER_PREFIX_RE.match(raw)
+    if m is None:
+        return raw, None
+    qualifier: Literal["t", "c"] = m.group(1)  # ty: ignore[invalid-assignment]
+    return m.group(2), qualifier
 
 
 def register_librarian_tools(
@@ -301,7 +385,14 @@ def register_librarian_tools(
         underlying ``WikiSearchResult`` doesn't carry the flag yet
         (F18 Task 2/3 surfaces it; Task 1 just plumbs the path).
         """
-        result = memory_service.search(question, limit=limit)
+        collection_filter = resolve_collection_filter(
+            tag_expr=ctx.deps.tag_expr,
+            exclude_tags=ctx.deps.exclude_tags,
+            wiki_name=wiki.name,
+        )
+        result = memory_service.search(
+            question, limit=limit, qmd_collection_filter=collection_filter
+        )
         dumped = result.model_dump()
         librarian_no_coverage.set(bool(dumped.get("no_coverage", False)))
         return cast(dict[str, object], dumped)
