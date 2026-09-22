@@ -1328,8 +1328,8 @@ def cite(
         f"Render the returned `ArchivistDigest.citations` as one line "
         f"per citation in this exact form:\n\n"
         f'  [[collection/slug]] (Title): "<verbatim CitationSnippet.snippet>"\n\n'
-        f"LIBRARY citations (source_kind='library' or 'library+wiki') render "
-        f"as above. WIKI-ONLY citations (source_kind='wiki') prefix the "
+        f"LIBRARY citations (source_kind='library') render as above. "
+        f"WIKI-ONLY citations (source_kind='wiki') prefix the "
         f"line with `[secondary] ` to flag that the snippet is not "
         f"grounded in a primary source:\n\n"
         f'  [secondary] [[wiki/slug]] (Title): "<snippet>"\n\n'

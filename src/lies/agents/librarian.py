@@ -60,9 +60,10 @@ class PageExcerpt:
     ``source_kind`` (dual-source-routing) flags which surface the
     excerpt came from so downstream rendering can distinguish
     primary-source hits (``"library"``) from wiki-only hits
-    (``"wiki"``) from surfaces that matched on both
-    (``"wiki"``). Defaults to ``"library"`` for backward
-    compat against pre-T2F librarian outputs.
+    (``"wiki"``). Library-wins-on-conflict drops the wiki copy on
+    slug match, so there is no merged-row third value. Defaults
+    to ``"library"`` for backward compat against pre-T2F librarian
+    outputs.
     """
 
     collection: str
@@ -176,8 +177,8 @@ The wiki has TWO retrieval surfaces:
 
 Both are reachable via the same `wiki_search` tool. Each hit is
 tagged with `source_kind` — `"library"` for library hits, `"wiki"`
-for wiki-only hits, `"library+wiki"` for merged rows where both
-surfaces matched the same slug.
+for wiki-only hits. Library-wins-on-conflict means the wiki copy is
+dropped on slug match, so there is no merged-row discriminator.
 
 ## 1. Classify (registry-driven, dual-surface)
 

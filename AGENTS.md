@@ -266,15 +266,16 @@ parallel:
 2. **Wikis** at `~/.local/share/lies/<name>/` — secondary source,
    derived.
 
-`CitationSnippet.source_kind: Literal["library", "wiki",
-"library+wiki"]` records which surface produced each snippet.
+`CitationSnippet.source_kind: Literal["library", "wiki"]`
+records which surface produced each snippet. Library-wins-on-
+conflict drops the wiki copy entirely on slug match, so there is
+no merged-row third value.
 
 **Library-wins-on-conflict:** when the same `slug` exists in both
 surfaces, the library hit replaces the wiki hit. The wiki copy is
-dropped entirely; the merged hit carries `source_kind="library"`
-(or `"library+wiki"` when both contribute). This rule was previously
-applied at synthesis time; dual-source routing applies it at
-retrieval time.
+dropped entirely; the merged hit carries `source_kind="library"`.
+This rule was previously applied at synthesis time; dual-source
+routing applies it at retrieval time.
 
 **Render marker:** when the LLM renders the archivist's digest as
 citation lines, wiki-only hits (where `source_kind="wiki"`) are
