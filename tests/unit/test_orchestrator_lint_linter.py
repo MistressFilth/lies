@@ -66,7 +66,7 @@ def test_call_linter_passes_marker_deps(orch: Orchestrator) -> None:
     """N2: ``_call_linter`` constructs a marker ``LintDeps()`` and dispatches
     with it. The pre-N2 surface (``page_texts`` / ``wiki_root`` on deps)
     was retired; pages are pulled via tool calls instead. Tool wiring is
-    exercised by ``tests/unit/test_orchestrator_lint_tools.py`` (Task 3).
+    exercised by ``tests/unit/agents/test_linter_tools.py``.
     """
     captured: dict[str, object] = {}
 
