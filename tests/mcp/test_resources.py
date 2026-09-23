@@ -10,6 +10,8 @@ import pytest
 
 from lies.mcp.server import (
     _wiki_catalog_impl,
+    _wiki_index_impl,
+    _wiki_lint_report_impl,
     ask_question,
     ask_wiki_answer,
     cite,
@@ -88,6 +90,50 @@ def test_wiki_lint_report_missing_returns_empty_string(
     Wiki.data_root_for(wiki_name).mkdir(parents=True, exist_ok=True)
     out = wiki_lint_report(name=wiki_name)
     assert out == ""
+
+
+def test_wiki_index_library_mode_returns_envelope(
+    wiki_name: str,
+) -> None:
+    """No wiki registered → ``wiki_index`` returns ``{"mode": "library"}``.
+
+    Pins the regression for the live bug where
+    ``ReadMcpResourceTool(uri='wiki://index')`` returned ``""`` and the
+    LLM caller had no signal to route through the library path. The
+    envelope gives the LLM a stable JSON shape (``mode: 'library'``)
+    to dispatch on without parsing the wiki catalog first.
+    """
+    from lies.errors import WikiNotRegistered
+    from lies.mcp.resolution import resolve_wiki
+
+    with pytest.raises(WikiNotRegistered):
+        resolve_wiki(name=wiki_name)
+
+    out = _wiki_index_impl(name=wiki_name)
+    parsed = json.loads(out)
+    assert parsed == {"mode": "library"}
+
+
+def test_wiki_lint_report_library_mode_returns_envelope(
+    wiki_name: str,
+) -> None:
+    """No wiki registered → ``wiki_lint_report`` returns ``{"mode": "library", "status": "no_wiki"}``.
+
+    The ``status: "no_wiki"`` field is concrete — a wiki never existed,
+    so a lint report is meaningless. Mirrors the
+    ``test_wiki_index_library_mode_returns_envelope`` contract and
+    pins the regression for the live bug where
+    ``ReadMcpResourceTool(uri='wiki://lint-report')`` returned ``""``.
+    """
+    from lies.errors import WikiNotRegistered
+    from lies.mcp.resolution import resolve_wiki
+
+    with pytest.raises(WikiNotRegistered):
+        resolve_wiki(name=wiki_name)
+
+    out = _wiki_lint_report_impl(name=wiki_name)
+    parsed = json.loads(out)
+    assert parsed == {"mode": "library", "status": "no_wiki"}
 
 
 def test_wiki_page_returns_file_contents(

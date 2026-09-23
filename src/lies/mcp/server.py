@@ -1020,7 +1020,31 @@ def wiki_status(name: str | None = None) -> str:
 
 
 def _wiki_index_impl(name: str | None = None) -> str:
-    wiki = resolve_wiki(name)
+    """Raw ``wiki/index.md`` contents (JSON envelope in library mode).
+
+    Wiki mode (a wiki is registered and its ``data_root`` exists on
+    disk): returns the raw markdown of ``wiki/index.md``. The empty-file
+    case returns ``""`` so an LLM caller can distinguish "no wiki
+    catalog rendered yet" from "wiki is registered, with a populated
+    index".
+
+    Library mode (no wiki registered, or the resolved wiki's
+    ``data_root`` does not exist on disk) returns a stable envelope
+    ``{"mode": "library"}``. The mode discriminator lets an LLM caller
+    distinguish a wiki-mode index dump from a library-mode response
+    without parsing the shape, mirroring the F4b ``wiki://catalog``
+    envelope contract.
+    """
+    import json
+
+    try:
+        wiki = resolve_wiki(name)
+    except WikiNotRegistered:
+        return json.dumps({"mode": "library"}, indent=2)
+
+    if not wiki.data_root.exists():
+        return json.dumps({"mode": "library"}, indent=2)
+
     index_path = wiki.wiki_dir / "index.md"
     if not index_path.exists():
         return ""
@@ -1040,7 +1064,13 @@ _register_static_resource(
 
 
 def wiki_index(name: str | None = None) -> str:
-    """Raw contents of ``wiki/index.md`` (empty string if absent).
+    """Raw contents of ``wiki/index.md`` (JSON envelope in library mode).
+
+    Returns the raw markdown of ``wiki/index.md`` when a wiki is
+    registered; returns ``""`` if the wiki exists but the index file
+    has not been rendered yet; returns ``'{"mode": "library"}'`` when
+    no wiki is registered (library mode). See
+    :func:`_wiki_index_impl` for the full contract.
 
     Direct Python entry point — accepts an explicit ``name`` kwarg so
     tests and REPL callers don't have to mutate ``LIES_WIKI_NAME``.
@@ -1084,7 +1114,30 @@ def wiki_log(name: str | None = None) -> str:
 
 
 def _wiki_lint_report_impl(name: str | None = None) -> str:
-    wiki = resolve_wiki(name)
+    """Raw ``wiki/lint-report.md`` contents (JSON envelope in library mode).
+
+    Wiki mode (a wiki is registered and its ``data_root`` exists on
+    disk): returns the raw markdown of ``wiki/lint-report.md``. The
+    empty-file case returns ``""`` so an LLM caller can distinguish "no
+    lint has run yet" from "lint has run and reported findings".
+
+    Library mode (no wiki registered, or the resolved wiki's
+    ``data_root`` does not exist on disk) returns a stable envelope
+    ``{"mode": "library", "status": "no_wiki"}``. The ``status`` field
+    gives the LLM caller a concrete reason string to route on (the
+    wiki never existed, so a lint report is meaningless). Mirrors the
+    F4b ``wiki://catalog`` envelope contract.
+    """
+    import json
+
+    try:
+        wiki = resolve_wiki(name)
+    except WikiNotRegistered:
+        return json.dumps({"mode": "library", "status": "no_wiki"}, indent=2)
+
+    if not wiki.data_root.exists():
+        return json.dumps({"mode": "library", "status": "no_wiki"}, indent=2)
+
     report_path = wiki.wiki_dir / "lint-report.md"
     if not report_path.exists():
         return ""
@@ -1104,7 +1157,13 @@ _register_static_resource(
 
 
 def wiki_lint_report(name: str | None = None) -> str:
-    """Raw contents of ``wiki/lint-report.md`` (empty string if absent).
+    """Raw contents of ``wiki/lint-report.md`` (JSON envelope in library mode).
+
+    Returns the raw markdown of ``wiki/lint-report.md`` when a wiki is
+    registered; returns ``""`` if the wiki exists but no lint has run
+    yet; returns ``'{"mode": "library", "status": "no_wiki"}'`` when
+    no wiki is registered (library mode). See
+    :func:`_wiki_lint_report_impl` for the full contract.
 
     Direct Python entry point — accepts an explicit ``name`` kwarg so
     tests and REPL callers don't have to mutate ``LIES_WIKI_NAME``.
