@@ -19,8 +19,15 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: "3.14"
-      - name: Install pandoc
-        run: sudo apt-get update && sudo apt-get install -y pandoc
+      - name: Install pandoc + qmd
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pandoc
+          # qmd is needed by integration tests that shell out to the
+          # real CLI (``tests/integration/test_page_author_e2e``,
+          # ``tests/integration/test_synthesis_file_back``,
+          # ``tests/integration/cli/test_wiki_provenance_integration``).
+          sudo npm install -g @tobilu/qmd
       - run: uv sync --all-extras
       # Pre-commit: hard-limit gate runs locally on a fixed runner
       # (the pre-commit hook fails the commit on any >0.15s regression).
@@ -33,4 +40,5 @@ jobs:
         env:
           INTEGRATION: "1"
           CI: "true"
+          GH_TOKEN: ${{ github.token }}
 
