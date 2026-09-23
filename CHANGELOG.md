@@ -34,6 +34,35 @@ All notable changes to LIES are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.37.5] - 2026-09-23
+
+### Fixed
+- Librarian `_wiki_read` now strips a leading `qmd://` prefix from
+  the input page_id before the library-path branch. Previously the
+  full `qmd://opencode/config.md` string was treated as a library
+  path and prepended with another `qmd://`, yielding a malformed
+  `qmd://qmd://...` URI that qmd rejected → `WikiPageNotFound`.
+  Surfaced by session f39c9ef8 calling `answer(tag_expr="c:opencode",
+  exclude_tags=["claude_code"])`.
+- `memory_service.search()` filters out hits whose path matches
+  `^[^/]+/[^/]+\.md$` AND whose first segment is a registered
+  library collection. The wiki qmd index had library content indexed
+  under a wiki page-id, but the wiki catalog had no row for those
+  pages — subsequent `wiki_read` raised `WikiPageNotFound`. Falls
+  back to the bare regex when the library registry is empty.
+- `wiki://catalog` resource returns `{"mode": "library", "collections":
+  [...]}` when no wiki is registered (library-mode-only runtime),
+  instead of surfacing stale wiki synthesis slugs.
+- `wiki://index` and `wiki://lint-report` resources return informative
+  envelopes (`{"mode": "library"}` / `{"mode": "library", "status":
+  "no_wiki"}`) in library mode instead of empty strings.
+- `reindex --cleanup` (and `--all`) now surface a clear bypass-path
+  error string when MCP server-initiated elicitation is unavailable,
+  pointing the caller at `lies mcp down && lies mcp up` retry or
+  `lies reindex --cleanup` direct shell invocation.
+
+## [Unreleased]
+
 - MCP prompt surface: `ask_wiki` and `query_prompt` prompts removed.
   `/answer` slash unchanged (librarian + synthesizer). New `/cite`
   slash templates a `ground()` tool call and renders the
