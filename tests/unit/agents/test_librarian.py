@@ -726,3 +726,154 @@ def test_wiki_read_unknown_raises() -> None:
     )
     with pytest.raises(WikiPageNotFound):
         tool_fn(None, ["unknown_format"])  # type: ignore[misc]
+
+
+# ---------------------------------------------------------------------------
+# Fix-D2-extend - strip qmd ``docid`` from wiki and library hits
+# ---------------------------------------------------------------------------
+
+
+def test_wiki_search_strips_qmd_docid_from_wiki_hits() -> None:
+    """Wiki hits must strip the qmd ``docid`` field along with ``page_id``.
+
+    Pre-fix bug (live debug session
+    ``d7554f5d-3d8d-4912-a57c-3dd266225a6d``): the wiki-side qmd call
+    returns hits with ``docid='#d75430'`` (and ``file: 'qmd://...'``).
+    Fix-D2 strips ``page_id`` but qmd hits don't have a ``page_id``
+    field - they have ``docid``. The strip was a no-op, so the LLM
+    agent extracted ``docid='#d75430'`` from the search result and
+    passed it to ``wiki_read(['#d75430'])``. ``_wiki_read`` doesn't
+    recognize the qmd docid format (no ``page-`` prefix, no ``/``
+    separator) and raised ``WikiPageNotFound``. The fix strips
+    ``docid`` alongside ``page_id`` so the LLM never sees a
+    qmd-style identifier in the search results.
+    """
+    from lies.library.registry import library_git_root
+
+    wiki_pages = [
+        _FakeWikiEvidence(
+            page_id="page-2da7bf8c551d",
+            path="concepts/pydantic",
+            collection_id="wiki",
+            excerpt="Wiki excerpt",
+        ),
+    ]
+    wiki_service = _FakeMemoryService(pages=wiki_pages, no_coverage=False)
+    fake_wiki = _FakeWiki(wiki_dir=Path("/tmp/fake-wiki"))
+    lib_root = library_git_root()
+    wiki_qmd_hit = {
+        "docid": "#d75430",
+        "file": "qmd://opencode/config.md",
+        "path": "concepts/pydantic",
+        "title": "Wiki pydantic",
+        "score": 0.7,
+        "excerpt": "qmd excerpt",
+    }
+
+    def fake_qmd_query(cwd: Path, q: str, limit: int = 5, **_kw: Any) -> list[dict[str, Any]]:
+        if Path(cwd) == fake_wiki.wiki_dir:
+            return [wiki_qmd_hit]
+        if Path(cwd) == lib_root:
+            return []
+        return []
+
+    out = _drive_wiki_search(
+        wiki=fake_wiki,
+        memory_service=wiki_service,
+        qmd_query_fn=fake_qmd_query,
+    )
+
+    hits = out["hits"]
+    assert len(hits) == 1
+    hit = hits[0]
+    assert hit["source_kind"] == "wiki"
+    assert "docid" not in hit
+    assert hit["page_id"] == "page-2da7bf8c551d"
+    assert hit["path"] == "concepts/pydantic"
+    assert hit["file"] == "qmd://opencode/config.md"
+    assert hit["title"] == "Wiki pydantic"
+    assert hit["excerpt"] == "qmd excerpt"
+
+
+def test_wiki_search_strips_qmd_docid_from_library_hits() -> None:
+    """Library hits must strip the qmd ``docid`` field along with ``page_id``.
+
+    Same Fix-D2-extension bug class as the wiki-side test: library
+    qmd hits also surface ``docid='#d75430'`` (instead of
+    ``page_id``) in some qmd versions; Fix-D2 only stripped
+    ``page_id``. The strip must drop ``docid`` too so the LLM
+    agent's downstream ``wiki_read`` call never receives a qmd
+    docid.
+    """
+    from lies.library.registry import library_git_root
+
+    wiki_service = _FakeMemoryService(pages=[], no_coverage=False)
+
+    def fake_qmd_query(cwd: Path, q: str, limit: int = 5, **_kw: Any) -> list[dict[str, Any]]:
+        if Path(cwd) == library_git_root():
+            return [
+                {
+                    "docid": "#abc123",
+                    "file": "qmd://opencode/config.md",
+                    "path": "opencode/config.md",
+                    "title": "Config",
+                    "excerpt": "library excerpt",
+                }
+            ]
+        return []
+
+    out = _drive_wiki_search(memory_service=wiki_service, qmd_query_fn=fake_qmd_query)
+
+    hits = out["hits"]
+    assert len(hits) == 1
+    hit = hits[0]
+    assert hit["source_kind"] == "library"
+    assert "docid" not in hit
+    assert hit["page_id"] is None
+    assert hit["path"] == "opencode/config.md"
+    assert hit["title"] == "Config"
+    assert hit["excerpt"] == "library excerpt"
+
+
+def test_wiki_search_strips_qmd_docid_from_unmatched_wiki_hit() -> None:
+    """Unmatched wiki qmd hits (path not in memory search) must also drop docid.
+
+    Best-effort fallback path: a wiki qmd hit whose path doesn't
+    match any wiki search hit gets ``page_id=None``. The same
+    strip logic must drop ``docid`` so the LLM never sees a
+    qmd-style identifier even on the unmatched (orphan) wiki
+    path.
+    """
+    from lies.library.registry import library_git_root
+
+    wiki_service = _FakeMemoryService(pages=[], no_coverage=False)
+    fake_wiki = _FakeWiki(wiki_dir=Path("/tmp/fake-wiki"))
+    lib_root = library_git_root()
+    wiki_qmd_hit = {
+        "docid": "#d75430",
+        "file": "qmd://opencode/orphan.md",
+        "path": "opencode/orphan",
+        "title": "Orphan",
+        "score": 0.7,
+        "excerpt": "orphan excerpt",
+    }
+
+    def fake_qmd_query(cwd: Path, q: str, limit: int = 5, **_kw: Any) -> list[dict[str, Any]]:
+        if Path(cwd) == fake_wiki.wiki_dir:
+            return [wiki_qmd_hit]
+        if Path(cwd) == lib_root:
+            return []
+        return []
+
+    out = _drive_wiki_search(
+        wiki=fake_wiki,
+        memory_service=wiki_service,
+        qmd_query_fn=fake_qmd_query,
+    )
+
+    hits = out["hits"]
+    assert len(hits) == 1
+    hit = hits[0]
+    assert hit["source_kind"] == "wiki"
+    assert "docid" not in hit
+    assert hit["page_id"] is None

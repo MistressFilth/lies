@@ -551,13 +551,22 @@ def register_librarian_tools(
         for hit in raw_wiki:
             hit_path = hit.get("path", "")
             wiki_page_id = path_to_wiki_id.get(hit_path)
-            # Strip the qmd-style ``page_id``; replace with the wiki
-            # ``page-`` + sha1-12 ID so ``_wiki_read`` can resolve it
-            # via ``memory_service.read``. ``wiki_page_id`` is
-            # ``None`` when the qmd hit doesn't match any wiki search
-            # hit (best-effort fallback; mirrors the library-side
-            # contract).
-            clean = {k: v for k, v in hit.items() if k != "page_id"}
+            # Strip qmd's foreign identifiers (``page_id`` and
+            # ``docid``) so the LLM agent never sees a qmd-style
+            # identifier in the search results. ``_wiki_read`` only
+            # recognizes wiki ``page-`` + sha1-12 IDs and library
+            # paths (``<collection>/<page>``); a qmd docid like
+            # ``#d75430`` matches neither prefix nor separator and
+            # would otherwise raise ``WikiPageNotFound`` if the LLM
+            # extracted it and passed it back to ``wiki_read``.
+            # Stripping both fields covers the qmd versions where
+            # the docid is named ``docid`` instead of ``page_id``
+            # (Fix-D2-extend). The wiki ``page-`` + sha1-12 ID is
+            # supplied via the mapped ``wiki_page_id`` below;
+            # ``wiki_page_id`` is ``None`` when the qmd hit doesn't
+            # match any wiki search hit (best-effort fallback;
+            # mirrors the library-side contract).
+            clean = {k: v for k, v in hit.items() if k not in ("page_id", "docid")}
             wiki_hits.append(
                 {
                     **clean,
@@ -629,16 +638,18 @@ def register_librarian_tools(
             raw_library = []
 
         for hit in raw_library:
-            # Strip qmd-style ``page_id`` from library hits. Library
-            # content is already inlined into the hit body at qmd
-            # search time, so the LLM agent does not need to call
-            # ``wiki_read`` for library hits - and ``wiki_read`` only
-            # knows wiki ``page-`` + sha1-12 IDs, so a qmd docid like
-            # ``#abc123`` would otherwise raise ``WikiPageNotFound``.
-            # Setting ``page_id=None`` here is the contract that
-            # tells the LLM agent to skip the read step for library
-            # hits entirely.
-            clean = {k: v for k, v in hit.items() if k != "page_id"}
+            # Strip qmd's foreign identifiers (``page_id`` and
+            # ``docid``) from library hits. Library content is already
+            # inlined into the hit body at qmd search time, so the LLM
+            # agent does not need to call ``wiki_read`` for library
+            # hits - and ``wiki_read`` only knows wiki ``page-`` +
+            # sha1-12 IDs, so a qmd docid like ``#abc123`` would
+            # otherwise raise ``WikiPageNotFound``. Stripping both
+            # fields covers the qmd versions where the docid is named
+            # ``docid`` instead of ``page_id`` (Fix-D2-extend). Setting
+            # ``page_id=None`` here is the contract that tells the LLM
+            # agent to skip the read step for library hits entirely.
+            clean = {k: v for k, v in hit.items() if k not in ("page_id", "docid")}
             library_hits.append({**clean, "page_id": None, "source_kind": "library"})
 
         # Merge — dedupe by slug. On conflict, the library hit
