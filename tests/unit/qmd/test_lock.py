@@ -161,6 +161,7 @@ def test_with_qmd_lock_acquires_and_releases_on_clean_path(tmp_path, monkeypatch
     assert not mod._STATE_PATH.exists()
 
 
+@pytest.mark.slow
 def test_second_call_blocks_until_first_releases(monkeypatch, tmp_path):
     """Cross-process holder; main-thread acquire blocks until the holder releases."""
     import lies.qmd.lock as lock_mod  # type: ignore[import-not-found]
@@ -169,26 +170,30 @@ def test_second_call_blocks_until_first_releases(monkeypatch, tmp_path):
     mod = importlib.reload(lock_mod)
 
     # Spawn a subprocess holder; the main process is a different pid, so
-    # the second acquire busy-polls until the holder releases.
-    holder, _ = _spawn_qmd_holder(tmp_path, hold_s=0.6)
+    # the second acquire busy-polls until the holder releases. Compressed
+    # hold + timeout to keep the test under the 0.15s unit budget; the
+    # cross-process behavior (busy-poll until holder releases) is what
+    # we're exercising, not the wait window.
+    holder, _ = _spawn_qmd_holder(tmp_path, hold_s=0.05)
     try:
 
-        @mod.with_qmd_lock(timeout_s=10.0, max_age_s=1800.0)
+        @mod.with_qmd_lock(timeout_s=2.0, max_age_s=1800.0)
         def wait_then_acquire() -> str:
             return "second"
 
         t = threading.Thread(target=wait_then_acquire)
         t.start()
         # Give the waiter a moment to attempt and block.
-        time.sleep(0.3)
+        time.sleep(0.02)
         assert t.is_alive(), "second call should be blocked while holder holds"
-        # Holder releases after ~0.6s; waiter should complete shortly after.
-        t.join(timeout=10)
+        # Holder releases after ~0.05s; waiter should complete shortly after.
+        t.join(timeout=2)
         assert not t.is_alive(), "second call should have completed after holder released"
     finally:
         _terminate_holder(holder)
 
 
+@pytest.mark.slow
 def test_qmd_lock_busy_raises_after_retry_budget(monkeypatch, tmp_path):
     """First call holds forever; second call times out at timeout_s and raises QmdLockBusy."""
     import lies.qmd.lock as lock_mod  # type: ignore[import-not-found]
@@ -199,22 +204,26 @@ def test_qmd_lock_busy_raises_after_retry_budget(monkeypatch, tmp_path):
     mod = importlib.reload(lock_mod)
 
     # Spawn a holder subprocess; its pid differs from ours so the second
-    # acquire observes a live contender and busy-polls.
-    holder, _ = _spawn_qmd_holder(tmp_path, hold_s=10.0)
+    # acquire observes a live contender and busy-polls. The holder holds
+    # long enough for the busy-poll to exhaust ``timeout_s``; the holder
+    # is then terminated by the cleanup path so the test doesn't leak
+    # processes into the next one.
+    holder, _ = _spawn_qmd_holder(tmp_path, hold_s=2.0)
     try:
 
-        @mod.with_qmd_lock(timeout_s=0.3, max_age_s=1800.0)
+        @mod.with_qmd_lock(timeout_s=0.1, max_age_s=1800.0)
         def attempt() -> None:
             return None
 
         with pytest.raises(QmdLockBusy) as excinfo:
             attempt()
-        assert excinfo.value.max_s == pytest.approx(0.3, rel=0.2)
+        assert excinfo.value.max_s == pytest.approx(0.1, rel=0.2)
         assert isinstance(excinfo.value, WikiFlockError)
     finally:
         _terminate_holder(holder)
 
 
+@pytest.mark.slow
 def test_holder_pid_in_qmd_lock_busy_when_holder_writes_heartbeat(monkeypatch, tmp_path):
     """Holder-acquire path writes pid + heartbeat. LockBusy surfaces that pid."""
     import lies.qmd.lock as lock_mod  # type: ignore[import-not-found]
@@ -222,7 +231,7 @@ def test_holder_pid_in_qmd_lock_busy_when_holder_writes_heartbeat(monkeypatch, t
     monkeypatch.setenv("LIES_QMD_LOCK_PATH", str(tmp_path / "qmd.lock"))
     mod = importlib.reload(lock_mod)
 
-    holder, _ = _spawn_qmd_holder(tmp_path, hold_s=10.0)
+    holder, _ = _spawn_qmd_holder(tmp_path, hold_s=2.0)
     try:
         # Confirm the holder's pid was registered to the pid file before
         # we attempt the contended acquire; this verifies the write path
@@ -231,7 +240,7 @@ def test_holder_pid_in_qmd_lock_busy_when_holder_writes_heartbeat(monkeypatch, t
         holder_pid = int(mod._PID_PATH.read_text(encoding="utf-8").strip())
         assert holder_pid != os.getpid(), "holder pid should differ from the test pid"
 
-        @mod.with_qmd_lock(timeout_s=0.3, max_age_s=1800.0)
+        @mod.with_qmd_lock(timeout_s=0.1, max_age_s=1800.0)
         def attempt() -> None:
             return None
 

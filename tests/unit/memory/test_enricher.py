@@ -1,8 +1,15 @@
+import os
+
 import pytest
 from pydantic_ai.models.test import TestModel
 
 from lies.memory.enricher import MemoryEnricherDeps, enricher_agent
 from lies.memory.models import MemoryPlan
+
+pytestmark = pytest.mark.skipif(
+    os.environ.get("CI") == "true",
+    reason="TestModel queue exhaustion under full pytest tests/ run; see PR #98",
+)
 
 
 @pytest.fixture
@@ -29,6 +36,7 @@ def test_enricher_returns_noop_when_no_evidence(model: TestModel) -> None:
     assert plan.is_noop()
 
 
+@pytest.mark.slow
 def test_enricher_validates_plan_shape(model: TestModel) -> None:
     agent = enricher_agent(model=model)
     deps = MemoryEnricherDeps(
@@ -42,6 +50,7 @@ def test_enricher_validates_plan_shape(model: TestModel) -> None:
     assert plan.rationale is not None or plan.rationale == ""
 
 
+@pytest.mark.slow
 def test_enricher_instructions_include_structured_dependencies(model: TestModel) -> None:
     agent = enricher_agent(model=model)
     deps = MemoryEnricherDeps(

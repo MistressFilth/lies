@@ -13,6 +13,8 @@ from lies import xdg
 from lies.cli import app
 from lies.utils.lock_heartbeat import Heartbeat, write_heartbeat, write_owner_pid
 
+pytestmark = pytest.mark.slow
+
 runner = CliRunner()
 
 

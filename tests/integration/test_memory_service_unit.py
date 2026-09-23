@@ -48,22 +48,70 @@ def _git_init(root: Path) -> None:
 
 
 @pytest.fixture(autouse=True)
-def _skip_qmd_refresh(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Skip the post-commit qmd_update subprocess in tests that do not assert on it.
+def _stub_external_services(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Stub qmd + atomic_commit by default so the unit suite stays off subprocess work.
 
-    Each ``WikiMemoryService.apply_plan`` invocation fires a real
-    ``qmd update`` subprocess (~100ms startup) which is the dominant cost
-    of these tests. The qmd-failure contract is preserved by leaving the
-    explicit ``qmd_failure`` test untouched (it asserts ``qmd_stale``
-    in ``receipt.errors``).
+    ``WikiMemoryService.apply_plan`` fires a real ``qmd update``
+    subprocess (~100ms) and a real ``atomic_commit`` (git add + git
+    commit, ~150ms). Stubbing both drops the dominant per-test cost.
+    Tests that assert on real git history (commit message, file list,
+    porcelain state, HEAD SHA) opt out by name so the underlying git
+    machinery runs; the qmd-failure test (``test_apply_plan_rolls_back_on_qmd_failure``)
+    also opts out so its qmd assertion remains valid.
     """
-    if "qmd_failure" in request.node.name:
-        return
-    monkeypatch.setattr(WikiMemoryService, "_refresh_qmd", lambda self: (True, ""))
+    name = request.node.name
+    needs_real_qmd = "qmd_failure" in name
+    needs_real_git = (
+        "_uses_op_tag" in name  # _last_git_commit_message
+        or "commit_includes_new_page" in name  # _commit_changed_files
+        or "rolls_back_writes" in name  # git rev-parse HEAD
+        or "delete_commits_to_git" in name  # _tracked_porcelain + git log --name-status
+        or "delete_removes_existing_page" in name  # _tracked_porcelain
+        or "delete_no_op_when_missing_still_records_commit" in name  # _tracked_porcelain
+        or "restores_dirty_tree" in name  # real snapshot/restore contract
+        or "empty_receipt_when_atomic_commit_is_noop" in name  # rollback contract
+    )
+    if not needs_real_qmd:
+        monkeypatch.setattr(WikiMemoryService, "_refresh_qmd", lambda self: (True, ""))
+    if not needs_real_git:
+        monkeypatch.setattr(
+            "lies.memory.service.atomic_commit",
+            lambda *_a, **_kw: "deadbeef" + "0" * 32,
+        )
+        # Stub the snapshot/restore envelope so the unit suite stays
+        # off ``git stash`` subprocesses. Tests that read real git
+        # history keep the envelope live (see ``needs_real_git``
+        # above); every other test exercises only the in-memory
+        # apply path and never restores a real stash.
+        monkeypatch.setattr(
+            WikiMemoryService,
+            "_snapshot_working_tree",
+            lambda _self, _repo: "fake-stash-ref",
+        )
+        monkeypatch.setattr(
+            WikiMemoryService,
+            "_restore_working_tree",
+            lambda _self, _repo, _ref: None,
+        )
+        monkeypatch.setattr(
+            WikiMemoryService,
+            "_discard_snapshot",
+            lambda _self, _repo, _ref: None,
+        )
 
 
 @pytest.fixture
-def git_wiki(tmp_path: Path) -> Wiki:
+def git_wiki(request: pytest.FixtureRequest, tmp_path: Path) -> Wiki:
+    """Wiki rooted at ``tmp_path/wiki`` with optional real ``git init``.
+
+    Skips the ``git init + config + add + commit`` bootstrap when the
+    test does not need a real git repo. The autouse
+    ``_stub_external_services`` fixture stubs every git-touching path
+    (``atomic_commit`` + snapshot envelope) for those tests, so a real
+    repo would just sit idle and cost ~250ms per test.
+    """
     root = tmp_path / "wiki"
     for sub in ("wiki", "raw"):
         (root / sub).mkdir(parents=True)
@@ -71,7 +119,22 @@ def git_wiki(tmp_path: Path) -> Wiki:
     wiki.config_root.mkdir(parents=True, exist_ok=True)
     (wiki.wiki_dir / "concepts").mkdir(parents=True)
     (wiki.wiki_dir / "index.md").write_text("# Index\n", encoding="utf-8")
-    _git_init(root)
+    # Tests that read git history / exercise the rollback contract
+    # need the real repo. The list mirrors the exclusion in
+    # ``_stub_external_services``; keep them in sync.
+    name = request.node.name if hasattr(request, "node") else ""
+    needs_real_git = (
+        "_uses_op_tag" in name
+        or "commit_includes_new_page" in name
+        or "rolls_back_writes" in name
+        or "delete_commits_to_git" in name
+        or "delete_removes_existing_page" in name
+        or "delete_no_op_when_missing_still_records_commit" in name
+        or "restores_dirty_tree" in name
+        or "empty_receipt_when_atomic_commit_is_noop" in name
+    )
+    if needs_real_git:
+        _git_init(root)
     return wiki
 
 
@@ -79,6 +142,7 @@ def _sha(content: str) -> str:
     return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 
+@pytest.mark.slow
 def test_apply_plan_creates_page(git_wiki: Wiki) -> None:
     service = WikiMemoryService(wiki=git_wiki)
     service.register_evidence({"page-1"})
@@ -98,6 +162,7 @@ def test_apply_plan_creates_page(git_wiki: Wiki) -> None:
     assert (git_wiki.wiki_dir / "concepts" / "example.md").exists()
 
 
+@pytest.mark.slow
 def test_apply_plan_updates_page_with_matching_hash(git_wiki: Wiki) -> None:
     path = git_wiki.wiki_dir / "concepts" / "x.md"
     body = "---\ntitle: X\ntype: concept\n---\n# X\n"
@@ -187,6 +252,7 @@ def test_apply_plan_rejects_raw_source_access(git_wiki: Wiki) -> None:
         service.apply_plan(plan)
 
 
+@pytest.mark.slow
 def test_apply_plan_rolls_back_on_qmd_failure(
     git_wiki: Wiki, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -213,6 +279,7 @@ def test_apply_plan_rolls_back_on_qmd_failure(
     assert (git_wiki.wiki_dir / "concepts" / "example.md").exists()
 
 
+@pytest.mark.slow
 def test_apply_plan_logs_operation(git_wiki: Wiki) -> None:
     plan = MemoryPlan(
         operations=[
@@ -256,6 +323,7 @@ def _last_git_commit_message(repo: Path) -> str:
     return result.stdout.rstrip("\n")
 
 
+@pytest.mark.slow
 def test_apply_plan_commit_includes_new_page_index_and_log(
     git_wiki: Wiki,
 ) -> None:
@@ -384,6 +452,7 @@ def test_hash_page_missing_file_returns_empty_sentinel(
     assert service.hash_page("concepts/does-not-exist.md") == ""
 
 
+@pytest.mark.slow
 def test_apply_plan_restores_dirty_tree_when_commit_fails(
     git_wiki: Wiki, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -413,6 +482,7 @@ def test_apply_plan_restores_dirty_tree_when_commit_fails(
     assert not (git_wiki.wiki_dir / "concepts" / "new.md").exists()
 
 
+@pytest.mark.slow
 def test_apply_plan_returns_empty_receipt_when_atomic_commit_is_noop(
     git_wiki: Wiki, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -532,6 +602,7 @@ def test_validate_plan_rejects_invalid_frontmatter_type(git_wiki: Wiki) -> None:
         service.validate_plan(plan)
 
 
+@pytest.mark.slow
 def test_search_filters_single_collection_and_registers_evidence(
     git_wiki: Wiki, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -648,6 +719,7 @@ def test_init_filters_stale_entries(tmp_path) -> None:
     assert {r.collection_id for r in svc.registered_collections()} == {"alive"}
 
 
+@pytest.mark.slow
 def test_register_collection_persists_to_disk(tmp_path) -> None:
     from pathlib import PurePosixPath
 
@@ -776,6 +848,7 @@ def test_acquire_wiki_flock_routes_indeterminate_to_wiki_flock_indeterminate(
     assert "force-repair" in msg
 
 
+@pytest.mark.slow
 def test_apply_plan_commit_message_uses_op_tag(git_wiki: Wiki) -> None:
     """An op with ``tag="ingest"`` must produce a commit message that
     starts with ``ingest:`` (not the hard-coded ``memory:`` prefix)."""
@@ -798,6 +871,7 @@ def test_apply_plan_commit_message_uses_op_tag(git_wiki: Wiki) -> None:
     assert msg.startswith("ingest: distill single source"), msg
 
 
+@pytest.mark.slow
 def test_apply_plan_log_entry_uses_op_tag(git_wiki: Wiki) -> None:
     """An op with ``tag="ingest"`` must produce a ``wiki/log.md`` entry
     prefixed ``ingest | <op> | <path>`` (not the hard-coded ``memory``)."""
@@ -820,6 +894,7 @@ def test_apply_plan_log_entry_uses_op_tag(git_wiki: Wiki) -> None:
     assert "ingest | create | concepts/alpha.md" in log_text, log_text
 
 
+@pytest.mark.slow
 def test_apply_plan_delete_removes_existing_page(git_wiki: Wiki) -> None:
     """A ``PageDelete`` op removes an existing wiki page and records
     the change in the receipt with ``OperationKind.DELETE``."""
@@ -849,6 +924,7 @@ def test_apply_plan_delete_removes_existing_page(git_wiki: Wiki) -> None:
     assert porcelain == "", f"working tree should be clean after delete; got:\n{porcelain}"
 
 
+@pytest.mark.slow
 def test_apply_plan_delete_commits_to_git(git_wiki: Wiki) -> None:
     """A ``PageDelete`` op MUST land in git (not stay as an uncommitted
     ``D`` in the working tree).
@@ -906,6 +982,7 @@ def test_apply_plan_delete_commits_to_git(git_wiki: Wiki) -> None:
     assert delete_refs[0].op == OperationKind.DELETE
 
 
+@pytest.mark.slow
 def test_apply_plan_delete_no_op_when_missing(git_wiki: Wiki) -> None:
     """A ``PageDelete`` op against a missing file is a silent no-op:
     ``apply_plan`` records no ``PageReference`` for the path because no
@@ -923,6 +1000,7 @@ def test_apply_plan_delete_no_op_when_missing(git_wiki: Wiki) -> None:
     assert not any(r.path == "concepts/never-existed.md" for r in receipt.changed_pages)
 
 
+@pytest.mark.slow
 def test_apply_plan_delete_no_op_when_missing_still_records_commit(
     git_wiki: Wiki,
 ) -> None:
@@ -1274,6 +1352,7 @@ def test_translate_page_diffs_to_plan_empty_returns_noop(tmp_path: Path) -> None
     assert plan.is_noop()
 
 
+@pytest.mark.slow
 def test_validate_plan_read_matches_apply_for_prefixed_path(git_wiki: Wiki) -> None:
     """``validate_plan`` and ``apply_plan`` must read the same file for
     a prefixed UPDATE path.
@@ -1409,6 +1488,7 @@ def test_apply_plan_system_file_guard_catches_doubled_prefix_index(git_wiki: Wik
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.slow
 def test_apply_plan_writes_catalog_row_for_page_create(git_wiki: Wiki) -> None:
     """apply_plan(PageCreate) writes a catalog row matching the file's frontmatter."""
     from lies.memory.catalog import list_pages, open_catalog
@@ -1443,6 +1523,7 @@ def test_apply_plan_writes_catalog_row_for_page_create(git_wiki: Wiki) -> None:
     assert row.source_pkg == "claude-code"
 
 
+@pytest.mark.slow
 def test_apply_plan_removes_catalog_row_for_page_delete(git_wiki: Wiki) -> None:
     """apply_plan(PageDelete) removes the corresponding catalog row."""
     from lies.memory.catalog import open_catalog, upsert_page
@@ -1498,6 +1579,7 @@ def test_apply_plan_does_not_call_rebuild_index() -> None:
     )
 
 
+@pytest.mark.slow
 def test_apply_plan_skips_catalog_upsert_for_index_md(git_wiki: Wiki) -> None:
     """apply_plan(PageUpdate("wiki/index.md", ...)) must NOT add a catalog row.
 

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import subprocess
+import subprocess  # noqa: F401  # kept for backward-compat with monkeypatched tests
 from pathlib import Path
 
 import pytest
@@ -27,20 +27,56 @@ from tests.conftest import make_wiki
 
 
 @pytest.fixture(autouse=True)
-def _skip_qmd_refresh(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Skip the post-commit qmd_update subprocess in repair-service tests.
+def _stub_external_services(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Stub qmd + atomic_commit + snapshot envelope by default.
 
-    ``apply_repair_plan`` routes through ``apply_plan`` which fires a real
-    ``qmd update`` subprocess (~100ms). The repair-service tests assert
-    on wiki state, not on qmd, so the refresh is no-op'd module-wide.
+    ``apply_repair_plan`` routes through ``apply_plan`` which fires
+    real ``qmd update`` + ``atomic_commit`` + snapshot/restore git
+    subprocesses (~100ms each). The repair-service tests assert on
+    wiki state, not on git/qmd, so the subprocesses are no-op'd by
+    default. Tests that read real git history (``_tracked_porcelain``
+    usage — currently none in this file) opt out by name.
     """
     from lies.memory.service import WikiMemoryService
 
     monkeypatch.setattr(WikiMemoryService, "_refresh_qmd", lambda self: (True, ""))
+    monkeypatch.setattr(
+        "lies.memory.service.atomic_commit",
+        lambda *_a, **_kw: "deadbeef" + "0" * 32,
+    )
+    monkeypatch.setattr(
+        WikiMemoryService,
+        "_snapshot_working_tree",
+        lambda _self, _repo: "fake-stash-ref",
+    )
+    monkeypatch.setattr(
+        WikiMemoryService,
+        "_restore_working_tree",
+        lambda _self, _repo, _ref: None,
+    )
+    monkeypatch.setattr(
+        WikiMemoryService,
+        "_discard_snapshot",
+        lambda _self, _repo, _ref: None,
+    )
 
 
 @pytest.fixture
 def git_wiki(tmp_path: Path):
+    """Wiki rooted at ``tmp_path/wiki`` with a real ``git init`` baseline.
+
+    The autouse ``_stub_external_services`` fixture stubs
+    ``atomic_commit`` + snapshot envelope + qmd refresh, so the apply
+    path never shells out from inside ``apply_repair_plan``. The
+    baseline ``git init + config + add + commit`` here is needed because
+    two tests (``test_apply_repair_plan_rejects_hash_mismatch``,
+    ````test_apply_repair_plan_update_index_adds_orphan_to_catalog``)
+    perform their own ``git add . && git commit`` to seed a page
+    before invoking the repair path; without a real repo those
+    seeding subprocesses fail.
+    """
     root = tmp_path / "wiki"
     for sub in ("wiki", "raw"):
         (root / sub).mkdir(parents=True)
@@ -146,6 +182,7 @@ def test_from_repair_plan_maps_append_evidence_to_evidence_append() -> None:
     assert op.expected_sha256 == "abc123"
 
 
+@pytest.mark.slow
 def test_apply_repair_plan_creates_stub_page(git_wiki) -> None:
     plan = RepairPlan(
         operations=[
@@ -212,6 +249,7 @@ def test_apply_repair_plan_rejects_hash_mismatch(git_wiki) -> None:
         service.apply_repair_plan(plan)
 
 
+@pytest.mark.slow
 def test_apply_repair_plan_update_index_adds_orphan_to_catalog(git_wiki) -> None:
     orphan = git_wiki.wiki_dir / "concepts" / "orphan.md"
     orphan.parent.mkdir(parents=True, exist_ok=True)

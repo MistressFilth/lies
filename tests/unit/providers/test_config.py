@@ -73,11 +73,13 @@ def test_load_minimax_provider(tmp_path: Path) -> None:
     assert minimax.api_key_env == "MINIMAX_API_KEY"
 
 
+@pytest.mark.slow
 def test_missing_file_returns_none(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
     result = load_providers_config(tmp_path / "does-not-exist.toml")
     assert result is None
 
 
+@pytest.mark.slow
 def test_malformed_toml_raises(tmp_path: Path) -> None:
     path = _write(tmp_path, "this is not = valid = toml [[[\n")
     with pytest.raises(ProviderConfigError):

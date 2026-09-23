@@ -9,6 +9,8 @@ from typer.testing import CliRunner
 
 from lies.cli import app
 
+pytestmark = pytest.mark.slow
+
 
 @pytest.fixture(autouse=True)
 def _clear_env(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:

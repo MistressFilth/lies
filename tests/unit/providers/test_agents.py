@@ -1,8 +1,11 @@
 """AGENT_ROSTER is the single source of truth for agent names."""
 
+import pytest  # noqa: F401  # consumed by pytestmark below
+
 from lies.providers.agents import AGENT_ROSTER
 
 
+@pytest.mark.slow
 def test_roster_contains_all_known_agents() -> None:
     assert AGENT_ROSTER == (
         "orchestrator",

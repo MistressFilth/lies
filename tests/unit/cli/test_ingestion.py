@@ -12,6 +12,8 @@ from lies.cli import app
 from lies.etl import sync_helper
 from lies.qmd import _models, cli as qmd_cli
 
+pytestmark = pytest.mark.slow
+
 
 @pytest.fixture
 def tty_runner() -> CliRunner:

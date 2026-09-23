@@ -1,13 +1,15 @@
 import pytest
 
-from lies.library.bootstrap import (
+pytestmark = pytest.mark.slow  # noqa: E402
+
+from lies.library.bootstrap import (  # noqa: E402
     BootstrapAllReport,
     bootstrap_all_missing_configs,
     bootstrap_library_collection,
 )
-from lies.library.config_io import load_config
-from lies.library.errors import CollectionMismatch
-from lies.library.paths import Library
+from lies.library.config_io import load_config  # noqa: E402
+from lies.library.errors import CollectionMismatch  # noqa: E402
+from lies.library.paths import Library  # noqa: E402
 
 
 @pytest.fixture
@@ -39,6 +41,7 @@ def _clear_library_collection_name_cache():
     library_collection_names.cache_clear()
 
 
+@pytest.mark.slow
 def test_bootstrap_creates_config_when_missing(library: Library) -> None:
     rec = bootstrap_library_collection("foo", "https://example.com/foo.txt")
     assert rec.name == "foo"
@@ -46,6 +49,7 @@ def test_bootstrap_creates_config_when_missing(library: Library) -> None:
     assert load_config("foo").source == "https://example.com/foo.txt"
 
 
+@pytest.mark.slow
 def test_bootstrap_returns_existing_when_source_matches(library: Library) -> None:
     bootstrap_library_collection("foo", "https://example.com/foo.txt")
     rec = bootstrap_library_collection("foo", "https://example.com/foo.txt")

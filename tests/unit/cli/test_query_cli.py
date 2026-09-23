@@ -28,11 +28,13 @@ from typer.testing import CliRunner
 
 from lies import xdg
 from lies.cli import app
-from lies.library.config_io import save_config
-from lies.library.paths import Library
-from lies.library.record import LibraryCollectionConfig
-from lies.query.models import SynthesizedAnswer
-from lies.wiki.wiki import Wiki
+
+pytestmark = pytest.mark.slow
+from lies.library.config_io import save_config  # noqa: E402
+from lies.library.paths import Library  # noqa: E402
+from lies.library.record import LibraryCollectionConfig  # noqa: E402
+from lies.query.models import SynthesizedAnswer  # noqa: E402
+from lies.wiki.wiki import Wiki  # noqa: E402
 
 runner = CliRunner()
 

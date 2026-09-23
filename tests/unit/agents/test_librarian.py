@@ -115,11 +115,17 @@ def test_register_librarian_tools_captures_no_coverage_from_wiki_search(
         def search(self, question: str, *, limit: int = 5) -> _FakeSearchResult:
             return _FakeSearchResult()
 
+    # Pass ``qmd_query`` explicitly as an empty stub so the librarian's
+    # library-side merge is a no-op. The default ``qmd_query`` helper
+    # lazy-imports ``lies.qmd.cli`` on first call and shells out to the
+    # qmd binary against ``wiki.wiki_dir`` — a real subprocess in a unit
+    # test, and the dominant cost of this regression pin (~30s).
     agent = librarian_mod.librarian_agent(model="test")
     librarian_mod.register_librarian_tools(
         agent,
         wiki=empty_wiki,  # type: ignore[arg-type]
         memory_service=_FakeMemoryService(),  # type: ignore[arg-type]
+        qmd_query=lambda *_a, **_kw: [],
     )
 
     # Pull the registered ``wiki_search`` closure out of the toolset

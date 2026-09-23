@@ -12,6 +12,8 @@ from lies.cli import app
 from lies.wiki.wiki import Wiki
 from tests.conftest import make_wiki
 
+pytestmark = pytest.mark.slow
+
 runner = CliRunner()
 
 

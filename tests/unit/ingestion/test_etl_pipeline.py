@@ -55,6 +55,7 @@ def _collection(wiki: Wiki) -> Collection:
     )
 
 
+@pytest.mark.slow
 def test_pipeline_runs_all_states(wiki: Wiki) -> None:
     collection = _collection(wiki)
     telemetry = SyncTelemetry(wiki, collection.name)

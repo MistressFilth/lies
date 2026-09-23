@@ -229,6 +229,7 @@ async def test_recycle_qmd_daemon_probes_with_list_tools(
         data_dir=tmp_path,
         daemon_url="http://127.0.0.1:8181",
         ready_timeout=5.0,
+        poll_interval=0.01,
     )
     assert state.running is True
     assert state.pid == 1234
@@ -271,13 +272,14 @@ async def test_recycle_qmd_daemon_raises_qmd_recycle_failed_when_probe_never_ser
         await qmd_daemon.recycle_qmd_daemon(
             data_dir=tmp_path,
             daemon_url="http://127.0.0.1:8181",
-            ready_timeout=0.2,
-            poll_interval=0.05,
+            ready_timeout=0.05,
+            poll_interval=0.01,
         )
-    assert excinfo.value.ready_timeout_s == 0.2
+    assert excinfo.value.ready_timeout_s == 0.05
     assert "no listener" in excinfo.value.last_state.detail
 
 
+@pytest.mark.slow
 @pytest.mark.asyncio
 async def test_ensure_qmd_daemon_reaps_stale_via_mtime_check(
     monkeypatch: pytest.MonkeyPatch,

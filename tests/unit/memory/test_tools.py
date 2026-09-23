@@ -58,6 +58,7 @@ def test_register_read_tools_attaches_two_tools(wiki: Wiki) -> None:
     assert "wiki_read" in tool_names
 
 
+@pytest.mark.slow
 def test_wiki_search_tool_returns_evidence(wiki: Wiki, monkeypatch: pytest.MonkeyPatch) -> None:
     from lies.memory.tools import wiki_search_tool
 

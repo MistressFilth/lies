@@ -10,6 +10,8 @@ from typer.testing import CliRunner
 
 from lies.cli.wiki import wiki_app
 
+pytestmark = pytest.mark.slow
+
 
 @pytest.fixture
 def runner() -> CliRunner:

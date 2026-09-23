@@ -682,6 +682,15 @@ same checks fire on every commit via `.pre-commit-config.yaml`.
 The pre-commit chain wraps `make unit-test`, so a commit that lands
 in the repo has already passed the local gate.
 
+`make unit-test` enforces the **0.15s per-test hard limit**: any
+non-slow-marked test whose call phase exceeds 0.15s fails the run
+with a printed five-tier remediation rubric (delete / move to
+integration / mock / compress / mark slow). The hook lives in
+`tests/unit/conftest.py` (`pytest_terminal_summary`); slow-marked
+tests are exempt (they only run with `--runslow`). To profile
+slow tests, run `make time-unit-tests` (which passes `--runslow`),
+or `uv run pytest tests/unit/ --runslow --durations=0`.
+
 `make lint-supyrliminal` runs `flake8 --select=SL,PYD`; the same
 check fires on every commit via `.pre-commit-config.yaml` and in CI.
 Supyrliminal is required — commits fail if a new SL/PYD finding

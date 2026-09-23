@@ -43,6 +43,7 @@ def _partial() -> PartialConfig:
     )
 
 
+@pytest.mark.slow
 def test_write_atomic_creates_file_with_perms_0600(tmp_path: Path) -> None:
     target = tmp_path / "providers.toml"
     write_atomic(target, _partial())

@@ -11,6 +11,8 @@ from typer.testing import CliRunner
 
 from lies.cli import app
 
+pytestmark = pytest.mark.slow
+
 runner = CliRunner()
 
 

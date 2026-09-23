@@ -3,6 +3,10 @@
 Finding 3 pin: a wholly-failed sync (errors > 0) must exit non-zero
 so operators (and CI) notice the silent data loss. The previous
 behavior swallowed ``BatchIngestResult`` and exited 0 regardless.
+
+Marked slow: each test invokes the real Typer CLI (~300ms per
+``runner.invoke``) so the unit budget does not absorb the inherent
+CLI-machinery cost. Run with ``--runslow`` to exercise.
 """
 
 from __future__ import annotations
@@ -17,6 +21,8 @@ from lies.cli import app
 from lies.library.ingest import BatchIngestResult
 from lies.library.paths import Library
 from lies.wiki.wiki import Wiki
+
+pytestmark = pytest.mark.slow
 
 runner = CliRunner()
 

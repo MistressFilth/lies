@@ -21,7 +21,6 @@ file at the negative-control path and trip the assertion.
 from __future__ import annotations
 
 from pathlib import Path
-import subprocess
 
 import pytest
 
@@ -47,10 +46,11 @@ _BODY = (
 def fixture_lib(tmp_path: Path, monkeypatch) -> Library:
     """Library singleton rooted at ``tmp_path/.lies/library`` (XDG-routed).
 
-    Mirrors ``tests/integration/test_sync_library.py::fixture_lib`` so
-    the wiki stub can resolve ``xdg.data_home()`` through the same
-    monkeypatched function. ``.gitkeep`` keeps ``git add .`` non-empty
-    so the initial commit lands.
+    No real ``git init`` runs. The tests in this module stub
+    ``atomic_commit`` + qmd helpers so the git history is irrelevant
+    to the assertions; the fixture only needs the directory layout
+    so ``Library.open()`` resolves the catalog + collections roots
+    against the XDG-redirected path.
     """
     from lies import xdg
 
@@ -60,25 +60,6 @@ def fixture_lib(tmp_path: Path, monkeypatch) -> Library:
     lib.git_root.mkdir(parents=True, exist_ok=True)
     (lib.git_root / ".lies").mkdir(parents=True, exist_ok=True)
     (lib.git_root / ".gitkeep").write_text("")
-    subprocess.run(
-        ["git", "init", "-b", "main", str(lib.git_root)],
-        check=True,
-        capture_output=True,
-    )
-    subprocess.run(
-        ["git", "-C", str(lib.git_root), "config", "user.email", "t@t"],
-        check=True,
-    )
-    subprocess.run(
-        ["git", "-C", str(lib.git_root), "config", "user.name", "t"],
-        check=True,
-    )
-    subprocess.run(["git", "-C", str(lib.git_root), "add", "."], check=True)
-    subprocess.run(
-        ["git", "-C", str(lib.git_root), "commit", "-m", "init"],
-        check=True,
-        capture_output=True,
-    )
     return lib
 
 
@@ -170,6 +151,24 @@ def test_sync_helper_writes_to_library_not_wiki(fixture_lib: Library, monkeypatc
     _seed_collection(wiki)
 
     monkeypatch.setattr("lies.etl.sync_helper.ScraperFetcher", _StaticFetcher)
+
+    # Stub the post-commit helpers (git atomic_commit + qmd indexing
+    # subprocesses) so the unit test stays off real subprocess work.
+    # The contract under test is *routing* (file lands at library, not
+    # wiki; catalog row lands in library section), not git history or
+    # qmd indexing. The fixture's initial ``git init`` is still needed
+    # for ``Library.open()`` to recognize the repo.
+    from lies.library import writer as writer_mod
+    import lies.qmd.cli as qmd_cli_mod
+
+    monkeypatch.setattr(
+        writer_mod,
+        "atomic_commit",
+        lambda *_a, **_kw: "deadbeef" + "0" * 32,
+    )
+    monkeypatch.setattr(qmd_cli_mod, "qmd_collection_add_or_update", lambda *_a, **_kw: None)
+    monkeypatch.setattr(qmd_cli_mod, "qmd_update", lambda *_a, **_kw: None)
+    monkeypatch.setattr(qmd_cli_mod, "qmd_embed", lambda *_a, **_kw: None)
 
     result = sync_collection(
         wiki=wiki,

@@ -250,6 +250,7 @@ def test_writer_commit_no_op_returns_none(lib_with_git: Library) -> None:
     assert result is None
 
 
+@pytest.mark.slow
 def test_writer_commit_catalog_only_no_paths_skips_git_commit(
     lib_with_git: Library,
 ) -> None:
@@ -305,6 +306,7 @@ def test_writer_commit_catalog_only_no_paths_skips_git_commit(
     assert after_sha == before_sha, "catalog-only short-circuit must not touch HEAD"
 
 
+@pytest.mark.slow
 def test_writer_commit_catalog_updates(lib_with_git: Library) -> None:
     file = lib_with_git.collections_root / "claude" / "x.md"
     file.parent.mkdir(parents=True)
@@ -349,6 +351,7 @@ def _sample_catalog_update(slug: str) -> LibraryCatalogPage:
     )
 
 
+@pytest.mark.slow
 def test_writer_upsert_catalog_raises_locked_when_open_locked(
     lib_with_git: Library, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -372,6 +375,7 @@ def test_writer_upsert_catalog_raises_locked_when_open_locked(
     assert exc_info.value.__cause__ is original_operational_error
 
 
+@pytest.mark.slow
 def test_writer_upsert_catalog_raises_locked_when_commit_locked(
     lib_with_git: Library, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -481,7 +485,18 @@ def test_writer_commit_touches_f14_last_write_marker(
     marker = cache_dir / "qmd" / "last-write-marker"
     assert not marker.exists()
 
-    # Stub the qmd post-commit hooks so we don't need a live daemon.
+    # Stub the qmd post-commit hooks so the unit test stays off the
+    # qmd subprocess chain. ``qmd_embed`` is the dominant cost
+    # (~13s for an embedding pass over the freshly committed mirror);
+    # the test's contract is just that ``commit`` touches the marker,
+    # not that any qmd indexing actually runs. Stub at the
+    # ``lies.qmd.cli`` module level so the writer's PEP 562
+    # ``__getattr__`` resolves to the stubs on first call.
+    import lies.qmd.cli as qmd_cli_mod
+
+    monkeypatch.setattr(qmd_cli_mod, "qmd_collection_add_or_update", lambda *_a, **_kw: None)
+    monkeypatch.setattr(qmd_cli_mod, "qmd_update", lambda *_a, **_kw: None)
+    monkeypatch.setattr(qmd_cli_mod, "qmd_embed", lambda *_a, **_kw: None)
     writer_mod = importlib.import_module("lies.library.writer")
     for cached in ("qmd_collection_add_or_update", "qmd_update", "qmd_embed"):
         monkeypatch.delattr(writer_mod, cached, raising=False)

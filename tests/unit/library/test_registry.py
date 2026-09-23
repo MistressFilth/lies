@@ -42,6 +42,7 @@ def _cfg(name: str) -> LibraryCollectionConfig:
     )
 
 
+@pytest.mark.slow
 def test_records_iterates_each_config(library: Library) -> None:
     save_config(_cfg("alpha"))
     save_config(_cfg("beta"))
@@ -53,6 +54,7 @@ def test_record_lookup_returns_none_for_missing(library: Library) -> None:
     assert library_collection_record("nope") is None
 
 
+@pytest.mark.slow
 def test_record_lookup_returns_config(library: Library) -> None:
     save_config(_cfg("alpha"))
     rec = library_collection_record("alpha")

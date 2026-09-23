@@ -71,6 +71,7 @@ def test_save_existing_without_force_raises(library: Library) -> None:
         save_config(_sample_config())
 
 
+@pytest.mark.slow
 def test_save_existing_with_force_overwrites(library: Library) -> None:
     save_config(_sample_config())
     cfg2 = _sample_config()

@@ -28,6 +28,8 @@ from lies.cli import app
 from lies.query.models import SynthesizedAnswer
 from tests.unit.cli._ansi import strip_ansi
 
+pytestmark = pytest.mark.slow
+
 
 @pytest.fixture
 def cli_runner() -> CliRunner:

@@ -271,6 +271,14 @@ def qmd_fixture_library(tmp_path: Path) -> Wiki:
     """A wiki with four tagged collections, registered and embedded with qmd."""
     if shutil.which("qmd") is None:
         pytest.skip("qmd not installed on PATH")
+    # Real qmd daemon must be reachable: the per-test fixture embeds
+    # collections into the daemon's global index and the integration
+    # tests assert that ``wiki_search`` surfaces indexed hits. CI
+    # doesn't run a qmd daemon by default; skip rather than fail.
+    from lies.qmd.health import qmd_daemon_reachable
+
+    if not qmd_daemon_reachable("http://127.0.0.1:8181", timeout=0.5):
+        pytest.skip("qmd daemon not reachable at http://127.0.0.1:8181")
     wiki = _build_tag_filter_library(tmp_path, name="tag-filter-lib")
     _seed_qmd(wiki)
     return wiki
@@ -351,6 +359,10 @@ def _orchestrator(wiki: Wiki) -> Orchestrator:
     return Orchestrator(wiki=wiki, models=models_for_tests("test"))
 
 
+@pytest.mark.skipif(
+    os.environ.get("CI") == "true",
+    reason="requires live qmd daemon with indexed content; CI skips",
+)
 def test_plus_tag_filters_to_one_collection(
     qmd_fixture_library: Wiki,
 ) -> None:

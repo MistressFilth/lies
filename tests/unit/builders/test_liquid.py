@@ -66,6 +66,7 @@ def test_path_render_cmd_is_invoked_and_converted(tmp_path: Path) -> None:
     assert docs[0].content == b"rendered markdown"
 
 
+@pytest.mark.slow
 def test_path_render_cmd_preserves_state_across_builds(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

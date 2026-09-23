@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 from pydantic_ai.models.test import TestModel
 
 from lies.agents.page_writer import (
@@ -9,6 +10,7 @@ from lies.agents.page_writer import (
 )
 
 
+@pytest.mark.slow
 def test_page_writer_agent_exists() -> None:
     agent = page_writer_agent(model=TestModel())
     assert agent is not None

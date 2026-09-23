@@ -261,6 +261,7 @@ def test_spawn_raises_already_running_for_live_record(
     assert caught.value.record.pid == os.getpid()
 
 
+@pytest.mark.slow
 def test_spawn_reclaims_stale_record_then_fails_on_child(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

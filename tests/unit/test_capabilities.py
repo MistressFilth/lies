@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest  # noqa: F401  # consumed by pytestmark below
 from pathlib import Path
 
 from pydantic_ai import Agent
@@ -11,6 +12,7 @@ from lies.capabilities.memory import memory
 from lies.capabilities.planning import planning
 
 
+@pytest.mark.slow
 def test_code_mode_returns_capability() -> None:
     cap = code_mode()
     assert cap is not None

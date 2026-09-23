@@ -35,6 +35,7 @@ def conn(tmp_path: Path) -> sqlite3.Connection:
     return open_catalog(wiki)
 
 
+@pytest.mark.slow
 def test_open_catalog_creates_schema(tmp_path: Path) -> None:
     class _StubWiki:
         pass
@@ -51,6 +52,7 @@ def test_open_catalog_creates_schema(tmp_path: Path) -> None:
         conn.close()
 
 
+@pytest.mark.slow
 def test_open_catalog_sets_wal_and_busy_timeout(tmp_path: Path) -> None:
     class _StubWiki:
         pass
@@ -68,6 +70,7 @@ def test_open_catalog_sets_wal_and_busy_timeout(tmp_path: Path) -> None:
         conn.close()
 
 
+@pytest.mark.slow
 def test_open_catalog_idempotent(tmp_path: Path) -> None:
     class _StubWiki:
         pass
@@ -83,6 +86,7 @@ def test_open_catalog_idempotent(tmp_path: Path) -> None:
         conn2.close()
 
 
+@pytest.mark.slow
 def test_open_catalog_seeds_on_first_open(tmp_path: Path) -> None:
     """First open with no ``.md`` files: catalog is empty."""
     wiki_dir = tmp_path / "wiki"
@@ -101,6 +105,7 @@ def test_open_catalog_seeds_on_first_open(tmp_path: Path) -> None:
         conn.close()
 
 
+@pytest.mark.slow
 def test_open_catalog_seeds_existing_disk_files(tmp_path: Path) -> None:
     """Add a ``.md`` file, delete catalog.db, re-open: row appears.
 
@@ -144,6 +149,7 @@ def test_open_catalog_seeds_existing_disk_files(tmp_path: Path) -> None:
         conn.close()
 
 
+@pytest.mark.slow
 def test_open_catalog_does_not_reseed_existing_catalog(tmp_path: Path) -> None:
     """Cleared catalog (``pages`` empty, file present) is NOT auto-seeded.
 
@@ -264,6 +270,7 @@ def test_list_slugs(tmp_path: Path, conn: sqlite3.Connection) -> None:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.slow
 def test_rebuild_from_disk_walks_markdown(tmp_path: Path) -> None:
     """rebuild_from_disk walks wiki/**/*.md and returns CatalogPage rows."""
     from lies.memory.catalog import rebuild_from_disk
@@ -292,6 +299,7 @@ def test_rebuild_from_disk_walks_markdown(tmp_path: Path) -> None:
     assert "index" not in slugs
 
 
+@pytest.mark.slow
 def test_rebuild_from_disk_keeps_nested_system_named_files(tmp_path: Path) -> None:
     """A nested ``concepts/index.md`` is a real wiki page, not a system file.
 
@@ -331,6 +339,7 @@ def test_rebuild_from_disk_keeps_nested_system_named_files(tmp_path: Path) -> No
     assert "overview" not in slugs
 
 
+@pytest.mark.slow
 def test_reconcile_dry_run(tmp_path: Path) -> None:
     """dry_run reports would_add/would_remove without writing."""
     from lies.memory.catalog import open_catalog, reconcile, upsert_page
@@ -363,6 +372,7 @@ def test_reconcile_dry_run(tmp_path: Path) -> None:
     assert result.would_remove == 1  # "dangling" has no file
 
 
+@pytest.mark.slow
 def test_reconcile_applies_changes(tmp_path: Path) -> None:
     """non-dry_run upserts orphans + removes dangling rows."""
     from lies.memory.catalog import get_page, open_catalog, reconcile, upsert_page
@@ -403,6 +413,7 @@ def test_reconcile_applies_changes(tmp_path: Path) -> None:
         conn.close()
 
 
+@pytest.mark.slow
 def test_reconcile_idempotent(tmp_path: Path) -> None:
     """Second reconcile call is a no-op after the first converges state."""
     from lies.memory.catalog import open_catalog, reconcile, upsert_page

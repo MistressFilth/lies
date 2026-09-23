@@ -13,7 +13,9 @@ from __future__ import annotations
 import pytest
 from typer.testing import CliRunner
 
-from lies.cli.operator import _qmd_flock_app
+pytestmark = pytest.mark.slow
+
+from lies.cli.operator import _qmd_flock_app  # noqa: E402
 
 
 def test_lies_flock_qmd_recycle_invokes_recycle_helper(

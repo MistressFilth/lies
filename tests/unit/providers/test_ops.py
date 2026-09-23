@@ -41,6 +41,7 @@ def _seed_target(tmp_path: Path, extra_agents: dict[str, str] | None = None) -> 
     return target
 
 
+@pytest.mark.slow
 def test_add_provider_round_trip(tmp_path: Path) -> None:
     target = _seed_target(tmp_path)
     new_spec = ProviderSpec(
@@ -77,6 +78,7 @@ def test_unassign_agent_raises_for_roster_member(tmp_path: Path) -> None:
         unassign_agent(target, "source_reader")
 
 
+@pytest.mark.slow
 def test_unassign_agent_succeeds_for_extra_agent(tmp_path: Path) -> None:
     target = _seed_target(tmp_path, extra_agents={"legacy_agent": "anthropic:claude-opus-4-7"})
     unassign_agent(target, "legacy_agent")

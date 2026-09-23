@@ -81,6 +81,7 @@ def test_status_handles_missing_sidecar_gracefully(runner, tmp_path, monkeypatch
     assert "recent invisible writes" not in result.output
 
 
+@pytest.mark.slow
 def test_status_rejects_negative_memory_limit(runner, tmp_path, monkeypatch) -> None:
     """`--memory-limit -1` must exit non-zero with a clear error."""
     from lies.wiki.wiki import Wiki

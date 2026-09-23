@@ -10,12 +10,20 @@ sys.modules manipulation pollutes the pytest session and breaks
 unrelated tests (notably the REPL tests in tests/unit/test_cli.py).
 A clean Python process is the only reliable way to measure what
 `import lies.cli` does at startup.
+
+Each test spends ~300ms booting a fresh Python interpreter — the
+cost is intrinsic to the subprocess-based measurement. Marked slow
+so the unit-test budget skips them; run with ``--runslow`` to exercise.
 """
 
 from __future__ import annotations
 
 import subprocess
 import sys
+
+import pytest
+
+pytestmark = pytest.mark.slow
 
 
 def _run_in_clean_process(snippet: str) -> str:
