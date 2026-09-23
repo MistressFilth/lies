@@ -416,8 +416,21 @@ def parse_query_argv(
             )
         while i < len(argv):
             tok = argv[i]
-            # Extend the chain if the previous chain token ended in & or |.
+            # Extend the chain if EITHER (a) the previous chain
+            # token ended in an operator (atom-then-operator case)
+            # OR (b) the current token starts with `&` / `|` — the
+            # operator-then-atom case from realistic shell splitting
+            # (e.g. `+c:foo & c:bar` shlex-tokenizes to `["+c:foo",
+            # "&", "c:bar"]`). The bare-operator token is appended
+            # as-is; the per-token operator split
+            # (:func:`_split_argv_token_for_ops`) re-emits it as its
+            # own flat-list element so `parse_tokens` sees a clean
+            # operator/atom stream.
             if chain_tokens and chain_tokens[-1].endswith(("&", "|")):
+                chain_tokens.append(tok)
+                i += 1
+                continue
+            if tok in ("&", "|"):
                 chain_tokens.append(tok)
                 i += 1
                 continue
@@ -465,25 +478,47 @@ def parse_query_argv(
         check_qualifier(body, position=i)
         exclude_tokens: list[str] = [body]
         i += 1
-        while i < len(argv) and argv[i].startswith(("&", "|")):
-            # Continuation token: starts with the binary operator.
-            # The operator is consumed here (``_split_argv_token_for_ops``
-            # will re-emit it as its own flat-list element); the rest
-            # of the token is the next atom and must validate as a
-            # ``t:`` / ``c:`` qualified atom. Append the full token
-            # (including the leading operator) so the per-token
-            # operator split produces a clean flat list with one
-            # operator between atoms.
+        while i < len(argv):
             tok = argv[i]
-            atom_body = tok[1:]
-            if not atom_body:
-                raise TagExprParseError(
-                    f"dangling operator at end of exclude chain: {tok!r}",
-                    position=i,
-                )
-            check_qualifier(atom_body, position=i)
-            exclude_tokens.append(tok)
-            i += 1
+            # Bare operator: append operator + immediately absorb the
+            # next token (whatever it is) as the following atom.
+            # Mirrors the include path's "extend chain" semantics for
+            # argv[i] starts with & / |: the operator must be followed
+            # by an atom or the chain is dangling. Realistic shell
+            # splits produce this shape when the operator has
+            # surrounding whitespace (e.g. shlex.split("-c:foo & c:bar")
+            # yields `["-c:foo", "&", "c:bar"]`).
+            if tok in ("&", "|"):
+                exclude_tokens.append(tok)
+                i += 1
+                if i >= len(argv):
+                    raise TagExprParseError(
+                        f"dangling operator at end of exclude chain: {tok!r}",
+                        position=i - 1,
+                    )
+                next_tok = argv[i]
+                if next_tok.startswith("-"):
+                    raise TagExprParseError(
+                        f"unexpected exclude prefix inside chain: {next_tok!r}",
+                        position=i,
+                    )
+                check_qualifier(next_tok, position=i)
+                exclude_tokens.append(next_tok)
+                i += 1
+                continue
+            # Operator-prefixed atom (e.g. `&c:bar`).
+            if tok.startswith(("&", "|")):
+                atom_body = tok[1:]
+                if not atom_body:
+                    raise TagExprParseError(
+                        f"dangling operator at end of exclude chain: {tok!r}",
+                        position=i,
+                    )
+                check_qualifier(atom_body, position=i)
+                exclude_tokens.append(tok)
+                i += 1
+                continue
+            break
         # If the chain ended with `&` or `|`, peel that dangling op
         # into a parse error before going further (mirrors the
         # include path's post-loop dangling check).

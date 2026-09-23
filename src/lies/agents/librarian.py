@@ -209,8 +209,15 @@ library is the primary surface and the wiki is the secondary.
    intersects, run UNTAGGED (`tag_expr=None`). An empty registry is
    also untagged; note it in the bundle.
 5. The caller's `exclude_expr` is a compiled `TagExpr` AST (Task 3
-   / f15-exclude-compound). Pass it through to `wiki_search`
-   unchanged so the daemon enforces the exclusion site-side.
+   / f15-exclude-compound). Do NOT pass it to `wiki_search` —
+   exclusion is applied site-side by `_wiki_search` against each
+   hit's collection first-segment before the merged list is
+   returned. Just call `wiki_search` with the question and
+   `tag_expr`; the tool enforces the exclude AST internally and
+   the LLM never sees an `exclude_expr` kwarg. (`wiki_search` does
+   accept `exclude_expr` for callers that want to apply exclusion
+   directly — the librarian's own calls leave it at the default
+   `None`.)
 
 ## 2. Search (dual-surface)
 
@@ -441,6 +448,11 @@ def register_librarian_tools(
         ctx: RunContext[LibrarianDeps],
         question: str,
         limit: int = 5,
+        exclude_expr: Any = None,  # TagExpr | None AST (Task 3);
+        # Any at runtime so pydantic-ai's tool schema generator
+        # doesn't try to build a JSON schema for the stdlib
+        # ``TagExpr`` dataclass — same workaround as
+        # :class:`LibrarianDeps.exclude_expr`.
     ) -> dict[str, object]:
         """Search the wiki + library for project knowledge relevant to ``question``.
 
@@ -481,6 +493,21 @@ def register_librarian_tools(
         :func:`dataclasses.replace`. The ContextVar reflects the
         wiki side's signal; library failures do not flip it because a
         live library is not required for coverage.
+
+        Site-side exclusion (Task F / urgent-bug-f): when
+        ``exclude_expr`` is a non-``None`` compiled ``TagExpr`` AST
+        (the same shape ``LibrarianDeps.exclude_expr`` carries), the
+        merged hit list is filtered against it before being
+        returned. Each hit's collection first-segment is fed to
+        :func:`lies.query.tag_expr.exclude_matches` via a synthesized
+        :class:`LibraryCollectionMeta(name=first_seg, tags=())`. For
+        library hits, ``first_seg`` is the library collection name
+        (``opencode``, ``claude_platform``, …); for wiki hits, it is
+        the wiki synthesis namespace (``default`` or whatever the
+        wiki is named). A hit whose synthesized record matches the
+        AST is dropped. Hits with no path / no first-segment are
+        kept rather than silently dropped — matches the library
+        retriever's "tagless hits are not excluded" semantics.
         """
         from lies.qmd.cli import QmdError
 
@@ -671,6 +698,37 @@ def register_librarian_tools(
         # to ``"library"`` to reflect the winning surface.
         merged = _merge_wiki_and_library_hits(wiki_hits, library_hits)
 
+        # Site-side exclude filter (Task F / urgent-bug-f). When the
+        # caller passes a compiled ``TagExpr`` AST, drop any hit
+        # whose collection first-segment matches. Library hits:
+        # ``first_seg`` IS the library collection name (``opencode``,
+        # ``claude_platform``, …). Wiki hits: ``first_seg`` is the
+        # wiki synthesis namespace (``default`` or whatever); we
+        # evaluate that namespace against the exclude AST too so an
+        # exclude targeting the namespace drops wiki hits carrying
+        # it. Both surfaces feed the matcher via a synthesized
+        # :class:`LibraryCollectionMeta(name=first_seg, tags=())`
+        # because :func:`exclude_matches` only reads ``.name`` and
+        # ``.tags``. Hits with no path / no first-segment are kept
+        # rather than silently dropped — matches the library
+        # retriever's "tagless hits are not excluded" semantics.
+        if exclude_expr is not None:
+            from lies.library.registry import LibraryCollectionMeta
+            from lies.query.tag_expr import exclude_matches
+
+            filtered: list[dict[str, Any]] = []
+            for hit in merged:
+                path = str(hit.get("path", ""))
+                first_seg = path.split("/", 1)[0] if path else ""
+                if not first_seg:
+                    filtered.append(hit)
+                    continue
+                coll = LibraryCollectionMeta(name=first_seg, tags=())
+                if exclude_matches(coll, exclude_expr):
+                    continue
+                filtered.append(hit)
+            merged = filtered
+
         return {
             "hits": merged,
             "no_coverage": no_coverage,
@@ -757,7 +815,11 @@ def register_librarian_tools(
         name="wiki_search",
         description=(
             "Search this wiki for project knowledge relevant to a question. "
-            "Returns bounded evidence with page_id values that can be passed to wiki_read."
+            "Accepts an optional ``exclude_expr`` (a compiled ``TagExpr`` "
+            "AST) — when present, hits whose collection first-segment "
+            "matches the exclude AST are dropped site-side before being "
+            "returned. Returns bounded evidence with page_id values that "
+            "can be passed to wiki_read."
         ),
     )(_wiki_search)
     agent.tool(

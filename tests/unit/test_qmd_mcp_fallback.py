@@ -47,6 +47,7 @@ def test_fallback_lists_expected_tools(wiki_root: Wiki) -> None:
     assert set(mcp.tools_known_to_model()) == {"wiki_search", "wiki_read"}
 
 
+@pytest.mark.slow
 def test_fallback_search_returns_degraded_true(wiki_root: Wiki) -> None:
     """A search call returns bounded evidence and flags it as degraded."""
     from lies.memory.service import WikiMemoryService
@@ -95,6 +96,7 @@ def test_fallback_read_rejects_unknown_ids(wiki_root: Wiki) -> None:
         mcp.call_wiki_read(service, page_ids=["page-deadbeefdeadbeef"])
 
 
+@pytest.mark.slow
 def test_fallback_search_with_empty_wiki_is_empty_and_degraded(
     wiki_root: Wiki,
 ) -> None:

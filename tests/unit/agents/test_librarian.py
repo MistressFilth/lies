@@ -979,3 +979,316 @@ def test_wiki_search_strips_qmd_docid_from_unmatched_wiki_hit() -> None:
     assert hit["source_kind"] == "wiki"
     assert "docid" not in hit
     assert hit["page_id"] is None
+
+
+# ---------------------------------------------------------------------------
+# Task F / urgent-bug-f — site-side exclude_expr filter on wiki_search
+# ---------------------------------------------------------------------------
+
+
+def _drive_wiki_search_with_exclude(
+    *,
+    exclude_expr: Any,
+    qmd_query_fn: Any,
+    wiki: _FakeWiki | None = None,
+) -> dict[str, object]:
+    """Drive ``_wiki_search`` with an explicit ``exclude_expr``.
+
+    Variant of :func:`_drive_wiki_search` that threads
+    ``exclude_expr`` through to the registered ``wiki_search``
+    closure. The exclude is a compiled ``TagExpr`` AST (the same
+    shape :class:`LibrarianDeps.exclude_expr` carries); the closure
+    applies it site-side against each merged hit's collection
+    first-segment.
+    """
+    from lies.agents import librarian as librarian_mod
+    from pydantic_ai import RunContext
+    from pydantic_ai.models.test import TestModel
+
+    wiki_service = _FakeMemoryService(pages=[], no_coverage=False)
+    agent = librarian_mod.librarian_agent(model="test")
+    librarian_mod.register_librarian_tools(
+        agent,
+        wiki=wiki if wiki is not None else _FakeWiki(wiki_dir=Path("/tmp/fake-wiki")),  # type: ignore[arg-type]
+        memory_service=wiki_service,  # type: ignore[arg-type]
+        qmd_query=qmd_query_fn,
+    )
+
+    tool_fn: object | None = None
+    for toolset in agent.toolsets:
+        tool = toolset.tools.get("wiki_search")
+        if tool is not None:
+            tool_fn = tool.function
+            break
+    assert tool_fn is not None, "wiki_search tool not registered"
+
+    deps = LibrarianDeps(question="q", tag_expr=None, exclude_expr=exclude_expr, top_k=5)
+    ctx = RunContext(
+        model=TestModel(),
+        deps=deps,
+        usage=None,  # type: ignore[arg-type]
+    )
+    return tool_fn(ctx, "q", 5, exclude_expr=exclude_expr)  # type: ignore[misc]
+
+
+def test_wiki_search_exclude_expr_filters_library_hits() -> None:
+    """``exclude_expr=Or(c:opencode, c:claude_platform)`` drops library hits on those collections.
+
+    Pre-fix bug (v0.37.6 regression / urgent-bug-f): the librarian's
+    prompt told the LLM to pass ``exclude_expr`` through to
+    ``wiki_search`` unchanged, but ``_wiki_search`` did not accept
+    the parameter and did not filter against it. The LLM tried to
+    call ``wiki_search(exclude_expr=...)`` and the validation
+    failure exhausted max output retries. The fix: ``_wiki_search``
+    now accepts ``exclude_expr`` and applies it site-side against
+    each merged hit's collection first-segment.
+
+    Library hits carry ``source_kind="library"``; their path's first
+    segment IS the library collection name (``opencode``,
+    ``claude_platform``, …). ``Or(c:opencode, c:claude_platform)``
+    must drop every hit whose first segment matches either atom —
+    which is both library hits here because the wiki side is empty.
+    """
+    from lies.library.registry import library_git_root
+    from lies.query.tag_expr import Include, Or
+
+    exclude = Or(
+        Include("opencode", "c"),
+        Include("claude_platform", "c"),
+    )
+
+    def fake_qmd_query(cwd: Path, q: str, limit: int = 5, **_kw: Any) -> list[dict[str, Any]]:
+        if Path(cwd) == library_git_root():
+            return [
+                {
+                    "path": "opencode/config.md",
+                    "title": "Opencode config",
+                    "score": 0.9,
+                    "excerpt": "opencode excerpt",
+                },
+                {
+                    "path": "claude_platform/settings.md",
+                    "title": "Claude platform settings",
+                    "score": 0.8,
+                    "excerpt": "claude platform excerpt",
+                },
+            ]
+        return []
+
+    out = _drive_wiki_search_with_exclude(exclude_expr=exclude, qmd_query_fn=fake_qmd_query)
+
+    hits = out["hits"]
+    # Both library hits must be dropped — each one's first segment
+    # (``opencode``, ``claude_platform``) matches one of the OR atoms.
+    assert hits == [], (
+        f"exclude_expr must drop every library hit whose first segment matches an atom; got {hits}"
+    )
+
+
+def test_wiki_search_exclude_expr_none_returns_unfiltered_hits() -> None:
+    """``exclude_expr=None`` (default) returns the merged hits unchanged.
+
+    Pins the regression-free path: when no exclude is supplied,
+    ``_wiki_search`` does not touch the merged list. Library hits
+    come through with their original first-segment paths intact —
+    the operator opted out of site-side exclusion by passing
+    ``None`` (or by omitting the kwarg).
+    """
+    from lies.library.registry import library_git_root
+
+    def fake_qmd_query(cwd: Path, q: str, limit: int = 5, **_kw: Any) -> list[dict[str, Any]]:
+        if Path(cwd) == library_git_root():
+            return [
+                {
+                    "path": "opencode/config.md",
+                    "title": "Opencode config",
+                    "score": 0.9,
+                    "excerpt": "opencode excerpt",
+                },
+                {
+                    "path": "claude_platform/settings.md",
+                    "title": "Claude platform settings",
+                    "score": 0.8,
+                    "excerpt": "claude platform excerpt",
+                },
+            ]
+        return []
+
+    out = _drive_wiki_search_with_exclude(exclude_expr=None, qmd_query_fn=fake_qmd_query)
+
+    hits = out["hits"]
+    # No filter applied — both library hits come through.
+    assert len(hits) == 2
+    paths = {hit["path"] for hit in hits}
+    assert paths == {"opencode/config.md", "claude_platform/settings.md"}
+
+
+def test_wiki_search_exclude_expr_keeps_non_matching_library_hits() -> None:
+    """``exclude_expr`` drops only matching hits; non-matches survive.
+
+    The exclude filter is selective, not blanket — a hit whose
+    first segment does NOT match the exclude AST must remain in
+    the merged list. The companion to
+    :func:`test_wiki_search_exclude_expr_filters_library_hits`:
+    that test pins the dropping; this test pins the keeping.
+    """
+    from lies.library.registry import library_git_root
+    from lies.query.tag_expr import Include
+
+    exclude = Include("claude_platform", "c")
+
+    def fake_qmd_query(cwd: Path, q: str, limit: int = 5, **_kw: Any) -> list[dict[str, Any]]:
+        if Path(cwd) == library_git_root():
+            return [
+                {
+                    "path": "opencode/config.md",
+                    "title": "Opencode config",
+                    "score": 0.9,
+                    "excerpt": "opencode excerpt",
+                },
+                {
+                    "path": "claude_platform/settings.md",
+                    "title": "Claude platform settings",
+                    "score": 0.8,
+                    "excerpt": "claude platform excerpt",
+                },
+            ]
+        return []
+
+    out = _drive_wiki_search_with_exclude(exclude_expr=exclude, qmd_query_fn=fake_qmd_query)
+
+    hits = out["hits"]
+    # ``claude_platform`` matches the exclude atom and is dropped;
+    # ``opencode`` does not match and survives.
+    assert len(hits) == 1
+    assert hits[0]["path"] == "opencode/config.md"
+
+
+def test_wiki_search_exclude_expr_compound_and_filters_correctly() -> None:
+    """Compound AND exclude drops only hits whose first segment matches BOTH atoms.
+
+    ``And(c:opencode, t:opencode)`` evaluates true on a hit whose
+    first segment is ``opencode`` AND whose tag set contains
+    ``opencode``. Library hits have an empty tag set, so the
+    synthesized ``LibraryCollectionMeta(name="opencode", tags=())``
+    contains ``opencode`` in ``name ∪ tags`` — so ``t:opencode``
+    evaluates true via the tag-or-name alias. The
+    ``opencode/config.md`` hit satisfies both atoms and is dropped;
+    the ``claude_platform/settings.md`` hit fails the first AND
+    atom (``c:opencode`` against ``name="claude_platform"``) and
+    short-circuits to false, surviving.
+
+    This pins the recursive AND walk in
+    :func:`lies.query.tag_expr.exclude_matches`: BOTH atoms must
+    match for the AND branch to evaluate true.
+    """
+    from lies.library.registry import library_git_root
+    from lies.query.tag_expr import And, Include
+
+    exclude = And(Include("opencode", "c"), Include("opencode", "t"))
+
+    def fake_qmd_query(cwd: Path, q: str, limit: int = 5, **_kw: Any) -> list[dict[str, Any]]:
+        if Path(cwd) == library_git_root():
+            return [
+                {
+                    "path": "opencode/config.md",
+                    "title": "Opencode config",
+                    "score": 0.9,
+                    "excerpt": "opencode excerpt",
+                },
+                {
+                    "path": "claude_platform/settings.md",
+                    "title": "Claude platform settings",
+                    "score": 0.8,
+                    "excerpt": "claude platform excerpt",
+                },
+            ]
+        return []
+
+    out = _drive_wiki_search_with_exclude(exclude_expr=exclude, qmd_query_fn=fake_qmd_query)
+
+    hits = out["hits"]
+    # AND requires both atoms to match. The ``opencode`` hit
+    # satisfies both ``c:opencode`` (name match) and ``t:opencode``
+    # (tag-or-name alias) — dropped. The ``claude_platform`` hit
+    # fails the first AND atom (``c:opencode``) and short-circuits
+    # to false — survives.
+    assert len(hits) == 1
+    assert hits[0]["path"] == "claude_platform/settings.md"
+
+
+def test_wiki_search_exclude_expr_filters_wiki_hits_by_namespace() -> None:
+    """Wiki hits whose first segment matches the exclude AST are dropped site-side.
+
+    Wiki hits carry ``source_kind="wiki"``; their path's first
+    segment is the wiki synthesis namespace (``default`` or
+    whatever the wiki is named). The site-side filter evaluates
+    that namespace against the exclude AST too, so an exclude
+    targeting the namespace drops wiki hits carrying it. Library
+    hits in this test carry a non-matching first segment and
+    survive, so the merged output shows only the wiki-side drop.
+    """
+    from lies.library.registry import library_git_root
+    from lies.query.tag_expr import Include
+
+    exclude = Include("default", "c")
+
+    def fake_qmd_query(cwd: Path, q: str, limit: int = 5, **_kw: Any) -> list[dict[str, Any]]:
+        # Library side: a non-matching first segment so the library
+        # hit survives the exclude.
+        if Path(cwd) == library_git_root():
+            return [
+                {
+                    "path": "opencode/config.md",
+                    "title": "Opencode config",
+                    "score": 0.9,
+                    "excerpt": "opencode excerpt",
+                },
+            ]
+        # Wiki side: a wiki hit whose first segment is ``default`` —
+        # the synthesized namespace matches the exclude atom.
+        return [
+            {
+                "path": "default/concepts/orphan",
+                "title": "Orphan",
+                "score": 0.7,
+                "excerpt": "wiki orphan excerpt",
+            },
+        ]
+
+    out = _drive_wiki_search_with_exclude(exclude_expr=exclude, qmd_query_fn=fake_qmd_query)
+
+    hits = out["hits"]
+    # Wiki hit dropped (first segment ``default`` matches the
+    # exclude atom); library hit survives (first segment
+    # ``opencode`` does not match).
+    assert len(hits) == 1
+    assert hits[0]["source_kind"] == "library"
+    assert hits[0]["path"] == "opencode/config.md"
+
+
+def test_wiki_search_exclude_expr_keeps_pathless_hits() -> None:
+    """Hits with no path / no first-segment survive the exclude filter.
+
+    Edge case: a hit whose path is empty (or has no ``/``) has no
+    collection context. The site-side filter keeps these hits
+    rather than silently dropping them — matches the library
+    retriever's "tagless hits are not excluded" semantics. Pins
+    the no-path branch so a future regression that silently drops
+    pathless hits is caught.
+    """
+    from lies.query.tag_expr import Include
+
+    exclude = Include("opencode", "c")
+
+    def fake_qmd_query(cwd: Path, q: str, limit: int = 5, **_kw: Any) -> list[dict[str, Any]]:
+        # Library side returns one hit with NO path — pathological
+        # but the test exercises the no-path branch.
+        return [{"title": "Pathless", "score": 0.5, "excerpt": "no path"}]
+
+    out = _drive_wiki_search_with_exclude(exclude_expr=exclude, qmd_query_fn=fake_qmd_query)
+
+    hits = out["hits"]
+    # Pathless hit survives — site-side filter does not drop it.
+    assert len(hits) == 1
+    assert hits[0]["title"] == "Pathless"

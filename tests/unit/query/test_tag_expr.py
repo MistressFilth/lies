@@ -834,3 +834,68 @@ def test_parse_tokens_empty_body_errors():
         parse_query_argv(["+airflow", "-c:", "what", "is", "X?"])
     with pytest.raises(TagExprParseError):
         parse_query_argv(["+airflow", "-t:", "what", "is", "X?"])
+
+
+# --- Bug G + H fix: bare-operator argv tokens ------------------------------
+# Realistic shell splitting produces argv lists where the binary operator
+# is its own token (surrounded by whitespace) rather than glued to the
+# following atom. shlex.split("-c:foo & c:bar What?") yields
+# ["-c:foo", "&", "c:bar", "What?"]. Before this fix, both the include
+# path and the exclude path rejected this form with a dangling-operator
+# parse error. The argv chain-peel loops now extend on either side
+# (previous-token-ends-with-op OR current-token-is-op), and the exclude
+# path's bare-operator branch absorbs the operator + the following atom
+# together.
+
+
+def test_parse_query_argv_include_bare_and_op():
+    """`+c:foo & c:bar What?` argv-shlex-split: And-include of c:foo&c:bar."""
+    from lies.query.tag_expr import parse_query_argv
+
+    q, inc, exc, _ = parse_query_argv(["+c:foo", "&", "c:bar", "What", "is", "X?"])
+    assert _render_include(inc) == "c:foo&c:bar"
+    assert exc is None
+    assert q == "What is X?"
+
+
+def test_parse_query_argv_include_bare_or_op():
+    """`+c:foo | c:bar What?`: Or-include of c:foo|c:bar."""
+    from lies.query.tag_expr import parse_query_argv
+
+    q, inc, exc, _ = parse_query_argv(["+c:foo", "|", "c:bar", "What", "is", "X?"])
+    assert _render_include(inc) == "c:foo|c:bar"
+    assert exc is None
+    assert q == "What is X?"
+
+
+def test_parse_query_argv_exclude_bare_and_op():
+    """`-c:foo & c:bar What?`: And-exclude of c:foo&c:bar."""
+    from lies.query.tag_expr import parse_query_argv
+
+    q, inc, exc, _ = parse_query_argv(["-c:foo", "&", "c:bar", "What", "is", "X?"])
+    assert _render_include(exc) == "c:foo&c:bar"
+    assert inc is None
+    assert q == "What is X?"
+
+
+def test_parse_query_argv_exclude_bare_or_op():
+    """`-c:foo | c:bar What?`: Or-exclude of c:foo|c:bar."""
+    from lies.query.tag_expr import parse_query_argv
+
+    q, inc, exc, _ = parse_query_argv(["-c:foo", "|", "c:bar", "What", "is", "X?"])
+    assert _render_include(exc) == "c:foo|c:bar"
+    assert inc is None
+    assert q == "What is X?"
+
+
+def test_parse_query_argv_dangling_bare_op_still_errors():
+    """Trailing bare `&` with no following token raises dangling-operator.
+
+    Ensures the new bare-operator branch doesn't swallow the dangling
+    case — `-c:foo &` with no atom after `&` must still error.
+    """
+    from lies.query.tag_expr import TagExprParseError, parse_query_argv
+
+    with pytest.raises(TagExprParseError) as exc:
+        parse_query_argv(["-c:foo", "&"])
+    assert "dangling" in str(exc.value).lower()
