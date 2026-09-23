@@ -4,6 +4,19 @@ All notable changes to LIES are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/) adapted for
 [Semantic Versioning](https://semver.org/).
 
+## [0.37.3] - 2026-09-23
+
+### Fixed
+- `/answer` slash prompt now takes a single `text` positional arg.
+  Claude Code's slash-command dispatcher forwards the rest of the
+  line as one string when the prompt has only one positional arg;
+  the previous three-arg signature was tokenizing the multi-word
+  invocation and dropping everything past the first token.
+- Librarian: wiki-side qmd hits are now mapped to the wiki's
+  `page-` + sha1-12 page_ids by joining on `path` against
+  `memory_service.search()` results. The qmd `#abc123` docid
+  format is no longer surfaced to `_wiki_read`.
+
 ## [Unreleased]
 
 - MCP prompt surface: `ask_wiki` and `query_prompt` prompts removed.
