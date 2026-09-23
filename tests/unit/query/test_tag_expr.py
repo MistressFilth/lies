@@ -262,6 +262,61 @@ def test_render_include_round_trip_multiatom_with_internal_space():
     assert parse_include(rendered) == ast
 
 
+# --- F15 argv token split preserves c:/t: qualifier ---------------------
+
+
+def test_split_argv_token_for_ops_keeps_qualifier_attached():
+    """`c:opencode|c:claude_platform` shlex-splits on `|` only; qualifier
+    colon stays glued to its atom so downstream parse_tokens sees a clean
+    token list (`["c:opencode", "|", "c:claude_platform"]`).
+
+    Regression for session 82a266a9 line 61: a slash command tokenized
+    `+c:opencode|c:claude_platform` as one argv token. Without `:` in
+    wordchars, shlex split it into `["c", ":", "opencode", ...]` and
+    parse_tokens choked on the leaked `":"` token.
+    """
+    from lies.query.tag_expr import _split_argv_token_for_ops, parse_tokens
+
+    tokens = _split_argv_token_for_ops("c:opencode|c:claude_platform")
+    assert tokens == ["c:opencode", "|", "c:claude_platform"]
+    assert parse_tokens(tokens) == Or(
+        Include("opencode", qualifier="c"),
+        Include("claude_platform", qualifier="c"),
+    )
+
+
+def test_split_argv_token_for_ops_no_op_passthrough():
+    """A token with no `&` / `|` outside quotes is one atom (whitespace intact)."""
+    from lies.query.tag_expr import _split_argv_token_for_ops
+
+    assert _split_argv_token_for_ops("c:opencode") == ["c:opencode"]
+    assert _split_argv_token_for_ops('"airflow provider"') == ['"airflow provider"']
+
+
+def test_split_argv_token_for_ops_keeps_t_qualifier_attached():
+    """t: qualifier round-trips through the argv split path."""
+    from lies.query.tag_expr import _split_argv_token_for_ops, parse_tokens
+
+    tokens = _split_argv_token_for_ops("t:airflow|t:provider")
+    assert tokens == ["t:airflow", "|", "t:provider"]
+    assert parse_tokens(tokens) == Or(
+        Include("airflow", qualifier="t"),
+        Include("provider", qualifier="t"),
+    )
+
+
+def test_split_argv_token_for_ops_and_with_qualifier():
+    """`&` keeps qualifier attached too, mirroring `|` behavior."""
+    from lies.query.tag_expr import _split_argv_token_for_ops, parse_tokens
+
+    tokens = _split_argv_token_for_ops("c:opencode&t:provider")
+    assert tokens == ["c:opencode", "&", "t:provider"]
+    assert parse_tokens(tokens) == And(
+        Include("opencode", qualifier="c"),
+        Include("provider", qualifier="t"),
+    )
+
+
 # --- resolve ---------------------------------------------------------------
 
 

@@ -337,10 +337,14 @@ def _split_argv_token_for_ops(token: str) -> list[str]:
         return [token]
     # Operators detected — split with posix shlex. Quoted segments
     # stay one token; `&` / `|` become their own tokens; `-` is in
-    # wordchars so tag names like `claude-code` stay whole.
+    # wordchars so tag names like `claude-code` stay whole. `:` is in
+    # wordchars so `c:opencode` / `t:airflow` qualifier prefixes stay
+    # attached to their atom (otherwise `c:opencode` would tokenize
+    # as `c`, `:`, `opencode`). Mirrors `parse()` which also adds
+    # both `-` and `:` to wordchars.
     try:
         lexer = shlex.shlex(token, posix=True)
-        lexer.wordchars += "-"
+        lexer.wordchars += "-:"
         lexer.commenters = ""
         return list(lexer)
     except ValueError as exc:
