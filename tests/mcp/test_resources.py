@@ -325,13 +325,20 @@ def test_answer_prompt_parses_quoted_exclude() -> None:
 
     shlex unquotes the ``"airflow provider"`` arg so the exclude tag
     arrives as a single multi-word string; the prompt renders the list
-    with a single element.
+    with a single element. Task 3 / f15-exclude-compound changed the
+    exclude representation from a flat string to an ``Include`` / ``And``
+    / ``Or`` AST, so :func:`_render_include` quotes the multi-word tag
+    (``"airflow provider"``) so it round-trips through :func:`parse`
+    intact — the rendered exclude entry is ``'\\"airflow provider\\"'``.
+    The LLM reads the rendered string verbatim and forwards it to the
+    ``answer`` tool's ``exclude_tags=`` kwarg, where :func:`parse` strips
+    the outer quotes back to the multi-word atom.
     """
     out = ask_wiki_answer(
         text='+c:opencode -"airflow provider" what does it do?',
     )
     assert "tag_expr: 'c:opencode'" in out
-    assert "exclude_tags: ['airflow provider']" in out
+    assert "exclude_tags: ['\"airflow provider\"']" in out
 
 
 def test_answer_prompt_surfaces_parse_error() -> None:

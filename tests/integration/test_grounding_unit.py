@@ -143,7 +143,7 @@ def test_archivist_digest_frozen() -> None:
     digest = ArchivistDigest(
         question="q",
         tag_expr=None,
-        exclude_tags=[],
+        exclude_expr=None,
         citations=[],
         no_coverage=False,
         distinct_pages=0,
@@ -156,7 +156,7 @@ def test_archivist_digest_distinct_pages_round_trips() -> None:
     digest = ArchivistDigest(
         question="q",
         tag_expr=None,
-        exclude_tags=[],
+        exclude_expr=None,
         citations=[
             CitationSnippet(collection="wiki", slug="a", title="A", snippet="s"),
             CitationSnippet(collection="wiki", slug="a", title="A", snippet="s2"),
@@ -235,7 +235,7 @@ def test_ground_clamps_top_k_to_bounds(monkeypatch) -> None:
         ]
         return LibrarianOutput(
             tag_expr=None,
-            exclude_tags=[],
+            exclude_expr=None,
             excerpts=excerpts,
             distinct_pages=20,
         )
@@ -266,7 +266,9 @@ def test_ground_uses_first_prose_span_per_excerpt(monkeypatch) -> None:
     ]
 
     def fake_librarian(deps):
-        return LibrarianOutput(tag_expr=None, exclude_tags=[], excerpts=excerpts, distinct_pages=1)
+        return LibrarianOutput(
+            tag_expr=None, exclude_expr=None, excerpts=excerpts, distinct_pages=1
+        )
 
     _patch_librarian(monkeypatch, grounding, fake_librarian)
     digest = grounding.ground("q")
@@ -295,7 +297,9 @@ def test_ground_skips_excerpts_with_only_code_fences(monkeypatch) -> None:
     ]
 
     def fake_librarian(deps):
-        return LibrarianOutput(tag_expr=None, exclude_tags=[], excerpts=excerpts, distinct_pages=2)
+        return LibrarianOutput(
+            tag_expr=None, exclude_expr=None, excerpts=excerpts, distinct_pages=2
+        )
 
     _patch_librarian(monkeypatch, grounding, fake_librarian)
     digest = grounding.ground("q")
@@ -319,7 +323,7 @@ def test_ground_no_coverage_true_when_librarian_reports_it(monkeypatch) -> None:
     def fake_librarian(question, deps):
         return LibrarianOutput(
             tag_expr=None,
-            exclude_tags=[],
+            exclude_expr=None,
             excerpts=[],
             distinct_pages=0,
             no_coverage=True,
@@ -352,7 +356,7 @@ def test_ground_no_coverage_false_when_librarian_reports_zero(monkeypatch) -> No
     def fake_librarian(question, deps):
         return LibrarianOutput(
             tag_expr=None,
-            exclude_tags=[],
+            exclude_expr=None,
             excerpts=[],
             distinct_pages=0,
             no_coverage=False,
@@ -388,7 +392,7 @@ def test_ground_no_coverage_false_when_librarian_returns_hits(monkeypatch) -> No
     def fake_librarian(question, deps):
         return LibrarianOutput(
             tag_expr=None,
-            exclude_tags=[],
+            exclude_expr=None,
             excerpts=excerpts,
             distinct_pages=1,
             no_coverage=False,
@@ -443,7 +447,7 @@ def test_ground_library_collection_names_cached_across_calls(monkeypatch) -> Non
     from lies.mcp import grounding
 
     def fake_librarian(deps):
-        return LibrarianOutput(tag_expr=None, exclude_tags=[], excerpts=[], distinct_pages=0)
+        return LibrarianOutput(tag_expr=None, exclude_expr=None, excerpts=[], distinct_pages=0)
 
     _patch_librarian(monkeypatch, grounding, fake_librarian)
     # Make the underlying body return a stable, non-empty
@@ -673,7 +677,7 @@ def test_ground_wires_librarian_tools_before_run_sync(
         def run_sync(self, user_prompt: object, *, deps: object) -> _FakeResult:
             dispatched_agent.append(self)
             return _FakeResult(
-                LibrarianOutput(tag_expr=None, exclude_tags=[], excerpts=[], distinct_pages=0)
+                LibrarianOutput(tag_expr=None, exclude_expr=None, excerpts=[], distinct_pages=0)
             )
 
     monkeypatch.setattr(grounding, "librarian_agent", lambda: _FakeAgent())
@@ -750,7 +754,7 @@ def test_ground_threads_source_kind_from_librarian_output(monkeypatch) -> None:
     @dataclass(frozen=True)
     class _FakeOutput:
         tag_expr: object = None
-        exclude_tags: list = field(default_factory=list)
+        exclude_expr: object = None
         excerpts: list = field(default_factory=list)
         distinct_pages: int = 0
         no_coverage: bool = False

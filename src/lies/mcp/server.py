@@ -42,13 +42,11 @@ from lies.memory.models import WikiPlanInvalid
 from lies.orchestrator import Orchestrator
 from lies.query.citation import Citation, ClaimCitation
 from lies.query.tag_expr import (
-    Include,
     TagExpr,
     TagExprEmpty,
     TagExprParseError,
     TagExprUnknown,
     _render_include,
-    check_qualifier,
     parse,
     parse_query_argv,
     resolve,
@@ -132,8 +130,12 @@ def mcp_ground(
             e.g. ``"airflow&postgres"``. ``None`` for untagged.
         exclude_tags: NOT tags without leading sigil (wire-level
             ``list[str]``). The F15 grammar permits at most one entry;
-            each entry may carry a ``t:`` / ``c:`` qualifier prefix.
-            Translated to a ``TagExpr`` AST at this boundary (Task 3
+            each entry is a **full F15 expression** and may carry
+            compound operators (``c:foo&c:bar``, ``c:foo|c:bar``),
+            qualifier prefixes (``t:`` / ``c:``), and quoted
+            multi-word atoms. Parsed via :func:`parse` at this
+            boundary into an ``Include`` / ``And`` / ``Or`` AST and
+            validated against the registered collection set (Task 4
             / f15-exclude-compound) before threading to the librarian
             unchanged — the AST shape is the canonical post-Task-3
             surface end-to-end.
@@ -159,12 +161,32 @@ def mcp_ground(
     # list-of-strings envelope so existing MCP callers don't break;
     # the conversion happens here at the boundary so the librarian
     # thread sees the AST shape end-to-end.
-    from lies.query.tag_expr import Include, check_qualifier
+    #
+    # Task 4 / f15-exclude-compound: each ``exclude_tags[i]`` is now a
+    # **full F15 expression** (``c:foo&c:bar``, ``c:foo|c:bar``, etc.),
+    # not a single atom. ``parse`` returns the same ``Include`` /
+    # ``And`` / ``Or`` AST shape that the include half uses; ``resolve``
+    # validates every atom against the registered collection set via
+    # :func:`library_collection_names` (the library-first tag surface
+    # for the ground tool — ``name`` is accepted on the wire but the
+    # collection registry is global, not per-wiki).
+    from lies.library.registry import library_collection_names
 
-    exclude_expr: object = None
+    exclude_expr: TagExpr | None = None
     if exclude_tags:
-        _ex_qualifier, _ex_body = check_qualifier(exclude_tags[0], position=0)
-        exclude_expr = Include(_ex_body, qualifier=_ex_qualifier)
+        try:
+            exclude_expr = parse(exclude_tags[0])
+            resolve(
+                None,
+                available=set(library_collection_names()),
+                exclude=exclude_expr,
+            )
+        except TagExprParseError as exc:
+            raise ToolError(f"invalid tag expression: {exc}") from exc
+        except TagExprEmpty as exc:
+            raise ToolError(f"empty tag expression: {exc}") from exc
+        except TagExprUnknown as exc:
+            raise ToolError(format_unknown_tag_error(exc)) from exc
 
     try:
         digest = ground(
@@ -641,11 +663,17 @@ def query(
     size ≤ 1. Either may be set independently; together they build one
     :class:`ResolvedTagFilter` passed to the orchestrator. Each atom
     (inside ``tag_expr`` and as an ``exclude_tags`` element) may carry
-    a ``t:`` / ``c:`` qualifier prefix. An unknown include atom raises
-    a ``ToolError`` with the verbatim spelling; a too-long exclude
-    list raises ``ToolError`` at the boundary. Both kwargs are
-    additive — existing callers (no ``tag_expr``) get the unfiltered
-    behavior.
+    a ``t:`` / ``c:`` qualifier prefix. **Task 4 / f15-exclude-compound:**
+    each ``exclude_tags[i]`` is a **full F15 expression** — it may
+    contain compound operators (``c:foo&c:bar``, ``c:foo|c:bar``),
+    qualifier prefixes on every atom, and quoted multi-word tags —
+    and is parsed via :func:`parse` into the same ``Include`` /
+    ``And`` / ``Or`` AST shape that the include half uses. An unknown
+    include atom raises a ``ToolError`` with the verbatim spelling;
+    a too-long exclude list raises ``ToolError`` at the boundary;
+    parser errors and unknown atoms inside a compound exclude raise
+    ``ToolError`` at the boundary too. Both kwargs are additive —
+    existing callers (no ``tag_expr``) get the unfiltered behavior.
     """
     if exclude_tags is not None and len(exclude_tags) > 1:
         raise ToolError(
@@ -663,17 +691,25 @@ def query(
     #
     # ``exclude_tags`` stays a wire-level ``list[str]`` (the F15
     # grammar permits at most one entry per MCP validation above);
-    # translate the one-element list to a one-atom ``Include`` tree
-    # so the orchestrator's ``exclude_expr`` kwarg (a ``TagExpr``
-    # AST) is the canonical post-Task-3 surface end-to-end.
+    # translate the one-element list to a parsed ``Include`` /
+    # ``And`` / ``Or`` AST via :func:`parse` (Task 4) so the
+    # orchestrator's ``exclude_expr`` kwarg (a ``TagExpr`` AST) is
+    # the canonical post-Task-3 surface end-to-end. Compound exclude
+    # expressions (``c:foo&c:bar``, ``c:foo|c:bar``) now round-trip
+    # through the boundary instead of being mis-parsed as a single
+    # atom with a literal ``&`` / ``|`` body.
     exclude_expr: TagExpr | None = None
     try:
         if tag_expr is not None:
             include_ast = parse(tag_expr)
             resolve(include_ast, available=_collect_available_tags_mcp(wiki))
         if exclude_tags:
-            _ex_qualifier, _ex_body = check_qualifier(exclude_tags[0], position=0)
-            exclude_expr = Include(_ex_body, qualifier=_ex_qualifier)
+            exclude_expr = parse(exclude_tags[0])
+            resolve(
+                None,
+                available=_collect_available_tags_mcp(wiki),
+                exclude=exclude_expr,
+            )
     except TagExprParseError as exc:
         raise ToolError(f"invalid tag expression: {exc}") from exc
     except TagExprEmpty as exc:

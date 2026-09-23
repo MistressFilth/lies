@@ -86,7 +86,7 @@ async def test_query_tool_round_trip(
         question: str,
         *,
         tag_expr: object = None,
-        exclude_tags: object = None,
+        exclude_expr: object = None,
         top_n: int = 5,
         file_back: bool = True,
         **_kwargs: object,
