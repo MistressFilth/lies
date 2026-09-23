@@ -377,6 +377,29 @@ async def reindex(
             prompt = "Cleanup will vacuum the FTS5 db and drop orphan rows. Confirm?"
         decision = await _confirm_destructive(ctx, prompt)
         if decision is not None:
+            # Detect elicitation-unavailable specifically so the LLM
+            # caller gets a bypass path rather than a generic
+            # protocol-version error string. Bug E (session f39c9ef8):
+            # the host's MCP connection was older than
+            # ``2026-07-28`` and rejected server-initiated elicitation;
+            # ``_confirm_destructive`` returned
+            # ``"elicitation unavailable: <inner-exc>"`` and the LLM
+            # had no actionable signal to route on. Surface the
+            # concrete workaround here so the caller can either
+            # restart the MCP daemon (which negotiates a newer
+            # protocol version) or invoke ``lies reindex --cleanup``
+            # directly from the shell, where destructive flags run
+            # without the MCP gate.
+            if decision.startswith("elicitation unavailable"):
+                bypass_msg = (
+                    "cleanup requires confirmation; MCP server-initiated "
+                    "elicitation unavailable on this connection. Run "
+                    "`lies mcp down && lies mcp up` and retry, or invoke "
+                    "`lies reindex --cleanup` directly from the shell."
+                )
+                return _models.ReindexResult(
+                    reconciled=result.reconciled, errors=[bypass_msg]
+                ).model_dump()
             return _models.ReindexResult(
                 reconciled=result.reconciled, errors=[decision]
             ).model_dump()
