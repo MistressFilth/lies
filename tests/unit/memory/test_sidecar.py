@@ -73,6 +73,7 @@ def test_append_receipt_is_idempotent_on_commit_sha(tmp_path: Path) -> None:
     assert len(lines) == 1
 
 
+@pytest.mark.slow
 def test_append_receipt_caps_pages_at_eight(tmp_path: Path) -> None:
     wiki = _wiki(tmp_path)
     ops = [
@@ -130,6 +131,7 @@ def test_read_recent_returns_last_n(tmp_path: Path) -> None:
     assert rows[1].rationale == "plan 2"
 
 
+@pytest.mark.slow
 def test_read_recent_filters_by_page_substring(tmp_path: Path) -> None:
     wiki = _wiki(tmp_path)
     _seed_three_rows(wiki)
@@ -188,6 +190,7 @@ def _git_init_with_memory_commit(tmp_path: Path, message_body: str, sha: str) ->
     )
 
 
+@pytest.mark.slow
 def test_reconcile_walks_git_log_and_rewrites_sidecar(tmp_path: Path) -> None:
     wiki = _wiki(tmp_path)
     body = (
@@ -203,6 +206,7 @@ def test_reconcile_walks_git_log_and_rewrites_sidecar(tmp_path: Path) -> None:
     assert rows[0].evidence_count == 4
 
 
+@pytest.mark.slow
 def test_reconcile_skips_malformed_body(tmp_path: Path) -> None:
     wiki = _wiki(tmp_path)
     _git_init_with_memory_commit(tmp_path, "garbage data", sha="dummy")
@@ -300,6 +304,7 @@ def test_truncate_refuses_keep_over_count_without_force(tmp_path: Path) -> None:
         sidecar.truncate(wiki, keep=10)
 
 
+@pytest.mark.slow
 def test_truncate_force_allows_overcount(tmp_path: Path) -> None:
     """M8: ``force=True`` lets ``keep`` exceed the current row count."""
     wiki = _wiki(tmp_path)

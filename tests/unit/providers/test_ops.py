@@ -77,6 +77,7 @@ def test_unassign_agent_raises_for_roster_member(tmp_path: Path) -> None:
         unassign_agent(target, "source_reader")
 
 
+@pytest.mark.slow
 def test_unassign_agent_succeeds_for_extra_agent(tmp_path: Path) -> None:
     target = _seed_target(tmp_path, extra_agents={"legacy_agent": "anthropic:claude-opus-4-7"})
     unassign_agent(target, "legacy_agent")

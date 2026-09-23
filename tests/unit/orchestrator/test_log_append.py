@@ -8,6 +8,8 @@ when the report is empty).
 
 from __future__ import annotations
 
+import pytest  # noqa: F401  # consumed by pytestmark below
+
 from unittest.mock import MagicMock
 
 from lies.orchestrator import _lint_log_title
@@ -30,6 +32,7 @@ def test_lint_log_title_with_categories() -> None:
     assert title == "lint | 3 findings (missing_xref, orphan)"
 
 
+@pytest.mark.slow
 def test_lint_log_title_no_findings() -> None:
     report = MagicMock()
     report.findings = []

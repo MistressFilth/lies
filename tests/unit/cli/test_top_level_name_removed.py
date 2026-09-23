@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import pytest
 from typer.testing import CliRunner
 
-from lies.cli import app
+pytestmark = pytest.mark.slow
+
+from lies.cli import app  # noqa: E402
 
 runner = CliRunner()
 

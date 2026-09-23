@@ -46,6 +46,42 @@ class QueryAnswer:
     to ``SynthesizedAnswer.claim_citations`` for downstream consumers.
     """
 
+    searched_scope: list[str] = field(default_factory=list)
+    """Sorted, unique collection names that satisfied the tag filter.
+
+    Mirrors :attr:`SynthesizedAnswer.searched_scope`. F18/F19 callers
+    read this directly off the orchestrator's return value to render
+    the resolved scope (see ``_searched_scope(wiki, tag_filter)``).
+    Empty when the query ran untagged or no collection matched.
+    """
+
+    no_coverage: bool = False
+    """True when the tag filter resolved to an empty set (scope miss).
+
+    Mirrors :attr:`SynthesizedAnswer.no_coverage`. Set by
+    :func:`lies.query.synthesizer._searched_scope` when the include
+    expression matches zero collections; the orchestrator's dispatch
+    site propagates the F18 Task 1 ``librarian_no_coverage`` ContextVar
+    onto this attribute.
+    """
+
+    fallback_used: bool = False
+    """True when retrieval fell back to a degraded path.
+
+    Mirrors :attr:`SynthesizedAnswer.fallback_used`. Set by the
+    orchestrator when qmd is unreachable and the librarian falls
+    back to an in-process index scan (the F18 contract's
+    ``fallback_reason`` field carries the reason string).
+    """
+
+    fallback_reason: str = ""
+    """Reason string for ``fallback_used``. Empty when no fallback ran.
+
+    Mirrors :attr:`SynthesizedAnswer.fallback_reason``. Typical
+    values: ``"qmd_unavailable"`` (qmd daemon unreachable),
+    ``"qmd_no_results"`` (qmd reachable but zero hits).
+    """
+
     file_receipt: MemoryReceipt | None = None
     """F3 file-back envelope returned by ``Orchestrator.run_query`` when
     filing-back runs.
@@ -77,11 +113,6 @@ class QueryAnswer:
     def synthesis_used(self) -> bool:
         """F18 compat shim — the F19 path always synthesizes, so True."""
         return True
-
-    @property
-    def fallback_used(self) -> bool:
-        """F18 compat shim — no extractive fallback in the F19 path."""
-        return False
 
 
 QUERY_SYNTHESIZER_SYSTEM_PROMPT = """Your job is to answer the user's question

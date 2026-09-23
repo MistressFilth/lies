@@ -70,11 +70,53 @@ def test_page_write_then_overwrite(tmp_path):
     # though no agent call is ever made. A dummy value is enough;
     # pydantic-ai will only complain if a real call hits the wire.
     env.setdefault("ANTHROPIC_API_KEY", "test-integration-dummy-key-not-used")
+    env.setdefault("MINIMAX_API_KEY", "test-integration-dummy-key-not-used")
 
     # Init wiki + collection
     subprocess.run(["uv", "run", "lies", "init", "test-integration"], check=True, env=env)
 
-    body = "## Body\nFirst version."
+    # Seed a providers.toml at the wiki's user-level providers path so
+    # the Orchestrator can resolve every agent. The AnthropicProvider
+    # only needs the env var at instantiation time; no live API call.
+    from lies.wiki.wiki import Wiki
+    from textwrap import dedent
+
+    from lies.providers.agents import AGENT_ROSTER
+
+    providers_path = Wiki.require("test-integration").providers_path
+    providers_body = dedent(
+        """
+        default_model = "anthropic:claude-opus-4-7"
+
+        [providers.anthropic]
+        type = "anthropic"
+        api_key_env = "ANTHROPIC_API_KEY"
+
+        [providers.minimax]
+        type = "anthropic_compatible"
+        base_url = "https://api.minimax.io/anthropic"
+        api_key_env = "MINIMAX_API_KEY"
+
+        [agents]
+        """
+    ).lstrip()
+    minimax_agents = {"source_reader", "page_writer"}
+    agents_block = "\n".join(
+        f'{n} = "minimax:MiniMax-M3"'
+        if n in minimax_agents
+        else f'{n} = "anthropic:claude-opus-4-7"'
+        for n in AGENT_ROSTER
+    )
+    providers_path.write_text(providers_body + "\n" + agents_block + "\n")
+
+    # Body must satisfy the schema's required sections for ``concept``
+    # (## Definition, ## Examples, ## Related — see
+    # src/lies/schema/default_schema.md).
+    body = (
+        "## Definition\nFirst version.\n\n"
+        "## Examples\n- example 1\n- example 2\n\n"
+        "## Related\n- sibling 1\n- sibling 2\n"
+    )
 
     # First write
     result = subprocess.run(

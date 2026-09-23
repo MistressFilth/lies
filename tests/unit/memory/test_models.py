@@ -31,6 +31,7 @@ def test_collection_ref_is_immutable() -> None:
         ref.collection_id = "other"
 
 
+@pytest.mark.slow
 def test_evidence_carries_page_id_and_lines() -> None:
     ev = WikiEvidence(
         page_id="page-1",

@@ -142,13 +142,32 @@ def library_collection_metas() -> Iterator[LibraryCollectionMeta]:
     legacy wiki-yaml Collection shape and :class:`LibraryCollectionMeta`
     (library-first shape); the library model is the canonical source
     going forward.
+
+    Reads the per-collection ``config.yaml`` sidecar so the resolver
+    sees declared ``tags`` (the ``t:`` / ``c:`` qualifier dispatch
+    in :mod:`lies.query.tag_expr` keys off tags ∪ {name}). When the
+    config is missing or malformed, falls back to a no-tags meta so
+    the resolver still surfaces the collection's name (the implicit
+    self-tag rule).
     """
     root = _collections_root()
     if not root.exists():
         return
     for entry in sorted(root.iterdir()):
-        if entry.is_dir():
-            yield LibraryCollectionMeta(name=entry.name)
+        if not entry.is_dir():
+            continue
+        config = entry / "config.yaml"
+        tags: tuple[str, ...] = ()
+        if config.exists():
+            try:
+                from lies.library.config_io import load_config
+
+                record = load_config(entry.name)
+                if record is not None and record.tags:
+                    tags = tuple(record.tags)
+            except Exception:
+                tags = ()
+        yield LibraryCollectionMeta(name=entry.name, tags=tags)
 
 
 def library_collection_records() -> Iterator[LibraryCollectionConfig]:

@@ -119,10 +119,15 @@ def test_cli_ingest_end_to_end(
 
     wiki_root = Wiki.data_root_for(name)
     assert (wiki_root / "raw" / "alpha").exists()
-    # ``wiki.collections_dir`` resolves to ``xdg.config_home() / "lies" / <name> /
-    # "collections"``. With ``xdg.config_home`` monkeypatched to ``tmp_path``,
-    # the XDG root segment is the path itself (the ``LIES_DATA_SUBDIR``
-    # segment is appended below it), so the YAML lives at
-    # ``tmp_path / "lies" / <name> / "collections"``.
-    cfg_root = tmp_path / "lies" / name / "collections"
-    assert (cfg_root / "alpha.yaml").exists()
+    # Post-cutover (Task 8) the bootstrap writes the library config at
+    # the library singleton (``xdg_data_home / LIES_DATA_SUBDIR / library /
+    # collections / <name> / config.yaml``), not the per-wiki YAML dir.
+    # ``xdg.data_home`` and ``xdg.config_home`` are both monkeypatched
+    # to ``tmp_path`` above, so the library root lands at
+    # ``tmp_path / "lies" / "library" / "collections" / "alpha" / config.yaml``.
+    from lies.library.config_io import config_path_for
+
+    config_path = config_path_for("alpha")
+    assert config_path.exists(), f"expected library config at {config_path}"
+    assert config_path.name == "config.yaml"
+    assert config_path.parent.name == "alpha"

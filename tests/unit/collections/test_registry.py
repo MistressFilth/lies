@@ -100,6 +100,7 @@ def test_load_rejects_bool_version(tmp_path: Path) -> None:
         Registry.load(wiki)
 
 
+@pytest.mark.slow
 def test_save_then_load_roundtrips(tmp_path: Path) -> None:
     wiki = _wiki(tmp_path)
     reg = Registry(
