@@ -17,6 +17,21 @@ All notable changes to LIES are documented here. The format follows
   `memory_service.search()` results. The qmd `#abc123` docid
   format is no longer surfaced to `_wiki_read`.
 
+## [0.37.4] - 2026-09-23
+
+### Added
+- New MCP tool `ask_question(text)` that takes a single multi-word
+  string and parses the `+tag_expr` / `-exclude_tags` filter syntax.
+  Works around Claude Code's `/mcp__lies__answer` slash-command
+  dispatcher, which tokenizes the input on whitespace and discards
+  everything past the first token.
+
+### Fixed
+- Librarian: wiki-side and library-side qmd hits now strip the
+  qmd `docid` field (`#abc123` format) along with `page_id`. The
+  LLM agent was extracting `docid` from search results and passing
+  it to `wiki_read`, which then raised `WikiPageNotFound`.
+
 ## [Unreleased]
 
 - MCP prompt surface: `ask_wiki` and `query_prompt` prompts removed.
