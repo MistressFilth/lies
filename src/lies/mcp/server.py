@@ -34,7 +34,7 @@ except ImportError:  # FastMCP < 3.4.5 with Context.elicit
 
 from lies import __version__, xdg
 from lies.constants import LIES_DATA_SUBDIR
-from lies.errors import WikiAlreadyExists
+from lies.errors import WikiAlreadyExists, WikiNotRegistered
 from lies.lock_errors import WikiFlockUnrepairable, WikiLockBusy
 from lies.mcp.instructions_loader import load_instructions, load_prompt
 from lies.mcp.resolution import resolve_wiki
@@ -1241,13 +1241,42 @@ def _wiki_catalog_impl(name: str | None = None) -> str:
     of one row in ``<wiki_dir>/.lies/catalog.db``. The shape mirrors
     ``lies catalog dump --json``. The empty-catalog case returns ``"[]"``
     so the JSON shape is stable for LLM callers.
+
+    Library mode (no wiki registered, or the resolved wiki's
+    ``data_root`` does not exist on disk) returns a stable envelope
+    ``{"mode": "library", "collections": [...]}`` listing registered
+    library-collection names. The mode discriminator lets an LLM
+    caller distinguish a wiki catalog dump from a library-mode
+    response without parsing the shape.
     """
     import json
+
+    from lies.library.registry import library_collection_names
+
+    try:
+        wiki = resolve_wiki(name)
+    except WikiNotRegistered:
+        # Library mode: no wiki registered for the requested name.
+        # Return an informative envelope rather than crashing so the
+        # MCP caller can recover and route through the library path.
+        return json.dumps(
+            {"mode": "library", "collections": sorted(library_collection_names())},
+            indent=2,
+        )
+
+    if not wiki.data_root.exists():
+        # Defensive: ``Wiki.require`` already vetted ``data_root`` at
+        # construction time, but the directory may have been removed
+        # out-of-band (e.g. the operator ran ``rm -rf`` between two
+        # MCP calls). Treat the same as the unregistered case.
+        return json.dumps(
+            {"mode": "library", "collections": sorted(library_collection_names())},
+            indent=2,
+        )
 
     from lies.memory.catalog import list_pages as _catalog_list_pages
     from lies.memory.catalog import open_catalog as _open_catalog
 
-    wiki = resolve_wiki(name)
     conn = _open_catalog(wiki)
     try:
         pages = _catalog_list_pages(conn)
