@@ -692,22 +692,34 @@ def register_librarian_tools(
         bodies: dict[str, str] = {}
         unknown: list[str] = []
         wiki_ids: list[str] = []
-        library_paths: list[str] = []
+        # Library dispatch pairs each raw input pid (body dict key)
+        # with the bare library path (qmd_get URI argument). This
+        # preserves the existing "key by input pid" semantics while
+        # letting the qmd_get call drop any ``qmd://`` prefix that
+        # the caller included on the input.
+        library_dispatch: list[tuple[str, str]] = []
         for pid in page_ids:
             if pid.startswith("page-"):
                 wiki_ids.append(pid)
-            elif "/" in pid:
-                library_paths.append(pid)
+                continue
+            # qmd's own search results surface library paths as
+            # ``qmd://<collection>/<page>`` (the same URI form qmd_get
+            # accepts). Strip the prefix before classification so the
+            # ``/`` check below doesn't capture it AND so the qmd_get
+            # call doesn't double-prefix into ``qmd://qmd://...``.
+            bare = pid.removeprefix("qmd://") if pid.startswith("qmd://") else pid
+            if "/" in bare:
+                library_dispatch.append((pid, bare))
             else:
                 unknown.append(pid)
         if wiki_ids:
             bodies.update(memory_service.read(wiki_ids))
         lib_root = library_git_root()
-        for path in library_paths:
+        for raw_pid, bare_path in library_dispatch:
             try:
-                bodies[path] = _qmd_get_callable(lib_root, f"qmd://{path}")
+                bodies[raw_pid] = _qmd_get_callable(lib_root, f"qmd://{bare_path}")
             except QmdError:
-                unknown.append(path)
+                unknown.append(raw_pid)
         if unknown:
             from lies.memory.models import WikiPageNotFound
 

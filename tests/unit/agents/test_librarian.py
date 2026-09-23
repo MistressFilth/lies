@@ -735,6 +735,101 @@ def test_wiki_read_unknown_raises() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Fix-A - ``_wiki_read`` accepts ``qmd://``-prefixed library paths
+# ---------------------------------------------------------------------------
+
+
+def test_wiki_read_accepts_qmd_prefixed_library_paths() -> None:
+    """``wiki_read(['qmd://opencode/config.md'])`` reads from the library's qmd chunks.
+
+    Pre-fix bug (live debug session
+    ``f39c9ef8-77a8-4f2d-86b7-a57a48bd82d5``): the LLM agent
+    constructed ``qmd://opencode/config.md``-style identifiers from
+    qmd search results and passed them to ``wiki_read``. The
+    dispatch's ``"/" in pid`` library-path branch captured the full
+    ``qmd://...`` string, and the ``_qmd_get_callable`` call then
+    prepended ANOTHER ``qmd://`` -> ``qmd://qmd://opencode/config.md``
+    -> ``QmdError`` -> ``WikiPageNotFound``. The fix strips a
+    leading ``qmd://`` before the library-path branch and uses the
+    bare path for the qmd_get URI; the body dict still keys by the
+    raw input pid (preserves dedupe-by-input semantics).
+    """
+    from lies.library.registry import library_git_root
+
+    qmd_calls: list[dict[str, Any]] = []
+
+    class _EmptyMemoryService:
+        def read(self, ids: list[str]) -> dict[str, str]:  # pragma: no cover - unreachable
+            raise AssertionError(
+                f"memory_service.read must NOT be called for library paths; got {ids!r}"
+            )
+
+    def fake_qmd_get(cwd: Path, qmd_path: str) -> str:
+        qmd_calls.append({"cwd": cwd, "qmd_path": qmd_path})
+        return f"<body for {qmd_path}>"
+
+    tool_fn = _drive_wiki_read(
+        memory_service=_EmptyMemoryService(),
+        qmd_get_fn=fake_qmd_get,
+    )
+    bodies = tool_fn(None, ["qmd://opencode/config.md"])  # type: ignore[misc]
+
+    # The fix must call qmd_get with a single ``qmd://`` prefix,
+    # never ``qmd://qmd://...``. Library git root is the live one.
+    assert qmd_calls == [{"cwd": library_git_root(), "qmd_path": "qmd://opencode/config.md"}], (
+        "wiki_read must call qmd_get with the qmd:// URI, not double-prefixed"
+    )
+    # Body dict keys by the raw input pid (preserves dedupe-by-input
+    # semantics — see brief's risk note).
+    assert bodies == {"qmd://opencode/config.md": "<body for qmd://opencode/config.md>"}
+
+
+def test_wiki_read_dispatches_mixed_wiki_and_qmd_prefixed_library_ids() -> None:
+    """``wiki_read(['page-<sha1>', 'qmd://foo/bar.md'])`` dispatches each correctly.
+
+    Pins the source-aware dispatch end-to-end: the wiki ID routes
+    to ``memory_service.read`` and the ``qmd://``-prefixed library
+    path routes to ``qmd_get`` against ``library_git_root()`` with
+    a single ``qmd://`` URI prefix. Neither side leaks into the
+    other's downstream call.
+    """
+    from lies.library.registry import library_git_root
+
+    seen_wiki_ids: list[list[str]] = []
+    qmd_calls: list[dict[str, Any]] = []
+
+    class _MixedMemoryService:
+        def read(self, ids: list[str]) -> dict[str, str]:
+            seen_wiki_ids.append(list(ids))
+            return {pid: f"<wiki body for {pid}>" for pid in ids}
+
+    def fake_qmd_get(cwd: Path, qmd_path: str) -> str:
+        qmd_calls.append({"cwd": cwd, "qmd_path": qmd_path})
+        return f"<library body for {qmd_path}>"
+
+    tool_fn = _drive_wiki_read(
+        memory_service=_MixedMemoryService(),
+        qmd_get_fn=fake_qmd_get,
+    )
+    bodies = tool_fn(  # type: ignore[misc]
+        None,
+        ["page-abc123def456", "qmd://foo/bar.md"],
+    )
+
+    # Wiki side: only the wiki ID was passed to memory_service.read,
+    # not the qmd://-prefixed library path.
+    assert seen_wiki_ids == [["page-abc123def456"]]
+    # Library side: single qmd:// prefix, not double.
+    assert qmd_calls == [{"cwd": library_git_root(), "qmd_path": "qmd://foo/bar.md"}]
+    # Body dict keys by the raw input (wiki key bare, library key
+    # carries its original qmd:// prefix).
+    assert bodies == {
+        "page-abc123def456": "<wiki body for page-abc123def456>",
+        "qmd://foo/bar.md": "<library body for qmd://foo/bar.md>",
+    }
+
+
+# ---------------------------------------------------------------------------
 # Fix-D2-extend - strip qmd ``docid`` from wiki and library hits
 # ---------------------------------------------------------------------------
 
