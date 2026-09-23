@@ -351,10 +351,34 @@ def _split_argv_token_for_ops(token: str) -> list[str]:
         raise TagExprParseError(f"unparseable token {token!r}: {exc}") from exc
 
 
+def _render_exclude_body(node: TagExpr) -> str:
+    """Render a TagExpr AST to a body-only flat string (no qualifier prefix).
+
+    Used by the CLI's translator to keep the legacy
+    :class:`ResolvedTagFilter.exclude` contract — a single string with no
+    qualifier prefix — working while the parser now emits an AST. The
+    qualifier lives on each ``Include`` atom in the tree; for the
+    single-atom case this matches the F15 default ``None`` semantics
+    (the legacy translator drops the qualifier). Compound excludes
+    render as a joined operator-expression; Task 3 will refactor
+    consumers to read the AST directly rather than parsing the flat form.
+
+    Inverse of :func:`parse_tokens` restricted to the body — qualifiers
+    round-trip via :func:`_render_include` / :func:`parse_tokens` only.
+    """
+    if isinstance(node, Include):
+        return node.tag
+    if isinstance(node, And):
+        return f"{_render_exclude_body(node.left)}&{_render_exclude_body(node.right)}"
+    if isinstance(node, Or):
+        return f"{_render_exclude_body(node.left)}|{_render_exclude_body(node.right)}"
+    raise TypeError(f"unexpected node type: {type(node).__name__}")
+
+
 def parse_query_argv(
     argv: list[str],
-) -> tuple[str, TagExpr | None, str | None, Literal["t", "c"] | None]:
-    """Walk argv, peel off optional `+` chain and optional `-` atom.
+) -> tuple[str, TagExpr | None, TagExpr | None, None]:
+    """Walk argv, peel off optional `+` chain and optional `-` chain.
 
     The argv here is the post-Typer positional list. Typer has
     already consumed `--flag` values; what remains is positional.
@@ -363,25 +387,29 @@ def parse_query_argv(
       - If the first token starts with `+`, the chain extends
         across subsequent tokens while the previous token ended
         in `&` or `|`.
-      - If the next token (immediately after the chain) starts
-        with `-`, it is the exclude atom. The atom may carry a
-        ``t:`` / ``c:`` qualifier prefix (F15); the prefix is
-        stripped here and returned as ``exclude_qualifier``.
+      - If the next token (immediately after the include chain)
+        starts with `-`, peel a compound ``-`` chain that mirrors
+        the include path's split + extend model: each ``-`` atom
+        may carry a ``t:`` / ``c:`` qualifier prefix (F15), and
+        the chain extends while the next argv token starts with
+        ``&`` / ``|`` (the operator-then-atom case) or the previous
+        chain token ended with ``&`` / ``|``. ``&`` binds tighter
+        than ``|`` (same precedence as the include path).
       - The remaining tokens join with single spaces to form
         the question.
 
-    Returns ``(question, include_ast, exclude_tag, exclude_qualifier)``.
-    ``exclude_qualifier`` is ``None`` for an unqualified exclude
-    (the ``t`` alias) or ``"t"`` / ``"c"`` for an explicit prefix.
+    Returns ``(question, include_ast, exclude_ast, None)``. The
+    fourth element is always ``None`` because the qualifier lives
+    on each ``Include`` atom in the tree; callers that need a
+    flat string can render the AST via :func:`_render_include`
+    (qualified form, includes the prefix) or :func:`_render_exclude_body`
+    (body-only form, matches the legacy ``ResolvedTagFilter.exclude``
+    contract).
 
     Raises TagExprParseError on grammar errors.
     """
     if not argv:
         raise TagExprParseError("query argv is empty")
-
-    chain_tokens: list[str] = []
-    exclude_tag: str | None = None
-    exclude_qualifier: Literal["t", "c"] | None = None
 
     # Peel the optional `+` chain.
     if argv[0].startswith("+"):
@@ -429,24 +457,72 @@ def parse_query_argv(
         include_ast = None
         i = 0
 
-    # Peel the optional single `-` atom. The atom may carry a
-    # ``t:`` / ``c:`` qualifier prefix (F15). Bad qualifiers raise
-    # ``TagExprParseError`` here, mirroring the include chain's
-    # parse_atom error path.
+    # Peel the optional `-` chain. The chain mirrors the include
+    # path's split + extend model: the first argv token's body
+    # (after stripping the leading ``-``) is one atom; the chain
+    # extends across subsequent argv tokens that START with ``&``
+    # / ``|`` (the operator-then-atom case from realistic shell
+    # splitting). Embedded operators inside the first argv token
+    # (e.g. ``-c:foo&c:bar`` as one shell word) flow through the
+    # same ``_split_argv_token_for_ops`` helper the include path
+    # uses, so the ``&`` / ``|`` split semantics are symmetric
+    # across both chains. Each atom may carry a ``t:`` / ``c:``
+    # qualifier prefix (F15); bad prefixes raise
+    # ``TagExprParseError`` via :func:`check_qualifier` here,
+    # mirroring the include chain's parse_atom error path.
     if i < len(argv) and argv[i].startswith("-"):
         body = argv[i][1:]
         if not body:
             raise TagExprParseError("'-' without atom", position=i)
-        exclude_qualifier, exclude_tag = check_qualifier(body, position=i)
+        check_qualifier(body, position=i)
+        exclude_tokens: list[str] = [body]
         i += 1
+        while i < len(argv) and argv[i].startswith(("&", "|")):
+            # Continuation token: starts with the binary operator.
+            # The operator is consumed here (``_split_argv_token_for_ops``
+            # will re-emit it as its own flat-list element); the rest
+            # of the token is the next atom and must validate as a
+            # ``t:`` / ``c:`` qualified atom. Append the full token
+            # (including the leading operator) so the per-token
+            # operator split produces a clean flat list with one
+            # operator between atoms.
+            tok = argv[i]
+            atom_body = tok[1:]
+            if not atom_body:
+                raise TagExprParseError(
+                    f"dangling operator at end of exclude chain: {tok!r}",
+                    position=i,
+                )
+            check_qualifier(atom_body, position=i)
+            exclude_tokens.append(tok)
+            i += 1
+        # If the chain ended with `&` or `|`, peel that dangling op
+        # into a parse error before going further (mirrors the
+        # include path's post-loop dangling check).
+        if exclude_tokens and exclude_tokens[-1].endswith(("&", "|")):
+            raise TagExprParseError(
+                f"dangling operator at end of exclude chain: {exclude_tokens[-1]!r}",
+                position=len(argv) - 1,
+            )
+        # Flatten via the same argv-split helper used by the
+        # include path: operators outside any quoted segment
+        # become their own tokens; the leading operator on a
+        # continuation argv token flows through to the flat list
+        # exactly once. parse_tokens then builds the AST.
+        flat_exclude: list[str] = []
+        for ct in exclude_tokens:
+            flat_exclude.extend(_split_argv_token_for_ops(ct))
+        exclude_ast = parse_tokens(flat_exclude)
+    else:
+        exclude_ast = None
 
     # Remaining tokens are the question.
     question_tokens = argv[i:]
-    if include_ast is not None or exclude_tag is not None:
+    if include_ast is not None or exclude_ast is not None:
         if not question_tokens:
             raise TagExprParseError("filter present but no question")
     question = " ".join(question_tokens)
-    return question, include_ast, exclude_tag, exclude_qualifier
+    return question, include_ast, exclude_ast, None
 
 
 # ---------------------------------------------------------------------------

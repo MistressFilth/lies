@@ -154,47 +154,49 @@ def test_parse_include_errors(bad):
 )
 def test_parse_query_argv_happy(argv, expected_filter, expected_exclude, expected_query):
     # expected_filter as string is re-parsed to compare; we
-    # compare on (question, include_ast.render() if include else None, exclude).
+    # compare on (question, include_ast.render() if include else None,
+    # exclude_ast.render() if exclude else None).
     from lies.query.tag_expr import _render_include  # see step 7
 
-    question, include_ast, exclude, exclude_qualifier = parse_query_argv(argv)
+    question, include_ast, exclude_ast, _ = parse_query_argv(argv)
     assert question == expected_query
     if expected_filter is None:
         assert include_ast is None
     else:
         assert include_ast is not None
         assert _render_include(include_ast) == expected_filter
-    assert exclude == expected_exclude
-    # Unqualified excludes (the t-alias default) yield None.
-    assert exclude_qualifier is None
+    if expected_exclude is None:
+        assert exclude_ast is None
+    else:
+        assert exclude_ast is not None
+        # The exclude half keeps its qualifier on each Include atom; render
+        # the AST to compare against the expected flat-string spelling.
+        assert _render_include(exclude_ast) == expected_exclude
 
 
 def test_parse_query_argv_with_exclude():
     argv = ["+airflow&provider", "-amazon", "compare", "X", "and", "Y"]
-    question, include_ast, exclude, exclude_qualifier = parse_query_argv(argv)
+    question, include_ast, exclude_ast, _ = parse_query_argv(argv)
     assert question == "compare X and Y"
-    assert exclude == "amazon"
-    assert exclude_qualifier is None
+    assert exclude_ast == Include("amazon")
 
 
 def test_parse_query_argv_with_c_qualifier_exclude():
-    """``-c:airflow`` strips the prefix and returns qualifier='c'."""
+    """``-c:airflow`` keeps the qualifier on the Include atom."""
     argv = ["+t:airflow", "-c:airflow", "what", "is", "X?"]
-    question, include_ast, exclude, exclude_qualifier = parse_query_argv(argv)
+    question, include_ast, exclude_ast, _ = parse_query_argv(argv)
     assert question == "what is X?"
     assert include_ast == Include("airflow", qualifier="t")
-    assert exclude == "airflow"
-    assert exclude_qualifier == "c"
+    assert exclude_ast == Include("airflow", qualifier="c")
 
 
 def test_parse_query_argv_with_t_qualifier_exclude():
-    """``-t:airflow`` returns qualifier='t' (the explicit alias)."""
+    """``-t:airflow`` keeps the explicit t: qualifier on the Include atom."""
     argv = ["+airflow", "-t:airflow", "what", "is", "X?"]
-    question, include_ast, exclude, exclude_qualifier = parse_query_argv(argv)
+    question, include_ast, exclude_ast, _ = parse_query_argv(argv)
     assert question == "what is X?"
     assert include_ast == Include("airflow")
-    assert exclude == "airflow"
-    assert exclude_qualifier == "t"
+    assert exclude_ast == Include("airflow", qualifier="t")
 
 
 def test_parse_query_argv_bad_exclude_qualifier_errors():
@@ -237,21 +239,19 @@ def test_parse_query_argv_realistic_bash_quoted_tag():
     internal whitespace as a single atom.
     """
     argv = ["+airflow provider", "what", "is", "X?"]
-    question, include_ast, exclude, exclude_qualifier = parse_query_argv(argv)
+    question, include_ast, exclude_ast, _ = parse_query_argv(argv)
     assert question == "what is X?"
     assert include_ast == Include("airflow provider")
-    assert exclude is None
-    assert exclude_qualifier is None
+    assert exclude_ast is None
 
 
 def test_parse_query_argv_realistic_bash_quoted_tag_and_exclude():
     """Realistic bash: +"airflow provider" -amazon compare X and Y."""
     argv = ["+airflow provider", "-amazon", "compare", "X", "and", "Y"]
-    question, include_ast, exclude, exclude_qualifier = parse_query_argv(argv)
+    question, include_ast, exclude_ast, _ = parse_query_argv(argv)
     assert question == "compare X and Y"
     assert include_ast == Include("airflow provider")
-    assert exclude == "amazon"
-    assert exclude_qualifier is None
+    assert exclude_ast == Include("amazon")
 
 
 def test_render_include_round_trip_multiatom_with_internal_space():
@@ -260,6 +260,86 @@ def test_render_include_round_trip_multiatom_with_internal_space():
     rendered = _render_include(ast)
     assert rendered == '"airflow provider"'
     assert parse_include(rendered) == ast
+
+
+# --- F15 exclude compound chain (Task 2) --------------------------------
+
+
+def test_parse_query_argv_exclude_and_chain():
+    """``-c:foo&c:bar`` builds an And-tree on the exclude half.
+
+    Mirrors the include chain's operator split: ``_split_argv_token_for_ops``
+    breaks the embedded ``&`` outside any quoted segment, then ``parse_tokens``
+    builds the tree. The fourth tuple element is always ``None`` because
+    the qualifier lives on each ``Include`` atom.
+    """
+    argv = ["-c:foo&c:bar", "What is X?"]
+    question, include_ast, exclude_ast, fourth = parse_query_argv(argv)
+    assert question == "What is X?"
+    assert include_ast is None
+    assert exclude_ast == And(
+        Include("foo", qualifier="c"),
+        Include("bar", qualifier="c"),
+    )
+    assert fourth is None
+
+
+def test_parse_query_argv_exclude_or_chain():
+    """``-c:foo|c:bar`` builds an Or-tree on the exclude half.
+
+    ``|`` is the lower-precedence binary operator; ``parse_tokens`` builds
+    the ``Or`` node directly. Same qualifier-on-atom contract as And.
+    """
+    argv = ["-c:foo|c:bar", "What is X?"]
+    question, include_ast, exclude_ast, fourth = parse_query_argv(argv)
+    assert question == "What is X?"
+    assert include_ast is None
+    assert exclude_ast == Or(
+        Include("foo", qualifier="c"),
+        Include("bar", qualifier="c"),
+    )
+    assert fourth is None
+
+
+def test_parse_query_argv_exclude_precedence_and_binds_tighter():
+    """``-c:foo&c:bar|t:baz`` builds Or(And(...), Include) — & first.
+
+    Mirrors the include chain's precedence: ``&`` binds tighter than ``|``,
+    so the AST is ``Or(And(Include("foo", "c"), Include("bar", "c")), Include("baz", "t"))``.
+    Regression for the case where the original exclude peel only took one
+    atom and silently dropped the rest of the chain (session 82a266a9).
+    """
+    argv = ["-c:foo&c:bar|t:baz", "What is X?"]
+    question, include_ast, exclude_ast, fourth = parse_query_argv(argv)
+    assert question == "What is X?"
+    assert include_ast is None
+    assert exclude_ast == Or(
+        And(
+            Include("foo", qualifier="c"),
+            Include("bar", qualifier="c"),
+        ),
+        Include("baz", qualifier="t"),
+    )
+    assert fourth is None
+
+
+def test_parse_query_argv_exclude_chain_across_argv_tokens():
+    """``-c:foo &c:bar`` (split across argv tokens) builds the And-tree.
+
+    Realistic bash delivers operator-then-atom as a separate argv token
+    (e.g. ``-c:foo '&c:bar' What?``); the loop absorbs it when the next
+    token starts with ``&`` / ``|``. The flat list after splitting is
+    ``["c:foo", "&", "c:bar"]`` and ``parse_tokens`` builds the And.
+    """
+    argv = ["-c:foo", "&c:bar", "What?"]
+    question, include_ast, exclude_ast, fourth = parse_query_argv(argv)
+    assert question == "What?"
+    assert include_ast is None
+    assert exclude_ast == And(
+        Include("foo", qualifier="c"),
+        Include("bar", qualifier="c"),
+    )
+    assert fourth is None
 
 
 # --- F15 argv token split preserves c:/t: qualifier ---------------------

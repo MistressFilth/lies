@@ -823,12 +823,16 @@ def ask_question(text: str) -> dict[str, object]:
         return {"error": "empty input", "original": text}
 
     try:
-        parsed_question, include_ast, exclude, _qualifier = parse_query_argv(argv)
+        parsed_question, include_ast, exclude_ast, _ = parse_query_argv(argv)
     except (TagExprParseError, TagExprEmpty) as exc:
         return {"error": str(exc), "original": text}
 
     tag_expr = _render_include(include_ast) if include_ast is not None else None
-    exclude_tags = [exclude] if exclude is not None else []
+    # ``_render_include`` handles ``Include`` / ``And`` / ``Or`` trees so
+    # compound excludes round-trip correctly through the MCP boundary; the
+    # orchestrator still receives ``exclude_tags`` as a single-element
+    # list, matching the F18 librarian's list contract.
+    exclude_tags = [_render_include(exclude_ast)] if exclude_ast is not None else []
 
     return {
         "question": parsed_question,
@@ -1484,12 +1488,12 @@ def ask_wiki_answer(text: str) -> str:
         return _filter_parse_error_prompt(text, ValueError("empty input"))
 
     try:
-        parsed_question, include_ast, exclude, _qualifier = parse_query_argv(argv)
+        parsed_question, include_ast, exclude_ast, _ = parse_query_argv(argv)
     except (TagExprParseError, TagExprEmpty) as exc:
         return _filter_parse_error_prompt(text, exc)
 
     tag_expr = _render_include(include_ast) if include_ast is not None else None
-    exclude_tags = [exclude] if exclude is not None else []
+    exclude_tags = [_render_include(exclude_ast)] if exclude_ast is not None else []
 
     return _render_answer_prompt_body(
         question=parsed_question,

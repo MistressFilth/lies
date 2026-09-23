@@ -201,6 +201,7 @@ def query(
         TagExprEmpty,
         TagExprParseError,
         TagExprUnknown,
+        _render_exclude_body,
         check_qualifier,
         parse,
         parse_query_argv,
@@ -234,7 +235,18 @@ def query(
             if exclude_tag is not None:
                 exclude_qualifier, exclude = check_qualifier(exclude_tag, position=0)
         else:
-            question, include_ast, exclude, exclude_qualifier = parse_query_argv(tokens)
+            # Task 2 (f15-exclude-compound): parse_query_argv now returns a
+            # TagExpr | None for the exclude half (previously a flat
+            # string). The rest of the CLI's translator still consumes a
+            # flat string via ``ResolvedTagFilter.exclude``; render the
+            # AST back to a body-only string here so the legacy
+            # translator keeps working until Task 3 fully migrates to the
+            # AST form. The qualifier info lives on each ``Include`` atom
+            # in the tree; the legacy translator drops it (matches the F15
+            # default ``None`` semantics for single-atom excludes).
+            question, include_ast, exclude_ast, _ = parse_query_argv(tokens)
+            exclude = _render_exclude_body(exclude_ast) if exclude_ast is not None else None
+            exclude_qualifier = None
     except (TagExprParseError, TagExprEmpty) as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=2) from exc
