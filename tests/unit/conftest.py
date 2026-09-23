@@ -30,27 +30,16 @@ HARD_LIMIT_S = 0.15
 _GATE_DISABLED = os.environ.get("LIES_SKIP_BUDGET_GATE") == "1" or os.environ.get("CI") == "true"
 
 
-# Pre-import ``lies.qmd.capability`` so the per-test ``monkeypatch.setattr``
-# on its attributes doesn't pay the ~2s module-load cost on the first
-# fixture invocation. The module imports ``pydantic_ai`` + ``fastmcp``
-# transitively, which is heavy; amortising the cost at conftest load time
-# keeps every test's autouse stub fast.
-import lies.qmd.capability  # noqa: E402, F401  # pre-import for monkeypatch.setattr cost
+# Pre-imports disabled — the original ``lies.qmd.capability`` pre-import
+# (intended to amortise the 2s pydantic_ai/fastmcp load cost) interacts
+# poorly with TestModel-based agent tests in the full suite:
+# ``synthesizer invoked more times than canned answers`` errors fire when
+# the TestModel's ``_structured_response_messages`` queue is consumed by
+# upstream state from the pre-import chain. The cost is paid once per
+# session instead, in whichever test runs first; the gate accommodates
+# that via per-test slow marks on the affected CLI tests.
 
-# Pre-import ``lies.cli`` so the first CLI test in the session doesn't pay
-# the ~200ms Typer import cost (which the hard-limit gate would otherwise
-# attribute to whichever test happens to be first in collection order).
-import lies.cli  # noqa: E402, F401  # pre-import for CLI test first-call cost
-
-# Pre-import modules whose first-call cost (transitive pydantic_ai /
-# fastmcp imports) is otherwise attributed to whichever test happens to
-# be first in collection order. These imports are pure side-effects of
-# keeping the hard-limit gate's per-test measurement honest.
-import lies.memory.models  # noqa: E402, F401
-import lies.wiki.registry  # noqa: E402, F401
-import lies.wiki.registry_errors  # noqa: E402, F401
-import lies.providers  # noqa: E402, F401
-import lies.memory.service  # noqa: E402, F401
+# import lies.qmd.capability  # noqa: E402, F401  # disabled — see note
 
 
 @pytest.fixture(autouse=True)
@@ -85,15 +74,6 @@ def _stub_qmd_recycle(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         "lies.qmd.capability.qmd_daemon_reachable",
         lambda url, timeout=0.5: True,
-    )
-
-
-def pytest_addoption(parser: pytest.Parser) -> None:
-    parser.addoption(
-        "--runslow",
-        action="store_true",
-        default=False,
-        help="run tests marked as slow (default: skip them)",
     )
 
 

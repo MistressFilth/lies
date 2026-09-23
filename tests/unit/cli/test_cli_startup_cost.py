@@ -77,6 +77,7 @@ def test_import_lies_cli_under_threshold() -> None:
 
 
 @pytest.mark.skipif(os.environ.get("SKIP_PERF") == "1", reason="perf test skipped")
+@pytest.mark.slow
 def test_lies_help_wall_clock_under_threshold() -> None:
     """`lies --help` (full wall clock) should not exceed the budget.
 

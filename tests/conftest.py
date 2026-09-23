@@ -14,6 +14,26 @@ from lies.wiki.wiki import Wiki
 FIXTURE_WIKI = Path(__file__).parent / "fixtures" / "sample-wiki"
 
 
+def pytest_addoption(parser: pytest.Parser) -> None:
+    """Register the ``--runslow`` flag at the rootdir conftest.
+
+    Pytest parses CLI args before conftest.py files deeper in the tree
+    are loaded, so a ``--runslow`` flag registered in
+    ``tests/unit/conftest.py`` is rejected with ``unrecognized
+    arguments`` when pytest is invoked at the repo root with a path
+    argument (e.g. ``pytest tests/ --runslow``). Registering here — the
+    first conftest pytest loads — makes the flag visible at CLI parse
+    time across every invocation shape (``pytest``, ``pytest
+    tests/unit/``, ``pytest tests/``).
+    """
+    parser.addoption(
+        "--runslow",
+        action="store_true",
+        default=False,
+        help="run tests marked as slow (default: skip them)",
+    )
+
+
 def make_wiki(name: str, data_root: Path) -> Wiki:
     """Build a Wiki rooted at ``data_root`` with all five role roots set.
 
