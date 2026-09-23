@@ -805,7 +805,7 @@ wheels = [
 
 [[package]]
 name = "lies"
-version = "0.37.6"
+version = "0.37.7"
 source = { editable = "." }
 dependencies = [
     { name = "ahocorasick-rs" },

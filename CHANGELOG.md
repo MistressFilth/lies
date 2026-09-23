@@ -34,6 +34,28 @@ All notable changes to LIES are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.37.7] - 2026-09-23
+
+### Fixed
+- Librarian `_wiki_search` now applies `exclude_expr` site-side: hits
+  whose path's first segment matches the exclude AST are dropped
+  before the merged list is returned. Previously the librarian prompt
+  instructed the LLM to pass `exclude_expr` to `wiki_search`, but the
+  tool did not accept the kwarg; the LLM retried until it exhausted
+  max output retries and failed with `UnexpectedModelBehavior`. With
+  this fix, `answer(exclude_tags=[...])` works for single-atom,
+  AND-compound, and OR-compound exclude ASTs. Surfaced by sessions
+  ea703e3b and bf5a4db9. (`673fc5b`)
+- `parse_query_argv` now accepts bare-operator argv tokens in both
+  include and exclude chains. Realistic shell splitting (e.g.
+  `shlex.split("-c:foo & c:bar")` → `["-c:foo", "&", "c:bar"]`)
+  produces argv lists where the binary operator is its own token; the
+  chain-peel loops now extend on either side (previous-token-ends-in-op
+  OR current-token-is-op). The exclude loop also handles the
+  bare-operator form by absorbing the following argv token as the
+  trailing atom. Surfaced by live MCP testing of sessions ea703e3b +
+  bf5a4db9. (`673fc5b`)
+
 ## [0.37.6] - 2026-09-23
 
 ### Fixed
