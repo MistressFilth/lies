@@ -18,7 +18,7 @@ def _excerpt(slug: str, spans: list[Span]) -> PageExcerpt:
 def test_validate_claim_citations_drops_missing_claim() -> None:
     lo = LibrarianOutput(
         tag_expr=None,
-        exclude_tags=[],
+        exclude_expr=None,
         excerpts=[
             _excerpt("a", [Span(heading_path=[], body="body", code_fence=False, start_line=1)])
         ],
@@ -33,7 +33,7 @@ def test_validate_claim_citations_drops_missing_claim() -> None:
 def test_validate_claim_citations_drops_bad_index() -> None:
     lo = LibrarianOutput(
         tag_expr=None,
-        exclude_tags=[],
+        exclude_expr=None,
         excerpts=[
             _excerpt("a", [Span(heading_path=[], body="body", code_fence=False, start_line=1)])
         ],
@@ -48,7 +48,7 @@ def test_validate_claim_citations_drops_bad_index() -> None:
 def test_validate_claim_citations_drops_quote_not_in_excerpt() -> None:
     lo = LibrarianOutput(
         tag_expr=None,
-        exclude_tags=[],
+        exclude_expr=None,
         excerpts=[
             _excerpt(
                 "a", [Span(heading_path=[], body="real body text", code_fence=False, start_line=1)]
@@ -65,7 +65,7 @@ def test_validate_claim_citations_drops_quote_not_in_excerpt() -> None:
 def test_validate_claim_citations_keeps_valid() -> None:
     lo = LibrarianOutput(
         tag_expr=None,
-        exclude_tags=[],
+        exclude_expr=None,
         excerpts=[
             _excerpt(
                 "a",
@@ -84,7 +84,7 @@ def test_thread_heading_paths_sets_citation_heading_path() -> None:
     span = Span(heading_path=["H1", "H2"], body="real body text", code_fence=False, start_line=1)
     lo = LibrarianOutput(
         tag_expr=None,
-        exclude_tags=[],
+        exclude_expr=None,
         excerpts=[_excerpt("a", [span])],
         distinct_pages=1,
     )
@@ -98,7 +98,7 @@ def test_thread_heading_paths_handles_empty_heading_path() -> None:
     span = Span(heading_path=[], body="body", code_fence=False, start_line=1)
     lo = LibrarianOutput(
         tag_expr=None,
-        exclude_tags=[],
+        exclude_expr=None,
         excerpts=[_excerpt("a", [span])],
         distinct_pages=1,
     )

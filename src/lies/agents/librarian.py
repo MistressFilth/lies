@@ -40,13 +40,23 @@ class LibrarianDeps:
         question: The user's natural-language question.
         tag_expr: Body of a single include token (no leading sigil),
             e.g. ``'a&b|c'``. ``None`` for untagged queries.
-        exclude_tags: NOT tags without leading sigil.
+        exclude_expr: Compiled exclude AST (Task 3 /
+            f15-exclude-compound). ``None`` when no ``-`` chain was
+            supplied. The dep carries the AST rather than a flat
+            ``list[str]`` because the F15 grammar now accepts
+            compound excludes (``-c:foo&c:bar``, ``-c:foo|c:bar``)
+            whose per-collection dispatch walks the tree. The
+            historical ``list[str]`` contract was retired in Task 3
+            along with the flat-string ``ResolvedTagFilter.exclude``
+            field.
         top_k: Maximum number of excerpts to return (default 5).
     """
 
     question: str
     tag_expr: str | None
-    exclude_tags: list[str]
+    exclude_expr: Any  # TagExpr | None AST (Task 3); Any at runtime so
+    # pydantic-ai's TypeAdapter doesn't try to build a schema for
+    # TagExpr (a stdlib @dataclass, not pydantic).
     top_k: int = 5
 
 
@@ -93,7 +103,9 @@ class LibrarianOutput:
     """
 
     tag_expr: str | None
-    exclude_tags: list[str]
+    exclude_expr: Any  # TagExpr | None AST (Task 3); Any at runtime so
+    # pydantic-ai's TypeAdapter doesn't try to build a schema for
+    # TagExpr (a stdlib @dataclass, not pydantic).
     excerpts: list[PageExcerpt]
     distinct_pages: int
     no_coverage: bool = False
@@ -196,7 +208,8 @@ library is the primary surface and the wiki is the secondary.
 4. Build `tag_expr` as a `|`-union of matched tags. When nothing
    intersects, run UNTAGGED (`tag_expr=None`). An empty registry is
    also untagged; note it in the bundle.
-5. Pass the caller's `exclude_tags` through to `wiki_search`
+5. The caller's `exclude_expr` is a compiled `TagExpr` AST (Task 3
+   / f15-exclude-compound). Pass it through to `wiki_search`
    unchanged so the daemon enforces the exclusion site-side.
 
 ## 2. Search (dual-surface)
@@ -244,7 +257,7 @@ Emit a JSON evidence bundle:
 ```json
 {
   "tag_expr": "<chosen union, or null when untagged>",
-  "exclude_tags": [...],
+  "exclude_expr": "<compiled TagExpr AST or null>",
   "excerpts": [
     {"collection": "<collection>", "slug": "<docid>", "title": "<page title>", "spans": [<Span objects>]}
   ],
@@ -349,7 +362,7 @@ def register_librarian_tools(
     Tools are defined per the librarian's 4-step contract
     (classify → search → read → return). The closures bind ``wiki``
     and ``memory_service`` so the librarian's deps type
-    (:class:`LibrarianDeps` — question / tag_expr / exclude_tags /
+    (:class:`LibrarianDeps` — question / tag_expr / exclude_expr /
     top_k) does not widen to carry the wiki context; the agent's
     typed deps surface stays narrow while the tools see the full
     per-wiki service.

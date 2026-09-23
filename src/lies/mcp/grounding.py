@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
     from lies.markdown_spans import Span
+    from lies.query.tag_expr import TagExpr
 
 
 # Module-level import of the librarian factory so callers (and tests)
@@ -66,7 +67,12 @@ class ArchivistDigest:
     Attributes:
         question: Echoed back for caller verification.
         tag_expr: Chosen union (``None`` when untagged).
-        exclude_tags: NOT tags the caller passed through.
+        exclude_expr: Compiled NOT AST the caller passed through
+            (Task 3 / f15-exclude-compound). ``None`` when no
+            ``-`` chain was supplied. The historical
+            ``exclude_tags: list[str]`` contract was retired along
+            with ``ResolvedTagFilter.exclude`` so the AST threads
+            through to the librarian unchanged.
         citations: Snippets, one per retrieved excerpt.
         no_coverage: True when the F18 librarian's bundle reports a
             scope miss on a populated wiki (corpus non-empty AND no
@@ -77,7 +83,7 @@ class ArchivistDigest:
 
     question: str
     tag_expr: str | None
-    exclude_tags: list[str]
+    exclude_expr: "TagExpr | None"
     citations: list[CitationSnippet]
     no_coverage: bool
     distinct_pages: int
@@ -152,14 +158,14 @@ def pick_first_prose_span(spans: "list[Span]") -> "Span | None":
 def ground(
     question: str,
     tag_expr: str | None = None,
-    exclude_tags: "list[str] | None" = None,
+    exclude_expr: "TagExpr | None" = None,
     top_k: int = 3,
     *,
     wiki_name: str | None = None,
 ) -> ArchivistDigest:
     """Return a grounding digest for ``question``.
 
-    Translates ``tag_expr`` / ``exclude_tags`` via the F15 tag-filter
+    Translates ``tag_expr`` / ``exclude_expr`` via the F15 tag-filter
     dispatch, calls the F18 librarian, and trims each excerpt to a
     ≤200-char grounding snippet. The caller renders the result as
     ``[[slug]]: "snippet"`` per ask's grounding form (NOT F19's long
@@ -169,9 +175,12 @@ def ground(
         question: The natural-language question to ground.
         tag_expr: Body of a single include expression (no leading
             sigil), e.g. ``"airflow&postgres"``. ``None`` for untagged.
-        exclude_tags: NOT tags without leading sigil. The F15 grammar
-            permits at most one; passing more is forwarded to the
-            librarian unchanged.
+        exclude_expr: Compiled NOT AST (Task 3 / f15-exclude-compound).
+            ``None`` when no ``-`` chain was supplied. The historical
+            ``exclude_tags: list[str]`` parameter was retired in
+            Task 3 along with ``ResolvedTagFilter.exclude``; callers
+            build the AST via the CLI / MCP parser and thread it
+            through here unchanged.
         top_k: Maximum excerpts requested from the librarian (clamped
             to ``[1, 10]``). The librarian honors the request;
             ``ground`` does not re-truncate its output.
@@ -194,7 +203,6 @@ def ground(
         top_k = 1
     elif top_k > 10:
         top_k = 10
-    exclude_list: list[str] = list(exclude_tags or [])
 
     # F15 tag-filter dispatch: parse + validate include. Excludes are
     # passed through to the librarian unchanged (the librarian owns
@@ -303,7 +311,7 @@ def ground(
                 return ArchivistDigest(
                     question=question,
                     tag_expr=resolved_tag_expr,
-                    exclude_tags=exclude_list,
+                    exclude_expr=exclude_expr,
                     citations=[],
                     no_coverage=True,
                     distinct_pages=0,
@@ -312,7 +320,7 @@ def ground(
     deps = LibrarianDeps(
         question=question,
         tag_expr=resolved_tag_expr,
-        exclude_tags=exclude_list,
+        exclude_expr=exclude_expr,
         top_k=top_k,
     )
 
@@ -336,7 +344,7 @@ def ground(
         return ArchivistDigest(
             question=question,
             tag_expr=resolved_tag_expr,
-            exclude_tags=exclude_list,
+            exclude_expr=exclude_expr,
             citations=[],
             no_coverage=True,
             distinct_pages=0,
@@ -383,7 +391,7 @@ def ground(
     return ArchivistDigest(
         question=question,
         tag_expr=resolved_tag_expr,
-        exclude_tags=exclude_list,
+        exclude_expr=exclude_expr,
         citations=citations,
         no_coverage=no_coverage,
         distinct_pages=len({c.slug for c in citations}),

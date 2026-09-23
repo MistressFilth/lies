@@ -559,18 +559,75 @@ def test_round_trip_with_qualifier():
     assert reparsed == original
 
 
-def test_resolved_tag_filter_default_qualifier():
-    """ResolvedTagFilter accepts the new exclude_qualifier field with default None."""
-    f = ResolvedTagFilter(include=None, exclude="python")
-    assert f.exclude_qualifier is None
+def test_resolved_tag_filter_exclude_carries_ast():
+    """Task 3: ``ResolvedTagFilter.exclude`` is a ``TagExpr | None`` AST.
+
+    The flat-string ``exclude`` field was retired in favor of the
+    same ``TagExpr`` AST shape the include side already used, so
+    compound excludes (``-c:foo&c:bar``, ``-c:foo|c:bar``) thread
+    through unchanged. The historical ``exclude_qualifier`` field
+    is gone — the qualifier now lives on each ``Include`` atom in
+    the tree.
+    """
+    exclude_tree = Or(Include("foo", qualifier="c"), Include("bar", qualifier="c"))
+    f = ResolvedTagFilter(include=None, exclude=exclude_tree)
+    assert f.exclude == exclude_tree
+    # The historical ``exclude_qualifier`` attribute is gone — the
+    # qualifier lives on each Include atom now.
+    assert not hasattr(f, "exclude_qualifier")
 
 
-def test_resolved_tag_filter_with_exclude_qualifier():
-    f = ResolvedTagFilter(include=None, exclude="python", exclude_qualifier="c")
-    assert f.exclude_qualifier == "c"
+def test_resolved_tag_filter_exclude_and_tree():
+    """Compound ``-c:foo&c:bar`` carries the And-tree on exclude."""
+    exclude_tree = And(Include("foo", qualifier="c"), Include("bar", qualifier="c"))
+    f = ResolvedTagFilter(include=Include("airflow"), exclude=exclude_tree)
+    assert f.exclude == exclude_tree
+    assert f.include == Include("airflow")
 
 
-# --- F15 atom_matches / _exclude_atom_matches helpers --------------------
+def test_resolve_validates_exclude_tree():
+    """``resolve(include, exclude=, available=)`` validates the exclude tree too.
+
+    Both halves of the F15 grammar share the same recursive
+    validation walk. An unknown atom on the exclude side raises
+    ``TagExprUnknown`` just like the include side does.
+    """
+    include_tree = parse_include("airflow")
+    exclude_tree = parse_include("amazon")  # available
+    result = resolve(
+        include_tree,
+        exclude=exclude_tree,
+        available={"airflow", "amazon"},
+    )
+    assert result.include == Include("airflow")
+    assert result.exclude == Include("amazon")
+
+
+def test_resolve_exclude_unknown_atom_errors():
+    """An unknown exclude atom raises ``TagExprUnknown``."""
+    include_tree = parse_include("airflow")
+    exclude_tree = parse_include("nope")
+    with pytest.raises(TagExprUnknown):
+        resolve(
+            include_tree,
+            exclude=exclude_tree,
+            available={"airflow", "amazon"},
+        )
+
+
+def test_resolve_exclude_compound_validates_each_atom():
+    """An And-tree on exclude validates both leaves recursively."""
+    include_tree = parse_include("airflow")
+    exclude_tree = And(Include("foo", qualifier="c"), Include("bar", qualifier="c"))
+    result = resolve(
+        include_tree,
+        exclude=exclude_tree,
+        available={"airflow", "foo", "bar"},
+    )
+    assert result.exclude == exclude_tree
+
+
+# --- F15 atom_matches / exclude_matches helpers ---------------------------
 
 
 def _make_collection(name: str, tags: list[str]):
@@ -642,25 +699,57 @@ def test_atom_matches_c_does_not_match_unrelated():
     assert atom_matches(other, Include("airflow", qualifier="c")) is False
 
 
-def test_exclude_atom_matches_c_strict():
-    """_exclude_atom_matches with 'c' qualifier matches only the named collection."""
-    from lies.query.tag_expr import _exclude_atom_matches
+def test_exclude_matches_c_strict():
+    """``exclude_matches`` with a ``c``-qualified atom matches only the named collection.
+
+    Task 3 / f15-exclude-compound: the legacy single-atom
+    ``_exclude_atom_matches`` shim was replaced by a recursive
+    ``exclude_matches(coll, tree)`` walker that dispatches every leaf
+    through ``atom_matches`` so compound excludes
+    (``-c:foo&c:bar``, ``-c:foo|c:bar``) drop on the same dispatcher.
+    A single-atom ``Include(..., qualifier="c")`` is the simplest tree
+    the walker accepts; it must behave identically to the historical
+    ``_exclude_atom_matches(coll, "foo", "c")``.
+    """
+    from lies.query.tag_expr import exclude_matches
 
     airflow = _make_collection(name="airflow", tags=["provider"])
     cnn = _make_collection(name="cnn", tags=["airflow", "news"])
-    assert _exclude_atom_matches(airflow, "airflow", "c") is True
-    assert _exclude_atom_matches(cnn, "airflow", "c") is False
+    assert exclude_matches(airflow, Include("airflow", qualifier="c")) is True
+    assert exclude_matches(cnn, Include("airflow", qualifier="c")) is False
 
 
-def test_exclude_atom_matches_no_qualifier_aliases_t():
-    from lies.query.tag_expr import _exclude_atom_matches
+def test_exclude_matches_no_qualifier_aliases_t():
+    """``exclude_matches`` with no qualifier (or explicit ``t``) aliases t: semantics.
+
+    Mirrors ``test_atom_matches_no_qualifier_aliases_t`` on the include
+    side. A bare ``Include("foo")`` matches collections named ``foo``
+    OR tagged ``foo``; an explicit ``Include("foo", qualifier="t")``
+    behaves identically (same dispatch).
+    """
+    from lies.query.tag_expr import exclude_matches
 
     airflow = _make_collection(name="airflow", tags=["provider"])
     cnn = _make_collection(name="cnn", tags=["airflow", "news"])
-    assert _exclude_atom_matches(airflow, "airflow", None) is True
-    assert _exclude_atom_matches(cnn, "airflow", None) is True
-    assert _exclude_atom_matches(airflow, "airflow", "t") is True
-    assert _exclude_atom_matches(cnn, "airflow", "t") is True
+    assert exclude_matches(airflow, Include("airflow")) is True
+    assert exclude_matches(cnn, Include("airflow")) is True
+    assert exclude_matches(airflow, Include("airflow", qualifier="t")) is True
+    assert exclude_matches(cnn, Include("airflow", qualifier="t")) is True
+
+
+def test_exclude_matches_t_strict():
+    """``exclude_matches`` with explicit ``t`` qualifier matches name-or-tag.
+
+    Same dispatch as the no-qualifier form (``atom_matches`` treats
+    ``None`` and ``"t"`` identically). A collection named ``foo`` and
+    a collection tagged ``foo`` both match.
+    """
+    from lies.query.tag_expr import exclude_matches
+
+    airflow = _make_collection(name="airflow", tags=["provider"])
+    cnn = _make_collection(name="cnn", tags=["airflow", "news"])
+    assert exclude_matches(airflow, Include("airflow", qualifier="t")) is True
+    assert exclude_matches(cnn, Include("airflow", qualifier="t")) is True
 
 
 # --- F15 check_qualifier helper (cross-surface unify) -------------------

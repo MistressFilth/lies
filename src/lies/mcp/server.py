@@ -42,6 +42,8 @@ from lies.memory.models import WikiPlanInvalid
 from lies.orchestrator import Orchestrator
 from lies.query.citation import Citation, ClaimCitation
 from lies.query.tag_expr import (
+    Include,
+    TagExpr,
     TagExprEmpty,
     TagExprParseError,
     TagExprUnknown,
@@ -128,9 +130,13 @@ def mcp_ground(
         question: The user's natural-language question.
         tag_expr: Body of a single include token (no leading sigil),
             e.g. ``"airflow&postgres"``. ``None`` for untagged.
-        exclude_tags: NOT tags without leading sigil. The F15 grammar
-            permits at most one; more is forwarded to the librarian
-            unchanged.
+        exclude_tags: NOT tags without leading sigil (wire-level
+            ``list[str]``). The F15 grammar permits at most one entry;
+            each entry may carry a ``t:`` / ``c:`` qualifier prefix.
+            Translated to a ``TagExpr`` AST at this boundary (Task 3
+            / f15-exclude-compound) before threading to the librarian
+            unchanged — the AST shape is the canonical post-Task-3
+            surface end-to-end.
         top_k: Maximum excerpts requested from the librarian (clamped
             to ``[1, 10]``).
         name: Wiki name to resolve against. Defaults to the
@@ -147,11 +153,24 @@ def mcp_ground(
         ToolError: when the F15 tag-filter dispatch cannot resolve the
             include expression (caller may retry untagged or surface).
     """
+    # Translate the wire-level ``exclude_tags: list[str]`` to the
+    # internal ``TagExpr | None`` AST the F18 librarian consumes
+    # (Task 3 / f15-exclude-compound). The wire format keeps the
+    # list-of-strings envelope so existing MCP callers don't break;
+    # the conversion happens here at the boundary so the librarian
+    # thread sees the AST shape end-to-end.
+    from lies.query.tag_expr import Include, check_qualifier
+
+    exclude_expr: object = None
+    if exclude_tags:
+        _ex_qualifier, _ex_body = check_qualifier(exclude_tags[0], position=0)
+        exclude_expr = Include(_ex_body, qualifier=_ex_qualifier)
+
     try:
         digest = ground(
             question=question,
             tag_expr=tag_expr,
-            exclude_tags=exclude_tags,
+            exclude_expr=exclude_expr,
             top_k=top_k,
             wiki_name=name,
         )
@@ -635,18 +654,26 @@ def query(
 
     wiki = resolve_wiki(name)
 
-    # F19 (Task 6): pre-flight validation of ``tag_expr`` /
+    # F19 (Task 6) / Task 3: pre-flight validation of ``tag_expr`` /
     # ``exclude_tags`` against the registered collection set surfaces
     # unknown-tag errors and parser errors at the boundary, then the
     # raw kwargs flow into the F18 ``librarian_agent`` path. The
     # synthesized ``ResolvedTagFilter`` envelope is no longer built
     # here — the F18 librarian owns its own tag-expression semantics.
+    #
+    # ``exclude_tags`` stays a wire-level ``list[str]`` (the F15
+    # grammar permits at most one entry per MCP validation above);
+    # translate the one-element list to a one-atom ``Include`` tree
+    # so the orchestrator's ``exclude_expr`` kwarg (a ``TagExpr``
+    # AST) is the canonical post-Task-3 surface end-to-end.
+    exclude_expr: TagExpr | None = None
     try:
         if tag_expr is not None:
             include_ast = parse(tag_expr)
             resolve(include_ast, available=_collect_available_tags_mcp(wiki))
         if exclude_tags:
-            check_qualifier(exclude_tags[0], position=0)
+            _ex_qualifier, _ex_body = check_qualifier(exclude_tags[0], position=0)
+            exclude_expr = Include(_ex_body, qualifier=_ex_qualifier)
     except TagExprParseError as exc:
         raise ToolError(f"invalid tag expression: {exc}") from exc
     except TagExprEmpty as exc:
@@ -655,20 +682,24 @@ def query(
         raise ToolError(format_unknown_tag_error(exc)) from exc
 
     orch = Orchestrator(wiki=wiki)
-    # F18/F19 (Task 6): ``run_query`` now takes the librarian-threading
-    # kwargs (``tag_expr`` + ``exclude_tags`` + ``file_back``) and
-    # returns a ``QueryAnswer`` rather than a ``SynthesizedAnswer``.
-    # The pre-F18 ``tag_filter=ResolvedTagFilter(...)`` envelope was
-    # retired; tag-filter plumbing flows through the orchestrator's
+    # F18/F19 (Task 6) / Task 3: ``run_query`` now takes the
+    # librarian-threading kwargs (``tag_expr`` + ``exclude_expr`` +
+    # ``file_back``) and returns a ``QueryAnswer`` rather than a
+    # ``SynthesizedAnswer``. The pre-F18
+    # ``tag_filter=ResolvedTagFilter(...)`` envelope was retired;
+    # tag-filter plumbing flows through the orchestrator's
     # ``LibrarianDeps`` → ``librarian_agent`` path. The MCP boundary
-    # passes the F19 kwargs through directly: ``tag_expr`` and
-    # ``exclude_tags`` are already strings / list[str] on the wire,
-    # not the synthesized AST that the legacy path consumed.
+    # passes the F19 kwargs through directly: ``tag_expr`` is the
+    # include body string on the wire, and ``exclude_expr`` is the
+    # compiled ``TagExpr`` AST that Task 3 threads through to the
+    # librarian (the historical flat-string ``exclude_tags`` list
+    # was retired in Task 3 along with the flat-string
+    # ``ResolvedTagFilter.exclude`` field).
     try:
         ans = orch.run_query(
             question,
             tag_expr=tag_expr,
-            exclude_tags=exclude_tags,
+            exclude_expr=exclude_expr,
             file_back=file,
         )
     except Exception as exc:  # noqa: BLE001 - orchestration surfaces upstream

@@ -78,7 +78,7 @@ class LibraryCollectionMeta:
 
     The structural shape (``name: str``, ``tags: Sequence[str]``)
     matches what :func:`lies.query.tag_expr.atom_matches` and
-    :func:`lies.query.tag_expr._exclude_atom_matches` read off a
+    :func:`lies.query.tag_expr.exclude_matches` read off a
     collection, so the legacy wiki-yaml Collection and
     :class:`LibraryCollectionMeta` are interchangeable at the
     resolver boundary. This keeps the library-first migration

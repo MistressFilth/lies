@@ -13,6 +13,7 @@ from lies.agents.librarian import (
     _rewrite_query_for_validator,
 )
 from lies.library.registry import library_collection_names, library_git_root
+from lies.query.tag_expr import Include
 
 
 def test_rewrite_query_drops_in_word_hyphens() -> None:
@@ -33,7 +34,7 @@ def test_librarian_deps_required_fields() -> None:
     deps = LibrarianDeps(
         question="how does pydantic validate nested models?",
         tag_expr="python",
-        exclude_tags=["postgres"],
+        exclude_expr=Include("postgres"),
         top_k=5,
     )
     assert deps.top_k == 5
@@ -56,7 +57,7 @@ def test_librarian_output_distinct_pages_derives_from_excerpts() -> None:
     spans = [Span(heading_path=[], body="b", code_fence=False, start_line=1)]
     out = LibrarianOutput(
         tag_expr=None,
-        exclude_tags=[],
+        exclude_expr=None,
         excerpts=[
             PageExcerpt(collection="wiki", slug="a", title="A", spans=spans),
             PageExcerpt(collection="wiki", slug="a", title="A", spans=spans),
@@ -69,7 +70,7 @@ def test_librarian_output_distinct_pages_derives_from_excerpts() -> None:
 
 def test_librarian_output_defaults_no_coverage_false() -> None:
     """F18 no_coverage field defaults to False (back-compat)."""
-    out = LibrarianOutput(tag_expr=None, exclude_tags=[], excerpts=[], distinct_pages=0)
+    out = LibrarianOutput(tag_expr=None, exclude_expr=None, excerpts=[], distinct_pages=0)
     assert out.no_coverage is False
 
 
@@ -77,7 +78,7 @@ def test_librarian_output_no_coverage_settable() -> None:
     """F18 no_coverage field is settable to True via keyword."""
     out = LibrarianOutput(
         tag_expr=None,
-        exclude_tags=[],
+        exclude_expr=None,
         excerpts=[],
         distinct_pages=0,
         no_coverage=True,
@@ -139,7 +140,7 @@ def test_register_librarian_tools_captures_no_coverage_from_wiki_search(
             break
     assert tool_fn is not None, "wiki_search tool not registered"
 
-    deps = LibrarianDeps(question="q", tag_expr=None, exclude_tags=[], top_k=5)
+    deps = LibrarianDeps(question="q", tag_expr=None, exclude_expr=None, top_k=5)
     ctx = RunContext(
         model=TestModel(),
         deps=deps,
@@ -248,7 +249,7 @@ def _drive_wiki_search(
             break
     assert tool_fn is not None, "wiki_search tool not registered"
 
-    deps = LibrarianDeps(question="q", tag_expr=None, exclude_tags=[], top_k=5)
+    deps = LibrarianDeps(question="q", tag_expr=None, exclude_expr=None, top_k=5)
     ctx = RunContext(
         model=TestModel(),
         deps=deps,

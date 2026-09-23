@@ -25,7 +25,7 @@ if TYPE_CHECKING:
     # top-level transitively pulls in ``pydantic_ai`` and ``fastmcp``,
     # which the CLI must keep off its lazy-import path (see
     # ``tests/unit/cli/test_cli_lazy_imports``).
-    from lies.query.tag_expr import ResolvedTagFilter
+    from lies.query.tag_expr import ResolvedTagFilter, TagExpr
 
 __all__ = (
     "lint",
@@ -61,9 +61,10 @@ def _build_compat_run_query_kwargs(
 
     - ``tag_filter.include`` (a ``TagExpr`` AST) → ``tag_expr`` (the
       body of a single include expression, rendered from the AST).
-    - ``tag_filter.exclude`` (a single string) →
-      ``exclude_tags=[<exclude>]`` (the F18 librarian's list
-      contract).
+    - ``tag_filter.exclude`` (a ``TagExpr`` AST, post-Task 3) →
+      ``exclude_expr`` (passed through verbatim — both halves of
+      the F15 grammar share the same AST shape, so the AST threads
+      through to the librarian unchanged).
     - ``collection=<name>`` → ``tag_expr="c:<name>"`` (the F15
       strict-name prefix; matches what the MCP ``query`` tool does
       for the same kwarg). When the user passed a tag filter, the
@@ -92,13 +93,13 @@ def _build_compat_run_query_kwargs(
         coll_atom = f"c:{collection}"
         include_body = f"{coll_atom}|{include_body}" if include_body else coll_atom
 
-    exclude_list: list[str] = []
+    exclude_expr: TagExpr | None = None
     if tag_filter is not None and tag_filter.exclude is not None:
-        exclude_list = [tag_filter.exclude]
+        exclude_expr = tag_filter.exclude
 
     return {
         "tag_expr": include_body,
-        "exclude_tags": exclude_list or None,
+        "exclude_expr": exclude_expr,
         "file_back": file_back,
     }
 
@@ -196,12 +197,11 @@ def query(
     from lies.cli.query_format import render_answer, validate_format_flag
     from lies.memory.models import WikiPlanInvalid
     from lies.query.tag_expr import (
+        Include,
         ResolvedTagFilter,
-        TagExpr,
         TagExprEmpty,
         TagExprParseError,
         TagExprUnknown,
-        _render_exclude_body,
         check_qualifier,
         parse,
         parse_query_argv,
@@ -221,8 +221,7 @@ def query(
     wiki = resolve_wiki(name)
 
     include_ast: TagExpr | None = None
-    exclude: str | None = None
-    exclude_qualifier: str | None = None
+    exclude_ast: TagExpr | None = None
     explicit = tag_expr is not None or exclude_tag is not None
     try:
         if explicit:
@@ -231,22 +230,21 @@ def query(
             # '-' is not re-read as a filter.
             question = " ".join(tokens)
             include_ast = parse(tag_expr) if tag_expr is not None else None
-            exclude = exclude_tag
             if exclude_tag is not None:
-                exclude_qualifier, exclude = check_qualifier(exclude_tag, position=0)
+                # Single-tag explicit form: build a one-atom Include from
+                # the optional ``t:`` / ``c:`` qualifier prefix. The
+                # prefix is validated by ``check_qualifier`` (raises on
+                # bad qualifiers) and the qualifier rides along on the
+                # Include atom.
+                _qualifier, _body = check_qualifier(exclude_tag, position=0)
+                exclude_ast = Include(_body, qualifier=_qualifier)
         else:
-            # Task 2 (f15-exclude-compound): parse_query_argv now returns a
-            # TagExpr | None for the exclude half (previously a flat
-            # string). The rest of the CLI's translator still consumes a
-            # flat string via ``ResolvedTagFilter.exclude``; render the
-            # AST back to a body-only string here so the legacy
-            # translator keeps working until Task 3 fully migrates to the
-            # AST form. The qualifier info lives on each ``Include`` atom
-            # in the tree; the legacy translator drops it (matches the F15
-            # default ``None`` semantics for single-atom excludes).
+            # Task 2 (f15-exclude-compound): parse_query_argv returns a
+            # TagExpr | None for the exclude half. Task 3 retires the
+            # legacy flat-string ``ResolvedTagFilter.exclude`` contract
+            # so the AST threads straight through to ``ResolvedTagFilter``
+            # and onward to the orchestrator's ``exclude_expr`` kwarg.
             question, include_ast, exclude_ast, _ = parse_query_argv(tokens)
-            exclude = _render_exclude_body(exclude_ast) if exclude_ast is not None else None
-            exclude_qualifier = None
     except (TagExprParseError, TagExprEmpty) as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=2) from exc
@@ -258,35 +256,33 @@ def query(
         raise typer.Exit(code=2) from exc
 
     tag_filter: ResolvedTagFilter | None = None
-    if include_ast is not None or exclude is not None:
+    if include_ast is not None or exclude_ast is not None:
         # Only touch the collections dir when a filter is actually
         # present; the back-compat path must not pay for the IO.
         resolved_include: TagExpr | None = None
-        if include_ast is not None:
-            try:
-                resolved_include = resolve(
-                    include_ast, available=_collect_available_tags(wiki)
-                ).include
-            except TagExprUnknown as exc:
-                # Surface the shared library-first message (see
-                # ``format_unknown_tag_error`` in the MCP server).
-                # Strip the leading "unknown tag: 'foo'" line for the
-                # CLI's two-line stderr contract; re-print it as
-                # ``error: unknown tag: foo`` to keep the existing CLI
-                # test regex (``error: unknown tag: <name>``) intact.
-                from lies.mcp.server import format_unknown_tag_error
+        resolved_exclude: TagExpr | None = None
+        available = _collect_available_tags(wiki)
+        try:
+            resolved = resolve(include_ast, exclude=exclude_ast, available=available)
+            resolved_include = resolved.include
+            resolved_exclude = resolved.exclude
+        except TagExprUnknown as exc:
+            # Surface the shared library-first message (see
+            # ``format_unknown_tag_error`` in the MCP server).
+            # Strip the leading "unknown tag: 'foo'" line for the
+            # CLI's two-line stderr contract; re-print it as
+            # ``error: unknown tag: foo`` to keep the existing CLI
+            # test regex (``error: unknown tag: <name>``) intact.
+            from lies.mcp.server import format_unknown_tag_error
 
-                full = format_unknown_tag_error(exc).splitlines()
-                typer.echo(f"error: {full[0]}", err=True)
-                for line in full[1:]:
-                    typer.echo(f"  {line}", err=True)
-                raise typer.Exit(code=2) from exc
-        # The exclude is deliberately not validated here — the retriever
-        # resolves it against the live collection set (spec: Error model).
+            full = format_unknown_tag_error(exc).splitlines()
+            typer.echo(f"error: {full[0]}", err=True)
+            for line in full[1:]:
+                typer.echo(f"  {line}", err=True)
+            raise typer.Exit(code=2) from exc
         tag_filter = ResolvedTagFilter(
             include=resolved_include,
-            exclude=exclude,
-            exclude_qualifier=exclude_qualifier,  # type: ignore[arg-type]
+            exclude=resolved_exclude,
         )
 
     # F18/F19: translate the CLI's legacy kwargs to the new
@@ -296,10 +292,11 @@ def query(
     # tool does for the same kwarg). ``--force-file`` forces
     # ``file_back=True``; ``--no-file`` flips it off. ``tag_filter``
     # is split into ``tag_expr`` (include body, rendered from the
-    # AST) + ``exclude_tags`` (the NOT list, at most one entry per
-    # the F15 grammar). The pre-F18 ``collection=`` / ``file=`` /
-    # ``force_file=`` / ``tag_filter=`` kwargs were retired in
-    # Task 6.
+    # AST) + ``exclude_expr`` (the validated exclude tree, threaded
+    # through to the librarian unchanged — Task 3 retired the legacy
+    # flat-string ``exclude_tags`` contract). The pre-F18
+    # ``collection=`` / ``file=`` / ``force_file=`` / ``tag_filter=``
+    # kwargs were retired in Task 6.
     orch = Orchestrator(wiki)
     orch_kwargs = _build_compat_run_query_kwargs(
         tag_filter=tag_filter,
@@ -331,7 +328,7 @@ def query(
             answer = orch.run_query_with_format(
                 question,
                 tag_expr=orch_kwargs.get("tag_expr"),
-                exclude_tags=orch_kwargs.get("exclude_tags"),
+                exclude_expr=orch_kwargs.get("exclude_expr"),
                 file_back=orch_kwargs["file_back"],
                 format_hint=cli_format,
             )

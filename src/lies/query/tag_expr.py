@@ -26,10 +26,11 @@ if TYPE_CHECKING:
 class TagExpr:
     """Base class for the tag-filter AST.
 
-    Concrete variants: `Include`, `And`, `Or`. The exclude lives
-    on `ResolvedTagFilter.exclude` as a flat string; it is not
-    part of the tree (the grammar restricts to at most one
-    `-` atom).
+    Concrete variants: `Include`, `And`, `Or`. The include and the
+    exclude share the same tree shape — both halves of the F15
+    grammar parse to the same AST, both halves are validated by the
+    same recursive `resolve()` walk, and both halves are evaluated by
+    the same `atom_matches` / `exclude_matches` recursion.
     """
 
 
@@ -67,17 +68,26 @@ class Or(TagExpr):
 class ResolvedTagFilter:
     """Flattened form the retriever consumes.
 
-    include: the validated include AST tree (may be Include / And / Or, or None).
-    exclude: at most one tag string, or None.
-    exclude_qualifier:
-        - None (default): tag-or-name alias.
-        - "t": explicit alias.
-        - "c": strict collection-name match.
+    Both halves of the F15 grammar share the same `TagExpr` shape:
+    `include` and `exclude` are validated independently by the same
+    recursive `resolve()` walk and evaluated by the same per-collection
+    matcher. The historical split — flat string on `exclude`, AST on
+    `include` — was retired in Task 3 / f15-exclude-compound because
+    the F15 grammar accepts compound excludes (``-c:foo&c:bar``,
+    ``-c:foo|c:bar``) that no longer fit a single atom.
+
+    Each ``Include`` atom carries its own ``qualifier`` (default
+    ``None`` — same ``t:`` / ``c:`` semantics as the include side).
+
+    Attributes:
+        include: Validated include AST (Include / And / Or), or None
+            when the operator passed no ``+`` chain.
+        exclude: Validated exclude AST (Include / And / Or), or None
+            when the operator passed no ``-`` chain.
     """
 
     include: TagExpr | None = None
-    exclude: str | None = None
-    exclude_qualifier: Literal["t", "c"] | None = None
+    exclude: TagExpr | None = None
 
 
 class TagExprParseError(Exception):
@@ -351,30 +361,6 @@ def _split_argv_token_for_ops(token: str) -> list[str]:
         raise TagExprParseError(f"unparseable token {token!r}: {exc}") from exc
 
 
-def _render_exclude_body(node: TagExpr) -> str:
-    """Render a TagExpr AST to a body-only flat string (no qualifier prefix).
-
-    Used by the CLI's translator to keep the legacy
-    :class:`ResolvedTagFilter.exclude` contract — a single string with no
-    qualifier prefix — working while the parser now emits an AST. The
-    qualifier lives on each ``Include`` atom in the tree; for the
-    single-atom case this matches the F15 default ``None`` semantics
-    (the legacy translator drops the qualifier). Compound excludes
-    render as a joined operator-expression; Task 3 will refactor
-    consumers to read the AST directly rather than parsing the flat form.
-
-    Inverse of :func:`parse_tokens` restricted to the body — qualifiers
-    round-trip via :func:`_render_include` / :func:`parse_tokens` only.
-    """
-    if isinstance(node, Include):
-        return node.tag
-    if isinstance(node, And):
-        return f"{_render_exclude_body(node.left)}&{_render_exclude_body(node.right)}"
-    if isinstance(node, Or):
-        return f"{_render_exclude_body(node.left)}|{_render_exclude_body(node.right)}"
-    raise TypeError(f"unexpected node type: {type(node).__name__}")
-
-
 def parse_query_argv(
     argv: list[str],
 ) -> tuple[str, TagExpr | None, TagExpr | None, None]:
@@ -401,10 +387,12 @@ def parse_query_argv(
     Returns ``(question, include_ast, exclude_ast, None)``. The
     fourth element is always ``None`` because the qualifier lives
     on each ``Include`` atom in the tree; callers that need a
-    flat string can render the AST via :func:`_render_include`
-    (qualified form, includes the prefix) or :func:`_render_exclude_body`
-    (body-only form, matches the legacy ``ResolvedTagFilter.exclude``
-    contract).
+    flat string can render the include AST via :func:`_render_include`
+    (qualified form, includes the prefix). The exclude AST is now
+    threaded through to consumers verbatim — no body-only renderer
+    is needed because both halves of the F15 grammar share the
+    same AST shape (Task 3 / f15-exclude-compound retired the
+    legacy flat-string ``ResolvedTagFilter.exclude`` contract).
 
     Raises TagExprParseError on grammar errors.
     """
@@ -530,32 +518,61 @@ def parse_query_argv(
 # ---------------------------------------------------------------------------
 
 
-def resolve(expr: TagExpr, *, available: set[str]) -> ResolvedTagFilter:
-    """Validate the include AST against the available tag set.
+def resolve(
+    expr: TagExpr | None,
+    *,
+    available: set[str],
+    exclude: TagExpr | None = None,
+) -> ResolvedTagFilter:
+    """Validate the include (and optional exclude) AST against the available tag set.
 
-    Every `Include(tag)` requires `tag` in `available`; the first
-    unknown raises `TagExprUnknown` with the exact spelling.
-    `And` / `Or` are recursive — both children must validate.
-    The exclude lives on `ResolvedTagFilter.exclude`; this
-    function does not validate it (the retriever does).
+    Every ``Include(tag)`` — on either half — requires ``tag`` in
+    ``available``; the first unknown raises :class:`TagExprUnknown`
+    with the exact spelling. ``And`` / ``Or`` are recursive — both
+    children must validate.
+
+    ``expr`` may be ``None`` when the operator passed only an exclude
+    chain (no ``+`` prefix). The CLI's argv parser splits the two
+    halves independently and threads each one through here; the
+    orchestrator's include-only path leaves ``exclude`` at its
+    ``None`` default.
+
+    Task 3 / f15-exclude-compound: the exclude half shares the same
+    AST shape as the include half, so the validation walk is the
+    same recursive ``resolve`` over the exclude tree. Callers that
+    pre-split the two halves (CLI's explicit form, MCP's
+    ``ask_question``) thread the exclude tree through ``exclude=``
+    here; callers that only have the include AST leave it ``None``
+    (default).
 
     Returns:
-        `ResolvedTagFilter(include=validated_tree, exclude=None)`.
-        Exclude is filled by the caller (`parse_query_argv` already
-        extracted it; this function only handles the include AST).
+        :class:`ResolvedTagFilter` carrying the validated include
+        tree (and the validated exclude tree when one was supplied).
+    """
+    include = _resolve_tree(expr, available) if expr is not None else None
+    exclude_tree = _resolve_tree(exclude, available) if exclude is not None else None
+    return ResolvedTagFilter(include=include, exclude=exclude_tree)
+
+
+def _resolve_tree(expr: TagExpr, available: set[str]) -> TagExpr:
+    """Recursively validate one ``TagExpr`` tree against ``available``.
+
+    Returns the validated tree unchanged (``Include`` atoms whose
+    ``tag`` is in ``available``; ``And`` / ``Or`` whose both /
+    either child validated). Raises :class:`TagExprUnknown` on the
+    first unknown atom.
+
+    Used by :func:`resolve` to validate both halves of a
+    :class:`ResolvedTagFilter` with one recursion shape.
     """
     if isinstance(expr, Include):
         if expr.tag not in available:
             raise TagExprUnknown(expr.tag, available=available)
-        return ResolvedTagFilter(include=expr)
+        return expr
     if isinstance(expr, And):
-        left = resolve(expr.left, available=available)
-        right = resolve(expr.right, available=available)
-        return ResolvedTagFilter(include=And(left.include, right.include))  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
+        return And(_resolve_tree(expr.left, available), _resolve_tree(expr.right, available))
     if isinstance(expr, Or):
-        left = resolve(expr.left, available=available)
-        right = resolve(expr.right, available=available)
-        return ResolvedTagFilter(include=Or(left.include, right.include))  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
+        return Or(_resolve_tree(expr.left, available), _resolve_tree(expr.right, available))
     raise TypeError(f"unexpected node type: {type(expr).__name__}")
 
 
@@ -585,19 +602,32 @@ def atom_matches(coll: "Collection | LibraryCollectionMeta", include: Include) -
     return include.tag in (set(coll.tags) | {coll.name})
 
 
-def _exclude_atom_matches(
+def exclude_matches(
     coll: "Collection | LibraryCollectionMeta",
-    exclude: str,
-    exclude_qualifier: Literal["t", "c"] | None,
+    exclude: TagExpr,
 ) -> bool:
-    """Evaluate the exclude atom against one Collection.
+    """Evaluate the exclude AST against one Collection.
 
-    Same dispatch as :func:`atom_matches` but for the flat exclude
-    string field on :class:`ResolvedTagFilter`. Accepts the legacy
-    wiki-yaml ``Collection`` and the library-first
-    :class:`LibraryCollectionMeta` interchangeably — see
-    :func:`atom_matches` for the structural contract.
+    Mirror of the include-side recursion in
+    :func:`lies.query.synthesizer._eval_include` — walks the
+    exclude tree (``Include`` / ``And`` / ``Or``) and dispatches
+    every leaf via :func:`atom_matches`. ``And`` short-circuits on
+    the first non-match; ``Or`` short-circuits on the first match.
+
+    Task 3 / f15-exclude-compound replaced the historical flat-string
+    ``_exclude_atom_matches`` helper because compound excludes
+    (``-c:foo&c:bar``, ``-c:foo|c:bar``) need a tree walk, not a
+    single-atom match. The retriever's :func:`_collections_matching`
+    calls this once per collection per query.
+
+    Accepts the legacy wiki-yaml :class:`Collection` and the
+    library-first :class:`LibraryCollectionMeta` interchangeably —
+    see :func:`atom_matches` for the structural contract.
     """
-    if exclude_qualifier == "c":
-        return coll.name == exclude
-    return exclude in (set(coll.tags) | {coll.name})
+    if isinstance(exclude, Include):
+        return atom_matches(coll, exclude)
+    if isinstance(exclude, And):
+        return exclude_matches(coll, exclude.left) and exclude_matches(coll, exclude.right)
+    if isinstance(exclude, Or):
+        return exclude_matches(coll, exclude.left) or exclude_matches(coll, exclude.right)
+    raise TypeError(f"unexpected node type: {type(exclude).__name__}")

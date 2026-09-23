@@ -220,7 +220,7 @@ def test_run_query_with_format_threads_format_hint_into_call_synthesizer(
     orch._librarian_agent = MagicMock()
     orch._librarian_agent.run_sync = MagicMock(
         return_value=MagicMock(
-            output=LibrarianOutput(tag_expr=None, exclude_tags=[], excerpts=[], distinct_pages=0)
+            output=LibrarianOutput(tag_expr=None, exclude_expr=None, excerpts=[], distinct_pages=0)
         )
     )
 

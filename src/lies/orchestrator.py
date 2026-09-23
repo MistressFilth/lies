@@ -55,6 +55,7 @@ from lies.query import (
 )
 from lies.query.citation import Citation, ClaimCitation
 from lies.query.synthesizer import retrieve_pages as _retrieve_pages
+from lies.query.tag_expr import TagExpr
 from lies.schema import load_schema
 from lies.schema.sections import _missing_required_sections
 from lies.wiki.wiki import Wiki
@@ -1663,7 +1664,7 @@ class Orchestrator:
         question: str,
         *,
         tag_expr: str | None = None,
-        exclude_tags: list[str] | None = None,
+        exclude_expr: TagExpr | None = None,
         top_n: int = 5,
         file_back: bool = True,
         # F1 override hook: when ``run_query_with_format`` re-enters
@@ -1687,10 +1688,11 @@ class Orchestrator:
         # branches that haven't migrated) pass a ``ResolvedTagFilter``
         # object as ``tag_filter=``. The orchestrator's current
         # contract surfaces the include body as ``tag_expr`` (string)
-        # and the NOT set as ``exclude_tags`` (list). When ``tag_filter``
-        # is supplied we render it to the new shape; ``tag_expr`` /
-        # ``exclude_tags`` keywords win when both are present (callers
-        # who pre-rendered the filter take precedence).
+        # and the NOT set as ``exclude_expr`` (compiled ``TagExpr``
+        # AST). When ``tag_filter`` is supplied we forward its trees
+        # straight through; ``tag_expr`` / ``exclude_expr`` keywords
+        # win when both are present (callers who pre-built the
+        # filter take precedence).
         tag_filter: Any = None,  # noqa: ANN401  # ResolvedTagFilter from tests
     ) -> QueryAnswer:
         """Answer a question via the librarian subagent (F18) + synthesizer (F19).
@@ -1706,11 +1708,11 @@ class Orchestrator:
         5. Optionally file the synthesis back as a knowledge page.
 
         ``tag_expr`` (Bundle C / F15) is the body of a single include
-        expression; ``exclude_tags`` is a list of size ≤ 1. ``top_n``
-        is the librarian's ``top_k`` — the maximum number of excerpts
-        the librarian may return. ``file_back`` controls whether the
-        filing-back step runs (Task 6 stub; the actual write lands in
-        Task 7).
+        expression; ``exclude_expr`` is a compiled ``TagExpr`` AST
+        (Task 3 / f15-exclude-compound). ``top_n`` is the librarian's
+        ``top_k`` — the maximum number of excerpts the librarian may
+        return. ``file_back`` controls whether the filing-back step
+        runs.
 
         Returns the synthesised ``QueryAnswer`` with validated
         ``claim_citations`` and ``heading_path`` threads on every
@@ -1732,23 +1734,28 @@ class Orchestrator:
             file_back = True
         elif file is False:
             file_back = False
-        # F15 back-compat: render ``tag_filter`` (a ``ResolvedTagFilter``)
-        # to the new ``tag_expr`` + ``exclude_tags`` shape. Caller-supplied
-        # ``tag_expr`` / ``exclude_tags`` kwargs win when both are present
-        # so callers who pre-rendered the filter take precedence.
+        # F15 back-compat: thread ``tag_filter`` (a ``ResolvedTagFilter``)
+        # straight through. ``ResolvedTagFilter.include`` is already a
+        # ``TagExpr | None`` (the validated include tree); the
+        # post-Task-3 ``ResolvedTagFilter.exclude`` is a
+        # ``TagExpr | None`` too (the validated exclude tree).
+        # Caller-supplied ``tag_expr`` / ``exclude_expr`` kwargs win
+        # when both are present so callers who pre-built the filter
+        # take precedence.
         if tag_filter is not None and tag_expr is None:
             try:
                 tag_expr = tag_filter.include
             except AttributeError:
                 tag_expr = None
             try:
-                exclude_tags = list(tag_filter.exclude or [])
+                if exclude_expr is None:
+                    exclude_expr = tag_filter.exclude
             except AttributeError:
-                exclude_tags = exclude_tags
+                pass
         deps = LibrarianDeps(
             question=question,
             tag_expr=tag_expr,
-            exclude_tags=list(exclude_tags or []),
+            exclude_expr=exclude_expr,
             top_k=top_n,
         )
         # Self-heal: ensure ``wiki_<name>`` is registered with qmd
@@ -1874,7 +1881,7 @@ class Orchestrator:
         format_hint: Literal["md", "table", "marp", "chart"] = "md",
         *,
         tag_expr: str | None = None,
-        exclude_tags: list[str] | None = None,
+        exclude_expr: TagExpr | None = None,
         top_n: int = 5,
         file_back: bool = True,
         # F1 back-compat aliases: pre-F18 callers passed
@@ -1910,7 +1917,7 @@ class Orchestrator:
             cli_format: Alias for ``format_hint`` (F1 pre-F18 name).
             file: Alias for ``file_back`` (F1 pre-F18 flag).
             force_file: Alias for ``file_back=True`` (F1 pre-F18 flag).
-            tag_expr, exclude_tags, top_n: Same contract
+            tag_expr, exclude_expr, top_n: Same contract
                 as :meth:`run_query`.
 
         Returns:
@@ -1929,7 +1936,7 @@ class Orchestrator:
         answer = self.run_query(
             question,
             tag_expr=tag_expr,
-            exclude_tags=exclude_tags,
+            exclude_expr=exclude_expr,
             top_n=top_n,
             file_back=file_back,
             # F1 chart addendum (Critical #2): thread the caller's
