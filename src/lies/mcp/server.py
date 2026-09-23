@@ -1528,8 +1528,10 @@ def ask_wiki_answer(text: str) -> str:
     - ``+t:<tag>`` — include pages tagged ``<tag>``
     - ``+a&b`` — AND two include atoms (no spaces)
     - ``+a|b`` — OR (lower precedence than ``&``)
-    - ``-t:<tag>`` — exclude pages tagged ``<tag>``
+    - ``-c:<name>`` / ``-t:<tag>`` — exclude the named collection or tag
     - ``-"airflow provider"`` — exclude with quoted tag
+    - ``-c:foo&c:bar`` — exclude AND (drop collections matching both)
+    - ``-c:foo|c:bar`` — exclude OR (drop collections matching either)
 
     Everything after the include chain and the optional exclude is
     the question text. The parser stops at the first non-filter
@@ -1545,6 +1547,14 @@ def ask_wiki_answer(text: str) -> str:
             tag_expr: c:opencode&t:linux
             exclude_tags: [draft]
             question: how do I configure...
+
+        /answer +c:opencode|c:claude_platform Where does opencode keep settings?
+            tag_expr: c:opencode|c:claude_platform
+            question: Where does opencode keep settings?
+
+        /answer -c:claude_platform&t:claude Where does opencode keep settings?
+            exclude_tags: [c:claude_platform&t:claude]
+            question: Where does opencode keep settings?
 
     Mirrors the CLI grammar exactly (see
     ``features/tag-filter-language/2026-09-02-tag-filter-language-design.md``

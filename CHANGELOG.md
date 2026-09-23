@@ -34,6 +34,45 @@ All notable changes to LIES are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.37.6] - 2026-09-23
+
+### Fixed
+- `_split_argv_token_for_ops` now keeps `c:` / `t:` qualifier prefixes
+  attached when splitting argv tokens on `&` / `|`. Previously the
+  shlex split inside that helper did not add `:` to wordchars, so a
+  single-token input like `+c:opencode|c:claude_platform` produced
+  `["c", ":", "opencode", "|", "c", ":", "claude_platform"]` and
+  `parse_tokens` choked on the `:` token. Mirror of the include path's
+  `parse()` which already added both `-` and `:` to wordchars.
+  Surfaced by session 82a266a9. (`2e3cb66`)
+
+### Changed
+- `parse_query_argv` now supports a compound exclude chain
+  (`-atom [&atom | |atom]*`). The exclude half of the F15 grammar is
+  now symmetric with the include half: `&` and `|` operators work in
+  both inclusion and exclusion, with `&` binding tighter than `|`.
+  Return type extended to `tuple[str, TagExpr | None, TagExpr | None,
+  None]` — `exclude_qualifier` removed (the qualifier now lives on
+  each `Include` atom in the tree). Surfaced by session 82a266a9.
+  (`45b8897`)
+- `ResolvedTagFilter.exclude` is now a `TagExpr | None` AST instead of
+  a flat string. `resolve()` validates the exclude tree against the
+  registered collection set; `exclude_matches(coll, tree) -> bool`
+  walks the AST. The librarian's `exclude_expr` field plumbs the AST
+  end-to-end through `LibrarianDeps` → `LibrarianOutput` →
+  `query_synthesizer`. Pre-existing `_exclude_atom_matches` removed.
+  (`89e488d`)
+- MCP `query` / `answer` / `ground` boundaries parse each
+  `exclude_tags[i]` as a full F15 expression via `parse()`, replacing
+  the prior single-atom `check_qualifier + Include(...)` shim.
+  Bad grammar / unknown atoms surface as `ToolError` at the boundary.
+  Eight integration test files migrated to the new AST shape (49
+  sites). (`0f60207`)
+- `ask_question` MCP tool renders the compound exclude AST back to an
+  F15 expression string via `_render_include`, so the LLM can forward
+  the returned `exclude_tags` value verbatim to `query` / `answer`.
+  Docstring updated to document the operators. (`8a4292d`)
+
 ## [0.37.5] - 2026-09-23
 
 ### Fixed
