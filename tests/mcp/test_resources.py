@@ -454,6 +454,34 @@ def test_ask_question_parse_error() -> None:
     assert "dangling operator" in out["error"]
 
 
+def test_ask_question_compound_exclude_and() -> None:
+    """``-c:foo&c:bar <question>`` → ``exclude_tags=['c:foo&c:bar']``.
+
+    The exclude path mirrors the include path: ``&`` chains atoms
+    into an ``And`` AST that ``_render_include`` flattens back to
+    a single ``c:foo&c:bar`` string. The downstream ``query`` /
+    ``answer`` boundary re-parses that string, so round-tripping
+    through the MCP wire format must preserve the operator.
+    """
+    out = ask_question(text="-c:foo&c:bar what is X?")
+    assert out["question"] == "what is X?"
+    assert out["tag_expr"] is None
+    assert out["exclude_tags"] == ["c:foo&c:bar"]
+
+
+def test_ask_question_compound_exclude_or() -> None:
+    """``-c:foo|c:bar <question>`` → ``exclude_tags=['c:foo|c:bar']``.
+
+    Same as the AND case but with ``|``: the parser produces an
+    ``Or`` AST and ``_render_include`` emits the ``|`` operator
+    between the two atoms.
+    """
+    out = ask_question(text="-c:foo|c:bar what is X?")
+    assert out["question"] == "what is X?"
+    assert out["tag_expr"] is None
+    assert out["exclude_tags"] == ["c:foo|c:bar"]
+
+
 def test_ask_question_empty() -> None:
     """Empty input → structured envelope with error key, no exception."""
     out = ask_question(text="")

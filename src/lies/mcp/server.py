@@ -859,7 +859,8 @@ def answer(
     name="ask_question",
     description=(
         "Parse the question argument (with optional +tag_expr / "
-        "-exclude_tags filter prefixes) and return the parsed kwargs. "
+        "-exclude_tags filter prefixes, including compound exclude "
+        "chains joined with & or |) and return the parsed kwargs. "
         "The calling LLM uses this to extract filter args from a "
         "slash-style invocation where Claude Code's slash-command "
         "dispatcher would otherwise tokenize the input. After calling "
@@ -877,6 +878,12 @@ def ask_question(text: str) -> dict[str, object]:
     with structured JSON args where multi-word strings round-trip
     intact, so this tool exposes the parser as a regular MCP tool
     the LLM can call when the user reaches for the ``/answer`` slash.
+
+    The exclude chain supports compound expressions: ``-c:foo&c:bar``
+    (AND) and ``-c:foo|c:bar`` (OR) are parsed into the F15 AST and
+    re-rendered as a single ``exclude_tags`` element so the
+    downstream ``query`` / ``answer`` boundary can re-parse the
+    string.
 
     Returns a dict with keys ``question``, ``tag_expr``,
     ``exclude_tags``. Always returns; surface parse errors as a
