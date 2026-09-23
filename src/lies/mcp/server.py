@@ -765,6 +765,55 @@ def answer(
     return result.answer
 
 
+@mcp.tool(
+    name="ask_question",
+    description=(
+        "Parse the question argument (with optional +tag_expr / "
+        "-exclude_tags filter prefixes) and return the parsed kwargs. "
+        "The calling LLM uses this to extract filter args from a "
+        "slash-style invocation where Claude Code's slash-command "
+        "dispatcher would otherwise tokenize the input. After calling "
+        "ask_question, the LLM should call the `answer` tool with the "
+        "returned kwargs verbatim."
+    ),
+)
+def ask_question(text: str) -> dict[str, object]:
+    """Parse ``+c:<name>`` / ``-<tag>`` filter syntax out of ``text``.
+
+    Bypass for Claude Code's slash-command dispatcher: the dispatcher
+    tokenizes the slash input on whitespace BEFORE invoking an MCP
+    prompt function, dropping everything past the first token even
+    when the prompt has a single positional arg. Tools are invoked
+    with structured JSON args where multi-word strings round-trip
+    intact, so this tool exposes the parser as a regular MCP tool
+    the LLM can call when the user reaches for the ``/answer`` slash.
+
+    Returns a dict with keys ``question``, ``tag_expr``,
+    ``exclude_tags``. Always returns; surface parse errors as a
+    structured envelope with an ``error`` key so the LLM can decide
+    what to do instead of catching an exception trace.
+    """
+    import shlex
+
+    argv = shlex.split(text) if text.strip() else []
+    if not argv:
+        return {"error": "empty input", "original": text}
+
+    try:
+        parsed_question, include_ast, exclude, _qualifier = parse_query_argv(argv)
+    except (TagExprParseError, TagExprEmpty) as exc:
+        return {"error": str(exc), "original": text}
+
+    tag_expr = _render_include(include_ast) if include_ast is not None else None
+    exclude_tags = [exclude] if exclude is not None else []
+
+    return {
+        "question": parsed_question,
+        "tag_expr": tag_expr,
+        "exclude_tags": exclude_tags,
+    }
+
+
 def _collect_available_tags_mcp(wiki: Wiki) -> set[str]:
     """Return every addressable tag in the library (MCP surface).
 
@@ -1262,15 +1311,25 @@ def ask_wiki_answer(text: str) -> str:
     """Starter prompt that templates an ``answer`` tool invocation.
 
     Single-arg form: the entire slash-command input is passed verbatim
-    as ``text``. Claude Code's slash-command dispatcher forwards the
-    rest of the line as one string when the prompt has a single
-    positional arg. The filter-syntax parser runs here so the calling
+    as ``text``. The filter-syntax parser runs here so the calling
     LLM never has to fill ``tag_expr`` / ``exclude_tags`` slots.
 
     Chat-surface counterpart to the synthesized answer path: the LLM
     calls the ``answer`` tool (returns plain text) instead of ``query``
     (returns structured envelope). Use this when the response needs to
     render verbatim in chat rather than behind a collapsible JSON block.
+
+    **Known limitation — Claude Code slash dispatcher tokenizes the
+    input on whitespace before invoking this prompt, so multi-word
+    filter prefixes are truncated to the first token.** Even with the
+    single-arg signature, ``/mcp__lies__answer +c:opencode Where does
+    opencode keep settings?`` arrives at the prompt as just
+    ``+c:opencode`` and the question is dropped. The reliable
+    workaround is the ``ask_question`` MCP tool: call it with the
+    user's full multi-word input as the ``text`` argument, then
+    forward the returned kwargs verbatim to the ``answer`` tool. This
+    prompt is still useful for plain questions without filter syntax,
+    where the input is a single token anyway.
 
     Filter syntax (parsed out of the ``text`` argument here, so the
     calling LLM never has to fill ``tag_expr`` / ``exclude_tags``

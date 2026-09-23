@@ -27,6 +27,12 @@ only).
 - `file_knowledge` — write one markdown page.
 - `query` / `answer` — synthesized answer; `query` returns
   structured envelope, `answer` returns plain text.
+- `ask_question(text)` — parse the `+c:<name>` / `-<tag>` filter syntax
+  out of a slash-style invocation and return the parsed kwargs
+  (`question`, `tag_expr`, `exclude_tags`). The LLM then forwards the
+  returned kwargs to the `answer` tool. Use this for any question
+  that includes a multi-word filter prefix; the `/answer` slash
+  command tokenizes on whitespace and drops the rest of the line.
 - `lint` — health-check; `fix=True` applies the repair plan.
 - `wiki_changes` — recent plan applications.
 
@@ -39,7 +45,11 @@ only).
 
 ## Prompts
 
-- `ask_wiki_answer(question)` (slash `/answer`) — drive `answer`.
+- `ask_wiki_answer(text)` (slash `/answer`) — drive `answer`.
+  Note: Claude Code's slash dispatcher tokenizes the input on
+  whitespace, so multi-word filter prefixes (`+c:opencode Where...`)
+  are truncated. For filtered questions, call the `ask_question` tool
+  with the user's full multi-word input instead.
 - `orient(wiki=...)` — reference prose for the four workflows.
 - `ingest(source=...)` — `lies sync <name> --source <source>`.
 - `lint()` — `lies lint`, `--fix`, repair agent.

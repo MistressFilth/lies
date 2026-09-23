@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from lies.mcp.server import (
+    ask_question,
     ask_wiki_answer,
     cite,
     init_wiki,
@@ -286,3 +287,45 @@ def test_init_wiki_round_trips_with_resources(wiki_name: str) -> None:
     # The wiki is now registered; the status resource read succeeds.
     out = wiki_status(name=wiki_name)
     assert "=== qmd status ===" in out
+
+
+def test_ask_question_parses_filter() -> None:
+    """``+c:opencode <question>`` → ``tag_expr='c:opencode'``, no exclude.
+
+    Regression for the slash-tokenization bug: Claude Code's dispatcher
+    tokenizes the slash command on whitespace BEFORE invoking the MCP
+    prompt function, dropping everything past the first token. The
+    ``ask_question`` tool bypasses that path because Claude Code passes
+    structured JSON args to tools verbatim, so multi-word strings
+    round-trip intact. The LLM calls ``ask_question`` first, then
+    forwards the returned kwargs to the ``answer`` tool.
+    """
+    out = ask_question(text="+c:opencode Where does opencode keep settings?")
+    assert out["question"] == "Where does opencode keep settings?"
+    assert out["tag_expr"] == "c:opencode"
+    assert out["exclude_tags"] == []
+
+
+def test_ask_question_no_filter() -> None:
+    """Plain question (no filter prefix) → ``tag_expr=None``."""
+    out = ask_question(text="Where does opencode keep settings?")
+    assert out["question"] == "Where does opencode keep settings?"
+    assert out["tag_expr"] is None
+    assert out["exclude_tags"] == []
+
+
+def test_ask_question_parse_error() -> None:
+    """``+a&`` (dangling operator) → structured envelope with error key.
+
+    The tool never raises on parser errors — the LLM needs a
+    machine-readable shape it can inspect, not an exception trace.
+    """
+    out = ask_question(text="+a&")
+    assert "error" in out
+    assert "dangling operator" in out["error"]
+
+
+def test_ask_question_empty() -> None:
+    """Empty input → structured envelope with error key, no exception."""
+    out = ask_question(text="")
+    assert "error" in out
