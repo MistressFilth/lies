@@ -1258,19 +1258,21 @@ def wiki_catalog_slug(slug: str) -> str:
 
 
 @mcp.prompt(name="answer")
-def ask_wiki_answer(
-    question: str,
-    name: str | None = None,
-    collection: str | None = None,
-) -> str:
+def ask_wiki_answer(text: str) -> str:
     """Starter prompt that templates an ``answer`` tool invocation.
+
+    Single-arg form: the entire slash-command input is passed verbatim
+    as ``text``. Claude Code's slash-command dispatcher forwards the
+    rest of the line as one string when the prompt has a single
+    positional arg. The filter-syntax parser runs here so the calling
+    LLM never has to fill ``tag_expr`` / ``exclude_tags`` slots.
 
     Chat-surface counterpart to the synthesized answer path: the LLM
     calls the ``answer`` tool (returns plain text) instead of ``query``
     (returns structured envelope). Use this when the response needs to
     render verbatim in chat rather than behind a collapsible JSON block.
 
-    Filter syntax (parsed out of the ``question`` argument here, so the
+    Filter syntax (parsed out of the ``text`` argument here, so the
     calling LLM never has to fill ``tag_expr`` / ``exclude_tags``
     slots — that was the live hallucination bug):
 
@@ -1307,20 +1309,14 @@ def ask_wiki_answer(
     """
     import shlex
 
-    argv = shlex.split(question)
+    argv = shlex.split(text) if text.strip() else []
     if not argv:
-        return _render_answer_prompt_body(
-            question=question,
-            tag_expr=None,
-            exclude_tags=[],
-            name=name,
-            collection=collection,
-        )
+        return _filter_parse_error_prompt(text, ValueError("empty input"))
 
     try:
         parsed_question, include_ast, exclude, _qualifier = parse_query_argv(argv)
     except (TagExprParseError, TagExprEmpty) as exc:
-        return _filter_parse_error_prompt(question, exc)
+        return _filter_parse_error_prompt(text, exc)
 
     tag_expr = _render_include(include_ast) if include_ast is not None else None
     exclude_tags = [exclude] if exclude is not None else []
@@ -1329,8 +1325,8 @@ def ask_wiki_answer(
         question=parsed_question,
         tag_expr=tag_expr,
         exclude_tags=exclude_tags,
-        name=name,
-        collection=collection,
+        name=None,
+        collection=None,
     )
 
 

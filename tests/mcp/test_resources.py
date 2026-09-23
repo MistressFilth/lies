@@ -161,9 +161,7 @@ def test_answer_prompt_parses_c_prefix() -> None:
     parses the include atom itself; the calling LLM has nothing to fill.
     """
     out = ask_wiki_answer(
-        question="+c:opencode where does X keep settings?",
-        name="default",
-        collection="opencode",
+        text="+c:opencode where does X keep settings?",
     )
     assert isinstance(out, str)
     assert "tag_expr: 'c:opencode'" in out
@@ -174,9 +172,7 @@ def test_answer_prompt_parses_c_prefix() -> None:
 def test_answer_prompt_parses_combined_atom_and_exclude() -> None:
     """``+c:opencode -draft what...`` → include + single exclude."""
     out = ask_wiki_answer(
-        question="+c:opencode -draft what is the API?",
-        name="default",
-        collection="opencode",
+        text="+c:opencode -draft what is the API?",
     )
     assert "tag_expr: 'c:opencode'" in out
     assert "exclude_tags: ['draft']" in out
@@ -195,8 +191,7 @@ def test_answer_prompt_parses_multi_atom_chain() -> None:
     common form per the spec.
     """
     out = ask_wiki_answer(
-        question="+airflow&provider how do I configure?",
-        name="default",
+        text="+airflow&provider how do I configure?",
     )
     assert "tag_expr: 'airflow&provider'" in out
     assert "question: how do I configure?" in out
@@ -210,8 +205,7 @@ def test_answer_prompt_parses_quoted_exclude() -> None:
     with a single element.
     """
     out = ask_wiki_answer(
-        question='+c:opencode -"airflow provider" what does it do?',
-        name="default",
+        text='+c:opencode -"airflow provider" what does it do?',
     )
     assert "tag_expr: 'c:opencode'" in out
     assert "exclude_tags: ['airflow provider']" in out
@@ -226,8 +220,7 @@ def test_answer_prompt_surfaces_parse_error() -> None:
     LLM tells the operator what went wrong.
     """
     out = ask_wiki_answer(
-        question="+a&",
-        name="default",
+        text="+a&",
     )
     assert "Filter parse error" in out
     assert "dangling operator" in out
@@ -240,8 +233,7 @@ def test_answer_prompt_plain_question_unchanged() -> None:
     prefix in the question argument.
     """
     out = ask_wiki_answer(
-        question="Where does opencode keep settings?",
-        name="default",
+        text="Where does opencode keep settings?",
     )
     assert "tag_expr: None" in out
     assert "exclude_tags: []" in out
@@ -256,11 +248,29 @@ def test_answer_prompt_no_false_positive_mid_question() -> None:
     question never matches the include/exclude rule.
     """
     out = ask_wiki_answer(
-        question="how do I write a c++ tutorial?",
-        name="default",
+        text="how do I write a c++ tutorial?",
     )
     assert "tag_expr: None" in out
     assert "question: how do I write a c++ tutorial?" in out
+
+
+def test_answer_prompt_handles_multi_word_input() -> None:
+    """Full multi-word input parses correctly (slash dispatcher regression).
+
+    Regression for the dispatch bug: when the slash prompt had multiple
+    positional args, Claude Code's dispatcher tokenized the input on
+    whitespace and assigned each token to a separate arg, dropping
+    everything past the third token. The fix collapses to a single
+    ``text`` positional arg so the dispatcher passes the entire
+    remainder of the line verbatim. The full question text must then
+    round-trip through the filter parser.
+    """
+    out = ask_wiki_answer(
+        text="+c:opencode Where does opencode keep its settings on Linux?",
+    )
+    assert "tag_expr: 'c:opencode'" in out
+    assert "exclude_tags: []" in out
+    assert "question: Where does opencode keep its settings on Linux?" in out
 
 
 def test_init_wiki_round_trips_with_resources(wiki_name: str) -> None:
