@@ -24,10 +24,21 @@ def _stub_qmd_query(monkeypatch: pytest.MonkeyPatch) -> None:
     path; the underlying :func:`WikiMemoryService.search` resolves
     ``qmd_query`` lazily via :mod:`lies.qmd.cli`, so monkeypatching
     that import path covers every entry point.
+
+    Also stub the library-collection registry so the
+    library-shape filter's first-segment gate does not fall back to
+    the bare regex (which would catch the wiki path
+    ``concepts/alpha.md`` here even though it is a legitimate wiki
+    page). The library set deliberately omits ``concepts`` so the
+    wiki hit passes through.
     """
     monkeypatch.setattr(
         "lies.qmd.cli.qmd_query",
         lambda *a, **kw: [{"path": "concepts/alpha.md", "score": 1.0}],
+    )
+    monkeypatch.setattr(
+        "lies.memory.service.library_collection_names",
+        lambda: frozenset({"opencode"}),
     )
 
 
