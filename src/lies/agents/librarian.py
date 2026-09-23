@@ -507,8 +507,6 @@ def register_librarian_tools(
             )
             raw_wiki = []
 
-        wiki_hits = [{**hit, "source_kind": "wiki"} for hit in raw_wiki]
-
         # F18 Task 1 — capture the wiki-side ``no_coverage`` and
         # ``searched_scope`` signals into the module-scope
         # :data:`librarian_no_coverage` ContextVar and the result
@@ -518,11 +516,55 @@ def register_librarian_tools(
         # :func:`dataclasses.replace`. The ContextVar reflects the
         # wiki side's signal; library failures do not flip it because
         # a live library is not required for coverage.
+        #
+        # Moved BEFORE the wiki-hit assembly below so we can build
+        # the ``path -> page_id`` lookup the assembly needs to
+        # convert qmd docids (``#abc123``) into the wiki ``page-`` +
+        # sha1-12 IDs that ``_wiki_read`` (and
+        # ``memory_service.read``) understand. ``memory_service.search``
+        # returns real wiki pages with the canonical wiki page_ids;
+        # qmd returns hits with its own docid format. Without the
+        # conversion, ``_wiki_read(['#d75430'])`` raises
+        # ``WikiPageNotFound`` because ``#abc123`` matches neither
+        # the ``page-`` prefix nor a ``/`` separator.
         wiki_envelope = memory_service.search(question, limit=limit)
         wiki_dump = wiki_envelope.model_dump()
         no_coverage = bool(wiki_dump.get("no_coverage", False))
         searched_scope = list(wiki_dump.get("searched_scope", []))
         librarian_no_coverage.set(no_coverage)
+
+        # Build ``path -> wiki page_id`` from memory_service.search's
+        # results. Each ``WikiEvidence`` carries the wiki's canonical
+        # ``page-`` + sha1-12 ID; the qmd hits carry ``#abc123``-style
+        # docids that ``_wiki_read`` cannot resolve. Mapping by path
+        # is best-effort: a qmd hit whose path doesn't match any wiki
+        # search hit falls through to ``page_id=None`` (library-style
+        # contract) so the LLM agent skips ``wiki_read`` instead of
+        # passing a qmd docid.
+        path_to_wiki_id: dict[str, str] = {
+            page["path"]: page["page_id"]
+            for page in wiki_dump.get("pages", [])
+            if page.get("path") and page.get("page_id")
+        }
+
+        wiki_hits: list[dict[str, Any]] = []
+        for hit in raw_wiki:
+            hit_path = hit.get("path", "")
+            wiki_page_id = path_to_wiki_id.get(hit_path)
+            # Strip the qmd-style ``page_id``; replace with the wiki
+            # ``page-`` + sha1-12 ID so ``_wiki_read`` can resolve it
+            # via ``memory_service.read``. ``wiki_page_id`` is
+            # ``None`` when the qmd hit doesn't match any wiki search
+            # hit (best-effort fallback; mirrors the library-side
+            # contract).
+            clean = {k: v for k, v in hit.items() if k != "page_id"}
+            wiki_hits.append(
+                {
+                    **clean,
+                    "page_id": wiki_page_id,
+                    "source_kind": "wiki",
+                }
+            )
 
         # Library side — best-effort qmd query against the library's
         # own qmd index. Errors (missing binary, daemon failures,

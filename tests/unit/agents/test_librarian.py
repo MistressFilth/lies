@@ -316,6 +316,114 @@ def test_wiki_search_returns_wiki_only_hits_with_source_kind_wiki(monkeypatch) -
     assert hits[0]["path"] == "concepts/pydantic"
 
 
+def test_wiki_search_maps_qmd_docid_to_wiki_page_id(monkeypatch) -> None:
+    """Wiki-side qmd hits must carry the wiki page- + sha1-12 ID.
+
+    Pre-fix bug: the wiki-side qmd query returns ``page_id='#abc123'``
+    (qmd docid format). ``_wiki_read`` only recognizes wiki
+    ``page-<sha1-12>`` IDs and library paths (``<collection>/<page>``);
+    a qmd docid like ``#abc123`` matches neither prefix nor separator,
+    so ``_wiki_read(['#d75430'])`` raises ``WikiPageNotFound``. A
+    live debug session
+    (``5b6fa1e5-75b0-4fe6-84cd-c60ff7fc7ff0``) hit this failure.
+
+    The fix: build a ``path -> page_id`` lookup from
+    ``memory_service.search()``'s real wiki hits, then for each
+    wiki-side qmd hit replace the qmd docid with the matching
+    wiki page_id (or ``None`` if no wiki search hit covers that
+    path - best-effort, never raises).
+    """
+    from lies.library.registry import library_git_root
+
+    wiki_pages = [
+        _FakeWikiEvidence(
+            page_id="page-2da7bf8c551d",
+            path="concepts/pydantic",
+            collection_id="wiki",
+            excerpt="Wiki excerpt about pydantic",
+        ),
+    ]
+    wiki_service = _FakeMemoryService(pages=wiki_pages, no_coverage=False)
+    fake_wiki = _FakeWiki(wiki_dir=Path("/tmp/fake-wiki"))
+    lib_root = library_git_root()
+    wiki_qmd_hit = {
+        "page_id": "#d75430",  # qmd docid, NOT a wiki page_id
+        "path": "concepts/pydantic",
+        "title": "Wiki pydantic",
+        "score": 0.7,
+        "excerpt": "qmd excerpt about pydantic",
+    }
+
+    def fake_qmd_query(cwd: Path, q: str, limit: int = 5, **_kw: Any) -> list[dict[str, Any]]:
+        if Path(cwd) == fake_wiki.wiki_dir:
+            return [wiki_qmd_hit]
+        if Path(cwd) == lib_root:
+            return []
+        return []
+
+    out = _drive_wiki_search(
+        wiki=fake_wiki,
+        memory_service=wiki_service,
+        qmd_query_fn=fake_qmd_query,
+    )
+
+    hits = out["hits"]
+    assert len(hits) == 1
+    hit = hits[0]
+    assert hit["source_kind"] == "wiki"
+    assert hit["path"] == "concepts/pydantic"
+    # The qmd docid must be REPLACED by the wiki page- + sha1-12 ID
+    # derived from memory_service.search()'s matching wiki page.
+    assert hit["page_id"] == "page-2da7bf8c551d"
+    # The other wiki-hit fields survive the mapping.
+    assert hit["title"] == "Wiki pydantic"
+    assert hit["excerpt"] == "qmd excerpt about pydantic"
+
+
+def test_wiki_search_unmatched_qmd_hit_has_none_page_id(monkeypatch) -> None:
+    """A wiki qmd hit whose path doesn't match any wiki search hit gets page_id=None.
+
+    Best-effort fallback (library-style contract): the conversion
+    is best-effort - if qmd's hit covers a path the memory-service
+    search didn't surface, we set ``page_id=None`` so the LLM agent
+    skips ``wiki_read`` rather than calling it with a qmd docid
+    that would raise ``WikiPageNotFound``. This mirrors how library
+    hits already carry ``page_id=None``.
+    """
+    from lies.library.registry import library_git_root
+
+    wiki_service = _FakeMemoryService(pages=[], no_coverage=False)
+    fake_wiki = _FakeWiki(wiki_dir=Path("/tmp/fake-wiki"))
+    lib_root = library_git_root()
+    wiki_qmd_hit = {
+        "page_id": "#d75430",
+        "path": "concepts/orphan",
+        "title": "Orphan",
+        "score": 0.7,
+        "excerpt": "orphan excerpt",
+    }
+
+    def fake_qmd_query(cwd: Path, q: str, limit: int = 5, **_kw: Any) -> list[dict[str, Any]]:
+        if Path(cwd) == fake_wiki.wiki_dir:
+            return [wiki_qmd_hit]
+        if Path(cwd) == lib_root:
+            return []
+        return []
+
+    out = _drive_wiki_search(
+        wiki=fake_wiki,
+        memory_service=wiki_service,
+        qmd_query_fn=fake_qmd_query,
+    )
+
+    hits = out["hits"]
+    assert len(hits) == 1
+    hit = hits[0]
+    assert hit["source_kind"] == "wiki"
+    # No matching wiki search hit -> page_id=None (library-style fallback).
+    assert hit["page_id"] is None
+
+
 def test_wiki_search_library_wins_on_slug_conflict(monkeypatch) -> None:
     """When wiki and library both hit the same slug, the library hit wins.
 
