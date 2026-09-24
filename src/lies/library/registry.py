@@ -26,19 +26,6 @@ call site (CLI ``query`` / MCP ``query`` and ``answer`` / retriever's
     Cache invalidates on process restart; the registry is small
     enough that this is acceptable for long-running daemons.
 
-  - :func:`library_collection_tags` — sorted frozenset of every
-    ``tags`` entry across all registered collections'
-    ``config.yaml``. The MCP ``query`` / ``answer`` validator
-    unions this with ``c:<name>`` so a ``t:<tag>`` filter against
-    a library-collection tag does not raise ``TagExprUnknown``.
-    Memoized to match :func:`library_collection_names`.
-
-  - :func:`library_git_root` — the library's git root. Library
-    collections are registered into qmd at this path, so the
-    dual-source librarian fan-out queries ``qmd_query`` against this
-    cwd for the library side (and against ``wiki.wiki_dir`` for the
-    wiki side).
-
   - :func:`library_initialized` — whether the library's
     ``collections_root`` exists on disk. The error surface names the
     gap when False.
@@ -78,7 +65,7 @@ class LibraryCollectionMeta:
 
     The structural shape (``name: str``, ``tags: Sequence[str]``)
     matches what :func:`lies.query.tag_expr.atom_matches` and
-    :func:`lies.query.tag_expr.exclude_matches` read off a
+    :func:`lies.query.tag_expr._exclude_atom_matches` read off a
     collection, so the legacy wiki-yaml Collection and
     :class:`LibraryCollectionMeta` are interchangeable at the
     resolver boundary. This keeps the library-first migration
@@ -103,23 +90,6 @@ def _collections_root() -> Path:
     import surface for tag resolution.
     """
     return Library.open().collections_root
-
-
-def library_git_root() -> Path:
-    """The library's git root directory.
-
-    Library collections are registered into qmd at this path, not at
-    any wiki's ``wiki_dir``. The dual-source librarian fan-out calls
-    ``qmd_query`` against this cwd for the library side and against
-    ``wiki.wiki_dir`` for the wiki side. The two surfaces are
-    distinct qmd indexes; collapsing them to a single cwd returns
-    zero library hits even when the library is populated.
-
-    Thin wrapper over :meth:`Library.open` so the registry module
-    stays the single import surface for downstream callers (notably
-    the librarian subagent's ``_wiki_search`` closure).
-    """
-    return Library.open().git_root
 
 
 def library_initialized() -> bool:
@@ -236,37 +206,12 @@ def library_collection_record(slug: str) -> LibraryCollectionConfig | None:
         return None
 
 
-@lru_cache(maxsize=1)
-def library_collection_tags() -> frozenset[str]:
-    """Sorted frozenset of every ``tags`` entry across all registered library
-    collections' ``config.yaml``.
-
-    Union of :attr:`LibraryCollectionConfig.tags` across all registered
-    collections, surfaced via :func:`library_collection_records`. Empty
-    when the library is uninitialized or has no collection tags. Sorted
-    for deterministic error messages.
-
-    Memoized via :func:`functools.lru_cache` to match
-    :func:`library_collection_names`: the first call walks every
-    collection's ``config.yaml`` once and returns a frozen snapshot;
-    subsequent calls return the cached snapshot without re-traversing
-    the disk. The test surface can clear the cache via
-    ``library_collection_tags.cache_clear()``.
-    """
-    tags: set[str] = set()
-    for record in library_collection_records():
-        tags.update(record.tags)
-    return frozenset(sorted(tags))
-
-
 __all__ = (
     "LibraryCollectionMeta",
     "library_collection_metas",
     "library_collection_names",
     "library_collection_record",
     "library_collection_records",
-    "library_collection_tags",
-    "library_git_root",
     "library_has_no_collections",
     "library_initialized",
 )

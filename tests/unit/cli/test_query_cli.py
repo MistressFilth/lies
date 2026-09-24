@@ -34,7 +34,6 @@ from lies.library.config_io import save_config  # noqa: E402
 from lies.library.paths import Library  # noqa: E402
 from lies.library.record import LibraryCollectionConfig  # noqa: E402
 from lies.query.models import SynthesizedAnswer  # noqa: E402
-from lies.query.tag_expr import Include  # noqa: E402
 from lies.wiki.wiki import Wiki  # noqa: E402
 
 runner = CliRunner()
@@ -131,12 +130,11 @@ def test_query_quoted_question_back_compat(wiki: Wiki) -> None:
     result, call = _invoke("what is X?")
     assert result.exit_code == 0, result.output
     assert call.args[0] == "what is X?"
-    # F18/F19 / Task 3: the CLI translates the legacy ``ResolvedTagFilter``
-    # into ``tag_expr`` (string body) / ``exclude_expr`` (compiled
-    # ``TagExpr`` AST) kwargs on ``Orchestrator.run_query``. No filter
-    # parsed → both are None.
+    # F18/F19: the CLI translates the legacy ``ResolvedTagFilter`` into
+    # ``tag_expr`` / ``exclude_tags`` kwargs on ``Orchestrator.run_query``.
+    # No filter parsed → both are None.
     assert call.kwargs["tag_expr"] is None
-    assert call.kwargs["exclude_expr"] is None
+    assert call.kwargs["exclude_tags"] is None
 
 
 def test_query_shell_split_bare_form(wiki: Wiki) -> None:
@@ -150,7 +148,7 @@ def test_query_shell_split_bare_form(wiki: Wiki) -> None:
     assert result.exit_code == 0, result.output
     assert call.args[0] == "what is X?"
     assert call.kwargs["tag_expr"] is None
-    assert call.kwargs["exclude_expr"] is None
+    assert call.kwargs["exclude_tags"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -164,7 +162,7 @@ def test_query_with_plus_tag(wiki: Wiki) -> None:
     assert result.exit_code == 0, result.output
     assert call.args[0] == "what are DAGs?"
     assert call.kwargs["tag_expr"] == "airflow"
-    assert call.kwargs["exclude_expr"] is None
+    assert call.kwargs["exclude_tags"] is None
 
 
 def test_query_with_and_chain_and_exclude(wiki: Wiki) -> None:
@@ -173,9 +171,7 @@ def test_query_with_and_chain_and_exclude(wiki: Wiki) -> None:
     assert result.exit_code == 0, result.output
     assert call.args[0] == "compare X and Y"
     assert call.kwargs["tag_expr"] == "airflow&amazon"
-    # Task 3 / f15-exclude-compound: exclude half is a compiled
-    # ``Include`` AST (was a flat ``["python"]`` list pre-Task-3).
-    assert call.kwargs["exclude_expr"] == Include("python")
+    assert call.kwargs["exclude_tags"] == ["python"]
 
 
 def test_query_with_or_chain(wiki: Wiki) -> None:
@@ -191,7 +187,7 @@ def test_query_bare_exclude_only(wiki: Wiki) -> None:
     assert result.exit_code == 0, result.output
     assert call.args[0] == "what is S3?"
     assert call.kwargs["tag_expr"] is None
-    assert call.kwargs["exclude_expr"] == Include("amazon")
+    assert call.kwargs["exclude_tags"] == ["amazon"]
 
 
 # ---------------------------------------------------------------------------
@@ -213,14 +209,14 @@ def test_query_explicit_tag_expr_and_exclude_tag(wiki: Wiki) -> None:
     assert result.exit_code == 0, result.output
     assert call.args[0] == "what is X?"
     assert call.kwargs["tag_expr"] == "airflow&amazon"
-    assert call.kwargs["exclude_expr"] == Include("python")
+    assert call.kwargs["exclude_tags"] == ["python"]
 
 
 def test_query_explicit_exclude_tag_only(wiki: Wiki) -> None:
     """``--exclude-tag`` alone yields an include-less filter."""
     result, call = _invoke("what is X?", "--exclude-tag", "amazon")
     assert result.exit_code == 0, result.output
-    assert call.kwargs["exclude_expr"] == Include("amazon")
+    assert call.kwargs["exclude_tags"] == ["amazon"]
 
 
 def test_query_explicit_form_does_not_split_prefixes(wiki: Wiki) -> None:
@@ -289,7 +285,7 @@ def test_query_cli_plus_c_qualifier(wiki: Wiki) -> None:
     assert result.exit_code == 0, result.output
     assert call.args[0] == "what is X?"
     assert call.kwargs["tag_expr"] == "c:airflow"
-    assert call.kwargs["exclude_expr"] is None
+    assert call.kwargs["exclude_tags"] is None
 
 
 def test_query_cli_t_python_c_python_exclude(wiki: Wiki) -> None:
@@ -304,7 +300,7 @@ def test_query_cli_t_python_c_python_exclude(wiki: Wiki) -> None:
     assert result.exit_code == 0, result.output
     assert call.args[0] == "what is X?"
     assert call.kwargs["tag_expr"] == "t:python"
-    assert call.kwargs["exclude_expr"] == Include("python", qualifier="c")
+    assert call.kwargs["exclude_tags"] == ["python"]
 
 
 def test_query_cli_explicit_tag_expr_with_qualifiers(wiki: Wiki) -> None:
@@ -321,7 +317,7 @@ def test_query_cli_explicit_tag_expr_with_qualifiers(wiki: Wiki) -> None:
     assert result.exit_code == 0, result.output
     assert call.args[0] == "what is X?"
     assert call.kwargs["tag_expr"] == "t:python&c:amazon"
-    assert call.kwargs["exclude_expr"] == Include("python", qualifier="c")
+    assert call.kwargs["exclude_tags"] == ["python"]
 
 
 def test_query_cli_bad_qualifier_exits_2(wiki: Wiki) -> None:

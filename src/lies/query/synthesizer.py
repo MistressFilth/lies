@@ -841,13 +841,9 @@ def _collections_matching(tag_filter: ResolvedTagFilter) -> set[str]:
             - ``c``: strict name match (``coll.name == include.tag``).
 
     Exclude drops a collection per the same dispatch
-    (:func:`lies.query.tag_expr.exclude_matches`); regardless of
-    include result, the exclude wins on collision (a collection
-    listed by an include and the exclude at the same time is
-    dropped). Task 3 / f15-exclude-compound replaced the
-    single-atom ``_exclude_atom_matches`` shim with a recursive
-    tree walk so compound excludes (``-c:foo&c:bar``,
-    ``-c:foo|c:bar``) drop on the same dispatcher.
+    (``_exclude_atom_matches``); regardless of include result, the
+    exclude wins on collision (a collection listed by an include and
+    the exclude at the same time is dropped).
 
     Returns the set of *names* (qmd's per-collection filter key, which
     is the path's first segment). Empty when the library is not
@@ -855,11 +851,12 @@ def _collections_matching(tag_filter: ResolvedTagFilter) -> set[str]:
     separately and tell the operator to initialize the library.
     """
     from lies.library.registry import library_collection_metas
-    from lies.query.tag_expr import atom_matches, exclude_matches
+    from lies.query.tag_expr import _exclude_atom_matches, atom_matches
 
     matching: set[str] = set()
 
     exclude = tag_filter.exclude
+    exclude_qualifier = tag_filter.exclude_qualifier
     include = tag_filter.include
 
     def _eval_include(node: object, coll: LibraryCollectionMeta) -> bool:
@@ -872,7 +869,7 @@ def _collections_matching(tag_filter: ResolvedTagFilter) -> set[str]:
         return False
 
     for coll in library_collection_metas():
-        if exclude is not None and exclude_matches(coll, exclude):
+        if exclude is not None and _exclude_atom_matches(coll, exclude, exclude_qualifier):
             continue
         if include is None:
             matching.add(coll.name)

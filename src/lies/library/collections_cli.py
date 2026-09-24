@@ -2,8 +2,7 @@
 
 The legacy ``lies collections`` group is gone. This sub-app exposes the
 same verbs (list / show / new / modify / delete / enrich-tags) plus a
-``where`` verb that prints the on-disk config path for a slug, and a
-``bootstrap-all`` verb that repairs no-config collections in batch.
+``where`` verb that prints the on-disk config path for a slug.
 """
 
 from __future__ import annotations
@@ -229,46 +228,3 @@ def enrich_tags_cmd() -> None:
         if rec.tags:
             continue
         typer.echo(f"lies library modify {rec.name} --set tags=<comma-separated>")
-
-
-@library_collections_app.command("bootstrap-all")
-def bootstrap_all_cmd(
-    json_output: Annotated[
-        bool,
-        typer.Option("--json", help="Emit JSON summary."),
-    ] = False,
-) -> None:
-    """Bootstrap ``config.yaml`` for every library collection that lacks one.
-
-    Iterates every directory under the library's ``collections_root``
-    and writes a minimal config for any collection whose
-    ``config.yaml`` is missing. Collections that already have a config
-    are left untouched — overwriting their existing ``source`` with a
-    placeholder would be destructive.
-
-    Newly created records are seeded with the placeholder source
-    ``bootstrap-all://<slug>``. Follow up with
-    ``lies library modify <slug> --set source=<real-url>`` to record
-    the actual upstream for each swept collection.
-    """
-    from lies.library.bootstrap import bootstrap_all_missing_configs
-
-    report = bootstrap_all_missing_configs()
-    if json_output:
-        typer.echo(
-            json.dumps(
-                {
-                    "created": list(report.created),
-                    "skipped": list(report.skipped),
-                    "skipped_sources": dict(report.skipped_sources),
-                },
-                indent=2,
-            )
-        )
-        return
-    typer.echo(f"created: {len(report.created)} ({', '.join(report.created) or 'none'})")
-    typer.echo(f"skipped: {len(report.skipped)} ({', '.join(report.skipped) or 'none'})")
-    if report.created:
-        typer.echo("set real sources:")
-        for slug in report.created:
-            typer.echo(f"  lies library modify {slug} --set source=<real-url>")

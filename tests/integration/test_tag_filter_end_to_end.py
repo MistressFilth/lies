@@ -415,9 +415,7 @@ def test_plus_tag_with_exclude(
     """
     orch = _orchestrator(qmd_fixture_library)
     captured: list[str] = []
-    # Task 3 / f15-exclude-compound: ``exclude`` is now an ``Include``
-    # AST (no more flat-string + qualifier shim).
-    tf = ResolvedTagFilter(include=Include("airflow"), exclude=Include("amazon"))
+    tf = ResolvedTagFilter(include=Include("airflow"), exclude="amazon")
     with _patched_synthesizer(orch, captured=captured):
         answer = orch.run_query(AIRFLOW_PROBE, tag_filter=tf, file=False)
 
@@ -608,15 +606,10 @@ def test_plus_t_then_c_exclude_drops_named_only(
     """
     orch = _orchestrator(qmd_fixture_library)
     captured: list[str] = []
-    # Task 3 / f15-exclude-compound: ``ResolvedTagFilter.exclude`` is
-    # now a ``TagExpr | None`` AST (not a flat string + qualifier).
-    # The ``c:`` qualifier lives on the ``Include`` atom itself, so
-    # the same single-atom exclude that the pre-Task-3
-    # ``exclude="airflow", exclude_qualifier="c"`` shape captured is
-    # now an ``Include("airflow", qualifier="c")`` AST.
     tf = ResolvedTagFilter(
         include=Include("airflow", qualifier="t"),
-        exclude=Include("airflow", qualifier="c"),
+        exclude="airflow",
+        exclude_qualifier="c",
     )
     with _patched_synthesizer(orch, captured=captured):
         answer = orch.run_query(AIRFLOW_PROBE, tag_filter=tf, file=False)

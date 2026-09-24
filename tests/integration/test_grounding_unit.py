@@ -143,7 +143,7 @@ def test_archivist_digest_frozen() -> None:
     digest = ArchivistDigest(
         question="q",
         tag_expr=None,
-        exclude_expr=None,
+        exclude_tags=[],
         citations=[],
         no_coverage=False,
         distinct_pages=0,
@@ -156,7 +156,7 @@ def test_archivist_digest_distinct_pages_round_trips() -> None:
     digest = ArchivistDigest(
         question="q",
         tag_expr=None,
-        exclude_expr=None,
+        exclude_tags=[],
         citations=[
             CitationSnippet(collection="wiki", slug="a", title="A", snippet="s"),
             CitationSnippet(collection="wiki", slug="a", title="A", snippet="s2"),
@@ -235,7 +235,7 @@ def test_ground_clamps_top_k_to_bounds(monkeypatch) -> None:
         ]
         return LibrarianOutput(
             tag_expr=None,
-            exclude_expr=None,
+            exclude_tags=[],
             excerpts=excerpts,
             distinct_pages=20,
         )
@@ -266,9 +266,7 @@ def test_ground_uses_first_prose_span_per_excerpt(monkeypatch) -> None:
     ]
 
     def fake_librarian(deps):
-        return LibrarianOutput(
-            tag_expr=None, exclude_expr=None, excerpts=excerpts, distinct_pages=1
-        )
+        return LibrarianOutput(tag_expr=None, exclude_tags=[], excerpts=excerpts, distinct_pages=1)
 
     _patch_librarian(monkeypatch, grounding, fake_librarian)
     digest = grounding.ground("q")
@@ -297,9 +295,7 @@ def test_ground_skips_excerpts_with_only_code_fences(monkeypatch) -> None:
     ]
 
     def fake_librarian(deps):
-        return LibrarianOutput(
-            tag_expr=None, exclude_expr=None, excerpts=excerpts, distinct_pages=2
-        )
+        return LibrarianOutput(tag_expr=None, exclude_tags=[], excerpts=excerpts, distinct_pages=2)
 
     _patch_librarian(monkeypatch, grounding, fake_librarian)
     digest = grounding.ground("q")
@@ -323,7 +319,7 @@ def test_ground_no_coverage_true_when_librarian_reports_it(monkeypatch) -> None:
     def fake_librarian(question, deps):
         return LibrarianOutput(
             tag_expr=None,
-            exclude_expr=None,
+            exclude_tags=[],
             excerpts=[],
             distinct_pages=0,
             no_coverage=True,
@@ -356,7 +352,7 @@ def test_ground_no_coverage_false_when_librarian_reports_zero(monkeypatch) -> No
     def fake_librarian(question, deps):
         return LibrarianOutput(
             tag_expr=None,
-            exclude_expr=None,
+            exclude_tags=[],
             excerpts=[],
             distinct_pages=0,
             no_coverage=False,
@@ -392,7 +388,7 @@ def test_ground_no_coverage_false_when_librarian_returns_hits(monkeypatch) -> No
     def fake_librarian(question, deps):
         return LibrarianOutput(
             tag_expr=None,
-            exclude_expr=None,
+            exclude_tags=[],
             excerpts=excerpts,
             distinct_pages=1,
             no_coverage=False,
@@ -431,191 +427,6 @@ def test_ground_dispatch_failure_still_yields_no_coverage_true(monkeypatch) -> N
     assert digest.no_coverage is True
 
 
-# ---------------------------------------------------------------------------
-# Bug C — `ground` wire format exposes `searched_scope` (F15 envelope parity)
-# ---------------------------------------------------------------------------
-
-
-def test_archivist_digest_searched_scope_default_empty() -> None:
-    """``ArchivistDigest.searched_scope`` defaults to ``[]`` for back-compat.
-
-    Pin for the Bug C fix: the field is added at the END of the
-    dataclass so existing positional constructions remain valid.
-    Without the default, every pre-fix call site would break. Also
-    pins the frozen-dataclass contract — assigning to the field
-    raises ``FrozenInstanceError``.
-    """
-    digest = ArchivistDigest(
-        question="q",
-        tag_expr=None,
-        exclude_expr=None,
-        citations=[],
-        no_coverage=False,
-        distinct_pages=0,
-    )
-    assert digest.searched_scope == []
-    with pytest.raises(dataclasses.FrozenInstanceError):
-        digest.searched_scope = ["x"]  # type: ignore[misc]
-
-
-def test_ground_searched_scope_untagged_returns_all_collections(monkeypatch) -> None:
-    """Untagged ``ground()`` → ``searched_scope`` = every registered collection.
-
-    Pins Bug C: the digest's ``searched_scope`` mirrors the F15
-    envelope that ``Orchestrator.run_query`` writes onto
-    ``SynthesizedAnswer.searched_scope``. Untagged scope = every
-    collection the library knows about, sorted. Tested by patching
-    the library registry to a known set so the assertion sees
-    exactly the names we expect, regardless of the host's live
-    library state.
-    """
-    from lies.library import registry as registry_mod
-    from lies.mcp import grounding
-
-    # Replace the lru_cache-wrapped ``library_collection_names``
-    # with a plain lambda so ``_all_collection_names`` reads our
-    # deterministic fixture instead of walking the host's live
-    # library. Also clear any prior cache so the swap is honored
-    # even if a sibling test in this module already populated it.
-    monkeypatch.setattr(
-        registry_mod,
-        "library_collection_names",
-        lambda: frozenset({"opencode", "claude_platform", "mermaid"}),
-    )
-
-    def fake_librarian(deps):
-        from lies.agents.librarian import LibrarianOutput
-
-        return LibrarianOutput(tag_expr=None, exclude_expr=None, excerpts=[], distinct_pages=0)
-
-    _patch_librarian(monkeypatch, grounding, fake_librarian)
-
-    digest = grounding.ground("q")
-    assert digest.searched_scope == ["claude_platform", "mermaid", "opencode"]
-
-
-def test_ground_searched_scope_tagged_returns_matching_only(monkeypatch) -> None:
-    """Tagged ``ground(tag_expr="opencode")`` → ``searched_scope`` = just that collection.
-
-    Pins Bug C: filtered scope = the subset whose ``atom_matches``
-    is true for the resolved include AST, sorted. The result mirrors
-    ``Orchestrator.run_query``'s contract — tagged ground returns a
-    narrower scope than untagged ground.
-    """
-    from lies.agents.librarian import LibrarianOutput
-    from lies.library import registry as registry_mod
-    from lies.library.registry import LibraryCollectionMeta
-    from lies.mcp import grounding
-
-    monkeypatch.setattr(
-        registry_mod,
-        "library_collection_names",
-        lambda: frozenset({"opencode", "claude_platform", "mermaid"}),
-    )
-
-    # Stub ``library_collection_metas`` so the matching walker sees
-    # the three collections with deterministic tag sets.
-    def _fake_metas() -> list[LibraryCollectionMeta]:
-        return [
-            LibraryCollectionMeta(name="opencode", tags=("cli", "agent")),
-            LibraryCollectionMeta(name="claude_platform", tags=("api",)),
-            LibraryCollectionMeta(name="mermaid", tags=("syntax",)),
-        ]
-
-    monkeypatch.setattr(registry_mod, "library_collection_metas", _fake_metas)
-    # Also stub ``library_collection_tags`` so the F15 validator's
-    # available-set recognizes ``opencode`` as addressable.
-    monkeypatch.setattr(
-        registry_mod,
-        "library_collection_tags",
-        lambda: frozenset({"cli", "agent", "api", "syntax"}),
-    )
-
-    def fake_librarian(deps):
-        return LibrarianOutput(
-            tag_expr="opencode", exclude_expr=None, excerpts=[], distinct_pages=0
-        )
-
-    _patch_librarian(monkeypatch, grounding, fake_librarian)
-
-    digest = grounding.ground("q", tag_expr="opencode")
-    assert digest.searched_scope == ["opencode"]
-
-
-def test_ground_searched_scope_populated_on_librarian_exception(monkeypatch) -> None:
-    """Librarian dispatch failure → ``searched_scope`` is still populated.
-
-    Pins Bug C fail-soft posture: ``searched_scope`` is computed
-    once (before the librarian dispatch) and threaded through every
-    return path. A failed dispatch reports ``no_coverage=True`` but
-    the digest still tells the caller which collections were
-    searched — same contract as ``Orchestrator.run_query`` writing
-    ``searched_scope`` before the F18 ``no_coverage`` decision.
-    """
-    from lies.library import registry as registry_mod
-    from lies.mcp import grounding
-
-    monkeypatch.setattr(
-        registry_mod,
-        "library_collection_names",
-        lambda: frozenset({"opencode", "claude_platform"}),
-    )
-
-    class _BoomAgent:
-        def run_sync(self, user_prompt, *, deps):
-            raise RuntimeError("qmd daemon offline")
-
-    monkeypatch.setattr(grounding, "librarian_agent", lambda: _BoomAgent())
-
-    digest = grounding.ground("q")
-    assert digest.no_coverage is True
-    assert digest.searched_scope == ["claude_platform", "opencode"]
-
-
-def test_mcp_ground_wire_format_includes_searched_scope(monkeypatch) -> None:
-    """The MCP ``ground`` tool's JSON envelope carries ``searched_scope``.
-
-    Pins Bug C at the wire boundary: the MCP tool wrapper
-    (``mcp_ground`` in ``src/lies/mcp/server.py``) returns
-    ``dataclasses.asdict(digest)`` for FastMCP serialization. The
-    new ``searched_scope`` field must appear in the resulting JSON
-    dict so MCP clients can introspect the resolved scope. Without
-    this pin, an accidental ``asdict`` override or field-name typo
-    would silently drop the field from the wire.
-    """
-    from dataclasses import asdict
-
-    from lies.library import registry as registry_mod
-    from lies.mcp import grounding
-    from lies.mcp.server import mcp_ground
-
-    monkeypatch.setattr(
-        registry_mod,
-        "library_collection_names",
-        lambda: frozenset({"opencode", "claude_platform", "mermaid"}),
-    )
-
-    def fake_librarian(deps):
-        from lies.agents.librarian import LibrarianOutput
-
-        return LibrarianOutput(tag_expr=None, exclude_expr=None, excerpts=[], distinct_pages=0)
-
-    _patch_librarian(monkeypatch, grounding, fake_librarian)
-
-    wire = mcp_ground(question="what is opencode?")
-    assert isinstance(wire, dict)
-    assert "searched_scope" in wire, (
-        f"ground wire envelope dropped searched_scope: keys={sorted(wire.keys())}"
-    )
-    assert wire["searched_scope"] == ["claude_platform", "mermaid", "opencode"]
-
-    # Also pin the dataclass-level asdict path so the dataclass itself
-    # carries the field — this is what the MCP tool relies on.
-    digest = grounding.ground("what is opencode?")
-    asdict_payload = asdict(digest)
-    assert "searched_scope" in asdict_payload
-
-
 def test_ground_library_collection_names_cached_across_calls(monkeypatch) -> None:
     """Regression for Fix 5: library_collection_names memoization.
 
@@ -632,7 +443,7 @@ def test_ground_library_collection_names_cached_across_calls(monkeypatch) -> Non
     from lies.mcp import grounding
 
     def fake_librarian(deps):
-        return LibrarianOutput(tag_expr=None, exclude_expr=None, excerpts=[], distinct_pages=0)
+        return LibrarianOutput(tag_expr=None, exclude_tags=[], excerpts=[], distinct_pages=0)
 
     _patch_librarian(monkeypatch, grounding, fake_librarian)
     # Make the underlying body return a stable, non-empty
@@ -678,88 +489,6 @@ class _FakeEntry:
 
     def is_dir(self) -> bool:
         return True
-
-
-def test_collect_available_tags_mcp_includes_library_collections(monkeypatch) -> None:
-    """Library-collection names must appear in the tag-validator's
-    available set with the ``c:`` qualifier prefix.
-
-    Regression for Fix 3 (Task 3 brief): the F15 tag-expression
-    validator on the MCP ``query`` / ``answer`` tool path needs to
-    know which ``c:``-prefixed atoms are addressable so a
-    ``c:opencode`` filter does not raise ``TagExprUnknown``. The MCP
-    tool path is distinct from the ``ground`` archivist's
-    ``grounding.py`` path; the helper lives at
-    ``lies.mcp.server._collect_available_tags_mcp``.
-    """
-    from lies.mcp.server import _collect_available_tags_mcp
-
-    monkeypatch.setattr(
-        "lies.library.registry.library_collection_names",
-        lambda: frozenset({"opencode", "pydantic_ai"}),
-    )
-    tags = _collect_available_tags_mcp(None)
-    assert "c:opencode" in tags
-    assert "c:pydantic_ai" in tags
-
-
-def test_collect_available_tags_mcp_includes_library_collection_tags(monkeypatch) -> None:
-    """Each ``LibraryCollectionConfig.tags`` entry must appear in the
-    tag-validator's available set with the ``t:`` qualifier prefix.
-
-    Regression for Task 8: pre-fix the validator only enumerated
-    collection NAMES (with the ``c:`` prefix). The ``tags`` field on
-    each collection's ``config.yaml`` (e.g. ``mermaid`` carrying
-    ``[syntax, docs, mermaid]``) was invisible to the validator, so
-    a ``t:mermaid`` filter against a library-collection tag raised
-    ``TagExprUnknown``. The fix unions each registered collection's
-    ``tags`` (via :func:`library_collection_tags`) into the available
-    set with the ``t:`` prefix.
-    """
-    from lies.mcp.server import _collect_available_tags_mcp
-
-    monkeypatch.setattr(
-        "lies.library.registry.library_collection_tags",
-        lambda: frozenset({"mermaid", "syntax", "docs", "cli"}),
-    )
-    tags = _collect_available_tags_mcp(None)
-    assert "t:mermaid" in tags
-    assert "t:syntax" in tags
-    assert "t:docs" in tags
-    assert "t:cli" in tags
-
-
-def test_collect_available_tags_mcp_accepts_bare_tag_names(monkeypatch) -> None:
-    """Bare tag names must validate too — F15 treats ``+tag`` as the
-    implicit-t alias for ``+t:tag``.
-
-    Regression for the v0.37.9 fix: pre-fix
-    :func:`_collect_available_tags_mcp` only registered each
-    ``LibraryCollectionConfig.tags`` entry with the explicit ``t:``
-    qualifier prefix. A bare ``+claude`` expression — which is the
-    canonical F15 include form against a library-collection tag —
-    parses to ``Include("claude", qualifier=None)``, and the resolver
-    checks ``expr.tag in available`` directly, so the bare string
-    had to be present in the set or ``TagExprUnknown`` fired at the
-    MCP ``query`` / ``answer`` / ``ground`` boundary even though
-    ``claude`` was a real tag on multiple collections. The fix adds
-    each tag BARE alongside the ``t:`` form so the user's
-    user-confirmed semantic (``bare +tag == +t:tag``) validates.
-    """
-    from lies.mcp.server import _collect_available_tags_mcp
-
-    monkeypatch.setattr(
-        "lies.library.registry.library_collection_tags",
-        lambda: frozenset({"mermaid", "syntax", "docs", "cli"}),
-    )
-    tags = _collect_available_tags_mcp(None)
-    # ``t:``-prefixed form still validates (no regression for Task 8).
-    assert "t:mermaid" in tags
-    # Bare form is now also addressable (implicit-t: alias).
-    assert "mermaid" in tags
-    assert "syntax" in tags
-    assert "docs" in tags
-    assert "cli" in tags
 
 
 def _patch_librarian(monkeypatch, grounding_module, fake_fn):
@@ -895,7 +624,7 @@ def test_ground_wires_librarian_tools_before_run_sync(
         def run_sync(self, user_prompt: object, *, deps: object) -> _FakeResult:
             dispatched_agent.append(self)
             return _FakeResult(
-                LibrarianOutput(tag_expr=None, exclude_expr=None, excerpts=[], distinct_pages=0)
+                LibrarianOutput(tag_expr=None, exclude_tags=[], excerpts=[], distinct_pages=0)
             )
 
     monkeypatch.setattr(grounding, "librarian_agent", lambda: _FakeAgent())
@@ -972,7 +701,7 @@ def test_ground_threads_source_kind_from_librarian_output(monkeypatch) -> None:
     @dataclass(frozen=True)
     class _FakeOutput:
         tag_expr: object = None
-        exclude_expr: object = None
+        exclude_tags: list = field(default_factory=list)
         excerpts: list = field(default_factory=list)
         distinct_pages: int = 0
         no_coverage: bool = False

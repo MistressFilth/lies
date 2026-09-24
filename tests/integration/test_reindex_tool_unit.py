@@ -110,63 +110,6 @@ async def test_reindex_elicitation_unavailable_no_qmd(mock_resolve_wiki) -> None
 
 
 @pytest.mark.asyncio
-async def test_reindex_elicitation_unavailable_surfaces_bypass_path(
-    mock_resolve_wiki,
-) -> None:
-    """cleanup=True + elicitation unavailable: return the bypass-path
-    envelope so the LLM caller can route around the MCP gate.
-
-    Bug E (session f39c9ef8): the host's MCP connection was older
-    than ``2026-07-28`` and rejected server-initiated elicitation.
-    The generic ``"elicitation unavailable: <inner-exc>"`` string
-    left the LLM with no actionable signal. The fix surfaces the
-    concrete workaround — restart the daemon (which negotiates a
-    newer protocol version) or invoke ``lies reindex --cleanup``
-    directly from the shell, where destructive flags run without
-    the MCP gate.
-    """
-    ctx = MagicMock(
-        elicit=AsyncMock(
-            side_effect=RuntimeError(
-                "elicitation via server-initiated requests is "
-                "unavailable on 2026-07-28 connections.",
-            ),
-        ),
-    )
-    with patch.object(qmd_cli, "qmd_reindex") as mock:
-        result = await reindex_tool(cleanup=True, ctx=ctx, name="t")
-    mock.assert_not_called()
-    assert result["cleaned"] is False
-    assert result["errors"] == [
-        "cleanup requires confirmation; MCP server-initiated "
-        "elicitation unavailable on this connection. Run "
-        "`lies mcp down && lies mcp up` and retry, or invoke "
-        "`lies reindex --cleanup` directly from the shell.",
-    ]
-
-
-@pytest.mark.asyncio
-async def test_reindex_all_elicitation_unavailable_surfaces_bypass_path(
-    mock_resolve_wiki,
-) -> None:
-    """all_=True + elicitation unavailable: same bypass-path message.
-
-    Pins the bypass-path translation for the destructive ``--all``
-    flag too — both ``cleanup`` and ``all_`` are destructive and
-    therefore gated by the elicitation check.
-    """
-    ctx = MagicMock(
-        elicit=AsyncMock(side_effect=RuntimeError("no support")),
-    )
-    with patch.object(qmd_cli, "qmd_reindex") as mock:
-        result = await reindex_tool(all_=True, ctx=ctx, name="t")
-    mock.assert_not_called()
-    assert result["cleaned"] is False
-    assert len(result["errors"]) == 1
-    assert result["errors"][0].startswith("cleanup requires confirmation;")
-
-
-@pytest.mark.asyncio
 async def test_reindex_all_elicit_with_all_text(
     ctx_accept, mock_qmd_reindex, mock_resolve_wiki
 ) -> None:

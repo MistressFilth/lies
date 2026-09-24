@@ -27,23 +27,6 @@ only).
 - `file_knowledge` — write one markdown page.
 - `query` / `answer` — synthesized answer; `query` returns
   structured envelope, `answer` returns plain text.
-- `ask_question(text)` — parse the `+c:<name>` / `-<tag>` filter syntax
-  out of a slash-style invocation and return the parsed kwargs
-  (`question`, `tag_expr`, `exclude_tags`). The LLM then forwards the
-  returned kwargs to the `answer` tool. Use this for any question
-  that includes a multi-word filter prefix; the `/answer` slash
-  command tokenizes on whitespace and drops the rest of the line.
-- `ask_ground_question(text)` — same shape as `ask_question`, but
-  returns kwargs (`question`, `tag_expr`, `exclude_tags`, `top_k`)
-  for the `ground` tool. The LLM forwards the returned kwargs to
-  `ground` verbatim. **Use this for every `/cite` slash invocation
-  whose input begins with `+`** — Claude Code's slash dispatcher
-  drops the `text` argument entirely when the slash input starts
-  with a `+` (F15 include sigil), raising
-  `ProtocolError: Missing required arguments: {'text'}` (session
-  df653c3d, 2026-09-24). Plain multi-word questions are also safer
-  through this tool than the slash, since the dispatcher
-  tokenizes on whitespace too.
 - `lint` — health-check; `fix=True` applies the repair plan.
 - `wiki_changes` — recent plan applications.
 
@@ -56,27 +39,13 @@ only).
 
 ## Prompts
 
-- `ask_wiki_answer(text)` (slash `/answer`) — drive `answer`.
-  Note: Claude Code's slash dispatcher tokenizes the input on
-  whitespace, so multi-word filter prefixes (`+c:opencode Where...`)
-  are truncated. For filtered questions, call the `ask_question` tool
-  with the user's full multi-word input instead.
+- `ask_wiki_answer(question)` (slash `/answer`) — drive `answer`.
 - `orient(wiki=...)` — reference prose for the four workflows.
 - `ingest(source=...)` — `lies sync <name> --source <source>`.
 - `lint()` — `lies lint`, `--fix`, repair agent.
 - `sync(collection=...)` — `lies sync`, lock envelope.
 - `file-back(wiki=...)` — F3 file-back from a query synthesis.
-- `cite(text)` (slash `/cite`) — drive `ground` and render
-  `[[slug]]: "snippet"` lines. Single-arg form, parses the
-  `+c:<name>` / `-<tag>` filter syntax internally; the calling
-  LLM forwards the rendered kwargs to the `ground` tool verbatim.
-  **Claude Code's slash dispatcher drops the `text` argument
-  entirely when the input begins with `+`** (F15 include sigil),
-  raising `ProtocolError: Missing required arguments: {'text'}` —
-  worse than `/answer`'s whitespace-tokenize bug, which at least
-  arrives truncated. For any `/cite` invocation whose input
-  begins with `+`, route the user's full multi-word text through
-  the `ask_ground_question` tool instead.
+- `cite(question, tag_expr=None, exclude_tags=None, top_k=3)` — tool-call template: drive `ground` and render `[[slug]]: "snippet"` lines.
 
 ## CLI
 
