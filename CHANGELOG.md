@@ -87,6 +87,14 @@ All notable changes to LIES are documented here. The format follows
   via `load_providers_config` + `resolve_model`. User
   `providers.toml` must include a `librarian` entry.
 
+- Librarian subagent re-derived `tag_expr` from `wiki_catalog` and
+  overrode the caller's pre-set `tag_expr` from `LibrarianDeps`,
+  causing MCP `ground()` (and `/cite`) to return `no_coverage=true`
+  with empty citations even when library qmd returned 18+ hits.
+  The librarian now trusts the caller's `tag_expr` verbatim; the
+  registry-driven classification loop is the fallback for un-tagged
+  queries.
+
 ## [0.37.11] - 2026-09-23
 
 ### Fixed
