@@ -24,10 +24,21 @@ def _stub_qmd_query(monkeypatch: pytest.MonkeyPatch) -> None:
     path; the underlying :func:`WikiMemoryService.search` resolves
     ``qmd_query`` lazily via :mod:`lies.qmd.cli`, so monkeypatching
     that import path covers every entry point.
+
+    Also stub the library-collection registry so the
+    library-shape filter's first-segment gate does not fall back to
+    the bare regex (which would catch the wiki path
+    ``concepts/alpha.md`` here even though it is a legitimate wiki
+    page). The library set deliberately omits ``concepts`` so the
+    wiki hit passes through.
     """
     monkeypatch.setattr(
         "lies.qmd.cli.qmd_query",
         lambda *a, **kw: [{"path": "concepts/alpha.md", "score": 1.0}],
+    )
+    monkeypatch.setattr(
+        "lies.memory.service.library_collection_names",
+        lambda: frozenset({"opencode"}),
     )
 
 
@@ -36,6 +47,7 @@ def test_fallback_lists_expected_tools(wiki_root: Wiki) -> None:
     assert set(mcp.tools_known_to_model()) == {"wiki_search", "wiki_read"}
 
 
+@pytest.mark.slow
 def test_fallback_search_returns_degraded_true(wiki_root: Wiki) -> None:
     """A search call returns bounded evidence and flags it as degraded."""
     from lies.memory.service import WikiMemoryService
@@ -84,6 +96,7 @@ def test_fallback_read_rejects_unknown_ids(wiki_root: Wiki) -> None:
         mcp.call_wiki_read(service, page_ids=["page-deadbeefdeadbeef"])
 
 
+@pytest.mark.slow
 def test_fallback_search_with_empty_wiki_is_empty_and_degraded(
     wiki_root: Wiki,
 ) -> None:

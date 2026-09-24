@@ -41,6 +41,7 @@ def _seed_target(tmp_path: Path, extra_agents: dict[str, str] | None = None) -> 
     return target
 
 
+@pytest.mark.slow
 def test_add_provider_round_trip(tmp_path: Path) -> None:
     target = _seed_target(tmp_path)
     new_spec = ProviderSpec(

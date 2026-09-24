@@ -24,6 +24,7 @@ import os
 import sqlite3
 import subprocess
 import sys
+import warnings
 from collections.abc import Iterable
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -238,6 +239,78 @@ class LibraryWriter:
 
         if updates:
             self._upsert_catalog(updates)
+
+        # Reconcile deletions: ``atomic_commit`` runs ``git add -- <files>``
+        # for the explicit paths only, so a tracked file that was
+        # previously committed and then deleted from disk (e.g. by a
+        # re-ingest that drops now-stale collection files) is never
+        # staged. Without this, every re-ingest accumulates ghost
+        # entries in HEAD. ``git add -u`` (NOT ``-A``) stages only
+        # modifications and deletions of already-tracked files,
+        # leaving new untracked files alone. ``-A`` would also pick up
+        # untracked files, which the writer does not claim.
+        if sha is not None:
+            try:
+                subprocess.run(
+                    ["git", "-C", str(self._library.git_root), "add", "-u"],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+            except subprocess.CalledProcessError as exc:
+                warnings.warn(
+                    f"library: deletion reconcile `git add -u` failed: "
+                    f"{(exc.stderr or '').strip() or exc}; "
+                    f"tracked-file deletions may accumulate in HEAD until a "
+                    f"manual `git -C {self._library.git_root} add -u && git "
+                    f"commit` runs.",
+                    stacklevel=2,
+                )
+            else:
+                # If ``git add -u`` introduced further staged changes
+                # (modifications or deletions of tracked files the
+                # caller did not name explicitly), fold them into a
+                # follow-up commit so the deletions land atomically
+                # with the original write.
+                diff = subprocess.run(
+                    [
+                        "git",
+                        "-C",
+                        str(self._library.git_root),
+                        "diff",
+                        "--cached",
+                        "--name-only",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    timeout=30,
+                )
+                if diff.stdout.strip():
+                    try:
+                        subprocess.run(
+                            [
+                                "git",
+                                "-C",
+                                str(self._library.git_root),
+                                "commit",
+                                "-m",
+                                f"{message} (reconcile deletions)",
+                            ],
+                            check=True,
+                            capture_output=True,
+                            text=True,
+                            timeout=30,
+                        )
+                    except subprocess.CalledProcessError as exc:
+                        warnings.warn(
+                            f"library: deletion reconcile commit failed: "
+                            f"{(exc.stderr or '').strip() or exc}; "
+                            f"tracked-file deletions may accumulate in HEAD until a "
+                            f"manual `git -C {self._library.git_root} commit` runs.",
+                            stacklevel=2,
+                        )
 
         # F14 sentinel: mark that any library has been written since the qmd
         # daemon started. Touched at the machine-global path so the daemon's

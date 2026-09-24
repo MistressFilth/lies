@@ -362,6 +362,41 @@ def reconcile(wiki: object, *, dry_run: bool = False) -> ReconcileResult:
     return ReconcileResult(added=added, removed=removed)
 
 
+def reconcile_wiki_catalog(wiki: object) -> int:
+    """Drop stale catalog rows whose on-disk page no longer exists.
+
+    Lightweight, search-time reconciliation: walks the ``pages`` table
+    and removes rows whose slug doesn't resolve to an existing file
+    under ``wiki.wiki_dir``. Returns the number of rows dropped.
+    Idempotent — a second call after convergence drops zero.
+
+    Out of scope: adding missing rows. The full rebuild (orphan pass +
+    dangling pass) lives in :func:`reconcile` and the ``lies catalog
+    reconcile`` CLI; this helper only removes ghosts that the qmd
+    index / ``index.md`` fallback could surface as
+    ``unknown page_id`` failures on a subsequent ``wiki_read``.
+
+    Called at the top of :meth:`WikiMemoryService.search` so every
+    ``wiki_search`` dispatch sees a catalog that's a subset of the
+    on-disk wiki. Cost is one ``stat`` per row — cheap for the small
+    wikis LIES targets; can be promoted to a heartbeat-driven job if
+    larger wikis make per-search statting measurable.
+    """
+    wiki_dir: Path = wiki.wiki_dir  # type: ignore[attr-defined]  # ty: ignore[unresolved-attribute]
+    conn = open_catalog(wiki)
+    try:
+        cur = conn.execute("SELECT slug FROM pages")
+        dropped = 0
+        for (slug,) in cur.fetchall():
+            if not (wiki_dir / f"{slug}.md").exists():
+                conn.execute("DELETE FROM pages WHERE slug = ?", (slug,))
+                dropped += 1
+        conn.commit()
+        return dropped
+    finally:
+        conn.close()
+
+
 def render_markdown(conn: sqlite3.Connection) -> str:
     """Title-only markdown export. One ``- [Title](path)`` per row.
 

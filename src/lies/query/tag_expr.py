@@ -26,10 +26,11 @@ if TYPE_CHECKING:
 class TagExpr:
     """Base class for the tag-filter AST.
 
-    Concrete variants: `Include`, `And`, `Or`. The exclude lives
-    on `ResolvedTagFilter.exclude` as a flat string; it is not
-    part of the tree (the grammar restricts to at most one
-    `-` atom).
+    Concrete variants: `Include`, `And`, `Or`. The include and the
+    exclude share the same tree shape — both halves of the F15
+    grammar parse to the same AST, both halves are validated by the
+    same recursive `resolve()` walk, and both halves are evaluated by
+    the same `atom_matches` / `exclude_matches` recursion.
     """
 
 
@@ -67,17 +68,26 @@ class Or(TagExpr):
 class ResolvedTagFilter:
     """Flattened form the retriever consumes.
 
-    include: the validated include AST tree (may be Include / And / Or, or None).
-    exclude: at most one tag string, or None.
-    exclude_qualifier:
-        - None (default): tag-or-name alias.
-        - "t": explicit alias.
-        - "c": strict collection-name match.
+    Both halves of the F15 grammar share the same `TagExpr` shape:
+    `include` and `exclude` are validated independently by the same
+    recursive `resolve()` walk and evaluated by the same per-collection
+    matcher. The historical split — flat string on `exclude`, AST on
+    `include` — was retired in Task 3 / f15-exclude-compound because
+    the F15 grammar accepts compound excludes (``-c:foo&c:bar``,
+    ``-c:foo|c:bar``) that no longer fit a single atom.
+
+    Each ``Include`` atom carries its own ``qualifier`` (default
+    ``None`` — same ``t:`` / ``c:`` semantics as the include side).
+
+    Attributes:
+        include: Validated include AST (Include / And / Or), or None
+            when the operator passed no ``+`` chain.
+        exclude: Validated exclude AST (Include / And / Or), or None
+            when the operator passed no ``-`` chain.
     """
 
     include: TagExpr | None = None
-    exclude: str | None = None
-    exclude_qualifier: Literal["t", "c"] | None = None
+    exclude: TagExpr | None = None
 
 
 class TagExprParseError(Exception):
@@ -337,10 +347,14 @@ def _split_argv_token_for_ops(token: str) -> list[str]:
         return [token]
     # Operators detected — split with posix shlex. Quoted segments
     # stay one token; `&` / `|` become their own tokens; `-` is in
-    # wordchars so tag names like `claude-code` stay whole.
+    # wordchars so tag names like `claude-code` stay whole. `:` is in
+    # wordchars so `c:opencode` / `t:airflow` qualifier prefixes stay
+    # attached to their atom (otherwise `c:opencode` would tokenize
+    # as `c`, `:`, `opencode`). Mirrors `parse()` which also adds
+    # both `-` and `:` to wordchars.
     try:
         lexer = shlex.shlex(token, posix=True)
-        lexer.wordchars += "-"
+        lexer.wordchars += "-:"
         lexer.commenters = ""
         return list(lexer)
     except ValueError as exc:
@@ -349,8 +363,8 @@ def _split_argv_token_for_ops(token: str) -> list[str]:
 
 def parse_query_argv(
     argv: list[str],
-) -> tuple[str, TagExpr | None, str | None, Literal["t", "c"] | None]:
-    """Walk argv, peel off optional `+` chain and optional `-` atom.
+) -> tuple[str, TagExpr | None, TagExpr | None, None]:
+    """Walk argv, peel off optional `+` chain and optional `-` chain.
 
     The argv here is the post-Typer positional list. Typer has
     already consumed `--flag` values; what remains is positional.
@@ -359,25 +373,31 @@ def parse_query_argv(
       - If the first token starts with `+`, the chain extends
         across subsequent tokens while the previous token ended
         in `&` or `|`.
-      - If the next token (immediately after the chain) starts
-        with `-`, it is the exclude atom. The atom may carry a
-        ``t:`` / ``c:`` qualifier prefix (F15); the prefix is
-        stripped here and returned as ``exclude_qualifier``.
+      - If the next token (immediately after the include chain)
+        starts with `-`, peel a compound ``-`` chain that mirrors
+        the include path's split + extend model: each ``-`` atom
+        may carry a ``t:`` / ``c:`` qualifier prefix (F15), and
+        the chain extends while the next argv token starts with
+        ``&`` / ``|`` (the operator-then-atom case) or the previous
+        chain token ended with ``&`` / ``|``. ``&`` binds tighter
+        than ``|`` (same precedence as the include path).
       - The remaining tokens join with single spaces to form
         the question.
 
-    Returns ``(question, include_ast, exclude_tag, exclude_qualifier)``.
-    ``exclude_qualifier`` is ``None`` for an unqualified exclude
-    (the ``t`` alias) or ``"t"`` / ``"c"`` for an explicit prefix.
+    Returns ``(question, include_ast, exclude_ast, None)``. The
+    fourth element is always ``None`` because the qualifier lives
+    on each ``Include`` atom in the tree; callers that need a
+    flat string can render the include AST via :func:`_render_include`
+    (qualified form, includes the prefix). The exclude AST is now
+    threaded through to consumers verbatim — no body-only renderer
+    is needed because both halves of the F15 grammar share the
+    same AST shape (Task 3 / f15-exclude-compound retired the
+    legacy flat-string ``ResolvedTagFilter.exclude`` contract).
 
     Raises TagExprParseError on grammar errors.
     """
     if not argv:
         raise TagExprParseError("query argv is empty")
-
-    chain_tokens: list[str] = []
-    exclude_tag: str | None = None
-    exclude_qualifier: Literal["t", "c"] | None = None
 
     # Peel the optional `+` chain.
     if argv[0].startswith("+"):
@@ -396,8 +416,21 @@ def parse_query_argv(
             )
         while i < len(argv):
             tok = argv[i]
-            # Extend the chain if the previous chain token ended in & or |.
+            # Extend the chain if EITHER (a) the previous chain
+            # token ended in an operator (atom-then-operator case)
+            # OR (b) the current token starts with `&` / `|` — the
+            # operator-then-atom case from realistic shell splitting
+            # (e.g. `+c:foo & c:bar` shlex-tokenizes to `["+c:foo",
+            # "&", "c:bar"]`). The bare-operator token is appended
+            # as-is; the per-token operator split
+            # (:func:`_split_argv_token_for_ops`) re-emits it as its
+            # own flat-list element so `parse_tokens` sees a clean
+            # operator/atom stream.
             if chain_tokens and chain_tokens[-1].endswith(("&", "|")):
+                chain_tokens.append(tok)
+                i += 1
+                continue
+            if tok in ("&", "|"):
                 chain_tokens.append(tok)
                 i += 1
                 continue
@@ -425,24 +458,94 @@ def parse_query_argv(
         include_ast = None
         i = 0
 
-    # Peel the optional single `-` atom. The atom may carry a
-    # ``t:`` / ``c:`` qualifier prefix (F15). Bad qualifiers raise
-    # ``TagExprParseError`` here, mirroring the include chain's
-    # parse_atom error path.
+    # Peel the optional `-` chain. The chain mirrors the include
+    # path's split + extend model: the first argv token's body
+    # (after stripping the leading ``-``) is one atom; the chain
+    # extends across subsequent argv tokens that START with ``&``
+    # / ``|`` (the operator-then-atom case from realistic shell
+    # splitting). Embedded operators inside the first argv token
+    # (e.g. ``-c:foo&c:bar`` as one shell word) flow through the
+    # same ``_split_argv_token_for_ops`` helper the include path
+    # uses, so the ``&`` / ``|`` split semantics are symmetric
+    # across both chains. Each atom may carry a ``t:`` / ``c:``
+    # qualifier prefix (F15); bad prefixes raise
+    # ``TagExprParseError`` via :func:`check_qualifier` here,
+    # mirroring the include chain's parse_atom error path.
     if i < len(argv) and argv[i].startswith("-"):
         body = argv[i][1:]
         if not body:
             raise TagExprParseError("'-' without atom", position=i)
-        exclude_qualifier, exclude_tag = check_qualifier(body, position=i)
+        check_qualifier(body, position=i)
+        exclude_tokens: list[str] = [body]
         i += 1
+        while i < len(argv):
+            tok = argv[i]
+            # Bare operator: append operator + immediately absorb the
+            # next token (whatever it is) as the following atom.
+            # Mirrors the include path's "extend chain" semantics for
+            # argv[i] starts with & / |: the operator must be followed
+            # by an atom or the chain is dangling. Realistic shell
+            # splits produce this shape when the operator has
+            # surrounding whitespace (e.g. shlex.split("-c:foo & c:bar")
+            # yields `["-c:foo", "&", "c:bar"]`).
+            if tok in ("&", "|"):
+                exclude_tokens.append(tok)
+                i += 1
+                if i >= len(argv):
+                    raise TagExprParseError(
+                        f"dangling operator at end of exclude chain: {tok!r}",
+                        position=i - 1,
+                    )
+                next_tok = argv[i]
+                if next_tok.startswith("-"):
+                    raise TagExprParseError(
+                        f"unexpected exclude prefix inside chain: {next_tok!r}",
+                        position=i,
+                    )
+                check_qualifier(next_tok, position=i)
+                exclude_tokens.append(next_tok)
+                i += 1
+                continue
+            # Operator-prefixed atom (e.g. `&c:bar`).
+            if tok.startswith(("&", "|")):
+                atom_body = tok[1:]
+                if not atom_body:
+                    raise TagExprParseError(
+                        f"dangling operator at end of exclude chain: {tok!r}",
+                        position=i,
+                    )
+                check_qualifier(atom_body, position=i)
+                exclude_tokens.append(tok)
+                i += 1
+                continue
+            break
+        # If the chain ended with `&` or `|`, peel that dangling op
+        # into a parse error before going further (mirrors the
+        # include path's post-loop dangling check).
+        if exclude_tokens and exclude_tokens[-1].endswith(("&", "|")):
+            raise TagExprParseError(
+                f"dangling operator at end of exclude chain: {exclude_tokens[-1]!r}",
+                position=len(argv) - 1,
+            )
+        # Flatten via the same argv-split helper used by the
+        # include path: operators outside any quoted segment
+        # become their own tokens; the leading operator on a
+        # continuation argv token flows through to the flat list
+        # exactly once. parse_tokens then builds the AST.
+        flat_exclude: list[str] = []
+        for ct in exclude_tokens:
+            flat_exclude.extend(_split_argv_token_for_ops(ct))
+        exclude_ast = parse_tokens(flat_exclude)
+    else:
+        exclude_ast = None
 
     # Remaining tokens are the question.
     question_tokens = argv[i:]
-    if include_ast is not None or exclude_tag is not None:
+    if include_ast is not None or exclude_ast is not None:
         if not question_tokens:
             raise TagExprParseError("filter present but no question")
     question = " ".join(question_tokens)
-    return question, include_ast, exclude_tag, exclude_qualifier
+    return question, include_ast, exclude_ast, None
 
 
 # ---------------------------------------------------------------------------
@@ -450,32 +553,61 @@ def parse_query_argv(
 # ---------------------------------------------------------------------------
 
 
-def resolve(expr: TagExpr, *, available: set[str]) -> ResolvedTagFilter:
-    """Validate the include AST against the available tag set.
+def resolve(
+    expr: TagExpr | None,
+    *,
+    available: set[str],
+    exclude: TagExpr | None = None,
+) -> ResolvedTagFilter:
+    """Validate the include (and optional exclude) AST against the available tag set.
 
-    Every `Include(tag)` requires `tag` in `available`; the first
-    unknown raises `TagExprUnknown` with the exact spelling.
-    `And` / `Or` are recursive — both children must validate.
-    The exclude lives on `ResolvedTagFilter.exclude`; this
-    function does not validate it (the retriever does).
+    Every ``Include(tag)`` — on either half — requires ``tag`` in
+    ``available``; the first unknown raises :class:`TagExprUnknown`
+    with the exact spelling. ``And`` / ``Or`` are recursive — both
+    children must validate.
+
+    ``expr`` may be ``None`` when the operator passed only an exclude
+    chain (no ``+`` prefix). The CLI's argv parser splits the two
+    halves independently and threads each one through here; the
+    orchestrator's include-only path leaves ``exclude`` at its
+    ``None`` default.
+
+    Task 3 / f15-exclude-compound: the exclude half shares the same
+    AST shape as the include half, so the validation walk is the
+    same recursive ``resolve`` over the exclude tree. Callers that
+    pre-split the two halves (CLI's explicit form, MCP's
+    ``ask_question``) thread the exclude tree through ``exclude=``
+    here; callers that only have the include AST leave it ``None``
+    (default).
 
     Returns:
-        `ResolvedTagFilter(include=validated_tree, exclude=None)`.
-        Exclude is filled by the caller (`parse_query_argv` already
-        extracted it; this function only handles the include AST).
+        :class:`ResolvedTagFilter` carrying the validated include
+        tree (and the validated exclude tree when one was supplied).
+    """
+    include = _resolve_tree(expr, available) if expr is not None else None
+    exclude_tree = _resolve_tree(exclude, available) if exclude is not None else None
+    return ResolvedTagFilter(include=include, exclude=exclude_tree)
+
+
+def _resolve_tree(expr: TagExpr, available: set[str]) -> TagExpr:
+    """Recursively validate one ``TagExpr`` tree against ``available``.
+
+    Returns the validated tree unchanged (``Include`` atoms whose
+    ``tag`` is in ``available``; ``And`` / ``Or`` whose both /
+    either child validated). Raises :class:`TagExprUnknown` on the
+    first unknown atom.
+
+    Used by :func:`resolve` to validate both halves of a
+    :class:`ResolvedTagFilter` with one recursion shape.
     """
     if isinstance(expr, Include):
         if expr.tag not in available:
             raise TagExprUnknown(expr.tag, available=available)
-        return ResolvedTagFilter(include=expr)
+        return expr
     if isinstance(expr, And):
-        left = resolve(expr.left, available=available)
-        right = resolve(expr.right, available=available)
-        return ResolvedTagFilter(include=And(left.include, right.include))  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
+        return And(_resolve_tree(expr.left, available), _resolve_tree(expr.right, available))
     if isinstance(expr, Or):
-        left = resolve(expr.left, available=available)
-        right = resolve(expr.right, available=available)
-        return ResolvedTagFilter(include=Or(left.include, right.include))  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
+        return Or(_resolve_tree(expr.left, available), _resolve_tree(expr.right, available))
     raise TypeError(f"unexpected node type: {type(expr).__name__}")
 
 
@@ -505,19 +637,32 @@ def atom_matches(coll: "Collection | LibraryCollectionMeta", include: Include) -
     return include.tag in (set(coll.tags) | {coll.name})
 
 
-def _exclude_atom_matches(
+def exclude_matches(
     coll: "Collection | LibraryCollectionMeta",
-    exclude: str,
-    exclude_qualifier: Literal["t", "c"] | None,
+    exclude: TagExpr,
 ) -> bool:
-    """Evaluate the exclude atom against one Collection.
+    """Evaluate the exclude AST against one Collection.
 
-    Same dispatch as :func:`atom_matches` but for the flat exclude
-    string field on :class:`ResolvedTagFilter`. Accepts the legacy
-    wiki-yaml ``Collection`` and the library-first
-    :class:`LibraryCollectionMeta` interchangeably — see
-    :func:`atom_matches` for the structural contract.
+    Mirror of the include-side recursion in
+    :func:`lies.query.synthesizer._eval_include` — walks the
+    exclude tree (``Include`` / ``And`` / ``Or``) and dispatches
+    every leaf via :func:`atom_matches`. ``And`` short-circuits on
+    the first non-match; ``Or`` short-circuits on the first match.
+
+    Task 3 / f15-exclude-compound replaced the historical flat-string
+    ``_exclude_atom_matches`` helper because compound excludes
+    (``-c:foo&c:bar``, ``-c:foo|c:bar``) need a tree walk, not a
+    single-atom match. The retriever's :func:`_collections_matching`
+    calls this once per collection per query.
+
+    Accepts the legacy wiki-yaml :class:`Collection` and the
+    library-first :class:`LibraryCollectionMeta` interchangeably —
+    see :func:`atom_matches` for the structural contract.
     """
-    if exclude_qualifier == "c":
-        return coll.name == exclude
-    return exclude in (set(coll.tags) | {coll.name})
+    if isinstance(exclude, Include):
+        return atom_matches(coll, exclude)
+    if isinstance(exclude, And):
+        return exclude_matches(coll, exclude.left) and exclude_matches(coll, exclude.right)
+    if isinstance(exclude, Or):
+        return exclude_matches(coll, exclude.left) or exclude_matches(coll, exclude.right)
+    raise TypeError(f"unexpected node type: {type(exclude).__name__}")

@@ -87,7 +87,7 @@ def test_query_default_collection_file_and_force_file() -> None:
     """Without any of the three flags, defaults match the F18 signature."""
     call = _run_query_call()
     assert call.kwargs["tag_expr"] is None
-    assert call.kwargs["exclude_tags"] is None
+    assert call.kwargs["exclude_expr"] is None
     assert call.kwargs["file_back"] is True
 
 

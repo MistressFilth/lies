@@ -154,47 +154,49 @@ def test_parse_include_errors(bad):
 )
 def test_parse_query_argv_happy(argv, expected_filter, expected_exclude, expected_query):
     # expected_filter as string is re-parsed to compare; we
-    # compare on (question, include_ast.render() if include else None, exclude).
+    # compare on (question, include_ast.render() if include else None,
+    # exclude_ast.render() if exclude else None).
     from lies.query.tag_expr import _render_include  # see step 7
 
-    question, include_ast, exclude, exclude_qualifier = parse_query_argv(argv)
+    question, include_ast, exclude_ast, _ = parse_query_argv(argv)
     assert question == expected_query
     if expected_filter is None:
         assert include_ast is None
     else:
         assert include_ast is not None
         assert _render_include(include_ast) == expected_filter
-    assert exclude == expected_exclude
-    # Unqualified excludes (the t-alias default) yield None.
-    assert exclude_qualifier is None
+    if expected_exclude is None:
+        assert exclude_ast is None
+    else:
+        assert exclude_ast is not None
+        # The exclude half keeps its qualifier on each Include atom; render
+        # the AST to compare against the expected flat-string spelling.
+        assert _render_include(exclude_ast) == expected_exclude
 
 
 def test_parse_query_argv_with_exclude():
     argv = ["+airflow&provider", "-amazon", "compare", "X", "and", "Y"]
-    question, include_ast, exclude, exclude_qualifier = parse_query_argv(argv)
+    question, include_ast, exclude_ast, _ = parse_query_argv(argv)
     assert question == "compare X and Y"
-    assert exclude == "amazon"
-    assert exclude_qualifier is None
+    assert exclude_ast == Include("amazon")
 
 
 def test_parse_query_argv_with_c_qualifier_exclude():
-    """``-c:airflow`` strips the prefix and returns qualifier='c'."""
+    """``-c:airflow`` keeps the qualifier on the Include atom."""
     argv = ["+t:airflow", "-c:airflow", "what", "is", "X?"]
-    question, include_ast, exclude, exclude_qualifier = parse_query_argv(argv)
+    question, include_ast, exclude_ast, _ = parse_query_argv(argv)
     assert question == "what is X?"
     assert include_ast == Include("airflow", qualifier="t")
-    assert exclude == "airflow"
-    assert exclude_qualifier == "c"
+    assert exclude_ast == Include("airflow", qualifier="c")
 
 
 def test_parse_query_argv_with_t_qualifier_exclude():
-    """``-t:airflow`` returns qualifier='t' (the explicit alias)."""
+    """``-t:airflow`` keeps the explicit t: qualifier on the Include atom."""
     argv = ["+airflow", "-t:airflow", "what", "is", "X?"]
-    question, include_ast, exclude, exclude_qualifier = parse_query_argv(argv)
+    question, include_ast, exclude_ast, _ = parse_query_argv(argv)
     assert question == "what is X?"
     assert include_ast == Include("airflow")
-    assert exclude == "airflow"
-    assert exclude_qualifier == "t"
+    assert exclude_ast == Include("airflow", qualifier="t")
 
 
 def test_parse_query_argv_bad_exclude_qualifier_errors():
@@ -237,21 +239,19 @@ def test_parse_query_argv_realistic_bash_quoted_tag():
     internal whitespace as a single atom.
     """
     argv = ["+airflow provider", "what", "is", "X?"]
-    question, include_ast, exclude, exclude_qualifier = parse_query_argv(argv)
+    question, include_ast, exclude_ast, _ = parse_query_argv(argv)
     assert question == "what is X?"
     assert include_ast == Include("airflow provider")
-    assert exclude is None
-    assert exclude_qualifier is None
+    assert exclude_ast is None
 
 
 def test_parse_query_argv_realistic_bash_quoted_tag_and_exclude():
     """Realistic bash: +"airflow provider" -amazon compare X and Y."""
     argv = ["+airflow provider", "-amazon", "compare", "X", "and", "Y"]
-    question, include_ast, exclude, exclude_qualifier = parse_query_argv(argv)
+    question, include_ast, exclude_ast, _ = parse_query_argv(argv)
     assert question == "compare X and Y"
     assert include_ast == Include("airflow provider")
-    assert exclude == "amazon"
-    assert exclude_qualifier is None
+    assert exclude_ast == Include("amazon")
 
 
 def test_render_include_round_trip_multiatom_with_internal_space():
@@ -260,6 +260,141 @@ def test_render_include_round_trip_multiatom_with_internal_space():
     rendered = _render_include(ast)
     assert rendered == '"airflow provider"'
     assert parse_include(rendered) == ast
+
+
+# --- F15 exclude compound chain (Task 2) --------------------------------
+
+
+def test_parse_query_argv_exclude_and_chain():
+    """``-c:foo&c:bar`` builds an And-tree on the exclude half.
+
+    Mirrors the include chain's operator split: ``_split_argv_token_for_ops``
+    breaks the embedded ``&`` outside any quoted segment, then ``parse_tokens``
+    builds the tree. The fourth tuple element is always ``None`` because
+    the qualifier lives on each ``Include`` atom.
+    """
+    argv = ["-c:foo&c:bar", "What is X?"]
+    question, include_ast, exclude_ast, fourth = parse_query_argv(argv)
+    assert question == "What is X?"
+    assert include_ast is None
+    assert exclude_ast == And(
+        Include("foo", qualifier="c"),
+        Include("bar", qualifier="c"),
+    )
+    assert fourth is None
+
+
+def test_parse_query_argv_exclude_or_chain():
+    """``-c:foo|c:bar`` builds an Or-tree on the exclude half.
+
+    ``|`` is the lower-precedence binary operator; ``parse_tokens`` builds
+    the ``Or`` node directly. Same qualifier-on-atom contract as And.
+    """
+    argv = ["-c:foo|c:bar", "What is X?"]
+    question, include_ast, exclude_ast, fourth = parse_query_argv(argv)
+    assert question == "What is X?"
+    assert include_ast is None
+    assert exclude_ast == Or(
+        Include("foo", qualifier="c"),
+        Include("bar", qualifier="c"),
+    )
+    assert fourth is None
+
+
+def test_parse_query_argv_exclude_precedence_and_binds_tighter():
+    """``-c:foo&c:bar|t:baz`` builds Or(And(...), Include) — & first.
+
+    Mirrors the include chain's precedence: ``&`` binds tighter than ``|``,
+    so the AST is ``Or(And(Include("foo", "c"), Include("bar", "c")), Include("baz", "t"))``.
+    Regression for the case where the original exclude peel only took one
+    atom and silently dropped the rest of the chain (session 82a266a9).
+    """
+    argv = ["-c:foo&c:bar|t:baz", "What is X?"]
+    question, include_ast, exclude_ast, fourth = parse_query_argv(argv)
+    assert question == "What is X?"
+    assert include_ast is None
+    assert exclude_ast == Or(
+        And(
+            Include("foo", qualifier="c"),
+            Include("bar", qualifier="c"),
+        ),
+        Include("baz", qualifier="t"),
+    )
+    assert fourth is None
+
+
+def test_parse_query_argv_exclude_chain_across_argv_tokens():
+    """``-c:foo &c:bar`` (split across argv tokens) builds the And-tree.
+
+    Realistic bash delivers operator-then-atom as a separate argv token
+    (e.g. ``-c:foo '&c:bar' What?``); the loop absorbs it when the next
+    token starts with ``&`` / ``|``. The flat list after splitting is
+    ``["c:foo", "&", "c:bar"]`` and ``parse_tokens`` builds the And.
+    """
+    argv = ["-c:foo", "&c:bar", "What?"]
+    question, include_ast, exclude_ast, fourth = parse_query_argv(argv)
+    assert question == "What?"
+    assert include_ast is None
+    assert exclude_ast == And(
+        Include("foo", qualifier="c"),
+        Include("bar", qualifier="c"),
+    )
+    assert fourth is None
+
+
+# --- F15 argv token split preserves c:/t: qualifier ---------------------
+
+
+def test_split_argv_token_for_ops_keeps_qualifier_attached():
+    """`c:opencode|c:claude_platform` shlex-splits on `|` only; qualifier
+    colon stays glued to its atom so downstream parse_tokens sees a clean
+    token list (`["c:opencode", "|", "c:claude_platform"]`).
+
+    Regression for session 82a266a9 line 61: a slash command tokenized
+    `+c:opencode|c:claude_platform` as one argv token. Without `:` in
+    wordchars, shlex split it into `["c", ":", "opencode", ...]` and
+    parse_tokens choked on the leaked `":"` token.
+    """
+    from lies.query.tag_expr import _split_argv_token_for_ops, parse_tokens
+
+    tokens = _split_argv_token_for_ops("c:opencode|c:claude_platform")
+    assert tokens == ["c:opencode", "|", "c:claude_platform"]
+    assert parse_tokens(tokens) == Or(
+        Include("opencode", qualifier="c"),
+        Include("claude_platform", qualifier="c"),
+    )
+
+
+def test_split_argv_token_for_ops_no_op_passthrough():
+    """A token with no `&` / `|` outside quotes is one atom (whitespace intact)."""
+    from lies.query.tag_expr import _split_argv_token_for_ops
+
+    assert _split_argv_token_for_ops("c:opencode") == ["c:opencode"]
+    assert _split_argv_token_for_ops('"airflow provider"') == ['"airflow provider"']
+
+
+def test_split_argv_token_for_ops_keeps_t_qualifier_attached():
+    """t: qualifier round-trips through the argv split path."""
+    from lies.query.tag_expr import _split_argv_token_for_ops, parse_tokens
+
+    tokens = _split_argv_token_for_ops("t:airflow|t:provider")
+    assert tokens == ["t:airflow", "|", "t:provider"]
+    assert parse_tokens(tokens) == Or(
+        Include("airflow", qualifier="t"),
+        Include("provider", qualifier="t"),
+    )
+
+
+def test_split_argv_token_for_ops_and_with_qualifier():
+    """`&` keeps qualifier attached too, mirroring `|` behavior."""
+    from lies.query.tag_expr import _split_argv_token_for_ops, parse_tokens
+
+    tokens = _split_argv_token_for_ops("c:opencode&t:provider")
+    assert tokens == ["c:opencode", "&", "t:provider"]
+    assert parse_tokens(tokens) == And(
+        Include("opencode", qualifier="c"),
+        Include("provider", qualifier="t"),
+    )
 
 
 # --- resolve ---------------------------------------------------------------
@@ -424,18 +559,75 @@ def test_round_trip_with_qualifier():
     assert reparsed == original
 
 
-def test_resolved_tag_filter_default_qualifier():
-    """ResolvedTagFilter accepts the new exclude_qualifier field with default None."""
-    f = ResolvedTagFilter(include=None, exclude="python")
-    assert f.exclude_qualifier is None
+def test_resolved_tag_filter_exclude_carries_ast():
+    """Task 3: ``ResolvedTagFilter.exclude`` is a ``TagExpr | None`` AST.
+
+    The flat-string ``exclude`` field was retired in favor of the
+    same ``TagExpr`` AST shape the include side already used, so
+    compound excludes (``-c:foo&c:bar``, ``-c:foo|c:bar``) thread
+    through unchanged. The historical ``exclude_qualifier`` field
+    is gone — the qualifier now lives on each ``Include`` atom in
+    the tree.
+    """
+    exclude_tree = Or(Include("foo", qualifier="c"), Include("bar", qualifier="c"))
+    f = ResolvedTagFilter(include=None, exclude=exclude_tree)
+    assert f.exclude == exclude_tree
+    # The historical ``exclude_qualifier`` attribute is gone — the
+    # qualifier lives on each Include atom now.
+    assert not hasattr(f, "exclude_qualifier")
 
 
-def test_resolved_tag_filter_with_exclude_qualifier():
-    f = ResolvedTagFilter(include=None, exclude="python", exclude_qualifier="c")
-    assert f.exclude_qualifier == "c"
+def test_resolved_tag_filter_exclude_and_tree():
+    """Compound ``-c:foo&c:bar`` carries the And-tree on exclude."""
+    exclude_tree = And(Include("foo", qualifier="c"), Include("bar", qualifier="c"))
+    f = ResolvedTagFilter(include=Include("airflow"), exclude=exclude_tree)
+    assert f.exclude == exclude_tree
+    assert f.include == Include("airflow")
 
 
-# --- F15 atom_matches / _exclude_atom_matches helpers --------------------
+def test_resolve_validates_exclude_tree():
+    """``resolve(include, exclude=, available=)`` validates the exclude tree too.
+
+    Both halves of the F15 grammar share the same recursive
+    validation walk. An unknown atom on the exclude side raises
+    ``TagExprUnknown`` just like the include side does.
+    """
+    include_tree = parse_include("airflow")
+    exclude_tree = parse_include("amazon")  # available
+    result = resolve(
+        include_tree,
+        exclude=exclude_tree,
+        available={"airflow", "amazon"},
+    )
+    assert result.include == Include("airflow")
+    assert result.exclude == Include("amazon")
+
+
+def test_resolve_exclude_unknown_atom_errors():
+    """An unknown exclude atom raises ``TagExprUnknown``."""
+    include_tree = parse_include("airflow")
+    exclude_tree = parse_include("nope")
+    with pytest.raises(TagExprUnknown):
+        resolve(
+            include_tree,
+            exclude=exclude_tree,
+            available={"airflow", "amazon"},
+        )
+
+
+def test_resolve_exclude_compound_validates_each_atom():
+    """An And-tree on exclude validates both leaves recursively."""
+    include_tree = parse_include("airflow")
+    exclude_tree = And(Include("foo", qualifier="c"), Include("bar", qualifier="c"))
+    result = resolve(
+        include_tree,
+        exclude=exclude_tree,
+        available={"airflow", "foo", "bar"},
+    )
+    assert result.exclude == exclude_tree
+
+
+# --- F15 atom_matches / exclude_matches helpers ---------------------------
 
 
 def _make_collection(name: str, tags: list[str]):
@@ -507,25 +699,57 @@ def test_atom_matches_c_does_not_match_unrelated():
     assert atom_matches(other, Include("airflow", qualifier="c")) is False
 
 
-def test_exclude_atom_matches_c_strict():
-    """_exclude_atom_matches with 'c' qualifier matches only the named collection."""
-    from lies.query.tag_expr import _exclude_atom_matches
+def test_exclude_matches_c_strict():
+    """``exclude_matches`` with a ``c``-qualified atom matches only the named collection.
+
+    Task 3 / f15-exclude-compound: the legacy single-atom
+    ``_exclude_atom_matches`` shim was replaced by a recursive
+    ``exclude_matches(coll, tree)`` walker that dispatches every leaf
+    through ``atom_matches`` so compound excludes
+    (``-c:foo&c:bar``, ``-c:foo|c:bar``) drop on the same dispatcher.
+    A single-atom ``Include(..., qualifier="c")`` is the simplest tree
+    the walker accepts; it must behave identically to the historical
+    ``_exclude_atom_matches(coll, "foo", "c")``.
+    """
+    from lies.query.tag_expr import exclude_matches
 
     airflow = _make_collection(name="airflow", tags=["provider"])
     cnn = _make_collection(name="cnn", tags=["airflow", "news"])
-    assert _exclude_atom_matches(airflow, "airflow", "c") is True
-    assert _exclude_atom_matches(cnn, "airflow", "c") is False
+    assert exclude_matches(airflow, Include("airflow", qualifier="c")) is True
+    assert exclude_matches(cnn, Include("airflow", qualifier="c")) is False
 
 
-def test_exclude_atom_matches_no_qualifier_aliases_t():
-    from lies.query.tag_expr import _exclude_atom_matches
+def test_exclude_matches_no_qualifier_aliases_t():
+    """``exclude_matches`` with no qualifier (or explicit ``t``) aliases t: semantics.
+
+    Mirrors ``test_atom_matches_no_qualifier_aliases_t`` on the include
+    side. A bare ``Include("foo")`` matches collections named ``foo``
+    OR tagged ``foo``; an explicit ``Include("foo", qualifier="t")``
+    behaves identically (same dispatch).
+    """
+    from lies.query.tag_expr import exclude_matches
 
     airflow = _make_collection(name="airflow", tags=["provider"])
     cnn = _make_collection(name="cnn", tags=["airflow", "news"])
-    assert _exclude_atom_matches(airflow, "airflow", None) is True
-    assert _exclude_atom_matches(cnn, "airflow", None) is True
-    assert _exclude_atom_matches(airflow, "airflow", "t") is True
-    assert _exclude_atom_matches(cnn, "airflow", "t") is True
+    assert exclude_matches(airflow, Include("airflow")) is True
+    assert exclude_matches(cnn, Include("airflow")) is True
+    assert exclude_matches(airflow, Include("airflow", qualifier="t")) is True
+    assert exclude_matches(cnn, Include("airflow", qualifier="t")) is True
+
+
+def test_exclude_matches_t_strict():
+    """``exclude_matches`` with explicit ``t`` qualifier matches name-or-tag.
+
+    Same dispatch as the no-qualifier form (``atom_matches`` treats
+    ``None`` and ``"t"`` identically). A collection named ``foo`` and
+    a collection tagged ``foo`` both match.
+    """
+    from lies.query.tag_expr import exclude_matches
+
+    airflow = _make_collection(name="airflow", tags=["provider"])
+    cnn = _make_collection(name="cnn", tags=["airflow", "news"])
+    assert exclude_matches(airflow, Include("airflow", qualifier="t")) is True
+    assert exclude_matches(cnn, Include("airflow", qualifier="t")) is True
 
 
 # --- F15 check_qualifier helper (cross-surface unify) -------------------
@@ -610,3 +834,68 @@ def test_parse_tokens_empty_body_errors():
         parse_query_argv(["+airflow", "-c:", "what", "is", "X?"])
     with pytest.raises(TagExprParseError):
         parse_query_argv(["+airflow", "-t:", "what", "is", "X?"])
+
+
+# --- Bug G + H fix: bare-operator argv tokens ------------------------------
+# Realistic shell splitting produces argv lists where the binary operator
+# is its own token (surrounded by whitespace) rather than glued to the
+# following atom. shlex.split("-c:foo & c:bar What?") yields
+# ["-c:foo", "&", "c:bar", "What?"]. Before this fix, both the include
+# path and the exclude path rejected this form with a dangling-operator
+# parse error. The argv chain-peel loops now extend on either side
+# (previous-token-ends-with-op OR current-token-is-op), and the exclude
+# path's bare-operator branch absorbs the operator + the following atom
+# together.
+
+
+def test_parse_query_argv_include_bare_and_op():
+    """`+c:foo & c:bar What?` argv-shlex-split: And-include of c:foo&c:bar."""
+    from lies.query.tag_expr import parse_query_argv
+
+    q, inc, exc, _ = parse_query_argv(["+c:foo", "&", "c:bar", "What", "is", "X?"])
+    assert _render_include(inc) == "c:foo&c:bar"
+    assert exc is None
+    assert q == "What is X?"
+
+
+def test_parse_query_argv_include_bare_or_op():
+    """`+c:foo | c:bar What?`: Or-include of c:foo|c:bar."""
+    from lies.query.tag_expr import parse_query_argv
+
+    q, inc, exc, _ = parse_query_argv(["+c:foo", "|", "c:bar", "What", "is", "X?"])
+    assert _render_include(inc) == "c:foo|c:bar"
+    assert exc is None
+    assert q == "What is X?"
+
+
+def test_parse_query_argv_exclude_bare_and_op():
+    """`-c:foo & c:bar What?`: And-exclude of c:foo&c:bar."""
+    from lies.query.tag_expr import parse_query_argv
+
+    q, inc, exc, _ = parse_query_argv(["-c:foo", "&", "c:bar", "What", "is", "X?"])
+    assert _render_include(exc) == "c:foo&c:bar"
+    assert inc is None
+    assert q == "What is X?"
+
+
+def test_parse_query_argv_exclude_bare_or_op():
+    """`-c:foo | c:bar What?`: Or-exclude of c:foo|c:bar."""
+    from lies.query.tag_expr import parse_query_argv
+
+    q, inc, exc, _ = parse_query_argv(["-c:foo", "|", "c:bar", "What", "is", "X?"])
+    assert _render_include(exc) == "c:foo|c:bar"
+    assert inc is None
+    assert q == "What is X?"
+
+
+def test_parse_query_argv_dangling_bare_op_still_errors():
+    """Trailing bare `&` with no following token raises dangling-operator.
+
+    Ensures the new bare-operator branch doesn't swallow the dangling
+    case — `-c:foo &` with no atom after `&` must still error.
+    """
+    from lies.query.tag_expr import TagExprParseError, parse_query_argv
+
+    with pytest.raises(TagExprParseError) as exc:
+        parse_query_argv(["-c:foo", "&"])
+    assert "dangling" in str(exc.value).lower()

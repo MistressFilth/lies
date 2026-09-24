@@ -277,6 +277,11 @@ dropped entirely; the merged hit carries `source_kind="library"`.
 This rule was previously applied at synthesis time; dual-source
 routing applies it at retrieval time.
 
+The librarian queries the library's qmd index at `lib.git_root` (with
+a `collection_filter` of registered library names), not at any wiki's
+`wiki_dir`. Library collections and wiki pages share the slug space
+but live in separate qmd indexes.
+
 **Render marker:** when the LLM renders the archivist's digest as
 citation lines, wiki-only hits (where `source_kind="wiki"`) are
 prefixed with `[secondary] ` to flag that the snippet is not
@@ -286,6 +291,8 @@ grounded in a primary source. Library hits render unprefixed.
 [[mermaid/syntax/flowchart]] (Flowchart syntax): "flowchart TD; A-->B"     # library (primary)
 [secondary] [[default/concepts/pydantic]] (Pydantic concept): "..."      # wiki-only (secondary)
 ```
+
+**Read-side dispatch:** `_wiki_read` is source-aware. Wiki page IDs (`page-` + sha1-12) route to `memory_service.read()`. Library paths (`<collection>/<page>`) read from the library's qmd chunks via `qmd_get(library_git_root(), "qmd://<path>")`. Library hits carry `page_id=None` so the calling LLM doesn't try to read them via the wiki service.
 
 ## Quality gates
 

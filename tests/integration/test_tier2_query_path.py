@@ -158,7 +158,7 @@ def _stub_librarian_output(wiki: Wiki) -> LibrarianOutput:
         )
     return LibrarianOutput(
         tag_expr=None,
-        exclude_tags=[],
+        exclude_expr=None,
         excerpts=excerpts,
         distinct_pages=len(excerpts),
     )
@@ -207,7 +207,7 @@ def test_librarian_round_trip_with_real_wiki(
         deps=LibrarianDeps(
             question="how does pydantic validate nested models?",
             tag_expr=None,
-            exclude_tags=[],
+            exclude_expr=None,
             top_k=5,
         ),
     )
@@ -253,7 +253,7 @@ def test_synthesize_emits_inline_citation_form(
     two_excerpts = canned_lo.excerpts[:2]
     canned_lo_2 = LibrarianOutput(
         tag_expr=canned_lo.tag_expr,
-        exclude_tags=canned_lo.exclude_tags,
+        exclude_expr=canned_lo.exclude_expr,
         excerpts=two_excerpts,
         distinct_pages=len(two_excerpts),
     )

@@ -19,11 +19,12 @@ span-picking helpers. Library vs wiki discrimination lives on
 from __future__ import annotations
 
 import warnings
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
     from lies.markdown_spans import Span
+    from lies.query.tag_expr import TagExpr
 
 
 # Module-level import of the librarian factory so callers (and tests)
@@ -66,21 +67,37 @@ class ArchivistDigest:
     Attributes:
         question: Echoed back for caller verification.
         tag_expr: Chosen union (``None`` when untagged).
-        exclude_tags: NOT tags the caller passed through.
+        exclude_expr: Compiled NOT AST the caller passed through
+            (Task 3 / f15-exclude-compound). ``None`` when no
+            ``-`` chain was supplied. The historical
+            ``exclude_tags: list[str]`` contract was retired along
+            with ``ResolvedTagFilter.exclude`` so the AST threads
+            through to the librarian unchanged.
         citations: Snippets, one per retrieved excerpt.
         no_coverage: True when the F18 librarian's bundle reports a
             scope miss on a populated wiki (corpus non-empty AND no
             hits landed). Source-of-truth is the librarian's
             ``LibrarianOutput.no_coverage`` field as of F18 Task 2.
         distinct_pages: ``len({c.slug for c in citations})``.
+        searched_scope: Sorted, unique list of library collection
+            names whose corpus was searched. Mirrors
+            ``SynthesizedAnswer.searched_scope`` (Bundle C / F15):
+            every collection in the library when untagged, or the
+            sorted set of collections whose ``atom_matches`` is true
+            for the resolved include / exclude AST when tagged.
+            Empty when the library is uninitialized or the resolved
+            AST matches no collections. Populated even on the
+            ``no_coverage=True`` path so callers can render
+            "searched X, found nothing" rather than guessing.
     """
 
     question: str
     tag_expr: str | None
-    exclude_tags: list[str]
+    exclude_expr: "TagExpr | None"
     citations: list[CitationSnippet]
     no_coverage: bool
     distinct_pages: int
+    searched_scope: list[str] = field(default_factory=list)
 
 
 class ArchivistCoverageError(Exception):
@@ -152,14 +169,14 @@ def pick_first_prose_span(spans: "list[Span]") -> "Span | None":
 def ground(
     question: str,
     tag_expr: str | None = None,
-    exclude_tags: "list[str] | None" = None,
+    exclude_expr: "TagExpr | None" = None,
     top_k: int = 3,
     *,
     wiki_name: str | None = None,
 ) -> ArchivistDigest:
     """Return a grounding digest for ``question``.
 
-    Translates ``tag_expr`` / ``exclude_tags`` via the F15 tag-filter
+    Translates ``tag_expr`` / ``exclude_expr`` via the F15 tag-filter
     dispatch, calls the F18 librarian, and trims each excerpt to a
     ≤200-char grounding snippet. The caller renders the result as
     ``[[slug]]: "snippet"`` per ask's grounding form (NOT F19's long
@@ -169,9 +186,12 @@ def ground(
         question: The natural-language question to ground.
         tag_expr: Body of a single include expression (no leading
             sigil), e.g. ``"airflow&postgres"``. ``None`` for untagged.
-        exclude_tags: NOT tags without leading sigil. The F15 grammar
-            permits at most one; passing more is forwarded to the
-            librarian unchanged.
+        exclude_expr: Compiled NOT AST (Task 3 / f15-exclude-compound).
+            ``None`` when no ``-`` chain was supplied. The historical
+            ``exclude_tags: list[str]`` parameter was retired in
+            Task 3 along with ``ResolvedTagFilter.exclude``; callers
+            build the AST via the CLI / MCP parser and thread it
+            through here unchanged.
         top_k: Maximum excerpts requested from the librarian (clamped
             to ``[1, 10]``). The librarian honors the request;
             ``ground`` does not re-truncate its output.
@@ -183,7 +203,13 @@ def ground(
 
     Returns:
         :class:`ArchivistDigest` carrying the librarian's excerpts
-        trimmed to ≤200 chars each.
+        trimmed to ≤200 chars each. The digest's ``searched_scope``
+        mirrors ``Orchestrator.run_query``'s envelope: every
+        registered library collection when untagged, or the sorted
+        set of collections whose ``atom_matches`` is true for the
+        resolved include / exclude AST when tagged. Populated even on
+        the ``no_coverage=True`` path so callers can render
+        "searched X, found nothing" rather than guessing.
 
     Raises:
         ArchivistCoverageError: when a positive tag matches zero
@@ -194,7 +220,6 @@ def ground(
         top_k = 1
     elif top_k > 10:
         top_k = 10
-    exclude_list: list[str] = list(exclude_tags or [])
 
     # F15 tag-filter dispatch: parse + validate include. Excludes are
     # passed through to the librarian unchanged (the librarian owns
@@ -203,10 +228,11 @@ def ground(
     # collection set — that IS "positive tag matches zero collections"
     # at the dispatch layer.
     resolved_tag_expr = tag_expr
+    include_ast: "TagExpr | None" = None
     if tag_expr is not None:
         # Lazy imports keep this module off the pydantic_ai / fastmcp
         # import path that ``utils.logging`` is also careful to avoid.
-        from lies.library.registry import library_collection_names
+        from lies.mcp.server import _collect_available_tags_mcp
         from lies.query.tag_expr import (
             TagExprEmpty,
             TagExprParseError,
@@ -220,29 +246,80 @@ def ground(
         except (TagExprParseError, TagExprEmpty) as exc:
             raise ArchivistCoverageError(f"invalid tag expression: {exc}") from exc
         try:
-            # The registry's lru_cache is populated with a ``frozenset``
-            # so the resolver's ``available=set(...)`` materialization
-            # does not mutate the cache. ``sorted`` re-orders for the
-            # deterministic error-message envelope below — the cache
-            # itself is already an ordered frozenset so re-sorting is
-            # redundant on the happy path but cheap (small N) and keeps
-            # the error message stable against future cache-shape
-            # changes.
-            resolve(include_ast, available=set(library_collection_names()))
+            # Use the same expanded available-set as the MCP ``query`` /
+            # ``answer`` boundary so bare-tag includes (``+claude``) and
+            # explicit ``t:`` / ``c:`` forms validate consistently across
+            # every MCP tool that maps to the F15 grammar. The set
+            # covers bare collection names, ``c:<name>`` atoms, AND
+            # both bare and ``t:<tag>`` library-collection tag entries
+            # — without that, ``+claude`` (which parses to
+            # ``Include("claude", qualifier=None)``) raised
+            # ``TagExprUnknown`` against the collection-names-only set
+            # the helper used pre-v0.37.9.
+            resolve(
+                include_ast,
+                available=_collect_available_tags_mcp(wiki=None),
+            )
         except TagExprUnknown as exc:
-            # ``library_collection_names`` already returns a sorted
-            # frozenset (see ``lies.library.registry``), so the
-            # ``sorted(...)`` here is a no-op-on-shape defense against
-            # future cache-shape changes — and ``exc.available`` (the
-            # resolver's set of every known atom) is unsorted by
-            # contract, so we sort it for the deterministic error
-            # envelope below.
+            # ``_collect_available_tags_mcp`` already returns a
+            # deterministic-shape set (sorted frozenset for the
+            # collection side; bare / ``t:`` / ``c:`` aliases for the
+            # tag side), so the ``sorted(...)`` here is a no-op-on-
+            # shape defense against future cache-shape changes — and
+            # ``exc.available`` (the resolver's set of every known
+            # atom) is unsorted by contract, so we sort it for the
+            # deterministic error envelope below. The fallback when
+            # ``exc.available`` is empty reads from the same expanded
+            # helper so the surfaced ``available:`` list matches the
+            # validator's view end-to-end.
             available = (
-                sorted(exc.available) if exc.available else sorted(library_collection_names())
+                sorted(exc.available)
+                if exc.available
+                else sorted(_collect_available_tags_mcp(wiki=None))
             )
             raise ArchivistCoverageError(
                 f"unknown tag(s): {exc.tag!r} (available: {available!r})"
             ) from exc
+
+    # F15 ``searched_scope`` (Bug C fix): mirror the contract that
+    # ``Orchestrator.run_query`` writes onto
+    # ``SynthesizedAnswer.searched_scope``. Source is the library
+    # registry — the library is the universe; wikis do not contribute
+    # to the addressable collection set. Untagged -> every registered
+    # collection, sorted. Tagged -> the sorted set of collections
+    # whose ``atom_matches`` is true for the resolved include /
+    # exclude AST. Empty when the library is uninitialized or the
+    # resolved AST matches zero collections.
+    #
+    # Computed BEFORE the librarian dispatch so every return path —
+    # no model available, librarian exception, success — carries the
+    # same scope envelope. The orchestrator does the same:
+    # ``searched_scope`` lands on the answer before the F18
+    # ``no_coverage`` decision, so a ``no_coverage=True`` answer still
+    # tells the operator which collections the system tried.
+    from lies.query.synthesizer import (
+        _all_collection_names,
+        _collections_matching,
+    )
+    from lies.query.tag_expr import ResolvedTagFilter
+
+    if include_ast is None and exclude_expr is None:
+        searched_scope_list: list[str] = _all_collection_names()
+    else:
+        resolved_for_scope = ResolvedTagFilter(
+            include=include_ast,
+            exclude=exclude_expr,
+        )
+        try:
+            searched_scope_list = sorted(_collections_matching(resolved_for_scope))
+        except Exception:
+            # ``_collections_matching`` walks ``library_collection_metas``
+            # against the resolved AST. If the registry lookup raises
+            # (e.g. mid-write corruption), degrade to an empty list
+            # rather than failing the digest — same fail-soft posture
+            # the orchestrator's ``except Exception: answer.searched_scope = []``
+            # branch takes on the same line.
+            searched_scope_list = []
 
     # Lazy imports — ``LibrarianDeps`` transitively pulls in
     # ``pydantic_ai`` and the orchestrator's tool registry. Keeping
@@ -303,16 +380,17 @@ def ground(
                 return ArchivistDigest(
                     question=question,
                     tag_expr=resolved_tag_expr,
-                    exclude_tags=exclude_list,
+                    exclude_expr=exclude_expr,
                     citations=[],
                     no_coverage=True,
                     distinct_pages=0,
+                    searched_scope=searched_scope_list,
                 )
 
     deps = LibrarianDeps(
         question=question,
         tag_expr=resolved_tag_expr,
-        exclude_tags=exclude_list,
+        exclude_expr=exclude_expr,
         top_k=top_k,
     )
 
@@ -336,10 +414,11 @@ def ground(
         return ArchivistDigest(
             question=question,
             tag_expr=resolved_tag_expr,
-            exclude_tags=exclude_list,
+            exclude_expr=exclude_expr,
             citations=[],
             no_coverage=True,
             distinct_pages=0,
+            searched_scope=searched_scope_list,
         )
 
     citations: list[CitationSnippet] = []
@@ -383,8 +462,9 @@ def ground(
     return ArchivistDigest(
         question=question,
         tag_expr=resolved_tag_expr,
-        exclude_tags=exclude_list,
+        exclude_expr=exclude_expr,
         citations=citations,
         no_coverage=no_coverage,
         distinct_pages=len({c.slug for c in citations}),
+        searched_scope=searched_scope_list,
     )

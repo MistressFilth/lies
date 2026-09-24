@@ -34,7 +34,7 @@ except ImportError:  # FastMCP < 3.4.5 with Context.elicit
 
 from lies import __version__, xdg
 from lies.constants import LIES_DATA_SUBDIR
-from lies.errors import WikiAlreadyExists
+from lies.errors import WikiAlreadyExists, WikiNotRegistered
 from lies.lock_errors import WikiFlockUnrepairable, WikiLockBusy
 from lies.mcp.instructions_loader import load_instructions, load_prompt
 from lies.mcp.resolution import resolve_wiki
@@ -42,11 +42,13 @@ from lies.memory.models import WikiPlanInvalid
 from lies.orchestrator import Orchestrator
 from lies.query.citation import Citation, ClaimCitation
 from lies.query.tag_expr import (
+    TagExpr,
     TagExprEmpty,
     TagExprParseError,
     TagExprUnknown,
-    check_qualifier,
+    _render_include,
     parse,
+    parse_query_argv,
     resolve,
 )
 from lies.wiki.layout import WikiLayout, copy_default_schema, git_init_initial
@@ -126,9 +128,17 @@ def mcp_ground(
         question: The user's natural-language question.
         tag_expr: Body of a single include token (no leading sigil),
             e.g. ``"airflow&postgres"``. ``None`` for untagged.
-        exclude_tags: NOT tags without leading sigil. The F15 grammar
-            permits at most one; more is forwarded to the librarian
-            unchanged.
+        exclude_tags: NOT tags without leading sigil (wire-level
+            ``list[str]``). The F15 grammar permits at most one entry;
+            each entry is a **full F15 expression** and may carry
+            compound operators (``c:foo&c:bar``, ``c:foo|c:bar``),
+            qualifier prefixes (``t:`` / ``c:``), and quoted
+            multi-word atoms. Parsed via :func:`parse` at this
+            boundary into an ``Include`` / ``And`` / ``Or`` AST and
+            validated against the registered collection set (Task 4
+            / f15-exclude-compound) before threading to the librarian
+            unchanged — the AST shape is the canonical post-Task-3
+            surface end-to-end.
         top_k: Maximum excerpts requested from the librarian (clamped
             to ``[1, 10]``).
         name: Wiki name to resolve against. Defaults to the
@@ -145,11 +155,45 @@ def mcp_ground(
         ToolError: when the F15 tag-filter dispatch cannot resolve the
             include expression (caller may retry untagged or surface).
     """
+    # Translate the wire-level ``exclude_tags: list[str]`` to the
+    # internal ``TagExpr | None`` AST the F18 librarian consumes
+    # (Task 3 / f15-exclude-compound). The wire format keeps the
+    # list-of-strings envelope so existing MCP callers don't break;
+    # the conversion happens here at the boundary so the librarian
+    # thread sees the AST shape end-to-end.
+    #
+    # Task 4 / f15-exclude-compound: each ``exclude_tags[i]`` is now a
+    # **full F15 expression** (``c:foo&c:bar``, ``c:foo|c:bar``, etc.),
+    # not a single atom. ``parse`` returns the same ``Include`` /
+    # ``And`` / ``Or`` AST shape that the include half uses; ``resolve``
+    # validates every atom against the registered tag set via
+    # :func:`_collect_available_tags_mcp` — same surface as the
+    # ``query`` / ``answer`` / ``ground`` include validators, so bare
+    # tag atoms (``-harness``, ``-claude|cli``) validate consistently
+    # end to end. Pre-v0.37.9 the exclude side used the
+    # collection-names-only set, which rejected ``-harness`` even
+    # though ``harness`` is a real tag on multiple library collections.
+    exclude_expr: TagExpr | None = None
+    if exclude_tags:
+        try:
+            exclude_expr = parse(exclude_tags[0])
+            resolve(
+                None,
+                available=_collect_available_tags_mcp(None),
+                exclude=exclude_expr,
+            )
+        except TagExprParseError as exc:
+            raise ToolError(f"invalid tag expression: {exc}") from exc
+        except TagExprEmpty as exc:
+            raise ToolError(f"empty tag expression: {exc}") from exc
+        except TagExprUnknown as exc:
+            raise ToolError(format_unknown_tag_error(exc)) from exc
+
     try:
         digest = ground(
             question=question,
             tag_expr=tag_expr,
-            exclude_tags=exclude_tags,
+            exclude_expr=exclude_expr,
             top_k=top_k,
             wiki_name=name,
         )
@@ -375,6 +419,29 @@ async def reindex(
             prompt = "Cleanup will vacuum the FTS5 db and drop orphan rows. Confirm?"
         decision = await _confirm_destructive(ctx, prompt)
         if decision is not None:
+            # Detect elicitation-unavailable specifically so the LLM
+            # caller gets a bypass path rather than a generic
+            # protocol-version error string. Bug E (session f39c9ef8):
+            # the host's MCP connection was older than
+            # ``2026-07-28`` and rejected server-initiated elicitation;
+            # ``_confirm_destructive`` returned
+            # ``"elicitation unavailable: <inner-exc>"`` and the LLM
+            # had no actionable signal to route on. Surface the
+            # concrete workaround here so the caller can either
+            # restart the MCP daemon (which negotiates a newer
+            # protocol version) or invoke ``lies reindex --cleanup``
+            # directly from the shell, where destructive flags run
+            # without the MCP gate.
+            if decision.startswith("elicitation unavailable"):
+                bypass_msg = (
+                    "cleanup requires confirmation; MCP server-initiated "
+                    "elicitation unavailable on this connection. Run "
+                    "`lies mcp down && lies mcp up` and retry, or invoke "
+                    "`lies reindex --cleanup` directly from the shell."
+                )
+                return _models.ReindexResult(
+                    reconciled=result.reconciled, errors=[bypass_msg]
+                ).model_dump()
             return _models.ReindexResult(
                 reconciled=result.reconciled, errors=[decision]
             ).model_dump()
@@ -597,11 +664,17 @@ def query(
     size ≤ 1. Either may be set independently; together they build one
     :class:`ResolvedTagFilter` passed to the orchestrator. Each atom
     (inside ``tag_expr`` and as an ``exclude_tags`` element) may carry
-    a ``t:`` / ``c:`` qualifier prefix. An unknown include atom raises
-    a ``ToolError`` with the verbatim spelling; a too-long exclude
-    list raises ``ToolError`` at the boundary. Both kwargs are
-    additive — existing callers (no ``tag_expr``) get the unfiltered
-    behavior.
+    a ``t:`` / ``c:`` qualifier prefix. **Task 4 / f15-exclude-compound:**
+    each ``exclude_tags[i]`` is a **full F15 expression** — it may
+    contain compound operators (``c:foo&c:bar``, ``c:foo|c:bar``),
+    qualifier prefixes on every atom, and quoted multi-word tags —
+    and is parsed via :func:`parse` into the same ``Include`` /
+    ``And`` / ``Or`` AST shape that the include half uses. An unknown
+    include atom raises a ``ToolError`` with the verbatim spelling;
+    a too-long exclude list raises ``ToolError`` at the boundary;
+    parser errors and unknown atoms inside a compound exclude raise
+    ``ToolError`` at the boundary too. Both kwargs are additive —
+    existing callers (no ``tag_expr``) get the unfiltered behavior.
     """
     if exclude_tags is not None and len(exclude_tags) > 1:
         raise ToolError(
@@ -610,18 +683,34 @@ def query(
 
     wiki = resolve_wiki(name)
 
-    # F19 (Task 6): pre-flight validation of ``tag_expr`` /
+    # F19 (Task 6) / Task 3: pre-flight validation of ``tag_expr`` /
     # ``exclude_tags`` against the registered collection set surfaces
     # unknown-tag errors and parser errors at the boundary, then the
     # raw kwargs flow into the F18 ``librarian_agent`` path. The
     # synthesized ``ResolvedTagFilter`` envelope is no longer built
     # here — the F18 librarian owns its own tag-expression semantics.
+    #
+    # ``exclude_tags`` stays a wire-level ``list[str]`` (the F15
+    # grammar permits at most one entry per MCP validation above);
+    # translate the one-element list to a parsed ``Include`` /
+    # ``And`` / ``Or`` AST via :func:`parse` (Task 4) so the
+    # orchestrator's ``exclude_expr`` kwarg (a ``TagExpr`` AST) is
+    # the canonical post-Task-3 surface end-to-end. Compound exclude
+    # expressions (``c:foo&c:bar``, ``c:foo|c:bar``) now round-trip
+    # through the boundary instead of being mis-parsed as a single
+    # atom with a literal ``&`` / ``|`` body.
+    exclude_expr: TagExpr | None = None
     try:
         if tag_expr is not None:
             include_ast = parse(tag_expr)
             resolve(include_ast, available=_collect_available_tags_mcp(wiki))
         if exclude_tags:
-            check_qualifier(exclude_tags[0], position=0)
+            exclude_expr = parse(exclude_tags[0])
+            resolve(
+                None,
+                available=_collect_available_tags_mcp(wiki),
+                exclude=exclude_expr,
+            )
     except TagExprParseError as exc:
         raise ToolError(f"invalid tag expression: {exc}") from exc
     except TagExprEmpty as exc:
@@ -630,20 +719,24 @@ def query(
         raise ToolError(format_unknown_tag_error(exc)) from exc
 
     orch = Orchestrator(wiki=wiki)
-    # F18/F19 (Task 6): ``run_query`` now takes the librarian-threading
-    # kwargs (``tag_expr`` + ``exclude_tags`` + ``file_back``) and
-    # returns a ``QueryAnswer`` rather than a ``SynthesizedAnswer``.
-    # The pre-F18 ``tag_filter=ResolvedTagFilter(...)`` envelope was
-    # retired; tag-filter plumbing flows through the orchestrator's
+    # F18/F19 (Task 6) / Task 3: ``run_query`` now takes the
+    # librarian-threading kwargs (``tag_expr`` + ``exclude_expr`` +
+    # ``file_back``) and returns a ``QueryAnswer`` rather than a
+    # ``SynthesizedAnswer``. The pre-F18
+    # ``tag_filter=ResolvedTagFilter(...)`` envelope was retired;
+    # tag-filter plumbing flows through the orchestrator's
     # ``LibrarianDeps`` → ``librarian_agent`` path. The MCP boundary
-    # passes the F19 kwargs through directly: ``tag_expr`` and
-    # ``exclude_tags`` are already strings / list[str] on the wire,
-    # not the synthesized AST that the legacy path consumed.
+    # passes the F19 kwargs through directly: ``tag_expr`` is the
+    # include body string on the wire, and ``exclude_expr`` is the
+    # compiled ``TagExpr`` AST that Task 3 threads through to the
+    # librarian (the historical flat-string ``exclude_tags`` list
+    # was retired in Task 3 along with the flat-string
+    # ``ResolvedTagFilter.exclude`` field).
     try:
         ans = orch.run_query(
             question,
             tag_expr=tag_expr,
-            exclude_tags=exclude_tags,
+            exclude_expr=exclude_expr,
             file_back=file,
         )
     except Exception as exc:  # noqa: BLE001 - orchestration surfaces upstream
@@ -763,7 +856,133 @@ def answer(
     return result.answer
 
 
-def _collect_available_tags_mcp(wiki: Wiki) -> set[str]:
+@mcp.tool(
+    name="ask_question",
+    description=(
+        "Parse the question argument (with optional +tag_expr / "
+        "-exclude_tags filter prefixes, including compound exclude "
+        "chains joined with & or |) and return the parsed kwargs. "
+        "The calling LLM uses this to extract filter args from a "
+        "slash-style invocation where Claude Code's slash-command "
+        "dispatcher would otherwise tokenize the input. After calling "
+        "ask_question, the LLM should call the `answer` tool with the "
+        "returned kwargs verbatim."
+    ),
+)
+def ask_question(text: str) -> dict[str, object]:
+    """Parse ``+c:<name>`` / ``-<tag>`` filter syntax out of ``text``.
+
+    Bypass for Claude Code's slash-command dispatcher: the dispatcher
+    tokenizes the slash input on whitespace BEFORE invoking an MCP
+    prompt function, dropping everything past the first token even
+    when the prompt has a single positional arg. Tools are invoked
+    with structured JSON args where multi-word strings round-trip
+    intact, so this tool exposes the parser as a regular MCP tool
+    the LLM can call when the user reaches for the ``/answer`` slash.
+
+    The exclude chain supports compound expressions: ``-c:foo&c:bar``
+    (AND) and ``-c:foo|c:bar`` (OR) are parsed into the F15 AST and
+    re-rendered as a single ``exclude_tags`` element so the
+    downstream ``query`` / ``answer`` boundary can re-parse the
+    string.
+
+    Returns a dict with keys ``question``, ``tag_expr``,
+    ``exclude_tags``. Always returns; surface parse errors as a
+    structured envelope with an ``error`` key so the LLM can decide
+    what to do instead of catching an exception trace.
+    """
+    import shlex
+
+    argv = shlex.split(text) if text.strip() else []
+    if not argv:
+        return {"error": "empty input", "original": text}
+
+    try:
+        parsed_question, include_ast, exclude_ast, _ = parse_query_argv(argv)
+    except (TagExprParseError, TagExprEmpty) as exc:
+        return {"error": str(exc), "original": text}
+
+    tag_expr = _render_include(include_ast) if include_ast is not None else None
+    # ``_render_include`` handles ``Include`` / ``And`` / ``Or`` trees so
+    # compound excludes round-trip correctly through the MCP boundary; the
+    # orchestrator still receives ``exclude_tags`` as a single-element
+    # list, matching the F18 librarian's list contract.
+    exclude_tags = [_render_include(exclude_ast)] if exclude_ast is not None else []
+
+    return {
+        "question": parsed_question,
+        "tag_expr": tag_expr,
+        "exclude_tags": exclude_tags,
+    }
+
+
+@mcp.tool(
+    name="ask_ground_question",
+    description=(
+        "Parse the question argument (with optional +tag_expr / "
+        "-exclude_tags filter prefixes, including compound exclude "
+        "chains joined with & or |) and return the parsed kwargs for "
+        "the `ground` tool. The calling LLM uses this to extract "
+        "filter args from a slash-style invocation where Claude "
+        "Code's slash-command dispatcher would otherwise drop or "
+        "truncate the input: the `/mcp__lies__cite` slash dispatcher "
+        "drops the `text` argument entirely when the input begins "
+        "with `+` (session df653c3d, 2026-09-24), raising "
+        "`ProtocolError: Missing required arguments: {'text'}`, and "
+        "the `/answer` slash dispatcher tokenizes on whitespace. "
+        "Bypass both by calling ask_ground_question with the user's "
+        "full multi-word input as the `text` argument, then forward "
+        "the returned kwargs verbatim to the `ground` tool (the "
+        "`top_k` default is 3, matching `ground`'s default)."
+    ),
+)
+def ask_ground_question(text: str) -> dict[str, object]:
+    """Parse ``+c:<name>`` / ``-<tag>`` filter syntax out of ``text``.
+
+    Bypass for Claude Code's slash-command dispatcher — same
+    pattern as :func:`ask_question`, but the returned kwargs are
+    shaped for the ``ground`` MCP tool (``question``,
+    ``tag_expr``, ``exclude_tags``, ``top_k``) instead of
+    ``answer`` / ``query``. The LLM forwards the returned kwargs
+    verbatim to ``ground``.
+
+    The exclude chain supports compound expressions: ``-c:foo&c:bar``
+    (AND) and ``-c:foo|c:bar`` (OR) are parsed into the F15 AST and
+    re-rendered as a single ``exclude_tags`` element so the
+    downstream ``ground`` boundary can re-parse the string.
+
+    Returns a dict with keys ``question``, ``tag_expr``,
+    ``exclude_tags``, ``top_k``. Always returns; surface parse errors
+    as a structured envelope with an ``error`` key so the LLM can
+    decide what to do instead of catching an exception trace.
+    """
+    import shlex
+
+    argv = shlex.split(text) if text.strip() else []
+    if not argv:
+        return {"error": "empty input", "original": text}
+
+    try:
+        parsed_question, include_ast, exclude_ast, _ = parse_query_argv(argv)
+    except (TagExprParseError, TagExprEmpty) as exc:
+        return {"error": str(exc), "original": text}
+
+    tag_expr = _render_include(include_ast) if include_ast is not None else None
+    # ``_render_include`` handles ``Include`` / ``And`` / ``Or`` trees so
+    # compound excludes round-trip correctly through the MCP boundary; the
+    # ``ground`` tool still receives ``exclude_tags`` as a single-element
+    # list, matching the F18 librarian's list contract.
+    exclude_tags = [_render_include(exclude_ast)] if exclude_ast is not None else []
+
+    return {
+        "question": parsed_question,
+        "tag_expr": tag_expr,
+        "exclude_tags": exclude_tags,
+        "top_k": 3,
+    }
+
+
+def _collect_available_tags_mcp(wiki: Wiki | None) -> set[str]:
     """Return every addressable tag in the library (MCP surface).
 
     Thin shim over :func:`lies.library.registry.library_collection_names`
@@ -772,10 +991,42 @@ def _collect_available_tags_mcp(wiki: Wiki) -> set[str]:
     signature uniformity with the legacy per-wiki resolution but is
     intentionally ignored: collections live in the library, not in
     any wiki.
-    """
-    from lies.library.registry import library_collection_names
 
-    return set(library_collection_names())
+    Each collection name is added both bare and with the ``c:``
+    qualifier prefix so the F15 tag-expression validator recognizes
+    ``c:<name>`` atoms as addressable on the MCP ``query`` / ``answer``
+    path (Fix 3 / Task 3 brief). Each ``LibraryCollectionConfig.tags``
+    entry is added both bare and with the ``t:`` qualifier prefix so
+    ``t:<tag>`` filters against a library-collection tag do not raise
+    ``TagExprUnknown`` (Fix 6 / Task 8 brief) — and so bare ``+tag``
+    expressions validate too, since F15 treats a bare atom as the
+    implicit-t alias for ``+t:tag`` (``atom_matches`` matches the tag
+    against ``coll.tags ∪ {coll.name}`` and a bare expression's
+    ``Include.tag`` is the unqualified string). Both lookups are
+    wrapped in ``try/except`` so an uninitialized library — or any
+    other registry failure — does not break the validator; the
+    function still returns a set, just one that does not include
+    library tags of the failed surface.
+    """
+    from lies.library.registry import library_collection_names, library_collection_tags
+
+    try:
+        names = library_collection_names()
+    except Exception:
+        # Library uninitialized (or any other registry failure) is fine
+        # — the validator just sees no library-collection names.
+        names = frozenset()
+    tags: set[str] = set(names) | {f"c:{name}" for name in names}
+    try:
+        for tag in library_collection_tags():
+            tags.add(tag)  # bare tag (implicit-t: alias)
+            tags.add(f"t:{tag}")  # explicit t: qualifier form
+    except Exception:
+        # ``library_collection_tags`` raises when the library is
+        # uninitialized or its config-yaml surface fails to read. The
+        # validator still works against the wiki side.
+        pass
+    return tags
 
 
 def format_unknown_tag_error(exc: TagExprUnknown) -> str:
@@ -943,7 +1194,31 @@ def wiki_status(name: str | None = None) -> str:
 
 
 def _wiki_index_impl(name: str | None = None) -> str:
-    wiki = resolve_wiki(name)
+    """Raw ``wiki/index.md`` contents (JSON envelope in library mode).
+
+    Wiki mode (a wiki is registered and its ``data_root`` exists on
+    disk): returns the raw markdown of ``wiki/index.md``. The empty-file
+    case returns ``""`` so an LLM caller can distinguish "no wiki
+    catalog rendered yet" from "wiki is registered, with a populated
+    index".
+
+    Library mode (no wiki registered, or the resolved wiki's
+    ``data_root`` does not exist on disk) returns a stable envelope
+    ``{"mode": "library"}``. The mode discriminator lets an LLM caller
+    distinguish a wiki-mode index dump from a library-mode response
+    without parsing the shape, mirroring the F4b ``wiki://catalog``
+    envelope contract.
+    """
+    import json
+
+    try:
+        wiki = resolve_wiki(name)
+    except WikiNotRegistered:
+        return json.dumps({"mode": "library"}, indent=2)
+
+    if not wiki.data_root.exists():
+        return json.dumps({"mode": "library"}, indent=2)
+
     index_path = wiki.wiki_dir / "index.md"
     if not index_path.exists():
         return ""
@@ -963,7 +1238,13 @@ _register_static_resource(
 
 
 def wiki_index(name: str | None = None) -> str:
-    """Raw contents of ``wiki/index.md`` (empty string if absent).
+    """Raw contents of ``wiki/index.md`` (JSON envelope in library mode).
+
+    Returns the raw markdown of ``wiki/index.md`` when a wiki is
+    registered; returns ``""`` if the wiki exists but the index file
+    has not been rendered yet; returns ``'{"mode": "library"}'`` when
+    no wiki is registered (library mode). See
+    :func:`_wiki_index_impl` for the full contract.
 
     Direct Python entry point — accepts an explicit ``name`` kwarg so
     tests and REPL callers don't have to mutate ``LIES_WIKI_NAME``.
@@ -1007,7 +1288,30 @@ def wiki_log(name: str | None = None) -> str:
 
 
 def _wiki_lint_report_impl(name: str | None = None) -> str:
-    wiki = resolve_wiki(name)
+    """Raw ``wiki/lint-report.md`` contents (JSON envelope in library mode).
+
+    Wiki mode (a wiki is registered and its ``data_root`` exists on
+    disk): returns the raw markdown of ``wiki/lint-report.md``. The
+    empty-file case returns ``""`` so an LLM caller can distinguish "no
+    lint has run yet" from "lint has run and reported findings".
+
+    Library mode (no wiki registered, or the resolved wiki's
+    ``data_root`` does not exist on disk) returns a stable envelope
+    ``{"mode": "library", "status": "no_wiki"}``. The ``status`` field
+    gives the LLM caller a concrete reason string to route on (the
+    wiki never existed, so a lint report is meaningless). Mirrors the
+    F4b ``wiki://catalog`` envelope contract.
+    """
+    import json
+
+    try:
+        wiki = resolve_wiki(name)
+    except WikiNotRegistered:
+        return json.dumps({"mode": "library", "status": "no_wiki"}, indent=2)
+
+    if not wiki.data_root.exists():
+        return json.dumps({"mode": "library", "status": "no_wiki"}, indent=2)
+
     report_path = wiki.wiki_dir / "lint-report.md"
     if not report_path.exists():
         return ""
@@ -1027,7 +1331,13 @@ _register_static_resource(
 
 
 def wiki_lint_report(name: str | None = None) -> str:
-    """Raw contents of ``wiki/lint-report.md`` (empty string if absent).
+    """Raw contents of ``wiki/lint-report.md`` (JSON envelope in library mode).
+
+    Returns the raw markdown of ``wiki/lint-report.md`` when a wiki is
+    registered; returns ``""`` if the wiki exists but no lint has run
+    yet; returns ``'{"mode": "library", "status": "no_wiki"}'`` when
+    no wiki is registered (library mode). See
+    :func:`_wiki_lint_report_impl` for the full contract.
 
     Direct Python entry point — accepts an explicit ``name`` kwarg so
     tests and REPL callers don't have to mutate ``LIES_WIKI_NAME``.
@@ -1164,13 +1474,42 @@ def _wiki_catalog_impl(name: str | None = None) -> str:
     of one row in ``<wiki_dir>/.lies/catalog.db``. The shape mirrors
     ``lies catalog dump --json``. The empty-catalog case returns ``"[]"``
     so the JSON shape is stable for LLM callers.
+
+    Library mode (no wiki registered, or the resolved wiki's
+    ``data_root`` does not exist on disk) returns a stable envelope
+    ``{"mode": "library", "collections": [...]}`` listing registered
+    library-collection names. The mode discriminator lets an LLM
+    caller distinguish a wiki catalog dump from a library-mode
+    response without parsing the shape.
     """
     import json
+
+    from lies.library.registry import library_collection_names
+
+    try:
+        wiki = resolve_wiki(name)
+    except WikiNotRegistered:
+        # Library mode: no wiki registered for the requested name.
+        # Return an informative envelope rather than crashing so the
+        # MCP caller can recover and route through the library path.
+        return json.dumps(
+            {"mode": "library", "collections": sorted(library_collection_names())},
+            indent=2,
+        )
+
+    if not wiki.data_root.exists():
+        # Defensive: ``Wiki.require`` already vetted ``data_root`` at
+        # construction time, but the directory may have been removed
+        # out-of-band (e.g. the operator ran ``rm -rf`` between two
+        # MCP calls). Treat the same as the unregistered case.
+        return json.dumps(
+            {"mode": "library", "collections": sorted(library_collection_names())},
+            indent=2,
+        )
 
     from lies.memory.catalog import list_pages as _catalog_list_pages
     from lies.memory.catalog import open_catalog as _open_catalog
 
-    wiki = resolve_wiki(name)
     conn = _open_catalog(wiki)
     try:
         pages = _catalog_list_pages(conn)
@@ -1230,23 +1569,142 @@ def wiki_catalog_slug(slug: str) -> str:
 
 
 @mcp.prompt(name="answer")
-def ask_wiki_answer(question: str) -> str:
+def ask_wiki_answer(text: str) -> str:
     """Starter prompt that templates an ``answer`` tool invocation.
+
+    Single-arg form: the entire slash-command input is passed verbatim
+    as ``text``. The filter-syntax parser runs here so the calling
+    LLM never has to fill ``tag_expr`` / ``exclude_tags`` slots.
 
     Chat-surface counterpart to the synthesized answer path: the LLM
     calls the ``answer`` tool (returns plain text) instead of ``query``
-    (returns structured envelope). Use this when the response needs to render
-    verbatim in chat rather than behind a collapsible JSON block.
+    (returns structured envelope). Use this when the response needs to
+    render verbatim in chat rather than behind a collapsible JSON block.
+
+    **Known limitation — Claude Code slash dispatcher tokenizes the
+    input on whitespace before invoking this prompt, so multi-word
+    filter prefixes are truncated to the first token.** Even with the
+    single-arg signature, ``/mcp__lies__answer +c:opencode Where does
+    opencode keep settings?`` arrives at the prompt as just
+    ``+c:opencode`` and the question is dropped. The reliable
+    workaround is the ``ask_question`` MCP tool: call it with the
+    user's full multi-word input as the ``text`` argument, then
+    forward the returned kwargs verbatim to the ``answer`` tool. This
+    prompt is still useful for plain questions without filter syntax,
+    where the input is a single token anyway.
+
+    Filter syntax (parsed out of the ``text`` argument here, so the
+    calling LLM never has to fill ``tag_expr`` / ``exclude_tags``
+    slots — that was the live hallucination bug):
+
+    - ``+c:<name>`` — include the named library collection
+    - ``+t:<tag>`` — include pages tagged ``<tag>``
+    - ``+a&b`` — AND two include atoms (no spaces)
+    - ``+a|b`` — OR (lower precedence than ``&``)
+    - ``-c:<name>`` / ``-t:<tag>`` — exclude the named collection or tag
+    - ``-"airflow provider"`` — exclude with quoted tag
+    - ``-c:foo&c:bar`` — exclude AND (drop collections matching both)
+    - ``-c:foo|c:bar`` — exclude OR (drop collections matching either)
+
+    Everything after the include chain and the optional exclude is
+    the question text. The parser stops at the first non-filter
+    token.
+
+    Examples::
+
+        /answer +c:opencode Where does opencode keep settings?
+            tag_expr: c:opencode
+            question: Where does opencode keep settings?
+
+        /answer +t:linux +c:opencode -draft how do I configure...
+            tag_expr: c:opencode&t:linux
+            exclude_tags: [draft]
+            question: how do I configure...
+
+        /answer +c:opencode|c:claude_platform Where does opencode keep settings?
+            tag_expr: c:opencode|c:claude_platform
+            question: Where does opencode keep settings?
+
+        /answer -c:claude_platform&t:claude Where does opencode keep settings?
+            exclude_tags: [c:claude_platform&t:claude]
+            question: Where does opencode keep settings?
+
+    Mirrors the CLI grammar exactly (see
+    ``features/tag-filter-language/2026-09-02-tag-filter-language-design.md``
+    and ``src/lies/query/tag_expr.py:parse_query_argv``).
 
     The ``name="answer"`` override registers the prompt as the
     ``/answer`` slash command even though the Python function is named
     ``ask_wiki_answer`` (the bare name conflicts with the ``answer``
     tool defined elsewhere in this module).
     """
+    import shlex
+
+    argv = shlex.split(text) if text.strip() else []
+    if not argv:
+        return _filter_parse_error_prompt(text, ValueError("empty input"))
+
+    try:
+        parsed_question, include_ast, exclude_ast, _ = parse_query_argv(argv)
+    except (TagExprParseError, TagExprEmpty) as exc:
+        return _filter_parse_error_prompt(text, exc)
+
+    tag_expr = _render_include(include_ast) if include_ast is not None else None
+    exclude_tags = [_render_include(exclude_ast)] if exclude_ast is not None else []
+
+    return _render_answer_prompt_body(
+        question=parsed_question,
+        tag_expr=tag_expr,
+        exclude_tags=exclude_tags,
+        name=None,
+        collection=None,
+    )
+
+
+def _render_answer_prompt_body(
+    *,
+    question: str,
+    tag_expr: str | None,
+    exclude_tags: list[str],
+    name: str | None,
+    collection: str | None,
+) -> str:
+    """Render the prompt body for the parsed args.
+
+    No fillable slots for ``tag_expr`` / ``exclude_tags``: the slash
+    prompt parses them out of the ``question`` argument before the
+    calling LLM sees the body. The LLM only has to forward the
+    rendered kwargs verbatim to the ``answer`` tool.
+    """
     return (
-        f"Use the `answer` tool to ask the wiki the following question, "
-        f"then surface the answer body verbatim in your reply:\n\n"
-        f"  question: {question}"
+        f"Call the `answer` MCP tool with the following args, then surface "
+        f"the answer body verbatim in your reply:\n\n"
+        f"  question: {question}\n"
+        f"  tag_expr: {tag_expr!r}\n"
+        f"  exclude_tags: {exclude_tags!r}\n"
+        f"  name: {name!r}\n"
+        f"  collection: {collection!r}\n\n"
+        f"Do NOT modify these values before passing them to the tool. "
+        f"If the parsed args look wrong, surface the parse error verbatim "
+        f"and stop; do not retry with hand-rewritten args."
+    )
+
+
+def _filter_parse_error_prompt(question: str, exc: Exception) -> str:
+    """Render a parse-error prompt body.
+
+    Surfaces the parser's message verbatim — the calling LLM tells
+    the operator what went wrong instead of hallucinating a fix. The
+    fallback would be silent (pass the question through with no
+    filter), which is exactly the bug we're closing.
+    """
+    return (
+        f"Filter parse error: {exc}\n\n"
+        f"Original argument: {question!r}\n\n"
+        f"Filter syntax: tokens prefixed with `+` are include atoms "
+        f"(e.g. `+c:opencode`), tokens prefixed with `-` are exclude "
+        f"atoms (e.g. `-draft`). Use double-quotes for tags with spaces "
+        f'(`-"airflow provider"`). Everything else is the question.'
     )
 
 
@@ -1291,33 +1749,119 @@ def sync_prompt(collection: str) -> str:
     return load_prompt("sync").format(version=__version__, collection=collection)
 
 
-@mcp.prompt(name="cite")
-def cite(
-    question: str,
-    tag_expr: str | None = None,
-    exclude_tags: list[str] | None = None,
-    top_k: int = 3,
-) -> str:
+@mcp.prompt(
+    name="cite",
+    description=(
+        "Slash that drives the `ground` MCP tool. Single-arg form, "
+        "parses filter syntax internally; the calling LLM forwards "
+        "the rendered kwargs to the `ground` tool verbatim. "
+        "**Known limitation — Claude Code's slash dispatcher drops "
+        "the `text` argument entirely when the slash input begins "
+        "with `+`** (F15 include sigil), raising "
+        "`ProtocolError: Missing required arguments: {'text'}` "
+        "(session df653c3d, 2026-09-24). For any `/cite` invocation "
+        "whose input begins with `+`, route the user's full "
+        "multi-word text through the `ask_ground_question` MCP tool "
+        "instead — that tool takes the full multi-word `text` as a "
+        "single argument and returns kwargs shaped for `ground`. "
+        "Mirrors the `/answer` slash prompt's filter-parse shape."
+    ),
+)
+def cite(text: str) -> str:
     """Slash that routes to the Archivist (F34 ground tool) and renders
     the digest as ``[[collection/slug]] (Title): "<snippet>"`` lines.
 
-    Mirrors ask's ``archivist-prompt.md``: classify → search → read →
-    cite. The parent LLM does the rendering; the prompt only templates
+    Mirrors the ``/answer`` prompt's filter-parse shape: single
+    ``text`` positional arg carries the entire slash-input. The
+    filter-syntax parser runs here so the calling LLM never has to
+    fill ``tag_expr`` / ``exclude_tags`` / ``top_k`` slots.
+
+    The parent LLM does the rendering; the prompt only templates
     the tool call and the render form. On ``ArchivistCoverageError``
     the prompt tells the LLM to surface verbatim — no silent retry.
 
+    **Known limitation — Claude Code slash dispatcher drops the
+    ``text`` argument entirely when the slash input begins with a
+    ``+`` (F15 include sigil).** Surfaced in session df653c3d
+    (2026-09-24T01:29:30Z): the dispatcher forwards
+    ``/mcp__lies__cite +c:opencode|c:minimax|c:llama_cpp Configure my opencode...``
+    to the prompt with no ``text`` argument at all, and FastMCP
+    rejects the dispatch with
+    ``ProtocolError: Error rendering prompt 'cite': Missing required
+    arguments: {'text'}``. Direct JSON-RPC ``prompts/get cite(text=...)``
+    works perfectly, so the bug is upstream of the prompt body —
+    Claude Code's slash dispatcher mishandles ``+``-prefixed input
+    by failing to populate the single positional arg. Same shape as
+    ``/answer``'s known limitation (tokenizes on whitespace), but
+    the failure mode is harder to recover from: the dispatcher
+    reports a missing argument rather than a truncated one. The
+    reliable workaround is the ``ask_ground_question`` MCP tool:
+    call it with the user's full multi-word input as the ``text``
+    argument, then forward the returned kwargs verbatim to the
+    ``ground`` tool. This prompt is still useful for plain questions
+    without filter syntax, where the input is a single token.
+
+    Filter syntax (parsed out of the ``text`` argument here, so the
+    calling LLM never has to fill ``tag_expr`` / ``exclude_tags``
+    slots — that was the live hallucination bug):
+
+    - ``+c:<name>`` — include the named library collection
+    - ``+t:<tag>`` — include pages tagged ``<tag>``
+    - ``+a&b`` — AND two include atoms (no spaces)
+    - ``+a|b`` — OR (lower precedence than ``&``)
+    - ``-c:<name>`` / ``-t:<tag>`` — exclude the named collection or tag
+    - ``-"airflow provider"`` — exclude with quoted tag
+    - ``-c:foo&c:bar`` — exclude AND (drop collections matching both)
+    - ``-c:foo|c:bar`` — exclude OR (drop collections matching either)
+
+    Everything after the include chain and the optional exclude is
+    the question text. The parser stops at the first non-filter
+    token.
+
     Args:
-        question: Natural-language fragment to ground.
-        tag_expr: Body of a single include token (no leading sigil),
-            e.g. ``"airflow&postgres"``. ``None`` for untagged.
-        exclude_tags: NOT tags without leading sigil. Forwarded to
-            ``ground()`` unchanged.
-        top_k: Maximum citations requested (default 3; ground()
-            clamps to ``[1, 10]``).
+        text: Entire slash-input, parsed for filter syntax. Same
+            single-arg shape as ``ask_wiki_answer``.
 
     Returns:
         Prose that templates a ``ground`` tool call and the
         ``[[collection/slug]] (Title): "<snippet>"`` render form.
+    """
+    import shlex
+
+    argv = shlex.split(text) if text.strip() else []
+    if not argv:
+        return _filter_parse_error_prompt(text, ValueError("empty input"))
+
+    try:
+        parsed_question, include_ast, exclude_ast, _ = parse_query_argv(argv)
+    except (TagExprParseError, TagExprEmpty) as exc:
+        return _filter_parse_error_prompt(text, exc)
+
+    tag_expr = _render_include(include_ast) if include_ast is not None else None
+    exclude_tags = [_render_include(exclude_ast)] if exclude_ast is not None else []
+    top_k = 3
+
+    return _render_cite_prompt_body(
+        question=parsed_question,
+        tag_expr=tag_expr,
+        exclude_tags=exclude_tags,
+        top_k=top_k,
+    )
+
+
+def _render_cite_prompt_body(
+    *,
+    question: str,
+    tag_expr: str | None,
+    exclude_tags: list[str],
+    top_k: int,
+) -> str:
+    """Render the prompt body for the parsed args.
+
+    No fillable slots for ``tag_expr`` / ``exclude_tags`` / ``top_k``:
+    the slash prompt parses them out of the ``question`` argument
+    before the calling LLM sees the body. The LLM only has to forward
+    the rendered kwargs verbatim to the ``ground`` tool.
     """
     return (
         f"Call the `ground` MCP tool to ground the following fragment:\n"

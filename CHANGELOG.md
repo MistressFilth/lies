@@ -4,6 +4,203 @@ All notable changes to LIES are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/) adapted for
 [Semantic Versioning](https://semver.org/).
 
+## [0.37.3] - 2026-09-23
+
+### Fixed
+- `/answer` slash prompt now takes a single `text` positional arg.
+  Claude Code's slash-command dispatcher forwards the rest of the
+  line as one string when the prompt has only one positional arg;
+  the previous three-arg signature was tokenizing the multi-word
+  invocation and dropping everything past the first token.
+- Librarian: wiki-side qmd hits are now mapped to the wiki's
+  `page-` + sha1-12 page_ids by joining on `path` against
+  `memory_service.search()` results. The qmd `#abc123` docid
+  format is no longer surfaced to `_wiki_read`.
+
+## [0.37.4] - 2026-09-23
+
+### Added
+- New MCP tool `ask_question(text)` that takes a single multi-word
+  string and parses the `+tag_expr` / `-exclude_tags` filter syntax.
+  Works around Claude Code's `/mcp__lies__answer` slash-command
+  dispatcher, which tokenizes the input on whitespace and discards
+  everything past the first token.
+
+### Fixed
+- Librarian: wiki-side and library-side qmd hits now strip the
+  qmd `docid` field (`#abc123` format) along with `page_id`. The
+  LLM agent was extracting `docid` from search results and passing
+  it to `wiki_read`, which then raised `WikiPageNotFound`.
+
+## [Unreleased]
+
+### Fixed
+- `ArchivistDigest` (returned by the MCP `ground` tool) now exposes
+  `searched_scope: list[str]` on the wire, matching the F15 envelope
+  that `SynthesizedAnswer` already carries via
+  `Orchestrator.run_query`. Live test subagents reported that `ground`
+  returned the question / tag_expr / exclude_expr / citations /
+  no_coverage / distinct_pages keys but no `searched_scope`, so MCP
+  callers could not introspect the resolved scope. `ground()`
+  computes `searched_scope` from the same `_all_collection_names`
+  / `_collections_matching` helpers the orchestrator uses — every
+  registered library collection when untagged, or the sorted set of
+  collections whose `atom_matches` is true for the resolved include /
+  exclude AST when tagged. Populated even on the `no_coverage=True`
+  path (librarian dispatch exception / no model available) so callers
+  can render "searched X, found nothing" rather than guessing. Wire
+  format propagates automatically via `dataclasses.asdict(digest)`;
+  no MCP wrapper change needed.
+- `/cite` slash prompt now documents the Claude Code slash dispatcher
+  limitation that surfaces as
+  `ProtocolError: Missing required arguments: {'text'}` when the
+  slash input begins with `+` (F15 include sigil). Session df653c3d
+  (2026-09-24T01:29:30Z): invoking
+  `/mcp__lies__cite +c:opencode|c:minimax|c:llama_cpp Configure my opencode...`
+  from Claude Code drops the `text` argument entirely. The same
+  limitation affected `/answer` (tokenizes on whitespace) but
+  `/cite`'s failure mode is harder to recover from — the dispatcher
+  reports a missing argument rather than a truncated one. The
+  workaround (route through the `ask_ground_question` MCP tool with
+  the user's full multi-word text) is now surfaced in the prompt
+  description, the `ask_ground_question` tool description, and the
+  MCP `instructions.md` operator guidance.
+
+## [0.37.9] - 2026-09-23
+
+### Fixed
+- MCP F15 boundary validator now accepts bare tag names (`+claude`)
+  in addition to the explicit `t:`-prefixed form, end to end
+  across `query` / `answer` / `ground`. F15 already treats a bare
+  atom as the implicit-t alias for `+t:tag` (`atom_matches` matches
+  against `coll.tags ∪ {coll.name}`); the validator's available-set
+  was only registering `t:<tag>`, so a bare `+claude` parsed to
+  `Include("claude", qualifier=None)` and the resolver's
+  `expr.tag in available` check rejected it with `unknown tag:
+  'claude'` even though `claude` was a real tag on multiple library
+  collections. Three paths share the helper now:
+  `_collect_available_tags_mcp` (used by the `query` /
+  `answer` boundaries and `mcp_ground`'s exclude-side validator),
+  `grounding.ground`'s include-side resolve, and `mcp_ground`'s
+  exclude-side parse — all consult the same expanded available set
+  (bare collection names + `c:<name>` aliases + bare tags +
+  `t:<tag>` aliases), so the implicit-t alias validates consistently
+  on every F15 boundary. (`de8e4fa`)
+
+## [0.37.8] - 2026-09-23
+
+### Added
+- New MCP tool `ask_ground_question(text)` that takes a single
+  multi-word string and parses the `+tag_expr` / `-exclude_tags`
+  filter syntax (including compound `&` / `|` chains). Mirrors the
+  existing `ask_question` tool but returns kwargs shaped for the
+  `ground` tool (`question`, `tag_expr`, `exclude_tags`, `top_k=3`).
+  The LLM forwards the returned kwargs to `ground` verbatim. Works
+  around Claude Code's `/mcp__lies__cite` slash-command dispatcher,
+  which tokenizes the input on whitespace and discards everything
+  past the first token — same limitation that motivated the answer
+  side's `ask_question` tool. (`6d990b0`)
+
+### Fixed
+- `/cite` slash prompt now takes a single `text` positional arg, same
+  shape as `/answer`. The prompt parses `+c:<name>` / `-<tag>` filter
+  syntax internally (including compound exclude chains) and renders
+  the parsed `tag_expr` / `exclude_tags` / `top_k` kwargs verbatim
+  in the prompt body so the calling LLM does not have to fill them.
+  Previously the slash took pre-parsed kwargs, and Claude Code's
+  dispatcher tokenized the multi-word invocation on whitespace,
+  dropping the filter syntax entirely. The `ground` MCP tool itself
+  already parsed compound exclude correctly — the asymmetry was
+  only at the slash layer. (`6d990b0`)
+
+## [0.37.7] - 2026-09-23
+
+### Fixed
+- Librarian `_wiki_search` now applies `exclude_expr` site-side: hits
+  whose path's first segment matches the exclude AST are dropped
+  before the merged list is returned. Previously the librarian prompt
+  instructed the LLM to pass `exclude_expr` to `wiki_search`, but the
+  tool did not accept the kwarg; the LLM retried until it exhausted
+  max output retries and failed with `UnexpectedModelBehavior`. With
+  this fix, `answer(exclude_tags=[...])` works for single-atom,
+  AND-compound, and OR-compound exclude ASTs. Surfaced by sessions
+  ea703e3b and bf5a4db9. (`673fc5b`)
+- `parse_query_argv` now accepts bare-operator argv tokens in both
+  include and exclude chains. Realistic shell splitting (e.g.
+  `shlex.split("-c:foo & c:bar")` → `["-c:foo", "&", "c:bar"]`)
+  produces argv lists where the binary operator is its own token; the
+  chain-peel loops now extend on either side (previous-token-ends-in-op
+  OR current-token-is-op). The exclude loop also handles the
+  bare-operator form by absorbing the following argv token as the
+  trailing atom. Surfaced by live MCP testing of sessions ea703e3b +
+  bf5a4db9. (`673fc5b`)
+
+## [0.37.6] - 2026-09-23
+
+### Fixed
+- `_split_argv_token_for_ops` now keeps `c:` / `t:` qualifier prefixes
+  attached when splitting argv tokens on `&` / `|`. Previously the
+  shlex split inside that helper did not add `:` to wordchars, so a
+  single-token input like `+c:opencode|c:claude_platform` produced
+  `["c", ":", "opencode", "|", "c", ":", "claude_platform"]` and
+  `parse_tokens` choked on the `:` token. Mirror of the include path's
+  `parse()` which already added both `-` and `:` to wordchars.
+  Surfaced by session 82a266a9. (`2e3cb66`)
+
+### Changed
+- `parse_query_argv` now supports a compound exclude chain
+  (`-atom [&atom | |atom]*`). The exclude half of the F15 grammar is
+  now symmetric with the include half: `&` and `|` operators work in
+  both inclusion and exclusion, with `&` binding tighter than `|`.
+  Return type extended to `tuple[str, TagExpr | None, TagExpr | None,
+  None]` — `exclude_qualifier` removed (the qualifier now lives on
+  each `Include` atom in the tree). Surfaced by session 82a266a9.
+  (`45b8897`)
+- `ResolvedTagFilter.exclude` is now a `TagExpr | None` AST instead of
+  a flat string. `resolve()` validates the exclude tree against the
+  registered collection set; `exclude_matches(coll, tree) -> bool`
+  walks the AST. The librarian's `exclude_expr` field plumbs the AST
+  end-to-end through `LibrarianDeps` → `LibrarianOutput` →
+  `query_synthesizer`. Pre-existing `_exclude_atom_matches` removed.
+  (`89e488d`)
+- MCP `query` / `answer` / `ground` boundaries parse each
+  `exclude_tags[i]` as a full F15 expression via `parse()`, replacing
+  the prior single-atom `check_qualifier + Include(...)` shim.
+  Bad grammar / unknown atoms surface as `ToolError` at the boundary.
+  Eight integration test files migrated to the new AST shape (49
+  sites). (`0f60207`)
+- `ask_question` MCP tool renders the compound exclude AST back to an
+  F15 expression string via `_render_include`, so the LLM can forward
+  the returned `exclude_tags` value verbatim to `query` / `answer`.
+  Docstring updated to document the operators. (`8a4292d`)
+
+## [0.37.5] - 2026-09-23
+
+### Fixed
+- Librarian `_wiki_read` now strips a leading `qmd://` prefix from
+  the input page_id before the library-path branch. Previously the
+  full `qmd://opencode/config.md` string was treated as a library
+  path and prepended with another `qmd://`, yielding a malformed
+  `qmd://qmd://...` URI that qmd rejected → `WikiPageNotFound`.
+  Surfaced by session f39c9ef8 calling `answer(tag_expr="c:opencode",
+  exclude_tags=["claude_code"])`.
+- `memory_service.search()` filters out hits whose path matches
+  `^[^/]+/[^/]+\.md$` AND whose first segment is a registered
+  library collection. The wiki qmd index had library content indexed
+  under a wiki page-id, but the wiki catalog had no row for those
+  pages — subsequent `wiki_read` raised `WikiPageNotFound`. Falls
+  back to the bare regex when the library registry is empty.
+- `wiki://catalog` resource returns `{"mode": "library", "collections":
+  [...]}` when no wiki is registered (library-mode-only runtime),
+  instead of surfacing stale wiki synthesis slugs.
+- `wiki://index` and `wiki://lint-report` resources return informative
+  envelopes (`{"mode": "library"}` / `{"mode": "library", "status":
+  "no_wiki"}`) in library mode instead of empty strings.
+- `reindex --cleanup` (and `--all`) now surface a clear bypass-path
+  error string when MCP server-initiated elicitation is unavailable,
+  pointing the caller at `lies mcp down && lies mcp up` retry or
+  `lies reindex --cleanup` direct shell invocation.
+
 ## [Unreleased]
 
 - MCP prompt surface: `ask_wiki` and `query_prompt` prompts removed.
@@ -11,6 +208,48 @@ All notable changes to LIES are documented here. The format follows
   slash templates a `ground()` tool call and renders the
   `ArchivistDigest` as `[[collection/slug]] (Title): "<snippet>"`
   citation lines.
+
+## [0.37.2] - 2026-09-22
+
+### Fixed
+
+- Librarian: library hits no longer carry qmd `#abc123` page_ids;
+  `page_id` is `None` on library hits so the LLM doesn't try to
+  `wiki_read` them.
+- Librarian: `_wiki_read` now source-aware — wiki IDs go to
+  `memory_service.read()`, library paths (`<collection>/<page>`)
+  read from the library's qmd chunks via `qmd get`.
+- Wiki catalog reconciles before each search — stale rows whose
+  on-disk page is gone are dropped, so `wiki_search` doesn't
+  return ghost page_ids.
+
+## [0.37.1] - 2026-09-22
+
+### Fixed
+
+- Librarian fan-out: `qmd_query` now hits the library's qmd surface
+  (`lib.git_root`), not just the wiki's. Library collections are
+  reachable from `/answer` and `/cite` again. (`5c1f668`)
+- `/answer` slash prompt exposes `tag_expr`, `exclude_tags`, `name`,
+  `collection` as separate kwargs (was a single opaque `question`
+  string with embedded filter syntax). (`fad2627`)
+- Tag-expression validator's available-set now includes library-
+  collection names with the `c:` qualifier prefix. (`e11b626`)
+- Tag-expression validator's available-set now includes library-
+  collection tags (each `LibraryCollectionConfig.tags` entry) with
+  the `t:` qualifier prefix, in addition to library-collection
+  names with the `c:` prefix. (`134d0bb`)
+- Library commit envelope reconciles deletions of tracked files via
+  `git add -u` after the explicit-files commit. Re-ingests no longer
+  accumulate ghost entries in HEAD. (`df34c89`)
+- `/answer` slash prompt now parses the question argument via
+  `shlex.split()` + `parse_query_argv()` so the calling LLM doesn't
+  hallucinate values for `tag_expr` / `exclude_tags`. Matches the
+  CLI's grammar exactly. (`92e45c2`)
+
+### Changed
+
+- Librarian system prompt documents the dual-surface fan-out.
 
 ## [0.37.0] - 2026-09-22
 

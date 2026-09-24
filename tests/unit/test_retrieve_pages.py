@@ -272,7 +272,7 @@ def test_collections_matching_exclude_drops_matching_collection(
 ) -> None:
     """A bare ``-amazon`` drops every library collection named amazon.
     Without an include, every other collection is kept."""
-    tf = ResolvedTagFilter(exclude="amazon")
+    tf = ResolvedTagFilter(exclude=Include("amazon"))
     assert _collections_matching(tf) == {"airflow", "pyspark"}
 
 
@@ -280,7 +280,7 @@ def test_collections_matching_exclude_and_include_compose(
     tagged_wiki: Wiki,
 ) -> None:
     """``+airflow -amazon`` keeps airflow (exclude only matches amazon)."""
-    tf = ResolvedTagFilter(include=Include("airflow"), exclude="amazon")
+    tf = ResolvedTagFilter(include=Include("airflow"), exclude=Include("amazon"))
     assert _collections_matching(tf) == {"airflow"}
 
 
@@ -428,8 +428,7 @@ def test_collections_matching_t_then_c_exclude(
     airflow, and the exclude drops the collection that matched."""
     tf = ResolvedTagFilter(
         include=Include("airflow", qualifier="t"),
-        exclude="airflow",
-        exclude_qualifier="c",
+        exclude=Include("airflow", qualifier="c"),
     )
     assert _collections_matching(tf) == set()
 
@@ -449,8 +448,7 @@ def test_collections_matching_t_python_c_python_excludes_self(
     """
     tf = ResolvedTagFilter(
         include=Include("python", qualifier="t"),
-        exclude="python",
-        exclude_qualifier="c",
+        exclude=Include("python", qualifier="c"),
     )
     assert _collections_matching(tf) == set()
 
