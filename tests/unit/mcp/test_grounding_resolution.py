@@ -12,7 +12,13 @@ The two tests below are marked ``@pytest.mark.slow`` because
 rubric (option 5: MARK ``@pytest.mark.slow``), they run only with
 ``uv run pytest --runslow``; the default ``make unit-test`` skips
 them. The pre-commit ``test`` hook inherits ``make unit-test`` and
-therefore never runs these in CI or locally.
+therefore never runs these locally. CI *does* run them via
+``.github/workflows/ci.yml`` line 39:
+
+    uv run pytest tests/ --runslow --tb=short -q -p no:cacheprovider
+
+so a regression here surfaces in the CI check job (not in the local
+pre-commit gate).
 
 **Gate coverage for the lookup itself** lives in
 ``tests/unit/providers/test_resolver.py`` — that file's
@@ -38,6 +44,7 @@ def _isolated_xdg(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     cfg_dir = tmp_path / "lies"
     cfg_dir.mkdir()
     cfg_file = cfg_dir / "providers.toml"
+    monkeypatch.delenv("LIES_LIBRARIAN_MODEL", raising=False)
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     return cfg_file
 

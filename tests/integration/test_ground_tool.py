@@ -56,6 +56,36 @@ def _seed_wiki_collection() -> Path:
     return coll_root
 
 
+def _seed_anthropic_providers_toml(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Seed a minimal ``providers.toml`` with the Anthropic provider wired to every roster entry.
+
+    Task 3 / librarian-model-config: the new resolver in ``ground()``
+    reads this file at ``$XDG_CONFIG_HOME/lies/providers.toml``; without
+    it the dispatch raises :class:`ModelNotConfigured` before reaching
+    the patched ``librarian_agent``. Iterating ``AGENT_ROSTER`` here
+    means adding a new agent to the roster extends the seed
+    automatically — no manual edit to this helper is needed when the
+    roster grows.
+    """
+    from lies.providers import AGENT_ROSTER
+
+    cfg_dir = xdg.config_home() / LIES_DATA_SUBDIR
+    cfg_dir.mkdir(parents=True, exist_ok=True)
+    agents_section = "\n".join(f'{name} = "anthropic:claude-opus-4-7"' for name in AGENT_ROSTER)
+    (cfg_dir / "providers.toml").write_text(
+        'default_model = "anthropic:claude-opus-4-7"\n'
+        "\n"
+        "[providers.anthropic]\n"
+        'type = "anthropic"\n'
+        'api_key_env = "ANTHROPIC_API_KEY"\n'
+        "\n"
+        "[agents]\n"
+        f"{agents_section}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-real")
+
+
 def _patch_librarian(
     monkeypatch: pytest.MonkeyPatch,
     excerpts: list[PageExcerpt],
@@ -68,33 +98,12 @@ def _patch_librarian(
     carries the typed output. ``ground()`` reads ``result.output``,
     so the fake mirrors that wrapper shape.
 
-    Also seeds a minimal ``providers.toml`` at ``$XDG_CONFIG_HOME/lies/``
-    so the new resolver (Task 3 / librarian-model-config) finds a
-    valid config — without it ``ground()`` raises
-    ``ModelNotConfigured`` before reaching the patched
-    ``librarian_agent``.
+    Also calls :func:`_seed_anthropic_providers_toml` so the new
+    resolver (Task 3 / librarian-model-config) finds a valid config —
+    without it ``ground()`` raises :class:`ModelNotConfigured` before
+    reaching the patched ``librarian_agent``.
     """
-    cfg_dir = xdg.config_home() / LIES_DATA_SUBDIR
-    cfg_dir.mkdir(parents=True, exist_ok=True)
-    (cfg_dir / "providers.toml").write_text(
-        'default_model = "anthropic:claude-opus-4-7"\n'
-        "\n"
-        "[providers.anthropic]\n"
-        'type = "anthropic"\n'
-        'api_key_env = "ANTHROPIC_API_KEY"\n'
-        "\n"
-        "[agents]\n"
-        'orchestrator = "anthropic:claude-opus-4-7"\n'
-        'source_reader = "anthropic:claude-opus-4-7"\n'
-        'page_writer = "anthropic:claude-opus-4-7"\n'
-        'linter = "anthropic:claude-opus-4-7"\n'
-        'query_synthesizer = "anthropic:claude-opus-4-7"\n'
-        'enricher = "anthropic:claude-opus-4-7"\n'
-        'repair = "anthropic:claude-opus-4-7"\n'
-        'librarian = "anthropic:claude-opus-4-7"\n',
-        encoding="utf-8",
-    )
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-real")
+    _seed_anthropic_providers_toml(monkeypatch)
 
     class _FakeResult:
         def __init__(self, output: object) -> None:
@@ -335,28 +344,9 @@ async def test_ground_tool_wires_librarian_tools(
 
     # Task 3 / librarian-model-config: seed a ``providers.toml`` so the
     # new resolver in ``ground()`` finds a valid config before reaching
-    # the patched ``librarian_agent`` below.
-    cfg_dir = xdg.config_home() / LIES_DATA_SUBDIR
-    cfg_dir.mkdir(parents=True, exist_ok=True)
-    (cfg_dir / "providers.toml").write_text(
-        'default_model = "anthropic:claude-opus-4-7"\n'
-        "\n"
-        "[providers.anthropic]\n"
-        'type = "anthropic"\n'
-        'api_key_env = "ANTHROPIC_API_KEY"\n'
-        "\n"
-        "[agents]\n"
-        'orchestrator = "anthropic:claude-opus-4-7"\n'
-        'source_reader = "anthropic:claude-opus-4-7"\n'
-        'page_writer = "anthropic:claude-opus-4-7"\n'
-        'linter = "anthropic:claude-opus-4-7"\n'
-        'query_synthesizer = "anthropic:claude-opus-4-7"\n'
-        'enricher = "anthropic:claude-opus-4-7"\n'
-        'repair = "anthropic:claude-opus-4-7"\n'
-        'librarian = "anthropic:claude-opus-4-7"\n',
-        encoding="utf-8",
-    )
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-real")
+    # the patched ``librarian_agent`` below. Shared helper with
+    # :func:`_patch_librarian` so the roster-driven seed stays in sync.
+    _seed_anthropic_providers_toml(monkeypatch)
 
     # Set up a wiki at the XDG redirect path so ``resolve_wiki()``
     # finds it via ``Wiki.require``. The autouse ``_isolated_xdg``
