@@ -18,6 +18,7 @@ from pydantic_ai.models import Model
 from lies.agents.librarian import (
     LibrarianDeps,
     LibrarianOutput,
+    PageExcerpt,
     librarian_agent,
     librarian_no_coverage,
 )
@@ -1790,6 +1791,71 @@ class Orchestrator:
             exclude_expr=exclude_expr,
             top_k=top_n,
         )
+
+        # Orchestrator-side fast-path: when the caller pre-sets
+        # ``tag_expr`` and the resolved scope is non-empty, bypass the
+        # librarian LLM. Build a synthetic ``LibrarianOutput`` directly
+        # from a library ``qmd_query`` + ``qmd_get`` fan-out. Mirrors
+        # ``grounding.ground()``'s fast-path (commit 8946cdf) — the
+        # orchestrator's LLM dispatch has the same
+        # ``LibrarianOutput`` validation failure mode that surfaces as
+        # an empty bundle when the LLM produces a partial output.
+        # Falls through to the librarian dispatch when the fast-path
+        # yields zero excerpts or when the caller is un-tagged.
+        fast_path_out: LibrarianOutput | None = None
+        if tag_expr is not None:
+            try:
+                from lies.query.synthesizer import _searched_scope as _compute_searched_scope
+                from lies.library.registry import library_git_root
+                from lies.markdown_spans import parse_spans
+                from lies.qmd.cli import qmd_get, qmd_query
+
+                _scope = _compute_searched_scope(self.wiki, tag_filter)
+                if _scope:
+                    _lib_root = library_git_root()
+                    _lib_hits = qmd_query(
+                        _lib_root,
+                        question=question,
+                        limit=top_n,
+                        collection_filter=set(_scope),
+                    )
+                    _excerpts: list[PageExcerpt] = []
+                    for _hit in _lib_hits[:top_n]:
+                        _hit_path = str(_hit.get("path", ""))
+                        if not _hit_path:
+                            continue
+                        try:
+                            _body = qmd_get(_lib_root, f"qmd://{_hit_path}")
+                        except Exception:
+                            continue
+                        _spans = parse_spans(_body)
+                        if not _spans:
+                            continue
+                        _excerpts.append(
+                            PageExcerpt(
+                                collection=_hit_path.split("/", 1)[0],
+                                slug=_hit_path,
+                                title=str(_hit.get("title", "")),
+                                spans=_spans,
+                                source_kind="library",
+                            )
+                        )
+                    if _excerpts:
+                        fast_path_out = LibrarianOutput(
+                            tag_expr=tag_expr,
+                            exclude_expr=exclude_expr,
+                            excerpts=_excerpts,
+                            distinct_pages=len({e.slug for e in _excerpts}),
+                            no_coverage=False,
+                        )
+            except Exception:
+                fast_path_out = None
+
+        if fast_path_out is not None:
+            # Skip the librarian LLM dispatch; feed the synthetic
+            # ``LibrarianOutput`` directly into the synthesizer.
+            librarian_result = None  # type: ignore[assignment]
+            librarian_out = fast_path_out
         # Self-heal: ensure ``wiki_<name>`` is registered with qmd
         # before the librarian runs. Wikis created before 0.22.0 skip
         # this registration in ``WikiLayout.init`` because
@@ -1813,21 +1879,32 @@ class Orchestrator:
         # patched out of the dispatch. The probe calls the active
         # ``_qmd_search`` callable (via ``set_qmd_search``) so a test
         # stub that raises ``QmdNotInstalledError`` is honored.
-        try:
-            from lies.qmd.cli import qmd_query as _qmd_default
+        #
+        # Fast-path short-circuits both the qmd probe and the
+        # librarian LLM dispatch when the synthetic LibrarianOutput
+        # succeeded above (commit 8946cdf-style architecture:
+        # caller pre-scoped via tag_expr; the F18 4-step protocol is
+        # redundant because the LLM's relevance judgment is replaced
+        # by the caller's tag filter).
+        if fast_path_out is None:
+            try:
+                from lies.qmd.cli import qmd_query as _qmd_default
 
-            _qmd_callable = _qmd_default
-            from lies.query.synthesizer import _QMD_SEARCH
+                _qmd_callable = _qmd_default
+                from lies.query.synthesizer import _QMD_SEARCH
 
-            if _QMD_SEARCH is not None:
-                _qmd_callable = _QMD_SEARCH
-            _qmd_callable(self.wiki.data_root, question, 1)
-        except Exception as _qmd_exc:
-            _qmd_unavailable = type(_qmd_exc).__name__ == "QmdNotInstalledError"
+                if _QMD_SEARCH is not None:
+                    _qmd_callable = _QMD_SEARCH
+                _qmd_callable(self.wiki.data_root, question, 1)
+            except Exception as _qmd_exc:
+                _qmd_unavailable = type(_qmd_exc).__name__ == "QmdNotInstalledError"
+            else:
+                _qmd_unavailable = False
+            librarian_result = self._librarian_agent.run_sync(question, deps=deps)
+            librarian_out = librarian_result.output
         else:
-            _qmd_unavailable = False
-        librarian_result = self._librarian_agent.run_sync(question, deps=deps)
-        librarian_out = librarian_result.output
+            librarian_out = fast_path_out
+            librarian_result = None  # type: ignore[assignment]
         # F18 Task 1 — copy the ``librarian_no_coverage`` ContextVar
         # (populated by ``_wiki_search``'s closure inside
         # ``register_librarian_tools``) onto the returned

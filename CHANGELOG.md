@@ -114,9 +114,19 @@ All notable changes to LIES are documented here. The format follows
      Falls through to the librarian dispatch if the fast-path
      yields zero hits. The librarian is still invoked for
      un-tagged queries where relevance judgment matters.
+  3. `Orchestrator.run_query` mirrors the fast-path pattern for
+     the `/answer` + `/query` MCP tools. When the caller pre-sets
+     `tag_expr` and the resolved scope is non-empty, build a
+     synthetic `LibrarianOutput` from a direct library search,
+     skip both the qmd probe and the librarian LLM dispatch, and
+     feed the synthetic output straight into the synthesizer.
+     Falls through to the existing librarian path when the
+     fast-path yields zero excerpts or when the caller is
+     un-tagged. Mirrors `ground()`'s fast-path semantically.
   Empirical validation: `/cite +c:switchyard ...` returns 3
-  citations from the switchyard library collection with
-  `distinct_pages=3, no_coverage=false`.
+  citations with `distinct_pages=3, no_coverage=false`. `/answer
+  +c:switchyard ...` returns a synthesized answer with citations
+  to switchyard library pages (verified via direct MCP probe).
 
 ## [0.37.11] - 2026-09-23
 
