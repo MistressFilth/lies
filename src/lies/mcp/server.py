@@ -166,19 +166,20 @@ def mcp_ground(
     # **full F15 expression** (``c:foo&c:bar``, ``c:foo|c:bar``, etc.),
     # not a single atom. ``parse`` returns the same ``Include`` /
     # ``And`` / ``Or`` AST shape that the include half uses; ``resolve``
-    # validates every atom against the registered collection set via
-    # :func:`library_collection_names` (the library-first tag surface
-    # for the ground tool — ``name`` is accepted on the wire but the
-    # collection registry is global, not per-wiki).
-    from lies.library.registry import library_collection_names
-
+    # validates every atom against the registered tag set via
+    # :func:`_collect_available_tags_mcp` — same surface as the
+    # ``query`` / ``answer`` / ``ground`` include validators, so bare
+    # tag atoms (``-harness``, ``-claude|cli``) validate consistently
+    # end to end. Pre-v0.37.9 the exclude side used the
+    # collection-names-only set, which rejected ``-harness`` even
+    # though ``harness`` is a real tag on multiple library collections.
     exclude_expr: TagExpr | None = None
     if exclude_tags:
         try:
             exclude_expr = parse(exclude_tags[0])
             resolve(
                 None,
-                available=set(library_collection_names()),
+                available=_collect_available_tags_mcp(None),
                 exclude=exclude_expr,
             )
         except TagExprParseError as exc:
@@ -975,7 +976,7 @@ def ask_ground_question(text: str) -> dict[str, object]:
     }
 
 
-def _collect_available_tags_mcp(wiki: Wiki) -> set[str]:
+def _collect_available_tags_mcp(wiki: Wiki | None) -> set[str]:
     """Return every addressable tag in the library (MCP surface).
 
     Thin shim over :func:`lies.library.registry.library_collection_names`
@@ -985,16 +986,21 @@ def _collect_available_tags_mcp(wiki: Wiki) -> set[str]:
     intentionally ignored: collections live in the library, not in
     any wiki.
 
-    Each collection name is added with the ``c:`` qualifier prefix so
-    the F15 tag-expression validator recognizes ``c:<name>`` atoms as
-    addressable on the MCP ``query`` / ``answer`` path (Fix 3 / Task 3
-    brief). Each ``LibraryCollectionConfig.tags`` entry is added with
-    the ``t:`` qualifier prefix so ``t:<tag>`` filters against a
-    library-collection tag do not raise ``TagExprUnknown`` (Fix 6 /
-    Task 8 brief). Both lookups are wrapped in ``try/except`` so an
-    uninitialized library — or any other registry failure — does not
-    break the validator; the function still returns a set, just one
-    that does not include library tags of the failed surface.
+    Each collection name is added both bare and with the ``c:``
+    qualifier prefix so the F15 tag-expression validator recognizes
+    ``c:<name>`` atoms as addressable on the MCP ``query`` / ``answer``
+    path (Fix 3 / Task 3 brief). Each ``LibraryCollectionConfig.tags``
+    entry is added both bare and with the ``t:`` qualifier prefix so
+    ``t:<tag>`` filters against a library-collection tag do not raise
+    ``TagExprUnknown`` (Fix 6 / Task 8 brief) — and so bare ``+tag``
+    expressions validate too, since F15 treats a bare atom as the
+    implicit-t alias for ``+t:tag`` (``atom_matches`` matches the tag
+    against ``coll.tags ∪ {coll.name}`` and a bare expression's
+    ``Include.tag`` is the unqualified string). Both lookups are
+    wrapped in ``try/except`` so an uninitialized library — or any
+    other registry failure — does not break the validator; the
+    function still returns a set, just one that does not include
+    library tags of the failed surface.
     """
     from lies.library.registry import library_collection_names, library_collection_tags
 
@@ -1007,7 +1013,8 @@ def _collect_available_tags_mcp(wiki: Wiki) -> set[str]:
     tags: set[str] = set(names) | {f"c:{name}" for name in names}
     try:
         for tag in library_collection_tags():
-            tags.add(f"t:{tag}")
+            tags.add(tag)  # bare tag (implicit-t: alias)
+            tags.add(f"t:{tag}")  # explicit t: qualifier form
     except Exception:
         # ``library_collection_tags`` raises when the library is
         # uninitialized or its config-yaml surface fails to read. The

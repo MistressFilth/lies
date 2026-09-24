@@ -544,6 +544,39 @@ def test_collect_available_tags_mcp_includes_library_collection_tags(monkeypatch
     assert "t:cli" in tags
 
 
+def test_collect_available_tags_mcp_accepts_bare_tag_names(monkeypatch) -> None:
+    """Bare tag names must validate too — F15 treats ``+tag`` as the
+    implicit-t alias for ``+t:tag``.
+
+    Regression for the v0.37.9 fix: pre-fix
+    :func:`_collect_available_tags_mcp` only registered each
+    ``LibraryCollectionConfig.tags`` entry with the explicit ``t:``
+    qualifier prefix. A bare ``+claude`` expression — which is the
+    canonical F15 include form against a library-collection tag —
+    parses to ``Include("claude", qualifier=None)``, and the resolver
+    checks ``expr.tag in available`` directly, so the bare string
+    had to be present in the set or ``TagExprUnknown`` fired at the
+    MCP ``query`` / ``answer`` / ``ground`` boundary even though
+    ``claude`` was a real tag on multiple collections. The fix adds
+    each tag BARE alongside the ``t:`` form so the user's
+    user-confirmed semantic (``bare +tag == +t:tag``) validates.
+    """
+    from lies.mcp.server import _collect_available_tags_mcp
+
+    monkeypatch.setattr(
+        "lies.library.registry.library_collection_tags",
+        lambda: frozenset({"mermaid", "syntax", "docs", "cli"}),
+    )
+    tags = _collect_available_tags_mcp(None)
+    # ``t:``-prefixed form still validates (no regression for Task 8).
+    assert "t:mermaid" in tags
+    # Bare form is now also addressable (implicit-t: alias).
+    assert "mermaid" in tags
+    assert "syntax" in tags
+    assert "docs" in tags
+    assert "cli" in tags
+
+
 def _patch_librarian(monkeypatch, grounding_module, fake_fn):
     """Replace ``librarian_agent().run_sync(...)`` with ``fake_fn(deps)``.
 

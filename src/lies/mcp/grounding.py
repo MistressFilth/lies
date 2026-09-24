@@ -214,7 +214,7 @@ def ground(
     if tag_expr is not None:
         # Lazy imports keep this module off the pydantic_ai / fastmcp
         # import path that ``utils.logging`` is also careful to avoid.
-        from lies.library.registry import library_collection_names
+        from lies.mcp.server import _collect_available_tags_mcp
         from lies.query.tag_expr import (
             TagExprEmpty,
             TagExprParseError,
@@ -228,25 +228,36 @@ def ground(
         except (TagExprParseError, TagExprEmpty) as exc:
             raise ArchivistCoverageError(f"invalid tag expression: {exc}") from exc
         try:
-            # The registry's lru_cache is populated with a ``frozenset``
-            # so the resolver's ``available=set(...)`` materialization
-            # does not mutate the cache. ``sorted`` re-orders for the
-            # deterministic error-message envelope below — the cache
-            # itself is already an ordered frozenset so re-sorting is
-            # redundant on the happy path but cheap (small N) and keeps
-            # the error message stable against future cache-shape
-            # changes.
-            resolve(include_ast, available=set(library_collection_names()))
+            # Use the same expanded available-set as the MCP ``query`` /
+            # ``answer`` boundary so bare-tag includes (``+claude``) and
+            # explicit ``t:`` / ``c:`` forms validate consistently across
+            # every MCP tool that maps to the F15 grammar. The set
+            # covers bare collection names, ``c:<name>`` atoms, AND
+            # both bare and ``t:<tag>`` library-collection tag entries
+            # — without that, ``+claude`` (which parses to
+            # ``Include("claude", qualifier=None)``) raised
+            # ``TagExprUnknown`` against the collection-names-only set
+            # the helper used pre-v0.37.9.
+            resolve(
+                include_ast,
+                available=_collect_available_tags_mcp(wiki=None),
+            )
         except TagExprUnknown as exc:
-            # ``library_collection_names`` already returns a sorted
-            # frozenset (see ``lies.library.registry``), so the
-            # ``sorted(...)`` here is a no-op-on-shape defense against
-            # future cache-shape changes — and ``exc.available`` (the
-            # resolver's set of every known atom) is unsorted by
-            # contract, so we sort it for the deterministic error
-            # envelope below.
+            # ``_collect_available_tags_mcp`` already returns a
+            # deterministic-shape set (sorted frozenset for the
+            # collection side; bare / ``t:`` / ``c:`` aliases for the
+            # tag side), so the ``sorted(...)`` here is a no-op-on-
+            # shape defense against future cache-shape changes — and
+            # ``exc.available`` (the resolver's set of every known
+            # atom) is unsorted by contract, so we sort it for the
+            # deterministic error envelope below. The fallback when
+            # ``exc.available`` is empty reads from the same expanded
+            # helper so the surfaced ``available:`` list matches the
+            # validator's view end-to-end.
             available = (
-                sorted(exc.available) if exc.available else sorted(library_collection_names())
+                sorted(exc.available)
+                if exc.available
+                else sorted(_collect_available_tags_mcp(wiki=None))
             )
             raise ArchivistCoverageError(
                 f"unknown tag(s): {exc.tag!r} (available: {available!r})"
