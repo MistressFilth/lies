@@ -67,7 +67,34 @@ def _patch_librarian(
     ``Agent.run_sync`` returns an ``AgentRunResult`` whose ``.output``
     carries the typed output. ``ground()`` reads ``result.output``,
     so the fake mirrors that wrapper shape.
+
+    Also seeds a minimal ``providers.toml`` at ``$XDG_CONFIG_HOME/lies/``
+    so the new resolver (Task 3 / librarian-model-config) finds a
+    valid config — without it ``ground()`` raises
+    ``ModelNotConfigured`` before reaching the patched
+    ``librarian_agent``.
     """
+    cfg_dir = xdg.config_home() / LIES_DATA_SUBDIR
+    cfg_dir.mkdir(parents=True, exist_ok=True)
+    (cfg_dir / "providers.toml").write_text(
+        'default_model = "anthropic:claude-opus-4-7"\n'
+        "\n"
+        "[providers.anthropic]\n"
+        'type = "anthropic"\n'
+        'api_key_env = "ANTHROPIC_API_KEY"\n'
+        "\n"
+        "[agents]\n"
+        'orchestrator = "anthropic:claude-opus-4-7"\n'
+        'source_reader = "anthropic:claude-opus-4-7"\n'
+        'page_writer = "anthropic:claude-opus-4-7"\n'
+        'linter = "anthropic:claude-opus-4-7"\n'
+        'query_synthesizer = "anthropic:claude-opus-4-7"\n'
+        'enricher = "anthropic:claude-opus-4-7"\n'
+        'repair = "anthropic:claude-opus-4-7"\n'
+        'librarian = "anthropic:claude-opus-4-7"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-real")
 
     class _FakeResult:
         def __init__(self, output: object) -> None:
@@ -101,7 +128,10 @@ def _patch_librarian(
                 )
             )
 
-    monkeypatch.setattr(grounding, "librarian_agent", lambda: _FakeAgent())
+    # Task 3 / librarian-model-config: ``ground()`` now calls
+    # ``librarian_agent(model=...)`` with the resolved model — the
+    # mock accepts the kwarg and ignores it.
+    monkeypatch.setattr(grounding, "librarian_agent", lambda model=None: _FakeAgent())
 
 
 async def test_ground_tool_registered_with_mcp_server() -> None:
@@ -302,6 +332,31 @@ async def test_ground_tool_wires_librarian_tools(
     from lies.agents import librarian as librarian_mod
     from lies.mcp import grounding
     from lies.mcp import resolution as resolution_mod
+
+    # Task 3 / librarian-model-config: seed a ``providers.toml`` so the
+    # new resolver in ``ground()`` finds a valid config before reaching
+    # the patched ``librarian_agent`` below.
+    cfg_dir = xdg.config_home() / LIES_DATA_SUBDIR
+    cfg_dir.mkdir(parents=True, exist_ok=True)
+    (cfg_dir / "providers.toml").write_text(
+        'default_model = "anthropic:claude-opus-4-7"\n'
+        "\n"
+        "[providers.anthropic]\n"
+        'type = "anthropic"\n'
+        'api_key_env = "ANTHROPIC_API_KEY"\n'
+        "\n"
+        "[agents]\n"
+        'orchestrator = "anthropic:claude-opus-4-7"\n'
+        'source_reader = "anthropic:claude-opus-4-7"\n'
+        'page_writer = "anthropic:claude-opus-4-7"\n'
+        'linter = "anthropic:claude-opus-4-7"\n'
+        'query_synthesizer = "anthropic:claude-opus-4-7"\n'
+        'enricher = "anthropic:claude-opus-4-7"\n'
+        'repair = "anthropic:claude-opus-4-7"\n'
+        'librarian = "anthropic:claude-opus-4-7"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-real")
 
     # Set up a wiki at the XDG redirect path so ``resolve_wiki()``
     # finds it via ``Wiki.require``. The autouse ``_isolated_xdg``
