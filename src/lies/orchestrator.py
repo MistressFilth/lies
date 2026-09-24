@@ -1805,12 +1805,40 @@ class Orchestrator:
         fast_path_out: LibrarianOutput | None = None
         if tag_expr is not None:
             try:
-                from lies.query.synthesizer import _searched_scope as _compute_searched_scope
                 from lies.library.registry import library_git_root
                 from lies.markdown_spans import parse_spans
                 from lies.qmd.cli import qmd_get, qmd_query
+                from lies.query.tag_expr import (
+                    TagExprEmpty,
+                    TagExprParseError,
+                    TagExprUnknown,
+                    parse as _parse_tag_expr,
+                    ResolvedTagFilter,
+                )
+                from lies.query.synthesizer import (
+                    _collections_matching as _resolve_scope,
+                )
 
-                _scope = _compute_searched_scope(self.wiki, tag_filter)
+                # Resolve the caller-supplied tag_expr to a concrete
+                # collection set. Mirrors ``grounding.ground()``'s
+                # scope-resolution pattern. Falls back to
+                # ``_searched_scope`` when tag_filter is also set
+                # (F18 callers that pre-built the filter).
+                _scope: list[str] = []
+                try:
+                    _include_ast = _parse_tag_expr(tag_expr)
+                    _resolved = ResolvedTagFilter(
+                        include=_include_ast,
+                        exclude=exclude_expr,
+                    )
+                    _scope = sorted(_resolve_scope(_resolved))
+                except (TagExprParseError, TagExprEmpty, TagExprUnknown):
+                    _scope = []
+                if not _scope and tag_filter is not None:
+                    from lies.query.synthesizer import _searched_scope as _compute_searched_scope
+
+                    _scope = _compute_searched_scope(self.wiki, tag_filter)
+
                 if _scope:
                     _lib_root = library_git_root()
                     _lib_hits = qmd_query(
