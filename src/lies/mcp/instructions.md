@@ -36,8 +36,14 @@ only).
 - `ask_ground_question(text)` — same shape as `ask_question`, but
   returns kwargs (`question`, `tag_expr`, `exclude_tags`, `top_k`)
   for the `ground` tool. The LLM forwards the returned kwargs to
-  `ground` verbatim. Use this for any `/cite` slash invocation that
-  includes a multi-word filter prefix.
+  `ground` verbatim. **Use this for every `/cite` slash invocation
+  whose input begins with `+`** — Claude Code's slash dispatcher
+  drops the `text` argument entirely when the slash input starts
+  with a `+` (F15 include sigil), raising
+  `ProtocolError: Missing required arguments: {'text'}` (session
+  df653c3d, 2026-09-24). Plain multi-word questions are also safer
+  through this tool than the slash, since the dispatcher
+  tokenizes on whitespace too.
 - `lint` — health-check; `fix=True` applies the repair plan.
 - `wiki_changes` — recent plan applications.
 
@@ -64,9 +70,13 @@ only).
   `[[slug]]: "snippet"` lines. Single-arg form, parses the
   `+c:<name>` / `-<tag>` filter syntax internally; the calling
   LLM forwards the rendered kwargs to the `ground` tool verbatim.
-  Like `/answer`, Claude Code's slash dispatcher tokenizes on
-  whitespace, so for multi-word filter prefixes use the
-  `ask_ground_question` tool instead.
+  **Claude Code's slash dispatcher drops the `text` argument
+  entirely when the input begins with `+`** (F15 include sigil),
+  raising `ProtocolError: Missing required arguments: {'text'}` —
+  worse than `/answer`'s whitespace-tokenize bug, which at least
+  arrives truncated. For any `/cite` invocation whose input
+  begins with `+`, route the user's full multi-word text through
+  the `ask_ground_question` tool instead.
 
 ## CLI
 

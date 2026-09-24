@@ -19,7 +19,7 @@ span-picking helpers. Library vs wiki discrimination lives on
 from __future__ import annotations
 
 import warnings
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
@@ -79,6 +79,16 @@ class ArchivistDigest:
             hits landed). Source-of-truth is the librarian's
             ``LibrarianOutput.no_coverage`` field as of F18 Task 2.
         distinct_pages: ``len({c.slug for c in citations})``.
+        searched_scope: Sorted, unique list of library collection
+            names whose corpus was searched. Mirrors
+            ``SynthesizedAnswer.searched_scope`` (Bundle C / F15):
+            every collection in the library when untagged, or the
+            sorted set of collections whose ``atom_matches`` is true
+            for the resolved include / exclude AST when tagged.
+            Empty when the library is uninitialized or the resolved
+            AST matches no collections. Populated even on the
+            ``no_coverage=True`` path so callers can render
+            "searched X, found nothing" rather than guessing.
     """
 
     question: str
@@ -87,6 +97,7 @@ class ArchivistDigest:
     citations: list[CitationSnippet]
     no_coverage: bool
     distinct_pages: int
+    searched_scope: list[str] = field(default_factory=list)
 
 
 class ArchivistCoverageError(Exception):
@@ -192,7 +203,13 @@ def ground(
 
     Returns:
         :class:`ArchivistDigest` carrying the librarian's excerpts
-        trimmed to ≤200 chars each.
+        trimmed to ≤200 chars each. The digest's ``searched_scope``
+        mirrors ``Orchestrator.run_query``'s envelope: every
+        registered library collection when untagged, or the sorted
+        set of collections whose ``atom_matches`` is true for the
+        resolved include / exclude AST when tagged. Populated even on
+        the ``no_coverage=True`` path so callers can render
+        "searched X, found nothing" rather than guessing.
 
     Raises:
         ArchivistCoverageError: when a positive tag matches zero
@@ -211,6 +228,7 @@ def ground(
     # collection set — that IS "positive tag matches zero collections"
     # at the dispatch layer.
     resolved_tag_expr = tag_expr
+    include_ast: "TagExpr | None" = None
     if tag_expr is not None:
         # Lazy imports keep this module off the pydantic_ai / fastmcp
         # import path that ``utils.logging`` is also careful to avoid.
@@ -262,6 +280,46 @@ def ground(
             raise ArchivistCoverageError(
                 f"unknown tag(s): {exc.tag!r} (available: {available!r})"
             ) from exc
+
+    # F15 ``searched_scope`` (Bug C fix): mirror the contract that
+    # ``Orchestrator.run_query`` writes onto
+    # ``SynthesizedAnswer.searched_scope``. Source is the library
+    # registry — the library is the universe; wikis do not contribute
+    # to the addressable collection set. Untagged -> every registered
+    # collection, sorted. Tagged -> the sorted set of collections
+    # whose ``atom_matches`` is true for the resolved include /
+    # exclude AST. Empty when the library is uninitialized or the
+    # resolved AST matches zero collections.
+    #
+    # Computed BEFORE the librarian dispatch so every return path —
+    # no model available, librarian exception, success — carries the
+    # same scope envelope. The orchestrator does the same:
+    # ``searched_scope`` lands on the answer before the F18
+    # ``no_coverage`` decision, so a ``no_coverage=True`` answer still
+    # tells the operator which collections the system tried.
+    from lies.query.synthesizer import (
+        _all_collection_names,
+        _collections_matching,
+    )
+    from lies.query.tag_expr import ResolvedTagFilter
+
+    if include_ast is None and exclude_expr is None:
+        searched_scope_list: list[str] = _all_collection_names()
+    else:
+        resolved_for_scope = ResolvedTagFilter(
+            include=include_ast,
+            exclude=exclude_expr,
+        )
+        try:
+            searched_scope_list = sorted(_collections_matching(resolved_for_scope))
+        except Exception:
+            # ``_collections_matching`` walks ``library_collection_metas``
+            # against the resolved AST. If the registry lookup raises
+            # (e.g. mid-write corruption), degrade to an empty list
+            # rather than failing the digest — same fail-soft posture
+            # the orchestrator's ``except Exception: answer.searched_scope = []``
+            # branch takes on the same line.
+            searched_scope_list = []
 
     # Lazy imports — ``LibrarianDeps`` transitively pulls in
     # ``pydantic_ai`` and the orchestrator's tool registry. Keeping
@@ -326,6 +384,7 @@ def ground(
                     citations=[],
                     no_coverage=True,
                     distinct_pages=0,
+                    searched_scope=searched_scope_list,
                 )
 
     deps = LibrarianDeps(
@@ -359,6 +418,7 @@ def ground(
             citations=[],
             no_coverage=True,
             distinct_pages=0,
+            searched_scope=searched_scope_list,
         )
 
     citations: list[CitationSnippet] = []
@@ -406,4 +466,5 @@ def ground(
         citations=citations,
         no_coverage=no_coverage,
         distinct_pages=len({c.slug for c in citations}),
+        searched_scope=searched_scope_list,
     )

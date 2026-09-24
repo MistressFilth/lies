@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import shutil
 from pathlib import Path
@@ -25,6 +26,17 @@ from lies.mcp.server import (
 )
 from lies.memory.models import WikiPlanInvalid
 from lies.wiki.wiki import Wiki
+
+
+def _asyncio_run(coro: object) -> object:
+    """Run an async coroutine in a fresh event loop.
+
+    Local helper so the citation-prompt Bug B tests can introspect
+    the FastMCP ``prompts/list`` / ``tools/list`` surface without
+    depending on pytest-asyncio. Mirrors the helper of the same
+    name in ``tests/mcp/test_memory_tools.py``.
+    """
+    return asyncio.run(coro)  # type: ignore[arg-type]
 
 
 @pytest.fixture(autouse=True)
@@ -600,3 +612,95 @@ def test_cite_prompt_plain_question_unchanged() -> None:
     assert "tag_expr: None" in out
     assert "exclude_tags: []" in out
     assert "question: Where does opencode keep settings?" in out
+
+
+# ---------------------------------------------------------------------------
+# Bug B — `/cite` slash dispatcher limitation (session df653c3d, 2026-09-24)
+# ---------------------------------------------------------------------------
+
+
+def test_cite_prompt_renders_with_plus_prefixed_input() -> None:
+    """`cite(text="+c:opencode|c:claude_platform What?")` renders the
+    ground-tool kwargs body end-to-end.
+
+    Pins Bug B: when the slash dispatcher DOES populate the ``text``
+    arg (the direct ``prompts/get cite(text=...)`` path), the
+    prompt body must include the parsed ``tag_expr`` /
+    ``exclude_tags`` / ``question`` / ``top_k`` kwargs so the
+    calling LLM can forward them verbatim to the ``ground`` tool.
+    Session df653c3d (2026-09-24T01:29:30Z) showed Claude Code's
+    slash dispatcher dropping the ``text`` arg entirely when the
+    input begins with ``+``; that dispatcher-side bug is
+    unreproducible here (FastMCP dispatches with whatever the
+    caller passes), but this test pins that the PROMPT side does
+    the right thing whenever it does receive the input.
+    """
+    out = cite(text="+c:opencode|c:claude_platform What is opencode?")
+    assert isinstance(out, str)
+    # Mirrors the multi-atom include parse path that
+    # ``test_cite_prompt_parses_compound_include_filter`` already
+    # covers, plus a non-trivial question so we know the parser
+    # didn't accidentally swallow it.
+    assert "tag_expr: 'c:opencode|c:claude_platform'" in out
+    assert "question: What is opencode?" in out
+    assert "top_k: 3" in out
+    assert "ground" in out
+
+
+def test_cite_prompt_documents_ask_ground_question_workaround() -> None:
+    """The cite prompt's known-limitation paragraph names
+    ``ask_ground_question`` as the dispatcher-bypass workaround.
+
+    Pins Bug B documentation: the cite prompt's docstring must
+    surface the Claude Code slash dispatcher limitation AND the
+    ``ask_ground_question`` workaround, so the calling LLM picks
+    the right tool when the operator types ``/mcp__lies__cite
+    +c:foo What?`` and Claude Code drops the ``text`` arg. The
+    test reads the docstring off the live ``cite`` object — that's
+    the same source ``@mcp.prompt(name="cite", description=...)``
+    reads at FastMCP registration time.
+    """
+    doc = cite.__doc__ or ""
+    assert "Claude Code slash dispatcher" in doc, (
+        "cite docstring must name the dispatcher-side limitation"
+    )
+    assert "ask_ground_question" in doc, (
+        "cite docstring must name the ask_ground_question workaround"
+    )
+    # The prompt also has the prompt-level ``description=`` kwarg
+    # surfaced by FastMCP — pin both surfaces name the workaround
+    # so an MCP client introspecting ``prompts/list`` sees the hint.
+    from lies.mcp.server import mcp
+
+    prompts = _asyncio_run(mcp.list_prompts())
+    cite_prompt = next(p for p in prompts if p.name == "cite")
+    description = cite_prompt.description or ""
+    assert "ask_ground_question" in description, (
+        f"cite prompt description must name ask_ground_question workaround, got: {description!r}"
+    )
+
+
+def test_ask_ground_question_description_documents_dispatcher_bypass() -> None:
+    """The ``ask_ground_question`` tool description names the
+    Claude Code slash dispatcher limitation AND the bypass.
+
+    Pins Bug B documentation: the tool surface (the FastMCP
+    ``tools/list``-discoverable ``description=``) must tell the
+    calling LLM *when* to use ``ask_ground_question`` instead of
+    the ``/cite`` slash — specifically, when the slash input
+    begins with ``+``. Without this, the dispatcher-side bug
+    surfaces only as ``ProtocolError: Missing required arguments:
+    {'text'}`` at slash time, with no surface-level hint to fall
+    back.
+    """
+    from lies.mcp.server import mcp
+
+    tools = _asyncio_run(mcp.list_tools())
+    ask_ground = next(t for t in tools if t.name == "ask_ground_question")
+    description = ask_ground.description or ""
+    assert "Claude Code" in description or "slash" in description, (
+        f"ask_ground_question description must mention the slash "
+        f"dispatcher limitation, got: {description!r}"
+    )
+    assert "ground" in description
+    assert "verbatim" in description or "kwargs" in description

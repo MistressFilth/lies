@@ -431,6 +431,191 @@ def test_ground_dispatch_failure_still_yields_no_coverage_true(monkeypatch) -> N
     assert digest.no_coverage is True
 
 
+# ---------------------------------------------------------------------------
+# Bug C — `ground` wire format exposes `searched_scope` (F15 envelope parity)
+# ---------------------------------------------------------------------------
+
+
+def test_archivist_digest_searched_scope_default_empty() -> None:
+    """``ArchivistDigest.searched_scope`` defaults to ``[]`` for back-compat.
+
+    Pin for the Bug C fix: the field is added at the END of the
+    dataclass so existing positional constructions remain valid.
+    Without the default, every pre-fix call site would break. Also
+    pins the frozen-dataclass contract — assigning to the field
+    raises ``FrozenInstanceError``.
+    """
+    digest = ArchivistDigest(
+        question="q",
+        tag_expr=None,
+        exclude_expr=None,
+        citations=[],
+        no_coverage=False,
+        distinct_pages=0,
+    )
+    assert digest.searched_scope == []
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        digest.searched_scope = ["x"]  # type: ignore[misc]
+
+
+def test_ground_searched_scope_untagged_returns_all_collections(monkeypatch) -> None:
+    """Untagged ``ground()`` → ``searched_scope`` = every registered collection.
+
+    Pins Bug C: the digest's ``searched_scope`` mirrors the F15
+    envelope that ``Orchestrator.run_query`` writes onto
+    ``SynthesizedAnswer.searched_scope``. Untagged scope = every
+    collection the library knows about, sorted. Tested by patching
+    the library registry to a known set so the assertion sees
+    exactly the names we expect, regardless of the host's live
+    library state.
+    """
+    from lies.library import registry as registry_mod
+    from lies.mcp import grounding
+
+    # Replace the lru_cache-wrapped ``library_collection_names``
+    # with a plain lambda so ``_all_collection_names`` reads our
+    # deterministic fixture instead of walking the host's live
+    # library. Also clear any prior cache so the swap is honored
+    # even if a sibling test in this module already populated it.
+    monkeypatch.setattr(
+        registry_mod,
+        "library_collection_names",
+        lambda: frozenset({"opencode", "claude_platform", "mermaid"}),
+    )
+
+    def fake_librarian(deps):
+        from lies.agents.librarian import LibrarianOutput
+
+        return LibrarianOutput(tag_expr=None, exclude_expr=None, excerpts=[], distinct_pages=0)
+
+    _patch_librarian(monkeypatch, grounding, fake_librarian)
+
+    digest = grounding.ground("q")
+    assert digest.searched_scope == ["claude_platform", "mermaid", "opencode"]
+
+
+def test_ground_searched_scope_tagged_returns_matching_only(monkeypatch) -> None:
+    """Tagged ``ground(tag_expr="opencode")`` → ``searched_scope`` = just that collection.
+
+    Pins Bug C: filtered scope = the subset whose ``atom_matches``
+    is true for the resolved include AST, sorted. The result mirrors
+    ``Orchestrator.run_query``'s contract — tagged ground returns a
+    narrower scope than untagged ground.
+    """
+    from lies.agents.librarian import LibrarianOutput
+    from lies.library import registry as registry_mod
+    from lies.library.registry import LibraryCollectionMeta
+    from lies.mcp import grounding
+
+    monkeypatch.setattr(
+        registry_mod,
+        "library_collection_names",
+        lambda: frozenset({"opencode", "claude_platform", "mermaid"}),
+    )
+
+    # Stub ``library_collection_metas`` so the matching walker sees
+    # the three collections with deterministic tag sets.
+    def _fake_metas() -> list[LibraryCollectionMeta]:
+        return [
+            LibraryCollectionMeta(name="opencode", tags=("cli", "agent")),
+            LibraryCollectionMeta(name="claude_platform", tags=("api",)),
+            LibraryCollectionMeta(name="mermaid", tags=("syntax",)),
+        ]
+
+    monkeypatch.setattr(registry_mod, "library_collection_metas", _fake_metas)
+    # Also stub ``library_collection_tags`` so the F15 validator's
+    # available-set recognizes ``opencode`` as addressable.
+    monkeypatch.setattr(
+        registry_mod,
+        "library_collection_tags",
+        lambda: frozenset({"cli", "agent", "api", "syntax"}),
+    )
+
+    def fake_librarian(deps):
+        return LibrarianOutput(
+            tag_expr="opencode", exclude_expr=None, excerpts=[], distinct_pages=0
+        )
+
+    _patch_librarian(monkeypatch, grounding, fake_librarian)
+
+    digest = grounding.ground("q", tag_expr="opencode")
+    assert digest.searched_scope == ["opencode"]
+
+
+def test_ground_searched_scope_populated_on_librarian_exception(monkeypatch) -> None:
+    """Librarian dispatch failure → ``searched_scope`` is still populated.
+
+    Pins Bug C fail-soft posture: ``searched_scope`` is computed
+    once (before the librarian dispatch) and threaded through every
+    return path. A failed dispatch reports ``no_coverage=True`` but
+    the digest still tells the caller which collections were
+    searched — same contract as ``Orchestrator.run_query`` writing
+    ``searched_scope`` before the F18 ``no_coverage`` decision.
+    """
+    from lies.library import registry as registry_mod
+    from lies.mcp import grounding
+
+    monkeypatch.setattr(
+        registry_mod,
+        "library_collection_names",
+        lambda: frozenset({"opencode", "claude_platform"}),
+    )
+
+    class _BoomAgent:
+        def run_sync(self, user_prompt, *, deps):
+            raise RuntimeError("qmd daemon offline")
+
+    monkeypatch.setattr(grounding, "librarian_agent", lambda: _BoomAgent())
+
+    digest = grounding.ground("q")
+    assert digest.no_coverage is True
+    assert digest.searched_scope == ["claude_platform", "opencode"]
+
+
+def test_mcp_ground_wire_format_includes_searched_scope(monkeypatch) -> None:
+    """The MCP ``ground`` tool's JSON envelope carries ``searched_scope``.
+
+    Pins Bug C at the wire boundary: the MCP tool wrapper
+    (``mcp_ground`` in ``src/lies/mcp/server.py``) returns
+    ``dataclasses.asdict(digest)`` for FastMCP serialization. The
+    new ``searched_scope`` field must appear in the resulting JSON
+    dict so MCP clients can introspect the resolved scope. Without
+    this pin, an accidental ``asdict`` override or field-name typo
+    would silently drop the field from the wire.
+    """
+    from dataclasses import asdict
+
+    from lies.library import registry as registry_mod
+    from lies.mcp import grounding
+    from lies.mcp.server import mcp_ground
+
+    monkeypatch.setattr(
+        registry_mod,
+        "library_collection_names",
+        lambda: frozenset({"opencode", "claude_platform", "mermaid"}),
+    )
+
+    def fake_librarian(deps):
+        from lies.agents.librarian import LibrarianOutput
+
+        return LibrarianOutput(tag_expr=None, exclude_expr=None, excerpts=[], distinct_pages=0)
+
+    _patch_librarian(monkeypatch, grounding, fake_librarian)
+
+    wire = mcp_ground(question="what is opencode?")
+    assert isinstance(wire, dict)
+    assert "searched_scope" in wire, (
+        f"ground wire envelope dropped searched_scope: keys={sorted(wire.keys())}"
+    )
+    assert wire["searched_scope"] == ["claude_platform", "mermaid", "opencode"]
+
+    # Also pin the dataclass-level asdict path so the dataclass itself
+    # carries the field — this is what the MCP tool relies on.
+    digest = grounding.ground("what is opencode?")
+    asdict_payload = asdict(digest)
+    assert "searched_scope" in asdict_payload
+
+
 def test_ground_library_collection_names_cached_across_calls(monkeypatch) -> None:
     """Regression for Fix 5: library_collection_names memoization.
 

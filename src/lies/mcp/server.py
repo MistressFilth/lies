@@ -924,10 +924,16 @@ def ask_question(text: str) -> dict[str, object]:
         "chains joined with & or |) and return the parsed kwargs for "
         "the `ground` tool. The calling LLM uses this to extract "
         "filter args from a slash-style invocation where Claude "
-        "Code's slash-command dispatcher would otherwise tokenize "
-        "the input. After calling ask_ground_question, the LLM should "
-        "call the `ground` tool with the returned kwargs verbatim "
-        "(the `top_k` default is 3, matching `ground`'s default)."
+        "Code's slash-command dispatcher would otherwise drop or "
+        "truncate the input: the `/mcp__lies__cite` slash dispatcher "
+        "drops the `text` argument entirely when the input begins "
+        "with `+` (session df653c3d, 2026-09-24), raising "
+        "`ProtocolError: Missing required arguments: {'text'}`, and "
+        "the `/answer` slash dispatcher tokenizes on whitespace. "
+        "Bypass both by calling ask_ground_question with the user's "
+        "full multi-word input as the `text` argument, then forward "
+        "the returned kwargs verbatim to the `ground` tool (the "
+        "`top_k` default is 3, matching `ground`'s default)."
     ),
 )
 def ask_ground_question(text: str) -> dict[str, object]:
@@ -1748,10 +1754,17 @@ def sync_prompt(collection: str) -> str:
     description=(
         "Slash that drives the `ground` MCP tool. Single-arg form, "
         "parses filter syntax internally; the calling LLM forwards "
-        "the rendered kwargs to the `ground` tool verbatim. Mirrors "
-        "the `/answer` slash prompt's filter-parse shape — see the "
-        "`ask_question` tool for the slash-dispatcher bypass when the "
-        "input includes a multi-word filter prefix."
+        "the rendered kwargs to the `ground` tool verbatim. "
+        "**Known limitation — Claude Code's slash dispatcher drops "
+        "the `text` argument entirely when the slash input begins "
+        "with `+`** (F15 include sigil), raising "
+        "`ProtocolError: Missing required arguments: {'text'}` "
+        "(session df653c3d, 2026-09-24). For any `/cite` invocation "
+        "whose input begins with `+`, route the user's full "
+        "multi-word text through the `ask_ground_question` MCP tool "
+        "instead — that tool takes the full multi-word `text` as a "
+        "single argument and returns kwargs shaped for `ground`. "
+        "Mirrors the `/answer` slash prompt's filter-parse shape."
     ),
 )
 def cite(text: str) -> str:
@@ -1767,17 +1780,26 @@ def cite(text: str) -> str:
     the tool call and the render form. On ``ArchivistCoverageError``
     the prompt tells the LLM to surface verbatim — no silent retry.
 
-    **Known limitation — Claude Code slash dispatcher tokenizes the
-    input on whitespace before invoking this prompt, so multi-word
-    filter prefixes are truncated to the first token.** Even with
-    the single-arg signature, ``/mcp__lies__cite +c:opencode|c:claude_platform What?``
-    arrives at the prompt as just
-    ``+c:opencode|c:claude_platform`` and the question is dropped.
-    The reliable workaround is the ``ask_ground_question`` MCP tool:
+    **Known limitation — Claude Code slash dispatcher drops the
+    ``text`` argument entirely when the slash input begins with a
+    ``+`` (F15 include sigil).** Surfaced in session df653c3d
+    (2026-09-24T01:29:30Z): the dispatcher forwards
+    ``/mcp__lies__cite +c:opencode|c:minimax|c:llama_cpp Configure my opencode...``
+    to the prompt with no ``text`` argument at all, and FastMCP
+    rejects the dispatch with
+    ``ProtocolError: Error rendering prompt 'cite': Missing required
+    arguments: {'text'}``. Direct JSON-RPC ``prompts/get cite(text=...)``
+    works perfectly, so the bug is upstream of the prompt body —
+    Claude Code's slash dispatcher mishandles ``+``-prefixed input
+    by failing to populate the single positional arg. Same shape as
+    ``/answer``'s known limitation (tokenizes on whitespace), but
+    the failure mode is harder to recover from: the dispatcher
+    reports a missing argument rather than a truncated one. The
+    reliable workaround is the ``ask_ground_question`` MCP tool:
     call it with the user's full multi-word input as the ``text``
     argument, then forward the returned kwargs verbatim to the
     ``ground`` tool. This prompt is still useful for plain questions
-    without filter syntax, where the input is a single token anyway.
+    without filter syntax, where the input is a single token.
 
     Filter syntax (parsed out of the ``text`` argument here, so the
     calling LLM never has to fill ``tag_expr`` / ``exclude_tags``

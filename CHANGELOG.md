@@ -34,6 +34,38 @@ All notable changes to LIES are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+- `ArchivistDigest` (returned by the MCP `ground` tool) now exposes
+  `searched_scope: list[str]` on the wire, matching the F15 envelope
+  that `SynthesizedAnswer` already carries via
+  `Orchestrator.run_query`. Live test subagents reported that `ground`
+  returned the question / tag_expr / exclude_expr / citations /
+  no_coverage / distinct_pages keys but no `searched_scope`, so MCP
+  callers could not introspect the resolved scope. `ground()`
+  computes `searched_scope` from the same `_all_collection_names`
+  / `_collections_matching` helpers the orchestrator uses — every
+  registered library collection when untagged, or the sorted set of
+  collections whose `atom_matches` is true for the resolved include /
+  exclude AST when tagged. Populated even on the `no_coverage=True`
+  path (librarian dispatch exception / no model available) so callers
+  can render "searched X, found nothing" rather than guessing. Wire
+  format propagates automatically via `dataclasses.asdict(digest)`;
+  no MCP wrapper change needed.
+- `/cite` slash prompt now documents the Claude Code slash dispatcher
+  limitation that surfaces as
+  `ProtocolError: Missing required arguments: {'text'}` when the
+  slash input begins with `+` (F15 include sigil). Session df653c3d
+  (2026-09-24T01:29:30Z): invoking
+  `/mcp__lies__cite +c:opencode|c:minimax|c:llama_cpp Configure my opencode...`
+  from Claude Code drops the `text` argument entirely. The same
+  limitation affected `/answer` (tokenizes on whitespace) but
+  `/cite`'s failure mode is harder to recover from — the dispatcher
+  reports a missing argument rather than a truncated one. The
+  workaround (route through the `ask_ground_question` MCP tool with
+  the user's full multi-word text) is now surfaced in the prompt
+  description, the `ask_ground_question` tool description, and the
+  MCP `instructions.md` operator guidance.
+
 ## [0.37.9] - 2026-09-23
 
 ### Fixed
