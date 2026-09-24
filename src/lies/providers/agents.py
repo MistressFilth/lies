@@ -15,4 +15,5 @@ AGENT_ROSTER: tuple[str, ...] = (
     "query_synthesizer",
     "enricher",
     "repair",
+    "librarian",
 )

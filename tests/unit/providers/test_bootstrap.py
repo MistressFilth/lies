@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from lies.providers.agents import AGENT_ROSTER
 from lies.providers.bootstrap import (
     BootstrapAborted,
     BootstrapValidationFailed,
@@ -31,15 +32,7 @@ def _partial() -> PartialConfig:
             ),
         },
         default_model="anthropic:claude-opus-4-7",
-        agents={
-            "orchestrator": "anthropic:claude-opus-4-7",
-            "source_reader": "anthropic:claude-opus-4-7",
-            "page_writer": "anthropic:claude-opus-4-7",
-            "linter": "anthropic:claude-opus-4-7",
-            "query_synthesizer": "anthropic:claude-opus-4-7",
-            "enricher": "anthropic:claude-opus-4-7",
-            "repair": "anthropic:claude-opus-4-7",
-        },
+        agents={name: "anthropic:claude-opus-4-7" for name in AGENT_ROSTER},
     )
 
 
@@ -172,8 +165,6 @@ def test_step_agents_mirrors_roster(monkeypatch: pytest.MonkeyPatch) -> None:
         return next(answers)
 
     step_agents(partial, prompt=prompt)
-    from lies.providers.agents import AGENT_ROSTER
-
     for name in AGENT_ROSTER:
         assert partial.agents[name] == "anthropic:claude-opus-4-7"
 

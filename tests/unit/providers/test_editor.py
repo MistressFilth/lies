@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from lies.providers.agents import AGENT_ROSTER
 from lies.providers.config import ProvidersConfig, ProviderSpec
 from lies.providers.editor import ProvidersMutations, apply_mutations, to_toml
 from lies.providers.errors import ProviderConfigError
@@ -19,15 +20,7 @@ def _base() -> ProvidersConfig:
             ),
         },
         default_model="anthropic:claude-opus-4-7",
-        agents={
-            "orchestrator": "anthropic:claude-opus-4-7",
-            "source_reader": "anthropic:claude-opus-4-7",
-            "page_writer": "anthropic:claude-opus-4-7",
-            "linter": "anthropic:claude-opus-4-7",
-            "query_synthesizer": "anthropic:claude-opus-4-7",
-            "enricher": "anthropic:claude-opus-4-7",
-            "repair": "anthropic:claude-opus-4-7",
-        },
+        agents={name: "anthropic:claude-opus-4-7" for name in AGENT_ROSTER},
     )
 
 
