@@ -34,6 +34,27 @@ All notable changes to LIES are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.37.9] - 2026-09-23
+
+### Fixed
+- MCP F15 boundary validator now accepts bare tag names (`+claude`)
+  in addition to the explicit `t:`-prefixed form, end to end
+  across `query` / `answer` / `ground`. F15 already treats a bare
+  atom as the implicit-t alias for `+t:tag` (`atom_matches` matches
+  against `coll.tags ∪ {coll.name}`); the validator's available-set
+  was only registering `t:<tag>`, so a bare `+claude` parsed to
+  `Include("claude", qualifier=None)` and the resolver's
+  `expr.tag in available` check rejected it with `unknown tag:
+  'claude'` even though `claude` was a real tag on multiple library
+  collections. Three paths share the helper now:
+  `_collect_available_tags_mcp` (used by the `query` /
+  `answer` boundaries and `mcp_ground`'s exclude-side validator),
+  `grounding.ground`'s include-side resolve, and `mcp_ground`'s
+  exclude-side parse — all consult the same expanded available set
+  (bare collection names + `c:<name>` aliases + bare tags +
+  `t:<tag>` aliases), so the implicit-t alias validates consistently
+  on every F15 boundary. (`de8e4fa`)
+
 ## [0.37.8] - 2026-09-23
 
 ### Added
