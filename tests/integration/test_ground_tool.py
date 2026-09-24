@@ -457,3 +457,27 @@ def _registered_tool_names(agent: object) -> list[str]:
     for toolset in getattr(agent, "toolsets", []):
         names.extend(getattr(toolset, "tools", {}).keys())
     return sorted(set(names))
+
+
+@pytest.mark.integration
+def test_librarian_system_prompt_trusts_caller_tag_expr() -> None:
+    """Regression pin: LIBRARIAN_SYSTEM_PROMPT must honor caller tag_expr.
+
+    The librarian's Step-1 prompt tells the LLM to trust the
+    caller's pre-set tag_expr from LibrarianDeps. Without this
+    prose, the librarian re-derives tag_expr from wiki_catalog
+    and overrides the caller's scope, causing MCP ground() to
+    return no_coverage=true with empty citations even when
+    library qmd returns 18+ hits.
+
+    Spec: ~/code/project-notes/lies/superpowers/specs/
+          2026-09-24-librarian-trust-caller-tag-expr-design.md
+    """
+    from lies.agents.librarian import LIBRARIAN_SYSTEM_PROMPT
+
+    # The trust-caller block is the post-fix marker. Without it,
+    # the LLM runs the registry loop and overrides the caller's tag_expr.
+    assert "Pre-set `tag_expr`" in LIBRARIAN_SYSTEM_PROMPT
+    assert "use it verbatim" in LIBRARIAN_SYSTEM_PROMPT
+    # The registry loop becomes the fallback path, gated on caller tag_expr absence.
+    assert "Pre-set tag_expr absent" in LIBRARIAN_SYSTEM_PROMPT
