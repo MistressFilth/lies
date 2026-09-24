@@ -600,10 +600,71 @@ def test_cite_prompt_parses_compound_exclude() -> None:
 
 
 def test_cite_prompt_surfaces_parse_error() -> None:
-    """``cite("+a&")`` → parse error rendered verbatim, no silent retry."""
+    """``cite("+a&")`` → parse error rendered verbatim, no silent retry.
+
+    The dispatcher-truncation workaround only fires for the
+    ``filter present but no question`` shape — a real grammar error
+    like a dangling operator still surfaces verbatim so the operator
+    can fix the typo.
+    """
     out = cite(text="+a&")
     assert "Filter parse error" in out
     assert "dangling operator" in out
+
+
+def test_cite_prompt_truncated_filter_substitutes_default_question() -> None:
+    """`cite("+c:switchyard")` — dispatcher truncation workaround.
+
+    Reproduces session a640ed1a (2026-09-24): the operator ran
+    ``/mcp__lies__cite +c:switchyard let's set up Switchyard...`` and
+    Claude Code's dispatcher dropped everything past the first
+    whitespace, so the prompt saw only ``+c:switchyard``. The earlier
+    behavior rejected this as ``filter present but no question`` and
+    returned nothing useful. The workaround substitutes a default
+    question so the search still runs and surfaces switchyard content.
+
+    Regression: must NOT return a parse error. The prompt must
+    render a routable ground-tool template with the parsed filter
+    intact.
+    """
+    out = cite(text="+c:switchyard")
+    assert "Filter parse error" not in out, (
+        "truncated-filter invocation must substitute a default question, "
+        "not surface 'filter present but no question'"
+    )
+    assert "ground" in out
+    assert "tag_expr: 'c:switchyard'" in out
+    # The substituted default question must appear in the templated body.
+    assert "Summarize the most relevant snippets" in out
+
+
+def test_cite_prompt_truncated_filter_compound_chain() -> None:
+    """Multi-atom include chain truncated to filter-only — same
+    workaround applies; the prompt renders the OR-compound chain as
+    the tag_expr body and the default question as the question."""
+    out = cite(text="+c:opencode|c:claude_platform")
+    assert "Filter parse error" not in out
+    assert "tag_expr: 'c:opencode|c:claude_platform'" in out
+    assert "Summarize the most relevant snippets" in out
+
+
+def test_cite_prompt_truncated_filter_with_exclude() -> None:
+    """Exclude chain alone (or with include) — same workaround. The
+    exclude AST is preserved."""
+    out = cite(text="-c:foo&c:bar")
+    assert "Filter parse error" not in out
+    assert "exclude_tags: ['c:foo&c:bar']" in out
+    assert "tag_expr: None" in out
+    assert "Summarize the most relevant snippets" in out
+
+
+def test_cite_prompt_with_question_not_substituted() -> None:
+    """When the operator's question DOES survive the dispatcher (no
+    truncation), the substituted default must NOT appear — the
+    operator's literal question must be passed through verbatim."""
+    out = cite(text="+c:opencode What is opencode?")
+    assert "Summarize the most relevant snippets" not in out
+    assert "question: What is opencode?" in out
 
 
 def test_cite_prompt_plain_question_unchanged() -> None:

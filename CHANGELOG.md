@@ -35,6 +35,28 @@ All notable changes to LIES are documented here. The format follows
 ## [Unreleased]
 
 ### Fixed
+- `/cite` slash prompt now substitutes a default question when
+  Claude Code's slash dispatcher truncates the input to a
+  filter-only token. Reproduced in session a640ed1a (2026-09-24):
+  the operator ran
+  `/mcp__lies__cite +c:switchyard let's set up Switchyard...` and
+  the dispatcher dropped everything past the first whitespace, so
+  the prompt only saw `+c:switchyard` and returned
+  `Filter parse error: filter present but no question`. The prompt
+  now catches that exact error, re-parses the filter portion with
+  a synthetic trailing question, and templates a default question
+  (`"Summarize the most relevant snippets in the matched corpus."`)
+  so the `ground` tool runs anyway. Operators who want their
+  literal question preserved end-to-end should call the
+  `ask_ground_question` MCP tool directly with their full
+  multi-word input as `text` — that tool bypasses the slash
+  dispatcher entirely. The prompt's `description=` and docstring
+  now describe the truncation shape (rather than the older,
+  inaccurate "drops the `text` argument entirely" claim).
+
+## [0.37.11] - 2026-09-23
+
+### Fixed
 - Library collection registry caches (`library_collection_names` and
   `library_collection_tags`) now self-invalidate when the on-disk
   collection set changes. The `@lru_cache` snapshot was previously
