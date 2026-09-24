@@ -170,24 +170,27 @@ def test_second_call_blocks_until_first_releases(monkeypatch, tmp_path):
     mod = importlib.reload(lock_mod)
 
     # Spawn a subprocess holder; the main process is a different pid, so
-    # the second acquire busy-polls until the holder releases. Compressed
-    # hold + timeout to keep the test under the 0.15s unit budget; the
-    # cross-process behavior (busy-poll until holder releases) is what
-    # we're exercising, not the wait window.
-    holder, _ = _spawn_qmd_holder(tmp_path, hold_s=0.05)
+    # the second acquire busy-polls until the holder releases. The hold
+    # window has to be wider than the test runner's subprocess-startup
+    # + acquire latency on CI runners (the original 0.05s was tight
+    # enough that the holder sometimes released before the waiter
+    # could observe the blocked state). The cross-process behavior
+    # (busy-poll until holder releases) is what we're exercising, not
+    # the wait window.
+    holder, _ = _spawn_qmd_holder(tmp_path, hold_s=1.0)
     try:
 
-        @mod.with_qmd_lock(timeout_s=2.0, max_age_s=1800.0)
+        @mod.with_qmd_lock(timeout_s=5.0, max_age_s=1800.0)
         def wait_then_acquire() -> str:
             return "second"
 
         t = threading.Thread(target=wait_then_acquire)
         t.start()
         # Give the waiter a moment to attempt and block.
-        time.sleep(0.02)
+        time.sleep(0.1)
         assert t.is_alive(), "second call should be blocked while holder holds"
-        # Holder releases after ~0.05s; waiter should complete shortly after.
-        t.join(timeout=2)
+        # Holder releases after ~1.0s; waiter should complete shortly after.
+        t.join(timeout=5)
         assert not t.is_alive(), "second call should have completed after holder released"
     finally:
         _terminate_holder(holder)
