@@ -3,6 +3,28 @@
 Mirrors the resolver pattern in src/lies/orchestrator.py:101-154.
 The MCP ground() path runs wiki-less; it resolves the librarian
 model directly from $XDG_CONFIG_HOME/lies/providers.toml.
+
+The two tests below are marked ``@pytest.mark.slow`` because
+``grounding.ground()`` reaches ``resolve_model`` (via
+``lies.providers.resolver``), which transitively imports
+``anthropic`` + ``openai`` + ``pydantic_ai.models.*`` at module load
+(~0.8s wall-clock on first call). Per the project budget-gate
+rubric (option 5: MARK ``@pytest.mark.slow``), they run only with
+``uv run pytest --runslow``; the default ``make unit-test`` skips
+them. The pre-commit ``test`` hook inherits ``make unit-test`` and
+therefore never runs these in CI or locally.
+
+**Gate coverage for the lookup itself** lives in
+``tests/unit/providers/test_resolver.py`` — that file's
+``test_librarian_lookup_returns_anthropic_compatible_spec`` and
+``test_lookup_env_var_overrides_toml`` exercise the same
+``librarian`` → provider-spec path through
+``lies.providers.config.resolve_agent_to_provider`` *without*
+importing the full provider stack, so they stay below the 0.15s
+hard limit and fail the local gate on a regression. The slow tests
+here add integration coverage (``ground()`` → resolver →
+``librarian_agent(model=...)``) but are not load-bearing for the
+resolver contract — they are belt-and-suspenders.
 """
 
 from __future__ import annotations

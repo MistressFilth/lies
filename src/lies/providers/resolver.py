@@ -24,11 +24,10 @@ from pydantic_ai.providers.openai import OpenAIProvider
 from lies.providers.config import (
     ProviderSpec,
     ProvidersConfig,
-    parse_model_string,
     read_api_key,
+    resolve_agent_to_provider,
 )
 from lies.providers.errors import ProviderConfigError
-from lies.providers.env import env_override
 
 
 def _anthropic_client(spec: ProviderSpec) -> AsyncAnthropic:
@@ -50,9 +49,17 @@ def _openai_client(spec: ProviderSpec) -> AsyncOpenAI:
 
 
 def resolve_model(agent_name: str, config: ProvidersConfig) -> Model | str:
-    raw = env_override(agent_name) or config.agents[agent_name]
-    provider_name, model_name = parse_model_string(raw)
-    spec = config.providers[provider_name]
+    """Resolve ``agent_name`` to a ready-to-use pydantic-ai ``Model`` (or string).
+
+    Provider-key parsing + spec lookup is delegated to
+    :func:`lies.providers.config.resolve_agent_to_provider` so a unit
+    test can exercise the lookup path without importing pydantic_ai.
+    This function then branches on ``spec.type`` to construct the
+    concrete ``Model`` instance — that branch is the only piece that
+    requires pydantic_ai; tests that don't reach a branch (or stub it)
+    stay below the 0.15s unit-test budget.
+    """
+    provider_name, model_name, spec = resolve_agent_to_provider(agent_name, config)
     if spec.type == "anthropic":
         return f"anthropic:{model_name}"
     if spec.type == "openai_compatible":
