@@ -369,23 +369,10 @@ def ground(
         )
         if agent is None:
             # Agent construction itself failed (most likely missing
-            # API credentials). Build a no-tools agent so the
-            # dispatch-exception branch can still catch any
-            # downstream failure; the digest lands as
-            # ``no_coverage=True`` / ``citations=[]``.
-            try:
-                agent = librarian_agent(model="test")
-            except Exception:
-                # No model available at all — give up gracefully.
-                return ArchivistDigest(
-                    question=question,
-                    tag_expr=resolved_tag_expr,
-                    exclude_expr=exclude_expr,
-                    citations=[],
-                    no_coverage=True,
-                    distinct_pages=0,
-                    searched_scope=searched_scope_list,
-                )
+            # API credentials). Re-raise so the caller sees the
+            # underlying ModelNotConfigured; the digest contract
+            # never promised a no-tools fallback.
+            raise
 
     deps = LibrarianDeps(
         question=question,

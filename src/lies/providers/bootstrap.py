@@ -54,11 +54,18 @@ def write_atomic(target_path: os.PathLike[str], partial: PartialConfig) -> None:
     Raises ``OSError`` on filesystem failure. Never leaves a partial
     file behind because ``os.replace`` is atomic on POSIX.
     """
+    from lies.errors import ModelNotConfigured
     from lies.providers.editor import to_toml
 
+    if partial.default_model is None:
+        raise ModelNotConfigured(
+            "write_atomic requires an explicit default_model in the "
+            "PartialConfig. The wizard collects this from the operator "
+            "before writing; programmatic callers must supply it."
+        )
     cfg = ProvidersConfig(
         providers=partial.providers,
-        default_model=partial.default_model or "anthropic:claude-opus-4-7",
+        default_model=partial.default_model,
         agents=partial.agents,
     )
     target = os.fspath(target_path)
@@ -109,10 +116,15 @@ def step_default_model(partial: PartialConfig, *, prompt: PromptFn) -> None:
 
     raw = prompt(
         "Default model (provider:model) — blank to keep",
-        "anthropic:claude-opus-4-7",
+        "",
     ).strip()
     if not raw:
-        return
+        msg = (
+            "default_model is required. LIES does not hard-code a vendor "
+            "default; enter a model string in the form 'provider:model' "
+            "(e.g. 'anthropic:claude-opus-4-7')."
+        )
+        raise ProviderConfigError(msg)
     provider_name, _ = parse_model_string(raw)
     if provider_name not in partial.providers:
         msg = (

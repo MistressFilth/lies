@@ -932,30 +932,21 @@ def test_ground_wires_librarian_tools_before_run_sync(
 def test_ground_dispatch_failure_when_wiring_raises(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Wiring failure → bare agent still dispatches → warning surfaces.
+    """Wiring failure surfaces as ``ModelNotConfigured`` (no silent fallback).
 
-    Pins the documented best-effort wiring contract: when wiki
-    resolution OR :class:`WikiMemoryService` construction fails,
-    ``ground()`` logs a stdlib ``UserWarning`` and falls back to a
-    no-tools bare-agent dispatch. The test asserts the warning
-    surfaces — the exact digest shape depends on the bare agent's
-    response, which the wiring failure explicitly does NOT control.
+    Pins the v0.38.0 no-default-models contract: when wiki resolution
+    OR :class:`WikiMemoryService` construction fails AND no model is
+    configured, ``ground()`` no longer falls back to a bare
+    ``model="test"`` agent. The pre-v0.37.5 best-effort wiring
+    contract is retired; operators see the configuration gap and
+    configure providers.toml / ``LIES_<AGENT>_MODEL`` before the
+    archivist can run.
     """
+    from lies.errors import ModelNotConfigured
     from lies.mcp import grounding
 
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        digest = grounding.ground("test question")
-
-    wiring_warns = [w for w in caught if "tool wiring skipped" in str(w.message)]
-    assert len(wiring_warns) >= 1, "expected a wiring-skipped warning"
-    # The wiring failure does NOT take down ``ground()`` — the bare
-    # agent dispatches and a digest (possibly non-empty under
-    # ``model='test'``) returns to the caller. We only pin the
-    # user-visible warning; the digest's content depends on the
-    # model response.
-    assert isinstance(digest, ArchivistDigest)
-    assert digest.question == "test question"
+    with pytest.raises(ModelNotConfigured):
+        grounding.ground("test question")
 
 
 def test_ground_threads_source_kind_from_librarian_output(monkeypatch) -> None:

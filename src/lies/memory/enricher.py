@@ -62,7 +62,15 @@ def _evidence_instructions(ctx: RunContext[MemoryEnricherDeps]) -> str:
 
 def enricher_agent(model: Model | str | None = None) -> Agent[MemoryEnricherDeps, MemoryPlan]:
     """Construct the structured-output MemoryEnricher agent."""
-    resolved: Model | str = model if model is not None else "anthropic:claude-opus-4-7"
+    if model is None:
+        from lies.errors import ModelNotConfigured
+
+        raise ModelNotConfigured(
+            "enricher_agent requires an explicit model. "
+            "Pass `model=` or set LIES_AGENT_ENRICHER_MODEL / "
+            "configure providers.toml."
+        )
+    resolved: Model | str = model
     agent = Agent(
         resolved,
         deps_type=MemoryEnricherDeps,

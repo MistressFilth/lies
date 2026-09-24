@@ -38,7 +38,7 @@ def test_search_wiki_falls_back_to_index_when_qmd_missing(
 ) -> None:
     from lies import qmd
 
-    def missing(_cwd: Path, _q: str, _limit: int) -> list[dict[str, object]]:
+    def missing(_cwd: Path, _q: str, _limit: int, **_kw) -> list[dict[str, object]]:
         from lies.qmd.cli import QmdNotInstalledError
 
         raise QmdNotInstalledError("no qmd")
@@ -55,7 +55,7 @@ def test_search_wiki_falls_back_to_index_when_qmd_missing(
 def test_search_wiki_uses_qmd_when_available(indexed_wiki, monkeypatch: pytest.MonkeyPatch) -> None:
     from lies import qmd
 
-    def fake_query(_cwd: Path, _q: str, _limit: int) -> list[dict[str, object]]:
+    def fake_query(_cwd: Path, _q: str, _limit: int, **_kw) -> list[dict[str, object]]:
         return [
             {
                 "path": str(indexed_wiki.data_root / "wiki" / "concepts" / "mvc.md"),
@@ -77,7 +77,7 @@ def test_search_wiki_marks_truncated_when_more_than_limit(
             f"---\ntitle: T{i}\ntype: concept\n---\n# T{i}\n", encoding="utf-8"
         )
 
-    def fake_query(_cwd: Path, _q: str, limit: int) -> list[dict[str, object]]:
+    def fake_query(_cwd: Path, _q: str, limit: int, **_kw) -> list[dict[str, object]]:
         paths = [
             str(indexed_wiki.wiki_dir / "concepts" / f"topic_{i}.md")
             for i in range(min(limit + 1, 8))
@@ -94,7 +94,7 @@ def test_search_wiki_marks_truncated_when_more_than_limit(
 
 def test_read_pages_returns_content_for_ids(indexed_wiki) -> None:
     # Construct a search to assign page IDs.
-    def fake_query(_cwd: Path, _q: str, _limit: int) -> list[dict[str, object]]:
+    def fake_query(_cwd: Path, _q: str, _limit: int, **_kw) -> list[dict[str, object]]:
         return [
             {
                 "path": str(indexed_wiki.data_root / "wiki" / "concepts" / "mvc.md"),
@@ -142,7 +142,7 @@ def test_search_no_coverage_true_when_corpus_non_empty_and_no_hits(
     """
     from lies import qmd
 
-    def missing(_cwd: Path, _q: str, _limit: int) -> list[dict[str, object]]:
+    def missing(_cwd: Path, _q: str, _limit: int, **_kw) -> list[dict[str, object]]:
         from lies.qmd.cli import QmdNotInstalledError
 
         raise QmdNotInstalledError("no qmd")
@@ -170,7 +170,7 @@ def test_search_no_coverage_false_when_corpus_empty_and_no_hits(
 
     from lies import qmd
 
-    def missing(_cwd: Path, _q: str, _limit: int) -> list[dict[str, object]]:
+    def missing(_cwd: Path, _q: str, _limit: int, **_kw) -> list[dict[str, object]]:
         from lies.qmd.cli import QmdNotInstalledError
 
         raise QmdNotInstalledError("no qmd")
@@ -191,7 +191,7 @@ def test_search_no_coverage_false_when_corpus_non_empty_and_has_hits(
     """
     from lies import qmd
 
-    def fake_query(_cwd: Path, _q: str, _limit: int) -> list[dict[str, object]]:
+    def fake_query(_cwd: Path, _q: str, _limit: int, **_kw) -> list[dict[str, object]]:
         return [
             {
                 "path": str(indexed_wiki.data_root / "wiki" / "concepts" / "mvc.md"),
@@ -214,7 +214,7 @@ def test_from_qmd_resolves_under_wiki_dir(indexed_wiki, monkeypatch: pytest.Monk
     """
     from lies import qmd
 
-    def fake_query(_cwd: Path, _q: str, _limit: int) -> list[dict[str, object]]:
+    def fake_query(_cwd: Path, _q: str, _limit: int, **_kw) -> list[dict[str, object]]:
         # qmd returns the path *within* the registered root. For a
         # collection named ``concepts`` the relative hit path is
         # ``concepts/mvc.md``; joining it under ``wiki.wiki_dir`` must
