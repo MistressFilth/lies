@@ -321,6 +321,66 @@ def ground(
             # branch takes on the same line.
             searched_scope_list = []
 
+    # Option C fast-path (experimental): when the caller pre-sets a
+    # tag_expr that resolves to a non-empty collection set, run a
+    # direct library search against that scope and emit excerpts
+    # without invoking the librarian LLM. Avoids the
+    # ``UnexpectedModelBehavior`` retry exhaustion that surfaces when
+    # the LLM produces a partial ``LibrarianOutput``. The fast-path
+    # degrades to the librarian dispatch when the search returns
+    # zero excerpts.
+    fast_path_citations: list[CitationSnippet] = []
+    if resolved_tag_expr is not None and searched_scope_list:
+        try:
+            from lies.library.registry import library_git_root
+            from lies.markdown_spans import parse_spans
+            from lies.qmd.cli import qmd_get, qmd_query
+
+            lib_root = library_git_root()
+            lib_hits = qmd_query(
+                lib_root,
+                question=question,
+                limit=top_k,
+                collection_filter=set(searched_scope_list),
+            )
+            for hit in lib_hits[:top_k]:
+                hit_path = str(hit.get("path", ""))
+                if not hit_path:
+                    continue
+                try:
+                    body = qmd_get(lib_root, f"qmd://{hit_path}")
+                except Exception:
+                    continue
+                spans = parse_spans(body)
+                chosen = pick_first_prose_span(spans)
+                if chosen is None:
+                    continue
+                snippet_text = truncate_at_word_boundary(chosen.body, 200)
+                collection = hit_path.split("/", 1)[0]
+                slug = hit_path
+                title = str(hit.get("title", ""))
+                fast_path_citations.append(
+                    CitationSnippet(
+                        collection=collection,
+                        slug=slug,
+                        title=title,
+                        snippet=snippet_text,
+                    )
+                )
+        except Exception:
+            fast_path_citations = []
+
+    if fast_path_citations:
+        return ArchivistDigest(
+            question=question,
+            tag_expr=resolved_tag_expr,
+            exclude_expr=exclude_expr,
+            citations=fast_path_citations,
+            no_coverage=False,
+            distinct_pages=len({c.slug for c in fast_path_citations}),
+            searched_scope=searched_scope_list,
+        )
+
     # Lazy imports — ``LibrarianDeps`` transitively pulls in
     # ``pydantic_ai`` and the orchestrator's tool registry. Keeping
     # the import inside ``ground`` mirrors the CLI's lazy-import

@@ -588,9 +588,14 @@ def register_librarian_tools(
         # the ``page-`` prefix nor a ``/`` separator.
         wiki_envelope = memory_service.search(question, limit=limit)
         wiki_dump = wiki_envelope.model_dump()
-        no_coverage = bool(wiki_dump.get("no_coverage", False))
+        # wiki-side no_coverage is captured separately; the merged
+        # no_coverage below is suppressed when the library side has
+        # hits. Library is primary per the F18 dual-source routing
+        # design — a wiki-only no_coverage=true must not mask library hits.
+        wiki_no_coverage = bool(wiki_dump.get("no_coverage", False))
+        no_coverage = wiki_no_coverage  # provisional; refined below
         searched_scope = list(wiki_dump.get("searched_scope", []))
-        librarian_no_coverage.set(no_coverage)
+        librarian_no_coverage.set(wiki_no_coverage)
 
         # Build ``path -> wiki page_id`` from memory_service.search's
         # results. Each ``WikiEvidence`` carries the wiki's canonical
@@ -747,6 +752,15 @@ def register_librarian_tools(
                     continue
                 filtered.append(hit)
             merged = filtered
+
+        # Suppress wiki's no_coverage when the merged result has
+        # library hits. Library-wins-on-conflict means the library
+        # side is authoritative — a wiki-side no_coverage=true must
+        # not propagate when the library surface produced real hits.
+        # Refines the provisional no_coverage set above.
+        if merged and no_coverage:
+            no_coverage = False
+            librarian_no_coverage.set(False)
 
         return {
             "hits": merged,
