@@ -166,13 +166,13 @@ def test_should_file_requires_two_distinct_pages() -> None:
     spans = [Span(heading_path=[], body="b", code_fence=False, start_line=1)]
     lo_one_page = LibrarianOutput(
         tag_expr=None,
-        exclude_tags=[],
+        exclude_expr=None,
         excerpts=[PageExcerpt(collection="wiki", slug="a", title="A", spans=spans)],
         distinct_pages=1,
     )
     lo_two_pages = LibrarianOutput(
         tag_expr=None,
-        exclude_tags=[],
+        exclude_expr=None,
         excerpts=[
             PageExcerpt(collection="wiki", slug="a", title="A", spans=spans),
             PageExcerpt(collection="wiki", slug="b", title="B", spans=spans),
@@ -200,7 +200,7 @@ def test_should_file_drops_one_liner() -> None:
     spans = [Span(heading_path=[], body="b", code_fence=False, start_line=1)]
     lo = LibrarianOutput(
         tag_expr=None,
-        exclude_tags=[],
+        exclude_expr=None,
         excerpts=[
             PageExcerpt(collection="wiki", slug="a", title="A", spans=spans),
             PageExcerpt(collection="wiki", slug="b", title="B", spans=spans),

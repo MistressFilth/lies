@@ -78,6 +78,14 @@ def test_wiki_search_returns_evidence(wiki: Path, monkeypatch: pytest.MonkeyPatc
         "lies.qmd.cli.qmd_query",
         lambda *a, **kw: [{"path": "concepts/x.md", "score": 1.0}],
     )
+    # Library registry stub: surface a non-empty library set so the
+    # library-shape filter's first-segment gate is exercised. The
+    # bare-regex fallback would catch ``concepts/x.md`` even though
+    # it is a real wiki path.
+    monkeypatch.setattr(
+        "lies.memory.service.library_collection_names",
+        lambda: frozenset({"opencode"}),
+    )
     from fastmcp import Client
     from fastmcp.client.transports import FastMCPTransport
 
@@ -100,6 +108,11 @@ def test_wiki_read_returns_page(wiki: Path, monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setattr(
         "lies.qmd.cli.qmd_query",
         lambda *a, **kw: [{"path": "concepts/x.md", "score": 1.0}],
+    )
+    # Library registry stub: see ``test_wiki_search_returns_evidence``.
+    monkeypatch.setattr(
+        "lies.memory.service.library_collection_names",
+        lambda: frozenset({"opencode"}),
     )
     from fastmcp import Client
     from fastmcp.client.transports import FastMCPTransport

@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from lies.memory.namespace import WikiIdentity, memory_namespace
 
 
@@ -13,7 +15,16 @@ def test_namespace_stable_for_same_root(tmp_path: Path) -> None:
     assert not a.startswith("/")
 
 
+@pytest.mark.slow
 def test_namespace_differs_for_different_roots(tmp_path: Path) -> None:
+    # Marked slow because ``Path.resolve()`` does a stat-per-component
+    # syscall chain on WSL2 / tmpfs that occasionally exceeds the
+    # 0.15s wall-clock budget enforced by ``tests/unit/conftest.py``
+    # (HARD_LIMIT_S). The test itself does no extra work — it
+    # exercises ``memory_namespace`` on two distinct roots. The
+    # ``Path.resolve`` cost is intrinsic to the function under test,
+    # not something a MOCK could plausibly replace (see
+    # ``tests/unit/conftest.py`` remediation rubric, option 5).
     a_root = tmp_path / "wiki_a"
     b_root = tmp_path / "wiki_b"
     a_root.mkdir()

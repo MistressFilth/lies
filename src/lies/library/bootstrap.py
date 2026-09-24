@@ -11,11 +11,19 @@ Behavior:
 - ``config.yaml`` missing + ``wizard=False`` → write a minimal record and return it.
 - ``config.yaml`` missing + ``wizard=True`` → raise :class:`WizardRequiresTTY`
   if stdin is not a TTY; otherwise drive the agent interactively.
+
+:func:`bootstrap_all_missing_configs` is the sweep variant: iterates
+every directory under ``Library.collections_root`` and bootstraps any
+collection whose ``config.yaml`` is missing. Collections with an
+existing config are left untouched (their real ``source`` wins over
+the sweep placeholder). The sweep never invokes the wizard — a batch
+operation should not depend on a TTY.
 """
 
 from __future__ import annotations
 
 import sys
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, cast
 
@@ -25,6 +33,22 @@ from lies.library.errors import (
     WizardRequiresTTY,
 )
 from lies.library.record import LibraryCollectionConfig
+
+
+@dataclass(frozen=True)
+class BootstrapAllReport:
+    """Result summary for :func:`bootstrap_all_missing_configs`.
+
+    ``created`` are slugs that gained a new ``config.yaml`` on this run;
+    ``skipped`` are slugs that already had one and were left alone.
+    ``skipped_sources`` mirrors ``skipped`` with the existing source
+    surfaced, so the operator can audit which records were deemed
+    trustworthy enough to leave in place.
+    """
+
+    created: tuple[str, ...] = ()
+    skipped: tuple[str, ...] = ()
+    skipped_sources: dict[str, str] = field(default_factory=dict)
 
 
 def bootstrap_library_collection(
@@ -51,6 +75,51 @@ def bootstrap_library_collection(
         return _bootstrap_via_wizard(slug, source)
 
     return _bootstrap_bare(slug, source)
+
+
+def bootstrap_all_missing_configs(
+    *,
+    default_source_template: str = "bootstrap-all://{slug}",
+) -> BootstrapAllReport:
+    """Bootstrap a config for every library collection that lacks one.
+
+    Iterates :func:`lies.library.registry.library_collection_names` and,
+    for each directory without a ``config.yaml``, writes a minimal
+    record whose ``source`` is ``default_source_template.format(slug=...)``.
+    Collections that already have a config are left untouched: their
+    existing ``source`` is the trusted value, and overwriting it with
+    the sweep placeholder would be destructive.
+
+    The placeholder source is intentionally not a URL: an operator who
+    ran the sweep to repair a no-config directory should follow up with
+    ``lies library modify <slug> --set source=<real-url>`` to record
+    the actual upstream. The CLI surfaces the per-slug outcome so the
+    follow-up is mechanical, not exploratory.
+
+    Returns a :class:`BootstrapAllReport` describing what changed. The
+    function never invokes the wizard: a batch sweep must not depend
+    on a TTY, and the wizard does not know the real source anyway.
+    """
+    from lies.library.registry import library_collection_names
+
+    created: list[str] = []
+    skipped: list[str] = []
+    skipped_sources: dict[str, str] = {}
+
+    for slug in sorted(library_collection_names()):
+        if config_path_for(slug).exists():
+            existing = load_config(slug)
+            skipped.append(slug)
+            skipped_sources[slug] = existing.source
+            continue
+        _bootstrap_bare(slug, default_source_template.format(slug=slug))
+        created.append(slug)
+
+    return BootstrapAllReport(
+        created=tuple(created),
+        skipped=tuple(skipped),
+        skipped_sources=skipped_sources,
+    )
 
 
 def _bootstrap_bare(slug: str, source: str) -> LibraryCollectionConfig:

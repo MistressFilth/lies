@@ -417,6 +417,56 @@ def test_writer_upsert_catalog_raises_locked_when_commit_locked(
     conn.close()
 
 
+def test_writer_commit_stages_deletions_of_tracked_files(
+    lib_with_git: Library,
+) -> None:
+    """LibraryWriter.commit must reconcile deletions of tracked files.
+
+    Pre-fix bug: ``git add -- <files>`` only staged explicit paths.
+    Files that were committed once and then deleted from disk remained
+    in HEAD forever, accumulating ghost entries across re-ingests.
+    The live ``~/.local/share/lies/library/`` at the start of this
+    branch had 2041 deletions visible from ``git status``.
+
+    After the explicit-files ``atomic_commit`` the writer must run
+    ``git add -u`` to stage modifications + deletions of tracked
+    files, then commit any newly-staged changes with a follow-up
+    message of the form ``<original> (reconcile deletions)``.
+    """
+    target = lib_with_git.collections_root / "foo" / "page.md"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("old content\n")
+    rel = target.relative_to(lib_with_git.git_root)
+
+    writer = LibraryWriter(lib_with_git)
+    first_sha = writer.commit([rel], message="add foo")
+    assert first_sha is not None
+
+    # Delete the file out-of-band (simulating a re-ingest).
+    target.unlink()
+
+    # A new ingest (a different file in the same collection) must
+    # clean up the deletion.
+    other = lib_with_git.collections_root / "foo" / "other.md"
+    other.parent.mkdir(parents=True, exist_ok=True)
+    other.write_text("new content\n")
+    other_rel = other.relative_to(lib_with_git.git_root)
+
+    sha = writer.commit([other_rel], message="re-ingest foo")
+    assert sha is not None
+
+    tracked = subprocess.check_output(
+        ["git", "-C", str(lib_with_git.git_root), "ls-tree", "-r", "HEAD", "--name-only"],
+        text=True,
+    )
+    assert "collections/foo/page.md" not in tracked, (
+        f"deleted tracked file still in HEAD after re-ingest commit; got:\n{tracked}"
+    )
+    assert "collections/foo/other.md" in tracked, (
+        f"newly added file missing from HEAD after re-ingest commit; got:\n{tracked}"
+    )
+
+
 def test_writer_commit_touches_f14_last_write_marker(
     lib_with_git: Library,
     tmp_path: Path,

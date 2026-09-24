@@ -20,7 +20,7 @@ def test_query_deps_accepts_librarian_output() -> None:
             spans=[Span(heading_path=["H1"], body="body", code_fence=False, start_line=1)],
         )
     ]
-    lo = LibrarianOutput(tag_expr=None, exclude_tags=[], excerpts=excerpts, distinct_pages=1)
+    lo = LibrarianOutput(tag_expr=None, exclude_expr=None, excerpts=excerpts, distinct_pages=1)
     deps = QueryDeps(question="q", librarian_output=lo)
     assert deps.librarian_output is lo
 
@@ -42,7 +42,7 @@ def test_query_deps_page_texts_derived_from_excerpts() -> None:
             ],
         ),
     ]
-    lo = LibrarianOutput(tag_expr=None, exclude_tags=[], excerpts=excerpts, distinct_pages=1)
+    lo = LibrarianOutput(tag_expr=None, exclude_expr=None, excerpts=excerpts, distinct_pages=1)
     deps = QueryDeps(question="q", librarian_output=lo)
     assert "prose a" in deps.page_texts["a"]
     assert "x = 1" not in deps.page_texts["a"]
@@ -56,7 +56,7 @@ def test_query_deps_page_sources_derived() -> None:
     spans = [Span(heading_path=[], body="b", code_fence=False, start_line=1)]
     lo = LibrarianOutput(
         tag_expr=None,
-        exclude_tags=[],
+        exclude_expr=None,
         excerpts=[
             PageExcerpt(collection="wiki", slug="w", title="W", spans=spans),
             PageExcerpt(collection="claude_platform", slug="c", title="C", spans=spans),

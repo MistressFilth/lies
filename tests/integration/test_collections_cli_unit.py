@@ -1,3 +1,4 @@
+import json
 from datetime import UTC, datetime
 
 import pytest
@@ -144,3 +145,28 @@ def test_modify_set_source_round_trip(library: Library) -> None:
     assert result.exit_code == 0, result.output
     loaded = load_config("alpha")
     assert loaded.source == "https://new.example.com/alpha"
+
+
+def test_bootstrap_all_creates_missing_and_reports(library: Library) -> None:
+    """CLI sweep writes configs for scraped-only dirs, leaves existing alone."""
+    save_config(_cfg("configured"))
+    (library.collections_root / "scraped-a").mkdir()
+    (library.collections_root / "scraped-a" / "page.md").write_text("hi", encoding="utf-8")
+    (library.collections_root / "scraped-b").mkdir()
+    (library.collections_root / "scraped-b" / "page.md").write_text("hi", encoding="utf-8")
+
+    runner = CliRunner()
+    app.add_typer(library_collections_app, name="library")
+    result = runner.invoke(app, ["library", "bootstrap-all", "--json"])
+    assert result.exit_code == 0, result.output
+
+    payload = json.loads(result.stdout)
+    assert sorted(payload["created"]) == ["scraped-a", "scraped-b"]
+    assert payload["skipped"] == ["configured"]
+    assert payload["skipped_sources"] == {"configured": "https://example.com/configured"}
+
+    # The pre-existing config was not overwritten.
+    assert load_config("configured").source == "https://example.com/configured"
+    # The new configs use the bootstrap-all placeholder source.
+    assert load_config("scraped-a").source == "bootstrap-all://scraped-a"
+    assert load_config("scraped-b").source == "bootstrap-all://scraped-b"

@@ -173,7 +173,7 @@ def test_orchestrator_uses_qmd_http_transport(
 # The pre-F18 ``run_query(tag_filter=..., file=..., force_file=...,
 # collection=...)`` shape is retired — see Task 6 brief and
 # ``Orchestrator.run_query``. The new signature is
-# ``run_query(question, *, tag_expr, exclude_tags, top_n, file_back)``
+# ``run_query(question, *, tag_expr, exclude_expr, top_n, file_back)``
 # and returns ``QueryAnswer`` (not ``SynthesizedAnswer``). The legacy
 # tag-filter / searched_scope plumbing tests were deleted with the
 # legacy surface; the new shape is pinned by

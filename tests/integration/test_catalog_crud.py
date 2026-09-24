@@ -517,3 +517,112 @@ def test_catalog_rebuild_index_removed() -> None:
     assert not hasattr(catalog, "rebuild_index")
     assert not hasattr(catalog, "_discover_pages")
     assert not hasattr(catalog, "_page_title_from_frontmatter")
+
+
+# ---------------------------------------------------------------------------
+# Lightweight reconcile (reconcile_wiki_catalog — search-time ghost-row drop)
+# ---------------------------------------------------------------------------
+
+
+def test_reconcile_wiki_catalog_drops_stale_rows(tmp_path: Path) -> None:
+    """Rows whose on-disk file is gone must be dropped.
+
+    The lightweight search-time reconcile only deletes ghost rows;
+    it does NOT add missing rows (that lives in the heavy
+    ``lies catalog reconcile`` CLI path).
+    """
+    from lies.memory.catalog import open_catalog, reconcile_wiki_catalog, upsert_page
+    from lies.memory.catalog_models import CatalogPage
+
+    wiki_dir = tmp_path / "wiki"
+    wiki_dir.mkdir()
+    page_dir = wiki_dir / "x" / "concepts"
+    page_dir.mkdir(parents=True)
+    (page_dir / "alive.md").write_text("# Alive\n", encoding="utf-8")
+    (page_dir / "ghost.md").write_text("# Ghost\n", encoding="utf-8")
+
+    class _StubWiki:
+        pass
+
+    wiki = _StubWiki()
+    wiki.wiki_dir = wiki_dir  # type: ignore[attr-defined]
+
+    # Seed catalog with both rows.
+    conn = open_catalog(wiki)
+    try:
+        upsert_page(conn, CatalogPage(slug="x/concepts/alive", title="Alive"))
+        upsert_page(conn, CatalogPage(slug="x/concepts/ghost", title="Ghost"))
+        assert count_pages(conn) == 2
+    finally:
+        conn.close()
+
+    # Delete the on-disk file backing the ghost row.
+    (page_dir / "ghost.md").unlink()
+
+    dropped = reconcile_wiki_catalog(wiki)
+    assert dropped == 1
+
+    # Reopen to confirm the row is gone.
+    conn = open_catalog(wiki)
+    try:
+        assert slug_exists(conn, "x/concepts/alive") is True
+        assert slug_exists(conn, "x/concepts/ghost") is False
+        assert count_pages(conn) == 1
+    finally:
+        conn.close()
+
+
+def test_reconcile_wiki_catalog_idempotent(tmp_path: Path) -> None:
+    """A second call after convergence drops nothing."""
+    from lies.memory.catalog import open_catalog, reconcile_wiki_catalog, upsert_page
+    from lies.memory.catalog_models import CatalogPage
+
+    wiki_dir = tmp_path / "wiki"
+    wiki_dir.mkdir()
+
+    class _StubWiki:
+        pass
+
+    wiki = _StubWiki()
+    wiki.wiki_dir = wiki_dir  # type: ignore[attr-defined]
+
+    # Seed a dangling row (no file on disk).
+    conn = open_catalog(wiki)
+    try:
+        upsert_page(conn, CatalogPage(slug="dangling", title="D"))
+    finally:
+        conn.close()
+
+    first = reconcile_wiki_catalog(wiki)
+    second = reconcile_wiki_catalog(wiki)
+    assert first == 1
+    assert second == 0
+
+
+def test_reconcile_wiki_catalog_keeps_valid_rows(tmp_path: Path) -> None:
+    """Files on disk keep their catalog rows."""
+    from lies.memory.catalog import open_catalog, reconcile_wiki_catalog, upsert_page
+    from lies.memory.catalog_models import CatalogPage
+
+    wiki_dir = tmp_path / "wiki"
+    wiki_dir.mkdir()
+    (wiki_dir / "kept.md").write_text("# Kept\n", encoding="utf-8")
+
+    class _StubWiki:
+        pass
+
+    wiki = _StubWiki()
+    wiki.wiki_dir = wiki_dir  # type: ignore[attr-defined]
+
+    conn = open_catalog(wiki)
+    try:
+        upsert_page(conn, CatalogPage(slug="kept", title="Kept"))
+    finally:
+        conn.close()
+
+    assert reconcile_wiki_catalog(wiki) == 0
+    conn = open_catalog(wiki)
+    try:
+        assert slug_exists(conn, "kept")
+    finally:
+        conn.close()
