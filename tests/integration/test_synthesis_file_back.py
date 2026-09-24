@@ -151,7 +151,7 @@ def _canned_librarian_output(wiki: Wiki, *, page_count: int = 2) -> LibrarianOut
         )
     return LibrarianOutput(
         tag_expr=None,
-        exclude_expr=None,
+        exclude_tags=[],
         excerpts=excerpts,
         distinct_pages=2,
     )

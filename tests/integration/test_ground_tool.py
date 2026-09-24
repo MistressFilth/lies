@@ -76,12 +76,7 @@ def _patch_librarian(
     class _FakeAgent:
         def run_sync(self, user_prompt: object, *, deps: object) -> _FakeResult:
             tag_expr = getattr(deps, "tag_expr", None)
-            # Task 3 / f15-exclude-compound: ``exclude_expr`` is now a
-            # ``TagExpr | None`` AST the F18 librarian consumes — the
-            # historical ``exclude_tags: list[str]`` flat-list field
-            # on ``LibrarianDeps`` was retired along with the matching
-            # ``LibrarianOutput.exclude_tags`` field.
-            exclude_expr = getattr(deps, "exclude_expr", None)
+            exclude_tags = list(getattr(deps, "exclude_tags", []) or [])
             # F18 Task 3 pin: when the librarian's mock returns zero
             # excerpts, classify the dispatch as a tag-filter scope
             # miss (``no_coverage=True``) so the FastMCP surfacing
@@ -94,7 +89,7 @@ def _patch_librarian(
             return _FakeResult(
                 LibrarianOutput(
                     tag_expr=tag_expr,
-                    exclude_expr=exclude_expr,
+                    exclude_tags=exclude_tags,
                     excerpts=list(excerpts),
                     distinct_pages=len({e.slug for e in excerpts}),
                     no_coverage=not excerpts,
@@ -143,16 +138,11 @@ async def test_ground_tool_returns_archivist_digest(
     assert "question" in data
     assert "no_coverage" in data
     assert "tag_expr" in data
-    # Task 3 / f15-exclude-compound: ``ArchivistDigest.exclude_expr``
-    # replaces the flat-list ``exclude_tags`` field. The MCP boundary
-    # translates the wire-level ``exclude_tags: list[str]`` to the
-    # ``TagExpr | None`` AST (Task 4 / f15-exclude-compound), which
-    # ``ArchivistDigest`` then surfaces as ``exclude_expr``.
-    assert "exclude_expr" in data
+    assert "exclude_tags" in data
     assert "distinct_pages" in data
     assert data["question"] == "what is the pydantic hook?"
     assert data["tag_expr"] is None
-    assert data["exclude_expr"] is None
+    assert data["exclude_tags"] == []
     assert data["no_coverage"] is False
     assert data["distinct_pages"] == 1
     assert len(data["citations"]) == 1
@@ -202,74 +192,6 @@ async def test_ground_tool_with_tag_filter(
         assert data["no_coverage"] is True, (
             f"tag filter excluded all hits; expected no_coverage=True, got {data['no_coverage']}"
         )
-
-
-async def test_ground_tool_compound_exclude_tags(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """``ground(exclude_tags=["c:wiki&c:other"])`` parses a compound exclude.
-
-    Task 4 / f15-exclude-compound: the ``mcp_ground`` boundary parses
-    each ``exclude_tags[i]`` as a full F15 expression via
-    :func:`lies.query.tag_expr.parse` and validates it against
-    :func:`_collect_available_tags_mcp` — same surface as the
-    ``query`` / ``answer`` path. The pre-Task-4 boundary only built
-    a single-atom ``Include`` from ``check_qualifier``; a compound
-    ``c:foo&c:bar`` would have arrived at the librarian as
-    ``Include("foo&c:bar", "c")`` with a literal ``&c:bar`` body.
-    """
-    _seed_wiki_collection()
-    _patch_librarian(monkeypatch, excerpts=[])
-
-    async with Client(mcp) as client:
-        result = await client.call_tool(
-            "ground",
-            {"question": "any question", "exclude_tags": ["c:wiki&c:wiki"]},
-        )
-
-    # Compound exclude parsed without raising — the boundary validated
-    # every atom against the registered set (the seeded ``wiki`` col is
-    # the only addressable collection under the hermetic XDG).
-    assert result.data["no_coverage"] is True
-    assert result.data["exclude_expr"] is not None
-    # The MCP envelope serializes ``Include`` / ``And`` / ``Or`` trees
-    # via :func:`dataclasses.asdict` — nested ``{"left", "right"}``
-    # dicts for ``And`` / ``Or`` and a ``{"tag", "qualifier"}`` dict
-    # for ``Include``. The wire shape preserves the compound structure
-    # so downstream consumers can introspect it without re-parsing
-    # the boundary expression.
-    data = result.data
-    assert data["exclude_expr"] == {
-        "left": {"tag": "wiki", "qualifier": "c"},
-        "right": {"tag": "wiki", "qualifier": "c"},
-    }
-
-
-async def test_ground_tool_exclude_tags_bad_grammar_raises(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """``ground(exclude_tags=["c:foo&"])`` raises ``ToolError`` at the boundary.
-
-    A dangling ``&`` is a parse error in the F15 grammar; the MCP
-    boundary surfaces it as ``ToolError("invalid tag expression: ...")`
-    rather than letting the malformed AST reach the librarian. The
-    FastMCP client surfaces ``ToolError`` from ``call_tool`` directly
-    by default (``raise_on_error=True``), so the test uses
-    :func:`pytest.raises` rather than asserting on
-    ``result.is_error``.
-    """
-    from fastmcp.exceptions import ToolError
-    from lies.query.tag_expr import Include  # noqa: F401  (import probe)
-
-    _seed_wiki_collection()
-    _patch_librarian(monkeypatch, excerpts=[])
-
-    async with Client(mcp) as client:
-        with pytest.raises(ToolError, match="invalid tag expression"):
-            await client.call_tool(
-                "ground",
-                {"question": "any question", "exclude_tags": ["c:wiki&"]},
-            )
 
 
 async def test_ground_tool_wires_librarian_tools(

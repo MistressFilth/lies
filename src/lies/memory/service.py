@@ -12,7 +12,6 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import os
-import re
 import subprocess
 import threading
 import time
@@ -25,7 +24,6 @@ if TYPE_CHECKING:
     from lies.agents.repair_models import RepairPlan
 
 from lies.agents.page_writer import PageDiff, PageOperation
-from lies.library.registry import library_collection_names
 from lies.lock_errors import (  # noqa: F401 — Task 5/6/7 will reference these from this module.
     WikiFlockCorrupt,
     WikiFlockIndeterminate,
@@ -35,7 +33,6 @@ from lies.lock_errors import (  # noqa: F401 — Task 5/6/7 will reference these
 from lies.memory.catalog import (
     _SYSTEM_FILES,
     open_catalog as _open_catalog,
-    reconcile_wiki_catalog,
     remove_page as _remove_catalog_page,
     upsert_page as _upsert_catalog_page,
 )
@@ -70,60 +67,6 @@ from lies.wiki.git import atomic_commit
 from lies.wiki.wiki import Wiki
 
 _QMD_STALE_PREFIX = "qmd_stale"
-
-# Library-shaped paths look like ``<collection>/<page>.md``: exactly
-# one path segment, a slash, another single segment, and a ``.md``
-# extension. The wiki's page paths use deeper subdirs (``<type_plural>/
-# <page>.md``); synthesis pages add a third segment. The bare
-# two-segment pattern matches library collection paths specifically,
-# not wiki synthesis slugs (which have a deeper shape).
-_LIBRARY_SHAPED_PATH = re.compile(r"^[^/]+/[^/]+\.md$")
-
-
-def _is_library_shaped_path(path: str) -> bool:
-    """Return True when ``path`` matches a library path pattern.
-
-    The wiki's qmd daemon can index library content under a
-    wiki-shaped page_id when an ingested collection's files overlap
-    the wiki's data_root. The bug surfaces as a hit like
-    ``{path: "opencode/config.md", collection_id: "default"}`` whose
-    page_id resolves to a sha1 of the library path — but the wiki
-    catalog has no row for that path, so a subsequent ``wiki_read``
-    raises :class:`WikiPageNotFound`. Drop these dead-end hits at
-    the service boundary so callers never see them.
-
-    Two gates:
-
-    1. The path matches :data:`_LIBRARY_SHAPED_PATH` (top-level
-       collection + single file).
-    2. The first path segment is a registered library-collection
-       name — sourced from :func:`lies.library.registry.
-       library_collection_names`. This avoids misclassifying wiki
-       synthesis slugs whose first segment happens to look like a
-       collection (``claude_platform/synthesis/c-...md`` is a wiki
-       synthesis namespace, not a library collection).
-
-    Fallback: when the library is uninitialized or returns an empty
-    set, fall back to the bare regex match. The ``opencode/config.md``
-    shape is library-only by convention; an empty registry cannot
-    tell us whether a particular first segment IS a library, so we
-    apply the conservative rule (treat the pattern as library-shaped)
-    rather than risk leaking a known-broken hit to the caller.
-    """
-    if not path or not _LIBRARY_SHAPED_PATH.match(path):
-        return False
-    first_segment = path.split("/", 1)[0]
-    try:
-        library_names = library_collection_names()
-    except Exception:
-        # Defensive: any registry failure (missing library dir, IO
-        # error, etc.) falls back to the bare regex. The error does
-        # not propagate because filtering is not a hard correctness
-        # gate — the caller still gets a sensible search result.
-        library_names = frozenset()
-    if not library_names:
-        return True
-    return first_segment in library_names
 
 
 def _hash_text(text: str) -> str:
@@ -547,12 +490,6 @@ class WikiMemoryService:
     ) -> WikiSearchResult:
         """Search this wiki and authenticate the returned evidence references."""
 
-        # Drop ghost catalog rows before any dispatch so a stale row
-        # cannot surface a ``page_id`` the subsequent ``wiki_read``
-        # cannot resolve. Cheap (one stat per row); idempotent. See
-        # ``lies.memory.catalog.reconcile_wiki_catalog``.
-        reconcile_wiki_catalog(self._wiki)
-
         collection_id = self._wiki.name
         if collection_ids is not None and collection_id not in collection_ids:
             # Filter-excluded: empty hits against this wiki. Apply the
@@ -570,14 +507,6 @@ class WikiMemoryService:
                 no_coverage=_no_coverage_flag(self._wiki, []),
             )
         result = search_wiki(self._wiki, question, limit=limit)
-        # Filter library-shaped hits BEFORE registering evidence so
-        # the page_ids and paths the validator sees cannot reference
-        # dead-end library paths. Without this gate the wiki catalog
-        # has no row for the hit and a follow-up ``wiki_read`` raises
-        # ``WikiPageNotFound``. See ``_is_library_shaped_path``.
-        if result.pages and any(_is_library_shaped_path(p.path) for p in result.pages):
-            kept = [page for page in result.pages if not _is_library_shaped_path(page.path)]
-            result = result.model_copy(update={"pages": kept})
         for page in result.pages:
             self._known_evidence.update(
                 {

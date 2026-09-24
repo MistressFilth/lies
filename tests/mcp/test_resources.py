@@ -2,20 +2,12 @@
 
 from __future__ import annotations
 
-import asyncio
-import json
 import shutil
 from pathlib import Path
 
 import pytest
 
 from lies.mcp.server import (
-    _wiki_catalog_impl,
-    _wiki_index_impl,
-    _wiki_lint_report_impl,
-    ask_ground_question,
-    ask_question,
-    ask_wiki_answer,
     cite,
     init_wiki,
     wiki_index,
@@ -26,17 +18,6 @@ from lies.mcp.server import (
 )
 from lies.memory.models import WikiPlanInvalid
 from lies.wiki.wiki import Wiki
-
-
-def _asyncio_run(coro: object) -> object:
-    """Run an async coroutine in a fresh event loop.
-
-    Local helper so the citation-prompt Bug B tests can introspect
-    the FastMCP ``prompts/list`` / ``tools/list`` surface without
-    depending on pytest-asyncio. Mirrors the helper of the same
-    name in ``tests/mcp/test_memory_tools.py``.
-    """
-    return asyncio.run(coro)  # type: ignore[arg-type]
 
 
 @pytest.fixture(autouse=True)
@@ -105,50 +86,6 @@ def test_wiki_lint_report_missing_returns_empty_string(
     assert out == ""
 
 
-def test_wiki_index_library_mode_returns_envelope(
-    wiki_name: str,
-) -> None:
-    """No wiki registered → ``wiki_index`` returns ``{"mode": "library"}``.
-
-    Pins the regression for the live bug where
-    ``ReadMcpResourceTool(uri='wiki://index')`` returned ``""`` and the
-    LLM caller had no signal to route through the library path. The
-    envelope gives the LLM a stable JSON shape (``mode: 'library'``)
-    to dispatch on without parsing the wiki catalog first.
-    """
-    from lies.errors import WikiNotRegistered
-    from lies.mcp.resolution import resolve_wiki
-
-    with pytest.raises(WikiNotRegistered):
-        resolve_wiki(name=wiki_name)
-
-    out = _wiki_index_impl(name=wiki_name)
-    parsed = json.loads(out)
-    assert parsed == {"mode": "library"}
-
-
-def test_wiki_lint_report_library_mode_returns_envelope(
-    wiki_name: str,
-) -> None:
-    """No wiki registered → ``wiki_lint_report`` returns ``{"mode": "library", "status": "no_wiki"}``.
-
-    The ``status: "no_wiki"`` field is concrete — a wiki never existed,
-    so a lint report is meaningless. Mirrors the
-    ``test_wiki_index_library_mode_returns_envelope`` contract and
-    pins the regression for the live bug where
-    ``ReadMcpResourceTool(uri='wiki://lint-report')`` returned ``""``.
-    """
-    from lies.errors import WikiNotRegistered
-    from lies.mcp.resolution import resolve_wiki
-
-    with pytest.raises(WikiNotRegistered):
-        resolve_wiki(name=wiki_name)
-
-    out = _wiki_lint_report_impl(name=wiki_name)
-    parsed = json.loads(out)
-    assert parsed == {"mode": "library", "status": "no_wiki"}
-
-
 def test_wiki_page_returns_file_contents(
     registered_wiki: Wiki,
     wiki_name: str,
@@ -184,80 +121,6 @@ def test_wiki_page_returns_empty_for_missing_file(
     assert out == ""
 
 
-def test_wiki_catalog_library_mode_no_wiki_registered(
-    wiki_name: str,
-) -> None:
-    """No wiki registered under the redirected XDG roots.
-
-    ``resolve_wiki`` raises ``WikiNotRegistered`` so the resource
-    falls through to library mode. The envelope reports ``mode:
-    "library"`` with an empty ``collections`` list (the test env has
-    no library either, so the name set is empty). Pins the
-    regression for the live bug where the MCP ``wiki://catalog``
-    resource returned library synthesis slugs instead of an
-    informative envelope.
-    """
-    from lies.errors import WikiNotRegistered
-
-    with pytest.raises(WikiNotRegistered):
-        # Sanity-check the precondition: without a registered wiki,
-        # resolve_wiki does raise. The fix is that the resource
-        # surfaces this condition via a stable JSON envelope rather
-        # than propagating the exception.
-        from lies.mcp.resolution import resolve_wiki
-
-        resolve_wiki(name=wiki_name)
-
-    out = _wiki_catalog_impl(name=wiki_name)
-    parsed = json.loads(out)
-    assert parsed == {"mode": "library", "collections": []}
-
-
-def test_wiki_catalog_library_mode_lists_registered_collections(
-    wiki_name: str,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Library-mode envelope carries every registered collection name.
-
-    Stubs :func:`lies.library.registry.library_collection_names` so
-    the assertion sees a deterministic non-empty collection set
-    regardless of the on-disk library state. Pins the contract that
-    the resource serialises the full set (sorted) — not a subset,
-    not a hand-rolled tag list.
-    """
-    monkeypatch.setattr(
-        "lies.library.registry.library_collection_names",
-        lambda: frozenset({"alpha", "beta"}),
-    )
-    out = _wiki_catalog_impl(name=wiki_name)
-    parsed = json.loads(out)
-    assert parsed == {"mode": "library", "collections": ["alpha", "beta"]}
-
-
-def test_wiki_catalog_wiki_mode_returns_catalog_page_list(
-    registered_wiki: Wiki,
-    wiki_name: str,
-) -> None:
-    """Wiki-mode returns the existing ``list[CatalogPage]`` JSON array.
-
-    The fixture wiki has multiple ``.md`` files under ``wiki/``;
-    the resource opens ``<wiki>/.lies/catalog.db`` and dumps every
-    row. The shape is a JSON array of ``CatalogPage.model_dump()``
-    dicts — not the library-mode envelope. This regression pins the
-    branch unchanged so the library-mode fix does not perturb the
-    wiki-mode contract.
-    """
-    out = _wiki_catalog_impl(name=wiki_name)
-    parsed = json.loads(out)
-    assert isinstance(parsed, list)
-    assert len(parsed) > 0
-    for page in parsed:
-        # Every row is a CatalogPage-shaped dict.
-        assert "slug" in page
-        assert "title" in page
-        assert "section" in page
-
-
 def test_cite_prompt_routes_to_ground() -> None:
     """The cite slash templates a `ground` tool call and the snippet render form.
 
@@ -266,7 +129,12 @@ def test_cite_prompt_routes_to_ground() -> None:
     Regression catches silent re-template to `answer` or rewrites to a
     non-routing prose form.
     """
-    out = cite(text="+python -chat what is pydantic-ai?")
+    out = cite(
+        question="what is pydantic-ai?",
+        tag_expr="python",
+        exclude_tags=["chat"],
+        top_k=3,
+    )
     assert isinstance(out, str)
     assert "ground" in out
     assert "[[" in out
@@ -275,135 +143,13 @@ def test_cite_prompt_routes_to_ground() -> None:
 
 def test_cite_prompt_documents_secondary_marker() -> None:
     """The cite prompt prose tells the LLM to prefix wiki-only hits with [secondary]."""
-    out = cite(text="+python -chat what is pydantic-ai?")
+    out = cite(
+        question="what is pydantic-ai?",
+        tag_expr="python",
+        exclude_tags=["chat"],
+        top_k=3,
+    )
     assert "secondary" in out.lower()
-
-
-def test_answer_prompt_parses_c_prefix() -> None:
-    """``+c:opencode <question>`` → ``tag_expr='c:opencode'``, no exclude.
-
-    Regression for the live bug where the calling LLM hallucinated
-    ``exclude_tags='does'`` from the question text. The slash prompt
-    parses the include atom itself; the calling LLM has nothing to fill.
-    """
-    out = ask_wiki_answer(
-        text="+c:opencode where does X keep settings?",
-    )
-    assert isinstance(out, str)
-    assert "tag_expr: 'c:opencode'" in out
-    assert "exclude_tags: []" in out
-    assert "question: where does X keep settings?" in out
-
-
-def test_answer_prompt_parses_combined_atom_and_exclude() -> None:
-    """``+c:opencode -draft what...`` → include + single exclude."""
-    out = ask_wiki_answer(
-        text="+c:opencode -draft what is the API?",
-    )
-    assert "tag_expr: 'c:opencode'" in out
-    assert "exclude_tags: ['draft']" in out
-    assert "question: what is the API?" in out
-
-
-def test_answer_prompt_parses_multi_atom_chain() -> None:
-    """``+airflow&provider how do I...`` → AND chain, two atoms.
-
-    ``_render_include`` preserves left-to-right operator order, so the
-    rendered string is ``airflow&provider`` (not the reversed form).
-    Uses unqualified atoms because ``+t:foo&c:bar`` in a single argv
-    token trips a known ``_split_argv_token_for_ops`` limitation
-    (``:`` is not a shlex wordchar). The CLI grammar splits those as
-    separate argv tokens, but a single-token ``&`` chain is the
-    common form per the spec.
-    """
-    out = ask_wiki_answer(
-        text="+airflow&provider how do I configure?",
-    )
-    assert "tag_expr: 'airflow&provider'" in out
-    assert "question: how do I configure?" in out
-
-
-def test_answer_prompt_parses_quoted_exclude() -> None:
-    """``+c:opencode -"airflow provider" ...`` → quoted exclude tag.
-
-    shlex unquotes the ``"airflow provider"`` arg so the exclude tag
-    arrives as a single multi-word string; the prompt renders the list
-    with a single element. Task 3 / f15-exclude-compound changed the
-    exclude representation from a flat string to an ``Include`` / ``And``
-    / ``Or`` AST, so :func:`_render_include` quotes the multi-word tag
-    (``"airflow provider"``) so it round-trips through :func:`parse`
-    intact — the rendered exclude entry is ``'\\"airflow provider\\"'``.
-    The LLM reads the rendered string verbatim and forwards it to the
-    ``answer`` tool's ``exclude_tags=`` kwarg, where :func:`parse` strips
-    the outer quotes back to the multi-word atom.
-    """
-    out = ask_wiki_answer(
-        text='+c:opencode -"airflow provider" what does it do?',
-    )
-    assert "tag_expr: 'c:opencode'" in out
-    assert "exclude_tags: ['\"airflow provider\"']" in out
-
-
-def test_answer_prompt_surfaces_parse_error() -> None:
-    """``+a&`` (dangling operator) → parser error rendered verbatim.
-
-    The slash prompt must NOT silently fall back to no-filter on a
-    grammar error -- that would let the calling LLM retry with the
-    hand-rewritten args. The fix surfaces the parser's message so the
-    LLM tells the operator what went wrong.
-    """
-    out = ask_wiki_answer(
-        text="+a&",
-    )
-    assert "Filter parse error" in out
-    assert "dangling operator" in out
-
-
-def test_answer_prompt_plain_question_unchanged() -> None:
-    """Plain question (no filter) → no tag_expr, full text is the question.
-
-    The pre-fix behaviour is preserved when there is no include/exclude
-    prefix in the question argument.
-    """
-    out = ask_wiki_answer(
-        text="Where does opencode keep settings?",
-    )
-    assert "tag_expr: None" in out
-    assert "exclude_tags: []" in out
-    assert "question: Where does opencode keep settings?" in out
-
-
-def test_answer_prompt_no_false_positive_mid_question() -> None:
-    """``c++ tutorial`` mid-question is NOT a filter.
-
-    The parser only treats ``argv[0]`` as a chain start when it begins
-    with ``+``. A bare ``c++ tutorial`` token in the middle of the
-    question never matches the include/exclude rule.
-    """
-    out = ask_wiki_answer(
-        text="how do I write a c++ tutorial?",
-    )
-    assert "tag_expr: None" in out
-    assert "question: how do I write a c++ tutorial?" in out
-
-
-def test_answer_prompt_handles_multi_word_input() -> None:
-    """Full multi-word input parses correctly (slash dispatcher regression).
-
-    Regression for the dispatch bug: when the slash prompt had multiple
-    positional args, Claude Code's dispatcher tokenized the input on
-    whitespace and assigned each token to a separate arg, dropping
-    everything past the third token. The fix collapses to a single
-    ``text`` positional arg so the dispatcher passes the entire
-    remainder of the line verbatim. The full question text must then
-    round-trip through the filter parser.
-    """
-    out = ask_wiki_answer(
-        text="+c:opencode Where does opencode keep its settings on Linux?",
-    )
-    assert "tag_expr: 'c:opencode'" in out
-    assert "exclude_tags: []" in out
-    assert "question: Where does opencode keep its settings on Linux?" in out
 
 
 def test_init_wiki_round_trips_with_resources(wiki_name: str) -> None:
@@ -419,288 +165,3 @@ def test_init_wiki_round_trips_with_resources(wiki_name: str) -> None:
     # The wiki is now registered; the status resource read succeeds.
     out = wiki_status(name=wiki_name)
     assert "=== qmd status ===" in out
-
-
-def test_ask_question_parses_filter() -> None:
-    """``+c:opencode <question>`` → ``tag_expr='c:opencode'``, no exclude.
-
-    Regression for the slash-tokenization bug: Claude Code's dispatcher
-    tokenizes the slash command on whitespace BEFORE invoking the MCP
-    prompt function, dropping everything past the first token. The
-    ``ask_question`` tool bypasses that path because Claude Code passes
-    structured JSON args to tools verbatim, so multi-word strings
-    round-trip intact. The LLM calls ``ask_question`` first, then
-    forwards the returned kwargs to the ``answer`` tool.
-    """
-    out = ask_question(text="+c:opencode Where does opencode keep settings?")
-    assert out["question"] == "Where does opencode keep settings?"
-    assert out["tag_expr"] == "c:opencode"
-    assert out["exclude_tags"] == []
-
-
-def test_ask_question_no_filter() -> None:
-    """Plain question (no filter prefix) → ``tag_expr=None``."""
-    out = ask_question(text="Where does opencode keep settings?")
-    assert out["question"] == "Where does opencode keep settings?"
-    assert out["tag_expr"] is None
-    assert out["exclude_tags"] == []
-
-
-def test_ask_question_parse_error() -> None:
-    """``+a&`` (dangling operator) → structured envelope with error key.
-
-    The tool never raises on parser errors — the LLM needs a
-    machine-readable shape it can inspect, not an exception trace.
-    """
-    out = ask_question(text="+a&")
-    assert "error" in out
-    assert "dangling operator" in out["error"]
-
-
-def test_ask_question_compound_exclude_and() -> None:
-    """``-c:foo&c:bar <question>`` → ``exclude_tags=['c:foo&c:bar']``.
-
-    The exclude path mirrors the include path: ``&`` chains atoms
-    into an ``And`` AST that ``_render_include`` flattens back to
-    a single ``c:foo&c:bar`` string. The downstream ``query`` /
-    ``answer`` boundary re-parses that string, so round-tripping
-    through the MCP wire format must preserve the operator.
-    """
-    out = ask_question(text="-c:foo&c:bar what is X?")
-    assert out["question"] == "what is X?"
-    assert out["tag_expr"] is None
-    assert out["exclude_tags"] == ["c:foo&c:bar"]
-
-
-def test_ask_question_compound_exclude_or() -> None:
-    """``-c:foo|c:bar <question>`` → ``exclude_tags=['c:foo|c:bar']``.
-
-    Same as the AND case but with ``|``: the parser produces an
-    ``Or`` AST and ``_render_include`` emits the ``|`` operator
-    between the two atoms.
-    """
-    out = ask_question(text="-c:foo|c:bar what is X?")
-    assert out["question"] == "what is X?"
-    assert out["tag_expr"] is None
-    assert out["exclude_tags"] == ["c:foo|c:bar"]
-
-
-def test_ask_question_empty() -> None:
-    """Empty input → structured envelope with error key, no exception."""
-    out = ask_question(text="")
-    assert "error" in out
-
-
-def test_ask_ground_question_simple_include() -> None:
-    """``+c:opencode <question>`` → ``tag_expr='c:opencode'``, no exclude, top_k=3.
-
-    Parallel to ``test_ask_question_parses_filter`` but with the
-    ground-tool kwargs shape (``top_k`` defaulted to 3). The LLM
-    forwards the dict to the ``ground`` tool unchanged.
-    """
-    out = ask_ground_question(text="+c:opencode where does X keep settings?")
-    assert out["question"] == "where does X keep settings?"
-    assert out["tag_expr"] == "c:opencode"
-    assert out["exclude_tags"] == []
-    assert out["top_k"] == 3
-
-
-def test_ask_ground_question_compound_exclude_and() -> None:
-    """``-c:foo&c:bar <question>`` → ``exclude_tags=['c:foo&c:bar']`` (AND).
-
-    Parallel to ``test_ask_question_compound_exclude_and`` —
-    ``_render_include`` flattens the AND AST to a single string so
-    the ground-tool boundary can re-parse it. ``top_k`` is the
-    ground default, not the answer default.
-    """
-    out = ask_ground_question(text="-c:foo&c:bar what is X?")
-    assert out["question"] == "what is X?"
-    assert out["tag_expr"] is None
-    assert out["exclude_tags"] == ["c:foo&c:bar"]
-    assert out["top_k"] == 3
-
-
-def test_ask_ground_question_compound_exclude_or() -> None:
-    """``-c:foo|c:bar <question>`` → ``exclude_tags=['c:foo|c:bar']`` (OR).
-
-    Parallel to ``test_ask_question_compound_exclude_or``.
-    """
-    out = ask_ground_question(text="-c:foo|c:bar what is X?")
-    assert out["question"] == "what is X?"
-    assert out["tag_expr"] is None
-    assert out["exclude_tags"] == ["c:foo|c:bar"]
-    assert out["top_k"] == 3
-
-
-def test_ask_ground_question_bare_operator_argv() -> None:
-    """``-c:foo & c:bar what?`` (realistic shell split) → AND exclude.
-
-    Regression pin for the bare-operator argv form: realistic shell
-    splitting produces argv lists where ``&`` is its own token. The
-    chain-peel loop must absorb it and continue. Without this
-    contract, slash invocations that arrive shlex-split would
-    silently drop the operator and mis-classify the atoms.
-    """
-    out = ask_ground_question(text="-c:foo & c:bar what is X?")
-    assert out["question"] == "what is X?"
-    assert out["exclude_tags"] == ["c:foo&c:bar"]
-
-
-def test_ask_ground_question_no_filter() -> None:
-    """Plain question → ``tag_expr=None``, ``exclude_tags=[]``."""
-    out = ask_ground_question(text="where does X keep settings?")
-    assert out["question"] == "where does X keep settings?"
-    assert out["tag_expr"] is None
-    assert out["exclude_tags"] == []
-    assert out["top_k"] == 3
-
-
-def test_ask_ground_question_parse_error() -> None:
-    """``+a&`` (dangling operator) → structured envelope with error key.
-
-    Mirror of ``test_ask_question_parse_error`` — never raises,
-    always returns a machine-readable shape.
-    """
-    out = ask_ground_question(text="+a&")
-    assert "error" in out
-    assert "dangling operator" in out["error"]
-
-
-def test_ask_ground_question_empty() -> None:
-    """Empty input → structured envelope with error key, no exception."""
-    out = ask_ground_question(text="")
-    assert "error" in out
-
-
-def test_cite_prompt_parses_compound_include_filter() -> None:
-    """``cite("+c:opencode|c:claude_platform What?")`` returns structured kwargs.
-
-    Parity pin for the `/cite` slash + ``ask_ground_question`` pair:
-    the slash prompt must parse the same filter syntax the
-    ``ask_wiki_answer`` prompt does, so the LLM never has to fill
-    ``tag_expr`` / ``exclude_tags`` slots. Regression catches the
-    pre-fix shape where multi-word filter prefixes were dropped by
-    the slash dispatcher.
-    """
-    out = cite(text="+c:opencode|c:claude_platform What?")
-    assert isinstance(out, str)
-    assert "ground" in out
-    assert "tag_expr: 'c:opencode|c:claude_platform'" in out
-    assert "exclude_tags: []" in out
-    assert "question: What?" in out
-    assert "top_k: 3" in out
-
-
-def test_cite_prompt_parses_compound_exclude() -> None:
-    """``cite("-c:foo&c:bar <question>")`` renders AND exclude."""
-    out = cite(text="-c:foo&c:bar what is X?")
-    assert "tag_expr: None" in out
-    assert "exclude_tags: ['c:foo&c:bar']" in out
-    assert "question: what is X?" in out
-
-
-def test_cite_prompt_surfaces_parse_error() -> None:
-    """``cite("+a&")`` → parse error rendered verbatim, no silent retry."""
-    out = cite(text="+a&")
-    assert "Filter parse error" in out
-    assert "dangling operator" in out
-
-
-def test_cite_prompt_plain_question_unchanged() -> None:
-    """Plain question (no filter) → no tag_expr, no exclude, full text is the question."""
-    out = cite(text="Where does opencode keep settings?")
-    assert "tag_expr: None" in out
-    assert "exclude_tags: []" in out
-    assert "question: Where does opencode keep settings?" in out
-
-
-# ---------------------------------------------------------------------------
-# Bug B — `/cite` slash dispatcher limitation (session df653c3d, 2026-09-24)
-# ---------------------------------------------------------------------------
-
-
-def test_cite_prompt_renders_with_plus_prefixed_input() -> None:
-    """`cite(text="+c:opencode|c:claude_platform What?")` renders the
-    ground-tool kwargs body end-to-end.
-
-    Pins Bug B: when the slash dispatcher DOES populate the ``text``
-    arg (the direct ``prompts/get cite(text=...)`` path), the
-    prompt body must include the parsed ``tag_expr`` /
-    ``exclude_tags`` / ``question`` / ``top_k`` kwargs so the
-    calling LLM can forward them verbatim to the ``ground`` tool.
-    Session df653c3d (2026-09-24T01:29:30Z) showed Claude Code's
-    slash dispatcher dropping the ``text`` arg entirely when the
-    input begins with ``+``; that dispatcher-side bug is
-    unreproducible here (FastMCP dispatches with whatever the
-    caller passes), but this test pins that the PROMPT side does
-    the right thing whenever it does receive the input.
-    """
-    out = cite(text="+c:opencode|c:claude_platform What is opencode?")
-    assert isinstance(out, str)
-    # Mirrors the multi-atom include parse path that
-    # ``test_cite_prompt_parses_compound_include_filter`` already
-    # covers, plus a non-trivial question so we know the parser
-    # didn't accidentally swallow it.
-    assert "tag_expr: 'c:opencode|c:claude_platform'" in out
-    assert "question: What is opencode?" in out
-    assert "top_k: 3" in out
-    assert "ground" in out
-
-
-def test_cite_prompt_documents_ask_ground_question_workaround() -> None:
-    """The cite prompt's known-limitation paragraph names
-    ``ask_ground_question`` as the dispatcher-bypass workaround.
-
-    Pins Bug B documentation: the cite prompt's docstring must
-    surface the Claude Code slash dispatcher limitation AND the
-    ``ask_ground_question`` workaround, so the calling LLM picks
-    the right tool when the operator types ``/mcp__lies__cite
-    +c:foo What?`` and Claude Code drops the ``text`` arg. The
-    test reads the docstring off the live ``cite`` object — that's
-    the same source ``@mcp.prompt(name="cite", description=...)``
-    reads at FastMCP registration time.
-    """
-    doc = cite.__doc__ or ""
-    assert "Claude Code slash dispatcher" in doc, (
-        "cite docstring must name the dispatcher-side limitation"
-    )
-    assert "ask_ground_question" in doc, (
-        "cite docstring must name the ask_ground_question workaround"
-    )
-    # The prompt also has the prompt-level ``description=`` kwarg
-    # surfaced by FastMCP — pin both surfaces name the workaround
-    # so an MCP client introspecting ``prompts/list`` sees the hint.
-    from lies.mcp.server import mcp
-
-    prompts = _asyncio_run(mcp.list_prompts())
-    cite_prompt = next(p for p in prompts if p.name == "cite")
-    description = cite_prompt.description or ""
-    assert "ask_ground_question" in description, (
-        f"cite prompt description must name ask_ground_question workaround, got: {description!r}"
-    )
-
-
-def test_ask_ground_question_description_documents_dispatcher_bypass() -> None:
-    """The ``ask_ground_question`` tool description names the
-    Claude Code slash dispatcher limitation AND the bypass.
-
-    Pins Bug B documentation: the tool surface (the FastMCP
-    ``tools/list``-discoverable ``description=``) must tell the
-    calling LLM *when* to use ``ask_ground_question`` instead of
-    the ``/cite`` slash — specifically, when the slash input
-    begins with ``+``. Without this, the dispatcher-side bug
-    surfaces only as ``ProtocolError: Missing required arguments:
-    {'text'}`` at slash time, with no surface-level hint to fall
-    back.
-    """
-    from lies.mcp.server import mcp
-
-    tools = _asyncio_run(mcp.list_tools())
-    ask_ground = next(t for t in tools if t.name == "ask_ground_question")
-    description = ask_ground.description or ""
-    assert "Claude Code" in description or "slash" in description, (
-        f"ask_ground_question description must mention the slash "
-        f"dispatcher limitation, got: {description!r}"
-    )
-    assert "ground" in description
-    assert "verbatim" in description or "kwargs" in description

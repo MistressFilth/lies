@@ -43,7 +43,7 @@ def _deps() -> QueryDeps:
         question="What is alpha?",
         librarian_output=LibrarianOutput(
             tag_expr=None,
-            exclude_expr=None,
+            exclude_tags=[],
             excerpts=[excerpt],
             distinct_pages=1,
         ),
@@ -132,7 +132,7 @@ def test_query_deps_carries_page_sources() -> None:
         question="q",
         librarian_output=LibrarianOutput(
             tag_expr=None,
-            exclude_expr=None,
+            exclude_tags=[],
             excerpts=excerpts,
             distinct_pages=2,
         ),
@@ -184,7 +184,7 @@ def test_build_query_prompt_renders_source_tag_inline() -> None:
         question="anything",
         librarian_output=LibrarianOutput(
             tag_expr=None,
-            exclude_expr=None,
+            exclude_tags=[],
             excerpts=excerpts,
             distinct_pages=2,
         ),

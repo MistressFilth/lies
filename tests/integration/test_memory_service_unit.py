@@ -613,14 +613,6 @@ def test_search_filters_single_collection_and_registers_evidence(
         "lies.qmd.cli.qmd_query",
         lambda *a, **kw: [{"path": "concepts/x.md", "score": 1.0}],
     )
-    # Library registry: surface a non-empty library set so the
-    # library-shape filter's first-segment gate is exercised (the
-    # bare-regex fallback would catch ``concepts/x.md`` even though
-    # it is a real wiki path).
-    monkeypatch.setattr(
-        "lies.memory.service.library_collection_names",
-        lambda: frozenset({"opencode"}),
-    )
     service = WikiMemoryService(wiki=git_wiki)
     service.register_evidence({"page-1"})
     result = service.search("X", collection_ids=[git_wiki.name])
@@ -628,106 +620,6 @@ def test_search_filters_single_collection_and_registers_evidence(
     assert service.known_evidence
     filtered = service.search("X", collection_ids=["other"])
     assert filtered.pages == []
-
-
-def test_search_filters_library_shaped_hits(
-    git_wiki: Wiki, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Wiki qmd may index library content under a wiki page_id when
-    an ingested collection's files overlap the wiki's data_root
-    (legacy ingest layout). Such hits have a library-shaped path
-    (e.g. ``opencode/config.md``) and the wiki catalog has no row
-    for them — a follow-up ``wiki_read`` would raise
-    ``WikiPageNotFound``. The service boundary must drop them.
-
-    Both gates of the filter are exercised: a wiki-shaped hit
-    (``concepts/x.md``) survives; a library-shaped hit whose first
-    segment (``opencode``) is a registered library collection name
-    is filtered out; ``known_evidence`` does not record the filtered
-    path so the validator cannot cite it.
-    """
-    page = git_wiki.wiki_dir / "concepts" / "x.md"
-    page.write_text("---\ntitle: X\ntype: concept\n---\n# X\nEvidence.\n", encoding="utf-8")
-    monkeypatch.setattr(
-        "lies.qmd.cli.qmd_query",
-        lambda *a, **kw: [
-            {"path": "opencode/config.md", "score": 0.93},
-            {"path": "concepts/x.md", "score": 1.0},
-        ],
-    )
-    monkeypatch.setattr(
-        "lies.memory.service.library_collection_names",
-        lambda: frozenset({"opencode"}),
-    )
-    service = WikiMemoryService(wiki=git_wiki)
-    result = service.search("opencode settings", collection_ids=[git_wiki.name])
-    paths = [p.path for p in result.pages]
-    assert "opencode/config.md" not in paths
-    assert "concepts/x.md" in paths
-    # The filtered library path must not enter known_evidence, so a
-    # downstream plan cannot cite it as evidence.
-    assert "opencode/config.md" not in service.known_evidence
-
-
-def test_search_keeps_synthesis_slug_with_same_pattern_when_first_segment_not_a_library(
-    git_wiki: Wiki, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The bare ``^[^/]+/[^/]+\\.md$`` pattern matches synthesis
-    slugs too (e.g. ``claude_platform/synthesis/c-...md``). The
-    first-segment gate distinguishes them: a synthesis namespace is
-    only filtered when it ALSO matches a registered library
-    collection. Here ``claude_platform`` is NOT a registered
-    library, so the hit survives.
-    """
-    monkeypatch.setattr(
-        "lies.qmd.cli.qmd_query",
-        lambda *a, **kw: [
-            {"path": "claude_platform/synthesis/c-12345.md", "score": 0.8},
-        ],
-    )
-    monkeypatch.setattr(
-        "lies.memory.service.library_collection_names",
-        lambda: frozenset({"opencode"}),
-    )
-    # The synthesis file does not need to exist on disk for this
-    # test — we only assert the filter passes it through. The
-    # ``_read_page_content`` call in ``_from_qmd`` returns "" for
-    # missing files, which still produces a ``WikiEvidence``.
-    synth_dir = git_wiki.wiki_dir / "claude_platform" / "synthesis"
-    synth_dir.mkdir(parents=True, exist_ok=True)
-    (synth_dir / "c-12345.md").write_text(
-        "---\ntitle: synthesis\ntype: synthesis\n---\nbody\n",
-        encoding="utf-8",
-    )
-    service = WikiMemoryService(wiki=git_wiki)
-    result = service.search("claude_platform", collection_ids=[git_wiki.name])
-    paths = [p.path for p in result.pages]
-    assert "claude_platform/synthesis/c-12345.md" in paths
-
-
-def test_search_filter_falls_back_to_bare_regex_when_library_empty(
-    git_wiki: Wiki, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """When ``library_collection_names()`` returns empty (library
-    uninitialized or has zero collections), the filter cannot
-    decide which first segments ARE libraries. The fallback treats
-    any top-level-collection pattern as library-shaped — the
-    conservative choice when the registry cannot answer.
-    """
-    monkeypatch.setattr(
-        "lies.qmd.cli.qmd_query",
-        lambda *a, **kw: [
-            {"path": "opencode/config.md", "score": 0.93},
-        ],
-    )
-    monkeypatch.setattr(
-        "lies.memory.service.library_collection_names",
-        lambda: frozenset(),
-    )
-    service = WikiMemoryService(wiki=git_wiki)
-    result = service.search("opencode settings", collection_ids=[git_wiki.name])
-    paths = [p.path for p in result.pages]
-    assert "opencode/config.md" not in paths
 
 
 def test_service_locks_are_per_instance(git_wiki: Wiki) -> None:

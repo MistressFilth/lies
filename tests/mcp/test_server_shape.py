@@ -25,8 +25,6 @@ async def test_tools_registered(client: Client) -> None:
         "init_wiki",
         "query",
         "answer",
-        "ask_question",
-        "ask_ground_question",
         "lint",
         "wiki_search",
         "wiki_read",

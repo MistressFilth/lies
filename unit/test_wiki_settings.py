@@ -1,0 +1,240 @@
+"""Unit tests for ``WikiSettings.load`` (env > toml > default chain)."""
+
+from __future__ import annotations
+
+import warnings
+from datetime import UTC
+from pathlib import Path
+
+import pytest
+
+from lies.library.record import LibraryCollectionConfig as Collection
+from lies.wiki_settings import (
+    CURRENT_SETTINGS_VERSION,
+    DEFAULT_LANGUAGE,
+    WikiSettings,
+    resolve_language,
+)
+from tests.conftest import make_wiki
+
+
+@pytest.fixture
+def wiki(tmp_path: Path):
+    root = tmp_path / "wiki"
+    root.mkdir()
+    return make_wiki(name="lang-test", data_root=root)
+
+
+def _write_toml(wiki, body: str) -> Path:
+    p = wiki.config_root / "lies.toml"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(body, encoding="utf-8")
+    return p
+
+
+class TestWikiSettingsLoad:
+    def test_env_wins_no_toml(self, wiki, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("LIES_LANG", "ja")
+        assert WikiSettings.load(wiki).language == "ja"
+
+    def test_env_wins_over_toml(self, wiki, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("LIES_LANG", "ja")
+        _write_toml(wiki, '[settings]\nlang = "de"\n')
+        assert WikiSettings.load(wiki).language == "ja"
+
+    def test_env_empty_treated_as_unset(self, wiki, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("LIES_LANG", "")
+        _write_toml(wiki, '[settings]\nlang = "de"\n')
+        assert WikiSettings.load(wiki).language == "de"
+
+    def test_env_whitespace_treated_as_unset(self, wiki, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("LIES_LANG", "   ")
+        _write_toml(wiki, '[settings]\nlang = "de"\n')
+        assert WikiSettings.load(wiki).language == "de"
+
+    def test_toml_absent_defaults_silently(self, wiki, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("LIES_LANG", raising=False)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            settings = WikiSettings.load(wiki)
+        assert settings.language == DEFAULT_LANGUAGE
+        assert caught == []
+
+    def test_toml_settings_lang(self, wiki, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("LIES_LANG", raising=False)
+        _write_toml(wiki, '[settings]\nlang = "de"\n')
+        assert WikiSettings.load(wiki).language == "de"
+
+    def test_toml_lang_stripped(self, wiki, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("LIES_LANG", raising=False)
+        _write_toml(wiki, '[settings]\nlang = "  de  "\n')
+        assert WikiSettings.load(wiki).language == "de"
+
+    def test_toml_missing_settings_table(self, wiki, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("LIES_LANG", raising=False)
+        _write_toml(wiki, "# toml with no settings table\n")
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            settings = WikiSettings.load(wiki)
+        assert settings.language == DEFAULT_LANGUAGE
+        assert caught == []
+
+    def test_toml_missing_lang_key(self, wiki, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("LIES_LANG", raising=False)
+        _write_toml(wiki, "[settings]\nother_key = 1\n")
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            settings = WikiSettings.load(wiki)
+        assert settings.language == DEFAULT_LANGUAGE
+        assert caught == []
+
+    def test_toml_empty_lang_warns_and_defaults(
+        self, wiki, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("LIES_LANG", raising=False)
+        _write_toml(wiki, '[settings]\nlang = ""\n')
+        with pytest.warns(UserWarning, match=r"lang is empty"):
+            settings = WikiSettings.load(wiki)
+        assert settings.language == DEFAULT_LANGUAGE
+
+    def test_toml_non_string_lang_warns_and_defaults(
+        self, wiki, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("LIES_LANG", raising=False)
+        _write_toml(wiki, "[settings]\nlang = 42\n")
+        with pytest.warns(UserWarning, match=r"must be a string"):
+            settings = WikiSettings.load(wiki)
+        assert settings.language == DEFAULT_LANGUAGE
+
+    def test_toml_unparseable_warns_and_defaults(
+        self, wiki, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("LIES_LANG", raising=False)
+        _write_toml(wiki, "[settings\nlang = broken\n")
+        with pytest.warns(UserWarning, match=r"not valid TOML"):
+            settings = WikiSettings.load(wiki)
+        assert settings.language == DEFAULT_LANGUAGE
+
+    def test_default_fallback(self, wiki, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("LIES_LANG", raising=False)
+        assert WikiSettings.load(wiki).language == DEFAULT_LANGUAGE
+
+
+class TestWikiSettingsVersion:
+    def test_version_missing_is_none_no_warning(
+        self, wiki, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("LIES_LANG", raising=False)
+        _write_toml(wiki, '[settings]\nlang = "de"\n')
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            settings = WikiSettings.load(wiki)
+        assert settings.settings_version is None
+        assert settings.language == "de"
+        assert caught == []
+
+    def test_version_matches_current_no_warning(
+        self, wiki, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("LIES_LANG", raising=False)
+        _write_toml(wiki, f'[settings]\nlang = "de"\nversion = "{CURRENT_SETTINGS_VERSION}"\n')
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            settings = WikiSettings.load(wiki)
+        assert settings.settings_version == CURRENT_SETTINGS_VERSION
+        assert settings.language == "de"
+        assert caught == []
+
+    def test_version_mismatch_warns_and_keeps_value(
+        self, wiki, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("LIES_LANG", raising=False)
+        _write_toml(wiki, '[settings]\nlang = "de"\nversion = "0"\n')
+        with pytest.warns(UserWarning, match=r"check release notes for migration guidance"):
+            settings = WikiSettings.load(wiki)
+        assert settings.settings_version == "0"
+        assert settings.language == "de"
+
+    def test_version_non_string_warns_and_defaults(
+        self, wiki, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("LIES_LANG", raising=False)
+        _write_toml(wiki, '[settings]\nlang = "de"\nversion = 42\n')
+        with pytest.warns(UserWarning, match=r"must be a string"):
+            settings = WikiSettings.load(wiki)
+        assert settings.settings_version is None
+        assert settings.language == "de"
+
+    def test_version_empty_string_warns_and_defaults(
+        self, wiki, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("LIES_LANG", raising=False)
+        _write_toml(wiki, '[settings]\nlang = "de"\nversion = ""\n')
+        with pytest.warns(UserWarning, match=r"version is empty"):
+            settings = WikiSettings.load(wiki)
+        assert settings.settings_version is None
+        assert settings.language == "de"
+
+    def test_version_whitespace_stripped(self, wiki, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("LIES_LANG", raising=False)
+        _write_toml(wiki, f'[settings]\nlang = "de"\nversion = "  {CURRENT_SETTINGS_VERSION}  "\n')
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            settings = WikiSettings.load(wiki)
+        assert settings.settings_version == CURRENT_SETTINGS_VERSION
+        assert settings.language == "de"
+        assert caught == []
+
+    def test_env_wins_ignores_toml_version(self, wiki, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("LIES_LANG", "ja")
+        _write_toml(wiki, '[settings]\nversion = "0"\n')
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            settings = WikiSettings.load(wiki)
+        assert settings.language == "ja"
+        assert settings.settings_version is None
+        assert caught == []
+
+
+def _make_collection(wiki, name: str = "test-coll", language: str | None = None) -> Collection:
+    """Build a minimal Collection for resolve_language tests."""
+    from datetime import datetime
+
+    return Collection(
+        name=name,
+        source="https://example.com",
+        tags=[],
+        scraper_cmd=None,
+        doc_path=None,
+        mapper_model=None,
+        language=language,
+        version="0.0.0",
+        created_at=datetime.now(tz=UTC),
+        updated_at=datetime.now(tz=UTC),
+    )
+
+
+class TestResolveLanguage:
+    def test_wiki_global_when_no_collection(self, wiki, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("LIES_LANG", "fr")
+        assert resolve_language(wiki) == "fr"
+
+    def test_collection_override_wins(self, wiki, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("LIES_LANG", "fr")
+        coll = _make_collection(wiki, language="de")
+        assert resolve_language(wiki, coll) == "de"
+
+    def test_collection_none_falls_back_to_wiki_global(
+        self, wiki, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("LIES_LANG", "fr")
+        coll = _make_collection(wiki, language=None)
+        assert resolve_language(wiki, coll) == "fr"
+
+    def test_collection_empty_string_normalized_falls_back(
+        self, wiki, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Collection loader normalizes empty/whitespace to None; resolver falls back."""
+        monkeypatch.setenv("LIES_LANG", "fr")
+        coll = _make_collection(wiki, language=None)  # normalized upstream
+        assert resolve_language(wiki, coll) == "fr"
