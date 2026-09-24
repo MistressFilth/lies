@@ -75,12 +75,20 @@ async def test_query_tool_round_trip(
         fallback_reason="",
     )
 
+    # v0.38.0 no-default-models contract: every agent slot requires an
+    # explicit model. Patch the orchestrator's __init__ to skip
+    # ``_resolve_default_models`` (which would raise ModelNotConfigured
+    # in the test env) and to skip schema loading + qmd transport setup.
+    def fake_init(self, wiki, models=None):
+        self.wiki = wiki
+        self.models = models or {"orchestrator": "anthropic:test-dummy"}
+        self.schema = None
+        self._build()
+
     # ``Orchestrator.run_query`` is a deterministic, extractive wrapper over
     # ``synthesize_answer`` (no agent call, no LLM). Mocking it directly is
     # the real-Orchestrator pattern here: there is no ``_agent.run_sync``
-    # to mock because ``run_query`` never goes through the agent. We also
-    # no-op ``Orchestrator._build`` so the constructor doesn't try to spin
-    # up the qmd stdio MCP transport in the test process.
+    # to mock because ``run_query`` never goes through the agent.
     def fake_run_query(
         self,
         question: str,
@@ -94,6 +102,7 @@ async def test_query_tool_round_trip(
         return fake_answer
 
     with (
+        mock.patch.object(Orchestrator, "__init__", fake_init),
         mock.patch.object(Orchestrator, "_build", lambda self: None),
         mock.patch.object(Orchestrator, "run_query", new=fake_run_query),
     ):

@@ -76,8 +76,21 @@ def test_provenance_round_trip(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
 
     monkeypatch.setenv("LIES_WIKI_NAME", "test-wiki")
     # Orchestrator instantiation loads the providers stack which requires
-    # ANTHROPIC_API_KEY even when no model call happens.
+    # ANTHROPIC_API_KEY even when no model call happens. The no-default-
+    # model contract added in v0.38.0 also requires each agent slot to
+    # have an explicit LIES_<AGENT>_MODEL override; set all of them to a
+    # dummy value so the provider stack builds.
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-integration-dummy-key-not-used")
+    for agent_name in (
+        "orchestrator",
+        "source_reader",
+        "page_writer",
+        "linter",
+        "query_synthesizer",
+        "enricher",
+        "repair",
+    ):
+        monkeypatch.setenv(f"LIES_{agent_name.upper()}_MODEL", "anthropic:test-dummy")
     monkeypatch.setattr("lies.cli.resolve_wiki", lambda _name=None: wiki)
 
     orch = Orchestrator(wiki)
