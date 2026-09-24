@@ -199,6 +199,18 @@ Discover which collections the question touches by reading the LIVE
 registries — never a hardcoded map. Both registries matter; the
 library is the primary surface and the wiki is the secondary.
 
+**Pre-set `tag_expr` (caller-scoped queries):** when the caller's
+`LibrarianDeps.tag_expr` is non-`None` and non-empty, **use it verbatim**
+as the search scope. Do NOT re-derive from `wiki_catalog`. The caller
+has already scoped relevance at the corpus level; the catalog-derived
+scope is the FALLBACK only.
+
+- Pre-set tag_expr present → skip the registry loop below, proceed to
+  Step 2 with the caller's tag_expr.
+- Pre-set tag_expr absent (`None`) → run the registry loop as documented.
+
+### Registry loop (only when no caller tag_expr)
+
 1. Call `wiki_catalog` to list every wiki catalog row. Each entry
    carries `name`, `tags`, and `scope_keywords`.
 2. Library collection names are exposed via the addressable-tag
