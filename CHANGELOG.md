@@ -95,6 +95,29 @@ All notable changes to LIES are documented here. The format follows
   registry-driven classification loop is the fallback for un-tagged
   queries.
 
+- MCP `ground()` returned `no_coverage=true` with empty citations
+  for tag-scoped queries even after the v0.38.2 prompt fix. Root
+  cause: when no wiki is registered, the merged `_wiki_search`
+  result carried the wiki-side `no_coverage=true` flag, masking
+  the library hits; the librarian LLM was then invoked but its
+  structured `LibrarianOutput` repeatedly failed validation
+  (`Exceeded maximum output retries`), which the archivist caught
+  and converted to `no_coverage=true`. Fix:
+  1. `_wiki_search` now suppresses the wiki-side `no_coverage`
+     when the merged result has library hits — library-wins-on-
+     conflict per F18.
+  2. `grounding.ground()` gains a fast-path: when the caller
+     pre-sets `tag_expr` and the resolved scope is non-empty,
+     bypass the librarian LLM entirely, run a direct library
+     search, build `CitationSnippet`s from the top-K hits via
+     `qmd_get` + `parse_spans`, and return the digest immediately.
+     Falls through to the librarian dispatch if the fast-path
+     yields zero hits. The librarian is still invoked for
+     un-tagged queries where relevance judgment matters.
+  Empirical validation: `/cite +c:switchyard ...` returns 3
+  citations from the switchyard library collection with
+  `distinct_pages=3, no_coverage=false`.
+
 ## [0.37.11] - 2026-09-23
 
 ### Fixed
