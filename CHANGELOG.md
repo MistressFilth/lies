@@ -35,6 +35,37 @@ All notable changes to LIES are documented here. The format follows
 ## [Unreleased]
 
 ### Fixed
+- Library collection registry caches (`library_collection_names` and
+  `library_collection_tags`) now self-invalidate when the on-disk
+  collection set changes. The `@lru_cache` snapshot was previously
+  populated once per daemon process and only refreshed on restart —
+  a long-running MCP daemon did not see collections added after it
+  started. Reproduced in session b0298d7a (2026-09-23): the daemon
+  was started at 19:04, the `switchyard` collection was ingested
+  at 21:30, and `mcp__lies__ground` with `tag_expr="c:switchyard"`
+  surfaced `unknown tag(s): 'switchyard'` because the cache still
+  held the pre-ingest 13-collection snapshot. The caches are now
+  keyed on the directory mtime (names) and the aggregate mtime of
+  the directory plus every contained `config.yaml` (tags), so any
+  add / remove / rename / tag edit bumps the key and the next call
+  re-walks. Unchanged directories keep the hot-path speedup.
+- `WikiMemoryService.search` no longer drops wiki hits whose first
+  path segment matches the library-shape pattern when the library
+  registry is empty. The previous "conservative" fallback (treat
+  any top-level-collection pattern as library-shaped when the
+  registry cannot answer) leaked legitimate wiki hits: a wiki page
+  at `concepts/x.md` was dropped because `library_collection_names()`
+  returned the empty set and the regex fell through. Empty registry
+  is now a no-op filter — there are no library collections to
+  conflict with, so every wiki-shaped hit is a real wiki hit. The
+  filter still drops library-shaped hits when the registry IS
+  populated and the first segment matches a registered collection
+  name (the original bug the gate was added for: a wiki qmd index
+  that picks up library content due to data-root overlap).
+
+## [0.37.10] - 2026-09-23
+
+### Fixed
 - `ArchivistDigest` (returned by the MCP `ground` tool) now exposes
   `searched_scope: list[str]` on the wire, matching the F15 envelope
   that `SynthesizedAnswer` already carries via

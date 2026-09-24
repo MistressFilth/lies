@@ -34,11 +34,16 @@ def _clear_library_collection_name_cache():
     this fixture, a test that mutates ``collections_root`` would inherit
     a stale snapshot from an earlier test in the same xdist worker.
     """
-    from lies.library.registry import library_collection_names
+    from lies.library.registry import (
+        _library_collection_names_cached,
+        _library_collection_tags_cached,
+    )
 
-    library_collection_names.cache_clear()
+    _library_collection_names_cached.cache_clear()
+    _library_collection_tags_cached.cache_clear()
     yield
-    library_collection_names.cache_clear()
+    _library_collection_names_cached.cache_clear()
+    _library_collection_tags_cached.cache_clear()
 
 
 @pytest.mark.slow

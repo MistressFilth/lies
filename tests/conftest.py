@@ -124,12 +124,14 @@ def _isolated_xdg(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     # cache is built once against whichever XDG path was current at the
     # first call; every later call returns the cached Library even when
     # XDG has been repointed. Clear it here so the per-test XDG redirect
-    # takes effect for every test that touches the library.
+    # takes effect for every test that touches the library. The
+    # collection-name and tag-union registries are keyed on the
+    # collections root's mtime — a fresh tmp_path per test gives a
+    # unique mtime, so the cache is naturally self-isolating across
+    # tests without an explicit clear.
     from lies.library.paths import Library
-    from lies.library.registry import library_collection_names
 
     Library.open.cache_clear()
-    library_collection_names.cache_clear()
     xdg_root = tmp_path / "xdg"
     for sub in ("data", "config", "cache", "state", "runtime"):
         (xdg_root / sub).mkdir(parents=True, exist_ok=True)

@@ -103,12 +103,23 @@ def _is_library_shaped_path(path: str) -> bool:
        collection (``claude_platform/synthesis/c-...md`` is a wiki
        synthesis namespace, not a library collection).
 
-    Fallback: when the library is uninitialized or returns an empty
-    set, fall back to the bare regex match. The ``opencode/config.md``
-    shape is library-only by convention; an empty registry cannot
-    tell us whether a particular first segment IS a library, so we
-    apply the conservative rule (treat the pattern as library-shaped)
-    rather than risk leaking a known-broken hit to the caller.
+    Empty-registry rule: when ``library_collection_names()`` returns
+    the empty set (library uninitialized OR every collection removed),
+    the filter is a no-op — return False. There are no library
+    collections to conflict with, so every wiki-shaped hit is a real
+    wiki hit. The earlier "conservative fallback" (treat every
+    top-level-collection pattern as library-shaped when the registry
+    is empty) leaked legitimate wiki hits and broke
+    :func:`wiki_search_tool` for any wiki page whose path happened
+    to match the library pattern. The conservative variant assumed
+    the registry would always be populated; an empty registry is a
+    real state and the filter must respect it.
+
+    Defensive: any registry failure (missing library dir, IO error,
+    etc.) is treated as an empty registry, not as "library present"
+    — the error does not propagate because filtering is not a hard
+    correctness gate, but it also does not silently start dropping
+    hits on a transient failure.
     """
     if not path or not _LIBRARY_SHAPED_PATH.match(path):
         return False
@@ -117,12 +128,14 @@ def _is_library_shaped_path(path: str) -> bool:
         library_names = library_collection_names()
     except Exception:
         # Defensive: any registry failure (missing library dir, IO
-        # error, etc.) falls back to the bare regex. The error does
-        # not propagate because filtering is not a hard correctness
-        # gate — the caller still gets a sensible search result.
+        # error, etc.) is treated as an empty registry. We do NOT
+        # fall back to "treat as library-shaped" because that
+        # silently drops wiki hits when the library briefly
+        # disappears mid-daemon; the safer default is to keep
+        # everything.
         library_names = frozenset()
     if not library_names:
-        return True
+        return False
     return first_segment in library_names
 
 

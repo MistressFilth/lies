@@ -705,14 +705,17 @@ def test_search_keeps_synthesis_slug_with_same_pattern_when_first_segment_not_a_
     assert "claude_platform/synthesis/c-12345.md" in paths
 
 
-def test_search_filter_falls_back_to_bare_regex_when_library_empty(
+def test_search_filter_is_noop_when_library_empty(
     git_wiki: Wiki, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """When ``library_collection_names()`` returns empty (library
-    uninitialized or has zero collections), the filter cannot
-    decide which first segments ARE libraries. The fallback treats
-    any top-level-collection pattern as library-shaped — the
-    conservative choice when the registry cannot answer.
+    uninitialized or has zero collections), there are no library
+    collections to conflict with — every wiki-shaped hit is a real
+    wiki hit, so the filter must be a no-op. The earlier "treat any
+    top-level-collection pattern as library-shaped when the registry
+    cannot answer" variant silently dropped legitimate wiki hits at
+    ``concepts/x.md`` and broke :func:`wiki_search_tool` for any wiki
+    page whose path matched the library pattern.
     """
     monkeypatch.setattr(
         "lies.qmd.cli.qmd_query",
@@ -727,7 +730,8 @@ def test_search_filter_falls_back_to_bare_regex_when_library_empty(
     service = WikiMemoryService(wiki=git_wiki)
     result = service.search("opencode settings", collection_ids=[git_wiki.name])
     paths = [p.path for p in result.pages]
-    assert "opencode/config.md" not in paths
+    # Empty registry → filter is a no-op → the hit survives.
+    assert "opencode/config.md" in paths
 
 
 def test_service_locks_are_per_instance(git_wiki: Wiki) -> None:

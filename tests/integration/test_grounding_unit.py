@@ -642,13 +642,16 @@ def test_ground_library_collection_names_cached_across_calls(monkeypatch) -> Non
     # itself and break the regression intent).
     monkeypatch.setattr(registry, "_collections_root", lambda: _FakeRoot())
     # Reset the cache so the assertion sees only this test's misses.
-    registry.library_collection_names.cache_clear()
+    # ``library_collection_names`` is now a thin wrapper that keys the
+    # inner lru_cache on the directory mtime; clear the inner cache
+    # so the test's miss counter starts from zero.
+    registry._library_collection_names_cached.cache_clear()
 
     grounding.ground("q")  # tag_expr=None — resolver path skipped
     grounding.ground("q", tag_expr="a|b")  # resolver consults cache
     grounding.ground("q", tag_expr="a")  # resolver hits cache
 
-    info = registry.library_collection_names.cache_info()
+    info = registry._library_collection_names_cached.cache_info()
     # One underlying body call regardless of how many ground()
     # invocations crossed the resolver boundary. Without
     # memoization, every ground() with a tag_expr would force a
@@ -659,10 +662,13 @@ def test_ground_library_collection_names_cached_across_calls(monkeypatch) -> Non
 class _FakeRoot:
     """Fake Path-like for ``_collections_root`` in the cache test.
 
-    Exposes ``.exists()`` returning ``True`` and ``.iterdir()``
-    yielding two fake directory entries so
-    :func:`lies.library.registry.library_collection_names` walks a
-    stable, non-empty set without touching the real library.
+    Exposes ``.exists()`` returning ``True``, ``.iterdir()``
+    yielding two fake directory entries, and ``.stat()`` returning
+    a deterministic mtime so the new mtime-keyed cache can record
+    a stable cache key. Without ``.stat()`` the wrapper around
+    :func:`library_collection_names` (which keys on the dir mtime)
+    raises ``AttributeError`` and the cache assertion cannot
+    observe a hit.
     """
 
     def exists(self) -> bool:
@@ -670,6 +676,13 @@ class _FakeRoot:
 
     def iterdir(self):
         return iter([_FakeEntry("a"), _FakeEntry("b")])
+
+    def stat(self) -> _FakeStat:
+        return _FakeStat()
+
+
+class _FakeStat:
+    st_mtime_ns: int = 1_700_000_000_000_000_000
 
 
 class _FakeEntry:

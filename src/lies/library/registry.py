@@ -142,26 +142,54 @@ def library_has_no_collections() -> bool:
 
 
 @lru_cache(maxsize=1)
+def _library_collection_names_cached(_root_mtime_ns: int) -> frozenset[str]:
+    """Cached snapshot of library-collection directory names.
+
+    Cache key is the parent directory's mtime in nanoseconds —
+    changing when a collection is added, removed, or renamed. The
+    mtime-based key makes the cache self-invalidating for the
+    long-running MCP daemon (a new collection like ``switchyard``
+    was previously invisible until the daemon restarted). The
+    directory walk only re-runs on cache miss; an unchanged dir
+    keeps its hot-path speedup. Tests can still clear the cache
+    via :func:`library_collection_names.cache_clear` (clears the
+    outer wrapper) or by touching ``collections_root``.
+    """
+    root = _collections_root()
+    if not root.exists():
+        return frozenset()
+    return frozenset(sorted(entry.name for entry in root.iterdir() if entry.is_dir()))
+
+
 def library_collection_names() -> frozenset[str]:
     """Sorted frozenset of every addressable library-collection directory name.
 
     The addressable-tag set for the resolver. Empty when the library
     is uninitialized or empty. Sorted for deterministic error messages.
 
-    Memoized via :func:`functools.lru_cache`: the first call walks
-    the library's ``collections_root`` once and returns a frozen
-    snapshot; subsequent calls return the cached snapshot without
-    re-traversing the disk. Cache invalidates on process restart —
-    acceptable because the registry is small and the hot paths
-    (F15 tag-filter dispatch, F19 ground tool, CLI query surface)
-    would otherwise re-do an ``iterdir`` on every invocation. The
-    test surface can clear the cache via
-    ``library_collection_names.cache_clear()``.
+    Memoized via :func:`functools.lru_cache` keyed on the parent
+    directory's mtime: the first call (and any call after a directory
+    change) walks the library's ``collections_root`` once and returns
+    a frozen snapshot; subsequent calls with an unchanged mtime
+    return the cached snapshot without re-traversing the disk. The
+    mtime key self-invalidates the cache when a collection is added
+    or removed, so the long-running MCP daemon picks up new
+    collections like ``switchyard`` without a restart. The test
+    surface can clear the cache via
+    ``library_collection_names.cache_clear()`` (clears the inner
+    wrapper).
     """
     root = _collections_root()
     if not root.exists():
         return frozenset()
-    return frozenset(sorted(entry.name for entry in root.iterdir() if entry.is_dir()))
+    try:
+        mtime_ns = root.stat().st_mtime_ns
+    except OSError:
+        # ``collections_root`` disappeared between ``exists()`` and
+        # ``stat()`` — treat as empty rather than crash. Next call
+        # will re-stat and re-walk.
+        return frozenset()
+    return _library_collection_names_cached(mtime_ns)
 
 
 def library_collection_metas() -> Iterator[LibraryCollectionMeta]:
@@ -237,6 +265,23 @@ def library_collection_record(slug: str) -> LibraryCollectionConfig | None:
 
 
 @lru_cache(maxsize=1)
+def _library_collection_tags_cached(_aggregate_mtime_ns: int) -> frozenset[str]:
+    """Cached snapshot of the union of every collection's ``tags``.
+
+    Cache key is the aggregate mtime of the ``collections_root``
+    directory and every ``config.yaml`` it contains; the key changes
+    when a collection is added, removed, renamed, or has its tags
+    list edited. The aggregate-mtime key makes the cache
+    self-invalidating for the long-running MCP daemon — the same
+    fix applied to :func:`library_collection_names`. The full tag
+    walk only runs on cache miss.
+    """
+    tags: set[str] = set()
+    for record in library_collection_records():
+        tags.update(record.tags)
+    return frozenset(sorted(tags))
+
+
 def library_collection_tags() -> frozenset[str]:
     """Sorted frozenset of every ``tags`` entry across all registered library
     collections' ``config.yaml``.
@@ -246,17 +291,54 @@ def library_collection_tags() -> frozenset[str]:
     when the library is uninitialized or has no collection tags. Sorted
     for deterministic error messages.
 
-    Memoized via :func:`functools.lru_cache` to match
-    :func:`library_collection_names`: the first call walks every
-    collection's ``config.yaml`` once and returns a frozen snapshot;
-    subsequent calls return the cached snapshot without re-traversing
-    the disk. The test surface can clear the cache via
-    ``library_collection_tags.cache_clear()``.
+    Memoized via :func:`functools.lru_cache` keyed on the aggregate
+    mtime of the collections root and every contained ``config.yaml``.
+    Adding a collection, removing one, or editing a config's tags
+    list bumps the aggregate mtime and self-invalidates the cache;
+    the long-running MCP daemon picks up the change without a
+    restart (same fix as :func:`library_collection_names`).
+    ``stat()`` on ~14 files per call is negligible compared to the
+    registry's downstream cost (every validator / atom-matcher
+    call), so the speedup is preserved. The test surface can clear
+    the cache via ``_library_collection_tags_cached.cache_clear()``
+    (the inner lru_cache the wrapper delegates to).
     """
-    tags: set[str] = set()
-    for record in library_collection_records():
-        tags.update(record.tags)
-    return frozenset(sorted(tags))
+    root = _collections_root()
+    if not root.exists():
+        return frozenset()
+    aggregate_ns = _aggregate_mtime_ns(root)
+    return _library_collection_tags_cached(aggregate_ns)
+
+
+def _aggregate_mtime_ns(root: Path) -> int:
+    """Return the maximum mtime in nanoseconds across ``root`` and its
+    immediate ``config.yaml`` children.
+
+    Used as a cache key for the per-collection tag union: any
+    add/remove/rename of a collection, or any edit to a collection's
+    ``config.yaml`` tags, bumps the aggregate and self-invalidates
+    the cache. Skips a missing ``config.yaml`` (collection not yet
+    bootstrapped) without raising.
+    """
+    try:
+        root_mtime = root.stat().st_mtime_ns
+    except OSError:
+        return 0
+    max_ns = root_mtime
+    try:
+        for entry in root.iterdir():
+            if not entry.is_dir():
+                continue
+            config = entry / "config.yaml"
+            if not config.exists():
+                continue
+            try:
+                max_ns = max(max_ns, config.stat().st_mtime_ns)
+            except OSError:
+                continue
+    except OSError:
+        pass
+    return max_ns
 
 
 __all__ = (
