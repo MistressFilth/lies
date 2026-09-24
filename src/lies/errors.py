@@ -12,7 +12,27 @@ from lies.constants import LIES_DATA_SUBDIR
 # subclasses :class:`lies.lock_errors.WikiFlockError`.
 from lies.lock_errors import WikiLockBusy
 
-__all__ = ["WikiAlreadyExists", "WikiLockBusy", "WikiNameError", "WikiNotRegistered"]
+__all__ = [
+    "ModelNotConfigured",
+    "WikiAlreadyExists",
+    "WikiLockBusy",
+    "WikiNameError",
+    "WikiNotRegistered",
+]
+
+
+class ModelNotConfigured(Exception):
+    """Raised when no model is configured for an agent slot.
+
+    LIES does not hard-code vendor-default models. Every operator
+    must configure a model via ``providers.toml`` or
+    ``LIES_<AGENT>_MODEL`` env vars; deployments that rely on the
+    legacy implicit ``anthropic:claude-opus-4-7`` fallback now
+    surface this exception at first use.
+    """
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
 
 
 class WikiAlreadyExists(Exception):

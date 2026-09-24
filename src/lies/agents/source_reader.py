@@ -94,10 +94,17 @@ readable; tests and wiki pages are intentionally out of scope.
 
 
 def source_reader_agent(
-    model: Model | str = "anthropic:claude-opus-4-7",
+    model: Model | str | None = None,
     tools: list[Callable[..., Any]] | None = None,
 ) -> Agent[None, SourceExtraction]:
     """Construct the source-reader sub-agent."""
+    if model is None:
+        from lies.errors import ModelNotConfigured
+
+        raise ModelNotConfigured(
+            "source_reader_agent requires an explicit model. Pass `model=` "
+            "or set LIES_AGENT_SOURCE_READER_MODEL / configure providers.toml."
+        )
     # PromptedOutput wraps the schema in instructions and parses the
     # model's free-form JSON text rather than relying on tool calling
     # or response_format=json_schema. MiniMax-M3 ignores tool_choice and

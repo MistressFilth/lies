@@ -73,9 +73,24 @@ def _from_qmd(
     question: str,
     limit: int,
     qmd_search: Callable[..., list[dict[str, object]]],
+    *,
+    collection_filter: set[str] | None = None,
 ) -> tuple[list[WikiEvidence], bool, str]:
+    """Run the qmd query and validate each hit before minting a page id.
+
+    ``collection_filter`` (F18 Task 6 / Bundle C): when set, qmd
+    applies its post-filter (``qmd://<coll>/<rest>`` first-segment
+    match) before hits leave the CLI. Library collections the
+    operator excluded never surface as wiki-side hits at qmd-time.
+    The downstream ``WikiMemoryService.search`` additionally drops
+    library-shaped hits via ``_is_library_shaped_path`` so the
+    catalog cannot mint phantom page_ids for paths the wiki
+    catalog has no row for.
+    """
     try:
-        results = qmd_search(wiki.data_root, question, limit + 1)
+        results = qmd_search(
+            wiki.data_root, question, limit + 1, collection_filter=collection_filter
+        )
     except QmdNotInstalledError:
         return ([], True, _QMD_FALLBACK_UNAVAILABLE)
     except QmdNoResultsError:
@@ -208,8 +223,17 @@ def search_wiki(
     *,
     limit: int = 5,
     qmd_search: Callable[..., list[dict[str, object]]] | None = None,
+    collection_filter: set[str] | None = None,
 ) -> WikiSearchResult:
-    """Search the wiki and return bounded evidence."""
+    """Search the wiki and return bounded evidence.
+
+    ``collection_filter`` (F18 Task 6 / Bundle C) threads the resolved
+    tag-expression set down to qmd. qmd applies its post-filter
+    (``qmd://<coll>/<rest>`` first-segment match) before the hits
+    ever leave the CLI, so library collections the operator excluded
+    never produce phantom wiki-side paths. ``None`` keeps the
+    untagged behavior unchanged for every existing caller.
+    """
     if qmd_search is None:
         # Resolve ``qmd_query`` at call time so monkeypatching
         # ``lies.qmd.cli.qmd_query`` takes effect.
@@ -225,7 +249,9 @@ def search_wiki(
             fallback_reason="empty_query",
             no_coverage=_no_coverage_flag(wiki, []),
         )
-    evidences, truncated, fallback_reason = _from_qmd(wiki, question, limit, qmd_search)
+    evidences, truncated, fallback_reason = _from_qmd(
+        wiki, question, limit, qmd_search, collection_filter=collection_filter
+    )
     if not evidences:
         evidences = _from_index(wiki, question, limit)
     return WikiSearchResult(

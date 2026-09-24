@@ -557,8 +557,23 @@ class WikiMemoryService:
         *,
         collection_ids: list[str] | None = None,
         limit: int = 5,
+        qmd_collection_filter: set[str] | None = None,
     ) -> WikiSearchResult:
-        """Search this wiki and authenticate the returned evidence references."""
+        """Search this wiki and authenticate the returned evidence references.
+
+        ``qmd_collection_filter`` is the F18 Task 6 / Bundle C
+        tag-expression set the caller (typically the librarian's
+        ``_wiki_search`` closure) resolved from ``LibrarianDeps.
+        tag_expr``. Threads down to ``_from_qmd`` so qmd applies the
+        post-filter at qmd-time — library collections the operator
+        excluded never surface as phantom wiki-side hits.
+        ``collection_ids`` is the per-wiki filter (wiki membership);
+        ``qmd_collection_filter`` is the qmd-side collection set.
+        Two distinct scopes: a wiki that excludes itself from
+        ``collection_ids`` returns ``no_coverage=True``; a wiki whose
+        ``qmd_collection_filter`` excludes library collections still
+        searches its own pages.
+        """
 
         # Drop ghost catalog rows before any dispatch so a stale row
         # cannot surface a ``page_id`` the subsequent ``wiki_read``
@@ -582,7 +597,9 @@ class WikiMemoryService:
                 fallback_reason="collection_filtered",
                 no_coverage=_no_coverage_flag(self._wiki, []),
             )
-        result = search_wiki(self._wiki, question, limit=limit)
+        result = search_wiki(
+            self._wiki, question, limit=limit, collection_filter=qmd_collection_filter
+        )
         # Filter library-shaped hits BEFORE registering evidence so
         # the page_ids and paths the validator sees cannot reference
         # dead-end library paths. Without this gate the wiki catalog

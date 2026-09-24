@@ -111,7 +111,7 @@ def _build_page_writer_prompt(ctx: RunContext[PageWriterDeps] | Any) -> str:
 
 
 def page_writer_agent(
-    model: Model | str = "anthropic:claude-opus-4-7",
+    model: Model | str | None = None,
 ) -> Agent[PageWriterDeps, list[PageDiff]]:
     """Construct the page-writer sub-agent."""
     # PromptedOutput — same rationale as source_reader_agent. M3
@@ -120,6 +120,13 @@ def page_writer_agent(
     # instructions; model emits JSON text. The unit test that
     # exercised the live run was relaxed (TestModel can't drive
     # PromptedOutput) and the integration test exercises the real path.
+    if model is None:
+        from lies.errors import ModelNotConfigured
+
+        raise ModelNotConfigured(
+            "page_writer_agent requires an explicit model. Pass `model=` "
+            "or set LIES_AGENT_PAGE_WRITER_MODEL / configure providers.toml."
+        )
     agent: Agent[PageWriterDeps, list[PageDiff]] = Agent(
         model,
         output_type=PromptedOutput(list[PageDiff]),

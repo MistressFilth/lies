@@ -8,7 +8,11 @@ Usage:
     from lies.qmd.mcp import QmdMcpClient
 
     qmd = QmdMcpClient(transport="stdio")
-    agent = Agent("anthropic:claude-opus-4-7", capabilities=[qmd.as_capability()])
+    agent = Agent("<configured-model>", capabilities=[qmd.as_capability()])
+
+LIES no longer hard-codes a vendor-default model; operators must
+configure a model via providers.toml or LIES_<AGENT>_MODEL before
+constructing an agent.
 
 Note: the stdio transport needs pydantic-ai's `mcp` extra installed at
 runtime — `pip install "pydantic-ai-slim[mcp]"`. Without it the capability

@@ -143,7 +143,15 @@ the report and continue; the shell still runs.
 """
 
 
-def linter_agent(model: Model | str = "anthropic:claude-opus-4-7") -> Agent[LintDeps, LintReport]:
+def linter_agent(model: Model | str | None = None) -> Agent[LintDeps, LintReport]:
+    """Construct the linter sub-agent (N2)."""
+    if model is None:
+        from lies.errors import ModelNotConfigured
+
+        raise ModelNotConfigured(
+            "linter_agent requires an explicit model. Pass `model=` "
+            "or set LIES_AGENT_LINTER_MODEL / configure providers.toml."
+        )
     """Construct the linter sub-agent (N2).
 
     Carries the marker :class:`LintDeps` so the typed deps surface

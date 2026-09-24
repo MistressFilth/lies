@@ -278,7 +278,7 @@ to issue a follow-up, not to fabricate.
 
 
 def librarian_agent(
-    model: Model | str = "anthropic:claude-opus-4-7",
+    model: Model | str | None = None,
 ) -> Agent[LibrarianDeps, LibrarianOutput]:
     """Construct the librarian subagent.
 
@@ -291,6 +291,13 @@ def librarian_agent(
     Dispatches via ``run_sync(deps)`` (in-process, not harness
     await-async).
     """
+    if model is None:
+        from lies.errors import ModelNotConfigured
+
+        raise ModelNotConfigured(
+            "librarian_agent requires an explicit model. Pass `model=` "
+            "or set LIES_AGENT_LIBRARIAN_MODEL / configure providers.toml."
+        )
     agent: Agent[LibrarianDeps, LibrarianOutput] = make_sub_agent(
         model=model,
         output_type=LibrarianOutput,

@@ -34,7 +34,33 @@ All notable changes to LIES are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+- BREAKING: every agent factory and `_resolve_default_models` no
+  longer silently falls back to `anthropic:claude-opus-4-7` when
+  no `providers.toml` and no `LIES_<AGENT>_MODEL` env override are
+  configured. Missing configuration now raises
+  `lies.errors.ModelNotConfigured` with the list of slots that
+  need a value. The `lies providers init` wizard no longer
+  pre-selects `anthropic:claude-opus-4-7` — `default_model` is
+  now a required prompt. LIES does not hard-code vendor defaults;
+  operators own the model choice. Migration: run
+  `uv run lies providers init` or export per-agent env vars.
+
+### Added
+- New `lies.errors.ModelNotConfigured` exception raised by every
+  agent factory and `_resolve_default_models` when no model is
+  configured. Replaces the silent `anthropic:claude-opus-4-7`
+  fallback.
+
 ### Fixed
+- `WikiMemoryService.search` now threads an optional
+  `qmd_collection_filter` kwarg down to `_from_qmd` /
+  `search_wiki` so qmd applies the post-filter at qmd-time. The
+  librarian's `_wiki_search` resolves `LibrarianDeps.tag_expr`
+  via the F15 tag-expression filter and threads the resolved
+  collection set down. Library collections the operator excluded
+  no longer surface as phantom wiki-side hits.
+
 - `/cite` slash prompt now substitutes a default question when
   Claude Code's slash dispatcher truncates the input to a
   filter-only token. Reproduced in session a640ed1a (2026-09-24):
