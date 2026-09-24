@@ -67,6 +67,7 @@ async def test_accept_returns_none(ctx_accept) -> None:
     assert await _confirm_destructive(ctx_accept, "msg") is None
 
 
+@pytest.mark.slow
 @pytest.mark.asyncio
 async def test_accept_with_confirm_false_returns_decline(ctx_decline_data) -> None:
     assert await _confirm_destructive(ctx_decline_data, "msg") == "operation declined by user"

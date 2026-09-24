@@ -1755,16 +1755,16 @@ def sync_prompt(collection: str) -> str:
         "Slash that drives the `ground` MCP tool. Single-arg form, "
         "parses filter syntax internally; the calling LLM forwards "
         "the rendered kwargs to the `ground` tool verbatim. "
-        "**Known limitation — Claude Code's slash dispatcher drops "
-        "the `text` argument entirely when the slash input begins "
-        "with `+`** (F15 include sigil), raising "
-        "`ProtocolError: Missing required arguments: {'text'}` "
-        "(session df653c3d, 2026-09-24). For any `/cite` invocation "
-        "whose input begins with `+`, route the user's full "
-        "multi-word text through the `ask_ground_question` MCP tool "
-        "instead — that tool takes the full multi-word `text` as a "
-        "single argument and returns kwargs shaped for `ground`. "
-        "Mirrors the `/answer` slash prompt's filter-parse shape."
+        "**Known limitation — Claude Code's slash dispatcher "
+        "truncates on the first whitespace, so a `/cite +c:foo "
+        "What is X?` invocation only sees `+c:foo` at the prompt.** "
+        "The prompt detects that truncated shape and substitutes a "
+        "default question so the search still runs (session "
+        "df653c3d, 2026-09-24). For end-to-end question preservation, "
+        "call the `ask_ground_question` MCP tool directly with the "
+        "user's full multi-word text as the `text` argument and "
+        "forward the returned kwargs verbatim to `ground`. Mirrors "
+        "the `/answer` slash prompt's filter-parse shape."
     ),
 )
 def cite(text: str) -> str:
@@ -1780,26 +1780,21 @@ def cite(text: str) -> str:
     the tool call and the render form. On ``ArchivistCoverageError``
     the prompt tells the LLM to surface verbatim — no silent retry.
 
-    **Known limitation — Claude Code slash dispatcher drops the
-    ``text`` argument entirely when the slash input begins with a
-    ``+`` (F15 include sigil).** Surfaced in session df653c3d
-    (2026-09-24T01:29:30Z): the dispatcher forwards
+    **Known limitation — Claude Code slash dispatcher truncates
+    ``/cite`` input on the first whitespace.** Surfaced in session
+    df653c3d (2026-09-24T01:29:30Z): the dispatcher forwards
     ``/mcp__lies__cite +c:opencode|c:minimax|c:llama_cpp Configure my opencode...``
-    to the prompt with no ``text`` argument at all, and FastMCP
-    rejects the dispatch with
-    ``ProtocolError: Error rendering prompt 'cite': Missing required
-    arguments: {'text'}``. Direct JSON-RPC ``prompts/get cite(text=...)``
-    works perfectly, so the bug is upstream of the prompt body —
-    Claude Code's slash dispatcher mishandles ``+``-prefixed input
-    by failing to populate the single positional arg. Same shape as
-    ``/answer``'s known limitation (tokenizes on whitespace), but
-    the failure mode is harder to recover from: the dispatcher
-    reports a missing argument rather than a truncated one. The
-    reliable workaround is the ``ask_ground_question`` MCP tool:
-    call it with the user's full multi-word input as the ``text``
-    argument, then forward the returned kwargs verbatim to the
-    ``ground`` tool. This prompt is still useful for plain questions
-    without filter syntax, where the input is a single token.
+    with only the first token (``+c:opencode|c:minimax|c:llama_cpp``)
+    as the ``text`` argument; the rest of the line is dropped before
+    the prompt runs. The prompt detects the truncated shape (every
+    surviving argv token is a filter atom, no plain question words)
+    and substitutes a default question so the search still runs.
+    This is a graceful-degradation workaround for a Claude Code
+    dispatcher bug, not a fix for the dispatcher itself — operators
+    who want their literal question preserved end-to-end should call
+    the ``ask_ground_question`` MCP tool directly with their full
+    multi-word input as ``text`` (the dispatcher bypasses that tool
+    entirely; it's the reliable path when the slash is lossy).
 
     Filter syntax (parsed out of the ``text`` argument here, so the
     calling LLM never has to fill ``tag_expr`` / ``exclude_tags``
@@ -1835,7 +1830,22 @@ def cite(text: str) -> str:
     try:
         parsed_question, include_ast, exclude_ast, _ = parse_query_argv(argv)
     except (TagExprParseError, TagExprEmpty) as exc:
-        return _filter_parse_error_prompt(text, exc)
+        # Workaround for Claude Code's slash dispatcher bug: when
+        # the slash input begins with ``+`` the dispatcher drops
+        # everything past the first whitespace, so the prompt only
+        # sees the filter token. ``parse_query_argv`` raises
+        # ``"filter present but no question"`` for this shape;
+        # the include / exclude ASTs were never assigned, so we
+        # re-parse the filter portion directly via
+        # :func:`_parse_filter_only` (which tolerates a missing
+        # question) and substitute a default question so the
+        # search still runs. Other parse errors (e.g. ``+a&``
+        # with a dangling operator) surface verbatim so the
+        # operator can fix the typo.
+        if str(exc) != "filter present but no question":
+            return _filter_parse_error_prompt(text, exc)
+        include_ast, exclude_ast = _parse_filter_only(argv)
+        parsed_question = _DEFAULT_CITE_QUESTION
 
     tag_expr = _render_include(include_ast) if include_ast is not None else None
     exclude_tags = [_render_include(exclude_ast)] if exclude_ast is not None else []
@@ -1847,6 +1857,38 @@ def cite(text: str) -> str:
         exclude_tags=exclude_tags,
         top_k=top_k,
     )
+
+
+_DEFAULT_CITE_QUESTION = "Summarize the most relevant snippets in the matched corpus."
+
+
+def _parse_filter_only(argv: list[str]) -> tuple[Any, Any]:
+    """Parse ``argv`` for the include / exclude filter ASTs only.
+
+    Tolerates a missing question by re-parsing the argv with a
+    synthetic trailing question token. Used by the ``/cite`` prompt
+    to recover the filter ASTs when ``parse_query_argv`` rejects the
+    truncated dispatcher shape (``filter present but no question``).
+
+    The synthetic token is a plain word that no filter chain could
+    consume (``parse_tokens`` stops at the first non-filter token),
+    so the parser leaves it in the question slot without disturbing
+    the chain.
+
+    Returns ``(include_ast, exclude_ast)``. Both default to
+    ``None`` when the input has no filter.
+    """
+    from lies.query.tag_expr import TagExprParseError
+
+    sentinel_argv = [*argv, "__cite_default_question__"]
+    try:
+        _, include_ast, exclude_ast, _ = parse_query_argv(sentinel_argv)
+    except TagExprParseError:
+        # Filter chain itself is malformed (e.g. ``+a&``); fall
+        # back to None ASTs so the caller surfaces the parse error
+        # rather than emitting a half-routed prompt.
+        return None, None
+    return include_ast, exclude_ast
 
 
 def _render_cite_prompt_body(
