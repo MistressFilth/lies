@@ -34,6 +34,32 @@ All notable changes to LIES are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.37.8] - 2026-09-23
+
+### Added
+- New MCP tool `ask_ground_question(text)` that takes a single
+  multi-word string and parses the `+tag_expr` / `-exclude_tags`
+  filter syntax (including compound `&` / `|` chains). Mirrors the
+  existing `ask_question` tool but returns kwargs shaped for the
+  `ground` tool (`question`, `tag_expr`, `exclude_tags`, `top_k=3`).
+  The LLM forwards the returned kwargs to `ground` verbatim. Works
+  around Claude Code's `/mcp__lies__cite` slash-command dispatcher,
+  which tokenizes the input on whitespace and discards everything
+  past the first token — same limitation that motivated the answer
+  side's `ask_question` tool. (`6d990b0`)
+
+### Fixed
+- `/cite` slash prompt now takes a single `text` positional arg, same
+  shape as `/answer`. The prompt parses `+c:<name>` / `-<tag>` filter
+  syntax internally (including compound exclude chains) and renders
+  the parsed `tag_expr` / `exclude_tags` / `top_k` kwargs verbatim
+  in the prompt body so the calling LLM does not have to fill them.
+  Previously the slash took pre-parsed kwargs, and Claude Code's
+  dispatcher tokenized the multi-word invocation on whitespace,
+  dropping the filter syntax entirely. The `ground` MCP tool itself
+  already parsed compound exclude correctly — the asymmetry was
+  only at the slash layer. (`6d990b0`)
+
 ## [0.37.7] - 2026-09-23
 
 ### Fixed
