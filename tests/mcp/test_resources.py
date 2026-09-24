@@ -12,6 +12,7 @@ from lies.mcp.server import (
     _wiki_catalog_impl,
     _wiki_index_impl,
     _wiki_lint_report_impl,
+    ask_ground_question,
     ask_question,
     ask_wiki_answer,
     cite,
@@ -253,12 +254,7 @@ def test_cite_prompt_routes_to_ground() -> None:
     Regression catches silent re-template to `answer` or rewrites to a
     non-routing prose form.
     """
-    out = cite(
-        question="what is pydantic-ai?",
-        tag_expr="python",
-        exclude_tags=["chat"],
-        top_k=3,
-    )
+    out = cite(text="+python -chat what is pydantic-ai?")
     assert isinstance(out, str)
     assert "ground" in out
     assert "[[" in out
@@ -267,12 +263,7 @@ def test_cite_prompt_routes_to_ground() -> None:
 
 def test_cite_prompt_documents_secondary_marker() -> None:
     """The cite prompt prose tells the LLM to prefix wiki-only hits with [secondary]."""
-    out = cite(
-        question="what is pydantic-ai?",
-        tag_expr="python",
-        exclude_tags=["chat"],
-        top_k=3,
-    )
+    out = cite(text="+python -chat what is pydantic-ai?")
     assert "secondary" in out.lower()
 
 
@@ -486,3 +477,126 @@ def test_ask_question_empty() -> None:
     """Empty input → structured envelope with error key, no exception."""
     out = ask_question(text="")
     assert "error" in out
+
+
+def test_ask_ground_question_simple_include() -> None:
+    """``+c:opencode <question>`` → ``tag_expr='c:opencode'``, no exclude, top_k=3.
+
+    Parallel to ``test_ask_question_parses_filter`` but with the
+    ground-tool kwargs shape (``top_k`` defaulted to 3). The LLM
+    forwards the dict to the ``ground`` tool unchanged.
+    """
+    out = ask_ground_question(text="+c:opencode where does X keep settings?")
+    assert out["question"] == "where does X keep settings?"
+    assert out["tag_expr"] == "c:opencode"
+    assert out["exclude_tags"] == []
+    assert out["top_k"] == 3
+
+
+def test_ask_ground_question_compound_exclude_and() -> None:
+    """``-c:foo&c:bar <question>`` → ``exclude_tags=['c:foo&c:bar']`` (AND).
+
+    Parallel to ``test_ask_question_compound_exclude_and`` —
+    ``_render_include`` flattens the AND AST to a single string so
+    the ground-tool boundary can re-parse it. ``top_k`` is the
+    ground default, not the answer default.
+    """
+    out = ask_ground_question(text="-c:foo&c:bar what is X?")
+    assert out["question"] == "what is X?"
+    assert out["tag_expr"] is None
+    assert out["exclude_tags"] == ["c:foo&c:bar"]
+    assert out["top_k"] == 3
+
+
+def test_ask_ground_question_compound_exclude_or() -> None:
+    """``-c:foo|c:bar <question>`` → ``exclude_tags=['c:foo|c:bar']`` (OR).
+
+    Parallel to ``test_ask_question_compound_exclude_or``.
+    """
+    out = ask_ground_question(text="-c:foo|c:bar what is X?")
+    assert out["question"] == "what is X?"
+    assert out["tag_expr"] is None
+    assert out["exclude_tags"] == ["c:foo|c:bar"]
+    assert out["top_k"] == 3
+
+
+def test_ask_ground_question_bare_operator_argv() -> None:
+    """``-c:foo & c:bar what?`` (realistic shell split) → AND exclude.
+
+    Regression pin for the bare-operator argv form: realistic shell
+    splitting produces argv lists where ``&`` is its own token. The
+    chain-peel loop must absorb it and continue. Without this
+    contract, slash invocations that arrive shlex-split would
+    silently drop the operator and mis-classify the atoms.
+    """
+    out = ask_ground_question(text="-c:foo & c:bar what is X?")
+    assert out["question"] == "what is X?"
+    assert out["exclude_tags"] == ["c:foo&c:bar"]
+
+
+def test_ask_ground_question_no_filter() -> None:
+    """Plain question → ``tag_expr=None``, ``exclude_tags=[]``."""
+    out = ask_ground_question(text="where does X keep settings?")
+    assert out["question"] == "where does X keep settings?"
+    assert out["tag_expr"] is None
+    assert out["exclude_tags"] == []
+    assert out["top_k"] == 3
+
+
+def test_ask_ground_question_parse_error() -> None:
+    """``+a&`` (dangling operator) → structured envelope with error key.
+
+    Mirror of ``test_ask_question_parse_error`` — never raises,
+    always returns a machine-readable shape.
+    """
+    out = ask_ground_question(text="+a&")
+    assert "error" in out
+    assert "dangling operator" in out["error"]
+
+
+def test_ask_ground_question_empty() -> None:
+    """Empty input → structured envelope with error key, no exception."""
+    out = ask_ground_question(text="")
+    assert "error" in out
+
+
+def test_cite_prompt_parses_compound_include_filter() -> None:
+    """``cite("+c:opencode|c:claude_platform What?")`` returns structured kwargs.
+
+    Parity pin for the `/cite` slash + ``ask_ground_question`` pair:
+    the slash prompt must parse the same filter syntax the
+    ``ask_wiki_answer`` prompt does, so the LLM never has to fill
+    ``tag_expr`` / ``exclude_tags`` slots. Regression catches the
+    pre-fix shape where multi-word filter prefixes were dropped by
+    the slash dispatcher.
+    """
+    out = cite(text="+c:opencode|c:claude_platform What?")
+    assert isinstance(out, str)
+    assert "ground" in out
+    assert "tag_expr: 'c:opencode|c:claude_platform'" in out
+    assert "exclude_tags: []" in out
+    assert "question: What?" in out
+    assert "top_k: 3" in out
+
+
+def test_cite_prompt_parses_compound_exclude() -> None:
+    """``cite("-c:foo&c:bar <question>")`` renders AND exclude."""
+    out = cite(text="-c:foo&c:bar what is X?")
+    assert "tag_expr: None" in out
+    assert "exclude_tags: ['c:foo&c:bar']" in out
+    assert "question: what is X?" in out
+
+
+def test_cite_prompt_surfaces_parse_error() -> None:
+    """``cite("+a&")`` → parse error rendered verbatim, no silent retry."""
+    out = cite(text="+a&")
+    assert "Filter parse error" in out
+    assert "dangling operator" in out
+
+
+def test_cite_prompt_plain_question_unchanged() -> None:
+    """Plain question (no filter) → no tag_expr, no exclude, full text is the question."""
+    out = cite(text="Where does opencode keep settings?")
+    assert "tag_expr: None" in out
+    assert "exclude_tags: []" in out
+    assert "question: Where does opencode keep settings?" in out

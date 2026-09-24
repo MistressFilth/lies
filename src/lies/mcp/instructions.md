@@ -33,6 +33,11 @@ only).
   returned kwargs to the `answer` tool. Use this for any question
   that includes a multi-word filter prefix; the `/answer` slash
   command tokenizes on whitespace and drops the rest of the line.
+- `ask_ground_question(text)` — same shape as `ask_question`, but
+  returns kwargs (`question`, `tag_expr`, `exclude_tags`, `top_k`)
+  for the `ground` tool. The LLM forwards the returned kwargs to
+  `ground` verbatim. Use this for any `/cite` slash invocation that
+  includes a multi-word filter prefix.
 - `lint` — health-check; `fix=True` applies the repair plan.
 - `wiki_changes` — recent plan applications.
 
@@ -55,7 +60,13 @@ only).
 - `lint()` — `lies lint`, `--fix`, repair agent.
 - `sync(collection=...)` — `lies sync`, lock envelope.
 - `file-back(wiki=...)` — F3 file-back from a query synthesis.
-- `cite(question, tag_expr=None, exclude_tags=None, top_k=3)` — tool-call template: drive `ground` and render `[[slug]]: "snippet"` lines.
+- `cite(text)` (slash `/cite`) — drive `ground` and render
+  `[[slug]]: "snippet"` lines. Single-arg form, parses the
+  `+c:<name>` / `-<tag>` filter syntax internally; the calling
+  LLM forwards the rendered kwargs to the `ground` tool verbatim.
+  Like `/answer`, Claude Code's slash dispatcher tokenizes on
+  whitespace, so for multi-word filter prefixes use the
+  `ask_ground_question` tool instead.
 
 ## CLI
 

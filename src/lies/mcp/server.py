@@ -915,6 +915,66 @@ def ask_question(text: str) -> dict[str, object]:
     }
 
 
+@mcp.tool(
+    name="ask_ground_question",
+    description=(
+        "Parse the question argument (with optional +tag_expr / "
+        "-exclude_tags filter prefixes, including compound exclude "
+        "chains joined with & or |) and return the parsed kwargs for "
+        "the `ground` tool. The calling LLM uses this to extract "
+        "filter args from a slash-style invocation where Claude "
+        "Code's slash-command dispatcher would otherwise tokenize "
+        "the input. After calling ask_ground_question, the LLM should "
+        "call the `ground` tool with the returned kwargs verbatim "
+        "(the `top_k` default is 3, matching `ground`'s default)."
+    ),
+)
+def ask_ground_question(text: str) -> dict[str, object]:
+    """Parse ``+c:<name>`` / ``-<tag>`` filter syntax out of ``text``.
+
+    Bypass for Claude Code's slash-command dispatcher — same
+    pattern as :func:`ask_question`, but the returned kwargs are
+    shaped for the ``ground`` MCP tool (``question``,
+    ``tag_expr``, ``exclude_tags``, ``top_k``) instead of
+    ``answer`` / ``query``. The LLM forwards the returned kwargs
+    verbatim to ``ground``.
+
+    The exclude chain supports compound expressions: ``-c:foo&c:bar``
+    (AND) and ``-c:foo|c:bar`` (OR) are parsed into the F15 AST and
+    re-rendered as a single ``exclude_tags`` element so the
+    downstream ``ground`` boundary can re-parse the string.
+
+    Returns a dict with keys ``question``, ``tag_expr``,
+    ``exclude_tags``, ``top_k``. Always returns; surface parse errors
+    as a structured envelope with an ``error`` key so the LLM can
+    decide what to do instead of catching an exception trace.
+    """
+    import shlex
+
+    argv = shlex.split(text) if text.strip() else []
+    if not argv:
+        return {"error": "empty input", "original": text}
+
+    try:
+        parsed_question, include_ast, exclude_ast, _ = parse_query_argv(argv)
+    except (TagExprParseError, TagExprEmpty) as exc:
+        return {"error": str(exc), "original": text}
+
+    tag_expr = _render_include(include_ast) if include_ast is not None else None
+    # ``_render_include`` handles ``Include`` / ``And`` / ``Or`` trees so
+    # compound excludes round-trip correctly through the MCP boundary; the
+    # ``ground`` tool still receives ``exclude_tags`` as a single-element
+    # list, matching the F18 librarian's list contract.
+    exclude_tags = [_render_include(exclude_ast)] if exclude_ast is not None else []
+
+    return {
+        "question": parsed_question,
+        "tag_expr": tag_expr,
+        "exclude_tags": exclude_tags,
+        "top_k": 3,
+    }
+
+
 def _collect_available_tags_mcp(wiki: Wiki) -> set[str]:
     """Return every addressable tag in the library (MCP surface).
 
@@ -1676,33 +1736,103 @@ def sync_prompt(collection: str) -> str:
     return load_prompt("sync").format(version=__version__, collection=collection)
 
 
-@mcp.prompt(name="cite")
-def cite(
-    question: str,
-    tag_expr: str | None = None,
-    exclude_tags: list[str] | None = None,
-    top_k: int = 3,
-) -> str:
+@mcp.prompt(
+    name="cite",
+    description=(
+        "Slash that drives the `ground` MCP tool. Single-arg form, "
+        "parses filter syntax internally; the calling LLM forwards "
+        "the rendered kwargs to the `ground` tool verbatim. Mirrors "
+        "the `/answer` slash prompt's filter-parse shape — see the "
+        "`ask_question` tool for the slash-dispatcher bypass when the "
+        "input includes a multi-word filter prefix."
+    ),
+)
+def cite(text: str) -> str:
     """Slash that routes to the Archivist (F34 ground tool) and renders
     the digest as ``[[collection/slug]] (Title): "<snippet>"`` lines.
 
-    Mirrors ask's ``archivist-prompt.md``: classify → search → read →
-    cite. The parent LLM does the rendering; the prompt only templates
+    Mirrors the ``/answer`` prompt's filter-parse shape: single
+    ``text`` positional arg carries the entire slash-input. The
+    filter-syntax parser runs here so the calling LLM never has to
+    fill ``tag_expr`` / ``exclude_tags`` / ``top_k`` slots.
+
+    The parent LLM does the rendering; the prompt only templates
     the tool call and the render form. On ``ArchivistCoverageError``
     the prompt tells the LLM to surface verbatim — no silent retry.
 
+    **Known limitation — Claude Code slash dispatcher tokenizes the
+    input on whitespace before invoking this prompt, so multi-word
+    filter prefixes are truncated to the first token.** Even with
+    the single-arg signature, ``/mcp__lies__cite +c:opencode|c:claude_platform What?``
+    arrives at the prompt as just
+    ``+c:opencode|c:claude_platform`` and the question is dropped.
+    The reliable workaround is the ``ask_ground_question`` MCP tool:
+    call it with the user's full multi-word input as the ``text``
+    argument, then forward the returned kwargs verbatim to the
+    ``ground`` tool. This prompt is still useful for plain questions
+    without filter syntax, where the input is a single token anyway.
+
+    Filter syntax (parsed out of the ``text`` argument here, so the
+    calling LLM never has to fill ``tag_expr`` / ``exclude_tags``
+    slots — that was the live hallucination bug):
+
+    - ``+c:<name>`` — include the named library collection
+    - ``+t:<tag>`` — include pages tagged ``<tag>``
+    - ``+a&b`` — AND two include atoms (no spaces)
+    - ``+a|b`` — OR (lower precedence than ``&``)
+    - ``-c:<name>`` / ``-t:<tag>`` — exclude the named collection or tag
+    - ``-"airflow provider"`` — exclude with quoted tag
+    - ``-c:foo&c:bar`` — exclude AND (drop collections matching both)
+    - ``-c:foo|c:bar`` — exclude OR (drop collections matching either)
+
+    Everything after the include chain and the optional exclude is
+    the question text. The parser stops at the first non-filter
+    token.
+
     Args:
-        question: Natural-language fragment to ground.
-        tag_expr: Body of a single include token (no leading sigil),
-            e.g. ``"airflow&postgres"``. ``None`` for untagged.
-        exclude_tags: NOT tags without leading sigil. Forwarded to
-            ``ground()`` unchanged.
-        top_k: Maximum citations requested (default 3; ground()
-            clamps to ``[1, 10]``).
+        text: Entire slash-input, parsed for filter syntax. Same
+            single-arg shape as ``ask_wiki_answer``.
 
     Returns:
         Prose that templates a ``ground`` tool call and the
         ``[[collection/slug]] (Title): "<snippet>"`` render form.
+    """
+    import shlex
+
+    argv = shlex.split(text) if text.strip() else []
+    if not argv:
+        return _filter_parse_error_prompt(text, ValueError("empty input"))
+
+    try:
+        parsed_question, include_ast, exclude_ast, _ = parse_query_argv(argv)
+    except (TagExprParseError, TagExprEmpty) as exc:
+        return _filter_parse_error_prompt(text, exc)
+
+    tag_expr = _render_include(include_ast) if include_ast is not None else None
+    exclude_tags = [_render_include(exclude_ast)] if exclude_ast is not None else []
+    top_k = 3
+
+    return _render_cite_prompt_body(
+        question=parsed_question,
+        tag_expr=tag_expr,
+        exclude_tags=exclude_tags,
+        top_k=top_k,
+    )
+
+
+def _render_cite_prompt_body(
+    *,
+    question: str,
+    tag_expr: str | None,
+    exclude_tags: list[str],
+    top_k: int,
+) -> str:
+    """Render the prompt body for the parsed args.
+
+    No fillable slots for ``tag_expr`` / ``exclude_tags`` / ``top_k``:
+    the slash prompt parses them out of the ``question`` argument
+    before the calling LLM sees the body. The LLM only has to forward
+    the rendered kwargs verbatim to the ``ground`` tool.
     """
     return (
         f"Call the `ground` MCP tool to ground the following fragment:\n"
