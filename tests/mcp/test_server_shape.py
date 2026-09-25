@@ -23,15 +23,9 @@ async def test_tools_registered(client: Client) -> None:
     names = {t.name for t in tools}
     assert names == {
         "init_wiki",
-        "query",
-        "answer",
         "ask_question",
         "ask_ground_question",
         "lint",
-        "wiki_search",
-        "wiki_read",
-        "wiki_changes",
-        "file_knowledge",
         "reindex",
         "ground",
     }
@@ -65,13 +59,3 @@ async def test_prompts_registered(client: Client) -> None:
     prompts = await client.list_prompts()
     names = {p.name for p in prompts}
     assert "cite" in names
-
-
-def test_query_response_includes_claim_citations() -> None:
-    """The MCP `query` envelope forwards claim_citations from the synthesizer."""
-    import typing
-
-    from lies.mcp.server import SynthesizedMcpAnswer
-
-    hints = typing.get_type_hints(SynthesizedMcpAnswer)
-    assert "claim_citations" in hints
