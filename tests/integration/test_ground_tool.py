@@ -104,6 +104,38 @@ def _patch_librarian(
     monkeypatch.setattr(grounding, "librarian_agent", lambda: _FakeAgent())
 
 
+def _patch_fanout(
+    monkeypatch: pytest.MonkeyPatch,
+    excerpts: list[PageExcerpt],
+) -> None:
+    """Replace ``_fanout_unscoped(...)`` with a deterministic output.
+
+    Mirrors :func:`_patch_librarian` for the unscoped fan-out path
+    introduced by the library-mode read-side rewrite. Unscoped
+    ``ground()`` bypasses the F18 librarian and dispatches via
+    ``_fanout_unscoped`` (``asyncio.run``). The real helper is
+    async, so the fake wraps the deterministic ``excerpts`` list in
+    an ``async def`` to preserve the awaitable contract.
+
+    Also seeds ``library_collection_names`` with a non-empty
+    frozenset so the ``no_library=True`` fast-path early return
+    does not short-circuit before the fan-out mock can be
+    exercised.
+    """
+    from lies.library import registry as registry_mod
+    from lies.mcp import grounding
+
+    async def _async_fake(*_args, **_kwargs):
+        return list(excerpts)
+
+    monkeypatch.setattr(grounding, "_fanout_unscoped", _async_fake)
+    monkeypatch.setattr(
+        registry_mod,
+        "library_collection_names",
+        lambda: frozenset({"wiki"}),
+    )
+
+
 async def test_ground_tool_registered_with_mcp_server() -> None:
     """The MCP server exposes the ``ground`` tool."""
     async with Client(mcp) as client:
@@ -115,7 +147,15 @@ async def test_ground_tool_registered_with_mcp_server() -> None:
 async def test_ground_tool_returns_archivist_digest(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """End-to-end: MCP tool call returns a digest with the expected shape."""
+    """End-to-end: MCP tool call returns a digest with the expected shape.
+
+    Library-mode rewrite migration: unscoped ``ground()`` no longer
+    dispatches through the F18 librarian (Task 1 brick-wall fix
+    replaced that path with a direct qmd fan-out across registered
+    library collections). Patch ``_fanout_unscoped`` directly with
+    the deterministic excerpts so the MCP wire envelope assertion
+    still pins the post-rewrite shape end-to-end.
+    """
     spans = [
         Span(
             heading_path=["H1"],
@@ -127,7 +167,7 @@ async def test_ground_tool_returns_archivist_digest(
     excerpts = [
         PageExcerpt(collection="wiki", slug="concepts/pydantic", title="Pydantic", spans=spans),
     ]
-    _patch_librarian(monkeypatch, excerpts)
+    _patch_fanout(monkeypatch, excerpts)
 
     async with Client(mcp) as client:
         result = await client.call_tool(
@@ -376,10 +416,23 @@ async def test_ground_tool_wires_librarian_tools(
         lambda model="test": librarian_mod.librarian_agent(model="test"),
     )
 
+    # Library-mode rewrite migration: unscoped ``ground()`` bypasses
+    # the F18 librarian entirely (Task 1 brick-wall fix), so wiring
+    # never fires on the unscoped path. Force the librarian path by
+    # passing ``tag_expr="wiki"``; the seeded ``wiki`` library
+    # collection (created via the ``_seed_wiki_collection`` helper
+    # above) satisfies the F15 tag-filter dispatch. The wiring spy
+    # then records the canonical wiring call against the active
+    # wiki's :class:`WikiMemoryService`.
+    _seed_wiki_collection()
+
     async with Client(mcp) as client:
         result = await client.call_tool(
             "ground",
-            {"question": "what is pydantic?"},
+            {
+                "question": "what is pydantic?",
+                "tag_expr": "wiki",
+            },
         )
 
     # The bare agent had zero tools; wiring added the F18 trio.
