@@ -29,6 +29,7 @@ pytestmark = pytest.mark.skipif(
 )
 
 
+@pytest.mark.slow
 def test_agent_emits_question_first() -> None:
     """First run produces one of the two AuthorOutput variants."""
     agent = collection_author_agent(model=TestModel())

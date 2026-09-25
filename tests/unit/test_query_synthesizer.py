@@ -292,10 +292,10 @@ def test_qmd_real_query_end_to_end(sample_wiki: Wiki, monkeypatch) -> None:
     )
     with (
         patch("lies.qmd.cli.shutil.which", return_value="/usr/bin/qmd"),
-        patch("lies.qmd.cli.subprocess.run") as mock_run,
+        patch("lies.qmd.cli._run_qmd") as mock_run_qmd,
     ):
-        mock_run.return_value = subprocess.CompletedProcess(
-            args=[], returncode=0, stdout=payload, stderr=""
+        mock_run_qmd.return_value = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout=payload.encode("utf-8"), stderr=b""
         )
         result = synthesize_answer("What is a hook?", sample_wiki)
 

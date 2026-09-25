@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from lies.agents.librarian import (
     LibrarianDeps,
     LibrarianOutput,
@@ -562,6 +564,7 @@ def test_wiki_search_passes_collection_filter_to_library_side_only() -> None:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.slow
 def test_library_hit_page_id_is_none() -> None:
     """Library hits must carry page_id=None so wiki_read is not called.
 
@@ -673,6 +676,7 @@ def test_wiki_read_dispatches_wiki_ids() -> None:
     assert bodies == {"page-abc123def456": "<body for page-abc123def456>"}
 
 
+@pytest.mark.slow
 def test_wiki_read_dispatches_library_paths_to_qmd() -> None:
     """``wiki_read(['opencode/config.md'])`` reads from the library's qmd chunks.
 

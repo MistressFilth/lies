@@ -18,6 +18,7 @@ from typing import Any
 
 from lies.qmd import _proc
 from lies.qmd._models import ReindexResult
+from lies.qmd._subprocess import _run_qmd
 from lies.qmd.lock import with_qmd_lock
 
 # Real `qmd query --format json` returns each hit's `file` field as
@@ -374,13 +375,10 @@ def qmd_query(
         raise QmdNotInstalledError("`qmd` not found on PATH")
 
     try:
-        result = subprocess.run(
+        result = _run_qmd(
             ["qmd", "query", question, "--limit", str(limit), "--json"],
             cwd=cwd,
-            capture_output=True,
-            text=True,
             timeout=timeout,
-            check=False,
         )
     except FileNotFoundError as exc:
         raise QmdNotInstalledError("`qmd` binary not found at exec time") from exc
@@ -388,16 +386,15 @@ def qmd_query(
         raise QmdCommandError(f"qmd query timed out after {timeout}s") from exc
 
     if result.returncode != 0:
-        raise QmdCommandError(
-            f"qmd query failed (exit {result.returncode}): {result.stderr.strip()}"
-        )
+        stderr_text = result.stderr.decode("utf-8", errors="replace").strip()
+        raise QmdCommandError(f"qmd query failed (exit {result.returncode}): {stderr_text}")
 
-    stdout = result.stdout.strip()
-    if not stdout:
+    stdout_text = result.stdout.decode("utf-8", errors="replace").strip()
+    if not stdout_text:
         raise QmdNoResultsError(f"qmd query returned no results for: {question!r}")
 
     try:
-        data = json.loads(stdout)
+        data = json.loads(stdout_text)
     except json.JSONDecodeError as exc:
         raise QmdCommandError(f"qmd query returned invalid JSON: {exc}") from exc
 
