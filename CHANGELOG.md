@@ -80,6 +80,13 @@ All notable changes to LIES are documented here. The format follows
   now describe the truncation shape (rather than the older,
   inaccurate "drops the `text` argument entirely" claim).
 
+- MCP `ground()` aborted with `ModelNotConfigured` because the
+  librarian subagent was missing from `AGENT_ROSTER` and the MCP
+  path bypassed the orchestrator's model-resolution fallback. The
+  librarian is now in `AGENT_ROSTER`; `ground()` resolves the model
+  via `load_providers_config` + `resolve_model`. User
+  `providers.toml` must include a `librarian` entry.
+
 ## [0.37.11] - 2026-09-23
 
 ### Fixed

@@ -351,10 +351,22 @@ def ground(
     # ``LogfireNotConfiguredWarning`` noise.
     agent = None
     try:
+        from lies.config import get_xdg_config_home
+        from lies.constants import LIES_DATA_SUBDIR
+        from lies.errors import ModelNotConfigured
+        from lies.providers import load_providers_config, resolve_model
         from lies.mcp.resolution import resolve_wiki
         from lies.memory.service import WikiMemoryService
 
-        agent = librarian_agent()
+        config_path = get_xdg_config_home() / LIES_DATA_SUBDIR / "providers.toml"
+        config = load_providers_config(config_path)
+        if config is None:
+            raise ModelNotConfigured(
+                f"ground(): no providers.toml at {config_path}; "
+                f"run `lies providers init` or set LIES_AGENT_LIBRARIAN_MODEL."
+            )
+        model = resolve_model("librarian", config)
+        agent = librarian_agent(model=model)
         resolved_wiki = resolve_wiki(wiki_name)
         register_librarian_tools(
             agent,

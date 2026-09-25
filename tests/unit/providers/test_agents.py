@@ -15,6 +15,7 @@ def test_roster_contains_all_known_agents() -> None:
         "query_synthesizer",
         "enricher",
         "repair",
+        "librarian",
     )
 
 
