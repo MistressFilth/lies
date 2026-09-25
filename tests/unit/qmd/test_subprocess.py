@@ -88,3 +88,108 @@ def test_run_qmd_does_not_deadlock_on_long_stderr(tmp_path: Path):
     assert dt < 3.0, f"helper took {dt:.2f}s; expected < 3s"
     assert result.returncode == 0
     assert len(result.stderr) == 8 * 1024  # truncated
+
+
+@pytest.mark.slow
+def test_run_qmd_kills_process_group_on_timeout(tmp_path: Path):
+    """Timeout SIGKILLs the entire process group, not just the immediate child.
+
+    On this host, qmd is a bun shim that forks node.js as a grandchild
+    and exec's into it. ``proc.kill()`` alone leaves the grandchild
+    orphaned in its own process group. This test pins the
+    ``start_new_session=True`` + ``os.killpg`` contract: a forked
+    grandchild that ignores SIGTERM and outlasts the timeout must be
+    reaped along with its parent.
+
+    Marked slow because the test waits the full ``timeout`` (1.0s)
+    for the SIGKILL path to fire, well over the 0.15s hard-limit
+    gate enforced for non-slow tests.
+    """
+    script = tmp_path / "spawn_grandchild.py"
+    # Two-child tree:
+    # - immediate child of helper: forks the grandchild, then sleeps
+    #   long enough that the helper's timeout fires while both are
+    #   still alive.
+    # - grandchild: ignores SIGTERM (SIGKILL is uncatchable, so the
+    #   only way for it to survive a killpg is for the group to be
+    #   intact — which is exactly the regression we are guarding
+    #   against).
+    script.write_text(
+        "import os, signal, time\n"
+        "pid = os.fork()\n"
+        "if pid == 0:\n"
+        # Grandchild: ignore SIGTERM so only SIGKILL via killpg can
+        # end it. SIGKILL on the wrong process group leaves this
+        # orphan alive — the regression we're pinning.
+        "    signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+        "    time.sleep(60)\n"
+        "else:\n"
+        # Immediate child: wait so the helper sees both processes
+        # alive at timeout, then the helper's killpg must reap both.
+        "    time.sleep(60)\n"
+    )
+    with pytest.raises(subprocess.TimeoutExpired):
+        _run_qmd(
+            [sys.executable, str(script)],
+            cwd=tmp_path,
+            timeout=1.0,
+        )
+    # Allow the kernel a moment to reap both children after killpg.
+    time.sleep(0.5)
+    # ``pgrep`` returns 1 (and empty stdout) when no matches. If the
+    # helper failed to kill the group, the grandchild or the immediate
+    # child would still be alive and pgrep would list them.
+    probe = subprocess.run(
+        ["pgrep", "-f", "spawn_grandchild.py"],
+        capture_output=True,
+        text=True,
+        timeout=5.0,
+    )
+    assert probe.returncode != 0 or not probe.stdout.strip(), (
+        f"orphan subprocesses still alive after killpg: {probe.stdout!r}"
+    )
+
+
+@pytest.mark.slow
+def test_run_qmd_long_stderr_kills_grandchild(tmp_path: Path):
+    """Long-stderr path also kills the entire process group on timeout.
+
+    The bug fixed in this branch surfaces most acutely when qmd's
+    stderr fills the OS pipe buffer AND the process is slow enough
+    to hit the timeout: the child blocks writing stderr, the parent
+    hits the timeout, and the SIGKILL must reach the whole group so
+    the grandchild does not outlive the parent. This test combines
+    both failure modes (100 KB stderr write + forked grandchild
+    that ignores SIGTERM) into one scenario.
+    """
+    script = tmp_path / "loud_grandchild.py"
+    script.write_text(
+        "import os, signal, sys, time\n"
+        # Fill the OS pipe buffer so the parent cannot drain stderr
+        # promptly. This is the precondition for the timeout path to
+        # fire rather than a clean exit.
+        "sys.stderr.write('x' * 100_000)\n"
+        "sys.stderr.flush()\n"
+        "pid = os.fork()\n"
+        "if pid == 0:\n"
+        "    signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+        "    time.sleep(60)\n"
+        "else:\n"
+        "    time.sleep(60)\n"
+    )
+    with pytest.raises(subprocess.TimeoutExpired):
+        _run_qmd(
+            [sys.executable, str(script)],
+            cwd=tmp_path,
+            timeout=1.0,
+        )
+    time.sleep(0.5)
+    probe = subprocess.run(
+        ["pgrep", "-f", "loud_grandchild.py"],
+        capture_output=True,
+        text=True,
+        timeout=5.0,
+    )
+    assert probe.returncode != 0 or not probe.stdout.strip(), (
+        f"orphan subprocesses still alive after killpg: {probe.stdout!r}"
+    )
