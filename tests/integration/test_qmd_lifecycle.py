@@ -17,12 +17,30 @@ not the host's ``~/.cache/qmd/mcp.pid``.
 
 from __future__ import annotations
 
+import shutil
 import time
 from pathlib import Path
 
 import pytest
 
 from lies.qmd import lifecycle
+
+
+# CI sandbox gate: every test in this module spawns or signals a real
+# ``qmd mcp --http --daemon`` child via :func:`lies.qmd.lifecycle._up`.
+# The CI sandbox does not have ``qmd`` on PATH (the LIES image does
+# not install the qmd CLI), so each test would otherwise fail with
+# ``RuntimeError: qmd daemon failed to bind ...`` after the underlying
+# ``_find_qmd`` helper raised ``RuntimeError: qmd binary not found on
+# PATH``. Skip the whole module when the binary is missing so a
+# missing-toolchain CI box still produces a green run without
+# crashing each test at the bind timeout. Tests still exercise the
+# full lifecycle on hosts where ``qmd`` IS installed (developer
+# machines, the staggered \"run with qmd\" job).
+pytestmark = pytest.mark.skipif(
+    shutil.which("qmd") is None,
+    reason="qmd binary not on PATH; spawn-and-bind tests cannot run without it",
+)
 
 
 def _redirected_cache_home(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
