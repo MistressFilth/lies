@@ -67,6 +67,7 @@ def test_path_render_cmd_is_invoked_and_converted(tmp_path: Path) -> None:
     assert docs[0].content == b"rendered markdown"
 
 
+# exceeds 0.15s budget; slow-marked per pre-PR-checklist rule (project-noted in TODO.md)
 @pytest.mark.slow
 def test_path_render_cmd_preserves_state_across_builds(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -140,6 +141,7 @@ def test_resolve_render_cmd_rejects_non_callable_value() -> None:
         _resolve_render_cmd("tests.fixtures.liquid_stub:NON_CALLABLE")
 
 
+# exceeds 0.15s budget; slow-marked per pre-PR-checklist rule (project-noted in TODO.md)
 @pytest.mark.slow
 def test_source_read_oserror_is_wrapped(tmp_path: Path) -> None:
     source = tmp_path / "source.liquid"
@@ -151,6 +153,7 @@ def test_source_read_oserror_is_wrapped(tmp_path: Path) -> None:
         LiquidBuilder().build(tmp_path, collection=_collection(tmp_path))
 
 
+# exceeds 0.15s budget; slow-marked per pre-PR-checklist rule (project-noted in TODO.md)
 @pytest.mark.slow
 def test_liquid_builder_pandoc_nonzero_exit_quarantines(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -169,6 +172,7 @@ def test_liquid_builder_pandoc_nonzero_exit_quarantines(
         LiquidBuilder().build(workspace, collection=_collection(tmp_path))
 
 
+# exceeds 0.15s budget; slow-marked per pre-PR-checklist rule (project-noted in TODO.md)
 @pytest.mark.slow
 def test_liquid_builder_passthrough(tmp_path: Path) -> None:
     """No render_cmd → source treated as already-rendered HTML."""
@@ -188,6 +192,7 @@ def test_liquid_builder_passthrough(tmp_path: Path) -> None:
     assert doc.source_sha256 == hashlib.sha256(doc.content).hexdigest()
 
 
+# exceeds 0.15s budget; slow-marked per pre-PR-checklist rule (project-noted in TODO.md)
 @pytest.mark.slow
 def test_liquid_builder_reads_source_html(tmp_path: Path) -> None:
     """Pre-rendered source.html is also accepted."""
@@ -199,6 +204,7 @@ def test_liquid_builder_reads_source_html(tmp_path: Path) -> None:
     assert "Pre-rendered" in docs[0].content.decode("utf-8")
 
 
+# exceeds 0.15s budget; slow-marked per pre-PR-checklist rule (project-noted in TODO.md)
 @pytest.mark.slow
 def test_liquid_builder_uses_render_cmd(tmp_path: Path) -> None:
     """render_cmd renders Liquid to HTML before pandoc."""
@@ -223,6 +229,7 @@ def test_liquid_builder_uses_render_cmd(tmp_path: Path) -> None:
     assert "{{ title }}" in md
 
 
+# exceeds 0.15s budget; slow-marked per pre-PR-checklist rule (project-noted in TODO.md)
 @pytest.mark.slow
 def test_liquid_builder_renderer_failure_quarantines(tmp_path: Path) -> None:
     """Renderer exception → BuilderFetchFailed for upstream quarantine."""
@@ -240,6 +247,7 @@ def test_liquid_builder_renderer_failure_quarantines(tmp_path: Path) -> None:
         LiquidBuilder().build(workspace, collection=collection)
 
 
+# exceeds 0.15s budget; slow-marked per pre-PR-checklist rule (project-noted in TODO.md)
 @pytest.mark.slow
 def test_liquid_builder_non_bytes_return_quarantines(tmp_path: Path) -> None:
     """Renderer returns non-bytes → BuilderFetchFailed."""

@@ -564,6 +564,7 @@ def test_wiki_search_passes_collection_filter_to_library_side_only() -> None:
 # ---------------------------------------------------------------------------
 
 
+# exceeds 0.15s budget; slow-marked per pre-PR-checklist rule (project-noted in TODO.md)
 @pytest.mark.slow
 def test_library_hit_page_id_is_none() -> None:
     """Library hits must carry page_id=None so wiki_read is not called.
@@ -676,6 +677,7 @@ def test_wiki_read_dispatches_wiki_ids() -> None:
     assert bodies == {"page-abc123def456": "<body for page-abc123def456>"}
 
 
+# exceeds 0.15s budget; slow-marked per pre-PR-checklist rule (project-noted in TODO.md)
 @pytest.mark.slow
 def test_wiki_read_dispatches_library_paths_to_qmd() -> None:
     """``wiki_read(['opencode/config.md'])`` reads from the library's qmd chunks.
