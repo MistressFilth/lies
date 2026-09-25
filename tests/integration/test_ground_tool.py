@@ -101,7 +101,7 @@ def _patch_librarian(
                 )
             )
 
-    monkeypatch.setattr(grounding, "librarian_agent", lambda: _FakeAgent())
+    monkeypatch.setattr(grounding, "librarian_agent", lambda model=None: _FakeAgent())
 
 
 def _patch_fanout(
@@ -424,6 +424,15 @@ async def test_ground_tool_wires_librarian_tools(
     # above) satisfies the F15 tag-filter dispatch. The wiring spy
     # then records the canonical wiring call against the active
     # wiki's :class:`WikiMemoryService`.
+    #
+    # Post-rewrite revision: passing ``tag_expr="wiki"`` alone lets
+    # ``_collections_matching`` resolve ``wiki`` to the seeded
+    # collection and the tagged fast-path skips the wiring block.
+    # Pair the include with an exclude that drops the matched
+    # collection (``exclude_tags=["c:wiki"]``), so
+    # ``searched_scope_list`` resolves to ``[]`` and the legacy F18
+    # librarian branch fires — the regression contract this test
+    # pins lives on that branch only.
     _seed_wiki_collection()
 
     async with Client(mcp) as client:
@@ -432,6 +441,7 @@ async def test_ground_tool_wires_librarian_tools(
             {
                 "question": "what is pydantic?",
                 "tag_expr": "wiki",
+                "exclude_tags": ["c:wiki"],
             },
         )
 

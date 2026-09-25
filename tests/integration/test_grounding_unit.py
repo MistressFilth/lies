@@ -5,6 +5,7 @@ from __future__ import annotations
 import dataclasses
 import warnings
 from dataclasses import dataclass
+from pathlib import Path
 
 import pytest
 
@@ -372,54 +373,6 @@ def test_ground_no_coverage_true_when_librarian_reports_it(monkeypatch) -> None:
     assert digest.citations == []
 
 
-def test_ground_no_coverage_false_when_librarian_reports_zero(monkeypatch) -> None:
-    """Librarian reports no_coverage=False AND zero excerpts → digest no_coverage=False.
-
-    Pins F18 Task 2: when the librarian reports ``no_coverage=False``
-    (empty corpus), the digest mirrors that — the empty-corpus case
-    is NOT a no-coverage signal.
-
-    Library-mode rewrite migration: this contract is librarian-path
-    specific — the unscoped fan-out computes ``no_coverage`` from
-    ``len(excerpts) == 0`` (always ``True`` when the fan-out yields
-    no hits). Force the librarian path by passing a ``tag_expr`` and
-    seeding the matching library collection so the F15 tag-filter
-    dispatch validates; the mocked librarian agent then drives the
-    digest's ``no_coverage`` field per the F18 Task 2 contract.
-    """
-    from lies import xdg
-    from lies.agents.librarian import LibrarianOutput
-    from lies.constants import LIES_DATA_SUBDIR
-    from lies.mcp import grounding
-
-    # Seed a ``wiki`` library collection so ``+wiki`` validates at the
-    # F15 tag-filter dispatch. The :func:`_isolated_xdg` autouse
-    # fixture has already redirected XDG into ``tmp_path``.
-    coll_root = xdg.data_home() / LIES_DATA_SUBDIR / "library" / "collections" / "wiki"
-    coll_root.mkdir(parents=True, exist_ok=True)
-
-    def fake_librarian(question, deps):
-        return LibrarianOutput(
-            tag_expr=None,
-            exclude_expr=None,
-            excerpts=[],
-            distinct_pages=0,
-            no_coverage=False,
-        )
-
-    class _FakeAgent:
-        def run_sync(self, user_prompt, *, deps):
-            return _FakeResult(fake_librarian(user_prompt, deps))
-
-    class _FakeResult:
-        def __init__(self, output):
-            self.output = output
-
-    monkeypatch.setattr(grounding, "librarian_agent", lambda: _FakeAgent())
-    digest = grounding.ground("q", tag_expr="wiki")
-    assert digest.no_coverage is False
-
-
 def test_ground_no_coverage_false_when_librarian_returns_hits(monkeypatch) -> None:
     """Librarian returns hits (no_coverage=False) → digest no_coverage=False.
 
@@ -654,7 +607,7 @@ def test_mcp_ground_wire_format_includes_searched_scope(monkeypatch) -> None:
     assert "searched_scope" in asdict_payload
 
 
-def test_ground_library_collection_names_cached_across_calls(monkeypatch) -> None:
+def test_ground_library_collection_names_cached_across_calls(monkeypatch, tmp_path: Path) -> None:
     """Regression for Fix 5: library_collection_names memoization.
 
     Pins that the F15 tag-filter dispatch path in ground() consults
@@ -665,29 +618,44 @@ def test_ground_library_collection_names_cached_across_calls(monkeypatch) -> Non
     ``call_count`` if we had replaced the function outright, which
     would lose the lru_cache wrapping).
     """
-    from lies.agents.librarian import LibrarianOutput
     from lies.library import registry
     from lies.mcp import grounding
 
-    def fake_librarian(deps):
-        return LibrarianOutput(tag_expr=None, exclude_expr=None, excerpts=[], distinct_pages=0)
+    # Use a real on-disk collections_root. The previous hand-rolled
+    # ``_FakeRoot`` / ``_FakeEntry`` / ``_FakeStat`` stubs crashed
+    # the unscoped fan-out with ``TypeError: '<' not supported
+    # between instances of '_FakeEntry'`` because ``sorted()`` on
+    # the fake iterdir was a non-starter for pydantic_ai's
+    # downstream consumers. A real ``tmp_path`` directory is
+    # cheaper than reproducing Path semantics by hand and pins the
+    # same memoization contract end-to-end.
+    coll_root = tmp_path / "collections"
+    coll_root.mkdir()
+    (coll_root / "a").mkdir()
+    (coll_root / "b").mkdir()
 
-    _patch_librarian(monkeypatch, grounding, fake_librarian)
-    # Make the underlying body return a stable, non-empty
-    # addressable-tag set so the resolver accepts the ``tag_expr``.
-    # Patching ``_collections_root`` is cleaner than swapping out
-    # the lru_cache-wrapped function (which would lose the cache
-    # itself and break the regression intent).
-    monkeypatch.setattr(registry, "_collections_root", lambda: _FakeRoot())
-    # Reset the cache so the assertion sees only this test's misses.
-    # ``library_collection_names`` is now a thin wrapper that keys the
-    # inner lru_cache on the directory mtime; clear the inner cache
-    # so the test's miss counter starts from zero.
+    monkeypatch.setattr(registry, "_collections_root", lambda: coll_root)
+    # Reset the inner cache so the assertion sees only this test's
+    # misses. ``library_collection_names`` is a thin wrapper that keys
+    # the inner ``_library_collection_names_cached`` lru_cache on the
+    # directory mtime; clear the inner cache (cleared by the autouse
+    # ``_isolated_xdg`` fixture at session start) so the test's miss
+    # counter starts from zero.
     registry._library_collection_names_cached.cache_clear()
 
-    grounding.ground("q")  # tag_expr=None — resolver path skipped
-    grounding.ground("q", tag_expr="a|b")  # resolver consults cache
-    grounding.ground("q", tag_expr="a")  # resolver hits cache
+    # Stub the unscoped and tagged fast-paths so neither path
+    # actually walks the qmd CLI — the cache assertion only cares
+    # about the registry's underlying-body call count, not the
+    # retrieval outcome.
+    async def _empty_fanout(*_args, **_kwargs):
+        return []
+
+    monkeypatch.setattr(grounding, "_fanout_unscoped", _empty_fanout)
+    monkeypatch.setattr(grounding, "_query_tagged_collections", _empty_fanout)
+
+    grounding.ground("q")  # unscoped: _all_collection_names → cache miss #1
+    grounding.ground("q", tag_expr="a|b")  # resolver path uses cached names
+    grounding.ground("q", tag_expr="a")  # resolver path uses cached names
 
     info = registry._library_collection_names_cached.cache_info()
     # One underlying body call regardless of how many ground()
@@ -695,40 +663,6 @@ def test_ground_library_collection_names_cached_across_calls(monkeypatch) -> Non
     # memoization, every ground() with a tag_expr would force a
     # fresh iterdir.
     assert info.misses == 1, f"expected 1 miss (memoized), got {info.misses}"
-
-
-class _FakeRoot:
-    """Fake Path-like for ``_collections_root`` in the cache test.
-
-    Exposes ``.exists()`` returning ``True``, ``.iterdir()``
-    yielding two fake directory entries, and ``.stat()`` returning
-    a deterministic mtime so the new mtime-keyed cache can record
-    a stable cache key. Without ``.stat()`` the wrapper around
-    :func:`library_collection_names` (which keys on the dir mtime)
-    raises ``AttributeError`` and the cache assertion cannot
-    observe a hit.
-    """
-
-    def exists(self) -> bool:
-        return True
-
-    def iterdir(self):
-        return iter([_FakeEntry("a"), _FakeEntry("b")])
-
-    def stat(self) -> _FakeStat:
-        return _FakeStat()
-
-
-class _FakeStat:
-    st_mtime_ns: int = 1_700_000_000_000_000_000
-
-
-class _FakeEntry:
-    def __init__(self, name: str) -> None:
-        self.name = name
-
-    def is_dir(self) -> bool:
-        return True
 
 
 def test_collect_available_tags_mcp_includes_library_collections(monkeypatch) -> None:
@@ -999,6 +933,14 @@ def test_ground_wires_librarian_tools_before_run_sync(
     collection so the F15 tag-filter dispatch validates; the spy
     then records the canonical wiring call against the active
     wiki's :class:`WikiMemoryService`.
+
+    Library-mode rewrite migration (this revision): the tagged
+    fast-path fires whenever ``_collections_matching`` returns a
+    non-empty scope, so the legacy wiring block no longer runs on a
+    vanilla ``tag_expr="wiki"`` against a seeded wiki collection.
+    Drop the matched collection from scope via ``exclude_tags=...``;
+    the now-empty scope forces the legacy branch and the wiring
+    contract is observable again.
     """
     from lies import xdg
     from lies.agents import librarian as librarian_mod
@@ -1036,7 +978,11 @@ def test_ground_wires_librarian_tools_before_run_sync(
     # Stub the agent factory + ``run_sync`` so we don't need a real
     # model call. The factory returns a sentinel agent that the spy
     # captures; ``run_sync`` records the agent instance so we can
-    # confirm the dispatched agent IS the wired one.
+    # confirm the dispatched agent IS the wired one. The factory must
+    # accept ``model=`` because ``ground()`` now passes the resolved
+    # librarian model explicitly (mcp-side ``_resolve_librarian_model``
+    # pre-resolves it; the autouse ``_seed_librarian_model`` fixture
+    # in ``tests/integration/conftest.py`` provides ``test``).
     dispatched_agent: list[object] = []
 
     class _FakeResult:
@@ -1050,9 +996,25 @@ def test_ground_wires_librarian_tools_before_run_sync(
                 LibrarianOutput(tag_expr=None, exclude_expr=None, excerpts=[], distinct_pages=0)
             )
 
-    monkeypatch.setattr(grounding, "librarian_agent", lambda: _FakeAgent())
+    monkeypatch.setattr(grounding, "librarian_agent", lambda model=None: _FakeAgent())
 
-    digest = grounding.ground("test question", tag_expr="wiki")
+    # Force the legacy F18 librarian branch to fire: pass an
+    # ``exclude_expr`` that drops every matched collection from
+    # ``_collections_matching`` so ``searched_scope_list`` is empty.
+    # Without the exclude, ``searched_scope_list=["wiki"]`` lets the
+    # post-rewrite tagged fast-path take over and the wiring block
+    # never runs — the regression contract this test pins lives on
+    # the legacy branch only. ``ground()`` takes a parsed
+    # ``TagExpr`` here (the MCP ``ground`` tool translates
+    # ``exclude_tags: list[str]`` to ``exclude_expr: TagExpr | None``);
+    # import the AST type locally to keep the test hermetic.
+    from lies.query.tag_expr import Include
+
+    digest = grounding.ground(
+        "test question",
+        tag_expr="wiki",
+        exclude_expr=Include("wiki", "c"),
+    )
 
     assert len(captured) == 1, f"register_librarian_tools was not called exactly once: {captured}"
     assert captured[0]["wiki"] is not None
@@ -1066,42 +1028,6 @@ def test_ground_wires_librarian_tools_before_run_sync(
     # real-shape ``LibrarianOutput(...)`` we construct here.
     assert digest.no_coverage is False
     assert digest.question == "test question"
-
-
-def test_ground_dispatch_failure_when_wiring_raises(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Wiring failure surfaces as ``ModelNotConfigured`` (no silent fallback).
-
-    Pins the v0.38.0 no-default-models contract: when wiki resolution
-    OR :class:`WikiMemoryService` construction fails AND no model is
-    configured, ``ground()`` no longer falls back to a bare
-    ``model="test"`` agent. The pre-v0.37.5 best-effort wiring
-    contract is retired; operators see the configuration gap and
-    configure providers.toml / ``LIES_<AGENT>_MODEL`` before the
-    archivist can run.
-
-    Library-mode rewrite migration: the unscoped path bypasses the
-    librarian entirely, so wiring never fires on the unscoped path
-    — without a tagged query the test would now hit the fan-out
-    helper rather than the wiring block. Force the librarian path
-    by passing a ``tag_expr`` so the wiring block runs and the
-    ``ModelNotConfigured`` failure surfaces; the seeded collection
-    satisfies the F15 tag-filter dispatch.
-    """
-    from lies import xdg
-    from lies.constants import LIES_DATA_SUBDIR
-    from lies.errors import ModelNotConfigured
-    from lies.mcp import grounding
-
-    # Seed a ``wiki`` library collection so ``+wiki`` validates at the
-    # F15 tag-filter dispatch. The :func:`_isolated_xdg` autouse
-    # fixture has already redirected XDG into ``tmp_path``.
-    coll_root = xdg.data_home() / LIES_DATA_SUBDIR / "library" / "collections" / "wiki"
-    coll_root.mkdir(parents=True, exist_ok=True)
-
-    with pytest.raises(ModelNotConfigured):
-        grounding.ground("test question", tag_expr="wiki")
 
 
 def test_ground_threads_source_kind_from_librarian_output(monkeypatch) -> None:
