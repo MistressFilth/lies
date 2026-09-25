@@ -607,6 +607,67 @@ def lint(
 
 
 # ---------------------------------------------------------------------------
+# synthesize — prose answer for human reading (library-mode read surface)
+# ---------------------------------------------------------------------------
+
+
+from lies.mcp.synth import synthesize as _synthesize  # noqa: E402
+
+
+@mcp.tool(
+    description=(
+        "Synthesize a prose answer for human reading. Returns "
+        "`{answer, citations, pages_read, fallback_used, synthesis_used}`. "
+        "Use when the human asks a question and wants a complete, "
+        "synthesized response (vs. `/cite` which returns snippets for "
+        "agent context)."
+    ),
+    annotations=ToolAnnotations(
+        title="Synthesize: prose answer for human reading",
+    ),
+)
+async def synthesize(
+    question: str,
+    tag_expr: str | None = None,
+    exclude_tags: list[str] | None = None,
+    file_back: bool = False,
+) -> dict:
+    """Synthesize a prose answer from library collections.
+
+    Args:
+        question: Natural-language question.
+        tag_expr: Body of a single include expression (no leading sigil).
+        exclude_tags: At most one entry (F15 grammar).
+        file_back: Reserved; raises ToolError until write-tool spec lands.
+    """
+    if exclude_tags is not None and len(exclude_tags) > 1:
+        raise ToolError(f"exclude_tags accepts at most one tag; got {len(exclude_tags)}")
+
+    exclude_expr: TagExpr | None = None
+    if exclude_tags:
+        from lies.query.tag_expr import parse
+
+        exclude_expr = parse(exclude_tags[0])
+
+    envelope = await _synthesize(
+        question=question,
+        tag_expr=tag_expr,
+        exclude_expr=exclude_expr,
+        file_back=file_back,
+    )
+    return {
+        "question": envelope.question,
+        "tag_expr": envelope.tag_expr,
+        "answer": envelope.answer,
+        "citations": [asdict(c) for c in envelope.citations],
+        "pages_read": envelope.pages_read,
+        "fallback_used": envelope.fallback_used,
+        "synthesis_used": envelope.synthesis_used,
+        "fallback_reason": envelope.fallback_reason,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Resources — raw wiki reads, no LLM round-trip
 # ---------------------------------------------------------------------------
 #
