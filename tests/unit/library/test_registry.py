@@ -162,6 +162,7 @@ def test_collection_tags_picks_up_new_collection_after_mtime_change(
     assert library_collection_tags() == frozenset({"a"})
 
 
+@pytest.mark.slow
 def test_collection_names_cache_hits_on_unchanged_mtime(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
