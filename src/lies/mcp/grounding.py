@@ -24,6 +24,8 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
+    from pydantic_ai.models import Model
+
     from lies.agents.librarian import PageExcerpt
     from lies.markdown_spans import Span
     from lies.query.tag_expr import TagExpr
@@ -255,6 +257,7 @@ def ground(
     top_k: int = 3,
     *,
     wiki_name: str | None = None,
+    librarian_model: "Model | str | None" = None,
 ) -> ArchivistDigest:
     """Return a grounding digest for ``question``.
 
@@ -284,6 +287,16 @@ def ground(
             Tests pass an explicit name so the dispatch layer hits
             a known fixture wiki; production callers leave it
             ``None``.
+        librarian_model: Pre-resolved ``Model`` or model-string for
+            the F18 librarian. ``None`` falls through to the bare
+            :func:`librarian_agent` factory, which raises
+            :class:`ModelNotConfigured` (the historical
+            pre-resolver behavior). The MCP ``ground`` tool wrapper
+            resolves this via :func:`lies.mcp.server._resolve_librarian_model`
+            so the configuration error surfaces at the MCP boundary
+            rather than mid-dispatch. Unscoped ``ground()`` bypasses
+            the librarian entirely (Task 1 brick-wall fix), so the
+            kwarg is only consumed on the tagged path.
 
     Returns:
         :class:`ArchivistDigest` carrying the librarian's excerpts
@@ -299,6 +312,11 @@ def ground(
         ArchivistCoverageError: when a positive tag matches zero
             collections (caller may retry untagged or surface). Also
             raised when the include expression fails to parse.
+        lies.errors.ModelNotConfigured: when ``librarian_model`` is
+            ``None`` and the librarian path is entered (i.e. when
+            ``tag_expr`` or ``exclude_expr`` is set). The MCP wrapper
+            pre-resolves the model so this propagates only when a
+            Python caller skips the resolver.
     """
     if top_k < 1:
         top_k = 1
@@ -494,7 +512,13 @@ def ground(
             from lies.mcp.resolution import resolve_wiki
             from lies.memory.service import WikiMemoryService
 
-            agent = librarian_agent()
+            # ``librarian_agent()`` raises ``ModelNotConfigured`` when
+            # called without a ``model=`` kwarg — see the factory doc.
+            # The MCP wrapper resolves the model eagerly via
+            # ``_resolve_librarian_model`` and threads it through this
+            # kwarg; Python callers (e.g. ``lies query --ground``) can
+            # pre-resolve and pass the same shape, or let it raise.
+            agent = librarian_agent(model=librarian_model)
             resolved_wiki = resolve_wiki(wiki_name)
             register_librarian_tools(
                 agent,

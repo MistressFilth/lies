@@ -57,6 +57,44 @@ mcp = FastMCP(
 )
 
 
+def _resolve_librarian_model():
+    """Resolve the ``librarian`` model string or constructed ``Model``.
+
+    Mirrors :func:`lies.mcp.synth._resolve_synthesizer_model` (and
+    ``Orchestrator._resolve_default_models``): ``env_override`` first
+    (cheapest), then a user-level ``providers.toml`` load via
+    :func:`lies.providers.resolve_model`. Raises
+    :class:`lies.errors.ModelNotConfigured` when nothing is wired —
+    LIES does not silently fall back to a vendor-default model.
+
+    The MCP ``ground`` tool wrapper must resolve this before calling
+    :func:`lies.mcp.grounding.ground` because the bare
+    :func:`librarian_agent` factory raises ``ModelNotConfigured``
+    when called without a ``model=`` kwarg. ``Orchestrator.__init__``
+    resolves the same model via ``_resolve_default_models``; the MCP
+    path skips that wrapper, so it has to resolve the librarian
+    model itself.
+    """
+    from lies.errors import ModelNotConfigured
+    from lies.providers import env_override, load_providers_config
+    from lies.providers.resolver import resolve_model
+    from lies.xdg import config_home
+    from lies.constants import LIES_DATA_SUBDIR
+
+    override = env_override("librarian")
+    if override is not None:
+        return override
+    providers_path = config_home() / LIES_DATA_SUBDIR / "providers.toml"
+    config = load_providers_config(providers_path)
+    if config is not None and "librarian" in config.agents:
+        return resolve_model("librarian", config)
+    raise ModelNotConfigured(
+        "mcp_ground() requires the librarian model. "
+        "Set LIES_AGENT_LIBRARIAN_MODEL or configure providers.toml "
+        "via `lies providers init`."
+    )
+
+
 # ---------------------------------------------------------------------------
 # ground — F19 grounding digest (Task 3 of the grounding-archivist plan)
 # ---------------------------------------------------------------------------
@@ -143,12 +181,24 @@ def mcp_ground(
             raise ToolError(format_unknown_tag_error(exc)) from exc
 
     try:
+        # Resolve the librarian model BEFORE ``ground()`` enters its
+        # tagged-path branch: ``librarian_agent()`` raises
+        # ``ModelNotConfigured`` when called without a ``model=``
+        # kwarg. ``Orchestrator.__init__`` does this via
+        # ``_resolve_default_models``; the MCP path bypasses that
+        # wrapper, so we resolve it here. Unscoped ``ground()``
+        # bypasses the librarian entirely (Task 1 brick-wall fix),
+        # but resolving the model eagerly keeps the tagged and
+        # unscoped paths symmetric and surfaces a configuration
+        # error at the boundary instead of mid-dispatch.
+        librarian_model = _resolve_librarian_model()
         digest = ground(
             question=question,
             tag_expr=tag_expr,
             exclude_expr=exclude_expr,
             top_k=top_k,
             wiki_name=name,
+            librarian_model=librarian_model,
         )
     except ArchivistCoverageError as exc:
         raise ToolError(str(exc)) from exc
