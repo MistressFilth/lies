@@ -25,6 +25,7 @@ from lies.qmd.lifecycle import (
     _pidfile,
     _port_listening,
     _read_pid,
+    recycle,
     serves_query,
     status,
 )
@@ -262,3 +263,106 @@ def test_serves_query_returns_false_when_httpx_raises(
 
     monkeypatch.setattr(httpx, "Client", _RaisingClient)
     assert serves_query(timeout=1.0) is False
+
+
+# --- recycle ----------------------------------------------------------------
+
+
+def test_recycle_calls_down_then_up_and_polls(monkeypatch: pytest.MonkeyPatch) -> None:
+    """recycle() = ``_down`` -> ``_up`` -> serves_query-poll, in that order.
+
+    All three primitives are stubbed; the call sequence is captured
+    without spawning a real daemon, keeping the test well inside the
+    unit-test budget.
+    """
+    calls: list[str] = []
+    expected = DaemonStatus(running=True, pid=42, port=8181, url="http://127.0.0.1:8181/mcp")
+
+    def fake_down(port: int) -> None:
+        calls.append(f"down({port})")
+
+    def fake_up(port: int) -> DaemonStatus:
+        calls.append(f"up({port})")
+        return expected
+
+    def fake_serves_query(port: int, timeout: float) -> bool:
+        calls.append(f"serves_query({port})")
+        return True
+
+    monkeypatch.setattr(lifecycle, "_down", fake_down)
+    monkeypatch.setattr(lifecycle, "_up", fake_up)
+    monkeypatch.setattr(lifecycle, "serves_query", fake_serves_query)
+
+    result = recycle()
+    assert calls == ["down(8181)", "up(8181)", "serves_query(8181)"]
+    assert result is expected
+
+
+def test_recycle_polls_until_serves_query_succeeds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """recycle() keeps polling while serves_query returns False.
+
+    Two false polls -> two ``time.sleep`` calls; the third poll
+    returns True and the loop exits. ``time.sleep`` is stubbed so
+    the test does not actually wait.
+    """
+    polls = iter([False, False, True])
+    sleeps: list[float] = []
+
+    monkeypatch.setattr(lifecycle, "_down", lambda port: None)
+    monkeypatch.setattr(
+        lifecycle,
+        "_up",
+        lambda port: DaemonStatus(running=True, pid=1, port=port, url=""),
+    )
+    monkeypatch.setattr(lifecycle, "serves_query", lambda port, timeout: next(polls))
+    monkeypatch.setattr(lifecycle.time, "sleep", lambda s: sleeps.append(s))
+
+    recycle()
+    assert sleeps == [0.5, 0.5]
+
+
+def test_recycle_raises_when_daemon_never_serves(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """recycle() raises RuntimeError when serves_query stays False past the budget.
+
+    ``time.time`` is stubbed so the deadline expires on the second
+    loop check; ``time.sleep`` is stubbed so the test does not block.
+    The error message references the post-restart liveness budget —
+    that is the diagnostic the operator needs.
+    """
+    monkeypatch.setattr(lifecycle, "_down", lambda port: None)
+    monkeypatch.setattr(
+        lifecycle,
+        "_up",
+        lambda port: DaemonStatus(running=True, pid=1, port=port, url=""),
+    )
+    monkeypatch.setattr(lifecycle, "serves_query", lambda port, timeout: False)
+    monkeypatch.setattr(lifecycle.time, "sleep", lambda _s: None)
+
+    # First ``time.time()`` sets the deadline (1000.0 + 2.0 = 1002.0);
+    # the second ``time.time()`` (the first loop check) jumps past it.
+    clock = iter([1000.0, 1003.0])
+    monkeypatch.setattr(lifecycle.time, "time", lambda: next(clock))
+
+    with pytest.raises(RuntimeError, match="never served"):
+        recycle(ready_timeout=2.0)
+
+
+def test_recycle_returns_up_status_verbatim(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """recycle() returns the status produced by the fresh ``_up`` call.
+
+    The post-restart liveness is the only thing recycle adds; the
+    status object is passed through unchanged so callers see the
+    fresh daemon's pid/port/url.
+    """
+    expected = DaemonStatus(running=True, pid=9999, port=8181, url="http://127.0.0.1:8181/mcp")
+    monkeypatch.setattr(lifecycle, "_down", lambda port: None)
+    monkeypatch.setattr(lifecycle, "_up", lambda port: expected)
+    monkeypatch.setattr(lifecycle, "serves_query", lambda port, timeout: True)
+
+    assert recycle() is expected

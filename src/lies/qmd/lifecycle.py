@@ -222,3 +222,22 @@ def serves_query(port: int = _DEFAULT_PORT, timeout: float = _SERVES_QUERY_TIMEO
     except (httpx.HTTPError, ValueError):
         return False
     return True
+
+
+def recycle(port: int = _DEFAULT_PORT, ready_timeout: float = _READY_TIMEOUT_S) -> DaemonStatus:
+    """Restart the daemon and wait until it serves a query (backstop recovery).
+
+    Stop the listener, start a fresh one, poll ``serves_query`` until it
+    answers or ``ready_timeout`` elapses. Raises ``RuntimeError`` when the
+    fresh daemon never serves within the budget. Mirrors ask's
+    ``scripts/qmd-daemon.py:recycle()`` so LIES inherits the same wedged-
+    daemon recovery discipline ask has used in production for years.
+    """
+    _down(port)
+    status_ = _up(port)
+    deadline = time.time() + ready_timeout
+    while time.time() < deadline:
+        if serves_query(port, timeout=5.0):
+            return status_
+        time.sleep(0.5)
+    raise RuntimeError(f"qmd daemon recycled but never served within {ready_timeout}s")

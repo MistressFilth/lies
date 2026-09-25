@@ -134,3 +134,81 @@ def test_serves_query_returns_false_when_port_dead(
     _skip_if_daemon_already_running(monkeypatch, tmp_path)
 
     assert lifecycle.serves_query(timeout=2.0) is False
+
+
+def test_recycle_brings_wedged_daemon_back(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """recycle() recovers a wedged daemon the live ``_up`` cannot reach.
+
+    Starts a real daemon via ``_up``, SIGKILLs the pidfile-recorded
+    process out-of-band (bypassing ``qmd mcp stop`` -- that is
+    precisely the wedge scenario ``recycle`` exists to recover
+    from), waits for the kernel to release the port, then calls
+    ``recycle`` and verifies the new daemon is up. Cleans up via
+    ``_down`` in a ``finally`` so a failing assertion does not
+    leave a daemon running.
+    """
+    import os
+
+    _redirected_cache_home(monkeypatch, tmp_path)
+    _skip_if_daemon_already_running(monkeypatch, tmp_path)
+
+    lifecycle._up()
+    # Simulate the wedge by killing the listener directly, bypassing
+    # ``qmd mcp stop`` -- that command is exactly what _down tries
+    # first; out-of-band killing is what a wedged process looks like.
+    pid = lifecycle._read_pid()
+    if pid is not None:
+        try:
+            os.kill(pid, 9)
+        except OSError:
+            pass
+    # Wait for the kernel to release the port + any lingering TIME_WAIT
+    # to settle before recycle's ``_up`` tries to bind again.
+    time.sleep(1.0)
+
+    try:
+        s = lifecycle.recycle()
+        assert s.running is True, f"recycle returned {s!r}; expected running=True"
+    finally:
+        lifecycle._down()
+        # Mirror ``test_up_starts_daemon``'s post-stop sleep so the
+        # next test does not race the lingering TIME_WAIT socket.
+        time.sleep(0.5)
+
+
+def test_recycle_raises_when_daemon_never_serves(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """recycle() raises ``RuntimeError`` when no daemon can serve within budget.
+
+    Holds port 8181 with a raw socket so the fresh ``_up`` cannot
+    bind a working daemon and ``recycle``'s poll loop cannot get a
+    sane liveness signal. ``ready_timeout=2`` keeps the test bounded;
+    the blocker is released in ``finally`` so the next test does not
+    see a port conflict. The skip-if-running guard runs BEFORE the
+    bind: we want to skip if the host's real daemon is already on
+    8181, not skip after we've claimed the port for our blocker.
+    """
+    import socket
+
+    _redirected_cache_home(monkeypatch, tmp_path)
+    _skip_if_daemon_already_running(monkeypatch, tmp_path)
+
+    blocker = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    blocker.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        blocker.bind(("127.0.0.1", 8181))
+    except OSError:
+        # Lost a race against the host's real daemon coming up
+        # between the skip check and the bind. Skip rather than fail.
+        blocker.close()
+        pytest.skip("port grabbed after _skip_if_daemon_already_running check")
+    blocker.listen(1)
+    try:
+        with pytest.raises(RuntimeError):
+            lifecycle.recycle(ready_timeout=2.0)
+    finally:
+        blocker.close()
+        # Let the kernel release the port + the lingering TIME_WAIT
+        # settle before the next test runs.
+        time.sleep(0.5)
