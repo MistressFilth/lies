@@ -34,6 +34,8 @@ _HOST = "127.0.0.1"
 _DEFAULT_PORT = 8181
 _READY_TIMEOUT_S = 30.0
 _STOP_TIMEOUT_S = 10.0
+_SERVES_QUERY_TIMEOUT_S = 5.0
+_DEFAULT_URL = f"http://{_HOST}:{_DEFAULT_PORT}"
 
 
 class DaemonStatus:
@@ -194,3 +196,29 @@ def _down(port: int = _DEFAULT_PORT) -> None:
         # will bind a fresh listener on the same port, superseding
         # the stuck process.
         return
+
+
+def serves_query(port: int = _DEFAULT_PORT, timeout: float = _SERVES_QUERY_TIMEOUT_S) -> bool:
+    """True iff the daemon answers a trivial ``lex`` query within ``timeout``.
+
+    A bound port is not enough: a daemon can pass a port probe and
+    still hang on the first real query. Liveness means *serves a
+    query*. This is the test that catches the qmd subprocess hung
+    at 98% CPU emitting long traces — the daemon accepts TCP but
+    never returns a response.
+
+    ask's qmd-daemon.py implements the same liveness check; the
+    comment there reads: "A bound port is not enough: a daemon can
+    pass a port probe and still hang on the first real query."
+    """
+    import httpx
+
+    payload = {"searches": [{"type": "lex", "query": "ready"}], "limit": 1}
+    try:
+        with httpx.Client(base_url=f"http://{_HOST}:{port}", timeout=timeout) as client:
+            resp = client.post(f"http://{_HOST}:{port}/query", json=payload)
+            resp.raise_for_status()
+            resp.json()
+    except (httpx.HTTPError, ValueError):
+        return False
+    return True

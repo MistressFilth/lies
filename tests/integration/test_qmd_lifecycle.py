@@ -91,3 +91,46 @@ def test_down_stops_daemon(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> N
     s = lifecycle.status()
     assert s.running is False, f"expected not-running after _down; got {s!r}"
     assert s.pid is None
+
+
+def test_serves_query_returns_true_for_healthy_daemon(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """``serves_query`` probes a real ``lex`` query and returns True.
+
+    Pins the contract that ``serves_query`` issues an actual query
+    against the daemon's REST API (not just a TCP connect), so a
+    wedged-but-listening daemon is correctly flagged live. The
+    daemon is spawned + torn down via the real ``_up``/``_down``
+    primitives, not a mock — this is the integration surface Task 3
+    (``recycle``) builds on.
+    """
+    _redirected_cache_home(monkeypatch, tmp_path)
+    _skip_if_daemon_already_running(monkeypatch, tmp_path)
+
+    lifecycle._up()
+    try:
+        assert lifecycle.serves_query(timeout=10.0) is True
+    finally:
+        lifecycle._down()
+        # Mirror ``test_up_starts_daemon``'s post-stop sleep so the
+        # next test does not race the lingering TIME_WAIT socket.
+        time.sleep(0.5)
+
+
+def test_serves_query_returns_false_when_port_dead(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """``serves_query`` returns False without a daemon.
+
+    No ``_up`` and no listener: ``httpx.Client.post`` raises
+    ``ConnectError`` on connect, the ``HTTPError`` arm catches it,
+    and ``serves_query`` returns False. The skip-if-running guard
+    is required because the developer's foreground daemon would
+    otherwise happily answer and the test would silently report
+    True when it should report False.
+    """
+    _redirected_cache_home(monkeypatch, tmp_path)
+    _skip_if_daemon_already_running(monkeypatch, tmp_path)
+
+    assert lifecycle.serves_query(timeout=2.0) is False

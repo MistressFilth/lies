@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import httpx
 import pytest
 
 from lies.qmd import lifecycle
@@ -24,6 +25,7 @@ from lies.qmd.lifecycle import (
     _pidfile,
     _port_listening,
     _read_pid,
+    serves_query,
     status,
 )
 
@@ -222,3 +224,41 @@ def test_status_honors_custom_port() -> None:
     s = status(port=9000)
     assert s.port == 9000
     assert s.url == "http://127.0.0.1:9000/mcp"
+
+
+# --- serves_query -----------------------------------------------------------
+
+
+def test_serves_query_returns_false_when_httpx_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``serves_query`` returns False when ``httpx.Client.post`` raises.
+
+    A bound port is not enough: ``serves_query`` is the liveness
+    probe that catches a wedged daemon (TCP accepts but the query
+    hangs). The exception arm here covers both ``httpx.HTTPError``
+    and ``ValueError`` (malformed JSON) — we exercise the
+    ``HTTPError`` arm via a mocked ``ConnectError`` without
+    standing up a real daemon, keeping the unit-test budget
+    well under 0.15 s.
+
+    The function imports ``httpx`` lazily, so monkeypatching the
+    module-level ``httpx.Client`` (the same object in
+    ``sys.modules``) intercepts the lookup.
+    """
+
+    class _RaisingClient:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+        def __enter__(self) -> _RaisingClient:
+            return self
+
+        def __exit__(self, *args: object) -> bool:
+            return False
+
+        def post(self, *args: object, **kwargs: object) -> None:
+            raise httpx.ConnectError("connection refused")
+
+    monkeypatch.setattr(httpx, "Client", _RaisingClient)
+    assert serves_query(timeout=1.0) is False
