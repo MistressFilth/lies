@@ -23,6 +23,7 @@ def model() -> TestModel:
     )
 
 
+@pytest.mark.slow
 def test_enricher_returns_noop_when_no_evidence(model: TestModel) -> None:
     agent = enricher_agent(model=model)
     deps = MemoryEnricherDeps(

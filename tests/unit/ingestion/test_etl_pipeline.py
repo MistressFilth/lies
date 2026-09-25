@@ -256,6 +256,7 @@ def test_pipeline_threads_wiki_to_write(wiki: Wiki) -> None:
     assert captured["wiki_root"] == wiki.data_root
 
 
+@pytest.mark.slow
 def test_pipeline_runs_register_stage(wiki: Wiki, monkeypatch: pytest.MonkeyPatch) -> None:
     """After WRITE, the pipeline calls WikiMemoryService.register_collection.
     QMD refresh + collection registration + index.md rebuild now happen

@@ -67,6 +67,7 @@ def test_record_lookup_returns_config(library: Library) -> None:
     assert rec.source == "https://example.com/alpha"
 
 
+@pytest.mark.slow
 def test_collection_without_config_skipped(tmp_path, monkeypatch) -> None:
     # A directory with no config.yaml must not raise.
     lib = Library(
@@ -130,6 +131,7 @@ def test_collection_names_picks_up_new_directory_after_mtime_change(
     assert library_collection_names() == frozenset({"alpha", "beta"})
 
 
+@pytest.mark.slow
 def test_collection_tags_picks_up_new_collection_after_mtime_change(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -160,6 +162,7 @@ def test_collection_tags_picks_up_new_collection_after_mtime_change(
     assert library_collection_tags() == frozenset({"a"})
 
 
+@pytest.mark.slow
 def test_collection_names_cache_hits_on_unchanged_mtime(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -60,7 +60,9 @@ src/lies/
 ├── capabilities/    # harness capability adapters (CodeMode, Memory, Planning, ...)
 │   └── memory.py    # Harness Memory capability; per-wiki namespace via WikiIdentity
 ├── cli/             # Typer CLI package (init / ingest / query / lint / mcp / REPL)
-│   └── catalog.py   # `lies catalog` group: status/dump/reconcile/rebuild/render
+│   ├── catalog.py   # `lies catalog` group: status/dump/reconcile/rebuild/render
+│   └── qmd.py       # `lies qmd` operator group: status/up/down/recycle
+│                    # (thin wrapper around lies.qmd.lifecycle)
 ├── config.py        # env-driven config (model, wiki root, log level)
 ├── library/         # global corpus of collection configs and deterministic
 │   │                # mirrors. Per-cutover the library is the source of
@@ -73,13 +75,19 @@ src/lies/
 │   ├── collections_cli.py       # `lies library` sub-app
 │   │                            # (list/show/where/new/modify/delete/enrich-tags)
 │   └── migrate_collection_configs.py  # `lies migrate-collection-configs`
-├── mcp/             # FastMCP server (src/lies/mcp/server.py) — thin adapter
-│                    # around WikiMemoryService; tools: init_wiki, query,
-│                    # answer, lint, ground, wiki_search, wiki_read,
-│                    # wiki_changes, file_knowledge, reindex; resources
-│                    # include wiki://catalog and wiki://catalog/{slug}
+├── mcp/             # FastMCP server (src/lies/mcp/server.py) — library-mode read surface;
+│                    # tools: init_wiki, synthesize, lint, reindex, ground,
+│                    # ask_question, ask_ground_question; resources include
+│                    # library://catalog and library://catalog/{slug} (wiki://status,
+│                    # wiki://index, wiki://log, wiki://lint-report kept as
+│                    # operational diagnostics); the wiki-shaped read tools
+│                    # (query / answer / wiki_search / wiki_read / wiki_changes /
+│                    # file_knowledge) and wiki-shaped data resources
+│                    # (wiki://page / wiki://memory-changes / wiki://catalog)
+│                    # are retired
 │   ├── grounding.py # F19 grounding archivist (CitationSnippet + ArchivistDigest
 │   │                # + truncate_at_word_boundary + pick_first_prose_span + ground())
+│   ├── synth.py     # library-mode synthesize envelope (SynthesizeEnvelope + synthesize())
 │   └── daemon.py    # pidfile lifecycle for `lies mcp up/down/status`
 ├── memory/          # invisible-memory layer (see below)
 │   ├── catalog.py   # sqlite wiki catalog: schema + CRUD + rebuild_from_disk
@@ -89,7 +97,17 @@ src/lies/
 │   └── catalog_models.py  # CatalogPage (frozen BaseModel) + PageSection enum
 ├── orchestrator.py  # top-level Orchestrator; owns cross-cutting capabilities
 ├── qmd/             # qmd CLI + MCP adapters
-│   └── daemon.py    # ensure/inspect qmd's own daemon (never stops it)
+│   ├── _models.py   # Pydantic models returned by qmd library functions (e.g. ReindexResult)
+│   ├── _proc.py     # subprocess seam for qmd library functions (Popen + bounded communicate)
+│   ├── _subprocess.py # deadlock-free `_run_qmd` helper (Popen + timeout + SIGKILL-on-overrun)
+│   ├── capability.py # daemon-aware QmdCapability (MCP toolset + recycle envelope)
+│   ├── cli.py       # thin wrapper around the `qmd` CLI for batch operations
+│   ├── daemon.py    # ensure/inspect qmd's own daemon (never stops it)
+│   ├── health.py    # cheap reachability probe for the qmd HTTP daemon
+│   ├── lifecycle.py # qmd daemon lifecycle: status, up, down, recycle
+│   ├── lock.py      # cross-process flock envelope for qmd CLI helpers
+│   ├── mcp.py       # qmd MCP client (QmdRecycleToolset wrapper for transport errors)
+│   └── mcp_fallback.py # in-process FastMCP fallback for the qmd HTTP daemon
 ├── markdown_spans.py # F37 — markdown spans parser (Span dataclass + parse_spans)
 ├── query/           # index.md parser + answer synthesizer
 │   ├── citation.py  # Citation / ClaimCitation dataclasses (F19)
@@ -118,7 +136,7 @@ tests/
 
 The project runtime on the host currently operates
 **knowledge-collections-only** — no wikis are registered under
-`~/.local/share/lies/<name>/`. The MCP `query` / `answer` / `cite` /
+`~/.local/share/lies/<name>/`. The MCP `synthesize` / `cite` /
 `ground` tools fan out across the global library at
 `~/.local/share/lies/library/collections/<name>/` instead.
 
@@ -126,12 +144,11 @@ When an agent is asked to "look at a lies collection," treat it as a
 reference to a library collection, not a wiki. The library is the
 source of truth for retrieval in this environment.
 
-Wiki code paths (`WikiMemoryService`, `wiki_search`, `wiki_read`,
-`init_wiki`, `file_knowledge`, `WikiIdentity`, `MemoryPlan`,
-page-author agents, `wiki://catalog` resource) remain in source for
-future use. They are dormant — no wiki XDG instance currently exists
-for them to point at. `lies init <name>` will create a new wiki if
-invoked; that's expected for future wiki-mode users.
+Wiki code paths (`WikiMemoryService`, `init_wiki`, `WikiIdentity`,
+`MemoryPlan`, page-author agents) remain in source for future use.
+They are dormant — no wiki XDG instance currently exists for them
+to point at. `lies init <name>` will create a new wiki if invoked;
+that's expected for future wiki-mode users.
 
 ## Invisible memory layer
 
@@ -153,9 +170,13 @@ invoked; that's expected for future wiki-mode users.
 - `capabilities/memory.py` exposes this through the harness `Memory`
   capability with a per-wiki namespace derived from `WikiIdentity` (so
   two wikis against the same install do not share state).
-- The Pydantic AI main agent reads through `wiki_search` and `wiki_read`
-  tools; the FastMCP server exposes the same tools plus an expanded
-  `query` response (`citations`, `pages_read`, `changed_pages`).
+- The FastMCP server exposes the library-mode read surface
+  (`synthesize` for prose answers, `ground` for snippet digests,
+  `ask_question` / `ask_ground_question` for slash-input parsing)
+  against the global library at
+  `~/.local/share/lies/library/collections/<name>/`. The Pydantic
+  AI main agent and any future wiki-mode user reach memory through
+  the dormant wiki-shaped tools (no production surface).
 - After the answer, a `MemoryEnricher` sub-agent proposes a structured
   `MemoryPlan` only when evidence warrants it.
 - The `EnrichmentQueue` (in `src/lies/memory/retry.py`) is a per-session,

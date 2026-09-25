@@ -29,6 +29,8 @@ pytestmark = pytest.mark.skipif(
 )
 
 
+# exceeds 0.15s budget; slow-marked per pre-PR-checklist rule (project-noted in TODO.md)
+@pytest.mark.slow
 def test_agent_emits_question_first() -> None:
     """First run produces one of the two AuthorOutput variants."""
     agent = collection_author_agent(model=TestModel())

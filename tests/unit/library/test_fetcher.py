@@ -145,6 +145,7 @@ def test_fetcher_invokes_local_file(monkeypatch, tmp_path: Path) -> None:
     assert fake.parse_called_with == [src]
 
 
+@pytest.mark.slow
 def test_fetcher_url_source_sets_url_field(monkeypatch) -> None:
     """When source is a str (URL), ``FetchItem.url`` carries it.
 

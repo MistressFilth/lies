@@ -17,15 +17,13 @@ from __future__ import annotations
 
 import sys
 from collections.abc import Callable
-from dataclasses import asdict, dataclass
-from pathlib import Path
-from typing import Any, Literal, cast
+from dataclasses import asdict
+from typing import Any, cast
 
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 from mcp.types import ToolAnnotations
 from pydantic import BaseModel, ConfigDict
-from pydantic import Field
 
 try:
     from fastmcp import Context
@@ -38,9 +36,7 @@ from lies.errors import WikiAlreadyExists, WikiNotRegistered
 from lies.lock_errors import WikiFlockUnrepairable, WikiLockBusy
 from lies.mcp.instructions_loader import load_instructions, load_prompt
 from lies.mcp.resolution import resolve_wiki
-from lies.memory.models import WikiPlanInvalid
 from lies.orchestrator import Orchestrator
-from lies.query.citation import Citation, ClaimCitation
 from lies.query.tag_expr import (
     TagExpr,
     TagExprEmpty,
@@ -61,47 +57,42 @@ mcp = FastMCP(
 )
 
 
-class SynthesizedMcpAnswer(BaseModel):
-    """Structured answer returned by the ``query`` tool.
+def _resolve_librarian_model():
+    """Resolve the ``librarian`` model string or constructed ``Model``.
 
-    A 1:1 slice of :class:`lies.query.models.SynthesizedAnswer` for
-    FastMCP serialization — only ``page_links`` is dropped (it is
-    redundant with ``citations`` plus the answer body's own links;
-    raw wiki reads are still available via the ``wiki://`` resources
-    if the LLM wants them). ``should_file`` and ``file_receipt`` are
-    F3 file-back fields: ``should_file`` is the agent's verdict on
-    whether the answer earns a wiki page; ``file_receipt`` is the
-    structured outcome of the file-back attempt (or ``None`` when
-    filing was skipped / failed-soft).
+    Mirrors :func:`lies.mcp.synth._resolve_synthesizer_model` (and
+    ``Orchestrator._resolve_default_models``): ``env_override`` first
+    (cheapest), then a user-level ``providers.toml`` load via
+    :func:`lies.providers.resolve_model`. Raises
+    :class:`lies.errors.ModelNotConfigured` when nothing is wired —
+    LIES does not silently fall back to a vendor-default model.
 
-    ``citations`` and ``pages_read`` mirror the underlying
-    :class:`SynthesizedAnswer` shape (``list[Citation]``) — each
-    carries the source discriminator (``"library"`` / ``"wiki"``)
-    so downstream consumers can apply the library-wins-on-conflict
-    rule without re-deriving the source from the path.
+    The MCP ``ground`` tool wrapper must resolve this before calling
+    :func:`lies.mcp.grounding.ground` because the bare
+    :func:`librarian_agent` factory raises ``ModelNotConfigured``
+    when called without a ``model=`` kwarg. ``Orchestrator.__init__``
+    resolves the same model via ``_resolve_default_models``; the MCP
+    path skips that wrapper, so it has to resolve the librarian
+    model itself.
     """
+    from lies.errors import ModelNotConfigured
+    from lies.providers import env_override, load_providers_config
+    from lies.providers.resolver import resolve_model
+    from lies.xdg import config_home
+    from lies.constants import LIES_DATA_SUBDIR
 
-    answer: str
-    fallback_used: bool
-    fallback_reason: str | None  # None when qmd served the query
-    citations: list[Citation]
-    pages_read: list[Citation]
-    claim_citations: list[ClaimCitation] = []
-    changed_pages: list[str]
-    synthesis_used: bool = False
-    synthesis_reason: str | None = None  # None when the agent answered cleanly
-    should_file: bool = False  # F3: agent verdict on whether this earns a page
-    file_receipt: dict | None = None  # F3: serialized MemoryReceipt or None
-    searched_scope: list[str] = Field(
-        default_factory=list
-    )  # Bundle C (F15): sorted, unique collection names searched
-    format: Literal["md", "table", "marp", "chart"] = (
-        "md"  # F1: validated output format (auto-route resolves to one of these)
+    override = env_override("librarian")
+    if override is not None:
+        return override
+    providers_path = config_home() / LIES_DATA_SUBDIR / "providers.toml"
+    config = load_providers_config(providers_path)
+    if config is not None and "librarian" in config.agents:
+        return resolve_model("librarian", config)
+    raise ModelNotConfigured(
+        "mcp_ground() requires the librarian model. "
+        "Set LIES_AGENT_LIBRARIAN_MODEL or configure providers.toml "
+        "via `lies providers init`."
     )
-
-
-# Re-export the page-author slice for FastMCP serialization.
-from lies.page import WriteKnowledgeResult  # noqa: E402,F401
 
 
 # ---------------------------------------------------------------------------
@@ -190,12 +181,24 @@ def mcp_ground(
             raise ToolError(format_unknown_tag_error(exc)) from exc
 
     try:
+        # Resolve the librarian model BEFORE ``ground()`` enters its
+        # tagged-path branch: ``librarian_agent()`` raises
+        # ``ModelNotConfigured`` when called without a ``model=``
+        # kwarg. ``Orchestrator.__init__`` does this via
+        # ``_resolve_default_models``; the MCP path bypasses that
+        # wrapper, so we resolve it here. Unscoped ``ground()``
+        # bypasses the librarian entirely (Task 1 brick-wall fix),
+        # but resolving the model eagerly keeps the tagged and
+        # unscoped paths symmetric and surfaces a configuration
+        # error at the boundary instead of mid-dispatch.
+        librarian_model = _resolve_librarian_model()
         digest = ground(
             question=question,
             tag_expr=tag_expr,
             exclude_expr=exclude_expr,
             top_k=top_k,
             wiki_name=name,
+            librarian_model=librarian_model,
         )
     except ArchivistCoverageError as exc:
         raise ToolError(str(exc)) from exc
@@ -260,63 +263,8 @@ def init_wiki(name: str) -> dict[str, object]:
 
 
 # ---------------------------------------------------------------------------
-# wiki_search / wiki_read — direct memory retrieval
+# _confirm_destructive — destructive-flag elicitation (used by reindex)
 # ---------------------------------------------------------------------------
-
-
-@mcp.tool
-def wiki_search(
-    question: str,
-    collection_ids: list[str] | None = None,
-    limit: int = 5,
-    name: str | None = None,
-) -> dict[str, object]:
-    """Search the wiki identified by ``name`` for project knowledge."""
-    from lies.memory.service import WikiMemoryService
-
-    wiki = resolve_wiki(name)
-    result = WikiMemoryService(wiki).search(
-        question,
-        collection_ids=collection_ids,
-        limit=limit,
-    )
-    return cast(dict[str, object], result.model_dump())
-
-
-@mcp.tool
-def wiki_read(
-    page_ids: list[str],
-    name: str | None = None,
-) -> dict[str, str]:
-    """Read full wiki pages by ID for the wiki identified by ``name``."""
-    from lies.memory.service import WikiMemoryService
-
-    wiki = resolve_wiki(name)
-    return WikiMemoryService(wiki).read(page_ids)
-
-
-# ---------------------------------------------------------------------------
-# file_knowledge — write one markdown page (collision + force gate)
-# ---------------------------------------------------------------------------
-
-from lies.page import build_author_plan  # noqa: E402
-from lies.page.author import _SectionRefusal  # noqa: E402,F401
-
-_TYPE_PLURAL_MCP: dict[str, str] = {
-    "entity": "entities",
-    "concept": "concepts",
-    "comparison": "comparisons",
-    "source": "sources",
-    "synthesis": "synthesis",
-}
-
-
-@dataclass
-class _CollisionVerdict:
-    """Response model for the file_knowledge collision elicit."""
-
-    action: Literal["overwrite", "rename", "cancel"]
-    new_slug: str | None = None
 
 
 class _ConfirmDestructive(BaseModel):
@@ -460,400 +408,9 @@ async def reindex(
     return result.model_dump()
 
 
-@mcp.tool(
-    description=(
-        "Write one markdown page to the wiki. type/slug/title/body required. "
-        "Slugs already on disk elicit overwrite/rename/cancel via ctx.elicit. "
-        "Returns the written page path + receipt on success; raises ToolError "
-        "on plan-invalid input."
-    ),
-)
-async def file_knowledge(
-    page_type: str,
-    collection: str,
-    slug: str,
-    title: str,
-    body: str,
-    *,
-    derived_from: list[str] | None = None,
-    tags: list[str] | None = None,
-    sources: list[str] | None = None,
-    force: bool = False,
-    name: str | None = None,
-    ctx: Context | None = None,  # type: ignore[valid-type]
-) -> dict[str, object]:
-    wiki = resolve_wiki(name)
-    rel_path = (
-        "wiki/overview.md"
-        if page_type == "overview"
-        else f"{collection}/{_TYPE_PLURAL_MCP[page_type]}/{slug}.md"
-    )
-
-    # Collision gate.
-    if (wiki.wiki_dir / rel_path).exists() and not force:
-        if ctx is None:
-            raise ToolError(f"page exists at {rel_path}; pass force=True to overwrite")
-        verdict = await ctx.elicit(
-            f"page already exists at {rel_path}; overwrite, rename, or cancel?",
-            response_type=_CollisionVerdict,
-        )
-        # FastMCP wraps the response: AcceptedElicitation has .action == "accept"
-        # and .data == <_CollisionVerdict>; DeclinedElicitation / CancelledElicitation
-        # carry no user payload. Branch on the wrapper action first; only on "accept"
-        # read the user's choice from .data.
-        if verdict.action == "cancel":
-            return WriteKnowledgeResult(
-                page_path=None,
-                page_type=page_type,
-                slug=slug,
-                collection=collection,
-                op="none",
-                receipt={
-                    "changed_pages": [],
-                    "deferred": [],
-                    "fallback_used": False,
-                    "fallback_reason": "",
-                    "errors": ["cancelled by operator"],
-                },
-            ).model_dump()
-        if verdict.action == "decline":
-            # Treat decline the same as cancel: no write, return a cancelled receipt.
-            return WriteKnowledgeResult(
-                page_path=None,
-                page_type=page_type,
-                slug=slug,
-                collection=collection,
-                op="none",
-                receipt={
-                    "changed_pages": [],
-                    "deferred": [],
-                    "fallback_used": False,
-                    "fallback_reason": "",
-                    "errors": ["cancelled by operator"],
-                },
-            ).model_dump()
-        if verdict.action == "accept":
-            user_action = verdict.data.action
-            if user_action == "rename":
-                new_slug = verdict.data.new_slug
-                if not new_slug:
-                    raise ToolError("rename requires new_slug")
-                slug = new_slug
-                rel_path = (
-                    "wiki/overview.md"
-                    if page_type == "overview"
-                    else f"{collection}/{_TYPE_PLURAL_MCP[page_type]}/{new_slug}.md"
-                )
-            elif user_action == "cancel":
-                return WriteKnowledgeResult(
-                    page_path=None,
-                    page_type=page_type,
-                    slug=slug,
-                    collection=collection,
-                    op="none",
-                    receipt={
-                        "changed_pages": [],
-                        "deferred": [],
-                        "fallback_used": False,
-                        "fallback_reason": "",
-                        "errors": ["cancelled by operator"],
-                    },
-                ).model_dump()
-            # user_action == "overwrite" falls through; proceed to build_author_plan
-        else:  # pragma: no cover  # unknown wrapper action
-            raise ToolError(f"unexpected elicit verdict action: {verdict.action}")
-
-    orch = Orchestrator(wiki=wiki)
-    try:
-        plan = build_author_plan(
-            type=page_type,  # type: ignore
-            collection=collection,
-            slug=slug,
-            title=title,
-            body=body,
-            derived_from=derived_from or [],
-            tags=tags or [],
-            sources=sources or [],
-            exists=lambda r: (wiki.wiki_dir / r).exists(),
-            sha_lookup=lambda r: orch._memory_service.current_state(r)[0],
-            # F17 (Task 4): thread the wiki's resolved section contract
-            # into the plan builder. ``Wiki.section_contract`` is the
-            # per-wiki resolved contract (override → default → empty);
-            # production wikis see enforcement. The default contract
-            # for an unresolved wiki yields an empty SectionContract
-            # that the helper short-circuits to ``[]`` — no refusal
-            # fires.
-            section_contract=wiki.section_contract,
-        )
-    except WikiPlanInvalid as exc:
-        raise ToolError(f"plan_invalid: {exc}") from exc
-
-    # F17 (Task 4) refusal surface. ``build_author_plan`` returns a
-    # ``_SectionRefusal`` (an errors-as-value sentinel) when the body
-    # omits a heading required by the wiki's section contract. We
-    # short-circuit before reaching ``Orchestrator.file_back_author``
-    # and translate the refusal into a refusal-shaped
-    # ``WriteKnowledgeResult`` (``op="none"``, ``page_path=None``,
-    # error preserved verbatim in ``receipt["errors"]``). The shape
-    # mirrors the cancel/decline elicit branches above; LLM callers
-    # already pattern-match on these fields, so we keep the surface
-    # uniform. ``Orchestrator.file_back_author`` also has a defensive
-    # ``isinstance(plan, _SectionRefusal)`` seam, but that one writes
-    # a misleading ``page_path=rel_path`` / ``op="create"`` envelope —
-    # the MCP layer must own this translation.
-    if isinstance(plan, _SectionRefusal):
-        return WriteKnowledgeResult(
-            page_path=None,
-            page_type=plan.page_type,
-            slug=plan.slug,
-            collection=collection,
-            op="none",
-            receipt={
-                "changed_pages": [],
-                "deferred": [],
-                "fallback_used": False,
-                "fallback_reason": "",
-                "errors": [plan.error],
-            },
-        ).model_dump()
-
-    receipt = orch.file_back_author(plan)
-    op_kind = "update" if any(p.op.name == "UPDATE" for p in receipt.changed_pages) else "create"
-    return WriteKnowledgeResult(
-        page_path=rel_path,
-        page_type=page_type,
-        slug=slug,
-        collection=collection,
-        op=op_kind,
-        receipt=receipt.model_dump(),
-    ).model_dump()
-
-
 # ---------------------------------------------------------------------------
-# query — synthesized answer with structured retrieval + synthesis metadata
+# ask_question — parser for /answer-style slash input
 # ---------------------------------------------------------------------------
-
-
-@mcp.tool
-def query(
-    question: str,
-    name: str | None = None,
-    collection: str | None = None,
-    file: bool = True,
-    force_file: bool = False,
-    tag_expr: str | None = None,
-    exclude_tags: list[str] | None = None,
-) -> SynthesizedMcpAnswer:
-    """Answer ``question`` from the wiki identified by ``name``.
-
-    Synthesizes through ``query_synthesizer_agent`` over qmd-retrieved
-    pages. ``fallback_used`` / ``fallback_reason`` report retrieval;
-    ``synthesis_used`` / ``synthesis_reason`` report whether the LLM or
-    the extractive fallback wrote the body.
-
-    F3 file-back: when ``file`` is True and the synthesized answer
-    marks itself ``should_file`` (or ``force_file`` flips it on), the
-    answer is filed under ``wiki/<collection>/synthesis/`` and a
-    structured ``file_receipt`` is returned. ``collection`` is required
-    to know where the page lives; without it the orchestrator raises
-    :class:`WikiPlanInvalid` and the tool re-raises that as a
-    ``ToolError`` so the LLM caller can react.
-
-    Bundle C (F15) tag filter: ``tag_expr`` is the body of a single
-    include expression (no leading ``+``); ``exclude_tags`` is a list of
-    size ≤ 1. Either may be set independently; together they build one
-    :class:`ResolvedTagFilter` passed to the orchestrator. Each atom
-    (inside ``tag_expr`` and as an ``exclude_tags`` element) may carry
-    a ``t:`` / ``c:`` qualifier prefix. **Task 4 / f15-exclude-compound:**
-    each ``exclude_tags[i]`` is a **full F15 expression** — it may
-    contain compound operators (``c:foo&c:bar``, ``c:foo|c:bar``),
-    qualifier prefixes on every atom, and quoted multi-word tags —
-    and is parsed via :func:`parse` into the same ``Include`` /
-    ``And`` / ``Or`` AST shape that the include half uses. An unknown
-    include atom raises a ``ToolError`` with the verbatim spelling;
-    a too-long exclude list raises ``ToolError`` at the boundary;
-    parser errors and unknown atoms inside a compound exclude raise
-    ``ToolError`` at the boundary too. Both kwargs are additive —
-    existing callers (no ``tag_expr``) get the unfiltered behavior.
-    """
-    if exclude_tags is not None and len(exclude_tags) > 1:
-        raise ToolError(
-            f"exclude_tags accepts at most one tag; got {len(exclude_tags)} ({exclude_tags!r})"
-        )
-
-    wiki = resolve_wiki(name)
-
-    # F19 (Task 6) / Task 3: pre-flight validation of ``tag_expr`` /
-    # ``exclude_tags`` against the registered collection set surfaces
-    # unknown-tag errors and parser errors at the boundary, then the
-    # raw kwargs flow into the F18 ``librarian_agent`` path. The
-    # synthesized ``ResolvedTagFilter`` envelope is no longer built
-    # here — the F18 librarian owns its own tag-expression semantics.
-    #
-    # ``exclude_tags`` stays a wire-level ``list[str]`` (the F15
-    # grammar permits at most one entry per MCP validation above);
-    # translate the one-element list to a parsed ``Include`` /
-    # ``And`` / ``Or`` AST via :func:`parse` (Task 4) so the
-    # orchestrator's ``exclude_expr`` kwarg (a ``TagExpr`` AST) is
-    # the canonical post-Task-3 surface end-to-end. Compound exclude
-    # expressions (``c:foo&c:bar``, ``c:foo|c:bar``) now round-trip
-    # through the boundary instead of being mis-parsed as a single
-    # atom with a literal ``&`` / ``|`` body.
-    exclude_expr: TagExpr | None = None
-    try:
-        if tag_expr is not None:
-            include_ast = parse(tag_expr)
-            resolve(include_ast, available=_collect_available_tags_mcp(wiki))
-        if exclude_tags:
-            exclude_expr = parse(exclude_tags[0])
-            resolve(
-                None,
-                available=_collect_available_tags_mcp(wiki),
-                exclude=exclude_expr,
-            )
-    except TagExprParseError as exc:
-        raise ToolError(f"invalid tag expression: {exc}") from exc
-    except TagExprEmpty as exc:
-        raise ToolError(f"empty tag expression: {exc}") from exc
-    except TagExprUnknown as exc:
-        raise ToolError(format_unknown_tag_error(exc)) from exc
-
-    orch = Orchestrator(wiki=wiki)
-    # F18/F19 (Task 6) / Task 3: ``run_query`` now takes the
-    # librarian-threading kwargs (``tag_expr`` + ``exclude_expr`` +
-    # ``file_back``) and returns a ``QueryAnswer`` rather than a
-    # ``SynthesizedAnswer``. The pre-F18
-    # ``tag_filter=ResolvedTagFilter(...)`` envelope was retired;
-    # tag-filter plumbing flows through the orchestrator's
-    # ``LibrarianDeps`` → ``librarian_agent`` path. The MCP boundary
-    # passes the F19 kwargs through directly: ``tag_expr`` is the
-    # include body string on the wire, and ``exclude_expr`` is the
-    # compiled ``TagExpr`` AST that Task 3 threads through to the
-    # librarian (the historical flat-string ``exclude_tags`` list
-    # was retired in Task 3 along with the flat-string
-    # ``ResolvedTagFilter.exclude`` field).
-    try:
-        ans = orch.run_query(
-            question,
-            tag_expr=tag_expr,
-            exclude_expr=exclude_expr,
-            file_back=file,
-        )
-    except Exception as exc:  # noqa: BLE001 - orchestration surfaces upstream
-        raise ToolError(f"orchestrator failure: {type(exc).__name__}: {exc}") from exc
-
-    # Build ``Citation`` envelopes from the synthesizer's emitted
-    # citation paths. The new ``QueryAnswer.citations`` carries the
-    # threaded heading context (Task 6) so the citation surface
-    # preserves the F19 ``[[slug]]: "verbatim"`` shape.
-    page_read_for_path: dict[str, object] = {}
-    # ``QueryAnswer.citations`` is ``list[str]`` (F19 paths). Pre-F18
-    # ``SynthesizedAnswer.citations`` is ``list[Citation]``. The MCP
-    # wire shape is the latter; coerce path strings into Citation
-    # envelopes and pass-through ``Citation`` objects unchanged.
-    raw_citations = ans.citations
-    citations: list[Citation] = []
-    for entry in raw_citations:
-        if isinstance(entry, Citation):
-            citations.append(entry)
-        else:
-            path = str(entry)
-            citations.append(
-                Citation(
-                    path=path,
-                    source=cast(
-                        Literal["library", "wiki"], _source_for_path(path, page_read_for_path)
-                    ),
-                )
-            )
-    # Pre-F18 mocks/tests pass a full ``SynthesizedAnswer`` envelope.
-    # The new F19 path returns ``QueryAnswer`` only. Surface whichever
-    # provenance fields the answer carries; defaults preserve the F19
-    # shape (the F18 librarian does not emit ``fallback_used`` or
-    # ``pages_read`` / ``synthesis_reason``).
-    fallback_used = bool(getattr(ans, "fallback_used", False))
-    fallback_reason = getattr(ans, "fallback_reason", None) or None
-    synthesis_used = bool(getattr(ans, "synthesis_used", True))
-    synthesis_reason = getattr(ans, "synthesis_reason", None) or None
-    raw_pages_read = getattr(ans, "pages_read", None)
-    if (
-        isinstance(raw_pages_read, list)
-        and raw_pages_read
-        and isinstance(raw_pages_read[0], Citation)
-    ):
-        pages_read: list[Citation] = [cast(Citation, p) for p in raw_pages_read]
-    else:
-        pages_read = []
-    return SynthesizedMcpAnswer(
-        answer=ans.answer,
-        fallback_used=fallback_used,
-        fallback_reason=fallback_reason,
-        citations=citations,
-        pages_read=pages_read,
-        claim_citations=list(ans.claim_citations),
-        changed_pages=list(getattr(ans, "changed_pages", [])),
-        synthesis_used=synthesis_used,
-        synthesis_reason=synthesis_reason,
-        should_file=ans.should_file,
-        file_receipt=getattr(ans, "file_receipt", None),
-        searched_scope=list(getattr(ans, "searched_scope", [])),
-        # The new ``QueryAnswer`` carries ``format_hint`` (F19); the
-        # pre-F18 surface used ``format``. Tolerate either so legacy
-        # mocks / SynthesizedAnswer stubs continue to work without
-        # the MCP boundary knowing about every field renumber.
-        format=getattr(ans, "format_hint", None) or getattr(ans, "format", "md"),
-    )
-
-
-def _source_for_path(path: str, _page_read_for_path: dict[str, object]) -> str:
-    """Discriminate ``"library"`` vs ``"wiki"`` from the citation path.
-
-    Library pages surface as ``<coll>/...``; wiki pages as
-    ``wiki/...``. The F18 librarian's evidence bundle carries the
-    authoritative discriminator; the MCP layer's lightweight
-    derivation is good enough for the wire envelope and stays
-    consistent with the source rule in
-    ``SynthesizedAnswer.pages_read``.
-    """
-    if path.startswith("wiki/"):
-        return "wiki"
-    return "library"
-
-
-@mcp.tool
-def answer(
-    question: str,
-    name: str | None = None,
-    collection: str | None = None,
-    tag_expr: str | None = None,
-    exclude_tags: list[str] | None = None,
-) -> str:
-    """Answer ``question`` from the wiki as plain text.
-
-    Surface alias for the ``query`` tool that returns ONLY the answer
-    body. ``query`` returns a structured envelope (``answer`` plus
-    metadata: ``citations``, ``pages_read``, ``synthesis_reason``,
-    ``fallback_used``); ``answer`` returns just the ``answer`` string so
-    the tool result renders as the actual response text in chat.
-
-    Use ``answer`` when the caller wants the answer body surfaced in
-    chat. Use ``query`` when the caller needs the structured envelope
-    (citations to follow up on, file-receipt details, scope).
-
-    Same tag-filter surface as ``query``. ``collection`` is only
-    required if the synthesis path wants to file the answer back; by
-    default this tool runs with ``file=False``.
-    """
-    result = query(
-        question=question,
-        name=name,
-        collection=collection,
-        file=False,
-        force_file=False,
-        tag_expr=tag_expr,
-        exclude_tags=exclude_tags,
-    )
-    return result.answer
 
 
 @mcp.tool(
@@ -865,7 +422,7 @@ def answer(
         "The calling LLM uses this to extract filter args from a "
         "slash-style invocation where Claude Code's slash-command "
         "dispatcher would otherwise tokenize the input. After calling "
-        "ask_question, the LLM should call the `answer` tool with the "
+        "ask_question, the LLM should call the `synthesize` tool with the "
         "returned kwargs verbatim."
     ),
 )
@@ -883,8 +440,7 @@ def ask_question(text: str) -> dict[str, object]:
     The exclude chain supports compound expressions: ``-c:foo&c:bar``
     (AND) and ``-c:foo|c:bar`` (OR) are parsed into the F15 AST and
     re-rendered as a single ``exclude_tags`` element so the
-    downstream ``query`` / ``answer`` boundary can re-parse the
-    string.
+    downstream ``synthesize`` boundary can re-parse the string.
 
     Returns a dict with keys ``question``, ``tag_expr``,
     ``exclude_tags``. Always returns; surface parse errors as a
@@ -1095,6 +651,67 @@ def lint(
         return orch.run_lint(apply=fix, force_repair=force_repair)
     except (WikiFlockUnrepairable, WikiLockBusy):
         return f"error: {sys.exc_info()[1]}"
+
+
+# ---------------------------------------------------------------------------
+# synthesize — prose answer for human reading (library-mode read surface)
+# ---------------------------------------------------------------------------
+
+
+from lies.mcp.synth import synthesize as _synthesize  # noqa: E402
+
+
+@mcp.tool(
+    description=(
+        "Synthesize a prose answer for human reading. Returns "
+        "`{answer, citations, pages_read, fallback_used, synthesis_used}`. "
+        "Use when the human asks a question and wants a complete, "
+        "synthesized response (vs. `/cite` which returns snippets for "
+        "agent context)."
+    ),
+    annotations=ToolAnnotations(
+        title="Synthesize: prose answer for human reading",
+    ),
+)
+async def synthesize(
+    question: str,
+    tag_expr: str | None = None,
+    exclude_tags: list[str] | None = None,
+    file_back: bool = False,
+) -> dict:
+    """Synthesize a prose answer from library collections.
+
+    Args:
+        question: Natural-language question.
+        tag_expr: Body of a single include expression (no leading sigil).
+        exclude_tags: At most one entry (F15 grammar).
+        file_back: Reserved; raises ToolError until write-tool spec lands.
+    """
+    if exclude_tags is not None and len(exclude_tags) > 1:
+        raise ToolError(f"exclude_tags accepts at most one tag; got {len(exclude_tags)}")
+
+    exclude_expr: TagExpr | None = None
+    if exclude_tags:
+        from lies.query.tag_expr import parse
+
+        exclude_expr = parse(exclude_tags[0])
+
+    envelope = await _synthesize(
+        question=question,
+        tag_expr=tag_expr,
+        exclude_expr=exclude_expr,
+        file_back=file_back,
+    )
+    return {
+        "question": envelope.question,
+        "tag_expr": envelope.tag_expr,
+        "answer": envelope.answer,
+        "citations": [asdict(c) for c in envelope.citations],
+        "pages_read": envelope.pages_read,
+        "fallback_used": envelope.fallback_used,
+        "synthesis_used": envelope.synthesis_used,
+        "fallback_reason": envelope.fallback_reason,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1348,219 +965,105 @@ def wiki_lint_report(name: str | None = None) -> str:
     return _wiki_lint_report_impl(name)
 
 
-def _safe_page_path(wiki: Wiki, path: str) -> Path:
-    """Resolve ``path`` under ``wiki.wiki_dir`` and reject escapes.
+# ---------------------------------------------------------------------------
+# library://catalog — read-through for the library collection registry
+# ---------------------------------------------------------------------------
 
-    ``path`` is wiki-dir-relative. Absolute paths, ``..`` traversal,
-    and any path that resolves outside ``wiki.wiki_dir`` are rejected
-    with :class:`WikiPlanInvalid`. Missing files are not an error at
-    this layer — callers decide what to do with the returned path.
+
+def _count_pages(name: str) -> int:
+    """Count ``*.md`` files under a library collection's doc tree.
+
+    Each collection is rooted at ``<library>/collections/<name>/`` and
+    carries its markdown under ``doc/`` (post-ingest). We walk the
+    whole subtree for ``*.md`` files; empty / missing trees return 0.
+    Used by ``library://catalog`` and ``library://catalog/{slug}`` to
+    surface a ``page_count`` field so LLM callers can rank
+    collections by corpus size without re-reading the raw mirrors.
     """
-    if not path:
-        raise WikiPlanInvalid("page path is empty")
-    candidate = Path(path)
-    if candidate.is_absolute():
-        raise WikiPlanInvalid(f"page path must be relative: {path}")
-    if any(part == ".." for part in candidate.parts):
-        raise WikiPlanInvalid(f"page path contains '..': {path}")
-    resolved = (wiki.wiki_dir / candidate).resolve()
+    from lies.library.paths import Library
+
+    root = Library.open().collections_root / name / "doc"
+    if not root.exists():
+        return 0
+    return sum(1 for _ in root.rglob("*.md"))
+
+
+def _library_collection_payload(slug: str) -> dict | None:
+    """Build the per-collection metadata envelope for ``slug``.
+
+    Returns ``None`` when ``slug`` is not a registered collection —
+    lets the single-slug resource distinguish "absent" from "present
+    with empty fields" cheaply (the resource handler returns ``""``
+    in that case). ``load_config`` raises :class:`CollectionNotFound`
+    when the config is absent; we treat the absent case as "not a
+    collection" rather than crashing.
+    """
+    from lies.library.config_io import load_config
+    from lies.library.errors import CollectionNotFound
+
     try:
-        resolved.relative_to(wiki.wiki_dir.resolve())
-    except ValueError as exc:
-        raise WikiPlanInvalid(f"page path escapes wiki/: {path}") from exc
-    return resolved
+        cfg = load_config(slug)
+    except CollectionNotFound:
+        return None
+    return {
+        "name": cfg.name,
+        "tags": list(cfg.tags),
+        "source": cfg.source,
+        "page_count": _count_pages(slug),
+        "updated_at": cfg.updated_at.isoformat() if cfg.updated_at else None,
+    }
 
 
-def _wiki_page_impl(path: str, name: str | None = None) -> str:
-    """Return the raw markdown of any page under ``wiki/``.
+@mcp.resource("library://catalog")
+def library_catalog() -> str:
+    """All library collection metadata as a per-collection grouping.
 
-    ``path`` is relative to ``<wiki.data_root>/wiki/``. Absolute paths,
-    ``..`` traversal, and any path that resolves outside the wiki are
-    rejected with :class:`WikiPlanInvalid`. Missing files return ``""``
-    (the resource exists; the page just hasn't been written yet).
-    """
-    wiki = resolve_wiki(name)
-    resolved = _safe_page_path(wiki, path)
-    if not resolved.exists():
-        return ""
-    return resolved.read_text(encoding="utf-8")
+    Returns JSON of shape::
 
+        {
+          "<collection-name>": {
+            "name": "<collection-name>",
+            "tags": ["..."],
+            "source": "<source-url>",
+            "page_count": <int>,
+            "updated_at": "<iso-8601>"
+          },
+          ...
+        }
 
-@mcp.resource("wiki://page/{path}")
-def wiki_page(path: str, name: str | None = None) -> str:
-    """Raw markdown of any page under ``wiki/`` (relative ``path``).
-
-    Template-resource handler — unlike the static resources above,
-    FastMCP passes ``path`` directly so the forwarder forwards it to
-    :func:`_wiki_page_impl`. The optional ``name`` kwarg keeps the
-    Python-callable surface — and the MCP tool parity — consistent with
-    ``query`` / ``answer`` / ``init_wiki``, which all accept ``name``;
-    FastMCP itself never passes it, so the env-default wiki is used.
-    """
-    return _wiki_page_impl(path, name)
-
-
-# ---------------------------------------------------------------------------
-# wiki_changes — JSONL sidecar reader (tool + resource)
-# ---------------------------------------------------------------------------
-
-
-@mcp.tool
-def wiki_changes(
-    limit: int = 10,
-    page: str | None = None,
-    op: str | None = None,
-    since: str | None = None,
-) -> list[dict]:
-    """Return recent ``MemoryPlan`` applications from the JSONL sidecar.
-
-    Filters compose with AND. ``page`` is a substring match on each
-    plan's pages list. ``op`` matches any op-kind in the histogram.
-    Returns an empty list when the sidecar is unavailable.
-    """
-    from lies.memory import sidecar
-
-    wiki = resolve_wiki()
-    try:
-        rows = sidecar.read_recent(wiki, limit=limit, page=page, op=op, since=since)
-    except OSError:
-        return []
-    return [row.model_dump() for row in rows]
-
-
-def _wiki_memory_changes_impl(name: str | None = None) -> str:
-    """Render recent ``MemoryPlan`` applications as formatted text.
-
-    Matches the layout of ``lies memory`` (the CLI counterpart): one
-    4-line block per record (ts + SHA[:12] + rationale, pages, ops,
-    evidence count). Missing-sidecar and ``OSError`` paths surface as
-    text — the resource handler must never raise.
-    """
-    from lies.memory import sidecar
-
-    wiki = resolve_wiki(name)
-    out = "Recent MemoryPlan applications:\n"
-    try:
-        rows = sidecar.read_recent(wiki, limit=10)
-    except OSError as exc:
-        return out + f"sidecar unavailable: {exc}\n"
-    if not rows:
-        return out + "(no plans recorded yet)\n"
-    for rec in rows:
-        out += sidecar.format_record_block(rec)
-    return out
-
-
-@mcp.resource("wiki://memory-changes")
-def wiki_memory_changes() -> str:
-    """Recent invisible wiki writes (formatted text).
-
-    Zero-argument forwarder (FastMCP 3.4.5 constraint). Real logic in
-    :func:`_wiki_memory_changes_impl`; ``name`` is resolved from the env
-    there.
-    """
-    return _wiki_memory_changes_impl()
-
-
-# ---------------------------------------------------------------------------
-# wiki://catalog — sqlite catalog read-through (F4b)
-# ---------------------------------------------------------------------------
-
-
-def _wiki_catalog_impl(name: str | None = None) -> str:
-    """Structured list of every catalog row.
-
-    Each row is the JSON-serialized ``CatalogPage.model_dump(mode="json")``
-    of one row in ``<wiki_dir>/.lies/catalog.db``. The shape mirrors
-    ``lies catalog dump --json``. The empty-catalog case returns ``"[]"``
-    so the JSON shape is stable for LLM callers.
-
-    Library mode (no wiki registered, or the resolved wiki's
-    ``data_root`` does not exist on disk) returns a stable envelope
-    ``{"mode": "library", "collections": [...]}`` listing registered
-    library-collection names. The mode discriminator lets an LLM
-    caller distinguish a wiki catalog dump from a library-mode
-    response without parsing the shape.
+    Collections without a ``config.yaml`` (not yet bootstrapped) are
+    silently skipped — the resource only surfaces collections the
+    library knows about through its registry. Empty library → ``{}``.
     """
     import json
 
     from lies.library.registry import library_collection_names
 
-    try:
-        wiki = resolve_wiki(name)
-    except WikiNotRegistered:
-        # Library mode: no wiki registered for the requested name.
-        # Return an informative envelope rather than crashing so the
-        # MCP caller can recover and route through the library path.
-        return json.dumps(
-            {"mode": "library", "collections": sorted(library_collection_names())},
-            indent=2,
-        )
-
-    if not wiki.data_root.exists():
-        # Defensive: ``Wiki.require`` already vetted ``data_root`` at
-        # construction time, but the directory may have been removed
-        # out-of-band (e.g. the operator ran ``rm -rf`` between two
-        # MCP calls). Treat the same as the unregistered case.
-        return json.dumps(
-            {"mode": "library", "collections": sorted(library_collection_names())},
-            indent=2,
-        )
-
-    from lies.memory.catalog import list_pages as _catalog_list_pages
-    from lies.memory.catalog import open_catalog as _open_catalog
-
-    conn = _open_catalog(wiki)
-    try:
-        pages = _catalog_list_pages(conn)
-    finally:
-        conn.close()
-    return json.dumps([p.model_dump(mode="json") for p in pages], indent=2)
+    out: dict[str, dict] = {}
+    for name in sorted(library_collection_names()):
+        payload = _library_collection_payload(name)
+        if payload is None:
+            continue
+        out[name] = payload
+    return json.dumps(out, indent=2)
 
 
-@mcp.resource("wiki://catalog")
-def wiki_catalog() -> str:
-    """All catalog rows (JSON-serialized ``list[dict]``).
+@mcp.resource("library://catalog/{slug}")
+def library_catalog_slug(slug: str) -> str:
+    """Single library collection metadata; empty string when not found.
 
-    Zero-argument forwarder (FastMCP 3.4.5 constraint). Real logic in
-    :func:`_wiki_catalog_impl`; ``name`` is resolved from the env there.
-    """
-    return _wiki_catalog_impl()
-
-
-def _wiki_catalog_slug_impl(slug: str, name: str | None = None) -> str:
-    """Single catalog row by slug. Empty when not found.
-
-    Returns ``""`` (not a JSON object) when the slug is absent so an LLM
-    caller can distinguish "missing" from "present with empty fields"
-    cheaply. ``model_dump(mode="json")`` ensures the ``PageSection``
-    enum serializes as ``"wiki"`` / ``"ingested"`` rather than the enum
-    repr.
+    Returns ``""`` (not a JSON object) when ``slug`` is not a
+    registered collection so an LLM caller can distinguish "missing"
+    from "present with empty fields" cheaply. Empty-string is the
+    same contract the retired ``wiki://catalog/{slug}`` resource
+    used — clients that pattern-matched on it keep working.
     """
     import json
 
-    from lies.memory.catalog import get_page as _catalog_get_page
-    from lies.memory.catalog import open_catalog as _open_catalog
-
-    wiki = resolve_wiki(name)
-    conn = _open_catalog(wiki)
-    try:
-        page = _catalog_get_page(conn, slug)
-    finally:
-        conn.close()
-    if page is None:
+    payload = _library_collection_payload(slug)
+    if payload is None:
         return ""
-    return json.dumps(page.model_dump(mode="json"), indent=2)
-
-
-@mcp.resource("wiki://catalog/{slug}")
-def wiki_catalog_slug(slug: str) -> str:
-    """Single catalog row by slug (JSON-serialized ``dict`` or ``""``).
-
-    Template-resource handler — FastMCP passes ``slug`` directly so the
-    forwarder forwards it to :func:`_wiki_catalog_slug_impl`.
-    """
-    return _wiki_catalog_slug_impl(slug)
+    return json.dumps(payload, indent=2)
 
 
 # ---------------------------------------------------------------------------
@@ -1570,16 +1073,16 @@ def wiki_catalog_slug(slug: str) -> str:
 
 @mcp.prompt(name="answer")
 def ask_wiki_answer(text: str) -> str:
-    """Starter prompt that templates an ``answer`` tool invocation.
+    """Starter prompt that templates a ``synthesize`` tool invocation.
 
     Single-arg form: the entire slash-command input is passed verbatim
     as ``text``. The filter-syntax parser runs here so the calling
     LLM never has to fill ``tag_expr`` / ``exclude_tags`` slots.
 
-    Chat-surface counterpart to the synthesized answer path: the LLM
-    calls the ``answer`` tool (returns plain text) instead of ``query``
-    (returns structured envelope). Use this when the response needs to
-    render verbatim in chat rather than behind a collapsible JSON block.
+    Chat-surface counterpart to the synthesizer path: the LLM calls
+    the ``synthesize`` tool and surfaces the ``answer`` field of the
+    returned dict verbatim in chat. Use this when the response needs
+    to render as plain prose rather than behind a collapsible JSON block.
 
     **Known limitation — Claude Code slash dispatcher tokenizes the
     input on whitespace before invoking this prompt, so multi-word
@@ -1589,7 +1092,7 @@ def ask_wiki_answer(text: str) -> str:
     ``+c:opencode`` and the question is dropped. The reliable
     workaround is the ``ask_question`` MCP tool: call it with the
     user's full multi-word input as the ``text`` argument, then
-    forward the returned kwargs verbatim to the ``answer`` tool. This
+    forward the returned kwargs verbatim to the ``synthesize`` tool. This
     prompt is still useful for plain questions without filter syntax,
     where the input is a single token anyway.
 
@@ -1635,7 +1138,7 @@ def ask_wiki_answer(text: str) -> str:
 
     The ``name="answer"`` override registers the prompt as the
     ``/answer`` slash command even though the Python function is named
-    ``ask_wiki_answer`` (the bare name conflicts with the ``answer``
+    ``ask_wiki_answer`` (the bare name conflicts with the ``synthesize``
     tool defined elsewhere in this module).
     """
     import shlex
@@ -1656,8 +1159,6 @@ def ask_wiki_answer(text: str) -> str:
         question=parsed_question,
         tag_expr=tag_expr,
         exclude_tags=exclude_tags,
-        name=None,
-        collection=None,
     )
 
 
@@ -1666,24 +1167,27 @@ def _render_answer_prompt_body(
     question: str,
     tag_expr: str | None,
     exclude_tags: list[str],
-    name: str | None,
-    collection: str | None,
 ) -> str:
     """Render the prompt body for the parsed args.
 
     No fillable slots for ``tag_expr`` / ``exclude_tags``: the slash
     prompt parses them out of the ``question`` argument before the
     calling LLM sees the body. The LLM only has to forward the
-    rendered kwargs verbatim to the ``answer`` tool.
+    rendered kwargs verbatim to the ``synthesize`` tool. The
+    rendered kwargs match ``synthesize``'s actual signature
+    (``question, tag_expr, exclude_tags, file_back``); the
+    ``file_back`` slot is reserved (raises ToolError until write-tool
+    spec lands) and intentionally omitted so the LLM never forwards
+    it. The ``name`` / ``collection`` kwargs from the old ``answer``
+    tool shape are gone — FastMCP would raise ``TypeError: unexpected
+    keyword argument`` on a faithful forward.
     """
     return (
-        f"Call the `answer` MCP tool with the following args, then surface "
+        f"Call the `synthesize` MCP tool with the following args, then surface "
         f"the answer body verbatim in your reply:\n\n"
         f"  question: {question}\n"
         f"  tag_expr: {tag_expr!r}\n"
-        f"  exclude_tags: {exclude_tags!r}\n"
-        f"  name: {name!r}\n"
-        f"  collection: {collection!r}\n\n"
+        f"  exclude_tags: {exclude_tags!r}\n\n"
         f"Do NOT modify these values before passing them to the tool. "
         f"If the parsed args look wrong, surface the parse error verbatim "
         f"and stop; do not retry with hand-rewritten args."

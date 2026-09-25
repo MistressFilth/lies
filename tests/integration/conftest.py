@@ -30,6 +30,29 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
             item.add_marker(skip)
 
 
+@pytest.fixture(autouse=True)
+def _seed_librarian_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Seed ``LIES_LIBRARIAN_MODEL=test`` for every integration test.
+
+    The MCP ``ground`` tool calls :func:`lies.mcp.server._resolve_librarian_model`
+    eagerly before dispatch, which raises
+    :class:`lies.errors.ModelNotConfigured` when neither ``providers.toml``
+    nor ``LIES_LIBRARIAN_MODEL`` is configured (the resolution surface is
+    :func:`lies.providers.env_override`, not the agent-name-prefixed alias
+    quoted in the error message). The CI sandbox has neither. Integration
+    tests stub the librarian agent at the ``grounding.librarian_agent``
+    import seam (mirrored for the scoped fast-path as
+    ``_query_tagged_collections``), so a benign env override is sufficient:
+    it short-circuits the ``providers.toml`` resolution without
+    instantiating an Anthropic client.
+
+    Tests that genuinely exercise a real model set ``LIES_LIBRARIAN_MODEL``
+    themselves (not currently a case under ``tests/integration/``); the
+    autouse does not interfere because ``monkeypatch.setenv`` is per-test.
+    """
+    monkeypatch.setenv("LIES_LIBRARIAN_MODEL", "test")
+
+
 @pytest.fixture
 def child_env(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
     """Snapshot the XDG-redirected env so subprocesses see the same wiki.

@@ -520,13 +520,15 @@ def test_retrieve_pages_tag_filter_drops_non_matching_qmd_hits(
         ]
     )
 
-    def fake_run(*_a: object, **_kw: object) -> subprocess.CompletedProcess[str]:
-        return subprocess.CompletedProcess(args=[], returncode=0, stdout=payload, stderr="")
+    def fake_run(*_a: object, **_kw: object) -> subprocess.CompletedProcess[bytes]:
+        return subprocess.CompletedProcess(
+            args=[], returncode=0, stdout=payload.encode("utf-8"), stderr=b""
+        )
 
     tf = ResolvedTagFilter(include=Include("airflow"))
     with (
         patch("lies.qmd.cli.shutil.which", return_value="/usr/bin/qmd"),
-        patch("lies.qmd.cli.subprocess.run", fake_run),
+        patch("lies.qmd.cli._run_qmd", fake_run),
     ):
         pages, _ = retrieve_pages(
             "what is a DAG?",

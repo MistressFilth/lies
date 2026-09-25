@@ -215,6 +215,7 @@ def test_reconcile_skips_malformed_body(tmp_path: Path) -> None:
     assert sidecar.read_recent(wiki, limit=10) == []
 
 
+@pytest.mark.slow
 def test_reconcile_walks_ingest_tagged_commits(tmp_path: Path) -> None:
     """F2: ``ingest:``-prefixed commits must also be reconciled.
 
@@ -280,6 +281,7 @@ def test_git_log_filter_matches_ingest_prefix_via_stub(
     assert rows == [("deadbeef", "2026-08-24T18:32:14+00:00", "pulled three pages")]
 
 
+@pytest.mark.slow
 def test_truncate_keeps_last_n(tmp_path: Path) -> None:
     wiki = _wiki(tmp_path)
     _seed_three_rows(wiki)

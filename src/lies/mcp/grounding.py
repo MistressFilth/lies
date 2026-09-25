@@ -18,11 +18,16 @@ span-picking helpers. Library vs wiki discrimination lives on
 
 from __future__ import annotations
 
+import asyncio
+import os
 import warnings
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
+    from pydantic_ai.models import Model
+
+    from lies.agents.librarian import PageExcerpt
     from lies.markdown_spans import Span
     from lies.query.tag_expr import TagExpr
 
@@ -31,6 +36,17 @@ if TYPE_CHECKING:
 # can monkeypatch ``grounding.librarian_agent``. The factory itself is
 # cheap; the pydantic_ai cost only pays when ``.run_sync(...)`` fires.
 from lies.agents.librarian import librarian_agent  # noqa: E402,F401
+
+# Consecutive-qmd-error counter for the fan-out recycle trigger (Task 5).
+# When the fan-out helper observes ``_RECYCLE_THRESHOLD`` consecutive
+# ``QmdCommandError`` / ``QmdNoResultsError`` results across collections,
+# it triggers a single ``recycle()`` to unstick a wedged daemon before
+# surfacing the failure. The threshold defaults to 3 and is overridable
+# via the ``LIES_QMD_RECYCLE_THRESHOLD`` env var for ops. The counter
+# is module-level state — the brief's tests reset it via a fixture to
+# keep the fan-out tests hermetic.
+_RECYCLE_THRESHOLD = int(os.environ.get("LIES_QMD_RECYCLE_THRESHOLD", "3"))
+_consecutive_qmd_errors = 0
 
 
 @dataclass(frozen=True)
@@ -98,6 +114,7 @@ class ArchivistDigest:
     no_coverage: bool
     distinct_pages: int
     searched_scope: list[str] = field(default_factory=list)
+    no_library: bool = False
 
 
 class ArchivistCoverageError(Exception):
@@ -166,6 +183,223 @@ def pick_first_prose_span(spans: "list[Span]") -> "Span | None":
 # ---------------------------------------------------------------------------
 
 
+async def _fanout_collections(
+    question: str,
+    exclude_expr: "TagExpr | None",
+    top_k: int,
+    collection_names: list[str],
+) -> "list[PageExcerpt]":
+    """Parallel-scan ``collection_names`` for the question, no LLM round-trip.
+
+    Shared core for both the unscoped fan-out
+    (:func:`_fanout_unscoped`, Task 1) and the tagged fan-out
+    (:func:`_query_tagged_collections`, this task). Bypasses the F18
+    librarian entirely by dispatching per-collection ``qmd_query``
+    calls concurrently and merging the results sorted by score desc.
+    Each ``collection_names`` entry is passed as a qmd
+    ``collection_filter`` set so the per-collection post-filter
+    retains the same semantics the unscoped fan-out has shipped with.
+
+    Per-collection timeout: 5s. Failed collections dropped silently.
+    The ``exclude_expr`` parameter is preserved for signature parity
+    with the broader ground() surface; per-collection qmd filters are
+    include-only, so excludes are not enforced at this layer (the
+    include filter already constrains the addressable set).
+
+    Args:
+        question: Natural-language question.
+        exclude_expr: Compiled NOT AST (Task 3 / f15-exclude-compound).
+            ``None`` when no ``-`` chain supplied. Retained for
+            signature parity; not enforced inside the helper.
+        top_k: Maximum excerpts to return.
+        collection_names: Library collection names to scan. The
+            caller is responsible for resolving the set — this helper
+            does not consult the library registry. Order is
+            irrelevant; duplicates are de-duped by sorting.
+
+    Returns:
+        ``list[PageExcerpt]`` sorted by score desc, length ≤ ``top_k``.
+        Empty list when ``collection_names`` is empty or all fan-outs
+        fail.
+    """
+    from lies.agents.librarian import PageExcerpt
+    from lies.library.registry import library_git_root
+    from lies.markdown_spans import Span
+    from lies.qmd.cli import QmdCommandError, QmdNoResultsError, qmd_query
+
+    if not collection_names:
+        return []
+
+    lib_root = library_git_root()
+    names = sorted(set(collection_names))
+
+    async def _one(name: str) -> list[dict] | None:
+        # Task 5: track consecutive qmd failures across the fan-out.
+        # ``N`` consecutive errors trigger a single ``recycle()`` to
+        # recover from a wedged daemon before propagating the failure;
+        # any success between failures resets the counter. The lazy
+        # ``recycle`` import keeps ``grounding`` off the daemon-
+        # lifecycle import path until the threshold trips.
+        global _consecutive_qmd_errors
+        try:
+            return await asyncio.to_thread(
+                qmd_query,
+                cwd=lib_root,
+                question=question,
+                limit=top_k,
+                timeout=5,
+                collection_filter={name},
+            )
+        except (QmdCommandError, QmdNoResultsError):
+            _consecutive_qmd_errors += 1
+            if _consecutive_qmd_errors >= _RECYCLE_THRESHOLD:
+                # Reset BEFORE the await so concurrent failures that
+                # land during the in-flight ``recycle()`` cannot
+                # double-trip the threshold. The clear happens under
+                # the same ``except`` branch as the increment, so two
+                # racing ``_one`` tasks cannot both observe a tripped
+                # counter for the same wedged batch.
+                _consecutive_qmd_errors = 0
+                try:
+                    from lies.qmd.lifecycle import recycle
+
+                    await asyncio.to_thread(recycle)
+                except Exception:
+                    # ``recycle`` is best-effort — a failed recycle
+                    # does not mask the original qmd failure. The
+                    # caller surfaces the dropped-collection result
+                    # via the empty excerpts list.
+                    pass
+            return None
+        # Any successful collection query resets the counter so a
+        # transient error doesn't accumulate against later successes.
+        _consecutive_qmd_errors = 0
+
+    raw = await asyncio.gather(*[_one(n) for n in names])
+    merged: list[tuple[float, dict]] = []
+    for batch in raw:
+        if not batch:
+            continue
+        for hit in batch:
+            score = float(hit.get("score", 0.0))
+            merged.append((score, hit))
+    merged.sort(key=lambda x: x[0], reverse=True)
+    top_hits = merged[:top_k]
+
+    out: list[PageExcerpt] = []
+    for score, hit in top_hits:
+        path = hit.get("path", "")
+        # path is "<collection>/<rest>"; collection name is the first segment
+        coll = path.split("/", 1)[0] if path else ""
+        slug = path
+        title = hit.get("title") or path.rsplit("/", 1)[-1].replace(".md", "")
+        # qmd's wire payload carries a ``snippet`` field with a brief
+        # diff-style excerpt (``@@ -N,M @@ (before, after) ...``) — use
+        # it to seed a single prose span so the downstream citation-
+        # building loop in :func:`ground` can produce a
+        # :class:`CitationSnippet`. Without a span, the loop skips
+        # the excerpt (no prose body to truncate), producing an empty
+        # citations list — pre-this-change the fan-out path always
+        # returned 0 citations in production despite the qmd scan
+        # surfacing real hits. Falls back to an empty spans list when
+        # qmd omits the field (older qmd CLI versions, edge-case
+        # qmd-shape changes).
+        snippet = hit.get("snippet")
+        spans: list[Span] = []
+        if snippet:
+            spans = [
+                Span(
+                    heading_path=[],
+                    body=str(snippet),
+                    code_fence=False,
+                    start_line=int(hit.get("line", 1)),
+                ),
+            ]
+        out.append(
+            PageExcerpt(
+                collection=coll,
+                slug=slug,
+                title=title,
+                spans=spans,
+                source_kind="library",
+            )
+        )
+    return out
+
+
+async def _fanout_unscoped(
+    question: str,
+    exclude_expr: "TagExpr | None",
+    top_k: int,
+) -> "list[PageExcerpt]":
+    """Parallel-scan every registered library collection for unscoped queries.
+
+    Thin wrapper around :func:`_fanout_collections` that resolves
+    the collection set from the library registry. Bypasses the F18
+    librarian LLM round-trip (which times out at ~42s/empty on
+    unscoped queries — session 2505630b reproduction) by fanning
+    out directly to qmd with a per-collection post-filter. Returns
+    merged ``PageExcerpt`` rows sorted by score desc and truncated
+    to ``top_k``.
+
+    Per-collection timeout: 5s. Failed collections dropped silently.
+
+    Args:
+        question: Natural-language question.
+        exclude_expr: Compiled NOT AST (Task 3 / f15-exclude-compound).
+            ``None`` when no ``-`` chain supplied.
+        top_k: Maximum excerpts to return.
+
+    Returns:
+        ``list[PageExcerpt]`` sorted by score desc, length ≤ ``top_k``.
+        Empty list when no collections registered or all fan-outs fail.
+    """
+    from lies.library.registry import library_collection_metas
+
+    names = sorted(m.name for m in library_collection_metas())
+    return await _fanout_collections(question, exclude_expr, top_k, names)
+
+
+async def _query_tagged_collections(
+    question: str,
+    exclude_expr: "TagExpr | None",
+    top_k: int,
+    collection_names: list[str],
+) -> "list[PageExcerpt]":
+    """Parallel-scan the tag-resolved collection set without the F18 librarian.
+
+    Tagged ``ground()`` previously took the F18 librarian path even
+    when the resolved AST matched one or more library collections
+    (session 2505630b reproduction — ``ground(tag_expr="c:switchyard")``
+    timed out at ~197s with ``no_coverage=True``). This fast-path
+    replaces the librarian LLM round-trip with a direct qmd fan-out
+    across ONLY the tag-matched collections (the unscoped fast-path
+    fanned across every registered collection).
+
+    Mirrors the F18 ``LibrarianOutput.excerpts`` shape so the
+    downstream citation-building loop in :func:`ground` is identical
+    between the unscoped and the tagged fast-path. The library is
+    the universe for retrieval; the wiki surface contributes only
+    via the legacy F18 librarian fallback when the resolved AST
+    matches zero collections.
+
+    Args:
+        question: Natural-language question.
+        exclude_expr: Compiled NOT AST (Task 3 / f15-exclude-compound).
+            ``None`` when no ``-`` chain supplied.
+        top_k: Maximum excerpts to return.
+        collection_names: Sorted collection names from the F15
+            ``_collections_matching`` walker — the addressable set
+            that the tagged query resolves to.
+
+    Returns:
+        ``list[PageExcerpt]`` sorted by score desc, length ≤ ``top_k``.
+        Empty list when ``collection_names`` is empty or all fan-outs
+        fail.
+    """
+    return await _fanout_collections(question, exclude_expr, top_k, collection_names)
+
+
 def ground(
     question: str,
     tag_expr: str | None = None,
@@ -173,14 +407,31 @@ def ground(
     top_k: int = 3,
     *,
     wiki_name: str | None = None,
+    librarian_model: "Model | str | None" = None,
 ) -> ArchivistDigest:
     """Return a grounding digest for ``question``.
 
     Translates ``tag_expr`` / ``exclude_expr`` via the F15 tag-filter
-    dispatch, calls the F18 librarian, and trims each excerpt to a
-    ≤200-char grounding snippet. The caller renders the result as
-    ``[[slug]]: "snippet"`` per ask's grounding form (NOT F19's long
-    ``[[slug]]: "verbatim"`` form).
+    dispatch, then dispatches one of three retrieval paths:
+
+    1. **Unscoped fast-path** (no ``tag_expr``, no ``exclude_expr``) —
+       direct qmd fan-out across every registered library collection
+       (Task 1 brick-wall fix; ~1s vs the historical ~42s librarian
+       round-trip on an empty wiki).
+    2. **Tagged fast-path** (this task) — when ``tag_expr`` or
+       ``exclude_expr`` is set AND the resolved AST matches at least
+       one library collection, direct qmd fan-out across ONLY the
+       matched collections. Replaces the F18 librarian round-trip
+       that previously timed out at ~197s on
+       ``tag_expr="c:switchyard"`` (session 2505630b reproduction).
+    3. **Legacy F18 librarian** — when the tagged AST matches zero
+       library collections (edge-case fallback that preserves
+       historical behavior for ``tag_expr="c:ghost"`` style queries
+       against an unpopulated library).
+
+    Trims each excerpt to a ≤200-char grounding snippet. The caller
+    renders the result as ``[[slug]]: "snippet"`` per ask's
+    grounding form (NOT F19's long ``[[slug]]: "verbatim"`` form).
 
     Args:
         question: The natural-language question to ground.
@@ -200,6 +451,16 @@ def ground(
             Tests pass an explicit name so the dispatch layer hits
             a known fixture wiki; production callers leave it
             ``None``.
+        librarian_model: Pre-resolved ``Model`` or model-string for
+            the F18 librarian. ``None`` falls through to the bare
+            :func:`librarian_agent` factory, which raises
+            :class:`ModelNotConfigured` (the historical
+            pre-resolver behavior). The MCP ``ground`` tool wrapper
+            resolves this via :func:`lies.mcp.server._resolve_librarian_model`
+            so the configuration error surfaces at the MCP boundary
+            rather than mid-dispatch. Only consumed on the legacy
+            librarian path (path #3 above); both fast-paths bypass
+            the LLM round-trip entirely.
 
     Returns:
         :class:`ArchivistDigest` carrying the librarian's excerpts
@@ -215,6 +476,11 @@ def ground(
         ArchivistCoverageError: when a positive tag matches zero
             collections (caller may retry untagged or surface). Also
             raised when the include expression fails to parse.
+        lies.errors.ModelNotConfigured: when ``librarian_model`` is
+            ``None`` and the legacy librarian path (#3 above) is
+            entered (empty library OR zero tag matches). The MCP
+            wrapper pre-resolves the model so this propagates only
+            when a Python caller skips the resolver.
     """
     if top_k < 1:
         top_k = 1
@@ -321,6 +587,27 @@ def ground(
             # branch takes on the same line.
             searched_scope_list = []
 
+    # Task 1 brick-wall fix: unscoped ``ground()`` previously took the
+    # F18 librarian path, hitting a ~42s LLM round-trip and returning
+    # 0 citations (session 2505630b reproduction). Replace that path
+    # with a direct qmd fan-out across registered library collections
+    # when the query is unscoped (no tag include, no exclude AST) AND
+    # the library has at least one collection. The ``no_library=True``
+    # fast-path below handles the empty-library case up front so the
+    # MCP surface can distinguish "library uninitialized" from
+    # "library initialized but no hits".
+    if not searched_scope_list and tag_expr is None and exclude_expr is None:
+        return ArchivistDigest(
+            question=question,
+            tag_expr=None,
+            exclude_expr=None,
+            citations=[],
+            no_coverage=True,
+            distinct_pages=0,
+            searched_scope=[],
+            no_library=True,
+        )
+
     # Lazy imports — ``LibrarianDeps`` transitively pulls in
     # ``pydantic_ai`` and the orchestrator's tool registry. Keeping
     # the import inside ``ground`` mirrors the CLI's lazy-import
@@ -331,94 +618,174 @@ def ground(
         register_librarian_tools,
     )
 
-    # Construct the librarian agent and wire its tools BEFORE run_sync.
-    # The bare factory emits ``Agent(tools=[])`` so an unwired agent
-    # has no tools; the F18 4-step contract (classify → search → read
-    # → return) cannot run, and the LLM either emits an empty digest
-    # or attempts the named tools and crashes — the dispatch-exception
-    # branch below would then return ``no_coverage=True``. Wiring the
-    # active wiki's ``WikiMemoryService`` lets the librarian's
-    # ``wiki_search`` / ``wiki_read`` / ``wiki_catalog`` closures see
-    # the per-wiki context.
-    #
-    # Tool wiring is best-effort: when the active wiki cannot be
-    # resolved (no wiki registered, XDG misconfigured) OR the agent
-    # factory itself raises (e.g. missing API credentials), the agent
-    # falls back to a no-tools bare-agent path and the dispatch-
-    # exception branch handles any tool-side failure. The user-
-    # visible signal flows through stdlib ``warnings`` so a non-
-    # configured logfire environment does not emit
-    # ``LogfireNotConfiguredWarning`` noise.
-    agent = None
-    try:
-        from lies.config import get_xdg_config_home
-        from lies.constants import LIES_DATA_SUBDIR
-        from lies.errors import ModelNotConfigured
-        from lies.providers import load_providers_config, resolve_model
-        from lies.mcp.resolution import resolve_wiki
-        from lies.memory.service import WikiMemoryService
-
-        config_path = get_xdg_config_home() / LIES_DATA_SUBDIR / "providers.toml"
-        config = load_providers_config(config_path)
-        if config is None:
-            raise ModelNotConfigured(
-                f"ground(): no providers.toml at {config_path}; "
-                f"run `lies providers init` or set LIES_AGENT_LIBRARIAN_MODEL."
+    out: LibrarianOutput
+    if tag_expr is None and exclude_expr is None:
+        # Unscoped fast-path: bypass the F18 librarian LLM round-trip
+        # and fan out directly to qmd across every registered library
+        # collection. ``asyncio.run`` bridges the sync ``ground()``
+        # signature to the async fan-out helper; the surface stays
+        # synchronous for every existing caller. Skips the librarian
+        # tool-wiring block entirely (no LLM round-trip happens here).
+        try:
+            excerpts = asyncio.run(
+                _fanout_unscoped(question, exclude_expr, top_k),
             )
-        model = resolve_model("librarian", config)
-        agent = librarian_agent(model=model)
-        resolved_wiki = resolve_wiki(wiki_name)
-        register_librarian_tools(
-            agent,
-            wiki=resolved_wiki,
-            memory_service=WikiMemoryService(resolved_wiki),
+        except Exception as exc:
+            warnings.warn(
+                f"ground: fan-out dispatch failed: {type(exc).__name__}: {exc}",
+                stacklevel=2,
+            )
+            return ArchivistDigest(
+                question=question,
+                tag_expr=resolved_tag_expr,
+                exclude_expr=exclude_expr,
+                citations=[],
+                no_coverage=True,
+                distinct_pages=0,
+                searched_scope=searched_scope_list,
+                no_library=False,
+            )
+        out = LibrarianOutput(
+            tag_expr=None,
+            exclude_expr=None,
+            excerpts=excerpts,
+            distinct_pages=len({e.slug for e in excerpts}),
+            no_coverage=len(excerpts) == 0,
         )
-    except Exception as wiring_exc:
-        warnings.warn(
-            f"ground: tool wiring skipped (bare agent will dispatch): "
-            f"{type(wiring_exc).__name__}: {wiring_exc}",
-            stacklevel=2,
+    elif (tag_expr is not None or exclude_expr is not None) and searched_scope_list:
+        # Tagged fast-path: when the resolved AST matches at least one
+        # library collection, bypass the F18 librarian LLM round-trip
+        # (session 2505630b reproduction: ``ground(tag_expr="c:switchyard")``
+        # previously timed out at ~197s with ``no_coverage=True`` and 0
+        # citations) and fan out directly to qmd across ONLY the matched
+        # collections. Same async-to-sync bridge as the unscoped path;
+        # same ``LibrarianOutput`` shape downstream so the citation-
+        # building loop is identical between the two fast-paths.
+        #
+        # Gate: ``tag_expr is not None or exclude_expr is not None`` keeps
+        # the unscoped path exclusive (this branch is for tagged queries
+        # only), and ``searched_scope_list`` is the resolved collection
+        # set — non-empty iff the library has collections AND the AST
+        # matches at least one. The library is the universe for
+        # retrieval; when the AST matches zero collections we fall
+        # through to the legacy F18 librarian path (edge-case fallback
+        # preserves historical behavior for ``tag_expr`` set with no
+        # library match — e.g. ``tag_expr="c:ghost"``).
+        try:
+            excerpts = asyncio.run(
+                _query_tagged_collections(
+                    question,
+                    exclude_expr,
+                    top_k,
+                    searched_scope_list,
+                ),
+            )
+        except Exception as exc:
+            warnings.warn(
+                f"ground: tagged fan-out dispatch failed: {type(exc).__name__}: {exc}",
+                stacklevel=2,
+            )
+            return ArchivistDigest(
+                question=question,
+                tag_expr=resolved_tag_expr,
+                exclude_expr=exclude_expr,
+                citations=[],
+                no_coverage=True,
+                distinct_pages=0,
+                searched_scope=searched_scope_list,
+                no_library=False,
+            )
+        out = LibrarianOutput(
+            tag_expr=resolved_tag_expr,
+            exclude_expr=exclude_expr,
+            excerpts=excerpts,
+            distinct_pages=len({e.slug for e in excerpts}),
+            no_coverage=len(excerpts) == 0,
         )
-        if agent is None:
-            # Agent construction itself failed (most likely missing
-            # API credentials). Re-raise so the caller sees the
-            # underlying ModelNotConfigured; the digest contract
-            # never promised a no-tools fallback.
-            raise
+    else:
+        # Construct the librarian agent and wire its tools BEFORE run_sync.
+        # The bare factory emits ``Agent(tools=[])`` so an unwired agent
+        # has no tools; the F18 4-step contract (classify → search → read
+        # → return) cannot run, and the LLM either emits an empty digest
+        # or attempts the named tools and crashes — the dispatch-exception
+        # branch below would then return ``no_coverage=True``. Wiring the
+        # active wiki's ``WikiMemoryService`` lets the librarian's
+        # ``wiki_search`` / ``wiki_read`` / ``wiki_catalog`` closures see
+        # the per-wiki context.
+        #
+        # Tool wiring is best-effort: when the active wiki cannot be
+        # resolved (no wiki registered, XDG misconfigured) OR the agent
+        # factory itself raises (e.g. missing API credentials), the agent
+        # falls back to a no-tools bare-agent path and the dispatch-
+        # exception branch handles any tool-side failure. The user-
+        # visible signal flows through stdlib ``warnings`` so a non-
+        # configured logfire environment does not emit
+        # ``LogfireNotConfiguredWarning`` noise.
+        agent = None
+        try:
+            from lies.mcp.resolution import resolve_wiki
+            from lies.memory.service import WikiMemoryService
 
-    deps = LibrarianDeps(
-        question=question,
-        tag_expr=resolved_tag_expr,
-        exclude_expr=exclude_expr,
-        top_k=top_k,
-    )
+            # ``librarian_agent()`` raises ``ModelNotConfigured`` when
+            # called without a ``model=`` kwarg — see the factory doc.
+            # The MCP wrapper resolves the model eagerly via
+            # ``_resolve_librarian_model`` and threads it through this
+            # kwarg; Python callers (e.g. ``lies query --ground``) can
+            # pre-resolve and pass the same shape, or let it raise.
+            agent = librarian_agent(model=librarian_model)
+            resolved_wiki = resolve_wiki(wiki_name)
+            register_librarian_tools(
+                agent,
+                wiki=resolved_wiki,
+                memory_service=WikiMemoryService(resolved_wiki),
+            )
+        except Exception as wiring_exc:
+            warnings.warn(
+                f"ground: tool wiring skipped (bare agent will dispatch): "
+                f"{type(wiring_exc).__name__}: {wiring_exc}",
+                stacklevel=2,
+            )
+            if agent is None:
+                # Agent construction itself failed (most likely missing
+                # API credentials). Re-raise so the caller sees the
+                # underlying ModelNotConfigured; the digest contract
+                # never promised a no-tools fallback.
+                raise
 
-    try:
-        librarian_result = agent.run_sync(question, deps=deps)
-        out: LibrarianOutput = librarian_result.output
-    except Exception as exc:
-        # The codebase's dominant warning surface for runtime
-        # anomalies is stdlib ``warnings`` (see e.g.
-        # ``src/lies/wiki_settings.py``), not logfire. logfire is
-        # reserved for instrumentation in :func:`utils.logging.configure_logging`.
-        # ``logfire.warning`` from a non-configured environment
-        # emits ``LogfireNotConfiguredWarning`` on every call, which
-        # is noise in tests and CLI runs without a LOGFIRE_TOKEN.
-        # Switch to ``warnings.warn`` so the user-visible signal
-        # stays out of logfire's wiring entirely.
-        warnings.warn(
-            f"ground: librarian dispatch failed: {type(exc).__name__}: {exc}",
-            stacklevel=2,
-        )
-        return ArchivistDigest(
+        deps = LibrarianDeps(
             question=question,
             tag_expr=resolved_tag_expr,
             exclude_expr=exclude_expr,
-            citations=[],
-            no_coverage=True,
-            distinct_pages=0,
-            searched_scope=searched_scope_list,
+            top_k=top_k,
         )
+
+        try:
+            librarian_result = agent.run_sync(question, deps=deps)
+            out = librarian_result.output
+        except Exception as exc:
+            # The codebase's dominant warning surface for runtime
+            # anomalies is stdlib ``warnings`` (see e.g.
+            # ``src/lies/wiki_settings.py``), not logfire. logfire is
+            # reserved for instrumentation in :func:`utils.logging.configure_logging`.
+            # ``logfire.warning`` from a non-configured environment
+            # emits ``LogfireNotConfiguredWarning`` on every call, which
+            # is noise in tests and CLI runs without a LOGFIRE_TOKEN.
+            # Switch to ``warnings.warn`` so the user-visible signal
+            # stays out of logfire's wiring entirely.
+            warnings.warn(
+                f"ground: librarian dispatch failed: {type(exc).__name__}: {exc}",
+                stacklevel=2,
+            )
+            return ArchivistDigest(
+                question=question,
+                tag_expr=resolved_tag_expr,
+                exclude_expr=exclude_expr,
+                citations=[],
+                no_coverage=True,
+                distinct_pages=0,
+                searched_scope=searched_scope_list,
+                no_library=False,
+            )
 
     citations: list[CitationSnippet] = []
     for excerpt in out.excerpts:
@@ -466,4 +833,5 @@ def ground(
         no_coverage=no_coverage,
         distinct_pages=len({c.slug for c in citations}),
         searched_scope=searched_scope_list,
+        no_library=False,
     )

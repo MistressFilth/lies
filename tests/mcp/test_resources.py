@@ -1,4 +1,14 @@
-"""Tests for the LIES MCP server resources, page template, and prompt."""
+"""Tests for the LIES MCP server resources and prompt surface.
+
+After Task 3 (library-mode read-side rewrite) the wiki-shaped data
+resources (``wiki://page/{path}``, ``wiki://memory-changes``,
+``wiki://catalog``, ``wiki://catalog/{slug}``) are retired in favour
+of ``library://catalog`` and ``library://catalog/{slug}``. The static
+``wiki://status`` / ``wiki://index`` / ``wiki://log`` /
+``wiki://lint-report`` resources stay — they're the operational
+diagnostics and aren't replaced by a library-side equivalent in this
+task.
+"""
 
 from __future__ import annotations
 
@@ -10,7 +20,6 @@ from pathlib import Path
 import pytest
 
 from lies.mcp.server import (
-    _wiki_catalog_impl,
     _wiki_index_impl,
     _wiki_lint_report_impl,
     ask_ground_question,
@@ -21,10 +30,8 @@ from lies.mcp.server import (
     wiki_index,
     wiki_lint_report,
     wiki_log,
-    wiki_page,
     wiki_status,
 )
-from lies.memory.models import WikiPlanInvalid
 from lies.wiki.wiki import Wiki
 
 
@@ -147,115 +154,6 @@ def test_wiki_lint_report_library_mode_returns_envelope(
     out = _wiki_lint_report_impl(name=wiki_name)
     parsed = json.loads(out)
     assert parsed == {"mode": "library", "status": "no_wiki"}
-
-
-def test_wiki_page_returns_file_contents(
-    registered_wiki: Wiki,
-    wiki_name: str,
-) -> None:
-    out = wiki_page("index.md", name=wiki_name)
-    assert "Index" in out
-
-
-def test_wiki_page_rejects_traversal(
-    registered_wiki: Wiki,
-    wiki_name: str,
-) -> None:
-    """``..`` traversal out of the wiki/ directory raises WikiPlanInvalid."""
-    with pytest.raises(WikiPlanInvalid, match=r"\.\."):
-        wiki_page("../../etc/passwd", name=wiki_name)
-
-
-def test_wiki_page_rejects_absolute(
-    registered_wiki: Wiki,
-    wiki_name: str,
-) -> None:
-    """An absolute path is rejected (must be relative)."""
-    with pytest.raises(WikiPlanInvalid, match="relative"):
-        wiki_page("/etc/passwd", name=wiki_name)
-
-
-def test_wiki_page_returns_empty_for_missing_file(
-    registered_wiki: Wiki,
-    wiki_name: str,
-) -> None:
-    """A page path that resolves cleanly under wiki/ but doesn't exist returns ''."""
-    out = wiki_page("entities/does-not-exist.md", name=wiki_name)
-    assert out == ""
-
-
-def test_wiki_catalog_library_mode_no_wiki_registered(
-    wiki_name: str,
-) -> None:
-    """No wiki registered under the redirected XDG roots.
-
-    ``resolve_wiki`` raises ``WikiNotRegistered`` so the resource
-    falls through to library mode. The envelope reports ``mode:
-    "library"`` with an empty ``collections`` list (the test env has
-    no library either, so the name set is empty). Pins the
-    regression for the live bug where the MCP ``wiki://catalog``
-    resource returned library synthesis slugs instead of an
-    informative envelope.
-    """
-    from lies.errors import WikiNotRegistered
-
-    with pytest.raises(WikiNotRegistered):
-        # Sanity-check the precondition: without a registered wiki,
-        # resolve_wiki does raise. The fix is that the resource
-        # surfaces this condition via a stable JSON envelope rather
-        # than propagating the exception.
-        from lies.mcp.resolution import resolve_wiki
-
-        resolve_wiki(name=wiki_name)
-
-    out = _wiki_catalog_impl(name=wiki_name)
-    parsed = json.loads(out)
-    assert parsed == {"mode": "library", "collections": []}
-
-
-def test_wiki_catalog_library_mode_lists_registered_collections(
-    wiki_name: str,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Library-mode envelope carries every registered collection name.
-
-    Stubs :func:`lies.library.registry.library_collection_names` so
-    the assertion sees a deterministic non-empty collection set
-    regardless of the on-disk library state. Pins the contract that
-    the resource serialises the full set (sorted) — not a subset,
-    not a hand-rolled tag list.
-    """
-    monkeypatch.setattr(
-        "lies.library.registry.library_collection_names",
-        lambda: frozenset({"alpha", "beta"}),
-    )
-    out = _wiki_catalog_impl(name=wiki_name)
-    parsed = json.loads(out)
-    assert parsed == {"mode": "library", "collections": ["alpha", "beta"]}
-
-
-def test_wiki_catalog_wiki_mode_returns_catalog_page_list(
-    registered_wiki: Wiki,
-    wiki_name: str,
-) -> None:
-    """Wiki-mode returns the existing ``list[CatalogPage]`` JSON array.
-
-    The fixture wiki has multiple ``.md`` files under ``wiki/``;
-    the resource opens ``<wiki>/.lies/catalog.db`` and dumps every
-    row. The shape is a JSON array of ``CatalogPage.model_dump()``
-    dicts — not the library-mode envelope. This regression pins the
-    branch unchanged so the library-mode fix does not perturb the
-    wiki-mode contract.
-    """
-    out = _wiki_catalog_impl(name=wiki_name)
-    parsed = json.loads(out)
-    assert isinstance(parsed, list)
-    assert len(parsed) > 0
-    for page in parsed:
-        # Every row is a CatalogPage-shaped dict.
-        assert "slug" in page
-        assert "title" in page
-        assert "section" in page
 
 
 def test_cite_prompt_routes_to_ground() -> None:

@@ -159,6 +159,13 @@ def qmd_daemon_state() -> QmdState:
     if not qmd_installed():
         return _not_installed()
     try:
+        # TODO(qmd-drain follow-up): switch to ``_run_qmd`` from
+        # ``lies.qmd._subprocess`` once the daemon-lifecycle module's
+        # stdout/stderr handling is rewired to bytes. Out of scope for
+        # Spec A (the qmd-drain sweep covered ``cli.py`` + ``_proc.py``);
+        # this daemon module predates Spec B and was intentionally
+        # left untouched to keep the PR review surface small. Track
+        # under issues/qmd-drain-followup.md.
         proc = subprocess.run(
             [_QMD_BIN, "status"],
             capture_output=True,
@@ -244,6 +251,11 @@ def _reap_qmd_daemon(*, grace: float = 2.0, poll: float = 0.05) -> None:
 def _spawn_qmd_daemon() -> None:
     """Invoke ``qmd mcp --http --daemon``. Never raises."""
     try:
+        # TODO(qmd-drain follow-up): switch to ``_run_qmd`` from
+        # ``lies.qmd._subprocess`` (Spec A sweep). Tracked under
+        # issues/qmd-drain-followup.md — this module predates
+        # Spec B and was intentionally left untouched to keep the
+        # PR review surface small.
         subprocess.run(
             [_QMD_BIN, "mcp", "--http", "--daemon"],
             capture_output=True,
@@ -283,6 +295,11 @@ def ensure_qmd_daemon(*, data_dir: _Path, timeout: float = 15.0) -> QmdState:
 
     # Normal path: idempotent start.
     try:
+        # TODO(qmd-drain follow-up): switch to ``_run_qmd`` from
+        # ``lies.qmd._subprocess`` (Spec A sweep). Tracked under
+        # issues/qmd-drain-followup.md — this module predates
+        # Spec B and was intentionally left untouched to keep the
+        # PR review surface small.
         proc = subprocess.run(
             [_QMD_BIN, "mcp", "--http", "--daemon"],
             capture_output=True,

@@ -14,7 +14,7 @@ Three layers: **raw/** (your curated sources, immutable), **wiki/** (the agent's
 
 LIES reads and writes the wiki invisibly during normal interaction:
 
-- The Pydantic AI main agent searches and reads relevant wiki pages through `wiki_search` and `wiki_read` tools.
+- The Pydantic AI main agent reaches library collections through the library-mode read surface: `synthesize` for prose answers, `ground` for snippet digests. The pre-rewrite `wiki_search` / `wiki_read` shape is dormant.
 - After the answer, a `MemoryEnricher` sub-agent proposes a structured `MemoryPlan` only when evidence warrants it.
 - The host validates the plan and applies it through `WikiMemoryService`, which writes the page, rebuilds the index, appends the log, commits atomically, and refreshes the qmd derived index.
 - Each invisible write appends one line to `<wiki>/.lies/memory_plans.jsonl`. Inspect with `lies memory`; the MCP resource `wiki://memory-changes` exposes the same data; `lies memory reconcile` rebuilds from `git log` if the sidecar drifts.
@@ -150,41 +150,52 @@ proxy in front if remote access is required.
 After registration, Claude Code sees these tools:
 
 - `init_wiki(name)` — bootstrap a new wiki by name (creates XDG role-routed dirs).
-- `query(question, name?)` — synthesized answer (structured result
-  with `fallback_used`, `fallback_reason`, and `citations:
-  list[Citation]` where each `Citation` carries a `source:
-  "library" | "wiki"` discriminator, an optional `heading_path`
-  describing where in the page the cited claim lives, plus optional
-  `line` and `section` so each citation can point at the passage a
-  claim relied on; library citations are the primary source of truth,
-  wiki citations are supplementary). The synthesized answer renders
-  citations inline per claim using the `[[page-slug]]: "verbatim
-  text"` form — no footnote block, no anchor numbers. Filed synthesis
-  pages use `[[slug]] (Heading > Subheading): "verbatim"` so curators
-  can trace each claim to the source paragraph.
-- `answer(question, name?)` — same synthesized answer body as plain
-  text. Use this when the chat surface needs to render the answer
-  verbatim (the structured `query` tool returns a JSON envelope that
-  some surfaces hide behind collapsible blocks).
-- `lint(name?)` — health-check the wiki.
-- `ground(question, tag_expr?, exclude_tags?, top_k=3)` — return a
-  grounding digest (`ArchivistDigest`) carrying up to `top_k`
-  `CitationSnippet` entries of ≤200 chars each, drawn from LIES
-  wiki collections via the F18 librarian. Caller renders each
-  snippet inline as `[[slug]]: "snippet"` so the agent can verify
-  corpus coverage before reasoning. New module
-  `src/lies/mcp/grounding.py`. See the
-  [Grounding archivist](#grounding-archivist) section below.
-- `migrate_xdg(legacy_path, name)` — one-shot bridge from legacy `<wiki>/.lies/` to XDG.
+- `synthesize(question, tag_expr?, exclude_tags?, file_back=False)` —
+  prose answer for human reading. Calls `ground()` for retrieval then
+  runs `query_synthesizer_agent` over the result. Returns a structured
+  envelope (`SynthesizeEnvelope`) carrying `answer`, `citations`,
+  `pages_read`, `fallback_used`, `synthesis_used`, `fallback_reason`.
+  `file_back=True` raises `ToolError` (deferred; write-tool spec is
+  out-of-scope for the library-mode read-side rewrite).
+- `lint(name?, fix=False, force_repair=False)` — health-check the wiki;
+  `fix=True` applies the repair plan for `safe_to_fix` findings.
+- `reindex(cleanup?, all_?, embed?, force?, reconcile?, name?)` —
+  rebuild qmd index. Destructive flags (`cleanup` / `all_`) elicit
+  confirmation via `ctx.elicit`.
+- `ground(question, tag_expr?, exclude_tags?, top_k=3, name?)` —
+  return a grounding digest (`ArchivistDigest`) carrying up to
+  `top_k` `CitationSnippet` entries of ≤200 chars each, drawn from
+  library collections. Caller renders each snippet inline as
+  `[[slug]]: "snippet"` so the agent can verify corpus coverage
+  before reasoning. Unscoped queries take a parallel fan-out path
+  across every registered library collection (Task 1 brick-wall fix
+  for session 2505630b). See the [Grounding archivist](#grounding-archivist)
+  section below.
+- `ask_question(text)` — parse `+tag_expr` / `-exclude_tags` filter
+  syntax out of a slash-style invocation and return parsed kwargs for
+  the `synthesize` tool. Works around Claude Code's `/answer` slash
+  dispatcher, which tokenizes on whitespace and drops everything past
+  the first token.
+- `ask_ground_question(text)` — same shape as `ask_question`, but
+  returns kwargs for the `ground` tool. Works around Claude Code's
+  `/cite` slash dispatcher, which drops the `text` argument entirely
+  when the slash input begins with `+`.
 
 …and these resources:
 
-- `wiki://status` — qmd status + last 10 log entries.
-- `wiki://index`, `wiki://log`, `wiki://lint-report` — raw wiki artifacts.
-- `wiki://page/{path}` — any page under `wiki/` (relative path; traversal
-  rejected).
+- `wiki://status` — qmd status + last 10 log entries (operational
+  diagnostic; no library-side equivalent in the read-side rewrite).
+- `wiki://index`, `wiki://log`, `wiki://lint-report` — raw wiki
+  artifacts (operational diagnostics).
+- `library://catalog` — every registered library collection's
+  metadata (name, tags, source, page_count, updated_at) as a
+  per-collection JSON grouping. Replaces the retired
+  `wiki://catalog` resource.
+- `library://catalog/{slug}` — single library collection metadata;
+  empty string when the slug is not registered. Replaces the retired
+  `wiki://catalog/{slug}` resource.
 
-The server also exposes a `cite` prompt that templates a `ground()` tool call and renders the `ArchivistDigest` as `[[collection/slug]] (Title): "<snippet>"` citation lines.
+The server also exposes a `cite` prompt that templates a `ground()` tool call and renders the `ArchivistDigest` as `[[collection/slug]] (Title): "<snippet>"` citation lines, and an `answer` prompt that templates a `synthesize` tool call.
 
 Wiki selection: every tool accepts an optional `name` parameter.
 Resolution chain: explicit `name` → `LIES_WIKI_NAME` env → `default`.
@@ -310,16 +321,21 @@ lies page write --collection claude-code --type concept \
   --slug hooks --title "Hooks" --body-file body.md --force
 ```
 
-The MCP equivalent (`mcp__plugin_lies__file_knowledge`) elicits
-overwrite/rename/cancel on slug collision via `ctx.elicit`.
+The MCP writer (`mcp__plugin_lies__file_knowledge`) was retired in
+the library-mode read-side rewrite — the current MCP surface is
+read-only (`synthesize` / `ground` / `init_wiki` / `lint` / `reindex`
+plus the slash-input parsers `ask_question` /
+`ask_ground_question`). Wiki writes still go through
+`lies page write` from the CLI; a future write-tool spec will
+restore an MCP write surface.
 
 Each page type carries a set of required `## <Heading>` sections (see
 `src/lies/schema/default_schema.md` → "Section contract"). The CLI
-and MCP `file_knowledge` refuse writes that omit them; `lies lint`
-surfaces them as `missing_required_section` findings
-(`safe_to_fix=False`). Override per-wiki via `<wiki>/schema.md`. The
-match is literal-substring — `## Evidence` matches, but `### Evidence`,
-`##Evidence`, and `## evidence` do not.
+refuses writes that omit them; `lies lint` surfaces them as
+`missing_required_section` findings (`safe_to_fix=False`). Override
+per-wiki via `<wiki>/schema.md`. The match is literal-substring —
+`## Evidence` matches, but `### Evidence`, `##Evidence`, and
+`## evidence` do not.
 
 ## Tag-filter language
 
@@ -345,10 +361,11 @@ configs are legacy and not consulted for tag resolution. A
 `+c:opencode` filter resolves from any wiki because the opencode
 collection lives in the library.
 
-The MCP `query` tool accepts `tag_expr` and `exclude_tags` (size ≤ 1)
-kwargs. `SynthesizedMcpAnswer.searched_scope` reports the resolved
-library-collection set; with no filter, it reports every library
-collection.
+The MCP `synthesize` tool accepts `tag_expr` and `exclude_tags`
+(size ≤ 1) kwargs. The underlying `ArchivistDigest.searched_scope`
+(surfaced via the `ground` tool's wire envelope) reports the
+resolved library-collection set; with no filter, it reports every
+library collection.
 
 When the active wiki's `tag_expr` references a collection the
 library does not declare, the error surfaces the library's actual
@@ -394,7 +411,7 @@ answer: only the library-collection directory name is addressable, so
 The prefix survives the parser so future tag metadata (per-collection
 frontmatter, etc.) can reintroduce the `t:` / `c:` distinction
 without a grammar change. Both include and exclude atoms accept the
-prefixes; the same prefixes work in `mcp_query(tag_expr=...,
+prefixes; the same prefixes work in `mcp_synthesize(tag_expr=...,
 exclude_tags=...)`.
 
 ### Output formats
@@ -406,7 +423,7 @@ exclude_tags=...)`.
 - **`marp`**: Marp-flavored markdown with `marp: true` frontmatter + slide breaks. When the `marp` CLI is on `$PATH`, the body is rendered to HTML at `${XDG_CACHE_HOME:-~/.cache}/lies/query-<timestamp>.html`. When `marp` is not installed, the body is written to a `.md` file and the path is printed with a render hint.
 - **`chart`**: a single ```` ```mermaid ```` fence (one of `flowchart`, `sequenceDiagram`, or `classDiagram`); the renderer extracts the longest block and emits it unchanged. Validator-bypass: pass-through with a stderr warning when the synth produces no mermaid block.
 
-The format is also exposed on the MCP `query` response via the `format` field (`"md"`, `"table"`, `"marp"`, or `"chart"`). Synthesis pages gain a `render_format` frontmatter field recording the body shape for future curators.
+The format is also exposed on the MCP `synthesize` response via the `format` field (`"md"`, `"table"`, `"marp"`, or `"chart"`). Synthesis pages gain a `render_format` frontmatter field recording the body shape for future curators.
 
 ### `lies wiki provenance`
 
@@ -872,6 +889,14 @@ CLI commands (`src/lies/cli/`):
 - `lies lint [--fix]` — health-check the wiki (`--fix` applies the repair plan for safe_to_fix findings). Findings span six categories; LLM-backed categories are skipped with a `Sources` line when no model key is configured.
 - `lies mcp` / `lies mcp start` — run the MCP server on stdio.
 - `lies mcp up` / `down` / `status` — manage the detached http MCP daemon.
+- `lies qmd status` / `up` / `down` / `recycle` — manage the shared qmd
+  daemon (`status` prints a JSON snapshot; `up` is idempotent; `down`
+  is best-effort; `recycle` restarts and waits for liveness). Mirrors
+  ask's daemon operator surface so an operator fluent in ask's
+  commands can apply them to LIES unchanged. `lies mcp down` still
+  does not stop qmd — that daemon is machine-global and stopping it
+  would break sessions LIES knows nothing about. Use `lies qmd down`
+  (or `qmd mcp stop`) explicitly when you want it down.
 - `lies status` — show the library catalog count + migrated tally, qmd
   status, wiki catalog size, recent invisible writes, and the last few
   log entries (`--memory-limit N` to skip or limit the writes section).
