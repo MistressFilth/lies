@@ -19,6 +19,7 @@ span-picking helpers. Library vs wiki discrimination lives on
 from __future__ import annotations
 
 import asyncio
+import os
 import warnings
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
@@ -35,6 +36,17 @@ if TYPE_CHECKING:
 # can monkeypatch ``grounding.librarian_agent``. The factory itself is
 # cheap; the pydantic_ai cost only pays when ``.run_sync(...)`` fires.
 from lies.agents.librarian import librarian_agent  # noqa: E402,F401
+
+# Consecutive-qmd-error counter for the fan-out recycle trigger (Task 5).
+# When the fan-out helper observes ``_RECYCLE_THRESHOLD`` consecutive
+# ``QmdCommandError`` / ``QmdNoResultsError`` results across collections,
+# it triggers a single ``recycle()`` to unstick a wedged daemon before
+# surfacing the failure. The threshold defaults to 3 and is overridable
+# via the ``LIES_QMD_RECYCLE_THRESHOLD`` env var for ops. The counter
+# is module-level state — the brief's tests reset it via a fixture to
+# keep the fan-out tests hermetic.
+_RECYCLE_THRESHOLD = int(os.environ.get("LIES_QMD_RECYCLE_THRESHOLD", "3"))
+_consecutive_qmd_errors = 0
 
 
 @dataclass(frozen=True)
@@ -222,6 +234,13 @@ async def _fanout_collections(
     names = sorted(set(collection_names))
 
     async def _one(name: str) -> list[dict] | None:
+        # Task 5: track consecutive qmd failures across the fan-out.
+        # ``N`` consecutive errors trigger a single ``recycle()`` to
+        # recover from a wedged daemon before propagating the failure;
+        # any success between failures resets the counter. The lazy
+        # ``recycle`` import keeps ``grounding`` off the daemon-
+        # lifecycle import path until the threshold trips.
+        global _consecutive_qmd_errors
         try:
             return await asyncio.to_thread(
                 qmd_query,
@@ -232,7 +251,29 @@ async def _fanout_collections(
                 collection_filter={name},
             )
         except (QmdCommandError, QmdNoResultsError):
+            _consecutive_qmd_errors += 1
+            if _consecutive_qmd_errors >= _RECYCLE_THRESHOLD:
+                # Reset BEFORE the await so concurrent failures that
+                # land during the in-flight ``recycle()`` cannot
+                # double-trip the threshold. The clear happens under
+                # the same ``except`` branch as the increment, so two
+                # racing ``_one`` tasks cannot both observe a tripped
+                # counter for the same wedged batch.
+                _consecutive_qmd_errors = 0
+                try:
+                    from lies.qmd.lifecycle import recycle
+
+                    await asyncio.to_thread(recycle)
+                except Exception:
+                    # ``recycle`` is best-effort — a failed recycle
+                    # does not mask the original qmd failure. The
+                    # caller surfaces the dropped-collection result
+                    # via the empty excerpts list.
+                    pass
             return None
+        # Any successful collection query resets the counter so a
+        # transient error doesn't accumulate against later successes.
+        _consecutive_qmd_errors = 0
 
     raw = await asyncio.gather(*[_one(n) for n in names])
     merged: list[tuple[float, dict]] = []

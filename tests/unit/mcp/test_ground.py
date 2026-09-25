@@ -29,6 +29,24 @@ def _silence_wiring_skipped_warning() -> None:
     )
 
 
+@pytest.fixture(autouse=True)
+def _reset_consecutive_qmd_errors() -> None:
+    """Reset the recycle-trigger counter between tests.
+
+    The counter lives at module scope on ``lies.mcp.grounding`` so a
+    wedged-daemon simulation can persist across the fan-out (the
+    recycle path expects exactly that). Without this fixture the
+    second test in the file sees a counter residue from the first —
+    autouse yields both pre-test and post-test resets so adjacent
+    tests stay hermetic regardless of order.
+    """
+    from lies.mcp import grounding
+
+    grounding._consecutive_qmd_errors = 0
+    yield
+    grounding._consecutive_qmd_errors = 0
+
+
 def test_archivist_digest_has_no_library_field_default_false() -> None:
     """`no_library` defaults to False for back-compat with existing call sites."""
     from lies.mcp.grounding import ArchivistDigest
@@ -218,4 +236,119 @@ def test_fanout_unscoped_runs_concurrently(monkeypatch) -> None:
     assert elapsed < hold_s * 3, (
         f"fan-out took {elapsed:.3f}s with hold={hold_s}s; "
         f"serial would be ~{n * hold_s:.3f}s — asyncio.gather regression"
+    )
+
+
+def test_fanout_unscoped_triggers_recycle_after_n_failures(monkeypatch) -> None:
+    """``N`` consecutive ``QmdCommandError`` results trigger ``recycle()`` once.
+
+    Pins the Task 5 fan-out recycle hook: when every dispatched
+    ``_one`` raises ``QmdCommandError`` and the consecutive-error
+    counter crosses ``_RECYCLE_THRESHOLD``, the fan-out fires
+    ``recycle()`` exactly once before returning the (empty) excerpt
+    list. Threshold is monkeypatched down to 2 so the test fires
+    fast; the recycle mock clears the counter so a second batch of
+    fan-outs would not see it double-count.
+    """
+    from lies.library import registry as reg_mod
+    from lies.library.registry import LibraryCollectionMeta
+    from lies.mcp import grounding
+    from lies.qmd import cli as qmd_mod
+
+    metas = [
+        LibraryCollectionMeta(name="c0", tags=()),
+        LibraryCollectionMeta(name="c1", tags=()),
+        LibraryCollectionMeta(name="c2", tags=()),
+    ]
+    monkeypatch.setattr(reg_mod, "library_collection_metas", lambda: iter(metas))
+    monkeypatch.setattr(reg_mod, "library_git_root", lambda: Path("/tmp/fake-lib"))
+
+    monkeypatch.setattr(grounding, "_RECYCLE_THRESHOLD", 2)
+
+    recycle_calls: list[str] = []
+
+    def fake_recycle(*args, **kwargs):
+        recycle_calls.append("called")
+        # Mirror the real recycle: clear the counter so subsequent
+        # fan-outs start fresh. Without this the counter is permanent
+        # residue from the mock and every future test trips it.
+        grounding._consecutive_qmd_errors = 0
+
+    monkeypatch.setattr("lies.qmd.lifecycle.recycle", fake_recycle)
+
+    def fake_qmd_query(*, cwd, question, limit, timeout, collection_filter):
+        raise qmd_mod.QmdCommandError(f"simulated qmd failure for {next(iter(collection_filter))}")
+
+    monkeypatch.setattr(qmd_mod, "qmd_query", fake_qmd_query)
+
+    excerpts = asyncio.run(grounding._fanout_unscoped("any question", None, top_k=5))
+
+    assert excerpts == []
+    assert len(recycle_calls) == 1, (
+        f"recycle called {len(recycle_calls)} times; expected 1 — "
+        f"the consecutive-failure threshold tripped and one recycle "
+        f"should fire per wedged-daemon batch."
+    )
+
+
+def test_fanout_unscoped_resets_counter_after_success(monkeypatch) -> None:
+    """A success between failures prevents the recycle trigger.
+
+    Pins the success-reset branch of the recycle hook: with three
+    collections and a threshold of 3, a (fail, success, fail) pattern
+    keeps the counter below the threshold (it goes 1 → 0 → 1) and
+    ``recycle()`` is never called. The success is keyed on the
+    collection name rather than call count so the test is robust to
+    the executor's thread-scheduling order.
+    """
+    from lies.library import registry as reg_mod
+    from lies.library.registry import LibraryCollectionMeta
+    from lies.mcp import grounding
+    from lies.qmd import cli as qmd_mod
+
+    metas = [
+        LibraryCollectionMeta(name="c0", tags=()),
+        LibraryCollectionMeta(name="c1", tags=()),
+        LibraryCollectionMeta(name="c2", tags=()),
+    ]
+    monkeypatch.setattr(reg_mod, "library_collection_metas", lambda: iter(metas))
+    monkeypatch.setattr(reg_mod, "library_git_root", lambda: Path("/tmp/fake-lib"))
+
+    monkeypatch.setattr(grounding, "_RECYCLE_THRESHOLD", 3)
+
+    recycle_calls: list[str] = []
+
+    def fake_recycle(*args, **kwargs):
+        recycle_calls.append("called")
+        grounding._consecutive_qmd_errors = 0
+
+    monkeypatch.setattr("lies.qmd.lifecycle.recycle", fake_recycle)
+
+    def fake_qmd_query(*, cwd, question, limit, timeout, collection_filter):
+        name = next(iter(collection_filter))
+        if name == "c1":
+            # Mid-fan-out success: clears the counter so the third
+            # collection's failure restarts at 1, not at 2.
+            return [
+                {
+                    "path": "c1/page.md",
+                    "title": "Page",
+                    "score": 0.9,
+                    "snippet": "",
+                }
+            ]
+        raise qmd_mod.QmdCommandError(f"simulated qmd failure for {name}")
+
+    monkeypatch.setattr(qmd_mod, "qmd_query", fake_qmd_query)
+
+    excerpts = asyncio.run(grounding._fanout_unscoped("any question", None, top_k=5))
+
+    # The successful collection's excerpt survives; the two failures
+    # are dropped. The point of the assertion is the empty recycle list.
+    surviving_slugs = sorted(e.slug for e in excerpts)
+    assert surviving_slugs == ["c1/page.md"]
+    assert recycle_calls == [], (
+        f"recycle called {len(recycle_calls)} times; expected 0 — "
+        f"the success between failures must reset the counter before "
+        f"the threshold trips."
     )
