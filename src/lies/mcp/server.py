@@ -1109,8 +1109,6 @@ def ask_wiki_answer(text: str) -> str:
         question=parsed_question,
         tag_expr=tag_expr,
         exclude_tags=exclude_tags,
-        name=None,
-        collection=None,
     )
 
 
@@ -1119,24 +1117,27 @@ def _render_answer_prompt_body(
     question: str,
     tag_expr: str | None,
     exclude_tags: list[str],
-    name: str | None,
-    collection: str | None,
 ) -> str:
     """Render the prompt body for the parsed args.
 
     No fillable slots for ``tag_expr`` / ``exclude_tags``: the slash
     prompt parses them out of the ``question`` argument before the
     calling LLM sees the body. The LLM only has to forward the
-    rendered kwargs verbatim to the ``synthesize`` tool.
+    rendered kwargs verbatim to the ``synthesize`` tool. The
+    rendered kwargs match ``synthesize``'s actual signature
+    (``question, tag_expr, exclude_tags, file_back``); the
+    ``file_back`` slot is reserved (raises ToolError until write-tool
+    spec lands) and intentionally omitted so the LLM never forwards
+    it. The ``name`` / ``collection`` kwargs from the old ``answer``
+    tool shape are gone — FastMCP would raise ``TypeError: unexpected
+    keyword argument`` on a faithful forward.
     """
     return (
         f"Call the `synthesize` MCP tool with the following args, then surface "
         f"the answer body verbatim in your reply:\n\n"
         f"  question: {question}\n"
         f"  tag_expr: {tag_expr!r}\n"
-        f"  exclude_tags: {exclude_tags!r}\n"
-        f"  name: {name!r}\n"
-        f"  collection: {collection!r}\n\n"
+        f"  exclude_tags: {exclude_tags!r}\n\n"
         f"Do NOT modify these values before passing them to the tool. "
         f"If the parsed args look wrong, surface the parse error verbatim "
         f"and stop; do not retry with hand-rewritten args."
