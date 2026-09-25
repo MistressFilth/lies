@@ -875,6 +875,49 @@ def _patch_fanout(monkeypatch, grounding_module, fake_fn):
     )
 
 
+def _patch_tagged_fanout(monkeypatch, grounding_module, fake_fn):
+    """Replace ``_query_tagged_collections(...)`` with an async fake.
+
+    Mirrors :func:`_patch_fanout` for the tagged fast-path. Tagged
+    ``ground()`` with a non-empty resolved scope bypasses the F18
+    librarian and dispatches via
+    :func:`lies.mcp.grounding._query_tagged_collections`
+    (``asyncio.run``). The real helper is async, so the fake wraps
+    the sync ``fake_fn`` in an ``async def``.
+
+    Also seeds ``library_collection_names`` AND ``library_collection_metas``
+    so the F15 ``_collections_matching`` walker sees a non-empty
+    collection set and ``searched_scope_list`` resolves to at least
+    one collection — the tagged fast-path gate (``searched_scope_list``
+    non-empty) is the precondition for the new branch to fire.
+    Without that seed, an empty resolved scope falls through to the
+    legacy F18 librarian path (which is its own contract test).
+    """
+
+    async def _async_fake(*args, **kwargs):
+        return fake_fn(*args, **kwargs)
+
+    monkeypatch.setattr(grounding_module, "_query_tagged_collections", _async_fake)
+
+    # Seed the library registry so the F15 tag-filter dispatch sees
+    # at least one collection matching ``c:switchyard``. Both the name
+    # set and the metas iterable are patched because the resolver and
+    # the matching walker read different registry surfaces.
+    from lies.library import registry as registry_mod
+    from lies.library.registry import LibraryCollectionMeta
+
+    monkeypatch.setattr(
+        registry_mod,
+        "library_collection_names",
+        lambda: frozenset({"switchyard"}),
+    )
+    monkeypatch.setattr(
+        registry_mod,
+        "library_collection_metas",
+        lambda: iter([LibraryCollectionMeta(name="switchyard", tags=())]),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Fix Critical regression pins
 # ---------------------------------------------------------------------------
@@ -1122,3 +1165,456 @@ def test_ground_threads_source_kind_from_librarian_output(monkeypatch) -> None:
     digest = grounding.ground("anything")
     kinds = sorted(c.source_kind for c in digest.citations)
     assert kinds == ["library", "wiki"]
+
+
+# ---------------------------------------------------------------------------
+# Scoped fast-path: tagged ground() bypasses the F18 librarian LLM
+# round-trip via ``_query_tagged_collections`` when the resolved AST
+# matches at least one library collection.
+# ---------------------------------------------------------------------------
+
+
+def test_ground_tagged_dispatches_via_qmd_fanout_not_librarian(monkeypatch) -> None:
+    """Tagged ``ground(tag_expr="c:switchyard")`` hits the fast-path, not the librarian.
+
+    Regression for the session-2505630b brick wall: the scoped
+    ``ground()`` path previously took the F18 librarian round-trip
+    (which dispatched against an empty wiki and timed out at ~197s
+    with ``no_coverage=True`` and zero citations). The fix adds a
+    tagged fast-path that fans out directly to qmd across the
+    resolved collection set. The test mocks ``qmd_query`` so the
+    call surface is the wire path the production code actually
+    walks; the assertion verifies (a) the F18 librarian agent is
+    NOT invoked, and (b) qmd_query is dispatched with the resolved
+    collection filter — NOT against the full library.
+
+    Library-mode rewrite tagged fast-path: ``c:switchyard`` resolves
+    to one library collection (``switchyard``), so
+    ``searched_scope_list`` is non-empty and the gate fires.
+
+    Note on citations: this test stubs ``qmd_query`` directly, and
+    the wire-shape contract there returns ``{path, title, score}``
+    rows without spans. The citation-building loop in
+    :func:`ground` skips excerpts whose ``spans`` list is empty
+    (no prose body to trim), so this test asserts the fast-path
+    dispatch contract, not the citation count. Citation production
+    is covered by :func:`test_ground_tagged_fast_path_under_budget`
+    below.
+    """
+    from lies.mcp import grounding
+
+    qmd_calls: list[dict] = []
+
+    def fake_qmd_query(*_args, **kwargs):
+        qmd_calls.append(
+            {
+                "question": kwargs.get("question") or _args[1] if len(_args) > 1 else None,
+                "limit": kwargs.get("limit"),
+                "collection_filter": kwargs.get("collection_filter"),
+            }
+        )
+        # Mirror the qmd wire shape (``path``, ``title``, ``score``,
+        # ``snippet``) so the production ``_fanout_collections``
+        # populates the PageExcerpt's spans list from the snippet
+        # field. Without ``snippet``, the citation-building loop in
+        # :func:`ground` skips the excerpt (no prose body to
+        # truncate) and the digest's citations list is empty.
+        return [
+            {
+                "path": "switchyard/concepts/switchyard",
+                "title": "Switchyard",
+                "score": 0.95,
+                "line": 1,
+                "snippet": "Switchyard is the LiteLLM replacement.",
+            },
+        ]
+
+    librarian_called = []
+
+    class _BoomAgent:
+        def run_sync(self, user_prompt, *, deps):  # noqa: ARG002
+            librarian_called.append(True)
+            raise AssertionError(
+                "librarian_agent must not be called when the tagged fast-path fires"
+            )
+
+    monkeypatch.setattr(grounding, "librarian_agent", lambda: _BoomAgent())
+
+    # Seed the library registry so the F15 ``_collections_matching``
+    # walker AND the F15 tag-filter validator's
+    # ``_collect_available_tags_mcp`` see ``switchyard`` as
+    # addressable. All three surfaces (names, metas, tags) must be
+    # patched because the resolver's available-set union walks each.
+    from lies.library import registry as registry_mod
+    from lies.library.registry import LibraryCollectionMeta
+
+    monkeypatch.setattr(
+        registry_mod,
+        "library_collection_names",
+        lambda: frozenset({"switchyard"}),
+    )
+    monkeypatch.setattr(
+        registry_mod,
+        "library_collection_metas",
+        lambda: iter([LibraryCollectionMeta(name="switchyard", tags=())]),
+    )
+    monkeypatch.setattr(
+        registry_mod,
+        "library_collection_tags",
+        lambda: frozenset(),
+    )
+
+    # Patch the qmd CLI callable that ``_fanout_collections`` dispatches
+    # against. Importing it lazily inside the helper means we patch
+    # the ``lies.qmd.cli`` module attribute, which is what the
+    # ``from lies.qmd.cli import qmd_query`` inside
+    # ``_fanout_collections`` rebinds every call.
+    import lies.qmd.cli as qmd_cli
+
+    monkeypatch.setattr(qmd_cli, "qmd_query", fake_qmd_query)
+
+    digest = grounding.ground(
+        "Set up Switchyard to replace LiteLLM",
+        tag_expr="c:switchyard",
+        top_k=5,
+    )
+
+    # The tagged fast-path must NOT have routed through the librarian.
+    assert librarian_called == [], (
+        f"librarian_agent must not be called on tagged fast-path; saw {librarian_called!r}"
+    )
+    # ``qmd_query`` was dispatched (at least once) with the
+    # ``c:switchyard`` collection filter.
+    assert qmd_calls, "qmd_query was not called on the tagged fast-path"
+    assert any(call["collection_filter"] == {"switchyard"} for call in qmd_calls), (
+        f"qmd_query not dispatched with the switchyard filter; saw {qmd_calls!r}"
+    )
+    # The resolved collection filter restricts the dispatch to ONLY
+    # the matched collection — no other collection names appear in
+    # any ``collection_filter`` set.
+    all_filters = {tuple(sorted(call["collection_filter"] or ())) for call in qmd_calls}
+    assert all_filters == {("switchyard",)}, (
+        f"tagged fast-path must restrict to matched collections only; saw {all_filters!r}"
+    )
+    # ``searched_scope`` reflects the resolved scope (the matched
+    # collection), not the unscoped full-library fan-out list.
+    assert digest.searched_scope == ["switchyard"]
+    assert digest.tag_expr == "c:switchyard"
+    # The qmd stub returned a populated ``snippet`` field, so
+    # ``_fanout_collections`` populates ``PageExcerpt.spans`` and
+    # the citation-building loop in :func:`ground` produces a
+    # ``CitationSnippet`` from the first prose span. Pins the full
+    # wire-shape contract end-to-end: qmd ``snippet`` →
+    # ``PageExcerpt.spans`` → ``CitationSnippet.snippet``.
+    assert digest.no_coverage is False
+    assert len(digest.citations) == 1, (
+        f"expected 1 citation from the canned qmd stub, got {len(digest.citations)}: {digest.citations!r}"
+    )
+    assert digest.citations[0].collection == "switchyard"
+    assert digest.citations[0].snippet.startswith("Switchyard")
+
+
+def test_ground_tagged_fast_path_under_budget(monkeypatch) -> None:
+    """Tagged ``ground()`` fast-path completes in well under 15s with citations.
+
+    Regression for the session-2505630b 197s timeout: the post-fix
+    tagged fast-path must run in tens of milliseconds when the qmd
+    fan-out is fully mocked, AND the citation-building loop picks
+    up the populated spans the mock provides. The 0.15s budget is
+    generous — the real path on a cached cold-start is <50ms; the
+    budget guards against regression to the LLM round-trip path
+    while leaving headroom for slow CI hosts.
+    """
+    import time
+
+    from lies.agents.librarian import PageExcerpt
+    from lies.markdown_spans import Span
+    from lies.mcp import grounding
+
+    excerpts = [
+        PageExcerpt(
+            collection="switchyard",
+            slug="concepts/switchyard",
+            title="Switchyard",
+            spans=[
+                Span(
+                    heading_path=["H1"],
+                    body="Switchyard is the LiteLLM replacement.",
+                    code_fence=False,
+                    start_line=1,
+                ),
+            ],
+            source_kind="library",
+        ),
+    ]
+
+    def fake_tagged(*_args, **_kwargs):
+        return list(excerpts)
+
+    _patch_tagged_fanout(monkeypatch, grounding, fake_tagged)
+
+    t0 = time.monotonic()
+    digest = grounding.ground(
+        "Set up Switchyard to replace LiteLLM",
+        tag_expr="c:switchyard",
+        top_k=5,
+    )
+    elapsed = time.monotonic() - t0
+
+    assert elapsed < 0.15, f"tagged fast-path took {elapsed:.3f}s; expected < 0.15s"
+    assert len(digest.citations) >= 1
+    assert digest.tag_expr == "c:switchyard"
+    assert digest.citations[0].snippet.startswith("Switchyard")
+
+
+def test_ground_tagged_dispatch_exception_returns_no_coverage(monkeypatch) -> None:
+    """Tagged fast-path dispatch exception → ``no_coverage=True``, stdlib warning.
+
+    Pins the fail-soft posture on the tagged fast-path: when
+    ``_query_tagged_collections`` raises (qmd daemon offline,
+    timeout, etc.), ``ground()`` returns a digest with
+    ``no_coverage=True`` and surfaces the failure via stdlib
+    ``warnings`` — same contract as the unscoped fast-path and the
+    legacy librarian path. No logfire warning is emitted.
+    """
+    from lies.library import registry as registry_mod
+    from lies.library.registry import LibraryCollectionMeta
+    from lies.mcp import grounding
+
+    monkeypatch.setattr(
+        registry_mod,
+        "library_collection_names",
+        lambda: frozenset({"switchyard"}),
+    )
+    monkeypatch.setattr(
+        registry_mod,
+        "library_collection_metas",
+        lambda: iter([LibraryCollectionMeta(name="switchyard", tags=())]),
+    )
+    monkeypatch.setattr(
+        registry_mod,
+        "library_collection_tags",
+        lambda: frozenset(),
+    )
+
+    async def _boom_tagged(*_args, **_kwargs):
+        raise RuntimeError("qmd daemon offline")
+
+    monkeypatch.setattr(grounding, "_query_tagged_collections", _boom_tagged)
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        digest = grounding.ground(
+            "Set up Switchyard to replace LiteLLM",
+            tag_expr="c:switchyard",
+            top_k=5,
+        )
+
+    assert digest.no_coverage is True
+    assert digest.citations == []
+    assert digest.distinct_pages == 0
+    # ``searched_scope`` reflects the resolved scope even on the
+    # exception path — the operator still sees which collections
+    # the system attempted.
+    assert digest.searched_scope == ["switchyard"]
+    # The user-visible signal surfaces as a stdlib warning, not a
+    # logfire one.
+    logfire_warns = [w for w in caught if "LogfireNotConfiguredWarning" in type(w.message).__name__]
+    assert logfire_warns == [], f"unexpected LogfireNotConfiguredWarning: {logfire_warns!r}"
+    tagged_warns = [w for w in caught if "tagged fan-out dispatch failed" in str(w.message)]
+    assert len(tagged_warns) >= 1, (
+        f"expected a 'tagged fan-out dispatch failed' warning, saw: {[str(w.message) for w in caught]!r}"
+    )
+
+
+def test_ground_tagged_zero_matches_falls_through_to_librarian(monkeypatch) -> None:
+    """Tagged ``ground()`` with zero resolved collections falls through to legacy path.
+
+    Edge-case fallback: when the library is populated but the
+    resolved AST matches zero library collections, the tagged
+    fast-path gate (``searched_scope_list`` non-empty) does NOT fire.
+    The legacy F18 librarian path runs as the historical fallback —
+    preserves behavior for ``tag_expr="ghost"`` style queries
+    against a collection that no longer exists.
+
+    The test sets up the scenario by patching the library registry
+    so that ``library_collection_tags`` returns ``{"ghost"}`` (so the
+    F15 validator's available-set recognizes ``+ghost`` as
+    addressable), but ``library_collection_metas`` returns only
+    ``switchyard`` (with no ``ghost`` tag) — the matching walker
+    resolves to an empty set, ``searched_scope_list`` is empty, and
+    the fast-path gate stays closed. The legacy librarian path runs
+    as the historical fallback.
+
+    Note: a fully-empty library is a different failure mode (the F15
+    validator throws ``ArchivistCoverageError`` on the first unknown
+    atom). The "library empty" surface from the spec brief reduces
+    to this case in practice — the legacy path's
+    ``searched_scope_list`` branch covers both uninitialized-library
+    and zero-match scenarios.
+    """
+    from lies.library import registry as registry_mod
+    from lies.library.registry import LibraryCollectionMeta
+    from lies.mcp import grounding
+
+    # Library has ``switchyard`` registered (so the library is
+    # "populated" per the gate) but no collection carries the
+    # ``ghost`` tag. ``+ghost`` validates at the F15 dispatcher
+    # (because ``ghost`` is in ``library_collection_tags``) but
+    # ``_collections_matching`` resolves to an empty set.
+    monkeypatch.setattr(
+        registry_mod,
+        "library_collection_names",
+        lambda: frozenset({"switchyard"}),
+    )
+    monkeypatch.setattr(
+        registry_mod,
+        "library_collection_metas",
+        lambda: iter([LibraryCollectionMeta(name="switchyard", tags=())]),
+    )
+    monkeypatch.setattr(
+        registry_mod,
+        "library_collection_tags",
+        lambda: frozenset({"ghost"}),
+    )
+
+    librarian_called = []
+
+    class _FakeResult:
+        def __init__(self, output):
+            self.output = output
+
+    class _FakeAgent:
+        def run_sync(self, user_prompt, *, deps):  # noqa: ARG002
+            from lies.agents.librarian import LibrarianOutput
+
+            librarian_called.append(True)
+            return _FakeResult(
+                LibrarianOutput(
+                    tag_expr="ghost",
+                    exclude_expr=None,
+                    excerpts=[],
+                    distinct_pages=0,
+                    no_coverage=True,
+                )
+            )
+
+    monkeypatch.setattr(grounding, "librarian_agent", lambda model=None: _FakeAgent())
+
+    # If the tagged fast-path fires despite the zero-match
+    # resolution, this mock records it — the test asserts this
+    # stays untouched.
+    tagged_called = []
+
+    async def _spy_tagged(*_args, **_kwargs):
+        tagged_called.append(True)
+        return []
+
+    monkeypatch.setattr(grounding, "_query_tagged_collections", _spy_tagged)
+
+    digest = grounding.ground(
+        "Anything",
+        tag_expr="ghost",
+        top_k=5,
+    )
+
+    # The tagged fast-path must NOT have fired (zero resolved
+    # collections).
+    assert tagged_called == [], (
+        f"tagged fast-path must not fire when resolved scope is empty; saw {tagged_called!r}"
+    )
+    # The legacy librarian path WAS exercised — the F18 fallback
+    # preserves historical behavior for the edge case.
+    assert librarian_called == [True], (
+        f"legacy librarian path did not run on zero-match tagged query; saw {librarian_called!r}"
+    )
+    # The librarian returned ``no_coverage=True``; the digest
+    # mirrors that.
+    assert digest.no_coverage is True
+    assert digest.tag_expr == "ghost"
+    # ``searched_scope`` is empty (zero matches), per the matching
+    # walker — the operator sees "searched nothing" rather than
+    # guessing which collections were attempted.
+    assert digest.searched_scope == []
+
+
+def test_ground_tagged_with_resolved_collection_calls_fanout_only(
+    monkeypatch,
+) -> None:
+    """Tagged fast-path restricts the qmd dispatch to resolved collections only.
+
+    When ``tag_expr`` resolves to two library collections (e.g.
+    ``c:switchyard|c:opencode``), ``_fanout_collections`` dispatches
+    against each collection separately via the per-collection
+    ``collection_filter`` — NOT against every registered collection.
+    The test mocks ``qmd_query`` to record every call's
+    ``collection_filter`` and asserts the union of filters equals
+    exactly the resolved set.
+
+    The mocked qmd rows carry spans-like payloads directly so the
+    downstream citation-building loop picks them up. Since the
+    mocked ``qmd_query`` returns raw dicts (not ``Span`` objects),
+    this test asserts the dispatch contract (filter sets) — the
+    citation-count check is covered by
+    :func:`test_ground_tagged_fast_path_under_budget`.
+    """
+    from lies.library import registry as registry_mod
+    from lies.library.registry import LibraryCollectionMeta
+    from lies.mcp import grounding
+
+    monkeypatch.setattr(
+        registry_mod,
+        "library_collection_names",
+        lambda: frozenset({"switchyard", "opencode", "claude_platform"}),
+    )
+    monkeypatch.setattr(
+        registry_mod,
+        "library_collection_metas",
+        lambda: iter(
+            [
+                LibraryCollectionMeta(name="switchyard", tags=()),
+                LibraryCollectionMeta(name="opencode", tags=()),
+                LibraryCollectionMeta(name="claude_platform", tags=()),
+            ]
+        ),
+    )
+    monkeypatch.setattr(
+        registry_mod,
+        "library_collection_tags",
+        lambda: frozenset(),
+    )
+
+    qmd_calls: list[set] = []
+
+    def fake_qmd_query(*_args, **kwargs):
+        filter_set = kwargs.get("collection_filter")
+        qmd_calls.append(frozenset(filter_set) if filter_set is not None else None)
+        coll = next(iter(filter_set)) if filter_set else "unknown"
+        return [{"path": f"{coll}/concepts/x", "title": "X", "score": 0.9}]
+
+    import lies.qmd.cli as qmd_cli
+
+    monkeypatch.setattr(qmd_cli, "qmd_query", fake_qmd_query)
+
+    digest = grounding.ground(
+        "test",
+        tag_expr="c:switchyard|c:opencode",
+        top_k=5,
+    )
+
+    # The fan-out dispatched against each matched collection
+    # exactly once — never against the unrelated ``claude_platform``.
+    unique_filters = set(qmd_calls)
+    matched_names = {next(iter(f)) for f in unique_filters if f}
+    assert {"switchyard", "opencode"}.issubset(matched_names), (
+        f"expected dispatch against switchyard + opencode; saw {matched_names!r}"
+    )
+    # No filter set included ``claude_platform`` (unmatched).
+    for f in qmd_calls:
+        if f is None:
+            continue
+        assert "claude_platform" not in f, (
+            f"tagged fast-path leaked an unmatched collection; saw {f!r}"
+        )
+    # ``searched_scope`` mirrors the resolved (matched) set.
+    assert sorted(digest.searched_scope) == ["opencode", "switchyard"]

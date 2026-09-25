@@ -116,33 +116,68 @@ def _patch_fanout(
     )
 
 
+def _patch_tagged_fanout(
+    monkeypatch: pytest.MonkeyPatch,
+    excerpts: list,
+) -> None:
+    """Replace ``_query_tagged_collections(...)`` with a deterministic output.
+
+    Mirrors :func:`_patch_fanout` for the tagged fast-path. Tagged
+    ``ground()`` with a non-empty resolved scope bypasses the F18
+    librarian and dispatches via
+    :func:`lies.mcp.grounding._query_tagged_collections`
+    (``asyncio.run``). The real helper is async, so the fake wraps
+    the deterministic ``excerpts`` list in an ``async def`` to
+    preserve the awaitable contract.
+
+    The test seeds ``switchyard`` under XDG so the F15 tag-filter
+    dispatch sees a non-empty resolved scope (``searched_scope_list
+    == ["switchyard"]``), which is the precondition for the tagged
+    fast-path to fire instead of falling through to the legacy
+    librarian path.
+    """
+    from lies.mcp import grounding
+
+    async def _async_fake(*_args, **_kwargs):
+        return list(excerpts)
+
+    monkeypatch.setattr(grounding, "_query_tagged_collections", _async_fake)
+
+
 async def test_live_corpus_ground_scoped_under_15s(monkeypatch: pytest.MonkeyPatch) -> None:
     """Scoped ``ground()`` returns within 15s with citations populated.
 
     The session-2505630b reproduction: the operator ran
     ``ground(tag_expr="c:switchyard", top_k=5)`` against the live
     corpus and the call timed out at ~42s with zero citations. Task 1
-    added the unscoped fan-out path; this test pins the scoped path's
-    timing contract.
+    added the unscoped fan-out path; this task (scoped fast-path)
+    added the matching tagged fan-out so ``c:switchyard`` no longer
+    takes the F18 librarian round-trip.
 
-    The test stubs the librarian's ``run_sync`` so no real model is
-    required (the 15s budget is a regression guard for the wire-path
-    overhead, not a model-roundtrip budget). Assertions:
+    The test stubs ``_query_tagged_collections`` so the wire-path
+    overhead is measured, not a model round-trip. The 15s budget is
+    a regression guard against the historical 197s timeout; the
+    post-fix path completes in <50ms. Assertions:
 
       - The call returns within 15s.
       - The envelope carries at least 1 citation.
       - The ``tag_expr`` round-trips through the wire envelope.
+      - The citation's ``collection`` matches the seeded
+        ``switchyard`` library collection (primary-source hit).
     """
     from fastmcp import Client
     from lies.agents.librarian import PageExcerpt
     from lies.markdown_spans import Span
     from lies.mcp.server import mcp
 
-    # Seed the addressable collection so ``c:switchyard`` validates.
+    # Seed the addressable collection so ``c:switchyard`` validates
+    # at the F15 tag-filter dispatch and the tagged fast-path gate
+    # (``searched_scope_list`` non-empty) fires.
     _seed_switchyard_collection()
 
-    # Stub the librarian with one canned excerpt so the envelope
-    # carries citations ≥ 1.
+    # Stub the tagged fan-out helper with one canned excerpt so the
+    # envelope carries citations ≥ 1. Same shape as the unscoped
+    # variant's fan-out mock.
     spans = [
         Span(
             heading_path=["H1"],
@@ -163,7 +198,7 @@ async def test_live_corpus_ground_scoped_under_15s(monkeypatch: pytest.MonkeyPat
             source_kind="library",
         ),
     ]
-    _patch_librarian(monkeypatch, excerpts)
+    _patch_tagged_fanout(monkeypatch, excerpts)
 
     async with Client(mcp) as client:
         t0 = time.monotonic()

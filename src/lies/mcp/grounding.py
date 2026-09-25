@@ -171,39 +171,55 @@ def pick_first_prose_span(spans: "list[Span]") -> "Span | None":
 # ---------------------------------------------------------------------------
 
 
-async def _fanout_unscoped(
+async def _fanout_collections(
     question: str,
     exclude_expr: "TagExpr | None",
     top_k: int,
+    collection_names: list[str],
 ) -> "list[PageExcerpt]":
-    """Parallel-scan every registered library collection for unscoped queries.
+    """Parallel-scan ``collection_names`` for the question, no LLM round-trip.
 
-    Bypasses the F18 librarian LLM round-trip (which times out at
-    ~42s/empty on unscoped queries — session 2505630b reproduction)
-    by fanning out directly to qmd with a per-collection post-filter.
-    Returns merged ``PageExcerpt`` rows sorted by score desc and
-    truncated to ``top_k``.
+    Shared core for both the unscoped fan-out
+    (:func:`_fanout_unscoped`, Task 1) and the tagged fan-out
+    (:func:`_query_tagged_collections`, this task). Bypasses the F18
+    librarian entirely by dispatching per-collection ``qmd_query``
+    calls concurrently and merging the results sorted by score desc.
+    Each ``collection_names`` entry is passed as a qmd
+    ``collection_filter`` set so the per-collection post-filter
+    retains the same semantics the unscoped fan-out has shipped with.
 
     Per-collection timeout: 5s. Failed collections dropped silently.
+    The ``exclude_expr`` parameter is preserved for signature parity
+    with the broader ground() surface; per-collection qmd filters are
+    include-only, so excludes are not enforced at this layer (the
+    include filter already constrains the addressable set).
 
     Args:
         question: Natural-language question.
         exclude_expr: Compiled NOT AST (Task 3 / f15-exclude-compound).
-            ``None`` when no ``-`` chain supplied.
+            ``None`` when no ``-`` chain supplied. Retained for
+            signature parity; not enforced inside the helper.
         top_k: Maximum excerpts to return.
+        collection_names: Library collection names to scan. The
+            caller is responsible for resolving the set — this helper
+            does not consult the library registry. Order is
+            irrelevant; duplicates are de-duped by sorting.
 
     Returns:
         ``list[PageExcerpt]`` sorted by score desc, length ≤ ``top_k``.
-        Empty list when no collections registered or all fan-outs fail.
+        Empty list when ``collection_names`` is empty or all fan-outs
+        fail.
     """
-    from lies.library.registry import library_collection_metas, library_git_root
+    from lies.agents.librarian import PageExcerpt
+    from lies.library.registry import library_git_root
+    from lies.markdown_spans import Span
     from lies.qmd.cli import QmdCommandError, QmdNoResultsError, qmd_query
 
-    metas = list(library_collection_metas())
-    if not metas:
+    if not collection_names:
         return []
 
     lib_root = library_git_root()
+    names = sorted(set(collection_names))
 
     async def _one(name: str) -> list[dict] | None:
         try:
@@ -218,7 +234,7 @@ async def _fanout_unscoped(
         except (QmdCommandError, QmdNoResultsError):
             return None
 
-    raw = await asyncio.gather(*[_one(m.name) for m in metas])
+    raw = await asyncio.gather(*[_one(n) for n in names])
     merged: list[tuple[float, dict]] = []
     for batch in raw:
         if not batch:
@@ -229,8 +245,6 @@ async def _fanout_unscoped(
     merged.sort(key=lambda x: x[0], reverse=True)
     top_hits = merged[:top_k]
 
-    from lies.agents.librarian import PageExcerpt
-
     out: list[PageExcerpt] = []
     for score, hit in top_hits:
         path = hit.get("path", "")
@@ -238,16 +252,111 @@ async def _fanout_unscoped(
         coll = path.split("/", 1)[0] if path else ""
         slug = path
         title = hit.get("title") or path.rsplit("/", 1)[-1].replace(".md", "")
+        # qmd's wire payload carries a ``snippet`` field with a brief
+        # diff-style excerpt (``@@ -N,M @@ (before, after) ...``) — use
+        # it to seed a single prose span so the downstream citation-
+        # building loop in :func:`ground` can produce a
+        # :class:`CitationSnippet`. Without a span, the loop skips
+        # the excerpt (no prose body to truncate), producing an empty
+        # citations list — pre-this-change the fan-out path always
+        # returned 0 citations in production despite the qmd scan
+        # surfacing real hits. Falls back to an empty spans list when
+        # qmd omits the field (older qmd CLI versions, edge-case
+        # qmd-shape changes).
+        snippet = hit.get("snippet")
+        spans: list[Span] = []
+        if snippet:
+            spans = [
+                Span(
+                    heading_path=[],
+                    body=str(snippet),
+                    code_fence=False,
+                    start_line=int(hit.get("line", 1)),
+                ),
+            ]
         out.append(
             PageExcerpt(
                 collection=coll,
                 slug=slug,
                 title=title,
-                spans=[],
+                spans=spans,
                 source_kind="library",
             )
         )
     return out
+
+
+async def _fanout_unscoped(
+    question: str,
+    exclude_expr: "TagExpr | None",
+    top_k: int,
+) -> "list[PageExcerpt]":
+    """Parallel-scan every registered library collection for unscoped queries.
+
+    Thin wrapper around :func:`_fanout_collections` that resolves
+    the collection set from the library registry. Bypasses the F18
+    librarian LLM round-trip (which times out at ~42s/empty on
+    unscoped queries — session 2505630b reproduction) by fanning
+    out directly to qmd with a per-collection post-filter. Returns
+    merged ``PageExcerpt`` rows sorted by score desc and truncated
+    to ``top_k``.
+
+    Per-collection timeout: 5s. Failed collections dropped silently.
+
+    Args:
+        question: Natural-language question.
+        exclude_expr: Compiled NOT AST (Task 3 / f15-exclude-compound).
+            ``None`` when no ``-`` chain supplied.
+        top_k: Maximum excerpts to return.
+
+    Returns:
+        ``list[PageExcerpt]`` sorted by score desc, length ≤ ``top_k``.
+        Empty list when no collections registered or all fan-outs fail.
+    """
+    from lies.library.registry import library_collection_metas
+
+    names = sorted(m.name for m in library_collection_metas())
+    return await _fanout_collections(question, exclude_expr, top_k, names)
+
+
+async def _query_tagged_collections(
+    question: str,
+    exclude_expr: "TagExpr | None",
+    top_k: int,
+    collection_names: list[str],
+) -> "list[PageExcerpt]":
+    """Parallel-scan the tag-resolved collection set without the F18 librarian.
+
+    Tagged ``ground()`` previously took the F18 librarian path even
+    when the resolved AST matched one or more library collections
+    (session 2505630b reproduction — ``ground(tag_expr="c:switchyard")``
+    timed out at ~197s with ``no_coverage=True``). This fast-path
+    replaces the librarian LLM round-trip with a direct qmd fan-out
+    across ONLY the tag-matched collections (the unscoped fast-path
+    fanned across every registered collection).
+
+    Mirrors the F18 ``LibrarianOutput.excerpts`` shape so the
+    downstream citation-building loop in :func:`ground` is identical
+    between the unscoped and the tagged fast-path. The library is
+    the universe for retrieval; the wiki surface contributes only
+    via the legacy F18 librarian fallback when the resolved AST
+    matches zero collections.
+
+    Args:
+        question: Natural-language question.
+        exclude_expr: Compiled NOT AST (Task 3 / f15-exclude-compound).
+            ``None`` when no ``-`` chain supplied.
+        top_k: Maximum excerpts to return.
+        collection_names: Sorted collection names from the F15
+            ``_collections_matching`` walker — the addressable set
+            that the tagged query resolves to.
+
+    Returns:
+        ``list[PageExcerpt]`` sorted by score desc, length ≤ ``top_k``.
+        Empty list when ``collection_names`` is empty or all fan-outs
+        fail.
+    """
+    return await _fanout_collections(question, exclude_expr, top_k, collection_names)
 
 
 def ground(
@@ -262,12 +371,26 @@ def ground(
     """Return a grounding digest for ``question``.
 
     Translates ``tag_expr`` / ``exclude_expr`` via the F15 tag-filter
-    dispatch, then either fans out directly to qmd across registered
-    library collections (unscoped path; Task 1 brick-wall fix) or calls
-    the F18 librarian (tagged path), and trims each excerpt to a
-    ≤200-char grounding snippet. The caller renders the result as
-    ``[[slug]]: "snippet"`` per ask's grounding form (NOT F19's long
-    ``[[slug]]: "verbatim"`` form).
+    dispatch, then dispatches one of three retrieval paths:
+
+    1. **Unscoped fast-path** (no ``tag_expr``, no ``exclude_expr``) —
+       direct qmd fan-out across every registered library collection
+       (Task 1 brick-wall fix; ~1s vs the historical ~42s librarian
+       round-trip on an empty wiki).
+    2. **Tagged fast-path** (this task) — when ``tag_expr`` or
+       ``exclude_expr`` is set AND the resolved AST matches at least
+       one library collection, direct qmd fan-out across ONLY the
+       matched collections. Replaces the F18 librarian round-trip
+       that previously timed out at ~197s on
+       ``tag_expr="c:switchyard"`` (session 2505630b reproduction).
+    3. **Legacy F18 librarian** — when the tagged AST matches zero
+       library collections (edge-case fallback that preserves
+       historical behavior for ``tag_expr="c:ghost"`` style queries
+       against an unpopulated library).
+
+    Trims each excerpt to a ≤200-char grounding snippet. The caller
+    renders the result as ``[[slug]]: "snippet"`` per ask's
+    grounding form (NOT F19's long ``[[slug]]: "verbatim"`` form).
 
     Args:
         question: The natural-language question to ground.
@@ -294,9 +417,9 @@ def ground(
             pre-resolver behavior). The MCP ``ground`` tool wrapper
             resolves this via :func:`lies.mcp.server._resolve_librarian_model`
             so the configuration error surfaces at the MCP boundary
-            rather than mid-dispatch. Unscoped ``ground()`` bypasses
-            the librarian entirely (Task 1 brick-wall fix), so the
-            kwarg is only consumed on the tagged path.
+            rather than mid-dispatch. Only consumed on the legacy
+            librarian path (path #3 above); both fast-paths bypass
+            the LLM round-trip entirely.
 
     Returns:
         :class:`ArchivistDigest` carrying the librarian's excerpts
@@ -313,10 +436,10 @@ def ground(
             collections (caller may retry untagged or surface). Also
             raised when the include expression fails to parse.
         lies.errors.ModelNotConfigured: when ``librarian_model`` is
-            ``None`` and the librarian path is entered (i.e. when
-            ``tag_expr`` or ``exclude_expr`` is set). The MCP wrapper
-            pre-resolves the model so this propagates only when a
-            Python caller skips the resolver.
+            ``None`` and the legacy librarian path (#3 above) is
+            entered (empty library OR zero tag matches). The MCP
+            wrapper pre-resolves the model so this propagates only
+            when a Python caller skips the resolver.
     """
     if top_k < 1:
         top_k = 1
@@ -484,6 +607,56 @@ def ground(
         out = LibrarianOutput(
             tag_expr=None,
             exclude_expr=None,
+            excerpts=excerpts,
+            distinct_pages=len({e.slug for e in excerpts}),
+            no_coverage=len(excerpts) == 0,
+        )
+    elif (tag_expr is not None or exclude_expr is not None) and searched_scope_list:
+        # Tagged fast-path: when the resolved AST matches at least one
+        # library collection, bypass the F18 librarian LLM round-trip
+        # (session 2505630b reproduction: ``ground(tag_expr="c:switchyard")``
+        # previously timed out at ~197s with ``no_coverage=True`` and 0
+        # citations) and fan out directly to qmd across ONLY the matched
+        # collections. Same async-to-sync bridge as the unscoped path;
+        # same ``LibrarianOutput`` shape downstream so the citation-
+        # building loop is identical between the two fast-paths.
+        #
+        # Gate: ``tag_expr is not None or exclude_expr is not None`` keeps
+        # the unscoped path exclusive (this branch is for tagged queries
+        # only), and ``searched_scope_list`` is the resolved collection
+        # set — non-empty iff the library has collections AND the AST
+        # matches at least one. The library is the universe for
+        # retrieval; when the AST matches zero collections we fall
+        # through to the legacy F18 librarian path (edge-case fallback
+        # preserves historical behavior for ``tag_expr`` set with no
+        # library match — e.g. ``tag_expr="c:ghost"``).
+        try:
+            excerpts = asyncio.run(
+                _query_tagged_collections(
+                    question,
+                    exclude_expr,
+                    top_k,
+                    searched_scope_list,
+                ),
+            )
+        except Exception as exc:
+            warnings.warn(
+                f"ground: tagged fan-out dispatch failed: {type(exc).__name__}: {exc}",
+                stacklevel=2,
+            )
+            return ArchivistDigest(
+                question=question,
+                tag_expr=resolved_tag_expr,
+                exclude_expr=exclude_expr,
+                citations=[],
+                no_coverage=True,
+                distinct_pages=0,
+                searched_scope=searched_scope_list,
+                no_library=False,
+            )
+        out = LibrarianOutput(
+            tag_expr=resolved_tag_expr,
+            exclude_expr=exclude_expr,
             excerpts=excerpts,
             distinct_pages=len({e.slug for e in excerpts}),
             no_coverage=len(excerpts) == 0,
