@@ -124,7 +124,7 @@ tests/
 
 The project runtime on the host currently operates
 **knowledge-collections-only** — no wikis are registered under
-`~/.local/share/lies/<name>/`. The MCP `query` / `answer` / `cite` /
+`~/.local/share/lies/<name>/`. The MCP `synthesize` / `cite` /
 `ground` tools fan out across the global library at
 `~/.local/share/lies/library/collections/<name>/` instead.
 
@@ -132,12 +132,11 @@ When an agent is asked to "look at a lies collection," treat it as a
 reference to a library collection, not a wiki. The library is the
 source of truth for retrieval in this environment.
 
-Wiki code paths (`WikiMemoryService`, `wiki_search`, `wiki_read`,
-`init_wiki`, `file_knowledge`, `WikiIdentity`, `MemoryPlan`,
-page-author agents, `wiki://catalog` resource) remain in source for
-future use. They are dormant — no wiki XDG instance currently exists
-for them to point at. `lies init <name>` will create a new wiki if
-invoked; that's expected for future wiki-mode users.
+Wiki code paths (`WikiMemoryService`, `init_wiki`, `WikiIdentity`,
+`MemoryPlan`, page-author agents) remain in source for future use.
+They are dormant — no wiki XDG instance currently exists for them
+to point at. `lies init <name>` will create a new wiki if invoked;
+that's expected for future wiki-mode users.
 
 ## Invisible memory layer
 
@@ -159,9 +158,13 @@ invoked; that's expected for future wiki-mode users.
 - `capabilities/memory.py` exposes this through the harness `Memory`
   capability with a per-wiki namespace derived from `WikiIdentity` (so
   two wikis against the same install do not share state).
-- The Pydantic AI main agent reads through `wiki_search` and `wiki_read`
-  tools; the FastMCP server exposes the same tools plus an expanded
-  `query` response (`citations`, `pages_read`, `changed_pages`).
+- The FastMCP server exposes the library-mode read surface
+  (`synthesize` for prose answers, `ground` for snippet digests,
+  `ask_question` / `ask_ground_question` for slash-input parsing)
+  against the global library at
+  `~/.local/share/lies/library/collections/<name>/`. The Pydantic
+  AI main agent and any future wiki-mode user reach memory through
+  the dormant wiki-shaped tools (no production surface).
 - After the answer, a `MemoryEnricher` sub-agent proposes a structured
   `MemoryPlan` only when evidence warrants it.
 - The `EnrichmentQueue` (in `src/lies/memory/retry.py`) is a per-session,
