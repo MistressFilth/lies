@@ -8,6 +8,7 @@ from lies.providers.config import (
     ProviderSpec,
     load_providers_config,
     parse_model_string,
+    resolve_agent_to_provider,
 )
 from lies.providers.env import env_override
 from lies.providers.errors import ProviderConfigError
@@ -23,5 +24,6 @@ __all__ = (
     "env_override",
     "load_providers_config",
     "parse_model_string",
+    "resolve_agent_to_provider",
     "resolve_model",
 )

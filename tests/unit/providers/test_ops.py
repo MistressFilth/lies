@@ -147,15 +147,7 @@ def test_check_connectivity_anthropic_compatible_ok(
                 ),
             },
             default_model="anthropic:claude-opus-4-7",
-            agents={
-                "orchestrator": "anthropic:claude-opus-4-7",
-                "source_reader": "anthropic:claude-opus-4-7",
-                "page_writer": "anthropic:claude-opus-4-7",
-                "linter": "anthropic:claude-opus-4-7",
-                "query_synthesizer": "anthropic:claude-opus-4-7",
-                "enricher": "anthropic:claude-opus-4-7",
-                "repair": "anthropic:claude-opus-4-7",
-            },
+            agents={n: "anthropic:claude-opus-4-7" for n in AGENT_ROSTER},
         ),
     )
     status = check_connectivity(target)

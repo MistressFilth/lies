@@ -24,8 +24,13 @@ def test_config_command_defaults() -> None:
     result = runner.invoke(app, ["config"])
     assert result.exit_code == 0
     assert "wiki: default" in result.stdout
-    assert "(no providers.toml" in result.stdout
-    assert "agent models: (none configured)" in result.stdout
+    # The autouse ``_isolated_xdg`` fixture now seeds a minimal
+    # ``providers.toml`` so model-resolution paths used elsewhere in the
+    # suite have a real config to load. ``lies config`` therefore renders
+    # the configured default model and every roster agent instead of the
+    # pre-seed ``(no providers.toml)`` placeholder.
+    assert "model: minimax:MiniMax-M3[1m]" in result.stdout
+    assert "librarian          minimax:MiniMax-M3[1m]" in result.stdout
 
 
 def test_config_command_overrides(monkeypatch, tmp_path) -> None:
@@ -34,7 +39,10 @@ def test_config_command_overrides(monkeypatch, tmp_path) -> None:
     result = runner.invoke(app, ["config"])
     assert result.exit_code == 0
     assert "wiki: wiki" in result.stdout
-    assert "(no providers.toml" in result.stdout
+    # See ``test_config_command_defaults`` for why this asserts the
+    # configured model rather than the previous ``(no providers.toml)``
+    # placeholder.
+    assert "model: minimax:MiniMax-M3[1m]" in result.stdout
 
 
 # Smoke tests for the REPL (`lies` with no subcommand).
