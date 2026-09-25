@@ -210,6 +210,7 @@ async def _fanout_unscoped(
                 cwd=lib_root,
                 question=question,
                 limit=top_k,
+                timeout=5,
                 collection_filter={name},
             )
         except (QmdCommandError, QmdNoResultsError):
