@@ -53,6 +53,7 @@ app = typer.Typer(
 # Step 2: import the sub-app objects (cheap -- just typer.Typer instances)
 # and wire them under the root app.
 from lies.cli.catalog import catalog_app  # noqa: E402
+from lies.cli.qmd import app as qmd_app  # noqa: E402
 from lies.library.collections_cli import library_collections_app  # noqa: E402
 from lies.cli.memory import memory_app  # noqa: E402
 from lies.cli.operator import flock_app, mcp_app, providers_app  # noqa: E402
@@ -63,6 +64,7 @@ from lies.library import cli as library_cli  # noqa: E402
 app.add_typer(mcp_app, name="mcp", rich_help_panel="Operator tooling")
 app.add_typer(flock_app, name="flock", rich_help_panel="Operator tooling")
 app.add_typer(providers_app, name="providers", rich_help_panel="Operator tooling")
+app.add_typer(qmd_app, name="qmd", rich_help_panel="Operator tooling")
 app.add_typer(memory_app, name="memory", rich_help_panel="Querying and maintenance")
 app.add_typer(catalog_app, name="catalog", rich_help_panel="Querying and maintenance")
 app.add_typer(library_collections_app, name="library", rich_help_panel="Library")
@@ -269,5 +271,6 @@ __all__ = (
     "library_collections_app",
     "mcp_app",
     "providers_app",
+    "qmd_app",
     "xdg",
 )
