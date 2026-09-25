@@ -34,6 +34,25 @@ All notable changes to LIES are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- `synthesize` MCP tool for human-reading prose answers. Calls `ground()`
+  for retrieval then runs `query_synthesizer_agent` over the result.
+- `library://catalog` and `library://catalog/{slug}` MCP resources as
+  the user-facing catalog surface.
+- `ground()` parallel fan-out for unscoped queries: ≤ 15s with non-empty
+  citations across all registered library collections.
+- `ArchivistDigest.no_library: bool` flag (additive).
+
+### Changed
+- `ground()` unscoped queries no longer fall through the F18 librarian
+  LLM round-trip; they take a parallel fan-out path.
+
+### Removed
+- `query`, `answer`, `wiki_search`, `wiki_read`, `wiki_changes`,
+  `file_knowledge` MCP tools.
+- `wiki://page/{path}`, `wiki://memory-changes`, `wiki://catalog`,
+  `wiki://catalog/{slug}` MCP resources.
+
 ### Changed
 - BREAKING: every agent factory and `_resolve_default_models` no
   longer silently falls back to `anthropic:claude-opus-4-7` when
