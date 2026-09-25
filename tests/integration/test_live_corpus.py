@@ -84,6 +84,38 @@ def _patch_librarian(
     monkeypatch.setattr(grounding, "librarian_agent", lambda: _FakeAgent())
 
 
+def _patch_fanout(
+    monkeypatch: pytest.MonkeyPatch,
+    excerpts: list,
+) -> None:
+    """Replace ``_fanout_unscoped(...)`` with a deterministic output.
+
+    Mirrors :func:`_patch_librarian` for the unscoped fan-out path
+    introduced by the library-mode read-side rewrite. Unscoped
+    ``ground()`` bypasses the F18 librarian and dispatches via
+    ``_fanout_unscoped`` (``asyncio.run``). The real helper is
+    async, so the fake wraps the deterministic ``excerpts`` list in
+    an ``async def`` to preserve the awaitable contract.
+
+    Also seeds ``library_collection_names`` with a non-empty
+    frozenset so the ``no_library=True`` fast-path early return
+    does not short-circuit before the fan-out mock can be
+    exercised.
+    """
+    from lies.library import registry as registry_mod
+    from lies.mcp import grounding
+
+    async def _async_fake(*_args, **_kwargs):
+        return list(excerpts)
+
+    monkeypatch.setattr(grounding, "_fanout_unscoped", _async_fake)
+    monkeypatch.setattr(
+        registry_mod,
+        "library_collection_names",
+        lambda: frozenset({"switchyard"}),
+    )
+
+
 async def test_live_corpus_ground_scoped_under_15s(monkeypatch: pytest.MonkeyPatch) -> None:
     """Scoped ``ground()`` returns within 15s with citations populated.
 
@@ -148,6 +180,92 @@ async def test_live_corpus_ground_scoped_under_15s(monkeypatch: pytest.MonkeyPat
     data = result.data
     assert dt < 15, f"ground() took {dt:.2f}s; expected < 15s"
     assert data["tag_expr"] == "c:switchyard"
+    assert len(data["citations"]) >= 1, (
+        f"expected >= 1 citation, got {len(data['citations'])}: {data['citations']!r}"
+    )
+    # Library primary-source hit (no [secondary] prefix on the wire).
+    assert data["citations"][0]["collection"] == "switchyard"
+
+
+async def test_live_corpus_ground_unscoped_under_15s(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Unscoped ``ground()`` returns within 15s with citations populated.
+
+    Pairs with :func:`test_live_corpus_ground_scoped_under_15s` —
+    the scoped variant exercises the librarian path
+    (``tag_expr=\"c:switchyard\"``), this test exercises the
+    unscoped fan-out path (``_fanout_unscoped``) added by the
+    library-mode read-side rewrite's Task 1 brick-wall fix. The
+    pre-rewrite unscoped path timed out at ~42s with zero
+    citations (session-2505630b reproduction); the post-rewrite
+    fan-out completes in <1s on this machine and the 15s budget
+    guards against regression to the 42s path.
+
+    The test stubs ``_fanout_unscoped`` at the import seam
+    (mirroring the ``librarian_agent`` stub in the scoped
+    variant) so the assertion focuses on the timing contract +
+    envelope shape rather than a real qmd fan-out. Assertions:
+
+      - The call returns within 15s.
+      - The envelope carries at least 1 citation.
+      - ``tag_expr`` round-trips as ``None`` (unscoped).
+      - The citation's ``collection`` matches the seeded
+        ``switchyard`` library collection (primary-source hit).
+    """
+    from fastmcp import Client
+    from lies.agents.librarian import PageExcerpt
+    from lies.markdown_spans import Span
+    from lies.mcp.server import mcp
+
+    # Seed the addressable collection so the ``library_collection_names``
+    # registry sees at least one collection (avoids the
+    # ``no_library=True`` fast-path short-circuit before the fan-out
+    # mock is exercised). The fan-out mock bypasses any actual qmd
+    # scan, so the seeded directory only needs to exist for the F15
+    # ``searched_scope`` computation.
+    _seed_switchyard_collection()
+
+    # Stub the fan-out helper with one canned excerpt so the
+    # envelope carries citations ≥ 1. Same shape as the scoped
+    # variant's librarian mock.
+    spans = [
+        Span(
+            heading_path=["H1"],
+            body=(
+                "Switchyard is the LiteLLM replacement that runs the "
+                "operator's model stack end to end."
+            ),
+            code_fence=False,
+            start_line=1,
+        ),
+    ]
+    excerpts = [
+        PageExcerpt(
+            collection="switchyard",
+            slug="concepts/switchyard",
+            title="Switchyard",
+            spans=spans,
+            source_kind="library",
+        ),
+    ]
+    _patch_fanout(monkeypatch, excerpts)
+
+    async with Client(mcp) as client:
+        t0 = time.monotonic()
+        result = await client.call_tool(
+            "ground",
+            {
+                "question": "Set up Switchyard to replace LiteLLM",
+                "top_k": 5,
+            },
+        )
+        dt = time.monotonic() - t0
+
+    data = result.data
+    assert dt < 15, f"ground() took {dt:.2f}s; expected < 15s"
+    # Unscoped contract: ``tag_expr`` is ``None`` end-to-end.
+    assert data["tag_expr"] is None, (
+        f"expected tag_expr=None for unscoped, got {data['tag_expr']!r}"
+    )
     assert len(data["citations"]) >= 1, (
         f"expected >= 1 citation, got {len(data['citations'])}: {data['citations']!r}"
     )
