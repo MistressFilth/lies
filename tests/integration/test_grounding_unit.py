@@ -181,7 +181,7 @@ def test_ground_returns_empty_digest_on_librarian_exception(monkeypatch) -> None
         def run_sync(self, user_prompt, *, deps):
             raise RuntimeError("qmd daemon offline")
 
-    monkeypatch.setattr(grounding, "librarian_agent", lambda: _BoomAgent())
+    monkeypatch.setattr(grounding, "librarian_agent", lambda model=None: _BoomAgent())
 
     digest = grounding.ground("what is pydantic?")
     assert digest.no_coverage is True
@@ -206,7 +206,7 @@ def test_ground_librarian_exception_emits_no_logfire_warning(monkeypatch, recwar
         def run_sync(self, user_prompt, *, deps):
             raise RuntimeError("qmd daemon offline")
 
-    monkeypatch.setattr(grounding, "librarian_agent", lambda: _BoomAgent())
+    monkeypatch.setattr(grounding, "librarian_agent", lambda model=None: _BoomAgent())
 
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
@@ -337,7 +337,7 @@ def test_ground_no_coverage_true_when_librarian_reports_it(monkeypatch) -> None:
         def __init__(self, output):
             self.output = output
 
-    monkeypatch.setattr(grounding, "librarian_agent", lambda: _FakeAgent())
+    monkeypatch.setattr(grounding, "librarian_agent", lambda model=None: _FakeAgent())
     digest = grounding.ground("q")
     assert digest.no_coverage is True
     assert digest.citations == []
@@ -370,7 +370,7 @@ def test_ground_no_coverage_false_when_librarian_reports_zero(monkeypatch) -> No
         def __init__(self, output):
             self.output = output
 
-    monkeypatch.setattr(grounding, "librarian_agent", lambda: _FakeAgent())
+    monkeypatch.setattr(grounding, "librarian_agent", lambda model=None: _FakeAgent())
     digest = grounding.ground("q")
     assert digest.no_coverage is False
 
@@ -386,7 +386,7 @@ def test_ground_no_coverage_false_when_librarian_returns_hits(monkeypatch) -> No
     from lies.markdown_spans import Span
     from lies.mcp import grounding
 
-    spans = [Span(heading_path=[], body="x", code_fence=False, start_line=1)]
+    spans = [Span(heading_path=["X"], body="x", code_fence=False, start_line=1)]
     excerpts = [PageExcerpt(collection="wiki", slug="x", title="X", spans=spans)]
 
     def fake_librarian(question, deps):
@@ -406,7 +406,7 @@ def test_ground_no_coverage_false_when_librarian_returns_hits(monkeypatch) -> No
         def __init__(self, output):
             self.output = output
 
-    monkeypatch.setattr(grounding, "librarian_agent", lambda: _FakeAgent())
+    monkeypatch.setattr(grounding, "librarian_agent", lambda model=None: _FakeAgent())
     digest = grounding.ground("q")
     assert digest.no_coverage is False
     assert len(digest.citations) == 1
@@ -426,7 +426,7 @@ def test_ground_dispatch_failure_still_yields_no_coverage_true(monkeypatch) -> N
         def run_sync(self, user_prompt, *, deps):
             raise RuntimeError("qmd daemon offline")
 
-    monkeypatch.setattr(grounding, "librarian_agent", lambda: _BoomAgent())
+    monkeypatch.setattr(grounding, "librarian_agent", lambda model=None: _BoomAgent())
     digest = grounding.ground("q")
     assert digest.no_coverage is True
 
@@ -565,7 +565,7 @@ def test_ground_searched_scope_populated_on_librarian_exception(monkeypatch) -> 
         def run_sync(self, user_prompt, *, deps):
             raise RuntimeError("qmd daemon offline")
 
-    monkeypatch.setattr(grounding, "librarian_agent", lambda: _BoomAgent())
+    monkeypatch.setattr(grounding, "librarian_agent", lambda model=None: _BoomAgent())
 
     digest = grounding.ground("q")
     assert digest.no_coverage is True
@@ -792,7 +792,11 @@ def _patch_librarian(monkeypatch, grounding_module, fake_fn):
         def run_sync(self, user_prompt, *, deps):  # noqa: ARG002
             return _FakeResult(fake_fn(deps))
 
-    monkeypatch.setattr(grounding_module, "librarian_agent", lambda: _FakeAgent())
+    # Accept (and discard) the ``model=`` kwarg that ``ground()`` now passes
+    # to ``librarian_agent`` after the wiring-path refactor; tests below
+    # only care about ``run_sync`` dispatch, not which model the agent
+    # was constructed with.
+    monkeypatch.setattr(grounding_module, "librarian_agent", lambda model=None: _FakeAgent())
 
 
 # ---------------------------------------------------------------------------
@@ -911,7 +915,7 @@ def test_ground_wires_librarian_tools_before_run_sync(
                 LibrarianOutput(tag_expr=None, exclude_expr=None, excerpts=[], distinct_pages=0)
             )
 
-    monkeypatch.setattr(grounding, "librarian_agent", lambda: _FakeAgent())
+    monkeypatch.setattr(grounding, "librarian_agent", lambda model=None: _FakeAgent())
 
     digest = grounding.ground("test question")
 
@@ -944,6 +948,20 @@ def test_ground_dispatch_failure_when_wiring_raises(
     """
     from lies.errors import ModelNotConfigured
     from lies.mcp import grounding
+
+    # The autouse ``_isolated_xdg`` fixture seeds a minimal
+    # ``providers.toml`` so other tests can resolve a real model. This
+    # test specifically wants the no-model-configured branch — pin
+    # ``load_providers_config`` to its missing-file return so ``ground``
+    # reaches the explicit ``ModelNotConfigured`` raise. ``ground()``
+    # imports ``load_providers_config`` lazily from ``lies.providers``,
+    # so patching the source binding diverts the lazy import and the
+    # wiring path raises ``ModelNotConfigured`` instead of
+    # ``ProviderConfigError`` (the latter would happen if MINIMAX_API_KEY
+    # were unset against a present TOML).
+    from lies import providers as providers_mod
+
+    monkeypatch.setattr(providers_mod, "load_providers_config", lambda _: None)
 
     with pytest.raises(ModelNotConfigured):
         grounding.ground("test question")
@@ -985,7 +1003,14 @@ def test_ground_threads_source_kind_from_librarian_output(monkeypatch) -> None:
         collection="mermaid",
         slug="syntax/flowchart",
         title="Flowchart syntax",
-        spans=[Span(heading_path=[], body="flowchart TD; A-->B", code_fence=False, start_line=1)],
+        spans=[
+            Span(
+                heading_path=["Flowchart"],
+                body="flowchart TD; A-->B",
+                code_fence=False,
+                start_line=1,
+            )
+        ],
         source_kind="library",
     )
     wiki_excerpt_with_span = _FakeExcerpt(
@@ -994,7 +1019,7 @@ def test_ground_threads_source_kind_from_librarian_output(monkeypatch) -> None:
         title="Pydantic concept",
         spans=[
             Span(
-                heading_path=[],
+                heading_path=["Pydantic"],
                 body="Pydantic is a data validation library.",
                 code_fence=False,
                 start_line=1,
@@ -1014,7 +1039,7 @@ def test_ground_threads_source_kind_from_librarian_output(monkeypatch) -> None:
 
             return _Result()
 
-    monkeypatch.setattr(grounding, "librarian_agent", lambda: _StubAgent())
+    monkeypatch.setattr(grounding, "librarian_agent", lambda model=None: _StubAgent())
 
     digest = grounding.ground("anything")
     kinds = sorted(c.source_kind for c in digest.citations)

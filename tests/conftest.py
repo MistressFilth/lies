@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 from pydantic_ai.models import Model
 
+from lies.constants import LIES_DATA_SUBDIR
 from lies.wiki.wiki import Wiki
 
 FIXTURE_WIKI = Path(__file__).parent / "fixtures" / "sample-wiki"
@@ -140,6 +141,46 @@ def _isolated_xdg(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("XDG_CACHE_HOME", str(xdg_root / "cache"))
     monkeypatch.setenv("XDG_STATE_HOME", str(xdg_root / "state"))
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(xdg_root / "runtime"))
+    # Seed a minimal ``providers.toml`` at the XDG-isolated config root.
+    # ``ground()`` (and other model-resolving entry points) reads
+    # ``$XDG_CONFIG_HOME/<LIES_DATA_SUBDIR>/providers.toml`` via
+    # ``load_providers_config()`` and raises ``ModelNotConfigured`` when
+    # the file is missing. CI sandboxes have no real ``providers.toml``,
+    # so without this seed every test that hits ``ground()`` fails before
+    # the assertions run. The TOML declares one anthropic_compatible
+    # provider (``minimax``) and every roster agent so the lookup path
+    # in ``resolve_agent_to_provider`` resolves cleanly. ``indexer`` is
+    # included as an extra — the TOML loader accepts unknown agents in
+    # the [agents] table without complaint.
+    providers_toml = xdg_root / "config" / LIES_DATA_SUBDIR / "providers.toml"
+    providers_toml.parent.mkdir(parents=True, exist_ok=True)
+    providers_toml.write_text(
+        'default_model = "minimax:MiniMax-M3[1m]"\n'
+        "\n"
+        "[providers.minimax]\n"
+        'type = "anthropic_compatible"\n'
+        'api_key_env = "MINIMAX_API_KEY"\n'
+        'base_url = "https://api.minimax.io/anthropic"\n'
+        "\n"
+        "[agents]\n"
+        'orchestrator = "minimax:MiniMax-M3[1m]"\n'
+        'source_reader = "minimax:MiniMax-M3[1m]"\n'
+        'page_writer = "minimax:MiniMax-M3[1m]"\n'
+        'indexer = "minimax:MiniMax-M3[1m]"\n'
+        'linter = "minimax:MiniMax-M3[1m]"\n'
+        'query_synthesizer = "minimax:MiniMax-M3[1m]"\n'
+        'enricher = "minimax:MiniMax-M3[1m]"\n'
+        'repair = "minimax:MiniMax-M3[1m]"\n'
+        'librarian = "minimax:MiniMax-M3[1m]"\n',
+        encoding="utf-8",
+    )
+    # Seed a dummy API key so ``resolve_model()`` can construct the
+    # Anthropic client without raising ``ProviderConfigError`` (the
+    # ``api_key_env`` referenced in the TOML above must resolve to a
+    # non-empty value at read time). The value is never used for an
+    # actual HTTP call — every test that exercises ``ground()`` swaps
+    # out ``librarian_agent`` before ``run_sync`` fires.
+    monkeypatch.setenv("MINIMAX_API_KEY", "test-key-not-real")
 
 
 @pytest.fixture
