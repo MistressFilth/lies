@@ -154,6 +154,16 @@ def _isolated_xdg(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     # the [agents] table without complaint.
     providers_toml = xdg_root / "config" / LIES_DATA_SUBDIR / "providers.toml"
     providers_toml.parent.mkdir(parents=True, exist_ok=True)
+    # The TOML declares TWO providers. ``minimax`` is the production
+    # provider used by every roster agent; ``anthropic`` is a dummy
+    # provider for tests that pin ``LIES_<AGENT>_MODEL=anthropic:<name>``
+    # via env override (the ``resolve_agent_to_provider`` path consults
+    # ``config.providers[provider_name]`` before falling through to the
+    # TOML, so the env-override provider name must be declared). The
+    # ``anthropic`` provider's ``api_key_env`` is read at config load
+    # time (TOML parser requires a non-empty string) but never read at
+    # model-build time: ``resolve_model`` short-circuits to a string for
+    # ``type == "anthropic"`` without consulting the env var.
     providers_toml.write_text(
         'default_model = "minimax:MiniMax-M3[1m]"\n'
         "\n"
@@ -161,6 +171,10 @@ def _isolated_xdg(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         'type = "anthropic_compatible"\n'
         'api_key_env = "MINIMAX_API_KEY"\n'
         'base_url = "https://api.minimax.io/anthropic"\n'
+        "\n"
+        "[providers.anthropic]\n"
+        'type = "anthropic"\n'
+        'api_key_env = "ANTHROPIC_API_KEY"\n'
         "\n"
         "[agents]\n"
         'orchestrator = "minimax:MiniMax-M3[1m]"\n'

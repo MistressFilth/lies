@@ -24,11 +24,22 @@ def mock_lies_model(monkeypatch: pytest.MonkeyPatch) -> None:
     The orchestrator resolves per-agent models from
     ``LIES_<AGENT>_MODEL`` env overrides, so this fixture sets every
     roster entry's override to the placeholder ``"test"`` string.
+
+    Also stubs ``lies.providers.load_providers_config`` to return
+    ``None`` so the autouse ``_isolated_xdg`` fixture's seeded
+    ``providers.toml`` (a real-config path that other tests rely on)
+    doesn't trip ``parse_model_string("test")``. With the TOML
+    effectively absent, ``_resolve_default_models`` falls into its
+    env-override fallback branch and the raw ``"test"`` string passes
+    through to ``pydantic_ai.Agent("test")``, which pydantic-ai resolves
+    to its built-in ``TestModel`` without consulting any API key.
     """
+    from lies import providers as providers_mod
     from lies.providers import AGENT_ROSTER
 
     for name in AGENT_ROSTER:
         monkeypatch.setenv(f"LIES_{name.upper()}_MODEL", "test")
+    monkeypatch.setattr(providers_mod, "load_providers_config", lambda _: None)
 
 
 WIKI_NAME = "lint-mcp"
