@@ -374,8 +374,18 @@ def qmd_query(
         raise QmdNotInstalledError("`qmd` not found on PATH")
 
     try:
+        cmd = ["qmd", "query", question, "--limit", str(limit), "--json"]
+        # When ``collection_filter`` is provided, pass a single
+        # representative collection via ``--collection`` so qmd
+        # narrows at the index level. Pass the first sorted member;
+        # the post-filter below culls hits from any sibling collection
+        # names in the resolved set. ``qmd`` supports ``--collection``
+        # but does not advertise it in ``--help`` (verified via
+        # ``qmd query --collection <name> "test"`` round-trip).
+        if collection_filter is not None and collection_filter:
+            cmd[2:2] = ["--collection", sorted(collection_filter)[0]]
         result = subprocess.run(
-            ["qmd", "query", question, "--limit", str(limit), "--json"],
+            cmd,
             cwd=cwd,
             capture_output=True,
             text=True,
