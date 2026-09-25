@@ -14,7 +14,7 @@ Three layers: **raw/** (your curated sources, immutable), **wiki/** (the agent's
 
 LIES reads and writes the wiki invisibly during normal interaction:
 
-- The Pydantic AI main agent searches and reads relevant wiki pages through `wiki_search` and `wiki_read` tools.
+- The Pydantic AI main agent reaches library collections through the library-mode read surface: `synthesize` for prose answers, `ground` for snippet digests. The pre-rewrite `wiki_search` / `wiki_read` shape is dormant.
 - After the answer, a `MemoryEnricher` sub-agent proposes a structured `MemoryPlan` only when evidence warrants it.
 - The host validates the plan and applies it through `WikiMemoryService`, which writes the page, rebuilds the index, appends the log, commits atomically, and refreshes the qmd derived index.
 - Each invisible write appends one line to `<wiki>/.lies/memory_plans.jsonl`. Inspect with `lies memory`; the MCP resource `wiki://memory-changes` exposes the same data; `lies memory reconcile` rebuilds from `git log` if the sidecar drifts.
@@ -321,16 +321,21 @@ lies page write --collection claude-code --type concept \
   --slug hooks --title "Hooks" --body-file body.md --force
 ```
 
-The MCP equivalent (`mcp__plugin_lies__file_knowledge`) elicits
-overwrite/rename/cancel on slug collision via `ctx.elicit`.
+The MCP writer (`mcp__plugin_lies__file_knowledge`) was retired in
+the library-mode read-side rewrite — the current MCP surface is
+read-only (`synthesize` / `ground` / `init_wiki` / `lint` / `reindex`
+plus the slash-input parsers `ask_question` /
+`ask_ground_question`). Wiki writes still go through
+`lies page write` from the CLI; a future write-tool spec will
+restore an MCP write surface.
 
 Each page type carries a set of required `## <Heading>` sections (see
 `src/lies/schema/default_schema.md` → "Section contract"). The CLI
-and MCP `file_knowledge` refuse writes that omit them; `lies lint`
-surfaces them as `missing_required_section` findings
-(`safe_to_fix=False`). Override per-wiki via `<wiki>/schema.md`. The
-match is literal-substring — `## Evidence` matches, but `### Evidence`,
-`##Evidence`, and `## evidence` do not.
+refuses writes that omit them; `lies lint` surfaces them as
+`missing_required_section` findings (`safe_to_fix=False`). Override
+per-wiki via `<wiki>/schema.md`. The match is literal-substring —
+`## Evidence` matches, but `### Evidence`, `##Evidence`, and
+`## evidence` do not.
 
 ## Tag-filter language
 
@@ -356,10 +361,11 @@ configs are legacy and not consulted for tag resolution. A
 `+c:opencode` filter resolves from any wiki because the opencode
 collection lives in the library.
 
-The MCP `query` tool accepts `tag_expr` and `exclude_tags` (size ≤ 1)
-kwargs. `SynthesizedMcpAnswer.searched_scope` reports the resolved
-library-collection set; with no filter, it reports every library
-collection.
+The MCP `synthesize` tool accepts `tag_expr` and `exclude_tags`
+(size ≤ 1) kwargs. The underlying `ArchivistDigest.searched_scope`
+(surfaced via the `ground` tool's wire envelope) reports the
+resolved library-collection set; with no filter, it reports every
+library collection.
 
 When the active wiki's `tag_expr` references a collection the
 library does not declare, the error surfaces the library's actual
@@ -405,7 +411,7 @@ answer: only the library-collection directory name is addressable, so
 The prefix survives the parser so future tag metadata (per-collection
 frontmatter, etc.) can reintroduce the `t:` / `c:` distinction
 without a grammar change. Both include and exclude atoms accept the
-prefixes; the same prefixes work in `mcp_query(tag_expr=...,
+prefixes; the same prefixes work in `mcp_synthesize(tag_expr=...,
 exclude_tags=...)`.
 
 ### Output formats
@@ -417,7 +423,7 @@ exclude_tags=...)`.
 - **`marp`**: Marp-flavored markdown with `marp: true` frontmatter + slide breaks. When the `marp` CLI is on `$PATH`, the body is rendered to HTML at `${XDG_CACHE_HOME:-~/.cache}/lies/query-<timestamp>.html`. When `marp` is not installed, the body is written to a `.md` file and the path is printed with a render hint.
 - **`chart`**: a single ```` ```mermaid ```` fence (one of `flowchart`, `sequenceDiagram`, or `classDiagram`); the renderer extracts the longest block and emits it unchanged. Validator-bypass: pass-through with a stderr warning when the synth produces no mermaid block.
 
-The format is also exposed on the MCP `query` response via the `format` field (`"md"`, `"table"`, `"marp"`, or `"chart"`). Synthesis pages gain a `render_format` frontmatter field recording the body shape for future curators.
+The format is also exposed on the MCP `synthesize` response via the `format` field (`"md"`, `"table"`, `"marp"`, or `"chart"`). Synthesis pages gain a `render_format` frontmatter field recording the body shape for future curators.
 
 ### `lies wiki provenance`
 
