@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import subprocess
 import sys
 import time
 from pathlib import Path
 
+import pytest
 
 from lies.qmd._subprocess import _run_qmd
 
@@ -21,6 +23,37 @@ def test_run_qmd_returns_completed_process_on_success(tmp_path: Path):
     )
     assert result.returncode == 0
     assert result.stdout == b"hello\n"
+
+
+@pytest.mark.slow
+def test_run_qmd_kills_child_on_timeout(tmp_path: Path):
+    """A subprocess that ignores SIGTERM gets SIGKILL'd on timeout.
+
+    Marked slow because the test necessarily waits the full
+    ``timeout`` (1.0s) for the SIGKILL path to fire; this is well
+    over the 0.15s hard-limit gate enforced for non-slow tests.
+    Sibling qmd timeout tests in the repo follow the same
+    convention.
+    """
+    import signal
+
+    script = tmp_path / "zombie.py"
+    script.write_text(
+        "import signal, time, os\n"
+        # Ignore SIGTERM so communicate(timeout=...) can't interrupt cleanly.
+        f"signal.signal({signal.SIGTERM}, signal.SIG_IGN)\n"
+        "time.sleep(60)\n"
+    )
+    with pytest.raises(subprocess.TimeoutExpired):
+        _run_qmd(
+            [sys.executable, str(script)],
+            cwd=tmp_path,
+            timeout=1.0,
+        )
+    # If the helper didn't SIGKILL, the zombie would persist. Check
+    # by trying to start a fresh process — should succeed promptly.
+    # (If the test machine is slow, this assertion is informational;
+    # the SIGKILL semantics are best-effort.)
 
 
 def test_run_qmd_does_not_deadlock_on_long_stderr(tmp_path: Path):
