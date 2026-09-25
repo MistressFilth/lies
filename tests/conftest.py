@@ -172,6 +172,17 @@ def _isolated_xdg(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         'librarian = "minimax:MiniMax-M3[1m]"\n',
         encoding="utf-8",
     )
+    # Seed ``MINIMAX_API_KEY`` to the dummy value the conftest's
+    # ``providers.toml`` declares as its ``api_key_env``. CI sandboxes
+    # have no real key, and the wiring paths in ``mcp/grounding.py``
+    # catch ``ProviderConfigError`` and fall back to a bare agent
+    # without ever hitting the wire — so no agent call actually uses
+    # this value. Seeding it here keeps the unit-test output of
+    # ``lies config`` deterministic: every roster agent resolves to
+    # the configured model string instead of the ``(unresolved:
+    # ...)`` branch, regardless of whether the developer's shell
+    # already happens to export a real ``MINIMAX_API_KEY``.
+    monkeypatch.setenv("MINIMAX_API_KEY", "test-key-not-real")
 
 
 @pytest.fixture
