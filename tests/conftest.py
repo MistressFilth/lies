@@ -142,14 +142,22 @@ def _isolated_xdg(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("XDG_STATE_HOME", str(xdg_root / "state"))
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(xdg_root / "runtime"))
     # Seed a minimal ``providers.toml`` at the XDG-isolated config root.
-    # ``mcp_ground()`` (and other model-resolving entry points) reads
+    # ``ground()`` (and other model-resolving entry points) reads
     # ``$XDG_CONFIG_HOME/<LIES_DATA_SUBDIR>/providers.toml`` via
     # ``load_providers_config()`` and raises ``ModelNotConfigured`` when
     # the file is missing. CI sandboxes have no real ``providers.toml``,
     # so without this seed every test that hits ``ground()`` fails before
-    # the assertions run. The TOML declares one anthropic_compatible
-    # provider (``minimax``) and every roster agent so the lookup path
-    # in ``resolve_agent_to_provider`` resolves cleanly.
+    # the assertions run. The TOML declares TWO providers. ``minimax``
+    # is the production provider used by every roster agent; ``anthropic``
+    # is a dummy provider for tests that pin
+    # ``LIES_<AGENT>_MODEL=anthropic:<name>`` via env override (the
+    # ``resolve_agent_to_provider`` path consults
+    # ``config.providers[provider_name]`` before falling through to the
+    # TOML, so the env-override provider name must be declared). The
+    # ``anthropic`` provider's ``api_key_env`` is required by the TOML
+    # parser as a non-empty string but never read at model-build time:
+    # ``resolve_model`` short-circuits to a string for
+    # ``type == "anthropic"`` without consulting the env var.
     providers_toml = xdg_root / "config" / LIES_DATA_SUBDIR / "providers.toml"
     providers_toml.parent.mkdir(parents=True, exist_ok=True)
     providers_toml.write_text(
@@ -159,6 +167,10 @@ def _isolated_xdg(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         'type = "anthropic_compatible"\n'
         'api_key_env = "MINIMAX_API_KEY"\n'
         'base_url = "https://api.minimax.io/anthropic"\n'
+        "\n"
+        "[providers.anthropic]\n"
+        'type = "anthropic"\n'
+        'api_key_env = "ANTHROPIC_API_KEY"\n'
         "\n"
         "[agents]\n"
         'orchestrator = "minimax:MiniMax-M3[1m]"\n'
@@ -172,16 +184,12 @@ def _isolated_xdg(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         'librarian = "minimax:MiniMax-M3[1m]"\n',
         encoding="utf-8",
     )
-    # Seed ``MINIMAX_API_KEY`` to the dummy value the conftest's
-    # ``providers.toml`` declares as its ``api_key_env``. CI sandboxes
-    # have no real key, and the wiring paths in ``mcp/grounding.py``
-    # catch ``ProviderConfigError`` and fall back to a bare agent
-    # without ever hitting the wire — so no agent call actually uses
-    # this value. Seeding it here keeps the unit-test output of
-    # ``lies config`` deterministic: every roster agent resolves to
-    # the configured model string instead of the ``(unresolved:
-    # ...)`` branch, regardless of whether the developer's shell
-    # already happens to export a real ``MINIMAX_API_KEY``.
+    # Seed a dummy API key so ``resolve_model()`` can construct the
+    # Anthropic client without raising ``ProviderConfigError`` (the
+    # ``api_key_env`` referenced in the TOML above must resolve to a
+    # non-empty value at read time). The value is never used for an
+    # actual HTTP call — every test that exercises ``ground()`` swaps
+    # out ``librarian_agent`` before ``run_sync`` fires.
     monkeypatch.setenv("MINIMAX_API_KEY", "test-key-not-real")
 
 
