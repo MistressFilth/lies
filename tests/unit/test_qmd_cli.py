@@ -22,14 +22,14 @@ from lies.qmd.cli import (
 def test_qmd_update_success(tmp_path: Path) -> None:
     with (
         patch("lies.qmd.cli.shutil.which", return_value="/usr/bin/qmd"),
-        patch("lies.qmd.cli.subprocess.run") as mock_run,
+        patch("lies.qmd.cli._run_qmd") as mock_run_qmd,
     ):
-        mock_run.return_value = subprocess.CompletedProcess(
-            args=[], returncode=0, stdout="", stderr=""
+        mock_run_qmd.return_value = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout=b"", stderr=b""
         )
         qmd_update(tmp_path)
-        mock_run.assert_called_once()
-        args = mock_run.call_args.args[0]
+        mock_run_qmd.assert_called_once()
+        args = mock_run_qmd.call_args.args[0]
         assert args[0] == "qmd"
         assert args[1] == "update"
 
@@ -37,10 +37,10 @@ def test_qmd_update_success(tmp_path: Path) -> None:
 def test_qmd_status_returns_stdout(tmp_path: Path) -> None:
     with (
         patch("lies.qmd.cli.shutil.which", return_value="/usr/bin/qmd"),
-        patch("lies.qmd.cli.subprocess.run") as mock_run,
+        patch("lies.qmd.cli._run_qmd") as mock_run_qmd,
     ):
-        mock_run.return_value = subprocess.CompletedProcess(
-            args=[], returncode=0, stdout="ok\n", stderr=""
+        mock_run_qmd.return_value = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout=b"ok\n", stderr=b""
         )
         result = qmd_status(tmp_path)
         assert result == "ok\n"
@@ -54,10 +54,10 @@ def test_qmd_not_installed(tmp_path: Path) -> None:
 def test_qmd_error(tmp_path: Path) -> None:
     with (
         patch("lies.qmd.cli.shutil.which", return_value="/usr/bin/qmd"),
-        patch("lies.qmd.cli.subprocess.run") as mock_run,
+        patch("lies.qmd.cli._run_qmd") as mock_run_qmd,
     ):
-        mock_run.return_value = subprocess.CompletedProcess(
-            args=[], returncode=1, stdout="", stderr="some error"
+        mock_run_qmd.return_value = subprocess.CompletedProcess(
+            args=[], returncode=1, stdout=b"", stderr=b"some error"
         )
         with pytest.raises(QmdError, match="some error"):
             qmd_update(tmp_path)
@@ -66,13 +66,13 @@ def test_qmd_error(tmp_path: Path) -> None:
 def test_qmd_collection_add(tmp_path: Path) -> None:
     with (
         patch("lies.qmd.cli.shutil.which", return_value="/usr/bin/qmd"),
-        patch("lies.qmd.cli.subprocess.run") as mock_run,
+        patch("lies.qmd.cli._run_qmd") as mock_run_qmd,
     ):
-        mock_run.return_value = subprocess.CompletedProcess(
-            args=[], returncode=0, stdout="", stderr=""
+        mock_run_qmd.return_value = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout=b"", stderr=b""
         )
         qmd_collection_add(tmp_path, tmp_path / "wiki", "mywiki")
-        args = mock_run.call_args.args[0]
+        args = mock_run_qmd.call_args.args[0]
         assert args[:3] == ["qmd", "collection", "add"]
         assert "mywiki" in args
 
@@ -90,10 +90,10 @@ def test_qmd_collection_add(tmp_path: Path) -> None:
 def test_qmd_collection_add_if_missing_returns_none_when_add_succeeds(tmp_path: Path) -> None:
     with (
         patch("lies.qmd.cli.shutil.which", return_value="/usr/bin/qmd"),
-        patch("lies.qmd.cli.subprocess.run") as mock_run,
+        patch("lies.qmd.cli._run_qmd") as mock_run_qmd,
     ):
-        mock_run.return_value = subprocess.CompletedProcess(
-            args=[], returncode=0, stdout="", stderr=""
+        mock_run_qmd.return_value = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout=b"", stderr=b""
         )
         result = qmd_collection_add_if_missing(tmp_path, tmp_path / "wiki", "mywiki")
         assert result is None  # no error, collection registered
@@ -103,13 +103,13 @@ def test_qmd_collection_add_if_missing_swallows_already_exists(tmp_path: Path) -
     """If qmd reports the collection already exists, treat it as success."""
     with (
         patch("lies.qmd.cli.shutil.which", return_value="/usr/bin/qmd"),
-        patch("lies.qmd.cli.subprocess.run") as mock_run,
+        patch("lies.qmd.cli._run_qmd") as mock_run_qmd,
     ):
-        mock_run.return_value = subprocess.CompletedProcess(
+        mock_run_qmd.return_value = subprocess.CompletedProcess(
             args=[],
             returncode=1,
-            stdout="",
-            stderr="Collection 'mywiki' already exists.\n",
+            stdout=b"",
+            stderr=b"Collection 'mywiki' already exists.\n",
         )
         # Must not raise; idempotent.
         qmd_collection_add_if_missing(tmp_path, tmp_path / "wiki", "mywiki")
@@ -119,10 +119,10 @@ def test_qmd_collection_add_if_missing_raises_on_other_qmd_errors(tmp_path: Path
     """Errors that aren't 'already exists' still propagate."""
     with (
         patch("lies.qmd.cli.shutil.which", return_value="/usr/bin/qmd"),
-        patch("lies.qmd.cli.subprocess.run") as mock_run,
+        patch("lies.qmd.cli._run_qmd") as mock_run_qmd,
     ):
-        mock_run.return_value = subprocess.CompletedProcess(
-            args=[], returncode=1, stdout="", stderr="EACCES: permission denied"
+        mock_run_qmd.return_value = subprocess.CompletedProcess(
+            args=[], returncode=1, stdout=b"", stderr=b"EACCES: permission denied"
         )
         with pytest.raises(QmdError, match="EACCES"):
             qmd_collection_add_if_missing(tmp_path, tmp_path / "wiki", "mywiki")

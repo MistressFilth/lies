@@ -52,20 +52,34 @@ class QmdCommandError(QmdError):
 
 
 def _run(args: list[str], cwd: Path, timeout: int = 300) -> subprocess.CompletedProcess[Any]:
-    """Run a qmd command, raising on failure."""
+    """Run a qmd command via the deadlock-free :func:`_run_qmd` helper.
+
+    Spec A of the qmd-drain plan: every subprocess call in this module
+    routes through ``_run_qmd`` so a runaway qmd stderr trace cannot
+    block the parent on a full pipe buffer. ``_run_qmd`` returns
+    ``CompletedProcess`` with bytes stdout/stderr; we decode to str
+    to preserve the prior contract that callers (e.g. ``qmd_status``
+    returning the raw stdout text) depend on.
+
+    Raises:
+        QmdNotInstalledError: ``qmd`` is not on PATH at exec time.
+    """
     if shutil.which("qmd") is None:
         raise QmdNotInstalledError("`qmd` not found on PATH. Install: npm i -g @tobilu/qmd")
     try:
-        return subprocess.run(
-            ["qmd", *args],
-            cwd=cwd,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            check=False,
-        )
+        result = _run_qmd(["qmd", *args], cwd=cwd, timeout=timeout)
     except FileNotFoundError as exc:
         raise QmdNotInstalledError("`qmd` not found on PATH") from exc
+    # ``_run_qmd`` returns bytes; convert to str so callers can keep
+    # using the existing ``result.stdout`` / ``result.stderr`` text
+    # contract (these are read by ``qmd_status``'s return path and
+    # several ``QmdError`` message strings).
+    return subprocess.CompletedProcess(
+        args=result.args,
+        returncode=result.returncode,
+        stdout=result.stdout.decode("utf-8", errors="replace"),
+        stderr=result.stderr.decode("utf-8", errors="replace"),
+    )
 
 
 @with_qmd_lock()
@@ -491,19 +505,15 @@ def qmd_get(cwd: Path, qmd_path: str, timeout: int = 60) -> str:
         raise QmdNotInstalledError("`qmd` not found on PATH")
 
     try:
-        result = subprocess.run(
-            ["qmd", "get", qmd_path],
-            cwd=cwd,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            check=False,
-        )
+        result = _run_qmd(["qmd", "get", qmd_path], cwd=cwd, timeout=timeout)
     except FileNotFoundError as exc:
         raise QmdNotInstalledError("`qmd` binary not found at exec time") from exc
     except subprocess.TimeoutExpired as exc:
         raise QmdCommandError(f"qmd get timed out after {timeout}s") from exc
 
+    # ``_run_qmd`` returns bytes; decode for the text-return contract
+    # (the librarian's source-aware ``_wiki_read`` expects a str body).
+    stderr_text = result.stderr.decode("utf-8", errors="replace").strip()
     if result.returncode != 0:
-        raise QmdCommandError(f"qmd get failed (exit {result.returncode}): {result.stderr.strip()}")
-    return result.stdout
+        raise QmdCommandError(f"qmd get failed (exit {result.returncode}): {stderr_text}")
+    return result.stdout.decode("utf-8", errors="replace")
