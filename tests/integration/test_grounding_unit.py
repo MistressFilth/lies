@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import warnings
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import pytest
 
@@ -193,20 +193,38 @@ def test_ground_returns_empty_digest_on_librarian_exception(monkeypatch) -> None
 def test_ground_librarian_exception_emits_no_logfire_warning(monkeypatch, recwarn) -> None:
     """Regression for the LogfireNotConfiguredWarning noise on the exception path.
 
-    Pins Fix 4: when the librarian dispatch raises, the warning must
-    flow through stdlib ``warnings`` (not ``logfire.warning``) so a
+    Pins Fix 4: when the dispatch path raises, the warning must flow
+    through stdlib ``warnings`` (not ``logfire.warning``) so a
     non-configured logfire environment does not emit
     ``LogfireNotConfiguredWarning`` on every ground() call. The
     user-visible signal still surfaces via ``recwarn`` — one
-    ``UserWarning`` carrying the librarian's failure reason.
+    ``UserWarning`` carrying the dispatch's failure reason.
+
+    After the library-mode read-side rewrite, unscoped ``ground()``
+    dispatches via the fan-out helper (``_fanout_unscoped``) rather
+    than the F18 librarian. The migration: the dispatch-exception
+    branch is exercised by raising from the fan-out mock; the
+    surfaced warning now carries "fan-out dispatch failed" instead
+    of "librarian dispatch failed". The stdlib-warnings contract is
+    unchanged — logfire never sees the warning.
+
+    Seeds ``library_collection_names`` with a non-empty set so the
+    ``no_library=True`` early return doesn't short-circuit before
+    the fan-out mock can be exercised.
     """
+    from lies.library import registry as registry_mod
     from lies.mcp import grounding
 
-    class _BoomAgent:
-        def run_sync(self, user_prompt, *, deps):
-            raise RuntimeError("qmd daemon offline")
+    monkeypatch.setattr(
+        registry_mod,
+        "library_collection_names",
+        lambda: frozenset({"_test_fake"}),
+    )
 
-    monkeypatch.setattr(grounding, "librarian_agent", lambda: _BoomAgent())
+    async def _boom_fanout(*_args, **_kwargs):
+        raise RuntimeError("qmd daemon offline")
+
+    monkeypatch.setattr(grounding, "_fanout_unscoped", _boom_fanout)
 
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
@@ -216,8 +234,10 @@ def test_ground_librarian_exception_emits_no_logfire_warning(monkeypatch, recwar
     logfire_warns = [w for w in caught if "LogfireNotConfiguredWarning" in type(w.message).__name__]
     assert logfire_warns == [], f"unexpected LogfireNotConfiguredWarning: {logfire_warns}"
     # The user-visible signal still surfaces — but as a stdlib warning,
-    # not a logfire one.
-    user_warns = [w for w in caught if "librarian dispatch failed" in str(w.message)]
+    # not a logfire one. After the rewrite the unscoped path surfaces
+    # "fan-out dispatch failed"; the contract (stdlib warnings, not
+    # logfire) is the same as the pre-rewrite librarian path.
+    user_warns = [w for w in caught if "fan-out dispatch failed" in str(w.message)]
     assert len(user_warns) >= 1
 
 
@@ -251,8 +271,15 @@ def test_ground_clamps_top_k_to_bounds(monkeypatch) -> None:
 
 
 def test_ground_uses_first_prose_span_per_excerpt(monkeypatch) -> None:
-    """First prose span wins; snippet truncated to ≤200 chars."""
-    from lies.agents.librarian import LibrarianOutput, PageExcerpt
+    """First prose span wins; snippet truncated to ≤200 chars.
+
+    Library-mode rewrite migration: the unscoped path bypasses the
+    F18 librarian and dispatches via ``_fanout_unscoped``. Mock the
+    fan-out helper at the import seam so the citation-building loop
+    sees populated ``PageExcerpt`` rows with the same shape the
+    real fan-out would return on a successful scan.
+    """
+    from lies.agents.librarian import PageExcerpt
     from lies.markdown_spans import Span
     from lies.mcp import grounding
 
@@ -265,12 +292,10 @@ def test_ground_uses_first_prose_span_per_excerpt(monkeypatch) -> None:
         PageExcerpt(collection="wiki", slug="x", title="X", spans=spans),
     ]
 
-    def fake_librarian(deps):
-        return LibrarianOutput(
-            tag_expr=None, exclude_expr=None, excerpts=excerpts, distinct_pages=1
-        )
+    def fake_fanout(*_args, **_kwargs):
+        return excerpts
 
-    _patch_librarian(monkeypatch, grounding, fake_librarian)
+    _patch_fanout(monkeypatch, grounding, fake_fanout)
     digest = grounding.ground("q")
     assert len(digest.citations) == 1
     assert digest.citations[0].snippet != ""
@@ -280,8 +305,14 @@ def test_ground_uses_first_prose_span_per_excerpt(monkeypatch) -> None:
 
 
 def test_ground_skips_excerpts_with_only_code_fences(monkeypatch) -> None:
-    """Excerpt with no prose spans → skipped from citations."""
-    from lies.agents.librarian import LibrarianOutput, PageExcerpt
+    """Excerpt with no prose spans → skipped from citations.
+
+    Library-mode rewrite migration: the unscoped path bypasses the
+    F18 librarian and dispatches via ``_fanout_unscoped``. Mock the
+    fan-out helper directly so the citation-building loop sees the
+    mixed code-only + prose-only excerpts.
+    """
+    from lies.agents.librarian import PageExcerpt
     from lies.markdown_spans import Span
     from lies.mcp import grounding
 
@@ -296,12 +327,10 @@ def test_ground_skips_excerpts_with_only_code_fences(monkeypatch) -> None:
         PageExcerpt(collection="wiki", slug="prose", title="P", spans=prose_only),
     ]
 
-    def fake_librarian(deps):
-        return LibrarianOutput(
-            tag_expr=None, exclude_expr=None, excerpts=excerpts, distinct_pages=2
-        )
+    def fake_fanout(*_args, **_kwargs):
+        return excerpts
 
-    _patch_librarian(monkeypatch, grounding, fake_librarian)
+    _patch_fanout(monkeypatch, grounding, fake_fanout)
     digest = grounding.ground("q")
     assert len(digest.citations) == 1
     assert digest.citations[0].slug == "prose"
@@ -349,9 +378,25 @@ def test_ground_no_coverage_false_when_librarian_reports_zero(monkeypatch) -> No
     Pins F18 Task 2: when the librarian reports ``no_coverage=False``
     (empty corpus), the digest mirrors that — the empty-corpus case
     is NOT a no-coverage signal.
+
+    Library-mode rewrite migration: this contract is librarian-path
+    specific — the unscoped fan-out computes ``no_coverage`` from
+    ``len(excerpts) == 0`` (always ``True`` when the fan-out yields
+    no hits). Force the librarian path by passing a ``tag_expr`` and
+    seeding the matching library collection so the F15 tag-filter
+    dispatch validates; the mocked librarian agent then drives the
+    digest's ``no_coverage`` field per the F18 Task 2 contract.
     """
+    from lies import xdg
     from lies.agents.librarian import LibrarianOutput
+    from lies.constants import LIES_DATA_SUBDIR
     from lies.mcp import grounding
+
+    # Seed a ``wiki`` library collection so ``+wiki`` validates at the
+    # F15 tag-filter dispatch. The :func:`_isolated_xdg` autouse
+    # fixture has already redirected XDG into ``tmp_path``.
+    coll_root = xdg.data_home() / LIES_DATA_SUBDIR / "library" / "collections" / "wiki"
+    coll_root.mkdir(parents=True, exist_ok=True)
 
     def fake_librarian(question, deps):
         return LibrarianOutput(
@@ -371,7 +416,7 @@ def test_ground_no_coverage_false_when_librarian_reports_zero(monkeypatch) -> No
             self.output = output
 
     monkeypatch.setattr(grounding, "librarian_agent", lambda: _FakeAgent())
-    digest = grounding.ground("q")
+    digest = grounding.ground("q", tag_expr="wiki")
     assert digest.no_coverage is False
 
 
@@ -381,32 +426,25 @@ def test_ground_no_coverage_false_when_librarian_returns_hits(monkeypatch) -> No
     Pins F18 Task 2: a successful query is never a no-coverage
     signal, regardless of corpus size. The librarian's
     ``no_coverage=False`` flows through unchanged.
+
+    Library-mode rewrite migration: the unscoped fan-out computes
+    ``no_coverage = len(excerpts) == 0`` so non-empty hits
+    propagate the same ``False`` value through to the digest. Mock
+    the fan-out helper directly with a populated ``PageExcerpt``
+    list so the digest sees a non-empty result on the unscoped
+    path.
     """
-    from lies.agents.librarian import LibrarianOutput, PageExcerpt
+    from lies.agents.librarian import PageExcerpt
     from lies.markdown_spans import Span
     from lies.mcp import grounding
 
     spans = [Span(heading_path=[], body="x", code_fence=False, start_line=1)]
     excerpts = [PageExcerpt(collection="wiki", slug="x", title="X", spans=spans)]
 
-    def fake_librarian(question, deps):
-        return LibrarianOutput(
-            tag_expr=None,
-            exclude_expr=None,
-            excerpts=excerpts,
-            distinct_pages=1,
-            no_coverage=False,
-        )
+    def fake_fanout(*_args, **_kwargs):
+        return excerpts
 
-    class _FakeAgent:
-        def run_sync(self, user_prompt, *, deps):
-            return _FakeResult(fake_librarian(user_prompt, deps))
-
-    class _FakeResult:
-        def __init__(self, output):
-            self.output = output
-
-    monkeypatch.setattr(grounding, "librarian_agent", lambda: _FakeAgent())
+    _patch_fanout(monkeypatch, grounding, fake_fanout)
     digest = grounding.ground("q")
     assert digest.no_coverage is False
     assert len(digest.citations) == 1
@@ -795,6 +833,48 @@ def _patch_librarian(monkeypatch, grounding_module, fake_fn):
     monkeypatch.setattr(grounding_module, "librarian_agent", lambda: _FakeAgent())
 
 
+def _patch_fanout(monkeypatch, grounding_module, fake_fn):
+    """Replace ``_fanout_unscoped(...)`` with an async fake returning ``fake_fn(...)``.
+
+    Mirrors :func:`_patch_librarian` for the unscoped fan-out path
+    introduced by the library-mode read-side rewrite. Unscoped
+    ``ground()`` no longer dispatches through the F18 librarian —
+    it bypasses the LLM round-trip and calls
+    :func:`lies.mcp.grounding._fanout_unscoped` directly via
+    ``asyncio.run``. The real helper is async, so the fake wraps the
+    sync ``fake_fn`` in an ``async def`` to preserve the awaitable
+    contract.
+
+    Also seeds ``library_collection_names`` with a non-empty
+    frozenset so the ``no_library=True`` fast-path early return
+    (``ground()`` returns ``no_library=True`` when the library has
+    zero registered collections and the query is unscoped) does not
+    short-circuit before the fan-out mock is reached. The seeded
+    collection list is only used by the F15 ``searched_scope``
+    envelope; the fan-out itself never walks the registry because
+    the mock bypasses it.
+    """
+
+    async def _async_fake(*args, **kwargs):
+        return fake_fn(*args, **kwargs)
+
+    monkeypatch.setattr(grounding_module, "_fanout_unscoped", _async_fake)
+
+    # Seed the library registry so the ``no_library`` fast-path does
+    # not fire before ``_fanout_unscoped`` is reached. Both the inner
+    # ``library_collection_names`` and the outer wrapper (cache key
+    # mtime path) are patched so the early-return predicate reads the
+    # seeded set deterministically regardless of the host's live
+    # library state.
+    from lies.library import registry as registry_mod
+
+    monkeypatch.setattr(
+        registry_mod,
+        "library_collection_names",
+        lambda: frozenset({"_patch_fanout_fake"}),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Fix Critical regression pins
 # ---------------------------------------------------------------------------
@@ -868,10 +948,26 @@ def test_ground_wires_librarian_tools_before_run_sync(
     memory_service kwargs and that the agent passed to the spy is
     the same instance ``run_sync`` saw (so the wiring landed on
     the dispatched agent).
+
+    Library-mode rewrite migration: unscoped ``ground()`` bypasses
+    the F18 librarian entirely (Task 1 brick-wall fix), so wiring
+    never fires on the unscoped path. Force the librarian path by
+    passing a ``tag_expr`` and seeding the matching library
+    collection so the F15 tag-filter dispatch validates; the spy
+    then records the canonical wiring call against the active
+    wiki's :class:`WikiMemoryService`.
     """
+    from lies import xdg
     from lies.agents import librarian as librarian_mod
+    from lies.constants import LIES_DATA_SUBDIR
     from lies.mcp import grounding
     from lies.mcp import resolution as resolution_mod
+
+    # Seed a ``wiki`` library collection so ``+wiki`` validates at the
+    # F15 tag-filter dispatch. The :func:`_isolated_xdg` autouse
+    # fixture has already redirected XDG into ``tmp_path``.
+    coll_root = xdg.data_home() / LIES_DATA_SUBDIR / "library" / "collections" / "wiki"
+    coll_root.mkdir(parents=True, exist_ok=True)
 
     # ``resolve_wiki`` is the wiki-name → Wiki resolver. The
     # ``empty_wiki`` fixture lives outside the XDG redirect, so
@@ -913,7 +1009,7 @@ def test_ground_wires_librarian_tools_before_run_sync(
 
     monkeypatch.setattr(grounding, "librarian_agent", lambda: _FakeAgent())
 
-    digest = grounding.ground("test question")
+    digest = grounding.ground("test question", tag_expr="wiki")
 
     assert len(captured) == 1, f"register_librarian_tools was not called exactly once: {captured}"
     assert captured[0]["wiki"] is not None
@@ -941,25 +1037,48 @@ def test_ground_dispatch_failure_when_wiring_raises(
     contract is retired; operators see the configuration gap and
     configure providers.toml / ``LIES_<AGENT>_MODEL`` before the
     archivist can run.
+
+    Library-mode rewrite migration: the unscoped path bypasses the
+    librarian entirely, so wiring never fires on the unscoped path
+    — without a tagged query the test would now hit the fan-out
+    helper rather than the wiring block. Force the librarian path
+    by passing a ``tag_expr`` so the wiring block runs and the
+    ``ModelNotConfigured`` failure surfaces; the seeded collection
+    satisfies the F15 tag-filter dispatch.
     """
+    from lies import xdg
+    from lies.constants import LIES_DATA_SUBDIR
     from lies.errors import ModelNotConfigured
     from lies.mcp import grounding
 
+    # Seed a ``wiki`` library collection so ``+wiki`` validates at the
+    # F15 tag-filter dispatch. The :func:`_isolated_xdg` autouse
+    # fixture has already redirected XDG into ``tmp_path``.
+    coll_root = xdg.data_home() / LIES_DATA_SUBDIR / "library" / "collections" / "wiki"
+    coll_root.mkdir(parents=True, exist_ok=True)
+
     with pytest.raises(ModelNotConfigured):
-        grounding.ground("test question")
+        grounding.ground("test question", tag_expr="wiki")
 
 
 def test_ground_threads_source_kind_from_librarian_output(monkeypatch) -> None:
     """ground() copies source_kind from each PageExcerpt into CitationSnippet.
 
-    Pins Task 2 of dual-source-routing: the librarian's per-excerpt
-    ``source_kind`` flag (``"library"`` vs ``"wiki"``) must propagate
-    through to the :class:`CitationSnippet` emitted by :func:`ground`
-    so downstream rendering can distinguish primary-source hits
-    from wiki-only hits. The test fakes the librarian dispatch and
-    feeds two excerpts with distinct ``source_kind`` values;
-    assertions on the resulting ``digest.citations`` pin the
-    propagation.
+    Pins Task 2 of dual-source-routing: the per-excerpt ``source_kind``
+    flag (``"library"`` vs ``"wiki"``) must propagate through to
+    the :class:`CitationSnippet` emitted by :func:`ground` so
+    downstream rendering can distinguish primary-source hits from
+    wiki-only hits. The test fakes the dispatch (librarian OR
+    fan-out, both surface the same ``source_kind`` contract) and
+    feeds two excerpts with distinct values; assertions on the
+    resulting ``digest.citations`` pin the propagation.
+
+    Library-mode rewrite migration: unscoped ``ground()`` dispatches
+    via ``_fanout_unscoped`` rather than the F18 librarian. Mock
+    the fan-out helper directly with the same two-excerpt fixture;
+    the citation-building loop reads ``getattr(excerpt,
+    "source_kind", "library")`` so the propagation contract is
+    unchanged across the dispatch boundary.
     """
     from lies.markdown_spans import Span
     from lies.mcp import grounding
@@ -972,14 +1091,6 @@ def test_ground_threads_source_kind_from_librarian_output(monkeypatch) -> None:
         title: str
         spans: list
         source_kind: str = "library"
-
-    @dataclass(frozen=True)
-    class _FakeOutput:
-        tag_expr: object = None
-        exclude_expr: object = None
-        excerpts: list = field(default_factory=list)
-        distinct_pages: int = 0
-        no_coverage: bool = False
 
     lib_excerpt_with_span = _FakeExcerpt(
         collection="mermaid",
@@ -1002,19 +1113,11 @@ def test_ground_threads_source_kind_from_librarian_output(monkeypatch) -> None:
         ],
         source_kind="wiki",
     )
-    fake = _FakeOutput(
-        excerpts=[lib_excerpt_with_span, wiki_excerpt_with_span],
-        distinct_pages=2,
-    )
 
-    class _StubAgent:
-        def run_sync(self, user_prompt, *, deps):  # noqa: ARG002
-            class _Result:
-                output = fake
+    def fake_fanout(*_args, **_kwargs):
+        return [lib_excerpt_with_span, wiki_excerpt_with_span]
 
-            return _Result()
-
-    monkeypatch.setattr(grounding, "librarian_agent", lambda: _StubAgent())
+    _patch_fanout(monkeypatch, grounding, fake_fanout)
 
     digest = grounding.ground("anything")
     kinds = sorted(c.source_kind for c in digest.citations)
