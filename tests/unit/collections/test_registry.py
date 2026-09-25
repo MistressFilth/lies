@@ -111,6 +111,7 @@ def test_save_then_load_roundtrips(tmp_path: Path) -> None:
     assert loaded.collections.keys() == {"htmx", "lask"}
 
 
+@pytest.mark.slow
 def test_save_writes_to_temp_then_renames(tmp_path: Path) -> None:
     wiki = _wiki(tmp_path)
     reg = Registry(collections={"htmx": _ref("htmx")})
