@@ -18,6 +18,7 @@ not the host's ``~/.cache/qmd/mcp.pid``.
 from __future__ import annotations
 
 import shutil
+import socket
 import time
 from pathlib import Path
 
@@ -26,20 +27,51 @@ import pytest
 from lies.qmd import lifecycle
 
 
+def _qmd_can_bind_8181() -> bool:
+    """Probe whether :func:`lifecycle._up` could bind the daemon port in this env.
+
+    The lifecycle tests exercise a real ``qmd mcp --http --daemon``
+    child that binds ``127.0.0.1:8181``. The CI workflow installs the
+    ``qmd`` binary via npm, so ``shutil.which("qmd")`` is truthy on the
+    sandbox runner — but some sandboxed runners (and developer hosts
+    with a foreground daemon) refuse the bind or have the port held,
+    which surfaces as the misleading
+    ``qmd daemon failed to bind 127.0.0.1:8181 within 30.0s`` rather
+    than a clear skip. Probe by attempting an unadorned bind (no
+    ``SO_REUSEADDR`` — we want a real conflict to register as
+    ``EADDRINUSE``); a bare ``bind``/``close`` does not enter
+    ``TIME_WAIT``, so the port is released immediately on return.
+    """
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        s.bind(("127.0.0.1", 8181))
+    except OSError:
+        return False
+    finally:
+        s.close()
+    return True
+
+
 # CI sandbox gate: every test in this module spawns or signals a real
 # ``qmd mcp --http --daemon`` child via :func:`lies.qmd.lifecycle._up`.
-# The CI sandbox does not have ``qmd`` on PATH (the LIES image does
-# not install the qmd CLI), so each test would otherwise fail with
-# ``RuntimeError: qmd daemon failed to bind ...`` after the underlying
-# ``_find_qmd`` helper raised ``RuntimeError: qmd binary not found on
-# PATH``. Skip the whole module when the binary is missing so a
-# missing-toolchain CI box still produces a green run without
-# crashing each test at the bind timeout. Tests still exercise the
-# full lifecycle on hosts where ``qmd`` IS installed (developer
-# machines, the staggered \"run with qmd\" job).
+# Two failure modes surface as the same misleading
+# ``RuntimeError: qmd daemon failed to bind ...`` after the bind-poll
+# timeout, so the skipif has to defend against both:
+#
+#   1. ``qmd`` not on PATH (``shutil.which("qmd") is None``) — the
+#      underlying ``_find_qmd`` raises immediately, but the bind-poll
+#      loop swallows that and reports the bind timeout instead.
+#   2. Port 8181 not bindable in this sandbox — ``qmd`` is installed
+#      (CI installs it via npm) but the kernel refuses the bind.
+#
+# Skip the whole module when either gate fails so the file produces a
+# green run without crashing each test at the bind timeout. Tests
+# still exercise the full lifecycle on hosts where both gates pass
+# (developer machines with no foreground daemon, the staggered "run
+# with qmd" job).
 pytestmark = pytest.mark.skipif(
-    shutil.which("qmd") is None,
-    reason="qmd binary not on PATH; spawn-and-bind tests cannot run without it",
+    shutil.which("qmd") is None or not _qmd_can_bind_8181(),
+    reason=("qmd lifecycle tests require both qmd on PATH and a bindable 8181 in this env"),
 )
 
 
