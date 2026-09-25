@@ -1023,16 +1023,16 @@ def library_catalog_slug(slug: str) -> str:
 
 @mcp.prompt(name="answer")
 def ask_wiki_answer(text: str) -> str:
-    """Starter prompt that templates an ``answer`` tool invocation.
+    """Starter prompt that templates a ``synthesize`` tool invocation.
 
     Single-arg form: the entire slash-command input is passed verbatim
     as ``text``. The filter-syntax parser runs here so the calling
     LLM never has to fill ``tag_expr`` / ``exclude_tags`` slots.
 
-    Chat-surface counterpart to the synthesized answer path: the LLM
-    calls the ``answer`` tool (returns plain text) instead of ``query``
-    (returns structured envelope). Use this when the response needs to
-    render verbatim in chat rather than behind a collapsible JSON block.
+    Chat-surface counterpart to the synthesizer path: the LLM calls
+    the ``synthesize`` tool and surfaces the ``answer`` field of the
+    returned dict verbatim in chat. Use this when the response needs
+    to render as plain prose rather than behind a collapsible JSON block.
 
     **Known limitation — Claude Code slash dispatcher tokenizes the
     input on whitespace before invoking this prompt, so multi-word
@@ -1042,7 +1042,7 @@ def ask_wiki_answer(text: str) -> str:
     ``+c:opencode`` and the question is dropped. The reliable
     workaround is the ``ask_question`` MCP tool: call it with the
     user's full multi-word input as the ``text`` argument, then
-    forward the returned kwargs verbatim to the ``answer`` tool. This
+    forward the returned kwargs verbatim to the ``synthesize`` tool. This
     prompt is still useful for plain questions without filter syntax,
     where the input is a single token anyway.
 
@@ -1088,7 +1088,7 @@ def ask_wiki_answer(text: str) -> str:
 
     The ``name="answer"`` override registers the prompt as the
     ``/answer`` slash command even though the Python function is named
-    ``ask_wiki_answer`` (the bare name conflicts with the ``answer``
+    ``ask_wiki_answer`` (the bare name conflicts with the ``synthesize``
     tool defined elsewhere in this module).
     """
     import shlex
@@ -1127,10 +1127,10 @@ def _render_answer_prompt_body(
     No fillable slots for ``tag_expr`` / ``exclude_tags``: the slash
     prompt parses them out of the ``question`` argument before the
     calling LLM sees the body. The LLM only has to forward the
-    rendered kwargs verbatim to the ``answer`` tool.
+    rendered kwargs verbatim to the ``synthesize`` tool.
     """
     return (
-        f"Call the `answer` MCP tool with the following args, then surface "
+        f"Call the `synthesize` MCP tool with the following args, then surface "
         f"the answer body verbatim in your reply:\n\n"
         f"  question: {question}\n"
         f"  tag_expr: {tag_expr!r}\n"
