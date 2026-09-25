@@ -4,6 +4,18 @@ All notable changes to LIES are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/) adapted for
 [Semantic Versioning](https://semver.org/).
 
+## [0.39.1] - 2026-09-25
+
+### Added
+
+- `lies qmd status|up|down|recycle` operator CLI (mirrors ask's daemon commands).
+- `qmd.recycle()` programmatic recovery for wedged daemons.
+- `ArchivistDigest` and `SynthesizeEnvelope` fan-out triggers `recycle()` after N consecutive `QmdCommandError`s.
+
+### Fixed
+
+- `qmd_query` pipe-buffer deadlock: when qmd emitted a long stderr trace (e.g. on VRAM OOM during in-process llama.cpp context expansion), the Python wrapper blocked forever because the OS pipe buffer filled. Replaced with `Popen` + bounded `communicate(timeout=...)` + SIGKILL-on-timeout. Mirrors ask's `repo/ask/scripts/qmd-daemon.py:213-219`.
+
 ## [0.37.3] - 2026-09-23
 
 ### Fixed

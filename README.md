@@ -889,6 +889,14 @@ CLI commands (`src/lies/cli/`):
 - `lies lint [--fix]` — health-check the wiki (`--fix` applies the repair plan for safe_to_fix findings). Findings span six categories; LLM-backed categories are skipped with a `Sources` line when no model key is configured.
 - `lies mcp` / `lies mcp start` — run the MCP server on stdio.
 - `lies mcp up` / `down` / `status` — manage the detached http MCP daemon.
+- `lies qmd status` / `up` / `down` / `recycle` — manage the shared qmd
+  daemon (`status` prints a JSON snapshot; `up` is idempotent; `down`
+  is best-effort; `recycle` restarts and waits for liveness). Mirrors
+  ask's daemon operator surface so an operator fluent in ask's
+  commands can apply them to LIES unchanged. `lies mcp down` still
+  does not stop qmd — that daemon is machine-global and stopping it
+  would break sessions LIES knows nothing about. Use `lies qmd down`
+  (or `qmd mcp stop`) explicitly when you want it down.
 - `lies status` — show the library catalog count + migrated tally, qmd
   status, wiki catalog size, recent invisible writes, and the last few
   log entries (`--memory-limit N` to skip or limit the writes section).

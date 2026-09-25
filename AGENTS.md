@@ -60,7 +60,9 @@ src/lies/
 ├── capabilities/    # harness capability adapters (CodeMode, Memory, Planning, ...)
 │   └── memory.py    # Harness Memory capability; per-wiki namespace via WikiIdentity
 ├── cli/             # Typer CLI package (init / ingest / query / lint / mcp / REPL)
-│   └── catalog.py   # `lies catalog` group: status/dump/reconcile/rebuild/render
+│   ├── catalog.py   # `lies catalog` group: status/dump/reconcile/rebuild/render
+│   └── qmd.py       # `lies qmd` operator group: status/up/down/recycle
+│                    # (thin wrapper around lies.qmd.lifecycle)
 ├── config.py        # env-driven config (model, wiki root, log level)
 ├── library/         # global corpus of collection configs and deterministic
 │   │                # mirrors. Per-cutover the library is the source of
@@ -95,7 +97,17 @@ src/lies/
 │   └── catalog_models.py  # CatalogPage (frozen BaseModel) + PageSection enum
 ├── orchestrator.py  # top-level Orchestrator; owns cross-cutting capabilities
 ├── qmd/             # qmd CLI + MCP adapters
-│   └── daemon.py    # ensure/inspect qmd's own daemon (never stops it)
+│   ├── _models.py   # Pydantic models returned by qmd library functions (e.g. ReindexResult)
+│   ├── _proc.py     # subprocess seam for qmd library functions (Popen + bounded communicate)
+│   ├── _subprocess.py # deadlock-free `_run_qmd` helper (Popen + timeout + SIGKILL-on-overrun)
+│   ├── capability.py # daemon-aware QmdCapability (MCP toolset + recycle envelope)
+│   ├── cli.py       # thin wrapper around the `qmd` CLI for batch operations
+│   ├── daemon.py    # ensure/inspect qmd's own daemon (never stops it)
+│   ├── health.py    # cheap reachability probe for the qmd HTTP daemon
+│   ├── lifecycle.py # qmd daemon lifecycle: status, up, down, recycle
+│   ├── lock.py      # cross-process flock envelope for qmd CLI helpers
+│   ├── mcp.py       # qmd MCP client (QmdRecycleToolset wrapper for transport errors)
+│   └── mcp_fallback.py # in-process FastMCP fallback for the qmd HTTP daemon
 ├── markdown_spans.py # F37 — markdown spans parser (Span dataclass + parse_spans)
 ├── query/           # index.md parser + answer synthesizer
 │   ├── citation.py  # Citation / ClaimCitation dataclasses (F19)
