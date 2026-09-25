@@ -150,41 +150,52 @@ proxy in front if remote access is required.
 After registration, Claude Code sees these tools:
 
 - `init_wiki(name)` — bootstrap a new wiki by name (creates XDG role-routed dirs).
-- `query(question, name?)` — synthesized answer (structured result
-  with `fallback_used`, `fallback_reason`, and `citations:
-  list[Citation]` where each `Citation` carries a `source:
-  "library" | "wiki"` discriminator, an optional `heading_path`
-  describing where in the page the cited claim lives, plus optional
-  `line` and `section` so each citation can point at the passage a
-  claim relied on; library citations are the primary source of truth,
-  wiki citations are supplementary). The synthesized answer renders
-  citations inline per claim using the `[[page-slug]]: "verbatim
-  text"` form — no footnote block, no anchor numbers. Filed synthesis
-  pages use `[[slug]] (Heading > Subheading): "verbatim"` so curators
-  can trace each claim to the source paragraph.
-- `answer(question, name?)` — same synthesized answer body as plain
-  text. Use this when the chat surface needs to render the answer
-  verbatim (the structured `query` tool returns a JSON envelope that
-  some surfaces hide behind collapsible blocks).
-- `lint(name?)` — health-check the wiki.
-- `ground(question, tag_expr?, exclude_tags?, top_k=3)` — return a
-  grounding digest (`ArchivistDigest`) carrying up to `top_k`
-  `CitationSnippet` entries of ≤200 chars each, drawn from LIES
-  wiki collections via the F18 librarian. Caller renders each
-  snippet inline as `[[slug]]: "snippet"` so the agent can verify
-  corpus coverage before reasoning. New module
-  `src/lies/mcp/grounding.py`. See the
-  [Grounding archivist](#grounding-archivist) section below.
-- `migrate_xdg(legacy_path, name)` — one-shot bridge from legacy `<wiki>/.lies/` to XDG.
+- `synthesize(question, tag_expr?, exclude_tags?, file_back=False)` —
+  prose answer for human reading. Calls `ground()` for retrieval then
+  runs `query_synthesizer_agent` over the result. Returns a structured
+  envelope (`SynthesizeEnvelope`) carrying `answer`, `citations`,
+  `pages_read`, `fallback_used`, `synthesis_used`, `fallback_reason`.
+  `file_back=True` raises `ToolError` (deferred; write-tool spec is
+  out-of-scope for the library-mode read-side rewrite).
+- `lint(name?, fix=False, force_repair=False)` — health-check the wiki;
+  `fix=True` applies the repair plan for `safe_to_fix` findings.
+- `reindex(cleanup?, all_?, embed?, force?, reconcile?, name?)` —
+  rebuild qmd index. Destructive flags (`cleanup` / `all_`) elicit
+  confirmation via `ctx.elicit`.
+- `ground(question, tag_expr?, exclude_tags?, top_k=3, name?)` —
+  return a grounding digest (`ArchivistDigest`) carrying up to
+  `top_k` `CitationSnippet` entries of ≤200 chars each, drawn from
+  library collections. Caller renders each snippet inline as
+  `[[slug]]: "snippet"` so the agent can verify corpus coverage
+  before reasoning. Unscoped queries take a parallel fan-out path
+  across every registered library collection (Task 1 brick-wall fix
+  for session 2505630b). See the [Grounding archivist](#grounding-archivist)
+  section below.
+- `ask_question(text)` — parse `+tag_expr` / `-exclude_tags` filter
+  syntax out of a slash-style invocation and return parsed kwargs for
+  the `synthesize` tool. Works around Claude Code's `/answer` slash
+  dispatcher, which tokenizes on whitespace and drops everything past
+  the first token.
+- `ask_ground_question(text)` — same shape as `ask_question`, but
+  returns kwargs for the `ground` tool. Works around Claude Code's
+  `/cite` slash dispatcher, which drops the `text` argument entirely
+  when the slash input begins with `+`.
 
 …and these resources:
 
-- `wiki://status` — qmd status + last 10 log entries.
-- `wiki://index`, `wiki://log`, `wiki://lint-report` — raw wiki artifacts.
-- `wiki://page/{path}` — any page under `wiki/` (relative path; traversal
-  rejected).
+- `wiki://status` — qmd status + last 10 log entries (operational
+  diagnostic; no library-side equivalent in the read-side rewrite).
+- `wiki://index`, `wiki://log`, `wiki://lint-report` — raw wiki
+  artifacts (operational diagnostics).
+- `library://catalog` — every registered library collection's
+  metadata (name, tags, source, page_count, updated_at) as a
+  per-collection JSON grouping. Replaces the retired
+  `wiki://catalog` resource.
+- `library://catalog/{slug}` — single library collection metadata;
+  empty string when the slug is not registered. Replaces the retired
+  `wiki://catalog/{slug}` resource.
 
-The server also exposes a `cite` prompt that templates a `ground()` tool call and renders the `ArchivistDigest` as `[[collection/slug]] (Title): "<snippet>"` citation lines.
+The server also exposes a `cite` prompt that templates a `ground()` tool call and renders the `ArchivistDigest` as `[[collection/slug]] (Title): "<snippet>"` citation lines, and an `answer` prompt that templates a `synthesize` tool call.
 
 Wiki selection: every tool accepts an optional `name` parameter.
 Resolution chain: explicit `name` → `LIES_WIKI_NAME` env → `default`.

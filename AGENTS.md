@@ -73,13 +73,19 @@ src/lies/
 │   ├── collections_cli.py       # `lies library` sub-app
 │   │                            # (list/show/where/new/modify/delete/enrich-tags)
 │   └── migrate_collection_configs.py  # `lies migrate-collection-configs`
-├── mcp/             # FastMCP server (src/lies/mcp/server.py) — thin adapter
-│                    # around WikiMemoryService; tools: init_wiki, query,
-│                    # answer, lint, ground, wiki_search, wiki_read,
-│                    # wiki_changes, file_knowledge, reindex; resources
-│                    # include wiki://catalog and wiki://catalog/{slug}
+├── mcp/             # FastMCP server (src/lies/mcp/server.py) — library-mode read surface;
+│                    # tools: init_wiki, synthesize, lint, reindex, ground,
+│                    # ask_question, ask_ground_question; resources include
+│                    # library://catalog and library://catalog/{slug} (wiki://status,
+│                    # wiki://index, wiki://log, wiki://lint-report kept as
+│                    # operational diagnostics); the wiki-shaped read tools
+│                    # (query / answer / wiki_search / wiki_read / wiki_changes /
+│                    # file_knowledge) and wiki-shaped data resources
+│                    # (wiki://page / wiki://memory-changes / wiki://catalog)
+│                    # are retired
 │   ├── grounding.py # F19 grounding archivist (CitationSnippet + ArchivistDigest
 │   │                # + truncate_at_word_boundary + pick_first_prose_span + ground())
+│   ├── synth.py     # library-mode synthesize envelope (SynthesizeEnvelope + synthesize())
 │   └── daemon.py    # pidfile lifecycle for `lies mcp up/down/status`
 ├── memory/          # invisible-memory layer (see below)
 │   ├── catalog.py   # sqlite wiki catalog: schema + CRUD + rebuild_from_disk
