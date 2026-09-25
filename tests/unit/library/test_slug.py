@@ -42,6 +42,7 @@ def test_derive_slug_rejects_invalid_derived_stems(tmp_path: Path) -> None:
         derive_slug(empty_path)
 
 
+@pytest.mark.slow
 def test_derive_slug_with_override(tmp_path: Path) -> None:
     src = tmp_path / "Original.html"
     src.write_text("")

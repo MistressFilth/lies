@@ -130,6 +130,7 @@ def test_collection_names_picks_up_new_directory_after_mtime_change(
     assert library_collection_names() == frozenset({"alpha", "beta"})
 
 
+@pytest.mark.slow
 def test_collection_tags_picks_up_new_collection_after_mtime_change(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
