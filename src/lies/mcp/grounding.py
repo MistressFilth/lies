@@ -57,6 +57,8 @@ class CitationSnippet:
     slug: str
     title: str
     snippet: str
+    body: str = ""
+    shallow: bool = False
     source_kind: Literal["library", "wiki"] = "library"
 
 
@@ -151,14 +153,45 @@ def pick_first_prose_span(spans: "list[Span]") -> "Span | None":
     (``body.strip() == ""``). The synthesis's pipeline already
     separates prose from code, so this filter is the F19 ground
     shape's lens on F37 spans.
+
+    Front-matter skip (best-effort): if the first non-empty prose
+    span's body opens with a YAML front-matter delimiter (``---``
+    at the start, or ``qmd://`` URI prefix + ``---\n`` separator
+    inserted by the qmd daemon), prefer the next span when one
+    exists. Falls back to the front-matter span when nothing else
+    is available.
     """
+    front_matter: "Span | None" = None
     for span in spans:
         if span.code_fence:
             continue
         if not span.body.strip():
             continue
-        return span
-    return None
+        # Detect front-matter: either the body starts with ``---``
+        # OR qmd-served content starts with ``qmd://`` then a
+        # ``---\n`` separator before the YAML body. Treat either as
+        # the leading front-matter block and defer until we see a
+        # heading-rooted span or run out of spans.
+        if front_matter is None:
+            stripped = span.body.lstrip()
+            if (
+                stripped.startswith("---\n")
+                or stripped.startswith("qmd://")
+                and "\n---\n" in span.body
+            ):
+                front_matter = span
+                continue
+        # Prefer heading-rooted spans (anything past the front
+        # matter). Once we see one, return immediately.
+        if span.heading_path:
+            return span
+        # First non-front-matter span with no heading yet — could
+        # be a section body or a sub-heading's lead. Defer
+        # returning in case a later span has a heading_path.
+        if front_matter is not None:
+            return span
+    # Fallback to front-matter if nothing better was found.
+    return front_matter
 
 
 # ---------------------------------------------------------------------------
@@ -351,11 +384,24 @@ def ground(
                     body = qmd_get(lib_root, f"qmd://{hit_path}")
                 except Exception:
                     continue
-                spans = parse_spans(body)
+                # qmd's retrieval format prefixes every line with
+                # ``<linenum>: ``. That breaks ``parse_spans``'s
+                # ATX-heading detection (which requires ``#`` at the
+                # start of a stripped line). Strip the prefix before
+                # parsing so heading boundaries surface and the
+                # archivist's body field captures heading-rooted
+                # content rather than just the leading front-matter.
+                import re as _re_line_prefix
+
+                _stripped_body = _re_line_prefix.sub(
+                    r"^\d+: ?", "", body, flags=_re_line_prefix.MULTILINE
+                )
+                spans = parse_spans(_stripped_body)
                 chosen = pick_first_prose_span(spans)
                 if chosen is None:
                     continue
-                snippet_text = truncate_at_word_boundary(chosen.body, 200)
+                snippet_text = truncate_at_word_boundary(chosen.body, 600)
+                full_body = truncate_at_word_boundary(chosen.body, 4000)
                 collection = hit_path.split("/", 1)[0]
                 slug = hit_path
                 title = str(hit.get("title", ""))
@@ -365,6 +411,7 @@ def ground(
                         slug=slug,
                         title=title,
                         snippet=snippet_text,
+                        body=full_body,
                     )
                 )
         except Exception:
