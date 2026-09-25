@@ -24,6 +24,7 @@ import pytest
 from lies.qmd.cli import QmdError, qmd_query
 
 
+@pytest.mark.slow
 def test_qmd_query_does_not_deadlock_on_long_stderr(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

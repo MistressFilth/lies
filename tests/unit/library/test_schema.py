@@ -1,3 +1,4 @@
+import pytest
 import yaml
 
 from lies.library.schema import ConfigYAML, dump_config_yaml
@@ -34,6 +35,7 @@ def test_schema_drops_empty_config() -> None:
     assert parsed.config == {}
 
 
+@pytest.mark.slow
 def test_schema_preserves_non_empty_config() -> None:
     payload = _sample()
     payload["config"] = {"k": "v"}

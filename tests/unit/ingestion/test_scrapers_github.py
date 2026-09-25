@@ -16,6 +16,7 @@ def _sha(s: str) -> str:
     return hashlib.sha256(s.encode("utf-8")).hexdigest()
 
 
+@pytest.mark.slow
 def test_github_scraper_fetches_via_gh(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     def fake_run(cmd, **kwargs):
         # cmd shape: ["gh", "repo", "clone", url, tmp, "--", "--depth=1"]

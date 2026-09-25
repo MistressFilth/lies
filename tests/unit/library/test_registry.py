@@ -67,6 +67,7 @@ def test_record_lookup_returns_config(library: Library) -> None:
     assert rec.source == "https://example.com/alpha"
 
 
+@pytest.mark.slow
 def test_collection_without_config_skipped(tmp_path, monkeypatch) -> None:
     # A directory with no config.yaml must not raise.
     lib = Library(

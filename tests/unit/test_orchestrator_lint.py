@@ -175,6 +175,7 @@ def test_build_lint_report_orphans_are_safe_to_fix(orch: Orchestrator) -> None:
         )
 
 
+@pytest.mark.slow
 def test_run_lint_apply_passes_findings_to_repair_agent(orch: Orchestrator) -> None:
     """The LintReport's safe_to_fix flags flow through to the repair agent
     via RepairAgentDeps. Orphans are safe_to_fix=True; any other finding
