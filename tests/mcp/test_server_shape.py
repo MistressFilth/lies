@@ -28,6 +28,7 @@ async def test_tools_registered(client: Client) -> None:
         "lint",
         "reindex",
         "ground",
+        "synthesize",
     }
 
 
@@ -39,8 +40,7 @@ async def test_resources_registered(client: Client) -> None:
         "wiki://index",
         "wiki://log",
         "wiki://lint-report",
-        "wiki://memory-changes",
-        "wiki://catalog",
+        "library://catalog",
     }
 
 
@@ -51,8 +51,7 @@ async def test_resource_templates_registered(client: Client) -> None:
     # ``uri_template`` but ``Client.list_resource_templates`` returns the
     # protocol-layer objects.
     patterns = {t.uriTemplate for t in templates}
-    assert "wiki://page/{path}" in patterns
-    assert "wiki://catalog/{slug}" in patterns
+    assert "library://catalog/{slug}" in patterns
 
 
 async def test_prompts_registered(client: Client) -> None:

@@ -18,7 +18,6 @@ from __future__ import annotations
 import sys
 from collections.abc import Callable
 from dataclasses import asdict
-from pathlib import Path
 from typing import Any, cast
 
 from fastmcp import FastMCP
@@ -37,7 +36,6 @@ from lies.errors import WikiAlreadyExists, WikiNotRegistered
 from lies.lock_errors import WikiFlockUnrepairable, WikiLockBusy
 from lies.mcp.instructions_loader import load_instructions, load_prompt
 from lies.mcp.resolution import resolve_wiki
-from lies.memory.models import WikiPlanInvalid
 from lies.orchestrator import Orchestrator
 from lies.query.tag_expr import (
     TagExpr,
@@ -374,7 +372,7 @@ async def reindex(
         "The calling LLM uses this to extract filter args from a "
         "slash-style invocation where Claude Code's slash-command "
         "dispatcher would otherwise tokenize the input. After calling "
-        "ask_question, the LLM should call the `answer` tool with the "
+        "ask_question, the LLM should call the `synthesize` tool with the "
         "returned kwargs verbatim."
     ),
 )
@@ -392,8 +390,7 @@ def ask_question(text: str) -> dict[str, object]:
     The exclude chain supports compound expressions: ``-c:foo&c:bar``
     (AND) and ``-c:foo|c:bar`` (OR) are parsed into the F15 AST and
     re-rendered as a single ``exclude_tags`` element so the
-    downstream ``query`` / ``answer`` boundary can re-parse the
-    string.
+    downstream ``synthesize`` boundary can re-parse the string.
 
     Returns a dict with keys ``question``, ``tag_expr``,
     ``exclude_tags``. Always returns; surface parse errors as a
@@ -918,198 +915,105 @@ def wiki_lint_report(name: str | None = None) -> str:
     return _wiki_lint_report_impl(name)
 
 
-def _safe_page_path(wiki: Wiki, path: str) -> Path:
-    """Resolve ``path`` under ``wiki.wiki_dir`` and reject escapes.
+# ---------------------------------------------------------------------------
+# library://catalog — read-through for the library collection registry
+# ---------------------------------------------------------------------------
 
-    ``path`` is wiki-dir-relative. Absolute paths, ``..`` traversal,
-    and any path that resolves outside ``wiki.wiki_dir`` are rejected
-    with :class:`WikiPlanInvalid`. Missing files are not an error at
-    this layer — callers decide what to do with the returned path.
+
+def _count_pages(name: str) -> int:
+    """Count ``*.md`` files under a library collection's doc tree.
+
+    Each collection is rooted at ``<library>/collections/<name>/`` and
+    carries its markdown under ``doc/`` (post-ingest). We walk the
+    whole subtree for ``*.md`` files; empty / missing trees return 0.
+    Used by ``library://catalog`` and ``library://catalog/{slug}`` to
+    surface a ``page_count`` field so LLM callers can rank
+    collections by corpus size without re-reading the raw mirrors.
     """
-    if not path:
-        raise WikiPlanInvalid("page path is empty")
-    candidate = Path(path)
-    if candidate.is_absolute():
-        raise WikiPlanInvalid(f"page path must be relative: {path}")
-    if any(part == ".." for part in candidate.parts):
-        raise WikiPlanInvalid(f"page path contains '..': {path}")
-    resolved = (wiki.wiki_dir / candidate).resolve()
+    from lies.library.paths import Library
+
+    root = Library.open().collections_root / name / "doc"
+    if not root.exists():
+        return 0
+    return sum(1 for _ in root.rglob("*.md"))
+
+
+def _library_collection_payload(slug: str) -> dict | None:
+    """Build the per-collection metadata envelope for ``slug``.
+
+    Returns ``None`` when ``slug`` is not a registered collection —
+    lets the single-slug resource distinguish "absent" from "present
+    with empty fields" cheaply (the resource handler returns ``""``
+    in that case). ``load_config`` raises :class:`CollectionNotFound`
+    when the config is absent; we treat the absent case as "not a
+    collection" rather than crashing.
+    """
+    from lies.library.config_io import load_config
+    from lies.library.errors import CollectionNotFound
+
     try:
-        resolved.relative_to(wiki.wiki_dir.resolve())
-    except ValueError as exc:
-        raise WikiPlanInvalid(f"page path escapes wiki/: {path}") from exc
-    return resolved
+        cfg = load_config(slug)
+    except CollectionNotFound:
+        return None
+    return {
+        "name": cfg.name,
+        "tags": list(cfg.tags),
+        "source": cfg.source,
+        "page_count": _count_pages(slug),
+        "updated_at": cfg.updated_at.isoformat() if cfg.updated_at else None,
+    }
 
 
-def _wiki_page_impl(path: str, name: str | None = None) -> str:
-    """Return the raw markdown of any page under ``wiki/``.
+@mcp.resource("library://catalog")
+def library_catalog() -> str:
+    """All library collection metadata as a per-collection grouping.
 
-    ``path`` is relative to ``<wiki.data_root>/wiki/``. Absolute paths,
-    ``..`` traversal, and any path that resolves outside the wiki are
-    rejected with :class:`WikiPlanInvalid`. Missing files return ``""``
-    (the resource exists; the page just hasn't been written yet).
-    """
-    wiki = resolve_wiki(name)
-    resolved = _safe_page_path(wiki, path)
-    if not resolved.exists():
-        return ""
-    return resolved.read_text(encoding="utf-8")
+    Returns JSON of shape::
 
+        {
+          "<collection-name>": {
+            "name": "<collection-name>",
+            "tags": ["..."],
+            "source": "<source-url>",
+            "page_count": <int>,
+            "updated_at": "<iso-8601>"
+          },
+          ...
+        }
 
-@mcp.resource("wiki://page/{path}")
-def wiki_page(path: str, name: str | None = None) -> str:
-    """Raw markdown of any page under ``wiki/`` (relative ``path``).
-
-    Template-resource handler — unlike the static resources above,
-    FastMCP passes ``path`` directly so the forwarder forwards it to
-    :func:`_wiki_page_impl`. The optional ``name`` kwarg keeps the
-    Python-callable surface — and the MCP tool parity — consistent with
-    ``query`` / ``answer`` / ``init_wiki``, which all accept ``name``;
-    FastMCP itself never passes it, so the env-default wiki is used.
-    """
-    return _wiki_page_impl(path, name)
-
-
-# ---------------------------------------------------------------------------
-# wiki://memory-changes — JSONL sidecar resource (tool retired; resource kept
-# for the formatted-text reader path used by callers that haven't migrated
-# off the wiki-shaped surface yet — see Task 3 brief).
-# ---------------------------------------------------------------------------
-
-
-def _wiki_memory_changes_impl(name: str | None = None) -> str:
-    """Render recent ``MemoryPlan`` applications as formatted text.
-
-    Matches the layout of ``lies memory`` (the CLI counterpart): one
-    4-line block per record (ts + SHA[:12] + rationale, pages, ops,
-    evidence count). Missing-sidecar and ``OSError`` paths surface as
-    text — the resource handler must never raise.
-    """
-    from lies.memory import sidecar
-
-    wiki = resolve_wiki(name)
-    out = "Recent MemoryPlan applications:\n"
-    try:
-        rows = sidecar.read_recent(wiki, limit=10)
-    except OSError as exc:
-        return out + f"sidecar unavailable: {exc}\n"
-    if not rows:
-        return out + "(no plans recorded yet)\n"
-    for rec in rows:
-        out += sidecar.format_record_block(rec)
-    return out
-
-
-@mcp.resource("wiki://memory-changes")
-def wiki_memory_changes() -> str:
-    """Recent invisible wiki writes (formatted text).
-
-    Zero-argument forwarder (FastMCP 3.4.5 constraint). Real logic in
-    :func:`_wiki_memory_changes_impl`; ``name`` is resolved from the env
-    there.
-    """
-    return _wiki_memory_changes_impl()
-
-
-# ---------------------------------------------------------------------------
-# wiki://catalog — sqlite catalog read-through (F4b)
-# ---------------------------------------------------------------------------
-
-
-def _wiki_catalog_impl(name: str | None = None) -> str:
-    """Structured list of every catalog row.
-
-    Each row is the JSON-serialized ``CatalogPage.model_dump(mode="json")``
-    of one row in ``<wiki_dir>/.lies/catalog.db``. The shape mirrors
-    ``lies catalog dump --json``. The empty-catalog case returns ``"[]"``
-    so the JSON shape is stable for LLM callers.
-
-    Library mode (no wiki registered, or the resolved wiki's
-    ``data_root`` does not exist on disk) returns a stable envelope
-    ``{"mode": "library", "collections": [...]}`` listing registered
-    library-collection names. The mode discriminator lets an LLM
-    caller distinguish a wiki catalog dump from a library-mode
-    response without parsing the shape.
+    Collections without a ``config.yaml`` (not yet bootstrapped) are
+    silently skipped — the resource only surfaces collections the
+    library knows about through its registry. Empty library → ``{}``.
     """
     import json
 
     from lies.library.registry import library_collection_names
 
-    try:
-        wiki = resolve_wiki(name)
-    except WikiNotRegistered:
-        # Library mode: no wiki registered for the requested name.
-        # Return an informative envelope rather than crashing so the
-        # MCP caller can recover and route through the library path.
-        return json.dumps(
-            {"mode": "library", "collections": sorted(library_collection_names())},
-            indent=2,
-        )
-
-    if not wiki.data_root.exists():
-        # Defensive: ``Wiki.require`` already vetted ``data_root`` at
-        # construction time, but the directory may have been removed
-        # out-of-band (e.g. the operator ran ``rm -rf`` between two
-        # MCP calls). Treat the same as the unregistered case.
-        return json.dumps(
-            {"mode": "library", "collections": sorted(library_collection_names())},
-            indent=2,
-        )
-
-    from lies.memory.catalog import list_pages as _catalog_list_pages
-    from lies.memory.catalog import open_catalog as _open_catalog
-
-    conn = _open_catalog(wiki)
-    try:
-        pages = _catalog_list_pages(conn)
-    finally:
-        conn.close()
-    return json.dumps([p.model_dump(mode="json") for p in pages], indent=2)
+    out: dict[str, dict] = {}
+    for name in sorted(library_collection_names()):
+        payload = _library_collection_payload(name)
+        if payload is None:
+            continue
+        out[name] = payload
+    return json.dumps(out, indent=2)
 
 
-@mcp.resource("wiki://catalog")
-def wiki_catalog() -> str:
-    """All catalog rows (JSON-serialized ``list[dict]``).
+@mcp.resource("library://catalog/{slug}")
+def library_catalog_slug(slug: str) -> str:
+    """Single library collection metadata; empty string when not found.
 
-    Zero-argument forwarder (FastMCP 3.4.5 constraint). Real logic in
-    :func:`_wiki_catalog_impl`; ``name`` is resolved from the env there.
-    """
-    return _wiki_catalog_impl()
-
-
-def _wiki_catalog_slug_impl(slug: str, name: str | None = None) -> str:
-    """Single catalog row by slug. Empty when not found.
-
-    Returns ``""`` (not a JSON object) when the slug is absent so an LLM
-    caller can distinguish "missing" from "present with empty fields"
-    cheaply. ``model_dump(mode="json")`` ensures the ``PageSection``
-    enum serializes as ``"wiki"`` / ``"ingested"`` rather than the enum
-    repr.
+    Returns ``""`` (not a JSON object) when ``slug`` is not a
+    registered collection so an LLM caller can distinguish "missing"
+    from "present with empty fields" cheaply. Empty-string is the
+    same contract the retired ``wiki://catalog/{slug}`` resource
+    used — clients that pattern-matched on it keep working.
     """
     import json
 
-    from lies.memory.catalog import get_page as _catalog_get_page
-    from lies.memory.catalog import open_catalog as _open_catalog
-
-    wiki = resolve_wiki(name)
-    conn = _open_catalog(wiki)
-    try:
-        page = _catalog_get_page(conn, slug)
-    finally:
-        conn.close()
-    if page is None:
+    payload = _library_collection_payload(slug)
+    if payload is None:
         return ""
-    return json.dumps(page.model_dump(mode="json"), indent=2)
-
-
-@mcp.resource("wiki://catalog/{slug}")
-def wiki_catalog_slug(slug: str) -> str:
-    """Single catalog row by slug (JSON-serialized ``dict`` or ``""``).
-
-    Template-resource handler — FastMCP passes ``slug`` directly so the
-    forwarder forwards it to :func:`_wiki_catalog_slug_impl`.
-    """
-    return _wiki_catalog_slug_impl(slug)
+    return json.dumps(payload, indent=2)
 
 
 # ---------------------------------------------------------------------------
