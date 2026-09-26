@@ -48,6 +48,20 @@ from lies.agents.librarian import librarian_agent  # noqa: E402,F401
 _RECYCLE_THRESHOLD = int(os.environ.get("LIES_QMD_RECYCLE_THRESHOLD", "3"))
 _consecutive_qmd_errors = 0
 
+# Concurrency cap on parallel qmd subprocess fan-out in
+# :func:`_fanout_collections`. qmd's reranking step ("Reranking N
+# chunks..." on stderr) competes for resources when many
+# ``qmd_query`` subprocesses run concurrently in the same daemon;
+# firing every registered collection in parallel (asyncio.gather)
+# caused subprocesses to wedge and exceed the 5s per-collection
+# timeout (session live-corpus hang: limit=10 amplified the
+# reranking pool and made contention worse). Bounding to 4 keeps
+# the fan-out parallelism usable while staying under the
+# contention threshold — a hard-coded 4 is the conservative bound
+# that survived every observed workload; making it configurable
+# would invite ops to crank it back into the hang regime.
+_QMD_FANOUT_SEMAPHORE = asyncio.Semaphore(4)
+
 
 @dataclass(frozen=True)
 class CitationSnippet:
@@ -241,39 +255,48 @@ async def _fanout_collections(
         # ``recycle`` import keeps ``grounding`` off the daemon-
         # lifecycle import path until the threshold trips.
         global _consecutive_qmd_errors
-        try:
-            return await asyncio.to_thread(
-                qmd_query,
-                cwd=lib_root,
-                question=question,
-                limit=top_k,
-                timeout=5,
-                collection_filter={name},
-            )
-        except (QmdCommandError, QmdNoResultsError):
-            _consecutive_qmd_errors += 1
-            if _consecutive_qmd_errors >= _RECYCLE_THRESHOLD:
-                # Reset BEFORE the await so concurrent failures that
-                # land during the in-flight ``recycle()`` cannot
-                # double-trip the threshold. The clear happens under
-                # the same ``except`` branch as the increment, so two
-                # racing ``_one`` tasks cannot both observe a tripped
-                # counter for the same wedged batch.
-                _consecutive_qmd_errors = 0
-                try:
-                    from lies.qmd.lifecycle import recycle
+        # Bound concurrent qmd subprocesses to ``_QMD_FANOUT_SEMAPHORE``
+        # permits. The semaphore lives at module scope so it persists
+        # across every fan-out call — a per-call ``Semaphore(N)`` would
+        # only ever cap the call in flight, defeating the purpose when
+        # callers fire fan-outs in parallel (e.g. multiple ``ground()``
+        # calls awaited from the same gather). The 4-permit bound is
+        # conservative: qmd's reranking step can absorb up to ~4
+        # concurrent subprocesses before contention wedges the daemon.
+        async with _QMD_FANOUT_SEMAPHORE:
+            try:
+                return await asyncio.to_thread(
+                    qmd_query,
+                    cwd=lib_root,
+                    question=question,
+                    limit=top_k,
+                    timeout=5,
+                    collection_filter={name},
+                )
+            except (QmdCommandError, QmdNoResultsError):
+                _consecutive_qmd_errors += 1
+                if _consecutive_qmd_errors >= _RECYCLE_THRESHOLD:
+                    # Reset BEFORE the await so concurrent failures that
+                    # land during the in-flight ``recycle()`` cannot
+                    # double-trip the threshold. The clear happens under
+                    # the same ``except`` branch as the increment, so two
+                    # racing ``_one`` tasks cannot both observe a tripped
+                    # counter for the same wedged batch.
+                    _consecutive_qmd_errors = 0
+                    try:
+                        from lies.qmd.lifecycle import recycle
 
-                    await asyncio.to_thread(recycle)
-                except Exception:
-                    # ``recycle`` is best-effort — a failed recycle
-                    # does not mask the original qmd failure. The
-                    # caller surfaces the dropped-collection result
-                    # via the empty excerpts list.
-                    pass
-            return None
-        # Any successful collection query resets the counter so a
-        # transient error doesn't accumulate against later successes.
-        _consecutive_qmd_errors = 0
+                        await asyncio.to_thread(recycle)
+                    except Exception:
+                        # ``recycle`` is best-effort — a failed recycle
+                        # does not mask the original qmd failure. The
+                        # caller surfaces the dropped-collection result
+                        # via the empty excerpts list.
+                        pass
+                return None
+            # Any successful collection query resets the counter so a
+            # transient error doesn't accumulate against later successes.
+            _consecutive_qmd_errors = 0
 
     raw = await asyncio.gather(*[_one(n) for n in names])
     merged: list[tuple[float, dict]] = []

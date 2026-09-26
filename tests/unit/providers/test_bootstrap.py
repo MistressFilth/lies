@@ -181,6 +181,7 @@ def test_step_agents_skip_keeps_empty(monkeypatch: pytest.MonkeyPatch) -> None:
     assert partial.agents == {}
 
 
+@pytest.mark.slow
 def test_run_wizard_happy_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     target = tmp_path / "providers.toml"
     answers = iter(
