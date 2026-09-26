@@ -149,8 +149,8 @@ def test_fanout_unscoped_threads_module_timeout_and_drops_failures(monkeypatch) 
     production; the mock emulates the observable contract
     (QmdCommandError) without burning the test budget on a sleep.
     The fail-soft envelope is what the budget needs to guard.
-    Concurrency is independently covered by
-    ``test_fanout_unscoped_runs_concurrently`` below.
+    Sequential dispatch is independently covered by
+    ``test_fanout_unscoped_dispatches_sequentially`` below.
     """
     from lies.library import registry as reg_mod
     from lies.library.registry import LibraryCollectionMeta
@@ -209,51 +209,6 @@ def test_fanout_unscoped_threads_module_timeout_and_drops_failures(monkeypatch) 
     # collection's hit survives.
     assert len(excerpts) == 1
     assert excerpts[0].slug == "fast/page.md"
-
-
-def test_fanout_unscoped_runs_concurrently(monkeypatch) -> None:
-    """``asyncio.gather`` fans out qmd_query calls in parallel.
-
-    Pins the concurrency property of ``_fanout_unscoped``: with N
-    collections each holding the fan-out for ``hold_s`` seconds, the
-    total wall time must be ≈ ``hold_s`` (concurrent), not N×
-    ``hold_s`` (serial). Uses a short hold (50ms) so the test stays
-    under the 0.15s unit-test hard limit.
-    """
-    import time
-
-    from lies.library import registry as reg_mod
-    from lies.library.registry import LibraryCollectionMeta
-    from lies.mcp import grounding
-    from lies.qmd import cli as qmd_mod
-
-    n = 4
-    hold_s = 0.05
-    metas = [LibraryCollectionMeta(name=f"c{i}", tags=()) for i in range(n)]
-    monkeypatch.setattr(reg_mod, "library_collection_metas", lambda: iter(metas))
-    monkeypatch.setattr(reg_mod, "library_git_root", lambda: Path("/tmp/fake-lib"))
-
-    def fake_qmd_query(*, cwd, question, limit, timeout, collection_filter):
-        time.sleep(hold_s)
-        name = next(iter(collection_filter))
-        return [{"path": f"{name}/page.md", "title": "Page", "score": 1.0}]
-
-    monkeypatch.setattr(qmd_mod, "qmd_query", fake_qmd_query)
-
-    start = time.monotonic()
-    excerpts = asyncio.run(grounding._fanout_unscoped("test question", None, top_k=5))
-    elapsed = time.monotonic() - start
-
-    # All N collections returned (none failed).
-    assert len(excerpts) == n
-    # Concurrent: total wall time ≈ hold_s. Serial would be N × hold_s
-    # = 4 × 50ms = 200ms. Allow a generous ceiling (3 × hold_s) to
-    # absorb CI scheduler jitter without giving up the load-bearing
-    # concurrent-vs-serial distinction.
-    assert elapsed < hold_s * 3, (
-        f"fan-out took {elapsed:.3f}s with hold={hold_s}s; "
-        f"serial would be ~{n * hold_s:.3f}s — asyncio.gather regression"
-    )
 
 
 def test_fanout_unscoped_triggers_recycle_after_n_failures(monkeypatch) -> None:
@@ -459,26 +414,24 @@ def test_fanout_unscoped_resets_counter_after_success(monkeypatch) -> None:
     )
 
 
-def test_fanout_concurrent_calls_bounded_by_semaphore(monkeypatch) -> None:
-    """Parallel fan-out calls do not exceed the semaphore's bound.
+def test_fanout_unscoped_dispatches_sequentially(monkeypatch) -> None:
+    """``_fanout_unscoped`` fires one qmd subprocess at a time.
 
-    Pins the qmd-fanout-concurrency-fix regression: with multiple
-    parallel ``_fanout_collections`` calls each fanning out across
-    several collections, the semaphore must cap in-flight subprocesses
-    at 4 (the module-level ``_QMD_FANOUT_SEMAPHORE`` bound). Without
-    the semaphore, every fan-out's ``asyncio.gather`` would fire its
-    full collection set in parallel, summing to a number far greater
-    than 4 concurrent qmd subprocesses — the live-corpus reproduction
-    trigger.
+    Pins the VRAM-spike fix: per-collection ``qmd_query`` calls must
+    run strictly serially, not in parallel. Each concurrent
+    ``qmd_query`` subprocess independently loads the embedding model
+    into VRAM (live corpus reproduction: ``+c:opencode|c:claude_code``
+    spiked VRAM when two subprocesses fired at once). The dispatch
+    contract is one subprocess at a time, full stop.
 
-    Test sizing note: 5 fan-outs × 5 collections = 25 attempted qmd
-    calls, hold_s=5ms each. 4-permit throughput: 25 × 5ms / 4 ≈ 31ms;
-    the test stays well under the 0.15s unit-test hard limit while
-    still demonstrating overlapping workers (the semaphore allows up
-    to 4 in flight, so peak in-flight reliably reaches the bound).
-    The historical failure mode was the 5s per-collection timeout
-    tripping repeatedly under contention; the wall-clock budget
-    assertion is a sanity-check rather than a concurrency-model proof.
+    The test uses an event-list recording fake: every ``qmd_query``
+    call appends ``(name, "start")`` on entry and ``(name, "end")``
+    on exit. A 5ms ``time.sleep`` inside the fake ensures the
+    start/end timestamps are deterministic across machines. The
+    load-bearing assertion is the strict ``[start, end, start, end,
+    start, end]`` interleaving — under the pre-fix ``asyncio.gather``
+    dispatch, the three calls would interleave as
+    ``[start, start, start, end, end, end]``.
     """
     import threading
     import time
@@ -488,165 +441,54 @@ def test_fanout_concurrent_calls_bounded_by_semaphore(monkeypatch) -> None:
     from lies.mcp import grounding
     from lies.qmd import cli as qmd_mod
 
-    collections_per_fanout = 5
-    parallel_fanouts = 5
-    hold_s = 0.005
-
-    metas = [LibraryCollectionMeta(name=f"c{i}", tags=()) for i in range(collections_per_fanout)]
+    n = 3
+    # 20ms per call keeps the wall-clock at ~60ms (3 × 20ms) for
+    # sequential dispatch — well within the 0.15s unit-test hard
+    # limit. Parallel dispatch would overlap all three calls at
+    # ~20ms wall time; the strict interleaving assertion below
+    # distinguishes the two regimes.
+    hold_s = 0.02
+    metas = [LibraryCollectionMeta(name=f"c{i}", tags=()) for i in range(n)]
     monkeypatch.setattr(reg_mod, "library_collection_metas", lambda: iter(metas))
     monkeypatch.setattr(reg_mod, "library_git_root", lambda: Path("/tmp/fake-lib"))
 
-    # Track the peak in-flight qmd_query call count via a thread-safe
-    # counter. ``asyncio.to_thread`` runs the mocked qmd_query on the
-    # default executor's worker threads, so the counter increments /
-    # decrements under a lock for accuracy across the worker pool.
-    in_flight = 0
-    in_flight_lock = threading.Lock()
-    peak_lock = threading.Lock()
-    peak_in_flight = 0
+    events: list[tuple[str, str]] = []
+    events_lock = threading.Lock()
 
     def fake_qmd_query(*, cwd, question, limit, timeout, collection_filter):
-        nonlocal in_flight, peak_in_flight
-        with in_flight_lock:
-            in_flight += 1
-            with peak_lock:
-                if in_flight > peak_in_flight:
-                    peak_in_flight = in_flight
-        try:
-            time.sleep(hold_s)
-            name = next(iter(collection_filter))
-            return [{"path": f"{name}/page.md", "title": "Page", "score": 1.0}]
-        finally:
-            with in_flight_lock:
-                in_flight -= 1
+        name = next(iter(collection_filter))
+        # ``asyncio.to_thread`` schedules each call on the default
+        # executor's worker pool; appends are GIL-atomic in CPython,
+        # but lock explicitly so the test reads as obviously correct.
+        with events_lock:
+            events.append((name, "start"))
+        time.sleep(hold_s)
+        with events_lock:
+            events.append((name, "end"))
+        return [{"path": f"{name}/page.md", "title": "Page", "score": 1.0}]
 
     monkeypatch.setattr(qmd_mod, "qmd_query", fake_qmd_query)
 
-    semaphore_capacity = grounding._QMD_FANOUT_SEMAPHORE._value  # type: ignore[attr-defined]
+    excerpts = asyncio.run(grounding._fanout_unscoped("test question", None, top_k=5))
 
-    async def _run_all() -> None:
-        # Fire ``parallel_fanouts`` fan-outs concurrently. Every
-        # _one underneath shares the same module-level semaphore, so
-        # the in-flight budget is the semaphore's bound across ALL
-        # fan-outs combined — not per-fan-out.
-        await asyncio.gather(
-            *[grounding._fanout_unscoped(f"q{i}", None, top_k=5) for i in range(parallel_fanouts)]
+    # All N collections returned (none failed).
+    assert len(excerpts) == n
+    # Strict serial interleaving: each call's "start" follows the
+    # previous call's "end". Under parallel ``asyncio.gather`` the
+    # events would interleave as ``[start, start, start, end, end,
+    # end]`` because all three workers fire before any of them
+    # finishes. The dispatch contract is one subprocess at a time.
+    assert len(events) == 2 * n, (
+        f"events has {len(events)} entries; expected {2 * n} — "
+        f"either a call did not record its end event or the dispatch "
+        f"recorded extra starts"
+    )
+    for i in range(n):
+        assert events[2 * i] == (f"c{i}", "start"), (
+            f"event[{2 * i}] = {events[2 * i]}; expected (c{i}, start) — "
+            f"dispatch fired out of order or with overlap"
         )
-
-    start = time.monotonic()
-    asyncio.run(_run_all())
-    elapsed = time.monotonic() - start
-
-    # Load-bearing assertion #1: the semaphore caps in-flight qmd
-    # subprocesses. With the bound held at 4 and 5 fan-outs × 5
-    # collections = 25 total subprocesses requested, the peak must
-    # never exceed 4. (If the semaphore regresses, this peaks toward
-    # ``parallel_fanouts * collections_per_fanout``.)
-    assert peak_in_flight <= semaphore_capacity, (
-        f"peak in-flight qmd subprocesses = {peak_in_flight}, "
-        f"exceeds semaphore bound {semaphore_capacity} — "
-        f"qmd-fanout-concurrency regression"
-    )
-    # Load-bearing assertion #2: the semaphore allowed measurable
-    # parallelism (not zero in-flight at the peak — would be a
-    # bug that turned the fan-out into a serial queue). Any call
-    # count >= 2 demonstrates that the bound is permissive, not
-    # over-restrictive.
-    assert peak_in_flight >= 2, (
-        f"peak in-flight qmd subprocesses = {peak_in_flight}; "
-        f"semaphore too restrictive (expected at least 2 parallel calls)"
-    )
-    # Load-bearing assertion #3: wall-clock budget. 4-permit throughput
-    # at 5ms/each: 25 × 5ms / 4 ≈ 31ms; 1s gives 30× headroom for CI
-    # jitter. The pre-fix hang would either time out the 5s
-    # per-collection deadline or block the gather on a wedged worker
-    # — neither outcome reaches this assertion.
-    assert elapsed < 1.0, (
-        f"parallel fan-outs took {elapsed:.2f}s with "
-        f"{parallel_fanouts} fan-outs × {collections_per_fanout} "
-        f"collections; budget is 1s — qmd-fanout-concurrency "
-        f"deadlock regression"
-    )
-
-
-def test_fanout_uses_module_level_semaphore(monkeypatch) -> None:
-    """``_one`` awaits the module-level ``_QMD_FANOUT_SEMAPHORE`` binding.
-
-    Pins the persistence property: ``_fanout_collections._one`` must
-    reach for the module-level binding ``grounding._QMD_FANOUT_SEMAPHORE``
-    rather than construct a per-call semaphore (which would defeat the
-    bound when callers fire ``ground()`` calls in parallel). The test
-    monkeypatches the binding to a counting wrapper that records every
-    acquire/release pair; after two fan-outs complete, the recorded
-    acquire count must equal the number of ``_one`` invocations across
-    both fan-outs (not zero, which would prove the fan-out used a
-    different semaphore).
-    """
-    from lies.library import registry as reg_mod
-    from lies.library.registry import LibraryCollectionMeta
-    from lies.mcp import grounding
-    from lies.qmd import cli as qmd_mod
-
-    metas = [LibraryCollectionMeta(name="c0", tags=())]
-    monkeypatch.setattr(reg_mod, "library_collection_metas", lambda: iter(metas))
-    monkeypatch.setattr(reg_mod, "library_git_root", lambda: Path("/tmp/fake-lib"))
-
-    acquire_count = 0
-
-    class _CountingSemaphore:
-        """Adapter around ``asyncio.Semaphore`` that records acquires.
-
-        Implements the async-context-manager interface the
-        ``async with`` form requires, threading through to a real
-        ``Semaphore`` for actual blocking semantics. Used in place
-        of the module's ``Semaphore(4)`` so the test can prove the
-        fan-out reached for the module-level binding rather than
-        constructing a fresh semaphore per call.
-        """
-
-        def __init__(self, capacity: int) -> None:
-            self._inner = asyncio.Semaphore(capacity)
-
-        async def __aenter__(self) -> "_CountingSemaphore":
-            nonlocal acquire_count
-            await self._inner.acquire()
-            acquire_count += 1
-            return self
-
-        async def __aexit__(self, exc_type, exc, tb: object) -> bool:
-            self._inner.release()
-            return False
-
-    counting = _CountingSemaphore(4)
-    monkeypatch.setattr(grounding, "_QMD_FANOUT_SEMAPHORE", counting)
-
-    def fake_qmd_query(*, cwd, question, limit, timeout, collection_filter):
-        return [{"path": "c0/page.md", "title": "Page", "score": 1.0}]
-
-    monkeypatch.setattr(qmd_mod, "qmd_query", fake_qmd_query)
-
-    async def _run() -> None:
-        # Two sequential fan-outs through the same module-level
-        # binding. The acquire counter must tick up exactly twice
-        # (one _one call per fan-out, since metas=[c0]). A regression
-        # to a per-call semaphore would leave the counter at 0
-        # because the wrapper would never observe the fan-out's
-        # ``async with``.
-        await grounding._fanout_unscoped("q1", None, top_k=5)
-        await grounding._fanout_unscoped("q2", None, top_k=5)
-
-    asyncio.run(_run())
-
-    # Load-bearing assertion: the fan-out acquired the sentinel
-    # wrapper twice — once per _one. If the fan-out built its own
-    # semaphore, acquire_count would be 0 (the wrapper was never
-    # touched). The sentinel identity guarantee relies on the
-    # ``_QMD_FANOUT_SEMAPHORE`` binding rather than internal handle
-    # inspection, so a future refactor that swaps in a fresh
-    # semaphore per call would still touch the wrapper and tick
-    # the counter — making the regression visible.
-    assert acquire_count == 2, (
-        f"module-level semaphore was acquired {acquire_count} times "
-        f"across 2 fan-outs; expected 2 — the fan-out must reach "
-        f"for the module-level binding, not a per-call semaphore."
-    )
+        assert events[2 * i + 1] == (f"c{i}", "end"), (
+            f"event[{2 * i + 1}] = {events[2 * i + 1]}; expected (c{i}, end) — "
+            f"dispatch interleaved or overlapped (parallel regression)"
+        )

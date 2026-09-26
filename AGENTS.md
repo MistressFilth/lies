@@ -156,11 +156,15 @@ The library-mode read surface is split between two MCP tools:
 
 - **`ground`** — snippet digest for agents. `ArchivistDigest` with
   `[[collection/slug]] (Title): "<verbatim snippet>"` rendering.
-  Uses parallel qmd fan-out (`_fanout_collections._one`) bounded by
-  `_QMD_FANOUT_SEMAPHORE = asyncio.Semaphore(4)`. Per-call timeout
-  lives in `LIES_QMD_FANOUT_TIMEOUT` (default 15s; matches qmd's
-  observed reranking latency on cold daemons). The recycle trigger
-  counts only `QmdCommandError` (real subprocess failures);
+  Uses sequential qmd fan-out (`_fanout_collections._one` awaited
+  one at a time in a `for` loop) — one qmd subprocess at a time,
+  full stop. Each concurrent `qmd_query` independently loads the
+  embedding model into VRAM, so OR-scoped queries
+  (`+c:opencode|c:claude_code`) used to spike VRAM when two
+  subprocesses fired at once. Per-call timeout lives in
+  `LIES_QMD_FANOUT_TIMEOUT` (default 15s; matches qmd's observed
+  reranking latency on cold daemons). The recycle trigger counts
+  only `QmdCommandError` (real subprocess failures);
   `QmdNoResultsError` (clean miss) is silent.
 - **`synthesize`** — prose answer for humans. `SynthesizeEnvelope`
   carrying the LLM-written body and claim-tagged citations. Calls

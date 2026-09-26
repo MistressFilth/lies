@@ -48,33 +48,27 @@ from lies.agents.librarian import librarian_agent  # noqa: E402,F401
 _RECYCLE_THRESHOLD = int(os.environ.get("LIES_QMD_RECYCLE_THRESHOLD", "3"))
 _consecutive_qmd_errors = 0
 
-# Concurrency cap on parallel qmd subprocess fan-out in
-# :func:`_fanout_collections`. qmd's reranking step ("Reranking N
-# chunks..." on stderr) competes for resources when many
-# ``qmd_query`` subprocesses run concurrently in the same daemon;
-# firing every registered collection in parallel (asyncio.gather)
-# caused subprocesses to wedge and exceed the per-collection
-# timeout (session live-corpus hang: limit=10 amplified the
-# reranking pool and made contention worse). Bounding to 4 keeps
-# the fan-out parallelism usable while staying under the
-# contention threshold — a hard-coded 4 is the conservative bound
-# that survived every observed workload; making it configurable
-# would invite ops to crank it back into the hang regime.
-_QMD_FANOUT_SEMAPHORE = asyncio.Semaphore(4)
+# Sequential dispatch on qmd subprocess fan-out in
+# :func:`_fanout_collections`: one ``qmd_query`` subprocess at a
+# time, full stop. Concurrent fan-out spiked VRAM because each
+# subprocess independently loaded the embedding model (live
+# corpus reproduction: ``+c:opencode|c:claude_code`` fired two
+# concurrent qmd subprocesses, two model loads at once). Operators
+# trade ``max(N) * per-call latency`` for ``ceil(N) * per-call
+# latency`` in exchange for VRAM stability — verified on the live
+# corpus 2026-09-26.
 
 # Per-call timeout for the ``qmd_query`` subprocess fired by
 # :func:`_fanout_collections._one`. Default 15s matches qmd's
 # observed reranking latency on cold daemons at ``limit=10``
 # (live corpus probe, 2026-09-25: ~3-7s on warm daemons; cold
 # daemon startup can push the reranking step past 10s). The
-# ``_QMD_FANOUT_SEMAPHORE`` above already caps worst-case fan-out
-# latency at ``ceil(N / 4) * timeout`` (4 * 15s = 60s ceiling
-# across 14 collections, dominated by cold daemon startup), so
-# bumping the per-call budget no longer reintroduces the
-# single-collection hang the 5s literal was guarding against.
-# Override via the ``LIES_QMD_FANOUT_TIMEOUT`` env var for ops
-# chasing a tighter SLO; reads at module import so daemon
-# restarts are required to pick up a change.
+# sequential dispatch above caps worst-case fan-out latency at
+# ``ceil(N) * timeout`` (14 * 15s = 210s ceiling across 14
+# collections, dominated by cold daemon startup). Override via
+# the ``LIES_QMD_FANOUT_TIMEOUT`` env var for ops chasing a
+# tighter SLO; reads at module import so daemon restarts are
+# required to pick up a change.
 _QMD_FANOUT_TIMEOUT = int(os.environ.get("LIES_QMD_FANOUT_TIMEOUT", "15"))
 
 
@@ -218,14 +212,21 @@ async def _fanout_collections(
     top_k: int,
     collection_names: list[str],
 ) -> "list[PageExcerpt]":
-    """Parallel-scan ``collection_names`` for the question, no LLM round-trip.
+    """Sequential-scan ``collection_names`` for the question, no LLM round-trip.
 
     Shared core for both the unscoped fan-out
     (:func:`_fanout_unscoped`, Task 1) and the tagged fan-out
     (:func:`_query_tagged_collections`, this task). Bypasses the F18
     librarian entirely by dispatching per-collection ``qmd_query``
-    calls concurrently and merging the results sorted by score desc.
-    Each ``collection_names`` entry is passed as a qmd
+    calls one at a time and merging the results sorted by score
+    desc. Sequential dispatch is load-bearing: each ``qmd_query``
+    subprocess independently loads the embedding model into VRAM,
+    so concurrent fan-out caused a model-per-process VRAM spike
+    (live corpus reproduction: ``+c:opencode|c:claude_code`` fired
+    two concurrent qmd subprocesses and spiked VRAM). Operators
+    trade ``max(N) * per-call latency`` for ``ceil(N) *
+    per-call latency`` in exchange for VRAM stability. Each
+    ``collection_names`` entry is passed as a qmd
     ``collection_filter`` set so the per-collection post-filter
     retains the same semantics the unscoped fan-out has shipped with.
 
@@ -268,69 +269,71 @@ async def _fanout_collections(
     names = sorted(set(collection_names))
 
     async def _one(name: str) -> list[dict] | None:
-        # Task 5: track consecutive qmd failures across the fan-out.
-        # ``N`` consecutive errors trigger a single ``recycle()`` to
-        # recover from a wedged daemon before propagating the failure;
-        # any success between failures resets the counter. The lazy
-        # ``recycle`` import keeps ``grounding`` off the daemon-
-        # lifecycle import path until the threshold trips.
+        # Outer ``for`` loop in :func:`_fanout_collections` awaits
+        # each ``_one`` before dispatching the next — sequential
+        # fan-out is the VRAM contract. Task 5 recycle counter
+        # threaded through the same body: ``N`` consecutive errors
+        # trigger a single ``recycle()`` to recover from a wedged
+        # daemon before propagating the failure; any success between
+        # failures resets the counter. The lazy ``recycle`` import
+        # keeps ``grounding`` off the daemon-lifecycle import path
+        # until the threshold trips.
         global _consecutive_qmd_errors
-        # Bound concurrent qmd subprocesses to ``_QMD_FANOUT_SEMAPHORE``
-        # permits. The semaphore lives at module scope so it persists
-        # across every fan-out call — a per-call ``Semaphore(N)`` would
-        # only ever cap the call in flight, defeating the purpose when
-        # callers fire fan-outs in parallel (e.g. multiple ``ground()``
-        # calls awaited from the same gather). The 4-permit bound is
-        # conservative: qmd's reranking step can absorb up to ~4
-        # concurrent subprocesses before contention wedges the daemon.
-        async with _QMD_FANOUT_SEMAPHORE:
-            try:
-                return await asyncio.to_thread(
-                    qmd_query,
-                    cwd=lib_root,
-                    question=question,
-                    limit=top_k,
-                    timeout=_QMD_FANOUT_TIMEOUT,
-                    collection_filter={name},
-                )
-            except QmdCommandError:
-                # Real subprocess failure (timeout, crash, transport).
-                # Increment counter; recycle when threshold trips.
-                _consecutive_qmd_errors += 1
-                if _consecutive_qmd_errors >= _RECYCLE_THRESHOLD:
-                    # Reset BEFORE the await so concurrent failures that
-                    # land during the in-flight ``recycle()`` cannot
-                    # double-trip the threshold. The clear happens under
-                    # the same ``except`` branch as the increment, so two
-                    # racing ``_one`` tasks cannot both observe a tripped
-                    # counter for the same wedged batch.
-                    _consecutive_qmd_errors = 0
-                    try:
-                        from lies.qmd.lifecycle import recycle
+        try:
+            return await asyncio.to_thread(
+                qmd_query,
+                cwd=lib_root,
+                question=question,
+                limit=top_k,
+                timeout=_QMD_FANOUT_TIMEOUT,
+                collection_filter={name},
+            )
+        except QmdCommandError:
+            # Real subprocess failure (timeout, crash, transport).
+            # Increment counter; recycle when threshold trips.
+            _consecutive_qmd_errors += 1
+            if _consecutive_qmd_errors >= _RECYCLE_THRESHOLD:
+                # Reset BEFORE the await so any subsequent failure
+                # that lands during the in-flight ``recycle()`` does
+                # not double-trip the threshold. The clear happens
+                # under the same ``except`` branch as the increment,
+                # so two racing ``_one`` tasks cannot both observe a
+                # tripped counter for the same wedged batch.
+                _consecutive_qmd_errors = 0
+                try:
+                    from lies.qmd.lifecycle import recycle
 
-                        await asyncio.to_thread(recycle)
-                    except Exception:
-                        # ``recycle`` is best-effort — a failed recycle
-                        # does not mask the original qmd failure. The
-                        # caller surfaces the dropped-collection result
-                        # via the empty excerpts list.
-                        pass
-                return None
-            except QmdNoResultsError:
-                # qmd ran cleanly; this collection has no hits for the
-                # query. Clean miss — do NOT increment counter, do NOT
-                # recycle. Pre-split, the tuple-caught
-                # ``(QmdCommandError, QmdNoResultsError)`` treated clean
-                # misses as failures; a ``pydantic_validation``-class
-                # collection with limited reranking candidates would
-                # trip the recycle threshold on legitimate empty
-                # results, eventually recycling a healthy daemon.
-                return None
-            # Any successful collection query resets the counter so a
-            # transient error doesn't accumulate against later successes.
-            _consecutive_qmd_errors = 0
+                    await asyncio.to_thread(recycle)
+                except Exception:
+                    # ``recycle`` is best-effort — a failed recycle
+                    # does not mask the original qmd failure. The
+                    # caller surfaces the dropped-collection result
+                    # via the empty excerpts list.
+                    pass
+            return None
+        except QmdNoResultsError:
+            # qmd ran cleanly; this collection has no hits for the
+            # query. Clean miss — do NOT increment counter, do NOT
+            # recycle. Pre-split, the tuple-caught
+            # ``(QmdCommandError, QmdNoResultsError)`` treated clean
+            # misses as failures; a ``pydantic_validation``-class
+            # collection with limited reranking candidates would
+            # trip the recycle threshold on legitimate empty
+            # results, eventually recycling a healthy daemon.
+            return None
+        # Any successful collection query resets the counter so a
+        # transient error doesn't accumulate against later successes.
+        _consecutive_qmd_errors = 0
 
-    raw = await asyncio.gather(*[_one(n) for n in names])
+    # Sequential dispatch: exactly one qmd subprocess at a time. The
+    # operator pays wall-clock cost (ceil(N) × per-call latency) in
+    # exchange for VRAM stability — concurrent qmd_query invocations
+    # each load the embedding model independently, and N parallel
+    # subprocesses cause a model-per-process VRAM spike (verified on
+    # the live corpus with +c:opencode|c:claude_code).
+    raw: list[list[dict] | None] = []
+    for name in names:
+        raw.append(await _one(name))
     merged: list[tuple[float, dict]] = []
     for batch in raw:
         if not batch:
@@ -387,7 +390,7 @@ async def _fanout_unscoped(
     exclude_expr: "TagExpr | None",
     top_k: int,
 ) -> "list[PageExcerpt]":
-    """Parallel-scan every registered library collection for unscoped queries.
+    """Sequential-scan every registered library collection for unscoped queries.
 
     Thin wrapper around :func:`_fanout_collections` that resolves
     the collection set from the library registry. Bypasses the F18
@@ -397,7 +400,11 @@ async def _fanout_unscoped(
     merged ``PageExcerpt`` rows sorted by score desc and truncated
     to ``top_k``.
 
-    Per-collection timeout: 5s. Failed collections dropped silently.
+    Per-collection timeout: 15s (``_QMD_FANOUT_TIMEOUT``). Failed
+    collections dropped silently. The fan-out is sequential —
+    one qmd subprocess at a time — to avoid a model-per-process
+    VRAM spike on OR-scoped queries (see
+    :func:`_fanout_collections`).
 
     Args:
         question: Natural-language question.
@@ -421,7 +428,7 @@ async def _query_tagged_collections(
     top_k: int,
     collection_names: list[str],
 ) -> "list[PageExcerpt]":
-    """Parallel-scan the tag-resolved collection set without the F18 librarian.
+    """Sequential-scan the tag-resolved collection set without the F18 librarian.
 
     Tagged ``ground()`` previously took the F18 librarian path even
     when the resolved AST matched one or more library collections
