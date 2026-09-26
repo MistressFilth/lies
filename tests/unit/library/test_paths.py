@@ -44,6 +44,7 @@ def test_collection_rejects_path_traversal(tmp_xdg: Path) -> None:
         lib.collection("with space")
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize(
     "bad_name",
     [

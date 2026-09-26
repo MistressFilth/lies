@@ -6,6 +6,8 @@ the help= text from the spec at
 
 from __future__ import annotations
 
+import re
+
 import pytest
 from typer.testing import CliRunner
 
@@ -14,6 +16,33 @@ from lies.cli import app
 pytestmark = pytest.mark.slow
 
 runner = CliRunner()
+
+# Strip ANSI escape sequences (e.g. Rich's dim/faint markers inserted at
+# wrap points in narrow-terminal panel output) and Rich's panel
+# box-drawing characters before substring matching, so wrapping panel
+# rendering can't split a help-text phrase apart.
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*m")
+# Box-drawing characters used by Rich's panel borders + heavy variants.
+# A character class rather than a range, so we don't accidentally sweep
+# up unrelated Unicode codepoints.
+_PANEL_CHARS_RE = re.compile(r"[─━│┃╭╮╯╰]")
+_WHITESPACE_RE = re.compile(r"\s+")
+
+
+def _plain(text: str) -> str:
+    """Strip ANSI escape sequences, panel box-drawing chars, and runs of whitespace.
+
+    Rich's panel renderer wraps long help text at word boundaries; on
+    narrow terminals it may also emit ANSI escape sequences inside the
+    wrapped region (e.g. a dimmed space) and emit a box-drawing border
+    on every wrapped line. Either artifact can split an otherwise-
+    contiguous help-text substring, so we strip ANSI codes, the panel
+    border characters, and collapse all remaining whitespace runs to a
+    single space before substring matching.
+    """
+    no_ansi = _ANSI_ESCAPE_RE.sub("", text)
+    no_panel = _PANEL_CHARS_RE.sub("", no_ansi)
+    return _WHITESPACE_RE.sub(" ", no_panel)
 
 
 # Each row: (command, expected_help_substrings).
@@ -71,7 +100,7 @@ def test_every_option_has_help_text(command, expected_substrings):
     """
     result = runner.invoke(app, command + ["--help"])
     assert result.exit_code == 0, f"command {command} --help failed: {result.output}"
-    output = result.output if isinstance(result.output, str) else "".join(result.output)
+    output = _plain(result.output if isinstance(result.output, str) else "".join(result.output))
     for substring in expected_substrings:
         assert substring in output, (
             f"help text {substring!r} not in {command} --help output:\n{output}"
@@ -135,7 +164,7 @@ def test_command_help_contains_help_text(command, expected_substring):
     """
     result = runner.invoke(app, command + ["--help"])
     assert result.exit_code == 0, f"command {command} --help failed: {result.output}"
-    output = result.output if isinstance(result.output, str) else "".join(result.output)
+    output = _plain(result.output if isinstance(result.output, str) else "".join(result.output))
     candidates = (
         expected_substring if isinstance(expected_substring, list) else [expected_substring]
     )

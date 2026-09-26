@@ -8,6 +8,13 @@ All notable changes to LIES are documented here. The format follows
 
 ### Added
 
+- `lies sync` chains `qmd update` + `qmd embed` against the
+  library git root after the collection loop. The auto-chain
+  replaces the separate `/reindex` invocation operators
+  previously had to run by hand. New `--skip-reindex` flag opts
+  out for CI matrices that reindex separately. Failures log +
+  warn; the sync exit code stays clean (sync data integrity is
+  separate from qmd lag).
 - `lies qmd status|up|down|recycle` operator CLI (mirrors ask's daemon commands).
 - `qmd.recycle()` programmatic recovery for wedged daemons.
 - `ArchivistDigest` and `SynthesizeEnvelope` fan-out triggers `recycle()` after N consecutive `QmdCommandError`s.
