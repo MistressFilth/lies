@@ -74,6 +74,13 @@ All notable changes to LIES are documented here. The format follows
   for retrieval then runs `query_synthesizer_agent` over the result.
 - `library://catalog` and `library://catalog/{slug}` MCP resources as
   the user-facing catalog surface.
+- Bespoke scraper path `~/.local/share/lies/scripts/opencode_llms_scraper.py`
+  for the `opencode` library collection. Subclasses `WebScraper` to add
+  `Accept: text/markdown` on per-page fetches; the OpenCode V2 docs site
+  returns HTML by default and only negotiates markdown when that header
+  is present (the same shape the site's "Copy page as Markdown" button
+  uses). Wired via `scraper_cmd` in `~/.local/share/lies/library/collections/opencode/config.yaml`,
+  pointing at the new `https://opencode.ai/v2/llms.txt` source.
 - `ground()` parallel fan-out for unscoped queries: ≤ 15s with non-empty
   citations across all registered library collections.
 - `ArchivistDigest.no_library: bool` flag (additive).
@@ -110,6 +117,17 @@ All notable changes to LIES are documented here. The format follows
 - `WikiMemoryService.search` now threads an optional
   `qmd_collection_filter` kwarg down to `_from_qmd` /
   `search_wiki` so qmd applies the post-filter at qmd-time. The
+- `WebScraper._LLMS_LINK_RE` regex (which extracts `- [Title](url)`
+  entries from an `llms.txt` index) used `\s*` for in-line whitespace,
+  which silently consumed newlines. llms.txt indexes whose links
+  carry no `: description` (e.g. `https://opencode.ai/v2/llms.txt`,
+  every entry bare) lost every-other link: the lazy `(.*?)`
+  description group swallowed the next link line as its "description"
+  because the trailing `\s*$` allowed matches to span newlines.
+  Tightened whitespace to `[ \t]` so each match is confined to one
+  line. Regression pin in
+  `tests/unit/ingestion/test_scrapers_web.py::test_web_scraper_extract_llms_links_handles_bare_links`.
+  Hard cutover — no shim, no deprecated path.
   librarian's `_wiki_search` resolves `LibrarianDeps.tag_expr`
   via the F15 tag-expression filter and threads the resolved
   collection set down. Library collections the operator excluded
