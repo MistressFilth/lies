@@ -15,6 +15,7 @@ to already be registered under ``$LIES_XDG_DATA_HOME``.
 
 from __future__ import annotations
 
+import asyncio
 import sys
 from collections.abc import Callable
 from dataclasses import asdict
@@ -192,13 +193,24 @@ def mcp_ground(
         # unscoped paths symmetric and surfaces a configuration
         # error at the boundary instead of mid-dispatch.
         librarian_model = _resolve_librarian_model()
-        digest = ground(
-            question=question,
-            tag_expr=tag_expr,
-            exclude_expr=exclude_expr,
-            top_k=top_k,
-            wiki_name=name,
-            librarian_model=librarian_model,
+        # ``ground()`` is async (the dispatch layer bridges to async
+        # fan-out + qmd subprocess + the legacy librarian LLM
+        # round-trip). FastMCP runs sync tool handlers in a
+        # threadpool where there is no running event loop, so
+        # ``asyncio.run`` creates a fresh loop and drains the
+        # coroutine. ``asyncio.run`` cannot be called from a running
+        # loop; if a future caller routes this through the daemon's
+        # main loop instead, switch ``mcp_ground`` to ``async def``
+        # and drop the ``asyncio.run`` wrapper.
+        digest = asyncio.run(
+            ground(
+                question=question,
+                tag_expr=tag_expr,
+                exclude_expr=exclude_expr,
+                top_k=top_k,
+                wiki_name=name,
+                librarian_model=librarian_model,
+            )
         )
     except ArchivistCoverageError as exc:
         raise ToolError(str(exc)) from exc

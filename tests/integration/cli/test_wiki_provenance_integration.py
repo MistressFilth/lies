@@ -89,6 +89,7 @@ def test_provenance_round_trip(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
         "query_synthesizer",
         "enricher",
         "repair",
+        "librarian",
     ):
         monkeypatch.setenv(f"LIES_{agent_name.upper()}_MODEL", "anthropic:test-dummy")
     monkeypatch.setattr("lies.cli.resolve_wiki", lambda _name=None: wiki)

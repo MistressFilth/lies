@@ -48,6 +48,20 @@ from lies.agents.librarian import librarian_agent  # noqa: E402,F401
 _RECYCLE_THRESHOLD = int(os.environ.get("LIES_QMD_RECYCLE_THRESHOLD", "3"))
 _consecutive_qmd_errors = 0
 
+# Concurrency cap on parallel qmd subprocess fan-out in
+# :func:`_fanout_collections`. qmd's reranking step ("Reranking N
+# chunks..." on stderr) competes for resources when many
+# ``qmd_query`` subprocesses run concurrently in the same daemon;
+# firing every registered collection in parallel (asyncio.gather)
+# caused subprocesses to wedge and exceed the 5s per-collection
+# timeout (session live-corpus hang: limit=10 amplified the
+# reranking pool and made contention worse). Bounding to 4 keeps
+# the fan-out parallelism usable while staying under the
+# contention threshold — a hard-coded 4 is the conservative bound
+# that survived every observed workload; making it configurable
+# would invite ops to crank it back into the hang regime.
+_QMD_FANOUT_SEMAPHORE = asyncio.Semaphore(4)
+
 
 @dataclass(frozen=True)
 class CitationSnippet:
@@ -241,39 +255,48 @@ async def _fanout_collections(
         # ``recycle`` import keeps ``grounding`` off the daemon-
         # lifecycle import path until the threshold trips.
         global _consecutive_qmd_errors
-        try:
-            return await asyncio.to_thread(
-                qmd_query,
-                cwd=lib_root,
-                question=question,
-                limit=top_k,
-                timeout=5,
-                collection_filter={name},
-            )
-        except (QmdCommandError, QmdNoResultsError):
-            _consecutive_qmd_errors += 1
-            if _consecutive_qmd_errors >= _RECYCLE_THRESHOLD:
-                # Reset BEFORE the await so concurrent failures that
-                # land during the in-flight ``recycle()`` cannot
-                # double-trip the threshold. The clear happens under
-                # the same ``except`` branch as the increment, so two
-                # racing ``_one`` tasks cannot both observe a tripped
-                # counter for the same wedged batch.
-                _consecutive_qmd_errors = 0
-                try:
-                    from lies.qmd.lifecycle import recycle
+        # Bound concurrent qmd subprocesses to ``_QMD_FANOUT_SEMAPHORE``
+        # permits. The semaphore lives at module scope so it persists
+        # across every fan-out call — a per-call ``Semaphore(N)`` would
+        # only ever cap the call in flight, defeating the purpose when
+        # callers fire fan-outs in parallel (e.g. multiple ``ground()``
+        # calls awaited from the same gather). The 4-permit bound is
+        # conservative: qmd's reranking step can absorb up to ~4
+        # concurrent subprocesses before contention wedges the daemon.
+        async with _QMD_FANOUT_SEMAPHORE:
+            try:
+                return await asyncio.to_thread(
+                    qmd_query,
+                    cwd=lib_root,
+                    question=question,
+                    limit=top_k,
+                    timeout=5,
+                    collection_filter={name},
+                )
+            except (QmdCommandError, QmdNoResultsError):
+                _consecutive_qmd_errors += 1
+                if _consecutive_qmd_errors >= _RECYCLE_THRESHOLD:
+                    # Reset BEFORE the await so concurrent failures that
+                    # land during the in-flight ``recycle()`` cannot
+                    # double-trip the threshold. The clear happens under
+                    # the same ``except`` branch as the increment, so two
+                    # racing ``_one`` tasks cannot both observe a tripped
+                    # counter for the same wedged batch.
+                    _consecutive_qmd_errors = 0
+                    try:
+                        from lies.qmd.lifecycle import recycle
 
-                    await asyncio.to_thread(recycle)
-                except Exception:
-                    # ``recycle`` is best-effort — a failed recycle
-                    # does not mask the original qmd failure. The
-                    # caller surfaces the dropped-collection result
-                    # via the empty excerpts list.
-                    pass
-            return None
-        # Any successful collection query resets the counter so a
-        # transient error doesn't accumulate against later successes.
-        _consecutive_qmd_errors = 0
+                        await asyncio.to_thread(recycle)
+                    except Exception:
+                        # ``recycle`` is best-effort — a failed recycle
+                        # does not mask the original qmd failure. The
+                        # caller surfaces the dropped-collection result
+                        # via the empty excerpts list.
+                        pass
+                return None
+            # Any successful collection query resets the counter so a
+            # transient error doesn't accumulate against later successes.
+            _consecutive_qmd_errors = 0
 
     raw = await asyncio.gather(*[_one(n) for n in names])
     merged: list[tuple[float, dict]] = []
@@ -400,7 +423,7 @@ async def _query_tagged_collections(
     return await _fanout_collections(question, exclude_expr, top_k, collection_names)
 
 
-def ground(
+async def ground(
     question: str,
     tag_expr: str | None = None,
     exclude_expr: "TagExpr | None" = None,
@@ -410,6 +433,17 @@ def ground(
     librarian_model: "Model | str | None" = None,
 ) -> ArchivistDigest:
     """Return a grounding digest for ``question``.
+
+    Async because the unscoped and tagged fast-paths (paths #1 and #2
+    below) bridge to async fan-out helpers via ``await``; the legacy
+    F18 librarian path (#3) is the only sync branch. The
+    ``await``-bridge replaces the prior ``asyncio.run(...)`` shim,
+    which raised ``RuntimeError: asyncio.run() cannot be called from
+    a running event loop`` when ``synthesize()`` — itself ``async`` —
+    called ``ground()`` from inside the daemon's event loop. The
+    sync MCP ``ground`` tool wrapper (``server.py::mcp_ground``) and
+    any Python caller outside an event loop thread ``asyncio.run``
+    around the await.
 
     Translates ``tag_expr`` / ``exclude_expr`` via the F15 tag-filter
     dispatch, then dispatches one of three retrieval paths:
@@ -622,14 +656,15 @@ def ground(
     if tag_expr is None and exclude_expr is None:
         # Unscoped fast-path: bypass the F18 librarian LLM round-trip
         # and fan out directly to qmd across every registered library
-        # collection. ``asyncio.run`` bridges the sync ``ground()``
-        # signature to the async fan-out helper; the surface stays
-        # synchronous for every existing caller. Skips the librarian
-        # tool-wiring block entirely (no LLM round-trip happens here).
+        # collection. ``await`` resolves on the async fan-out helper;
+        # the surface is now itself ``async`` so the daemon's event
+        # loop does not raise ``RuntimeError`` on a nested
+        # ``asyncio.run`` (pre-this-change bug: ``synthesize`` →
+        # ``ground`` → ``asyncio.run`` raised from inside the daemon
+        # loop). Skips the librarian tool-wiring block entirely (no
+        # LLM round-trip happens here).
         try:
-            excerpts = asyncio.run(
-                _fanout_unscoped(question, exclude_expr, top_k),
-            )
+            excerpts = await _fanout_unscoped(question, exclude_expr, top_k)
         except Exception as exc:
             warnings.warn(
                 f"ground: fan-out dispatch failed: {type(exc).__name__}: {exc}",
@@ -672,13 +707,11 @@ def ground(
         # preserves historical behavior for ``tag_expr`` set with no
         # library match — e.g. ``tag_expr="c:ghost"``).
         try:
-            excerpts = asyncio.run(
-                _query_tagged_collections(
-                    question,
-                    exclude_expr,
-                    top_k,
-                    searched_scope_list,
-                ),
+            excerpts = await _query_tagged_collections(
+                question,
+                exclude_expr,
+                top_k,
+                searched_scope_list,
             )
         except Exception as exc:
             warnings.warn(

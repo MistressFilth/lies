@@ -71,6 +71,15 @@ def test_page_write_then_overwrite(tmp_path):
     # pydantic-ai will only complain if a real call hits the wire.
     env.setdefault("ANTHROPIC_API_KEY", "test-integration-dummy-key-not-used")
     env.setdefault("MINIMAX_API_KEY", "test-integration-dummy-key-not-used")
+    # The integration conftest's autouse ``_seed_librarian_model`` sets
+    # ``LIES_LIBRARIAN_MODEL=test`` in the parent process; that env
+    # override propagates via ``env.copy()`` and would beat the TOML
+    # written below (which is the source of truth this test asserts
+    # against). The "test" value is also malformed (no ``:``) so
+    # ``parse_model_string`` would raise inside the subprocess's
+    # orchestrator constructor. Drop it so the subprocess reads the
+    # TOML the test just seeded.
+    env.pop("LIES_LIBRARIAN_MODEL", None)
 
     # Init wiki + collection
     subprocess.run(["uv", "run", "lies", "init", "test-integration"], check=True, env=env)

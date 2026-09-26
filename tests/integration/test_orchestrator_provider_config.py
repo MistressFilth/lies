@@ -45,6 +45,13 @@ def wiki(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Wiki:
     monkeypatch.setenv("LIES_WIKI_NAME", "default")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
     monkeypatch.setenv("MINIMAX_API_KEY", "test-key")
+    # The integration conftest's autouse ``_seed_librarian_model`` sets
+    # ``LIES_LIBRARIAN_MODEL=test``, which takes precedence over the
+    # TOML and is malformed (no ``:``). The TOML below is the source
+    # of truth these tests assert against, so drop the env override so
+    # the resolver reads the TOML. Tests that genuinely exercise the
+    # env-override path set ``LIES_<AGENT>_MODEL`` themselves.
+    monkeypatch.delenv("LIES_LIBRARIAN_MODEL", raising=False)
     data_root = Wiki.data_root_for("default")
     data_root.mkdir(parents=True)
     (data_root / "raw").mkdir()

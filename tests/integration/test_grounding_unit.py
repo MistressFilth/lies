@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import warnings
 from dataclasses import dataclass
@@ -18,6 +19,22 @@ from lies.mcp.grounding import (
     pick_first_prose_span,
     truncate_at_word_boundary,
 )
+
+
+def _ground(*args, **kwargs):
+    """Sync shim that drains the now-async ``grounding.ground()`` to completion.
+
+    ``grounding.ground()`` became ``async def`` (it was sync pre-v0.37.x
+    when the daemon's event loop raised ``RuntimeError`` on the inner
+    ``asyncio.run`` shim that bridged to the async fan-out). Sync test
+    code in this module has no event loop, so the helper wraps with
+    ``asyncio.run`` to provide one. Keeping the helper local to this
+    file avoids a cross-test-module import churn and pins the contract
+    end-to-end (every call site here goes through the same shim).
+    """
+    from lies.mcp import grounding
+
+    return asyncio.run(grounding.ground(*args, **kwargs))
 
 
 @pytest.fixture(autouse=True)
@@ -184,7 +201,7 @@ def test_ground_returns_empty_digest_on_librarian_exception(monkeypatch) -> None
 
     monkeypatch.setattr(grounding, "librarian_agent", lambda: _BoomAgent())
 
-    digest = grounding.ground("what is pydantic?")
+    digest = _ground("what is pydantic?")
     assert digest.no_coverage is True
     assert digest.citations == []
     assert digest.question == "what is pydantic?"
@@ -229,7 +246,7 @@ def test_ground_librarian_exception_emits_no_logfire_warning(monkeypatch, recwar
 
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        digest = grounding.ground("what is pydantic?")
+        digest = _ground("what is pydantic?")
 
     assert digest.no_coverage is True
     logfire_warns = [w for w in caught if "LogfireNotConfiguredWarning" in type(w.message).__name__]
@@ -262,8 +279,8 @@ def test_ground_clamps_top_k_to_bounds(monkeypatch) -> None:
         )
 
     _patch_librarian(monkeypatch, grounding, fake_librarian)
-    digest_low = grounding.ground("q", top_k=0)
-    digest_high = grounding.ground("q", top_k=999)
+    digest_low = _ground("q", top_k=0)
+    digest_high = _ground("q", top_k=999)
     # top_k is a request hint forwarded to the librarian; the brief does not
     # require ground() to re-truncate the librarian's output. We verify the
     # function returns a digest in both cases without exception.
@@ -297,7 +314,7 @@ def test_ground_uses_first_prose_span_per_excerpt(monkeypatch) -> None:
         return excerpts
 
     _patch_fanout(monkeypatch, grounding, fake_fanout)
-    digest = grounding.ground("q")
+    digest = _ground("q")
     assert len(digest.citations) == 1
     assert digest.citations[0].snippet != ""
     assert len(digest.citations[0].snippet) <= 200
@@ -332,7 +349,7 @@ def test_ground_skips_excerpts_with_only_code_fences(monkeypatch) -> None:
         return excerpts
 
     _patch_fanout(monkeypatch, grounding, fake_fanout)
-    digest = grounding.ground("q")
+    digest = _ground("q")
     assert len(digest.citations) == 1
     assert digest.citations[0].slug == "prose"
     assert digest.no_coverage is False
@@ -368,7 +385,7 @@ def test_ground_no_coverage_true_when_librarian_reports_it(monkeypatch) -> None:
             self.output = output
 
     monkeypatch.setattr(grounding, "librarian_agent", lambda: _FakeAgent())
-    digest = grounding.ground("q")
+    digest = _ground("q")
     assert digest.no_coverage is True
     assert digest.citations == []
 
@@ -398,7 +415,7 @@ def test_ground_no_coverage_false_when_librarian_returns_hits(monkeypatch) -> No
         return excerpts
 
     _patch_fanout(monkeypatch, grounding, fake_fanout)
-    digest = grounding.ground("q")
+    digest = _ground("q")
     assert digest.no_coverage is False
     assert len(digest.citations) == 1
 
@@ -418,7 +435,7 @@ def test_ground_dispatch_failure_still_yields_no_coverage_true(monkeypatch) -> N
             raise RuntimeError("qmd daemon offline")
 
     monkeypatch.setattr(grounding, "librarian_agent", lambda: _BoomAgent())
-    digest = grounding.ground("q")
+    digest = _ground("q")
     assert digest.no_coverage is True
 
 
@@ -481,7 +498,7 @@ def test_ground_searched_scope_untagged_returns_all_collections(monkeypatch) -> 
 
     _patch_librarian(monkeypatch, grounding, fake_librarian)
 
-    digest = grounding.ground("q")
+    digest = _ground("q")
     assert digest.searched_scope == ["claude_platform", "mermaid", "opencode"]
 
 
@@ -529,7 +546,7 @@ def test_ground_searched_scope_tagged_returns_matching_only(monkeypatch) -> None
 
     _patch_librarian(monkeypatch, grounding, fake_librarian)
 
-    digest = grounding.ground("q", tag_expr="opencode")
+    digest = _ground("q", tag_expr="opencode")
     assert digest.searched_scope == ["opencode"]
 
 
@@ -558,7 +575,7 @@ def test_ground_searched_scope_populated_on_librarian_exception(monkeypatch) -> 
 
     monkeypatch.setattr(grounding, "librarian_agent", lambda: _BoomAgent())
 
-    digest = grounding.ground("q")
+    digest = _ground("q")
     assert digest.no_coverage is True
     assert digest.searched_scope == ["claude_platform", "opencode"]
 
@@ -602,7 +619,7 @@ def test_mcp_ground_wire_format_includes_searched_scope(monkeypatch) -> None:
 
     # Also pin the dataclass-level asdict path so the dataclass itself
     # carries the field — this is what the MCP tool relies on.
-    digest = grounding.ground("what is opencode?")
+    digest = _ground("what is opencode?")
     asdict_payload = asdict(digest)
     assert "searched_scope" in asdict_payload
 
@@ -653,9 +670,9 @@ def test_ground_library_collection_names_cached_across_calls(monkeypatch, tmp_pa
     monkeypatch.setattr(grounding, "_fanout_unscoped", _empty_fanout)
     monkeypatch.setattr(grounding, "_query_tagged_collections", _empty_fanout)
 
-    grounding.ground("q")  # unscoped: _all_collection_names → cache miss #1
-    grounding.ground("q", tag_expr="a|b")  # resolver path uses cached names
-    grounding.ground("q", tag_expr="a")  # resolver path uses cached names
+    _ground("q")  # unscoped: _all_collection_names → cache miss #1
+    _ground("q", tag_expr="a|b")  # resolver path uses cached names
+    _ground("q", tag_expr="a")  # resolver path uses cached names
 
     info = registry._library_collection_names_cached.cache_info()
     # One underlying body call regardless of how many ground()
@@ -1010,7 +1027,7 @@ def test_ground_wires_librarian_tools_before_run_sync(
     # import the AST type locally to keep the test hermetic.
     from lies.query.tag_expr import Include
 
-    digest = grounding.ground(
+    digest = _ground(
         "test question",
         tag_expr="wiki",
         exclude_expr=Include("wiki", "c"),
@@ -1088,7 +1105,7 @@ def test_ground_threads_source_kind_from_librarian_output(monkeypatch) -> None:
 
     _patch_fanout(monkeypatch, grounding, fake_fanout)
 
-    digest = grounding.ground("anything")
+    digest = _ground("anything")
     kinds = sorted(c.source_kind for c in digest.citations)
     assert kinds == ["library", "wiki"]
 
@@ -1199,7 +1216,7 @@ def test_ground_tagged_dispatches_via_qmd_fanout_not_librarian(monkeypatch) -> N
 
     monkeypatch.setattr(qmd_cli, "qmd_query", fake_qmd_query)
 
-    digest = grounding.ground(
+    digest = _ground(
         "Set up Switchyard to replace LiteLLM",
         tag_expr="c:switchyard",
         top_k=5,
@@ -1280,7 +1297,7 @@ def test_ground_tagged_fast_path_under_budget(monkeypatch) -> None:
     _patch_tagged_fanout(monkeypatch, grounding, fake_tagged)
 
     t0 = time.monotonic()
-    digest = grounding.ground(
+    digest = _ground(
         "Set up Switchyard to replace LiteLLM",
         tag_expr="c:switchyard",
         top_k=5,
@@ -1330,7 +1347,7 @@ def test_ground_tagged_dispatch_exception_returns_no_coverage(monkeypatch) -> No
 
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        digest = grounding.ground(
+        digest = _ground(
             "Set up Switchyard to replace LiteLLM",
             tag_expr="c:switchyard",
             top_k=5,
@@ -1438,7 +1455,7 @@ def test_ground_tagged_zero_matches_falls_through_to_librarian(monkeypatch) -> N
 
     monkeypatch.setattr(grounding, "_query_tagged_collections", _spy_tagged)
 
-    digest = grounding.ground(
+    digest = _ground(
         "Anything",
         tag_expr="ghost",
         top_k=5,
@@ -1486,7 +1503,6 @@ def test_ground_tagged_with_resolved_collection_calls_fanout_only(
     """
     from lies.library import registry as registry_mod
     from lies.library.registry import LibraryCollectionMeta
-    from lies.mcp import grounding
 
     monkeypatch.setattr(
         registry_mod,
@@ -1522,7 +1538,7 @@ def test_ground_tagged_with_resolved_collection_calls_fanout_only(
 
     monkeypatch.setattr(qmd_cli, "qmd_query", fake_qmd_query)
 
-    digest = grounding.ground(
+    digest = _ground(
         "test",
         tag_expr="c:switchyard|c:opencode",
         top_k=5,

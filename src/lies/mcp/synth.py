@@ -121,7 +121,7 @@ async def synthesize(
     from lies.markdown_spans import Span
 
     # 1. Retrieval
-    digest = ground(
+    digest = await ground(
         question=question,
         tag_expr=tag_expr,
         exclude_expr=exclude_expr,
@@ -190,9 +190,19 @@ async def synthesize(
         )
 
     # 6. Run the synthesizer agent.
+    #
+    # ``synthesize`` is itself ``async`` (so it can ``await ground()``
+    # from inside the daemon's event loop without ``asyncio.run``).
+    # pydantic-ai's ``Agent.run_sync`` shells through
+    # ``asyncio.run(...)``, which raises ``RuntimeError: This event
+    # loop is already running`` when called from inside a running loop
+    # — the same shape as the ground bug this commit fixed. Call the
+    # async ``agent.run`` directly so the running loop owns the
+    # coroutine; the result is the same ``AgentRunResult`` shape, and
+    # ``.output`` lands on the same typed ``QueryAnswer``.
     try:
         agent = query_synthesizer_agent(model=model)
-        result = agent.run_sync(question, deps=deps)
+        result = await agent.run(question, deps=deps)
         answer_obj = result.output
     except Exception as exc:
         return SynthesizeEnvelope(
