@@ -156,6 +156,13 @@ def sync(
             help="Route through collection_author_agent for missing collections (requires TTY).",
         ),
     ] = False,
+    skip_reindex: Annotated[
+        bool,
+        typer.Option(
+            "--skip-reindex/--no-skip-reindex",
+            help="Skip the qmd update + embed chain after the sync loop (default: chain).",
+        ),
+    ] = False,
 ) -> None:
     """Sync one or all collections.
 
@@ -210,6 +217,30 @@ def sync(
             total_created += last_result.created
             total_updated += last_result.updated
             total_skipped += last_result.skipped
+        if not skip_reindex:
+            # Chain qmd update + embed after the sync loop. The qmd
+            # lag is operator-visible, not data-loss — failures log + warn
+            # but do not abort the sync exit code (the collection sync
+            # already exited 0). ``qmd_reindex(embed=True)`` re-uses the
+            # library-wide reindex envelope (no per-collection name
+            # required) rather than ``qmd_embed`` directly (which is
+            # per-collection). CI matrices that reindex separately can
+            # opt out with ``--skip-reindex``.
+            from lies.library.registry import library_git_root
+            from lies.qmd.cli import qmd_reindex
+
+            try:
+                reindex_outcome = qmd_reindex(library_git_root(), embed=True)
+                typer.echo(
+                    f"qmd reindex: indexed={reindex_outcome.indexed} "
+                    f"embedded={reindex_outcome.embedded} "
+                    f"errors={reindex_outcome.errors}"
+                )
+            except Exception as exc:
+                typer.echo(
+                    f"warning: qmd reindex failed: {type(exc).__name__}: {exc}",
+                    err=True,
+                )
         summary = (
             f"created={total_created} updated={total_updated} "
             f"skipped={total_skipped} errors={total_errors}"

@@ -176,6 +176,9 @@ and bridges to the async `ground()` via `asyncio.run(...)`. Works
 today because FastMCP runs sync handlers in a threadpool; migration
 to native async support deferred.
 
+- `lies sync` chains qmd `update` + `embed` after the collection
+  loop. Use `--skip-reindex` to opt out for CI matrices.
+
 ### Library mode in tests (post #104)
 
 `tests/conftest.py::_isolated_xdg` autouse fixture seeds a

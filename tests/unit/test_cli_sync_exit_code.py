@@ -4,6 +4,15 @@ Finding 3 pin: a wholly-failed sync (errors > 0) must exit non-zero
 so operators (and CI) notice the silent data loss. The previous
 behavior swallowed ``BatchIngestResult`` and exited 0 regardless.
 
+Sync auto-reindex chain (sync-auto-reindex-embed):
+    ``lies sync`` (no ``--skip-reindex``) chains ``qmd_reindex`` against
+    ``library_git_root()`` after the collection loop so operators no
+    longer need a separate ``/reindex`` invocation. CI matrices that
+    reindex separately pass ``--skip-reindex``. The 3 historical
+    exit-code tests below pass ``--skip-reindex`` so they stay focused
+    on the exit-code contract; the new chain-contract tests pin the
+    auto-chain shape end-to-end.
+
 Marked slow: each test invokes the real Typer CLI (~300ms per
 ``runner.invoke``) so the unit budget does not absorb the inherent
 CLI-machinery cost. Run with ``--runslow`` to exercise.
@@ -12,6 +21,7 @@ CLI-machinery cost. Run with ``--runslow`` to exercise.
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from typer.testing import CliRunner
@@ -77,7 +87,7 @@ def test_sync_exits_zero_on_clean_batch(
         "sync_collection",
         lambda wiki, coll_name, *, force: BatchIngestResult(created=3, errors=0),
     )
-    result = runner.invoke(app, ["sync", "alpha"])
+    result = runner.invoke(app, ["sync", "alpha", "--skip-reindex"])
     assert result.exit_code == 0, result.output
     out = result.output
     assert "created=3" in out
@@ -102,7 +112,7 @@ def test_sync_exits_one_on_failed_batch(
             quarantine_records=[("x:u", "fetch-unreachable:foo:UnknownFormatError")],
         ),
     )
-    result = runner.invoke(app, ["sync", "alpha"])
+    result = runner.invoke(app, ["sync", "alpha", "--skip-reindex"])
     assert result.exit_code == 1, result.output
     out = result.output
     assert "errors=2" in out
@@ -134,9 +144,99 @@ def test_sync_aggregates_errors_across_collections(
         return BatchIngestResult(created=2, errors=2)
 
     monkeypatch.setattr(sync_helper, "sync_collection", fake)
-    result = runner.invoke(app, ["sync"])
+    result = runner.invoke(app, ["sync", "--skip-reindex"])
     assert result.exit_code == 1, result.output
     out = result.output
     # Total errors = 1 + 2 = 3.
     assert "errors=3" in out
     assert "created=3" in out
+
+
+def test_sync_chains_qmd_reindex_by_default(
+    wiki_with_collection: Wiki, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Default ``lies sync`` chains ``qmd_reindex`` after the collection loop.
+
+    Pin the auto-chain contract: ``lies sync alpha`` without
+    ``--skip-reindex`` MUST invoke ``qmd_reindex`` exactly once
+    against ``library_git_root()`` with ``embed=True``. The qmd
+    failure mode does NOT abort the sync exit code — qmd lag is
+    operator-visible, not data-loss (the brief is explicit on this).
+    """
+    from lies.etl import sync_helper
+    from lies.qmd import _models, cli as qmd_cli
+
+    monkeypatch.setattr(
+        sync_helper,
+        "sync_collection",
+        lambda wiki, coll_name, *, force: BatchIngestResult(created=3, errors=0),
+    )
+    with patch.object(
+        qmd_cli,
+        "qmd_reindex",
+        return_value=_models.ReindexResult(indexed=True, embedded=True),
+    ) as mock:
+        result = runner.invoke(app, ["sync", "alpha"])
+    assert result.exit_code == 0, result.output
+    mock.assert_called_once()
+    # First positional arg is the cwd; the chain passes library_git_root().
+    args = mock.call_args.args
+    assert len(args) == 1
+    assert Path(args[0]) == Path(Library.open().git_root)
+    # embed=True so the chain re-embeds stale chunks alongside the BM25 update.
+    kwargs = mock.call_args.kwargs
+    assert kwargs.get("embed") is True
+
+
+def test_sync_skip_reindex_skips_qmd_chain(
+    wiki_with_collection: Wiki, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``--skip-reindex`` opts out of the qmd chain entirely.
+
+    Pin the opt-out contract for CI matrices that reindex separately.
+    """
+    from lies.etl import sync_helper
+    from lies.qmd import _models, cli as qmd_cli
+
+    monkeypatch.setattr(
+        sync_helper,
+        "sync_collection",
+        lambda wiki, coll_name, *, force: BatchIngestResult(created=3, errors=0),
+    )
+    with patch.object(
+        qmd_cli,
+        "qmd_reindex",
+        return_value=_models.ReindexResult(),
+    ) as mock:
+        result = runner.invoke(app, ["sync", "alpha", "--skip-reindex"])
+    assert result.exit_code == 0, result.output
+    mock.assert_not_called()
+
+
+def test_sync_qmd_reindex_failure_warns_but_exits_zero(
+    wiki_with_collection: Wiki, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """qmd_reindex failure logs a warning; sync exit code stays clean.
+
+    Pin the ``try/except Exception`` envelope: a qmd reindex wedge
+    is operator-visible (log + warning) but does NOT abort the sync
+    exit code, because sync data integrity is separate from qmd
+    lag. The collection sync already exited 0; qmd lag is a
+    follow-up concern.
+    """
+    from lies.etl import sync_helper
+    from lies.qmd import cli as qmd_cli
+
+    monkeypatch.setattr(
+        sync_helper,
+        "sync_collection",
+        lambda wiki, coll_name, *, force: BatchIngestResult(created=1, errors=0),
+    )
+    with patch.object(
+        qmd_cli,
+        "qmd_reindex",
+        side_effect=RuntimeError("simulated qmd wedge"),
+    ):
+        result = runner.invoke(app, ["sync", "alpha"])
+    assert result.exit_code == 0, result.output
+    assert "warning: qmd reindex failed" in result.output

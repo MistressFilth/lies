@@ -17,7 +17,13 @@ collection YAML.
 ## Multi-collection mode
 
 - `lies sync` (no positional arg) iterates every collection
-  YAML in the wiki. Useful for periodic re-syncs.
+  YAML in the wiki and chains `qmd update` + `qmd embed` after
+  the sync loop. The auto-chain replaces the separate
+  `/reindex` invocation operators previously had to run by
+  hand.
+- `lies sync --skip-reindex` opts out of the qmd chain. CI
+  matrices that reindex separately preserve the pre-chain
+  behavior.
 - `lies sync --reconcile` runs sync per collection before the
   qmd reindex.
 
