@@ -42,6 +42,8 @@ import httpx
 import fastmcp
 import mcp
 
+from lies.qmd._subprocess import _run_qmd
+
 _log = logging.getLogger(__name__)
 
 _QMD_BIN = "qmd"
@@ -159,30 +161,23 @@ def qmd_daemon_state() -> QmdState:
     if not qmd_installed():
         return _not_installed()
     try:
-        # TODO(qmd-drain follow-up): switch to ``_run_qmd`` from
-        # ``lies.qmd._subprocess`` once the daemon-lifecycle module's
-        # stdout/stderr handling is rewired to bytes. Out of scope for
-        # Spec A (the qmd-drain sweep covered ``cli.py`` + ``_proc.py``);
-        # this daemon module predates Spec B and was intentionally
-        # left untouched to keep the PR review surface small. Track
-        # under issues/qmd-drain-followup.md.
-        proc = subprocess.run(
+        proc = _run_qmd(
             [_QMD_BIN, "status"],
-            capture_output=True,
-            text=True,
+            cwd=_Path.cwd(),
             timeout=15.0,
-            check=False,
         )
     except subprocess.TimeoutExpired:
         return QmdState(True, False, None, "qmd status timed out")
     except OSError as exc:
         return QmdState(True, False, None, f"qmd status failed: {exc}")
 
+    stdout = proc.stdout.decode("utf-8", errors="replace")
+    stderr = proc.stderr.decode("utf-8", errors="replace")
     if proc.returncode != 0:
-        stderr = (proc.stderr or "").strip()
+        stderr = (stderr or "").strip()
         first = stderr.splitlines()[0] if stderr else "no stderr"
         return QmdState(True, False, None, f"qmd status exited {proc.returncode}: {first}")
-    match = _MCP_LINE.search(proc.stdout or "")
+    match = _MCP_LINE.search(stdout or "")
     if match is None:
         return QmdState(True, False, None, "qmd daemon not running")
     pid = int(match.group(1))
@@ -251,17 +246,10 @@ def _reap_qmd_daemon(*, grace: float = 2.0, poll: float = 0.05) -> None:
 def _spawn_qmd_daemon() -> None:
     """Invoke ``qmd mcp --http --daemon``. Never raises."""
     try:
-        # TODO(qmd-drain follow-up): switch to ``_run_qmd`` from
-        # ``lies.qmd._subprocess`` (Spec A sweep). Tracked under
-        # issues/qmd-drain-followup.md — this module predates
-        # Spec B and was intentionally left untouched to keep the
-        # PR review surface small.
-        subprocess.run(
+        _run_qmd(
             [_QMD_BIN, "mcp", "--http", "--daemon"],
-            capture_output=True,
-            text=True,
+            cwd=_Path.cwd(),
             timeout=15.0,
-            check=False,
         )
     except (subprocess.TimeoutExpired, OSError):
         pass
@@ -295,24 +283,19 @@ def ensure_qmd_daemon(*, data_dir: _Path, timeout: float = 15.0) -> QmdState:
 
     # Normal path: idempotent start.
     try:
-        # TODO(qmd-drain follow-up): switch to ``_run_qmd`` from
-        # ``lies.qmd._subprocess`` (Spec A sweep). Tracked under
-        # issues/qmd-drain-followup.md — this module predates
-        # Spec B and was intentionally left untouched to keep the
-        # PR review surface small.
-        proc = subprocess.run(
+        proc = _run_qmd(
             [_QMD_BIN, "mcp", "--http", "--daemon"],
-            capture_output=True,
-            text=True,
+            cwd=_Path.cwd(),
             timeout=timeout,
-            check=False,
         )
     except subprocess.TimeoutExpired:
         return QmdState(True, False, None, f"starting qmd timed out after {timeout:g}s")
     except OSError as exc:
         return QmdState(True, False, None, f"starting qmd failed: {exc}")
     write_sidecar_data_dir(data_dir)
-    output = f"{proc.stdout or ''}{proc.stderr or ''}"
+    stdout = proc.stdout.decode("utf-8", errors="replace")
+    stderr = proc.stderr.decode("utf-8", errors="replace")
+    output = f"{stdout or ''}{stderr or ''}"
     already = _ALREADY_RUNNING.search(output)
     if already is not None:
         pid = int(already.group(1))

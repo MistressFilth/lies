@@ -159,17 +159,32 @@ def test_ensure_qmd_daemon_runs_real_spawn_after_mocked_reap(
     )
 
     # Route every subprocess call that targets the qmd binary through
-    # our stub.
+    # our stub. After the PR #105 follow-up, daemon.py routes through
+    # ``_run_qmd`` (bytes-returning), so we mock that and translate the
+    # str-returning ``subprocess.run`` against the fake script back into
+    # the bytes ``CompletedProcess`` shape ``_run_qmd`` would have
+    # produced.
     monkeypatch.setattr(qmd_daemon, "_QMD_BIN", sys.executable)
     monkeypatch.setattr(qmd_daemon.shutil, "which", lambda _n: sys.executable)
-    real_run = qmd_daemon.subprocess.run
 
     def _route(args, **kwargs):  # type: ignore[no-untyped-def]
         if args and args[0] == sys.executable:
-            return real_run([sys.executable, str(script), *args[1:]], **kwargs)
-        return real_run(args, **kwargs)
+            result = subprocess.run(
+                [sys.executable, str(script), *args[1:]],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=kwargs.get("timeout"),
+            )
+            return subprocess.CompletedProcess(
+                args=args,
+                returncode=result.returncode,
+                stdout=result.stdout.encode("utf-8"),
+                stderr=result.stderr.encode("utf-8"),
+            )
+        raise AssertionError(f"unexpected args routed to _run_qmd: {args}")
 
-    monkeypatch.setattr(qmd_daemon.subprocess, "run", _route)
+    monkeypatch.setattr(qmd_daemon, "_run_qmd", _route)
 
     reap_calls: list[bool] = []
     monkeypatch.setattr(qmd_daemon, "_reap_qmd_daemon", lambda: reap_calls.append(True))
