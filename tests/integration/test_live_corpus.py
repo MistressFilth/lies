@@ -339,7 +339,7 @@ async def test_live_corpus_synthesize_envelope_shape(monkeypatch: pytest.MonkeyP
         no_library=False,
     )
 
-    def fake_ground(*_args, **_kwargs):
+    async def fake_ground(*_args, **_kwargs):
         return fake_digest
 
     monkeypatch.setattr(synth_mod, "ground", fake_ground)

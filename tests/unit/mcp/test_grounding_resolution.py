@@ -35,6 +35,7 @@ resolver contract — they are belt-and-suspenders.
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -92,7 +93,9 @@ def test_ground_resolves_librarian_model_from_providers_toml(
 
     from lies.mcp.grounding import ArchivistDigest
 
-    digest = grounding.ground(question="any", tag_expr=None, exclude_expr=None, top_k=1)
+    digest = asyncio.run(
+        grounding.ground(question="any", tag_expr=None, exclude_expr=None, top_k=1)
+    )
 
     assert isinstance(digest, ArchivistDigest)
     assert captured.get("model") is not None
@@ -119,4 +122,4 @@ def test_ground_raises_model_not_configured_when_providers_toml_missing(
     from lies.mcp import grounding
 
     with pytest.raises(ModelNotConfigured):
-        grounding.ground(question="any", tag_expr=None, exclude_expr=None, top_k=1)
+        asyncio.run(grounding.ground(question="any", tag_expr=None, exclude_expr=None, top_k=1))

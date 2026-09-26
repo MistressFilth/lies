@@ -105,7 +105,7 @@ def test_ground_unscoped_uses_fanout(monkeypatch) -> None:
 
     monkeypatch.setattr(grounding, "_fanout_unscoped", fake_fanout)
 
-    digest = grounding.ground("test question", tag_expr=None, top_k=5)
+    digest = asyncio.run(grounding.ground("test question", tag_expr=None, top_k=5))
     assert digest.no_coverage is False
     assert digest.no_library is False
     assert len(digest.citations) == 1
@@ -120,7 +120,7 @@ def test_ground_unscoped_no_library_returns_no_library_true(monkeypatch) -> None
 
     monkeypatch.setattr(synth_mod, "_all_collection_names", lambda: [])
 
-    digest = grounding.ground("any question", tag_expr=None)
+    digest = asyncio.run(grounding.ground("any question", tag_expr=None))
     assert digest.no_library is True
     assert digest.no_coverage is True
     assert digest.citations == []

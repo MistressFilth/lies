@@ -400,7 +400,7 @@ async def _query_tagged_collections(
     return await _fanout_collections(question, exclude_expr, top_k, collection_names)
 
 
-def ground(
+async def ground(
     question: str,
     tag_expr: str | None = None,
     exclude_expr: "TagExpr | None" = None,
@@ -410,6 +410,17 @@ def ground(
     librarian_model: "Model | str | None" = None,
 ) -> ArchivistDigest:
     """Return a grounding digest for ``question``.
+
+    Async because the unscoped and tagged fast-paths (paths #1 and #2
+    below) bridge to async fan-out helpers via ``await``; the legacy
+    F18 librarian path (#3) is the only sync branch. The
+    ``await``-bridge replaces the prior ``asyncio.run(...)`` shim,
+    which raised ``RuntimeError: asyncio.run() cannot be called from
+    a running event loop`` when ``synthesize()`` — itself ``async`` —
+    called ``ground()`` from inside the daemon's event loop. The
+    sync MCP ``ground`` tool wrapper (``server.py::mcp_ground``) and
+    any Python caller outside an event loop thread ``asyncio.run``
+    around the await.
 
     Translates ``tag_expr`` / ``exclude_expr`` via the F15 tag-filter
     dispatch, then dispatches one of three retrieval paths:
@@ -622,14 +633,15 @@ def ground(
     if tag_expr is None and exclude_expr is None:
         # Unscoped fast-path: bypass the F18 librarian LLM round-trip
         # and fan out directly to qmd across every registered library
-        # collection. ``asyncio.run`` bridges the sync ``ground()``
-        # signature to the async fan-out helper; the surface stays
-        # synchronous for every existing caller. Skips the librarian
-        # tool-wiring block entirely (no LLM round-trip happens here).
+        # collection. ``await`` resolves on the async fan-out helper;
+        # the surface is now itself ``async`` so the daemon's event
+        # loop does not raise ``RuntimeError`` on a nested
+        # ``asyncio.run`` (pre-this-change bug: ``synthesize`` →
+        # ``ground`` → ``asyncio.run`` raised from inside the daemon
+        # loop). Skips the librarian tool-wiring block entirely (no
+        # LLM round-trip happens here).
         try:
-            excerpts = asyncio.run(
-                _fanout_unscoped(question, exclude_expr, top_k),
-            )
+            excerpts = await _fanout_unscoped(question, exclude_expr, top_k)
         except Exception as exc:
             warnings.warn(
                 f"ground: fan-out dispatch failed: {type(exc).__name__}: {exc}",
@@ -672,13 +684,11 @@ def ground(
         # preserves historical behavior for ``tag_expr`` set with no
         # library match — e.g. ``tag_expr="c:ghost"``).
         try:
-            excerpts = asyncio.run(
-                _query_tagged_collections(
-                    question,
-                    exclude_expr,
-                    top_k,
-                    searched_scope_list,
-                ),
+            excerpts = await _query_tagged_collections(
+                question,
+                exclude_expr,
+                top_k,
+                searched_scope_list,
             )
         except Exception as exc:
             warnings.warn(

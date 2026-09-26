@@ -40,9 +40,9 @@ async def test_synthesize_empty_digest_returns_honest_prose(monkeypatch):
         no_library=False,
     )
 
-    # ``synth.ground`` is the sync archivist function; the test mock
-    # mirrors that signature so synthesize() can call it without await.
-    def fake_ground(*args, **kwargs):
+    # ``synth.ground`` is the async archivist function; the test mock
+    # mirrors that signature so synthesize() can ``await`` it.
+    async def fake_ground(*args, **kwargs):
         return fake_digest
 
     monkeypatch.setattr(synth, "ground", fake_ground)

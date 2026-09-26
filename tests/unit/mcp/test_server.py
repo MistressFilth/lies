@@ -141,7 +141,7 @@ def test_resolve_librarian_model_raises_when_unconfigured(monkeypatch) -> None:
         server_mod._resolve_librarian_model()
 
 
-async def test_mcp_ground_threads_resolved_model_into_ground(
+def test_mcp_ground_threads_resolved_model_into_ground(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """``mcp_ground`` resolves the librarian model and threads it into ``ground()``.
@@ -165,6 +165,12 @@ async def test_mcp_ground_threads_resolved_model_into_ground(
     function without wrapping it in a coroutine, so calling
     ``mcp_ground(...)`` directly executes the same code path a real
     MCP wire call would land on.
+
+    Sync (not ``async def``): ``mcp_ground`` is a sync tool handler
+    that bridges to the now-async ``ground()`` via
+    ``asyncio.run(...)``. Running this test inside an event loop
+    would trip ``RuntimeError: asyncio.run() cannot be called from
+    a running event loop`` — the test must therefore be sync.
     """
     from lies.mcp import server as server_mod
 
@@ -177,7 +183,7 @@ async def test_mcp_ground_threads_resolved_model_into_ground(
 
     captured: dict[str, object] = {}
 
-    def fake_ground(**kwargs):
+    async def fake_ground(**kwargs):
         captured.update(kwargs)
         from lies.mcp.grounding import ArchivistDigest
 
