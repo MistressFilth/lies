@@ -20,6 +20,7 @@ All notable changes to LIES are documented here. The format follows
 - `qmd_query` pipe-buffer deadlock: when qmd emitted a long stderr trace (e.g. on VRAM OOM during in-process llama.cpp context expansion), the Python wrapper blocked forever because the OS pipe buffer filled. Replaced with `Popen` + bounded `communicate(timeout=...)` + SIGKILL-on-timeout. Mirrors ask's `repo/ask/scripts/qmd-daemon.py:213-219`.
 - Per-collection timeout in `_fanout_collections._one` bumped from 5s to 15s (`LIES_QMD_FANOUT_TIMEOUT` env override) to match qmd's actual reranking latency on cold daemons. Recycle counter no longer trips on `QmdNoResultsError` (clean miss) — only on `QmdCommandError` (real subprocess failure).
 - All remaining `subprocess.run(capture_output=True, ...)` call sites in `src/lies/qmd/cli.py` (the `_run` helper + `qmd_get`) and `src/lies/qmd/_proc.py` now route through the deadlock-free `_run_qmd` helper introduced for `qmd_query`. The pre-existing daemon-lifecycle calls in `src/lies/qmd/daemon.py` are left with TODO markers for a follow-up PR (the bytes-vs-str conversion is not one-line trivial at those sites).
+- `src/lies/qmd/daemon.py` lifecycle calls (`qmd_daemon_state`, `_spawn_qmd_daemon`, `ensure_qmd_daemon`) now route through `_run_qmd` (Popen + bounded communicate + SIGKILL via process-group killpg). Closes the qmd pipe-buffer deadlock that the PR #105 sweep explicitly deferred for `daemon.py` due to the bytes-vs-str conversion. 3 source sites + 8 test mocks updated (7 unit + 1 integration).
 
 ## [0.37.3] - 2026-09-23
 
