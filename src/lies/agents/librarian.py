@@ -363,6 +363,89 @@ def _merge_wiki_and_library_hits(
     return list(merged_by_slug.values()) + library_anonymous
 
 
+def _resolve_library_collection_filter(
+    tag_expr: str | None,
+    registered: set[str],
+) -> set[str] | None:
+    """Resolve caller ``tag_expr`` to the set of library collections to search.
+
+    Live-debug bug (CC ``db4bd25e`` L22/L44, OC ``ses_f2110b5fdffe``):
+    callers passing ``tag_expr='c:opencode|c:claude_code'`` saw zero
+    ``opencode/*`` hits because the librarian ignored the filter and
+    searched every registered collection. qmd's hit ranking then
+    favored the higher-token-overlap ``claude_code/*`` pages and the
+    user got a "corpus is silent on OpenCode plugins" answer despite
+    ``opencode/plugins.md`` being ingested. The fix threads the
+    caller's filter to the library qmd query.
+
+    Returns:
+        - ``None`` when ``tag_expr`` is ``None`` (caller didn't
+          specify — search every registered collection, historical
+          default).
+        - ``None`` when the filter is unparseable, names an unknown
+          collection, or resolves to zero names — caller-intent is
+          ambiguous, fall back to all-registered so the user still
+          gets an answer rather than a forced empty-hit failure.
+        - A non-empty set of registered collection names otherwise.
+          ``c:opencode`` → ``{"opencode"}``;
+          ``c:opencode|c:claude_code`` → ``{"opencode", "claude_code"}``;
+          ``c:opencode&c:claude_code`` → ``{"opencode", "claude_code"}``
+          (sets are unordered; AND/OR both widen the surface).
+
+    The walker only honors ``c:`` (collection) qualifier atoms —
+    ``t:foo`` (tag) atoms reference page-level tags and don't map to
+    library collection names, so they are dropped from the set. A
+    filter that is ONLY ``t:`` atoms falls back to all-registered.
+    """
+    if tag_expr is None:
+        return None
+
+    # Local import — tag_expr is the F15 parser module; deferring
+    # keeps this module off the parser import chain until the first
+    # call.
+    from lies.query.tag_expr import (
+        And,
+        Include,
+        Or,
+        TagExpr,
+        TagExprUnknown,
+        parse,
+        resolve,
+    )
+
+    try:
+        ast = parse(tag_expr)
+    except Exception:
+        return None
+
+    try:
+        resolved = resolve(ast, available=set(registered))
+    except TagExprUnknown:
+        return None
+
+    if resolved.include is None:
+        return None
+
+    names: set[str] = set()
+
+    def _walk(node: TagExpr) -> None:
+        if isinstance(node, Include):
+            if node.qualifier in (None, "c"):
+                names.add(node.tag)
+            return
+        if isinstance(node, And):
+            _walk(node.left)
+            _walk(node.right)
+            return
+        if isinstance(node, Or):
+            _walk(node.left)
+            _walk(node.right)
+            return
+
+    _walk(resolved.include)
+    return names if names else None
+
+
 def register_librarian_tools(
     agent: Agent[LibrarianDeps, LibrarianOutput],
     *,
@@ -658,6 +741,25 @@ def register_librarian_tools(
             )
             _lib_root = None
             _lib_collections = None
+
+        # Honor the caller's ``tag_expr`` (when present) by narrowing
+        # the library search to the named collections. Live-debug bug
+        # (CC ``db4bd25e`` L22/L44): callers passing
+        # ``tag_expr='c:opencode|c:claude_code'`` got zero opencode
+        # hits because the librarian ignored the filter and let
+        # qmd's hit ranking favor the higher-token-overlap
+        # ``claude_code/*`` pages. Threading the filter through fixes
+        # this. ``_lib_collections`` is the all-registered default
+        # (``None`` when registry lookup failed) — only narrowed when
+        # the helper returns a non-empty set.
+        if _lib_collections is not None:
+            _caller_filter = _resolve_library_collection_filter(
+                ctx.deps.tag_expr,
+                _lib_collections,
+            )
+            if _caller_filter is not None:
+                _lib_collections = _caller_filter
+
         if _lib_root is not None:
             try:
                 raw_library = _qmd_query_callable(

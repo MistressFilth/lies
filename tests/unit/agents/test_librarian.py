@@ -223,6 +223,7 @@ def _drive_wiki_search(
     memory_service: _FakeMemoryService,
     qmd_query_fn: Any,
     wiki: _FakeWiki | None = None,
+    tag_expr: str | None = None,
 ) -> dict[str, object]:
     """Build a librarian agent with dual-source wiring and invoke ``wiki_search``.
 
@@ -230,6 +231,11 @@ def _drive_wiki_search(
     :func:`test_register_librarian_tools_captures_no_coverage_from_wiki_search`
     so the new dual-source tests don't depend on the LLM stack — they
     drive the registered ``wiki_search`` closure directly.
+
+    ``tag_expr`` populates ``LibrarianDeps.tag_expr`` so the caller
+    can exercise the caller's include-filter path. When ``None``
+    (default), the librarian falls back to the all-collections
+    behavior (the historical default).
     """
     from lies.agents import librarian as librarian_mod
     from pydantic_ai import RunContext
@@ -251,7 +257,7 @@ def _drive_wiki_search(
             break
     assert tool_fn is not None, "wiki_search tool not registered"
 
-    deps = LibrarianDeps(question="q", tag_expr=None, exclude_expr=None, top_k=5)
+    deps = LibrarianDeps(question="q", tag_expr=tag_expr, exclude_expr=None, top_k=5)
     ctx = RunContext(
         model=TestModel(),
         deps=deps,
@@ -557,6 +563,182 @@ def test_wiki_search_passes_collection_filter_to_library_side_only() -> None:
     assert call_log[1]["collection_filter"] == expected_lib_filter, (
         "library side must pass collection_filter=set(library_collection_names())"
     )
+
+
+# ---------------------------------------------------------------------------
+# Tag-expr threading — caller-supplied include filter reaches the library qmd query
+# ---------------------------------------------------------------------------
+
+
+def test_wiki_search_threads_caller_tag_expr_into_library_collection_filter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``LibrarianDeps.tag_expr`` restricts the library qmd query's collection_filter.
+
+    Pre-fix bug: ``_wiki_search`` queried the library with
+    ``collection_filter=set(library_collection_names())`` (every
+    registered collection) regardless of the caller-supplied
+    ``tag_expr``. Live debug sessions (CC ``db4bd25e`` L22/L44,
+    OC ``ses_f2110b5fdffe`` parallel sessions) confirmed: the
+    librarian surfaced 100% ``claude_code/*`` hits even when the
+    caller passed ``tag_expr='c:opencode|c:claude_code'`` because
+    the library query scanned every collection and qmd's hit
+    ranking favored the claude_code matches for the words
+    "compare" / "plugins".
+
+    The fix: resolve caller ``tag_expr`` against the registered
+    library-collection set and pass that set (intersected with
+    registered names) as the library-side ``collection_filter``.
+    The wiki side is unconstrained as before (the wiki corpus
+    indexes wiki pages, not library pages). When ``tag_expr`` is
+    ``None`` the librarian falls back to the all-collections
+    behavior — that path is pinned by
+    ``test_wiki_search_passes_collection_filter_to_library_side_only``.
+    """
+    from lies.library import registry as registry_mod
+
+    # Stub the registry so this test is independent of the host's
+    # library collection set (the default test env has none).
+    registered = {"opencode", "claude_code", "switchyard"}
+    monkeypatch.setattr(registry_mod, "library_collection_names", lambda: frozenset(registered))
+
+    wiki_service = _FakeMemoryService(pages=[], no_coverage=False)
+    fake_wiki = _FakeWiki(wiki_dir=Path("/tmp/fake-wiki"))
+    expected_lib_root = library_git_root()
+    call_log: list[dict[str, Any]] = []
+
+    def fake_qmd_query(cwd: Path, q: str, limit: int = 5, **kw: Any) -> list[dict[str, Any]]:
+        call_log.append({"cwd": Path(cwd), "collection_filter": kw.get("collection_filter")})
+        return []
+
+    _drive_wiki_search(
+        wiki=fake_wiki,
+        memory_service=wiki_service,
+        qmd_query_fn=fake_qmd_query,
+        tag_expr="c:opencode",
+    )
+
+    assert [c["cwd"] for c in call_log] == [fake_wiki.wiki_dir, expected_lib_root]
+    assert call_log[0]["collection_filter"] is None, "wiki side must not pass a filter"
+    # Library side must receive ONLY the named collection, not the
+    # full registered set. This is the bug fix.
+    assert call_log[1]["collection_filter"] == {"opencode"}, (
+        f"library side must honor caller tag_expr='c:opencode'; got {call_log[1]['collection_filter']!r}"
+    )
+
+
+def test_wiki_search_threads_or_tag_expr_as_union_collection_filter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``tag_expr='c:opencode|c:claude_code'`` filters library to the union set.
+
+    Pins the F15 grammar — an OR of two include atoms maps to the
+    union of the named collections as the ``collection_filter``
+    set. AND atoms (not exercised here) would intersect.
+    """
+    from lies.library import registry as registry_mod
+
+    registered = {"opencode", "claude_code", "switchyard"}
+    monkeypatch.setattr(registry_mod, "library_collection_names", lambda: frozenset(registered))
+
+    wiki_service = _FakeMemoryService(pages=[], no_coverage=False)
+    fake_wiki = _FakeWiki(wiki_dir=Path("/tmp/fake-wiki"))
+    expected_lib_root = library_git_root()
+    call_log: list[dict[str, Any]] = []
+
+    def fake_qmd_query(cwd: Path, q: str, limit: int = 5, **kw: Any) -> list[dict[str, Any]]:
+        call_log.append({"cwd": Path(cwd), "collection_filter": kw.get("collection_filter")})
+        return []
+
+    _drive_wiki_search(
+        wiki=fake_wiki,
+        memory_service=wiki_service,
+        qmd_query_fn=fake_qmd_query,
+        tag_expr="c:opencode|c:claude_code",
+    )
+
+    assert call_log[1]["cwd"] == expected_lib_root
+    assert call_log[1]["collection_filter"] == {"opencode", "claude_code"}, (
+        f"library side must honor caller OR tag_expr; got {call_log[1]['collection_filter']!r}"
+    )
+
+
+def test_wiki_search_unknown_tag_expr_falls_back_to_all_collections(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unknown tag in ``tag_expr`` falls back to all registered collections.
+
+    When the caller names a collection that isn't registered (or
+    the resolver can't reach it), the fix must NOT raise — the
+    librarian widens to all collections so the user still gets
+    an answer rather than an empty-hit failure. Mirrors the
+    documented F15 coverage-gate semantics at the tool layer:
+    unknown atoms in the include AST are tolerated, the union
+    is taken against the registered set, and if the resulting
+    set is empty the tool widens to all collections.
+    """
+    from lies.library import registry as registry_mod
+
+    registered = {"opencode", "claude_code", "switchyard"}
+    monkeypatch.setattr(registry_mod, "library_collection_names", lambda: frozenset(registered))
+
+    wiki_service = _FakeMemoryService(pages=[], no_coverage=False)
+    fake_wiki = _FakeWiki(wiki_dir=Path("/tmp/fake-wiki"))
+    expected_lib_root = library_git_root()
+    call_log: list[dict[str, Any]] = []
+
+    def fake_qmd_query(cwd: Path, q: str, limit: int = 5, **kw: Any) -> list[dict[str, Any]]:
+        call_log.append({"cwd": Path(cwd), "collection_filter": kw.get("collection_filter")})
+        return []
+
+    _drive_wiki_search(
+        wiki=fake_wiki,
+        memory_service=wiki_service,
+        qmd_query_fn=fake_qmd_query,
+        tag_expr="c:no_such_collection",
+    )
+
+    # Library side widens to all registered collections rather
+    # than passing an empty set or raising.
+    assert call_log[1]["cwd"] == expected_lib_root
+    assert call_log[1]["collection_filter"] == set(registered)
+
+
+def test_wiki_search_none_tag_expr_keeps_all_collections_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``tag_expr=None`` (the historical default) keeps the all-collections behavior.
+
+    Regression pin: the fix must NOT regress the legacy contract
+    that an unspecified filter searches every registered
+    collection. The librarian's instruction to "build tag_expr
+    from question tokens" still applies for the untagged path
+    in the system prompt — but at the tool layer, ``tag_expr=None``
+    means "search everything".
+    """
+    from lies.library import registry as registry_mod
+
+    registered = {"opencode", "claude_code", "switchyard"}
+    monkeypatch.setattr(registry_mod, "library_collection_names", lambda: frozenset(registered))
+
+    wiki_service = _FakeMemoryService(pages=[], no_coverage=False)
+    fake_wiki = _FakeWiki(wiki_dir=Path("/tmp/fake-wiki"))
+    expected_lib_root = library_git_root()
+    call_log: list[dict[str, Any]] = []
+
+    def fake_qmd_query(cwd: Path, q: str, limit: int = 5, **kw: Any) -> list[dict[str, Any]]:
+        call_log.append({"cwd": Path(cwd), "collection_filter": kw.get("collection_filter")})
+        return []
+
+    _drive_wiki_search(
+        wiki=fake_wiki,
+        memory_service=wiki_service,
+        qmd_query_fn=fake_qmd_query,
+        tag_expr=None,
+    )
+
+    assert call_log[1]["cwd"] == expected_lib_root
+    assert call_log[1]["collection_filter"] == set(registered)
 
 
 # ---------------------------------------------------------------------------

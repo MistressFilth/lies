@@ -442,6 +442,7 @@ def test_fetcher_uses_bespoke_loader_when_scraper_cmd_set(monkeypatch, tmp_path:
     assert pick_called["n"] == 0, "pick_scraper must NOT be called when scraper_cmd is set"
 
 
+@pytest.mark.slow
 def test_fetcher_propagates_bespoke_loader_failure(monkeypatch, tmp_path: Path) -> None:
     """A broken bespoke loader propagates; the fetcher never falls through.
 

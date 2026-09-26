@@ -1164,6 +1164,26 @@ def ask_wiki_answer(text: str) -> str:
     except (TagExprParseError, TagExprEmpty) as exc:
         return _filter_parse_error_prompt(text, exc)
 
+    # Defensive re-parse. Some MCP clients (notably the OpenCode TUI's
+    # slash picker) pass the slash input to this prompt in a shape that
+    # defeats the primary parse while still leaking the filter sigils
+    # into ``parsed_question``. Live-debug bug (CC session
+    # ``db4bd25e-e72e-4eee-8c25-0645d37f82ef`` L8, OC session
+    # ``ses_f2110b5fdffeTHmy7K0dkIIQaj`` parallel transcripts): the
+    # primary parse returned ``include_ast=None`` and the rendered
+    # question field still carried the unstripped ``+c:opencode|...``
+    # prefix, so the model forwarded ``tag_expr=None`` to
+    # ``synthesize`` and the librarian ran untagged. The defense
+    # detects the leading-sigil pattern in the question and retries
+    # the parser with the question treated as a fresh slash input.
+    # When the re-parse succeeds it replaces the primary result; when
+    # it fails or yields no include AST, the primary result stands.
+    parsed_question, include_ast, exclude_ast = _defensive_reparse_filter(
+        parsed_question,
+        include_ast,
+        exclude_ast,
+    )
+
     tag_expr = _render_include(include_ast) if include_ast is not None else None
     exclude_tags = [_render_include(exclude_ast)] if exclude_ast is not None else []
 
@@ -1172,6 +1192,55 @@ def ask_wiki_answer(text: str) -> str:
         tag_expr=tag_expr,
         exclude_tags=exclude_tags,
     )
+
+
+def _defensive_reparse_filter(
+    parsed_question: str,
+    include_ast: TagExpr | None,
+    exclude_ast: TagExpr | None,
+) -> tuple[str, TagExpr | None, TagExpr | None]:
+    """Re-parse ``parsed_question`` when it still looks like filter syntax.
+
+    Detects the OpenCode-TUI bug pattern where the primary parse
+    silently dropped the leading ``+`` sigil but left it embedded in
+    the question string. The re-parse retries
+    :func:`lies.query.tag_expr.parse_query_argv` with the question
+    treated as a fresh slash input.
+
+    Returns the (possibly improved) ``(parsed_question, include_ast,
+    exclude_ast)`` triple. On any re-parse failure — unparseable
+    grammar, empty question, or no include AST produced — the
+    original triple is returned untouched. This is fail-soft: a
+    legitimate question that happens to begin with a character
+    sequence that LOOKS filter-like (e.g. ``+1 + 1``) doesn't
+    regress.
+    """
+    import shlex
+
+    if include_ast is not None:
+        # Primary parse already got it; no defense needed.
+        return parsed_question, include_ast, exclude_ast
+
+    if not parsed_question or not parsed_question.lstrip().startswith("+"):
+        # No filter sigil at the start — primary parse's "no filter"
+        # verdict stands.
+        return parsed_question, include_ast, exclude_ast
+
+    argv = shlex.split(parsed_question)
+    if not argv or not argv[0].startswith("+"):
+        # shlex didn't put the sigil at the head of a token; nothing
+        # to re-parse.
+        return parsed_question, include_ast, exclude_ast
+
+    try:
+        re_question, re_include, re_exclude, _ = parse_query_argv(argv)
+    except (TagExprParseError, TagExprEmpty):
+        return parsed_question, include_ast, exclude_ast
+
+    if re_include is None:
+        return parsed_question, include_ast, exclude_ast
+
+    return re_question, re_include, re_exclude
 
 
 def _render_answer_prompt_body(

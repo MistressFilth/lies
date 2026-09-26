@@ -4,6 +4,45 @@ All notable changes to LIES are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/) adapted for
 [Semantic Versioning](https://semver.org/).
 
+## [0.39.2] - 2026-09-26
+
+### Fixed
+
+- **`/answer` slash prompt: defensive re-parse of leading filter
+  sigil.** The MCP `answer` prompt rendered the
+  `call-the-synthesize` body with `tag_expr: None` and the
+  `+c:...` prefix unstripped inside the question field for some
+  MCP clients (notably the OpenCode TUI slash picker). The model
+  faithfully forwarded those kwargs to `synthesize`, so the
+  librarian ran untagged. Live-debug: CC session
+  `db4bd25e-e72e-4eee-8c25-0645d37f82ef`, OC sessions
+  `ses_f2110b5fdffeTHmy7K0dkIIQaj` and parallel transcripts.
+  Fix: when the primary parse returns `include_ast=None` but the
+  rendered `parsed_question` still starts with a filter sigil,
+  retry `parse_query_argv` on the question as if it were the full
+  slash input. Fail-soft — legitimate questions that don't look
+  filter-like are unchanged.
+- **Librarian `_wiki_search`: thread caller-supplied `tag_expr`
+  into the library qmd `collection_filter`.** The librarian
+  queried the library index with
+  `collection_filter=set(library_collection_names())` (every
+  registered collection) regardless of the caller-supplied
+  `tag_expr`. Live-debug confirmed callers passing
+  `tag_expr='c:opencode|c:claude_code'` got 100% `claude_code/*`
+  hits because qmd's hit ranking favored the higher-token-overlap
+  claude_code matches for the words "compare" / "plugins" —
+  despite `opencode/plugins.md` being ingested. Fix: resolve
+  caller `tag_expr` to the set of registered collection names and
+  pass that set (intersected with registered names) as the
+  library-side `collection_filter`. Wiki side is unconstrained as
+  before. When `tag_expr=None` the librarian falls back to the
+  all-collections default.
+- Pre-existing slow-test budget hits on
+  `tests/unit/ingestion/test_etl_pipeline.py` and
+  `tests/unit/ingestion/test_etl_quarantine.py` marked
+  `@pytest.mark.slow` so the unit-test 0.15s wall-clock budget
+  gate stops tripping.
+
 ## [0.39.1] - 2026-09-25
 
 ### Added
