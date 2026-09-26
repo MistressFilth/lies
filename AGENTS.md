@@ -150,6 +150,44 @@ They are dormant — no wiki XDG instance currently exists for them
 to point at. `lies init <name>` will create a new wiki if invoked;
 that's expected for future wiki-mode users.
 
+### Read-side surface (post #103/#104/#106, 2026-09-25)
+
+The library-mode read surface is split between two MCP tools:
+
+- **`ground`** — snippet digest for agents. `ArchivistDigest` with
+  `[[collection/slug]] (Title): "<verbatim snippet>"` rendering.
+  Uses parallel qmd fan-out (`_fanout_collections._one`) bounded by
+  `_QMD_FANOUT_SEMAPHORE = asyncio.Semaphore(4)`. Per-call timeout
+  5s. **Known limitation**: 5s timeout is too aggressive for cold
+  daemons at `top_k=10`; reranking adds ~2-7s. Direct qmd with
+  `limit=10` needs ~7s on the live corpus. Workaround for now:
+  use `top_k<=5` or call `qmd_query` directly. Tracked in
+  `~/code/project-notes/lies/TODO.md` "Open TODOs surfaced this cycle".
+- **`synthesize`** — prose answer for humans. `SynthesizeEnvelope`
+  carrying the LLM-written body and claim-tagged citations. Calls
+  `await ground(...)` (no longer shelled through `asyncio.run`),
+  then `await query_synthesizer_agent.run(...)`. Empty digest
+  surfaces honest gap prose (`"No relevant content found in library."`)
+  with `synthesis_used=False`. Returns `SynthesizeEnvelope(answer="")`
+  on `ModelNotConfigured` with `fallback_reason` carrying the
+  exception class + message.
+
+The MCP `ground` tool wrapper (`mcp_ground` in `server.py`) is sync
+and bridges to the async `ground()` via `asyncio.run(...)`. Works
+today because FastMCP runs sync handlers in a threadpool; migration
+to native async support deferred.
+
+### Library mode in tests (post #104)
+
+`tests/conftest.py::_isolated_xdg` autouse fixture seeds a
+deterministic `providers.toml` under `<tmp_path>/config/lies/` with
+`[providers.minimax]` + `[providers.anthropic]` + `[agents]` (including
+`librarian`) + `MINIMAX_API_KEY=test-key-not-real`. Tests that exercise
+the MCP path no longer hit `ModelNotConfigured` against the bundled
+`agents` roster. Library collection registry is empty in unit-test
+mode; the test fixture for `mcp_ground` constructs the digest from
+mocked librarian excerpts (see `tests/unit/mcp/test_ground.py`).
+
 ## Invisible memory layer
 
 `src/lies/memory/` is the invisible-memory layer:
