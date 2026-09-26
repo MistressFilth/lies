@@ -35,8 +35,16 @@ _LLM_TXT_BASENAMES = ("llms-full.txt", "llms.txt")
 # lines in an llms.txt index. Some llms.txt publishers (e.g. platform.claude.com)
 # emit a dash separator instead of a colon; both forms are valid.
 # Captures title (1), url (2), and description (3); description may be empty.
+#
+# Whitespace within a single line is `[ \t]` only (no newlines). The earlier
+# `\s*` form silently consumed newlines: when an llms.txt uses bare links
+# without descriptions (e.g. https://opencode.ai/v2/llms.txt — every entry is
+# just `- [Title](url)`), the lazy `(.*?)` description group swallowed the
+# entire next link line as its "description" because the trailing `\s*$`
+# allowed the match to span newlines. Restricting to `[ \t]` confines each
+# match to one line.
 _LLMS_LINK_RE = re.compile(
-    r"^\s*-\s*\[([^\]]+)\]\(([^)]+)\)\s*(?:[:\-]\s+(.*?))?\s*$",
+    r"^[ \t]*-[ \t]*\[([^\]]+)\]\(([^)]+)\)[ \t]*(?:[:\-][ \t]+(.*?))?[ \t]*$",
     re.MULTILINE,
 )
 

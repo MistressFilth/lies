@@ -437,6 +437,44 @@ def test_web_scraper_parse_chunked_when_no_source(
     assert docs[0].path == "chunk-0000.md"
 
 
+def test_web_scraper_extract_llms_links_handles_bare_links(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """llms.txt indexes with bare ``- [Title](url)`` links (no description
+    after a colon) extract every link — one per line.
+
+    Regression pin for an earlier ``\\s*`` regex that consumed newlines:
+    with bare links, the lazy ``(.*?)`` description group swallowed the
+    next line as its "description" because the trailing ``\\s*$``
+    allowed matches to span newlines. Only every-other link survived.
+    Repro: https://opencode.ai/v2/llms.txt (55 entries, all bare).
+    """
+    body = (
+        "# OpenCode V2 Docs\n\n"
+        "- [Intro](https://example.com/docs/)\n"
+        "- [Config](https://example.com/docs/config/)\n"
+        "- [Migrate from V1](https://example.com/docs/migrate-v1/)\n"
+        "- [Troubleshooting](https://example.com/docs/troubleshooting/)\n"
+    )
+
+    def fake_urlopen(req, *args, **kwargs):
+        return _FakeResp(body, req.full_url)
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    s = WebScraper()
+    raw = s.fetch("https://example.com/llms.txt")
+    docs = s.parse(raw, source="https://example.com/llms.txt")
+
+    assert len(docs) == 4, (
+        f"expected all 4 bare links to be extracted, got {len(docs)}: {[d.path for d in docs]}"
+    )
+    titles = sorted(d.path for d in docs)
+    # _url_to_path strips trailing "/" tail to "docs.md" for index pages.
+    assert titles == sorted(
+        ["docs.md", "docs/config.md", "docs/migrate-v1.md", "docs/troubleshooting.md"]
+    )
+
+
 class _FakeResp:
     def __init__(self, body: str | bytes, url: str) -> None:
         self._body = body.encode("utf-8") if isinstance(body, str) else body
