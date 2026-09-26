@@ -127,26 +127,27 @@ def test_ground_unscoped_no_library_returns_no_library_true(monkeypatch) -> None
     assert digest.searched_scope == []
 
 
-def test_fanout_unscoped_threads_5s_timeout_and_drops_failures(monkeypatch) -> None:
-    """Concern #3 fix: thread ``timeout=5`` into ``qmd_query`` and drop
-    timed-out collections silently.
+def test_fanout_unscoped_threads_module_timeout_and_drops_failures(monkeypatch) -> None:
+    """Per-call timeout uses the module-level ``_QMD_FANOUT_TIMEOUT``
+    constant (default 15s; ``LIES_QMD_FANOUT_TIMEOUT`` env override)
+    and ``QmdCommandError`` drops timed-out collections silently.
 
-    Implementer's note on the prior commit: the docstring promised a
-    per-collection 5s timeout but the call site relied on
-    ``qmd_query``'s default 60s — a single stuck collection would blow
-    the whole 15s budget. After the fix:
+    Pins the post-#106 timeout constant: ``qmd_query`` is invoked
+    with the module-level binding's current value (not the 60s
+    default) so cold-daemon reranking has headroom. The constant is
+    asserted ``isinstance(int) >= 10`` so a regression to a too-
+    tight literal (the historical 5s bug) trips immediately.
 
-    1. ``qmd_query`` is invoked with ``timeout=5`` (not the 60s
-       default). The two-collection assertion pins the new value
-       end-to-end.
+    1. ``qmd_query`` is invoked with ``timeout=grounding._QMD_FANOUT_TIMEOUT``.
+       The two-collection assertion pins the new value end-to-end.
     2. ``QmdCommandError`` — the error ``qmd_query`` raises on
        ``subprocess.TimeoutExpired`` — is caught by ``_one`` and the
        collection is dropped (returns ``None``).
     3. The fan-out still returns the surviving collections' hits.
 
-    A real ``subprocess.run(timeout=5)`` would fire at 5s in
+    A real ``subprocess.run(timeout=N)`` would fire at N seconds in
     production; the mock emulates the observable contract
-    (QmdCommandError) without burning the test budget on a 5s sleep.
+    (QmdCommandError) without burning the test budget on a sleep.
     The fail-soft envelope is what the budget needs to guard.
     Concurrency is independently covered by
     ``test_fanout_unscoped_runs_concurrently`` below.
@@ -185,9 +186,25 @@ def test_fanout_unscoped_threads_5s_timeout_and_drops_failures(monkeypatch) -> N
 
     excerpts = asyncio.run(grounding._fanout_unscoped("test question", None, top_k=5))
 
-    # The fix: ``timeout=5`` threaded through (not the 60s default).
-    # Two calls because two collections are registered.
-    assert observed_timeouts == [5, 5]
+    # Timeout constant shape (must be ``int >= 10``): cold-daemon
+    # reranking needs ~7s plus tail margin (matches the live-corpus
+    # probe in features/2026-09-25-fanout-timeout/README.md). A
+    # regression to ``5`` or a string-coerced value trips here.
+    assert isinstance(grounding._QMD_FANOUT_TIMEOUT, int), (
+        f"_QMD_FANOUT_TIMEOUT must be int, got {type(grounding._QMD_FANOUT_TIMEOUT).__name__}"
+    )
+    assert grounding._QMD_FANOUT_TIMEOUT >= 10, (
+        f"_QMD_FANOUT_TIMEOUT={grounding._QMD_FANOUT_TIMEOUT} is below "
+        f"the 10s cold-daemon reranking floor — qmd needs ~7s on "
+        f"limit=10 plus tail margin"
+    )
+    # The fix: ``timeout=grounding._QMD_FANOUT_TIMEOUT`` threaded
+    # through (not the 60s qmd_query default). Two calls because two
+    # collections are registered.
+    assert observed_timeouts == [
+        grounding._QMD_FANOUT_TIMEOUT,
+        grounding._QMD_FANOUT_TIMEOUT,
+    ]
     # Slow collection's QmdCommandError caught and dropped; fast
     # collection's hit survives.
     assert len(excerpts) == 1
@@ -288,6 +305,94 @@ def test_fanout_unscoped_triggers_recycle_after_n_failures(monkeypatch) -> None:
         f"recycle called {len(recycle_calls)} times; expected 1 — "
         f"the consecutive-failure threshold tripped and one recycle "
         f"should fire per wedged-daemon batch."
+    )
+
+
+def test_fanout_unscoped_qmd_no_results_is_clean_miss(monkeypatch) -> None:
+    """`QmdNoResultsError` is a clean miss — counter stays at 0, no recycle.
+
+    Pins the post-PR #106 except-split: a per-collection
+    ``QmdNoResultsError`` (qmd ran cleanly and returned zero hits for
+    the question) must NOT increment ``_consecutive_qmd_errors``
+    and must NOT trip ``recycle()``. The pre-fix tuple-caught both
+    ``QmdCommandError`` AND ``QmdNoResultsError``, so the
+    recycle counter tripped on legitimate empty results, eventually
+    recycling a healthy daemon. The split promoted clean misses to
+    a silent drop.
+
+    Surface observed live: ``pydantic_validation`` legitimately
+    returns ``QmdNoResultsError`` at ``top_k=10`` (the collection
+    has limited reranking candidates). Pre-fix, this incremented
+    the counter on every query; after enough calls the operator's
+    healthy daemon was recycled.
+    """
+    from lies.library import registry as reg_mod
+    from lies.library.registry import LibraryCollectionMeta
+    from lies.mcp import grounding
+    from lies.qmd import cli as qmd_mod
+
+    metas = [
+        LibraryCollectionMeta(name="c0", tags=()),
+        LibraryCollectionMeta(name="c1", tags=()),
+        LibraryCollectionMeta(name="c2", tags=()),
+    ]
+    monkeypatch.setattr(reg_mod, "library_collection_metas", lambda: iter(metas))
+    monkeypatch.setattr(reg_mod, "library_git_root", lambda: Path("/tmp/fake-lib"))
+
+    # Threshold below the failure count to demonstrate the bug if
+    # the split regresses: with all 3 collections raising
+    # ``QmdNoResultsError`` and threshold=2, the pre-fix tuple
+    # incremented on every raise and would fire ``recycle()`` once
+    # (counter goes 1 → 2 → reset → 1, threshold=2 trips once).
+    monkeypatch.setattr(grounding, "_RECYCLE_THRESHOLD", 2)
+
+    recycle_calls: list[str] = []
+
+    def fake_recycle(*args, **kwargs):
+        recycle_calls.append("called")
+        # Mirror the real recycle: clear the counter so a subsequent
+        # fan-out starts fresh (defense-in-depth — the split should
+        # never let the counter trip in the first place).
+        grounding._consecutive_qmd_errors = 0
+
+    monkeypatch.setattr("lies.qmd.lifecycle.recycle", fake_recycle)
+
+    def fake_qmd_query(*, cwd, question, limit, timeout, collection_filter):
+        # Clean miss — qmd ran, found nothing for this query against
+        # this collection's corpus. NOT a subprocess failure; the
+        # post-split branch treats it as a silent drop with no
+        # counter side-effect.
+        raise qmd_mod.QmdNoResultsError(
+            f"simulated qmd no-results for {next(iter(collection_filter))}"
+        )
+
+    monkeypatch.setattr(qmd_mod, "qmd_query", fake_qmd_query)
+
+    excerpts = asyncio.run(grounding._fanout_unscoped("any question", None, top_k=5))
+
+    # Load-bearing assertion #1: no hits (every collection was a
+    # clean miss), but the digest shape is empty NOT a recycled
+    # daemon side-effect.
+    assert excerpts == []
+    # Load-bearing assertion #2: ``recycle()`` was NOT called.
+    # Pre-fix: tuple-caught ``QmdCommandError, QmdNoResultsError``
+    # and the counter tripped on every raise — recycle fires when
+    # counter crosses _RECYCLE_THRESHOLD=2. Post-fix: ``QmdNoResultsError``
+    # is silently dropped without touching the counter, so the
+    # recycle threshold never trips.
+    assert recycle_calls == [], (
+        f"recycle called {len(recycle_calls)} times on clean misses; "
+        f"expected 0 — QmdNoResultsError must be a clean miss with "
+        f"no counter side-effect (post-PR #106 except split)."
+    )
+    # Load-bearing assertion #3: the counter stayed at 0
+    # end-to-end. The post-fix split leaves ``QmdNoResultsError``
+    # out of the increment branch, so no failure of any kind
+    # touches the counter on a clean-miss fan-out.
+    assert grounding._consecutive_qmd_errors == 0, (
+        f"_consecutive_qmd_errors={grounding._consecutive_qmd_errors} "
+        f"after clean-miss fan-out; expected 0 — QmdNoResultsError "
+        f"must not increment the recycle counter."
     )
 
 
