@@ -158,11 +158,10 @@ The library-mode read surface is split between two MCP tools:
   `[[collection/slug]] (Title): "<verbatim snippet>"` rendering.
   Uses parallel qmd fan-out (`_fanout_collections._one`) bounded by
   `_QMD_FANOUT_SEMAPHORE = asyncio.Semaphore(4)`. Per-call timeout
-  5s. **Known limitation**: 5s timeout is too aggressive for cold
-  daemons at `top_k=10`; reranking adds ~2-7s. Direct qmd with
-  `limit=10` needs ~7s on the live corpus. Workaround for now:
-  use `top_k<=5` or call `qmd_query` directly. Tracked in
-  `~/code/project-notes/lies/TODO.md` "Open TODOs surfaced this cycle".
+  lives in `LIES_QMD_FANOUT_TIMEOUT` (default 15s; matches qmd's
+  observed reranking latency on cold daemons). The recycle trigger
+  counts only `QmdCommandError` (real subprocess failures);
+  `QmdNoResultsError` (clean miss) is silent.
 - **`synthesize`** — prose answer for humans. `SynthesizeEnvelope`
   carrying the LLM-written body and claim-tagged citations. Calls
   `await ground(...)` (no longer shelled through `asyncio.run`),

@@ -53,7 +53,7 @@ _consecutive_qmd_errors = 0
 # chunks..." on stderr) competes for resources when many
 # ``qmd_query`` subprocesses run concurrently in the same daemon;
 # firing every registered collection in parallel (asyncio.gather)
-# caused subprocesses to wedge and exceed the 5s per-collection
+# caused subprocesses to wedge and exceed the per-collection
 # timeout (session live-corpus hang: limit=10 amplified the
 # reranking pool and made contention worse). Bounding to 4 keeps
 # the fan-out parallelism usable while staying under the
@@ -61,6 +61,21 @@ _consecutive_qmd_errors = 0
 # that survived every observed workload; making it configurable
 # would invite ops to crank it back into the hang regime.
 _QMD_FANOUT_SEMAPHORE = asyncio.Semaphore(4)
+
+# Per-call timeout for the ``qmd_query`` subprocess fired by
+# :func:`_fanout_collections._one`. Default 15s matches qmd's
+# observed reranking latency on cold daemons at ``limit=10``
+# (live corpus probe, 2026-09-25: ~3-7s on warm daemons; cold
+# daemon startup can push the reranking step past 10s). The
+# ``_QMD_FANOUT_SEMAPHORE`` above already caps worst-case fan-out
+# latency at ``ceil(N / 4) * timeout`` (4 * 15s = 60s ceiling
+# across 14 collections, dominated by cold daemon startup), so
+# bumping the per-call budget no longer reintroduces the
+# single-collection hang the 5s literal was guarding against.
+# Override via the ``LIES_QMD_FANOUT_TIMEOUT`` env var for ops
+# chasing a tighter SLO; reads at module import so daemon
+# restarts are required to pick up a change.
+_QMD_FANOUT_TIMEOUT = int(os.environ.get("LIES_QMD_FANOUT_TIMEOUT", "15"))
 
 
 @dataclass(frozen=True)
@@ -214,8 +229,13 @@ async def _fanout_collections(
     ``collection_filter`` set so the per-collection post-filter
     retains the same semantics the unscoped fan-out has shipped with.
 
-    Per-collection timeout: 5s. Failed collections dropped silently.
-    The ``exclude_expr`` parameter is preserved for signature parity
+    Per-collection timeout: ``_QMD_FANOUT_TIMEOUT`` (default 15s;
+    ``LIES_QMD_FANOUT_TIMEOUT`` env override). Failed collections
+    dropped silently. ``QmdCommandError`` (real subprocess failure)
+    feeds the consecutive-error counter and may trigger
+    ``recycle()``; ``QmdNoResultsError`` (clean miss) is dropped
+    without touching the counter. The ``exclude_expr`` parameter
+    is preserved for signature parity
     with the broader ground() surface; per-collection qmd filters are
     include-only, so excludes are not enforced at this layer (the
     include filter already constrains the addressable set).
@@ -270,10 +290,12 @@ async def _fanout_collections(
                     cwd=lib_root,
                     question=question,
                     limit=top_k,
-                    timeout=5,
+                    timeout=_QMD_FANOUT_TIMEOUT,
                     collection_filter={name},
                 )
-            except (QmdCommandError, QmdNoResultsError):
+            except QmdCommandError:
+                # Real subprocess failure (timeout, crash, transport).
+                # Increment counter; recycle when threshold trips.
                 _consecutive_qmd_errors += 1
                 if _consecutive_qmd_errors >= _RECYCLE_THRESHOLD:
                     # Reset BEFORE the await so concurrent failures that
@@ -293,6 +315,16 @@ async def _fanout_collections(
                         # caller surfaces the dropped-collection result
                         # via the empty excerpts list.
                         pass
+                return None
+            except QmdNoResultsError:
+                # qmd ran cleanly; this collection has no hits for the
+                # query. Clean miss — do NOT increment counter, do NOT
+                # recycle. Pre-split, the tuple-caught
+                # ``(QmdCommandError, QmdNoResultsError)`` treated clean
+                # misses as failures; a ``pydantic_validation``-class
+                # collection with limited reranking candidates would
+                # trip the recycle threshold on legitimate empty
+                # results, eventually recycling a healthy daemon.
                 return None
             # Any successful collection query resets the counter so a
             # transient error doesn't accumulate against later successes.
