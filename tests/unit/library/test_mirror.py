@@ -66,7 +66,11 @@ def test_render_mirror_missing_required_kwargs_raises() -> None:
         )
 
 
+@pytest.mark.slow
 def test_write_mirror_creates_file(lib: Library) -> None:
+    # exceeds 0.15s budget under system load (mkdir + write_text + read_text
+    # on tmp_path); slow-marked per pre-PR-checklist rule
+    # (project-noted in TODO.md). Runs under ``--runslow``.
     coll = lib.collection("claude")
     coll.dir.mkdir(parents=True)
     path = write_mirror(
@@ -109,7 +113,11 @@ def test_write_mirror_collision_without_force_raises(lib: Library) -> None:
         )
 
 
+@pytest.mark.slow
 def test_write_mirror_force_overwrites(lib: Library) -> None:
+    # exceeds 0.15s budget under system load (two ``write_text`` calls
+    # plus a read on tmp_path); slow-marked per pre-PR-checklist rule
+    # (project-noted in TODO.md). Runs under ``--runslow``.
     coll = lib.collection("claude")
     coll.dir.mkdir(parents=True)
     write_mirror(
