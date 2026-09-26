@@ -19,6 +19,9 @@ htmlcov/
 .lies
 .superpowers/
 superpowers/
+# Project-internal design specs DO land in the repo under docs/superpowers/specs/
+# despite the superpowers/ ignore above — un-ignore that subtree explicitly.
+!docs/superpowers/
 sdd/
 .sdd/
 seal/
