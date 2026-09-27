@@ -4,6 +4,81 @@ All notable changes to LIES are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/) adapted for
 [Semantic Versioning](https://semver.org/).
 
+## [0.40.0] - 2026-09-26
+
+### Breaking changes
+
+**MCP tool surface rewritten.** Old tools removed:
+- `wiki_search` (subsumed by `search` + `ask`'s internal pipeline)
+- `wiki_read` (renamed to `read`)
+- `wiki_catalog` (renamed to `collections_read`)
+- `synthesize` (renamed to `ask`)
+- `ground` (renamed to `search`)
+- `ask_question`, `ask_ground_question` (filter parsing moved into `search`/`ask`)
+- `init_wiki` (deferred to post-v0.40; wiki code paths stay dormant in source)
+
+Old tools renamed:
+- `wiki_read` → `read`
+- `wiki_catalog` → `collections_read`
+- `synthesize` → `ask`
+- `ground` → `search`
+
+All 7 prompts removed (`answer`, `orient`, `ingest`, `lint`, `sync`, `file-back`, `cite`).
+
+### Added
+
+- **`collections_read` tool.** Live registry reader with three subcommands (`list`, `tag_list`, `info`). The librarian LLM uses it in Step 1 to build `tag_expr` from registry tokens.
+- **`search` tool.** Single-batch hybrid vec+lex qmd query. One round-trip per call. Library-wins-on-slug-conflict merge happens inside qmd.
+- **`read` tool.** Source-aware dispatch (wiki page IDs to `memory_service.read`, library paths to `qmd_get`).
+- **`ask` tool.** Prose answer orchestration. Calls the librarian subagent's 4-step pipeline (Classify → Search → Read → Return) then the synthesizer.
+- **Librarian agent 4-step pipeline.** Step 3 reviews snippets before committing to reads — closes the structural bug where qmd's BM25 ranking for "compare plugins" surfaced German/Italian/French localized overviews above the actual plugin-authoring guides.
+- **`SynthesizeEnvelope.searched_scope`** (additive). Mirrors the `search` tool's `searched_scope` field so callers see what was queried.
+- **Curated test corpus** at `tests/fixtures/library/collections/`. Five collections (`alpha`, `beta`, `gamma`, `delta`, `epsilon`) covering plugin authoring, marketplace, LSP integration, eval-driven testing, and plugin hints. ~30 hand-written docs. 20 query→expected_pages fixtures.
+
+### Changed
+
+- **`librarian_agent` system prompt** rewritten to the 4-step Classify → Search → Read → Return pipeline.
+- `librarian_agent`'s tool set changed from `{wiki_search, wiki_read, wiki_catalog}` to `{collections_read, search, read}`.
+
+## [0.39.2] - 2026-09-26
+
+### Fixed
+
+- **`/answer` slash prompt: defensive re-parse of leading filter
+  sigil.** The MCP `answer` prompt rendered the
+  `call-the-synthesize` body with `tag_expr: None` and the
+  `+c:...` prefix unstripped inside the question field for some
+  MCP clients (notably the OpenCode TUI slash picker). The model
+  faithfully forwarded those kwargs to `synthesize`, so the
+  librarian ran untagged. Live-debug: CC session
+  `db4bd25e-e72e-4eee-8c25-0645d37f82ef`, OC sessions
+  `ses_f2110b5fdffeTHmy7K0dkIIQaj` and parallel transcripts.
+  Fix: when the primary parse returns `include_ast=None` but the
+  rendered `parsed_question` still starts with a filter sigil,
+  retry `parse_query_argv` on the question as if it were the full
+  slash input. Fail-soft — legitimate questions that don't look
+  filter-like are unchanged.
+- **Librarian `_wiki_search`: thread caller-supplied `tag_expr`
+  into the library qmd `collection_filter`.** The librarian
+  queried the library index with
+  `collection_filter=set(library_collection_names())` (every
+  registered collection) regardless of the caller-supplied
+  `tag_expr`. Live-debug confirmed callers passing
+  `tag_expr='c:opencode|c:claude_code'` got 100% `claude_code/*`
+  hits because qmd's hit ranking favored the higher-token-overlap
+  claude_code matches for the words "compare" / "plugins" —
+  despite `opencode/plugins.md` being ingested. Fix: resolve
+  caller `tag_expr` to the set of registered collection names and
+  pass that set (intersected with registered names) as the
+  library-side `collection_filter`. Wiki side is unconstrained as
+  before. When `tag_expr=None` the librarian falls back to the
+  all-collections default.
+- Pre-existing slow-test budget hits on
+  `tests/unit/ingestion/test_etl_pipeline.py` and
+  `tests/unit/ingestion/test_etl_quarantine.py` marked
+  `@pytest.mark.slow` so the unit-test 0.15s wall-clock budget
+  gate stops tripping.
+
 ## [0.39.1] - 2026-09-25
 
 ### Added
@@ -158,6 +233,21 @@ All notable changes to LIES are documented here. The format follows
   librarian is now in `AGENT_ROSTER`; `ground()` resolves the model
   via `load_providers_config` + `resolve_model`. User
   `providers.toml` must include a `librarian` entry.
+
+- Live-runtime: `ask` MCP tool failed with
+  `UnexpectedModelBehavior: Exceeded maximum output retries (1)` when
+  the librarian LLM emitted a verbose prose preamble ("Confirmed —
+  no authoring page for OpenCode exists in this corpus. I have enough
+  material to assemble the bundle. Let me emit the final result.")
+  instead of a structured `LibrarianOutput`. Two changes:
+  `librarian_agent` now passes `output_retries=3` to pydantic-ai
+  (instead of the default 1), and the system prompt gains an
+  explicit "Output format (MANDATORY)" section that demands a bare
+  JSON object with no preamble, no thinking, no markdown fences, and
+  no recap of the failed attempt. The fail-soft envelope from the
+  prior `librarian_agent_run` change still returns
+  `"No relevant content found in library."` after the retry budget
+  exhausts.
 
 ## [0.37.11] - 2026-09-23
 

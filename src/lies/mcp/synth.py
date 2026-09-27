@@ -11,19 +11,30 @@ a :class:`PageExcerpt` with a single span holding the snippet body.
 This keeps :func:`synthesize` independent of the F18 librarian
 LLM round-trip while still feeding the synthesizer the verbatim
 excerpts it composes against.
+
+``ask`` is the new (Task 7) orchestrator that replaces ``synthesize``
+in v0.40. It runs the F18 librarian agent (4-step classify→search→
+read→return) before the synthesizer; the helpers
+:func:`librarian_agent_run`, :func:`synthesizer_agent_run`, and
+:func:`_build_query_deps` are wired in Task 9 and currently raise
+``NotImplementedError``. Tests patch them directly.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import TYPE_CHECKING
+import logging
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any
 
 from fastmcp.exceptions import ToolError
+from fastmcp.tools import Tool
 
 from lies.mcp.grounding import ground
+from lies.query.citation import Citation
+
+log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
-    from lies.query.citation import Citation
     from lies.query.tag_expr import TagExpr
 
 
@@ -51,12 +62,10 @@ class SynthesizeEnvelope:
     fallback_used: bool
     synthesis_used: bool
     fallback_reason: str | None = None
+    searched_scope: list[str] = field(default_factory=list)
 
 
-_FILE_BACK_DEFERRED_MSG = (
-    "file_back is deferred in this release; see "
-    "superpowers/specs/2026-09-24-library-mode-read-side-rewrite-design.md"
-)
+_FILE_BACK_DEFERRED_MSG = "file_back deferred until v0.41"
 
 
 def _resolve_synthesizer_model():
@@ -225,3 +234,296 @@ async def synthesize(
         fallback_used=False,
         synthesis_used=True,
     )
+
+
+# ---------------------------------------------------------------------------
+# ask — Task 7 orchestrator (replaces ``synthesize`` in v0.40)
+# ---------------------------------------------------------------------------
+
+
+def _resolve_librarian_model():
+    """Resolve the ``librarian`` model string.
+
+    Mirrors :func:`_resolve_synthesizer_model`: ``env_override``
+    first (cheapest), then a user-level ``providers.toml`` load via
+    :func:`lies.providers.resolve_model`. Raises
+    :class:`lies.errors.ModelNotConfigured` when nothing is wired —
+    LIES does not silently fall back to a vendor-default model.
+    """
+    from lies.errors import ModelNotConfigured
+    from lies.providers import env_override, load_providers_config
+    from lies.providers.resolver import resolve_model
+    from lies.xdg import config_home
+    from lies.constants import LIES_DATA_SUBDIR
+
+    override = env_override("librarian")
+    if override is not None:
+        return override
+    providers_path = config_home() / LIES_DATA_SUBDIR / "providers.toml"
+    config = load_providers_config(providers_path)
+    if config is not None and "librarian" in config.agents:
+        return resolve_model("librarian", config)
+    # Final fallback: the ``query_synthesizer`` slot. Both agents are
+    # part of the same Tier-2 query path, share the same retrieval
+    # envelope, and the orchestrator already threads this fallback
+    # (see ``Orchestrator._build``). Keeps the MCP ``ask`` tool
+    # working in environments where the operator only configured
+    # one slot.
+    if config is not None and "query_synthesizer" in config.agents:
+        return resolve_model("query_synthesizer", config)
+    raise ModelNotConfigured(
+        "ask() requires the librarian model. "
+        "Set LIES_AGENT_LIBRARIAN_MODEL or configure providers.toml "
+        "via `lies providers init`."
+    )
+
+
+def librarian_agent_run(deps: Any) -> Any:
+    """Run the librarian subagent's ``run_sync`` and return the LibrarianOutput.
+
+    Builds a fresh librarian agent (4-step pipeline), wires the new
+    stateless MCP-backed tools (``collections_read`` / ``search`` /
+    ``read``), and invokes ``run_sync`` with the supplied deps.
+
+    Tests patch this function directly via
+    ``monkeypatch.setattr("lies.mcp.synth.librarian_agent_run", ...)``
+    to stub the dispatch. The production path resolves the librarian
+    model eagerly via :func:`_resolve_librarian_model`, constructs
+    the agent with the v0.40 system prompt, registers the new tool
+    set, and propagates the agent's typed output back to the caller
+    (pydantic-ai returns a :class:`LibrarianOutput` dataclass
+    directly when the registered ``output_type`` matches).
+
+    Args:
+        deps: :class:`LibrarianDeps` carrying question / tag_expr /
+            exclude_expr / top_k.
+
+    Returns:
+        :class:`LibrarianOutput` — the librarian's curated excerpt
+        bundle with ``searched_scope`` populated from the search
+        tool's resolution.
+    """
+    from lies.agents.librarian import LibrarianOutput, register_librarian_tools
+
+    # ``librarian_agent`` is imported at module scope below so tests can
+    # ``monkeypatch.setattr("lies.mcp.synth.librarian_agent", ...)``.
+    agent_factory = librarian_agent
+
+    model = _resolve_librarian_model()
+    agent = agent_factory(model=model)
+    register_librarian_tools(agent)
+    try:
+        result = agent.run_sync(deps.question, deps=deps)
+    except Exception as exc:
+        # Fail-soft: pydantic-ai raises (e.g.
+        # ``UsageLimitExceeded("Exceeded maximum output retries (1)")``)
+        # when the librarian LLM cannot produce a valid
+        # ``LibrarianOutput`` after the configured retry budget. The
+        # MCP ``ask`` tool must surface an honest gap envelope instead
+        # of crashing the user's request. Match the F18 grounding
+        # archivist's contract: return a ``LibrarianOutput`` with
+        # empty excerpts and ``no_coverage=True`` so ``_ask_impl``
+        # short-circuits to the "No relevant content found" path.
+        # ``tag_expr`` / ``exclude_expr`` mirror the request's filters
+        # for observability — the synthesizer does not consume them,
+        # but a log reader can correlate the fallback against the
+        # user's question. ``searched_scope`` is empty because the
+        # librarian never executed its ``search()`` tool.
+        log.warning(
+            "librarian_agent_run: dispatch failed (%s: %s); returning empty no_coverage fallback",
+            type(exc).__name__,
+            exc,
+        )
+        return LibrarianOutput(
+            tag_expr=getattr(deps, "tag_expr", None),
+            exclude_expr=getattr(deps, "exclude_expr", None),
+            excerpts=[],
+            distinct_pages=0,
+            no_coverage=True,
+            searched_scope=[],
+        )
+    out = result.output
+    # Defensive: pydantic-ai's ``output_type=LibrarianOutput`` means
+    # ``out`` IS a ``LibrarianOutput`` (the registered dataclass).
+    # The ``isinstance`` check is a forward-compat guard against a
+    # future migration that emits a pydantic model alongside the
+    # dataclass — the conversion below keeps the public surface
+    # dataclass-shaped so consumers (synth, MCP layer, tests) see the
+    # same shape regardless of the agent's output type.
+    if isinstance(out, LibrarianOutput):
+        return out
+    return LibrarianOutput(
+        tag_expr=getattr(out, "tag_expr", None),
+        exclude_expr=getattr(out, "exclude_expr", None),
+        excerpts=list(getattr(out, "excerpts", []) or []),
+        distinct_pages=getattr(out, "distinct_pages", 0),
+        no_coverage=getattr(out, "no_coverage", False),
+        searched_scope=list(getattr(out, "searched_scope", None) or []),
+    )
+
+
+def synthesizer_agent_run(librarian_output: Any, question: str) -> Any:
+    """Run the synthesizer subagent's ``run_sync`` and return its answer.
+
+    Builds a fresh synthesizer agent, wires the librarian's excerpt
+    bundle as :class:`QueryDeps`, and returns the typed
+    :class:`QueryAnswer`.
+
+    Tests patch this function directly via
+    ``monkeypatch.setattr("lies.mcp.synth.synthesizer_agent_run", ...)``
+    to stub the dispatch.
+
+    Args:
+        librarian_output: :class:`LibrarianOutput` from
+            :func:`librarian_agent_run`.
+        question: The original user question (echoed into
+            :class:`QueryDeps`).
+
+    Returns:
+        :class:`QueryAnswer` — the synthesizer's prose answer with
+        citations and ``format_hint``.
+    """
+    from lies.agents.query_synthesizer import QueryDeps, query_synthesizer_agent
+
+    model = _resolve_synthesizer_model()
+    agent = query_synthesizer_agent(model=model)
+    deps = QueryDeps(
+        question=question,
+        librarian_output=librarian_output,
+        format_hint="md",
+    )
+    result = agent.run_sync(question, deps=deps)
+    return result.output
+
+
+# Module-level agent factories — the real factories. Tests can
+# monkeypatch them via ``monkeypatch.setattr("lies.mcp.synth.librarian_agent", ...)``
+# if they need a stubbed factory.
+from lies.agents.librarian import librarian_agent  # noqa: E402,F401
+from lies.agents.query_synthesizer import query_synthesizer_agent as synthesizer_agent  # noqa: E402,F401
+
+
+def _build_query_deps(
+    *,
+    question: str,
+    tag_expr: str | None,
+    exclude_tags: list[str] | None,
+) -> Any:
+    """Build the deps object for :func:`librarian_agent_run`.
+
+    Translates the MCP ``ask`` tool's flat ``exclude_tags`` surface
+    (a list of bare-tag strings like ``["c:opencode"]``) into the
+    compiled ``TagExpr`` AST the librarian consumes in
+    :attr:`LibrarianDeps.exclude_expr`. ``None`` when no ``-`` chain
+    was supplied; ``list[str]`` chain paths land here as a single
+    ``Or(...)`` AST so the F15 grammar walks the full chain site-side.
+
+    Args:
+        question: The user's natural-language question.
+        tag_expr: Body of a single include expression. ``None`` for
+            library-wide.
+        exclude_tags: NOT tags without leading sigil. ``None`` when
+            no ``-`` chain.
+
+    Returns:
+        :class:`LibrarianDeps` carrying the question, tag_expr
+        (string body), compiled exclude AST, and ``top_k=5``.
+    """
+    from lies.agents.librarian import LibrarianDeps
+    from lies.query.tag_expr import Include, Or
+
+    exclude_expr: Include | Or | None = None
+    if exclude_tags:
+        atoms = [
+            Include(tag.split(":", 1)[-1], "c" if tag.startswith("c:") else None)
+            for tag in exclude_tags
+        ]
+        if len(atoms) == 1:
+            exclude_expr = atoms[0]
+        elif len(atoms) > 1:
+            # Fold the chain into a left-leaning ``Or`` AST. The F15
+            # grammar's walker handles nested Ors uniformly; left-
+            # leaning is the historical convention for OR-of-NOT
+            # chains.
+            exclude_expr = atoms[0]
+            for atom in atoms[1:]:
+                exclude_expr = Or(exclude_expr, atom)
+
+    return LibrarianDeps(
+        question=question,
+        tag_expr=tag_expr,
+        exclude_expr=exclude_expr,
+        top_k=5,
+    )
+
+
+def _ask_impl(
+    question: str,
+    tag_expr: str | None = None,
+    exclude_tags: list[str] | None = None,
+    file_back: bool = False,
+) -> SynthesizeEnvelope:
+    """Orchestrate librarian → synthesizer → envelope.
+
+    Replaces the old ``synthesize`` tool. The librarian LLM runs the
+    Classify → Search → Read → Return 4-step pipeline; the synthesizer
+    LLM produces the prose answer from the librarian's excerpt bundle.
+
+    Args:
+        question: Natural-language question.
+        tag_expr: Body of a single include expression (no leading
+            sigil). ``None`` for library-wide.
+        exclude_tags: NOT tags without leading sigil. ``None`` when no
+            ``-`` chain.
+        file_back: Reserved for the write-tool spec. Raises
+            ``ToolError`` until the write-tool lands in v0.41.
+
+    Returns:
+        :class:`SynthesizeEnvelope` carrying the prose body and
+        citations.
+
+    Raises:
+        ToolError: When ``file_back=True``.
+    """
+    if file_back:
+        raise ToolError(_FILE_BACK_DEFERRED_MSG)
+
+    deps = _build_query_deps(question=question, tag_expr=tag_expr, exclude_tags=exclude_tags)
+    lib_out = librarian_agent_run(deps)
+
+    if not lib_out.excerpts:
+        return SynthesizeEnvelope(
+            question=question,
+            tag_expr=tag_expr,
+            answer="No relevant content found in library.",
+            citations=[],
+            pages_read=[],
+            fallback_used=True,
+            synthesis_used=False,
+            fallback_reason="librarian returned no excerpts",
+            searched_scope=list(lib_out.searched_scope or []),
+        )
+
+    synth_out = synthesizer_agent_run(lib_out, question)
+
+    return SynthesizeEnvelope(
+        question=question,
+        tag_expr=tag_expr,
+        answer=getattr(synth_out, "answer", ""),
+        citations=getattr(lib_out, "citations", []) or [],
+        pages_read=getattr(synth_out, "pages_read", []) or [],
+        fallback_used=bool(getattr(synth_out, "fallback_used", False)),
+        synthesis_used=bool(getattr(synth_out, "synthesis_used", True)),
+        fallback_reason=getattr(synth_out, "fallback_reason", None),
+        searched_scope=list(lib_out.searched_scope or []),
+    )
+
+
+# Wrap as a FastMCP ``Tool`` so the MCP wire can serialize the
+# dispatch surface and tests can reach the underlying function via
+# ``ask.fn(...)``. Mirrors the pattern in ``search.py`` (Task 4)
+# and ``read.py`` (Task 5). Server registration is a separate
+# concern (Task 6+); the Tool object is constructed here so downstream
+# code can ``import synth`` and call ``ask.fn`` without spinning up an
+# MCP instance.
+ask = Tool.from_function(_ask_impl, name="ask")

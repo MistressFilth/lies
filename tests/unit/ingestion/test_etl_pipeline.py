@@ -109,6 +109,7 @@ def test_pipeline_runs_all_states(wiki: Wiki) -> None:
     assert pipeline.state == PipelineState.IDLE
 
 
+@pytest.mark.slow
 def test_pipeline_rolls_back_on_budget_exceeded(wiki: Wiki) -> None:
     collection = _collection(wiki)
     telemetry = SyncTelemetry(wiki, collection.name)
@@ -129,6 +130,7 @@ def test_pipeline_rolls_back_on_budget_exceeded(wiki: Wiki) -> None:
     manifest.restore.assert_called_once()
 
 
+@pytest.mark.slow
 def test_pipeline_threads_parsed_docs_from_scrape_to_normalize(wiki: Wiki) -> None:
     """Scrape returns parsed_docs; orchestrator passes them to normalize."""
     collection = _collection(wiki)
@@ -176,6 +178,7 @@ def test_pipeline_threads_parsed_docs_from_scrape_to_normalize(wiki: Wiki) -> No
     assert captured["docs"] is fake_docs
 
 
+@pytest.mark.slow
 def test_pipeline_threads_force_to_write(wiki: Wiki) -> None:
     collection = _collection(wiki)
     telemetry = SyncTelemetry(wiki, collection.name)
@@ -217,6 +220,7 @@ def test_pipeline_threads_force_to_write(wiki: Wiki) -> None:
     assert captured["wiki"].data_root == wiki.data_root
 
 
+@pytest.mark.slow
 def test_pipeline_threads_wiki_to_write(wiki: Wiki) -> None:
     """The orchestrator must thread a Wiki into the write stage."""
     collection = _collection(wiki)

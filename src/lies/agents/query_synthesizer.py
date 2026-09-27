@@ -61,8 +61,7 @@ class QueryAnswer:
     Mirrors :attr:`SynthesizedAnswer.no_coverage`. Set by
     :func:`lies.query.synthesizer._searched_scope` when the include
     expression matches zero collections; the orchestrator's dispatch
-    site propagates the F18 Task 1 ``librarian_no_coverage`` ContextVar
-    onto this attribute.
+    site copies the resolved-scope verdict onto this attribute.
     """
 
     fallback_used: bool = False

@@ -1,0 +1,14 @@
+created_at: '2026-01-01T00:00:00Z'
+name: beta
+scope_keywords:
+- manifest
+- marketplace
+- install
+- scope
+- distribution
+source: https://example.test/beta/index
+tags:
+- plugins
+- marketplace
+- distribution
+updated_at: '2026-01-01T00:00:00Z'

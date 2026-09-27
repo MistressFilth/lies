@@ -19,7 +19,6 @@ from lies.agents.librarian import (
     LibrarianDeps,
     LibrarianOutput,
     librarian_agent,
-    librarian_no_coverage,
 )
 from lies.agents.linter import LintFinding, LintReport, linter_agent
 from lies.markdown_spans import Span
@@ -1828,20 +1827,12 @@ class Orchestrator:
             _qmd_unavailable = False
         librarian_result = self._librarian_agent.run_sync(question, deps=deps)
         librarian_out = librarian_result.output
-        # F18 Task 1 — copy the ``librarian_no_coverage`` ContextVar
-        # (populated by ``_wiki_search``'s closure inside
-        # ``register_librarian_tools``) onto the returned
-        # ``LibrarianOutput`` so downstream consumers (the F18
-        # ``ground()`` dispatch, the file-back gate, and any
-        # caller reading the bundle) see the scope-miss flag. Skip
-        # the replace when the run landed on a canned ``QueryAnswer``
-        # (the test-fixture branch below) — that shape is not a
-        # ``LibrarianOutput`` and ``replace`` would reject it.
-        if isinstance(librarian_out, LibrarianOutput):
-            librarian_out = replace(
-                librarian_out,
-                no_coverage=librarian_no_coverage.get(),
-            )
+        # v0.40 — the LLM populates ``LibrarianOutput.no_coverage``
+        # directly from the ``search`` MCP tool's ``no_coverage`` field
+        # in the SearchResult envelope. The value flows through as the
+        # agent emitted it; downstream consumers (the file-back gate,
+        # ``ground()`` dispatch, callers reading the bundle) read it
+        # as-is. No ContextVar hop, no orchestrator-side override.
         # F1 test-friendly: integration tests patch
         # ``Agent.run_sync`` at the class level (both the librarian
         # and the synthesizer share the same ``Agent`` base class),
@@ -2282,7 +2273,7 @@ class Orchestrator:
         return self.file_back_author(plan)
 
     def _register_librarian_tools(self) -> None:
-        """Register ``wiki_search`` / ``wiki_read`` / ``wiki_catalog`` on the librarian agent.
+        """Register ``collections_read`` / ``search`` / ``read`` on the librarian agent.
 
         Thin delegator to :func:`lies.agents.librarian.register_librarian_tools`
         so the wiring lives in exactly one place — both the orchestrator

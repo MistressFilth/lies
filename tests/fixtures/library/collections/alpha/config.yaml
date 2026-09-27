@@ -1,0 +1,14 @@
+created_at: '2026-01-01T00:00:00Z'
+name: alpha
+scope_keywords:
+- plugin
+- cli
+- author
+- define
+- setup
+source: https://example.test/alpha/index
+tags:
+- plugins
+- cli
+- authoring
+updated_at: '2026-01-01T00:00:00Z'

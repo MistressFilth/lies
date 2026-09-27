@@ -28,6 +28,7 @@ def wiki(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Wiki:
     return wiki
 
 
+@pytest.mark.slow
 def test_quarantine_writes_doc_and_reason(wiki: Wiki) -> None:
     raw = wiki.data_root / "raw" / "cpython" / "docs" / "broken.md"
     raw.parent.mkdir(parents=True)
