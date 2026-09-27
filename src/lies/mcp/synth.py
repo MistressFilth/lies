@@ -22,6 +22,7 @@ read→return) before the synthesizer; the helpers
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -30,6 +31,8 @@ from fastmcp.tools import Tool
 
 from lies.mcp.grounding import ground
 from lies.query.citation import Citation
+
+log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from lies.query.tag_expr import TagExpr
@@ -309,7 +312,36 @@ def librarian_agent_run(deps: Any) -> Any:
     model = _resolve_librarian_model()
     agent = agent_factory(model=model)
     register_librarian_tools(agent)
-    result = agent.run_sync(deps.question, deps=deps)
+    try:
+        result = agent.run_sync(deps.question, deps=deps)
+    except Exception as exc:
+        # Fail-soft: pydantic-ai raises (e.g.
+        # ``UsageLimitExceeded("Exceeded maximum output retries (1)")``)
+        # when the librarian LLM cannot produce a valid
+        # ``LibrarianOutput`` after the configured retry budget. The
+        # MCP ``ask`` tool must surface an honest gap envelope instead
+        # of crashing the user's request. Match the F18 grounding
+        # archivist's contract: return a ``LibrarianOutput`` with
+        # empty excerpts and ``no_coverage=True`` so ``_ask_impl``
+        # short-circuits to the "No relevant content found" path.
+        # ``tag_expr`` / ``exclude_expr`` mirror the request's filters
+        # for observability — the synthesizer does not consume them,
+        # but a log reader can correlate the fallback against the
+        # user's question. ``searched_scope`` is empty because the
+        # librarian never executed its ``search()`` tool.
+        log.warning(
+            "librarian_agent_run: dispatch failed (%s: %s); returning empty no_coverage fallback",
+            type(exc).__name__,
+            exc,
+        )
+        return LibrarianOutput(
+            tag_expr=getattr(deps, "tag_expr", None),
+            exclude_expr=getattr(deps, "exclude_expr", None),
+            excerpts=[],
+            distinct_pages=0,
+            no_coverage=True,
+            searched_scope=[],
+        )
     out = result.output
     # Defensive: pydantic-ai's ``output_type=LibrarianOutput`` means
     # ``out`` IS a ``LibrarianOutput`` (the registered dataclass).

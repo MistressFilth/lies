@@ -111,3 +111,53 @@ def test_ask_envelope_propagates_searched_scope(monkeypatch: pytest.MonkeyPatch)
 
     out = ask.fn(question="hi", tag_expr="c:alpha|c:beta")
     assert out.searched_scope == ["alpha", "beta"]
+
+
+def test_ask_returns_no_coverage_envelope_when_librarian_dispatch_fails(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """librarian_agent.run_sync raising → ask() returns gap envelope, no crash.
+
+    Reproduces the v0.40 live-test failure: pydantic-ai raises
+    ``UsageLimitExceeded("Exceeded maximum output retries (1)")`` when the
+    librarian LLM cannot produce a valid ``LibrarianOutput``. The MCP
+    ``ask`` tool must surface an honest gap envelope instead of
+    propagating the exception. Mirrors ``test_ground_returns_empty_digest_on_librarian_exception``
+    in :mod:`tests.integration.test_grounding_unit` for the new ask path.
+    """
+    from lies.mcp import synth
+
+    class _BoomAgent:
+        def run_sync(self, user_prompt, *, deps):
+            raise RuntimeError("Exceeded maximum output retries (1)")
+
+    # Patch the agent factory so ``librarian_agent_run`` builds a BoomAgent.
+    monkeypatch.setattr(synth, "librarian_agent", lambda model=None: _BoomAgent())
+    # Model resolution + tool registration are no-ops in this test — only
+    # the ``run_sync`` raise matters. ``register_librarian_tools`` is
+    # imported lazily inside ``librarian_agent_run`` so we patch at the
+    # source module to catch the local rebinding.
+    monkeypatch.setattr(synth, "_resolve_librarian_model", lambda: "test-model")
+    monkeypatch.setattr("lies.agents.librarian.register_librarian_tools", lambda agent: None)
+    # The synthesizer must NOT be reached on the fallback path.
+    synth_called: list[bool] = []
+    monkeypatch.setattr(
+        synth,
+        "synthesizer_agent_run",
+        lambda lib_out, q: synth_called.append(True) or MagicMock(),
+    )
+
+    with caplog.at_level("WARNING", logger="lies.mcp.synth"):
+        out = synth.ask.fn(question="what is pydantic?", tag_expr="c:alpha")
+
+    assert out.answer == "No relevant content found in library."
+    assert out.synthesis_used is False
+    assert out.fallback_used is True
+    assert "no excerpts" in (out.fallback_reason or "").lower()
+    assert out.searched_scope == []
+    assert synth_called == []
+    # The operator should see one warning explaining the fallback fired.
+    assert any(
+        "librarian_agent_run" in record.getMessage() and "RuntimeError" in record.getMessage()
+        for record in caplog.records
+    ), f"expected fallback warning, got: {[r.getMessage() for r in caplog.records]}"
