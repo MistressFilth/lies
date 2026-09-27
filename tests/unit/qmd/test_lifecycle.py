@@ -155,6 +155,7 @@ def test_status_returns_not_running_when_pidfile_absent_and_no_listener(
     assert s.pid is None
 
 
+@pytest.mark.slow
 def test_status_reports_pid_when_port_listening(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

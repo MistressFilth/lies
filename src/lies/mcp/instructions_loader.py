@@ -1,14 +1,20 @@
-"""Load + version-stamp the LIES MCP orientation payloads.
+"""Load + version-stamp the LIES MCP orientation payload.
 
-Reads ``instructions.md`` and ``prompts/*.md`` from disk and
-substitutes ``$version`` from :data:`lies.__version__` into the
-rendered text via :class:`string.Template`. ``string.Template``
-uses ``$variable`` (or ``${variable}``) so literal ``{...}``
-tokens in the source files — e.g. the ``{slug}`` and ``{path}``
-URI-template placeholders in the Resources section — render
-unchanged. Used by :mod:`lies.mcp.server` at MCP server boot.
+Reads ``instructions.md`` from disk and substitutes ``$version``
+from :data:`lies.__version__` into the rendered text via
+:class:`string.Template`. ``string.Template`` uses ``$variable``
+(or ``${variable}``) so literal ``{...}`` tokens in the source
+file — e.g. the ``{slug}`` URI-template placeholders some
+downstream sections reference — render unchanged.
 
-Tested by ``tests/mcp/test_instructions_loader.py``.
+The v0.40 rewrite retires the seven prompts the prior loader
+also served (``answer`` / ``orient`` / ``ingest`` / ``lint`` /
+``sync`` / ``file-back`` / ``cite``). ``PROMPTS_DIR`` and
+``load_prompt`` are gone; ``instructions.md`` is the only
+hand-edited orientation surface.
+
+Used by :mod:`lies.mcp.server` at MCP server boot.
+Tested by ``tests/unit/mcp/test_instructions_loader.py``.
 """
 
 from __future__ import annotations
@@ -19,7 +25,6 @@ from pathlib import Path
 from lies import __version__
 
 INSTRUCTIONS_PATH = Path(__file__).parent / "instructions.md"
-PROMPTS_DIR = Path(__file__).parent / "prompts"
 
 
 def load_instructions() -> str:
@@ -29,14 +34,3 @@ def load_instructions() -> str:
     """
     raw = INSTRUCTIONS_PATH.read_text(encoding="utf-8")
     return string.Template(raw).safe_substitute(version=__version__)
-
-
-def load_prompt(name: str) -> str:
-    """Return a prompt body by filename stem (no extension).
-
-    Raises ``FileNotFoundError`` if ``prompts/<name>.md`` is missing.
-    """
-    path = PROMPTS_DIR / f"{name}.md"
-    return string.Template(path.read_text(encoding="utf-8")).safe_substitute(
-        version=__version__,
-    )

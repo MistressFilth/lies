@@ -6,87 +6,52 @@ yourself. The wiki you are talking to is selected by the
 
 ## Paths
 
-- `wiki_dir` — `$XDG_DATA_HOME/lies/<wiki>/wiki/`
-  Derived pages (`<page-type>/<slug>.md`).
-- `raw_dir` — `$XDG_DATA_HOME/lies/<wiki>/raw/<collection>/`
-  Immutable source mirrors; written by the scrape stage.
+- `library_dir` — `$XDG_DATA_HOME/lies/library/`
+  Collection configs at `library/collections/<name>/config.yaml`.
+  Source docs under `library/collections/<name>/pages/` or wherever
+  the scraper wrote them.
 
-Collections are global library artifacts. Each named unit lives at
-`$XDG_DATA_HOME/lies/library/collections/<slug>/` and contains the
-scraped content plus a `config.yaml` (source URL, tags, scraper
-settings). No per-wiki collection config exists; any wiki can read any
-library collection on demand. New collections land via
-`lies ingest --source <URL> --collection <slug>` (writes content +
-bootstraps config) or `lies library new <slug> --source <URL>` (config
-only).
+## Tools (v0.40 surface)
 
-## Tools
+- `collections_read(subcommand, name?)` — live registry reader.
+  Subcommands: `list` (one row per collection), `tag_list` (tag → collections
+  map, qualifier prefix stripped), `info` (single collection's full metadata,
+  requires `name`).
+- `search(question, tag_expr?, exclude_tags?, hypothetical?)` —
+  single-batch hybrid vec+lex qmd query. Returns top-1 + top-10 ranked hits
+  with snippets, plus `searched_scope` and `unknown_tags`.
+- `read(paths)` — verbatim page bodies. Wiki page IDs route to
+  `memory_service.read`; library paths (`<collection>/<page>`) route to
+  `qmd_get`. Source-aware dispatch.
+- `ask(question, tag_expr?, exclude_tags?, file_back?)` — prose answer.
+  Calls the librarian subagent (Classify → Search → Read → Return 4-step
+  pipeline), then the synthesizer subagent. Returns a `SynthesizeEnvelope`
+  with `answer`, `citations`, `pages_read`, `searched_scope`,
+  `fallback_used`, `synthesis_used`, `fallback_reason`.
+- `lint` — health-check (unchanged).
+- `reindex` — qmd lifecycle (unchanged).
 
-- `init_wiki` — bootstrap a new wiki under the XDG roots.
-- `wiki_search` / `wiki_read` — direct memory retrieval.
-- `file_knowledge` — write one markdown page.
-- `query` / `answer` — synthesized answer; `query` returns
-  structured envelope, `answer` returns plain text.
-- `ask_question(text)` — parse the `+c:<name>` / `-<tag>` filter syntax
-  out of a slash-style invocation and return the parsed kwargs
-  (`question`, `tag_expr`, `exclude_tags`). The LLM then forwards the
-  returned kwargs to the `answer` tool. Use this for any question
-  that includes a multi-word filter prefix; the `/answer` slash
-  command tokenizes on whitespace and drops the rest of the line.
-- `ask_ground_question(text)` — same shape as `ask_question`, but
-  returns kwargs (`question`, `tag_expr`, `exclude_tags`, `top_k`)
-  for the `ground` tool. The LLM forwards the returned kwargs to
-  `ground` verbatim. **Use this for every `/cite` slash invocation
-  whose input begins with `+`** — Claude Code's slash dispatcher
-  drops the `text` argument entirely when the slash input starts
-  with a `+` (F15 include sigil), raising
-  `ProtocolError: Missing required arguments: {'text'}` (session
-  df653c3d, 2026-09-24). Plain multi-word questions are also safer
-  through this tool than the slash, since the dispatcher
-  tokenizes on whitespace too.
-- `lint` — health-check; `fix=True` applies the repair plan.
-- `wiki_changes` — recent plan applications.
+## Workflow
 
-## Resources (`wiki://`)
+1. `collections_read("list")` to discover what collections exist.
+2. `search(...)` with the user's question + filter to get ranked hits + snippets.
+3. `read(paths)` to deep-read the pages whose snippets look most relevant.
+4. `ask(...)` to compose a cited answer from the librarian's excerpt bundle.
 
-- `wiki://status`, `wiki://index`, `wiki://log`,
-  `wiki://lint-report`, `wiki://memory-changes`,
-  `wiki://catalog`, `wiki://catalog/{slug}`,
-  `wiki://page/{path}`.
+`ask` does steps 1–4 internally — the librarian subagent picks reads based on snippets. Use the individual tools when you need finer control.
 
-## Prompts
+## Tag-filter syntax
 
-- `ask_wiki_answer(text)` (slash `/answer`) — drive `answer`.
-  Note: Claude Code's slash dispatcher tokenizes the input on
-  whitespace, so multi-word filter prefixes (`+c:opencode Where...`)
-  are truncated. For filtered questions, call the `ask_question` tool
-  with the user's full multi-word input instead.
-- `orient(wiki=...)` — reference prose for the four workflows.
-- `ingest(source=...)` — `lies sync <name> --source <source>`.
-- `lint()` — `lies lint`, `--fix`, repair agent.
-- `sync(collection=...)` — `lies sync`, lock envelope.
-- `file-back(wiki=...)` — F3 file-back from a query synthesis.
-- `cite(text)` (slash `/cite`) — drive `ground` and render
-  `[[slug]]: "snippet"` lines. Single-arg form, parses the
-  `+c:<name>` / `-<tag>` filter syntax internally; the calling
-  LLM forwards the rendered kwargs to the `ground` tool verbatim.
-  **Claude Code's slash dispatcher drops the `text` argument
-  entirely when the input begins with `+`** (F15 include sigil),
-  raising `ProtocolError: Missing required arguments: {'text'}` —
-  worse than `/answer`'s whitespace-tokenize bug, which at least
-  arrives truncated. For any `/cite` invocation whose input
-  begins with `+`, route the user's full multi-word text through
-  the `ask_ground_question` tool instead.
+`tag_expr` body (no leading sigil):
+- `c:<name>` — collection qualifier
+- `t:<tag>` — tag qualifier
+- `|` — OR (lower precedence)
+- `&` — AND (higher precedence)
 
-## CLI
+Examples:
+- `c:opencode` → opencode collection only
+- `c:opencode|c:claude_code` → either
+- `c:opencode&t:linux` → opencode pages tagged `linux`
 
-- `lies init <name>` — bootstrap wiki + schema.
-- `lies sync <collection> --source <url>` — bootstrap + ingest.
-- `lies sync` — sync every collection.
-- `lies query --format=auto|md|table|marp` — render the answer as md, table, or marp.
-- `lies lint [--fix]` — deterministic health-check.
-- `lies library new|modify|list|show|where|delete|enrich-tags` — manage
-  library collection configs.
-- `lies migrate-collection-configs` — one-shot migration of legacy
-  per-wiki collection YAMLs into the library.
-- `lies mcp up|down|status` — daemon lifecycle.
+Caller-supplied filter is a CONSTRAINT, not a hint — the librarian intersects
+the user's filter with the matched registry tokens, then searches the union.
