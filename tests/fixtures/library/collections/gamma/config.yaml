@@ -1,13 +1,14 @@
+created_at: '2026-01-01T00:00:00Z'
 name: gamma
-description: LSP integration and per-language server config
-source_url: https://example.test/gamma/index
-tags:
-  - plugins
-  - lsp
-  - language-server
 scope_keywords:
-  - lsp
-  - language server
-  - pyright
-  - lsp block
-  - server
+- lsp
+- language server
+- pyright
+- lsp block
+- server
+source: https://example.test/gamma/index
+tags:
+- plugins
+- lsp
+- language-server
+updated_at: '2026-01-01T00:00:00Z'

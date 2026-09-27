@@ -1,12 +1,13 @@
+created_at: '2026-01-01T00:00:00Z'
 name: epsilon
-description: Plugin hints UX nudge
-source_url: https://example.test/epsilon/index
-tags:
-  - plugins
-  - hints
-  - ux
 scope_keywords:
-  - hint
-  - nudge
-  - rate limit
-  - scope
+- hint
+- nudge
+- rate limit
+- scope
+source: https://example.test/epsilon/index
+tags:
+- plugins
+- hints
+- ux
+updated_at: '2026-01-01T00:00:00Z'
