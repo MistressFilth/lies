@@ -4,6 +4,42 @@ All notable changes to LIES are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/) adapted for
 [Semantic Versioning](https://semver.org/).
 
+## [0.40.0] - 2026-09-26
+
+### Breaking changes
+
+**MCP tool surface rewritten.** Old tools removed:
+- `wiki_search` (subsumed by `search` + `ask`'s internal pipeline)
+- `wiki_read` (renamed to `read`)
+- `wiki_catalog` (renamed to `collections_read`)
+- `synthesize` (renamed to `ask`)
+- `ground` (renamed to `search`)
+- `ask_question`, `ask_ground_question` (filter parsing moved into `search`/`ask`)
+- `init_wiki` (deferred to post-v0.40; wiki code paths stay dormant in source)
+
+Old tools renamed:
+- `wiki_read` → `read`
+- `wiki_catalog` → `collections_read`
+- `synthesize` → `ask`
+- `ground` → `search`
+
+All 7 prompts removed (`answer`, `orient`, `ingest`, `lint`, `sync`, `file-back`, `cite`).
+
+### Added
+
+- **`collections_read` tool.** Live registry reader with three subcommands (`list`, `tag_list`, `info`). The librarian LLM uses it in Step 1 to build `tag_expr` from registry tokens.
+- **`search` tool.** Single-batch hybrid vec+lex qmd query. One round-trip per call. Library-wins-on-slug-conflict merge happens inside qmd.
+- **`read` tool.** Source-aware dispatch (wiki page IDs to `memory_service.read`, library paths to `qmd_get`).
+- **`ask` tool.** Prose answer orchestration. Calls the librarian subagent's 4-step pipeline (Classify → Search → Read → Return) then the synthesizer.
+- **Librarian agent 4-step pipeline.** Step 3 reviews snippets before committing to reads — closes the structural bug where qmd's BM25 ranking for "compare plugins" surfaced German/Italian/French localized overviews above the actual plugin-authoring guides.
+- **`SynthesizeEnvelope.searched_scope`** (additive). Mirrors the `search` tool's `searched_scope` field so callers see what was queried.
+- **Curated test corpus** at `tests/fixtures/library/collections/`. Five collections (`alpha`, `beta`, `gamma`, `delta`, `epsilon`) covering plugin authoring, marketplace, LSP integration, eval-driven testing, and plugin hints. ~30 hand-written docs. 20 query→expected_pages fixtures.
+
+### Changed
+
+- **`librarian_agent` system prompt** rewritten to the 4-step Classify → Search → Read → Return pipeline.
+- `librarian_agent`'s tool set changed from `{wiki_search, wiki_read, wiki_catalog}` to `{collections_read, search, read}`.
+
 ## [0.39.2] - 2026-09-26
 
 ### Fixed

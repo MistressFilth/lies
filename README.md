@@ -14,7 +14,7 @@ Three layers: **raw/** (your curated sources, immutable), **wiki/** (the agent's
 
 LIES reads and writes the wiki invisibly during normal interaction:
 
-- The Pydantic AI main agent reaches library collections through the library-mode read surface: `synthesize` for prose answers, `ground` for snippet digests. The pre-rewrite `wiki_search` / `wiki_read` shape is dormant.
+- The Pydantic AI main agent reaches library collections through the v0.40 library-mode read surface: `ask` for prose answers (librarian + synthesizer), `search` for snippet digests. The pre-rewrite `wiki_search` / `wiki_read` shape is dormant.
 - After the answer, a `MemoryEnricher` sub-agent proposes a structured `MemoryPlan` only when evidence warrants it.
 - The host validates the plan and applies it through `WikiMemoryService`, which writes the page, rebuilds the index, appends the log, commits atomically, and refreshes the qmd derived index.
 - Each invisible write appends one line to `<wiki>/.lies/memory_plans.jsonl`. Inspect with `lies memory`; the MCP resource `wiki://memory-changes` exposes the same data; `lies memory reconcile` rebuilds from `git log` if the sidecar drifts.
@@ -147,55 +147,37 @@ The daemon has no authentication, so `up` and the internal `_serve`
 command refuse non-loopback bind hosts. Put an authenticated reverse
 proxy in front if remote access is required.
 
-After registration, Claude Code sees these tools:
+After registration, Claude Code sees these tools (v0.40 surface):
 
-- `init_wiki(name)` — bootstrap a new wiki by name (creates XDG role-routed dirs).
-- `synthesize(question, tag_expr?, exclude_tags?, file_back=False)` —
-  prose answer for human reading. Calls `ground()` for retrieval then
-  runs `query_synthesizer_agent` over the result. Returns a structured
-  envelope (`SynthesizeEnvelope`) carrying `answer`, `citations`,
-  `pages_read`, `fallback_used`, `synthesis_used`, `fallback_reason`.
-  `file_back=True` raises `ToolError` (deferred; write-tool spec is
-  out-of-scope for the library-mode read-side rewrite).
-- `lint(name?, fix=False, force_repair=False)` — health-check the wiki;
-  `fix=True` applies the repair plan for `safe_to_fix` findings.
+- `collections_read(subcommand, name?)` — live library registry reader.
+  Subcommands: `list` (one row per collection), `tag_list` (tag →
+  collections map, qualifier prefix stripped), `info` (single
+  collection's full metadata; requires `name`).
+- `search(question, tag_expr?, exclude_tags?, hypothetical?)` —
+  single-batch hybrid vec+lex qmd query. Returns top-1 + top-10
+  ranked hits with snippets, plus `searched_scope` and
+  `unknown_tags`.
+- `read(paths)` — verbatim page bodies. Wiki page IDs route to
+  `memory_service.read`; library paths (`<collection>/<page>`) route
+  to `qmd_get`. Source-aware dispatch.
+- `ask(question, tag_expr?, exclude_tags?, file_back?)` — prose
+  answer for human reading. Calls the librarian subagent (Classify →
+  Search → Read → Return 4-step pipeline) then the synthesizer.
+  Returns a `SynthesizeEnvelope` with `answer`, `citations`,
+  `pages_read`, `searched_scope`, `fallback_used`, `synthesis_used`,
+  `fallback_reason`.
+- `lint(name?, fix=False, force_repair=False)` — health-check the
+  wiki; `fix=True` applies the repair plan for `safe_to_fix`
+  findings.
 - `reindex(cleanup?, all_?, embed?, force?, reconcile?, name?)` —
   rebuild qmd index. Destructive flags (`cleanup` / `all_`) elicit
   confirmation via `ctx.elicit`.
-- `ground(question, tag_expr?, exclude_tags?, top_k=3, name?)` —
-  return a grounding digest (`ArchivistDigest`) carrying up to
-  `top_k` `CitationSnippet` entries of ≤200 chars each, drawn from
-  library collections. Caller renders each snippet inline as
-  `[[slug]]: "snippet"` so the agent can verify corpus coverage
-  before reasoning. Unscoped queries take a parallel fan-out path
-  across every registered library collection (Task 1 brick-wall fix
-  for session 2505630b). See the [Grounding archivist](#grounding-archivist)
-  section below.
-- `ask_question(text)` — parse `+tag_expr` / `-exclude_tags` filter
-  syntax out of a slash-style invocation and return parsed kwargs for
-  the `synthesize` tool. Works around Claude Code's `/answer` slash
-  dispatcher, which tokenizes on whitespace and drops everything past
-  the first token.
-- `ask_ground_question(text)` — same shape as `ask_question`, but
-  returns kwargs for the `ground` tool. Works around Claude Code's
-  `/cite` slash dispatcher, which drops the `text` argument entirely
-  when the slash input begins with `+`.
 
 …and these resources:
 
-- `wiki://status` — qmd status + last 10 log entries (operational
-  diagnostic; no library-side equivalent in the read-side rewrite).
-- `wiki://index`, `wiki://log`, `wiki://lint-report` — raw wiki
-  artifacts (operational diagnostics).
 - `library://catalog` — every registered library collection's
   metadata (name, tags, source, page_count, updated_at) as a
-  per-collection JSON grouping. Replaces the retired
-  `wiki://catalog` resource.
-- `library://catalog/{slug}` — single library collection metadata;
-  empty string when the slug is not registered. Replaces the retired
-  `wiki://catalog/{slug}` resource.
-
-The server also exposes a `cite` prompt that templates a `ground()` tool call and renders the `ArchivistDigest` as `[[collection/slug]] (Title): "<snippet>"` citation lines, and an `answer` prompt that templates a `synthesize` tool call.
+  per-collection JSON grouping.
 
 Wiki selection: every tool accepts an optional `name` parameter.
 Resolution chain: explicit `name` → `LIES_WIKI_NAME` env → `default`.
@@ -249,58 +231,44 @@ The data shapes that flow through this path:
 
 Spec: `~/code/project-notes/lies/superpowers/specs/2026-09-19-tier2-query-path-design.md`.
 
-## Grounding archivist
+## Search tool
 
-The `ground` MCP tool (and its Python sibling
-`lies.mcp.grounding.ground`) is the F19 grounding digest: a tight,
-snippet-only view of the corpus so the agent can verify coverage
-before reasoning. It reuses the F18 librarian that the Tier 2 query
-path already runs — `ground` calls the librarian, trims each excerpt
-to ≤200 chars at a word boundary, and returns the bundle as a
-`ArchivistDigest` shaped for `[[slug]]: "snippet"` rendering.
-
-The MCP tool signature:
+The v0.40 `search` MCP tool (`src/lies/mcp/search.py`) is the
+single-batch hybrid vec+lex qmd query. Replaces the prior
+`ground` MCP tool (retired in v0.40) and the per-collection fan-out
+that called qmd once per registered collection.
 
 ```python
-ground(
+search(
     question: str,
-    tag_expr: str | None = None,    # F15 include body, no leading sigil
-    exclude_tags: list[str] | None = None,  # F15 NOT atoms
-    top_k: int = 3,                 # clamped to [1, 10]
-) -> dict                            # ArchivistDigest.asdict()
+    tag_expr: str | None = None,        # F15 include body, no leading sigil
+    exclude_tags: list[str] | None = None,  # F15 NOT atoms (reserved)
+    hypothetical: str | None = None,    # optional denser paraphrase
+) -> dict                               # SearchResult wire shape
 ```
 
-The returned `ArchivistDigest` carries:
+The returned dict carries:
 
-- `question`, `tag_expr`, `exclude_tags` — echoed back for caller
-  verification.
-- `citations: list[CitationSnippet]` — one entry per retrieved
-  excerpt. Each carries `(collection, slug, title, snippet)` where
-  `snippet` is the first ≤200 chars of the first prose span.
-- `no_coverage: bool` — true when the librarian dispatch fails (caller
-  may retry untagged or surface). Empty excerpts on a successful
-  dispatch leave `no_coverage=False`; the F15 coverage gate is the
-  `ArchivistCoverageError` raised on unknown include tags.
-- `distinct_pages: int` — `len({c.slug for c in citations})`.
+- `hit` — top-1 ranked hit (`{path, snippet, score, ...}` or `None`).
+- `hits` — up to 10 ranked hits with snippets.
+- `searched_scope` — sorted list of resolved collection names (or
+  every registered collection when untagged).
+- `unknown_tags` — list of unparseable / unknown `tag_expr` atoms.
+- `no_coverage` — true when qmd returned no hits or the dispatch
+  raised (caller may retry untagged or surface).
+- `fallback_reason` — error string on `no_coverage=True`.
 
-The new module `src/lies/mcp/grounding.py` exports:
+Library-wins-on-slug-conflict merge happens inside qmd. The
+`exclude_tags` parameter is preserved for forward compatibility
+with the F15 grammar but is no-op today (the include filter
+already constrains the addressable collection set).
 
-- `CitationSnippet(collection, slug, title, snippet)` — frozen dataclass.
-- `ArchivistDigest(question, tag_expr, exclude_tags, citations,
-  no_coverage, distinct_pages)` — frozen dataclass.
-- `ArchivistCoverageError` — typed error for unknown tag / unparseable
-  include. The MCP tool translates it to a `ToolError` so LLM callers
-  can react.
-- `truncate_at_word_boundary(text, max_chars)` — word-boundary trim
-  helper (cuts at the last whitespace ≤ `max_chars`; hard-cuts when
-  the candidate has no whitespace).
-- `pick_first_prose_span(spans)` — first non-code-fence, non-empty
-  span from the F37 span list.
-- `ground(question, tag_expr, exclude_tags, top_k)` — top-level
-  orchestrator. No LLM call in the module itself; the librarian owns
-  the model dispatch.
+The `ArchivistDigest` / `CitationSnippet` dataclasses still live at
+`src/lies/mcp/grounding.py` for legacy Python callers (`synthesize`,
+tests, integration scripts); the module is no longer wired into the
+MCP surface.
 
-Spec: `~/code/project-notes/lies/superpowers/specs/2026-09-20-grounding-archivist-design.md`.
+Spec: `~/code/project-notes/lies/superpowers/specs/2026-09-26-librarian-v040-port-design.md`.
 
 ## Page authoring
 
@@ -322,10 +290,9 @@ lies page write --collection claude-code --type concept \
 ```
 
 The MCP writer (`mcp__plugin_lies__file_knowledge`) was retired in
-the library-mode read-side rewrite — the current MCP surface is
-read-only (`synthesize` / `ground` / `init_wiki` / `lint` / `reindex`
-plus the slash-input parsers `ask_question` /
-`ask_ground_question`). Wiki writes still go through
+the library-mode read-side rewrite — the current v0.40 MCP surface
+is read-only (`collections_read` / `search` / `read` / `ask` /
+`lint` / `reindex`). Wiki writes still go through
 `lies page write` from the CLI; a future write-tool spec will
 restore an MCP write surface.
 
@@ -361,9 +328,9 @@ configs are legacy and not consulted for tag resolution. A
 `+c:opencode` filter resolves from any wiki because the opencode
 collection lives in the library.
 
-The MCP `synthesize` tool accepts `tag_expr` and `exclude_tags`
-(size ≤ 1) kwargs. The underlying `ArchivistDigest.searched_scope`
-(surfaced via the `ground` tool's wire envelope) reports the
+The MCP `ask` tool accepts `tag_expr` and `exclude_tags`
+(size ≤ 1) kwargs. The underlying `SynthesizeEnvelope.searched_scope`
+(mirroring the `search` tool's `searched_scope`) reports the
 resolved library-collection set; with no filter, it reports every
 library collection.
 
@@ -411,7 +378,7 @@ answer: only the library-collection directory name is addressable, so
 The prefix survives the parser so future tag metadata (per-collection
 frontmatter, etc.) can reintroduce the `t:` / `c:` distinction
 without a grammar change. Both include and exclude atoms accept the
-prefixes; the same prefixes work in `mcp_synthesize(tag_expr=...,
+prefixes; the same prefixes work in `ask(tag_expr=...,
 exclude_tags=...)`.
 
 ### Output formats
@@ -423,7 +390,7 @@ exclude_tags=...)`.
 - **`marp`**: Marp-flavored markdown with `marp: true` frontmatter + slide breaks. When the `marp` CLI is on `$PATH`, the body is rendered to HTML at `${XDG_CACHE_HOME:-~/.cache}/lies/query-<timestamp>.html`. When `marp` is not installed, the body is written to a `.md` file and the path is printed with a render hint.
 - **`chart`**: a single ```` ```mermaid ```` fence (one of `flowchart`, `sequenceDiagram`, or `classDiagram`); the renderer extracts the longest block and emits it unchanged. Validator-bypass: pass-through with a stderr warning when the synth produces no mermaid block.
 
-The format is also exposed on the MCP `synthesize` response via the `format` field (`"md"`, `"table"`, `"marp"`, or `"chart"`). Synthesis pages gain a `render_format` frontmatter field recording the body shape for future curators.
+The format is also exposed on the MCP `ask` response via the `format` field (`"md"`, `"table"`, `"marp"`, or `"chart"`). Synthesis pages gain a `render_format` frontmatter field recording the body shape for future curators.
 
 ### `lies wiki provenance`
 
@@ -949,20 +916,16 @@ The MCP `reindex` tool mirrors this with `destructiveHint=True` and uses `ctx.el
 ## MCP server orientation
 
 The LIES MCP server ships an orientation payload at every
-`initialize` handshake plus six reference-prose MCP prompts:
+`initialize` handshake. As of v0.40 there are no MCP prompts —
+the seven prompts the prior surface exposed (`answer`, `orient`,
+`ingest`, `lint`, `sync`, `file-back`, `cite`) were retired in
+v0.40 and the `prompts/` directory was removed from source.
 
-- `instructions=` field: path/env facts, tool inventory,
-  resource list, prompt index. The agent sees this on attach
-  regardless of cwd.
-- Prompts: `orient(wiki=...)`, `ingest(source=...)`,
-  `lint()`, `sync(collection=...)`,
-  `file-back(wiki=...)`. Plus `cite(question, tag_expr=None,
-  exclude_tags=None, top_k=3)` and the pre-existing
-  `/answer` slash tool-call template.
+- `instructions=` field: path/env facts, v0.40 tool inventory,
+  resource list. The agent sees this on attach regardless of cwd.
 
-The payload lives at `src/lies/mcp/instructions.md` plus
-`src/lies/mcp/prompts/*.md`. A pre-commit hook
-(`tools/check_lies_commands.py`) blocks commits that
+The payload lives at `src/lies/mcp/instructions.md`. A pre-commit
+hook (`tools/check_lies_commands.py`) blocks commits that
 introduce unresolved `lies <cmd>` references.
 
 ## Parsing and Ingestion
