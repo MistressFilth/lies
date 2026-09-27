@@ -128,3 +128,86 @@ def test_search_hit_is_top_ranked(monkeypatch: pytest.MonkeyPatch) -> None:
     assert result["hit"]["path"] == "alpha/a.md"
     assert result["hits"][0]["path"] == "alpha/a.md"
     assert result["hits"][1]["path"] == "alpha/b.md"
+
+
+def test_post_query_wires_to_qmd_query(monkeypatch: pytest.MonkeyPatch) -> None:
+    """_post_query delegates to lies.qmd.cli.qmd_query with library cwd.
+
+    Patches qmd_query (NOT _post_query) so the regression catches any
+    accidental re-stub or removed wiring. Asserts the cwd is the
+    library's git root, the question is the structured vec+lex doc, and
+    the collection_filter is the resolved scope set.
+    """
+    from lies.mcp.search import _post_query
+
+    captured: dict[str, Any] = {}
+
+    def _fake_qmd_query(*, cwd, question, limit, timeout, collection_filter):
+        captured["cwd"] = cwd
+        captured["question"] = question
+        captured["limit"] = limit
+        captured["timeout"] = timeout
+        captured["collection_filter"] = collection_filter
+        return [{"path": "alpha/p.md", "title": "P", "score": 0.7, "snippet": "s"}]
+
+    monkeypatch.setattr("lies.mcp.search.qmd_query", _fake_qmd_query)
+    monkeypatch.setattr(
+        "lies.library.registry.library_git_root",
+        lambda: __import__("pathlib").Path("/fake/library/root"),
+    )
+
+    doc = "vec: hi\nlex: hi\n"
+    out = _post_query(doc, ["alpha", "beta"], limit=5, timeout=10)
+
+    assert out == [{"path": "alpha/p.md", "title": "P", "score": 0.7, "snippet": "s"}]
+    assert str(captured["cwd"]) == "/fake/library/root"
+    assert captured["question"] == doc.rstrip()
+    assert captured["limit"] == 5
+    assert captured["timeout"] == 10
+    assert captured["collection_filter"] == {"alpha", "beta"}
+
+
+def test_post_query_maps_qmd_no_results_to_empty_list(monkeypatch: pytest.MonkeyPatch) -> None:
+    """_post_query returns [] when qmd raises QmdNoResultsError."""
+    from lies.mcp.search import _post_query
+    from lies.qmd.cli import QmdNoResultsError
+
+    def _boom(*, cwd, question, limit, timeout, collection_filter):
+        raise QmdNoResultsError("no hits")
+
+    monkeypatch.setattr("lies.mcp.search.qmd_query", _boom)
+    monkeypatch.setattr(
+        "lies.library.registry.library_git_root",
+        lambda: __import__("pathlib").Path("/fake/library/root"),
+    )
+
+    assert _post_query("vec: x\nlex: x\n", ["alpha"], limit=10, timeout=15) == []
+
+
+def test_post_query_strips_trailing_newline_from_doc(monkeypatch: pytest.MonkeyPatch) -> None:
+    """_post_query strips trailing whitespace so qmd's structured parser accepts it.
+
+    qmd's parser rejects an empty trailing line (``Line N is missing a
+    lex:/vec:/hyde:/intent: prefix``). The f-string we build produces a
+    trailing newline which would otherwise propagate through
+    ``subprocess.run`` (unlike shell command substitution, which strips
+    it). This test pins the strip invariant.
+    """
+    from lies.mcp.search import _post_query
+
+    captured: dict[str, Any] = {}
+
+    def _capture(*, cwd, question, limit, timeout, collection_filter):
+        captured["question"] = question
+        return []
+
+    monkeypatch.setattr("lies.mcp.search.qmd_query", _capture)
+    monkeypatch.setattr(
+        "lies.library.registry.library_git_root",
+        lambda: __import__("pathlib").Path("/fake/library/root"),
+    )
+
+    _post_query("vec: hi\nlex: hi\n", ["alpha"], limit=10, timeout=15)
+
+    assert captured["question"] == "vec: hi\nlex: hi"
+    assert not captured["question"].endswith("\n")

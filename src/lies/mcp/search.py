@@ -23,6 +23,7 @@ from lies.query.tag_expr import (
     parse,
     resolve,
 )
+from lies.qmd.cli import QmdNoResultsError, qmd_query
 
 
 def _resolve_tag_collections(tag_expr: str | None) -> tuple[list[str], list[str]]:
@@ -104,13 +105,37 @@ def _build_query_doc(question: str, scope: list[str] | None = None) -> str:
 
 
 def _post_query(doc: str, scope: list[str], limit: int, timeout: int) -> list[dict[str, Any]]:
-    """Issue one qmd query. Patched in tests.
+    """Issue one qmd query against the library index.
 
-    Production impl uses :func:`lies.qmd.cli.qmd_query` with the
-    structured doc written to a temp file and passed via the qmd CLI's
-    document-format flag.
+    Production wiring. Delegates to :func:`lies.qmd.cli.qmd_query` with
+    the structured ``vec + lex`` doc as the question payload and the
+    resolved collection set as the ``collection_filter``. Returns an
+    empty list when :class:`QmdNoResultsError` fires (the caller maps
+    that to ``no_coverage=True``). ``QmdCommandError`` propagates so
+    the caller's handler can label it ``qmd unreachable``.
     """
-    raise NotImplementedError("production wiring in Task 7")
+    from lies.library.registry import library_git_root
+
+    cwd = library_git_root()
+    collection_filter = set(scope) if scope else None
+
+    # qmd's structured-doc parser rejects an empty trailing line, which
+    # an f-string with a final ``\n`` produces. Strip trailing whitespace
+    # before handing the doc to qmd so shell-style callers (which strip
+    # trailing newlines via ``$()`` substitution) and the Python
+    # ``subprocess.run`` path both land on the same wire shape.
+    doc = doc.rstrip()
+
+    try:
+        return qmd_query(
+            cwd=cwd,
+            question=doc,
+            limit=limit,
+            timeout=timeout,
+            collection_filter=collection_filter,
+        )
+    except QmdNoResultsError:
+        return []
 
 
 def _search_impl(
