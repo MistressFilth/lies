@@ -22,7 +22,9 @@ class LibraryCollectionConfig:
 
     name: str
     source: str
+    description: str | None = None
     tags: tuple[str, ...] = ()
+    scope_keywords: tuple[str, ...] = ()
     scraper_cmd: str | None = None
     doc_path: Path | None = None
     mapper_model: str | None = None

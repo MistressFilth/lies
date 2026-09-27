@@ -590,7 +590,7 @@ def register_librarian_tools(
         merged hit list is filtered against it before being
         returned. Each hit's collection first-segment is fed to
         :func:`lies.query.tag_expr.exclude_matches` via a synthesized
-        :class:`LibraryCollectionMeta(name=first_seg, tags=())`. For
+        :class:`LibraryCollectionMeta(name=first_seg, tags=frozenset())`. For
         library hits, ``first_seg`` is the library collection name
         (``opencode``, ``claude_platform``, …); for wiki hits, it is
         the wiki synthesis namespace (``default`` or whatever the
@@ -816,7 +816,7 @@ def register_librarian_tools(
         # evaluate that namespace against the exclude AST too so an
         # exclude targeting the namespace drops wiki hits carrying
         # it. Both surfaces feed the matcher via a synthesized
-        # :class:`LibraryCollectionMeta(name=first_seg, tags=())`
+        # :class:`LibraryCollectionMeta(name=first_seg, tags=frozenset())`
         # because :func:`exclude_matches` only reads ``.name`` and
         # ``.tags``. Hits with no path / no first-segment are kept
         # rather than silently dropped — matches the library
@@ -832,7 +832,7 @@ def register_librarian_tools(
                 if not first_seg:
                     filtered.append(hit)
                     continue
-                coll = LibraryCollectionMeta(name=first_seg, tags=())
+                coll = LibraryCollectionMeta(name=first_seg, tags=frozenset())
                 if exclude_matches(coll, exclude_expr):
                     continue
                 filtered.append(hit)

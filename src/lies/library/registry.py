@@ -56,7 +56,7 @@ per-call disk walk runs only on the first invocation.
 from __future__ import annotations
 
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
 
@@ -70,13 +70,14 @@ from lies.library.record import LibraryCollectionConfig
 class LibraryCollectionMeta:
     """Slim per-collection record for library-first tag resolution.
 
-    Library collections carry no yaml config (no ``source``,
-    ``scraper_cmd``, ``mapper_model``, ``language``, ``version``,
-    etc.) — they are canonical source docs, not wikis. The resolver
-    only needs the collection's name and (potentially) its declared
-    tags, so this record holds exactly those two fields.
+    Library collections carry no yaml config (no ``scraper_cmd``,
+    ``mapper_model``, ``language``, ``version``, etc.) — they are
+    canonical source docs, not wikis. The resolver reads ``name``
+    and ``tags``; downstream surfaces (e.g. ``collections_read``)
+    consume ``source_url`` and ``scope_keywords`` so a caller can
+    scope a query without re-walking the registry.
 
-    The structural shape (``name: str``, ``tags: Sequence[str]``)
+    The structural shape (``name: str``, ``tags: Iterable[str]``)
     matches what :func:`lies.query.tag_expr.atom_matches` and
     :func:`lies.query.tag_expr.exclude_matches` read off a
     collection, so the legacy wiki-yaml Collection and
@@ -85,14 +86,32 @@ class LibraryCollectionMeta:
     additive — no rewrites to the matching code — while preventing
     the library model from re-introducing wiki-yaml metadata.
 
-    ``tags`` is always ``()`` under the current library layout. The
-    field exists so a future per-collection metadata sidecar (e.g.
-    ``<coll>/.lies/manifest.json`` with declared tags) can populate
-    it without a resolver signature change.
+    ``tags`` is always ``frozenset()`` under the current library
+    layout. The field exists so a future per-collection metadata
+    sidecar (e.g. ``<coll>/.lies/manifest.json`` with declared
+    tags) can populate it without a resolver signature change.
+    ``frozenset`` rather than ``tuple`` because the resolver
+    constructs a fresh set per call (``set(coll.tags) | {coll.name}``)
+    and we don't want callers comparing ``tags`` as ordered
+    sequences; set semantics are the only contract the resolver
+    depends on.
+
+    ``scope_keywords`` carries the per-collection vocabulary used
+    by ``collections_read`` to scope a query against the library's
+    content (distinct from ``tags``, which are routing labels).
+    Stored as ``frozenset`` for the same reason: callers do
+    membership / intersection tests, not ordered iteration.
+
+    ``source_url`` is the upstream URL the collection was sourced
+    from. Default empty string when the on-disk ``config.yaml`` is
+    missing or predates the field; downstream callers should treat
+    empty as "unknown source."
     """
 
     name: str
-    tags: tuple[str, ...] = ()
+    source_url: str = ""
+    tags: frozenset[str] = field(default_factory=frozenset)
+    scope_keywords: frozenset[str] = field(default_factory=frozenset)
 
 
 def _collections_root() -> Path:
@@ -204,9 +223,9 @@ def library_collection_metas() -> Iterator[LibraryCollectionMeta]:
     Reads the per-collection ``config.yaml`` sidecar so the resolver
     sees declared ``tags`` (the ``t:`` / ``c:`` qualifier dispatch
     in :mod:`lies.query.tag_expr` keys off tags ∪ {name}). When the
-    config is missing or malformed, falls back to a no-tags meta so
-    the resolver still surfaces the collection's name (the implicit
-    self-tag rule).
+    config is missing or malformed, falls back to empty frozensets
+    so the resolver still surfaces the collection's name (the
+    implicit self-tag rule).
     """
     root = _collections_root()
     if not root.exists():
@@ -215,17 +234,26 @@ def library_collection_metas() -> Iterator[LibraryCollectionMeta]:
         if not entry.is_dir():
             continue
         config = entry / "config.yaml"
-        tags: tuple[str, ...] = ()
+        tags: frozenset[str] = frozenset()
+        scope_keywords: frozenset[str] = frozenset()
+        source_url = ""
         if config.exists():
             try:
                 from lies.library.config_io import load_config
 
                 record = load_config(entry.name)
-                if record is not None and record.tags:
-                    tags = tuple(record.tags)
+                if record is not None:
+                    tags = frozenset(record.tags)
+                    scope_keywords = frozenset(record.scope_keywords)
+                    source_url = record.source
             except Exception:
-                tags = ()
-        yield LibraryCollectionMeta(name=entry.name, tags=tags)
+                pass
+        yield LibraryCollectionMeta(
+            name=entry.name,
+            source_url=source_url,
+            tags=tags,
+            scope_keywords=scope_keywords,
+        )
 
 
 def library_collection_records() -> Iterator[LibraryCollectionConfig]:

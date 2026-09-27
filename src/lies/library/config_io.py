@@ -82,7 +82,9 @@ def _schema_to_record(schema: ConfigYAML) -> LibraryCollectionConfig:
     return LibraryCollectionConfig(
         name=schema.name,
         source=schema.source,
+        description=schema.description,
         tags=schema.tags,
+        scope_keywords=schema.scope_keywords,
         scraper_cmd=schema.scraper_cmd,
         doc_path=schema.doc_path,
         mapper_model=schema.mapper_model,
@@ -98,7 +100,9 @@ def _record_to_schema(record: LibraryCollectionConfig) -> ConfigYAML:
     return ConfigYAML(
         name=record.name,
         source=record.source,
+        description=record.description,
         tags=record.tags,
+        scope_keywords=record.scope_keywords,
         scraper_cmd=record.scraper_cmd,
         doc_path=record.doc_path,
         mapper_model=record.mapper_model,
