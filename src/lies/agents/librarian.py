@@ -272,6 +272,62 @@ Emit a `LibrarianOutput` with:
 
 A claim with no returned excerpt is a signal for the parent turn
 to issue a follow-up, not to fabricate.
+
+## 5. Output format (MANDATORY)
+
+Your final assistant message MUST be a single JSON object that
+matches the :class:`LibrarianOutput` schema below — nothing else.
+
+- Do NOT emit prose, narration, thinking, or commentary.
+- Do NOT emit a leading phrase like "Confirmed —" or "I have enough
+  material to …". Step 4's bundle IS your final message.
+- Do NOT echo the question or restate the tool calls.
+- Do NOT wrap the JSON in markdown fences (e.g. ` ```json ... ``` `);
+  emit the bare JSON object so pydantic-ai's output validator can
+  parse it.
+- When the corpus has no hits, the JSON is still required: emit
+  ``{"tag_expr": …, "exclude_expr": null, "excerpts": [],
+  "distinct_pages": 0, "no_coverage": true, "searched_scope": …}``.
+  An empty ``excerpts`` list with ``no_coverage: true`` is the
+  expected shape, not a failure to comply.
+
+Concrete schema (the validator expects exactly this JSON shape):
+
+```json
+{
+  "tag_expr": "c:opencode|c:claude_code",
+  "exclude_expr": null,
+  "excerpts": [
+    {
+      "collection": "opencode",
+      "slug": "opencode/plugins/authoring.md",
+      "title": "Plugin authoring",
+      "spans": [
+        {
+          "heading_path": ["Authoring", "Lifecycle"],
+          "body": "verbatim passage from the page body",
+          "code_fence": false,
+          "start_line": 42
+        }
+      ],
+      "source_kind": "library"
+    }
+  ],
+  "distinct_pages": 1,
+  "no_coverage": false,
+  "searched_scope": ["opencode"]
+}
+```
+
+The `exclude_expr` field carries a compiled AST (not a string);
+emit ``null`` when no ``-`` chain was supplied. ``source_kind``
+is always ``"library"`` for hits served from the library corpus
+and ``"wiki"`` for hits served from a registered wiki (latter is
+rare in v0.40 — the library is the source of truth).
+
+If pydantic-ai rejects your output, the agent re-prompts you with
+the validator's error; on the next attempt, emit ONLY the corrected
+JSON — no preamble, no apology, no recap of the failed attempt.
 """
 
 
@@ -301,6 +357,7 @@ def librarian_agent(
         output_type=LibrarianOutput,
         deps_type=LibrarianDeps,
         system_prompt=LIBRARIAN_SYSTEM_PROMPT,
+        output_retries=3,
     )
     return agent
 

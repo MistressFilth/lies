@@ -216,6 +216,21 @@ All 7 prompts removed (`answer`, `orient`, `ingest`, `lint`, `sync`, `file-back`
   via `load_providers_config` + `resolve_model`. User
   `providers.toml` must include a `librarian` entry.
 
+- Live-runtime: `ask` MCP tool failed with
+  `UnexpectedModelBehavior: Exceeded maximum output retries (1)` when
+  the librarian LLM emitted a verbose prose preamble ("Confirmed —
+  no authoring page for OpenCode exists in this corpus. I have enough
+  material to assemble the bundle. Let me emit the final result.")
+  instead of a structured `LibrarianOutput`. Two changes:
+  `librarian_agent` now passes `output_retries=3` to pydantic-ai
+  (instead of the default 1), and the system prompt gains an
+  explicit "Output format (MANDATORY)" section that demands a bare
+  JSON object with no preamble, no thinking, no markdown fences, and
+  no recap of the failed attempt. The fail-soft envelope from the
+  prior `librarian_agent_run` change still returns
+  `"No relevant content found in library."` after the retry budget
+  exhausts.
+
 ## [0.37.11] - 2026-09-23
 
 ### Fixed
