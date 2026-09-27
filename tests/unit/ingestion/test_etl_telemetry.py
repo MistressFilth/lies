@@ -102,6 +102,7 @@ def test_record_counter_accumulates_in_place(wiki: Wiki) -> None:
     assert [e["delta"] for e in bytes_in_events] == [100, 250]
 
 
+@pytest.mark.slow
 def test_context_manager_closes_on_exception(wiki: Wiki) -> None:
     """`with SyncTelemetry(...) as t:` closes the file even on raise."""
     with pytest.raises(RuntimeError, match="boom"), SyncTelemetry(wiki, "cpython") as t:
