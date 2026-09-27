@@ -1,0 +1,13 @@
+name: alpha
+description: CLI plugin authoring guides
+source_url: https://example.test/alpha/index
+tags:
+  - plugins
+  - cli
+  - authoring
+scope_keywords:
+  - plugin
+  - cli
+  - author
+  - define
+  - setup

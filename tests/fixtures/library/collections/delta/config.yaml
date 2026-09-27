@@ -1,0 +1,13 @@
+name: delta
+description: Eval-driven plugin testing
+source_url: https://example.test/delta/index
+tags:
+  - plugins
+  - eval
+  - testing
+scope_keywords:
+  - eval
+  - grading
+  - baseline
+  - ci
+  - test

@@ -1,0 +1,12 @@
+name: epsilon
+description: Plugin hints UX nudge
+source_url: https://example.test/epsilon/index
+tags:
+  - plugins
+  - hints
+  - ux
+scope_keywords:
+  - hint
+  - nudge
+  - rate limit
+  - scope

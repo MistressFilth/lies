@@ -1,0 +1,13 @@
+name: beta
+description: Plugin marketplace and distribution
+source_url: https://example.test/beta/index
+tags:
+  - plugins
+  - marketplace
+  - distribution
+scope_keywords:
+  - manifest
+  - marketplace
+  - install
+  - scope
+  - distribution
