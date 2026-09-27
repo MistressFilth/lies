@@ -61,5 +61,5 @@ def test_synthesize_file_back_raises_tool_error():
     from fastmcp.exceptions import ToolError
     from lies.mcp import synth
 
-    with pytest.raises(ToolError, match="file_back is deferred"):
+    with pytest.raises(ToolError, match="file_back deferred"):
         asyncio.run(synth.synthesize("q", file_back=True))
