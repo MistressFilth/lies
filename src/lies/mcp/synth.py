@@ -238,36 +238,137 @@ async def synthesize(
 # ---------------------------------------------------------------------------
 
 
-def librarian_agent_run(deps: Any) -> Any:
-    """Wrapper around the librarian subagent's ``run_sync``.
+def _resolve_librarian_model():
+    """Resolve the ``librarian`` model string.
 
-    Production wiring lands in Task 9; tests patch this directly via
-    ``monkeypatch.setattr("lies.mcp.synth.librarian_agent_run", ...)``.
-    The shape of ``deps`` (:class:`LibrarianDeps` or successor) is
-    settled in Task 8.
+    Mirrors :func:`_resolve_synthesizer_model`: ``env_override``
+    first (cheapest), then a user-level ``providers.toml`` load via
+    :func:`lies.providers.resolve_model`. Raises
+    :class:`lies.errors.ModelNotConfigured` when nothing is wired —
+    LIES does not silently fall back to a vendor-default model.
     """
-    raise NotImplementedError("librarian_agent_run wired in Task 9")
+    from lies.errors import ModelNotConfigured
+    from lies.providers import env_override, load_providers_config
+    from lies.providers.resolver import resolve_model
+    from lies.xdg import config_home
+    from lies.constants import LIES_DATA_SUBDIR
+
+    override = env_override("librarian")
+    if override is not None:
+        return override
+    providers_path = config_home() / LIES_DATA_SUBDIR / "providers.toml"
+    config = load_providers_config(providers_path)
+    if config is not None and "librarian" in config.agents:
+        return resolve_model("librarian", config)
+    # Final fallback: the ``query_synthesizer`` slot. Both agents are
+    # part of the same Tier-2 query path, share the same retrieval
+    # envelope, and the orchestrator already threads this fallback
+    # (see ``Orchestrator._build``). Keeps the MCP ``ask`` tool
+    # working in environments where the operator only configured
+    # one slot.
+    if config is not None and "query_synthesizer" in config.agents:
+        return resolve_model("query_synthesizer", config)
+    raise ModelNotConfigured(
+        "ask() requires the librarian model. "
+        "Set LIES_AGENT_LIBRARIAN_MODEL or configure providers.toml "
+        "via `lies providers init`."
+    )
+
+
+def librarian_agent_run(deps: Any) -> Any:
+    """Run the librarian subagent's ``run_sync`` and return the LibrarianOutput.
+
+    Builds a fresh librarian agent (4-step pipeline), wires the new
+    stateless MCP-backed tools (``collections_read`` / ``search`` /
+    ``read``), and invokes ``run_sync`` with the supplied deps.
+
+    Tests patch this function directly via
+    ``monkeypatch.setattr("lies.mcp.synth.librarian_agent_run", ...)``
+    to stub the dispatch. The production path resolves the librarian
+    model eagerly via :func:`_resolve_librarian_model`, constructs
+    the agent with the v0.40 system prompt, registers the new tool
+    set, and propagates the agent's typed output back to the caller
+    (pydantic-ai returns a :class:`LibrarianOutput` dataclass
+    directly when the registered ``output_type`` matches).
+
+    Args:
+        deps: :class:`LibrarianDeps` carrying question / tag_expr /
+            exclude_expr / top_k.
+
+    Returns:
+        :class:`LibrarianOutput` — the librarian's curated excerpt
+        bundle with ``searched_scope`` populated from the search
+        tool's resolution.
+    """
+    from lies.agents.librarian import LibrarianOutput, register_librarian_tools
+
+    # ``librarian_agent`` is imported at module scope below so tests can
+    # ``monkeypatch.setattr("lies.mcp.synth.librarian_agent", ...)``.
+    agent_factory = librarian_agent
+
+    model = _resolve_librarian_model()
+    agent = agent_factory(model=model)
+    register_librarian_tools(agent)
+    result = agent.run_sync(deps.question, deps=deps)
+    out = result.output
+    # Defensive: pydantic-ai's ``output_type=LibrarianOutput`` means
+    # ``out`` IS a ``LibrarianOutput`` (the registered dataclass).
+    # The ``isinstance`` check is a forward-compat guard against a
+    # future migration that emits a pydantic model alongside the
+    # dataclass — the conversion below keeps the public surface
+    # dataclass-shaped so consumers (synth, MCP layer, tests) see the
+    # same shape regardless of the agent's output type.
+    if isinstance(out, LibrarianOutput):
+        return out
+    return LibrarianOutput(
+        tag_expr=getattr(out, "tag_expr", None),
+        exclude_expr=getattr(out, "exclude_expr", None),
+        excerpts=list(getattr(out, "excerpts", []) or []),
+        distinct_pages=getattr(out, "distinct_pages", 0),
+        no_coverage=getattr(out, "no_coverage", False),
+        searched_scope=list(getattr(out, "searched_scope", None) or []),
+    )
 
 
 def synthesizer_agent_run(librarian_output: Any, question: str) -> Any:
-    """Wrapper around the synthesizer subagent's ``run_sync``.
+    """Run the synthesizer subagent's ``run_sync`` and return its answer.
 
-    Production wiring lands in Task 9; tests patch this directly via
-    ``monkeypatch.setattr("lies.mcp.synth.synthesizer_agent_run", ...)``.
+    Builds a fresh synthesizer agent, wires the librarian's excerpt
+    bundle as :class:`QueryDeps`, and returns the typed
+    :class:`QueryAnswer`.
+
+    Tests patch this function directly via
+    ``monkeypatch.setattr("lies.mcp.synth.synthesizer_agent_run", ...)``
+    to stub the dispatch.
+
+    Args:
+        librarian_output: :class:`LibrarianOutput` from
+            :func:`librarian_agent_run`.
+        question: The original user question (echoed into
+            :class:`QueryDeps`).
+
+    Returns:
+        :class:`QueryAnswer` — the synthesizer's prose answer with
+        citations and ``format_hint``.
     """
-    raise NotImplementedError("synthesizer_agent_run wired in Task 9")
+    from lies.agents.query_synthesizer import QueryDeps, query_synthesizer_agent
+
+    model = _resolve_synthesizer_model()
+    agent = query_synthesizer_agent(model=model)
+    deps = QueryDeps(
+        question=question,
+        librarian_output=librarian_output,
+        format_hint="md",
+    )
+    result = agent.run_sync(question, deps=deps)
+    return result.output
 
 
-# Module-level agent factories — placeholders so tests can
-# ``monkeypatch.setattr("lies.mcp.synth.librarian_agent", ...)`` /
-# ``"lies.mcp.synth.synthesizer_agent", ...)`` without
-# ``AttributeError``. The real factories come from
-# :func:`lies.agents.librarian.librarian_agent` and
-# :func:`lies.agents.query_synthesizer.query_synthesizer_agent` and
-# land in Task 9. Tests don't actually invoke these placeholders —
-# the brief's tests patch the ``*_run`` wrappers, not the factories.
-librarian_agent: Any = None
-synthesizer_agent: Any = None
+# Module-level agent factories — the real factories. Tests can
+# monkeypatch them via ``monkeypatch.setattr("lies.mcp.synth.librarian_agent", ...)``
+# if they need a stubbed factory.
+from lies.agents.librarian import librarian_agent  # noqa: E402,F401
+from lies.agents.query_synthesizer import query_synthesizer_agent as synthesizer_agent  # noqa: E402,F401
 
 
 def _build_query_deps(
@@ -278,14 +379,50 @@ def _build_query_deps(
 ) -> Any:
     """Build the deps object for :func:`librarian_agent_run`.
 
-    Production wiring lands in Task 9; the stub returns ``None`` so
-    tests can monkeypatch :func:`librarian_agent_run` directly without
-    patching this helper (the test path goes
-    ``_build_query_deps → librarian_agent_run`` and the test patches
-    the second hop). The exact deps shape (:class:`LibrarianDeps` plus
-    exclude-expr handling, or a successor in Task 8) is settled there.
+    Translates the MCP ``ask`` tool's flat ``exclude_tags`` surface
+    (a list of bare-tag strings like ``["c:opencode"]``) into the
+    compiled ``TagExpr`` AST the librarian consumes in
+    :attr:`LibrarianDeps.exclude_expr`. ``None`` when no ``-`` chain
+    was supplied; ``list[str]`` chain paths land here as a single
+    ``Or(...)`` AST so the F15 grammar walks the full chain site-side.
+
+    Args:
+        question: The user's natural-language question.
+        tag_expr: Body of a single include expression. ``None`` for
+            library-wide.
+        exclude_tags: NOT tags without leading sigil. ``None`` when
+            no ``-`` chain.
+
+    Returns:
+        :class:`LibrarianDeps` carrying the question, tag_expr
+        (string body), compiled exclude AST, and ``top_k=5``.
     """
-    return None
+    from lies.agents.librarian import LibrarianDeps
+    from lies.query.tag_expr import Include, Or
+
+    exclude_expr: Include | Or | None = None
+    if exclude_tags:
+        atoms = [
+            Include(tag.split(":", 1)[-1], "c" if tag.startswith("c:") else None)
+            for tag in exclude_tags
+        ]
+        if len(atoms) == 1:
+            exclude_expr = atoms[0]
+        elif len(atoms) > 1:
+            # Fold the chain into a left-leaning ``Or`` AST. The F15
+            # grammar's walker handles nested Ors uniformly; left-
+            # leaning is the historical convention for OR-of-NOT
+            # chains.
+            exclude_expr = atoms[0]
+            for atom in atoms[1:]:
+                exclude_expr = Or(exclude_expr, atom)
+
+    return LibrarianDeps(
+        question=question,
+        tag_expr=tag_expr,
+        exclude_expr=exclude_expr,
+        top_k=5,
+    )
 
 
 def _ask_impl(

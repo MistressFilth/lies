@@ -155,6 +155,7 @@ def test_check_connectivity_anthropic_compatible_ok(
     assert by_name["minimax"] == "ok"
 
 
+@pytest.mark.slow
 def test_check_connectivity_ok_when_set(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_anthropic
 ) -> None:

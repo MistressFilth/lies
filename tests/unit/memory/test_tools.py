@@ -50,6 +50,7 @@ def _registered_tool_names(agent: Agent[WikiMemoryDeps, object]) -> list[str]:
     return sorted(set(names))
 
 
+@pytest.mark.slow
 def test_register_read_tools_attaches_two_tools(wiki: Wiki) -> None:
     agent: Agent[WikiMemoryDeps, object] = Agent(TestModel(), deps_type=WikiMemoryDeps)
     register_read_tools(agent)
