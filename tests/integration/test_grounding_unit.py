@@ -846,15 +846,18 @@ def _registered_tool_names(agent: object) -> list[str]:
 
 
 def test_register_librarian_tools_attaches_three_tools(empty_wiki: object) -> None:
-    """Wiring attaches ``wiki_search`` / ``wiki_read`` / ``wiki_catalog``.
+    """Wiring attaches ``collections_read`` / ``search`` / ``read``.
 
     Pins the canonical wiring contract: ``register_librarian_tools``
-    is the single source of truth for the F18 4-step trio, used by
-    both the orchestrator (delegates from
-    ``Orchestrator._register_librarian_tools``) and the MCP-layer
-    ``ground()`` path. The pre-Fix-Critical-era surface left the
-    orchestrator as the only caller, so any non-orchestrator dispatch
-    (notably ``ground()``) reached the LLM with no tools at all.
+    is the single source of truth for the v0.40 4-step trio, used by
+    the MCP ``ask`` orchestrator path (which delegates to
+    :func:`lies.mcp.synth.librarian_agent_run`). The v0.40 surface
+    retires the wiki-shaped trio (``wiki_search`` / ``wiki_read`` /
+    ``wiki_catalog``) in favor of the stateless MCP-backed trio
+    (``collections_read`` / ``search`` / ``read``) wired against the
+    library corpus. The pre-v0.40 surface left the orchestrator as
+    the only caller, so any non-orchestrator dispatch (notably the
+    F19 ``ground()`` path) reached the LLM with no tools at all.
 
     Uses ``"test"`` as the model id so the bare agent factory does
     not try to instantiate the Anthropic provider — the test only
@@ -874,9 +877,9 @@ def test_register_librarian_tools_attaches_three_tools(empty_wiki: object) -> No
     )
 
     names = _registered_tool_names(agent)
-    assert "wiki_search" in names, f"expected wiki_search in {names}"
-    assert "wiki_read" in names, f"expected wiki_read in {names}"
-    assert "wiki_catalog" in names, f"expected wiki_catalog in {names}"
+    assert "collections_read" in names, f"expected collections_read in {names}"
+    assert "search" in names, f"expected search in {names}"
+    assert "read" in names, f"expected read in {names}"
 
 
 def test_ground_wires_librarian_tools_before_run_sync(

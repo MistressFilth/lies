@@ -19,4 +19,12 @@ def test_instructions_payload_matches_loaded_file() -> None:
 
 def test_instructions_payload_mentions_library_root() -> None:
     instr = getattr(mcp, "_instructions", None) or getattr(mcp, "instructions", None)
-    assert "$XDG_DATA_HOME/lies/library/collections/<slug>/" in instr
+    # v0.40 instructions document the library root at
+    # ``$XDG_DATA_HOME/lies/library/`` (with ``library/collections/<name>/``
+    # described in the next paragraph). The pre-v0.40 string used
+    # ``<slug>`` as a placeholder; the rewrite dropped it because the
+    # library carries named collections, not anonymous slugs. Pin the
+    # parent path so the operator-facing orientation still surfaces the
+    # library location end-to-end.
+    assert "$XDG_DATA_HOME/lies/library/" in instr
+    assert "library/collections/<name>" in instr

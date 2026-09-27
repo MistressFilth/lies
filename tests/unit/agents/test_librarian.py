@@ -193,6 +193,13 @@ def test_librarian_agent_runs_4_step_pipeline(monkeypatch: pytest.MonkeyPatch) -
     )
     from lies.markdown_spans import Span
 
+    # ``LibrarianOutput`` is a stdlib ``@dataclass(frozen=True)``, not a
+    # pydantic model, so ``model_dump()`` is unavailable. TestModel's
+    # ``custom_output_args`` accepts the JSON-shaped dict the agent
+    # would emit; serialize via :func:`dataclasses.asdict` so the
+    # canned answer survives TestModel's structured-response queue.
+    import dataclasses
+
     # Pin the final structured output so the assertions are
     # deterministic; TestModel will still cycle through the registered
     # tools before producing this output. The pinned output mirrors
@@ -224,7 +231,12 @@ def test_librarian_agent_runs_4_step_pipeline(monkeypatch: pytest.MonkeyPatch) -
         searched_scope=["alpha"],
     )
 
-    agent = librarian_agent(model=TestModel(call_tools="all", custom_output_args=expected_output))
+    agent = librarian_agent(
+        model=TestModel(
+            call_tools=["collections_read", "search", "read"],
+            custom_output_args=dataclasses.asdict(expected_output),
+        )
+    )
     register_librarian_tools(agent)
 
     deps = LibrarianDeps(
