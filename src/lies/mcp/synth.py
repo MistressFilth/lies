@@ -15,7 +15,7 @@ excerpts it composes against.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from fastmcp.exceptions import ToolError
@@ -51,6 +51,7 @@ class SynthesizeEnvelope:
     fallback_used: bool
     synthesis_used: bool
     fallback_reason: str | None = None
+    searched_scope: list[str] = field(default_factory=list)
 
 
 _FILE_BACK_DEFERRED_MSG = (
