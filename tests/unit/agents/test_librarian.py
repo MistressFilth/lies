@@ -5,7 +5,23 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 
 import pytest
+from pydantic_ai import Agent as _PydanticAgent
 from pydantic_ai.models.test import TestModel
+
+
+# Capture the real ``Agent.run_sync`` at module-import time. Several
+# tests in this repo — notably
+# ``tests/integration/test_query_format_e2e.py::_patch_synthesizer`` —
+# call ``mock.patch.object(type(orch._query_synthesizer_agent),
+# "run_sync", new=fake)`` and then ``patcher.start()`` WITHOUT a
+# matching ``patcher.stop()``. Because every LIES subagent is a
+# ``pydantic_ai.Agent`` instance, that pattern mutates the ``Agent``
+# base class for the remainder of the pytest process; any later test
+# that calls ``agent.run_sync`` hits the leaked fake and raises once
+# its canned-answer queue exhausts. Capture happens before any test
+# runs (module import is once-per-session), so the captured value is
+# always the real method.
+_REAL_AGENT_RUN_SYNC = _PydanticAgent.run_sync
 
 
 def _patch_tools(monkeypatch: pytest.MonkeyPatch, *, hits=None, bodies=None, registry=None) -> None:
@@ -118,6 +134,19 @@ def test_librarian_agent_runs_4_step_pipeline(monkeypatch: pytest.MonkeyPatch) -
     invocations still go through the real closure → MCP-tool shim
     path; only the final structured output is pinned.
     """
+    # Defensive: restore the real ``Agent.run_sync`` for the duration of
+    # this test. Integration tests in this repo mutate the ``Agent``
+    # base class via ``mock.patch.object(type(<agent>), "run_sync",
+    # new=...)`` and do not always stop the patcher (see
+    # ``tests/integration/test_query_format_e2e.py::_patch_synthesizer``).
+    # If such a leak is active when this test runs, the canned-answer
+    # queue inside the leaked fake exhausts mid-pipeline and
+    # ``agent.run_sync`` raises ``RuntimeError("synthesizer invoked
+    # more times than canned answers")``. ``monkeypatch`` records the
+    # pre-test value and restores it on teardown, so any leak remains
+    # visible to tests that follow — we only shield this one.
+    monkeypatch.setattr(_PydanticAgent, "run_sync", _REAL_AGENT_RUN_SYNC)
+
     bodies = {
         "alpha/cli-plugin.md": (
             "# Setup\n\nPlugin.define({ id, setup }) — entry point for the alpha CLI plugin."
