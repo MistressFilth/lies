@@ -27,7 +27,6 @@ librarian returns.
 
 from __future__ import annotations
 
-import contextvars
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -103,13 +102,16 @@ class LibrarianOutput:
     the cited synthesis.
 
     Attributes:
-        no_coverage: F18 Task 1 — set by the orchestrator's dispatch
-            site from the :data:`librarian_no_coverage` ContextVar
-            that ``_wiki_search`` populates. ``True`` when the
-            search result carries the flag, signalling a scope miss
-            on a populated wiki. Defaults to ``False`` so existing
-            ``LibrarianOutput(...)`` construction sites and frozen-
-            dataclass consumers stay back-compat.
+        no_coverage: v0.40 — populated by the LLM from the ``search``
+            MCP tool's ``no_coverage`` field in the SearchResult
+            envelope. ``True`` when the corpus has zero hits for the
+            question (a scope miss on a populated library). The
+            orchestrator's dispatch site passes the field through
+            unchanged; downstream consumers (the file-back gate,
+            ``ground()`` dispatch, callers reading the bundle) read
+            the value as the agent emitted it. Defaults to ``False``
+            so existing ``LibrarianOutput(...)`` construction sites
+            and frozen-dataclass consumers stay back-compat.
         searched_scope: v0.40 additive — the resolved collection
             list from Step 2's ``search()`` tool
             (``searched_scope`` field). ``MCP synthesize`` threads
@@ -127,22 +129,6 @@ class LibrarianOutput:
     distinct_pages: int
     no_coverage: bool = False
     searched_scope: list[str] = field(default_factory=list)
-
-
-# Back-compat shim — F18 Task 1's ContextVar mechanism used to be
-# populated by the librarian's wiki-search closure and read by the
-# orchestrator's dispatch site. In v0.40, ``no_coverage`` flows
-# directly through :class:`LibrarianOutput` (the new ``search`` MCP
-# tool returns it as part of the ``SearchResult`` envelope). The
-# ContextVar remains as a no-op default-False so the
-# orchestrator's ``replace(librarian_out, no_coverage=...)`` import
-# keeps compiling. New code MUST NOT set this ContextVar; the
-# ``LibrarianOutput.no_coverage`` field is the single source of
-# truth.
-librarian_no_coverage: contextvars.ContextVar[bool] = contextvars.ContextVar(
-    "librarian_no_coverage",
-    default=False,
-)
 
 
 LIBRARIAN_SYSTEM_PROMPT = """# librarian — Classify, Search, Read, Return

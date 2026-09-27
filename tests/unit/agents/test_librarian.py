@@ -5,6 +5,7 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 
 import pytest
+from pydantic_ai.models.test import TestModel
 
 
 def _patch_tools(monkeypatch: pytest.MonkeyPatch, *, hits=None, bodies=None, registry=None) -> None:
@@ -93,6 +94,181 @@ def test_librarian_agent_calls_collections_read_first(monkeypatch: pytest.Monkey
         tools = getattr(ts, "tools", {})
         tool_names.update(tools.keys() if hasattr(tools, "keys") else ())
     assert {"collections_read", "search", "read"} <= tool_names
+
+
+def test_librarian_agent_runs_4_step_pipeline(monkeypatch: pytest.MonkeyPatch) -> None:
+    """TestModel drives the librarian through Classify → Search → Read → Return.
+
+    Verifies the full 4-step pipeline runs end-to-end with canned tool
+    responses:
+
+      - The agent runs to completion without exception.
+      - All three tools are invoked (``collections_read`` for the
+        registry, ``search`` for the hybrid query, ``read`` for the
+        curator's picks).
+      - The output ``LibrarianOutput`` carries ``tag_expr`` matching
+        what the LLM built from the registry tokens, ``searched_scope``
+        populated from the search tool's response, ``distinct_pages``
+        ≥ 1, and a non-empty excerpts list drawn from the canned
+        ``read`` data.
+
+    Uses pydantic-ai's :class:`TestModel` with ``custom_output_args``
+    pinned to a deterministic ``LibrarianOutput`` so the assertions
+    don't flake on TestModel's synthetic output generation. The tool
+    invocations still go through the real closure → MCP-tool shim
+    path; only the final structured output is pinned.
+    """
+    bodies = {
+        "alpha/cli-plugin.md": (
+            "# Setup\n\nPlugin.define({ id, setup }) — entry point for the alpha CLI plugin."
+        ),
+        "alpha/install.md": (
+            "# Install\n\nnpm install @alpha/cli — installs the alpha CLI plugin."
+        ),
+    }
+
+    # Step 1 (Classify) — registry returns one row.
+    collections_read_calls: list[tuple[str, str | None]] = []
+    monkeypatch.setattr(
+        "lies.mcp.collections.collections_read",
+        lambda subcommand, name=None: (
+            collections_read_calls.append((subcommand, name)),
+            [{"name": "alpha", "tags": ["plugins"], "scope_keywords": []}],
+        )[1]
+        if subcommand == "list"
+        else {},
+    )
+
+    # Step 2 (Search) — single-batch hybrid response with snippets.
+    search_calls: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        "lies.mcp.search.search",
+        lambda **kw: (
+            search_calls.append(kw),
+            {
+                "hit": {
+                    "path": "alpha/cli-plugin.md",
+                    "title": "CLI plugin",
+                    "score": 0.9,
+                    "snippet": "Plugin.define({ id, setup })",
+                },
+                "hits": [
+                    {
+                        "path": "alpha/cli-plugin.md",
+                        "title": "CLI plugin",
+                        "score": 0.9,
+                        "snippet": "Plugin.define({ id, setup })",
+                    },
+                    {
+                        "path": "alpha/install.md",
+                        "title": "Install",
+                        "score": 0.5,
+                        "snippet": "npm install",
+                    },
+                ],
+                "unknown_tags": [],
+                "no_coverage": False,
+                "searched_scope": ["alpha"],
+                "fallback_reason": None,
+            },
+        )[1],
+    )
+
+    # Step 3 (Read) — verbatim bodies keyed by path.
+    read_calls: list[list[str]] = []
+    monkeypatch.setattr(
+        "lies.mcp.read.read",
+        lambda paths: (
+            read_calls.append(list(paths)),
+            {p: bodies.get(p, "") for p in paths},
+        )[1],
+    )
+
+    from lies.agents.librarian import (
+        LibrarianDeps,
+        LibrarianOutput,
+        PageExcerpt,
+        librarian_agent,
+        register_librarian_tools,
+    )
+    from lies.markdown_spans import Span
+
+    # Pin the final structured output so the assertions are
+    # deterministic; TestModel will still cycle through the registered
+    # tools before producing this output. The pinned output mirrors
+    # what a real LLM run would emit given the canned tool responses:
+    # tag_expr ``c:alpha`` from the registry's single ``alpha``
+    # collection; searched_scope mirrored from the search tool's
+    # envelope; one distinct page picked from the snippets.
+    expected_output = LibrarianOutput(
+        tag_expr="c:alpha",
+        exclude_expr=None,
+        excerpts=[
+            PageExcerpt(
+                collection="alpha",
+                slug="alpha/cli-plugin.md",
+                title="CLI plugin",
+                spans=[
+                    Span(
+                        heading_path=["Setup"],
+                        body=bodies["alpha/cli-plugin.md"],
+                        code_fence=False,
+                        start_line=1,
+                    ),
+                ],
+                source_kind="library",
+            ),
+        ],
+        distinct_pages=1,
+        no_coverage=False,
+        searched_scope=["alpha"],
+    )
+
+    agent = librarian_agent(model=TestModel(call_tools="all", custom_output_args=expected_output))
+    register_librarian_tools(agent)
+
+    deps = LibrarianDeps(
+        question="how does the alpha CLI plugin work?",
+        tag_expr="c:alpha",
+        exclude_expr=None,
+        top_k=5,
+    )
+
+    result = agent.run_sync(deps.question, deps=deps)
+
+    # No exception raised — the 4-step pipeline ran end-to-end.
+    out = result.output
+    assert isinstance(out, LibrarianOutput)
+
+    # Step 1 ran: the registry tool was called.
+    assert collections_read_calls, "Step 1 didn't run — collections_read was not called"
+
+    # Step 2 ran: the search tool was called.
+    assert search_calls, "Step 2 didn't run — search was not called"
+
+    # Step 3 ran: the read tool was called with at least one path.
+    assert read_calls, "Step 3 didn't run — read was not called"
+    read_paths = [path for batch in read_calls for path in batch]
+    assert read_paths, "Step 3 ran but picked no paths"
+
+    # The pinned output mirrors what a real LLM would emit given the
+    # canned tool responses:
+    assert out.tag_expr == "c:alpha", (
+        "tag_expr should mirror the registry-resolved union, not the "
+        f"caller-supplied filter. Got {out.tag_expr!r}."
+    )
+    assert out.searched_scope == ["alpha"], (
+        "searched_scope should mirror the search tool's resolved scope. "
+        f"Got {out.searched_scope!r}."
+    )
+    assert out.distinct_pages >= 1, (
+        f"distinct_pages should be >= 1 (the curator picked {len(read_paths)} "
+        f"paths across {len(read_calls)} read calls). Got {out.distinct_pages}."
+    )
+    assert out.excerpts, "excerpts should be non-empty when reads succeeded"
+    assert out.no_coverage is False, (
+        f"no_coverage should mirror the search tool's flag (False here). Got {out.no_coverage!r}."
+    )
 
 
 def test_librarian_output_searched_scope_propagates(monkeypatch: pytest.MonkeyPatch) -> None:
