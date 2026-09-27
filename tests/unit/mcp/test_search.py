@@ -1,4 +1,4 @@
-"""search() runs a single hybrid vec+lex qmd query across the resolved collection set."""
+"""search() runs a single hybrid qmd query across the resolved collection set."""
 
 from __future__ import annotations
 
@@ -23,15 +23,42 @@ def _patch_registry(monkeypatch: pytest.MonkeyPatch, names: list[str]) -> None:
     monkeypatch.setattr("lies.library.registry.library_collection_names", lambda: frozenset(names))
 
 
-def test_search_builds_hybrid_query_doc(monkeypatch: pytest.MonkeyPatch) -> None:
-    """search() calls qmd with a structured doc carrying vec+lex legs."""
-    from lies.mcp.search import _build_query_doc
+def test_search_passes_question_as_plain_string(monkeypatch: pytest.MonkeyPatch) -> None:
+    """search() forwards the question (or the hypothetical) as a plain string.
 
-    doc = _build_query_doc("how do I author a plugin?", scope=["alpha", "beta"])
-    # The structured doc must have BOTH legs (vec + lex).
-    assert "vec:" in doc
-    assert "lex:" in doc
-    assert "how do I author a plugin?" in doc
+    Prior to the v0.40.b search bug fix, ``search()`` built a structured
+    ``vec: ...\\nlex: ...`` doc to push both legs of qmd's hybrid
+    search explicitly. That shape was found to silently lose coverage
+    on queries like ``"LSP setup configure language server"`` (the
+    single-string form returned 90%-scored hits; the structured form
+    returned 0). qmd's hybrid search handles vec+lex internally when
+    the question is plain, so ``search()`` now forwards the question
+    as a plain string. When ``hypothetical`` is set, it overrides the
+    question (HyDE-style substitution).
+    """
+    from lies.mcp.search import search
+
+    _patch_registry(monkeypatch, ["alpha"])
+
+    captured: dict[str, Any] = {}
+
+    def _capture(doc, scope, limit, timeout):
+        captured["doc"] = doc
+        return []
+
+    monkeypatch.setattr("lies.mcp.search._post_query", _capture)
+
+    search.fn(question="how do I author a plugin?")
+    assert captured["doc"] == "how do I author a plugin?"
+
+    search.fn(
+        question="how do I author a plugin?",
+        hypothetical="A guide that walks through Plugin.define, setup, and the lifecycle hooks.",
+    )
+    assert (
+        captured["doc"]
+        == "A guide that walks through Plugin.define, setup, and the lifecycle hooks."
+    )
 
 
 def test_search_resolves_tag_expr_to_collections(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -135,8 +162,9 @@ def test_post_query_wires_to_qmd_query(monkeypatch: pytest.MonkeyPatch) -> None:
 
     Patches qmd_query (NOT _post_query) so the regression catches any
     accidental re-stub or removed wiring. Asserts the cwd is the
-    library's git root, the question is the structured vec+lex doc, and
-    the collection_filter is the resolved scope set.
+    library's git root, the question is forwarded (after the defensive
+    trailing-whitespace strip) as-is, and the collection_filter is the
+    resolved scope set.
     """
     from lies.mcp.search import _post_query
 
@@ -156,12 +184,12 @@ def test_post_query_wires_to_qmd_query(monkeypatch: pytest.MonkeyPatch) -> None:
         lambda: __import__("pathlib").Path("/fake/library/root"),
     )
 
-    doc = "vec: hi\nlex: hi\n"
-    out = _post_query(doc, ["alpha", "beta"], limit=5, timeout=10)
+    question = "how do I author a plugin?\n"
+    out = _post_query(question, ["alpha", "beta"], limit=5, timeout=10)
 
     assert out == [{"path": "alpha/p.md", "title": "P", "score": 0.7, "snippet": "s"}]
     assert str(captured["cwd"]) == "/fake/library/root"
-    assert captured["question"] == doc.rstrip()
+    assert captured["question"] == question.rstrip()
     assert captured["limit"] == 5
     assert captured["timeout"] == 10
     assert captured["collection_filter"] == {"alpha", "beta"}
@@ -181,17 +209,19 @@ def test_post_query_maps_qmd_no_results_to_empty_list(monkeypatch: pytest.Monkey
         lambda: __import__("pathlib").Path("/fake/library/root"),
     )
 
-    assert _post_query("vec: x\nlex: x\n", ["alpha"], limit=10, timeout=15) == []
+    assert _post_query("anything", ["alpha"], limit=10, timeout=15) == []
 
 
-def test_post_query_strips_trailing_newline_from_doc(monkeypatch: pytest.MonkeyPatch) -> None:
-    """_post_query strips trailing whitespace so qmd's structured parser accepts it.
+def test_post_query_strips_trailing_whitespace(monkeypatch: pytest.MonkeyPatch) -> None:
+    """_post_query strips trailing whitespace for stable wire shape.
 
-    qmd's parser rejects an empty trailing line (``Line N is missing a
-    lex:/vec:/hyde:/intent: prefix``). The f-string we build produces a
-    trailing newline which would otherwise propagate through
-    ``subprocess.run`` (unlike shell command substitution, which strips
-    it). This test pins the strip invariant.
+    The v0.40 search bug fix dropped the structured ``vec: ...\\nlex: ...``
+    doc in favor of a plain question string. qmd's hybrid search
+    accepts trailing whitespace without rejection today, but
+    ``_post_query`` still ``rstrip()``s the question so callers that
+    source the question from shapes with trailing whitespace
+    (``$()`` substitution, manual concatenation) land on the same
+    payload the tests pin.
     """
     from lies.mcp.search import _post_query
 
@@ -207,7 +237,8 @@ def test_post_query_strips_trailing_newline_from_doc(monkeypatch: pytest.MonkeyP
         lambda: __import__("pathlib").Path("/fake/library/root"),
     )
 
-    _post_query("vec: hi\nlex: hi\n", ["alpha"], limit=10, timeout=15)
+    _post_query("hi\n  \n", ["alpha"], limit=10, timeout=15)
 
-    assert captured["question"] == "vec: hi\nlex: hi"
+    assert captured["question"] == "hi"
     assert not captured["question"].endswith("\n")
+    assert not captured["question"].endswith(" ")

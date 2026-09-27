@@ -1,9 +1,10 @@
-"""search MCP tool — single-batch hybrid vec+lex qmd query.
+"""search MCP tool — single-batch hybrid qmd query.
 
 Replaces the old per-collection fan-out in ``_fanout_collections`` with
-one qmd call carrying the resolved collection set as ``collection_filter``
-and a structured ``vec + lex`` query doc. Library-wins-on-slug-conflict
-merge happens inside qmd.
+one qmd call carrying the resolved collection set as ``collection_filter``.
+qmd's hybrid search handles vec+lex internally; we pass the user's
+question as a plain string (or the HyDE hypothetical when set).
+Library-wins-on-slug-conflict merge happens inside qmd.
 
 Specs: docs/superpowers/specs/2026-09-26-librarian-v040-port-design.md.
 """
@@ -88,42 +89,28 @@ def _resolve_tag_collections(tag_expr: str | None) -> tuple[list[str], list[str]
     return sorted(names & available), []
 
 
-def _build_query_doc(question: str, scope: list[str] | None = None) -> str:
-    """Build the structured vec+lex query doc qmd accepts.
-
-    The qmd daemon's structured-query input accepts lines of the form
-    ``vec: <query>`` and ``lex: <query>``; hybrid search submits both
-    and globally re-ranks the union. ``scope`` is reserved for future
-    per-collection metadata that may be embedded into the doc (today
-    the resolved collection set rides along via ``collection_filter``
-    on the qmd call itself, not in the doc body). Accepted as a
-    keyword argument so the helper's signature is forward-compatible
-    without a per-caller churn.
-    """
-    del scope  # see docstring; not embedded into the doc today
-    return f"vec: {question}\nlex: {question}\n"
-
-
 def _post_query(doc: str, scope: list[str], limit: int, timeout: int) -> list[dict[str, Any]]:
     """Issue one qmd query against the library index.
 
     Production wiring. Delegates to :func:`lies.qmd.cli.qmd_query` with
-    the structured ``vec + lex`` doc as the question payload and the
-    resolved collection set as the ``collection_filter``. Returns an
-    empty list when :class:`QmdNoResultsError` fires (the caller maps
-    that to ``no_coverage=True``). ``QmdCommandError`` propagates so
-    the caller's handler can label it ``qmd unreachable``.
+    the question as a plain string payload and the resolved collection
+    set as the ``collection_filter``. qmd's hybrid search handles
+    vec+lex internally. Returns an empty list when
+    :class:`QmdNoResultsError` fires (the caller maps that to
+    ``no_coverage=True``). ``QmdCommandError`` propagates so the
+    caller's handler can label it ``qmd unreachable``.
     """
     from lies.library.registry import library_git_root
 
     cwd = library_git_root()
     collection_filter = set(scope) if scope else None
 
-    # qmd's structured-doc parser rejects an empty trailing line, which
-    # an f-string with a final ``\n`` produces. Strip trailing whitespace
-    # before handing the doc to qmd so shell-style callers (which strip
-    # trailing newlines via ``$()`` substitution) and the Python
-    # ``subprocess.run`` path both land on the same wire shape.
+    # Strip trailing whitespace defensively. The original structured
+    # doc form required this (qmd rejected empty trailing lines from
+    # f-string interpolation); the plain-string form doesn't, but
+    # normalizing the wire shape keeps callers that source the
+    # question through different shapes (shell ``$()`` strips, manual
+    # construction, etc.) on the same payload the tests pin.
     doc = doc.rstrip()
 
     try:
@@ -201,8 +188,14 @@ def _search_impl(
             "fallback_reason": "no collections registered",
         }
 
-    dense_query = hypothetical or question
-    doc = f"vec: {dense_query}\nlex: {question}\n"
+    # Pass the user's question (or the HyDE hypothetical when set) as a
+    # plain string. The v0.40 structured ``vec: ...\nlex: ...`` doc form
+    # was found to silently lose coverage on some queries (``LSP setup``
+    # against ``opencode`` returned 0 hits even though the single-query
+    # form returned 90%-scored hits). qmd's hybrid search handles
+    # vec+lex internally when the question is plain, so we rely on that
+    # path instead.
+    doc = hypothetical or question
 
     from lies.qmd.cli import QmdCommandError
 
