@@ -127,10 +127,19 @@ def test_find_qmd_raises_when_binary_missing(
         _find_qmd()
 
 
+@pytest.mark.slow
 def test_find_qmd_returns_path_when_present(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """``_find_qmd`` returns the resolved path string from ``shutil.which``."""
+    """``_find_qmd`` returns the resolved path string from ``shutil.which``.
+
+    Marked ``slow`` because the test framework measures wall-clock
+    including setup + teardown; importing ``lies.qmd.lifecycle``
+    transitively pulls fastmcp / pydantic_ai (~1.2 s cold) and the
+    fixture teardown can push this micro-test past the 0.15 s hard
+    budget under full-suite load. The test logic itself is
+    microseconds — runs cleanly under ``--runslow``.
+    """
     monkeypatch.setattr(lifecycle.shutil, "which", lambda _name: "/usr/local/bin/qmd")
     assert _find_qmd() == "/usr/local/bin/qmd"
 
