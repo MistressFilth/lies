@@ -2273,7 +2273,7 @@ class Orchestrator:
         return self.file_back_author(plan)
 
     def _register_librarian_tools(self) -> None:
-        """Register ``wiki_search`` / ``wiki_read`` / ``wiki_catalog`` on the librarian agent.
+        """Register ``collections_read`` / ``search`` / ``read`` on the librarian agent.
 
         Thin delegator to :func:`lies.agents.librarian.register_librarian_tools`
         so the wiring lives in exactly one place — both the orchestrator

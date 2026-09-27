@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from unittest import mock
 
@@ -91,11 +93,17 @@ def _make_synth_answer(body: str, fmt: str, citations: list[str] | None = None) 
     )
 
 
-def _patch_synthesizer(orch: Orchestrator, query_answers: list[QueryAnswer]) -> list[QueryAnswer]:
+@contextmanager
+def _patch_synthesizer(
+    orch: Orchestrator, query_answers: list[QueryAnswer]
+) -> Iterator[list[QueryAnswer]]:
     """Patch ``_query_synthesizer_agent.run_sync`` so it pops a canned answer per call.
 
-    Returns the list so the test can introspect which answers were
+    Yields the list so the test can introspect which answers were
     consumed (the override path may invoke the synthesizer twice).
+    The base-class patch is restored via ``patcher.stop()`` on context
+    exit — leaking it would break any subsequent test that calls
+    ``agent.run_sync(...)`` against ``Orchestrator._query_synthesizer_agent``.
     """
     answers = list(query_answers)
 
@@ -106,7 +114,10 @@ def _patch_synthesizer(orch: Orchestrator, query_answers: list[QueryAnswer]) -> 
 
     patcher = mock.patch.object(type(orch._query_synthesizer_agent), "run_sync", new=fake_run_sync)
     patcher.start()
-    return answers
+    try:
+        yield answers
+    finally:
+        patcher.stop()
 
 
 # ---------------------------------------------------------------------------
@@ -139,8 +150,8 @@ def test_run_query_happy_path_each_format(wiki_copy: Path, fmt: str) -> None:
 
     set_qmd_search(_stub_qmd_search(["entities/postgres.md"]))
     try:
-        _patch_synthesizer(orch, [_make_synth_answer(body, fmt)])
-        answer = orch.run_query("anything", file=False)
+        with _patch_synthesizer(orch, [_make_synth_answer(body, fmt)]):
+            answer = orch.run_query("anything", file=False)
     finally:
         set_qmd_search(qmd_query)
 
@@ -170,8 +181,8 @@ def test_run_query_auto_route_passes_format_field(wiki_copy: Path) -> None:
     body = "| col1 | col2 |\n| --- | --- |\n| a | b |\n"
     set_qmd_search(_stub_qmd_search(["entities/postgres.md"]))
     try:
-        _patch_synthesizer(orch, [_make_synth_answer(body, "table")])
-        answer = orch.run_query("anything", file=False)
+        with _patch_synthesizer(orch, [_make_synth_answer(body, "table")]):
+            answer = orch.run_query("anything", file=False)
     finally:
         set_qmd_search(qmd_query)
 
@@ -203,16 +214,16 @@ def test_run_query_with_format_marp_overrides_auto_route(wiki_copy: Path, tmp_pa
         # ``run_query_with_format`` invokes the synthesizer once (no
         # auto-route pre-call); the canned answer must carry the marp
         # body + format_hint to satisfy the spec § 6 override shape.
-        _patch_synthesizer(
+        with _patch_synthesizer(
             orch,
             [_make_synth_answer(marp_body, "marp")],
-        )
-        with mock.patch.object(shutil, "which", return_value=None):
-            answer = orch.run_query_with_format(
-                "anything",
-                cli_format="marp",
-                file=False,
-            )
+        ):
+            with mock.patch.object(shutil, "which", return_value=None):
+                answer = orch.run_query_with_format(
+                    "anything",
+                    cli_format="marp",
+                    file=False,
+                )
     finally:
         set_qmd_search(qmd_query)
 

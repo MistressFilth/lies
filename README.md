@@ -244,7 +244,7 @@ search(
     tag_expr: str | None = None,        # F15 include body, no leading sigil
     exclude_tags: list[str] | None = None,  # F15 NOT atoms (reserved)
     hypothetical: str | None = None,    # optional denser paraphrase
-) -> dict                               # SearchResult wire shape
+) -> dict
 ```
 
 The returned dict carries:
@@ -328,11 +328,12 @@ configs are legacy and not consulted for tag resolution. A
 `+c:opencode` filter resolves from any wiki because the opencode
 collection lives in the library.
 
-The MCP `ask` tool accepts `tag_expr` and `exclude_tags`
-(size ≤ 1) kwargs. The underlying `SynthesizeEnvelope.searched_scope`
-(mirroring the `search` tool's `searched_scope`) reports the
-resolved library-collection set; with no filter, it reports every
-library collection.
+The MCP `ask` tool accepts `tag_expr` and `exclude_tags` kwargs
+(both lists of atoms per the F15 NOT grammar; no size cap). The
+underlying `SynthesizeEnvelope.searched_scope` (mirroring the
+`search` tool's `searched_scope`) reports the resolved
+library-collection set; with no filter, it reports every library
+collection.
 
 When the active wiki's `tag_expr` references a collection the
 library does not declare, the error surfaces the library's actual
