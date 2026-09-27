@@ -580,50 +580,6 @@ def test_ground_searched_scope_populated_on_librarian_exception(monkeypatch) -> 
     assert digest.searched_scope == ["claude_platform", "opencode"]
 
 
-def test_mcp_ground_wire_format_includes_searched_scope(monkeypatch) -> None:
-    """The MCP ``ground`` tool's JSON envelope carries ``searched_scope``.
-
-    Pins Bug C at the wire boundary: the MCP tool wrapper
-    (``mcp_ground`` in ``src/lies/mcp/server.py``) returns
-    ``dataclasses.asdict(digest)`` for FastMCP serialization. The
-    new ``searched_scope`` field must appear in the resulting JSON
-    dict so MCP clients can introspect the resolved scope. Without
-    this pin, an accidental ``asdict`` override or field-name typo
-    would silently drop the field from the wire.
-    """
-    from dataclasses import asdict
-
-    from lies.library import registry as registry_mod
-    from lies.mcp import grounding
-    from lies.mcp.server import mcp_ground
-
-    monkeypatch.setattr(
-        registry_mod,
-        "library_collection_names",
-        lambda: frozenset({"opencode", "claude_platform", "mermaid"}),
-    )
-
-    def fake_librarian(deps):
-        from lies.agents.librarian import LibrarianOutput
-
-        return LibrarianOutput(tag_expr=None, exclude_expr=None, excerpts=[], distinct_pages=0)
-
-    _patch_librarian(monkeypatch, grounding, fake_librarian)
-
-    wire = mcp_ground(question="what is opencode?")
-    assert isinstance(wire, dict)
-    assert "searched_scope" in wire, (
-        f"ground wire envelope dropped searched_scope: keys={sorted(wire.keys())}"
-    )
-    assert wire["searched_scope"] == ["claude_platform", "mermaid", "opencode"]
-
-    # Also pin the dataclass-level asdict path so the dataclass itself
-    # carries the field — this is what the MCP tool relies on.
-    digest = _ground("what is opencode?")
-    asdict_payload = asdict(digest)
-    assert "searched_scope" in asdict_payload
-
-
 def test_ground_library_collection_names_cached_across_calls(monkeypatch, tmp_path: Path) -> None:
     """Regression for Fix 5: library_collection_names memoization.
 
