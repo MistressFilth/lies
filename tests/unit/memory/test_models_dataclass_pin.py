@@ -1,5 +1,7 @@
 from dataclasses import is_dataclass
 
+import pytest
+
 from lies.memory.models import (
     EvidenceAppend,
     MemoryPlan,
@@ -31,6 +33,7 @@ def test_evidence_append_remains_base_model() -> None:
     assert issubclass(EvidenceAppend, BaseModel)
 
 
+@pytest.mark.slow
 def test_memory_plan_with_create_and_delete_ops() -> None:
     plan = MemoryPlan(
         rationale="test",
