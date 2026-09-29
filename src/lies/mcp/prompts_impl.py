@@ -54,6 +54,18 @@ def register_all(mcp: FastMCP) -> None:
     ) -> list[Message]:
         return collections_prompt(subcommand, args)
 
+    @mcp.prompt(
+        name="ingest",
+        description="Bring a source into the library (single, batch, or delete).",
+    )
+    def _ingest_prompt(
+        source: str,
+        delete_slug: str | None = None,
+        batch_dir: str | None = None,
+        dry_run: bool = False,
+    ) -> list[Message]:
+        return ingest_prompt(source, delete_slug, batch_dir, dry_run)
+
 
 # Concrete impl functions added by tasks 3-9 below.
 
@@ -145,5 +157,36 @@ def collections_prompt(
             f"Unknown subcommand {sub!r}. Valid subcommands: "
             f"list, add, remove, modify, info, tag, register-shipped, where. "
             f"Ask the user which to invoke."
+        )
+    return [Message(body)]
+
+
+def ingest_prompt(
+    source: str,
+    delete_slug: str | None = None,
+    batch_dir: str | None = None,
+    dry_run: bool = False,
+) -> list[Message]:
+    """Route a source into the library."""
+    dry = " --dry-run" if dry_run else ""
+    if delete_slug:
+        cmd = f'lies ingest --data-dir "$LIES_DATA"{dry} --delete {delete_slug}'
+        body = (
+            f"Run Bash({cmd!r}) and surface stdout/stderr. The CLI "
+            f"removes the page file, the catalog row, appends a "
+            f"delete entry to the log, and triggers qmd update."
+        )
+    elif batch_dir:
+        body = (
+            f"Run Bash(lies ingest --batch {batch_dir!r}{dry} "
+            f'--data-dir "$LIES_DATA" --slug-prefix <derive-from-user> '
+            f"--force) — slug-prefix is required. Surface stdout/stderr."
+        )
+    else:
+        body = (
+            f'Run Bash(lies ingest --data-dir "$LIES_DATA"{dry} '
+            f"--source {source!r} --type <entity|concept|synthesis|...> "
+            f'[--slug <slug>] [--title "<title>"]) — supervised mode '
+            f"requires --type. Surface stdout/stderr."
         )
     return [Message(body)]

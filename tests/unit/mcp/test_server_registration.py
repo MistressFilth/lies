@@ -74,13 +74,14 @@ def test_server_drops_old_tools() -> None:
 def test_server_drops_all_prompts() -> None:
     from lies.mcp.server import mcp
 
-    # The v0.40 rewrite retires every prompt. No @mcp.prompt should
-    # remain — not even the legacy /answer, /cite, /orient,
-    # /ingest, /lint, /sync, /file-back templates.
+    # The v0.40 rewrite retires every legacy starter-template prompt.
+    # No @mcp.prompt(name=...) should register the legacy
+    # /answer, /cite, /orient, /lint, /sync, /file-back templates.
+    # ``ingest`` was promoted to a first-class slash prompt by the
+    # slash-prompt-surface work, so it is intentionally allowed here.
     forbidden = {
         "answer",
         "orient",
-        "ingest",
         "lint",
         "sync",
         "file-back",
