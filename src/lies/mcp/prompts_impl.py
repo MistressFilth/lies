@@ -66,6 +66,16 @@ def register_all(mcp: FastMCP) -> None:
     ) -> list[Message]:
         return ingest_prompt(source, delete_slug, batch_dir, dry_run)
 
+    @mcp.prompt(
+        name="lint",
+        description="Health-check the corpus (optionally run a repair pass).",
+    )
+    def _lint_prompt(
+        check: str | None = None,
+        fix: bool = False,
+    ) -> list[Message]:
+        return lint_prompt(check, fix)
+
 
 # Concrete impl functions added by tasks 3-9 below.
 
@@ -189,4 +199,22 @@ def ingest_prompt(
             f'[--slug <slug>] [--title "<title>"]) — supervised mode '
             f"requires --type. Surface stdout/stderr."
         )
+    return [Message(body)]
+
+
+def lint_prompt(
+    check: str | None = None,
+    fix: bool = False,
+) -> list[Message]:
+    """Health-check the corpus."""
+    body = (
+        f"Call mcp__lies__lint(name=None, check={check!r}, "
+        f"fix={fix!r}) and surface the returned report. "
+        + (
+            "When fix=True, narrate any repair outcomes the tool "
+            "applied and re-run lint to confirm clean state."
+            if fix
+            else ""
+        )
+    )
     return [Message(body)]
