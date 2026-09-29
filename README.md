@@ -14,7 +14,7 @@ Three layers: **raw/** (your curated sources, immutable), **wiki/** (the agent's
 
 LIES reads and writes the wiki invisibly during normal interaction:
 
-- The Pydantic AI main agent reaches library collections through the v0.40 library-mode read surface: `ask` for prose answers (librarian + synthesizer), `search` for snippet digests. The pre-rewrite `wiki_search` / `wiki_read` shape is dormant.
+- The Pydantic AI main agent reaches library collections through the v0.40 library-mode read surface: `lib_ask` for prose answers (librarian + synthesizer), `search` for snippet digests. The pre-rewrite `wiki_search` / `wiki_read` shape is dormant.
 - After the answer, a `MemoryEnricher` sub-agent proposes a structured `MemoryPlan` only when evidence warrants it.
 - The host validates the plan and applies it through `WikiMemoryService`, which writes the page, rebuilds the index, appends the log, commits atomically, and refreshes the qmd derived index.
 - Each invisible write appends one line to `<wiki>/.lies/memory_plans.jsonl`. Inspect with `lies memory`; the MCP resource `wiki://memory-changes` exposes the same data; `lies memory reconcile` rebuilds from `git log` if the sidecar drifts.
@@ -160,7 +160,7 @@ After registration, Claude Code sees these tools (v0.40 surface):
 - `read(paths)` — verbatim page bodies. Wiki page IDs route to
   `memory_service.read`; library paths (`<collection>/<page>`) route
   to `qmd_get`. Source-aware dispatch.
-- `ask(question, tag_expr?, exclude_tags?, file_back?)` — prose
+- `lib_ask(question, tag_expr?, exclude_tags?, file_back?)` — prose
   answer for human reading. Calls the librarian subagent (Classify →
   Search → Read → Return 4-step pipeline) then the synthesizer.
   Returns a `SynthesizeEnvelope` with `answer`, `citations`,
@@ -178,6 +178,23 @@ After registration, Claude Code sees these tools (v0.40 surface):
 - `library://catalog` — every registered library collection's
   metadata (name, tags, source, page_count, updated_at) as a
   per-collection JSON grouping.
+
+…and these prompts (v0.41 surface):
+
+- `ask(question, tag_expr=None, exclude_tags=None)` — synthesized
+  cited answer.
+- `collections(subcommand, args=[])` — library registry CRUD.
+- `ingest(source, delete_slug=None, batch_dir=None, dry_run=False)` —
+  bring a source into the library.
+- `lint(check=None, fix=False)` — health-check the corpus.
+- `reindex(reconcile=False, embed=False, force=False, cleanup=False, all_=False)` —
+  rebuild the search index.
+- `sync(collections=[], no_ingest=False, force=False, dry_run=False, jobs=4, scraper_timeout=300)` —
+  pull + ingest remote sources.
+- `ground(question, tag_expr=None, exclude_tags=None, top_k=3)` —
+  cite-snippet digest (no synthesis).
+
+Hosts bind prompt names under their server prefix (e.g. `/lies:ask`).
 
 Wiki selection: every tool accepts an optional `name` parameter.
 Resolution chain: explicit `name` → `LIES_WIKI_NAME` env → `default`.
@@ -291,7 +308,7 @@ lies page write --collection claude-code --type concept \
 
 The MCP writer (`mcp__plugin_lies__file_knowledge`) was retired in
 the library-mode read-side rewrite — the current v0.40 MCP surface
-is read-only (`collections_read` / `search` / `read` / `ask` /
+is read-only (`collections_read` / `search` / `read` / `lib_ask` /
 `lint` / `reindex`). Wiki writes still go through
 `lies page write` from the CLI; a future write-tool spec will
 restore an MCP write surface.
@@ -328,7 +345,7 @@ configs are legacy and not consulted for tag resolution. A
 `+c:opencode` filter resolves from any wiki because the opencode
 collection lives in the library.
 
-The MCP `ask` tool accepts `tag_expr` and `exclude_tags` kwargs
+The MCP `lib_ask` tool accepts `tag_expr` and `exclude_tags` kwargs
 (both lists of atoms per the F15 NOT grammar; no size cap). The
 underlying `SynthesizeEnvelope.searched_scope` (mirroring the
 `search` tool's `searched_scope`) reports the resolved
@@ -379,7 +396,7 @@ answer: only the library-collection directory name is addressable, so
 The prefix survives the parser so future tag metadata (per-collection
 frontmatter, etc.) can reintroduce the `t:` / `c:` distinction
 without a grammar change. Both include and exclude atoms accept the
-prefixes; the same prefixes work in `ask(tag_expr=...,
+prefixes; the same prefixes work in `lib_ask(tag_expr=...,
 exclude_tags=...)`.
 
 ### Output formats
@@ -391,7 +408,7 @@ exclude_tags=...)`.
 - **`marp`**: Marp-flavored markdown with `marp: true` frontmatter + slide breaks. When the `marp` CLI is on `$PATH`, the body is rendered to HTML at `${XDG_CACHE_HOME:-~/.cache}/lies/query-<timestamp>.html`. When `marp` is not installed, the body is written to a `.md` file and the path is printed with a render hint.
 - **`chart`**: a single ```` ```mermaid ```` fence (one of `flowchart`, `sequenceDiagram`, or `classDiagram`); the renderer extracts the longest block and emits it unchanged. Validator-bypass: pass-through with a stderr warning when the synth produces no mermaid block.
 
-The format is also exposed on the MCP `ask` response via the `format` field (`"md"`, `"table"`, `"marp"`, or `"chart"`). Synthesis pages gain a `render_format` frontmatter field recording the body shape for future curators.
+The format is also exposed on the MCP `lib_ask` response via the `format` field (`"md"`, `"table"`, `"marp"`, or `"chart"`). Synthesis pages gain a `render_format` frontmatter field recording the body shape for future curators.
 
 ### `lies wiki provenance`
 
@@ -917,13 +934,14 @@ The MCP `reindex` tool mirrors this with `destructiveHint=True` and uses `ctx.el
 ## MCP server orientation
 
 The LIES MCP server ships an orientation payload at every
-`initialize` handshake. As of v0.40 there are no MCP prompts —
-the seven prompts the prior surface exposed (`answer`, `orient`,
-`ingest`, `lint`, `sync`, `file-back`, `cite`) were retired in
-v0.40 and the `prompts/` directory was removed from source.
+`initialize` handshake. As of v0.41 the server exposes seven slash
+prompts (`ask`, `collections`, `ingest`, `lint`, `reindex`, `sync`,
+`ground`) that template routed tool calls. Hosts bind prompt names
+under their server prefix (e.g. `/lies:ask`).
 
 - `instructions=` field: path/env facts, v0.40 tool inventory,
-  resource list. The agent sees this on attach regardless of cwd.
+  v0.41 prompt inventory, resource list. The agent sees this on
+  attach regardless of cwd.
 
 The payload lives at `src/lies/mcp/instructions.md`. A pre-commit
 hook (`tools/check_lies_commands.py`) blocks commits that

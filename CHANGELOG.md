@@ -4,6 +4,21 @@ All notable changes to LIES are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/) adapted for
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- 7 slash-command MCP prompts: `ask`, `collections`, `ingest`, `lint`,
+  `reindex`, `sync`, `ground`. Each returns a single user-role
+  Message that templates a routed tool call against the LIES surface.
+  Hosts bind the names under their server prefix (e.g. `/lies:ask`).
+
+### Changed
+
+- MCP tool `ask` renamed to `lib_ask`. The librarian+synthesizer
+  pipeline is unchanged; only the wire name and Python symbol
+  changed so the slash slot and tool surface stay de-duplicated.
+
 ## [0.40.0] - 2026-09-26
 
 ### Breaking changes

@@ -31,6 +31,25 @@ yourself. The wiki you are talking to is selected by the
 - `lint` — health-check (unchanged).
 - `reindex` — qmd lifecycle (unchanged).
 
+## Prompts (v0.41 surface)
+
+Slash-command entry points surface the following `@mcp.prompt` names.
+Hosts that bind slashes to MCP prompts render these under the server
+prefix (e.g. `/lies:ask`):
+
+- `ask(question, tag_expr=None, exclude_tags=None)` — synthesized
+  cited answer.
+- `collections(subcommand, args=[])` — library registry CRUD.
+- `ingest(source, delete_slug=None, batch_dir=None, dry_run=False)` —
+  bring a source into the library.
+- `lint(check=None, fix=False)` — health-check the corpus.
+- `reindex(reconcile=False, embed=False, force=False, cleanup=False, all_=False)` —
+  rebuild the search index.
+- `sync(collections=[], no_ingest=False, force=False, dry_run=False, jobs=4, scraper_timeout=300)` —
+  pull + ingest remote sources.
+- `ground(question, tag_expr=None, exclude_tags=None, top_k=3)` —
+  cite-snippet digest (no synthesis).
+
 ## Workflow
 
 1. `collections_read("list")` to discover what collections exist.
