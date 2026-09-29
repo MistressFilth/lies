@@ -19,12 +19,36 @@ if TYPE_CHECKING:
 
 
 def register_all(mcp: FastMCP) -> None:
-    """Wire each impl function as ``@mcp.prompt`` on ``mcp``.
+    """Wire each impl function as ``@mcp.prompt`` on ``mcp``."""
 
-    Real prompt bodies land in tasks 3-9. This stub returns empty;
-    populate as each task adds a prompt.
-    """
-    del mcp  # no-op until task 3
+    @mcp.prompt(
+        name="ask",
+        description="Synthesized cited answer to a question.",
+    )
+    def _ask_prompt(
+        question: str,
+        tag_expr: str | None = None,
+        exclude_tags: list[str] | None = None,
+    ) -> list[Message]:
+        return ask_prompt(question, tag_expr, exclude_tags)
 
 
 # Concrete impl functions added by tasks 3-9 below.
+
+
+def ask_prompt(
+    question: str,
+    tag_expr: str | None = None,
+    exclude_tags: list[str] | None = None,
+) -> list[Message]:
+    """Synthesized cited answer to a question."""
+    body = (
+        f"Call mcp__lies__search({question!r}, tag_expr={tag_expr!r}, "
+        f"exclude_tags={exclude_tags!r}) to find hits. "
+        f"Read each top-ranked page body via mcp__lies__read([path]). "
+        f"Then call mcp__lies__lib_ask({question!r}, "
+        f"tag_expr={tag_expr!r}, exclude_tags={exclude_tags!r}) for "
+        f"a synthesized cited answer. "
+        f'Cite each claim as [[collection/slug]]: "verbatim quote from the cited span".'
+    )
+    return [Message(body)]
