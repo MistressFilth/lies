@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from tests.unit.mcp._prompt_body import rendered_body
+
 
 def test_ask_prompt_returns_single_message() -> None:
     from lies.mcp.prompts_impl import ask_prompt
@@ -15,7 +17,7 @@ def test_ask_prompt_body_names_routed_tools() -> None:
     from lies.mcp.prompts_impl import ask_prompt
 
     [msg] = ask_prompt("anything", tag_expr="c:test_alpha", exclude_tags=["t:draft"])
-    body = msg.text if hasattr(msg, "text") else str(msg)
+    body = rendered_body(msg)
     assert "mcp__lies__search" in body
     assert "mcp__lies__read" in body
     assert "mcp__lies__lib_ask" in body
@@ -27,7 +29,7 @@ def test_ask_prompt_skips_cite_render_when_tag_is_none() -> None:
     from lies.mcp.prompts_impl import ask_prompt
 
     [msg_a] = ask_prompt("how does pydantic validate nested models")
-    body = msg_a.text if hasattr(msg_a, "text") else str(msg_a)
+    body = rendered_body(msg_a)
     # Lib_ask is still routed; tag_expr=None is templated as None.
     assert "mcp__lies__lib_ask" in body
     assert "tag_expr=None" in body
