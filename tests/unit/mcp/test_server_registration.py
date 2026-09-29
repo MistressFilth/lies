@@ -36,10 +36,12 @@ def test_server_registers_read() -> None:
     assert "read" in _registered_tool_names(mcp)
 
 
-def test_server_registers_ask() -> None:
+def test_server_registers_lib_ask() -> None:
     from lies.mcp.server import mcp
 
-    assert "ask" in _registered_tool_names(mcp)
+    registered = _registered_tool_names(mcp)
+    assert "lib_ask" in registered, f"missing tool: 'lib_ask' in {registered}"
+    assert "ask" not in registered, f"deprecated 'ask' tool still registered: {registered}"
 
 
 def test_server_registers_lint_and_reindex() -> None:

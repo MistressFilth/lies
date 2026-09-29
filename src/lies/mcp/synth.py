@@ -521,9 +521,9 @@ def _ask_impl(
 
 # Wrap as a FastMCP ``Tool`` so the MCP wire can serialize the
 # dispatch surface and tests can reach the underlying function via
-# ``ask.fn(...)``. Mirrors the pattern in ``search.py`` (Task 4)
+# ``lib_ask.fn(...)``. Mirrors the pattern in ``search.py`` (Task 4)
 # and ``read.py`` (Task 5). Server registration is a separate
 # concern (Task 6+); the Tool object is constructed here so downstream
-# code can ``import synth`` and call ``ask.fn`` without spinning up an
+# code can ``import synth`` and call ``lib_ask.fn`` without spinning up an
 # MCP instance.
-ask = Tool.from_function(_ask_impl, name="ask")
+lib_ask = Tool.from_function(_ask_impl, name="lib_ask")

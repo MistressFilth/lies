@@ -44,7 +44,7 @@ from lies.mcp.instructions_loader import load_instructions
 from lies.mcp.read import read as _read_tool
 from lies.mcp.resolution import resolve_wiki
 from lies.mcp.search import search as _search_tool
-from lies.mcp.synth import ask as _ask_tool
+from lies.mcp.synth import lib_ask as _lib_ask_tool
 from lies.orchestrator import Orchestrator
 from lies.query.tag_expr import TagExprUnknown
 
@@ -159,7 +159,7 @@ def format_unknown_tag_error(exc: TagExprUnknown) -> str:
 mcp.tool(name="collections_read")(_collections_read)
 mcp.tool(name="search")(_search_tool.fn)
 mcp.tool(name="read")(_read_tool.fn)
-mcp.tool(name="ask")(_ask_tool.fn)
+mcp.tool(name="lib_ask")(_lib_ask_tool.fn)
 
 
 # ---------------------------------------------------------------------------

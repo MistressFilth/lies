@@ -61,7 +61,7 @@ def test_run_enrichment_enqueues_on_wiki_lock_busy(orchestrator: Orchestrator) -
             side_effect=WikiLockBusy("wiki memory lock is held by another process"),
         ),
     ):
-        receipt = orchestrator._run_enrichment("ask", "answer", [], [])
+        receipt = orchestrator._run_enrichment("lib_ask", "answer", [], [])
 
     assert receipt.errors and receipt.errors[0].startswith("queued_for_retry: WikiLockBusy:")
     assert len(orchestrator._enrichment_queue) == 1

@@ -80,7 +80,7 @@ def test_queued_retry_succeeds_on_next_turn(wiki: Wiki) -> None:
         mock.patch.object(orch._memory_service, "apply_plan", side_effect=fake_apply),
     ):
         orch._turn_counter += 1
-        orch._run_enrichment("ask", "answer", [], [])
+        orch._run_enrichment("lib_ask", "answer", [], [])
         assert len(orch._enrichment_queue) == 1
         orch._turn_counter += 1
         orch._enrichment_queue.drain(
@@ -104,7 +104,7 @@ def test_queued_retry_hits_cap_after_three_failures(wiki: Wiki) -> None:
         mock.patch.object(orch._memory_service, "apply_plan", side_effect=always_locked),
     ):
         orch._turn_counter += 1
-        orch._run_enrichment("ask", "answer", [], [])
+        orch._run_enrichment("lib_ask", "answer", [], [])
         for _ in range(3):
             orch._turn_counter += 1
             orch._enrichment_queue.drain(
@@ -147,7 +147,7 @@ def test_queued_item_becomes_noop_on_reenrichment(wiki: Wiki) -> None:
         ),
     ):
         orch._turn_counter += 1
-        orch._run_enrichment("ask", "answer", [], [])
+        orch._run_enrichment("lib_ask", "answer", [], [])
 
     assert len(orch._enrichment_queue) == 1
 
