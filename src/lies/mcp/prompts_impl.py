@@ -44,6 +44,16 @@ def register_all(mcp: FastMCP) -> None:
     ) -> list[Message]:
         return ground_prompt(question, tag_expr, exclude_tags, top_k)
 
+    @mcp.prompt(
+        name="collections",
+        description="Library collection registry CRUD (list, add, remove, info, tag).",
+    )
+    def _collections_prompt(
+        subcommand: str,
+        args: list[str] | None = None,
+    ) -> list[Message]:
+        return collections_prompt(subcommand, args)
+
 
 # Concrete impl functions added by tasks 3-9 below.
 
@@ -83,4 +93,57 @@ def ground_prompt(
         f"Cite marker is grounded in the read span's body, not synthesized prose. "
         f"Do NOT route through lib_ask — ground is digest-only."
     )
+    return [Message(body)]
+
+
+def collections_prompt(
+    subcommand: str,
+    args: list[str] | None = None,
+) -> list[Message]:
+    """Library collection registry CRUD."""
+    args = list(args or [])
+    sub = subcommand.strip().lower()
+
+    if sub == "list":
+        body = (
+            'Call mcp__lies__collections_read(subcommand="list") and '
+            "render each entry as one markdown bullet (name, tags, "
+            "source, page_count, updated_at)."
+        )
+    elif sub == "info":
+        name = args[0] if args else "<name>"
+        body = (
+            f'Call mcp__lies__collections_read(subcommand="info", '
+            f"name={name!r}) and render the returned metadata envelope."
+        )
+    elif sub == "add":
+        joined = " ".join(args)
+        body = (
+            f"Register a new collection: run "
+            f"Bash(lies library new <name> <path> [--tags <t1,t2>] "
+            f"[--scope <keywords>] [--synonyms <file>] [--scraper <cmd>]) "
+            f"with args {joined!r}. Then run qmd embed so vec/hyde queries "
+            f"find the new collection."
+        )
+    elif sub in ("remove", "modify"):
+        joined = " ".join(args)
+        body = (
+            f"Run Bash(lies library {sub} {joined}) and report the tool's "
+            f"outcome to the user verbatim."
+        )
+    elif sub == "tag":
+        joined = " ".join(args)
+        body = (
+            f"Run Bash(lies library enrich-tags {joined}) and report which "
+            f"collections now carry the tag."
+        )
+    elif sub in ("register-shipped", "where"):
+        joined = " ".join(args)
+        body = f"Run Bash(lies library {sub} {joined}) and surface the stdout stream to the user."
+    else:
+        body = (
+            f"Unknown subcommand {sub!r}. Valid subcommands: "
+            f"list, add, remove, modify, info, tag, register-shipped, where. "
+            f"Ask the user which to invoke."
+        )
     return [Message(body)]
