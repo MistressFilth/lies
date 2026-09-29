@@ -14,12 +14,12 @@ def test_ask_prompt_returns_single_message() -> None:
 def test_ask_prompt_body_names_routed_tools() -> None:
     from lies.mcp.prompts_impl import ask_prompt
 
-    [msg] = ask_prompt("anything", tag_expr="c:opencode", exclude_tags=["t:draft"])
+    [msg] = ask_prompt("anything", tag_expr="c:test_alpha", exclude_tags=["t:draft"])
     body = msg.text if hasattr(msg, "text") else str(msg)
     assert "mcp__lies__search" in body
     assert "mcp__lies__read" in body
     assert "mcp__lies__lib_ask" in body
-    assert "c:opencode" in body
+    assert "c:test_alpha" in body
 
 
 def test_ask_prompt_skips_cite_render_when_tag_is_none() -> None:

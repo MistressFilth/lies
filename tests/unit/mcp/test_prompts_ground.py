@@ -18,14 +18,14 @@ def test_ground_prompt_routes_search_and_read() -> None:
 
     [msg] = ground_prompt(
         "register a PostToolUse hook",
-        tag_expr="c:claude_code",
+        tag_expr="c:test_alpha",
         exclude_tags=["t:draft"],
         top_k=5,
     )
     body = msg.text if hasattr(msg, "text") else str(msg)
     assert "mcp__lies__search" in body
     assert "mcp__lies__read" in body
-    assert "c:claude_code" in body
+    assert "c:test_alpha" in body
     assert "top_k=5" in body
 
 

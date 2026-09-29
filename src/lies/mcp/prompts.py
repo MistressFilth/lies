@@ -24,8 +24,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from fastmcp.prompts import Message  # noqa: F401  (re-exported for tests)
-
 if TYPE_CHECKING:
     from fastmcp import FastMCP
 
