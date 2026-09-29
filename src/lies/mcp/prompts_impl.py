@@ -76,6 +76,19 @@ def register_all(mcp: FastMCP) -> None:
     ) -> list[Message]:
         return lint_prompt(check, fix)
 
+    @mcp.prompt(
+        name="reindex",
+        description="Rebuild the search index (BM25, embed, cleanup, all).",
+    )
+    def _reindex_prompt(
+        reconcile: bool = False,
+        embed: bool = False,
+        force: bool = False,
+        cleanup: bool = False,
+        all_: bool = False,
+    ) -> list[Message]:
+        return reindex_prompt(reconcile, embed, force, cleanup, all_)
+
 
 # Concrete impl functions added by tasks 3-9 below.
 
@@ -214,6 +227,29 @@ def lint_prompt(
             "When fix=True, narrate any repair outcomes the tool "
             "applied and re-run lint to confirm clean state."
             if fix
+            else ""
+        )
+    )
+    return [Message(body)]
+
+
+def reindex_prompt(
+    reconcile: bool = False,
+    embed: bool = False,
+    force: bool = False,
+    cleanup: bool = False,
+    all_: bool = False,
+) -> list[Message]:
+    """Rebuild the search index."""
+    destructive = cleanup or all_
+    body = (
+        f"Call mcp__lies__reindex(reconcile={reconcile}, embed={embed}, "
+        f"force={force}, cleanup={cleanup}, all_={all_}, "
+        f"name=None) and surface the returned ReindexResult envelope. "
+        + (
+            "cleanup/all_ are destructive — wait for the host's "
+            "elicit-confirmation step before re-dispatching."
+            if destructive
             else ""
         )
     )
