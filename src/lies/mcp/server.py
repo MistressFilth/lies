@@ -14,7 +14,7 @@ map onto the v0.40 design contract:
 - ``collections_read`` — live library registry reader.
 - ``search`` — single-batch hybrid vec+lex qmd query.
 - ``read`` — verbatim page bodies via source-aware dispatch.
-- ``ask`` — librarian + synthesizer orchestrator.
+- ``lib_ask`` — librarian + synthesizer orchestrator.
 
 ``lint`` and ``reindex`` stay on the surface as operational /
 diagnostic primitives.
@@ -149,7 +149,7 @@ def format_unknown_tag_error(exc: TagExprUnknown) -> str:
 # The four new tools are imported from their dedicated modules and
 # registered under their canonical v0.40 names. ``Tool.from_function``
 # already wraps each function in a FastMCP ``FunctionTool``; we pass
-# ``search.fn`` / ``read.fn`` / ``ask.fn`` to ``mcp.tool(name=...)``
+# ``search.fn`` / ``read.fn`` / ``lib_ask.fn`` to ``mcp.tool(name=...)``
 # (which expects a bare callable) so the FastMCP wire re-wraps the
 # underlying function rather than trying to wrap a Tool object. The
 # explicit ``name=`` kwarg matches the canonical MCP tool name;
