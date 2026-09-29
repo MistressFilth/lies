@@ -12,6 +12,7 @@ def test_register_prompts_callable() -> None:
     assert callable(register_prompts)
 
 
+@pytest.mark.slow
 @pytest.mark.xfail(reason="populated by task 9", strict=False)
 def test_register_prompts_idempotent_after_task_9() -> None:
     """Asserts 7 names are bound. Enabled by task 9's final
