@@ -41,6 +41,7 @@ except ImportError:  # FastMCP < 3.4.5 with Context.elicit
 from lies.lock_errors import WikiFlockUnrepairable, WikiLockBusy
 from lies.mcp.collections import collections_read as _collections_read
 from lies.mcp.instructions_loader import load_instructions
+from lies.mcp.prompts import register_prompts
 from lies.mcp.read import read as _read_tool
 from lies.mcp.resolution import resolve_wiki
 from lies.mcp.search import search as _search_tool
@@ -52,6 +53,12 @@ mcp = FastMCP(
     "lies",
     instructions=load_instructions(),
 )
+
+
+# Bind slash-command prompts BEFORE tool registrations so prompts are
+# queryable before tools when the wire first boots. See
+# ``lies.mcp.prompts.register_prompts``.
+register_prompts(mcp)
 
 
 # ---------------------------------------------------------------------------
