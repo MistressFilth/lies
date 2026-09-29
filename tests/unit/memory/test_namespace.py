@@ -39,6 +39,7 @@ def test_namespace_rejects_absolute_path_artifact() -> None:
     assert "/" not in ns
 
 
+@pytest.mark.slow
 def test_identity_carries_root_and_namespace(tmp_path: Path) -> None:
     target = tmp_path / "wiki"
     target.mkdir()

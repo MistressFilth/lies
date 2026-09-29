@@ -49,6 +49,7 @@ def test_config_path_for(library: Library) -> None:
     )
 
 
+@pytest.mark.slow
 def test_save_then_load_round_trip(library: Library) -> None:
     cfg = _sample_config()
     save_config(cfg)
