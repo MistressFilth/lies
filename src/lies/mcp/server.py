@@ -177,8 +177,9 @@ mcp.tool(name="lib_ask")(_lib_ask_tool.fn)
 class _ConfirmDestructive(BaseModel):
     """Schema for the destructive-flag elicit prompt.
 
-    Mirrors ask's ``_ConfirmDestructive``
-    (``ask/scripts/_server_helpers.py:228``).
+    Two-field payload (``confirm``, optional ``reason``) used to
+    record the operator's intent before destructive operations
+    (``reindex --cleanup``, ``reindex --all``).
     """
 
     model_config = ConfigDict(frozen=True)
@@ -190,13 +191,12 @@ class _ConfirmDestructive(BaseModel):
 async def _confirm_destructive(ctx: Context | None, message: str) -> str | None:  # type: ignore[valid-type]
     """Prompt the user; return ``None`` to proceed or an error string to abort.
 
-    Mirrors ask's ``_confirm_destructive``
-    (``ask/scripts/_server_helpers.py:237``). Hosts that don't implement
-    ``ctx.elicit`` raise on the call; we return a clear error string so
-    the caller treats it as decline (no work runs). ``ctx`` may be
-    ``None`` for programmatic callers; the ``try/except`` below catches
-    the resulting ``AttributeError`` and surfaces the same "elicitation
-    unavailable" error path the existing callers rely on.
+    Hosts that don't implement ``ctx.elicit`` raise on the call; we
+    return a clear error string so the caller treats it as decline (no
+    work runs). ``ctx`` may be ``None`` for programmatic callers; the
+    ``try/except`` below catches the resulting ``AttributeError`` and
+    surfaces the same "elicitation unavailable" error path the existing
+    callers rely on.
     """
     try:
         result: Any = await ctx.elicit(  # ty: ignore[unresolved-attribute]

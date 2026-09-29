@@ -264,11 +264,9 @@ def _resolve_librarian_model():
     if config is not None and "librarian" in config.agents:
         return resolve_model("librarian", config)
     # Final fallback: the ``query_synthesizer`` slot. Both agents are
-    # part of the same Tier-2 query path, share the same retrieval
-    # envelope, and the orchestrator already threads this fallback
-    # (see ``Orchestrator._build``). Keeps the MCP ``lib_ask`` tool
-    # working in environments where the operator only configured
-    # one slot.
+    # part of the same Tier-2 query path and share the same retrieval
+    # envelope, so a single configured slot is enough to drive the
+    # librarian's dispatch.
     if config is not None and "query_synthesizer" in config.agents:
         return resolve_model("query_synthesizer", config)
     raise ModelNotConfigured(

@@ -145,7 +145,7 @@ def _search_impl(
     # constrains the addressable collection set, so a separately-supplied
     # exclude chain doesn't change the dispatch until the qmd payload
     # contract grows a nested filter. The MCP wire expects the parameter
-    # to exist (otherwise `ask` can't thread it through).
+    # to exist (otherwise ``lib_ask`` can't thread it through).
     del exclude_tags
 
     if not question:

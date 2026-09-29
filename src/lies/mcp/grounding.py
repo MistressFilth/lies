@@ -503,8 +503,8 @@ async def ground(
        against an unpopulated library).
 
     Trims each excerpt to a ≤200-char grounding snippet. The caller
-    renders the result as ``[[slug]]: "snippet"`` per ask's
-    grounding form (NOT F19's long ``[[slug]]: "verbatim"`` form).
+    renders the result as ``[[slug]]: "snippet"`` (NOT F19's long
+    ``[[slug]]: "verbatim"`` form).
 
     Args:
         question: The natural-language question to ground.
