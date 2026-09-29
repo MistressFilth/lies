@@ -15,7 +15,6 @@ repo), so the helper falls back to the ``_components`` dict.
 
 from __future__ import annotations
 
-import pytest
 from fastmcp import FastMCP
 
 
@@ -72,7 +71,6 @@ def test_server_drops_old_tools() -> None:
     assert not leaked, f"old tools still registered: {sorted(leaked)}"
 
 
-@pytest.mark.xfail(reason="populated by task 9", strict=False)
 def test_server_registers_seven_prompts() -> None:
     """Slash-command prompt surface — exactly 7 expected names.
 
