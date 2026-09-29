@@ -89,6 +89,20 @@ def register_all(mcp: FastMCP) -> None:
     ) -> list[Message]:
         return reindex_prompt(reconcile, embed, force, cleanup, all_)
 
+    @mcp.prompt(
+        name="sync",
+        description="Pull + ingest remote sources (then reindex).",
+    )
+    def _sync_prompt(
+        collections: list[str] | None = None,
+        no_ingest: bool = False,
+        force: bool = False,
+        dry_run: bool = False,
+        jobs: int = 4,
+        scraper_timeout: int = 300,
+    ) -> list[Message]:
+        return sync_prompt(collections, no_ingest, force, dry_run, jobs, scraper_timeout)
+
 
 # Concrete impl functions added by tasks 3-9 below.
 
@@ -252,5 +266,39 @@ def reindex_prompt(
             if destructive
             else ""
         )
+    )
+    return [Message(body)]
+
+
+def sync_prompt(
+    collections: list[str] | None = None,
+    no_ingest: bool = False,
+    force: bool = False,
+    dry_run: bool = False,
+    jobs: int = 4,
+    scraper_timeout: int = 300,
+) -> list[Message]:
+    """Pull + ingest remote sources."""
+    names = list(collections or [])
+    flags = []
+    if names:
+        flags.append(f"--only {' '.join(names)}")
+    if no_ingest:
+        flags.append("--no-ingest")
+    if force:
+        flags.append("--force")
+    if dry_run:
+        flags.append("--dry-run")
+    if jobs != 4:
+        flags.append(f"--jobs {jobs}")
+    if scraper_timeout != 300:
+        flags.append(f"--scraper-timeout {scraper_timeout}")
+
+    flag_str = (" " + " ".join(flags)) if flags else ""
+    body = (
+        f'Run Bash(lies sync --data-dir "$LIES_DATA"{flag_str}) and '
+        f"surface each collection's scrape/ingest status. "
+        f"Phase 3 (qmd reconcile + update + embed + cleanup) runs "
+        f"automatically unless --dry-run or --no-ingest is set."
     )
     return [Message(body)]
