@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from fastmcp.prompts import Message  # noqa: F401  (re-exported for impl fns)
+from fastmcp.prompts import Message  # used in every impl fn's return type
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP

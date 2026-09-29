@@ -36,6 +36,10 @@ def register_prompts(mcp: FastMCP) -> None:
     second time is a no-op (FastMCP rejects duplicate names; the
     decorators only fire on the first call).
     """
-    from lies.mcp.prompts_impl import register_all  # local import — see below
+    # Local import — `prompts_impl` triggers FastMCP decorator side
+    # effects at module load. Keeping it inside the function defers
+    # that until register_prompts is actually called, so the test
+    # suite can import `prompts` without spinning up an MCP fixture.
+    from lies.mcp.prompts_impl import register_all
 
     register_all(mcp)
