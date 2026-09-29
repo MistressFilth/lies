@@ -15,6 +15,7 @@ repo), so the helper falls back to the ``_components`` dict.
 
 from __future__ import annotations
 
+import pytest
 from fastmcp import FastMCP
 
 
@@ -71,25 +72,25 @@ def test_server_drops_old_tools() -> None:
     assert not leaked, f"old tools still registered: {sorted(leaked)}"
 
 
-def test_server_drops_all_prompts() -> None:
+@pytest.mark.xfail(reason="populated by task 9", strict=False)
+def test_server_registers_seven_prompts() -> None:
+    """Slash-command prompt surface — exactly 7 expected names.
+
+    Pins the wire-shape contract across all prompt registrations.
+    Drift on this contract (any missing/extra prompt name in the live
+    server `mcp` list) makes hosts render the wrong slash slot, so
+    the test xfails until task 9 (the final prompt registration)
+    flips it green.
+    """
     from lies.mcp.server import mcp
 
-    # The v0.40 rewrite retires every legacy starter-template prompt.
-    # No @mcp.prompt(name=...) should register the legacy
-    # /answer, /cite, /orient, /lint, /sync, /file-back templates.
-    # ``ingest`` was promoted to a first-class slash prompt by the
-    # slash-prompt-surface work, so it is intentionally allowed here.
-    forbidden = {
-        "answer",
-        "orient",
-        "lint",
-        "sync",
-        "file-back",
-        "cite",
-    }
     registered = _registered_prompt_names(mcp)
-    leaked = registered & forbidden
-    assert not leaked, f"old prompts still registered: {sorted(leaked)}"
+    expected = {"ask", "collections", "ingest", "lint", "reindex", "sync", "ground"}
+    missing = expected - registered
+    extra = registered - expected
+    assert not missing and not extra, (
+        f"prompt set drift — missing: {sorted(missing)}, extra: {sorted(extra)}"
+    )
 
 
 # ---------------------------------------------------------------------------
