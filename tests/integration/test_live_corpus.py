@@ -2,7 +2,7 @@
 
 The v0.40 rewrite replaces the F19 ``ground`` / ``synthesize`` MCP
 tools with ``search`` (single-batch hybrid vec+lex qmd query) and
-``ask`` (librarian + synthesizer orchestrator). These tests pin the
+``lib_ask`` (librarian + synthesizer orchestrator). These tests pin the
 wire-shape + timing contract for the new surface against the live
 library corpus.
 
@@ -212,15 +212,15 @@ async def test_live_corpus_search_unscoped_under_15s(monkeypatch: pytest.MonkeyP
 
 
 # ---------------------------------------------------------------------------
-# ask — librarian + synthesizer orchestrator
+# lib_ask — librarian + synthesizer orchestrator
 # ---------------------------------------------------------------------------
 
 
 async def test_live_corpus_ask_envelope_shape(monkeypatch: pytest.MonkeyPatch) -> None:
-    """``ask()`` returns the post-v0.40 envelope shape.
+    """``lib_ask()`` returns the post-v0.40 envelope shape.
 
     The pre-v0.40 surface had ``synthesize`` MCP tool with a
-    ``SynthesizeEnvelope`` envelope. ``ask`` is the v0.40
+    ``SynthesizeEnvelope`` envelope. ``lib_ask`` is the v0.40
     replacement: it orchestrates the librarian (4-step Classify →
     Search → Read → Return) and the synthesizer into the same
     ``SynthesizeEnvelope`` shape. This test pins that envelope
@@ -230,7 +230,7 @@ async def test_live_corpus_ask_envelope_shape(monkeypatch: pytest.MonkeyPatch) -
     the assertion targets the envelope wire shape, not a real
     librarian or synthesizer dispatch. The library has zero
     collections registered under the hermetic XDG, so the librarian
-    short-circuits with zero excerpts and ``ask`` returns the
+    short-circuits with zero excerpts and ``lib_ask`` returns the
     honest empty-prose envelope (``synthesis_used=False``,
     ``fallback_used=True``).
     """
@@ -265,10 +265,10 @@ async def test_live_corpus_ask_envelope_shape(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setattr("lies.mcp.synth.synthesizer_agent_run", _spy_synth)
 
     async with Client(mcp) as client:
-        result = await client.call_tool("ask", {"question": "anything"})
+        result = await client.call_tool("lib_ask", {"question": "anything"})
 
     data = result.data
-    # ``ask`` returns a typed ``SynthesizeEnvelope``; FastMCP 4.x
+    # ``lib_ask`` returns a typed ``SynthesizeEnvelope``; FastMCP 4.x
     # validates the result through a generated pydantic Root model,
     # so attribute access (not dict access) lands on each field.
     assert data.question == "anything"
@@ -285,7 +285,7 @@ async def test_live_corpus_ask_envelope_shape(monkeypatch: pytest.MonkeyPatch) -
 
 
 async def test_live_corpus_ask_file_back_raises_tool_error() -> None:
-    """``ask(file_back=True)`` raises ``ToolError`` (deferred).
+    """``lib_ask(file_back=True)`` raises ``ToolError`` (deferred).
 
     The file-back path is reserved for the write-tool spec
     (out-of-scope for the v0.40 read-side rewrite). The MCP boundary
@@ -293,7 +293,7 @@ async def test_live_corpus_ask_file_back_raises_tool_error() -> None:
     through the operator guidance instead of silently dropping the
     flag.
 
-    ``ask`` keeps the ``file_back`` kwarg for forward-compat with the
+    ``lib_ask`` keeps the ``file_back`` kwarg for forward-compat with the
     write-tool spec (``v0.41``) — the surface raises the same
     ``ToolError`` the retired ``synthesize`` tool did.
     """
@@ -305,6 +305,6 @@ async def test_live_corpus_ask_file_back_raises_tool_error() -> None:
     async with Client(mcp) as client:
         with pytest.raises(ToolError, match="file_back deferred"):
             await client.call_tool(
-                "ask",
+                "lib_ask",
                 {"question": "q", "file_back": True},
             )

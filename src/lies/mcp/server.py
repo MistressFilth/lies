@@ -14,7 +14,7 @@ map onto the v0.40 design contract:
 - ``collections_read`` — live library registry reader.
 - ``search`` — single-batch hybrid vec+lex qmd query.
 - ``read`` — verbatim page bodies via source-aware dispatch.
-- ``ask`` — librarian + synthesizer orchestrator.
+- ``lib_ask`` — librarian + synthesizer orchestrator.
 
 ``lint`` and ``reindex`` stay on the surface as operational /
 diagnostic primitives.
@@ -41,10 +41,11 @@ except ImportError:  # FastMCP < 3.4.5 with Context.elicit
 from lies.lock_errors import WikiFlockUnrepairable, WikiLockBusy
 from lies.mcp.collections import collections_read as _collections_read
 from lies.mcp.instructions_loader import load_instructions
+from lies.mcp.prompts import register_prompts
 from lies.mcp.read import read as _read_tool
 from lies.mcp.resolution import resolve_wiki
 from lies.mcp.search import search as _search_tool
-from lies.mcp.synth import ask as _ask_tool
+from lies.mcp.synth import lib_ask as _lib_ask_tool
 from lies.orchestrator import Orchestrator
 from lies.query.tag_expr import TagExprUnknown
 
@@ -52,6 +53,12 @@ mcp = FastMCP(
     "lies",
     instructions=load_instructions(),
 )
+
+
+# Bind slash-command prompts BEFORE tool registrations so prompts are
+# queryable before tools when the wire first boots. See
+# ``lies.mcp.prompts.register_prompts``.
+register_prompts(mcp)
 
 
 # ---------------------------------------------------------------------------
@@ -149,7 +156,7 @@ def format_unknown_tag_error(exc: TagExprUnknown) -> str:
 # The four new tools are imported from their dedicated modules and
 # registered under their canonical v0.40 names. ``Tool.from_function``
 # already wraps each function in a FastMCP ``FunctionTool``; we pass
-# ``search.fn`` / ``read.fn`` / ``ask.fn`` to ``mcp.tool(name=...)``
+# ``search.fn`` / ``read.fn`` / ``lib_ask.fn`` to ``mcp.tool(name=...)``
 # (which expects a bare callable) so the FastMCP wire re-wraps the
 # underlying function rather than trying to wrap a Tool object. The
 # explicit ``name=`` kwarg matches the canonical MCP tool name;
@@ -159,7 +166,7 @@ def format_unknown_tag_error(exc: TagExprUnknown) -> str:
 mcp.tool(name="collections_read")(_collections_read)
 mcp.tool(name="search")(_search_tool.fn)
 mcp.tool(name="read")(_read_tool.fn)
-mcp.tool(name="ask")(_ask_tool.fn)
+mcp.tool(name="lib_ask")(_lib_ask_tool.fn)
 
 
 # ---------------------------------------------------------------------------
@@ -170,8 +177,9 @@ mcp.tool(name="ask")(_ask_tool.fn)
 class _ConfirmDestructive(BaseModel):
     """Schema for the destructive-flag elicit prompt.
 
-    Mirrors ask's ``_ConfirmDestructive``
-    (``ask/scripts/_server_helpers.py:228``).
+    Two-field payload (``confirm``, optional ``reason``) used to
+    record the operator's intent before destructive operations
+    (``reindex --cleanup``, ``reindex --all``).
     """
 
     model_config = ConfigDict(frozen=True)
@@ -183,13 +191,12 @@ class _ConfirmDestructive(BaseModel):
 async def _confirm_destructive(ctx: Context | None, message: str) -> str | None:  # type: ignore[valid-type]
     """Prompt the user; return ``None`` to proceed or an error string to abort.
 
-    Mirrors ask's ``_confirm_destructive``
-    (``ask/scripts/_server_helpers.py:237``). Hosts that don't implement
-    ``ctx.elicit`` raise on the call; we return a clear error string so
-    the caller treats it as decline (no work runs). ``ctx`` may be
-    ``None`` for programmatic callers; the ``try/except`` below catches
-    the resulting ``AttributeError`` and surfaces the same "elicitation
-    unavailable" error path the existing callers rely on.
+    Hosts that don't implement ``ctx.elicit`` raise on the call; we
+    return a clear error string so the caller treats it as decline (no
+    work runs). ``ctx`` may be ``None`` for programmatic callers; the
+    ``try/except`` below catches the resulting ``AttributeError`` and
+    surfaces the same "elicitation unavailable" error path the existing
+    callers rely on.
     """
     try:
         result: Any = await ctx.elicit(  # ty: ignore[unresolved-attribute]

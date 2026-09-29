@@ -36,10 +36,12 @@ def test_server_registers_read() -> None:
     assert "read" in _registered_tool_names(mcp)
 
 
-def test_server_registers_ask() -> None:
+def test_server_registers_lib_ask() -> None:
     from lies.mcp.server import mcp
 
-    assert "ask" in _registered_tool_names(mcp)
+    registered = _registered_tool_names(mcp)
+    assert "lib_ask" in registered, f"missing tool: 'lib_ask' in {registered}"
+    assert "ask" not in registered, f"deprecated 'ask' tool still registered: {registered}"
 
 
 def test_server_registers_lint_and_reindex() -> None:
@@ -69,24 +71,24 @@ def test_server_drops_old_tools() -> None:
     assert not leaked, f"old tools still registered: {sorted(leaked)}"
 
 
-def test_server_drops_all_prompts() -> None:
+def test_server_registers_seven_prompts() -> None:
+    """Slash-command prompt surface — exactly 7 expected names.
+
+    Pins the wire-shape contract across all prompt registrations.
+    Drift on this contract (any missing/extra prompt name in the live
+    server `mcp` list) makes hosts render the wrong slash slot, so
+    the test xfails until task 9 (the final prompt registration)
+    flips it green.
+    """
     from lies.mcp.server import mcp
 
-    # The v0.40 rewrite retires every prompt. No @mcp.prompt should
-    # remain — not even the legacy /answer, /cite, /orient,
-    # /ingest, /lint, /sync, /file-back templates.
-    forbidden = {
-        "answer",
-        "orient",
-        "ingest",
-        "lint",
-        "sync",
-        "file-back",
-        "cite",
-    }
     registered = _registered_prompt_names(mcp)
-    leaked = registered & forbidden
-    assert not leaked, f"old prompts still registered: {sorted(leaked)}"
+    expected = {"ask", "collections", "ingest", "lint", "reindex", "sync", "ground"}
+    missing = expected - registered
+    extra = registered - expected
+    assert not missing and not extra, (
+        f"prompt set drift — missing: {sorted(missing)}, extra: {sorted(extra)}"
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -1,7 +1,7 @@
 """End-to-end tests against the curated 5-collection corpus.
 
 Pins the structural fix from Task 8 (snippet-review override) and the
-v0.40 tool surface (search / read / ask) against the corpus committed
+v0.40 tool surface (search / read / lib_ask) against the corpus committed
 in Task 1.
 
 The corpus lives at ``tests/fixtures/library/collections/{alpha,beta,
@@ -94,7 +94,7 @@ def _stub_synthesizer(
 
     Mirrors the unit-test pattern in ``tests/unit/mcp/test_ask.py``:
     the stub returns an object that quacks like a ``QueryAnswer``
-    with the canned fields. ``ask.fn`` reads these fields off the
+    with the canned fields. ``lib_ask.fn`` reads these fields off the
     return value to build the ``SynthesizeEnvelope``.
     """
     synth_out = MagicMock()
@@ -109,7 +109,7 @@ def _stub_synthesizer(
 def _make_excerpt(collection: str, slug: str, title: str) -> MagicMock:
     """Build a ``PageExcerpt``-shaped mock with one prose span.
 
-    ``ask.fn`` reads ``e.slug`` and ``e.collection`` off each excerpt
+    ``lib_ask.fn`` reads ``e.slug`` and ``e.collection`` off each excerpt
     to build ``pages_read``; the synthesizer stub returns its own
     ``pages_read`` list, so the excerpt bodies are not directly
     asserted against — they only need to be a valid shape.
@@ -159,7 +159,7 @@ def test_query_authoring_plugin_alpha_returns_authoring_page(
     curated_corpus: object,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """``ask('How do I author a CLI plugin?', 'c:alpha')`` includes ``alpha/cli-plugin.md``.
+    """``lib_ask('How do I author a CLI plugin?', 'c:alpha')`` includes ``alpha/cli-plugin.md``.
 
     Authoring guide surfaces in the synthesizer's ``pages_read``. The
     canned librarian output carries ``alpha/cli-plugin.md`` as the
@@ -168,7 +168,7 @@ def test_query_authoring_plugin_alpha_returns_authoring_page(
     ``pages_read``. Asserts the wire contract: the authoring page is
     read end-to-end.
     """
-    from lies.mcp.synth import ask
+    from lies.mcp.synth import lib_ask
 
     excerpts = [_make_excerpt("alpha", "alpha/cli-plugin.md", "CLI plugin overview")]
     lib_out = _stub_librarian(
@@ -185,7 +185,7 @@ def test_query_authoring_plugin_alpha_returns_authoring_page(
     _patch_synthesizer_run(monkeypatch, synth_out)
     monkeypatch.setattr("lies.mcp.synth._resolve_synthesizer_model", lambda: "test")
 
-    out = ask.fn(question="How do I author a CLI plugin?", tag_expr="c:alpha")
+    out = lib_ask.fn(question="How do I author a CLI plugin?", tag_expr="c:alpha")
 
     pages = list(out.pages_read)
     assert any("alpha/cli-plugin.md" in p for p in pages), (
@@ -197,7 +197,7 @@ def test_query_or_diversity_floor_includes_both_collections(
     curated_corpus: object,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """``ask('Compare plugin manifests', 'c:alpha|c:beta')`` returns ≥1 hit per collection.
+    """``lib_ask('Compare plugin manifests', 'c:alpha|c:beta')`` returns ≥1 hit per collection.
 
     The OR-scoped query against alpha + beta must produce a
     ``pages_read`` whose first segment covers both collections. The
@@ -205,7 +205,7 @@ def test_query_or_diversity_floor_includes_both_collections(
     authoring (alpha) + manifest reference (beta); the synthesizer
     echoes both into ``pages_read``.
     """
-    from lies.mcp.synth import ask
+    from lies.mcp.synth import lib_ask
 
     excerpts = [
         _make_excerpt("alpha", "alpha/cli-plugin.md", "CLI plugin overview"),
@@ -225,7 +225,7 @@ def test_query_or_diversity_floor_includes_both_collections(
     _patch_synthesizer_run(monkeypatch, synth_out)
     monkeypatch.setattr("lies.mcp.synth._resolve_synthesizer_model", lambda: "test")
 
-    out = ask.fn(question="Compare plugin manifests", tag_expr="c:alpha|c:beta")
+    out = lib_ask.fn(question="Compare plugin manifests", tag_expr="c:alpha|c:beta")
 
     pages = list(out.pages_read)
     has_alpha = any(p.startswith("alpha/") for p in pages)
@@ -305,7 +305,7 @@ def test_ask_includes_librarian_searched_scope(
     curated_corpus: object,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """``ask.searched_scope`` mirrors ``LibrarianOutput.searched_scope``.
+    """``lib_ask.searched_scope`` mirrors ``LibrarianOutput.searched_scope``.
 
     The envelope threads the librarian's resolved collection list
     onto ``SynthesizeEnvelope.searched_scope`` so the CLI / MCP
@@ -313,7 +313,7 @@ def test_ask_includes_librarian_searched_scope(
     AST. The canned librarian returns ``searched_scope=['alpha']``;
     the envelope surface must echo that.
     """
-    from lies.mcp.synth import ask
+    from lies.mcp.synth import lib_ask
 
     lib_out = _stub_librarian(
         monkeypatch,
@@ -329,7 +329,7 @@ def test_ask_includes_librarian_searched_scope(
     _patch_synthesizer_run(monkeypatch, synth_out)
     monkeypatch.setattr("lies.mcp.synth._resolve_synthesizer_model", lambda: "test")
 
-    out = ask.fn(question="anything", tag_expr="c:alpha")
+    out = lib_ask.fn(question="anything", tag_expr="c:alpha")
 
     assert "alpha" in (out.searched_scope or []), (
         f"envelope.searched_scope must echo librarian scope; got {out.searched_scope!r}"
@@ -400,7 +400,7 @@ def test_librarian_snippet_review_picks_authoring_over_install(
     """
     from lies.agents.librarian import PageExcerpt
     from lies.mcp.search import search
-    from lies.mcp.synth import ask
+    from lies.mcp.synth import lib_ask
 
     # Step 1 — search returns beta/install.md HIGHER than alpha/cli-plugin.md,
     # mirroring the BM25 ordering that triggered the user's bug.
@@ -493,7 +493,7 @@ def test_librarian_snippet_review_picks_authoring_over_install(
         "if this fails, the search stub is wrong"
     )
 
-    out = ask.fn(question="How do I author a plugin?", tag_expr="c:alpha|c:beta")
+    out = lib_ask.fn(question="How do I author a plugin?", tag_expr="c:alpha|c:beta")
 
     pages = list(out.pages_read)
     assert any("alpha/cli-plugin.md" in p for p in pages), (
@@ -514,11 +514,11 @@ def test_ask_envelope_carries_fallback_reason_on_no_coverage(
     curated_corpus: object,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """``ask(...)`` with no excerpts surfaces the honest gap envelope.
+    """``lib_ask(...)`` with no excerpts surfaces the honest gap envelope.
 
     When the librarian returns zero excerpts (a scope miss on a
     populated library — no alpha doc mentions quantum entanglement),
-    ``ask.fn`` short-circuits the synthesizer and returns the
+    ``lib_ask.fn`` short-circuits the synthesizer and returns the
     empty-prose envelope with ``synthesis_used=False``,
     ``fallback_used=True``, and ``fallback_reason`` set.
 
@@ -528,7 +528,7 @@ def test_ask_envelope_carries_fallback_reason_on_no_coverage(
     autouse; the assertion focuses on the envelope shape, not the
     corpus lookup.
     """
-    from lies.mcp.synth import ask
+    from lies.mcp.synth import lib_ask
 
     lib_out = _stub_librarian(
         monkeypatch,
@@ -543,7 +543,7 @@ def test_ask_envelope_carries_fallback_reason_on_no_coverage(
         lambda lib_out_arg, question: (synth_called.append(True) or MagicMock()),
     )
 
-    out = ask.fn(
+    out = lib_ask.fn(
         question="anything about quantum entanglement",
         tag_expr="c:alpha",
     )

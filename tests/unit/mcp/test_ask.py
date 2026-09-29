@@ -1,4 +1,4 @@
-"""ask() orchestrates librarian agent → synthesizer → envelope."""
+"""lib_ask() orchestrates librarian agent → synthesizer → envelope."""
 
 from __future__ import annotations
 
@@ -24,8 +24,8 @@ def _fake_librarian_output(
 
 
 def test_ask_runs_librarian_then_synthesizer(monkeypatch: pytest.MonkeyPatch) -> None:
-    """ask() calls librarian_agent.run_sync then synthesizer_agent.run_sync."""
-    from lies.mcp.synth import ask
+    """lib_ask() calls librarian_agent.run_sync then synthesizer_agent.run_sync."""
+    from lies.mcp.synth import lib_ask
 
     lib_out = _fake_librarian_output(
         searched_scope=["alpha"],
@@ -53,7 +53,7 @@ def test_ask_runs_librarian_then_synthesizer(monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.setattr("lies.mcp.synth._resolve_synthesizer_model", lambda: "test-model")
 
     # Call via FastMCP-resolved function attr
-    out = ask.fn(question="hi", tag_expr="c:alpha")
+    out = lib_ask.fn(question="hi", tag_expr="c:alpha")
 
     assert out.answer == "## Headline\n\nBody."
     assert out.pages_read == ["alpha/page.md"]
@@ -64,7 +64,7 @@ def test_ask_empty_librarian_output_returns_no_coverage_envelope(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Empty librarian output → honest gap envelope, no LLM call."""
-    from lies.mcp.synth import ask
+    from lies.mcp.synth import lib_ask
 
     lib_out = _fake_librarian_output(searched_scope=["alpha"], distinct_pages=0, excerpts=[])
     monkeypatch.setattr("lies.mcp.synth.librarian_agent_run", lambda deps: lib_out)
@@ -74,7 +74,7 @@ def test_ask_empty_librarian_output_returns_no_coverage_envelope(
         lambda lib_out, q: synth_called.append(True) or MagicMock(),
     )
 
-    out = ask.fn(question="hi", tag_expr="c:alpha")
+    out = lib_ask.fn(question="hi", tag_expr="c:alpha")
     assert out.answer == "No relevant content found in library."
     assert out.synthesis_used is False
     assert out.fallback_used is True
@@ -86,17 +86,17 @@ def test_ask_file_back_raises_tool_error() -> None:
     """file_back=True is still deferred to v0.41."""
     from fastmcp.exceptions import ToolError
 
-    from lies.mcp.synth import ask
+    from lies.mcp.synth import lib_ask
 
     import pytest
 
     with pytest.raises(ToolError, match="file_back deferred"):
-        ask.fn(question="hi", file_back=True)
+        lib_ask.fn(question="hi", file_back=True)
 
 
 def test_ask_envelope_propagates_searched_scope(monkeypatch: pytest.MonkeyPatch) -> None:
     """envelope.searched_scope mirrors librarian_output.searched_scope."""
-    from lies.mcp.synth import ask
+    from lies.mcp.synth import lib_ask
 
     lib_out = _fake_librarian_output(searched_scope=["alpha", "beta"], distinct_pages=2)
     monkeypatch.setattr("lies.mcp.synth.librarian_agent_run", lambda deps: lib_out)
@@ -109,21 +109,21 @@ def test_ask_envelope_propagates_searched_scope(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setattr("lies.mcp.synth.synthesizer_agent_run", lambda lo, q: synth_out)
     monkeypatch.setattr("lies.mcp.synth._resolve_synthesizer_model", lambda: "test-model")
 
-    out = ask.fn(question="hi", tag_expr="c:alpha|c:beta")
+    out = lib_ask.fn(question="hi", tag_expr="c:alpha|c:beta")
     assert out.searched_scope == ["alpha", "beta"]
 
 
 def test_ask_returns_no_coverage_envelope_when_librarian_dispatch_fails(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """librarian_agent.run_sync raising → ask() returns gap envelope, no crash.
+    """librarian_agent.run_sync raising → lib_ask() returns gap envelope, no crash.
 
     Reproduces the v0.40 live-test failure: pydantic-ai raises
     ``UsageLimitExceeded("Exceeded maximum output retries (1)")`` when the
     librarian LLM cannot produce a valid ``LibrarianOutput``. The MCP
-    ``ask`` tool must surface an honest gap envelope instead of
+    ``lib_ask`` tool must surface an honest gap envelope instead of
     propagating the exception. Mirrors ``test_ground_returns_empty_digest_on_librarian_exception``
-    in :mod:`tests.integration.test_grounding_unit` for the new ask path.
+    in :mod:`tests.integration.test_grounding_unit` for the new lib_ask path.
     """
     from lies.mcp import synth
 
@@ -148,7 +148,7 @@ def test_ask_returns_no_coverage_envelope_when_librarian_dispatch_fails(
     )
 
     with caplog.at_level("WARNING", logger="lies.mcp.synth"):
-        out = synth.ask.fn(question="what is pydantic?", tag_expr="c:alpha")
+        out = synth.lib_ask.fn(question="what is pydantic?", tag_expr="c:alpha")
 
     assert out.answer == "No relevant content found in library."
     assert out.synthesis_used is False

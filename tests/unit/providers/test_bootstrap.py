@@ -254,6 +254,7 @@ def test_run_wizard_aborts_leave_file_untouched(
     assert not target.exists()
 
 
+@pytest.mark.slow
 def test_run_wizard_writes_env_file_0600(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Full happy path with `--write-env-file` set; the operator must
     declare the minimax provider through the wizard so its key is a

@@ -86,6 +86,7 @@ def test_malformed_toml_raises(tmp_path: Path) -> None:
         load_providers_config(path)
 
 
+@pytest.mark.slow
 def test_missing_agent_in_agents_table_raises(tmp_path: Path) -> None:
     # Roster minus "repair" — config is missing one entry.
     body = """

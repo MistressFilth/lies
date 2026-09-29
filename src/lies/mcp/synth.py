@@ -12,7 +12,7 @@ This keeps :func:`synthesize` independent of the F18 librarian
 LLM round-trip while still feeding the synthesizer the verbatim
 excerpts it composes against.
 
-``ask`` is the new (Task 7) orchestrator that replaces ``synthesize``
+``lib_ask`` is the new (Task 7) orchestrator that replaces ``synthesize``
 in v0.40. It runs the F18 librarian agent (4-step classify→search→
 read→return) before the synthesizer; the helpers
 :func:`librarian_agent_run`, :func:`synthesizer_agent_run`, and
@@ -237,7 +237,7 @@ async def synthesize(
 
 
 # ---------------------------------------------------------------------------
-# ask — Task 7 orchestrator (replaces ``synthesize`` in v0.40)
+# lib_ask — Task 7 orchestrator (replaces ``synthesize`` in v0.40)
 # ---------------------------------------------------------------------------
 
 
@@ -264,15 +264,13 @@ def _resolve_librarian_model():
     if config is not None and "librarian" in config.agents:
         return resolve_model("librarian", config)
     # Final fallback: the ``query_synthesizer`` slot. Both agents are
-    # part of the same Tier-2 query path, share the same retrieval
-    # envelope, and the orchestrator already threads this fallback
-    # (see ``Orchestrator._build``). Keeps the MCP ``ask`` tool
-    # working in environments where the operator only configured
-    # one slot.
+    # part of the same Tier-2 query path and share the same retrieval
+    # envelope, so a single configured slot is enough to drive the
+    # librarian's dispatch.
     if config is not None and "query_synthesizer" in config.agents:
         return resolve_model("query_synthesizer", config)
     raise ModelNotConfigured(
-        "ask() requires the librarian model. "
+        "lib_ask() requires the librarian model. "
         "Set LIES_AGENT_LIBRARIAN_MODEL or configure providers.toml "
         "via `lies providers init`."
     )
@@ -319,7 +317,7 @@ def librarian_agent_run(deps: Any) -> Any:
         # ``UsageLimitExceeded("Exceeded maximum output retries (1)")``)
         # when the librarian LLM cannot produce a valid
         # ``LibrarianOutput`` after the configured retry budget. The
-        # MCP ``ask`` tool must surface an honest gap envelope instead
+        # MCP ``lib_ask`` tool must surface an honest gap envelope instead
         # of crashing the user's request. Match the F18 grounding
         # archivist's contract: return a ``LibrarianOutput`` with
         # empty excerpts and ``no_coverage=True`` so ``_ask_impl``
@@ -411,7 +409,7 @@ def _build_query_deps(
 ) -> Any:
     """Build the deps object for :func:`librarian_agent_run`.
 
-    Translates the MCP ``ask`` tool's flat ``exclude_tags`` surface
+    Translates the MCP ``lib_ask`` tool's flat ``exclude_tags`` surface
     (a list of bare-tag strings like ``["c:opencode"]``) into the
     compiled ``TagExpr`` AST the librarian consumes in
     :attr:`LibrarianDeps.exclude_expr`. ``None`` when no ``-`` chain
@@ -521,9 +519,9 @@ def _ask_impl(
 
 # Wrap as a FastMCP ``Tool`` so the MCP wire can serialize the
 # dispatch surface and tests can reach the underlying function via
-# ``ask.fn(...)``. Mirrors the pattern in ``search.py`` (Task 4)
+# ``lib_ask.fn(...)``. Mirrors the pattern in ``search.py`` (Task 4)
 # and ``read.py`` (Task 5). Server registration is a separate
 # concern (Task 6+); the Tool object is constructed here so downstream
-# code can ``import synth`` and call ``ask.fn`` without spinning up an
+# code can ``import synth`` and call ``lib_ask.fn`` without spinning up an
 # MCP instance.
-ask = Tool.from_function(_ask_impl, name="ask")
+lib_ask = Tool.from_function(_ask_impl, name="lib_ask")

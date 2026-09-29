@@ -118,6 +118,7 @@ def test_port_listening_returns_false_for_closed_port() -> None:
 # --- _find_qmd --------------------------------------------------------------
 
 
+@pytest.mark.slow
 def test_find_qmd_raises_when_binary_missing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

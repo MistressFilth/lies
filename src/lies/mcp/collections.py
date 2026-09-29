@@ -1,9 +1,8 @@
 """collections_read MCP tool — live registry reader for the librarian LLM.
 
-Replaces the old ``wiki_catalog`` tool with an ask-style interface
-that exposes ``name``, ``tags``, ``scope_keywords`` per row. The
-librarian LLM uses this to build ``tag_expr`` from the live registry
-in Step 1 of the 4-step pipeline.
+Exposes ``name``, ``tags``, ``scope_keywords`` per row in a flat,
+three-subcommand shape so the librarian LLM can build ``tag_expr``
+from the live registry in Step 1 of the 4-step pipeline.
 
 Subcommands:
 
