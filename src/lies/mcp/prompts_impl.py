@@ -18,6 +18,44 @@ if TYPE_CHECKING:
     from fastmcp import FastMCP
 
 
+def _parse_question_filters(
+    question: str,
+) -> tuple[str, str | None, list[str] | None]:
+    """Strip ``+tag`` / ``-exclude`` filter tokens out of a slash tail.
+
+    Claude Code's slash-command parser splits the slash tail on
+    whitespace into positional tokens and binds each to the
+    prompt's typed parameters in **declared** order. Multi-word
+    question text cannot bind to a single ``str`` parameter; the
+    text gets shredded across typed fields and FastMCP rejects
+    the non-string value with a JSON-parse error.
+
+    The slash-UX convention (mirroring the ask plugin) is to
+    parse the existing ``+tag`` and ``-tag`` filter markers out
+    of the question string itself. Tokens starting with ``+`` are
+    include atoms (OR-joined into ``tag_expr``); tokens starting
+    with ``-`` are collected as ``exclude_tags``; everything else
+    is the actual question text.
+
+    Quoted question text is out of scope for v0.41.
+    """
+    plus_atoms: list[str] = []
+    minus_tags: list[str] = []
+    text_tokens: list[str] = []
+    for token in question.split():
+        if token.startswith("+") and len(token) > 1:
+            plus_atoms.append(token[1:])
+        elif token.startswith("-") and len(token) > 1:
+            minus_tags.append(token[1:])
+        else:
+            text_tokens.append(token)
+
+    tag_expr = "|".join(plus_atoms) if plus_atoms else None
+    exclude_tags = minus_tags if minus_tags else None
+    query_text = " ".join(text_tokens)
+    return query_text, tag_expr, exclude_tags
+
+
 def register_all(mcp: FastMCP) -> None:
     """Wire each impl function as ``@mcp.prompt`` on ``mcp``."""
 
@@ -25,24 +63,15 @@ def register_all(mcp: FastMCP) -> None:
         name="ask",
         description="Synthesized cited answer to a question.",
     )
-    def _ask_prompt(
-        question: str,
-        tag_expr: str | None = None,
-        exclude_tags: list[str] | None = None,
-    ) -> list[Message]:
-        return ask_prompt(question, tag_expr, exclude_tags)
+    def _ask_prompt(question: str) -> list[Message]:
+        return ask_prompt(question)
 
     @mcp.prompt(
         name="ground",
         description="Cite-snippet digest (no synthesis).",
     )
-    def _ground_prompt(
-        question: str,
-        tag_expr: str | None = None,
-        exclude_tags: list[str] | None = None,
-        top_k: int = 3,
-    ) -> list[Message]:
-        return ground_prompt(question, tag_expr, exclude_tags, top_k)
+    def _ground_prompt(question: str, top_k: int = 3) -> list[Message]:
+        return ground_prompt(question, top_k)
 
     @mcp.prompt(
         name="collections",
@@ -107,17 +136,21 @@ def register_all(mcp: FastMCP) -> None:
 # Concrete impl functions added by tasks 3-9 below.
 
 
-def ask_prompt(
-    question: str,
-    tag_expr: str | None = None,
-    exclude_tags: list[str] | None = None,
-) -> list[Message]:
-    """Synthesized cited answer to a question."""
+def ask_prompt(question: str) -> list[Message]:
+    """Synthesized cited answer to a question.
+
+    The slash tail is consumed as a single positional string;
+    ``+tag`` / ``-exclude`` filter markers are parsed out of the
+    question text inside the body. The routed
+    ``mcp__lies__search`` / ``mcp__lies__lib_ask`` calls carry the
+    extracted filters, not the raw question.
+    """
+    query_text, tag_expr, exclude_tags = _parse_question_filters(question)
     body = (
-        f"Call mcp__lies__search({question!r}, tag_expr={tag_expr!r}, "
+        f"Call mcp__lies__search({query_text!r}, tag_expr={tag_expr!r}, "
         f"exclude_tags={exclude_tags!r}) to find hits. "
         f"Read each top-ranked page body via mcp__lies__read([path]). "
-        f"Then call mcp__lies__lib_ask({question!r}, "
+        f"Then call mcp__lies__lib_ask({query_text!r}, "
         f"tag_expr={tag_expr!r}, exclude_tags={exclude_tags!r}) for "
         f"a synthesized cited answer. "
         f'Cite each claim as [[collection/slug]]: "verbatim quote from the cited span".'
@@ -125,15 +158,16 @@ def ask_prompt(
     return [Message(body)]
 
 
-def ground_prompt(
-    question: str,
-    tag_expr: str | None = None,
-    exclude_tags: list[str] | None = None,
-    top_k: int = 3,
-) -> list[Message]:
-    """Cite-snippet digest (no synthesis)."""
+def ground_prompt(question: str, top_k: int = 3) -> list[Message]:
+    """Cite-snippet digest (no synthesis).
+
+    Same filter-parsing contract as ``ask_prompt``: ``+tag`` /
+    ``-exclude`` markers are stripped out of the question text
+    and routed into ``tag_expr`` / ``exclude_tags``.
+    """
+    query_text, tag_expr, exclude_tags = _parse_question_filters(question)
     body = (
-        f"Call mcp__lies__search({question!r}, tag_expr={tag_expr!r}, "
+        f"Call mcp__lies__search({query_text!r}, tag_expr={tag_expr!r}, "
         f"exclude_tags={exclude_tags!r}) to find hits. "
         f"Read each top-ranked page body via mcp__lies__read([path]). "
         f"Render each citation as "

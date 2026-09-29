@@ -19,6 +19,15 @@ All notable changes to LIES are documented here. The format follows
   pipeline is unchanged; only the wire name and Python symbol
   changed so the slash slot and tool surface stay de-duplicated.
 
+### Fixed
+
+- Slash-command prompts `ask` and `ground` parse `+tag` / `-tag`
+  filter tokens out of the question string at render time. Previously
+  Claude Code's slash parser shredded a multi-word question across
+  typed prompt parameters in declared order and FastMCP rejected the
+  non-string value with a JSON-parse error. The single positional
+  `question: str` parameter consumes the entire slash tail.
+
 ## [0.40.0] - 2026-09-26
 
 ### Breaking changes

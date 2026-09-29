@@ -37,8 +37,10 @@ Slash-command entry points surface the following `@mcp.prompt` names.
 Hosts that bind slashes to MCP prompts render these under the server
 prefix (e.g. `/lies:ask`):
 
-- `ask(question, tag_expr=None, exclude_tags=None)` — synthesized
-  cited answer.
+- `ask(question: str)` — synthesized cited answer. Filter tokens
+  `+tag`, `-tag` are parsed out of the question text inside the body
+  and routed into `tag_expr` / `exclude_tags` on the dispatched tool
+  calls (see argument-hint contract).
 - `collections(subcommand, args=[])` — library registry CRUD.
 - `ingest(source, delete_slug=None, batch_dir=None, dry_run=False)` —
   bring a source into the library.
@@ -47,8 +49,8 @@ prefix (e.g. `/lies:ask`):
   rebuild the search index.
 - `sync(collections=[], no_ingest=False, force=False, dry_run=False, jobs=4, scraper_timeout=300)` —
   pull + ingest remote sources.
-- `ground(question, tag_expr=None, exclude_tags=None, top_k=3)` —
-  cite-snippet digest (no synthesis).
+- `ground(question: str, top_k=3)` — cite-snippet digest (no
+  synthesis). Same filter-token parsing contract as `ask`.
 
 ## Workflow
 

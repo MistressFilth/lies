@@ -16,6 +16,21 @@ templated body. No LLM subagent dispatch happens from the prompt — the
 LLM reads the body and calls the routed tools directly in the same
 turn.
 
+Filter parsing for ``ask`` / ``ground``
+--------------------------------------
+
+The ``ask`` and ``ground`` prompts each take a single positional
+``question: str`` parameter that consumes the entire slash tail.
+Claude Code's slash-command parser splits the tail on whitespace and
+binds tokens to typed prompt parameters in declared order, which would
+shred a multi-word question across typed fields and break JSON binding.
+To keep the slash UX natural, ``+tag`` and ``-tag`` filter markers are
+parsed out of the question text inside the prompt body — the routed
+``mcp__lies__search`` / ``mcp__lies__lib_ask`` calls carry the parsed
+``tag_expr`` / ``exclude_tags`` values, not the raw slash tail. This
+matches the spec's ``argument-hint: "[+tag-expr] [-tag ...] <question>"``
+and the ask plugin's existing ``+tag -tag question text`` convention.
+
 Spec:
 ``~/code/project-notes/lies/superpowers/specs/2026-09-28-slash-prompt-surface-design.md``.
 """
