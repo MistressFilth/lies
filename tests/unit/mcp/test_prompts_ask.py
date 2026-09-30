@@ -25,8 +25,8 @@ def test_ask_prompt_body_names_routed_tools() -> None:
     # body — single quotes inside are repr-escaped because the body
     # itself is rendered via str(Message) which round-trips through
     # repr on TextContent. Match the escaped form.
-    assert "tag_expr=\\'c:test_alpha\\'" in body
-    assert "exclude_tags=[\\'t:draft\\']" in body
+    assert "tag_expr='c:test_alpha'" in body
+    assert "exclude_tags=['t:draft']" in body
 
 
 def test_ask_prompt_skips_cite_render_when_tag_is_none() -> None:
@@ -49,12 +49,12 @@ def test_ask_prompt_parses_filters_out_of_question() -> None:
 
     [msg] = ask_prompt("+c:alpha -t:draft my question")
     body = rendered_body(msg)
-    assert "tag_expr=\\'c:alpha\\'" in body
-    assert "exclude_tags=[\\'t:draft\\']" in body
+    assert "tag_expr='c:alpha'" in body
+    assert "exclude_tags=['t:draft']" in body
     # Routed lib_ask carries the parsed filters (not raw question).
-    assert "lib_ask(\\'my question\\'" in body
+    assert "lib_ask('my question'" in body
     # Routed search carries the parsed filters too.
-    assert "search(\\'my question\\'" in body
+    assert "search('my question'" in body
     # The +tag/-tag tokens themselves must not leak into the body.
     assert "+c:alpha" not in body
     assert "-t:draft" not in body
@@ -67,8 +67,8 @@ def test_ask_prompt_no_filter_tokens_passes_question_through_untouched() -> None
 
     [msg] = ask_prompt("plain question text")
     body = rendered_body(msg)
-    assert "search(\\'plain question text\\'" in body
-    assert "lib_ask(\\'plain question text\\'" in body
+    assert "search('plain question text'" in body
+    assert "lib_ask('plain question text'" in body
     assert "tag_expr=None" in body
     assert "exclude_tags=None" in body
 
@@ -80,5 +80,5 @@ def test_ask_prompt_multi_plus_tokens_combine_with_or() -> None:
 
     [msg] = ask_prompt("+c:alpha +c:beta my question")
     body = rendered_body(msg)
-    assert "tag_expr=\\'c:alpha|c:beta\\'" in body
-    assert "lib_ask(\\'my question\\'" in body
+    assert "tag_expr='c:alpha|c:beta'" in body
+    assert "lib_ask('my question'" in body

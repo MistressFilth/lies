@@ -30,6 +30,7 @@ from collections.abc import Callable
 from typing import Any, cast
 
 from fastmcp import FastMCP
+from fastmcp.server.transforms import PromptsAsTools
 from mcp.types import ToolAnnotations
 from pydantic import BaseModel, ConfigDict
 
@@ -59,6 +60,17 @@ mcp = FastMCP(
 # queryable before tools when the wire first boots. See
 # ``lies.mcp.prompts.register_prompts``.
 register_prompts(mcp)
+
+# Generate the ``list_prompts`` / ``get_prompt`` tool pair from the
+# registered prompt surface. Hosts that bind slashes to MCP prompts
+# pre-tokenize the slash tail on whitespace and bind tokens
+# positionally, so a multi-word question cannot reach a
+# single-parameter prompt body. Tool-call arguments are not subject to
+# that pre-tokenization, so the same prompts render from a tool call
+# with the full string intact. Added after ``register_prompts`` so all
+# prompts exist when the transform enumerates them; the generated
+# tools route through the server's middleware chain at runtime.
+mcp.add_transform(PromptsAsTools(mcp))
 
 
 # ---------------------------------------------------------------------------

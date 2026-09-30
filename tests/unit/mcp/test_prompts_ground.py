@@ -27,8 +27,8 @@ def test_ground_prompt_routes_search_and_read() -> None:
     assert "mcp__lies__read" in body
     # Single quotes inside the templated args are repr-escaped because
     # the body round-trips through repr on TextContent.
-    assert "tag_expr=\\'c:test_alpha\\'" in body
-    assert "exclude_tags=[\\'t:draft\\']" in body
+    assert "tag_expr='c:test_alpha'" in body
+    assert "exclude_tags=['t:draft']" in body
     assert "top_k=5" in body
 
 
@@ -48,9 +48,9 @@ def test_ground_prompt_parses_excludes_correctly() -> None:
 
     [msg] = ground_prompt("-t:draft -t:wip any question text")
     body = rendered_body(msg)
-    assert "exclude_tags=[\\'t:draft\\', \\'t:wip\\']" in body
+    assert "exclude_tags=['t:draft', 't:wip']" in body
     assert "tag_expr=None" in body
-    assert "search(\\'any question text\\'" in body
+    assert "search('any question text'" in body
     # Filter tokens themselves must not leak into the routed args.
     assert "-t:draft" not in body
     assert "-t:wip" not in body
@@ -62,6 +62,6 @@ def test_ground_prompt_no_filter_tokens() -> None:
 
     [msg] = ground_prompt("plain question text")
     body = rendered_body(msg)
-    assert "search(\\'plain question text\\'" in body
+    assert "search('plain question text'" in body
     assert "tag_expr=None" in body
     assert "exclude_tags=None" in body
