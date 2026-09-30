@@ -78,7 +78,7 @@ async def test_get_prompt_tool_is_callable() -> None:
             "get_prompt",
             {
                 "name": "ask",
-                "arguments": {"question": "+c:test_alpha what does pydantic validate?"},
+                "arguments": {"tail": "+c:test_alpha what does pydantic validate?"},
             },
         )
 

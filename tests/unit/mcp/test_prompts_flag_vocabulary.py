@@ -37,17 +37,12 @@ FLAG_VOCABULARY: list[FlagCase] = [
     # Every flag below is declared by the Typer signature in
     # ``src/lies/library/cli.py``. ``lies ingest`` has no positional
     # argument, so a bare path binds to ``--source``.
-    (ingest_prompt, "docs/a.md", "--source docs/a.md", None),
+    (ingest_prompt, "docs/a.md --collection mylib", "--source docs/a.md", None),
+    (ingest_prompt, "docs/a.md --collection mylib", "--collection mylib", None),
+    (ingest_prompt, "docs/a.md --collection mylib --slug my-slug", "--slug my-slug", None),
     (
         ingest_prompt,
-        "docs/a.md --collection mylib",
-        "--collection mylib",
-        None,
-    ),
-    (ingest_prompt, "docs/a.md --slug my-slug", "--slug my-slug", None),
-    (
-        ingest_prompt,
-        "docs/a.md --title Pydantic basics",
+        "docs/a.md --collection mylib --title Pydantic basics",
         "--title 'Pydantic basics'",
         None,
     ),
@@ -57,11 +52,11 @@ FLAG_VOCABULARY: list[FlagCase] = [
         "--slug-prefix mylib",
         None,
     ),
-    (ingest_prompt, "docs/a.md --dry-run", "--dry-run", None),
-    (ingest_prompt, "docs/a.md --force", "--force", None),
+    (ingest_prompt, "docs/a.md --collection mylib --dry-run", "--dry-run", None),
+    (ingest_prompt, "docs/a.md --collection mylib --force", "--force", None),
     (ingest_prompt, "--batch docs/ --exclude-stem _draft", "--exclude-stem _draft", None),
     # -- lint --------------------------------------------------------
-    (lint_prompt, "--check orphans", "check='orphans'", None),
+    (lint_prompt, "--check orphans", "\norphans\n```", None),
     (lint_prompt, "--fix", "fix=True", "fix=False"),
     (lint_prompt, "--check orphans --fix", "fix=True", "fix=False"),
     # -- reindex -----------------------------------------------------
@@ -134,8 +129,12 @@ class TestNoSilentFlagLoss:
             (reindex_prompt, "--all=true", "all_=True"),
             (reindex_prompt, "--cleanup=1", "cleanup=True"),
             (lint_prompt, "--fix=yes", "fix=True"),
-            (sync_prompt, "--dry-run=1", "--dry-run"),
-            (ingest_prompt, "docs/a.md --type concept --dry-run=true", "--dry-run"),
+            (sync_prompt, "pydantic --wizard=1", "--wizard)"),
+            (
+                ingest_prompt,
+                "docs/a.md --collection mylib --dry-run=true",
+                "--dry-run)",
+            ),
         ],
     )
     def test_boolean_written_with_equals_is_honoured(
@@ -150,6 +149,12 @@ class TestNoSilentFlagLoss:
         """
         [msg] = prompt_fn(tail)  # type: ignore[operator]
         body = rendered_body(msg)
+        # The marker ends at a delimiter so it can only be satisfied by
+        # the flag reaching the *rendered command*. The previous rows
+        # used bare `--dry-run`, which is a substring of the
+        # unrecognized-flag note -- so they passed while the flag was
+        # dropped, on a prompt (`sync`) where `--dry-run` does not even
+        # exist. A prose mention is not a rendered flag.
         assert marker in body, f"{tail!r} silently dropped the flag:\n{body}"
         assert "takes no value" in body
 

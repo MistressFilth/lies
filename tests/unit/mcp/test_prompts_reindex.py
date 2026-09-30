@@ -74,3 +74,31 @@ def test_reindex_names_an_unrecognized_flag() -> None:
     body = rendered_body(msg)
     assert "Unrecognized flag(s) ignored: --cleaup." in body
     assert "cleanup=False" in body
+
+
+def test_reindex_reports_a_positional_it_dropped() -> None:
+    """The only body of seven with no surplus report, and the costliest.
+
+    ``--name`` is the only way to scope a reindex to a wiki, so
+    ``reindex pydantic`` quietly reindexed the *default* wiki and said
+    nothing about the word it discarded.
+    """
+    from lies.mcp.prompts_impl import reindex_prompt
+
+    [msg] = reindex_prompt("--name pydantic extra")
+    body = rendered_body(msg)
+    assert "Not consumed by 'reindex': extra" in body, body
+    [msg] = reindex_prompt("pydantic")
+    body = rendered_body(msg)
+    assert "Not consumed by 'reindex': pydantic" in body, body
+    assert "name=None" in body, body
+
+
+def test_reindex_still_consumes_the_bare_all_marker() -> None:
+    """The legacy spelling is consumed, not reported as surplus."""
+    from lies.mcp.prompts_impl import reindex_prompt
+
+    [msg] = reindex_prompt("all")
+    body = rendered_body(msg)
+    assert "all_=True" in body, body
+    assert "Not consumed by" not in body, body

@@ -33,10 +33,35 @@ def test_collections_reports_that_args_are_whitespace_separated() -> None:
     instead of silently re-splitting the user's intended single argument."""
     [msg] = collections_prompt('modify claude_code "a b"')
     body = rendered_body(msg)
-    assert "Args are whitespace-separated" in body
-    assert "run the Bash command directly" in body
+    assert "whitespace-separated" in body
+    assert "quotes are literal here" in body
     # The command the agent would run is still rendered.
     assert "lies library modify claude_code" in body
+
+
+def test_a_quoted_flag_value_is_named_not_silently_stored() -> None:
+    """``--tag 'cli'`` stores the tag ``'cli'``, quotes included.
+
+    The note used to inspect positionals only, so the most common way
+    to quote -- a flag's value -- was unreported, and ``shlex.quote``
+    faithfully passed the quote characters *into* the value.
+    """
+    [msg] = collections_prompt("modify claude_code --tag 'cli'")
+    body = rendered_body(msg)
+    assert "quotes are literal here" in body
+    assert "--tag" in body
+
+
+def test_a_quote_in_a_collection_name_is_json_not_shell_quoting() -> None:
+    """An MCP tool argument is not a shell word.
+
+    ``shlex.quote("a'b")`` renders the six-character string
+    ``'"'"'b'``, so an agent copying the body looked up a collection
+    literally named that.
+    """
+    [msg] = collections_prompt("show a'b")
+    body = rendered_body(msg)
+    assert 'name="a\'b"' in body, body
 
 
 def test_collections_shell_metacharacters_stay_one_argument() -> None:

@@ -19,7 +19,7 @@ async def test_render_carries_multiword_question() -> None:
 
     prompt = await mcp.get_prompt("ask")
     assert prompt is not None
-    result = await prompt.render({"question": "+c:test_alpha what does pydantic validate?"})
+    result = await prompt.render({"tail": "+c:test_alpha what does pydantic validate?"})
     [message] = result.messages
     body = rendered_body(message)
     # The question reaches both routed calls as a fenced verbatim

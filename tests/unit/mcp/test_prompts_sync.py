@@ -102,13 +102,38 @@ def test_sync_value_flag_at_end_of_tail_is_reported() -> None:
 
 
 def test_sync_names_an_unrecognized_flag() -> None:
-    """A flag the CLI has no such option for is named, not rendered."""
+    """An unrecognized flag is a refusal, not a dropped word.
+
+    It used to be a note on a rendered command, which is the worst of
+    both: ``sync --bogus pydantic`` rendered ``Bash(lies sync
+    pydantic)`` *and* said "Unrecognized flag(s) ignored: --bogus", so
+    the user could not tell whether the collection survived. Now the
+    body refuses, and the refusal names both the flag and the word it
+    would have swallowed.
+    """
     from lies.mcp.prompts_impl import sync_prompt
 
     [msg] = sync_prompt("--bogus pydantic")
     body = rendered_body(msg)
-    assert "Unrecognized flag(s) ignored: --bogus." in body
-    assert "Run Bash(lies sync pydantic)" in body
+    assert "Cannot run sync: 'pydantic' after --bogus" in body, body
+    assert "Run Bash(" not in body, body
+
+
+def test_sync_refuses_a_flag_with_no_value_behind_it() -> None:
+    """``--bogus`` alone would leave the name list empty.
+
+    Dropping the flag and rendering ``Bash(lies sync)`` is worse than
+    rendering nothing: with no positional, ``lies sync`` syncs *every*
+    registered collection. A typo would trigger a whole-library scrape
+    and reindex. ``sync`` therefore refuses on any unrecognized flag.
+    """
+    from lies.mcp.prompts_impl import sync_prompt
+
+    for tail in ("--bogus", "-pydantic", "--data-dir"):
+        [msg] = sync_prompt(tail)
+        body = rendered_body(msg)
+        assert body.startswith("Cannot run sync:"), f"{tail!r}:\n{body}"
+        assert "Run Bash(" not in body, f"{tail!r}:\n{body}"
 
 
 def test_the_removed_sync_flags_are_reported_not_rendered() -> None:
@@ -130,10 +155,12 @@ def test_the_removed_sync_flags_are_reported_not_rendered() -> None:
     ):
         [msg] = sync_prompt(f"{invented} {value}".strip())
         body = rendered_body(msg)
-        assert f"Unrecognized flag(s) ignored: {invented}." in body, (
-            f"{invented} was accepted as if the CLI had it:\n{body}"
-        )
-        assert f"Run Bash(lies sync{invented}" not in body, body
+        assert invented in body, f"{invented} was accepted as if the CLI had it:\n{body}"
+        assert body.startswith("Cannot run sync:"), body
+        # The old assertion searched for "Run Bash(lies sync--data-dir"
+        # -- no space, so it was a string no body can produce and it
+        # never fired. The check is now that no command renders.
+        assert "Run Bash(" not in body, body
 
 
 def test_sync_quotes_a_collection_name_needing_it() -> None:
@@ -161,3 +188,26 @@ def test_sync_renders_the_negated_booleans_the_cli_declares() -> None:
         body = rendered_body(msg)
         assert f"Run Bash(lies sync pydantic {rendered})" in body, body
         assert "Unrecognized flag(s)" not in body, body
+
+
+def test_sync_refuses_to_fan_out_over_a_pasted_sentence() -> None:
+    """One command per word is one scrape-and-reindex chain per word.
+
+    ``lies sync`` takes a single positional, so "please resync my
+    library collections" rendered five invocations — and the sentence
+    justifying them read as a claim about a request the user never
+    made. Above the cap the body refuses and names the words.
+    """
+    from lies.mcp.prompts_impl import sync_prompt
+
+    [msg] = sync_prompt("please resync my library collections now")
+    body = rendered_body(msg)
+    assert body.startswith("Cannot run sync:"), body
+    assert "Run Bash(" not in body, body
+
+    # A genuine multi-collection request still renders, and says how
+    # many invocations it fires.
+    [msg] = sync_prompt("pydantic fastmcp mermaid")
+    body = rendered_body(msg)
+    assert "names 3" in body, body
+    assert body.count("Run Bash(") == 3, body

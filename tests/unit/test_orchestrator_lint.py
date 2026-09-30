@@ -447,9 +447,58 @@ def test_run_lint_check_does_not_narrow_the_log_entry(orch: Orchestrator) -> Non
     # the whole rather than standing in for it.
     assert "check=stale" in entry
     assert "1/4 matched" in entry, entry
+    # The *base* title is built from the unfiltered merge, and this
+    # asserts the number in it rather than trusting the appended
+    # trailer. Rewriting the title to use the filtered report left
+    # every previous assertion in this test green — "check=stale" and
+    # "1/4 matched" both live in the suffix, which is identical either
+    # way — so the exact regression this test exists for survived it.
+    assert "4 findings" in entry, entry
+    assert "1 findings" not in entry, entry
     # The unfiltered report is what the persisted artifact holds.
     report = (orch.wiki.wiki_dir / "lint-report.md").read_text(encoding="utf-8")
     assert "two pages disagree" in report
+
+
+def test_run_lint_renders_the_markdown_once_when_unscoped(orch: Orchestrator) -> None:
+    """An unscoped lint rendered the same body twice and threw one away.
+
+    ``run_lint`` called ``render(unfiltered_report)`` for the persisted
+    artifact and then ``render(merged_report)`` for the return value.
+    With no ``check`` those are the same object, so every plain
+    ``lies lint`` — the common path — formatted the whole report twice.
+    """
+    from lies.agents.linter import LintReport
+
+    calls: list[int] = []
+    import lies.orchestrator as orch_mod
+
+    real_render = orch_mod._render_lint_report
+
+    def counting(report: object, *a: object, **kw: object) -> str:
+        calls.append(len(getattr(report, "findings", [])))
+        return real_render(report, *a, **kw)  # type: ignore[arg-type]
+
+    with (
+        mock.patch.object(
+            orch, "_call_linter", return_value=(LintReport(findings=[], report_markdown=""), None)
+        ),
+        mock.patch.object(orch_mod, "_render_lint_report", side_effect=counting),
+    ):
+        orch.run_lint()
+    assert len(calls) == 1, f"rendered {len(calls)} times: {calls}"
+
+    calls.clear()
+    with (
+        mock.patch.object(
+            orch, "_call_linter", return_value=(LintReport(findings=[], report_markdown=""), None)
+        ),
+        mock.patch.object(orch_mod, "_render_lint_report", side_effect=counting),
+    ):
+        orch.run_lint(check="orphan")
+    # A scoped run genuinely needs both bodies: the full one for the
+    # artifact, the narrowed one for the return value.
+    assert len(calls) == 2, f"rendered {len(calls)} times: {calls}"
 
 
 def test_run_lint_check_accepts_the_plural_spelling(orch: Orchestrator) -> None:

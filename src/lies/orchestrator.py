@@ -2402,10 +2402,15 @@ class Orchestrator:
         # The persisted artifact is always the full report, so a
         # scoped read narrows this call's return value without
         # shrinking what the next reader of wiki://lint-report sees.
-        (self.wiki.wiki_dir / "lint-report.md").write_text(
-            render(unfiltered_report), encoding="utf-8"
-        )
-        final_md = render(merged_report)
+        unfiltered_md = render(unfiltered_report)
+        (self.wiki.wiki_dir / "lint-report.md").write_text(unfiltered_md, encoding="utf-8")
+        # ``unfiltered_report is merged_report`` whenever no check was
+        # requested, so re-rendering produced a second identical body
+        # and discarded the first. It is the common path — an unscoped
+        # ``lies lint`` — and it doubled the markdown render on every
+        # call. Reuse the string; the two differ exactly when a filter
+        # narrowed the report.
+        final_md = unfiltered_md if requested_check is None else render(merged_report)
         if requested_check is not None:
             final_md += (
                 f"\nFiltered to check={requested_check!r}. "

@@ -10,14 +10,42 @@ accepts from one it rejects with exit 2.
 
 This module closes that gap by checking the rendered command against
 the live Typer app: every ``--flag`` in it must be an option the
-target command declares, and the positional count must fit the
-arguments it declares. Introspection only — nothing is executed, so
-the test has no side effects on the host library.
+target command declares, every value-taking option must be followed
+by a token, and every required Argument must have been supplied.
+Introspection only — nothing is executed, so the test has no side
+effects on the host library.
 
-A body that invents a flag fails here even if every other test
-passes, which is the point: the vocabulary tables in
-``prompts_impl`` are transcribed by hand, and this file is what keeps
-the transcription honest.
+**The first version of this file closed one direction and claimed
+two.** Its matrices iterated the *hand-written* tables, so a flag the
+command declares and the table omits generated no row and went green;
+and ``_check_command`` validated flag names and an arity ceiling only,
+so it accepted ``lies library new`` — a command that exits 2 for a
+missing slug. Both were found by mutating the implementation and
+watching the suite stay green. Three tests below are the repair, and
+each one fails on a mutation that the previous version survived:
+
+``test_vocabulary_tables_match_the_live_signatures``
+    Equality, both directions, between every vocabulary table and the
+    options the live app declares. An omission is a failure; so is an
+    invention. Replaces the "one tail per table entry" idea, which
+    could only ever find inventions.
+``test_every_declared_flag_reaches_the_rendered_command``
+    A declared flag that the body knows about but never renders is a
+    silent loss, and no table-equality test can see it — the flag is
+    declared, the table is right, the *include tuple* in the body is
+    not. This renders a tail naming every option and asserts each one
+    reaches the command.
+``test_a_body_never_renders_a_command_with_a_starved_option``
+    A value-taking option with nothing after it: ``--source`` at the
+    end of a rendered line.
+
+Runtime preconditions are a fourth thing, and introspection cannot
+reach them. ``lies library new`` requires ``--source`` and ``lies
+ingest --source`` requires a collection name, both enforced by
+``raise``/``typer.Exit`` in a function body rather than by the
+signature. The tables below are exactly equal to the signatures and
+the rendered command is still invalid; the body-level regressions at
+the end of this file are what hold those two closed.
 """
 
 from __future__ import annotations
@@ -125,8 +153,38 @@ def _max_positionals(cmd: object) -> int | None:
     return count
 
 
+def _classify(cmd: object) -> tuple[frozenset[str], frozenset[str]]:
+    """``cmd``'s declared options, split into (value-taking, boolean).
+
+    Names are bare (``force``, not ``--force``), matching the shape the
+    vocabulary tables in ``prompts_impl`` are written in. Both
+    spellings of a ``--x/--no-x`` pair land in the same bucket, because
+    Typer models them as one option.
+    """
+    value: set[str] = set()
+    boolean: set[str] = set()
+    for param in cmd.params:  # type: ignore[attr-defined]
+        if _is_argument(param):
+            continue
+        names = {opt.lstrip("-") for opt in _all_opts(param)}
+        (boolean if getattr(param, "is_flag", False) else value).update(names)
+    return frozenset(value), frozenset(boolean)
+
+
 def _check_command(command: str) -> None:
-    """Assert ``command`` names a real command with real flags and arity."""
+    """Assert ``command`` names a real command that ``lies`` can actually run.
+
+    Four things, each of which was a real defect class:
+
+    1. every ``--flag`` is an option the target command declares;
+    2. every value-taking option is followed by a token (``--source``
+       with nothing after it exits 2, and the old check walked off the
+       end of the token list accepting it);
+    3. every required ``Argument`` received a positional (``lies
+       library new`` with no slug exits 2 — the old check only tested
+       an upper bound, so the *lower* bound was untested);
+    4. the positional count fits the declared arity.
+    """
     argv = shlex.split(command)
     assert argv and argv[0] == "lies", f"not a `lies` invocation: {command!r}"
     cmd, rest = _walk(argv[1:])
@@ -137,25 +195,54 @@ def _check_command(command: str) -> None:
     # as a positional the command does not take.
     positionals: list[str] = []
     bad: list[str] = []
+    starved: list[str] = []
+    supplied: set[str] = set()
     i = 0
     while i < len(rest):
         tok = rest[i]
-        if tok.startswith("--"):
-            key = tok.partition("=")[0]
+        if tok.startswith("-"):
+            key, eq, _ = tok.partition("=")
             param = params.get(key)
             if param is None or _is_argument(param):
                 bad.append(key)
                 i += 1
                 continue
-            if not getattr(param, "is_flag", False) and "=" not in tok:
-                i += 2
+            supplied.add(key)
+            if getattr(param, "is_flag", False) or eq:
+                i += 1
                 continue
+            # Value-taking option: the next token is its value, and it
+            # has to be there. `i + 2` past the end was the old bug.
+            if i + 1 >= len(rest) or rest[i + 1].startswith("--"):
+                starved.append(key)
+                i += 1
+                continue
+            i += 2
         else:
             positionals.append(tok)
-        i += 1
+            i += 1
     assert not bad, (
         f"{command!r} passes {bad}, which `lies {cmd.name}` does not declare. "  # type: ignore[attr-defined]
         f"Declared: {sorted(options)}"
+    )
+    assert not starved, (
+        f"{command!r} passes {starved} with no value after it; "
+        f"`lies {cmd.name}` rejects that with exit 2."
+    )
+    arg_params = [p for p in cmd.params if _is_argument(p)]  # type: ignore[attr-defined]
+    required_args = [p for p in arg_params if getattr(p, "required", False)]
+    assert len(positionals) >= len(required_args), (
+        f"{command!r} supplies {len(positionals)} positional(s) but "
+        f"`lies {cmd.name}` requires {len(required_args)} "  # type: ignore[attr-defined]
+        f"({', '.join(_all_opts(p)[0] for p in required_args)})"
+    )
+    required_opts = [
+        opt
+        for opt, param in params.items()
+        if getattr(param, "required", False) and not _is_argument(param)
+    ]
+    assert set(required_opts) <= supplied, (
+        f"{command!r} omits required option(s) {sorted(set(required_opts) - supplied)}."
     )
     ceiling = _max_positionals(cmd)
     assert ceiling is None or len(positionals) <= ceiling, (
@@ -199,67 +286,260 @@ TAILS: list[tuple[object, str]] = [
     (sync_prompt, "pydantic --no-wait"),
     (sync_prompt, "pydantic --no-skip-reindex"),
     (sync_prompt, "pydantic --no-force --no-fail-busy"),
-    (ingest_prompt, "docs/a.md --no-dry-run"),
-    (ingest_prompt, "docs/a.md --no-force"),
+    (ingest_prompt, "docs/a.md --collection mylib --no-dry-run"),
+    (ingest_prompt, "docs/a.md --collection mylib --no-force"),
 ]
 
 
-# The hand-written list above proves the tails someone remembered. The
-# matrix below proves the rest: one tail per flag in every vocabulary
-# table, so a flag the table gains and the command does not declare --
-# or a flag the command declares and the table omits, which renders a
-# command missing the switch the user asked for -- is a failing test
-# rather than a defect the next reviewer has to find. Generating the
-# tails from the tables is what makes table drift impossible instead of
-# merely detected.
+# The hand-written list above proves the tails someone remembered. It
+# was joined by matrices built from the vocabulary tables, on the claim
+# that they made "table drift impossible instead of merely detected."
+# They did not: they iterated the tables, so a *missing* entry produced
+# no row, and the mutations below stayed green. The three tests that
+# replaced them read the live app instead of the tables, which is the
+# only direction that catches an omission.
 def _positional_verbs() -> frozenset[str]:
     """Library verbs that declare a positional ``slug`` Argument.
 
     Read from the live app rather than from a hand-written list: this
-    set exists only to give the matrix a shape the verb accepts, so a
-    list of its own is another table that can drift from the signature
-    it is transcribed from.
+    set exists only to give the coverage test a shape the verb accepts,
+    so a list of its own is another table that can drift from the
+    signature it is transcribed from.
     """
     library = get_command(root_app).commands["library"]
     return frozenset(name for name, cmd in library.commands.items() if _max_positionals(cmd))
 
 
-def _library_matrix() -> list[tuple[object, str]]:
-    rows: list[tuple[object, str]] = []
+def _library_commands() -> dict[str, object]:
+    return dict(get_command(root_app).commands["library"].commands)
+
+
+def _real_verb(verb: str) -> str:
+    """The CLI command a prompt verb renders under.
+
+    ``tag`` is a prompt spelling with no ``lies library tag`` of its
+    own; the body renders ``lies library modify``, so the table row is
+    transcribed from ``modify``'s signature.
+    """
+    return "modify" if verb in _LIBRARY_ALIAS_VERBS else verb
+
+
+@pytest.mark.parametrize("verb", sorted(_LIBRARY_VERB_FLAGS))
+def test_vocabulary_tables_match_the_live_signatures(verb: str) -> None:
+    """The per-verb table equals the Typer signature, in both directions.
+
+    Deleting ``"force"`` from ``_LIBRARY_VERB_FLAGS["delete"]`` — a
+    flag ``lies library delete`` really declares — kept the whole
+    suite green before this test existed, because every matrix
+    iterated the table it was supposed to check. Equality against the
+    app catches it.
+    """
+    real = _real_verb(verb)
+    declared_value, declared_bool = _classify(_library_commands()[real])
+    table_value, table_bool = _LIBRARY_VERB_FLAGS[verb]
+    assert table_value == declared_value, (
+        f"`lies library {real}` value flags drifted from the table. "
+        f"Only in the table: {sorted(table_value - declared_value)}. "
+        f"Only in the signature: {sorted(declared_value - table_value)}."
+    )
+    assert table_bool == declared_bool, (
+        f"`lies library {real}` boolean flags drifted from the table. "
+        f"Only in the table: {sorted(table_bool - declared_bool)}. "
+        f"Only in the signature: {sorted(declared_bool - table_bool)}."
+    )
+
+
+def test_every_library_verb_has_a_table_entry() -> None:
+    """A new ``lies library`` verb cannot ship without a table row.
+
+    The per-verb equality test above only runs for verbs already in
+    the table, so adding a verb to the CLI and forgetting the table
+    would skip it rather than fail. This closes that direction.
+    """
+    declared = set(_library_commands()) - {"--help", "--version"}
+    # ``tag`` is a prompt spelling that renders under ``modify``; it is
+    # not a `lies library` command, so it is dropped from the table side
+    # before the comparison rather than demanded of the CLI.
+    table = set(_LIBRARY_VERB_FLAGS) - _LIBRARY_ALIAS_VERBS
+    assert table == declared, (
+        "lies library commands and the prompt's verb table disagree: "
+        f"only in the CLI={sorted(declared - table)}, "
+        f"only in the table={sorted(table - declared)}"
+    )
+
+
+@pytest.mark.parametrize(
+    ("name", "value_tbl", "bool_tbl"),
+    [
+        ("sync", _SYNC_VALUE_FLAGS, _SYNC_BOOL_FLAGS),
+        ("ingest", _INGEST_VALUE_FLAGS, _INGEST_BOOL_FLAGS),
+    ],
+)
+def test_vocabulary_tables_match_flat_signatures(
+    name: str, value_tbl: frozenset[str], bool_tbl: frozenset[str]
+) -> None:
+    declared_value, declared_bool = _classify(get_command(root_app).commands[name])
+    assert value_tbl == declared_value, (
+        f"`lies {name}` value flags drifted. "
+        f"Only in the table: {sorted(value_tbl - declared_value)}. "
+        f"Only in the signature: {sorted(declared_value - value_tbl)}."
+    )
+    assert bool_tbl == declared_bool, (
+        f"`lies {name}` boolean flags drifted. "
+        f"Only in the table: {sorted(bool_tbl - declared_bool)}. "
+        f"Only in the signature: {sorted(declared_bool - bool_tbl)}."
+    )
+
+
+def _tail_naming_every_option(
+    prompt_fn: object, verb: str, value: frozenset[str], boolean: frozenset[str], slug: str
+) -> str:
+    """A tail asking for every option the command declares, at once.
+
+    One tail rather than one per flag: the point is to catch a flag
+    the body declines to render, and a per-flag tail would be a
+    separate case for each and easy to weaken one at a time.
+    """
+    parts = [f"{verb}{slug}"]
+    parts += [f"--{flag} value" for flag in sorted(value)]
+    parts += [f"--{flag}" for flag in sorted(boolean) if not flag.startswith("no-")]
+    return " ".join(parts)
+
+
+@pytest.mark.parametrize("verb", sorted(_LIBRARY_VERB_FLAGS))
+def test_every_declared_flag_reaches_the_rendered_command(verb: str) -> None:
+    """A flag the body parses but never renders is a silent loss.
+
+    Dropping ``"prompt"`` from ``new``'s render include-tuple left the
+    vocabulary table correct and the signature equal, and every
+    pre-existing test green — ``--prompt`` is a real option that the
+    user could type and the command would then run without. The
+    include tuple is a *fourth* hand-written table, in the body, and no
+    signature-derived test could see it.
+    """
+    value, boolean = _LIBRARY_VERB_FLAGS[verb]
+    if not value and not boolean:
+        return
     positional = _positional_verbs() | _LIBRARY_ALIAS_VERBS
-    for verb, (values, bools) in _LIBRARY_VERB_FLAGS.items():
-        # Verbs whose *rendered* command has a ``slug`` Argument need
-        # one; the rest take none, and a spare positional there would be
-        # surplus the body reports (still a valid command, but not the
-        # shape under test). ``_LIBRARY_ALIAS_VERBS`` covers the
-        # spellings that render under a different command name --
-        # ``tag`` renders ``lies library modify``, and reading the
-        # names from the live app alone would miss that.
-        slug = " mylib" if verb in positional else ""
-        for flag in sorted(values):
-            rows.append((collections_prompt, f"{verb}{slug} --{flag} value"))
-        for flag in sorted(bools):
-            rows.append((collections_prompt, f"{verb}{slug} --{flag}"))
-    return rows
+    slug = " mylib" if verb in positional else ""
+    tail = _tail_naming_every_option(collections_prompt, verb, value, boolean, slug)
+    [msg] = collections_prompt(tail)  # type: ignore[operator]
+    body = rendered_body(msg)
+    commands = _BASH_RE.findall(body)
+    if not commands:
+        # `list` without --json renders an MCP call, not a Bash line.
+        # Call it through the MCP sink instead of skipping the verb.
+        assert "collections_read" in body, body
+        commands = []
+    rendered_flags: set[str] = set()
+    for command in commands:
+        _check_command(command.strip())
+        rendered_flags |= {
+            tok.partition("=")[0] for tok in shlex.split(command) if tok.startswith("--")
+        }
+    # `new` needs a source, so the body renders `--source` from the
+    # tail above; `tag` renders under `modify`. Everything the table
+    # declares must reach the command line.
+    expected = {f"--{flag}" for flag in value | boolean if not flag.startswith("no-")}
+    assert expected <= rendered_flags, (
+        f"`{verb}` parsed {sorted(expected - rendered_flags)} but did not render it.\n{body}"
+    )
 
 
-def _sync_matrix() -> list[tuple[object, str]]:
-    rows: list[tuple[object, str]] = [
-        (sync_prompt, f"pydantic --{flag} value") for flag in sorted(_SYNC_VALUE_FLAGS)
-    ]
-    rows += [(sync_prompt, f"pydantic --{flag}") for flag in sorted(_SYNC_BOOL_FLAGS)]
-    return rows
+def test_a_body_never_renders_a_command_with_a_starved_option() -> None:
+    """A value-taking option with nothing after it is the exit-2 case.
+
+    ``_check_command`` walked past the end of the token list accepting
+    ``--source`` with no value; this pins the check itself against a
+    command that is genuinely unrunnable.
+    """
+    for broken in (
+        "lies library new --source",
+        "lies library modify mylib --tag",
+        "lies ingest --source",
+        "lies sync pydantic --name",
+    ):
+        try:
+            _check_command(broken)
+        except AssertionError:
+            continue
+        raise AssertionError(f"_check_command accepted an unrunnable command: {broken!r}")
 
 
-def _ingest_matrix() -> list[tuple[object, str]]:
-    rows: list[tuple[object, str]] = [
-        (ingest_prompt, f"docs/a.md --{flag} value") for flag in sorted(_INGEST_VALUE_FLAGS)
-    ]
-    rows += [(ingest_prompt, f"docs/a.md --{flag}") for flag in sorted(_INGEST_BOOL_FLAGS)]
-    return rows
+def test_a_body_never_renders_a_command_missing_a_required_argument() -> None:
+    """The lower bound on arity, which the ceiling check never tested."""
+    for broken in (
+        "lies library new",
+        "lies library modify",
+        "lies library show",
+        "lies library where",
+        "lies library delete",
+    ):
+        try:
+            _check_command(broken)
+        except AssertionError:
+            continue
+        raise AssertionError(f"_check_command accepted a command missing its argument: {broken!r}")
 
 
-TAILS += _library_matrix() + _sync_matrix() + _ingest_matrix()
+# --- runtime preconditions -------------------------------------------------
+# `lies library new` raises `BadParameter("library new requires
+# --source")` in its body and `lies ingest --source` exits 2 without a
+# collection name, both below the signature. Introspection cannot see
+# either, and both are the *default* invocation of their verb, so the
+# body has to refuse. These are the two shapes that made the
+# "the CLI accepts every rendered command" claim false.
+
+
+@pytest.mark.parametrize(
+    "tail",
+    ["new mylib", "new mylib --tag cli", "new mylib --prompt wizard.md"],
+)
+def test_collections_new_refuses_without_a_source(tail: str) -> None:
+    body = rendered_body(collections_prompt(tail)[0])
+    assert body.startswith("Cannot run 'new': no source was given"), body
+    assert "Run Bash(" not in body, body
+
+
+@pytest.mark.parametrize("tail", ["/tmp/real.md", "--source /tmp/real.md"])
+def test_ingest_refuses_a_source_with_no_collection(tail: str) -> None:
+    body = rendered_body(ingest_prompt(tail)[0])
+    assert body.startswith("Cannot run ingest: --source"), body
+    assert "Run Bash(" not in body, body
+
+
+def test_ingest_renders_when_a_collection_is_named() -> None:
+    body = rendered_body(ingest_prompt("/tmp/real.md --collection mylib")[0])
+    assert "Run Bash(lies ingest --source /tmp/real.md --collection mylib)" in body, body
+
+
+def test_a_bare_double_dash_is_a_terminator_not_a_collection_name() -> None:
+    """``--`` reaches Click stripped, and a bare ``lies sync`` syncs all.
+
+    ``sync -- pydantic`` rendered ``Bash(lies sync --)`` as well as the
+    real one. Click removes a bare ``--`` before the command function
+    runs, so the first invocation received ``collection=None`` — every
+    registered collection, scraped and reindexed, from a request about
+    one.
+    """
+    body = rendered_body(sync_prompt("-- pydantic")[0])
+    assert "lies sync --)" not in body, body
+    assert body.count("Run Bash(") == 1, body
+    assert "Bash(lies sync pydantic)" in body, body
+
+
+def test_a_single_dash_token_is_never_an_argument() -> None:
+    """``-pydantic`` is a typo, and a bare ``lies sync`` syncs everything.
+
+    Letting it fall through to a positional rendered
+    ``Bash(lies sync -pydantic)`` (exit 2). Recording it as an unknown
+    flag emptied the name list instead, which rendered the *far* worse
+    ``Bash(lies sync)`` — every collection. ``sync`` therefore refuses
+    on an unrecognized flag rather than dropping it.
+    """
+    body = rendered_body(sync_prompt("-pydantic")[0])
+    assert body.startswith("Cannot run sync:"), body
+    assert "Run Bash(" not in body, body
 
 
 @pytest.mark.parametrize(
