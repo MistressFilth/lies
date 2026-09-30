@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from tests.unit.mcp._prompt_body import rendered_body
+from tests.unit.mcp._prompt_body import carries_verbatim, rendered_body
 
 
 def test_ground_prompt_skips_lib_ask() -> None:
@@ -45,7 +45,7 @@ def test_ground_prompt_parses_excludes_correctly() -> None:
     body = rendered_body(msg)
     assert "exclude_tags=['t:draft', 't:wip']" in body
     assert "tag_expr=None" in body
-    assert "search('any question text'" in body
+    assert carries_verbatim(body, "any question text")
     # Filter tokens themselves must not leak into the routed args.
     assert "-t:draft" not in body
     assert "-t:wip" not in body
@@ -57,7 +57,7 @@ def test_ground_prompt_no_filter_tokens() -> None:
 
     [msg] = ground_prompt("plain question text")
     body = rendered_body(msg)
-    assert "search('plain question text'" in body
+    assert carries_verbatim(body, "plain question text")
     assert "tag_expr=None" in body
     assert "exclude_tags=None" in body
 
@@ -80,7 +80,7 @@ def test_ground_top_k_accepts_the_space_form() -> None:
 
     [msg] = ground_prompt("--top_k 7 the question")
     body = rendered_body(msg)
-    assert "search('the question'" in body
+    assert carries_verbatim(body, "the question")
     assert "top_k=7" in body
 
 
@@ -105,6 +105,34 @@ def test_ground_empty_tail_asks_for_a_question() -> None:
     assert "mcp__lies__search" not in body
 
 
+def test_ground_a_tail_of_only_filters_asks_for_a_question() -> None:
+    """The guard ran before the filter pass, so it never fired.
+
+    A filter token is itself a positional, so ``+c:opencode`` and a
+    bare ``--top_k 5`` both satisfied the old emptiness check and
+    rendered ``search('')`` -- a query the qmd daemon treats as real.
+    ``ask`` had the check in the right place all along; ``ground`` did
+    not, and the CHANGELOG claimed both were fixed.
+    """
+    from lies.mcp.prompts_impl import ground_prompt
+
+    for tail in ("+c:opencode", "-t:draft", "--top_k 5", "--top_k=5"):
+        [msg] = ground_prompt(tail)
+        body = rendered_body(msg)
+        assert "No question given" in body, f"{tail!r} should ask for a question:\n{body}"
+        assert "mcp__lies__search" not in body, f"{tail!r} rendered a search:\n{body}"
+
+
+def test_ground_filters_plus_a_question_still_render() -> None:
+    """The post-extraction guard must not eat a real query."""
+    from lies.mcp.prompts_impl import ground_prompt
+
+    [msg] = ground_prompt("+c:opencode what is qmd")
+    body = rendered_body(msg)
+    assert carries_verbatim(body, "what is qmd")
+    assert "tag_expr='c:opencode'" in body
+
+
 def test_ground_names_an_unrecognized_flag() -> None:
     """``--cleaup`` used to be dropped silently; a typo in a destructive
     flag must not run the non-destructive path unremarked."""
@@ -120,5 +148,5 @@ def test_ground_keeps_negative_numbers_in_the_query() -> None:
 
     [msg] = ground_prompt("why is -1 broken here")
     body = rendered_body(msg)
-    assert "search('why is -1 broken here'" in body
+    assert carries_verbatim(body, "why is -1 broken here")
     assert "exclude_tags=None" in body

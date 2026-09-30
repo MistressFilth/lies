@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from tests.unit.mcp._prompt_body import rendered_body
+from tests.unit.mcp._prompt_body import carries_verbatim, rendered_body
 
 
 def test_ask_prompt_returns_single_message() -> None:
@@ -52,9 +52,9 @@ def test_ask_prompt_parses_filters_out_of_question() -> None:
     assert "tag_expr='c:alpha'" in body
     assert "exclude_tags=['t:draft']" in body
     # Routed lib_ask carries the parsed filters (not raw question).
-    assert "lib_ask('my question'" in body
+    assert carries_verbatim(body, "my question")
     # Routed search carries the parsed filters too.
-    assert "search('my question'" in body
+    assert carries_verbatim(body, "my question")
     # The +tag/-tag tokens themselves must not leak into the body.
     assert "+c:alpha" not in body
     assert "-t:draft" not in body
@@ -67,8 +67,8 @@ def test_ask_prompt_no_filter_tokens_passes_question_through_untouched() -> None
 
     [msg] = ask_prompt("plain question text")
     body = rendered_body(msg)
-    assert "search('plain question text'" in body
-    assert "lib_ask('plain question text'" in body
+    assert carries_verbatim(body, "plain question text")
+    assert body.count("plain question text") == 2
     assert "tag_expr=None" in body
     assert "exclude_tags=None" in body
 
@@ -81,7 +81,7 @@ def test_ask_prompt_multi_plus_tokens_combine_with_or() -> None:
     [msg] = ask_prompt("+c:alpha +c:beta my question")
     body = rendered_body(msg)
     assert "tag_expr='c:alpha|c:beta'" in body
-    assert "lib_ask('my question'" in body
+    assert carries_verbatim(body, "my question")
 
 
 def test_ask_prompt_tolerates_an_apostrophe_in_the_question() -> None:
@@ -96,8 +96,8 @@ def test_ask_prompt_tolerates_an_apostrophe_in_the_question() -> None:
 
     [msg] = ask_prompt("what are Claude Code's plugin differences?")
     body = rendered_body(msg)
-    assert 'search("what are Claude Code\'s plugin differences?"' in body
-    assert 'lib_ask("what are Claude Code\'s plugin differences?"' in body
+    assert carries_verbatim(body, "what are Claude Code's plugin differences?")
+    assert body.count("what are Claude Code's plugin differences?") == 2
 
 
 def test_ask_prompt_tolerates_an_unbalanced_quote() -> None:
@@ -105,7 +105,7 @@ def test_ask_prompt_tolerates_an_unbalanced_quote() -> None:
 
     [msg] = ask_prompt('what does "pydantic validate, exactly?')
     body = rendered_body(msg)
-    assert "search('what does \"pydantic validate, exactly?'" in body
+    assert carries_verbatim(body, 'what does "pydantic validate, exactly?')
 
 
 def test_ask_prompt_with_only_filter_tokens_asks_for_a_question() -> None:

@@ -241,13 +241,36 @@ mocked librarian excerpts (see `tests/unit/mcp/test_ground.py`).
   prompt declares exactly one string parameter (`question` for `ask`,
   `tail` for the other six); a typed `bool` / `int` / `list[str]` past
   position one receives a bare word from the slash tokenizer and fails
-  JSON decode. `prompts_impl._split_tail` is the shared parser: it
-  splits on whitespace only (never a shell lexer — an apostrophe in
-  ordinary English must not raise), separates flag values from bare
-  flags, and reports value flags that got no value and flags outside a
-  prompt's vocabulary so the body can name the problem instead of
-  running a command the user did not ask for. `tests/unit/mcp/
-  test_split_tail.py` covers the parser directly.
+  JSON decode. One slot makes the slash path *safe*, not *complete* —
+  the host binds exactly one token and drops the rest, so a multi-token
+  tail reaches a prompt whole only through `get_prompt`.
+  `prompts_impl._split_tail` is the shared parser: it splits on
+  whitespace only (never a shell lexer — an apostrophe in ordinary
+  English must not raise), separates flag values from bare flags, and
+  reports value flags that got no value, a value attached to a boolean,
+  and flags outside a prompt's vocabulary so the body can name the
+  problem instead of running a command the user did not ask for. Every
+  prompt declares its own `value_flags` / `multi_word_flags` /
+  `known_flags`; a body advertising a flag the parser does not know is
+  a defect, and `tests/unit/mcp/test_split_tail.py` (parser) plus
+  `tests/unit/mcp/test_prompts_flag_vocabulary.py` (each prompt's
+  advertised flags surviving the parse into the rendered command) cover
+  the two halves.
+- **Bodies read the flag collections through `TailParse.flag_on()`.**
+  It answers for both `booleans` and `values`, so a body cannot read
+  the wrong collection and silently drop a flag. The `=`-attached form
+  on a boolean sets the flag and discards the value into
+  `ignored_values`; it never smuggles the value into `values`, where
+  no body would see it.
+- **`+tag` / `-tag` filter atoms are read from the leading run only.**
+  `_parse_question_filters` takes a sigil token as a filter only while
+  no question word has been seen yet — the documented shape is
+  `+tag -tag <question>` — and only when the atom looks like a tag (a
+  `:` qualifier, or two or more characters). Both guards exist because
+  this library indexes command-line tooling, where a question *about*
+  option flags ("the `-e` flag of grep") is ordinary English; without
+  them the parser deletes those words and re-injects them as
+  `exclude_tags`.
 - After the answer, a `MemoryEnricher` sub-agent proposes a structured
   `MemoryPlan` only when evidence warrants it.
 - The `EnrichmentQueue` (in `src/lies/memory/retry.py`) is a per-session,

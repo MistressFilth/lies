@@ -81,11 +81,32 @@ class TestFlagValues:
         assert parsed.values == {"jobs": "8", "scraper-timeout": "600"}
         assert parsed.positionals == ()
 
-    def test_equals_form_binds_even_for_a_boolean_flag(self) -> None:
-        """``--flag=value`` is unambiguous regardless of the vocabulary."""
+    def test_equals_form_on_a_boolean_sets_the_flag_and_reports_the_value(self) -> None:
+        """``--all=true`` must turn ``all`` on.
+
+        Routing the ``=`` form on a boolean into ``values`` meant no
+        prompt body ever saw the flag -- they all read ``booleans``.
+        ``reindex --all=true`` silently ran the non-destructive path
+        with no note anywhere.
+        """
         parsed = _split_tail("--force=yes", value_flags=frozenset({"jobs"}))
-        assert parsed.values == {"force": "yes"}
-        assert parsed.booleans == frozenset()
+        assert parsed.booleans == frozenset({"force"})
+        assert parsed.values == {}
+        assert parsed.flag_on("force")
+        assert parsed.ignored_values == (("force", "yes"),)
+        note = parsed.note()
+        assert "--force='yes'" in note
+        assert "takes no value" in note
+
+    def test_flag_on_covers_both_collections(self) -> None:
+        parsed = _split_tail(
+            "--jobs 8 --force --tag=x",
+            value_flags=frozenset({"jobs", "tag"}),
+        )
+        assert parsed.flag_on("jobs"), "a value flag that got a value is on"
+        assert parsed.flag_on("force"), "a bare boolean is on"
+        assert parsed.flag_on("tag"), "a =value flag is on"
+        assert not parsed.flag_on("dry-run"), "an absent flag is off"
 
     def test_empty_equals_value_is_preserved(self) -> None:
         parsed = _split_tail("--title=", value_flags=frozenset({"title"}))
@@ -150,7 +171,11 @@ class TestUnknownFlags:
         assert parsed.unknown == frozenset({"cleaup"})
 
     def test_unknown_flags_are_not_reported_without_a_vocabulary(self) -> None:
-        """``collections`` has no flags, so nothing is ever unknown there."""
+        """A prompt that declares no vocabulary reports nothing.
+
+        Every prompt now declares one, so this pins the parser's
+        behavior for a caller that genuinely has no flags.
+        """
         parsed = _split_tail("--anything list")
         assert parsed.unknown == frozenset()
 
@@ -216,6 +241,52 @@ class TestQuestionFilterParsing:
         assert text == "what isn't the difference?"
         assert tag_expr == "c:opencode"
         assert excludes is None
+
+    @pytest.mark.parametrize(
+        ("question", "expected_text"),
+        [
+            # The regression: a library of command-line tooling is full
+            # of questions *about* option flags. The sigil-letter rule
+            # was not enough -- ``-e``, ``+r`` and ``-v`` are ordinary
+            # English in this domain.
+            (
+                "Explain the -e flag of grep and the +r modifier",
+                "Explain the -e flag of grep and the +r modifier",
+            ),
+            (
+                "compare -temperature control with +pressure drop",
+                "compare -temperature control with +pressure drop",
+            ),
+            ("what does -v do", "what does -v do"),
+            ("is -p or -q faster", "is -p or -q faster"),
+        ],
+    )
+    def test_a_question_about_option_flags_keeps_its_words(
+        self, question: str, expected_text: str
+    ) -> None:
+        text, tag_expr, excludes = _parse_question_filters(question)
+        assert text == expected_text
+        assert tag_expr is None
+        assert excludes is None
+
+    def test_a_filter_after_the_question_starts_is_question_text(self) -> None:
+        """Position is the guard: the filter run is the leading run.
+
+        ``+tag -tag <question>`` is the documented shape. A ``+atom``
+        mid-sentence is far more likely to be a word the user wrote.
+        """
+        text, tag_expr, excludes = _parse_question_filters("why does +c:opencode matter")
+        assert text == "why does +c:opencode matter"
+        assert tag_expr is None
+        assert excludes is None
+
+    def test_leading_run_still_collects_several_filters(self) -> None:
+        text, tag_expr, excludes = _parse_question_filters(
+            "+c:alpha -t:draft -v2:beta what changed"
+        )
+        assert text == "what changed"
+        assert tag_expr == "c:alpha"
+        assert excludes == ["t:draft", "v2:beta"]
 
 
 class TestMultiWordFlags:

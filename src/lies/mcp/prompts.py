@@ -19,24 +19,32 @@ turn.
 Single-string tails
 -------------------
 
-Every prompt takes exactly one ``str`` that consumes the entire tail —
-``question`` for ``ask``, ``tail`` for the other six. Claude Code's
-slash-command parser splits the tail on whitespace and binds tokens to
-typed prompt parameters in declared order, which would shred a
-multi-word question across typed fields and break JSON binding; one
-``str`` slot has no such problem. The other six parse their own
-``--flag[=value]`` vocabulary inside the body.
+Every prompt takes exactly one ``str`` — ``question`` for ``ask``,
+``tail`` for the other six. Claude Code's slash-command parser splits
+the tail on whitespace and binds tokens to typed prompt parameters in
+declared order, which would shred a multi-word question across typed
+fields and break JSON binding; one ``str`` slot has no such problem.
+The other six parse their own ``--flag[=value]`` vocabulary inside the
+body.
+
+One string slot makes the slash path *safe*, not *complete*: the host
+binds exactly one token and everything after it is overflow that the
+host drops. The multi-token grammar those bodies parse is reachable in
+full only through ``get_prompt``, whose tool-call arguments bypass the
+slash pre-tokenizer. So ``get_prompt`` is the path for a multi-word
+question, and the slash form exercises the single-token subset. See
+``src/lies/mcp/instructions.md`` for the routing rule hosts read.
 
 ``ask`` and ``ground`` additionally parse ``+tag`` / ``-tag`` filter
-markers out of the question text, so the routed
+markers out of the *leading* run of the question text, so the routed
 ``mcp__lies__search`` / ``mcp__lies__lib_ask`` calls carry the parsed
 ``tag_expr`` / ``exclude_tags`` values rather than the raw tail. This
 matches the spec's ``argument-hint: "[+tag-expr] [-tag ...] <question>"``
 and the ask plugin's existing ``+tag -tag question text`` convention.
-
-Tool-call arguments bypass the slash pre-tokenizer, so ``get_prompt``
-is the path for a multi-word question. See
-``src/lies/mcp/instructions.md`` for the routing rule hosts read.
+The leading run is the guard: a library of command-line tooling is
+full of questions *about* option flags (``the -e flag of grep``), and
+scanning the whole question for ``+``/``-`` atoms deletes those words
+and re-injects them as search filters.
 
 Spec:
 ``~/code/project-notes/lies/superpowers/specs/2026-09-29-prompts-as-tools-routing-design.md``

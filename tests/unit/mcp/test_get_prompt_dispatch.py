@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from tests.unit.mcp._prompt_body import rendered_body
+from tests.unit.mcp._prompt_body import carries_verbatim, rendered_body
 
 
 @pytest.mark.asyncio
@@ -22,14 +22,13 @@ async def test_render_carries_multiword_question() -> None:
     result = await prompt.render({"question": "+c:test_alpha what does pydantic validate?"})
     [message] = result.messages
     body = rendered_body(message)
-    assert (
-        "mcp__lies__search('what does pydantic validate?', "
-        "tag_expr='c:test_alpha', exclude_tags=None)" in body
-    )
-    assert (
-        "mcp__lies__lib_ask('what does pydantic validate?', "
-        "tag_expr='c:test_alpha', exclude_tags=None)" in body
-    )
+    # The question reaches both routed calls as a fenced verbatim
+    # block, not a repr-escaped literal, so what the user typed is
+    # what the agent passes.
+    assert carries_verbatim(body, "what does pydantic validate?")
+    assert body.count("what does pydantic validate?") == 2
+    assert "tag_expr='c:test_alpha'" in body
+    assert "exclude_tags=None" in body
 
 
 @pytest.mark.asyncio

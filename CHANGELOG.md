@@ -45,13 +45,20 @@ flags internally.
 
 | Prompt | Before | After |
 |---|---|---|
-| `ask` | `question: str` | `question: str` (unchanged) |
+| `ask` | `question: str, tag_expr: str \| None = None, exclude_tags: list[str] \| None = None` | `question: str` — the `+tag` / `-tag` filter atoms are parsed out of the question text instead of passed as arguments |
 | `ground` | `question: str, top_k: int = 3` | `tail: str` — `--top_k N` |
 | `collections` | `subcommand: str, args: list[str] \| None` | `tail: str` — `<subcommand> <args…>` |
 | `ingest` | `source: str, delete_slug=None, batch_dir=None, dry_run: bool` | `tail: str` — `--delete <slug>`, `--batch <dir>`, `--slug-prefix <n>`, `--type`, `--slug`, `--title`, `--dry-run` |
 | `lint` | `check: str \| None, fix: bool` | `tail: str` — `--check <name>`, `--fix` |
 | `reindex` | 5 × `bool` | `tail: str` — `--reconcile`, `--embed`, `--force`, `--cleanup`, `--all`, `--name <wiki>` |
 | `sync` | `collections: list[str] \| None, no_ingest/force/dry_run: bool, jobs: int, scraper_timeout: int` | `tail: str` — `<collection…>\|all`, `--no-ingest`, `--force`, `--dry-run`, `--jobs N`, `--scraper-timeout N` |
+
+`ask` keeps its parameter *name* but loses two: a host that followed the
+old `instructions.md` and called
+`get_prompt(name="ask", arguments={"question": …, "tag_expr": …})`
+breaks the same way the other six do. The `+tag` / `-tag` atoms now go
+inside the question string, which is what the ask plugin's slash
+convention always used.
 
 Programmatic callers replace the keyword arguments with one string:
 `get_prompt(name="lint", arguments={"check": "orphans", "fix": true})`
@@ -134,7 +141,11 @@ the seven.
   is whitespace-separated and quotes are literal, rather than
   pretending a quoted phrase bound as one argument.
 - An empty `ground` / `ask` tail no longer renders a search for the
-  empty string; it asks for the question.
+  empty string; it asks for the question. (`ground` needed a second
+  pass: its guard ran *before* the filter extraction, and a filter
+  token is itself a positional, so `+c:opencode` and a bare
+  `--top_k 5` both slipped through to `search('')`. `ask` had the
+  check in the right place already.)
 - Filter-token parsing no longer eats ordinary prose. A token is read
   as a `+tag` / `-tag` filter only when a letter follows the sigil, so
   `-1`, a bare `--`, and a lone `-` stay in the question text instead
@@ -144,6 +155,80 @@ the seven.
   overflow and is dropped, so the body rendered a search for the empty
   string. The file every host actually reads now states the limit and
   leads with the `get_prompt` routing rule.
+
+#### Fixed (0.42.0, second pass)
+
+Defects surfaced reviewing the first pass. Every one had the same
+shape: a flag the user typed never reached the command, so a prompt
+ran something other than what was asked — the exact failure the
+single-string parser was written to eliminate.
+
+- **A boolean flag written `--flag=value` was silently dropped.**
+  The parser routed any `=`-attached value into `values`, and every
+  body read `booleans`. `reindex --all=true` ran the
+  *non-destructive* path with `all_=False` and no confirmation
+  warning; `sync --dry-run=true` dropped the flag while the body
+  still told the agent "phase 3 runs automatically unless
+  `--dry-run`". The flag is now set, the meaningless value is
+  discarded, and the body names the discard so the agent can tell
+  the user their spelling was off rather than guessing.
+  `TailParse.flag_on()` is the one place a body asks "was this
+  switch set?", so the parser and the bodies cannot drift on which
+  collection holds the answer.
+- **`reindex --name <wiki> all` swallowed the destructive marker.**
+  `name` was declared a multi-word flag, so the parser consumed up
+  to the next `--flag` and bound `name='pydantic all'`, leaving
+  `all_=False`. A wiki name is one token; the multi-word
+  declaration is gone, and the confirmation the README, `AGENTS.md`
+  and the spec all promise is back.
+- **`collections` now declares its flag vocabulary.** It was the
+  only prompt that parsed with no `value_flags` and no
+  `known_flags`, while its own body advertised `--tags`,
+  `--scope`, `--synonyms` and `--scraper` — none of which the
+  parser could see, so `--tags foo,bar` fell through as two bare
+  positionals and landed in the rendered command as arguments the
+  user never asked to pass. The body also advertised a CLI that
+  does not exist: `lies library` implements `show` / `new` /
+  `delete` / `bootstrap-all`, not `info` / `add` / `remove` /
+  `register-shipped`, and its real flags are `--tag` / `--untag` /
+  `--set` / `--from-file` / `--source` / `--prompt`. Both are
+  corrected; the friendly spellings still work as aliases, and a
+  positional the verb has no slot for is reported rather than
+  appended to the command.
+- **`sync --only <names>` no longer contradicts itself.** The body
+  rendered `--only` into its own command and then reported it as
+  `Unrecognized flag(s) ignored: --only`. `--only` is now a declared
+  value flag, and its comma list is merged with the bare collection
+  names.
+- **Filter-token parsing no longer eats a question *about* option
+  flags.** The sigil-letter rule was necessary and not sufficient: a
+  library of command-line tooling is full of questions like "the
+  `-e` flag of grep", and those single-letter atoms were deleted
+  from the question and re-injected as `exclude_tags` with no note.
+  A filter must now both look like a tag (a `:` qualifier, or two
+  or more characters) and sit in the leading run — the shape
+  `+tag -tag <question>` documents. `-1`, `--`, a lone `-`, `-v`,
+  and a mid-sentence `+atom` all stay in the question text.
+- **The `ask` / `ground` bodies render the question as a fenced
+  verbatim block** rather than a `repr()` literal. A question
+  containing a quote or a newline arrived at the tool call carrying
+  escape sequences the agent had to know to strip, and a tail
+  containing a closing bracket could end the rendered call and
+  append instructions of its own.
+- **The lint prompt's `check` no longer leaks the full report.**
+  `_filter_lint_report` copied the *unfiltered* `report_markdown`
+  onto a report whose `findings` said otherwise; anything rendering
+  the markdown directly ignored the filter.
+- **`run_lint(check=…)` no longer clobbers the persisted report.**
+  The narrowed body was written to `<wiki>/lint-report.md`, so one
+  read-only scoped query shrank the artifact behind
+  `wiki://lint-report` for every later reader. The artifact now
+  always receives the full merged report and only the return value
+  is scoped.
+- **The `check` filter trailer counted the wrong denominator.**
+  `len(shell) + len(llm)` overstates the merged total, because
+  `merge_lint_reports` dedups on `(category, pages, message)` and the
+  two sources overlap on every mechanical category.
 
 ### Changed (0.42.0)
 

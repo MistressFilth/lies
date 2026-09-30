@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import subprocess
 from pathlib import Path
 from unittest import mock
@@ -480,3 +481,105 @@ def test_run_lint_blank_check_is_ignored(orch: Orchestrator) -> None:
         report_md = orch.run_lint(check="   ")
     assert "Filtered to check=" not in report_md
     assert "orphan" in report_md.lower()
+
+
+def test_run_lint_check_does_not_narrow_the_persisted_artifact(orch: Orchestrator) -> None:
+    """A scoped read is a read. The artifact behind ``wiki://lint-report``
+    used to receive the *filtered* body, so one ``--check`` query
+    silently shrank the report for every later reader."""
+    from lies.agents.linter import LintFinding, LintSeverity
+
+    _seed_orphan(orch)
+    llm = LintReport(
+        findings=[
+            LintFinding(
+                severity=LintSeverity.MEDIUM,
+                category="stale",
+                message="page is out of date",
+                pages=["concepts/a.md"],
+            )
+        ],
+        report_markdown="",
+    )
+    with (
+        mock.patch.object(orch, "_call_linter", return_value=(llm, None)),
+        mock.patch.object(orch, "_run_repair_agent"),
+    ):
+        narrowed = orch.run_lint(check="stale")
+    persisted = (orch.wiki.wiki_dir / "lint-report.md").read_text(encoding="utf-8")
+
+    assert "out of date" in narrowed
+    assert "Filtered to check='stale'" in narrowed
+    # The returned view is scoped; the artifact is not.
+    assert "Filtered to check=" not in persisted
+    assert "concepts/orphan.md" in persisted, "the shell's finding was dropped from the artifact"
+
+
+def test_filtered_lint_report_does_not_carry_the_unfiltered_markdown() -> None:
+    """``LintReport.report_markdown`` is a public field. Copying it onto
+    a narrowed report leaves the full body sitting next to filtered
+    ``findings``, and any consumer rendering the markdown directly
+    ignores the filter entirely."""
+    from lies.agents.linter import LintFinding, LintSeverity
+    from lies.orchestrator import _filter_lint_report
+
+    full = LintReport(
+        findings=[
+            LintFinding(
+                severity=LintSeverity.MEDIUM,
+                category="orphan",
+                message="no inbound links",
+                pages=["a.md"],
+            ),
+            LintFinding(
+                severity=LintSeverity.MEDIUM,
+                category="stale",
+                message="out of date",
+                pages=["b.md"],
+            ),
+        ],
+        report_markdown="## Lint report\n\n- orphan: no inbound links\n- stale: out of date\n",
+    )
+    filtered = _filter_lint_report(full, "stale")
+
+    assert [f.category for f in filtered.findings] == ["stale"]
+    assert filtered.report_markdown == "", "the unfiltered body leaked onto a filtered report"
+
+
+def test_check_trailer_counts_against_the_merged_total_not_the_sum(orch: Orchestrator) -> None:
+    """``merge_lint_reports`` dedups on ``(category, pages, message)``, so
+    ``len(shell) + len(llm)`` overstated the denominator whenever the two
+    sources overlapped -- which they do on every mechanical category.
+    The trailer read "1 of 3" where only 2 findings existed.
+    """
+    from lies.agents.linter import LintFinding, LintSeverity
+
+    _seed_orphan(orch)
+    # An exact duplicate of what the deterministic shell produced, so
+    # merge_lint_reports dedups it away. The message has to match the
+    # shell's byte for byte -- the dedup key is (category, pages,
+    # message).
+    dupe = LintFinding(
+        severity=LintSeverity.LOW,
+        category="orphan",
+        message="concepts/orphan.md has no inbound links.",
+        pages=["concepts/orphan.md"],
+    )
+    llm = LintReport(findings=[dupe], report_markdown="")
+
+    with mock.patch.object(orch, "_call_linter", return_value=(llm, None)):
+        full_md = orch.run_lint()
+    with (
+        mock.patch.object(orch, "_call_linter", return_value=(llm, None)),
+        mock.patch.object(orch, "_run_repair_agent"),
+    ):
+        report_md = orch.run_lint(check="orphan")
+
+    # The unfiltered run is the ground truth for how many findings
+    # exist; the trailer's denominator must agree with it.
+    unfiltered_count = int(re.search(r"\*\*Findings \((\d+)\)\*\*", full_md).group(1))
+    matched, total = re.search(r"\((\d+) of (\d+) merged findings matched\)", report_md).groups()
+    assert int(total) == unfiltered_count, (
+        f"trailer says {total} merged findings; the unfiltered report has {unfiltered_count}"
+    )
+    assert int(matched) <= int(total)

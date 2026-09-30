@@ -53,32 +53,42 @@ intact. The slash form (`/lies:sync all`, `/lies:lint --fix`) is
 single-token only: hosts pre-tokenize the slash tail on whitespace and
 bind tokens positionally to declared parameters, so everything after the
 first token is overflow and is dropped. `/lies:ask +c:opencode why`
-renders a search for the empty string.
+leaves the body asking for a question, because `why` never arrives.
 
-Every prompt takes exactly one `str` that consumes the whole tail and
-parses its own flags. A typed parameter past position one would receive
-a bare word from the slash tokenizer and fail JSON decode, which is why
-there are no `bool` / `int` / `list[str]` parameters on the prompt
-surface. Flag values bind as `--flag=value` or `--flag value`; a value
-flag given no value renders an error body rather than a command.
+Every prompt takes exactly one `str` and parses its own flags. A typed
+parameter past position one would receive a bare word from the slash
+tokenizer and fail JSON decode, which is why there are no `bool` / `int`
+/ `list[str]` parameters on the prompt surface. Flag values bind as
+`--flag=value` or `--flag value`; a value flag given no value renders an
+error body rather than a command. A boolean written `--flag=value` is
+still set — the value is discarded and the body says so.
 
 - `ask(question: str)` — synthesized cited answer. `+tag` / `-tag`
-  filter tokens are parsed out of `question` inside the body and
-  routed into `tag_expr` / `exclude_tags` on the dispatched calls.
+  filter tokens are parsed out of the **leading run** of `question`
+  inside the body and routed into `tag_expr` / `exclude_tags` on the
+  dispatched calls.
 - `ground(tail: str)` — cite-snippet digest (no synthesis). Same
   filter-token contract, plus `--top_k N` (clamped to [1, 10]).
 - `collections(tail: str)` — registry CRUD. `<subcommand> <args…>`.
+  Subcommands: `list`, `show` (alias `info`), `new` (alias `add`),
+  `modify`, `delete` (alias `remove`), `where`, `enrich-tags`, `tag`
+  (`<slug> <tag…>`, rendered as `modify --tag`), `bootstrap-all`
+  (alias `register-shipped`). Flags: `--source` / `--prompt` on
+  `new`; `--tag` / `--untag` / `--set` / `--from-file` on
+  `modify`; `--json` on `list`.
 - `ingest(tail: str)` — `<source>` or `--delete <slug>` or
   `--batch <dir>`, plus `--slug-prefix` / `--type` / `--slug` /
   `--title` / `--dry-run`.
 - `lint(tail: str)` — `--check <name>` (one finding category; the
   `lint` tool's `check` parameter filters the report to it), `--fix`.
 - `reindex(tail: str)` — `--reconcile` / `--embed` / `--force` /
-  `--cleanup` / `--all`. `all`, `all_` and `--all` are the same
-  destructive marker; `cleanup` and `all_` elicit confirmation.
+  `--cleanup` / `--all` / `--name <wiki>`. `all`, `all_` and `--all`
+  are the same destructive marker; `cleanup` and `all_` elicit
+  confirmation. `--name` takes exactly one token, so
+  `--name pydantic all` reindexes `pydantic` with `all_=True`.
 - `sync(tail: str)` — `<collection…>` or `all` (every collection with a
-  scraper), plus `--no-ingest` / `--force` / `--dry-run` / `--jobs N` /
-  `--scraper-timeout N`.
+  scraper), plus `--only <names>` / `--no-ingest` / `--force` /
+  `--dry-run` / `--jobs N` / `--scraper-timeout N`.
 
 ## Routing rules
 
@@ -96,10 +106,15 @@ synthesizer itself.
         arguments={"question": "<the full user message, filters included>"}
     )
 
-The prompt body parses `+tag` / `-tag` out of `question` and routes the
-typed filter into `tag_expr` / `exclude_tags` on the dispatched calls.
-A token is read as a filter only when a letter follows the sigil, so
-`-1` and `--` in ordinary prose stay in the question text.
+The prompt body parses `+tag` / `-tag` out of the **leading run** of
+`question` and routes the typed filter into `tag_expr` / `exclude_tags`
+on the dispatched calls. Two guards keep ordinary English out of the
+filter path: a token is read as a filter only while no question word
+has been seen yet (the documented shape is `+tag -tag <question>`), and
+only when what follows the sigil looks like a tag — a `:` qualifier
+(`c:opencode`) or two or more characters. So `-1`, a bare `--`, a lone
+`-`, and a question *about* option flags ("what does `-e` do", "is `-p`
+or `-q` faster") all stay in the question text.
 
 ## Workflow
 

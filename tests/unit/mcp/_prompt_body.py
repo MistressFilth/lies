@@ -24,3 +24,16 @@ def rendered_body(message: object) -> str:
     if isinstance(top_level, str):
         return top_level
     return str(message)
+
+
+def carries_verbatim(body: str, value: str) -> bool:
+    """Whether ``body`` carries ``value`` as a fenced verbatim block.
+
+    ``ask`` and ``ground`` render the user question into a fenced block
+    rather than a ``repr()`` literal, so a question carrying a quote or
+    a newline reaches the tool call exactly as typed instead of
+    arriving with escape sequences the agent has to know to strip.
+    Matching the fence is what pins that: it fails for both a missing
+    question and a repr-escaped one.
+    """
+    return f"\n{value}\n```" in body

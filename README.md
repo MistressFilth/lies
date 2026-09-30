@@ -190,39 +190,57 @@ After registration, Claude Code sees these tools (v0.40 surface):
   metadata (name, tags, source, page_count, updated_at) as a
   per-collection JSON grouping.
 
-…and these prompts (v0.42 surface). Every prompt takes one `str` that
-consumes the whole slash tail and parses its own flags:
+…and these prompts (v0.42 surface). Every prompt takes one `str` and
+parses its own flags. One slot makes the slash path *safe*, not
+*complete* — the host binds exactly one token and drops the rest, so
+reach these through the `get_prompt` tool for anything multi-word:
 
 - `ask(question: str)` — synthesized cited answer. `+tag` / `-tag`
-  filter tokens are parsed out of `question` by the prompt body and
-  routed into `tag_expr` / `exclude_tags` on the dispatched calls.
+  filter tokens are parsed out of the **leading run** of `question` by
+  the prompt body and routed into `tag_expr` / `exclude_tags` on the
+  dispatched calls. A filter must look like a tag (a `:` qualifier, or
+  two or more characters) and sit before the first question word, so a
+  question *about* option flags — "what does `-e` do" — keeps its
+  words.
 - `ground(tail: str)` — cite-snippet digest (no synthesis). Same
   filter-token contract as `ask`, plus `--top_k N` (also `--top_k=N`),
   clamped to [1, 10], default 3.
 - `collections(tail: str)` — registry CRUD. `<subcommand> <args…>`;
-  subcommands `list`, `add`, `remove`, `modify`, `info`, `tag`,
-  `register-shipped`, `where`. The tail is whitespace-separated and
-  quote characters are literal, so an argument that needs an embedded
-  space is not expressible here — run the `lies library` Bash command
-  directly for that.
+  subcommands `list`, `show` (alias `info`), `new` (alias `add`),
+  `modify`, `delete` (alias `remove`), `where`, `enrich-tags`, `tag`
+  (`<slug> <tag…>`, rendered as `modify --tag`), `bootstrap-all` (alias
+  `register-shipped`). Flags: `--source` / `--prompt` on `new`; `--tag`
+  / `--untag` / `--set` / `--from-file` on `modify`; `--json` on
+  `list`. The tail is whitespace-separated and quote characters are
+  literal, so an argument that needs an embedded space is not
+  expressible here — run the `lies library` Bash command directly for
+  that. A positional the subcommand has no slot for is reported in the
+  body rather than appended to the rendered command.
 - `ingest(tail: str)` — bring a source into the library. Either
   `<source>` or `--delete <slug>` or `--batch <dir>`, plus optional
   `--slug-prefix`, `--type`, `--slug`, `--title`, `--dry-run`.
   `--title` and `--slug-prefix` take free text (every word up to the
   next flag); the rest take one token.
 - `lint(tail: str)` — health-check. `--check <name>` (one finding
-  category, plural tolerated), `--fix`.
+  category, plural tolerated), `--fix`. `check` narrows this call's
+  return value; the persisted `<wiki>/lint-report.md` behind
+  `wiki://lint-report` always holds the full report.
 - `reindex(tail: str)` — rebuild the search index. `--reconcile`,
   `--embed`, `--force`, `--cleanup`, `--all`, `--name <wiki>`.
-  `all`, `all_` and `--all` are the same destructive marker.
+  `all`, `all_` and `--all` are the same destructive marker. `--name`
+  takes exactly one token, so `--name pydantic all` reindexes
+  `pydantic` with the destructive marker set.
 - `sync(tail: str)` — pull + ingest remote sources. `<collection…>` or
-  `all` (both mean every collection with a scraper), plus `--no-ingest`,
-  `--force`, `--dry-run`, `--jobs N`, `--scraper-timeout N`.
+  `all` (both mean every collection with a scraper), plus `--only
+  <names>`, `--no-ingest`, `--force`, `--dry-run`, `--jobs N`,
+  `--scraper-timeout N`.
 
 Every prompt tail is split on whitespace. Flag values bind as
-`--flag=value` or `--flag value`; a value flag given no value, or a flag
-outside the prompt's vocabulary, renders a body that names the problem
-instead of running a command the user did not ask for.
+`--flag=value` or `--flag value`; a value flag given no value, a value
+attached to a boolean, or a flag outside the prompt's vocabulary,
+renders a body that names the problem instead of running a command the
+user did not ask for. A boolean written `--all=true` is still set — the
+value means nothing on a switch, and the body says it was discarded.
 
 Hosts bind prompt names under their server prefix (e.g. `/lies:ask`).
 One-string parameters are what make the slash path work at all: hosts
