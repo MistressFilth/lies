@@ -35,32 +35,37 @@ yourself. The wiki you are talking to is selected by the
 - `get_prompt(name, arguments?)` — renders the named prompt and
   returns its messages.
 
-## Prompts (v0.41 surface)
+## Prompts (v0.42 surface)
 
 Seven `@mcp.prompt` names are registered. Two paths reach them:
 
-- **Slash** — `/lies:ask <token>`. Hosts pre-tokenize the slash tail
-  on whitespace and bind tokens positionally to declared parameters,
-  so a single-parameter prompt receives only the first token. Slash UX
-  is single-token only; do not recommend it for multi-word questions.
+- **Slash** — `/lies:sync all`, `/lies:ask +c:opencode why`. Hosts
+  pre-tokenize the slash tail on whitespace and bind tokens
+  positionally to declared parameters.
 - **Tool** — `get_prompt(name=..., arguments={...})`. Tool-call
-  arguments are not pre-tokenized, so the full string reaches the
-  prompt body intact. This is the path for user questions.
+  arguments are not pre-tokenized, so the full string arrives intact.
 
-- `ask(question: str)` — synthesized cited answer. Filter tokens
-  `+tag`, `-tag` are parsed out of the question text inside the body
-  and routed into `tag_expr` / `exclude_tags` on the dispatched tool
-  calls.
-- `ground(question: str, top_k=3)` — cite-snippet digest (no
-  synthesis). Same filter-token parsing contract as `ask`.
-- `collections(subcommand, args=[])` — library registry CRUD.
-- `ingest(source, delete_slug=None, batch_dir=None, dry_run=False)` —
-  bring a source into the library.
-- `lint(check=None, fix=False)` — health-check the corpus.
-- `reindex(reconcile=False, embed=False, force=False, cleanup=False, all_=False)` —
-  rebuild the search index.
-- `sync(collections=[], no_ingest=False, force=False, dry_run=False, jobs=4, scraper_timeout=300)` —
-  pull + ingest remote sources.
+Every prompt takes exactly one `str` that consumes the whole tail and
+parses its own flags. A typed parameter past position one would receive
+a bare word from the slash tokenizer and fail JSON decode, which is why
+there are no `bool` / `int` / `list[str]` parameters on the prompt
+surface.
+
+- `ask(question: str)` — synthesized cited answer. `+tag` / `-tag`
+  filter tokens are parsed out of `question` inside the body and
+  routed into `tag_expr` / `exclude_tags` on the dispatched calls.
+- `ground(tail: str)` — cite-snippet digest (no synthesis). Same
+  filter-token contract, plus `--top_k=N` (clamped to [1, 10]).
+- `collections(tail: str)` — registry CRUD. `<subcommand> <args…>`.
+- `ingest(tail: str)` — `<source>` or `--delete <slug>` or
+  `--batch <dir>`, plus `--slug-prefix` / `--type` / `--slug` /
+  `--title` / `--dry-run`.
+- `lint(tail: str)` — `--check <name>`, `--fix`.
+- `reindex(tail: str)` — `--reconcile` / `--embed` / `--force` /
+  `--cleanup` / `--all`.
+- `sync(tail: str)` — `<collection…>` or `all` (every collection with a
+  scraper), plus `--no-ingest` / `--force` / `--dry-run` / `--jobs N` /
+  `--scraper-timeout N`.
 
 ## Routing rules
 

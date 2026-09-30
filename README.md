@@ -185,26 +185,34 @@ After registration, Claude Code sees these tools (v0.40 surface):
   metadata (name, tags, source, page_count, updated_at) as a
   per-collection JSON grouping.
 
-…and these prompts (v0.41 surface):
+…and these prompts (v0.42 surface). Every prompt takes one `str` that
+consumes the whole slash tail and parses its own flags:
 
 - `ask(question: str)` — synthesized cited answer. `+tag` / `-tag`
   filter tokens are parsed out of `question` by the prompt body and
   routed into `tag_expr` / `exclude_tags` on the dispatched calls.
-- `ground(question: str, top_k=3)` — cite-snippet digest (no
-  synthesis). Same filter-token parsing contract as `ask`.
-- `collections(subcommand, args=[])` — library registry CRUD.
-- `ingest(source, delete_slug=None, batch_dir=None, dry_run=False)` —
-  bring a source into the library.
-- `lint(check=None, fix=False)` — health-check the corpus.
-- `reindex(reconcile=False, embed=False, force=False, cleanup=False, all_=False)` —
-  rebuild the search index.
-- `sync(collections=[], no_ingest=False, force=False, dry_run=False, jobs=4, scraper_timeout=300)` —
-  pull + ingest remote sources.
+- `ground(tail: str)` — cite-snippet digest (no synthesis). Same
+  filter-token contract as `ask`, plus `--top_k=N` (clamped to
+  [1, 10], default 3).
+- `collections(tail: str)` — registry CRUD. `<subcommand> <args…>`;
+  subcommands `list`, `add`, `remove`, `modify`, `info`, `tag`,
+  `register-shipped`, `where`.
+- `ingest(tail: str)` — bring a source into the library. Either
+  `<source>` or `--delete <slug>` or `--batch <dir>`, plus optional
+  `--slug-prefix`, `--type`, `--slug`, `--title`, `--dry-run`.
+- `lint(tail: str)` — health-check. `--check <name>`, `--fix`.
+- `reindex(tail: str)` — rebuild the search index. `--reconcile`,
+  `--embed`, `--force`, `--cleanup`, `--all`.
+- `sync(tail: str)` — pull + ingest remote sources. `<collection…>` or
+  `all` (both mean every collection with a scraper), plus `--no-ingest`,
+  `--force`, `--dry-run`, `--jobs N`, `--scraper-timeout N`.
 
 Hosts bind prompt names under their server prefix (e.g. `/lies:ask`).
-Hosts that pre-tokenize the slash tail on whitespace pass only the
-first token to a single-parameter prompt, so slash UX is
-single-token only. Use `get_prompt` for multi-word questions.
+One-string parameters are what make the slash path work: hosts
+pre-tokenize the tail on whitespace and bind tokens positionally, so a
+typed `bool` / `int` / `list[str]` past position one would receive a bare
+word and fail decode. Tool-call arguments are not pre-tokenized, so
+`get_prompt` carries the same string either way.
 
 Wiki selection: every tool accepts an optional `name` parameter.
 Resolution chain: explicit `name` → `LIES_WIKI_NAME` env → `default`.

@@ -33,6 +33,34 @@ All notable changes to LIES are documented here. The format follows
   passing against pydantic's repr escaping rather than the real
   rendered body. The helper now reads `message.content.text`.
 
+### Breaking changes (0.42.0)
+
+**MCP prompt arguments collapsed to a single string tail.** Five prompts
+took typed parameters past position one; hosts that bind slashes to MCP
+prompts pre-tokenize the tail on whitespace and bind tokens
+positionally, so a bare word landed in a `bool` / `int` / `list[str]`
+slot and FastMCP rejected it with a JSON-parse error. Every prompt now
+takes exactly one `str` that consumes the whole tail, and parses its
+flags internally.
+
+| Prompt | Before | After |
+|---|---|---|
+| `ask` | `question: str` | `question: str` (unchanged) |
+| `ground` | `question: str, top_k: int = 3` | `tail: str` — `--top_k=N` |
+| `collections` | `subcommand: str, args: list[str] \| None` | `tail: str` — `<subcommand> <args…>` |
+| `ingest` | `source: str, delete_slug=None, batch_dir=None, dry_run: bool` | `tail: str` — `--delete <slug>`, `--batch <dir>`, `--slug-prefix <n>`, `--type`, `--slug`, `--title`, `--dry-run` |
+| `lint` | `check: str \| None, fix: bool` | `tail: str` — `--check <name>`, `--fix` |
+| `reindex` | 5 × `bool` | `tail: str` — `--reconcile`, `--embed`, `--force`, `--cleanup`, `--all` |
+| `sync` | `collections: list[str] \| None, no_ingest/force/dry_run: bool, jobs: int, scraper_timeout: int` | `tail: str` — `<collection…>\|all`, `--no-ingest`, `--force`, `--dry-run`, `--jobs N`, `--scraper-timeout N` |
+
+Programmatic callers replace the keyword arguments with one string:
+`get_prompt(name="lint", arguments={"check": "orphans", "fix": true})`
+becomes `get_prompt(name="lint", arguments={"tail": "--check orphans --fix"})`.
+
+`all` and `--all` on `sync` are no-op markers meaning "every collection
+with a scraper"; both render a bare `lies sync`. No forwarder, no
+alias, no deprecation path.
+
 ### Added (0.42.0)
 
 - `list_prompts` and `get_prompt` tools via the FastMCP

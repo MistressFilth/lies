@@ -38,7 +38,7 @@ async def test_render_ground_excludes_lib_ask() -> None:
 
     prompt = await mcp.get_prompt("ground")
     assert prompt is not None
-    result = await prompt.render({"question": "what is qmd"})
+    result = await prompt.render({"tail": "what is qmd"})
     [message] = result.messages
     body = rendered_body(message)
     assert "mcp__lies__lib_ask" not in body

@@ -18,15 +18,10 @@ def test_ground_prompt_skips_lib_ask() -> None:
 def test_ground_prompt_routes_search_and_read() -> None:
     from lies.mcp.prompts_impl import ground_prompt
 
-    [msg] = ground_prompt(
-        "+c:test_alpha -t:draft register a PostToolUse hook",
-        top_k=5,
-    )
+    [msg] = ground_prompt("+c:test_alpha -t:draft --top_k=5 register a PostToolUse hook")
     body = rendered_body(msg)
     assert "mcp__lies__search" in body
     assert "mcp__lies__read" in body
-    # Single quotes inside the templated args are repr-escaped because
-    # the body round-trips through repr on TextContent.
     assert "tag_expr='c:test_alpha'" in body
     assert "exclude_tags=['t:draft']" in body
     assert "top_k=5" in body
