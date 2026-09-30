@@ -17,7 +17,11 @@ from __future__ import annotations
 
 import pytest
 
-from lies.mcp.prompts_impl import _parse_question_filters, _split_tail
+from lies.mcp.prompts_impl import (
+    _parse_question_filters,
+    _split_leading_flags,
+    _split_tail,
+)
 
 
 class TestWhitespaceSplitting:
@@ -330,3 +334,99 @@ class TestMultiWordFlags:
         )
         assert parsed.missing_values == ("title",)
         assert parsed.values == {"type": "concept"}
+
+
+class TestRepeats:
+    """Every occurrence of a value flag survives, in order.
+
+    ``lies library modify --tag a --tag b`` is a real shape: the option
+    is declared "Tag to add (repeatable)". ``values`` is last-wins,
+    which is right for a scalar and a silent loss for a repeatable one
+    — the first tag vanished with no word about it.
+    """
+
+    def test_two_occurrences_are_both_kept_in_order(self) -> None:
+        parsed = _split_tail("--tag a --tag b", value_flags=frozenset({"tag"}))
+        assert parsed.repeats_of("tag") == ("a", "b")
+        # Last-wins stays the scalar answer, and keeps the tail's order.
+        assert parsed.values["tag"] == "b"
+
+    def test_a_single_occurrence_is_still_reported(self) -> None:
+        parsed = _split_tail("--tag a", value_flags=frozenset({"tag"}))
+        assert parsed.repeats_of("tag") == ("a",)
+
+    def test_an_unused_flag_has_no_repeats(self) -> None:
+        parsed = _split_tail("plain", value_flags=frozenset({"tag"}))
+        assert parsed.repeats_of("tag") == ()
+
+    def test_the_equals_form_repeats_too(self) -> None:
+        parsed = _split_tail("--tag=a --tag=b", value_flags=frozenset({"tag"}))
+        assert parsed.repeats_of("tag") == ("a", "b")
+
+
+class TestLeadingFlagSplit:
+    """``_split_leading_flags`` — flags before the question, text after.
+
+    A tail that is mostly a question must keep its words. Running the
+    full grammar over the whole string turned "what is the --only flag"
+    into a search for "what is the flag".
+    """
+
+    def test_a_leading_flag_is_consumed(self) -> None:
+        parsed, question = _split_leading_flags(
+            "--top_k 5 what changed",
+            value_flags=frozenset({"top_k"}),
+            known_flags=frozenset({"top_k"}),
+        )
+        assert parsed.values["top_k"] == "5"
+        assert question == "what changed"
+
+    def test_a_flag_inside_the_question_is_text(self) -> None:
+        parsed, question = _split_leading_flags(
+            "what is the --only flag",
+            value_flags=frozenset({"top_k"}),
+            known_flags=frozenset({"top_k"}),
+        )
+        assert parsed.values == {}
+        assert question == "what is the --only flag"
+
+    def test_the_equals_form_in_the_leading_run(self) -> None:
+        parsed, question = _split_leading_flags(
+            "--top_k=5 what changed",
+            value_flags=frozenset({"top_k"}),
+            known_flags=frozenset({"top_k"}),
+        )
+        assert parsed.values["top_k"] == "5"
+        assert question == "what changed"
+
+    def test_a_leading_value_flag_with_no_value_is_reported(self) -> None:
+        parsed, question = _split_leading_flags(
+            "--top_k", value_flags=frozenset({"top_k"}), known_flags=frozenset({"top_k"})
+        )
+        assert "top_k" in parsed.missing_values
+        assert question == ""
+
+    def test_double_dash_says_the_flags_stop(self) -> None:
+        parsed, question = _split_leading_flags(
+            "-- --top_k 5 what changed",
+            value_flags=frozenset({"top_k"}),
+            known_flags=frozenset({"top_k"}),
+        )
+        assert parsed.values == {}
+        assert question == "--top_k 5 what changed"
+
+    def test_a_flag_with_no_value_does_not_eat_the_next_flag(self) -> None:
+        """``--top_k --force`` reports the missing value and keeps ``--force``.
+
+        Swallowing the neighbouring flag as the missing value would run
+        neither flag as asked; the whole leading run stays flags here,
+        so the question is empty and the body asks for one.
+        """
+        parsed, question = _split_leading_flags(
+            "--top_k --force",
+            value_flags=frozenset({"top_k"}),
+            known_flags=frozenset({"top_k", "force"}),
+        )
+        assert "top_k" in parsed.missing_values
+        assert "force" in parsed.booleans
+        assert question == ""

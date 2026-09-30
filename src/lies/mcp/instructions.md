@@ -76,9 +76,12 @@ still set — the value is discarded and the body says so.
   (alias `register-shipped`). Flags: `--source` / `--prompt` on
   `new`; `--tag` / `--untag` / `--set` / `--from-file` on
   `modify`; `--json` on `list`.
-- `ingest(tail: str)` — `<source>` or `--delete <slug>` or
-  `--batch <dir>`, plus `--slug-prefix` / `--type` / `--slug` /
-  `--title` / `--dry-run`.
+- `ingest(tail: str)` — `<source>` or `--batch <dir>`, plus
+  `--source` / `--collection` / `--slug` / `--title` / `--slug-prefix`
+  / `--exclude-stem` / `--exclude-dir` / `--force` / `--dry-run`.
+  A bare path binds to `--source`. There is no `--delete`: nothing in
+  the CLI removes an ingested page, so a tail that asks for one gets
+  the two things that do exist rather than a command that exits 2.
 - `lint(tail: str)` — `--check <name>` (one finding category; the
   `lint` tool's `check` parameter filters the report to it), `--fix`.
 - `reindex(tail: str)` — `--reconcile` / `--embed` / `--force` /
@@ -86,9 +89,10 @@ still set — the value is discarded and the body says so.
   are the same destructive marker; `cleanup` and `all_` elicit
   confirmation. `--name` takes exactly one token, so
   `--name pydantic all` reindexes `pydantic` with `all_=True`.
-- `sync(tail: str)` — `<collection…>` or `all` (every collection with a
-  scraper), plus `--only <names>` / `--no-ingest` / `--force` /
-  `--dry-run` / `--jobs N` / `--scraper-timeout N`.
+- `sync(tail: str)` — `<collection…>` or `all` (every collection with
+  a scraper), plus `--source` / `--name` / `--force` / `--wait` /
+  `--fail-busy` / `--wizard` / `--skip-reindex`. `lies sync` takes one
+  positional, so several names render one command each.
 
 ## Routing rules
 

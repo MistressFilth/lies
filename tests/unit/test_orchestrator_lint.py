@@ -407,6 +407,51 @@ def test_run_lint_check_filters_to_one_category(orch: Orchestrator) -> None:
     assert "Filtered to check='stale'" in report_md
 
 
+def test_run_lint_check_does_not_narrow_the_log_entry(orch: Orchestrator) -> None:
+    """The audit trail counts the merge, not the narrowed view.
+
+    The log entry is what a later reader scans to ask "was this corpus
+    healthy?". A title built from the filtered report read as "2
+    findings" for a run whose merge carried twenty across five
+    categories, which contradicts the docstring's promise that
+    ``check`` narrows the return value only.
+    """
+    from lies.agents.linter import LintFinding, LintSeverity
+
+    _seed_orphan(orch)
+    llm = LintReport(
+        findings=[
+            LintFinding(
+                severity=LintSeverity.MEDIUM,
+                category="stale",
+                message="page is out of date",
+                pages=["concepts/a.md"],
+            ),
+            LintFinding(
+                severity=LintSeverity.MEDIUM,
+                category="contradiction",
+                message="two pages disagree",
+                pages=["concepts/b.md"],
+            ),
+        ],
+        report_markdown="",
+    )
+    with (
+        mock.patch.object(orch, "_call_linter", return_value=(llm, None)),
+        mock.patch.object(orch, "_run_repair_agent"),
+    ):
+        orch.run_lint(check="stale")
+    log = (orch.wiki.wiki_dir / "log.md").read_text(encoding="utf-8")
+    entry = log.rsplit("## ", 1)[-1]
+    # The narrowed count is stated, and it is stated as a fraction of
+    # the whole rather than standing in for it.
+    assert "check=stale" in entry
+    assert "1/4 matched" in entry, entry
+    # The unfiltered report is what the persisted artifact holds.
+    report = (orch.wiki.wiki_dir / "lint-report.md").read_text(encoding="utf-8")
+    assert "two pages disagree" in report
+
+
 def test_run_lint_check_accepts_the_plural_spelling(orch: Orchestrator) -> None:
     """``--check orphans`` reads naturally in a report; the finding says
     ``orphan``. Both must select the same check."""

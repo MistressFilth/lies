@@ -34,37 +34,32 @@ FlagCase = tuple[object, str, str, str | None]
 
 FLAG_VOCABULARY: list[FlagCase] = [
     # -- ingest ------------------------------------------------------
+    # Every flag below is declared by the Typer signature in
+    # ``src/lies/library/cli.py``. ``lies ingest`` has no positional
+    # argument, so a bare path binds to ``--source``.
+    (ingest_prompt, "docs/a.md", "--source docs/a.md", None),
     (
         ingest_prompt,
-        "docs/a.md --type concept",
-        "--type concept",
+        "docs/a.md --collection mylib",
+        "--collection mylib",
         None,
     ),
+    (ingest_prompt, "docs/a.md --slug my-slug", "--slug my-slug", None),
     (
         ingest_prompt,
-        "docs/a.md --type concept --slug my-slug",
-        "--slug my-slug",
-        None,
-    ),
-    (
-        ingest_prompt,
-        "docs/a.md --type concept --title Pydantic basics",
+        "docs/a.md --title Pydantic basics",
         "--title 'Pydantic basics'",
         None,
     ),
     (
         ingest_prompt,
-        "--batch docs/ --slug-prefix my topic",
-        "--slug-prefix 'my topic'",
+        "--batch docs/ --slug-prefix mylib",
+        "--slug-prefix mylib",
         None,
     ),
-    (
-        ingest_prompt,
-        "docs/a.md --type concept --dry-run",
-        "--dry-run",
-        None,
-    ),
-    (ingest_prompt, "--delete entity-x", "--delete entity-x", None),
+    (ingest_prompt, "docs/a.md --dry-run", "--dry-run", None),
+    (ingest_prompt, "docs/a.md --force", "--force", None),
+    (ingest_prompt, "--batch docs/ --exclude-stem _draft", "--exclude-stem _draft", None),
     # -- lint --------------------------------------------------------
     (lint_prompt, "--check orphans", "check='orphans'", None),
     (lint_prompt, "--fix", "fix=True", "fix=False"),
@@ -80,25 +75,23 @@ FLAG_VOCABULARY: list[FlagCase] = [
     (reindex_prompt, "--all=true", "all_=True", "all_=False"),
     (reindex_prompt, "--name pydantic", "name='pydantic'", "name=None"),
     # -- sync --------------------------------------------------------
-    (sync_prompt, "--no-ingest", "--no-ingest", None),
-    (sync_prompt, "--force", "--force", None),
-    (sync_prompt, "--dry-run", "--dry-run", None),
-    (sync_prompt, "--jobs 8", "--jobs 8", None),
-    (sync_prompt, "--scraper-timeout 600", "--scraper-timeout 600", None),
-    (sync_prompt, "--only pydantic", "--only pydantic", "Unrecognized flag"),
-    (sync_prompt, "pydantic opencode", "--only pydantic opencode", None),
-    (sync_prompt, "all", "", "--only"),
+    (sync_prompt, "all", "Run Bash(lies sync)", "--only"),
+    (sync_prompt, "pydantic --force", "--force", None),
+    (sync_prompt, "pydantic --skip-reindex", "--skip-reindex", None),
+    (sync_prompt, "--name mywiki --wait", "--name mywiki --wait", None),
     # -- ground ------------------------------------------------------
-    (ground_prompt, "what changed --top_k 5", "top_k=5", None),
-    (ground_prompt, "what changed --top_k=5", "top_k=5", None),
+    (ground_prompt, "--top_k 5 what changed", "top_k=5", None),
+    (ground_prompt, "--top_k=5 what changed", "top_k=5", None),
     # -- collections -------------------------------------------------
     (collections_prompt, "add mylib /abs/path", "lies library new mylib", None),
     (collections_prompt, "new mylib --source /abs/path", "--source /abs/path", None),
+    (collections_prompt, "new mylib --source /abs/path --tag cli", "--tag cli", None),
     (collections_prompt, "modify claude_code --tag cli", "--tag cli", None),
     (collections_prompt, "modify claude_code --untag cli", "--untag cli", None),
     (collections_prompt, "modify claude_code --set tags=a,b", "--set tags=a,b", None),
     (collections_prompt, "tag claude_code cli rust", "--tag cli --tag rust", None),
     (collections_prompt, "remove claude_code", "lies library delete claude_code", None),
+    (collections_prompt, "remove claude_code --force", "--force", None),
     (collections_prompt, "info claude_code", 'subcommand="info"', None),
     (collections_prompt, "where claude_code", "lies library where claude_code", None),
     (
@@ -107,6 +100,8 @@ FLAG_VOCABULARY: list[FlagCase] = [
         "lies library bootstrap-all",
         None,
     ),
+    (collections_prompt, "register-shipped --json", "--json", None),
+    (collections_prompt, "list --json", "lies library list --json", "needs a value"),
     (collections_prompt, "enrich-tags", "lies library enrich-tags", None),
 ]
 

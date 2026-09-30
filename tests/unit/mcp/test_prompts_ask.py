@@ -22,9 +22,9 @@ def test_ask_prompt_body_names_routed_tools() -> None:
     assert "mcp__lies__read" in body
     assert "mcp__lies__lib_ask" in body
     # The tag atoms end up as repr'd string/list literals inside the
-    # body — single quotes inside are repr-escaped because the body
-    # itself is rendered via str(Message) which round-trips through
-    # repr on TextContent. Match the escaped form.
+    # body. `rendered_body` reads the real text off
+    # `Message.content.text`, so these are the literals the agent
+    # actually receives — not a repr of the model.
     assert "tag_expr='c:test_alpha'" in body
     assert "exclude_tags=['t:draft']" in body
 

@@ -121,17 +121,31 @@ class TailParse:
     flag written ``--all=true``. The flag is *on* -- the user asked
     for it -- and the value means nothing, so it is reported rather
     than dropped without word. Routing the ``=`` form on a boolean
-    into ``values`` instead (the pre-0.42.1 behavior) meant no prompt
+    into ``values`` instead (the pre-0.42.0 behavior) meant no prompt
     body, all of which read ``booleans``, ever saw the flag: the
     silent loss of a flag the user typed.
+
+    ``repeats`` holds *every* occurrence of a value flag, in order.
+    ``values`` keeps the last one, which is the right answer for a
+    scalar and a silent loss for a repeatable one -- ``modify --tag a
+    --tag b`` is a real shape (``--tag`` is declared "Tag to add
+    (repeatable)" by ``lies library modify``), and a dict of last
+    wins dropped the first tag with no word. Bodies that render a
+    repeatable flag read ``repeats_of``; bodies that render a scalar
+    read ``values``.
     """
 
     positionals: tuple[str, ...] = ()
     values: dict[str, str] = field(default_factory=dict)
+    repeats: dict[str, tuple[str, ...]] = field(default_factory=dict)
     booleans: frozenset[str] = frozenset()
     unknown: frozenset[str] = frozenset()
     missing_values: tuple[str, ...] = ()
     ignored_values: tuple[tuple[str, str], ...] = ()
+
+    def repeats_of(self, name: str) -> tuple[str, ...]:
+        """Every value ``name`` was given, in order (empty if never)."""
+        return self.repeats.get(name, ())
 
     def flag_on(self, name: str) -> bool:
         """Whether ``--name`` was present in any form the parser accepts.
@@ -144,7 +158,12 @@ class TailParse:
         return name in self.booleans or name in self.values
 
     def note(self) -> str:
-        """Render the parse problems as a sentence for the body, or ``""``."""
+        """Render the parse problems as a sentence for the body.
+
+        Returns ``""`` or a leading-space-prefixed sentence, so a body
+        that appends it to a rendered command cannot weld the last word
+        of that command to the first word of the note.
+        """
         parts: list[str] = []
         if self.missing_values:
             names = ", ".join(f"--{k}" for k in self.missing_values)
@@ -156,7 +175,7 @@ class TailParse:
         if self.ignored_values:
             names = ", ".join(f"--{k}={v!r}" for k, v in self.ignored_values)
             parts.append(f"{names} takes no value; treated as set. Drop the '=' suffix.")
-        return " ".join(parts)
+        return f" {' '.join(parts)}" if parts else ""
 
 
 def _split_tail(
@@ -205,10 +224,14 @@ def _split_tail(
 
     ``known_flags`` is the prompt's full flag vocabulary; anything
     outside it lands in ``unknown`` so the body can name the typo.
+    Every occurrence of a value flag is recorded in ``repeats``;
+    ``values`` holds the last, which is right for a scalar and a
+    silent loss for a repeatable one.
     """
     tokens = tail.split()
     positionals: list[str] = []
     values: dict[str, str] = {}
+    repeats: dict[str, list[str]] = {}
     booleans: set[str] = set()
     unknown: set[str] = set()
     missing_values: list[str] = []
@@ -222,6 +245,7 @@ def _split_tail(
             if sep:
                 if takes_value:
                     values[key] = val
+                    repeats.setdefault(key, []).append(val)
                 else:
                     booleans.add(key)
                     ignored_values.append((key, val))
@@ -231,7 +255,9 @@ def _split_tail(
                     taken.append(tokens[i + 1])
                     i += 1
                 if taken:
-                    values[key] = " ".join(taken)
+                    joined = " ".join(taken)
+                    values[key] = joined
+                    repeats.setdefault(key, []).append(joined)
                 else:
                     missing_values.append(key)
                     booleans.add(key)
@@ -239,6 +265,7 @@ def _split_tail(
                 nxt = tokens[i + 1] if i + 1 < len(tokens) else None
                 if nxt is not None and not nxt.startswith("--"):
                     values[key] = nxt
+                    repeats.setdefault(key, []).append(nxt)
                     i += 1
                 else:
                     missing_values.append(key)
@@ -253,11 +280,95 @@ def _split_tail(
     return TailParse(
         positionals=tuple(positionals),
         values=values,
+        repeats={k: tuple(v) for k, v in repeats.items()},
         booleans=frozenset(booleans),
         unknown=frozenset(unknown),
         missing_values=tuple(missing_values),
         ignored_values=tuple(ignored_values),
     )
+
+
+def _split_leading_flags(
+    tail: str,
+    *,
+    value_flags: frozenset[str],
+    known_flags: frozenset[str],
+) -> tuple[TailParse, str]:
+    """Consume only the *leading* run of ``--flags``; the rest is question text.
+
+    A tail that is mostly a question must not have its words parsed as
+    flags. This library indexes command-line tooling, so "what is the
+    ``--only`` flag" is an ordinary question and its ``--only`` is
+    ordinary text; running the full ``_split_tail`` grammar over the
+    whole string deleted the words and searched for the remainder
+    (``"what is the flag"``). Two guards close that:
+
+    1. **Leading run only.** Scanning stops at the first token that is
+       not a flag, so a flag-shaped word inside a sentence is never
+       reached.
+    2. **``--`` terminator.** Everything after a bare ``--`` is text,
+       so a user whose question *starts* with a flag can say so.
+
+    Returns ``(parse_of_the_leading_flags, question_text)``.
+    """
+    tokens = tail.split()
+    head: list[str] = []
+    i = 0
+    while i < len(tokens):
+        tok = tokens[i]
+        if tok == "--":
+            i += 1
+            break
+        if not (tok.startswith("--") and len(tok) > 2):
+            break
+        head.append(tok)
+        i += 1
+        key, sep, _ = tok[2:].partition("=")
+        if not sep and key in value_flags and i < len(tokens) and not tokens[i].startswith("--"):
+            head.append(tokens[i])
+            i += 1
+    parsed = _split_tail(" ".join(head), value_flags=value_flags, known_flags=known_flags)
+    return parsed, " ".join(tokens[i:])
+
+
+def _leftover_note(raw_args: tuple[str, ...], used: int, verb: str) -> str:
+    """Name the positionals ``verb`` had no slot for.
+
+    Splicing surplus positionals into a command line is how a flag the
+    parser did not recognise turned into a bare argument the user never
+    asked to pass, on a verb that then ran with it. Reporting is the
+    alternative: the agent asks, instead of running something nobody
+    typed.
+    """
+    extra = raw_args[used:]
+    if not extra:
+        return ""
+    return (
+        f" Not consumed by {verb!r}: {shlex.join(extra)} "
+        f"({len(extra)} positional(s) the verb does not take). "
+        f"Ask the user what to do with them instead of passing them along."
+    )
+
+
+def _render_flags(parsed: TailParse, include: tuple[str, ...]) -> str:
+    """Render every occurrence of each requested flag, in ``include`` order.
+
+    A value flag is read through ``repeats_of``, so ``modify --tag a
+    --tag b`` renders both — a repeatable Typer option means one
+    occurrence per value. A boolean renders bare, once, from
+    ``booleans``. A key with both a value and a bare occurrence (a
+    value flag that ran out of input) renders its value; the missing
+    value is named in :meth:`TailParse.note` rather than papered over
+    with a second spelling.
+    """
+    out: list[str] = []
+    for key in include:
+        values = parsed.repeats_of(key)
+        if values:
+            out.extend(f"--{key} {shlex.quote(v)}" for v in values)
+        elif key in parsed.booleans:
+            out.append(f"--{key}")
+    return (" " + " ".join(out)) if out else ""
 
 
 def ask_prompt(question: str) -> list[Message]:
@@ -294,17 +405,21 @@ def ask_prompt(question: str) -> list[Message]:
 def ground_prompt(tail: str) -> list[Message]:
     """Cite-snippet digest (no synthesis).
 
-    Same filter-parsing contract as ``ask_prompt``. ``--top_k`` is
-    parsed out of the tail before the filter pass and clamped to
-    [1, 10]; both ``--top_k=5`` and ``--top_k 5`` bind, so the value
-    never leaks into the query text.
+    Same filter-parsing contract as ``ask_prompt``, and the same
+    reason it is parsed differently: the tail is a *question*, and a
+    question about command-line tooling is full of option flags. Only
+    the leading run of ``--flags`` is parsed
+    (:func:`_split_leading_flags`), so ``what is the --only flag``
+    grounds the words ``--only`` and ``flag`` rather than deleting
+    them. ``--top_k`` is clamped to [1, 10]; both ``--top_k=5`` and
+    ``--top_k 5`` bind, so the value never leaks into the query text.
 
     The emptiness check runs *after* the filter pass, not before it.
     A filter token is itself a positional, so a guard on
     ``positionals`` let ``+c:opencode`` -- and a bare ``--top_k 5`` --
     through and rendered ``search('')``.
     """
-    parsed = _split_tail(
+    parsed, question = _split_leading_flags(
         tail,
         value_flags=frozenset({"top_k"}),
         known_flags=frozenset({"top_k"}),
@@ -316,7 +431,6 @@ def ground_prompt(tail: str) -> list[Message]:
             top_k = max(1, min(10, int(raw_top_k)))
         except ValueError:
             top_k = 3
-    question = " ".join(parsed.positionals)
     query_text, tag_expr, exclude_tags = _parse_question_filters(question)
     if not query_text:
         return [
@@ -328,6 +442,16 @@ def ground_prompt(tail: str) -> list[Message]:
             )
         ]
     note = parsed.note()
+    # A flag-shaped word inside the question is text, and it stays
+    # there. Say so, because the other reading -- "the prompt ignored
+    # my --top_k" -- is the one a user forms when the words they typed
+    # come back inside a search string.
+    if any(tok.startswith("--") for tok in question.split()):
+        note += (
+            " Flags are read from the leading run only, so a --flag after"
+            " the first word stays part of the question; put --top_k first,"
+            " or open the tail with -- to say the flags stop there."
+        )
     query_block = _verbatim("question", query_text)
     body = (
         f"Call mcp__lies__search with {query_block}, "
@@ -337,7 +461,7 @@ def ground_prompt(tail: str) -> list[Message]:
         f'[[collection/slug]] (Title): "\u2264200-char verbatim snippet" '
         f"(clamped to top_k={top_k} entries). "
         f"Cite marker is grounded in the read span's body, not synthesized prose. "
-        f"Do NOT route through lib_ask \u2014 ground is digest-only. " + note
+        f"Do NOT route through lib_ask \u2014 ground is digest-only." + note
     )
     return [Message(body)]
 
@@ -356,13 +480,34 @@ _LIBRARY_SUBS = (
     "list, show (info), new (add), modify, delete (remove), "
     "where, enrich-tags, tag, bootstrap-all (register-shipped)"
 )
-# The flag vocabulary of the verbs above, straight from
-# ``src/lies/library/collections_cli.py``. Declaring it here is what
-# lets ``--tags`` and friends reach the command line instead of
-# falling through as unquoted positionals.
-_LIBRARY_VALUE_FLAGS = frozenset({"source", "prompt", "tag", "untag", "set", "from-file", "json"})
-# ``--set`` and ``--from-file`` take free text; the rest are scalars.
-_LIBRARY_MULTI_WORD_FLAGS = frozenset({"set", "from-file"})
+# Per-verb flag vocabulary, transcribed from the Typer signatures in
+# ``src/lies/library/collections_cli.py``: (value flags, boolean
+# flags). Per-verb rather than one union set, because the two errors
+# are symmetric and both are silent. Too narrow and a real flag
+# (``new --tag cli``) is reported as a typo with its value falling
+# into a positional; too wide and a flag the verb does not have is
+# parsed as a boolean, reported as "on", and never rendered. Matching
+# the signature exactly is the only setting where neither happens --
+# ``tests/unit/mcp/test_rendered_commands_are_runnable.py`` checks
+# every rendered command against the live Typer app, so the table
+# cannot drift again without a test going red.
+_LIBRARY_VERB_FLAGS: dict[str, tuple[frozenset[str], frozenset[str]]] = {
+    "list": (frozenset(), frozenset({"json"})),
+    "show": (frozenset(), frozenset()),
+    "where": (frozenset(), frozenset()),
+    "new": (frozenset({"source", "prompt", "tag"}), frozenset()),
+    "modify": (frozenset({"set", "tag", "untag", "from-file"}), frozenset()),
+    "tag": (frozenset({"set", "tag", "untag", "from-file"}), frozenset()),
+    "delete": (frozenset(), frozenset({"force"})),
+    "enrich-tags": (frozenset(), frozenset()),
+    "bootstrap-all": (frozenset(), frozenset({"json"})),
+}
+_LIBRARY_ANY_VALUE = frozenset().union(*(v for v, _ in _LIBRARY_VERB_FLAGS.values()))
+_LIBRARY_ANY_BOOL = frozenset().union(*(b for _, b in _LIBRARY_VERB_FLAGS.values()))
+_LIBRARY_ANY_KNOWN = _LIBRARY_ANY_VALUE | _LIBRARY_ANY_BOOL
+# ``--force`` on ``delete`` skips an interactive confirmation, so a
+# body that renders it has to say what it is skipping.
+_LIBRARY_FORCE_WARNING = " --force skips the delete confirmation; say so before running it."
 
 
 def collections_prompt(tail: str) -> list[Message]:
@@ -378,28 +523,34 @@ def collections_prompt(tail: str) -> list[Message]:
     positionals into the command line -- is how a flag the parser did
     not recognise (``--tags foo,bar``) turned into a bare argument the
     user never asked to pass, on a verb that then ran with it.
+
+    Parsed twice: once against the union of every verb's flags to find
+    the subcommand, then again against that verb's own flags to render
+    it. The second parse is authoritative -- its ``unknown`` set is
+    what names a flag the verb has no slot for.
     """
+    first = _split_tail(
+        tail,
+        value_flags=_LIBRARY_ANY_VALUE,
+        known_flags=_LIBRARY_ANY_KNOWN,
+    )
+    raw_sub = first.positionals[0].lower() if first.positionals else ""
+    sub = _LIBRARY_SUB_ALIASES.get(raw_sub, raw_sub)
+    if not sub:
+        return [
+            Message(
+                f"No subcommand given. Valid subcommands: {_LIBRARY_SUBS}. "
+                "Ask the user which to invoke."
+            )
+        ]
+    verb_value, verb_bool = _LIBRARY_VERB_FLAGS.get(sub, (frozenset(), frozenset()))
     parsed = _split_tail(
         tail,
-        value_flags=_LIBRARY_VALUE_FLAGS,
-        multi_word_flags=_LIBRARY_MULTI_WORD_FLAGS,
-        known_flags=_LIBRARY_VALUE_FLAGS,
+        value_flags=verb_value,
+        known_flags=verb_value | verb_bool,
     )
     note = parsed.note()
-    raw_sub = parsed.positionals[0].lower() if parsed.positionals else ""
     args = parsed.positionals[1:]
-    sub = _LIBRARY_SUB_ALIASES.get(raw_sub, raw_sub)
-
-    def leftover(used: int) -> str:
-        """Name the positionals the verb had no slot for."""
-        extra = args[used:]
-        if not extra:
-            return ""
-        return (
-            f" Not consumed by {raw_sub!r}: {shlex.join(extra)} "
-            f"({len(extra)} positional(s) the verb does not take). "
-            f"Ask the user what to do with them instead of passing them along."
-        )
 
     unquoted = ""
     if any("'" in a or '"' in a for a in args):
@@ -410,52 +561,51 @@ def collections_prompt(tail: str) -> list[Message]:
             f"directly with your own quoting."
         )
 
-    def flags(include: tuple[str, ...]) -> str:
-        out = []
-        for key in include:
-            if parsed.values.get(key) is not None:
-                out.append(f"--{key} {shlex.quote(parsed.values[key])}")
-            elif key in parsed.booleans:
-                out.append(f"--{key}")
-        return (" " + " ".join(out)) if out else ""
-
     if sub == "list":
-        body = (
-            'Call mcp__lies__collections_read(subcommand="list") and '
-            "render each entry as one markdown bullet (name, tags, "
-            "source, page_count, updated_at)."
-        )
         if parsed.flag_on("json"):
             body = (
                 "Run Bash(lies library list --json) and render the parsed "
                 "array as one markdown bullet per record. " + note
+            )
+        else:
+            body = (
+                'Call mcp__lies__collections_read(subcommand="list") and '
+                "render each entry as one markdown bullet (name, tags, "
+                "source, page_count, updated_at). " + note
             )
     elif sub == "show":
         name = args[0] if args else "<name>"
         body = (
             f'Call mcp__lies__collections_read(subcommand="info", '
             f"name={shlex.quote(name)}) and render the returned metadata "
-            f"envelope." + leftover(1) + note
+            f"envelope." + _leftover_note(args, 1, raw_sub) + unquoted + note
         )
     elif sub == "new":
         slug = args[0] if args else "<slug>"
         # A second positional is the source path the pre-flag form
         # carried; the flag form overrides it.
-        source_flag = flags(("source", "prompt"))
+        source_flag = _render_flags(parsed, ("source", "prompt"))
         if not source_flag and len(args) > 1:
             source_flag = f" --source {shlex.quote(args[1])}"
         body = (
             f"Register a new collection: run "
-            f"Bash(lies library new {shlex.quote(slug)}{source_flag}). "
+            f"Bash(lies library new {shlex.quote(slug)}"
+            f"{source_flag}{_render_flags(parsed, ('tag',))}). "
             f"Then run qmd embed so vec/hyde queries find the new "
-            f"collection." + leftover(2) + unquoted + note
+            f"collection."
+            + _leftover_note(args, 2 if source_flag else 1, raw_sub)
+            + unquoted
+            + note
         )
     elif sub == "modify":
         slug = args[0] if args else "<slug>"
         body = (
             f"Run Bash(lies library modify {shlex.quote(slug)}"
-            f"{flags(('tag', 'untag', 'set', 'from-file'))}) and report "
-            f"the tool's outcome to the user verbatim." + leftover(1) + unquoted + note
+            f"{_render_flags(parsed, ('tag', 'untag', 'set', 'from-file'))}) "
+            f"and report the tool's outcome to the user verbatim."
+            + _leftover_note(args, 1, raw_sub)
+            + unquoted
+            + note
         )
     elif sub == "tag":
         # ``tag <slug> <t1> <t2>`` is the shape users reach for;
@@ -465,36 +615,40 @@ def collections_prompt(tail: str) -> list[Message]:
         rendered = "".join(f" --tag {shlex.quote(t)}" for t in tags)
         body = (
             f"Run Bash(lies library modify {shlex.quote(slug)}"
-            f"{flags(('tag', 'untag', 'set', 'from-file'))}{rendered}) "
+            f"{rendered}{_render_flags(parsed, ('untag', 'set', 'from-file'))}) "
             f"and report which tags the collection now carries."
-            + leftover(1 + len(tags))
+            + _leftover_note(args, 1 + len(tags), raw_sub)
             + unquoted
             + note
         )
     elif sub == "delete":
         slug = args[0] if args else "<slug>"
+        force = " --force" if parsed.flag_on("force") else ""
         body = (
-            f"Run Bash(lies library delete {shlex.quote(slug)}) and report "
-            f"the tool's outcome to the user verbatim." + leftover(1) + unquoted + note
+            f"Run Bash(lies library delete {shlex.quote(slug)}{force}) and "
+            f"report the tool's outcome to the user verbatim."
+            + (_LIBRARY_FORCE_WARNING if force else "")
+            + _leftover_note(args, 1, raw_sub)
+            + unquoted
+            + note
         )
     elif sub == "enrich-tags":
         body = (
             "Run Bash(lies library enrich-tags) and surface the printed "
-            "hints verbatim." + leftover(0) + note
+            "hints verbatim." + _leftover_note(args, 0, raw_sub) + note
         )
     elif sub == "bootstrap-all":
+        json_flag = " --json" if parsed.flag_on("json") else ""
         body = (
-            "Run Bash(lies library bootstrap-all) and surface the stdout "
-            "stream to the user." + leftover(0) + note
+            f"Run Bash(lies library bootstrap-all{json_flag}) and surface the "
+            f"stdout stream to the user." + _leftover_note(args, 0, raw_sub) + note
         )
     elif sub == "where":
         slug = args[0] if args else "<slug>"
         body = (
             f"Run Bash(lies library where {shlex.quote(slug)}) and surface "
-            f"the stdout stream to the user." + leftover(1) + unquoted + note
+            f"the stdout stream to the user." + _leftover_note(args, 1, raw_sub) + unquoted + note
         )
-    elif not sub:
-        body = f"No subcommand given. Valid subcommands: {_LIBRARY_SUBS}. Ask the user which to invoke."
     else:
         body = (
             f"Unknown subcommand {raw_sub!r}. Valid subcommands: "
@@ -503,16 +657,48 @@ def collections_prompt(tail: str) -> list[Message]:
     return [Message(body)]
 
 
+# ``lies ingest`` -- transcribed from the Typer signature in
+# ``src/lies/library/cli.py``. There is no positional argument and no
+# ``--type``: the ingest path is deterministic and never asks a model
+# what kind of page a file is. A bare path in the tail is treated as
+# ``--source``, which is the shape users reach for.
+_INGEST_VALUE_FLAGS = frozenset(
+    {
+        "source",
+        "batch",
+        "slug-prefix",
+        "collection",
+        "slug",
+        "title",
+        "exclude-stem",
+        "exclude-dir",
+    }
+)
+# ``--title`` is free text; the rest are single-token paths, slugs, and
+# collection names, and a rule that swallowed until the next flag would
+# eat the collection name after ``--slug-prefix``.
+_INGEST_MULTI_WORD_FLAGS = frozenset({"title"})
+_INGEST_BOOL_FLAGS = frozenset({"force", "no-force", "dry-run", "no-dry-run"})
+_INGEST_KNOWN_FLAGS = _INGEST_VALUE_FLAGS | _INGEST_BOOL_FLAGS
+# The old prompt advertised ``--delete <slug>`` on a command that has
+# no such option. Nothing in the CLI removes an ingested page, so the
+# body says what does exist instead of rendering a command that exits 2.
+_INGEST_DELETE_REMEDY = (
+    "Deleting an ingested page has no CLI verb: `lies ingest` takes "
+    "--source or --batch and nothing else. `lies library delete "
+    "<collection>` removes a collection's config.yaml only. Removing a "
+    "page file is a filesystem delete, so ask the user which they mean "
+    "before running anything."
+)
+
+
 def ingest_prompt(tail: str) -> list[Message]:
     """Route a source into the library."""
-    value_flags = frozenset({"type", "slug", "title", "batch", "slug-prefix", "delete"})
     parsed = _split_tail(
         tail,
-        value_flags=value_flags,
-        # --title and --slug-prefix carry free text; everything else is a
-        # scalar (a type name, a slug, a path) and takes one token.
-        multi_word_flags=frozenset({"title", "slug-prefix"}),
-        known_flags=value_flags | {"dry-run"},
+        value_flags=_INGEST_VALUE_FLAGS,
+        multi_word_flags=_INGEST_MULTI_WORD_FLAGS,
+        known_flags=_INGEST_KNOWN_FLAGS,
     )
     note = parsed.note()
     if parsed.missing_values:
@@ -523,36 +709,58 @@ def ingest_prompt(tail: str) -> list[Message]:
             )
         ]
     dry = " --dry-run" if parsed.flag_on("dry-run") else ""
-    delete_slug = parsed.values.get("delete")
+    force = " --force" if parsed.flag_on("force") else ""
+    excludes = _render_flags(parsed, ("exclude-stem", "exclude-dir"))
     batch_dir = parsed.values.get("batch")
-    source = parsed.positionals[0] if parsed.positionals else "<source>"
+    source = parsed.values.get("source")
+    positional = parsed.positionals[0] if parsed.positionals else None
+    delete_asked = "delete" in tail
 
-    if delete_slug:
-        cmd = f'lies ingest --data-dir "$LIES_DATA"{dry} --delete {shlex.quote(delete_slug)}'
+    if positional is not None:
+        if source is not None:
+            return [
+                Message(
+                    f"Cannot run ingest: {positional!r} and --source "
+                    f"{source!r} both name a source, and `lies ingest` takes "
+                    "one. Ask the user which to use; no command was run."
+                )
+            ]
+        source = positional
+
+    if batch_dir is not None:
+        if source is not None:
+            return [
+                Message(
+                    "Cannot run ingest: --batch and a single source both given. "
+                    "`lies ingest` runs one mode at a time. Ask the user which "
+                    "they want; no command was run."
+                )
+            ]
+        prefix = parsed.values.get("slug-prefix")
+        prefix_flag = f" --slug-prefix {shlex.quote(prefix)}" if prefix else ""
         body = (
-            f"Run Bash({cmd!r}) and surface stdout/stderr. The CLI "
-            "removes the page file, the catalog row, appends a "
-            f"delete entry to the log, and triggers qmd update. {note}"
+            f"Run Bash(lies ingest --batch {shlex.quote(batch_dir)}"
+            f"{prefix_flag}{excludes}{force}{dry}) — batch mode. Surface "
+            f"stdout/stderr." + _leftover_note(parsed.positionals, 1, "ingest") + note
         )
-    elif batch_dir:
-        prefix = shlex.quote(parsed.values.get("slug-prefix") or "<derive-from-user>")
+    elif source is not None:
+        extra = _render_flags(parsed, ("collection", "slug", "title"))
         body = (
-            f"Run Bash(lies ingest --batch {shlex.quote(batch_dir)}{dry} "
-            f'--data-dir "$LIES_DATA" --slug-prefix {prefix} '
-            f"--force) \u2014 slug-prefix is required. Surface stdout/stderr. {note}"
+            f"Run Bash(lies ingest --source {shlex.quote(source)}"
+            f"{extra}{excludes}{force}{dry}) and surface stdout/stderr."
+            + _leftover_note(parsed.positionals, 1, "ingest")
+            + note
         )
     else:
-        page_type = shlex.quote(parsed.values.get("type") or "<entity|concept|synthesis|...>")
-        extra = ""
-        if parsed.values.get("slug"):
-            extra += f" --slug {shlex.quote(parsed.values['slug'])}"
-        if parsed.values.get("title"):
-            extra += f" --title {shlex.quote(parsed.values['title'])}"
-        body = (
-            f'Run Bash(lies ingest --data-dir "$LIES_DATA"{dry} '
-            f"--source {shlex.quote(source)} --type {page_type}{extra}) \u2014 supervised mode "
-            f"requires --type. Surface stdout/stderr. {note}"
-        )
+        return [
+            Message(
+                "Cannot run ingest: no source given. Ask the user which file "
+                "or URL to ingest, or pass --batch <dir>, then re-dispatch "
+                'get_prompt(name="ingest", arguments={"tail": "<source>"}).'
+            )
+        ]
+    if delete_asked:
+        body += " " + _INGEST_DELETE_REMEDY
     return [Message(body)]
 
 
@@ -634,17 +842,38 @@ def reindex_prompt(tail: str) -> list[Message]:
     return [Message(body)]
 
 
+# ``lies sync`` -- transcribed from the Typer signature in
+# ``src/lies/cli/ingestion.py``. It takes ONE positional collection and
+# has no ``--only``, ``--jobs``, ``--scraper-timeout``, ``--no-ingest``,
+# ``--dry-run``, or ``--data-dir``; the old prompt invented all of them
+# and rendered a command that exited 2 on every invocation.
+_SYNC_VALUE_FLAGS = frozenset({"source", "name"})
+_SYNC_BOOL_FLAGS = frozenset(
+    {
+        "force",
+        "no-force",
+        "wait",
+        "no-wait",
+        "fail-busy",
+        "no-fail-busy",
+        "wizard",
+        "skip-reindex",
+    }
+)
+_SYNC_KNOWN_FLAGS = _SYNC_VALUE_FLAGS | _SYNC_BOOL_FLAGS
+_SYNC_TAIL = (
+    " Phase 3 (qmd update + embed) runs after the sync loop unless "
+    "--skip-reindex is set. `--wizard` routes a missing collection "
+    "through the collection_author_agent and needs a TTY."
+)
+
+
 def sync_prompt(tail: str) -> list[Message]:
     """Pull + ingest remote sources."""
-    value_flags = frozenset({"jobs", "scraper-timeout", "only"})
     parsed = _split_tail(
         tail,
-        value_flags=value_flags,
-        # ``--only`` takes a comma list and is the flag spelling of the
-        # bare collection names. Without it in the vocabulary, a typed
-        # ``--only pydantic`` was reported as an unrecognized flag the
-        # body had just rendered into its own command.
-        known_flags=value_flags | {"no-ingest", "force", "dry-run"},
+        value_flags=_SYNC_VALUE_FLAGS,
+        known_flags=_SYNC_KNOWN_FLAGS,
     )
     note = parsed.note()
     if parsed.missing_values:
@@ -654,37 +883,43 @@ def sync_prompt(tail: str) -> list[Message]:
                 "value and re-dispatch. No sync ran."
             )
         ]
-    # ``all`` is a no-op marker meaning "every collection with a
-    # scraper", which is also the CLI's behaviour with no --only.
+    # ``all`` is a no-op marker meaning "every collection", which is
+    # also the CLI's behaviour with no positional. Several names mean
+    # several commands: the CLI takes one collection per invocation,
+    # so rendering one call per name is how the user's request maps
+    # onto the real surface. Splicing them into a single list-valued
+    # flag was how an unrecognized flag's value became a collection
+    # the user never named.
     names = [p for p in parsed.positionals if p.lower() != "all"]
-    only = parsed.values.get("only")
-    if only:
-        names.extend(n for n in only.split(",") if n)
-    out: list[str] = []
-    if names:
-        out.append(f"--only {shlex.join(names)}")
-    for flag, label in (
-        ("no-ingest", "--no-ingest"),
-        ("force", "--force"),
-        ("dry-run", "--dry-run"),
-    ):
-        if parsed.flag_on(flag):
-            out.append(label)
-    jobs = parsed.values.get("jobs")
-    if jobs is not None and jobs != "4":
-        out.append(f"--jobs {shlex.quote(jobs)}")
-    timeout = parsed.values.get("scraper-timeout")
-    if timeout is not None and timeout != "300":
-        out.append(f"--scraper-timeout {shlex.quote(timeout)}")
-
-    flag_str = (" " + " ".join(out)) if out else ""
-    body = (
-        f'Run Bash(lies sync --data-dir "$LIES_DATA"{flag_str}) and '
-        "surface each collection's scrape/ingest status. "
-        "Phase 3 (qmd reconcile + update + embed + cleanup) runs "
-        f"automatically unless --dry-run or --no-ingest is set. {note}"
+    shared = _render_flags(
+        parsed,
+        (
+            "source",
+            "name",
+            "force",
+            "no-force",
+            "wait",
+            "no-wait",
+            "fail-busy",
+            "no-fail-busy",
+            "wizard",
+            "skip-reindex",
+        ),
     )
-    return [Message(body)]
+    if names:
+        # Every named collection is consumed — one command each — so
+        # there is no leftover to report here. Reporting one anyway
+        # contradicted the commands rendered a sentence earlier.
+        commands = "; ".join(f"Run Bash(lies sync {shlex.quote(n)}{shared})" for n in names)
+        rendered = (
+            f"{commands}. One invocation per collection, because `lies sync` "
+            f"takes a single positional. Surface each run's scrape/ingest status."
+        )
+    else:
+        rendered = (
+            f"Run Bash(lies sync{shared}) and surface each collection's scrape/ingest status."
+        )
+    return [Message(rendered + _SYNC_TAIL + note)]
 
 
 def register_all(mcp: FastMCP) -> None:

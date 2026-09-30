@@ -256,12 +256,31 @@ mocked librarian excerpts (see `tests/unit/mcp/test_ground.py`).
   `tests/unit/mcp/test_prompts_flag_vocabulary.py` (each prompt's
   advertised flags surviving the parse into the rendered command) cover
   the two halves.
+- **A flag vocabulary is transcribed from the target command's Typer
+  signature, and checked against it.** A body that renders a
+  `Bash(...)` line is promising the agent a runnable command, so every
+  flag it emits must be an option the command declares and the
+  positional count must fit its arguments. `prompts_impl`'s
+  `_LIBRARY_VERB_FLAGS` / `_INGEST_*` / `_SYNC_*` tables are that
+  transcription, and
+  `tests/unit/mcp/test_rendered_commands_are_runnable.py` resolves
+  every rendered command against the live Typer app, so a hand-written
+  table that drifts fails a test rather than shipping a command that
+  exits 2. The vocabulary-tolerance test cannot catch this class on its
+  own: it proves a flag reaches the rendered body, not that the body is
+  a command `lies` accepts.
 - **Bodies read the flag collections through `TailParse.flag_on()`.**
   It answers for both `booleans` and `values`, so a body cannot read
   the wrong collection and silently drop a flag. The `=`-attached form
   on a boolean sets the flag and discards the value into
   `ignored_values`; it never smuggles the value into `values`, where
-  no body would see it.
+  no body would see it. A *repeatable* value flag reads
+  `TailParse.repeats_of()`, which returns every occurrence in order —
+  `values` is last-wins, right for a scalar and a silent loss for
+  `modify --tag a --tag b`.
+- **`TailParse.note()` returns `""` or a leading-space-prefixed
+  sentence.** A body appends it to a rendered command, and a bare
+  sentence welds itself onto the last word of that command.
 - **`+tag` / `-tag` filter atoms are read from the leading run only.**
   `_parse_question_filters` takes a sigil token as a filter only while
   no question word has been seen yet — the documented shape is
@@ -271,6 +290,13 @@ mocked librarian excerpts (see `tests/unit/mcp/test_ground.py`).
   option flags ("the `-e` flag of grep") is ordinary English; without
   them the parser deletes those words and re-injects them as
   `exclude_tags`.
+- **`ground` parses flags from the leading run only, and `ask` parses
+  no flags at all.** Both tails are mostly a question, so running the
+  full flag grammar over them deletes words a question about option
+  flags is made of. `_split_leading_flags` stops at the first non-flag
+  token and honors a `--` terminator; the body names the limit when the
+  grounded question contains a flag, so the agent can tell the user
+  why the words came back inside the search string.
 - After the answer, a `MemoryEnricher` sub-agent proposes a structured
   `MemoryPlan` only when evidence warrants it.
 - The `EnrichmentQueue` (in `src/lies/memory/retry.py`) is a per-session,

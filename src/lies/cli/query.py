@@ -403,6 +403,17 @@ def lint(
     fix: Annotated[
         bool, typer.Option("--fix", help="Apply repair plan for safe_to_fix findings.")
     ] = False,
+    check: Annotated[
+        str | None,
+        typer.Option(
+            "--check",
+            help=(
+                "Narrow the report to one finding category "
+                "(e.g. orphan, stale, contradiction). The persisted "
+                "lint-report.md is always the full report."
+            ),
+        ),
+    ] = None,
     force_repair: Annotated[
         bool,
         typer.Option(
@@ -441,7 +452,7 @@ def lint(
     # Use the host-side ``run_lint`` entry point so the lint pass writes
     # a deterministic ``wiki/lint-report.md`` and appends to ``wiki/log.md``.
     try:
-        output = orch.run_lint(apply=fix, resolver=resolver, force_repair=force_repair)
+        output = orch.run_lint(apply=fix, resolver=resolver, force_repair=force_repair, check=check)
     except WikiFlockUnrepairable as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=1) from exc

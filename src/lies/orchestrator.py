@@ -2414,7 +2414,17 @@ class Orchestrator:
                 "merged findings matched).\n"
             )
         date = datetime.now(tz=UTC).date().isoformat()
-        title = _lint_log_title(merged_report)
+        # The log entry counts against the *merge*, not the narrowed
+        # view, and says so when a check scoped it. A title built from
+        # the filtered report read as "2 findings" in the audit trail
+        # for a run that found twenty across five categories, which
+        # contradicts the docstring's promise that ``check`` narrows
+        # the return value only.
+        title = _lint_log_title(unfiltered_report)
+        if requested_check is not None:
+            title += (
+                f" (check={requested_check}, {len(merged_report.findings)}/{merged_total} matched)"
+            )
         self._append_log_entry(f"## [{date}] {title}")
         return final_md
 

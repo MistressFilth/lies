@@ -217,23 +217,31 @@ reach these through the `get_prompt` tool for anything multi-word:
   that. A positional the subcommand has no slot for is reported in the
   body rather than appended to the rendered command.
 - `ingest(tail: str)` — bring a source into the library. Either
-  `<source>` or `--delete <slug>` or `--batch <dir>`, plus optional
-  `--slug-prefix`, `--type`, `--slug`, `--title`, `--dry-run`.
-  `--title` and `--slug-prefix` take free text (every word up to the
-  next flag); the rest take one token.
+  `<source>` or `--batch <dir>`, plus optional `--source`,
+  `--collection`, `--slug`, `--title`, `--slug-prefix`,
+  `--exclude-stem`, `--exclude-dir`, `--force`, `--dry-run`. A bare
+  path binds to `--source`; passing both a path and `--source` renders a
+  body that asks which one you meant rather than guessing. `--title`
+  takes free text (every word up to the next flag); the rest take one
+  token. There is no `--delete` verb — nothing in the CLI removes an
+  ingested page, and `lies library delete` removes a collection's
+  `config.yaml`, not a page.
 - `lint(tail: str)` — health-check. `--check <name>` (one finding
   category, plural tolerated), `--fix`. `check` narrows this call's
-  return value; the persisted `<wiki>/lint-report.md` behind
-  `wiki://lint-report` always holds the full report.
+  return value and the `log.md` entry counts it (`check=orphan,
+  2/20 matched`); the persisted `<wiki>/lint-report.md` behind
+  `wiki://lint-report` always holds the full report. `lies lint
+  --check <name>` carries the same scoping on the CLI.
 - `reindex(tail: str)` — rebuild the search index. `--reconcile`,
   `--embed`, `--force`, `--cleanup`, `--all`, `--name <wiki>`.
   `all`, `all_` and `--all` are the same destructive marker. `--name`
   takes exactly one token, so `--name pydantic all` reindexes
   `pydantic` with the destructive marker set.
 - `sync(tail: str)` — pull + ingest remote sources. `<collection…>` or
-  `all` (both mean every collection with a scraper), plus `--only
-  <names>`, `--no-ingest`, `--force`, `--dry-run`, `--jobs N`,
-  `--scraper-timeout N`.
+  `all` (both mean every collection with a scraper), plus `--source`,
+  `--name`, `--force`, `--wait`, `--fail-busy`, `--wizard`,
+  `--skip-reindex`. `lies sync` takes one positional, so naming several
+  collections renders one command per collection.
 
 Every prompt tail is split on whitespace. Flag values bind as
 `--flag=value` or `--flag value`; a value flag given no value, a value
@@ -248,9 +256,10 @@ pre-tokenize the tail on whitespace and bind tokens positionally, so a
 typed `bool` / `int` / `list[str]` past position one receives a bare word
 and fails decode. That same pre-tokenization makes the slash form
 **single-token only** — everything after the first token is overflow and
-is dropped, so `/lies:ask +c:opencode why` renders a search for the empty
-string. Tool-call arguments are not pre-tokenized, so `get_prompt` is the
-path for any multi-word question.
+is dropped, so `/lies:ask +c:opencode why` receives only `+c:opencode` and
+renders the "no question given — only filter tokens arrived" body. Tool-call
+arguments are not pre-tokenized, so `get_prompt` is the path for any
+multi-word question.
 
 Wiki selection: every tool accepts an optional `name` parameter.
 Resolution chain: explicit `name` → `LIES_WIKI_NAME` env → `default`.
