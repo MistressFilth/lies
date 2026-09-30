@@ -35,9 +35,7 @@ MCP_ROOT = REPO_ROOT / "src" / "lies" / "mcp"
 INSTRUCTIONS_PATH = MCP_ROOT / "instructions.md"
 PROMPTS_DIR = MCP_ROOT / "prompts"
 
-COMMAND_RE = re.compile(
-    r"\blies [a-z][a-z0-9-]+(( [a-z][a-z0-9-]+){1,2})?\b"
-)
+COMMAND_RE = re.compile(r"\blies [a-z][a-z0-9-]+(( [a-z][a-z0-9-]+){1,2})?\b")
 
 
 def _targets() -> list[Path]:
