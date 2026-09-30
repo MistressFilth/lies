@@ -30,17 +30,29 @@ yourself. The wiki you are talking to is selected by the
   `fallback_used`, `synthesis_used`, `fallback_reason`.
 - `lint` — health-check (unchanged).
 - `reindex` — qmd lifecycle (unchanged).
+- `list_prompts()` — the prompt inventory as JSON, with each prompt's
+  argument names and descriptions.
+- `get_prompt(name, arguments?)` — renders the named prompt and
+  returns its messages.
 
 ## Prompts (v0.41 surface)
 
-Slash-command entry points surface the following `@mcp.prompt` names.
-Hosts that bind slashes to MCP prompts render these under the server
-prefix (e.g. `/lies:ask`):
+Seven `@mcp.prompt` names are registered. Two paths reach them:
+
+- **Slash** — `/lies:ask <token>`. Hosts pre-tokenize the slash tail
+  on whitespace and bind tokens positionally to declared parameters,
+  so a single-parameter prompt receives only the first token. Slash UX
+  is single-token only; do not recommend it for multi-word questions.
+- **Tool** — `get_prompt(name=..., arguments={...})`. Tool-call
+  arguments are not pre-tokenized, so the full string reaches the
+  prompt body intact. This is the path for user questions.
 
 - `ask(question: str)` — synthesized cited answer. Filter tokens
   `+tag`, `-tag` are parsed out of the question text inside the body
   and routed into `tag_expr` / `exclude_tags` on the dispatched tool
-  calls (see argument-hint contract).
+  calls.
+- `ground(question: str, top_k=3)` — cite-snippet digest (no
+  synthesis). Same filter-token parsing contract as `ask`.
 - `collections(subcommand, args=[])` — library registry CRUD.
 - `ingest(source, delete_slug=None, batch_dir=None, dry_run=False)` —
   bring a source into the library.
@@ -49,8 +61,27 @@ prefix (e.g. `/lies:ask`):
   rebuild the search index.
 - `sync(collections=[], no_ingest=False, force=False, dry_run=False, jobs=4, scraper_timeout=300)` —
   pull + ingest remote sources.
-- `ground(question: str, top_k=3)` — cite-snippet digest (no
-  synthesis). Same filter-token parsing contract as `ask`.
+
+## Routing rules
+
+When a user message carries `+tag` include tokens (e.g. `+c:opencode …`)
+or `-tag` exclude tokens (e.g. `-t:draft …`), the user is asking for the
+LIES library retrieval path. Route through:
+
+    get_prompt(
+        name="ask",      # synthesized cited answer
+        # or name="ground"  # verbatim snippet digest, no synthesis
+        arguments={"question": "<the full user message, filters included>"}
+    )
+
+The prompt body parses `+tag` / `-tag` out of `question` and routes the
+typed filter into `tag_expr` / `exclude_tags` on the dispatched calls.
+
+Do **not** call `lib_ask` directly for user-facing questions. `lib_ask` is
+the synthesizer inside the `ask` prompt's body, not a user entry point;
+calling it directly skips the filter parsing and the citation-render
+instructions. Call `lib_ask` only when a prompt body has already routed
+you to it, or when you are debugging the synthesizer itself.
 
 ## Workflow
 

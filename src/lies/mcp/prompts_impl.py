@@ -61,21 +61,31 @@ def register_all(mcp: FastMCP) -> None:
 
     @mcp.prompt(
         name="ask",
-        description="Synthesized cited answer to a question.",
+        description=(
+            "Synthesize a cited answer from the LIES library. "
+            "+tag / -tag filter tokens in question scope the search."
+        ),
     )
     def _ask_prompt(question: str) -> list[Message]:
         return ask_prompt(question)
 
     @mcp.prompt(
         name="ground",
-        description="Cite-snippet digest (no synthesis).",
+        description=(
+            "Cite-snippet digest from the LIES library. "
+            "+tag / -tag filter tokens in question scope the search. "
+            "Returns verbatim snippets, no synthesis."
+        ),
     )
     def _ground_prompt(question: str, top_k: int = 3) -> list[Message]:
         return ground_prompt(question, top_k)
 
     @mcp.prompt(
         name="collections",
-        description="Library collection registry CRUD (list, add, remove, info, tag).",
+        description=(
+            "Library collection registry CRUD "
+            "(list, add, remove, modify, info, tag, register-shipped, where)."
+        ),
     )
     def _collections_prompt(
         subcommand: str,
@@ -85,7 +95,9 @@ def register_all(mcp: FastMCP) -> None:
 
     @mcp.prompt(
         name="ingest",
-        description="Bring a source into the library (single, batch, or delete).",
+        description=(
+            "Bring a source into the library (single source, --batch directory, or --delete slug)."
+        ),
     )
     def _ingest_prompt(
         source: str,
@@ -97,7 +109,10 @@ def register_all(mcp: FastMCP) -> None:
 
     @mcp.prompt(
         name="lint",
-        description="Health-check the corpus (optionally run a repair pass).",
+        description=(
+            "Health-check the LIES library "
+            "(optionally scoped to one check, optionally with a repair pass)."
+        ),
     )
     def _lint_prompt(
         check: str | None = None,
@@ -107,7 +122,7 @@ def register_all(mcp: FastMCP) -> None:
 
     @mcp.prompt(
         name="reindex",
-        description="Rebuild the search index (BM25, embed, cleanup, all).",
+        description=("Rebuild the LIES search index (reconcile, embed, force, cleanup, all)."),
     )
     def _reindex_prompt(
         reconcile: bool = False,
@@ -120,7 +135,9 @@ def register_all(mcp: FastMCP) -> None:
 
     @mcp.prompt(
         name="sync",
-        description="Pull + ingest remote sources (then reindex).",
+        description=(
+            "Pull + ingest remote sources, then reindex (scoped to named collections or all)."
+        ),
     )
     def _sync_prompt(
         collections: list[str] | None = None,
