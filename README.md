@@ -172,6 +172,12 @@ After registration, Claude Code sees these tools (v0.40 surface):
 - `reindex(cleanup?, all_?, embed?, force?, reconcile?, name?)` —
   rebuild qmd index. Destructive flags (`cleanup` / `all_`) elicit
   confirmation via `ctx.elicit`.
+- `list_prompts()` — the prompt inventory as JSON, with each prompt's
+  argument names and descriptions.
+- `get_prompt(name, arguments?)` — renders the named prompt and
+  returns its messages. Tool-call arguments are not pre-tokenized, so
+  a full multi-word question reaches the prompt body intact; this is
+  the path for user questions.
 
 …and these resources:
 
@@ -181,8 +187,11 @@ After registration, Claude Code sees these tools (v0.40 surface):
 
 …and these prompts (v0.41 surface):
 
-- `ask(question, tag_expr=None, exclude_tags=None)` — synthesized
-  cited answer.
+- `ask(question: str)` — synthesized cited answer. `+tag` / `-tag`
+  filter tokens are parsed out of `question` by the prompt body and
+  routed into `tag_expr` / `exclude_tags` on the dispatched calls.
+- `ground(question: str, top_k=3)` — cite-snippet digest (no
+  synthesis). Same filter-token parsing contract as `ask`.
 - `collections(subcommand, args=[])` — library registry CRUD.
 - `ingest(source, delete_slug=None, batch_dir=None, dry_run=False)` —
   bring a source into the library.
@@ -191,10 +200,11 @@ After registration, Claude Code sees these tools (v0.40 surface):
   rebuild the search index.
 - `sync(collections=[], no_ingest=False, force=False, dry_run=False, jobs=4, scraper_timeout=300)` —
   pull + ingest remote sources.
-- `ground(question, tag_expr=None, exclude_tags=None, top_k=3)` —
-  cite-snippet digest (no synthesis).
 
 Hosts bind prompt names under their server prefix (e.g. `/lies:ask`).
+Hosts that pre-tokenize the slash tail on whitespace pass only the
+first token to a single-parameter prompt, so slash UX is
+single-token only. Use `get_prompt` for multi-word questions.
 
 Wiki selection: every tool accepts an optional `name` parameter.
 Resolution chain: explicit `name` → `LIES_WIKI_NAME` env → `default`.

@@ -27,6 +27,29 @@ All notable changes to LIES are documented here. The format follows
   typed prompt parameters in declared order and FastMCP rejected the
   non-string value with a JSON-parse error. The single positional
   `question: str` parameter consumes the entire slash tail.
+- `rendered_body` (test helper) read `message.text`, which a FastMCP
+  `Message` does not expose; it always fell through to `str(message)`.
+  Twelve assertions across the ask and ground prompt tests were
+  passing against pydantic's repr escaping rather than the real
+  rendered body. The helper now reads `message.content.text`.
+
+### Added (0.42.0)
+
+- `list_prompts` and `get_prompt` tools via the FastMCP
+  `PromptsAsTools` transform. Tool-call arguments are not subject to
+  the host's slash pre-tokenization, so a full multi-word question
+  reaches the prompt body parser intact — including the `+tag` / `-tag`
+  filter tokens, which the prompt body strips and routes into
+  `tag_expr` / `exclude_tags` on the dispatched `search` / `read` /
+  `lib_ask` calls. The 7 `@mcp.prompt` registrations are unchanged;
+  this adds a second path to the same functions. Hosts that bind
+  slashes to MCP prompts pre-tokenize the slash tail on whitespace, so
+  the slash path still reaches a single-parameter prompt with only its
+  first token.
+- Server-emitted routing rules in `instructions.md`: a user message
+  carrying `+tag` / `-tag` filter tokens routes through `get_prompt`,
+  not `lib_ask` directly, because `lib_ask` is the synthesizer inside
+  the `ask` prompt's body rather than a user entry point.
 
 ## [0.40.0] - 2026-09-26
 
