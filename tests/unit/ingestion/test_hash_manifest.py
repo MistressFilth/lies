@@ -66,6 +66,7 @@ def test_snapshot_writes_copy(tmp_path: Path) -> None:
     assert "pre-sync" in snap.name
 
 
+@pytest.mark.slow
 def test_snapshot_then_restore_recovers_state(tmp_path: Path) -> None:
     wiki = _wiki(tmp_path)
     m = HashManifest(wiki, "cpython")

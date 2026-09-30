@@ -66,6 +66,7 @@ def test_load_missing_raises(library: Library) -> None:
         load_config("missing")
 
 
+@pytest.mark.slow
 def test_save_existing_without_force_raises(library: Library) -> None:
     save_config(_sample_config())
     with pytest.raises(CollectionAlreadyExists):
