@@ -16,6 +16,7 @@ the pre-commit ``test`` hook) inherits the failure.
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import pytest
@@ -107,9 +108,48 @@ def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo) -> objec
     return outcome.get_result()
 
 
+def _tail(stream: str, label: str, lines: int = 20) -> str:
+    """The last ``lines`` of ``stream``, indented, or nothing if empty.
+
+    The budget gate's whole report is a timing verdict, and a developer
+    reading a failure needs the *cause* to be in it rather than one
+    scrollable line above the rubric. Import errors and assertion
+    failures are multi-line, so the tail is what carries them.
+    """
+    rows = [row for row in stream.splitlines() if row.strip()]
+    if not rows:
+        return ""
+    body = "\n".join(f"      {row}" for row in rows[-lines:])
+    return f"\n    --- re-run {label} (last {min(len(rows), lines)} line(s)) ---\n{body}\n"
+
+
+@dataclass(frozen=True)
+class _Remeasure:
+    """The outcome of one isolation re-measurement pass.
+
+    The two failure shapes are deliberately distinct rather than both
+    collapsing to an empty dict. A re-run that *could not happen* — a
+    broken import in the test, a flake, a timeout, a harness that
+    stopped working — says nothing about how long the test takes, and
+    reporting it as a timing violation tells the reader to go make the
+    test faster when the real problem is that it errored. The caller
+    needs to tell them apart to name the right thing.
+
+    ``durations`` is empty whenever ``unavailable_reason`` is set.
+    """
+
+    durations: dict[str, float] = field(default_factory=dict)
+    unavailable_reason: str = ""
+    detail: str = ""
+
+    @property
+    def measured(self) -> bool:
+        return not self.unavailable_reason
+
+
 def _remeasure_in_isolation(
     nodeids: list[str], terminalreporter: pytest.TerminalReporter | None = None
-) -> dict[str, float]:
+) -> _Remeasure:
     """Re-run ``nodeids`` in a fresh pytest process and return their
     call-phase durations.
 
@@ -123,14 +163,13 @@ def _remeasure_in_isolation(
     Only the breaching tests are re-run, so a clean suite costs one
     measurement pass and a noisy one costs one more short process.
 
-    Returns ``{}`` when the re-run cannot be performed (no ``pytest``
-    importable, a timeout, or a parse failure) so a broken measurement
-    harness reports a single ambiguous violation rather than silently
-    passing a real one. Every such path names itself on the terminal
-    first: without it, a harness that stopped working and a re-run that
-    genuinely cleared the limit are indistinguishable from outside, and
-    the next person to hit it is reading a failure that the gate cannot
-    explain.
+    Returns an *unavailable* result when the re-run cannot be performed
+    (no ``pytest`` importable, a timeout, a parse failure) so a broken
+    measurement harness cannot silently pass a real breach. Every such
+    path names itself on the terminal first: without it, a harness that
+    stopped working and a re-run that genuinely cleared the limit are
+    indistinguishable from outside, and the next person to hit it is
+    reading a failure the gate cannot explain.
     """
     import json
     import os
@@ -138,17 +177,17 @@ def _remeasure_in_isolation(
     import sys
     import tempfile
 
-    def bail(reason: str, detail: str = "") -> dict[str, float]:
+    def bail(reason: str, detail: str = "") -> _Remeasure:
         if terminalreporter is not None:
             terminalreporter.write_line(
                 f"  [budget gate] isolation re-measure unavailable: {reason}"
                 + (f" — {detail}" if detail else ""),
                 red=True,
             )
-        return {}
+        return _Remeasure(unavailable_reason=reason, detail=detail)
 
     if not nodeids:
-        return {}
+        return _Remeasure()
     reporter = '''
 """Emitted by the budget gate's isolation re-run; see tests/unit/conftest.py."""
 
@@ -205,9 +244,16 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
         except OSError as exc:
             return bail("the re-run process could not start", str(exc))
     if proc.returncode != 0:
+        # A non-zero exit here is usually NOT a slow test — it is the
+        # test erroring in a fresh process (a broken import, a fixture
+        # that needs a real network), which is the one thing the
+        # in-suite run already passed. Both streams are quoted: a
+        # collection error lands on stderr, and the old code read only
+        # stdout, so the detail it showed was usually the wrong (or an
+        # empty) one.
         return bail(
             "the re-run process failed",
-            f"exit {proc.returncode}; last stdout line: {proc.stdout.splitlines()[-1:]}",
+            f"exit {proc.returncode}\n{_tail(proc.stderr, 'stderr')}{_tail(proc.stdout, 'stdout')}",
         )
     for line in proc.stdout.splitlines():
         if line.startswith("LIES_BUDGET_JSON="):
@@ -215,7 +261,7 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
                 parsed = json.loads(line.removeprefix("LIES_BUDGET_JSON="))
             except json.JSONDecodeError as exc:
                 return bail("the re-run emitted unparseable durations", str(exc))
-            return {k: float(v) for k, v in parsed.items()}
+            return _Remeasure(durations={k: float(v) for k, v in parsed.items()})
     return bail("the re-run emitted no duration line")
 
 
@@ -261,20 +307,56 @@ def pytest_terminal_summary(
     isolated = _remeasure_in_isolation(
         [nodeid for _, nodeid in breaches], terminalreporter=terminalreporter
     )
-    noise: list[tuple[float, str, float]] = []
-    if not isolated:
-        # The re-run could not be performed; treat the in-suite
-        # measurement as authoritative rather than passing a real
-        # breach on a broken measurement harness.
-        confirmed = list(breaches)
-    else:
-        confirmed = []
+    if not isolated.measured:
+        # The measurement never happened. Falling through to the timing
+        # report here is what produced the confusing failure: a test
+        # that *errored* in a fresh process was reported as a test that
+        # was too slow, with the actual traceback on one line above a
+        # remediation rubric about making it faster. The gate still
+        # fails closed — an unverified breach is not a pass — but it
+        # names what it knows and what it does not.
+        terminalreporter.write_sep(
+            "=",
+            "BUDGET GATE — the isolation re-measure could not be performed",
+            red=True,
+        )
+        terminalreporter.write_line(f"  reason: {isolated.unavailable_reason}", red=True)
+        if isolated.detail:
+            terminalreporter.write_line(isolated.detail, red=True)
+        terminalreporter.write_line("")
         for in_suite, nodeid in breaches:
-            fresh = isolated.get(nodeid, in_suite)
-            if fresh > HARD_LIMIT_S:
-                confirmed.append((fresh, nodeid))
-            else:
-                noise.append((fresh, nodeid, in_suite))
+            terminalreporter.write_line(f"  {in_suite:6.3f}s in suite (unverified)  {nodeid}")
+        terminalreporter.write_line("")
+        terminalreporter.write_line(
+            "  This is NOT a timing verdict. The re-run above is the cause —",
+            yellow=True,
+        )
+        terminalreporter.write_line(
+            "  most often a test that errors in a fresh process (a broken",
+            yellow=True,
+        )
+        terminalreporter.write_line(
+            "  import, a fixture needing the network) rather than a slow one.",
+            yellow=True,
+        )
+        terminalreporter.write_line(
+            "  Fix that and re-run; the gate fails closed so the breach is not",
+            yellow=True,
+        )
+        terminalreporter.write_line("  silently passed.", yellow=True)
+        pytest.exit(
+            f"\nthe budget gate could not verify {len(breaches)} in-suite breach(es): "
+            f"{isolated.unavailable_reason}. Pre-commit rejects this commit.",
+            returncode=1,
+        )
+    noise: list[tuple[float, str, float]] = []
+    confirmed: list[tuple[float, str]] = []
+    for in_suite, nodeid in breaches:
+        fresh = isolated.durations.get(nodeid, in_suite)
+        if fresh > HARD_LIMIT_S:
+            confirmed.append((fresh, nodeid))
+        else:
+            noise.append((fresh, nodeid, in_suite))
 
     if not confirmed:
         terminalreporter.write_sep("=", "BUDGET GATE — in-suite noise, not cost", yellow=True)

@@ -111,6 +111,19 @@ programmatic client depends on.
   terminal, so a harness that stopped working is distinguishable from a
   re-run that genuinely cleared the limit — the two were previously the
   same empty dict, and the gate could not explain its own verdict.
+- **A budget-gate failure that is not a timing failure no longer reads
+  as one.** When the isolation re-measure could not be performed — a
+  test that errors in a fresh process, a broken import, a flake, a
+  timeout — the gate fell through to the timing report anyway: "HARD
+  LIMIT VIOLATIONS ... confirmed in isolation" plus a rubric about
+  making tests cheaper, for a test that had in fact crashed. The
+  re-run's real output appeared on one line above the rubric, and on
+  the *last stdout line* only, while a collection error prints to
+  stderr — so the one line a reader needed was usually the one line
+  dropped. A bail is now its own outcome, not an empty measurement: the
+  gate quotes both streams, says plainly that it holds no measurement,
+  and still fails closed. Only a re-run that happened and said "slow"
+  produces the timing report.
 - `sync` renders one command per named collection. `lies sync` takes a
   single positional, so `sync pydantic opencode` is two invocations
   rather than a list-valued flag the CLI has no such option for.
