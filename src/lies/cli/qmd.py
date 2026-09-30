@@ -17,36 +17,33 @@ Lazy ``lies.qmd.lifecycle`` binding
 -----------------------------------
 
 The lifecycle primitives (``status``, ``_up``, ``_down``,
-``recycle``) are loaded via a PEP 562 module-level ``__getattr__``
-on first attribute access. ``import lies.qmd.lifecycle`` triggers
-loading of :mod:`lies.qmd`'s package ``__init__``, which eagerly
-imports :class:`QmdCapability` from
-:mod:`lies.qmd.capability` -- that import pulls in :mod:`fastmcp`
-and :mod:`pydantic_ai`, both of which are heavy startup costs that
-must NOT ride the ``import lies.cli`` chain
+``recycle``) are loaded on first use rather than at import.
+``import lies.qmd.lifecycle`` triggers loading of :mod:`lies.qmd`'s
+package ``__init__``, which eagerly imports :class:`QmdCapability`
+from :mod:`lies.qmd.capability` -- that import pulls in
+:mod:`fastmcp` and :mod:`pydantic_ai`, both of which are heavy
+startup costs that must NOT ride the ``import lies.cli`` chain
 (``tests/unit/cli/test_cli_lazy_imports`` pins this contract).
 
-Each command body dereferences the bare name (``status``, ``_up``,
-etc.) so the module-level lookup fires the lazy loader on first
-command invocation, not at CLI import. Test patches use
-``monkeypatch.setattr(qmd_cli, "status", ...)`` -- the lazy
-``__getattr__`` caches the resolved value in the module's globals
-on first access, and a subsequent ``monkeypatch.setattr`` writes
-over that cached slot so the patched value is what subsequent
-function bodies see.
+The binding goes through :func:`_lifecycle`, which resolves a name
+into this module's ``globals`` on first use. It did not used to work:
+the command bodies dereferenced the bare name (``status``) on the
+theory that a PEP 562 module ``__getattr__`` would catch it. A module
+``__getattr__`` fires on *attribute* access (``qmd_cli.status``),
+never on the bare-global lookup a function body performs -- that goes
+``globals()`` then ``builtins``. Every one of these four commands
+raised ``NameError: name 'status' is not defined`` on the first real
+invocation, and the ``# noqa: F821 -- resolved via __getattr__``
+comment asserted the opposite. Nothing caught it: the module had no
+test, and a test that patched ``qmd_cli.status`` would have masked it
+by writing the name into ``globals`` first.
 """
 
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING
 
 import typer
-
-if TYPE_CHECKING:
-    # Imported only for type-checker visibility; the runtime import
-    # is deferred through the ``__getattr__`` shim below.
-    from lies.qmd.lifecycle import _down, _up, recycle, status
 
 app = typer.Typer(help="qmd daemon lifecycle", no_args_is_help=True)
 
@@ -64,27 +61,42 @@ _LAZY_LIFECYCLE_ATTRS: tuple[str, ...] = ("status", "_up", "_down", "recycle")
 def __getattr__(name: str):
     """Resolve ``status`` / ``_up`` / ``_down`` / ``recycle`` on first access.
 
-    PEP 562 module-level ``__getattr__`` — Python calls it when a
-    bare name (``status``, ``_up``, …) is looked up at module scope
-    and not present in the module's ``globals()``. The first access
-    imports :mod:`lies.qmd.lifecycle` (which transitively loads the
-    heavy :mod:`lies.qmd` package) and caches the resolved symbol
-    in the module globals so subsequent lookups are a normal
-    attribute read. Tests that patch
-    ``monkeypatch.setattr(qmd_cli, "_up", …)`` after first access
-    overwrite the cached slot — the patched value is what the
-    command bodies see on their next access.
+    PEP 562 module-level ``__getattr__`` — Python calls it when
+    ``qmd_cli.<name>`` is looked up and the name is not in the
+    module's ``globals()``. It caches the resolved symbol in the
+    globals so later lookups are a plain attribute read.
+
+    It does **not** fire for the bare name a function body in this
+    module would resolve; :func:`_lifecycle` is what the command
+    bodies call, and it is the only thing that makes them work.
     """
     if name in _LAZY_LIFECYCLE_ATTRS:
         from lies import qmd as _qmd_pkg  # noqa: PLC0415 - PEP 562 lazy import
 
         _qmd_pkg  # touch: ensures ``import lies.cli`` does not pre-load this
-        from lies.qmd import lifecycle as _lifecycle  # noqa: PLC0415 - PEP 562 lazy import
+        from lies.qmd import lifecycle as _lifecycle_mod  # noqa: PLC0415 - PEP 562 lazy import
 
-        value = getattr(_lifecycle, name)
+        value = getattr(_lifecycle_mod, name)
         globals()[name] = value
         return value
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def _lifecycle(name: str):
+    """The lazy lifecycle primitive ``name``, resolved on first use.
+
+    The command bodies call this rather than dereferencing a bare
+    name. A module ``__getattr__`` only sees attribute access, so
+    ``globals()[name]`` inside a function body would never find it —
+    that is the ``NameError`` this helper exists to prevent.
+
+    A cached name short-circuits, so a
+    ``monkeypatch.setattr(qmd_cli, "status", …)`` that runs after the
+    first call is still what later calls see.
+    """
+    if name not in globals():
+        __getattr__(name)
+    return globals()[name]
 
 
 @app.command(name="status")
@@ -92,7 +104,7 @@ def status_cmd(
     port: int = typer.Option(_DEFAULT_PORT, "--port", "-p"),
 ) -> None:
     """Print daemon status as JSON."""
-    s = status(port=port)  # noqa: F821 — resolved via __getattr__
+    s = _lifecycle("status")(port=port)
     typer.echo(
         json.dumps(
             {
@@ -111,7 +123,7 @@ def up(
     port: int = typer.Option(_DEFAULT_PORT, "--port", "-p"),
 ) -> None:
     """Start the daemon (idempotent)."""
-    s = _up(port=port)  # noqa: F821 — resolved via __getattr__
+    s = _lifecycle("_up")(port=port)
     typer.echo(f"qmd daemon running (pid {s.pid}) at {s.url}")
 
 
@@ -120,7 +132,7 @@ def down(
     port: int = typer.Option(_DEFAULT_PORT, "--port", "-p"),
 ) -> None:
     """Stop the daemon (best-effort)."""
-    _down(port=port)  # noqa: F821 — resolved via __getattr__
+    _lifecycle("_down")(port=port)
     typer.echo("qmd daemon stopped")
 
 
@@ -130,5 +142,5 @@ def recycle_cmd(
     ready_timeout: float = typer.Option(30.0, "--ready-timeout"),
 ) -> None:
     """Restart the daemon; wait for liveness."""
-    s = recycle(port=port, ready_timeout=ready_timeout)  # noqa: F821 — resolved via __getattr__
+    s = _lifecycle("recycle")(port=port, ready_timeout=ready_timeout)
     typer.echo(f"qmd daemon recycled: pid {s.pid} at {s.url}")
