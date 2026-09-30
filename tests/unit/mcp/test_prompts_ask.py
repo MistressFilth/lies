@@ -82,3 +82,38 @@ def test_ask_prompt_multi_plus_tokens_combine_with_or() -> None:
     body = rendered_body(msg)
     assert "tag_expr='c:alpha|c:beta'" in body
     assert "lib_ask('my question'" in body
+
+
+def test_ask_prompt_tolerates_an_apostrophe_in_the_question() -> None:
+    """The prompt body's motivating question, verbatim.
+
+    A ``shlex``-based splitter raised ``ValueError: No closing
+    quotation`` here, which FastMCP surfaces as a ``PromptError`` --
+    the prompt failed for the exact English a user is most likely to
+    type. Question text is prose, not shell.
+    """
+    from lies.mcp.prompts_impl import ask_prompt
+
+    [msg] = ask_prompt("what are Claude Code's plugin differences?")
+    body = rendered_body(msg)
+    assert 'search("what are Claude Code\'s plugin differences?"' in body
+    assert 'lib_ask("what are Claude Code\'s plugin differences?"' in body
+
+
+def test_ask_prompt_tolerates_an_unbalanced_quote() -> None:
+    from lies.mcp.prompts_impl import ask_prompt
+
+    [msg] = ask_prompt('what does "pydantic validate, exactly?')
+    body = rendered_body(msg)
+    assert "search('what does \"pydantic validate, exactly?'" in body
+
+
+def test_ask_prompt_with_only_filter_tokens_asks_for_a_question() -> None:
+    """A tail of nothing but ``+tag`` markers used to render a search for
+    the empty string, which the qmd daemon treats as a real query."""
+    from lies.mcp.prompts_impl import ask_prompt
+
+    [msg] = ask_prompt("+c:opencode")
+    body = rendered_body(msg)
+    assert "No question given" in body
+    assert "mcp__lies__search" not in body

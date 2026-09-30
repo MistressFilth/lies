@@ -359,3 +359,124 @@ def test_run_lint_apply_uses_merged_findings(orch: Orchestrator) -> None:
     categories = {f.category for f in deps.lint_report.findings}
     assert "orphan" in categories
     assert "contradiction" in categories
+
+
+def _seed_orphan(orch: Orchestrator) -> None:
+    orphan = orch.wiki.wiki_dir / "concepts" / "orphan.md"
+    orphan.parent.mkdir(parents=True, exist_ok=True)
+    orphan.write_text("---\ntitle: Orphan\ntype: concept\n---\n# Orphan\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=orch.wiki.data_root, check=True)
+    subprocess.run(["git", "commit", "-m", "seed"], cwd=orch.wiki.data_root, check=True)
+
+
+def test_run_lint_check_filters_to_one_category(orch: Orchestrator) -> None:
+    """``--check`` on the lint prompt is only meaningful if the tool honours
+    it: a documented flag that the tool ignores is worse than no flag."""
+    from lies.agents.linter import LintFinding, LintSeverity
+
+    _seed_orphan(orch)
+    llm = LintReport(
+        findings=[
+            LintFinding(
+                severity=LintSeverity.MEDIUM,
+                category="stale",
+                message="page is out of date",
+                pages=["concepts/a.md"],
+            ),
+            LintFinding(
+                severity=LintSeverity.MEDIUM,
+                category="contradiction",
+                message="two pages disagree",
+                pages=["concepts/b.md"],
+            ),
+        ],
+        report_markdown="",
+    )
+    with (
+        mock.patch.object(orch, "_call_linter", return_value=(llm, None)),
+        mock.patch.object(orch, "_run_repair_agent"),
+    ):
+        report_md = orch.run_lint(check="stale")
+    assert "out of date" in report_md
+    assert "two pages disagree" not in report_md
+    # The shell's orphan finding is filtered out of the body; the word
+    # still appears in the trailing "Available checks" line, which is the
+    # point of that line.
+    assert "concepts/orphan.md" not in report_md
+    assert "Filtered to check='stale'" in report_md
+
+
+def test_run_lint_check_accepts_the_plural_spelling(orch: Orchestrator) -> None:
+    """``--check orphans`` reads naturally in a report; the finding says
+    ``orphan``. Both must select the same check."""
+    _seed_orphan(orch)
+    with (
+        mock.patch.object(
+            orch, "_call_linter", return_value=(LintReport(findings=[], report_markdown=""), None)
+        ),
+        mock.patch.object(orch, "_run_repair_agent"),
+    ):
+        plural = orch.run_lint(check="orphans")
+        singular = orch.run_lint(check="orphan")
+    assert plural == singular
+    assert "orphan" in plural.lower()
+
+
+def test_run_lint_check_that_matches_nothing_lists_the_vocabulary(orch: Orchestrator) -> None:
+    """An unmatched ``check`` must say so and show the real category list,
+    rather than rendering an empty report that reads like a clean wiki."""
+    _seed_orphan(orch)
+    with (
+        mock.patch.object(
+            orch, "_call_linter", return_value=(LintReport(findings=[], report_markdown=""), None)
+        ),
+        mock.patch.object(orch, "_run_repair_agent"),
+    ):
+        report_md = orch.run_lint(check="bogus")
+    assert "Filtered to check='bogus'" in report_md
+    assert "Available checks: missing_required_section, orphan" in report_md
+    assert "0 of" in report_md
+
+
+def test_run_lint_check_scopes_the_repair(orch: Orchestrator) -> None:
+    """``--check <cat> --fix`` must repair that category only, so the
+    repair agent never sees a finding outside the requested scope."""
+    from lies.agents.linter import LintFinding, LintSeverity
+    from lies.agents.repair_models import RepairPlan
+
+    _seed_orphan(orch)
+    llm = LintReport(
+        findings=[
+            LintFinding(
+                severity=LintSeverity.MEDIUM,
+                category="stale",
+                message="page is out of date",
+                pages=["concepts/a.md"],
+            ),
+        ],
+        report_markdown="",
+    )
+    with (
+        mock.patch.object(orch, "_call_linter", return_value=(llm, None)),
+        mock.patch.object(orch, "_run_repair_agent") as mock_repair,
+    ):
+        mock_repair.return_value = RepairPlan(
+            operations=[], rationale="nothing to fix", evidence=["concepts/a.md"]
+        )
+        orch.run_lint(apply=True, check="stale")
+    [call] = mock_repair.call_args_list
+    scoped = call.args[0]
+    assert {f.category for f in scoped.findings} == {"stale"}
+
+
+def test_run_lint_blank_check_is_ignored(orch: Orchestrator) -> None:
+    _seed_orphan(orch)
+    with (
+        mock.patch.object(
+            orch, "_call_linter", return_value=(LintReport(findings=[], report_markdown=""), None)
+        ),
+        mock.patch.object(orch, "_run_repair_agent"),
+    ):
+        report_md = orch.run_lint(check="   ")
+    assert "Filtered to check=" not in report_md
+    assert "orphan" in report_md.lower()

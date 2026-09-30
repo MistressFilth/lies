@@ -325,10 +325,19 @@ async def reindex(
 @mcp.tool
 def lint(
     name: str | None = None,
+    check: str | None = None,
     fix: bool = False,
     force_repair: bool = False,
 ) -> str:
     """Run lint; with ``fix=True`` also apply the repair plan.
+
+    ``check`` narrows the report to one finding category (``orphan``,
+    ``missing_xref``, ``missing_page``, ``missing_required_section``,
+    ``dangling_derived_from``, ``contradiction``, ``stale``,
+    ``data_gap``), matched case-insensitively and with an optional
+    plural. Combined with ``fix=True`` it scopes the repair too. A
+    ``check`` that matches nothing renders the report with the
+    available categories listed.
 
     When ``fix=True`` and ``force_repair=True``, the cross-process
     memory flock is unconditionally reaped + retried once before
@@ -341,7 +350,7 @@ def lint(
     wiki = resolve_wiki(name)
     orch = Orchestrator(wiki=wiki)
     try:
-        return orch.run_lint(apply=fix, force_repair=force_repair)
+        return orch.run_lint(apply=fix, force_repair=force_repair, check=check)
     except (WikiFlockUnrepairable, WikiLockBusy):
         return f"error: {sys.exc_info()[1]}"
 

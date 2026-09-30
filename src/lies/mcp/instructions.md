@@ -28,8 +28,14 @@ yourself. The wiki you are talking to is selected by the
   pipeline), then the synthesizer subagent. Returns a `SynthesizeEnvelope`
   with `answer`, `citations`, `pages_read`, `searched_scope`,
   `fallback_used`, `synthesis_used`, `fallback_reason`.
-- `lint` — health-check (unchanged).
-- `reindex` — qmd lifecycle (unchanged).
+- `lint(name?, check?, fix?, force_repair?)` — health-check. `check`
+  narrows the report to one finding category (`orphan`, `missing_xref`,
+  `missing_page`, `missing_required_section`, `dangling_derived_from`,
+  `contradiction`, `stale`, `data_gap`), matched case-insensitively
+  with an optional plural. `fix=True` applies the repair plan; with
+  `check` set, the repair is scoped to that category too.
+- `reindex` — qmd lifecycle. `cleanup` / `all_` are destructive and
+  elicit confirmation.
 - `list_prompts()` — the prompt inventory as JSON, with each prompt's
   argument names and descriptions.
 - `get_prompt(name, arguments?)` — renders the named prompt and
@@ -37,41 +43,52 @@ yourself. The wiki you are talking to is selected by the
 
 ## Prompts (v0.42 surface)
 
-Seven `@mcp.prompt` names are registered. Two paths reach them:
+Seven `@mcp.prompt` names are registered. Reach them with `get_prompt`:
 
-- **Slash** — `/lies:sync all`, `/lies:ask +c:opencode why`. Hosts
-  pre-tokenize the slash tail on whitespace and bind tokens
-  positionally to declared parameters.
-- **Tool** — `get_prompt(name=..., arguments={...})`. Tool-call
-  arguments are not pre-tokenized, so the full string arrives intact.
+    get_prompt(name=<prompt>, arguments={<the single string param>: "<tail>"})
+
+**Prefer `get_prompt` over the slash form for every user question.**
+Tool-call arguments are not pre-tokenized, so the full string arrives
+intact. The slash form (`/lies:sync all`, `/lies:lint --fix`) is
+single-token only: hosts pre-tokenize the slash tail on whitespace and
+bind tokens positionally to declared parameters, so everything after the
+first token is overflow and is dropped. `/lies:ask +c:opencode why`
+renders a search for the empty string.
 
 Every prompt takes exactly one `str` that consumes the whole tail and
 parses its own flags. A typed parameter past position one would receive
 a bare word from the slash tokenizer and fail JSON decode, which is why
 there are no `bool` / `int` / `list[str]` parameters on the prompt
-surface.
+surface. Flag values bind as `--flag=value` or `--flag value`; a value
+flag given no value renders an error body rather than a command.
 
 - `ask(question: str)` — synthesized cited answer. `+tag` / `-tag`
   filter tokens are parsed out of `question` inside the body and
   routed into `tag_expr` / `exclude_tags` on the dispatched calls.
 - `ground(tail: str)` — cite-snippet digest (no synthesis). Same
-  filter-token contract, plus `--top_k=N` (clamped to [1, 10]).
+  filter-token contract, plus `--top_k N` (clamped to [1, 10]).
 - `collections(tail: str)` — registry CRUD. `<subcommand> <args…>`.
 - `ingest(tail: str)` — `<source>` or `--delete <slug>` or
   `--batch <dir>`, plus `--slug-prefix` / `--type` / `--slug` /
   `--title` / `--dry-run`.
-- `lint(tail: str)` — `--check <name>`, `--fix`.
+- `lint(tail: str)` — `--check <name>` (one finding category; the
+  `lint` tool's `check` parameter filters the report to it), `--fix`.
 - `reindex(tail: str)` — `--reconcile` / `--embed` / `--force` /
-  `--cleanup` / `--all`.
+  `--cleanup` / `--all`. `all`, `all_` and `--all` are the same
+  destructive marker; `cleanup` and `all_` elicit confirmation.
 - `sync(tail: str)` — `<collection…>` or `all` (every collection with a
   scraper), plus `--no-ingest` / `--force` / `--dry-run` / `--jobs N` /
   `--scraper-timeout N`.
 
 ## Routing rules
 
-When a user message carries `+tag` include tokens (e.g. `+c:opencode …`)
-or `-tag` exclude tokens (e.g. `-t:draft …`), the user is asking for the
-LIES library retrieval path. Route through:
+**A user message carrying `+tag` include tokens (e.g. `+c:opencode …`)
+or `-tag` exclude tokens (e.g. `-t:draft …`) goes through `get_prompt`,
+not `lib_ask`.** `lib_ask` is the synthesizer inside the `ask` prompt's
+body, not a user entry point; calling it directly skips the filter
+parsing and the citation-render instructions. Call `lib_ask` only when a
+prompt body has already routed you to it, or when you are debugging the
+synthesizer itself.
 
     get_prompt(
         name="ask",      # synthesized cited answer
@@ -81,12 +98,8 @@ LIES library retrieval path. Route through:
 
 The prompt body parses `+tag` / `-tag` out of `question` and routes the
 typed filter into `tag_expr` / `exclude_tags` on the dispatched calls.
-
-Do **not** call `lib_ask` directly for user-facing questions. `lib_ask` is
-the synthesizer inside the `ask` prompt's body, not a user entry point;
-calling it directly skips the filter parsing and the citation-render
-instructions. Call `lib_ask` only when a prompt body has already routed
-you to it, or when you are debugging the synthesizer itself.
+A token is read as a filter only when a letter follows the sigil, so
+`-1` and `--` in ordinary prose stay in the question text.
 
 ## Workflow
 

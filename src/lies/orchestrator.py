@@ -694,6 +694,32 @@ def _format_lint_markdown(report: LintReport, wiki: Wiki) -> str:
     return "\n".join(sections)
 
 
+def _canonical_check(name: str, known: set[str]) -> str:
+    """Resolve a caller-supplied check name against the real categories.
+
+    Callers say ``orphans`` (plural, matching how a finding reads in a
+    report) where the category is ``orphan``, so a plural spelling has to
+    resolve. Stripping a trailing ``s`` unconditionally is not enough: it
+    turns ``bogus`` into ``bogu`` and would do the same to any category
+    that genuinely ends in ``s``. The plural is only stripped when doing
+    so lands on a category that actually exists in this report.
+    """
+    normalized = name.strip().lower()
+    if normalized in known:
+        return normalized
+    if normalized.endswith("s") and normalized[:-1] in known:
+        return normalized[:-1]
+    return normalized
+
+
+def _filter_lint_report(report: LintReport, canonical: str) -> LintReport:
+    """Return ``report`` narrowed to findings whose category matches."""
+    return LintReport(
+        findings=[f for f in report.findings if f.category.lower() == canonical],
+        report_markdown=report.report_markdown,
+    )
+
+
 def _render_lint_report(
     report: LintReport,
     *,
@@ -2301,6 +2327,7 @@ class Orchestrator:
         *,
         resolver: WikiLinkResolver | None = None,
         force_repair: bool = False,
+        check: str | None = None,
     ) -> str:
         """Run deterministic and LLM lint, merge findings, and write report.
 
@@ -2312,12 +2339,26 @@ class Orchestrator:
         :class:`WikiFlockUnrepairable`. Without the flag, a live
         contender raises :class:`WikiLockBusy`. Only meaningful when
         ``apply=True``.
+
+        ``check`` narrows the merged findings to one category, matched
+        case-insensitively and with an optional plural (``--check orphans``
+        and ``--check orphan`` both select ``orphan``). Filtering happens
+        before the repair agent runs, so ``--fix`` scoped to a check only
+        repairs findings of that check. A ``check`` matching nothing
+        renders the report with every category listed, so the caller can
+        see the vocabulary instead of guessing.
         """
         shell_report = _build_lint_report(self.wiki, resolver=resolver)
         llm_report, fallback_reason = self._call_linter()
         merged_report, fallback_reason = merge_lint_reports(
             shell_report, llm_report, llm_fallback_reason=fallback_reason
         )
+        requested_check: str | None = None
+        if check is not None and check.strip():
+            categories = {f.category.lower() for f in merged_report.findings}
+            requested_check = _canonical_check(check, categories)
+            available = sorted(categories)
+            merged_report = _filter_lint_report(merged_report, requested_check)
         repair_receipt: RepairReceipt | None = None
         if apply:
             plan = self._run_repair_agent(merged_report)
@@ -2332,6 +2373,13 @@ class Orchestrator:
             llm_count=len(llm_report.findings),
             llm_fallback_reason=fallback_reason,
         )
+        if requested_check is not None:
+            final_md += (
+                f"\nFiltered to check={requested_check!r}. "
+                f"Available checks: {', '.join(available) or 'none'} "
+                f"({len(merged_report.findings)} of {len(shell_report.findings) + len(llm_report.findings)} "
+                "merged findings matched).\n"
+            )
         (self.wiki.wiki_dir / "lint-report.md").write_text(final_md, encoding="utf-8")
         date = datetime.now(tz=UTC).date().isoformat()
         title = _lint_log_title(merged_report)

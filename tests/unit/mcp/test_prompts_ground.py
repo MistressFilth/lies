@@ -60,3 +60,65 @@ def test_ground_prompt_no_filter_tokens() -> None:
     assert "search('plain question text'" in body
     assert "tag_expr=None" in body
     assert "exclude_tags=None" in body
+
+
+def test_ground_prompt_tolerates_an_apostrophe() -> None:
+    """Regression: ``shlex.split`` raised ``ValueError: No closing
+    quotation`` on any apostrophe, failing 6 of the 7 prompts."""
+    from lies.mcp.prompts_impl import ground_prompt
+
+    [msg] = ground_prompt("what are Claude Code's plugin differences?")
+    body = rendered_body(msg)
+    assert "mcp__lies__search" in body
+    assert "what are Claude Code's plugin differences?" in body
+
+
+def test_ground_top_k_accepts_the_space_form() -> None:
+    """Only ``--top_k=N`` used to bind. With the space form, ``N`` leaked
+    into the query text and ``top_k`` silently fell back to the default."""
+    from lies.mcp.prompts_impl import ground_prompt
+
+    [msg] = ground_prompt("--top_k 7 the question")
+    body = rendered_body(msg)
+    assert "search('the question'" in body
+    assert "top_k=7" in body
+
+
+def test_ground_top_k_clamps_out_of_range_values() -> None:
+    from lies.mcp.prompts_impl import ground_prompt
+
+    for tail, expected in (("--top_k 99 q", "top_k=10"), ("--top_k 0 q", "top_k=1")):
+        [msg] = ground_prompt(tail)
+        assert expected in rendered_body(msg)
+
+    [msg] = ground_prompt("--top_k notanumber q")
+    assert "top_k=3" in rendered_body(msg)
+
+
+def test_ground_empty_tail_asks_for_a_question() -> None:
+    """An empty tail used to render ``search('')``."""
+    from lies.mcp.prompts_impl import ground_prompt
+
+    [msg] = ground_prompt("")
+    body = rendered_body(msg)
+    assert "No question given" in body
+    assert "mcp__lies__search" not in body
+
+
+def test_ground_names_an_unrecognized_flag() -> None:
+    """``--cleaup`` used to be dropped silently; a typo in a destructive
+    flag must not run the non-destructive path unremarked."""
+    from lies.mcp.prompts_impl import ground_prompt
+
+    [msg] = ground_prompt("--cleaup 5 the question")
+    body = rendered_body(msg)
+    assert "Unrecognized flag(s) ignored: --cleaup." in body
+
+
+def test_ground_keeps_negative_numbers_in_the_query() -> None:
+    from lies.mcp.prompts_impl import ground_prompt
+
+    [msg] = ground_prompt("why is -1 broken here")
+    body = rendered_body(msg)
+    assert "search('why is -1 broken here'" in body
+    assert "exclude_tags=None" in body

@@ -63,3 +63,42 @@ def test_sync_prompt_through_the_mcp_wire_shape() -> None:
     assert "--only pydantic fastmcp" in body
     assert "--force" in body
     assert "--jobs 8" in body
+
+
+def test_sync_value_flag_followed_by_a_flag_is_not_swallowed() -> None:
+    """Regression: ``--jobs --force`` set ``jobs='--force'`` and dropped
+    ``--force`` entirely, so the body ran neither as asked."""
+    from lies.mcp.prompts_impl import sync_prompt
+
+    [msg] = sync_prompt("--jobs --force")
+    body = rendered_body(msg)
+    assert "Cannot run sync" in body
+    assert "--jobs needs a value" in body
+    assert "lies sync" not in body
+
+
+def test_sync_value_flag_at_end_of_tail_is_reported() -> None:
+    from lies.mcp.prompts_impl import sync_prompt
+
+    [msg] = sync_prompt("pydantic --jobs")
+    body = rendered_body(msg)
+    assert "Cannot run sync" in body
+    assert "--jobs needs a value" in body
+
+
+def test_sync_names_an_unrecognized_flag() -> None:
+    from lies.mcp.prompts_impl import sync_prompt
+
+    [msg] = sync_prompt("--bogus pydantic")
+    body = rendered_body(msg)
+    assert "Unrecognized flag(s) ignored: --bogus." in body
+    assert "--only pydantic" in body
+
+
+def test_sync_quotes_a_collection_name_needing_it() -> None:
+    """``--only`` is interpolated into a ``Bash()`` line, so a collection
+    name containing shell metacharacters is re-quoted on the way out."""
+    from lies.mcp.prompts_impl import sync_prompt
+
+    [msg] = sync_prompt("a;b")
+    assert "--only 'a;b'" in rendered_body(msg)

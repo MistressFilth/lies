@@ -49,7 +49,6 @@ def test_config_path_for(library: Library) -> None:
     )
 
 
-@pytest.mark.slow
 def test_save_then_load_round_trip(library: Library) -> None:
     cfg = _sample_config()
     save_config(cfg)
@@ -66,14 +65,12 @@ def test_load_missing_raises(library: Library) -> None:
         load_config("missing")
 
 
-@pytest.mark.slow
 def test_save_existing_without_force_raises(library: Library) -> None:
     save_config(_sample_config())
     with pytest.raises(CollectionAlreadyExists):
         save_config(_sample_config())
 
 
-@pytest.mark.slow
 def test_save_existing_with_force_overwrites(library: Library) -> None:
     save_config(_sample_config())
     cfg2 = _sample_config()
