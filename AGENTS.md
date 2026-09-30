@@ -29,6 +29,16 @@ Before opening or merging a PR, the agent MUST:
    for a tool-signature break. This decision is recorded here rather
    than only in `CHANGELOG.md` so the next agent to bump a version sees
    it before choosing a segment.
+
+   **The `!` marker does not follow the segment.** Conventional Commits
+   ties `!` to a major bump, and version-bump automation reads the
+   marker. When the only break is on the prompt surface, write
+   `feat(mcp)!:` anyway — the marker records that a caller-visible
+   signature changed, which is true, and the version segment below
+   records how seriously the project takes it. A bare `feat(mcp):`
+   would hide the break from every Conventional-Commits-driven tool,
+   including `make release`. If a change breaks prompts *and* tools,
+   it is major and the marker means what it normally means.
 2. **Keep `CHANGELOG.md` up to date.** Add an entry under the in-progress or
    new release section describing the change.
 3. **Keep `README.md` up to date.** New commands, new config options, new
@@ -243,8 +253,8 @@ mocked librarian excerpts (see `tests/unit/mcp/test_ground.py`).
   directly.** `lib_ask` is the synthesizer that runs *inside* the
   `ask` prompt's body, not a user entry point. An agent answering a
   user's question should call `get_prompt(name="ask" | "ground",
-  arguments={"question": "<full user message>"})`; the prompt body
-  parses `+tag` / `-tag` filter tokens out of `question` and renders
+  arguments={"tail": "<full user message>"})`; the prompt body
+  parses `+tag` / `-tag` filter tokens out of the tail and renders
   the routed `search` / `read` / `lib_ask` calls with the typed filter.
   Calling `lib_ask` directly skips that parsing and the
   citation-render instructions. Hosts that bind slashes to MCP prompts
@@ -253,12 +263,24 @@ mocked librarian excerpts (see `tests/unit/mcp/test_ground.py`).
   after the first token is overflow and is dropped. `get_prompt` is the
   path for any multi-word question.
 - **Prompt tails take one `str` and parse their own flags.** Every
-  prompt declares exactly one string parameter (`question` for `ask`,
-  `tail` for the other six); a typed `bool` / `int` / `list[str]` past
-  position one receives a bare word from the slash tokenizer and fails
-  JSON decode. One slot makes the slash path *safe*, not *complete* —
-  the host binds exactly one token and drops the rest, so a multi-token
-  tail reaches a prompt whole only through `get_prompt`.
+  prompt declares exactly one string parameter, named `tail` for all
+  seven; a typed `bool` / `int` / `list[str]` past position one receives
+  a bare word from the slash tokenizer and fails JSON decode. One slot
+  makes the slash path *safe*, not *complete* — the host binds exactly
+  one token and drops the rest, so a multi-token tail reaches a prompt
+  whole only through `get_prompt`.
+
+  `ask` was briefly left as `question`, and the name is load-bearing
+  rather than cosmetic. FastMCP filters `get_prompt` arguments down to
+  the declared signature, so a surviving name means a *retired* call
+  succeeds instead of raising: `{"question": …, "tag_expr": …}`
+  rendered a well-formed body that searched with `tag_expr=None` and
+  silently dropped the filter — a query the user scoped by tag,
+  answered from the whole library, with nothing in the response saying
+  so. Renaming it to `tail` makes `ask` fail as loudly as the other
+  six (`Missing required arguments: {'tail'}`). A prompt parameter
+  that survives a signature change is a silent break, not a
+  compatible one.
   `prompts_impl._split_tail` is the shared parser: it splits on
   whitespace only (never a shell lexer — an apostrophe in ordinary
   English must not raise), separates flag values from bare flags, and
@@ -279,11 +301,26 @@ mocked librarian excerpts (see `tests/unit/mcp/test_ground.py`).
   `_LIBRARY_VERB_FLAGS` / `_INGEST_*` / `_SYNC_*` tables are that
   transcription, and
   `tests/unit/mcp/test_rendered_commands_are_runnable.py` resolves
-  every rendered command against the live Typer app, so a hand-written
-  table that drifts fails a test rather than shipping a command that
-  exits 2. The vocabulary-tolerance test cannot catch this class on its
-  own: it proves a flag reaches the rendered body, not that the body is
-  a command `lies` accepts.
+  every rendered command against the live Typer app. The vocabulary
+  test cannot catch this class on its own: it proves a flag reaches
+  the rendered body, not that the body is a command `lies` accepts.
+
+  The runnable-command test asserts **equality** between each
+  vocabulary table and the options the live app declares, in both
+  directions. Its first version generated its tails *from the tables*,
+  which could only ever catch an invented flag — a flag the command
+  declares and the table omits produced no row. That was found by
+  deleting `"force"` from the `delete` row and watching the suite stay
+  green. Three things are checked, and each has a mutation behind it:
+  table equality both ways; that every declared flag actually reaches
+  the rendered command (each body carries its own render include-tuple,
+  a fourth hand-written table, and dropping `"prompt"` from `new`'s was
+  silent); and that a value-taking option has a token after it and a
+  required argument has a positional. Two runtime preconditions sit
+  *below* the signature and no introspection can see them —
+  `new_cmd` raises `BadParameter("library new requires --source")` and
+  `lies ingest --source` exits 2 without a collection name. Both are
+  body-level refusals with their own regressions.
 - **Bodies read the flag collections through `TailParse.flag_on()`.**
   It answers for both `booleans` and `values`, so a body cannot read
   the wrong collection and silently drop a flag. The `=`-attached form
@@ -296,10 +333,28 @@ mocked librarian excerpts (see `tests/unit/mcp/test_ground.py`).
   the accessor is the only read path.
 - **`TailParse.repurposed` is the re-purposed-value set.** An unknown
   flag's following word falls through to `positionals` — on `collections
-  show --tag cli`, `cli` becomes the collection name. A body that
-  consumes positionals checks `repurposed` and asks instead of
-  rendering; a *declared* boolean followed by a bare word is a genuine
-  surplus positional, reported by `_leftover_note` instead.
+  show --tag cli`, `cli` becomes the collection name. A *declared*
+  boolean followed by a bare word is a genuine surplus positional,
+  reported by `_leftover_note` instead.
+- **`_refuse_unless_clean` is the one guard, and all seven bodies call
+  it.** It refuses on a missing flag value (the command would exit 2)
+  and on a repurposed value (the command would carry an argument the
+  user never named). Both are refusals rather than notes because both
+  make the *rendered command* wrong, and a body appends `note()` to a
+  command that exists. The check runs against every positional, not
+  only the consumed ones: a surplus value on `delete mylib --tag cli`
+  was exactly the case the consumed-only test missed, and it renders a
+  destructive verb.
+
+  Five bodies each carrying their own copy of this rule is how the
+  class stayed open: four honoured `missing_values`, one honoured
+  `repurposed`, and the body with the most flags shipped three exit-2
+  renders. A defect class closed once per body is not closed.
+  `note()` therefore never claims "no command was run" — four bodies
+  append it to a live `Bash(...)`, and the sentence contradicted the
+  rest of its own paragraph. `sync` additionally refuses on *any*
+  unrecognized flag, because with no positional left `lies sync` syncs
+  every registered collection.
 - **A body renders no placeholder.** A verb that requires an argument
   refuses when the tail omits it (`Cannot run 'where': no collection
   slug was given`) rather than rendering `Bash(lies library where

@@ -195,13 +195,15 @@ parses its own flags. One slot makes the slash path *safe*, not
 *complete* — the host binds exactly one token and drops the rest, so
 reach these through the `get_prompt` tool for anything multi-word:
 
-- `ask(question: str)` — synthesized cited answer. `+tag` / `-tag`
-  filter tokens are parsed out of the **leading run** of `question` by
+- `ask(tail: str)` — synthesized cited answer. `+tag` / `-tag`
+  filter tokens are parsed out of the **leading run** of the tail by
   the prompt body and routed into `tag_expr` / `exclude_tags` on the
   dispatched calls. A filter must look like a tag (a `:` qualifier, or
   two or more characters) and sit before the first question word, so a
   question *about* option flags — "what does `-e` do" — keeps its
-  words.
+  words. The parameter is named `tail` like the other six, so a caller
+  using the retired `{"question": …, "tag_expr": …}` shape gets an
+  error rather than a body that quietly searches the whole library.
 - `ground(tail: str)` — cite-snippet digest (no synthesis). Same
   filter-token contract as `ask`, plus `--top_k N` (also `--top_k=N`),
   clamped to [1, 10], default 3. A non-integer or out-of-range value
@@ -226,17 +228,23 @@ reach these through the `get_prompt` tool for anything multi-word:
   `<source>` or `--batch <dir>`, plus optional `--source`,
   `--collection`, `--slug`, `--title`, `--slug-prefix`,
   `--exclude-stem`, `--exclude-dir`, `--force`, `--dry-run` (each
-  `--force` / `--dry-run` also has its `--no-` form). A bare
-  path binds to `--source`; passing both a path and `--source` renders a
-  body that asks which one you meant rather than guessing. `--title`
+  `--force` / `--dry-run` also has its `--no-` form, and the negated
+  spelling renders rather than being dropped). A bare path binds to
+  `--source`; passing both a path and `--source` renders a body that
+  asks which one you meant rather than guessing. A single `--source`
+  also needs `--collection` or `--slug-prefix` — the CLI derives a
+  collection name from a *batch* parent directory but never from one
+  source, so the body asks for the name rather than rendering a command
+  that exits 2. `--title`
   takes free text (every word up to the next flag), so a source typed
   after it is read as part of the title — put the source first or
   attach it with `--source <path>`; the body says so whenever
   `--title` is set. The rest take one token. There is no `--delete`
   verb — nothing in the CLI removes an ingested page, and `lies library
   delete` removes a collection's `config.yaml`, not a page.
-- `lint(tail: str)` — health-check. `--check <name>` (one finding
-  category, plural tolerated), `--fix`. `check` narrows this call's
+- `lint(tail: str)` — health-check. `<check>` or `--check <name>` (one
+  finding category, plural tolerated), `--fix`, `--name <wiki>`,
+  `--force-repair`. `check` narrows this call's
   return value and the `log.md` entry counts it (`check=orphan,
   2/20 matched`); the persisted `<wiki>/lint-report.md` behind
   `wiki://lint-report` always holds the full report. `lies lint
@@ -245,14 +253,20 @@ reach these through the `get_prompt` tool for anything multi-word:
   `--embed`, `--force`, `--cleanup`, `--all`, `--name <wiki>`.
   `all`, `all_` and `--all` are the same destructive marker. `--name`
   takes exactly one token, so `--name pydantic all` reindexes
-  `pydantic` with the destructive marker set.
+  `pydantic` with the destructive marker set. A positional the verb
+  takes no slot for is reported rather than dropped — `--name` is the
+  only way to scope a reindex, so a bare word is worth naming.
 - `sync(tail: str)` — pull + ingest remote sources. `<collection…>` or
   `all` (both mean every collection with a scraper), plus `--source`,
   `--name`, `--force`, `--wait`, `--fail-busy`, `--wizard`,
   `--skip-reindex`; each paired boolean also takes its `--no-` form,
   `--no-wait` and `--no-skip-reindex` among them. `lies sync` takes one
   positional, so naming several collections renders one command per
-  collection.
+  collection. A tail naming more than five collections is refused: one
+  command per word turns a pasted sentence into a scrape-and-reindex
+  chain per word, and a flag typo that swallows the only name would
+  sync every registered collection, so an unrecognized flag refuses
+  here too.
 
 Every prompt tail is split on whitespace. Flag values bind as
 `--flag=value` or `--flag value`; a value flag given no value, a value
@@ -260,6 +274,11 @@ attached to a boolean, or a flag outside the prompt's vocabulary,
 renders a body that names the problem instead of running a command the
 user did not ask for. A boolean written `--all=true` is still set — the
 value means nothing on a switch, and the body says it was discarded.
+A bare `--` terminates flags, and a single-dash token (`-p`) is named
+as a typo rather than passed through: Click rejects it, and a bare
+`lies sync` means every collection. Because the split is
+whitespace-only, quote characters inside a value are literal and are
+stored as part of it; the body names that rather than re-splitting.
 
 Hosts bind prompt names under their server prefix (e.g. `/lies:ask`).
 One-string parameters are what make the slash path work at all: hosts

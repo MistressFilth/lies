@@ -63,10 +63,12 @@ tokenizer and fail JSON decode, which is why there are no `bool` / `int`
 error body rather than a command. A boolean written `--flag=value` is
 still set — the value is discarded and the body says so.
 
-- `ask(question: str)` — synthesized cited answer. `+tag` / `-tag`
-  filter tokens are parsed out of the **leading run** of `question`
+- `ask(tail: str)` — synthesized cited answer. `+tag` / `-tag`
+  filter tokens are parsed out of the **leading run** of the tail
   inside the body and routed into `tag_expr` / `exclude_tags` on the
-  dispatched calls.
+  dispatched calls. The parameter is named `tail`, like the other six,
+  so a retired call fails loudly rather than silently dropping its
+  filter.
 - `ground(tail: str)` — cite-snippet digest (no synthesis). Same
   filter-token contract, plus `--top_k N` (clamped to [1, 10]).
 - `collections(tail: str)` — registry CRUD. `<subcommand> <args…>`.
@@ -107,11 +109,11 @@ synthesizer itself.
     get_prompt(
         name="ask",      # synthesized cited answer
         # or name="ground"  # verbatim snippet digest, no synthesis
-        arguments={"question": "<the full user message, filters included>"}
+        arguments={"tail": "<the full user message, filters included>"}
     )
 
 The prompt body parses `+tag` / `-tag` out of the **leading run** of
-`question` and routes the typed filter into `tag_expr` / `exclude_tags`
+the tail and routes the typed filter into `tag_expr` / `exclude_tags`
 on the dispatched calls. Two guards keep ordinary English out of the
 filter path: a token is read as a filter only while no question word
 has been seen yet (the documented shape is `+tag -tag <question>`), and
