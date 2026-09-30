@@ -110,7 +110,45 @@ def test_a_timeout_is_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "exceeded" in result.unavailable_reason
 
 
-# --- what the terminal actually prints ------------------------------------
+def test_the_rerun_bound_scales_with_the_batch() -> None:
+    """A fixed bound was wrong at both ends.
+
+    Large enough for any realistic batch, it is also large enough that
+    one wedged test stalls the gate for two minutes. Small enough for a
+    typical batch, it fires on a loaded machine and converts a noise
+    verdict into a hard failure -- the exact failure the re-measure
+    exists to prevent. So the bound is a floor plus a per-test
+    allowance, and the timeout handed to ``subprocess.run`` is derived
+    from the batch actually being re-run.
+    """
+    one = gate._isolation_timeout_s(1)
+    many = gate._isolation_timeout_s(50)
+    assert one == gate._ISOLATION_BASE_S + gate._ISOLATION_PER_TEST_S
+    assert many > one, "a 50-test batch must get more than a 1-test batch"
+    assert many - one == 49 * gate._ISOLATION_PER_TEST_S
+    # An empty batch is not a request to run with no allowance.
+    assert gate._isolation_timeout_s(0) == one
+
+
+def test_the_bound_reaches_subprocess_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The derived bound is the one actually handed to the subprocess.
+
+    A helper that computes the right number and a call site that still
+    passes a constant is a very ordinary way to ship the old behaviour
+    wearing the fix, so this reads the ``timeout`` off the call.
+    """
+    seen: dict[str, object] = {}
+
+    def capture(*_args: object, **kwargs: object):
+        seen.update(kwargs)
+        return subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="LIES_BUDGET_JSON={}\n", stderr=""
+        )
+
+    monkeypatch.setattr(subprocess, "run", capture)
+    nodeids = [f"tests/unit/test_x.py::test_{i}" for i in range(20)]
+    gate._remeasure_in_isolation(nodeids)
+    assert seen["timeout"] == gate._isolation_timeout_s(20)
 
 
 class _ExitRecorder:

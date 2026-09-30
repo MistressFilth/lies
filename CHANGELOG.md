@@ -124,6 +124,15 @@ programmatic client depends on.
   gate quotes both streams, says plainly that it holds no measurement,
   and still fails closed. Only a re-run that happened and said "slow"
   produces the timing report.
+- **The budget gate's isolation re-run no longer has one fixed
+  timeout.** A 120s bound on the whole batch is wrong at both ends: high
+  enough to cover any realistic batch it is also high enough that one
+  wedged test stalls the gate for two minutes, and low enough for a
+  typical batch it fires on a loaded machine and converts a noise
+  verdict into a hard failure — the exact outcome the re-measure exists
+  to prevent. The bound is now a 60s floor plus 5s per test in the
+  batch, and a test reads the value back off the `subprocess.run` call
+  rather than only checking the arithmetic.
 - `sync` renders one command per named collection. `lies sync` takes a
   single positional, so `sync pydantic opencode` is two invocations
   rather than a list-valued flag the CLI has no such option for.

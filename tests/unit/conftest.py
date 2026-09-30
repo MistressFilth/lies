@@ -22,8 +22,23 @@ from pathlib import Path
 import pytest
 
 HARD_LIMIT_S = 0.15
-# Bound on the second, isolated re-measurement pass.
-_ISOLATION_TIMEOUT_S = 120
+# Bound on the second, isolated re-measurement pass, split into a floor
+# for interpreter start and collection plus a per-test allowance.
+# A single fixed bound was wrong in both directions. High enough to
+# cover any realistic batch it is also high enough that one wedged
+# test hangs the gate for two minutes; low enough for a typical one it
+# fires on a loaded machine and converts what should have been a noise
+# verdict into a hard failure — the failure mode the re-measure exists
+# to prevent.
+_ISOLATION_BASE_S = 60
+_ISOLATION_PER_TEST_S = 5
+
+
+def _isolation_timeout_s(count: int) -> float:
+    """Wall-clock bound for re-running ``count`` tests in one process."""
+    return _ISOLATION_BASE_S + _ISOLATION_PER_TEST_S * max(count, 1)
+
+
 # CI runs the full test suite (``make test`` with ``--runslow`` and
 # ``INTEGRATION=1``) and is not the place to enforce per-test
 # timing — wall-clock variance across CI runners would flake the gate.
@@ -216,6 +231,7 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
             [tmp, *([os.environ["PYTHONPATH"]] if os.environ.get("PYTHONPATH") else [])]
         )
         env.pop("PYTEST_CURRENT_TEST", None)
+        timeout_s = _isolation_timeout_s(len(nodeids))
         try:
             proc = subprocess.run(
                 [
@@ -235,12 +251,16 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
                 ],
                 capture_output=True,
                 text=True,
-                timeout=_ISOLATION_TIMEOUT_S,
+                timeout=timeout_s,
                 env=env,
                 cwd=Path.cwd(),
             )
         except subprocess.TimeoutExpired:
-            return bail(f"the re-run exceeded {_ISOLATION_TIMEOUT_S:.0f}s")
+            return bail(
+                f"the re-run exceeded its {timeout_s:.0f}s bound "
+                f"({len(nodeids)} test(s) at "
+                f"{_ISOLATION_BASE_S:.0f}s + {_ISOLATION_PER_TEST_S:.0f}s each)"
+            )
         except OSError as exc:
             return bail("the re-run process could not start", str(exc))
     if proc.returncode != 0:
