@@ -23,7 +23,6 @@ def _effective_tool_names() -> set[str]:
     return {t.name for t in asyncio.run(mcp.list_tools())}
 
 
-@pytest.mark.slow
 def test_transform_registers_prompt_tools() -> None:
     names = _effective_tool_names()
     assert {"list_prompts", "get_prompt"} <= names, (
@@ -31,7 +30,6 @@ def test_transform_registers_prompt_tools() -> None:
     )
 
 
-@pytest.mark.slow
 def test_transform_does_not_shadow_existing_tools() -> None:
     """The transform is additive — the six direct tools must survive."""
     names = _effective_tool_names()
@@ -47,7 +45,6 @@ def test_transform_does_not_shadow_existing_tools() -> None:
     assert not missing, f"transform shadowed direct tools: {sorted(missing)}"
 
 
-@pytest.mark.slow
 def test_transform_preserves_prompt_surface() -> None:
     """The transform is additive on the prompt side too — all seven stay."""
     import asyncio
@@ -60,7 +57,6 @@ def test_transform_preserves_prompt_surface() -> None:
     assert not missing, f"transform shadowed prompts: {sorted(missing)}"
 
 
-@pytest.mark.slow
 @pytest.mark.asyncio
 async def test_get_prompt_tool_is_callable() -> None:
     """End-to-end through the generated tool, not just the Prompt object.
