@@ -23,6 +23,7 @@ def _fake_librarian_output(
     return out
 
 
+@pytest.mark.slow
 def test_ask_runs_librarian_then_synthesizer(monkeypatch: pytest.MonkeyPatch) -> None:
     """lib_ask() calls librarian_agent.run_sync then synthesizer_agent.run_sync."""
     from lies.mcp.synth import lib_ask

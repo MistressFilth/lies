@@ -5,23 +5,12 @@ is skipped. The default ``make unit-test`` run skips them; CI's
 ``--runslow`` mode (or a developer chasing a regression) re-enables
 them. The marker is registered in ``pyproject.toml``.
 
-Enforces the hard limit: any non-slow-marked test whose ``call`` phase
-exceeds ``HARD_LIMIT_S`` fails the run with the remediation rubric
-printed. Slow-marked tests are exempt (they run only with ``--runslow``
-and are explicitly opt-in to higher cost). The pre-commit gate is
-satisfied because ``make unit-test`` (run by the pre-commit ``test``
-hook) inherits the failure.
-
-Threshold rationale: the slowest legitimate ``call`` in the unit suite
-measures ~0.07s. At the previous 0.15s the gate sat only 2x above real
-work, while transient scheduler noise on this WSL2 host routinely
-injects 100-180ms into a test whose body is otherwise instantaneous --
-so eight sampled runs flagged four different tests that each run in
-under 5ms in isolation. The gate flagged measurement noise, never real
-work, and each victim was slow-marked to silence it. 0.5s keeps the gate
-discriminating: roughly 7x headroom over the slowest legitimate test,
-while any genuine regression (an unmocked subprocess, a real daemon
-call, a sleep) exceeds it comfortably.
+Enforces the 0.15s hard limit: any non-slow-marked test whose
+``call`` phase exceeds ``HARD_LIMIT_S`` fails the run with the
+remediation rubric printed. Slow-marked tests are exempt (they run
+only with ``--runslow`` and are explicitly opt-in to higher cost).
+The pre-commit gate is satisfied because ``make unit-test`` (run by
+the pre-commit ``test`` hook) inherits the failure.
 """
 
 from __future__ import annotations
@@ -31,7 +20,7 @@ from pathlib import Path
 
 import pytest
 
-HARD_LIMIT_S = 0.5
+HARD_LIMIT_S = 0.15
 # CI runs the full test suite (``make test`` with ``--runslow`` and
 # ``INTEGRATION=1``) and is not the place to enforce per-test
 # timing — wall-clock variance across CI runners would flake the gate.

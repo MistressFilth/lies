@@ -63,6 +63,7 @@ def test_atomic_commit_rolls_back_on_failure(git_wiki: Path) -> None:
     assert (git_wiki / "untouched.txt").exists()
 
 
+@pytest.mark.slow
 def test_atomic_commit_empty_tree(git_wiki: Path) -> None:
     # No changes; the contract is now a quiet no-op (returns None) so
     # callers like run_write can gate post-commit hooks on the return

@@ -15,6 +15,7 @@ repo), so the helper falls back to the ``_components`` dict.
 
 from __future__ import annotations
 
+import pytest
 from fastmcp import FastMCP
 
 # Module scope, not inside each test body: importing lies.mcp.server builds the
@@ -48,6 +49,7 @@ def test_server_registers_lint_and_reindex() -> None:
     )
 
 
+@pytest.mark.slow
 def test_server_drops_old_tools() -> None:
     forbidden = {
         "wiki_search",

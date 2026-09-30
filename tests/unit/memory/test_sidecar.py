@@ -32,6 +32,7 @@ def _wiki(tmp_path: Path) -> Wiki:
     )
 
 
+@pytest.mark.slow
 def test_append_receipt_writes_one_jsonl_line(tmp_path: Path) -> None:
     wiki = _wiki(tmp_path)
     plan = MemoryPlan(
@@ -56,6 +57,7 @@ def test_append_receipt_writes_one_jsonl_line(tmp_path: Path) -> None:
     assert "ts" in record
 
 
+@pytest.mark.slow
 def test_append_receipt_is_idempotent_on_commit_sha(tmp_path: Path) -> None:
     wiki = _wiki(tmp_path)
     plan = MemoryPlan(
@@ -88,6 +90,7 @@ def test_append_receipt_caps_pages_at_eight(tmp_path: Path) -> None:
     assert record["pages"][-1] == "+4 more"
 
 
+@pytest.mark.slow
 def test_append_receipt_truncates_rationale(tmp_path: Path) -> None:
     wiki = _wiki(tmp_path)
     long_rationale = "x" * 200
@@ -315,6 +318,7 @@ def test_truncate_force_allows_overcount(tmp_path: Path) -> None:
     assert kept == 3
 
 
+@pytest.mark.slow
 def test_append_receipt_oserror_does_not_raise(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
