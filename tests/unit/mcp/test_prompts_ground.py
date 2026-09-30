@@ -150,3 +150,29 @@ def test_ground_keeps_negative_numbers_in_the_query() -> None:
     body = rendered_body(msg)
     assert carries_verbatim(body, "why is -1 broken here")
     assert "exclude_tags=None" in body
+
+
+def test_ground_names_a_malformed_top_k_instead_of_silently_defaulting() -> None:
+    """Every other malformed tail in this module gets a named note; a
+    swallowed ``--top_k`` read to the user as "you asked for 5, got 3"
+    with no cause attached."""
+    from lies.mcp.prompts_impl import ground_prompt
+
+    [msg] = ground_prompt("--top_k abc what changed")
+    body = rendered_body(msg)
+    assert "top_k=3 entries" in body
+    assert "--top_k='abc' is not an integer" in body
+
+    [msg] = ground_prompt("--top_k 99 what changed")
+    body = rendered_body(msg)
+    assert "top_k=10 entries" in body
+    assert "--top_k=99 is outside [1, 10]; clamped to 10." in body
+
+
+def test_ground_stays_quiet_about_a_well_formed_top_k() -> None:
+    from lies.mcp.prompts_impl import ground_prompt
+
+    [msg] = ground_prompt("--top_k 5 what changed")
+    body = rendered_body(msg)
+    assert "top_k=5 entries" in body
+    assert "top_k" not in body.rsplit("clamped to", 1)[-1].split("entries")[-1]

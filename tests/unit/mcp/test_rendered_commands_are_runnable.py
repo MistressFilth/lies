@@ -30,6 +30,11 @@ from typer.main import get_command
 
 from lies.cli import app as root_app
 from lies.mcp.prompts_impl import (
+    _INGEST_BOOL_FLAGS,
+    _INGEST_VALUE_FLAGS,
+    _LIBRARY_VERB_FLAGS,
+    _SYNC_BOOL_FLAGS,
+    _SYNC_VALUE_FLAGS,
     collections_prompt,
     ground_prompt,
     ingest_prompt,
@@ -37,10 +42,36 @@ from lies.mcp.prompts_impl import (
 )
 from tests.unit.mcp._prompt_body import rendered_body
 
+# Prompt spellings that have no command of their own and render under a
+# different one. ``tag`` has no ``lies library tag``; the body renders
+# ``lies library modify <slug> --tag …``, so the matrix has to give it a
+# slug the same way it does for ``modify``.
+_LIBRARY_ALIAS_VERBS = frozenset({"tag"})
+
 # ``Run Bash(<command>)`` — the bodies wrap the command in a prose
 # sentence, sometimes several in a row. Non-greedy so two adjacent
 # commands split rather than the first swallowing the second.
 _BASH_RE = re.compile(r"Bash\((.*?)\)")
+
+
+def _all_opts(param: object) -> list[str]:
+    """Every spelling of ``param``: ``opts`` plus ``secondary_opts``.
+
+    Typer renders a ``--x/--no-x`` boolean as two spellings, and only
+    the positive one lands in ``param.opts``:
+
+    ```
+    wait          ['--wait']   ['--no-wait']
+    skip_reindex  ['--skip-reindex']  ['--no-skip-reindex']
+    ```
+
+    Reading ``opts`` alone made this test reject ``--no-wait``, a flag
+    ``lies sync`` declares and the sync prompt renders. The test was
+    wrong, not the table -- the failure pointed at the table, and the
+    tempting repair was to delete a working flag from it. That is the
+    defect class this file exists to kill, reproduced inside the file.
+    """
+    return [*(getattr(param, "opts", None) or []), *(getattr(param, "secondary_opts", None) or [])]
 
 
 def _is_argument(param: object) -> bool:
@@ -53,7 +84,7 @@ def _is_argument(param: object) -> bool:
     an Argument's ``opts`` are bare names, an Option's all begin with a
     dash.
     """
-    opts = getattr(param, "opts", [])
+    opts = _all_opts(param)
     return bool(opts) and not any(opt.startswith("-") for opt in opts)
 
 
@@ -76,7 +107,7 @@ def _walk(argv: list[str]) -> tuple[object, list[str]]:
 
 
 def _declared_options(cmd: object) -> set[str]:
-    return {opt for param in cmd.params for opt in param.opts}  # type: ignore[attr-defined]
+    return {opt for param in cmd.params for opt in _all_opts(param)}  # type: ignore[attr-defined]
 
 
 def _max_positionals(cmd: object) -> int | None:
@@ -99,7 +130,7 @@ def _check_command(command: str) -> None:
     argv = shlex.split(command)
     assert argv and argv[0] == "lies", f"not a `lies` invocation: {command!r}"
     cmd, rest = _walk(argv[1:])
-    params = {opt: param for param in cmd.params for opt in param.opts}  # type: ignore[attr-defined]
+    params = {opt: param for param in cmd.params for opt in _all_opts(param)}  # type: ignore[attr-defined]
     options = set(params)
     # One scan, because only the scan knows which token is a flag's
     # value: counting bare tokens separately would file ``--name mywiki``
@@ -163,7 +194,72 @@ TAILS: list[tuple[object, str]] = [
     (sync_prompt, "pydantic --force --skip-reindex"),
     (sync_prompt, "--source https://example.com/docs pydantic --wizard"),
     (sync_prompt, "--name mywiki --wait"),
+    # Negated booleans. These are the flags ``param.opts`` alone does
+    # not carry -- the case that made the test reject a working table.
+    (sync_prompt, "pydantic --no-wait"),
+    (sync_prompt, "pydantic --no-skip-reindex"),
+    (sync_prompt, "pydantic --no-force --no-fail-busy"),
+    (ingest_prompt, "docs/a.md --no-dry-run"),
+    (ingest_prompt, "docs/a.md --no-force"),
 ]
+
+
+# The hand-written list above proves the tails someone remembered. The
+# matrix below proves the rest: one tail per flag in every vocabulary
+# table, so a flag the table gains and the command does not declare --
+# or a flag the command declares and the table omits, which renders a
+# command missing the switch the user asked for -- is a failing test
+# rather than a defect the next reviewer has to find. Generating the
+# tails from the tables is what makes table drift impossible instead of
+# merely detected.
+def _positional_verbs() -> frozenset[str]:
+    """Library verbs that declare a positional ``slug`` Argument.
+
+    Read from the live app rather than from a hand-written list: this
+    set exists only to give the matrix a shape the verb accepts, so a
+    list of its own is another table that can drift from the signature
+    it is transcribed from.
+    """
+    library = get_command(root_app).commands["library"]
+    return frozenset(name for name, cmd in library.commands.items() if _max_positionals(cmd))
+
+
+def _library_matrix() -> list[tuple[object, str]]:
+    rows: list[tuple[object, str]] = []
+    positional = _positional_verbs() | _LIBRARY_ALIAS_VERBS
+    for verb, (values, bools) in _LIBRARY_VERB_FLAGS.items():
+        # Verbs whose *rendered* command has a ``slug`` Argument need
+        # one; the rest take none, and a spare positional there would be
+        # surplus the body reports (still a valid command, but not the
+        # shape under test). ``_LIBRARY_ALIAS_VERBS`` covers the
+        # spellings that render under a different command name --
+        # ``tag`` renders ``lies library modify``, and reading the
+        # names from the live app alone would miss that.
+        slug = " mylib" if verb in positional else ""
+        for flag in sorted(values):
+            rows.append((collections_prompt, f"{verb}{slug} --{flag} value"))
+        for flag in sorted(bools):
+            rows.append((collections_prompt, f"{verb}{slug} --{flag}"))
+    return rows
+
+
+def _sync_matrix() -> list[tuple[object, str]]:
+    rows: list[tuple[object, str]] = [
+        (sync_prompt, f"pydantic --{flag} value") for flag in sorted(_SYNC_VALUE_FLAGS)
+    ]
+    rows += [(sync_prompt, f"pydantic --{flag}") for flag in sorted(_SYNC_BOOL_FLAGS)]
+    return rows
+
+
+def _ingest_matrix() -> list[tuple[object, str]]:
+    rows: list[tuple[object, str]] = [
+        (ingest_prompt, f"docs/a.md --{flag} value") for flag in sorted(_INGEST_VALUE_FLAGS)
+    ]
+    rows += [(ingest_prompt, f"docs/a.md --{flag}") for flag in sorted(_INGEST_BOOL_FLAGS)]
+    return rows
+
+
+TAILS += _library_matrix() + _sync_matrix() + _ingest_matrix()
 
 
 @pytest.mark.parametrize(

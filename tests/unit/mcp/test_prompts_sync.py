@@ -143,3 +143,21 @@ def test_sync_quotes_a_collection_name_needing_it() -> None:
 
     [msg] = sync_prompt("a;b")
     assert "Run Bash(lies sync 'a;b')" in rendered_body(msg)
+
+
+def test_sync_renders_the_negated_booleans_the_cli_declares() -> None:
+    """``--no-skip-reindex`` was missing from the table, so the flag was
+    dropped with no word and the rendered command ran the qmd
+    update+embed chain the user asked to skip."""
+    from lies.mcp.prompts_impl import sync_prompt
+
+    for tail, rendered in (
+        ("pydantic --no-skip-reindex", "--no-skip-reindex"),
+        ("pydantic --no-wait", "--no-wait"),
+        ("pydantic --no-force", "--no-force"),
+        ("pydantic --no-fail-busy", "--no-fail-busy"),
+    ):
+        [msg] = sync_prompt(tail)
+        body = rendered_body(msg)
+        assert f"Run Bash(lies sync pydantic {rendered})" in body, body
+        assert "Unrecognized flag(s)" not in body, body

@@ -99,7 +99,11 @@ programmatic client depends on.
   a false positive — a `@pytest.mark.slow` mark, which removes the
   test from the default run rather than fixing anything. 19 slow marks
   added in this series are removed and their tests run again; the gate
-  threshold is unchanged at 0.15s.
+  threshold is unchanged at 0.15s. Every path where the re-measure
+  cannot be performed now names itself on the terminal, so a harness
+  that stopped working is distinguishable from a re-run that genuinely
+  cleared the limit — the two were previously the same empty dict, and
+  the gate could not explain its own verdict.
 - `sync` renders one command per named collection. `lies sync` takes a
   single positional, so `sync pydantic opencode` is two invocations
   rather than a list-valued flag the CLI has no such option for.
@@ -142,8 +146,9 @@ programmatic client depends on.
 - **A repeatable flag no longer loses its earlier values.**
   `lies library modify --tag a --tag b` is a real shape — `--tag` is
   declared "Tag to add (repeatable)" — and a last-wins dict dropped
-  `a` with no word. `TailParse.repeats` records every occurrence in
-  order; `values` keeps the scalar reading.
+  `a` with no word. `TailParse.repeats_of()` returns every occurrence
+  in order; `values` keeps the scalar reading. The backing field is
+  private (`_repeats`) so the accessor is the only read path.
 - **`sync` no longer splices an unrecognized flag's value into a
   collection name.** `sync --jbos 8` rendered `--only 8`: the typo'd
   flag's value became a collection nobody named. Surplus positionals
@@ -176,7 +181,45 @@ programmatic client depends on.
   now returns `""` or a leading-space-prefixed sentence.
 - **The `ingest` and `collections` bodies no longer run a command with
   a placeholder in it.** A missing slug rendered
-  `lies library modify <slug>`, which the agent would then run.
+  `lies library modify <slug>`, which the agent would then run. The
+  `collections` verbs that require a name (`show`, `where`, `new`,
+  `modify`, `tag`, `delete`) now refuse with the name they need, which
+  also removes the literal `'<slug>'` / `'<name>'` from every rendered
+  `Bash(...)` line.
+- **`collections` no longer lets an unknown flag's value become the
+  collection name.** `show --tag cli` parses as an unknown flag plus
+  the positional `cli`, because `show` declares no `--tag`; the body
+  rendered `collections_read(name='cli')` while its note said the flag
+  was ignored, so the flag the user typed decided which collection got
+  queried. `TailParse.repurposed` records the pair, and a body that
+  consumes positionals asks instead of rendering. A *declared* boolean
+  followed by a bare word stays a surplus positional, reported by the
+  existing leftover note.
+- **`tag <slug> --tag <value>` no longer drops the tag.** The `tag`
+  branch read tags from the positionals only, so the flag spelling
+  rendered `lies library modify <slug>` and ran with no tags at all.
+  Both spellings now reach the command.
+- **`--no-skip-reindex` is no longer silently discarded by `sync`.**
+  The boolean table carried the negated spelling of every paired flag
+  except this one, so the flag was dropped with no word and the
+  rendered command ran the qmd `update` + `embed` chain the user asked
+  to skip.
+- **The runnable-command test reads `secondary_opts`.** Typer keeps the
+  `--no-x` half of a `--x/--no-x` boolean out of `param.opts`, so the
+  test rejected `lies sync pydantic --no-wait` — a flag the CLI
+  declares and the prompt renders. The failure pointed at the table,
+  and the tempting repair was to delete a working flag from it. Its
+  tails are now generated from the vocabulary tables rather than
+  hand-picked, so a table that gains a flag the command does not
+  declare fails a test instead of shipping an exit-2 command.
+- **`--title` no longer silently eats the source, and `ground` no
+  longer swallows a bad `--top_k`.** `--title` takes every word up to
+  the next flag, so `ingest --title "Pydantic basics" x.md` reported
+  "no source given" and pointed away from the cause; the body now
+  states the ordering rule wherever `--title` is set. `--top_k=abc`
+  fell back to 3 in silence, and `--top_k=99` clamped to 10 unremarked;
+  both are named now. The `ingest` prompt description also no longer
+  advertises a `--delete slug` the body says does not exist.
 - **The `ask` and `ground` bodies render the question as a fenced
   verbatim block** rather than a `repr()` literal. A question
   containing a quote or a newline arrived at the tool call carrying

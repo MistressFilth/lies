@@ -137,3 +137,24 @@ def test_ingest_reports_a_flag_the_cli_does_not_have() -> None:
     body = rendered_body(msg)
     assert "Unrecognized flag(s) ignored: --type." in body
     assert "--type" not in body.split("Unrecognized flag(s)")[0]
+
+
+def test_ingest_explains_a_title_that_swallowed_the_source() -> None:
+    """``--title`` takes every word up to the next flag, so a source
+    typed after it is read as part of the title. The refusal then said
+    "no source given" and pointed away from the cause."""
+    from lies.mcp.prompts_impl import ingest_prompt
+
+    [msg] = ingest_prompt('--title "Pydantic basics" x.md')
+    body = rendered_body(msg)
+    assert "no source given" in body
+    assert "put the source first" in body
+
+
+def test_ingest_renders_the_title_note_even_when_a_source_is_present() -> None:
+    from lies.mcp.prompts_impl import ingest_prompt
+
+    [msg] = ingest_prompt("--source docs/a.md --title Pydantic basics")
+    body = rendered_body(msg)
+    assert "Run Bash(lies ingest --source docs/a.md --title 'Pydantic basics')" in body
+    assert "put the source first" in body

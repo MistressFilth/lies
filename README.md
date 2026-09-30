@@ -204,28 +204,37 @@ reach these through the `get_prompt` tool for anything multi-word:
   words.
 - `ground(tail: str)` — cite-snippet digest (no synthesis). Same
   filter-token contract as `ask`, plus `--top_k N` (also `--top_k=N`),
-  clamped to [1, 10], default 3.
+  clamped to [1, 10], default 3. A non-integer or out-of-range value
+  is named in the body rather than silently corrected.
 - `collections(tail: str)` — registry CRUD. `<subcommand> <args…>`;
   subcommands `list`, `show` (alias `info`), `new` (alias `add`),
   `modify`, `delete` (alias `remove`), `where`, `enrich-tags`, `tag`
-  (`<slug> <tag…>`, rendered as `modify --tag`), `bootstrap-all` (alias
+  (`<slug> <tag…>` or `tag <slug> --tag <t>`, both rendered as
+  `modify --tag`), `bootstrap-all` (alias
   `register-shipped`). Flags: `--source` / `--prompt` on `new`; `--tag`
   / `--untag` / `--set` / `--from-file` on `modify`; `--json` on
   `list`. The tail is whitespace-separated and quote characters are
   literal, so an argument that needs an embedded space is not
   expressible here — run the `lies library` Bash command directly for
   that. A positional the subcommand has no slot for is reported in the
-  body rather than appended to the rendered command.
+  body rather than appended to the rendered command, a subcommand
+  missing its required name renders no command at all, and a flag the
+  subcommand does not declare is named along with the word that
+  followed it — that word is not the flag's value, and treating it as
+  a positional is how a typo became a collection name.
 - `ingest(tail: str)` — bring a source into the library. Either
   `<source>` or `--batch <dir>`, plus optional `--source`,
   `--collection`, `--slug`, `--title`, `--slug-prefix`,
-  `--exclude-stem`, `--exclude-dir`, `--force`, `--dry-run`. A bare
+  `--exclude-stem`, `--exclude-dir`, `--force`, `--dry-run` (each
+  `--force` / `--dry-run` also has its `--no-` form). A bare
   path binds to `--source`; passing both a path and `--source` renders a
   body that asks which one you meant rather than guessing. `--title`
-  takes free text (every word up to the next flag); the rest take one
-  token. There is no `--delete` verb — nothing in the CLI removes an
-  ingested page, and `lies library delete` removes a collection's
-  `config.yaml`, not a page.
+  takes free text (every word up to the next flag), so a source typed
+  after it is read as part of the title — put the source first or
+  attach it with `--source <path>`; the body says so whenever
+  `--title` is set. The rest take one token. There is no `--delete`
+  verb — nothing in the CLI removes an ingested page, and `lies library
+  delete` removes a collection's `config.yaml`, not a page.
 - `lint(tail: str)` — health-check. `--check <name>` (one finding
   category, plural tolerated), `--fix`. `check` narrows this call's
   return value and the `log.md` entry counts it (`check=orphan,
@@ -240,8 +249,10 @@ reach these through the `get_prompt` tool for anything multi-word:
 - `sync(tail: str)` — pull + ingest remote sources. `<collection…>` or
   `all` (both mean every collection with a scraper), plus `--source`,
   `--name`, `--force`, `--wait`, `--fail-busy`, `--wizard`,
-  `--skip-reindex`. `lies sync` takes one positional, so naming several
-  collections renders one command per collection.
+  `--skip-reindex`; each paired boolean also takes its `--no-` form,
+  `--no-wait` and `--no-skip-reindex` among them. `lies sync` takes one
+  positional, so naming several collections renders one command per
+  collection.
 
 Every prompt tail is split on whitespace. Flag values bind as
 `--flag=value` or `--flag value`; a value flag given no value, a value

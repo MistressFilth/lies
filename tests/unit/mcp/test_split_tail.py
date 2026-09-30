@@ -363,6 +363,57 @@ class TestRepeats:
         parsed = _split_tail("--tag=a --tag=b", value_flags=frozenset({"tag"}))
         assert parsed.repeats_of("tag") == ("a", "b")
 
+    def test_the_backing_field_is_private(self) -> None:
+        """``values`` is last-wins, so a body that read the raw repeat
+        table on a repeatable flag would see nothing and render the flag
+        once. Underscore-private makes ``repeats_of`` the only read
+        path rather than a convention."""
+        parsed = _split_tail("--tag a --tag b", value_flags=frozenset({"tag"}))
+        assert not hasattr(parsed, "repeats")
+
+
+class TestRepurposed:
+    """An unknown flag's neighbour is a positional, and is flagged as one.
+
+    ``collections show --tag cli`` parses against a verb that declares
+    no ``--tag``: the flag lands in ``unknown`` and ``cli`` falls
+    through to ``positionals``. A body that consumes positionals would
+    then hand ``cli`` to ``collections_read(name=…)`` while the note
+    said the flag was ignored — the flag the user typed decided which
+    collection got queried.
+    """
+
+    def test_an_unknown_flag_records_the_word_after_it(self) -> None:
+        parsed = _split_tail("show --tag cli", known_flags=frozenset())
+        assert parsed.repurposed == (("tag", "cli"),)
+        assert parsed.positionals == ("show", "cli")
+        assert "tag" in parsed.unknown
+
+    def test_a_declared_flag_is_not_repurposed(self) -> None:
+        """A *known* boolean followed by a bare word is a genuine
+        surplus positional, which ``_leftover_note`` already reports.
+        Recording it here too would refuse a command that is fine."""
+        parsed = _split_tail("delete mylib --force extra", known_flags=frozenset({"force"}))
+        assert parsed.repurposed == ()
+        assert parsed.positionals == ("delete", "mylib", "extra")
+
+    def test_a_known_value_flag_consumes_its_value(self) -> None:
+        parsed = _split_tail(
+            "modify x --tag cli", value_flags=frozenset({"tag"}), known_flags=frozenset({"tag"})
+        )
+        assert parsed.repeats_of("tag") == ("cli",)
+        assert parsed.repurposed == ()
+
+    def test_no_note_when_nothing_was_repurposed(self) -> None:
+        parsed = _split_tail("show cli", known_flags=frozenset())
+        assert parsed.note() == ""
+
+    def test_the_note_names_the_value_and_the_flag(self) -> None:
+        parsed = _split_tail("show --tag cli", known_flags=frozenset())
+        note = parsed.note()
+        assert "'cli' (after --tag)" in note
+        assert "read as a positional" in note
+
 
 class TestLeadingFlagSplit:
     """``_split_leading_flags`` — flags before the question, text after.

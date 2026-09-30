@@ -133,19 +133,37 @@ class TailParse:
     wins dropped the first tag with no word. Bodies that render a
     repeatable flag read ``repeats_of``; bodies that render a scalar
     read ``values``.
+
+    ``repurposed`` holds ``(flag, value)`` pairs for a flag the caller
+    did not declare as a value flag whose *following* token then fell
+    through to ``positionals``. ``collections show --tag cli`` is the
+    shape: the second parse knows ``show`` has no ``--tag``, records
+    the flag as unknown, and the value ``cli`` becomes a positional
+    that a body would hand to ``collections_read(name=…)``. Without
+    this field the note said "ignored", the agent read that as "I
+    dropped your flag", and the flag's own value became the collection
+    name. A body that consumes positionals checks this and asks.
     """
 
     positionals: tuple[str, ...] = ()
     values: dict[str, str] = field(default_factory=dict)
-    repeats: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    _repeats: dict[str, tuple[str, ...]] = field(default_factory=dict)
     booleans: frozenset[str] = frozenset()
     unknown: frozenset[str] = frozenset()
     missing_values: tuple[str, ...] = ()
     ignored_values: tuple[tuple[str, str], ...] = ()
+    repurposed: tuple[tuple[str, str], ...] = ()
 
     def repeats_of(self, name: str) -> tuple[str, ...]:
-        """Every value ``name`` was given, in order (empty if never)."""
-        return self.repeats.get(name, ())
+        """Every value ``name`` was given, in order (empty if never).
+
+        The only read path for the repeat table. The backing field is
+        underscore-private because ``values`` is last-wins: a body that
+        reached for the raw field on a *repeatable* flag would read
+        nothing, and the flag the user typed twice would render once
+        with no word.
+        """
+        return self._repeats.get(name, ())
 
     def flag_on(self, name: str) -> bool:
         """Whether ``--name`` was present in any form the parser accepts.
@@ -172,6 +190,13 @@ class TailParse:
         if self.unknown:
             names = ", ".join(f"--{k}" for k in sorted(self.unknown))
             parts.append(f"Unrecognized flag(s) ignored: {names}.")
+        if self.repurposed:
+            pairs = ", ".join(f"{v!r} (after --{k})" for k, v in self.repurposed)
+            parts.append(
+                f"Each of those flags takes no value on this command, so the "
+                f"word after it was read as a positional: {pairs}. "
+                f"Ask the user which they meant; no command was run."
+            )
         if self.ignored_values:
             names = ", ".join(f"--{k}={v!r}" for k, v in self.ignored_values)
             parts.append(f"{names} takes no value; treated as set. Drop the '=' suffix.")
@@ -223,7 +248,11 @@ def _split_tail(
     ``--jobs=--force``.
 
     ``known_flags`` is the prompt's full flag vocabulary; anything
-    outside it lands in ``unknown`` so the body can name the typo.
+    outside it lands in ``unknown`` so the body can name the typo. An
+    outside flag followed by a bare word also records the pair in
+    ``repurposed``: the word is a positional the user did not type as
+    one, and a body that consumes positionals must ask before passing
+    it along.
     Every occurrence of a value flag is recorded in ``repeats``;
     ``values`` holds the last, which is right for a scalar and a
     silent loss for a repeatable one.
@@ -236,6 +265,7 @@ def _split_tail(
     unknown: set[str] = set()
     missing_values: list[str] = []
     ignored_values: list[tuple[str, str]] = []
+    repurposed: list[tuple[str, str]] = []
     i = 0
     while i < len(tokens):
         tok = tokens[i]
@@ -272,6 +302,21 @@ def _split_tail(
                     booleans.add(key)
             else:
                 booleans.add(key)
+                nxt = tokens[i + 1] if i + 1 < len(tokens) else None
+                if nxt is not None and not nxt.startswith("--") and key not in (known_flags or ()):
+                    # An unrecognized flag followed by a bare word. The
+                    # word is not the flag's value -- it is a positional
+                    # the user never named as one, and a body that
+                    # consumes positionals would pass it to the command.
+                    # Recording the pair lets the body refuse instead of
+                    # reading `cli` as a collection name because the user
+                    # wrote `--tag cli` on a verb with no `--tag`.
+                    #
+                    # Restricted to flags outside ``known_flags``: a
+                    # *declared* boolean followed by a bare word is a
+                    # genuine surplus positional, and
+                    # ``_leftover_note`` already reports it by name.
+                    repurposed.append((key, nxt))
             if known_flags is not None and key not in known_flags:
                 unknown.add(key)
         else:
@@ -280,11 +325,12 @@ def _split_tail(
     return TailParse(
         positionals=tuple(positionals),
         values=values,
-        repeats={k: tuple(v) for k, v in repeats.items()},
+        _repeats={k: tuple(v) for k, v in repeats.items()},
         booleans=frozenset(booleans),
         unknown=frozenset(unknown),
         missing_values=tuple(missing_values),
         ignored_values=tuple(ignored_values),
+        repurposed=tuple(repurposed),
     )
 
 
@@ -425,23 +471,30 @@ def ground_prompt(tail: str) -> list[Message]:
         known_flags=frozenset({"top_k"}),
     )
     top_k = 3
+    bad_top_k = ""
     raw_top_k = parsed.values.get("top_k")
     if raw_top_k is not None:
+        # Every other malformed tail in this module gets a named note.
+        # A silently-swallowed --top_k reads to the user as "you asked
+        # for 5 and got 3" with no cause attached.
         try:
-            top_k = max(1, min(10, int(raw_top_k)))
+            requested = int(raw_top_k)
         except ValueError:
-            top_k = 3
+            bad_top_k = f" --top_k={raw_top_k!r} is not an integer; using the default 3."
+        else:
+            top_k = max(1, min(10, requested))
+            if requested != top_k:
+                bad_top_k = f" --top_k={requested} is outside [1, 10]; clamped to {top_k}."
     query_text, tag_expr, exclude_tags = _parse_question_filters(question)
     if not query_text:
         return [
             Message(
                 "No question given. Ask the user what to ground, then "
                 're-dispatch get_prompt(name="ground", '
-                'arguments={"tail": "<question>"}). '
-                f"{parsed.note()}".strip()
+                f'arguments={{"tail": "<question>"}}).{bad_top_k}{parsed.note()}'.strip()
             )
         ]
-    note = parsed.note()
+    note = parsed.note() + bad_top_k
     # A flag-shaped word inside the question is text, and it stays
     # there. Say so, because the other reading -- "the prompt ignored
     # my --top_k" -- is the one a user forms when the words they typed
@@ -510,6 +563,46 @@ _LIBRARY_ANY_KNOWN = _LIBRARY_ANY_VALUE | _LIBRARY_ANY_BOOL
 _LIBRARY_FORCE_WARNING = " --force skips the delete confirmation; say so before running it."
 
 
+def _needs_name_note(raw_sub: str, what: str) -> str:
+    """Refuse to render a command whose required positional is missing.
+
+    The alternative was to render the placeholder itself --
+    ``Bash(lies library where '<slug>')`` -- which exits 2 on the angle
+    brackets and reads to the agent as a real argument. Asking is the
+    only shape that leaves the user with a runnable next step.
+    """
+    return (
+        f"Cannot run {raw_sub!r}: no collection {what} was given. "
+        f"Ask the user which collection they mean, then re-dispatch "
+        f'get_prompt(name="collections", arguments={{"tail": "{raw_sub} '
+        f'<name>"}}). No command was run.'
+    )
+
+
+def _repurposed_note(parsed: TailParse, args: tuple[str, ...], used: int, sub: str) -> str:
+    """Refuse when a consumed positional is really an unknown flag's value.
+
+    ``show --tag cli`` parses as the unknown flag ``--tag`` plus the
+    positional ``cli``, because this verb has no ``--tag``. Rendering
+    the positional is how a flag the user typed became a collection
+    name they never named, on a tool call that then ran with it. The
+    surplus case (``delete mylib --force extra``) is different: there
+    ``extra`` genuinely is a positional, and ``_leftover_note`` reports
+    it, so only the unknown-flag pair is refused here.
+    """
+    consumed = set(args[:used])
+    hits = [(k, v) for k, v in parsed.repurposed if v in consumed]
+    if not hits:
+        return ""
+    pairs = ", ".join(f"{v!r} after --{k}" for k, v in hits)
+    return (
+        f"Cannot run {sub!r}: {pairs} — that flag takes no value on this "
+        f"verb, so the word after it would have been read as the collection "
+        f"name. Ask the user which they meant, the flag or the name, and "
+        f"re-dispatch. No command was run."
+    )
+
+
 def collections_prompt(tail: str) -> list[Message]:
     """Library collection registry CRUD.
 
@@ -524,10 +617,16 @@ def collections_prompt(tail: str) -> list[Message]:
     not recognise (``--tags foo,bar``) turned into a bare argument the
     user never asked to pass, on a verb that then ran with it.
 
+    A verb that requires a collection name refuses to render at all
+    when the name is missing, rather than rendering the literal
+    ``'<slug>'`` placeholder into a command that exits 2.
+
     Parsed twice: once against the union of every verb's flags to find
     the subcommand, then again against that verb's own flags to render
-    it. The second parse is authoritative -- its ``unknown`` set is
-    what names a flag the verb has no slot for.
+    it. The second parse is authoritative -- its ``unknown`` and
+    ``repurposed`` sets are what name a flag the verb has no slot for,
+    and refuse when that flag's value would otherwise be read as a
+    positional the user did not type.
     """
     first = _split_tail(
         tail,
@@ -561,46 +660,55 @@ def collections_prompt(tail: str) -> list[Message]:
             f"directly with your own quoting."
         )
 
+    # ``used`` counts the positionals this branch consumed; every branch
+    # sets it, and both the surplus note and the repurposed check read
+    # it rather than restating a number per branch.
+    used = 0
     if sub == "list":
         if parsed.flag_on("json"):
             body = (
                 "Run Bash(lies library list --json) and render the parsed "
-                "array as one markdown bullet per record. " + note
+                "array as one markdown bullet per record." + note
             )
         else:
             body = (
                 'Call mcp__lies__collections_read(subcommand="list") and '
                 "render each entry as one markdown bullet (name, tags, "
-                "source, page_count, updated_at). " + note
+                "source, page_count, updated_at)." + note
             )
     elif sub == "show":
-        name = args[0] if args else "<name>"
+        if not args:
+            return [Message(_needs_name_note(raw_sub, "name"))]
+        used = 1
         body = (
             f'Call mcp__lies__collections_read(subcommand="info", '
-            f"name={shlex.quote(name)}) and render the returned metadata "
+            f"name={shlex.quote(args[0])}) and render the returned metadata "
             f"envelope." + _leftover_note(args, 1, raw_sub) + unquoted + note
         )
     elif sub == "new":
-        slug = args[0] if args else "<slug>"
+        if not args:
+            return [Message(_needs_name_note(raw_sub, "slug"))]
+        used = 1
+        slug = args[0]
         # A second positional is the source path the pre-flag form
         # carried; the flag form overrides it.
         source_flag = _render_flags(parsed, ("source", "prompt"))
         if not source_flag and len(args) > 1:
             source_flag = f" --source {shlex.quote(args[1])}"
+            used = 2
         body = (
             f"Register a new collection: run "
             f"Bash(lies library new {shlex.quote(slug)}"
             f"{source_flag}{_render_flags(parsed, ('tag',))}). "
             f"Then run qmd embed so vec/hyde queries find the new "
-            f"collection."
-            + _leftover_note(args, 2 if source_flag else 1, raw_sub)
-            + unquoted
-            + note
+            f"collection." + _leftover_note(args, used, raw_sub) + unquoted + note
         )
     elif sub == "modify":
-        slug = args[0] if args else "<slug>"
+        if not args:
+            return [Message(_needs_name_note(raw_sub, "slug"))]
+        used = 1
         body = (
-            f"Run Bash(lies library modify {shlex.quote(slug)}"
+            f"Run Bash(lies library modify {shlex.quote(args[0])}"
             f"{_render_flags(parsed, ('tag', 'untag', 'set', 'from-file'))}) "
             f"and report the tool's outcome to the user verbatim."
             + _leftover_note(args, 1, raw_sub)
@@ -609,23 +717,31 @@ def collections_prompt(tail: str) -> list[Message]:
         )
     elif sub == "tag":
         # ``tag <slug> <t1> <t2>`` is the shape users reach for;
-        # ``lies library`` spells it ``modify --tag``.
-        slug = args[0] if args else "<slug>"
+        # ``lies library`` spells it ``modify --tag``. Both spellings
+        # render, so the flag form carries ``--tag`` here too -- reading
+        # tags only from the positionals dropped ``tag mylib --tag docs``
+        # on the floor, and the rendered command ran with none.
+        if not args:
+            return [Message(_needs_name_note(raw_sub, "slug"))]
         tags = args[1:]
+        used = 1 + len(tags)
         rendered = "".join(f" --tag {shlex.quote(t)}" for t in tags)
         body = (
-            f"Run Bash(lies library modify {shlex.quote(slug)}"
-            f"{rendered}{_render_flags(parsed, ('untag', 'set', 'from-file'))}) "
+            f"Run Bash(lies library modify {shlex.quote(args[0])}"
+            f"{rendered}"
+            f"{_render_flags(parsed, ('tag', 'untag', 'set', 'from-file'))}) "
             f"and report which tags the collection now carries."
-            + _leftover_note(args, 1 + len(tags), raw_sub)
+            + _leftover_note(args, used, raw_sub)
             + unquoted
             + note
         )
     elif sub == "delete":
-        slug = args[0] if args else "<slug>"
+        if not args:
+            return [Message(_needs_name_note(raw_sub, "slug"))]
+        used = 1
         force = " --force" if parsed.flag_on("force") else ""
         body = (
-            f"Run Bash(lies library delete {shlex.quote(slug)}{force}) and "
+            f"Run Bash(lies library delete {shlex.quote(args[0])}{force}) and "
             f"report the tool's outcome to the user verbatim."
             + (_LIBRARY_FORCE_WARNING if force else "")
             + _leftover_note(args, 1, raw_sub)
@@ -644,16 +760,23 @@ def collections_prompt(tail: str) -> list[Message]:
             f"stdout stream to the user." + _leftover_note(args, 0, raw_sub) + note
         )
     elif sub == "where":
-        slug = args[0] if args else "<slug>"
+        if not args:
+            return [Message(_needs_name_note(raw_sub, "slug"))]
+        used = 1
         body = (
-            f"Run Bash(lies library where {shlex.quote(slug)}) and surface "
+            f"Run Bash(lies library where {shlex.quote(args[0])}) and surface "
             f"the stdout stream to the user." + _leftover_note(args, 1, raw_sub) + unquoted + note
         )
     else:
-        body = (
-            f"Unknown subcommand {raw_sub!r}. Valid subcommands: "
-            f"{_LIBRARY_SUBS}. Ask the user which to invoke."
-        )
+        return [
+            Message(
+                f"Unknown subcommand {raw_sub!r}. Valid subcommands: "
+                f"{_LIBRARY_SUBS}. Ask the user which to invoke."
+            )
+        ]
+    repurposed = _repurposed_note(parsed, args, used, sub)
+    if repurposed:
+        return [Message(repurposed)]
     return [Message(body)]
 
 
@@ -690,6 +813,16 @@ _INGEST_DELETE_REMEDY = (
     "page file is a filesystem delete, so ask the user which they mean "
     "before running anything."
 )
+# ``--title`` is the one free-text flag, so it eats every word up to the
+# next ``--flag``. A source typed after it is consumed as part of the
+# title, and the user is then told they gave no source -- the diagnosis
+# points away from the cause. The note rides along on every render path
+# so the ordering rule is stated where the mistake is made.
+_INGEST_TITLE_NOTE = (
+    " Note: `--title` takes every following word up to the next flag as "
+    "its value, so put the source first or attach it with `--source "
+    "<path>`; a source typed after `--title` is read as part of the title."
+)
 
 
 def ingest_prompt(tail: str) -> list[Message]:
@@ -701,6 +834,8 @@ def ingest_prompt(tail: str) -> list[Message]:
         known_flags=_INGEST_KNOWN_FLAGS,
     )
     note = parsed.note()
+    if "title" in parsed.values:
+        note += _INGEST_TITLE_NOTE
     if parsed.missing_values:
         return [
             Message(
@@ -754,9 +889,11 @@ def ingest_prompt(tail: str) -> list[Message]:
     else:
         return [
             Message(
-                "Cannot run ingest: no source given. Ask the user which file "
-                "or URL to ingest, or pass --batch <dir>, then re-dispatch "
-                'get_prompt(name="ingest", arguments={"tail": "<source>"}).'
+                "Cannot run ingest: no source given."
+                + note
+                + " Ask the user which file or URL to ingest, or pass "
+                '--batch <dir>, then re-dispatch get_prompt(name="ingest", '
+                'arguments={"tail": "<source>"}).'
             )
         ]
     if delete_asked:
@@ -783,10 +920,10 @@ def lint_prompt(tail: str) -> list[Message]:
     fix = parsed.flag_on("fix")
     body = (
         f"Call mcp__lies__lint(name=None, check={check!r}, "
-        f"fix={fix!r}) and surface the returned report. "
+        f"fix={fix!r}) and surface the returned report."
         + (
-            "When fix=True, narrate any repair outcomes the tool "
-            "applied and re-run lint to confirm clean state. "
+            " When fix=True, narrate any repair outcomes the tool "
+            "applied and re-run lint to confirm clean state."
             if fix
             else ""
         )
@@ -858,6 +995,7 @@ _SYNC_BOOL_FLAGS = frozenset(
         "no-fail-busy",
         "wizard",
         "skip-reindex",
+        "no-skip-reindex",
     }
 )
 _SYNC_KNOWN_FLAGS = _SYNC_VALUE_FLAGS | _SYNC_BOOL_FLAGS
@@ -904,6 +1042,7 @@ def sync_prompt(tail: str) -> list[Message]:
             "no-fail-busy",
             "wizard",
             "skip-reindex",
+            "no-skip-reindex",
         ),
     )
     if names:
@@ -974,9 +1113,7 @@ def register_all(mcp: FastMCP) -> None:
 
     @mcp.prompt(
         name="ingest",
-        description=(
-            "Bring a source into the library (single source, --batch directory, or --delete slug)."
-        ),
+        description=("Bring a source into the library (--source <path> or --batch <directory>)."),
     )
     def _ingest_prompt(tail: str) -> list[Message]:
         return ingest_prompt(tail)

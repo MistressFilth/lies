@@ -14,6 +14,21 @@ Before opening or merging a PR, the agent MUST:
    for the nature of the change. Update every version surface — see
    `~/.claude/rules/versioning.md`. In this repo those are `pyproject.toml`
    and `src/lies/__init__.py`.
+
+   **One documented exception: the MCP prompt surface is host
+   configuration, so a breaking change to it takes a minor bump.**
+   `conventional-commits.md` says breaking is major, and for a library
+   imported as a package that is right. The seven `@mcp.prompt`
+   registrations are configuration a host reads to render a slash menu
+   and a `get_prompt` tool schema; the tools (`collections_read`,
+   `search`, `read`, `lib_ask`, `lint`, `reindex`) are the programmatic
+   API and keep breaking-change major bumps. A caller that imported
+   `lies` as a library never touches the prompt signatures, and a
+   consumer pinning `lies>=0.42` gets the new prompt shape with the
+   same install. Bump minor for a prompt-signature break; bump major
+   for a tool-signature break. This decision is recorded here rather
+   than only in `CHANGELOG.md` so the next agent to bump a version sees
+   it before choosing a segment.
 2. **Keep `CHANGELOG.md` up to date.** Add an entry under the in-progress or
    new release section describing the change.
 3. **Keep `README.md` up to date.** New commands, new config options, new
@@ -277,7 +292,18 @@ mocked librarian excerpts (see `tests/unit/mcp/test_ground.py`).
   no body would see it. A *repeatable* value flag reads
   `TailParse.repeats_of()`, which returns every occurrence in order —
   `values` is last-wins, right for a scalar and a silent loss for
-  `modify --tag a --tag b`.
+  `modify --tag a --tag b`. The backing field is `_repeats`, private so
+  the accessor is the only read path.
+- **`TailParse.repurposed` is the re-purposed-value set.** An unknown
+  flag's following word falls through to `positionals` — on `collections
+  show --tag cli`, `cli` becomes the collection name. A body that
+  consumes positionals checks `repurposed` and asks instead of
+  rendering; a *declared* boolean followed by a bare word is a genuine
+  surplus positional, reported by `_leftover_note` instead.
+- **A body renders no placeholder.** A verb that requires an argument
+  refuses when the tail omits it (`Cannot run 'where': no collection
+  slug was given`) rather than rendering `Bash(lies library where
+  '<slug>')`, which exits 2 and reads to the agent as a real argument.
 - **`TailParse.note()` returns `""` or a leading-space-prefixed
   sentence.** A body appends it to a rendered command, and a bare
   sentence welds itself onto the last word of that command.

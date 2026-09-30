@@ -107,7 +107,9 @@ def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo) -> objec
     return outcome.get_result()
 
 
-def _remeasure_in_isolation(nodeids: list[str]) -> dict[str, float]:
+def _remeasure_in_isolation(
+    nodeids: list[str], terminalreporter: pytest.TerminalReporter | None = None
+) -> dict[str, float]:
     """Re-run ``nodeids`` in a fresh pytest process and return their
     call-phase durations.
 
@@ -124,13 +126,26 @@ def _remeasure_in_isolation(nodeids: list[str]) -> dict[str, float]:
     Returns ``{}`` when the re-run cannot be performed (no ``pytest``
     importable, a timeout, or a parse failure) so a broken measurement
     harness reports a single ambiguous violation rather than silently
-    passing a real one.
+    passing a real one. Every such path names itself on the terminal
+    first: without it, a harness that stopped working and a re-run that
+    genuinely cleared the limit are indistinguishable from outside, and
+    the next person to hit it is reading a failure that the gate cannot
+    explain.
     """
     import json
     import os
     import subprocess
     import sys
     import tempfile
+
+    def bail(reason: str, detail: str = "") -> dict[str, float]:
+        if terminalreporter is not None:
+            terminalreporter.write_line(
+                f"  [budget gate] isolation re-measure unavailable: {reason}"
+                + (f" — {detail}" if detail else ""),
+                red=True,
+            )
+        return {}
 
     if not nodeids:
         return {}
@@ -185,16 +200,23 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
                 env=env,
                 cwd=Path.cwd(),
             )
-        except (OSError, subprocess.TimeoutExpired):
-            return {}
+        except subprocess.TimeoutExpired:
+            return bail(f"the re-run exceeded {_ISOLATION_TIMEOUT_S:.0f}s")
+        except OSError as exc:
+            return bail("the re-run process could not start", str(exc))
+    if proc.returncode != 0:
+        return bail(
+            "the re-run process failed",
+            f"exit {proc.returncode}; last stdout line: {proc.stdout.splitlines()[-1:]}",
+        )
     for line in proc.stdout.splitlines():
         if line.startswith("LIES_BUDGET_JSON="):
             try:
                 parsed = json.loads(line.removeprefix("LIES_BUDGET_JSON="))
-            except json.JSONDecodeError:
-                return {}
+            except json.JSONDecodeError as exc:
+                return bail("the re-run emitted unparseable durations", str(exc))
             return {k: float(v) for k, v in parsed.items()}
-    return {}
+    return bail("the re-run emitted no duration line")
 
 
 def pytest_terminal_summary(
@@ -236,7 +258,9 @@ def pytest_terminal_summary(
     if not breaches:
         return
 
-    isolated = _remeasure_in_isolation([nodeid for _, nodeid in breaches])
+    isolated = _remeasure_in_isolation(
+        [nodeid for _, nodeid in breaches], terminalreporter=terminalreporter
+    )
     noise: list[tuple[float, str, float]] = []
     if not isolated:
         # The re-run could not be performed; treat the in-suite
