@@ -46,11 +46,11 @@ flags internally.
 | Prompt | Before | After |
 |---|---|---|
 | `ask` | `question: str` | `question: str` (unchanged) |
-| `ground` | `question: str, top_k: int = 3` | `tail: str` — `--top_k=N` |
+| `ground` | `question: str, top_k: int = 3` | `tail: str` — `--top_k N` |
 | `collections` | `subcommand: str, args: list[str] \| None` | `tail: str` — `<subcommand> <args…>` |
 | `ingest` | `source: str, delete_slug=None, batch_dir=None, dry_run: bool` | `tail: str` — `--delete <slug>`, `--batch <dir>`, `--slug-prefix <n>`, `--type`, `--slug`, `--title`, `--dry-run` |
 | `lint` | `check: str \| None, fix: bool` | `tail: str` — `--check <name>`, `--fix` |
-| `reindex` | 5 × `bool` | `tail: str` — `--reconcile`, `--embed`, `--force`, `--cleanup`, `--all` |
+| `reindex` | 5 × `bool` | `tail: str` — `--reconcile`, `--embed`, `--force`, `--cleanup`, `--all`, `--name <wiki>` |
 | `sync` | `collections: list[str] \| None, no_ingest/force/dry_run: bool, jobs: int, scraper_timeout: int` | `tail: str` — `<collection…>\|all`, `--no-ingest`, `--force`, `--dry-run`, `--jobs N`, `--scraper-timeout N` |
 
 Programmatic callers replace the keyword arguments with one string:
@@ -60,6 +60,14 @@ becomes `get_prompt(name="lint", arguments={"tail": "--check orphans --fix"})`.
 `all` and `--all` on `sync` are no-op markers meaning "every collection
 with a scraper"; both render a bare `lies sync`. No forwarder, no
 alias, no deprecation path.
+
+The version stays **minor** (0.42.0). The prompt surface is host
+configuration rather than a versioned programmatic API: the only
+consumers are an MCP host's slash binding and the routing rules in
+`instructions.md`, and 0.41 shipped the same seven names. A major bump
+is reserved for the six *tools* (`search` / `read` / `lib_ask` /
+`collections_read` / `lint` / `reindex`), which are the surface a
+programmatic client depends on.
 
 ### Added (0.42.0)
 
@@ -78,6 +86,77 @@ alias, no deprecation path.
   carrying `+tag` / `-tag` filter tokens routes through `get_prompt`,
   not `lib_ask` directly, because `lib_ask` is the synthesizer inside
   the `ask` prompt's body rather than a user entry point.
+- `check` parameter on the `lint` tool, narrowing the report — and the
+  repair, when `fix=True` — to one finding category. Matched
+  case-insensitively against the categories actually present in the
+  report, with an optional plural (`orphans` and `orphan` both select
+  `orphan`). A `check` that matches nothing renders the report with the
+  available categories listed rather than an empty report that reads
+  like a clean wiki. The `lint` prompt's `--check` flag routes to it;
+  previously the prompt rendered a `check=` argument the tool did not
+  have.
+
+### Fixed (0.42.0)
+
+Defects found reviewing the single-string prompt tails. All seven
+prompts routed through the new parser, so the first two broke six of
+the seven.
+
+- **Prompt tails are split on whitespace, not by a shell lexer.** A
+  `shlex`-based splitter raised `ValueError: No closing quotation` on
+  any apostrophe or unbalanced quote, which FastMCP surfaced as a
+  `PromptError` — so `ground` failed on the exact question that
+  motivated the change, "what are Claude Code's plugin
+  differences?". Question text is prose, not shell.
+- **A value flag followed by another flag no longer swallows it.**
+  `sync --jobs --force` set `jobs='--force'` and dropped `--force`, so
+  the body ran neither command as asked. A value flag given no value at
+  all (`--jobs` at the end of the tail, or a bare `--delete`) is now
+  reported by name instead of being silently dropped or, in the
+  `--delete` case, rendering a garbled single-source ingest command.
+- **Flags outside a prompt's vocabulary are named in the body.** A
+  typo like `--cleaup` was dropped silently, so a destructive rebuild
+  request ran the non-destructive path unremarked.
+- `ground --top_k 7` binds, not just `--top_k=7`. The space form
+  leaked the value into the query text and fell back to the default.
+- `reindex` accepts the bare `all` / `all_` positional that the
+  pre-single-tail signature used, so `/lies-reindex all_` — the
+  invocation that worked — is no longer a silent no-op downgrade of a
+  destructive rebuild, and the confirmation warning is no longer lost
+  with it.
+- `ingest --title` and `--slug-prefix` take free text (every word up to
+  the next flag). `--title two words` bound `title='two'` and dropped
+  `words`. Scalar value flags stay single-token so `sync --jobs 8
+  pydantic` still means `jobs=8` plus a positional.
+- `collections` interpolates its arguments with `shlex.join`, so a
+  collection name containing shell metacharacters stays one argument
+  in the `Bash(...)` line the agent runs. The body states that the tail
+  is whitespace-separated and quotes are literal, rather than
+  pretending a quoted phrase bound as one argument.
+- An empty `ground` / `ask` tail no longer renders a search for the
+  empty string; it asks for the question.
+- Filter-token parsing no longer eats ordinary prose. A token is read
+  as a `+tag` / `-tag` filter only when a letter follows the sigil, so
+  `-1`, a bare `--`, and a lone `-` stay in the question text instead
+  of being deleted as an exclude tag.
+- `instructions.md` documented `/lies:ask +c:opencode why` as a usable
+  slash invocation. The slash path is single-token only — `why` is
+  overflow and is dropped, so the body rendered a search for the empty
+  string. The file every host actually reads now states the limit and
+  leads with the `get_prompt` routing rule.
+
+### Changed (0.42.0)
+
+- **The per-test budget gate re-measures in isolation before
+  failing.** A full-suite run measures each test under contention, and
+  the 0.15s line sits close enough to the noise floor that a test whose
+  body is instantaneous gets flagged for scheduler latency rather than
+  for cost. An in-suite breach is now re-run on its own; only a test
+  that breaches there fails the run. This replaces the previous remedy
+  for a false positive — a `@pytest.mark.slow` mark, which removes the
+  test from the default run rather than fixing anything. 19 slow marks
+  added in this series are removed and their tests run again; the gate
+  threshold is unchanged at 0.15s.
 
 ## [0.40.0] - 2026-09-26
 

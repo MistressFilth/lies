@@ -166,9 +166,14 @@ After registration, Claude Code sees these tools (v0.40 surface):
   Returns a `SynthesizeEnvelope` with `answer`, `citations`,
   `pages_read`, `searched_scope`, `fallback_used`, `synthesis_used`,
   `fallback_reason`.
-- `lint(name?, fix=False, force_repair=False)` — health-check the
-  wiki; `fix=True` applies the repair plan for `safe_to_fix`
-  findings.
+- `lint(name?, check?, fix=False, force_repair=False)` — health-check
+  the wiki; `fix=True` applies the repair plan for `safe_to_fix`
+  findings. `check` narrows the report (and the repair) to one finding
+  category, matched case-insensitively with an optional plural:
+  `orphan`, `missing_xref`, `missing_page`, `missing_required_section`,
+  `dangling_derived_from`, `contradiction`, `stale`, `data_gap`. A
+  `check` that matches nothing renders the report with the available
+  categories listed.
 - `reindex(cleanup?, all_?, embed?, force?, reconcile?, name?)` —
   rebuild qmd index. Destructive flags (`cleanup` / `all_`) elicit
   confirmation via `ctx.elicit`.
@@ -192,27 +197,42 @@ consumes the whole slash tail and parses its own flags:
   filter tokens are parsed out of `question` by the prompt body and
   routed into `tag_expr` / `exclude_tags` on the dispatched calls.
 - `ground(tail: str)` — cite-snippet digest (no synthesis). Same
-  filter-token contract as `ask`, plus `--top_k=N` (clamped to
-  [1, 10], default 3).
+  filter-token contract as `ask`, plus `--top_k N` (also `--top_k=N`),
+  clamped to [1, 10], default 3.
 - `collections(tail: str)` — registry CRUD. `<subcommand> <args…>`;
   subcommands `list`, `add`, `remove`, `modify`, `info`, `tag`,
-  `register-shipped`, `where`.
+  `register-shipped`, `where`. The tail is whitespace-separated and
+  quote characters are literal, so an argument that needs an embedded
+  space is not expressible here — run the `lies library` Bash command
+  directly for that.
 - `ingest(tail: str)` — bring a source into the library. Either
   `<source>` or `--delete <slug>` or `--batch <dir>`, plus optional
   `--slug-prefix`, `--type`, `--slug`, `--title`, `--dry-run`.
-- `lint(tail: str)` — health-check. `--check <name>`, `--fix`.
+  `--title` and `--slug-prefix` take free text (every word up to the
+  next flag); the rest take one token.
+- `lint(tail: str)` — health-check. `--check <name>` (one finding
+  category, plural tolerated), `--fix`.
 - `reindex(tail: str)` — rebuild the search index. `--reconcile`,
-  `--embed`, `--force`, `--cleanup`, `--all`.
+  `--embed`, `--force`, `--cleanup`, `--all`, `--name <wiki>`.
+  `all`, `all_` and `--all` are the same destructive marker.
 - `sync(tail: str)` — pull + ingest remote sources. `<collection…>` or
   `all` (both mean every collection with a scraper), plus `--no-ingest`,
   `--force`, `--dry-run`, `--jobs N`, `--scraper-timeout N`.
 
+Every prompt tail is split on whitespace. Flag values bind as
+`--flag=value` or `--flag value`; a value flag given no value, or a flag
+outside the prompt's vocabulary, renders a body that names the problem
+instead of running a command the user did not ask for.
+
 Hosts bind prompt names under their server prefix (e.g. `/lies:ask`).
-One-string parameters are what make the slash path work: hosts
+One-string parameters are what make the slash path work at all: hosts
 pre-tokenize the tail on whitespace and bind tokens positionally, so a
-typed `bool` / `int` / `list[str]` past position one would receive a bare
-word and fail decode. Tool-call arguments are not pre-tokenized, so
-`get_prompt` carries the same string either way.
+typed `bool` / `int` / `list[str]` past position one receives a bare word
+and fails decode. That same pre-tokenization makes the slash form
+**single-token only** — everything after the first token is overflow and
+is dropped, so `/lies:ask +c:opencode why` renders a search for the empty
+string. Tool-call arguments are not pre-tokenized, so `get_prompt` is the
+path for any multi-word question.
 
 Wiki selection: every tool accepts an optional `name` parameter.
 Resolution chain: explicit `name` → `LIES_WIKI_NAME` env → `default`.

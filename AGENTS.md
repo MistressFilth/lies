@@ -87,7 +87,8 @@ src/lies/
 │                    # and wiki-shaped data resources (wiki://page /
 │                    # wiki://memory-changes / wiki://catalog) are retired
 │   ├── prompts.py   # register_prompts(mcp) entry point for the 7 slash prompts
-│   ├── prompts_impl.py  # per-prompt impl functions + register_all decorator wiring
+│   ├── prompts_impl.py  # per-prompt impl functions + _split_tail / _parse_question_filters
+│   │                # + register_all decorator wiring
 │   ├── grounding.py # F19 grounding archivist (CitationSnippet + ArchivistDigest
 │   │                # + truncate_at_word_boundary + pick_first_prose_span + ground())
 │   ├── synth.py     # library-mode synthesize envelope (SynthesizeEnvelope + synthesize())
@@ -232,9 +233,21 @@ mocked librarian excerpts (see `tests/unit/mcp/test_ground.py`).
   the routed `search` / `read` / `lib_ask` calls with the typed filter.
   Calling `lib_ask` directly skips that parsing and the
   citation-render instructions. Hosts that bind slashes to MCP prompts
-  pre-tokenize the slash tail on whitespace, so the slash path reaches
-  a single-parameter prompt with only its first token; `get_prompt` is
-  the path for multi-word questions.
+  pre-tokenize the slash tail on whitespace and bind tokens
+  positionally, so the slash path is **single-token only** — everything
+  after the first token is overflow and is dropped. `get_prompt` is the
+  path for any multi-word question.
+- **Prompt tails take one `str` and parse their own flags.** Every
+  prompt declares exactly one string parameter (`question` for `ask`,
+  `tail` for the other six); a typed `bool` / `int` / `list[str]` past
+  position one receives a bare word from the slash tokenizer and fails
+  JSON decode. `prompts_impl._split_tail` is the shared parser: it
+  splits on whitespace only (never a shell lexer — an apostrophe in
+  ordinary English must not raise), separates flag values from bare
+  flags, and reports value flags that got no value and flags outside a
+  prompt's vocabulary so the body can name the problem instead of
+  running a command the user did not ask for. `tests/unit/mcp/
+  test_split_tail.py` covers the parser directly.
 - After the answer, a `MemoryEnricher` sub-agent proposes a structured
   `MemoryPlan` only when evidence warrants it.
 - The `EnrichmentQueue` (in `src/lies/memory/retry.py`) is a per-session,
@@ -378,6 +391,16 @@ grounded in a primary source. Library hits render unprefixed.
 `make check` runs `lint + typecheck + format`. `make test` runs the full
 pytest suite. Pre-commit hooks wrap the same targets so a commit that
 lands in the repo has already passed all gates.
+
+The per-test budget gate (`tests/unit/conftest.py`) fails a non-slow-marked
+test whose call phase exceeds 0.15s — but only after re-running the
+breaching test **in isolation**. A full-suite run measures every test
+under contention, and the threshold sits close enough to the scheduler's
+noise floor that instantaneous tests get flagged for latency rather than
+for cost. A breach that clears on re-measure is reported as noise and the
+run passes. Reaching for `@pytest.mark.slow` to silence a gate failure
+removes the test from the default run rather than fixing anything; mark
+only what genuinely costs more than the budget.
 
 ## References
 
