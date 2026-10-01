@@ -21,12 +21,13 @@ Three defects, three tests:
     ``TimeoutExpired.stderr`` is discarded at the boundary, so a
     timeout arrives with zero evidence of what qmd was doing. That is
     what made an intermittent stall undiagnosable.
-``test_the_search_timeout_is_tunable_and_defaults_to_60``
+``test_every_qmd_query_call_site_shares_one_deadline``
     The 15 was inherited from ``grounding._QMD_FANOUT_TIMEOUT``, sized
-    on a 2026-09-25 cold-daemon probe, hardcoded with the sibling
-    module's ``LIES_QMD_FANOUT_TIMEOUT`` override left behind. Live
-    warm latency is 5.6-6.0s; 60s is the layer's own default
-    (``qmd_query``) and leaves room for a cold start.
+    on a 2026-09-25 cold-daemon probe and hardcoded with the sibling
+    module's override left behind. The first cut of this fix wired
+    ``search`` to the variable and left ``grounding`` on 15s, so one
+    env var had two answers. Live warm latency is 5.6-6.0s; 60s is the
+    layer's own default (``qmd_query``).
 """
 
 from __future__ import annotations
@@ -128,34 +129,6 @@ def test_a_timeout_keeps_qmds_own_words(monkeypatch: pytest.MonkeyPatch) -> None
     # time from embedding time from rerank time.
     assert excinfo.value.stderr == stderr, excinfo.value.stderr
     assert "Reranking" in excinfo.value.stderr.decode()
-
-
-def test_the_search_timeout_is_tunable_and_defaults_to_60(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The budget is a live number, not a hardcoded 15 inherited by copy.
-
-    ``grounding._QMD_FANOUT_TIMEOUT`` has read ``LIES_QMD_FANOUT_TIMEOUT``
-    since 0.40.0. ``search`` replaced the fan-out and hardcoded the
-    number, dropping the override — so the documented knob for a
-    tighter SLO did not exist on the path that serves searches.
-
-    Mutation behind this test: hardcode 60 back and the second
-    assertion fails.
-    """
-    from lies.mcp import search as search_mod
-
-    assert search_mod._SEARCH_TIMEOUT == 60, search_mod._SEARCH_TIMEOUT
-
-    monkeypatch.setenv("LIES_QMD_FANOUT_TIMEOUT", "5")
-    import importlib
-
-    reloaded = importlib.reload(search_mod)
-    try:
-        assert reloaded._SEARCH_TIMEOUT == 5, reloaded._SEARCH_TIMEOUT
-    finally:
-        monkeypatch.delenv("LIES_QMD_FANOUT_TIMEOUT", raising=False)
-        importlib.reload(search_mod)
 
 
 def test_the_librarian_contract_does_not_call_a_timeout_a_coverage_gap() -> None:
@@ -289,3 +262,75 @@ def test_the_subprocess_timeout_still_raises_timeout_expired() -> None:
     it does not quietly change what callers catch.
     """
     assert issubclass(subprocess.TimeoutExpired, Exception)
+
+
+# ---------------------------------------------------------------------------
+# One deadline for the whole retrieval path.
+#
+# The first cut of this fix wired ``LIES_QMD_FANOUT_TIMEOUT`` into
+# ``search`` and left ``grounding`` on its own default, so the two qmd
+# query call sites shipped 60s and 15s respectively — one env var, two
+# answers, for the same underlying subprocess. The knob was coherent
+# only when a user set it, which is the case nobody reads the docs for.
+#
+# The retrieval deadline and the liveness deadlines are different
+# questions. A slow *query* deserves patience; a slow *probe* should
+# fail fast, so a wedged daemon is reported rather than waited on. The
+# split is deliberate and the test below pins both halves, because
+# collapsing them would make ``lies qmd status`` inherit a 60s hang.
+# ---------------------------------------------------------------------------
+
+
+def test_every_qmd_query_call_site_shares_one_deadline() -> None:
+    """Two call sites, one number, no second place to change it.
+
+    Mutation behind this test: give ``search`` its own default again
+    and the two values diverge here, which is exactly the drift that
+    shipped in the first cut.
+    """
+    from lies.config import get_qmd_query_timeout
+    from lies.mcp import grounding, search
+
+    # Both call sites read the one getter; neither carries a literal of
+    # its own to drift. The first cut of this fix had exactly that
+    # literal in each module — 60 in one, 15 in the other.
+    assert search._current_timeout() == get_qmd_query_timeout()
+    assert grounding._current_timeout() == get_qmd_query_timeout()
+    assert get_qmd_query_timeout() == 60, "the layer's own default (qmd_query)"
+
+
+def test_the_env_var_moves_both_query_call_sites_at_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One variable, both paths, no import-order trickery.
+
+    Mutation behind this test: read the env var in only one module and
+    the other stays at the default while this passes for the one that
+    moved.
+    """
+    from lies.mcp import grounding, search
+
+    monkeypatch.setenv("LIES_QMD_FANOUT_TIMEOUT", "7")
+    # Read at call time, so no module reload is needed — the knob has
+    # to work for an operator setting it before `lies mcp up`, and for
+    # a test that sets it mid-process.
+    assert search._current_timeout() == 7, search._current_timeout()
+    assert grounding._current_timeout() == 7, grounding._current_timeout()
+
+
+def test_liveness_probes_keep_their_own_short_deadlines() -> None:
+    """A wedged daemon must be reported, not waited on for a minute.
+
+    ``lies qmd status`` and the daemon bootstrap answer "is this alive?"
+    — a question where a slow answer is itself the failure. Inheriting
+    the 60s retrieval budget would turn a 5s status into a 60s hang on
+    every operator command.
+    """
+    from lies.qmd import daemon as qmd_daemon
+    from lies.qmd import lifecycle
+
+    assert qmd_daemon.STATUS_TIMEOUT_S == 15.0
+    assert lifecycle.DAEMON_START_TIMEOUT_S == 15.0
+    assert lifecycle.PROBE_TIMEOUT_S == 5.0
+    # …and none of them is reachable from the retrieval knob.
+    assert lifecycle.PROBE_TIMEOUT_S < 15.0

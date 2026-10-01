@@ -59,17 +59,22 @@ _consecutive_qmd_errors = 0
 # corpus 2026-09-26.
 
 # Per-call timeout for the ``qmd_query`` subprocess fired by
-# :func:`_fanout_collections._one`. Default 15s matches qmd's
-# observed reranking latency on cold daemons at ``limit=10``
-# (live corpus probe, 2026-09-25: ~3-7s on warm daemons; cold
-# daemon startup can push the reranking step past 10s). The
-# sequential dispatch above caps worst-case fan-out latency at
-# ``ceil(N) * timeout`` (14 * 15s = 210s ceiling across 14
-# collections, dominated by cold daemon startup). Override via
-# the ``LIES_QMD_FANOUT_TIMEOUT`` env var for ops chasing a
-# tighter SLO; reads at module import so daemon restarts are
-# required to pick up a change.
-_QMD_FANOUT_TIMEOUT = int(os.environ.get("LIES_QMD_FANOUT_TIMEOUT", "15"))
+# :func:`_fanout_collections._one`. The value and its rationale live
+# in ``lies.config.get_qmd_query_timeout``, shared with the
+# ``search`` tool so the two qmd query call sites cannot disagree —
+# the first cut of that fix left this at 15s and ``search`` at 60s,
+# which meant one env var had two answers.
+#
+# The sequential dispatch above caps worst-case fan-out latency at
+# ``ceil(N) * timeout``, so the deadline multiplies across collections.
+# That is a reason to keep it tunable, not a reason to make it
+# smaller: the per-call cost is the same qmd query either way.
+
+
+def _current_timeout() -> int:
+    from lies.config import get_qmd_query_timeout
+
+    return get_qmd_query_timeout()
 
 
 @dataclass(frozen=True)
@@ -230,8 +235,8 @@ async def _fanout_collections(
     ``collection_filter`` set so the per-collection post-filter
     retains the same semantics the unscoped fan-out has shipped with.
 
-    Per-collection timeout: ``_QMD_FANOUT_TIMEOUT`` (default 15s;
-    ``LIES_QMD_FANOUT_TIMEOUT`` env override). Failed collections
+    Per-collection timeout: ``_current_timeout()`` (default 15s;
+    ``LIES_current_timeout()`` env override). Failed collections
     dropped silently. ``QmdCommandError`` (real subprocess failure)
     feeds the consecutive-error counter and may trigger
     ``recycle()``; ``QmdNoResultsError`` (clean miss) is dropped
@@ -285,7 +290,7 @@ async def _fanout_collections(
                 cwd=lib_root,
                 question=question,
                 limit=top_k,
-                timeout=_QMD_FANOUT_TIMEOUT,
+                timeout=_current_timeout(),
                 collection_filter={name},
             )
         except QmdCommandError:
@@ -400,7 +405,7 @@ async def _fanout_unscoped(
     merged ``PageExcerpt`` rows sorted by score desc and truncated
     to ``top_k``.
 
-    Per-collection timeout: 15s (``_QMD_FANOUT_TIMEOUT``). Failed
+    Per-collection timeout: 15s (``_current_timeout()``). Failed
     collections dropped silently. The fan-out is sequential —
     one qmd subprocess at a time — to avoid a model-per-process
     VRAM spike on OR-scoped queries (see

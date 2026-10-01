@@ -385,10 +385,18 @@ The returned dict carries:
   attributed to expansion, embedding, or reranking.
 
 The per-call deadline is 60s, overridable with
-`LIES_QMD_FANOUT_TIMEOUT` (seconds) — the same variable the grounding
-fan-out reads, so one knob governs both. It was previously 15s,
-inherited from that fan-out by copy; measured warm latency against the
+`LIES_QMD_FANOUT_TIMEOUT` (seconds). One getter —
+`lies.config.get_qmd_query_timeout` — supplies it to every qmd
+*retrieval* call site (the `search` tool and the grounding fan-out),
+so the two cannot drift apart. It was previously 15s in the fan-out
+and 15s hardcoded in `search`; measured warm latency against the
 5987-document corpus is 5.6–6.0s.
+
+Liveness probes are deliberately excluded. `lies qmd up` / `status`
+keep 15s/5s (`qmd.lifecycle.DAEMON_START_TIMEOUT_S`,
+`PROBE_TIMEOUT_S`, `qmd.daemon.STATUS_TIMEOUT_S`) because a slow
+answer to "is this alive?" is itself the failure — a wedged daemon
+should be reported, not waited on.
 
 Library-wins-on-slug-conflict merge happens inside qmd. The
 `exclude_tags` parameter is preserved for forward compatibility

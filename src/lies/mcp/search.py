@@ -11,7 +11,6 @@ Specs: docs/superpowers/specs/2026-09-26-librarian-v040-port-design.md.
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 from fastmcp.tools import Tool
@@ -44,14 +43,18 @@ from lies.qmd.cli import (
 # per-collection fan-out, where one 15s stall is 15s out of a 210s
 # ceiling across 14 collections. Here it is the whole operation.
 #
-# Live measurements against the 5987-doc corpus (2026-10-01): warm
-# 5.6-6.0s, 3 concurrent clients 5.9-6.6s, no timeouts in ~150 calls.
-# Intermittent stalls past 15s do occur under host contention. 60s is
-# ``qmd_query``'s own default, so this is no longer stricter than the
-# layer beneath it, and it leaves room for a cold start on top of the
-# warm cost. Override with ``LIES_QMD_FANOUT_TIMEOUT`` — the same
-# variable the fan-out reads, so one knob governs both.
-_SEARCH_TIMEOUT = int(os.environ.get("LIES_QMD_FANOUT_TIMEOUT", "60"))
+# The value itself, and the rationale, live in
+# ``lies.config.get_qmd_query_timeout`` — the single source shared with
+# the grounding fan-out, so the two qmd query call sites cannot ship
+# different answers for the same subprocess. Read at call time below
+# rather than bound here, so the override takes effect without a
+# module reload.
+
+
+def _current_timeout() -> int:
+    from lies.config import get_qmd_query_timeout
+
+    return get_qmd_query_timeout()
 
 
 def _decode(stderr: bytes | str) -> str:
@@ -249,7 +252,7 @@ def _search_impl(
     doc = hypothetical or question
 
     try:
-        raw = _post_query(doc, scope, limit=10, timeout=_SEARCH_TIMEOUT)
+        raw = _post_query(doc, scope, limit=10, timeout=_current_timeout())
     except QmdTimeoutError as exc:
         # A timeout is a slow daemon, not an absent one, and it is not
         # a statement about the corpus. Reporting it as
@@ -273,7 +276,7 @@ def _search_impl(
             "no_coverage": False,
             "transient": True,
             "searched_scope": scope,
-            "fallback_reason": f"qmd timed out after {_SEARCH_TIMEOUT}s{detail}",
+            "fallback_reason": f"qmd timed out after {_current_timeout()}s{detail}",
         }
     except QmdCommandError as exc:
         return {

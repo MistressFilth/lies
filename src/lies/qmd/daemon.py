@@ -152,6 +152,12 @@ def _not_installed() -> QmdState:
     )
 
 
+# See ``lies.qmd.lifecycle`` for why this is not the retrieval budget:
+# a slow answer to "is this alive?" is itself the failure, so a wedged
+# daemon is reported rather than waited on.
+STATUS_TIMEOUT_S = 15.0
+
+
 def qmd_daemon_state() -> QmdState:
     """Report qmd's daemon state by parsing ``qmd status``.
 
@@ -164,7 +170,7 @@ def qmd_daemon_state() -> QmdState:
         proc = _run_qmd(
             [_QMD_BIN, "status"],
             cwd=_Path.cwd(),
-            timeout=15.0,
+            timeout=STATUS_TIMEOUT_S,
         )
     except subprocess.TimeoutExpired:
         return QmdState(True, False, None, "qmd status timed out")
@@ -249,7 +255,7 @@ def _spawn_qmd_daemon() -> None:
         _run_qmd(
             [_QMD_BIN, "mcp", "--http", "--daemon"],
             cwd=_Path.cwd(),
-            timeout=15.0,
+            timeout=STATUS_TIMEOUT_S,
         )
     except (subprocess.TimeoutExpired, OSError):
         pass

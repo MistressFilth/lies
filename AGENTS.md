@@ -190,10 +190,15 @@ The library-mode read surface is split between two MCP tools:
   full stop. Each concurrent `qmd_query` independently loads the
   embedding model into VRAM, so OR-scoped queries
   (`+c:opencode|c:claude_code`) used to spike VRAM when two
-  subprocesses fired at once. Per-call timeout lives in
-  `LIES_QMD_FANOUT_TIMEOUT` (default 15s for the fan-out, 60s for
-  `search`; matches qmd's observed reranking latency on cold
-  daemons). The recycle trigger counts only `QmdCommandError` (real
+  subprocesses fired at once. Per-call timeout comes from
+  `lies.config.get_qmd_query_timeout` (default 60s, override
+  `LIES_QMD_FANOUT_TIMEOUT`), read at call time and shared by every
+  qmd *retrieval* call site — the fan-out and the `search` tool both
+  read it, because the first cut of that fix left each holding its own
+  literal (60 and 15) under one env var. Liveness probes in
+  `qmd.lifecycle` / `qmd.daemon` keep their own short deadlines and
+  must not be widened: a slow answer to "is this alive?" is the
+  failure. The recycle trigger counts only `QmdCommandError` (real
   subprocess failures); `QmdNoResultsError` (clean miss) is silent.
 
 - **A qmd timeout is a slow daemon, not an unreachable one, and not

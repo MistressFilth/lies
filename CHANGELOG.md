@@ -18,8 +18,17 @@ All notable changes to LIES are documented here. The format follows
   qmd's captured `stderr`. The deadline message is a constant, so a
   timeout previously arrived with no indication of whether the time
   went into query expansion, embedding, or reranking.
-- **`LIES_QMD_FANOUT_TIMEOUT` now applies to `search`**, matching the
-  grounding fan-out that has read it since 0.40.0.
+- **One deadline for every qmd retrieval call site.**
+  `lies.config.get_qmd_query_timeout()` (default 60s, override
+  `LIES_QMD_FANOUT_TIMEOUT`) is now the single source, read at call
+  time by both the grounding fan-out and the `search` tool. Wiring
+  `search` to the variable alone left the fan-out on its own 15s
+  default, so one env var had two answers for the same subprocess;
+  the shared getter removes the second place to change.
+  `LIES_QMD_FANOUT_TIMEOUT` keeps its historical name because it has
+  been the fan-out's override since 0.40.0. A malformed or
+  non-positive value falls back to the default rather than raising —
+  an operator typo should cost the default budget, not the search.
 
 ### Changed
 
@@ -36,7 +45,12 @@ All notable changes to LIES are documented here. The format follows
   number was the whole operation. Measured warm latency against the
   5987-document corpus (2026-10-01) is 5.6-6.0s; 60s is
   `qmd_query`'s own default, so this is no longer stricter than the
-  layer beneath it.
+  layer beneath it. Liveness probes in `qmd.lifecycle` and
+  `qmd.daemon` are deliberately excluded and keep their own 15s/5s
+  deadlines (`DAEMON_START_TIMEOUT_S`, `PROBE_TIMEOUT_S`,
+  `STATUS_TIMEOUT_S`): a slow answer to "is this alive?" is itself the
+  failure, and a wedged daemon should be reported rather than waited
+  on.
 
 ### Fixed
 

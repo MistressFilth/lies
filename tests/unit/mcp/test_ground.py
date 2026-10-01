@@ -128,17 +128,21 @@ def test_ground_unscoped_no_library_returns_no_library_true(monkeypatch) -> None
 
 
 def test_fanout_unscoped_threads_module_timeout_and_drops_failures(monkeypatch) -> None:
-    """Per-call timeout uses the module-level ``_QMD_FANOUT_TIMEOUT``
-    constant (default 15s; ``LIES_QMD_FANOUT_TIMEOUT`` env override)
-    and ``QmdCommandError`` drops timed-out collections silently.
+    """Per-call timeout comes from the shared getter, and
+    ``QmdCommandError`` drops timed-out collections silently.
 
-    Pins the post-#106 timeout constant: ``qmd_query`` is invoked
-    with the module-level binding's current value (not the 60s
-    default) so cold-daemon reranking has headroom. The constant is
-    asserted ``isinstance(int) >= 10`` so a regression to a too-
-    tight literal (the historical 5s bug) trips immediately.
+    Pins the fan-out's deadline: ``qmd_query`` is invoked with
+    ``grounding._current_timeout()`` — the value
+    ``lies.config.get_qmd_query_timeout`` returns, shared with the
+    ``search`` tool so the two qmd query call sites cannot disagree.
+    That sharing is what replaced this module's own 15s literal; the
+    live-corpus warm cost is 5.6-6.0s and the default is 60s, with
+    ``LIES_QMD_FANOUT_TIMEOUT`` as the override.
 
-    1. ``qmd_query`` is invoked with ``timeout=grounding._QMD_FANOUT_TIMEOUT``.
+    The value is asserted ``isinstance(int) >= 10`` so a regression to
+    a too-tight literal (the historical 5s bug) trips immediately.
+
+    1. ``qmd_query`` is invoked with ``timeout=grounding._current_timeout()``.
        The two-collection assertion pins the new value end-to-end.
     2. ``QmdCommandError`` — the error ``qmd_query`` raises on
        ``subprocess.TimeoutExpired`` — is caught by ``_one`` and the
@@ -190,20 +194,19 @@ def test_fanout_unscoped_threads_module_timeout_and_drops_failures(monkeypatch) 
     # reranking needs ~7s plus tail margin (matches the live-corpus
     # probe in features/2026-09-25-fanout-timeout/README.md). A
     # regression to ``5`` or a string-coerced value trips here.
-    assert isinstance(grounding._QMD_FANOUT_TIMEOUT, int), (
-        f"_QMD_FANOUT_TIMEOUT must be int, got {type(grounding._QMD_FANOUT_TIMEOUT).__name__}"
+    assert isinstance(grounding._current_timeout(), int), (
+        f"the query timeout must be int, got {type(grounding._current_timeout()).__name__}"
     )
-    assert grounding._QMD_FANOUT_TIMEOUT >= 10, (
-        f"_QMD_FANOUT_TIMEOUT={grounding._QMD_FANOUT_TIMEOUT} is below "
+    assert grounding._current_timeout() >= 10, (
+        f"the query timeout={grounding._current_timeout()} is below "
         f"the 10s cold-daemon reranking floor — qmd needs ~7s on "
         f"limit=10 plus tail margin"
     )
-    # The fix: ``timeout=grounding._QMD_FANOUT_TIMEOUT`` threaded
-    # through (not the 60s qmd_query default). Two calls because two
-    # collections are registered.
+    # The fix: the shared value threaded through, and identical on
+    # both calls. Two calls because two collections are registered.
     assert observed_timeouts == [
-        grounding._QMD_FANOUT_TIMEOUT,
-        grounding._QMD_FANOUT_TIMEOUT,
+        grounding._current_timeout(),
+        grounding._current_timeout(),
     ]
     # Slow collection's QmdCommandError caught and dropped; fast
     # collection's hit survives.
