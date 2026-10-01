@@ -17,36 +17,31 @@ from __future__ import annotations
 
 from fastmcp import FastMCP
 
+# Module scope, not inside each test body: importing lies.mcp.server builds the
+# PromptsAsTools transform, and the first test to trigger that import pays
+# the full cost inside its call phase.
+from lies.mcp.server import mcp
+
 
 def test_server_registers_collections_read() -> None:
-    from lies.mcp.server import mcp
-
     assert "collections_read" in _registered_tool_names(mcp)
 
 
 def test_server_registers_search() -> None:
-    from lies.mcp.server import mcp
-
     assert "search" in _registered_tool_names(mcp)
 
 
 def test_server_registers_read() -> None:
-    from lies.mcp.server import mcp
-
     assert "read" in _registered_tool_names(mcp)
 
 
 def test_server_registers_lib_ask() -> None:
-    from lies.mcp.server import mcp
-
     registered = _registered_tool_names(mcp)
     assert "lib_ask" in registered, f"missing tool: 'lib_ask' in {registered}"
     assert "ask" not in registered, f"deprecated 'ask' tool still registered: {registered}"
 
 
 def test_server_registers_lint_and_reindex() -> None:
-    from lies.mcp.server import mcp
-
     registered = _registered_tool_names(mcp)
     assert {"lint", "reindex"} <= registered, (
         f"missing tools from v0.40 surface: {{'lint', 'reindex'}} - {registered}"
@@ -54,8 +49,6 @@ def test_server_registers_lint_and_reindex() -> None:
 
 
 def test_server_drops_old_tools() -> None:
-    from lies.mcp.server import mcp
-
     forbidden = {
         "wiki_search",
         "wiki_read",
@@ -80,8 +73,6 @@ def test_server_registers_seven_prompts() -> None:
     the test xfails until task 9 (the final prompt registration)
     flips it green.
     """
-    from lies.mcp.server import mcp
-
     registered = _registered_prompt_names(mcp)
     expected = {"ask", "collections", "ingest", "lint", "reindex", "sync", "ground"}
     missing = expected - registered

@@ -5,10 +5,18 @@ UV         ?= uv
 PY         := $(UV) run
 SRC        := src/lies
 TESTS      := tests
+PYTEST     := $(PY) pytest
+# Every lint / typecheck / format target below goes through pre-commit,
+# because `.pre-commit-config.yaml` is the single definition of what
+# those gates are. Inlining the raw tool calls here meant the Makefile
+# and the hook config could drift, and `ruff format --check .` had a
+# file failing repo-wide that no target ever looked at.
+PRECOMMIT  := $(PY) pre-commit
+# Retained for ad-hoc local use; the gate targets deliberately do not
+# use these, so the two definitions cannot diverge.
 RUFF_LINT  := $(PY) ruff check $(SRC) $(TESTS)
 RUFF_FMT   := $(PY) ruff format $(SRC) $(TESTS)
 TY         := $(PY) ty check $(SRC)
-PYTEST     := $(PY) pytest
 SL         := $(PY) flake8 --select=SL,PYD $(SRC) $(TESTS)
 
 REPO_ROOT              ?= $(HOME)/code/github/MistressFilth/lies
@@ -74,30 +82,28 @@ clean: ## Remove caches and build artifacts.
 		dist build *.egg-info */*.egg-info */*/*.egg-info
 
 .PHONY: lint
-lint: ## Run ruff check on src and tests.
-	$(RUFF_LINT)
+lint: ## Run ruff check via the pre-commit hook.
+	$(PRECOMMIT) run --all-files ruff-check
 
 .PHONY: lint-supyrliminal
-lint-supyrliminal: ## Run supyrliminal (SL + PYD flake8) on src and tests.
-	$(SL)
+lint-supyrliminal: ## Run supyrliminal via the pre-commit hook.
+	$(PRECOMMIT) run --all-files supyrliminal
 
 .PHONY: typecheck
-typecheck: ## Run ty on src.
-	$(TY)
+typecheck: ## Run ty via the pre-commit hook.
+	$(PRECOMMIT) run --all-files ty
 
 .PHONY: format
-format: ## Run ruff format (may auto-edit).
-	$(RUFF_FMT)
+format: ## Run ruff format via the pre-commit hook (may auto-edit).
+	$(PRECOMMIT) run --all-files ruff-format
 
 .PHONY: check
-check: ## Run full pre-commit stack (ruff + format + ty + supyrliminal + unit-test).
-	$(PY) ruff check --fix $(SRC) $(TESTS)
-	$(PY) ruff format $(SRC) $(TESTS)
-	$(TY)
-	$(SL)
-	$(PYTEST) $(TESTS)/unit/ \
-		--ignore=$(abspath $(TESTS)/unit/cli/test_query_cli.py) \
-		--ignore=$(abspath $(TESTS)/mcp/test_tools.py)
+check: ## Run the full gate stack: every pre-commit hook, in order.
+	$(PRECOMMIT) run --all-files ruff-check
+	$(PRECOMMIT) run --all-files ruff-format
+	$(PRECOMMIT) run --all-files ty
+	$(PRECOMMIT) run --all-files supyrliminal
+	$(MAKE) unit-test
 
 .PHONY: release
 release: check ## Bump version, update CHANGELOG, run gates, push tag.

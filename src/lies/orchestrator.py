@@ -694,6 +694,41 @@ def _format_lint_markdown(report: LintReport, wiki: Wiki) -> str:
     return "\n".join(sections)
 
 
+def _canonical_check(name: str, known: set[str]) -> str:
+    """Resolve a caller-supplied check name against the real categories.
+
+    Callers say ``orphans`` (plural, matching how a finding reads in a
+    report) where the category is ``orphan``, so a plural spelling has to
+    resolve. Stripping a trailing ``s`` unconditionally is not enough: it
+    turns ``bogus`` into ``bogu`` and would do the same to any category
+    that genuinely ends in ``s``. The plural is only stripped when doing
+    so lands on a category that actually exists in this report.
+    """
+    normalized = name.strip().lower()
+    if normalized in known:
+        return normalized
+    if normalized.endswith("s") and normalized[:-1] in known:
+        return normalized[:-1]
+    return normalized
+
+
+def _filter_lint_report(report: LintReport, canonical: str) -> LintReport:
+    """Return ``report`` narrowed to findings whose category matches.
+
+    ``report_markdown`` is deliberately dropped rather than carried
+    over. Copying it would leave the *unfiltered* body sitting on a
+    report whose ``findings`` say otherwise, and ``LintReport`` is a
+    public field: anything a consumer renders from it directly would
+    show every category under a ``check=`` filter. The renderer
+    (``_format_lint_markdown``) builds its body from ``findings``, so
+    an empty string here costs nothing on the path that matters.
+    """
+    return LintReport(
+        findings=[f for f in report.findings if f.category.lower() == canonical],
+        report_markdown="",
+    )
+
+
 def _render_lint_report(
     report: LintReport,
     *,
@@ -2301,6 +2336,7 @@ class Orchestrator:
         *,
         resolver: WikiLinkResolver | None = None,
         force_repair: bool = False,
+        check: str | None = None,
     ) -> str:
         """Run deterministic and LLM lint, merge findings, and write report.
 
@@ -2312,29 +2348,85 @@ class Orchestrator:
         :class:`WikiFlockUnrepairable`. Without the flag, a live
         contender raises :class:`WikiLockBusy`. Only meaningful when
         ``apply=True``.
+
+        ``check`` narrows the merged findings to one category, matched
+        case-insensitively and with an optional plural (``--check orphans``
+        and ``--check orphan`` both select ``orphan``). Filtering happens
+        before the repair agent runs, so ``--fix`` scoped to a check only
+        repairs findings of that check. A ``check`` matching nothing
+        renders the report with every category listed, so the caller can
+        see the vocabulary instead of guessing.
+
+        ``check`` narrows the *return value* only. The persisted
+        ``<wiki>/lint-report.md`` — the artifact behind
+        ``wiki://lint-report`` — always receives the full merged
+        report. Writing the narrowed body there meant a read-only
+        scoped query clobbered the artifact for every later reader.
         """
         shell_report = _build_lint_report(self.wiki, resolver=resolver)
         llm_report, fallback_reason = self._call_linter()
         merged_report, fallback_reason = merge_lint_reports(
             shell_report, llm_report, llm_fallback_reason=fallback_reason
         )
+        # Captured before the filter, so the "N of M matched" trailer
+        # counts against what the merge actually produced. M as
+        # len(shell) + len(llm) overstated it, because
+        # merge_lint_reports dedups on (category, pages, message) and
+        # the two sources overlap on every mechanical category.
+        merged_total = len(merged_report.findings)
+        requested_check: str | None = None
+        available: list[str] = []
+        unfiltered_report = merged_report
+        if check is not None and check.strip():
+            categories = {f.category.lower() for f in merged_report.findings}
+            requested_check = _canonical_check(check, categories)
+            available = sorted(categories)
+            merged_report = _filter_lint_report(merged_report, requested_check)
         repair_receipt: RepairReceipt | None = None
         if apply:
             plan = self._run_repair_agent(merged_report)
             repair_receipt = self._validate_and_apply_repair_plan(
                 plan, merged_report.findings, force_repair=force_repair
             )
-        final_md = _render_lint_report(
-            merged_report,
-            wiki=self.wiki,
-            repair_receipt=repair_receipt,
-            shell_count=len(shell_report.findings),
-            llm_count=len(llm_report.findings),
-            llm_fallback_reason=fallback_reason,
-        )
-        (self.wiki.wiki_dir / "lint-report.md").write_text(final_md, encoding="utf-8")
+
+        def render(report: LintReport) -> str:
+            return _render_lint_report(
+                report,
+                wiki=self.wiki,
+                repair_receipt=repair_receipt,
+                shell_count=len(shell_report.findings),
+                llm_count=len(llm_report.findings),
+                llm_fallback_reason=fallback_reason,
+            )
+
+        # The persisted artifact is always the full report, so a
+        # scoped read narrows this call's return value without
+        # shrinking what the next reader of wiki://lint-report sees.
+        unfiltered_md = render(unfiltered_report)
+        (self.wiki.wiki_dir / "lint-report.md").write_text(unfiltered_md, encoding="utf-8")
+        # When no check was requested the merge *is* the unfiltered
+        # report, so the rendered strings are identical; reuse the
+        # first and skip the second render.
+        final_md = unfiltered_md if requested_check is None else render(merged_report)
+        if requested_check is not None:
+            final_md += (
+                f"\nFiltered to check={requested_check!r}. "
+                f"Available checks: {', '.join(available) or 'none'} "
+                f"({len(merged_report.findings)} of {merged_total} "
+                "merged findings matched).\n"
+            )
         date = datetime.now(tz=UTC).date().isoformat()
-        title = _lint_log_title(merged_report)
+        # The log entry counts against the *merge*, not the narrowed
+        # view, and says so when a check scoped it. A title built from
+        # the filtered report read as "2 findings" in the audit trail
+        # for a run that found twenty across five categories, which
+        # contradicts the docstring's promise that ``check`` narrows
+        # the return value only.
+        title = _lint_log_title(unfiltered_report)
+        if requested_check is not None:
+            title += (
+                f" (check={requested_check}, {len(merged_report.findings)}/{merged_total} matched)"
+            )
         self._append_log_entry(f"## [{date}] {title}")
         return final_md
 

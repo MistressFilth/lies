@@ -30,6 +30,7 @@ from collections.abc import Callable
 from typing import Any, cast
 
 from fastmcp import FastMCP
+from fastmcp.server.transforms import PromptsAsTools
 from mcp.types import ToolAnnotations
 from pydantic import BaseModel, ConfigDict
 
@@ -59,6 +60,17 @@ mcp = FastMCP(
 # queryable before tools when the wire first boots. See
 # ``lies.mcp.prompts.register_prompts``.
 register_prompts(mcp)
+
+# Generate the ``list_prompts`` / ``get_prompt`` tool pair from the
+# registered prompt surface. Hosts that bind slashes to MCP prompts
+# pre-tokenize the slash tail on whitespace and bind tokens
+# positionally, so a multi-word question cannot reach a
+# single-parameter prompt body. Tool-call arguments are not subject to
+# that pre-tokenization, so the same prompts render from a tool call
+# with the full string intact. Added after ``register_prompts`` so all
+# prompts exist when the transform enumerates them; the generated
+# tools route through the server's middleware chain at runtime.
+mcp.add_transform(PromptsAsTools(mcp))
 
 
 # ---------------------------------------------------------------------------
@@ -313,10 +325,19 @@ async def reindex(
 @mcp.tool
 def lint(
     name: str | None = None,
+    check: str | None = None,
     fix: bool = False,
     force_repair: bool = False,
 ) -> str:
     """Run lint; with ``fix=True`` also apply the repair plan.
+
+    ``check`` narrows the report to one finding category (``orphan``,
+    ``missing_xref``, ``missing_page``, ``missing_required_section``,
+    ``dangling_derived_from``, ``contradiction``, ``stale``,
+    ``data_gap``), matched case-insensitively and with an optional
+    plural. Combined with ``fix=True`` it scopes the repair too. A
+    ``check`` that matches nothing renders the report with the
+    available categories listed.
 
     When ``fix=True`` and ``force_repair=True``, the cross-process
     memory flock is unconditionally reaped + retried once before
@@ -329,7 +350,7 @@ def lint(
     wiki = resolve_wiki(name)
     orch = Orchestrator(wiki=wiki)
     try:
-        return orch.run_lint(apply=fix, force_repair=force_repair)
+        return orch.run_lint(apply=fix, force_repair=force_repair, check=check)
     except (WikiFlockUnrepairable, WikiLockBusy):
         return f"error: {sys.exc_info()[1]}"
 

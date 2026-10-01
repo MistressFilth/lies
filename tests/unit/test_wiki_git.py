@@ -40,7 +40,6 @@ def git_wiki(tmp_path: Path) -> Path:
     return tmp_path
 
 
-@pytest.mark.slow
 def test_atomic_commit_succeeds(git_wiki: Path) -> None:
     (git_wiki / "new.txt").write_text("hello")
     sha = atomic_commit(git_wiki, "add new file", files=["new.txt"])

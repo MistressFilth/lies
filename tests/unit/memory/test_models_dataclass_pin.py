@@ -1,5 +1,6 @@
 from dataclasses import is_dataclass
 
+
 from lies.memory.models import (
     EvidenceAppend,
     MemoryPlan,

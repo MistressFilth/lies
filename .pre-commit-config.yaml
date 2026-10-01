@@ -9,9 +9,9 @@ repos:
     hooks:
       - id: ruff-check
         args: [--fix]
-        files: ^((src/lies|tests|scripts)/|pyproject\.toml$)
+        files: ^((src/lies|tests|scripts|tools)/|pyproject\.toml$)
       - id: ruff-format
-        files: ^((src/lies|tests|scripts)/|pyproject\.toml$)
+        files: ^((src/lies|tests|scripts|tools)/|pyproject\.toml$)
   - repo: https://github.com/astral-sh/ty-pre-commit
     rev: v0.0.66
     hooks:
@@ -27,7 +27,7 @@ repos:
         # Blocking: zero SL101 findings required (see PR #65 for the
         # conversion history; all 12 flagged classes were converted
         # from BaseModel to stdlib @dataclass).
-        files: ^((src/lies|tests|scripts)/|pyproject\.toml$)
+        files: ^((src/lies|tests|scripts|tools)/|pyproject\.toml$)
   - repo: local
     hooks:
       - id: test

@@ -6,18 +6,403 @@ All notable changes to LIES are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.42.0] - 2026-09-29
+
+### Breaking changes
+
+**MCP prompt arguments collapsed to a single string tail.** Five prompts
+took typed parameters past position one; hosts that bind slashes to MCP
+prompts pre-tokenize the tail on whitespace and bind tokens
+positionally, so a bare word landed in a `bool` / `int` / `list[str]`
+slot and FastMCP rejected it with a JSON-parse error. Every prompt now
+takes exactly one `str` that consumes the whole tail, and parses its
+flags internally.
+
+| Prompt | Before | After |
+|---|---|---|
+| `ask` | `question: str, tag_expr: str \| None = None, exclude_tags: list[str] \| None = None` | `tail: str` — the `+tag` / `-tag` filter atoms are parsed out of the question text instead of passed as arguments |
+| `ground` | `question: str, top_k: int = 3` | `tail: str` — `--top_k N` from the leading run |
+| `collections` | `subcommand: str, args: list[str] \| None` | `tail: str` — `<subcommand> <args…>` |
+| `ingest` | `source: str, delete_slug=None, batch_dir=None, dry_run: bool` | `tail: str` — `<source>` / `--batch <dir>`, plus `--collection`, `--slug`, `--title`, `--slug-prefix`, `--exclude-stem`, `--exclude-dir`, `--force`, `--dry-run` |
+| `lint` | `check: str \| None, fix: bool` | `tail: str` — `<check>` / `--check <name>`, `--name <wiki>`, `--fix`, `--force-repair` |
+| `reindex` | 5 × `bool` | `tail: str` — `--reconcile`, `--embed`, `--force`, `--cleanup`, `--all`, `--name <wiki>` |
+| `sync` | `collections: list[str] \| None, no_ingest/force/dry_run: bool, jobs: int, scraper_timeout: int` | `tail: str` — the request verbatim, plus `--source`, `--name`, `--force`, `--wait`, `--fail-busy`, `--wizard`, `--skip-reindex` |
+
+`ask` is renamed to `tail` along with the other six, and the rename is
+load-bearing rather than cosmetic. An earlier draft of this release kept
+`question`, which made `ask` the *only* prompt where a retired call
+failed silently: FastMCP filters `get_prompt` arguments to the declared
+signature, so
+`get_prompt(name="ask", arguments={"question": …, "tag_expr": …})`
+rendered a well-formed body that searched with `tag_expr=None` and
+**dropped the filter with no warning** — a query the user scoped by tag,
+answered from the whole library, with nothing in the response to say so.
+The other six raise `Missing required arguments: {'tail'}`. Naming the
+parameter `tail` makes `ask` fail the same loud way. The filters move
+into the tail as `+tag` / `-tag` atoms, which is what the ask plugin's
+slash convention always used.
+
+Programmatic callers replace the keyword arguments with one string:
+`get_prompt(name="lint", arguments={"check": "orphans", "fix": true})`
+becomes `get_prompt(name="lint", arguments={"tail": "--check orphans --fix"})`.
+
+`sync` no longer parses collection names positionally. Its tail is a
+*request*, handed to the agent verbatim in the same shape `ask` and
+`ground` use: the agent identifies the collections the request names,
+grounds an ambiguous name against `collections_read`, and asks the
+user before dispatching. A request naming no collection leaves the
+positional off, which is how `lies sync` covers every collection with
+a scraper — so `all` and `--all` are no longer special-cased. Flags
+stay deterministic: the body parses them and threads them into each
+call, so `--skip-reindex` is never left to the model to spot.
+
+The positional parse had a defect class of its own. It read one word
+per collection, so `sync please resync my library collections` rendered
+six `Bash(lies sync <word>)` invocations — a scrape-and-reindex chain
+per word, none of them on the collection the user meant. A five-name
+cap refused the tail, which fixed the paste accident and broke the
+legitimate six-collection request. Both halves are gone: the model
+reads the sentence instead of the parser counting words. No forwarder,
+no alias, no deprecation path.
+
+The version is **minor** (0.42.0). The prompt surface is host
+configuration rather than a versioned programmatic API: the only
+consumers are an MCP host's slash binding and the routing rules in
+`instructions.md`, and 0.41 shipped the same seven names. A major bump
+is reserved for the six *tools* (`search` / `read` / `lib_ask` /
+`collections_read` / `lint` / `reindex`), which are the surface a
+programmatic client depends on.
+
 ### Added
 
 - 7 slash-command MCP prompts: `ask`, `collections`, `ingest`, `lint`,
   `reindex`, `sync`, `ground`. Each returns a single user-role
   Message that templates a routed tool call against the LIES surface.
   Hosts bind the names under their server prefix (e.g. `/lies:ask`).
+- `list_prompts` and `get_prompt` tools via the FastMCP
+  `PromptsAsTools` transform. Tool-call arguments are not subject to
+  the host's slash pre-tokenization, so a full multi-word question
+  reaches the prompt body parser intact — including the `+tag` / `-tag`
+  filter tokens, which the prompt body strips and routes into
+  `tag_expr` / `exclude_tags` on the dispatched `search` / `read` /
+  `lib_ask` calls. The 7 `@mcp.prompt` registrations are unchanged;
+  this adds a second path to the same functions. Hosts that bind
+  slashes to MCP prompts pre-tokenize the slash tail on whitespace, so
+  the slash path still reaches a single-parameter prompt with only its
+  first token.
+- Server-emitted routing rules in `instructions.md`: a user message
+  carrying `+tag` / `-tag` filter tokens routes through `get_prompt`,
+  not `lib_ask` directly, because `lib_ask` is the synthesizer inside
+  the `ask` prompt's body rather than a user entry point.
+- `check` parameter on the `lint` tool, narrowing the report — and the
+  repair, when `fix=True` — to one finding category. Matched
+  case-insensitively against the categories actually present in the
+  report, with an optional plural (`orphans` and `orphan` both select
+  `orphan`). A `check` that matches nothing renders the report with the
+  available categories listed rather than an empty report that reads
+  like a clean wiki. The `lint` prompt's `--check` flag routes to it;
+  previously the prompt rendered a `check=` argument the tool did not
+  have. A blank `--check=` now refuses rather than running unfiltered:
+  the tool reads an empty check as *no filter*, so the call would have
+  returned the full report for a scoped request. The first repair
+  appended a note to the live call, which is the weaker answer — a body
+  that renders a command is a body promising an answer, so the user
+  had to read a trailing sentence to learn the scope was gone.
+- `--check <category>` on `lies lint`, so the CLI carries the same
+  scoping the MCP tool has. The prompt documented a filter the CLI
+  could not run, which read as a broken flag rather than a missing one.
 
 ### Changed
 
 - MCP tool `ask` renamed to `lib_ask`. The librarian+synthesizer
   pipeline is unchanged; only the wire name and Python symbol
   changed so the slash slot and tool surface stay de-duplicated.
+- The per-test budget gate re-measures in isolation before failing. A
+  full-suite run measures each test under contention, and the 0.15s
+  line sits close enough to the noise floor that a test whose body is
+  instantaneous gets flagged for scheduler latency rather than for
+  cost. An in-suite breach is now re-run on its own; only a test that
+  breaches there fails the run. This replaces the previous remedy for
+  a false positive — a `@pytest.mark.slow` mark, which removes the
+  test from the default run rather than fixing anything. The series
+  added 21 slow marks and removed 30, a net of −9 (173 on `main` before
+  it, 164 after), and the gate threshold is unchanged at 0.15s. Every
+  path where the re-measure cannot be performed now names itself on the
+  terminal, so a harness that stopped working is distinguishable from a
+  re-run that genuinely cleared the limit — the two were previously the
+  same empty dict, and the gate could not explain its own verdict.
+- **A budget-gate failure that is not a timing failure no longer reads
+  as one.** When the isolation re-measure could not be performed — a
+  test that errors in a fresh process, a broken import, a flake, a
+  timeout — the gate fell through to the timing report anyway: "HARD
+  LIMIT VIOLATIONS ... confirmed in isolation" plus a rubric about
+  making tests cheaper, for a test that had in fact crashed. The
+  re-run's real output appeared on one line above the rubric, and on
+  the *last stdout line* only, while a collection error prints to
+  stderr — so the one line a reader needed was usually the one line
+  dropped. A bail is now its own outcome, not an empty measurement: the
+  gate quotes both streams, says plainly that it holds no measurement,
+  and still fails closed. Only a re-run that happened and said "slow"
+  produces the timing report.
+- **The budget gate's isolation re-run no longer has one fixed
+  timeout.** A 120s bound on the whole batch is wrong at both ends: high
+  enough to cover any realistic batch it is also high enough that one
+  wedged test stalls the gate for two minutes, and low enough for a
+  typical batch it fires on a loaded machine and converts a noise
+  verdict into a hard failure — the exact outcome the re-measure exists
+  to prevent. The bound is now a 60s floor plus 5s per test in the
+  batch, and a test reads the value back off the `subprocess.run` call
+  rather than only checking the arithmetic.
+- `sync` renders one command per named collection. `lies sync` takes a
+  single positional, so `sync pydantic opencode` is two invocations
+  rather than a list-valued flag the CLI has no such option for.
+- `ingest` asks rather than rendering a placeholder. With neither
+  `--source` nor `--batch` the old body emitted
+  `--source '<source>'`; the body now asks which file to ingest.
+
+### Fixed
+
+- **Every `Bash(...)` the `ingest` and `sync` prompts render was a
+  command the CLI rejects.** The two prompts whose job is mutating the
+  library emitted `lies ingest|sync --data-dir "$LIES_DATA" …`, and
+  `--data-dir` is not an option on any `lies` command — every one of
+  those commands exited 2 before doing anything. The vocabularies were
+  transcribed from hand rather than from the Typer signatures, and
+  invented `--only`, `--jobs`, `--scraper-timeout`, `--no-ingest`,
+  `--dry-run`, `--type`, and `--delete` alongside it. Each prompt's
+  flag set is now the option set its target command declares; a flag
+  the command does not have is reported by name instead of rendered.
+  `tests/unit/mcp/test_rendered_commands_are_runnable.py` checks every
+  rendered command against the live Typer app, so a hand-transcribed
+  table that drifts turns a test red instead of shipping a broken
+  command.
+- **`ingest --delete <slug>` no longer renders a ghost verb.** Nothing
+  in the CLI removes an ingested page. The body now names the two
+  things that do exist — `lies library delete` removes a collection's
+  `config.yaml`, and removing a page file is a filesystem delete — and
+  asks which was meant.
+- **`ingest` no longer drops a flag the CLI accepts.** `--collection`,
+  `--slug`, `--title`, `--slug-prefix`, `--exclude-stem`, and
+  `--exclude-dir` were parsed and then thrown away with no note, so a
+  user who typed them correctly got a command missing them. The
+  vocabulary is now per-command, and every flag it admits is rendered.
+- **`collections` no longer drops `--tag` on `new`, `--json` on
+  `list` / `bootstrap-all`, or `--force` on `delete`.** All four are
+  declared by `lies library`; the prompt's union vocabulary did not
+  match, and `--json` was declared a *value* flag while being read as
+  a boolean, so the correct spelling produced both the right command
+  and a false "needs a value" alarm. The vocabulary is now per-verb.
+- **A repeatable flag no longer loses its earlier values.**
+  `lies library modify --tag a --tag b` is a real shape — `--tag` is
+  declared "Tag to add (repeatable)" — and a last-wins dict dropped
+  `a` with no word. `TailParse.repeats_of()` returns every occurrence
+  in order; `values` keeps the scalar reading. The backing field is
+  private (`_repeats`) so the accessor is the only read path.
+- **`sync` no longer splices an unrecognized flag's value into a
+  collection name.** `sync --jbos 8` rendered `--only 8`: the typo'd
+  flag's value became a collection nobody named, and the same body said
+  "no command was run" a sentence after printing `Run Bash(lies sync
+  8)`. All seven prompt bodies now call one shared guard
+  (`_refuse_unless_clean`) that refuses on a missing flag value or on a
+  flag whose value would be re-read as an argument, and `note()` no
+  longer claims a command was not run — a body that appends `note()` is
+  by definition rendering one.
+- **`ground` no longer deletes flag-shaped words from the question.**
+  Running the full flag grammar over a question that is mostly prose
+  turned "what is the `--only` flag" into a search for "what is the
+  flag" — the same defect the filter parser guards against, one layer
+  up. Flags are now read from the leading run only, `--` terminates
+  them, and a body that grounds a question containing a flag says so
+  rather than leaving the agent to guess why the words came back.
+- **`run_lint(check=…)` no longer narrows the `log.md` entry.** The
+  persisted `lint-report.md` always received the full merged report,
+  but the wiki's audit log was titled from the filtered one, so a
+  scoped run read as "2 findings" for a merge that carried twenty
+  across five categories. The entry now counts the merge and states
+  the narrowing: `check=stale, 1/4 matched`.
+- **The `check` filter trailer counted the wrong denominator, and the
+  lint prompt's `check` leaked the full report.**
+  `len(shell) + len(llm)` overstates the merged total, because
+  `merge_lint_reports` dedups on `(category, pages, message)` and the
+  two sources overlap on every mechanical category. Separately,
+  `_filter_lint_report` copied the *unfiltered* `report_markdown` onto
+  a report whose `findings` said otherwise; anything rendering the
+  markdown directly ignored the filter.
+- **The parse-problem note cannot weld onto the command.** `note()`
+  returned a bare sentence, so a body appending it to a rendered
+  command produced `…--forceUnrecognized flag(s) ignored: --bogus.` It
+  now returns `""` or a leading-space-prefixed sentence.
+- **The `ingest` and `collections` bodies no longer run a command with
+  a placeholder in it.** A missing slug rendered
+  `lies library modify <slug>`, which the agent would then run. The
+  `collections` verbs that require a name (`show`, `where`, `new`,
+  `modify`, `tag`, `delete`) now refuse with the name they need, which
+  also removes the literal `'<slug>'` / `'<name>'` from every rendered
+  `Bash(...)` line.
+- **`collections` no longer lets an unknown flag's value become the
+  collection name.** `show --tag cli` parses as an unknown flag plus
+  the positional `cli`, because `show` declares no `--tag`; the body
+  rendered `collections_read(name='cli')` while its note said the flag
+  was ignored, so the flag the user typed decided which collection got
+  queried. `TailParse.repurposed` records the pair, and a body that
+  consumes positionals asks instead of rendering. A *declared* boolean
+  followed by a bare word stays a surplus positional, reported by the
+  existing leftover note.
+- **`tag <slug> --tag <value>` no longer drops the tag.** The `tag`
+  branch read tags from the positionals only, so the flag spelling
+  rendered `lies library modify <slug>` and ran with no tags at all.
+  Both spellings now reach the command.
+- **`--no-skip-reindex` is no longer silently discarded by `sync`.**
+  The boolean table carried the negated spelling of every paired flag
+  except this one, so the flag was dropped with no word and the
+  rendered command ran the qmd `update` + `embed` chain the user asked
+  to skip.
+- **The runnable-command test reads `secondary_opts`.** Typer keeps the
+  `--no-x` half of a `--x/--no-x` boolean out of `param.opts`, so the
+  test rejected `lies sync pydantic --no-wait` — a flag the CLI
+  declares and the prompt renders. The failure pointed at the table,
+  and the tempting repair was to delete a working flag from it.
+- **The runnable-command test is compared against the live Typer app in
+  both directions.** Its first version generated its tails *from the
+  hand-written vocabulary tables*, so it could only ever catch a table
+  that gained an invented flag; a flag the command declares and the
+  table omits produced no row and passed. `_check_command` also
+  validated flag names and an arity ceiling only, so it accepted
+  `lies library new` — which exits 2 for a missing slug. Both gaps
+  were found by mutating the implementation and watching the suite
+  stay green. The test now asserts *equality* between each table and
+  the options the live app declares, checks that every declared flag
+  actually reaches the rendered command (a per-body render tuple is a
+  fourth hand-written table, and a flag dropped from it was silent),
+  and rejects a value-taking option with no token after it and a
+  required argument with no positional.
+
+  Two runtime preconditions sit below the signature and stay outside
+  any introspection: `lies library new` raises
+  `BadParameter("library new requires --source")` in its body, and
+  `lies ingest --source` exits 2 without `--collection` or
+  `--slug-prefix`. Both are the *default* invocation of their verb, and
+  both are now body-level refusals with their own regression tests.
+- **`--title` no longer silently eats the source, and `ground` no
+  longer swallows a bad `--top_k`.** `--title` takes every word up to
+  the next flag, so `ingest --title "Pydantic basics" x.md` reported
+  "no source given" and pointed away from the cause; the body now
+  states the ordering rule wherever `--title` is set. `--top_k=abc`
+  fell back to 3 in silence, and `--top_k=99` clamped to 10 unremarked;
+  both are named now. The `ingest` prompt description also no longer
+  advertises a `--delete slug` the body says does not exist.
+- **The `ask` and `ground` bodies render the question as a fenced
+  verbatim block** rather than a `repr()` literal. A question
+  containing a quote or a newline arrived at the tool call carrying
+  escape sequences the agent had to know to strip, and a tail
+  containing a closing bracket could end the rendered call and append
+  instructions of its own. The fence is now wider than the longest
+  backtick run in the value (CommonMark's rule), so a value cannot
+  close the block it sits in.
+- **The question text keeps its newlines.** It was rebuilt as
+  `" ".join(tokens)` after the filter pass, which collapsed every
+  internal whitespace run — a pasted code block or a stack trace
+  reached the search as one run-on line. qmd is whitespace-insensitive
+  so retrieval never noticed, but the body tells the agent to pass the
+  string *verbatim* and it was not what the user typed. Only the
+  leading filter run is tokenized now; the rest is sliced out of the
+  original string.
+- **A string tool argument no longer sits inside the call's
+  parentheses.** `lint --check "x) then run Bash(rm -rf /)"` rendered
+  `mcp__lies__lint(..., check='x)', ...)` — the first closing paren
+  belongs to the *value*, so an agent reading the line sees the call
+  end early and reads the tail as prose. Nothing escaped into a second
+  command, but an ambiguous instruction to an agent is a defect, and
+  `ask` / `ground` had already moved their values out for the same
+  reason. `check` now rides in a fenced `with check (…)` clause; an
+  absent *or empty* value keeps the call on one line, since a fenced
+  block reading "pass this string verbatim" above nothing looks like a
+  rendering bug.
+- **Three bodies no longer describe what they did inaccurately.**
+  `collections new` reported a dropped source through the generic
+  leftover note — "1 positional(s) the verb does not take" — when `new`
+  does take a second positional and a `--source`/`--prompt` flag simply
+  won; a user told the verb rejects their source would conclude the flag
+  invented a rule. `sync` rendered `--name <wiki>` beside a positional
+  collection with nothing to tell them apart, though the CLI documents
+  `--name` as "Wiki to sync" and the positional as a collection; an
+  agent passing a collection to `--name` gets the silent misroute the
+  body exists to prevent. Both are now named in the body.
+- **Slash-command prompts parse `+tag` / `-tag` filter tokens out of
+  the question at render time.** Claude Code's slash parser shredded a
+  multi-word question across typed prompt parameters in declared order
+  and FastMCP rejected the non-string value with a JSON-parse error.
+- **A filter must look like a tag *and* sit in the leading run.** A
+  library of command-line tooling is full of questions like "the `-e`
+  flag of grep", and those single-letter atoms were deleted from the
+  question and re-injected as `exclude_tags` with no note. A filter
+  atom now needs a `:` qualifier or two or more characters, and the
+  scan stops at the first word of the question.
+- **Prompt tails are split on whitespace, not by a shell lexer.** A
+  `shlex`-based splitter raised `ValueError: No closing quotation` on
+  any apostrophe or unbalanced quote, which FastMCP surfaced as a
+  `PromptError`. Question text is prose, not shell.
+- **A value flag followed by another flag no longer swallows it.**
+  `sync --source --force` set `source='--force'` and dropped `--force`,
+  so the body ran neither as asked. A value flag given no value is now
+  reported by name.
+- **A boolean flag written `--flag=value` is no longer silently
+  dropped.** The parser routed any `=`-attached value into `values`,
+  and every body read `booleans`. `reindex --all=true` ran the
+  *non-destructive* path with `all_=False` and no confirmation
+  warning. The flag is now set, the meaningless value is discarded,
+  and the body names the discard. `TailParse.flag_on()` is the one
+  place a body asks "was this switch set?".
+- **`reindex --name <wiki> all` no longer swallows the destructive
+  marker.** `name` was declared a multi-word flag, so the parser
+  consumed up to the next `--flag` and bound `name='pydantic all'`,
+  leaving `all_=False`. A wiki name is one token.
+- **`reindex` accepts the bare `all` / `all_` positional** the
+  pre-single-tail signature used, so `/lies-reindex all_` is no longer
+  a silent downgrade of a destructive rebuild.
+- **Flags outside a prompt's vocabulary are named in the body.** A
+  typo like `--cleaup` was dropped silently, so a destructive rebuild
+  request ran the non-destructive path unremarked.
+- `ground --top_k 7` binds, not just `--top_k=7`. The space form leaked
+  the value into the query text and fell back to the default.
+- `ingest --title` takes free text (every word up to the next flag).
+  `--title two words` bound `title='two'` and dropped `words`.
+- `collections` interpolates its arguments with `shlex.join`, so a
+  collection name containing shell metacharacters stays one argument
+  in the `Bash(...)` line the agent runs.
+- An empty `ground` / `ask` tail asks for the question rather than
+  rendering a search for the empty string. (`ground` needed a second
+  pass: its guard ran *before* the filter extraction, and a filter
+  token is itself a positional, so `+c:opencode` and a bare
+  `--top_k 5` both slipped through to `search('')`.)
+
+## [0.41.0] - 2026-09-29
+
+Reconstructed after the fact: this release shipped as commit `1504a20`
+(PR #114) with the version bumped in `pyproject.toml` and
+`src/lies/__init__.py` but no dated section here, so the changelog
+jumped straight from `[Unreleased]` to `[0.40.0]`. Written from that
+commit's own message and diff so the record matches what shipped.
+
+### Breaking changes
+
+- **MCP tool `ask` renamed to `lib_ask`.** The wire name and the Python
+  symbol both change, so the prompt surface can take the `ask` slot
+  without a collision. No forwarder and no alias; every call site was
+  updated in the same change.
+
+### Added
+
+- Seven slash-command MCP prompts — `ask`, `collections`, `ingest`,
+  `lint`, `reindex`, `sync`, `ground` — registered through a single
+  `register_prompts(mcp)` call wired into `server.py` ahead of the tool
+  registrations. Each returns one user-role `Message` templating a
+  routed tool call: `ask` runs search → read → `lib_ask` for a
+  synthesized cited answer with `[[collection/slug]]: "verbatim"`
+  markers, `ground` stops at search → read for a snippet digest with no
+  synthesis path.
+- `tests/unit/mcp/_prompt_body.py`, a shared helper for reaching a
+  prompt body's rendered text from a test.
 
 ## [0.40.0] - 2026-09-26
 

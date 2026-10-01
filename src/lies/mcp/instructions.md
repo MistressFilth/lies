@@ -28,27 +28,105 @@ yourself. The wiki you are talking to is selected by the
   pipeline), then the synthesizer subagent. Returns a `SynthesizeEnvelope`
   with `answer`, `citations`, `pages_read`, `searched_scope`,
   `fallback_used`, `synthesis_used`, `fallback_reason`.
-- `lint` — health-check (unchanged).
-- `reindex` — qmd lifecycle (unchanged).
+- `lint(name?, check?, fix?, force_repair?)` — health-check. `check`
+  narrows the report to one finding category (`orphan`, `missing_xref`,
+  `missing_page`, `missing_required_section`, `dangling_derived_from`,
+  `contradiction`, `stale`, `data_gap`), matched case-insensitively
+  with an optional plural. `fix=True` applies the repair plan; with
+  `check` set, the repair is scoped to that category too.
+- `reindex` — qmd lifecycle. `cleanup` / `all_` are destructive and
+  elicit confirmation.
+- `list_prompts()` — the prompt inventory as JSON, with each prompt's
+  argument names and descriptions.
+- `get_prompt(name, arguments?)` — renders the named prompt and
+  returns its messages.
 
-## Prompts (v0.41 surface)
+## Prompts (v0.42 surface)
 
-Slash-command entry points surface the following `@mcp.prompt` names.
-Hosts that bind slashes to MCP prompts render these under the server
-prefix (e.g. `/lies:ask`):
+Seven `@mcp.prompt` names are registered. Reach them with `get_prompt`:
 
-- `ask(question, tag_expr=None, exclude_tags=None)` — synthesized
-  cited answer.
-- `collections(subcommand, args=[])` — library registry CRUD.
-- `ingest(source, delete_slug=None, batch_dir=None, dry_run=False)` —
-  bring a source into the library.
-- `lint(check=None, fix=False)` — health-check the corpus.
-- `reindex(reconcile=False, embed=False, force=False, cleanup=False, all_=False)` —
-  rebuild the search index.
-- `sync(collections=[], no_ingest=False, force=False, dry_run=False, jobs=4, scraper_timeout=300)` —
-  pull + ingest remote sources.
-- `ground(question, tag_expr=None, exclude_tags=None, top_k=3)` —
-  cite-snippet digest (no synthesis).
+    get_prompt(name=<prompt>, arguments={<the single string param>: "<tail>"})
+
+**Prefer `get_prompt` over the slash form for every user question.**
+Tool-call arguments are not pre-tokenized, so the full string arrives
+intact. The slash form (`/lies:lint --fix`, `/lies:sync`) is
+single-token only: hosts pre-tokenize the slash tail on whitespace and
+bind tokens positionally to declared parameters, so everything after the
+first token is overflow and is dropped. `/lies:ask +c:opencode why`
+leaves the body asking for a question, because `why` never arrives.
+
+Every prompt takes exactly one `str` and parses its own flags. A typed
+parameter past position one would receive a bare word from the slash
+tokenizer and fail JSON decode, which is why there are no `bool` / `int`
+/ `list[str]` parameters on the prompt surface. Flag values bind as
+`--flag=value` or `--flag value`; a value flag given no value renders an
+error body rather than a command. A boolean written `--flag=value` is
+still set — the value is discarded and the body says so.
+
+- `ask(tail: str)` — synthesized cited answer. `+tag` / `-tag`
+  filter tokens are parsed out of the **leading run** of the tail
+  inside the body and routed into `tag_expr` / `exclude_tags` on the
+  dispatched calls. The parameter is named `tail`, like the other six,
+  so a retired call fails loudly rather than silently dropping its
+  filter.
+- `ground(tail: str)` — cite-snippet digest (no synthesis). Same
+  filter-token contract, plus `--top_k N` (clamped to [1, 10]).
+- `collections(tail: str)` — registry CRUD. `<subcommand> <args…>`.
+  Subcommands: `list`, `show` (alias `info`), `new` (alias `add`),
+  `modify`, `delete` (alias `remove`), `where`, `enrich-tags`, `tag`
+  (`<slug> <tag…>`, rendered as `modify --tag`), `bootstrap-all`
+  (alias `register-shipped`). Flags: `--source` / `--prompt` on
+  `new`; `--tag` / `--untag` / `--set` / `--from-file` on
+  `modify`; `--json` on `list`.
+- `ingest(tail: str)` — `<source>` or `--batch <dir>`, plus
+  `--source` / `--collection` / `--slug` / `--title` / `--slug-prefix`
+  / `--exclude-stem` / `--exclude-dir` / `--force` / `--dry-run`.
+  A bare path binds to `--source`. There is no `--delete`: nothing in
+  the CLI removes an ingested page, so a tail that asks for one gets
+  the two things that do exist rather than a command that exits 2.
+- `lint(tail: str)` — `--check <name>` (one finding category; the
+  `lint` tool's `check` parameter filters the report to it), `--fix`.
+- `reindex(tail: str)` — `--reconcile` / `--embed` / `--force` /
+  `--cleanup` / `--all` / `--name <wiki>`. `all`, `all_` and `--all`
+  are the same destructive marker; `cleanup` and `all_` elicit
+  confirmation. `--name` takes exactly one token, so
+  `--name pydantic all` reindexes `pydantic` with `all_=True`.
+- `sync(tail: str)` — the tail is a *request*, not a flag list. The
+  body carries it to you verbatim; you identify the collections it
+  names, ground ambiguous names against `mcp__lies__collections_read`,
+  and ask the user before dispatching. A request naming no collection
+  (`sync the library`) gets no positional, which is how `lies sync`
+  covers every collection with a scraper. Flags are parsed by the
+  body and threaded into each call you dispatch: `--source` /
+  `--name` / `--force` / `--wait` / `--fail-busy` / `--wizard` /
+  `--skip-reindex` plus each paired `--no-` form. `lies sync` takes
+  one positional per invocation, so N collections is N commands.
+
+## Routing rules
+
+**A user message carrying `+tag` include tokens (e.g. `+c:opencode …`)
+or `-tag` exclude tokens (e.g. `-t:draft …`) goes through `get_prompt`,
+not `lib_ask`.** `lib_ask` is the synthesizer inside the `ask` prompt's
+body, not a user entry point; calling it directly skips the filter
+parsing and the citation-render instructions. Call `lib_ask` only when a
+prompt body has already routed you to it, or when you are debugging the
+synthesizer itself.
+
+    get_prompt(
+        name="ask",      # synthesized cited answer
+        # or name="ground"  # verbatim snippet digest, no synthesis
+        arguments={"tail": "<the full user message, filters included>"}
+    )
+
+The prompt body parses `+tag` / `-tag` out of the **leading run** of
+the tail and routes the typed filter into `tag_expr` / `exclude_tags`
+on the dispatched calls. Two guards keep ordinary English out of the
+filter path: a token is read as a filter only while no question word
+has been seen yet (the documented shape is `+tag -tag <question>`), and
+only when what follows the sigil looks like a tag — a `:` qualifier
+(`c:opencode`) or two or more characters. So `-1`, a bare `--`, a lone
+`-`, and a question *about* option flags ("what does `-e` do", "is `-p`
+or `-q` faster") all stay in the question text.
 
 ## Workflow
 

@@ -166,12 +166,23 @@ After registration, Claude Code sees these tools (v0.40 surface):
   Returns a `SynthesizeEnvelope` with `answer`, `citations`,
   `pages_read`, `searched_scope`, `fallback_used`, `synthesis_used`,
   `fallback_reason`.
-- `lint(name?, fix=False, force_repair=False)` — health-check the
-  wiki; `fix=True` applies the repair plan for `safe_to_fix`
-  findings.
+- `lint(name?, check?, fix=False, force_repair=False)` — health-check
+  the wiki; `fix=True` applies the repair plan for `safe_to_fix`
+  findings. `check` narrows the report (and the repair) to one finding
+  category, matched case-insensitively with an optional plural:
+  `orphan`, `missing_xref`, `missing_page`, `missing_required_section`,
+  `dangling_derived_from`, `contradiction`, `stale`, `data_gap`. A
+  `check` that matches nothing renders the report with the available
+  categories listed.
 - `reindex(cleanup?, all_?, embed?, force?, reconcile?, name?)` —
   rebuild qmd index. Destructive flags (`cleanup` / `all_`) elicit
   confirmation via `ctx.elicit`.
+- `list_prompts()` — the prompt inventory as JSON, with each prompt's
+  argument names and descriptions.
+- `get_prompt(name, arguments?)` — renders the named prompt and
+  returns its messages. Tool-call arguments are not pre-tokenized, so
+  a full multi-word question reaches the prompt body intact; this is
+  the path for user questions.
 
 …and these resources:
 
@@ -179,22 +190,112 @@ After registration, Claude Code sees these tools (v0.40 surface):
   metadata (name, tags, source, page_count, updated_at) as a
   per-collection JSON grouping.
 
-…and these prompts (v0.41 surface):
+…and these prompts (v0.42 surface). Every prompt takes one `str` and
+parses its own flags. One slot makes the slash path *safe*, not
+*complete* — the host binds exactly one token and drops the rest, so
+reach these through the `get_prompt` tool for anything multi-word:
 
-- `ask(question, tag_expr=None, exclude_tags=None)` — synthesized
-  cited answer.
-- `collections(subcommand, args=[])` — library registry CRUD.
-- `ingest(source, delete_slug=None, batch_dir=None, dry_run=False)` —
-  bring a source into the library.
-- `lint(check=None, fix=False)` — health-check the corpus.
-- `reindex(reconcile=False, embed=False, force=False, cleanup=False, all_=False)` —
-  rebuild the search index.
-- `sync(collections=[], no_ingest=False, force=False, dry_run=False, jobs=4, scraper_timeout=300)` —
-  pull + ingest remote sources.
-- `ground(question, tag_expr=None, exclude_tags=None, top_k=3)` —
-  cite-snippet digest (no synthesis).
+- `ask(tail: str)` — synthesized cited answer. `+tag` / `-tag`
+  filter tokens are parsed out of the **leading run** of the tail by
+  the prompt body and routed into `tag_expr` / `exclude_tags` on the
+  dispatched calls. A filter must look like a tag (a `:` qualifier, or
+  two or more characters) and sit before the first question word, so a
+  question *about* option flags — "what does `-e` do" — keeps its
+  words. The parameter is named `tail` like the other six, so a caller
+  using the retired `{"question": …, "tag_expr": …}` shape gets an
+  error rather than a body that quietly searches the whole library.
+- `ground(tail: str)` — cite-snippet digest (no synthesis). Same
+  filter-token contract as `ask`, plus `--top_k N` (also `--top_k=N`),
+  clamped to [1, 10], default 3. A non-integer or out-of-range value
+  is named in the body rather than silently corrected.
+- `collections(tail: str)` — registry CRUD. `<subcommand> <args…>`;
+  subcommands `list`, `show` (alias `info`), `new` (alias `add`),
+  `modify`, `delete` (alias `remove`), `where`, `enrich-tags`, `tag`
+  (`<slug> <tag…>` or `tag <slug> --tag <t>`, both rendered as
+  `modify --tag`), `bootstrap-all` (alias
+  `register-shipped`). Flags: `--source` / `--prompt` on `new`; `--tag`
+  / `--untag` / `--set` / `--from-file` on `modify`; `--json` on
+  `list`. The tail is whitespace-separated and quote characters are
+  literal, so an argument that needs an embedded space is not
+  expressible here — run the `lies library` Bash command directly for
+  that. A positional the subcommand has no slot for is reported in the
+  body rather than appended to the rendered command, a subcommand
+  missing its required name renders no command at all, and a flag the
+  subcommand does not declare is named along with the word that
+  followed it — that word is not the flag's value, and treating it as
+  a positional is how a typo became a collection name.
+- `ingest(tail: str)` — bring a source into the library. Either
+  `<source>` or `--batch <dir>`, plus optional `--source`,
+  `--collection`, `--slug`, `--title`, `--slug-prefix`,
+  `--exclude-stem`, `--exclude-dir`, `--force`, `--dry-run` (each
+  `--force` / `--dry-run` also has its `--no-` form, and the negated
+  spelling renders rather than being dropped). A bare path binds to
+  `--source`; passing both a path and `--source` renders a body that
+  asks which one you meant rather than guessing. A single `--source`
+  also needs `--collection` or `--slug-prefix` — the CLI derives a
+  collection name from a *batch* parent directory but never from one
+  source, so the body asks for the name rather than rendering a command
+  that exits 2. `--title`
+  takes free text (every word up to the next flag), so a source typed
+  after it is read as part of the title — put the source first or
+  attach it with `--source <path>`; the body says so whenever
+  `--title` is set. The rest take one token. There is no `--delete`
+  verb — nothing in the CLI removes an ingested page, and `lies library
+  delete` removes a collection's `config.yaml`, not a page.
+- `lint(tail: str)` — health-check. `<check>` or `--check <name>` (one
+  finding category, plural tolerated), `--fix`, `--name <wiki>`,
+  `--force-repair`. `check` narrows this call's
+  return value and the `log.md` entry counts it (`check=orphan,
+  2/20 matched`); the persisted `<wiki>/lint-report.md` behind
+  `wiki://lint-report` always holds the full report. `lies lint
+  --check <name>` carries the same scoping on the CLI. A blank
+  `--check=` refuses: the tool reads an empty check as *no filter*, so
+  running it would return the full report for a scoped request, and a
+  note on a live call is a weaker answer than no call.
+- `reindex(tail: str)` — rebuild the search index. `--reconcile`,
+  `--embed`, `--force`, `--cleanup`, `--all`, `--name <wiki>`.
+  `all`, `all_` and `--all` are the same destructive marker. `--name`
+  takes exactly one token, so `--name pydantic all` reindexes
+  `pydantic` with the destructive marker set. A positional the verb
+  takes no slot for is reported rather than dropped — `--name` is the
+  only way to scope a reindex, so a bare word is worth naming.
+- `sync(tail: str)` — pull + ingest remote sources. The tail is a
+  *request*, not a flag list: the body carries it to the agent
+  verbatim, and the agent identifies the collections it names —
+  grounding ambiguous names against `collections_read` and asking
+  before dispatching. A request naming no collection (`sync the
+  library`) leaves the positional off, which is how `lies sync`
+  covers every collection with a scraper. Flags are still parsed
+  deterministically and threaded into each call: `--source`,
+  `--name`, `--force`, `--wait`, `--fail-busy`, `--wizard`,
+  `--skip-reindex`; each paired boolean also takes its `--no-` form,
+  `--no-wait` and `--no-skip-reindex` among them. `lies sync` takes one
+  positional per invocation, so N collections is N commands. An
+  unrecognized flag refuses here: a typo that swallowed the only
+  positional would sync every registered collection.
+
+Every prompt tail is split on whitespace. Flag values bind as
+`--flag=value` or `--flag value`; a value flag given no value, a value
+attached to a boolean, or a flag outside the prompt's vocabulary,
+renders a body that names the problem instead of running a command the
+user did not ask for. A boolean written `--all=true` is still set — the
+value means nothing on a switch, and the body says it was discarded.
+A bare `--` terminates flags, and a single-dash token (`-p`) is named
+as a typo rather than passed through: Click rejects it, and a bare
+`lies sync` means every collection. Because the split is
+whitespace-only, quote characters inside a value are literal and are
+stored as part of it; the body names that rather than re-splitting.
 
 Hosts bind prompt names under their server prefix (e.g. `/lies:ask`).
+One-string parameters are what make the slash path work at all: hosts
+pre-tokenize the tail on whitespace and bind tokens positionally, so a
+typed `bool` / `int` / `list[str]` past position one receives a bare word
+and fails decode. That same pre-tokenization makes the slash form
+**single-token only** — everything after the first token is overflow and
+is dropped, so `/lies:ask +c:opencode why` receives only `+c:opencode` and
+renders the "no question given — only filter tokens arrived" body. Tool-call
+arguments are not pre-tokenized, so `get_prompt` is the path for any
+multi-word question.
 
 Wiki selection: every tool accepts an optional `name` parameter.
 Resolution chain: explicit `name` → `LIES_WIKI_NAME` env → `default`.
