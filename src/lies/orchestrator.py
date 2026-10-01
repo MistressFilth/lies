@@ -2404,12 +2404,9 @@ class Orchestrator:
         # shrinking what the next reader of wiki://lint-report sees.
         unfiltered_md = render(unfiltered_report)
         (self.wiki.wiki_dir / "lint-report.md").write_text(unfiltered_md, encoding="utf-8")
-        # ``unfiltered_report is merged_report`` whenever no check was
-        # requested, so re-rendering produced a second identical body
-        # and discarded the first. It is the common path — an unscoped
-        # ``lies lint`` — and it doubled the markdown render on every
-        # call. Reuse the string; the two differ exactly when a filter
-        # narrowed the report.
+        # When no check was requested the merge *is* the unfiltered
+        # report, so the rendered strings are identical; reuse the
+        # first and skip the second render.
         final_md = unfiltered_md if requested_check is None else render(merged_report)
         if requested_check is not None:
             final_md += (
