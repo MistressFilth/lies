@@ -295,7 +295,19 @@ programmatic client depends on.
   command, but an ambiguous instruction to an agent is a defect, and
   `ask` / `ground` had already moved their values out for the same
   reason. `check` now rides in a fenced `with check (…)` clause; an
-  absent value keeps the call on one line.
+  absent *or empty* value keeps the call on one line, since a fenced
+  block reading "pass this string verbatim" above nothing looks like a
+  rendering bug.
+- **Three bodies no longer describe what they did inaccurately.**
+  `collections new` reported a dropped source through the generic
+  leftover note — "1 positional(s) the verb does not take" — when `new`
+  does take a second positional and a `--source`/`--prompt` flag simply
+  won; a user told the verb rejects their source would conclude the flag
+  invented a rule. `sync` rendered `--name <wiki>` beside a positional
+  collection with nothing to tell them apart, though the CLI documents
+  `--name` as "Wiki to sync" and the positional as a collection; an
+  agent passing a collection to `--name` gets the silent misroute the
+  body exists to prevent. Both are now named in the body.
 - **Slash-command prompts parse `+tag` / `-tag` filter tokens out of
   the question at render time.** Claude Code's slash parser shredded a
   multi-word question across typed prompt parameters in declared order

@@ -148,3 +148,16 @@ def test_an_absent_check_keeps_the_call_on_one_line() -> None:
     body = rendered_body(msg)
     assert "Call mcp__lies__lint(name=None, fix=False, force_repair=False)" in body
     assert "```" not in body, body
+
+
+def test_an_empty_check_renders_no_verbatim_block() -> None:
+    """A fenced block saying "pass this string verbatim" with nothing in
+    it reads as a rendering bug, and the note already explains the
+    empty value on its own."""
+    from lies.mcp.prompts_impl import lint_prompt
+
+    [msg] = lint_prompt("--check=")
+    body = rendered_body(msg)
+    assert "```" not in body, body
+    assert "--check='' is empty" in body, body
+    assert "Call mcp__lies__lint(name=None, fix=False, force_repair=False)" in body, body

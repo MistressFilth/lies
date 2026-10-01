@@ -140,3 +140,28 @@ def test_collections_tag_renders_the_flag_spelling() -> None:
 
     [msg] = collections_prompt("tag mylib docs")
     assert "Run Bash(lies library modify mylib --tag docs)" in rendered_body(msg)
+
+
+def test_new_says_when_a_source_positional_was_dropped_in_favour_of_a_flag() -> None:
+    """The generic leftover note names the wrong cause.
+
+    ``new mylib /tmp/src --prompt w.md`` renders the command *without*
+    ``/tmp/src``, and the leftover note says "1 positional(s) the verb
+    does not take" — but ``new`` does take a second positional; it is
+    the source, and a ``--source``/``--prompt`` flag won. A user told
+    the verb does not accept their source would conclude the flag
+    invented a rule.
+    """
+    [msg] = collections_prompt("new mylib /tmp/src --prompt w.md")
+    body = rendered_body(msg)
+    assert "was the source you gave and the flag form won" in body, body
+    assert "--prompt w.md" in body, body
+    # The flag-wins case keeps the leftover note too; both statements
+    # are true and the second is not a contradiction of the first.
+    assert "Not consumed by 'new'" in body, body
+
+    # A positional used as the source is *not* reported as dropped.
+    [msg] = collections_prompt("new mylib /tmp/src")
+    body = rendered_body(msg)
+    assert "--source /tmp/src" in body, body
+    assert "the flag form won" not in body, body

@@ -211,3 +211,21 @@ def test_sync_refuses_to_fan_out_over_a_pasted_sentence() -> None:
     body = rendered_body(msg)
     assert "names 3" in body, body
     assert body.count("Run Bash(") == 3, body
+
+
+def test_name_is_distinguished_from_the_collection_positional() -> None:
+    """`--name` is a wiki; the positional is a collection.
+
+    The CLI documents `--name` as "Wiki to sync (default:
+    $LIES_WIKI_NAME)" while the positional is a collection name. The
+    two sit side by side in the rendered command with nothing to tell
+    them apart, so an agent passing a collection to `--name` gets
+    exactly the silent misroute the body is supposed to prevent.
+    """
+    from lies.mcp.prompts_impl import sync_prompt
+
+    [msg] = sync_prompt("--name mywiki")
+    body = rendered_body(msg)
+    assert "Run Bash(lies sync --name mywiki)" in body, body
+    assert "is the *wiki* to sync" in body, body
+    assert "the positional is the collection" in body, body

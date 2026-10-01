@@ -467,7 +467,10 @@ def _tool_arg_clause(label: str, value: str | None) -> str:
     an absent one returns ``""`` so the call keeps every parameter
     visible in one line.
     """
-    if value is None:
+    # An empty string is as unusable as an absent one, and the body
+    # already carries a note saying so. A fenced block containing
+    # nothing but "pass this string verbatim" reads as a rendering bug.
+    if not value:
         return ""
     return f" with {_verbatim(label, value)}"
 
@@ -894,12 +897,24 @@ def collections_prompt(tail: str) -> list[Message]:
                     f"No command was run."
                 )
             ]
+        # A second positional IS a source the verb accepts, so the
+        # generic leftover note ("the verb does not take it") names the
+        # wrong cause. What happened is that a --source/--prompt flag
+        # took precedence, and the user should be told their source was
+        # dropped rather than merely unconsumed.
+        dropped_source = ""
+        if len(args) > 1 and used == 1:
+            dropped_source = (
+                f" {args[1]!r} was the source you gave and the flag form won, "
+                f"so it is NOT in the command above. Ask the user whether to "
+                f"re-issue with --source {shlex.quote(args[1])} instead."
+            )
         body = (
             f"Register a new collection: run "
             f"Bash(lies library new {shlex.quote(slug)}"
             f"{source_flag}{_render_flags(parsed, ('tag',))}). "
             f"Then run qmd embed so vec/hyde queries find the new "
-            f"collection." + _leftover_note(args, used, raw_sub) + unquoted + note
+            f"collection." + dropped_source + _leftover_note(args, used, raw_sub) + unquoted + note
         )
     elif sub == "modify":
         if not args:
@@ -1318,6 +1333,17 @@ def sync_prompt(tail: str) -> list[Message]:
             "no-skip-reindex",
         ),
     )
+    if parsed.values.get("name") is not None:
+        # `--name` is documented on the CLI as "Wiki to sync", while the
+        # positional is a *collection*. The two sit side by side in the
+        # rendered command with nothing to distinguish them, and an
+        # agent reading the body would reasonably pass a collection
+        # name to the wrong one.
+        note += (
+            " --name is the *wiki* to sync (`$LIES_WIKI_NAME`), not a "
+            "collection; the positional is the collection. Do not pass a "
+            "collection name to --name."
+        )
     if names:
         # One command per name, because `lies sync` takes a single
         # positional — which also means an English sentence becomes one
