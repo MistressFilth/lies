@@ -513,19 +513,16 @@ def test_ingest_renders_when_a_collection_is_named() -> None:
     assert "Run Bash(lies ingest --source /tmp/real.md --collection mylib)" in body, body
 
 
-def test_a_bare_double_dash_is_a_terminator_not_a_collection_name() -> None:
-    """``--`` reaches Click stripped, and a bare ``lies sync`` syncs all.
-
-    ``sync -- pydantic`` rendered ``Bash(lies sync --)`` as well as the
-    real one. Click removes a bare ``--`` before the command function
-    runs, so the first invocation received ``collection=None`` — every
-    registered collection, scraped and reindexed, from a request about
-    one.
+def test_a_bare_double_dash_is_text_the_agent_reads() -> None:
+    """``--`` no longer separates a flag from a collection positional,
+    because the body does not render Bash per positional any more. The
+    agent reads the verbatim request and identifies collection names
+    from natural language; ``--`` is ordinary text inside the
+    ``user_request`` fence.
     """
     body = rendered_body(sync_prompt("-- pydantic")[0])
-    assert "lies sync --)" not in body, body
-    assert body.count("Run Bash(") == 1, body
-    assert "Bash(lies sync pydantic)" in body, body
+    assert "Run Bash(" not in body, body
+    assert "pydantic" in body, body
 
 
 def test_a_single_dash_token_is_never_an_argument() -> None:

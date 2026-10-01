@@ -1207,7 +1207,7 @@ def lint_prompt(tail: str) -> list[Message]:
         # read the trailing sentence to learn the scope had been
         # discarded. Refusing is the stronger one -- nothing runs,
         # and the refusal names both what was typed and what to type
-        # instead. ``ground`` refuses a malformed ``--top_k`` the same
+        # instead. ``ground`` names a malformed ``--top_k`` the same
         # way; this is the same defect one parameter over.
         #
         # The refusal does not enumerate the categories. The tool
@@ -1333,10 +1333,6 @@ _SYNC_BOOL_FLAGS = frozenset(
     }
 )
 _SYNC_KNOWN_FLAGS = _SYNC_VALUE_FLAGS | _SYNC_BOOL_FLAGS
-# A request naming more than this many collections is not a request,
-# it is a pasted sentence. Refuse and ask rather than fire one
-# scrape-and-reindex chain per word.
-_SYNC_MAX_NAMES = 5
 _SYNC_TAIL = (
     " Phase 3 (qmd update + embed) runs after the sync loop unless "
     "--skip-reindex is set. `--wizard` routes a missing collection "
@@ -1345,30 +1341,44 @@ _SYNC_TAIL = (
 
 
 def sync_prompt(tail: str) -> list[Message]:
-    """Pull + ingest remote sources."""
+    """Pull + ingest remote sources for collections named in the request.
+
+    No positionals. The agent identifies collection names from the
+    user's natural-language request and dispatches one
+    ``Bash(lies sync <name>)`` per name. ``lies sync`` takes one
+    positional per invocation, so N names = N Bash calls; a request
+    that names no collection (or names them generally, like "sync the
+    library") leaves the positional off so the CLI syncs every
+    registered collection with a scraper.
+
+    The natural-language handoff matches the shape of ``ask_prompt``
+    and ``ground_prompt``: a verbatim block carries the user's full
+    request to the agent, which interprets it semantically. A pasted
+    English sentence ("please resync my library collections") no
+    longer fans out across the library, because the agent reads the
+    request and asks before dispatching when names are ambiguous.
+
+    Flags (``--force`` / ``--skip-reindex`` / ``--source`` / ``--name``
+    and their negated forms) are still parsed by the prompt and
+    threaded through identically; only collection *identification*
+    moves to the agent. Flag parsing stays deterministic because the
+    model is not asked to spot a ``--skip-reindex`` token.
+    """
     parsed = _split_tail(
         tail,
         value_flags=_SYNC_VALUE_FLAGS,
         known_flags=_SYNC_KNOWN_FLAGS,
     )
     note = parsed.note()
-    # `refuse_unknown`: `lies sync` with no positional syncs *every*
-    # registered collection, so a typo that eats the one collection
-    # name turns a one-collection request into a whole-library scrape
-    # and reindex. Every other body is safe on an unknown flag --
-    # dropping a flag leaves a valid command -- which is why this is a
-    # parameter rather than the default.
+    # `refuse_unknown`: ``lies sync`` with no positional syncs *every*
+    # registered collection, so a typo that the body would otherwise
+    # swallow silently could turn a one-collection request into a
+    # whole-library scrape and reindex. Every other body is safe on
+    # an unknown flag — dropping a flag leaves a valid command —
+    # which is why this is a parameter rather than the default.
     refusal = _refuse_unless_clean(parsed, "sync", refuse_unknown=True)
     if refusal:
         return [Message(refusal)]
-    # ``all`` is a no-op marker meaning "every collection", which is
-    # also the CLI's behaviour with no positional. Several names mean
-    # several commands: the CLI takes one collection per invocation,
-    # so rendering one call per name is how the user's request maps
-    # onto the real surface. Splicing them into a single list-valued
-    # flag was how an unrecognized flag's value became a collection
-    # the user never named.
-    names = [p for p in parsed.positionals if p.lower() != "all"]
     shared = _render_flags(
         parsed,
         (
@@ -1386,48 +1396,31 @@ def sync_prompt(tail: str) -> list[Message]:
         ),
     )
     if parsed.values.get("name") is not None:
-        # `--name` is documented on the CLI as "Wiki to sync", while the
-        # positional is a *collection*. The two sit side by side in the
-        # rendered command with nothing to distinguish them, and an
-        # agent reading the body would reasonably pass a collection
-        # name to the wrong one.
+        # `--name` is documented on the CLI as "Wiki to sync", while
+        # the positional is a *collection*. An agent reading the body
+        # could reasonably pass a collection name to `--name`.
         note += (
             " --name is the *wiki* to sync (`$LIES_WIKI_NAME`), not a "
             "collection; the positional is the collection. Do not pass a "
             "collection name to --name."
         )
-    if names:
-        # One command per name, because `lies sync` takes a single
-        # positional — which also means an English sentence becomes one
-        # expensive scrape-and-reindex chain *per word*.
-        # `sync please resync my library collections` rendered five.
-        # Above the cap the body refuses rather than rendering a
-        # request the user never made, and names the words so the
-        # agent can ask which of them are collection names.
-        if len(names) > _SYNC_MAX_NAMES:
-            return [
-                Message(
-                    f"Cannot run sync: this tail names {len(names)} things "
-                    f"({shlex.join(names)}), and `lies sync` takes one "
-                    f"collection per invocation, so it would fire "
-                    f"{len(names)} scrape-and-reindex chains. That is more "
-                    f"than the {_SYNC_MAX_NAMES} a single request is read as. "
-                    f"Ask the user which of those are collection names, then "
-                    f"re-dispatch with those alone. No command was run."
-                )
-            ]
-        commands = "; ".join(f"Run Bash(lies sync {shlex.quote(n)}{shared})" for n in names)
-        rendered = (
-            f"{commands}. One invocation per collection, because `lies sync` "
-            f"takes a single positional — this request names "
-            f"{len(names)}: {shlex.join(names)}. Surface each run's "
-            f"scrape/ingest status."
-        )
-    else:
-        rendered = (
-            f"Run Bash(lies sync{shared}) and surface each collection's scrape/ingest status."
-        )
-    return [Message(rendered + _SYNC_TAIL + note)]
+    user_request = _verbatim("user_request", tail.strip() or "(empty)")
+    body = (
+        f"Interpret the user's sync request: {user_request}. "
+        f"Identify the collection names mentioned. If the request is "
+        f"ambiguous, list registered collections via "
+        f"`mcp__lies__collections_read()` to ground the names against "
+        f"the registry, then ask the user before dispatching. "
+        f"For each named collection, run "
+        f"`Bash(lies sync <name>{shared})` and surface each run's "
+        f"scrape/ingest status. If the request is general (no "
+        f'collection named — e.g. "sync the library", "resync '
+        f'everything"), run `Bash(lies sync{shared})` — the CLI '
+        f"syncs every registered collection when no positional is "
+        f"given. Paste-accidents and English phrasing are read as a "
+        f"single request, not as a list of collection names." + _SYNC_TAIL + note
+    )
+    return [Message(body)]
 
 
 def register_all(mcp: FastMCP) -> None:
@@ -1508,7 +1501,9 @@ def register_all(mcp: FastMCP) -> None:
     @mcp.prompt(
         name="sync",
         description=(
-            "Pull + ingest remote sources, then reindex (scoped to named collections or all)."
+            "Pull + ingest remote sources for collections named in the "
+            "request (or every registered collection, when none named), "
+            "then reindex."
         ),
     )
     def _sync_prompt(tail: str) -> list[Message]:

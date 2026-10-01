@@ -353,8 +353,25 @@ mocked librarian excerpts (see `tests/unit/mcp/test_ground.py`).
   `note()` therefore never claims "no command was run" — four bodies
   append it to a live `Bash(...)`, and the sentence contradicted the
   rest of its own paragraph. `sync` additionally refuses on *any*
-  unrecognized flag, because with no positional left `lies sync` syncs
-  every registered collection.
+  unrecognized flag, because a dropped flag is indistinguishable from
+  a request for the whole library — no positional means `lies sync`
+  covers every registered collection.
+- **`sync` reads its tail as a request, not a flag list.** The body
+  carries the whole tail to the agent in a `user_request` verbatim
+  fence, the same shape `ask` and `ground` use, and the agent
+  identifies the collections the request names — grounding an
+  ambiguous name against `collections_read` and asking before
+  dispatching. This replaces a positional parse that read one word
+  per collection, so `sync please resync my library collections`
+  rendered six `Bash(lies sync <word>)` invocations, none of them on
+  the collection the user meant. A five-name cap was the
+  guard against that; it fixed the paste accident and broke the
+  legitimate six-collection request, so both halves are gone. The
+  model is asked to *read prose*, never to *parse tokens*: flags
+  (`--force`, `--skip-reindex`, `--source`, `--name` and every
+  `--no-` form) are still parsed by `_split_tail` and threaded into
+  each call the agent dispatches, because a flag is exactly the thing
+  a model is worst at spotting in free text.
 - **A body renders no placeholder.** A verb that requires an argument
   refuses when the tail omits it (`Cannot run 'where': no collection
   slug was given`) rather than rendering `Bash(lies library where

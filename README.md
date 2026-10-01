@@ -248,7 +248,10 @@ reach these through the `get_prompt` tool for anything multi-word:
   return value and the `log.md` entry counts it (`check=orphan,
   2/20 matched`); the persisted `<wiki>/lint-report.md` behind
   `wiki://lint-report` always holds the full report. `lies lint
-  --check <name>` carries the same scoping on the CLI.
+  --check <name>` carries the same scoping on the CLI. A blank
+  `--check=` refuses: the tool reads an empty check as *no filter*, so
+  running it would return the full report for a scoped request, and a
+  note on a live call is a weaker answer than no call.
 - `reindex(tail: str)` — rebuild the search index. `--reconcile`,
   `--embed`, `--force`, `--cleanup`, `--all`, `--name <wiki>`.
   `all`, `all_` and `--all` are the same destructive marker. `--name`
@@ -256,17 +259,20 @@ reach these through the `get_prompt` tool for anything multi-word:
   `pydantic` with the destructive marker set. A positional the verb
   takes no slot for is reported rather than dropped — `--name` is the
   only way to scope a reindex, so a bare word is worth naming.
-- `sync(tail: str)` — pull + ingest remote sources. `<collection…>` or
-  `all` (both mean every collection with a scraper), plus `--source`,
+- `sync(tail: str)` — pull + ingest remote sources. The tail is a
+  *request*, not a flag list: the body carries it to the agent
+  verbatim, and the agent identifies the collections it names —
+  grounding ambiguous names against `collections_read` and asking
+  before dispatching. A request naming no collection (`sync the
+  library`) leaves the positional off, which is how `lies sync`
+  covers every collection with a scraper. Flags are still parsed
+  deterministically and threaded into each call: `--source`,
   `--name`, `--force`, `--wait`, `--fail-busy`, `--wizard`,
   `--skip-reindex`; each paired boolean also takes its `--no-` form,
   `--no-wait` and `--no-skip-reindex` among them. `lies sync` takes one
-  positional, so naming several collections renders one command per
-  collection. A tail naming more than five collections is refused: one
-  command per word turns a pasted sentence into a scrape-and-reindex
-  chain per word, and a flag typo that swallows the only name would
-  sync every registered collection, so an unrecognized flag refuses
-  here too.
+  positional per invocation, so N collections is N commands. An
+  unrecognized flag refuses here: a typo that swallowed the only
+  positional would sync every registered collection.
 
 Every prompt tail is split on whitespace. Flag values bind as
 `--flag=value` or `--flag value`; a value flag given no value, a value

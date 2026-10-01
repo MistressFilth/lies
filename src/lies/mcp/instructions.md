@@ -49,7 +49,7 @@ Seven `@mcp.prompt` names are registered. Reach them with `get_prompt`:
 
 **Prefer `get_prompt` over the slash form for every user question.**
 Tool-call arguments are not pre-tokenized, so the full string arrives
-intact. The slash form (`/lies:sync all`, `/lies:lint --fix`) is
+intact. The slash form (`/lies:lint --fix`, `/lies:sync`) is
 single-token only: hosts pre-tokenize the slash tail on whitespace and
 bind tokens positionally to declared parameters, so everything after the
 first token is overflow and is dropped. `/lies:ask +c:opencode why`
@@ -91,10 +91,16 @@ still set — the value is discarded and the body says so.
   are the same destructive marker; `cleanup` and `all_` elicit
   confirmation. `--name` takes exactly one token, so
   `--name pydantic all` reindexes `pydantic` with `all_=True`.
-- `sync(tail: str)` — `<collection…>` or `all` (every collection with
-  a scraper), plus `--source` / `--name` / `--force` / `--wait` /
-  `--fail-busy` / `--wizard` / `--skip-reindex`. `lies sync` takes one
-  positional, so several names render one command each.
+- `sync(tail: str)` — the tail is a *request*, not a flag list. The
+  body carries it to you verbatim; you identify the collections it
+  names, ground ambiguous names against `mcp__lies__collections_read`,
+  and ask the user before dispatching. A request naming no collection
+  (`sync the library`) gets no positional, which is how `lies sync`
+  covers every collection with a scraper. Flags are parsed by the
+  body and threaded into each call you dispatch: `--source` /
+  `--name` / `--force` / `--wait` / `--fail-busy` / `--wizard` /
+  `--skip-reindex` plus each paired `--no-` form. `lies sync` takes
+  one positional per invocation, so N collections is N commands.
 
 ## Routing rules
 

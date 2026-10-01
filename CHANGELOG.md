@@ -26,7 +26,7 @@ flags internally.
 | `ingest` | `source: str, delete_slug=None, batch_dir=None, dry_run: bool` | `tail: str` — `<source>` / `--batch <dir>`, plus `--collection`, `--slug`, `--title`, `--slug-prefix`, `--exclude-stem`, `--exclude-dir`, `--force`, `--dry-run` |
 | `lint` | `check: str \| None, fix: bool` | `tail: str` — `<check>` / `--check <name>`, `--name <wiki>`, `--fix`, `--force-repair` |
 | `reindex` | 5 × `bool` | `tail: str` — `--reconcile`, `--embed`, `--force`, `--cleanup`, `--all`, `--name <wiki>` |
-| `sync` | `collections: list[str] \| None, no_ingest/force/dry_run: bool, jobs: int, scraper_timeout: int` | `tail: str` — `<collection…>\|all`, `--source`, `--name`, `--force`, `--wait`, `--fail-busy`, `--wizard`, `--skip-reindex` |
+| `sync` | `collections: list[str] \| None, no_ingest/force/dry_run: bool, jobs: int, scraper_timeout: int` | `tail: str` — the request verbatim, plus `--source`, `--name`, `--force`, `--wait`, `--fail-busy`, `--wizard`, `--skip-reindex` |
 
 `ask` is renamed to `tail` along with the other six, and the rename is
 load-bearing rather than cosmetic. An earlier draft of this release kept
@@ -46,9 +46,24 @@ Programmatic callers replace the keyword arguments with one string:
 `get_prompt(name="lint", arguments={"check": "orphans", "fix": true})`
 becomes `get_prompt(name="lint", arguments={"tail": "--check orphans --fix"})`.
 
-`all` and `--all` on `sync` are no-op markers meaning "every collection
-with a scraper"; both render a bare `lies sync`. No forwarder, no
-alias, no deprecation path.
+`sync` no longer parses collection names positionally. Its tail is a
+*request*, handed to the agent verbatim in the same shape `ask` and
+`ground` use: the agent identifies the collections the request names,
+grounds an ambiguous name against `collections_read`, and asks the
+user before dispatching. A request naming no collection leaves the
+positional off, which is how `lies sync` covers every collection with
+a scraper — so `all` and `--all` are no longer special-cased. Flags
+stay deterministic: the body parses them and threads them into each
+call, so `--skip-reindex` is never left to the model to spot.
+
+The positional parse had a defect class of its own. It read one word
+per collection, so `sync please resync my library collections` rendered
+six `Bash(lies sync <word>)` invocations — a scrape-and-reindex chain
+per word, none of them on the collection the user meant. A five-name
+cap refused the tail, which fixed the paste accident and broke the
+legitimate six-collection request. Both halves are gone: the model
+reads the sentence instead of the parser counting words. No forwarder,
+no alias, no deprecation path.
 
 The version is **minor** (0.42.0). The prompt surface is host
 configuration rather than a versioned programmatic API: the only
@@ -87,7 +102,12 @@ programmatic client depends on.
   available categories listed rather than an empty report that reads
   like a clean wiki. The `lint` prompt's `--check` flag routes to it;
   previously the prompt rendered a `check=` argument the tool did not
-  have.
+  have. A blank `--check=` now refuses rather than running unfiltered:
+  the tool reads an empty check as *no filter*, so the call would have
+  returned the full report for a scoped request. The first repair
+  appended a note to the live call, which is the weaker answer — a body
+  that renders a command is a body promising an answer, so the user
+  had to read a trailing sentence to learn the scope was gone.
 - `--check <category>` on `lies lint`, so the CLI carries the same
   scoping the MCP tool has. The prompt documented a filter the CLI
   could not run, which read as a broken flag rather than a missing one.

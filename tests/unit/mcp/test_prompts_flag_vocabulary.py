@@ -70,7 +70,7 @@ FLAG_VOCABULARY: list[FlagCase] = [
     (reindex_prompt, "--all=true", "all_=True", "all_=False"),
     (reindex_prompt, "--name pydantic", "name='pydantic'", "name=None"),
     # -- sync --------------------------------------------------------
-    (sync_prompt, "all", "Run Bash(lies sync)", "--only"),
+    (sync_prompt, "all", "If the request is general", "--only"),
     (sync_prompt, "pydantic --force", "--force", None),
     (sync_prompt, "pydantic --skip-reindex", "--skip-reindex", None),
     (sync_prompt, "--name mywiki --wait", "--name mywiki --wait", None),

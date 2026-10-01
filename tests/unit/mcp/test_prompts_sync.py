@@ -1,50 +1,49 @@
-"""Pin the sync prompt routes through Bash(lies sync ...).
+"""Pin the sync prompt hands the user's request to the agent verbatim,
+and the agent identifies collection names from natural language.
 
-Every command in this file is a real one. The prompt's previous
-vocabulary (``--data-dir``, ``--only``, ``--jobs``,
-``--scraper-timeout``, ``--no-ingest``, ``--dry-run``) named options
-``lies sync`` has never declared, so every one of these commands exited
-2 before it did anything. The vocabulary is transcribed from the Typer
-signature in ``src/lies/cli/ingestion.py``; the flags that used to be
-advertised are now *unrecognized*, and the tests below say so rather
-than rendering them.
+The prompt's previous vocabulary (``--data-dir``, ``--only``,
+``--jobs``, ``--scraper-timeout``, ``--no-ingest``, ``--dry-run``)
+named options ``lies sync`` has never declared, so every one of those
+commands exited 2 before it did anything. The vocabulary is
+transcribed from the Typer signature in
+``src/lies/cli/ingestion.py``; the flags that used to be advertised
+are now *unrecognized*, and the tests below say so rather than
+rendering them.
+
+The shape matches ``ask_prompt`` and ``ground_prompt``: a verbatim
+block carries the user's request; the agent interprets it. The body
+does not parse collection names positionally, so a pasted sentence
+("please resync my library collections") no longer fans out across
+the library as one ``Run Bash(lies sync <word>)`` per word.
 """
 
 from __future__ import annotations
 
-from tests.unit.mcp._prompt_body import rendered_body
+from tests.unit.mcp._prompt_body import carries_verbatim, rendered_body
 
 
-def test_sync_prompt_default_targets_all_collections() -> None:
-    from lies.mcp.prompts_impl import sync_prompt
+def test_sync_prompt_carries_the_user_request_verbatim() -> None:
+    """The agent reads the user's request, not a tokenized positional list.
 
-    [msg] = sync_prompt("")
-    body = rendered_body(msg)
-    assert "Run Bash(lies sync)" in body
-    # Every option the old body invented, gone.
-    assert "--data-dir" not in body
-    assert "LIES_DATA" not in body
-
-
-def test_sync_prompt_one_command_per_collection() -> None:
-    """``lies sync`` takes one positional, so two names are two commands.
-
-    Splicing them into a list-valued flag was how ``sync --jbos 8``
-    rendered ``--only 8``: the unrecognized flag's value became a
-    collection name nobody typed.
+    A ``user_request`` fence appears, and the verbatim question text
+    is inside it (no repr escaping). The agent uses
+    ``mcp__lies__collections_read`` to ground names against the
+    registry, so model-side identification — not the prompt body —
+    decides which collections to dispatch.
     """
     from lies.mcp.prompts_impl import sync_prompt
 
-    [msg] = sync_prompt("pydantic fastmcp")
+    [msg] = sync_prompt("pydantic fastmcp mermaid")
     body = rendered_body(msg)
-    assert "Run Bash(lies sync pydantic); Run Bash(lies sync fastmcp)" in body
-    assert "--only" not in body
-    # Every named collection became a command, so none is left over to
-    # report. A leftover note here contradicted the commands above it.
-    assert "Not consumed by" not in body
+    assert carries_verbatim(body, "pydantic fastmcp mermaid"), body
+    assert "user_request" in body, body
+    assert "Identify the collection names mentioned" in body, body
 
 
 def test_sync_prompt_threads_the_flags_the_cli_has() -> None:
+    """Flags are still parsed deterministically; only collection
+    identification moves to the model.
+    """
     from lies.mcp.prompts_impl import sync_prompt
 
     [msg] = sync_prompt("pydantic --force --skip-reindex --source https://x.example/docs")
@@ -54,18 +53,17 @@ def test_sync_prompt_threads_the_flags_the_cli_has() -> None:
     assert "--source https://x.example/docs" in body
 
 
-def test_sync_prompt_all_marker_means_every_collection() -> None:
-    """`/lies:sync all` must not reach the CLI as a collection name.
-
-    A bare ``lies sync`` is what the CLI runs over every collection
-    that has a scraper configured.
+def test_sync_prompt_instructs_for_general_requests() -> None:
+    """A request that names no collection (or names them generally)
+    leaves the positional off — ``lies sync`` syncs every registered
+    collection when no positional is given.
     """
     from lies.mcp.prompts_impl import sync_prompt
 
-    for tail in ("all", "ALL", ""):
-        [msg] = sync_prompt(tail)
-        body = rendered_body(msg)
-        assert "Run Bash(lies sync)" in body, f"{tail!r}: {body!r}"
+    [msg] = sync_prompt("sync the library")
+    body = rendered_body(msg)
+    assert "If the request is general" in body, body
+    assert "Bash(lies sync)" in body or "`Bash(lies sync)`" in body, body
 
 
 def test_sync_prompt_through_the_mcp_wire_shape() -> None:
@@ -75,7 +73,7 @@ def test_sync_prompt_through_the_mcp_wire_shape() -> None:
 
     [msg] = sync_prompt("pydantic --force --skip-reindex")
     body = rendered_body(msg)
-    assert "Run Bash(lies sync pydantic" in body
+    assert carries_verbatim(body, "pydantic --force --skip-reindex"), body
     assert "--force" in body
     assert "--skip-reindex" in body
 
@@ -157,25 +155,20 @@ def test_the_removed_sync_flags_are_reported_not_rendered() -> None:
         body = rendered_body(msg)
         assert invented in body, f"{invented} was accepted as if the CLI had it:\n{body}"
         assert body.startswith("Cannot run sync:"), body
-        # The old assertion searched for "Run Bash(lies sync--data-dir"
-        # -- no space, so it was a string no body can produce and it
-        # never fired. The check is now that no command renders.
         assert "Run Bash(" not in body, body
-
-
-def test_sync_quotes_a_collection_name_needing_it() -> None:
-    """A collection name is interpolated into a ``Bash()`` line, so one
-    containing shell metacharacters is re-quoted on the way out."""
-    from lies.mcp.prompts_impl import sync_prompt
-
-    [msg] = sync_prompt("a;b")
-    assert "Run Bash(lies sync 'a;b')" in rendered_body(msg)
 
 
 def test_sync_renders_the_negated_booleans_the_cli_declares() -> None:
     """``--no-skip-reindex`` was missing from the table, so the flag was
     dropped with no word and the rendered command ran the qmd
-    update+embed chain the user asked to skip."""
+    update+embed chain the user asked to skip.
+
+    With the natural-language handoff, the agent reads the flag and
+    threads it into each ``Bash(lies sync ...)`` it dispatches. The
+    flag is in the verbatim user request *and* threaded as a parsed
+    flag, so the agent sees it twice (once raw, once structured) —
+    the structured form is the one it must pass to Bash.
+    """
     from lies.mcp.prompts_impl import sync_prompt
 
     for tail, rendered in (
@@ -186,46 +179,37 @@ def test_sync_renders_the_negated_booleans_the_cli_declares() -> None:
     ):
         [msg] = sync_prompt(tail)
         body = rendered_body(msg)
-        assert f"Run Bash(lies sync pydantic {rendered})" in body, body
+        assert rendered in body, f"{tail!r}: {body}"
         assert "Unrecognized flag(s)" not in body, body
 
 
-def test_sync_refuses_to_fan_out_over_a_pasted_sentence() -> None:
-    """One command per word is one scrape-and-reindex chain per word.
+def test_sync_no_positionals_pasted_english_does_not_fan_out() -> None:
+    """A pasted sentence used to render one Bash per word.
 
-    ``lies sync`` takes a single positional, so "please resync my
-    library collections" rendered five invocations — and the sentence
-    justifying them read as a claim about a request the user never
-    made. Above the cap the body refuses and names the words.
+    With no positional parsing, the agent reads the request and
+    asks before dispatching. The body never pre-renders one Bash per
+    word — collection identification belongs to the model.
     """
     from lies.mcp.prompts_impl import sync_prompt
 
     [msg] = sync_prompt("please resync my library collections now")
     body = rendered_body(msg)
-    assert body.startswith("Cannot run sync:"), body
-    assert "Run Bash(" not in body, body
-
-    # A genuine multi-collection request still renders, and says how
-    # many invocations it fires.
-    [msg] = sync_prompt("pydantic fastmcp mermaid")
-    body = rendered_body(msg)
-    assert "names 3" in body, body
-    assert body.count("Run Bash(") == 3, body
+    # No pre-rendered commands — collection identification moved to
+    # the agent. The verbatim request is in the body so the agent
+    # can read it.
+    assert "Run Bash(lies sync please)" not in body, body
+    assert "Run Bash(lies sync resync)" not in body, body
+    assert "Run Bash(lies sync collections)" not in body, body
+    assert carries_verbatim(body, "please resync my library collections now"), body
 
 
-def test_name_is_distinguished_from_the_collection_positional() -> None:
-    """`--name` is a wiki; the positional is a collection.
-
-    The CLI documents `--name` as "Wiki to sync (default:
-    $LIES_WIKI_NAME)" while the positional is a collection name. The
-    two sit side by side in the rendered command with nothing to tell
-    them apart, so an agent passing a collection to `--name` gets
-    exactly the silent misroute the body is supposed to prevent.
+def test_sync_asks_the_agent_to_ground_against_the_registry() -> None:
+    """When a name is ambiguous, the agent queries ``collections_read``
+    rather than guessing.
     """
     from lies.mcp.prompts_impl import sync_prompt
 
-    [msg] = sync_prompt("--name mywiki")
+    [msg] = sync_prompt("resync the thing I mentioned yesterday")
     body = rendered_body(msg)
-    assert "Run Bash(lies sync --name mywiki)" in body, body
-    assert "is the *wiki* to sync" in body, body
-    assert "the positional is the collection" in body, body
+    assert "mcp__lies__collections_read" in body, body
+    assert "ask the user before dispatching" in body, body
