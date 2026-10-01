@@ -36,9 +36,13 @@ will reintroduce the leak.
 from __future__ import annotations
 
 import os
+import selectors
 import signal
 import subprocess
+import time
+from collections.abc import Callable
 from pathlib import Path
+from typing import IO
 
 # Diagnostic cap on stderr returned to callers. Larger than any
 # reasonable qmd error message (~2 KB in practice); truncates the
@@ -53,11 +57,82 @@ _MAX_STDERR_BYTES = 8 * 1024
 # on its way out the door.
 _DRAIN_TIMEOUT_S = 2.0
 
+# How long a qmd subprocess may go without emitting a single byte of
+# stderr before it is considered wedged.
+#
+# This is the bound that separates "slow" from "hung", which an
+# absolute deadline cannot do. qmd reports each phase as it works --
+# ``Expanding query... (1ms)``, ``Embedding 35 queries... (2.6s)``,
+# ``Reranking 40 chunks... (1ms)`` -- so silence is evidence and
+# duration is not. Measured on the 5987-document corpus: the embedding
+# step alone runs 2.6s, and a cold first call was 13.8s. A query that
+# keeps talking is doing work and is never killed here, however long
+# it runs; one that stops talking for this long is not going to
+# finish, whatever the absolute ceiling says.
+DEFAULT_IDLE_TIMEOUT_S = 30.0
+
+# How often the reader loop wakes to check the two bounds. Short
+# enough that the idle bound is honoured to within a fraction of a
+# second, long enough not to spin a core.
+_POLL_INTERVAL_S = 0.1
+
+
+class QmdWedgeError(subprocess.TimeoutExpired):
+    """A qmd subprocess was killed for going silent or overrunning.
+
+    A subclass of the stdlib exception so every existing
+    ``except subprocess.TimeoutExpired`` in the product keeps working
+    unchanged -- the seam is the one thing callers already handle.
+
+    ``bound`` records *which* limit fired, which is the whole point:
+
+    ``"idle"``
+        The process stopped emitting. This is the wedge signal, and it
+        fires on its own schedule regardless of the total budget.
+    ``"total"``
+        The absolute ceiling. The process kept talking and never
+        finished -- a backstop for work that progresses but does not
+        converge, not evidence of a hang.
+
+    ``last_output`` is the tail of stderr at the moment of the kill.
+    It is the difference between "died mid-embedding" and "went quiet
+    right after reranking started", which is the only thing that tells
+    a reader whether to look at VRAM or at the index.
+    """
+
+    def __init__(
+        self,
+        cmd: list[str],
+        bound: str,
+        *,
+        timeout: float,
+        idle_timeout: float,
+        last_output: str = "",
+        stderr: bytes | None = None,
+    ) -> None:
+        super().__init__(cmd, timeout)
+        self.bound = bound
+        self.timeout = timeout
+        self.idle_timeout = idle_timeout
+        self.last_output = last_output
+        self.stderr = stderr
+
+    def __str__(self) -> str:
+        if self.bound == "idle":
+            which = f"stopped emitting for {self.idle_timeout:g}s"
+        else:
+            which = f"exceeded the {self.timeout:g}s total budget"
+        tail = f"; last output: {self.last_output!r}" if self.last_output else ""
+        return f"qmd {which} (idle bound {self.idle_timeout:g}s){tail}"
+
 
 def _run_qmd(
     args: list[str],
     cwd: Path,
     timeout: float,
+    *,
+    idle_timeout: float = DEFAULT_IDLE_TIMEOUT_S,
+    on_output: Callable[[str], None] | None = None,
 ) -> subprocess.CompletedProcess[bytes]:
     """Run a qmd subprocess with DEVNULL stdin + bounded stderr capture.
 
@@ -97,26 +172,132 @@ def _run_qmd(
             # see the module docstring for the bug history.
             start_new_session=True,
         )
+        # Two bounds, watched together. ``communicate(timeout=N)`` was
+        # all-or-nothing: one absolute deadline cannot tell a slow query
+        # from a wedged one, and the only answer it gave was "timed out"
+        # -- true of both, and therefore useful for neither. Here the
+        # idle clock is reset by every byte qmd writes, so a query that
+        # keeps reporting progress survives no matter how long it takes,
+        # and only a process that has genuinely gone quiet is killed.
+        # The absolute ceiling remains as the backstop for work that
+        # progresses forever without converging.
+        started = time.monotonic()
+        last_output_at = started
+        captured = bytearray()
+        out_chunks: list[bytes] = []
+        bound: str | None = None
+
+        sel = selectors.DefaultSelector()
+        out_stream: IO[bytes] | None = proc.stdout
+        err_stream: IO[bytes] | None = proc.stderr
+        assert out_stream is not None
+        assert err_stream is not None
+        sel.register(out_stream, selectors.EVENT_READ, "out")
+        sel.register(err_stream, selectors.EVENT_READ, "err")
+        open_streams = 2
         try:
-            stdout_b, stderr_b = proc.communicate(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            # Kill the entire process group so descendants (e.g.
-            # qmd's node grandchild forked by the bun shim) cannot
-            # outlive the parent deadline. ``killpg`` raises if the
-            # group is already empty (race with natural exit before
-            # we got here, or a child that handles SIGKILL cleanly
-            # and exits before we signal); swallow that.
+            while open_streams:
+                now = time.monotonic()
+                if now - started > timeout:
+                    bound = "total"
+                    break
+                if now - last_output_at > idle_timeout:
+                    bound = "idle"
+                    break
+                for key, _ in sel.select(_POLL_INTERVAL_S):
+                    stream = key.fileobj
+                    # ``selectors`` types ``fileobj`` as an fd or a
+                    # HasFileno; both streams registered above are
+                    # buffered readers, and reading through the
+                    # selector key would have to be suppressed to
+                    # typecheck. Re-binding the value the loop already
+                    # knows is honest and needs no ignore.
+                    reader = out_stream if key.data == "out" else err_stream
+                    assert reader is not None
+                    # ``read1`` returns whatever is already buffered
+                    # without waiting to fill 64 KiB, which is the
+                    # entire point of a progress reader -- the idle
+                    # clock has to see bytes as they arrive, not in
+                    # 64 KiB quanta. It is a ``BufferedReader``
+                    # method, so it is absent from the ``IO``
+                    # protocol this local is declared against; the
+                    # value is a real pipe from ``Popen(stdout=PIPE)``
+                    # and always a buffered reader in practice.
+                    chunk = reader.read1(65536)  # ty: ignore[unresolved-attribute]
+                    if not chunk:
+                        sel.unregister(stream)
+                        open_streams -= 1
+                        continue
+                    last_output_at = time.monotonic()
+                    if key.data == "out":
+                        out_chunks.append(chunk)
+                    else:
+                        # Keep draining even past the capture cap:
+                        # bytes left sitting in the pipe would block
+                        # the child on write, which is the very
+                        # deadlock this module exists to prevent.
+                        captured.extend(chunk)
+                        if on_output is not None:
+                            on_output(chunk.decode("utf-8", errors="replace"))
+        finally:
+            sel.close()
+
+        stdout_b = b"".join(out_chunks)
+        stderr_b = bytes(captured)
+        if bound is None:
+            # Both pipes at EOF does not mean the child has been
+            # reaped -- only that it closed its streams. Without this
+            # the CompletedProcess below carries ``returncode=None``
+            # and every caller sees a successful run as a mystery.
+            try:
+                proc.wait(timeout=_DRAIN_TIMEOUT_S)
+            except subprocess.TimeoutExpired:
+                # A child that closed stdout/stderr but will not exit
+                # is the same class of problem as one that says
+                # nothing: it is not making progress. Fall through to
+                # the total-bound path rather than reporting success.
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except (ProcessLookupError, PermissionError):
+                    pass
+                try:
+                    proc.wait(timeout=_DRAIN_TIMEOUT_S)
+                except subprocess.TimeoutExpired:
+                    pass
+                raise QmdWedgeError(
+                    args,
+                    "total",
+                    timeout=timeout,
+                    idle_timeout=idle_timeout,
+                    last_output=(
+                        stderr_b.decode("utf-8", errors="replace").strip().splitlines() or [""]
+                    )[-1],
+                    stderr=stderr_b,
+                ) from None
+        if bound is not None:
+            # Kill the entire process group so descendants (e.g. qmd's
+            # node grandchild forked by the bun shim) cannot outlive
+            # the bound that fired. ``killpg`` raises if the group is
+            # already empty (race with natural exit before we got
+            # here); swallow that.
             try:
                 os.killpg(proc.pid, signal.SIGKILL)
             except (ProcessLookupError, PermissionError):
                 pass
-            # Drain pipes post-kill so the kernel can reap the child.
+            # Drain post-kill so the kernel can reap the child.
             try:
-                stdout_b, stderr_b = proc.communicate(timeout=_DRAIN_TIMEOUT_S)
+                proc.communicate(timeout=_DRAIN_TIMEOUT_S)
             except subprocess.TimeoutExpired:
-                stdout_b = b""
-                stderr_b = b""
-            raise
+                pass
+            lines_seen = stderr_b.decode("utf-8", errors="replace").strip().splitlines()
+            raise QmdWedgeError(
+                args,
+                bound,
+                timeout=timeout,
+                idle_timeout=idle_timeout,
+                last_output=lines_seen[-1] if lines_seen else "",
+                stderr=stderr_b,
+            )
         # Normal-exit safety net: if the immediate child exited but
         # forked a long-running grandchild we still want to signal
         # the group empty. ``killpg`` is a no-op when only the helper
