@@ -372,9 +372,23 @@ The returned dict carries:
 - `searched_scope` — sorted list of resolved collection names (or
   every registered collection when untagged).
 - `unknown_tags` — list of unparseable / unknown `tag_expr` atoms.
-- `no_coverage` — true when qmd returned no hits or the dispatch
-  raised (caller may retry untagged or surface).
-- `fallback_reason` — error string on `no_coverage=True`.
+- `no_coverage` — true when qmd ran and returned no hits, or the
+  dispatch failed. It is a claim about the **corpus**: this search
+  found nothing. It is `false` for a timeout, because a search that
+  never finished learned nothing and has no standing to assert the
+  library is empty.
+- `transient` — true when qmd outlived its deadline. A claim about the
+  **run**, not the corpus. Retry once; if it stays transient, report
+  the lookup as inconclusive rather than as missing content.
+- `fallback_reason` — error string when the dispatch did not return
+  hits. Carries qmd's own last output on a timeout, so a stall can be
+  attributed to expansion, embedding, or reranking.
+
+The per-call deadline is 60s, overridable with
+`LIES_QMD_FANOUT_TIMEOUT` (seconds) — the same variable the grounding
+fan-out reads, so one knob governs both. It was previously 15s,
+inherited from that fan-out by copy; measured warm latency against the
+5987-document corpus is 5.6–6.0s.
 
 Library-wins-on-slug-conflict merge happens inside qmd. The
 `exclude_tags` parameter is preserved for forward compatibility

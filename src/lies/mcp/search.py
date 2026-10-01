@@ -11,6 +11,7 @@ Specs: docs/superpowers/specs/2026-09-26-librarian-v040-port-design.md.
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 from fastmcp.tools import Tool
@@ -24,7 +25,46 @@ from lies.query.tag_expr import (
     parse,
     resolve,
 )
-from lies.qmd.cli import QmdNoResultsError, qmd_query
+from lies.qmd.cli import (
+    QmdCommandError,
+    QmdNoResultsError,
+    QmdTimeoutError,
+    qmd_query,
+)
+
+# Per-call deadline for the single qmd query behind this tool.
+#
+# The previous 15s was inherited by copy from
+# ``grounding._QMD_FANOUT_TIMEOUT``, which had sized it on a 2026-09-25
+# live probe: ~3-7s warm, and a cold daemon whose rerank step can pass
+# 10s. Two things did not survive the copy. The sibling's
+# ``LIES_QMD_FANOUT_TIMEOUT`` override was left behind, so the
+# documented knob for a tighter SLO did not exist on the path that
+# actually serves searches; and the number itself was sized for a
+# per-collection fan-out, where one 15s stall is 15s out of a 210s
+# ceiling across 14 collections. Here it is the whole operation.
+#
+# Live measurements against the 5987-doc corpus (2026-10-01): warm
+# 5.6-6.0s, 3 concurrent clients 5.9-6.6s, no timeouts in ~150 calls.
+# Intermittent stalls past 15s do occur under host contention. 60s is
+# ``qmd_query``'s own default, so this is no longer stricter than the
+# layer beneath it, and it leaves room for a cold start on top of the
+# warm cost. Override with ``LIES_QMD_FANOUT_TIMEOUT`` — the same
+# variable the fan-out reads, so one knob governs both.
+_SEARCH_TIMEOUT = int(os.environ.get("LIES_QMD_FANOUT_TIMEOUT", "60"))
+
+
+def _decode(stderr: bytes | str) -> str:
+    """qmd's captured output as text, bounded.
+
+    ``_run_qmd`` truncates stderr to ``_MAX_STDERR_BYTES`` before it
+    reaches here, so this does not need its own cap — it needs to
+    survive whatever encoding qmd emitted, because the one job of this
+    string is to be read by whoever is debugging the stall.
+    """
+    if isinstance(stderr, bytes):
+        return stderr.decode("utf-8", errors="replace").strip()
+    return stderr.strip()
 
 
 def _resolve_tag_collections(tag_expr: str | None) -> tuple[list[str], list[str]]:
@@ -97,8 +137,9 @@ def _post_query(doc: str, scope: list[str], limit: int, timeout: int) -> list[di
     set as the ``collection_filter``. qmd's hybrid search handles
     vec+lex internally. Returns an empty list when
     :class:`QmdNoResultsError` fires (the caller maps that to
-    ``no_coverage=True``). ``QmdCommandError`` propagates so the
-    caller's handler can label it ``qmd unreachable``.
+    ``no_coverage=True``). ``QmdTimeoutError`` and the other
+    ``QmdCommandError`` propagate so the caller can label a slow daemon
+    differently from a broken one.
     """
     from lies.library.registry import library_git_root
 
@@ -134,9 +175,16 @@ def _search_impl(
     """Run a single-batch hybrid vec+lex qmd query.
 
     Returns a dict matching the ``SearchResult`` shape:
-    ``{hit, hits, unknown_tags, no_coverage, searched_scope,
-    fallback_reason}``. Returned as dict (not the dataclass) so MCP
-    can serialize without pydantic round-trip.
+    ``{hit, hits, unknown_tags, no_coverage, transient,
+    searched_scope, fallback_reason}``. Returned as dict (not the
+    dataclass) so MCP can serialize without pydantic round-trip.
+
+    ``no_coverage`` and ``transient`` answer different questions and
+    must not be collapsed. ``no_coverage`` means *this search found
+    nothing*, which is a claim about the corpus. ``transient`` means
+    *this search did not finish*, which is a claim about the run. A
+    timeout sets only the second: the search never got to learn
+    anything, so it has no standing to assert the corpus is empty.
     """
     # ``exclude_tags`` is preserved in the surface signature for forward
     # compatibility with the design contract (F15 grammar lets callers
@@ -154,6 +202,7 @@ def _search_impl(
             "hits": [],
             "unknown_tags": [],
             "no_coverage": False,
+            "transient": False,
             "searched_scope": [],
             "fallback_reason": "empty question",
         }
@@ -167,6 +216,7 @@ def _search_impl(
             "hits": [],
             "unknown_tags": unknown,
             "no_coverage": False,
+            "transient": False,
             "searched_scope": [],
             "fallback_reason": f"unknown tag: {unknown[0]!r}",
         }
@@ -184,6 +234,7 @@ def _search_impl(
             "hits": [],
             "unknown_tags": [],
             "no_coverage": False,
+            "transient": False,
             "searched_scope": [],
             "fallback_reason": "no collections registered",
         }
@@ -197,16 +248,40 @@ def _search_impl(
     # path instead.
     doc = hypothetical or question
 
-    from lies.qmd.cli import QmdCommandError
-
     try:
-        raw = _post_query(doc, scope, limit=10, timeout=15)
+        raw = _post_query(doc, scope, limit=10, timeout=_SEARCH_TIMEOUT)
+    except QmdTimeoutError as exc:
+        # A timeout is a slow daemon, not an absent one, and it is not
+        # a statement about the corpus. Reporting it as
+        # ``qmd unreachable`` + ``no_coverage=True`` sent a stalled
+        # call to the user as "No relevant content found in library."
+        # — a false claim about what the library contains, for a query
+        # that returns in under six seconds on a retry.
+        #
+        # ``no_coverage`` is the flag that means "this search found
+        # nothing", and a search that never finished learned nothing.
+        # ``transient`` is the new one: the honest description is
+        # "ask again", and the librarian contract is what turns a flag
+        # into prose a model acts on.
+        detail = ""
+        if exc.stderr:
+            detail = f"; last qmd output: {_decode(exc.stderr)!r}"
+        return {
+            "hit": None,
+            "hits": [],
+            "unknown_tags": [],
+            "no_coverage": False,
+            "transient": True,
+            "searched_scope": scope,
+            "fallback_reason": f"qmd timed out after {_SEARCH_TIMEOUT}s{detail}",
+        }
     except QmdCommandError as exc:
         return {
             "hit": None,
             "hits": [],
             "unknown_tags": [],
             "no_coverage": True,
+            "transient": False,
             "searched_scope": scope,
             "fallback_reason": f"qmd unreachable: {exc}",
         }
@@ -216,6 +291,7 @@ def _search_impl(
             "hits": [],
             "unknown_tags": [],
             "no_coverage": True,
+            "transient": False,
             "searched_scope": scope,
             "fallback_reason": f"{type(exc).__name__}: {exc}",
         }
@@ -228,6 +304,7 @@ def _search_impl(
         "hits": hits,
         "unknown_tags": [],
         "no_coverage": no_coverage,
+        "transient": False,
         "searched_scope": scope,
         "fallback_reason": None,
     }

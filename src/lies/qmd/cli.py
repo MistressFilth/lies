@@ -51,6 +51,31 @@ class QmdCommandError(QmdError):
     """Raised when a `qmd query` exits non-zero or returns malformed output."""
 
 
+class QmdTimeoutError(QmdCommandError):
+    """Raised when a `qmd` subprocess outlives its deadline.
+
+    A timeout is its own type because it is a different failure from
+    every other :class:`QmdCommandError`. A non-zero exit means qmd
+    ran and rejected the work; a timeout means qmd was running and had
+    not finished. The distinction decides what a caller does next, and
+    collapsing the two made ``search`` report a slow daemon as
+    ``qmd unreachable`` — a claim about the connection that the
+    evidence did not support.
+
+    ``stderr`` carries whatever qmd printed before the deadline. It is
+    the only evidence of where the time went (``Embedding 35
+    queries... (2.6s)`` versus ``Reranking 40 chunks...``), and it was
+    being dropped at the boundary: the one failure that most needed
+    diagnostics arrived with a constant string and nothing else.
+    ``None`` when the post-kill drain also timed out, so
+    ``_run_qmd``'s empty-bytes path stays representable.
+    """
+
+    def __init__(self, message: str, stderr: bytes | str | None = None) -> None:
+        super().__init__(message)
+        self.stderr = stderr
+
+
 def _run(args: list[str], cwd: Path, timeout: int = 300) -> subprocess.CompletedProcess[Any]:
     """Run a qmd command via the deadlock-free :func:`_run_qmd` helper.
 
@@ -397,7 +422,17 @@ def qmd_query(
     except FileNotFoundError as exc:
         raise QmdNotInstalledError("`qmd` binary not found at exec time") from exc
     except subprocess.TimeoutExpired as exc:
-        raise QmdCommandError(f"qmd query timed out after {timeout}s") from exc
+        # Keep qmd's own output. The deadline message alone is a
+        # constant, so a timeout used to arrive with no indication of
+        # whether the time went into expansion, embedding, or
+        # reranking — which is the only question worth asking when
+        # picking a larger budget. ``exc.stderr`` is ``None`` on the
+        # stdlib's timeout path and bytes on the drained one; both
+        # shapes are passed through rather than normalized away.
+        raise QmdTimeoutError(
+            f"qmd query timed out after {timeout}s",
+            stderr=getattr(exc, "stderr", None),
+        ) from exc
 
     if result.returncode != 0:
         stderr_text = result.stderr.decode("utf-8", errors="replace").strip()

@@ -170,7 +170,8 @@ registry — never a hardcoded map.
 Call `search(question, tag_expr, exclude_tags)` with the `tag_expr`
 from step 1. `search` is a single-batch hybrid vec+lex qmd query
 that returns a `SearchResult` envelope:
-`{hit, hits, unknown_tags, no_coverage, searched_scope, fallback_reason}`.
+`{hit, hits, unknown_tags, no_coverage, transient, searched_scope,
+fallback_reason}`.
 
 `hits` is a list of `{path, title, score, snippet}` rows; each
 snippet is a ~200-char window around the matched line in the source
@@ -180,9 +181,23 @@ markdown.
   unknown spec in the envelope. Do NOT silently retry without tags.
 - `no_coverage=True` → return an empty bundle; the corpus has zero
   hits for this question.
-- `fallback_reason` non-None → the daemon errored; return an empty
-  bundle with `no_coverage=True` and surface the reason in the
-  envelope metadata.
+- `transient=True` → the search **did not finish** (qmd outlived its
+  deadline). This is a fact about the run, not about the corpus: the
+  search learned nothing, so it has no standing to say the library
+  lacks this topic. Retry the same search **once**. If it is still
+  transient, return an empty bundle with `no_coverage=False` and put
+  the reason in the envelope metadata, and say the lookup was
+  inconclusive — never that the content is missing.
+- `fallback_reason` non-None with `transient=False` → the daemon
+  genuinely failed; return an empty bundle and surface the reason in
+  the envelope metadata.
+
+`no_coverage` and `transient` are deliberately separate flags. An
+earlier version set `no_coverage=True` on a timeout, and because this
+contract told the model that flag means "the corpus has zero hits",
+a slow call reached the user as "No relevant content found in
+library." — a false statement about the corpus, for a question that
+answered in under six seconds on the retry.
 
 `searched_scope` is the resolved collection list — mirror it
 verbatim onto `LibrarianOutput.searched_scope` so the synthesizer

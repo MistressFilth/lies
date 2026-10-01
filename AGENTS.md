@@ -191,10 +191,31 @@ The library-mode read surface is split between two MCP tools:
   embedding model into VRAM, so OR-scoped queries
   (`+c:opencode|c:claude_code`) used to spike VRAM when two
   subprocesses fired at once. Per-call timeout lives in
-  `LIES_QMD_FANOUT_TIMEOUT` (default 15s; matches qmd's observed
-  reranking latency on cold daemons). The recycle trigger counts
-  only `QmdCommandError` (real subprocess failures);
-  `QmdNoResultsError` (clean miss) is silent.
+  `LIES_QMD_FANOUT_TIMEOUT` (default 15s for the fan-out, 60s for
+  `search`; matches qmd's observed reranking latency on cold
+  daemons). The recycle trigger counts only `QmdCommandError` (real
+  subprocess failures); `QmdNoResultsError` (clean miss) is silent.
+
+- **A qmd timeout is a slow daemon, not an unreachable one, and not
+  a statement about the corpus.** `QmdTimeoutError` is a distinct
+  subclass of `QmdCommandError`, and `search` maps it to
+  `transient=True` with `no_coverage=False`. The distinction is the
+  whole point: `no_coverage` means *this search found nothing*, and
+  the librarian contract tells the model that flag means "the corpus
+  has zero hits for this question". A timeout used to set
+  `no_coverage=True` and was labelled `qmd unreachable`, so an
+  intermittent stall reached the user as "No relevant content found
+  in library." — a false claim about the corpus, for a query that
+  answered in under six seconds on the retry. `QmdTimeoutError`
+  carries qmd's captured `stderr` for the same reason: the deadline
+  message is a constant, so a timeout without it arrived with no
+  evidence of where the time went.
+
+  Measured against the live 5987-doc corpus (2026-10-01): warm
+  5.6–6.0s, three concurrent clients 5.9–6.6s, no timeouts in ~150
+  calls. Stalls past 15s do occur under host contention, and the
+  trigger was not isolated — hence 60s and a knob rather than a
+  tighter budget justified by a cause nobody has found.
 - **`synthesize`** — prose answer for humans. `SynthesizeEnvelope`
   carrying the LLM-written body and claim-tagged citations. Calls
   `await ground(...)` (no longer shelled through `asyncio.run`),

@@ -4,7 +4,51 @@ All notable changes to LIES are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/) adapted for
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.43.0] - 2026-10-01
+
+### Added
+
+- **`transient` on the `search` envelope.** A qmd call that outlives
+  its deadline is a fact about the *run*, not the corpus, and the two
+  were conflated. `no_coverage` keeps its meaning ("this search found
+  nothing"); `transient` is new and true only when the search did not
+  finish. A caller can now distinguish *the library has nothing* from
+  *the lookup did not complete* without parsing prose.
+- **`QmdTimeoutError`**, a subclass of `QmdCommandError`, carrying
+  qmd's captured `stderr`. The deadline message is a constant, so a
+  timeout previously arrived with no indication of whether the time
+  went into query expansion, embedding, or reranking.
+- **`LIES_QMD_FANOUT_TIMEOUT` now applies to `search`**, matching the
+  grounding fan-out that has read it since 0.40.0.
+
+### Changed
+
+- **A qmd timeout is no longer reported as `qmd unreachable`.** The
+  label claimed a connection failure; a timeout means the daemon was
+  there and slow. Real `QmdCommandError`s (non-zero exit, malformed
+  output) keep the old wording — the two failures stay
+  distinguishable.
+- **The per-call search deadline is 60s, up from 15s.** The 15 was
+  inherited by copy from `grounding._QMD_FANOUT_TIMEOUT`, sized on a
+  2026-09-25 cold-daemon probe (~3-7s warm, cold rerank can pass
+  10s) and appropriate to a 14-collection fan-out where one stall is
+  15s out of a 210s ceiling. `search` is a single call, so the same
+  number was the whole operation. Measured warm latency against the
+  5987-document corpus (2026-10-01) is 5.6-6.0s; 60s is
+  `qmd_query`'s own default, so this is no longer stricter than the
+  layer beneath it.
+
+### Fixed
+
+- **A slow search no longer reaches the user as "No relevant content
+  found in library."** The librarian contract instructs the model that
+  `no_coverage=True` means the corpus has zero hits for the question;
+  a timeout set that flag, so an intermittent 15s stall asserted that
+  the library contained nothing on the topic — for a query that
+  returned in under six seconds on the retry. The librarian contract
+  now tells the model to retry once on `transient` and, if it stays
+  transient, to report the lookup as inconclusive rather than as
+  missing content.
 
 ## [0.42.0] - 2026-09-29
 
@@ -542,7 +586,7 @@ All 7 prompts removed (`answer`, `orient`, `ingest`, `lint`, `sync`, `file-back`
   LLM agent was extracting `docid` from search results and passing
   it to `wiki_read`, which then raised `WikiPageNotFound`.
 
-## [Unreleased]
+## [0.43.0] - 2026-10-01
 
 ### Added
 - `synthesize` MCP tool for human-reading prose answers. Calls `ground()`
@@ -849,7 +893,7 @@ All 7 prompts removed (`answer`, `orient`, `ingest`, `lint`, `sync`, `file-back`
   pointing the caller at `lies mcp down && lies mcp up` retry or
   `lies reindex --cleanup` direct shell invocation.
 
-## [Unreleased]
+## [0.43.0] - 2026-10-01
 
 - MCP prompt surface: `ask_wiki` and `query_prompt` prompts removed.
   `/answer` slash unchanged (librarian + synthesizer). New `/cite`
