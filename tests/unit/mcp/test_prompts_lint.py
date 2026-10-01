@@ -102,19 +102,27 @@ def test_lint_reaches_the_tools_other_two_parameters() -> None:
     assert "reaps the cross-process memory flock" in body, body
 
 
-def test_an_empty_check_is_named_rather_than_silently_unfiltered() -> None:
+def test_an_empty_check_refuses_rather_than_silently_unfiltering() -> None:
     """``--check=`` binds ``""``, and the tool reads that as no filter.
 
-    The user asked to scope the report and received the whole report,
-    with nothing to say so. ``ground`` already names a malformed
-    ``--top_k``; this is the same defect one parameter over.
+    The user asked to scope the report and would have received the
+    whole report, with nothing to say so. The first repair appended a
+    note to a live ``mcp__lies__lint(...)`` call -- a body that
+    renders a command is a body promising an answer, so the user had
+    to read a trailing sentence to learn the scope was gone. The
+    refusal is the stronger repair: nothing runs, and it names both
+    what was typed and what to type instead. ``ground`` refuses a
+    malformed ``--top_k`` the same way; this is the same defect one
+    parameter over.
     """
     from lies.mcp.prompts_impl import lint_prompt
 
     [msg] = lint_prompt("--check=")
     body = rendered_body(msg)
-    assert "is empty" in body, body
+    assert body.startswith("Cannot run lint:"), body
+    assert "--check= is empty" in body, body
     assert "no filter at all" in body, body
+    assert "Call mcp__lies__lint(" not in body, body
 
 
 def test_a_check_value_cannot_visually_close_the_tool_call() -> None:
@@ -150,14 +158,18 @@ def test_an_absent_check_keeps_the_call_on_one_line() -> None:
     assert "```" not in body, body
 
 
-def test_an_empty_check_renders_no_verbatim_block() -> None:
-    """A fenced block saying "pass this string verbatim" with nothing in
-    it reads as a rendering bug, and the note already explains the
-    empty value on its own."""
+def test_a_nonempty_check_still_renders_the_call() -> None:
+    """The refusal is scoped to the empty value; a real category renders.
+
+    Pinning the neighbour matters: a guard on ``parsed.values`` alone
+    (rather than on the stripped value) would fire on every ``--check``
+    and no test above would notice, because they all pass an empty
+    one.
+    """
     from lies.mcp.prompts_impl import lint_prompt
 
-    [msg] = lint_prompt("--check=")
+    [msg] = lint_prompt("--check orphans")
     body = rendered_body(msg)
-    assert "```" not in body, body
-    assert "--check='' is empty" in body, body
-    assert "Call mcp__lies__lint(name=None, fix=False, force_repair=False)" in body, body
+    assert "Cannot run lint" not in body, body
+    assert "Call mcp__lies__lint(name=None" in body, body
+    assert "check (pass this string verbatim" in body, body

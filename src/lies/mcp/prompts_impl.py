@@ -401,18 +401,25 @@ def _split_leading_flags(
     ``--only`` flag" is an ordinary question and its ``--only`` is
     ordinary text; running the full ``_split_tail`` grammar over the
     whole string deleted the words and searched for the remainder
-    (``"what is the flag"``). Two guards close that:
+    (``"what is the flag"``). Three guards close that:
 
     1. **Leading run only.** Scanning stops at the first token that is
-       not a flag, so a flag-shaped word inside a sentence is never
-       reached.
-    2. **``--`` terminator.** Everything after a bare ``--`` is text,
+       a non-flag *prose* word, so a flag-shaped word inside a
+       sentence is never reached.
+    2. **Filter tokens fall through, not stop.** ``+tag`` / ``-tag``
+       atoms are part of the question (the filter parser consumes
+       them from question text), so a leading filter does not block a
+       ``--top_k`` that follows it. ``+c:opencode --top_k 5 what``
+       parses ``--top_k=5`` and leaves ``+c:opencode`` in question
+       text; the filter parser picks it up there.
+    3. **``--`` terminator.** Everything after a bare ``--`` is text,
        so a user whose question *starts* with a flag can say so.
 
     Returns ``(parse_of_the_leading_flags, question_text)``.
     """
     tokens = tail.split()
     head: list[str] = []
+    carry: list[str] = []
     i = 0
     while i < len(tokens):
         tok = tokens[i]
@@ -420,6 +427,13 @@ def _split_leading_flags(
             i += 1
             break
         if not (tok.startswith("--") and len(tok) > 2):
+            if _FILTER_TOKEN_RE.match(tok) and _is_tag_atom(tok):
+                # Filter atoms belong in question text so the filter
+                # parser can read them; advance past them without
+                # stopping the leading-flag scan.
+                carry.append(tok)
+                i += 1
+                continue
             break
         head.append(tok)
         i += 1
@@ -428,7 +442,7 @@ def _split_leading_flags(
             head.append(tokens[i])
             i += 1
     parsed = _split_tail(" ".join(head), value_flags=value_flags, known_flags=known_flags)
-    return parsed, " ".join(tokens[i:])
+    return parsed, " ".join(carry + tokens[i:])
 
 
 def _leftover_note(raw_args: tuple[str, ...], used: int, verb: str) -> str:
@@ -651,8 +665,12 @@ def ground_prompt(tail: str) -> list[Message]:
     the leading run of ``--flags`` is parsed
     (:func:`_split_leading_flags`), so ``what is the --only flag``
     grounds the words ``--only`` and ``flag`` rather than deleting
-    them. ``--top_k`` is clamped to [1, 10]; both ``--top_k=5`` and
-    ``--top_k 5`` bind, so the value never leaks into the query text.
+    them. A leading ``+tag`` / ``-tag`` filter atom falls through the
+    scan rather than stopping it, so ``+c:opencode --top_k 5 ...``
+    parses ``--top_k=5`` and leaves the filter in question text; the
+    filter parser picks it up there. ``--top_k`` is clamped to [1, 10];
+    both ``--top_k=5`` and ``--top_k 5`` bind, so the value never leaks
+    into the query text.
 
     The emptiness check runs *after* the filter pass, not before it.
     A filter token is itself a positional, so a guard on
@@ -695,12 +713,17 @@ def ground_prompt(tail: str) -> list[Message]:
     # A flag-shaped word inside the question is text, and it stays
     # there. Say so, because the other reading -- "the prompt ignored
     # my --top_k" -- is the one a user forms when the words they typed
-    # come back inside a search string.
+    # come back inside a search string. The leading-flag scan reads
+    # ``--top_k`` past a leading ``+tag`` filter (filter atoms are
+    # question text, not prose), so ``+c:opencode --top_k 5 ...``
+    # parses ``--top_k=5``; a ``--top_k`` after a *prose* word is the
+    # case this note names.
     if any(tok.startswith("--") for tok in question.split()):
         note += (
             " Flags are read from the leading run only, so a --flag after"
-            " the first word stays part of the question; put --top_k first,"
-            " or open the tail with -- to say the flags stop there."
+            " the first prose word stays part of the question; put --top_k"
+            " before the question, or open the tail with -- to say the"
+            " flags stop there."
         )
     query_block = _verbatim("question", query_text)
     body = (
@@ -1049,15 +1072,23 @@ def ingest_prompt(tail: str) -> list[Message]:
     delete_asked = any(t.lstrip("-").lower() in ("delete", "remove", "rm") for t in tail.split())
 
     def finish(text: str) -> list[Message]:
-        """Every exit, so the delete remedy rides on refusals too.
+        """Every exit, so the delete remedy and the title hint ride on refusals too.
 
         ``ingest --delete entity-x`` hits the repurposed guard before
         anything renders, and the useful answer to "delete this page"
-        is the one that says what *can* delete it. Appending only on
-        the render path meant the one case that most needed the
-        sentence was the one that never got it.
+        is the one that says what *can* delete it. ``ingest --title
+        foo --collection bar`` (no source) hits the missing-source
+        guard, and the useful answer to that one says *why* ``--title``
+        ate what looked like a source -- the diagnosis points away
+        from the cause without the note. Appending only on the render
+        path meant both were dropped from the case that most needed
+        them.
         """
-        return [Message(text + " " + _INGEST_DELETE_REMEDY if delete_asked else text)]
+        body = text
+        if delete_asked:
+            body += " " + _INGEST_DELETE_REMEDY
+        body += note
+        return [Message(body)]
 
     refusal = _refuse_unless_clean(parsed, "ingest")
     if refusal:
@@ -1103,7 +1134,6 @@ def ingest_prompt(tail: str) -> list[Message]:
             f"stdout/stderr."
             + _leftover_note(parsed.positionals, 1, "ingest")
             + _quoted_value_note(parsed, parsed.positionals, "ingest")
-            + note
         )
     elif source is not None:
         # `ingest` derives a collection name from `--collection`,
@@ -1130,12 +1160,10 @@ def ingest_prompt(tail: str) -> list[Message]:
             f"{extra}{excludes}{force}{dry}) and surface stdout/stderr."
             + _leftover_note(parsed.positionals, 1, "ingest")
             + _quoted_value_note(parsed, parsed.positionals, "ingest")
-            + note
         )
     else:
         return finish(
             "Cannot run ingest: no source given."
-            + note
             + " Ask the user which file or URL to ingest, or pass "
             '--batch <dir>, then re-dispatch get_prompt(name="ingest", '
             'arguments={"tail": "<source>"}).'
@@ -1169,24 +1197,42 @@ def lint_prompt(tail: str) -> list[Message]:
     refusal = _refuse_unless_clean(parsed, "lint")
     if refusal:
         return [Message(refusal)]
+    if "check" in parsed.values and not parsed.values["check"].strip():
+        # `--check=` binds the empty string, and
+        # ``orchestrator.run_lint`` reads a blank check as *no
+        # filter* -- so the user got the whole report for a filter
+        # they asked for. A note on a rendered call was the weaker
+        # repair: the call still ran, and a body that renders a
+        # command is a body promising an answer, so the user had to
+        # read the trailing sentence to learn the scope had been
+        # discarded. Refusing is the stronger one -- nothing runs,
+        # and the refusal names both what was typed and what to type
+        # instead. ``ground`` refuses a malformed ``--top_k`` the same
+        # way; this is the same defect one parameter over.
+        #
+        # The refusal does not enumerate the categories. The tool
+        # derives them from the merged report at run time
+        # (``_canonical_check`` over the findings' own categories),
+        # so a static list here would be a second table to drift
+        # from a run it cannot see -- the defect class this whole
+        # branch exists to close. A ``--check`` that matches nothing
+        # already renders the available categories.
+        return [
+            Message(
+                "Cannot run lint: --check= is empty. The tool reads a blank "
+                "check as no filter at all, so the call would return the "
+                "full report for a scoped request. Ask the user which "
+                'category to check, then re-dispatch get_prompt(name="lint", '
+                'arguments={"tail": "--check <name>"}) — or drop the flag '
+                "for the unfiltered report."
+            )
+        ]
     check = parsed.values.get("check")
     if check is None and parsed.positionals:
         check = parsed.positionals[0]
     name = parsed.values.get("name")
     fix = parsed.flag_on("fix")
     force_repair = parsed.flag_on("force-repair")
-    if "check" in parsed.values and not parsed.values["check"].strip():
-        # `--check=` binds the empty string, and
-        # ``orchestrator.run_lint`` reads a blank check as *no
-        # filter* -- so the user got the whole report for a filter
-        # they asked for, with nothing to say so. ``ground`` already
-        # names the bad value for a malformed ``--top_k``; this is the
-        # same defect one parameter over.
-        note += (
-            f" --check={parsed.values['check']!r} is empty, and the tool treats "
-            f"a blank check as no filter at all, so this would return the "
-            f"full report. Re-issue with a category name."
-        )
     body = (
         f"Call mcp__lies__lint(name={name!r}, "
         f"fix={fix!r}, force_repair={force_repair!r})"
@@ -1198,10 +1244,16 @@ def lint_prompt(tail: str) -> list[Message]:
             else ""
         )
         + (
-            " force_repair reaps the cross-process memory flock and retries "
-            "once before surfacing an error; say so before setting it."
-            if force_repair
-            else ""
+            " --force-repair has no effect without --fix; the tool "
+            "ignores it. Add --fix or drop --force-repair."
+            if force_repair and not fix
+            else (
+                " force_repair reaps the cross-process memory flock and "
+                "retries once before surfacing an error; say so before "
+                "setting it."
+                if force_repair
+                else ""
+            )
         )
         + _leftover_note(parsed.positionals, 1, "lint")
         + note

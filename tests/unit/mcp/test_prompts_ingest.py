@@ -73,8 +73,8 @@ def test_ingest_delete_says_what_exists_instead_of_a_ghost_verb() -> None:
 
     [msg] = ingest_prompt("--delete entity-pydantic --collection mylib")
     body = rendered_body(msg)
-    assert "no CLI verb" in body
-    assert "lies library delete" in body
+    assert "filesystem delete" in body, body
+    assert "`lies library delete <collection>`" in body, body
     # `--delete` is not an ingest option, so its value would be read
     # as a positional source: the body refuses and names the pair.
     # The remedy rides on the refusal, so the one case that most needs
@@ -82,6 +82,21 @@ def test_ingest_delete_says_what_exists_instead_of_a_ghost_verb() -> None:
     assert "Cannot run ingest: 'entity-pydantic' after --delete" in body
     assert "lies ingest --delete" not in body
     assert "Run Bash(" not in body
+
+
+def test_ingest_no_source_refusal_carries_the_title_hinting_note() -> None:
+    """``--title <words> --collection <name>`` (no source) refuses; the
+    user typed something that looked like a source after ``--title``,
+    and the diagnosis must point back at ``--title`` rather than at
+    the absent source alone.
+    """
+    from lies.mcp.prompts_impl import ingest_prompt
+
+    [msg] = ingest_prompt("--title 'looks like a source' --collection mylib")
+    body = rendered_body(msg)
+    assert "Cannot run ingest: no source given." in body, body
+    assert "a source typed after `--title` is read as part of the title" in body, body
+    assert "Bash(" not in body, body
 
 
 def test_ingest_path_with_an_apostrophe_is_quoted_not_split() -> None:

@@ -588,6 +588,42 @@ class TestLeadingFlagSplit:
         assert parsed.values == {}
         assert question == "--top_k 5 what changed"
 
+    def test_a_leading_filter_does_not_block_a_flag_after_it(self) -> None:
+        """``+c:opencode --top_k 5 what`` parses the flag.
+
+        The leading-flag scan used to stop at any non-``--`` token,
+        so a tail that opened with a filter atom never reached a
+        ``--top_k`` that followed it. Filter atoms are part of the
+        question (the filter parser consumes them from question text),
+        not prose, so a leading filter falls through and the scan
+        continues.
+        """
+        parsed, question = _split_leading_flags(
+            "+c:opencode --top_k 5 what is qmd",
+            value_flags=frozenset({"top_k"}),
+            known_flags=frozenset({"top_k"}),
+        )
+        assert parsed.values["top_k"] == "5"
+        assert question == "+c:opencode what is qmd"
+
+    def test_a_flag_after_a_filter_binds_with_equals_form_too(self) -> None:
+        parsed, question = _split_leading_flags(
+            "+c:opencode --top_k=5 what is qmd",
+            value_flags=frozenset({"top_k"}),
+            known_flags=frozenset({"top_k"}),
+        )
+        assert parsed.values["top_k"] == "5"
+        assert question == "+c:opencode what is qmd"
+
+    def test_an_exclude_filter_does_not_block_a_flag_either(self) -> None:
+        parsed, question = _split_leading_flags(
+            "-t:draft --top_k 5 what is qmd",
+            value_flags=frozenset({"top_k"}),
+            known_flags=frozenset({"top_k"}),
+        )
+        assert parsed.values["top_k"] == "5"
+        assert question == "-t:draft what is qmd"
+
     def test_a_flag_with_no_value_does_not_eat_the_next_flag(self) -> None:
         """``--top_k --force`` reports the missing value and keeps ``--force``.
 
