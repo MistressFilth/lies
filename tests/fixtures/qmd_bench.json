@@ -217,50 +217,53 @@
     }
   ],
   "baseline": {
-    "recorded_from": "/home/divinefilth/code/github/MistressFilth/lies/qmd-timeout-classification/tests/fixtures/qmd_bench.json",
-    "qmd_version": "qmd 2.5.3",
-    "note": "Gate on precision/recall/MRR/F1. avg_latency_ms is not comparable across runs.",
-    "summary": {
-      "bm25": {
-        "avg_precision": 0.7333333333333333,
-        "avg_recall": 0.8666666666666667,
-        "avg_recall_at_1": 0.7333333333333333,
-        "avg_recall_at_3": 0.7333333333333333,
-        "avg_recall_at_5": 0.7333333333333333,
-        "avg_mrr": 0.7502645502645502,
-        "avg_f1": 0.7333333333333333,
-        "avg_latency_ms": 18.2
-      },
-      "vector": {
-        "avg_precision": 0.4666666666666667,
-        "avg_recall": 1,
-        "avg_recall_at_1": 0.4666666666666667,
-        "avg_recall_at_3": 0.8,
-        "avg_recall_at_5": 0.9333333333333333,
-        "avg_mrr": 0.6522222222222223,
-        "avg_f1": 0.4666666666666667,
-        "avg_latency_ms": 568.4666666666667
-      },
-      "hybrid": {
-        "avg_precision": 0.6666666666666666,
-        "avg_recall": 1,
-        "avg_recall_at_1": 0.6666666666666666,
-        "avg_recall_at_3": 0.8666666666666667,
-        "avg_recall_at_5": 0.9333333333333333,
-        "avg_mrr": 0.7833333333333333,
-        "avg_f1": 0.6666666666666666,
-        "avg_latency_ms": 1151.9333333333334
-      },
-      "full": {
-        "avg_precision": 0.6666666666666666,
-        "avg_recall": 0.9333333333333333,
-        "avg_recall_at_1": 0.6666666666666666,
-        "avg_recall_at_3": 0.8666666666666667,
-        "avg_recall_at_5": 0.8666666666666667,
-        "avg_mrr": 0.762962962962963,
-        "avg_f1": 0.6666666666666666,
-        "avg_latency_ms": 1574.6
+    "qmd_bench": {
+      "recorded_from": "/home/divinefilth/code/github/MistressFilth/lies/qmd-timeout-classification/tests/fixtures/qmd_bench.json",
+      "qmd_version": "qmd 2.5.3",
+      "note": "Gate on precision/recall/MRR/F1. avg_latency_ms is not comparable across runs.",
+      "summary": {
+        "bm25": {
+          "avg_precision": 0.7333333333333333,
+          "avg_recall": 0.8666666666666667,
+          "avg_recall_at_1": 0.7333333333333333,
+          "avg_recall_at_3": 0.7333333333333333,
+          "avg_recall_at_5": 0.7333333333333333,
+          "avg_mrr": 0.7502645502645502,
+          "avg_f1": 0.7333333333333333,
+          "avg_latency_ms": 18.2
+        },
+        "vector": {
+          "avg_precision": 0.4666666666666667,
+          "avg_recall": 1,
+          "avg_recall_at_1": 0.4666666666666667,
+          "avg_recall_at_3": 0.8,
+          "avg_recall_at_5": 0.9333333333333333,
+          "avg_mrr": 0.6522222222222223,
+          "avg_f1": 0.4666666666666667,
+          "avg_latency_ms": 568.4666666666667
+        },
+        "hybrid": {
+          "avg_precision": 0.6666666666666666,
+          "avg_recall": 1,
+          "avg_recall_at_1": 0.6666666666666666,
+          "avg_recall_at_3": 0.8666666666666667,
+          "avg_recall_at_5": 0.9333333333333333,
+          "avg_mrr": 0.7833333333333333,
+          "avg_f1": 0.6666666666666666,
+          "avg_latency_ms": 1151.9333333333334
+        },
+        "full": {
+          "avg_precision": 0.6666666666666666,
+          "avg_recall": 0.9333333333333333,
+          "avg_recall_at_1": 0.6666666666666666,
+          "avg_recall_at_3": 0.8666666666666667,
+          "avg_recall_at_5": 0.8666666666666667,
+          "avg_mrr": 0.762962962962963,
+          "avg_f1": 0.6666666666666666,
+          "avg_latency_ms": 1574.6
+        }
       }
-    }
+    },
+    "lies_gate": null
   }
 }

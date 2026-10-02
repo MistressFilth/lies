@@ -27,10 +27,24 @@ live collisions exist among the 5987 active documents.
 from __future__ import annotations
 
 import json
+import os
 import pathlib
 from typing import Any
 
-FIXTURE = pathlib.Path(__file__).parents[1] / "fixtures" / "qmd_bench.json"
+# The committed fixture. `QMD_BENCH_FIXTURE` overrides it, so the same
+# shape tests can be pointed at a candidate fixture in Task 4/6 without
+# editing the committed file — which is how "did this routing change
+# regress recall" gets asked before the candidate becomes the fixture.
+DEFAULT_FIXTURE = pathlib.Path(__file__).parents[1] / "fixtures" / "qmd_bench.json"
+
+
+def fixture_path() -> pathlib.Path:
+    """Resolve the fixture, honouring ``QMD_BENCH_FIXTURE``."""
+    return pathlib.Path(os.environ.get("QMD_BENCH_FIXTURE", DEFAULT_FIXTURE))
+
+
+# The default, for callers that want the committed fixture specifically.
+FIXTURE = DEFAULT_FIXTURE
 
 # The four collections the routing work must cover. `opencode` is required
 # by the multi-collection starvation queries, so it is in the span even
@@ -39,7 +53,40 @@ PRIMARY_COLLECTIONS = {"claude_code", "mermaid", "fastmcp", "typer"}
 
 
 def _load() -> dict[str, Any]:
-    return json.loads(FIXTURE.read_text())
+    return json.loads(fixture_path().read_text())
+
+
+def test_fixture_path_honors_the_env_override(tmp_path: pathlib.Path, monkeypatch) -> None:
+    """`QMD_BENCH_FIXTURE` must actually redirect the loader, not just parse."""
+    override = tmp_path / "candidate.json"
+    override.write_text(
+        json.dumps(
+            {
+                "queries": [
+                    {
+                        "id": "candidate-1",
+                        "query": "q",
+                        "type": "exact",
+                        "description": "d",
+                        "expected": "qmd://c/x.md",
+                        "expected_files": ["qmd://c/x.md"],
+                        "expected_in_top_k": 1,
+                        "collections": ["c"],
+                    }
+                ],
+                "baseline": {
+                    "qmd_bench": {"summary": {"bm25": {"avg_recall": 0.5}}},
+                    "lies_gate": None,
+                },
+            }
+        )
+    )
+    monkeypatch.setenv("QMD_BENCH_FIXTURE", str(override))
+    assert fixture_path() == override
+    assert _load()["queries"][0]["id"] == "candidate-1"
+
+    monkeypatch.delenv("QMD_BENCH_FIXTURE")
+    assert fixture_path() == DEFAULT_FIXTURE
 
 
 def test_fixture_has_ten_or_more_queries() -> None:
@@ -142,7 +189,26 @@ def test_baseline_is_recorded() -> None:
     data = _load()
     baseline = data["baseline"]
     assert baseline, "baseline is the regression gate; an empty one measures nothing"
-    assert baseline["summary"], baseline
-    for backend, scores in baseline["summary"].items():
+    assert baseline["qmd_bench"]["summary"], baseline
+    for backend, scores in baseline["qmd_bench"]["summary"].items():
         assert "avg_recall" in scores, backend
         assert 0.0 <= scores["avg_recall"] <= 1.0, (backend, scores)
+
+
+def test_lies_gate_slot_is_reserved() -> None:
+    """The `lies_gate` slot exists so Task 4/6 have somewhere to record.
+
+    It is `null` until they fill it, and the suite stays green while it is.
+    What matters is that the key is reserved and, once populated, carries
+    the documented keys — otherwise the routing comparison lands
+    somewhere unasserted and nothing checks its shape.
+    """
+    baseline = _load()["baseline"]
+    assert "lies_gate" in baseline, "the LIES-routing gate slot must be reserved"
+
+    gate = baseline["lies_gate"]
+    if gate is None:
+        return  # not yet recorded; the slot is what this test guards
+    for key in ("recorded_from", "qmd_version", "method", "queries_total", "queries_passing"):
+        assert key in gate, key
+    assert 0 <= gate["queries_passing"] <= gate["queries_total"], gate

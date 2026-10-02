@@ -43,12 +43,26 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 from pathlib import Path
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_OUT = REPO_ROOT / "tests" / "fixtures" / "qmd_bench.json"
+
+# The `lies_gate` shape Tasks 4 and 6 fill in. Kept here so the generator
+# and the shape test agree on one list of required keys.
+#
+# It is a *different measurement* from the `qmd bench` summary beside it,
+# and the difference is the reason this slot exists. `qmd bench` opens its
+# own store and calls qmd's four backends in-process — no daemon, no
+# per-query collection scope, no LIES `ground()` fan-out. Changing how
+# LIES dispatches a query therefore cannot move those numbers at all. The
+# summary says "qmd's backends can find these answers"; `lies_gate` says
+# "LIES, routed as it now routes, still finds them", and that is the
+# number a routing change can regress.
+LIES_GATE_KEYS = ("recorded_from", "qmd_version", "method", "queries_total", "queries_passing")
 
 # (id, query, expected, collections, type, description, paraphrase)
 #
@@ -211,7 +225,9 @@ def _entry(spec: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def build(baseline: dict[str, Any] | None) -> dict[str, Any]:
+def build(
+    baseline: dict[str, Any] | None, lies_gate: dict[str, Any] | None = None
+) -> dict[str, Any]:
     return {
         "description": (
             "Known-answer benchmark for the LIES qmd read surface. Twelve-plus "
@@ -224,7 +240,19 @@ def build(baseline: dict[str, Any] | None) -> dict[str, Any]:
         # fixture, so scoping here would exclude every collection but one. The
         # per-query `collections` key carries the scope instead.
         "queries": [_entry(spec) for spec in QUERIES],
-        "baseline": baseline or {},
+        "baseline": {
+            "qmd_bench": baseline or {},
+            # The routing gate. `null` until Task 4 / Task 6 run the
+            # LIES-routed equivalent of this known-answer set and record
+            # the comparison. The `qmd_bench` summary beside it measures
+            # qmd's own backends in-process, which no LIES routing change
+            # can move; this slot is the one that can, and it is also the
+            # only place the multi-collection starvation signal lands,
+            # because `qmd bench` has one global -c and so never exercises
+            # per-query collection scope. See LIES_GATE_KEYS in
+            # tools/qmd_bench_fixture.py for the required keys.
+            "lies_gate": lies_gate,
+        },
     }
 
 
@@ -233,13 +261,18 @@ def main() -> int:
     parser.add_argument(
         "--out",
         type=Path,
-        default=DEFAULT_OUT,
-        help="fixture path to write (default: %(default)s)",
+        default=Path(os.environ.get("QMD_BENCH_FIXTURE", DEFAULT_OUT)),
+        help="fixture path to write (default: $QMD_BENCH_FIXTURE, else %(default)s)",
     )
     parser.add_argument(
         "--baseline",
         type=Path,
         help="a `qmd bench --json` result file whose summary is embedded as the baseline",
+    )
+    parser.add_argument(
+        "--lies-gate",
+        type=Path,
+        help="a JSON file holding the recorded LIES-routing gate result (Task 4/6)",
     )
     args = parser.parse_args()
 
@@ -259,8 +292,15 @@ def main() -> int:
             "summary": raw["summary"],
         }
 
+    lies_gate: dict[str, Any] | None = None
+    if args.lies_gate:
+        lies_gate = json.loads(args.lies_gate.read_text())
+        missing = [k for k in LIES_GATE_KEYS if k not in lies_gate]
+        if missing:
+            parser.error(f"--lies-gate is missing required keys: {', '.join(missing)}")
+
     args.out.parent.mkdir(parents=True, exist_ok=True)
-    args.out.write_text(json.dumps(build(baseline), indent=2) + "\n")
+    args.out.write_text(json.dumps(build(baseline, lies_gate), indent=2) + "\n")
     print(f"wrote {len(QUERIES)} queries to {args.out}")
     return 0
 
