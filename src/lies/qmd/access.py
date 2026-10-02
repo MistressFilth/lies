@@ -340,20 +340,28 @@ async def daemon_tool(name: str, arguments: dict[str, Any]) -> Any:
         action, retryable = classify_call_error(exc)
         if action == "passthrough":
             raise
-        # Read the log BEFORE the recycle. `recycle_qmd_daemon` is
-        # reap+spawn, and qmd truncates mcp.log on every start — so a
-        # tail read after it describes the replacement daemon, which is
-        # the one thing the wedge exception must not report. Capturing
-        # first is the only ordering that puts the wedged daemon's own
-        # last words on the exception.
-        last_output = _daemon_log_tail()
-        await _recycle(url)
         if not retryable:
+            # Read the log BEFORE the recycle. `recycle_qmd_daemon` is
+            # reap+spawn, and qmd truncates mcp.log on every start — so
+            # a tail read after it describes the replacement daemon,
+            # which is the one thing the wedge exception must not
+            # report. Capturing first is the only ordering that puts the
+            # wedged daemon's own last words on the exception.
+            #
+            # Read on this branch only. A transport error recycles and
+            # retries without ever carrying a tail, so reading here
+            # would spend an open+seek+read of the daemon's log on a
+            # value that is thrown away — on the common path, where a
+            # daemon that is restarting is the ordinary case rather
+            # than the exception.
+            last_output = _daemon_log_tail()
+            await _recycle(url)
             raise QmdDaemonWedged(
                 f"qmd daemon wedged on call to {name!r}; recycled, but the same "
                 f"payload is not retried against a daemon that re-wedges on it",
                 last_output=last_output,
             ) from exc
+        await _recycle(url)
         try:
             return await _call(client, name, arguments)
         except Exception as retry_exc:

@@ -216,6 +216,7 @@ async def test_a_wedged_daemon_recycles_then_raises_with_the_log_tail(
 async def test_the_wedge_carries_the_log_as_it_was_before_the_recycle(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    seam: _Recycle,
 ) -> None:
     """The tail must be read before the recycle, not after.
 
@@ -234,10 +235,12 @@ async def test_the_wedge_carries_the_log_as_it_was_before_the_recycle(
         log.write_text("")  # qmd truncates mcp.log on every daemon start
         return QmdState(installed=True, running=True, pid=4242, detail="fresh")
 
-    monkeypatch.setattr(access, "qmd_daemon_reachable", lambda url, timeout=0.5: True)
-    monkeypatch.setattr(access, "_is_daemon_stale", lambda: False)
-    monkeypatch.setattr(access, "_daemon_log_tail", lambda: log.read_text().strip())
+    # The `seam` fixture supplies the probe, the staleness check, and
+    # the `_recycle_data_dir` stub — the last of which keeps
+    # `read_sidecar_data_dir()` from reaching a real $HOME. Only the
+    # recycle itself is replaced, because the truncation is the point.
     monkeypatch.setattr(access, "recycle_qmd_daemon", _recycle_that_truncates)
+    monkeypatch.setattr(access, "_daemon_log_tail", lambda: log.read_text().strip())
     _use_client(monkeypatch, _FakeClient([httpx.ReadTimeout("wedged")]))
 
     with pytest.raises(access.QmdDaemonWedged) as e:
@@ -317,6 +320,31 @@ async def test_a_transport_error_recycles_and_retries_once(
     assert result == {"hits": ["after-retry"]}
     assert len(seam.calls) == 1
     assert len(client.calls) == 2
+
+
+async def test_the_retryable_path_never_reads_the_daemon_log(
+    monkeypatch: pytest.MonkeyPatch,
+    seam: _Recycle,
+) -> None:
+    """A transport error carries no tail, so it must not read one.
+
+    The wedge is the only failure that reports a log tail. Reading it
+    on the retryable path would spend an open+seek+read of qmd's log on
+    a value that is thrown away — on the *common* path, since a daemon
+    that is restarting is ordinary rather than exceptional. It also put
+    a real filesystem read behind a test module that documents itself as
+    I/O-free, which is how a test ends up reading someone's home
+    directory the day the XDG isolation changes.
+    """
+    reads: list[bool] = []
+    monkeypatch.setattr(access, "_daemon_log_tail", lambda: reads.append(True) or "never used")
+    client = _FakeClient([httpx.ConnectError("refused"), {"hits": ["after-retry"]}])
+    _use_client(monkeypatch, client)
+
+    result = await access.daemon_tool("query", {"searches": [{"type": "lex", "query": "x"}]})
+
+    assert result == {"hits": ["after-retry"]}
+    assert reads == []
 
 
 async def test_a_transport_error_that_survives_a_recycle_raises_unavailable(
