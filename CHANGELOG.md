@@ -4,6 +4,51 @@ All notable changes to LIES are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/) adapted for
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **`lies.qmd.access` — the seam every qmd call goes through.** One
+  module owns the transport decision, so no call site picks one:
+  `DAEMON_TOOLS` (`query`, `get`, `multi_get`, `status`) and
+  `CLI_ONLY_OPS` (index maintenance, the collection and daemon
+  lifecycle verbs, `ls`/`doctor`/`bench`, and BM25 `search`, which the
+  daemon has no path for). `daemon_tool(name, arguments)` makes one
+  daemon call; `classify_call_error(exc)` answers
+  `(action, retryable)` for any qmd call and now has a second caller
+  outside the seam — the pydantic-ai `QmdRecycleToolset` — so the
+  agent path and the library path cannot disagree about what a wedge is.
+- **`QmdDaemonUnavailable`** and **`QmdDaemonWedged`**, the two daemon
+  failure modes as distinct types. A down daemon raises the first,
+  naming both `lies qmd up` and `LIES_QMD_URL`; there is no
+  availability-based fallback, no degraded tag, and no silently-empty
+  result. A wedged one raises the second, carrying `last_output` — the
+  tail of qmd's own daemon log — because a timeout reported as nothing
+  but a fired deadline says only what the caller already knew.
+
+### Fixed
+
+- **Every HTTP daemon call failed at connect with a `TypeError`.**
+  fastmcp invokes the httpx client factory with `follow_redirects=`,
+  which the shipped `_build_qmd_httpx_client` did not accept, so both
+  the agent toolset and any HTTP call through the seam raised before
+  reaching the recycle taxonomy. The factory now accepts the keyword and
+  builds its client from the httpx generation fastmcp actually installed.
+- **The recycle taxonomy matched nothing fastmcp raises.** fastmcp 4
+  vendors its own httpx as `httpx2`, and `httpx2.ReadTimeout` is not a
+  subclass of `httpx.ReadTimeout`; a dead session additionally arrives
+  wrapped in a bare `RuntimeError` with the real transport error on
+  `__cause__`. Every wedge therefore classified as a passthrough, so no
+  recycle ever ran. `classify_call_error` now matches both httpx
+  generations by exception class name and follows the cause chain
+  fastmcp's wrapper documents, and treats a `CONNECTION_CLOSED`
+  `MCPError` as the wedge it is.
+- **The daemon read timeout was a second literal.** The HTTP factory
+  hardcoded `read=60.0` while the CLI paths read
+  `get_qmd_query_timeout()`, so the same retrieval could get two
+  different deadlines depending on the transport. Both now read the one
+  getter.
+
 ## [0.43.0] - 2026-10-01
 
 ### Added

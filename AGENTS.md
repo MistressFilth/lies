@@ -126,6 +126,8 @@ src/lies/
 │   └── catalog_models.py  # CatalogPage (frozen BaseModel) + PageSection enum
 ├── orchestrator.py  # top-level Orchestrator; owns cross-cutting capabilities
 ├── qmd/             # qmd CLI + MCP adapters
+│   ├── access.py    # THE SEAM: DAEMON_TOOLS / CLI_ONLY_OPS, daemon_tool(),
+│   │                #   QmdDaemonUnavailable / QmdDaemonWedged, classify_call_error()
 │   ├── _models.py   # Pydantic models returned by qmd library functions (e.g. ReindexResult)
 │   ├── _proc.py     # subprocess seam for qmd library functions (Popen + bounded communicate)
 │   ├── _subprocess.py # deadlock-free `_run_qmd` helper (Popen + timeout + SIGKILL-on-overrun)
@@ -478,6 +480,62 @@ section using the `[[slug]] (Heading > Subheading): "verbatim"`
 form. The `_render_evidence` helper guarantees the section exists
 and is well-formed per the F17 page-type schema contract. Spec:
 `~/code/project-notes/lies/superpowers/specs/2026-09-19-tier2-query-path-design.md`.
+
+## The qmd access seam (`qmd/access.py`)
+
+One module owns every call LIES makes to qmd and encodes which
+transport serves which operation. Read it before adding any qmd call.
+
+- **Routing is by capability, never by availability.** `DAEMON_TOOLS`
+  is what qmd's MCP server exposes (`query`, `get`, `multi_get`,
+  `status`); `CLI_ONLY_OPS` is everything else, including BM25
+  `search`, which the daemon has no path for. A down daemon raises
+  `QmdDaemonUnavailable` naming `lies qmd up` and `LIES_QMD_URL`.
+  There is no degraded mode, no empty result, and no CLI fallback —
+  the previous behaviour reported an unreachable daemon as "no
+  relevant content in the library", a claim about the corpus that was
+  really a claim about the process.
+- **`lies mcp up` is not the fix.** It starts LIES' *own* MCP server
+  (`mcp/daemon.py`). The qmd daemon is `lies qmd up` (`cli/qmd.py`).
+  An operator who follows the wrong one changes nothing and never sees
+  the real cause.
+- **Three daemon failure modes, three answers.** A wedge (accepted the
+  call, then stopped answering) recycles and raises
+  `QmdDaemonWedged` carrying `last_output`, the tail of qmd's own
+  `mcp.log`; no transparent retry, because a fresh daemon re-wedges on
+  the same payload. Unreachable recycles and retries once. A
+  protocol-level rejection is not a transport failure and re-raises
+  unchanged. `classify_call_error` is the only place that decides.
+- **The taxonomy matches exception class *names*, not httpx types.**
+  fastmcp 4 vendors its own httpx as `httpx2`, and `httpx2.ReadTimeout`
+  is not a subclass of `httpx.ReadTimeout`; a dead session additionally
+  arrives as a bare `RuntimeError("Client failed to connect: ...")`
+  with the real error on `__cause__`. A taxonomy written against the
+  `httpx` LIES declares matches none of them, so every wedge silently
+  becomes a passthrough and no recycle ever runs. The three shapes the
+  installed fastmcp actually raises are pinned in
+  `tests/unit/qmd/test_access.py`; re-derive them by probe before
+  changing the matcher.
+- **`_build_qmd_httpx_client` takes `**kwargs` for a reason.** fastmcp
+  calls it with `follow_redirects=`; a fixed signature made every HTTP
+  daemon call fail at connect with a `TypeError` before any of the
+  above ran. It also builds its client from the httpx generation
+  fastmcp installed, and reads its read deadline from
+  `get_qmd_query_timeout()` so the daemon and the CLI cannot answer
+  differently for the same retrieval.
+- **The cached client is a client, not a session.** It is cached
+  per-process so the daemon's model stays warm (3.11s against 10.77s
+  cold), keyed on the URL so a changed `LIES_QMD_URL` rebuilds it. An
+  MCP session is bound to the event loop that opened it and this seam
+  is called from `asyncio.run` bridges, so the session is per call.
+- **`daemon_tool` returns the raw `CallToolResult`.** `get` and
+  `multi_get` answer with a content block and `.data` is `None`; a
+  caller that reaches for `.data` stores an empty body, which is the
+  exact failure the routing work exists to prevent. Note also that the
+  daemon answers an *unknown collection* with an empty result and **no
+  error** (the CLI exits 1 on the same class), so the `isError` branch
+  is for genuine tool errors only — validate scope against the registry
+  before dispatching.
 
 ## Grounding archivist
 

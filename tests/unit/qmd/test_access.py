@@ -1,0 +1,495 @@
+"""Unit tests for ``lies.qmd.access`` — the qmd access seam.
+
+The seam owns every call LIES makes to qmd and encodes which transport
+serves which operation. These tests are all I/O-free: the daemon probe,
+the staleness check, the client, the recycle, and the daemon log are
+stubbed, because the behaviour under test is the *decision* (which
+transport, which recovery, which exception) and not qmd's answers.
+
+Error taxonomy under test:
+
+- probe fails            → ``QmdDaemonUnavailable`` naming ``LIES_QMD_URL``
+                           and ``lies qmd up``. Never a fallback.
+- daemon stale           → reap + respawn, then proceed. Not an error.
+- ``httpx.ReadTimeout``  → recycle, raise ``QmdDaemonWedged`` carrying the
+                           daemon log's tail. No transparent retry: a fresh
+                           daemon re-wedges on the same payload.
+- transport error        → recycle, retry once; a second failure raises.
+- ``isError: true``      → ``RuntimeError`` carrying the daemon's text.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
+
+import httpx
+import mcp
+import pytest
+from fastmcp.client.client import CallToolResult
+from mcp.types import TextContent
+
+from lies.qmd import access
+from lies.qmd.daemon import QmdRecycleFailed, QmdState
+
+
+class _FakeClient:
+    """Stands in for the cached ``fastmcp.Client``.
+
+    A real Client needs a connected MCP session; the seam only needs
+    something it can ``async with`` and call ``call_tool`` on. Each
+    entry in ``outcomes`` is either an exception to raise or a value to
+    return; the last one repeats once the list is exhausted.
+    """
+
+    def __init__(self, outcomes: list[Any]) -> None:
+        self._outcomes = list(outcomes)
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+
+    async def __aenter__(self) -> _FakeClient:
+        return self
+
+    async def __aexit__(self, *_exc: object) -> None:
+        return None
+
+    async def call_tool(self, name: str, arguments: dict[str, Any], **_kw: Any) -> Any:
+        self.calls.append((name, arguments))
+        outcome = self._outcomes.pop(0) if self._outcomes else None
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
+
+
+def _tool_error(text: str) -> CallToolResult:
+    """A result carrying qmd's own error text, in the real result shape."""
+    return CallToolResult(
+        content=[TextContent(type="text", text=text)],
+        structured_content=None,
+        meta=None,
+        data=None,
+        is_error=True,
+    )
+
+
+class _Recycle:
+    """Records the kwargs each recycle was called with."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    async def __call__(self, **kwargs: Any) -> QmdState:
+        self.calls.append(kwargs)
+        return QmdState(installed=True, running=True, pid=4242, detail="fresh")
+
+
+@pytest.fixture(autouse=True)
+def _reset_cached_client() -> Any:
+    """Keep the module-level client cache from leaking between tests.
+
+    The cache exists so the daemon's model stays warm across calls; a
+    test that left a client behind would hand the next one a stub.
+    """
+    access._reset_client()
+    yield
+    access._reset_client()
+
+
+@pytest.fixture
+def seam(monkeypatch: pytest.MonkeyPatch) -> _Recycle:
+    """A reachable, non-stale daemon whose recycle is recorded.
+
+    Every test that gets past the probe starts here, so the individual
+    tests read as the one behaviour they are about rather than four
+    lines of stubbing each.
+    """
+    monkeypatch.setattr(access, "qmd_daemon_reachable", lambda url, timeout=0.5: True)
+    monkeypatch.setattr(access, "_is_daemon_stale", lambda: False)
+    # The sidecar is a real file under $HOME; a test must not read it.
+    monkeypatch.setattr(access, "_recycle_data_dir", lambda: Path("/nonexistent"))
+    recycle = _Recycle()
+    monkeypatch.setattr(access, "recycle_qmd_daemon", recycle)
+    return recycle
+
+
+def _use_client(monkeypatch: pytest.MonkeyPatch, client: _FakeClient) -> None:
+    monkeypatch.setattr(access, "_daemon_client", lambda url: client)
+
+
+# --- the capability map ------------------------------------------------
+
+
+def test_the_map_covers_exactly_what_each_transport_exposes() -> None:
+    assert access.DAEMON_TOOLS == {"query", "get", "multi_get", "status"}
+    assert "search" in access.CLI_ONLY_OPS  # the daemon has no BM25 path
+    assert not (access.DAEMON_TOOLS & access.CLI_ONLY_OPS)
+
+
+def test_maintenance_and_lifecycle_stay_on_the_cli() -> None:
+    # The daemon serves reads and nothing else; these are the operations
+    # that keep the index itself alive, and none of them is a tool call.
+    assert access.CLI_ONLY_OPS >= {"update", "embed", "cleanup", "collection", "mcp"}
+
+
+async def test_a_cli_only_op_is_refused_before_it_reaches_the_daemon() -> None:
+    # `search` is BM25. The daemon has no such tool, and a call that
+    # reached it anyway would come back empty — which reads downstream
+    # as "the corpus has nothing".
+    with pytest.raises(ValueError, match="CLI_ONLY"):
+        await access.daemon_tool("search", {"query": "hooks"})
+
+
+# --- the down path -----------------------------------------------------
+
+
+async def test_a_down_daemon_fails_loudly(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(access, "qmd_daemon_reachable", lambda url, timeout=0.5: False)
+
+    def _no_client(url: str) -> Any:
+        raise AssertionError("a down daemon must not reach the client")
+
+    monkeypatch.setattr(access, "_daemon_client", _no_client)
+
+    with pytest.raises(access.QmdDaemonUnavailable) as e:
+        await access.daemon_tool("query", {"searches": [{"type": "lex", "query": "x"}]})
+
+    # Both halves of the fix are named: the command that starts the
+    # daemon, and the variable that says where it is. `lies mcp up` is
+    # LIES' own MCP server — a different daemon, and following it would
+    # change nothing.
+    assert "lies qmd up" in str(e.value)
+    assert "LIES_QMD_URL" in str(e.value)
+
+
+def test_both_daemon_failures_are_runtime_errors() -> None:
+    # Callers catch one type at the boundary (Task 4's envelope, Task 3's
+    # read path); two unrelated names for one condition is one too many.
+    assert issubclass(access.QmdDaemonUnavailable, RuntimeError)
+    assert issubclass(access.QmdDaemonWedged, RuntimeError)
+
+
+# --- staleness is not an error ----------------------------------------
+
+
+async def test_a_stale_daemon_is_reaped_and_the_call_still_proceeds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reaped: list[bool] = []
+    spawned: list[bool] = []
+    monkeypatch.setattr(access, "qmd_daemon_reachable", lambda url, timeout=0.5: True)
+    monkeypatch.setattr(access, "_is_daemon_stale", lambda: True)
+    monkeypatch.setattr(access, "_reap_qmd_daemon", lambda: reaped.append(True))
+    monkeypatch.setattr(access, "_spawn_qmd_daemon", lambda: spawned.append(True))
+    client = _FakeClient([{"hits": ["served-after-respawn"]}])
+    _use_client(monkeypatch, client)
+
+    result = await access.daemon_tool("query", {"searches": [{"type": "lex", "query": "x"}]})
+
+    assert result == {"hits": ["served-after-respawn"]}
+    assert reaped == [True]
+    assert spawned == [True]
+
+
+# --- the wedged path ---------------------------------------------------
+
+
+async def test_a_wedged_daemon_recycles_then_raises_with_the_log_tail(
+    monkeypatch: pytest.MonkeyPatch,
+    seam: _Recycle,
+) -> None:
+    monkeypatch.setattr(access, "_daemon_log_tail", lambda: "expanding query 3/7")
+    client = _FakeClient([httpx.ReadTimeout("wedged")])
+    _use_client(monkeypatch, client)
+
+    with pytest.raises(access.QmdDaemonWedged) as e:
+        await access.daemon_tool("query", {"searches": [{"type": "lex", "query": "x"}]})
+
+    # The log tail is the evidence. A wedge reported as nothing but a
+    # fired deadline tells the reader only what they already knew.
+    assert e.value.last_output == "expanding query 3/7"
+    assert len(seam.calls) == 1
+    # No transparent retry: a fresh daemon re-wedges on the same payload.
+    assert len(client.calls) == 1
+
+
+async def test_the_wedge_message_names_the_tool(
+    monkeypatch: pytest.MonkeyPatch, seam: _Recycle
+) -> None:
+    monkeypatch.setattr(access, "_daemon_log_tail", lambda: "")
+    _use_client(monkeypatch, _FakeClient([httpx.ReadTimeout("wedged")]))
+
+    with pytest.raises(access.QmdDaemonWedged) as e:
+        await access.daemon_tool("get", {"file": "claude_code/hooks.md"})
+
+    assert "get" in str(e.value)
+
+
+def test_the_wedge_carries_the_tail_of_the_daemons_own_log(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    log = tmp_path / "mcp.log"
+    log.write_text("".join(f"line {i}\n" for i in range(500)))
+
+    monkeypatch.setattr("lies.qmd.lifecycle._logfile", lambda: log)
+    tail = access._daemon_log_tail()
+
+    # Bounded: the log grows for the life of the daemon, and the wedge
+    # exception is a message, not an index export.
+    assert len(tail) < 4000
+    assert tail.endswith("line 499")
+    assert "line 0\n" not in tail
+
+
+def test_a_missing_daemon_log_leaves_the_wedge_without_its_tail(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr("lies.qmd.lifecycle._logfile", lambda: tmp_path / "absent.log")
+
+    # The wedge is still worth reporting; it just arrives without the
+    # evidence, so this must not raise.
+    assert access._daemon_log_tail() == ""
+
+
+async def test_a_wedge_survives_a_recycle_that_never_served(
+    monkeypatch: pytest.MonkeyPatch,
+    seam: _Recycle,
+) -> None:
+    # A failed restart must not replace the diagnosis. The caller
+    # observed a wedge; a `recycle` that never served is a second fact
+    # about it, not a different failure to report.
+    async def _failed_recycle(**_kwargs: Any) -> QmdState:
+        raise QmdRecycleFailed(30.0, QmdState(False, False, None, "stuck"))
+
+    monkeypatch.setattr(access, "recycle_qmd_daemon", _failed_recycle)
+    _use_client(monkeypatch, _FakeClient([httpx.ReadTimeout("wedged")]))
+
+    with pytest.raises(access.QmdDaemonWedged):
+        await access.daemon_tool("query", {"searches": [{"type": "lex", "query": "x"}]})
+
+
+# --- the transport-error path ------------------------------------------
+
+
+async def test_a_transport_error_recycles_and_retries_once(
+    monkeypatch: pytest.MonkeyPatch,
+    seam: _Recycle,
+) -> None:
+    client = _FakeClient([httpx.ConnectError("refused"), {"hits": ["after-retry"]}])
+    _use_client(monkeypatch, client)
+
+    result = await access.daemon_tool("query", {"searches": [{"type": "lex", "query": "x"}]})
+
+    assert result == {"hits": ["after-retry"]}
+    assert len(seam.calls) == 1
+    assert len(client.calls) == 2
+
+
+async def test_a_transport_error_that_survives_a_recycle_raises_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+    seam: _Recycle,
+) -> None:
+    client = _FakeClient([httpx.ConnectError("refused"), httpx.ConnectError("still down")])
+    _use_client(monkeypatch, client)
+
+    with pytest.raises(access.QmdDaemonUnavailable) as e:
+        await access.daemon_tool("query", {"searches": [{"type": "lex", "query": "x"}]})
+
+    # After a recycle the daemon is down, not wedged: the two demand
+    # different responses from the operator.
+    assert "lies qmd up" in str(e.value)
+    assert len(client.calls) == 2  # one retry, never a third attempt
+    assert len(seam.calls) == 1
+
+
+async def test_a_wrapped_connect_timeout_is_recycled_not_leaked_as_a_protocol_error(
+    monkeypatch: pytest.MonkeyPatch,
+    seam: _Recycle,
+) -> None:
+    # fastmcp wraps httpx.ConnectTimeout in an mcp.MCPError. Unwrapped,
+    # it reads as a protocol rejection and the daemon is never restarted.
+    client = _FakeClient(
+        [
+            mcp.MCPError(code=httpx.codes.REQUEST_TIMEOUT, message="Timed out."),
+            {"hits": ["after-retry"]},
+        ]
+    )
+    _use_client(monkeypatch, client)
+
+    result = await access.daemon_tool("query", {"searches": [{"type": "lex", "query": "x"}]})
+
+    assert result == {"hits": ["after-retry"]}
+    assert len(seam.calls) == 1
+
+
+# --- the tool-error path -----------------------------------------------
+
+
+async def test_a_tool_error_result_raises_with_the_daemons_own_text(
+    monkeypatch: pytest.MonkeyPatch,
+    seam: _Recycle,
+) -> None:
+    _use_client(monkeypatch, _FakeClient([_tool_error("no such collection: 'no_such'")]))
+
+    with pytest.raises(RuntimeError) as e:
+        await access.daemon_tool("query", {"searches": [{"type": "lex", "query": "x"}]})
+
+    assert "no such collection: 'no_such'" in str(e.value)
+    # A tool error is neither a wedge nor a transport failure, so it is
+    # never recycled — a restart cannot change the daemon's answer.
+    assert not isinstance(e.value, access.QmdDaemonWedged)
+    assert seam.calls == []
+
+
+async def test_a_protocol_rejection_passes_through_unchanged(
+    monkeypatch: pytest.MonkeyPatch,
+    seam: _Recycle,
+) -> None:
+    err = mcp.MCPError(code=-32602, message="Invalid params")
+    _use_client(monkeypatch, _FakeClient([err]))
+
+    with pytest.raises(mcp.MCPError) as e:
+        await access.daemon_tool("query", {"searches": [{"type": "lex", "query": "x"}]})
+
+    assert e.value is err
+    assert seam.calls == []
+
+
+# --- the cached client -------------------------------------------------
+
+
+async def test_the_client_is_built_once_and_reused_across_calls(
+    monkeypatch: pytest.MonkeyPatch,
+    seam: _Recycle,
+) -> None:
+    built: list[str] = []
+    fake = _FakeClient([{"ok": 1}, {"ok": 2}])
+
+    def _factory(url: str) -> _FakeClient:
+        built.append(url)
+        return fake
+
+    monkeypatch.setattr(access, "fastmcp", SimpleNamespace(Client=_factory))
+    monkeypatch.setattr(access, "get_qmd_url", lambda: "http://127.0.0.1:8181")
+
+    first = await access.daemon_tool("query", {"searches": [{"type": "lex", "query": "x"}]})
+    second = await access.daemon_tool("get", {"file": "a.md"})
+
+    assert (first, second) == ({"ok": 1}, {"ok": 2})
+    assert len(built) == 1, "the daemon's model is warm; the client must be too"
+
+
+async def test_a_changed_daemon_url_rebuilds_the_client(
+    monkeypatch: pytest.MonkeyPatch,
+    seam: _Recycle,
+) -> None:
+    built: list[str] = []
+    monkeypatch.setattr(
+        access,
+        "fastmcp",
+        SimpleNamespace(Client=lambda url: built.append(url) or _FakeClient([{"ok": 1}])),
+    )
+    monkeypatch.setattr(access, "get_qmd_url", lambda: "http://127.0.0.1:8181")
+    await access.daemon_tool("get", {"file": "a.md"})
+
+    monkeypatch.setattr(access, "get_qmd_url", lambda: "http://127.0.0.1:9999")
+    await access.daemon_tool("get", {"file": "a.md"})
+
+    assert len(built) == 2, "a cached client would keep calling the old daemon"
+
+
+# --- the classification ------------------------------------------------
+
+
+def test_a_read_timeout_recycles_and_does_not_retry() -> None:
+    assert access.classify_call_error(httpx.ReadTimeout("x")) == ("recycle-raise", False)
+
+
+def test_a_transport_error_classifies_as_retry() -> None:
+    assert access.classify_call_error(httpx.ConnectError("x")) == ("recycle-retry", True)
+
+
+def test_a_wrapped_connect_timeout_recycles_and_retries_once() -> None:
+    err = mcp.MCPError(code=httpx.codes.REQUEST_TIMEOUT, message="Timed out.")
+    assert access.classify_call_error(err) == ("recycle-retry", True)
+
+
+def test_a_protocol_rejection_is_not_ours_to_recycle() -> None:
+    err = mcp.MCPError(code=-32602, message="Invalid params")
+    assert access.classify_call_error(err) == ("passthrough", False)
+
+
+# --- the taxonomy matches what fastmcp actually raises -----------------
+#
+# The three cases below are transcribed from a probe run against the
+# installed fastmcp 4.0.3 — an in-process `FastMCP` server over HTTP
+# with a tool that sleeps past the client's read timeout, plus a closed
+# port and a socket that accepts and never answers — not from its
+# documentation. They are the whole reason `classify_call_error` checks
+# exception class *names* rather than importing a specific httpx:
+# fastmcp vendors its own httpx as `httpx2`, and `httpx2.ReadTimeout` is
+# not a subclass of `httpx.ReadTimeout`. A taxonomy written against the
+# `httpx` LIES declares matches none of them, and every wedge silently
+# becomes a passthrough — the recycle never runs and the operator is
+# told the daemon rejected the request.
+#
+# Re-derive by probe before changing the matcher; the installed
+# fastmcp's answer is a property of that version, not of the protocol.
+
+
+def test_a_vendored_httpx_read_timeout_is_still_a_wedge() -> None:
+    httpx2 = pytest.importorskip("httpx2")
+    assert access.classify_call_error(httpx2.ReadTimeout("")) == ("recycle-raise", False)
+
+
+def test_a_vendored_httpx_connect_error_is_still_a_transport_error() -> None:
+    httpx2 = pytest.importorskip("httpx2")
+    assert access.classify_call_error(httpx2.ConnectError("")) == ("recycle-retry", True)
+
+
+def test_a_dead_session_wrapped_by_fastmcp_is_classified_through_its_cause() -> None:
+    # What fastmcp 4.0.3 raises for a daemon that is not listening.
+    httpx2 = pytest.importorskip("httpx2")
+    wrapped = RuntimeError("Client failed to connect: All connection attempts failed")
+    wrapped.__cause__ = httpx2.ConnectError("refused")
+
+    assert access.classify_call_error(wrapped) == ("recycle-retry", True)
+
+
+def test_a_wedge_wrapped_by_fastmcp_is_a_wedge_not_a_passthrough() -> None:
+    httpx2 = pytest.importorskip("httpx2")
+    wrapped = RuntimeError("Client failed to connect: ")
+    wrapped.__cause__ = httpx2.ReadTimeout("")
+
+    assert access.classify_call_error(wrapped) == ("recycle-raise", False)
+
+
+def test_a_dead_mcp_session_is_a_wedge() -> None:
+    # mcp.types.CONNECTION_CLOSED: the dispatcher saw the socket go
+    # before the client saw a timeout, and reported it through the
+    # protocol layer instead.
+    err = mcp.MCPError(code=-32000, message="Connection closed")
+    assert access.classify_call_error(err) == ("recycle-raise", False)
+
+
+def test_a_cause_chain_cannot_loop_forever() -> None:
+    # A wrapper that names itself as its own cause would hang the
+    # classification; the chain walk has to be bounded by identity.
+    err = RuntimeError("Client failed to connect: ")
+    err.__cause__ = err
+
+    assert access.classify_call_error(err) == ("passthrough", False)
+
+
+def test_an_httpx_client_factory_nobody_can_call_is_not_a_seam() -> None:
+    # fastmcp invokes the httpx factory with `follow_redirects=`, which
+    # the shipped factory did not accept — so *every* HTTP daemon call,
+    # agent path included, failed at connect with a TypeError before
+    # reaching any of the taxonomy above.
+    import inspect
+
+    from lies.qmd.mcp import _build_qmd_httpx_client
+
+    params = inspect.signature(_build_qmd_httpx_client).parameters
+    assert "follow_redirects" in params or any(
+        p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()
+    ), "fastmcp passes follow_redirects=; the factory must accept it"
