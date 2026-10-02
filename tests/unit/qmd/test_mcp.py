@@ -1,22 +1,20 @@
 """Unit tests for ``lies.qmd.mcp.QmdRecycleToolset``.
 
 Wraps an inner MCPToolset and recycles the qmd daemon on transport-class
-failures. Three failure modes:
-
-- ``httpx.ReadTimeout`` (wedge): recycle + raise ``ModelRetry``; no inner retry.
-- ``httpx.TransportError`` (daemon down / starting): recycle + retry once.
-- ``mcp.MCPError(code=REQUEST_TIMEOUT)`` (fastmcp wraps
-  ``httpx.ConnectTimeout``): recycle + retry once.
+failures. The *classification* of a failure is not tested here — it lives
+in ``lies.qmd.access.classify_call_error`` and is tested in
+``test_access.py``. What is tested here is the agent-path wrapping of it:
+a model has to be told a tool failed (``ModelRetry``) or that it failed
+terminally (``ToolFailed``), and anything the taxonomy does not own
+propagates unchanged.
 
 A recycle itself failing (``QmdRecycleFailed``) surfaces as
 ``ToolFailed("qmd daemon recycled but never served")``.
-
-Other ``mcp.MCPError`` codes (e.g. ``-32602`` Invalid params) pass through
-unchanged — those are protocol-level rejections, not transport failures.
 """
 
 from __future__ import annotations
 
+import json
 from collections.abc import Awaitable, Callable
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -143,6 +141,62 @@ async def test_qmd_recycle_toolset_transport_error_retry_also_fails_raises_tool_
     assert "still unreachable after recycle" in str(excinfo.value)
     recycle_cb.assert_awaited_once()
     assert inner.call_count == 2  # tried twice
+
+
+@pytest.mark.asyncio
+async def test_qmd_recycle_toolset_retry_failing_for_an_unowned_reason_propagates() -> None:
+    """A retry that fails for a reason the taxonomy does not own re-raises.
+
+    The retry's failure is classified, not assumed. A decode error or a
+    malformed result says nothing about the daemon being unreachable,
+    and `ToolFailed("qmd daemon still unreachable after recycle: ...")`
+    would hand the model a reason that is not true. Before the
+    classification was lifted, this exception could not reach the
+    wrapper's except clause at all and propagated for the same reason —
+    so this pins the agent path's behaviour as unchanged.
+    """
+    err = json.JSONDecodeError("Expecting value", "<html>", 0)
+    attempt = {"n": 0}
+
+    async def call_tool() -> None:
+        attempt["n"] += 1
+        if attempt["n"] == 1:
+            raise httpx.TransportError("refused")
+        raise err
+
+    inner = _FakeToolset(call_tool=call_tool)
+    recycle_cb = AsyncMock(return_value=QmdState(True, True, 12, "fresh"))
+    wrapper = QmdRecycleToolset(wrapped=inner, recycle_cb=recycle_cb)
+
+    with pytest.raises(json.JSONDecodeError) as excinfo:
+        await wrapper.call_tool("qmd_query", {}, _dummy_ctx(), _dummy_tool())
+
+    assert excinfo.value is err
+    assert inner.call_count == 2  # the retry still happened
+
+
+@pytest.mark.asyncio
+async def test_qmd_recycle_toolset_retry_that_wedges_reports_timing_out() -> None:
+    """A retry that also times out is a daemon that is up, not answering."""
+    attempt = {"n": 0}
+
+    async def call_tool() -> None:
+        attempt["n"] += 1
+        if attempt["n"] == 1:
+            raise httpx.TransportError("refused")
+        raise httpx.ReadTimeout("wedged again")
+
+    inner = _FakeToolset(call_tool=call_tool)
+    recycle_cb = AsyncMock(return_value=QmdState(True, True, 13, "fresh"))
+    wrapper = QmdRecycleToolset(wrapped=inner, recycle_cb=recycle_cb)
+
+    with pytest.raises(ToolFailed) as excinfo:
+        await wrapper.call_tool("qmd_query", {}, _dummy_ctx(), _dummy_tool())
+
+    # The two wordings this class has always used, chosen by the
+    # retry's own classification rather than by the first failure's.
+    assert "still timing out after recycle" in str(excinfo.value)
+    assert "unreachable" not in str(excinfo.value)
 
 
 @pytest.mark.asyncio

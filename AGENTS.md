@@ -506,6 +506,25 @@ transport serves which operation. Read it before adding any qmd call.
   the same payload. Unreachable recycles and retries once. A
   protocol-level rejection is not a transport failure and re-raises
   unchanged. `classify_call_error` is the only place that decides.
+- **`last_output` is read before the recycle, never after.** qmd
+  truncates `mcp.log` on every daemon start and `recycle_qmd_daemon` is
+  reap+spawn, so a tail read after it describes the *replacement*
+  daemon — exactly the thing the field exists to stop saying. The same
+  applies to a retry that wedges again: the tail there is from the
+  second daemon, which is the right one, because that is the daemon
+  that wedged.
+- **A retry's failure is classified, not assumed.** After a recycle the
+  second failure takes one of three routes: a reason the taxonomy does
+  not own propagates unchanged; a re-wedge raises `QmdDaemonWedged`;
+  only still-unreachable raises `QmdDaemonUnavailable`. Collapsing them
+  tells the operator to start a daemon that is already running. The
+  agent path's `QmdRecycleToolset` does the same on its retry, so a
+  decode error is not reported to the model as *unreachable*.
+- **Deliberate taxonomy gap.** `httpx.HTTPStatusError` (a 5xx from a
+  daemon failing internally) and `httpx.RemoteProtocolError` (a read
+  that died on a broken connection) classify as `"passthrough"` and get
+  no recycle. Both are server-side states rather than reachability
+  states. Recorded at the classifier so it reads as considered.
 - **The taxonomy matches exception class *names*, not httpx types.**
   fastmcp 4 vendors its own httpx as `httpx2`, and `httpx2.ReadTimeout`
   is not a subclass of `httpx.ReadTimeout`; a dead session additionally

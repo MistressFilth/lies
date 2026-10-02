@@ -4,7 +4,7 @@ All notable changes to LIES are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/) adapted for
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.43.1] - 2026-10-01
 
 ### Added
 
@@ -23,8 +23,9 @@ All notable changes to LIES are documented here. The format follows
   naming both `lies qmd up` and `LIES_QMD_URL`; there is no
   availability-based fallback, no degraded tag, and no silently-empty
   result. A wedged one raises the second, carrying `last_output` — the
-  tail of qmd's own daemon log — because a timeout reported as nothing
-  but a fired deadline says only what the caller already knew.
+  tail of qmd's own daemon log, read *before* the recycle so it is the
+  wedged daemon's log and not the replacement's (qmd truncates
+  `mcp.log` on every start).
 
 ### Fixed
 
@@ -42,7 +43,10 @@ All notable changes to LIES are documented here. The format follows
   recycle ever ran. `classify_call_error` now matches both httpx
   generations by exception class name and follows the cause chain
   fastmcp's wrapper documents, and treats a `CONNECTION_CLOSED`
-  `MCPError` as the wedge it is.
+  `MCPError` as the wedge it is. On the agent path the first call is now
+  caught broadly for the same reason; the *retry* still re-raises
+  anything the classifier does not own, so a decode error is no longer
+  reported to the model as the daemon being unreachable.
 - **The daemon read timeout was a second literal.** The HTTP factory
   hardcoded `read=60.0` while the CLI paths read
   `get_qmd_query_timeout()`, so the same retrieval could get two

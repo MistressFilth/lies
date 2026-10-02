@@ -238,14 +238,15 @@ class QmdRecycleToolset(WrapperToolset[Any]):
         try:
             return await self.wrapped.call_tool(name, tool_args, ctx, tool)
         except Exception as e:
-            # Every exception is offered to the classifier and it decides
-            # what is a transport failure. The catch is deliberately
-            # broad because the set of types fastmcp raises for a dead
-            # session is not a stable list — it wraps one of them in a
-            # bare `RuntimeError` — and a narrower catch silently turns
-            # a wedge into a passthrough. `classify_call_error` returns
-            # "passthrough" for anything it does not own, which
-            # re-raises unchanged.
+            # This catch is deliberately broad, and is the one place the
+            # agent path widens: fastmcp 4 presents a dead session as a
+            # bare `RuntimeError` with the transport error on
+            # `__cause__`, so a `(httpx.TransportError, mcp.MCPError)`
+            # catch would never see the failure the taxonomy exists to
+            # classify. `classify_call_error` returns "passthrough" for
+            # anything it does not own, and that re-raises unchanged —
+            # so the observable behaviour for every non-transport error
+            # is identical to before.
             action, retryable = classify_call_error(e)
             if action == "passthrough":
                 raise
@@ -257,7 +258,20 @@ class QmdRecycleToolset(WrapperToolset[Any]):
             try:
                 return await self.wrapped.call_tool(name, tool_args, ctx, tool)
             except Exception as e2:
-                raise ToolFailed(f"qmd daemon still unreachable after recycle: {e2}") from e2
+                # The retry's failure is classified, not assumed. A
+                # second failure the taxonomy does not own — a decode
+                # error, a malformed result — propagates rather than
+                # becoming a `ToolFailed` claiming the daemon is
+                # unreachable, which it was not. The two wordings are
+                # the ones this class has always used: a retry that
+                # timed out is a daemon that is up and not answering.
+                retry_action = classify_call_error(e2)[0]
+                if retry_action == "passthrough":
+                    raise
+                still = (
+                    "still timing out" if retry_action == "recycle-raise" else "still unreachable"
+                )
+                raise ToolFailed(f"qmd daemon {still} after recycle: {e2}") from e2
 
     async def _do_recycle(self) -> Any:
         from lies.qmd.daemon import QmdRecycleFailed  # local import to avoid cycle

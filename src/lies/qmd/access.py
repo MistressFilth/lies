@@ -108,6 +108,10 @@ class QmdDaemonWedged(RuntimeError):
     Carries ``last_output`` — the tail of qmd's own log at the moment of
     the wedge. Without it the exception says only that the read deadline
     fired, which tells the reader nothing they did not already know.
+
+    The tail must be captured *before* the recycle. qmd truncates
+    ``mcp.log`` on every daemon start, so a tail read afterwards is the
+    replacement daemon's log, not the one that wedged.
     """
 
     def __init__(self, message: str, *, last_output: str = "") -> None:
@@ -261,6 +265,14 @@ def classify_call_error(exc: Exception) -> tuple[str, bool]:
     retried against a daemon that re-wedges on the same payload. A
     connect timeout is a transport error and not a wedge — that is a
     daemon that was not there yet, not one that stopped answering.
+
+    Deliberate gap: ``httpx.HTTPStatusError`` (a 5xx from a daemon
+    failing internally) and ``httpx.RemoteProtocolError`` (a read that
+    died on a broken connection) classify as ``"passthrough"`` and get
+    no recycle. Both are server-side states rather than reachability
+    states, the design names exactly three failure modes, and a restart
+    is a heavier answer than either warrants. Recorded so a later
+    reader knows the boundary was considered rather than missed.
     """
     if _is_wedge(exc):
         return ("recycle-raise", False)
@@ -328,18 +340,44 @@ async def daemon_tool(name: str, arguments: dict[str, Any]) -> Any:
         action, retryable = classify_call_error(exc)
         if action == "passthrough":
             raise
+        # Read the log BEFORE the recycle. `recycle_qmd_daemon` is
+        # reap+spawn, and qmd truncates mcp.log on every start — so a
+        # tail read after it describes the replacement daemon, which is
+        # the one thing the wedge exception must not report. Capturing
+        # first is the only ordering that puts the wedged daemon's own
+        # last words on the exception.
+        last_output = _daemon_log_tail()
         await _recycle(url)
         if not retryable:
             raise QmdDaemonWedged(
                 f"qmd daemon wedged on call to {name!r}; recycled, but the same "
                 f"payload is not retried against a daemon that re-wedges on it",
-                last_output=_daemon_log_tail(),
+                last_output=last_output,
             ) from exc
         try:
             return await _call(client, name, arguments)
         except Exception as retry_exc:
-            # A recycle that served nothing leaves the daemon down, which
-            # is the down case, not a second wedge.
+            # The retry's failure is classified, not assumed. Three
+            # outcomes, and collapsing them would repeat the mistake
+            # this seam exists to fix — telling the operator something
+            # about the daemon that is not true:
+            #
+            #   passthrough  — a reason we do not own (a malformed
+            #                 result, a decode error). Propagates; it
+            #                 says nothing about reachability.
+            #   recycle-raise — the fresh daemon wedged too. That is a
+            #                 wedge, not a down daemon, and the log tail
+            #                 is still the useful evidence.
+            #   recycle-retry — still unreachable. The only case that is
+            #                 genuinely "start the daemon".
+            retry_action = classify_call_error(retry_exc)[0]
+            if retry_action == "passthrough":
+                raise
+            if retry_action == "recycle-raise":
+                raise QmdDaemonWedged(
+                    f"qmd daemon wedged again on call to {name!r} after a recycle",
+                    last_output=_daemon_log_tail(),
+                ) from retry_exc
             raise QmdDaemonUnavailable(
                 f"qmd daemon still not serving at {url} after a recycle "
                 f"({retry_exc}); start it with 'lies qmd up', or point "

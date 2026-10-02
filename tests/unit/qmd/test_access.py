@@ -20,6 +20,7 @@ Error taxonomy under test:
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -212,6 +213,40 @@ async def test_a_wedged_daemon_recycles_then_raises_with_the_log_tail(
     assert len(client.calls) == 1
 
 
+async def test_the_wedge_carries_the_log_as_it_was_before_the_recycle(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The tail must be read before the recycle, not after.
+
+    `recycle_qmd_daemon` is reap+spawn, and qmd truncates `mcp.log` on
+    every start — so a tail read after the recycle describes the
+    *replacement* daemon. This test's stub does exactly what qmd does:
+    it truncates the log when the recycle runs. Asserting against a
+    constant stub (as the test above does) pins the wiring but not the
+    ordering, and passes on either order; replacing the file is the only
+    shape that fails when the read moves after the recycle.
+    """
+    log = tmp_path / "mcp.log"
+    log.write_text("expanding query 3/7\n")
+
+    async def _recycle_that_truncates(**_kwargs: Any) -> QmdState:
+        log.write_text("")  # qmd truncates mcp.log on every daemon start
+        return QmdState(installed=True, running=True, pid=4242, detail="fresh")
+
+    monkeypatch.setattr(access, "qmd_daemon_reachable", lambda url, timeout=0.5: True)
+    monkeypatch.setattr(access, "_is_daemon_stale", lambda: False)
+    monkeypatch.setattr(access, "_daemon_log_tail", lambda: log.read_text().strip())
+    monkeypatch.setattr(access, "recycle_qmd_daemon", _recycle_that_truncates)
+    _use_client(monkeypatch, _FakeClient([httpx.ReadTimeout("wedged")]))
+
+    with pytest.raises(access.QmdDaemonWedged) as e:
+        await access.daemon_tool("query", {"searches": [{"type": "lex", "query": "x"}]})
+
+    assert e.value.last_output == "expanding query 3/7"
+    assert log.read_text() == "", "the stub did not model qmd's truncation"
+
+
 async def test_the_wedge_message_names_the_tool(
     monkeypatch: pytest.MonkeyPatch, seam: _Recycle
 ) -> None:
@@ -301,6 +336,40 @@ async def test_a_transport_error_that_survives_a_recycle_raises_unavailable(
     assert len(seam.calls) == 1
 
 
+async def test_a_retry_failing_for_an_unowned_reason_propagates_unchanged(
+    monkeypatch: pytest.MonkeyPatch,
+    seam: _Recycle,
+) -> None:
+    # A decode error on the retry says nothing about the daemon's
+    # reachability. Wrapping it in QmdDaemonUnavailable would assert
+    # "not serving" about a daemon that was serving.
+    err = json.JSONDecodeError("Expecting value", "<html>", 0)
+    client = _FakeClient([httpx.ConnectError("refused"), err])
+    _use_client(monkeypatch, client)
+
+    with pytest.raises(json.JSONDecodeError) as e:
+        await access.daemon_tool("query", {"searches": [{"type": "lex", "query": "x"}]})
+
+    assert e.value is err
+    assert len(client.calls) == 2  # the retry still happened
+
+
+async def test_a_retry_that_wedges_reports_a_wedge_not_a_down_daemon(
+    monkeypatch: pytest.MonkeyPatch,
+    seam: _Recycle,
+) -> None:
+    monkeypatch.setattr(access, "_daemon_log_tail", lambda: "expanding query 1/9")
+    client = _FakeClient([httpx.ConnectError("refused"), httpx.ReadTimeout("wedged again")])
+    _use_client(monkeypatch, client)
+
+    with pytest.raises(access.QmdDaemonWedged) as e:
+        await access.daemon_tool("query", {"searches": [{"type": "lex", "query": "x"}]})
+
+    # A daemon that answers the connection and then stalls is wedged
+    # again, not down — and the log tail is still the useful evidence.
+    assert e.value.last_output == "expanding query 1/9"
+
+
 async def test_a_wrapped_connect_timeout_is_recycled_not_leaked_as_a_protocol_error(
     monkeypatch: pytest.MonkeyPatch,
     seam: _Recycle,
@@ -328,12 +397,12 @@ async def test_a_tool_error_result_raises_with_the_daemons_own_text(
     monkeypatch: pytest.MonkeyPatch,
     seam: _Recycle,
 ) -> None:
-    _use_client(monkeypatch, _FakeClient([_tool_error("no such collection: 'no_such'")]))
+    _use_client(monkeypatch, _FakeClient([_tool_error("query failed: index not loaded")]))
 
     with pytest.raises(RuntimeError) as e:
         await access.daemon_tool("query", {"searches": [{"type": "lex", "query": "x"}]})
 
-    assert "no such collection: 'no_such'" in str(e.value)
+    assert "query failed: index not loaded" in str(e.value)
     # A tool error is neither a wedge nor a transport failure, so it is
     # never recycled — a restart cannot change the daemon's answer.
     assert not isinstance(e.value, access.QmdDaemonWedged)
