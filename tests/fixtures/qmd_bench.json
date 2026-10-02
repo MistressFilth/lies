@@ -1,0 +1,266 @@
+{
+  "description": "Known-answer benchmark for the LIES qmd read surface. Twelve-plus queries spanning five collections, two of them multi-collection and one a deliberate paraphrase. Regenerate with tools/qmd_bench_fixture.py; every expected path is verified against the live index, never guessed.",
+  "version": 1,
+  "queries": [
+    {
+      "id": "cc-hooks-pretooluse",
+      "query": "PreToolUse hook matcher settings",
+      "type": "exact",
+      "description": "Hook event names and matcher regex in the hooks config.",
+      "expected": "qmd://claude_code/hooks.md",
+      "expected_files": [
+        "qmd://claude_code/hooks.md"
+      ],
+      "expected_in_top_k": 1,
+      "collections": [
+        "claude_code"
+      ]
+    },
+    {
+      "id": "cc-sandbox-rules",
+      "query": "sandbox permission deny allow rules",
+      "type": "exact",
+      "description": "Filesystem and network allow/deny rules for the sandbox.",
+      "expected": "qmd://claude_code/sandboxing.md",
+      "expected_files": [
+        "qmd://claude_code/sandboxing.md"
+      ],
+      "expected_in_top_k": 1,
+      "collections": [
+        "claude_code"
+      ]
+    },
+    {
+      "id": "cc-subagents",
+      "query": "subagents Task tool parallel delegation",
+      "type": "exact",
+      "description": "Running a delegated subagent and collecting its result.",
+      "expected": "qmd://claude_code/sub-agents.md",
+      "expected_files": [
+        "qmd://claude_code/sub-agents.md"
+      ],
+      "expected_in_top_k": 1,
+      "collections": [
+        "claude_code"
+      ]
+    },
+    {
+      "id": "cc-agent-teams",
+      "query": "agent teams coordinated parallel teammates",
+      "type": "topical",
+      "description": "Multi-agent team layout, distinct from plain subagents.",
+      "expected": "qmd://claude_code/agent-teams.md",
+      "expected_files": [
+        "qmd://claude_code/agent-teams.md"
+      ],
+      "expected_in_top_k": 1,
+      "collections": [
+        "claude_code"
+      ]
+    },
+    {
+      "id": "cc-context-window-paraphrase",
+      "query": "the conversation keeps growing until it no longer fits; what happens then?",
+      "type": "semantic",
+      "description": "Paraphrase case: the wording shares no vocabulary with the document (no 'context', 'window', or 'compact'). Neither BM25 nor the reranked pipeline matches it; only the vector and hybrid backends do, which is what makes the hyde / paraphrase-count question measurable.",
+      "expected": "qmd://claude_code/context-window.md",
+      "expected_files": [
+        "qmd://claude_code/context-window.md"
+      ],
+      "expected_in_top_k": 1,
+      "collections": [
+        "claude_code"
+      ],
+      "paraphrase": true
+    },
+    {
+      "id": "mm-sequence-diagram",
+      "query": "sequence diagram actor activation",
+      "type": "exact",
+      "description": "Sequence diagram syntax: participants, messages, activation.",
+      "expected": "qmd://mermaid/packages/mermaid/src/docs/syntax/sequencediagram.md",
+      "expected_files": [
+        "qmd://mermaid/packages/mermaid/src/docs/syntax/sequencediagram.md"
+      ],
+      "expected_in_top_k": 1,
+      "collections": [
+        "mermaid"
+      ]
+    },
+    {
+      "id": "mm-gantt",
+      "query": "gantt chart dateFormat excludes",
+      "type": "exact",
+      "description": "Gantt chart sections, dateFormat, and excludes.",
+      "expected": "qmd://mermaid/packages/mermaid/src/docs/syntax/gantt.md",
+      "expected_files": [
+        "qmd://mermaid/packages/mermaid/src/docs/syntax/gantt.md"
+      ],
+      "expected_in_top_k": 1,
+      "collections": [
+        "mermaid"
+      ]
+    },
+    {
+      "id": "mm-flowchart",
+      "query": "flowchart subgraph direction",
+      "type": "exact",
+      "description": "Flowchart node shapes, subgraphs, and edge direction.",
+      "expected": "qmd://mermaid/packages/mermaid/src/docs/syntax/flowchart.md",
+      "expected_files": [
+        "qmd://mermaid/packages/mermaid/src/docs/syntax/flowchart.md"
+      ],
+      "expected_in_top_k": 1,
+      "collections": [
+        "mermaid"
+      ]
+    },
+    {
+      "id": "mm-class-diagram",
+      "query": "classDiagram class relation",
+      "type": "exact",
+      "description": "Class diagram relations and cardinality markers.",
+      "expected": "qmd://mermaid/packages/mermaid/src/docs/syntax/classdiagram.md",
+      "expected_files": [
+        "qmd://mermaid/packages/mermaid/src/docs/syntax/classdiagram.md"
+      ],
+      "expected_in_top_k": 1,
+      "collections": [
+        "mermaid"
+      ]
+    },
+    {
+      "id": "fm-tool-output-schema",
+      "query": "tool output schema",
+      "type": "exact",
+      "description": "Declaring tools and their structured output schema.",
+      "expected": "qmd://fastmcp/servers/tools.md",
+      "expected_files": [
+        "qmd://fastmcp/servers/tools.md"
+      ],
+      "expected_in_top_k": 1,
+      "collections": [
+        "fastmcp"
+      ]
+    },
+    {
+      "id": "fm-server-context",
+      "query": "auth middleware dependency injection",
+      "type": "topical",
+      "description": "Server context, dependency injection, and middleware.",
+      "expected": "qmd://fastmcp/servers/context.md",
+      "expected_files": [
+        "qmd://fastmcp/servers/context.md"
+      ],
+      "expected_in_top_k": 1,
+      "collections": [
+        "fastmcp"
+      ]
+    },
+    {
+      "id": "ty-parameters",
+      "query": "command line parameter types",
+      "type": "semantic",
+      "description": "typer parameters. Rank 1 under BM25 scoped to typer, but falls out of the unscoped BM25 top 10 that qmd bench uses (ftsLimit = limit when no collection filter is set), so only the vector/hybrid backends match it. Retained because a collection-scoped keyword search that the unscoped one loses is exactly the behaviour the routing change touches.",
+      "expected": "qmd://typer/parameters.md",
+      "expected_files": [
+        "qmd://typer/parameters.md"
+      ],
+      "expected_in_top_k": 1,
+      "collections": [
+        "typer"
+      ]
+    },
+    {
+      "id": "ty-file-objects",
+      "query": "file-like object types",
+      "type": "exact",
+      "description": "typer's FileText / FileBinaryRead family. Reachable by all four backends.",
+      "expected": "qmd://typer/file-objects.md",
+      "expected_files": [
+        "qmd://typer/file-objects.md"
+      ],
+      "expected_in_top_k": 1,
+      "collections": [
+        "typer"
+      ]
+    },
+    {
+      "id": "mc-shell-permissions",
+      "query": "ask before running shell commands allow block ordered rules",
+      "type": "cross-domain",
+      "description": "Multi-collection: both corpora document ordered shell-permission rules (claude_code/permissions.md and opencode/v2/docs/permissions.md both match this query). Scoping to one collection starves the other.",
+      "expected": "qmd://opencode/v2/docs/permissions.md",
+      "expected_files": [
+        "qmd://opencode/v2/docs/permissions.md"
+      ],
+      "expected_in_top_k": 1,
+      "collections": [
+        "claude_code",
+        "opencode"
+      ]
+    },
+    {
+      "id": "mc-custom-commands",
+      "query": "define a custom command that expands to a prompt",
+      "type": "cross-domain",
+      "description": "Multi-collection: user-defined slash commands in both corpora.",
+      "expected": "qmd://opencode/v2/docs/commands.md",
+      "expected_files": [
+        "qmd://opencode/v2/docs/commands.md"
+      ],
+      "expected_in_top_k": 1,
+      "collections": [
+        "claude_code",
+        "opencode"
+      ]
+    }
+  ],
+  "baseline": {
+    "recorded_from": "/home/divinefilth/code/github/MistressFilth/lies/qmd-timeout-classification/tests/fixtures/qmd_bench.json",
+    "qmd_version": "qmd 2.5.3",
+    "note": "Gate on precision/recall/MRR/F1. avg_latency_ms is not comparable across runs.",
+    "summary": {
+      "bm25": {
+        "avg_precision": 0.7333333333333333,
+        "avg_recall": 0.8666666666666667,
+        "avg_recall_at_1": 0.7333333333333333,
+        "avg_recall_at_3": 0.7333333333333333,
+        "avg_recall_at_5": 0.7333333333333333,
+        "avg_mrr": 0.7502645502645502,
+        "avg_f1": 0.7333333333333333,
+        "avg_latency_ms": 18.2
+      },
+      "vector": {
+        "avg_precision": 0.4666666666666667,
+        "avg_recall": 1,
+        "avg_recall_at_1": 0.4666666666666667,
+        "avg_recall_at_3": 0.8,
+        "avg_recall_at_5": 0.9333333333333333,
+        "avg_mrr": 0.6522222222222223,
+        "avg_f1": 0.4666666666666667,
+        "avg_latency_ms": 568.4666666666667
+      },
+      "hybrid": {
+        "avg_precision": 0.6666666666666666,
+        "avg_recall": 1,
+        "avg_recall_at_1": 0.6666666666666666,
+        "avg_recall_at_3": 0.8666666666666667,
+        "avg_recall_at_5": 0.9333333333333333,
+        "avg_mrr": 0.7833333333333333,
+        "avg_f1": 0.6666666666666666,
+        "avg_latency_ms": 1151.9333333333334
+      },
+      "full": {
+        "avg_precision": 0.6666666666666666,
+        "avg_recall": 0.9333333333333333,
+        "avg_recall_at_1": 0.6666666666666666,
+        "avg_recall_at_3": 0.8666666666666667,
+        "avg_recall_at_5": 0.8666666666666667,
+        "avg_mrr": 0.762962962962963,
+        "avg_f1": 0.6666666666666666,
+        "avg_latency_ms": 1574.6
+      }
+    }
+  }
+}
