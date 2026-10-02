@@ -420,6 +420,15 @@ async def test_each_wedge_carries_the_log_of_the_daemon_that_actually_wedged(
     one, which is the direction this field exists to prevent — so the
     test asserts which daemon's words arrived, not merely that some
     text did.
+
+    The `seam` parameter is load-bearing even though its recorder goes
+    unused: the test replaces the recycle because it has to control
+    *when* the log is truncated, not *what* the recycle does, and the
+    fixture is what stubs the daemon probe, the staleness check, and
+    `_recycle_data_dir`. Drop it as vestigial and `read_sidecar_data_dir`
+    runs unstubbed, reaching `library_git_root()` → `Library.open()`
+    against the real filesystem — contained today only by the autouse
+    XDG isolation in `tests/conftest.py`.
     """
     log = tmp_path / "mcp.log"
     log.write_text("D1: expanding query 3/7")
