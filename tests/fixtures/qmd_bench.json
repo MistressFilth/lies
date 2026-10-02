@@ -218,9 +218,9 @@
   ],
   "baseline": {
     "qmd_bench": {
-      "recorded_from": "/home/divinefilth/code/github/MistressFilth/lies/qmd-timeout-classification/tests/fixtures/qmd_bench.json",
+      "index_path": "/home/divinefilth/.cache/qmd/index.sqlite",
+      "corpus_documents": 5987,
       "qmd_version": "qmd 2.5.3",
-      "note": "Gate on precision/recall/MRR/F1. avg_latency_ms is not comparable across runs.",
       "summary": {
         "bm25": {
           "avg_precision": 0.7333333333333333,
@@ -229,8 +229,7 @@
           "avg_recall_at_3": 0.7333333333333333,
           "avg_recall_at_5": 0.7333333333333333,
           "avg_mrr": 0.7502645502645502,
-          "avg_f1": 0.7333333333333333,
-          "avg_latency_ms": 18.2
+          "avg_f1": 0.7333333333333333
         },
         "vector": {
           "avg_precision": 0.4666666666666667,
@@ -239,8 +238,7 @@
           "avg_recall_at_3": 0.8,
           "avg_recall_at_5": 0.9333333333333333,
           "avg_mrr": 0.6522222222222223,
-          "avg_f1": 0.4666666666666667,
-          "avg_latency_ms": 568.4666666666667
+          "avg_f1": 0.4666666666666667
         },
         "hybrid": {
           "avg_precision": 0.6666666666666666,
@@ -249,8 +247,7 @@
           "avg_recall_at_3": 0.8666666666666667,
           "avg_recall_at_5": 0.9333333333333333,
           "avg_mrr": 0.7833333333333333,
-          "avg_f1": 0.6666666666666666,
-          "avg_latency_ms": 1151.9333333333334
+          "avg_f1": 0.6666666666666666
         },
         "full": {
           "avg_precision": 0.6666666666666666,
@@ -259,11 +256,18 @@
           "avg_recall_at_3": 0.8666666666666667,
           "avg_recall_at_5": 0.8666666666666667,
           "avg_mrr": 0.762962962962963,
-          "avg_f1": 0.6666666666666666,
-          "avg_latency_ms": 1574.6
+          "avg_f1": 0.6666666666666666
         }
-      }
+      },
+      "latency_observed_ms": {
+        "bm25": 18.2,
+        "vector": 568.4666666666667,
+        "hybrid": 1151.9333333333334,
+        "full": 1574.6
+      },
+      "latency_note": "Observed once, at the time of recording. Not a gate: three runs against an unchanged index gave bit-identical quality metrics and 10x-different latency (cold vs warm embedding/reranker models). Compare the quality metrics; ignore this."
     },
-    "lies_gate": null
+    "lies_gate": null,
+    "lies_gate_note": "Not filled by qmd bench. That summary measures qmd's own four backends in-process (no daemon, no per-query collection scope, no LIES ground() fan-out), so no LIES routing change can move it. This slot measures LIES as it actually routes, and is therefore the only place the multi-collection starvation signal can land: the two multi-collection queries below are inert in the qmd_bench numbers, because the harness takes one global -c and never exercises per-query scope. Record here: corpus_documents, qmd_version, method, queries_total, queries_passing."
   }
 }

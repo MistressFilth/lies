@@ -3,8 +3,14 @@
 Not part of the shipped package: this is a maintenance script, and the
 fixture it writes is what ships (to the test suite, not to users).
 
-    uv run python tools/qmd_bench_fixture.py
     uv run python tools/qmd_bench_fixture.py --baseline /tmp/bench.json
+    uv run python tools/qmd_bench_fixture.py --baseline /tmp/bench.json --force
+
+There is deliberately no bare ``uv run python tools/qmd_bench_fixture.py``
+form any more. The primary documented command used to be that one, and
+because an omitted ``--baseline`` yielded ``"baseline": {}`` it quietly
+overwrote the committed fixture's recorded numbers with nothing. Writing
+an empty baseline over a populated one now needs ``--force``.
 
 Every ``expected`` below was verified against the live index before it
 was written down, not guessed. The oracle is ``qmd bench`` itself: it
@@ -37,6 +43,10 @@ retrieval gate that later tasks run against the same file:
 
 ``expected_files`` is kept equal to ``[expected]`` -- one known answer
 per query, so ``precision_at_k`` is not diluted by a filler entry.
+
+``tests/unit/test_bench_fixture.py`` imports this module and asserts the
+committed JSON equals what ``build()`` produces, so a hand-edit to the
+fixture is caught rather than silently reverted by the next run.
 """
 
 from __future__ import annotations
@@ -44,6 +54,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -51,8 +62,9 @@ from typing import Any
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_OUT = REPO_ROOT / "tests" / "fixtures" / "qmd_bench.json"
 
-# The `lies_gate` shape Tasks 4 and 6 fill in. Kept here so the generator
-# and the shape test agree on one list of required keys.
+# The `lies_gate` shape Tasks 4 and 6 fill in. This tuple is the single
+# source of truth: the test module imports it rather than restating it,
+# and `--lies-gate` validates an incoming file against it.
 #
 # It is a *different measurement* from the `qmd bench` summary beside it,
 # and the difference is the reason this slot exists. `qmd bench` opens its
@@ -62,7 +74,27 @@ DEFAULT_OUT = REPO_ROOT / "tests" / "fixtures" / "qmd_bench.json"
 # summary says "qmd's backends can find these answers"; `lies_gate` says
 # "LIES, routed as it now routes, still finds them", and that is the
 # number a routing change can regress.
-LIES_GATE_KEYS = ("recorded_from", "qmd_version", "method", "queries_total", "queries_passing")
+LIES_GATE_KEYS = (
+    "corpus_documents",
+    "qmd_version",
+    "method",
+    "queries_total",
+    "queries_passing",
+)
+
+# Where a Task 4 reader, who sees only the committed JSON and not this
+# source, will find the reason the slot exists. Mirrored into the file.
+LIES_GATE_NOTE = (
+    "Not filled by qmd bench. That summary measures qmd's own four backends "
+    "in-process (no daemon, no per-query collection scope, no LIES ground() "
+    "fan-out), so no LIES routing change can move it. This slot measures LIES "
+    "as it actually routes, and is therefore the only place the "
+    "multi-collection starvation signal can land: the two multi-collection "
+    "queries below are inert in the qmd_bench numbers, because the harness "
+    "takes one global -c and never exercises per-query scope. Record here: "
+    + ", ".join(LIES_GATE_KEYS)
+    + "."
+)
 
 # (id, query, expected, collections, type, description, paraphrase)
 #
@@ -225,6 +257,69 @@ def _entry(spec: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+# The quality metrics that are stable across runs, and the one that is not.
+# `avg_latency_ms` swings ~10x purely on whether the embedding and reranker
+# models are warm, so it is lifted out of `summary` entirely: a task reading
+# `summary[backend]["avg_latency_ms"]` mechanically would otherwise record a
+# "latency regression" that is really a cold cache.
+QUALITY_METRICS = (
+    "avg_precision",
+    "avg_recall",
+    "avg_recall_at_1",
+    "avg_recall_at_3",
+    "avg_recall_at_5",
+    "avg_mrr",
+    "avg_f1",
+)
+
+LATENCY_NOTE = (
+    "Observed once, at the time of recording. Not a gate: three runs against an "
+    "unchanged index gave bit-identical quality metrics and 10x-different "
+    "latency (cold vs warm embedding/reranker models). Compare the quality "
+    "metrics; ignore this."
+)
+
+
+def _index_identity() -> dict[str, Any]:
+    """Corpus and index identity, which is what actually binds a baseline.
+
+    Not the fixture's own path: that is worktree-specific, wrong in every
+    other checkout under the bare-repo+worktree layout, and self-referential.
+    A baseline is only comparable against the same corpus and the same index.
+
+    Read-only `qmd status` (the CLI's own description is "View index +
+    collection health"); it is not one of the index-writing commands.
+    """
+    try:
+        out = subprocess.run(["qmd", "status"], capture_output=True, text=True, timeout=120).stdout
+    except (OSError, subprocess.SubprocessError):
+        return {"index_path": "unknown", "corpus_documents": None}
+
+    index = re.search(r"^\s*Index:\s*(.+)$", out, re.M)
+    total = re.search(r"^\s*Total:\s*(\d+)\s+files indexed", out, re.M)
+    return {
+        "index_path": index.group(1).strip() if index else "unknown",
+        "corpus_documents": int(total.group(1)) if total else None,
+    }
+
+
+def _qmd_bench_block(raw: dict[str, Any]) -> dict[str, Any]:
+    """Turn a `qmd bench --json` result into the recorded ``qmd_bench`` block."""
+    quality: dict[str, dict[str, float]] = {}
+    latency: dict[str, float] = {}
+    for backend, scores in raw["summary"].items():
+        quality[backend] = {k: scores[k] for k in QUALITY_METRICS if k in scores}
+        if "avg_latency_ms" in scores:
+            latency[backend] = scores["avg_latency_ms"]
+    return {
+        **_index_identity(),
+        "qmd_version": _qmd_version(),
+        "summary": quality,
+        "latency_observed_ms": latency,
+        "latency_note": LATENCY_NOTE,
+    }
+
+
 def build(
     baseline: dict[str, Any] | None, lies_gate: dict[str, Any] | None = None
 ) -> dict[str, Any]:
@@ -242,16 +337,11 @@ def build(
         "queries": [_entry(spec) for spec in QUERIES],
         "baseline": {
             "qmd_bench": baseline or {},
-            # The routing gate. `null` until Task 4 / Task 6 run the
-            # LIES-routed equivalent of this known-answer set and record
-            # the comparison. The `qmd_bench` summary beside it measures
-            # qmd's own backends in-process, which no LIES routing change
-            # can move; this slot is the one that can, and it is also the
-            # only place the multi-collection starvation signal lands,
-            # because `qmd bench` has one global -c and so never exercises
-            # per-query collection scope. See LIES_GATE_KEYS in
-            # tools/qmd_bench_fixture.py for the required keys.
             "lies_gate": lies_gate,
+            # The rationale is repeated here, not left in the generator's
+            # source: the reader who needs it in Task 4 is reading this
+            # file, not this module.
+            "lies_gate_note": LIES_GATE_NOTE,
         },
     }
 
@@ -274,23 +364,33 @@ def main() -> int:
         type=Path,
         help="a JSON file holding the recorded LIES-routing gate result (Task 4/6)",
     )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="allow writing an empty baseline over a populated one",
+    )
     args = parser.parse_args()
 
     baseline: dict[str, Any] | None = None
     if args.baseline:
-        raw = json.loads(args.baseline.read_text())
-        baseline = {
-            "recorded_from": raw["fixture"],
-            "qmd_version": _qmd_version(),
-            # Compare the quality metrics only. Two runs of the same fixture
-            # against an unchanged index produced bit-identical precision,
-            # recall, MRR and F1; avg_latency_ms moved from 11666 to 1152
-            # (hybrid) purely because the embedding and reranker models were
-            # warm on the second run. A latency delta here is model-cache
-            # state, not a routing regression.
-            "note": "Gate on precision/recall/MRR/F1. avg_latency_ms is not comparable across runs.",
-            "summary": raw["summary"],
-        }
+        baseline = _qmd_bench_block(json.loads(args.baseline.read_text()))
+
+    # The bare invocation `uv run python tools/qmd_bench_fixture.py` used to
+    # be the documented first form, and it wrote `"baseline": {}` over the
+    # committed numbers. It fails loudly, so it is recoverable, but the
+    # primary documented command should not be the one that destroys the
+    # artifact it regenerates.
+    if baseline is None and args.out.exists():
+        try:
+            existing = json.loads(args.out.read_text()).get("baseline", {})
+        except json.JSONDecodeError:
+            existing = {}
+        if existing.get("qmd_bench") and not args.force:
+            parser.error(
+                f"{args.out} already records a baseline; refusing to overwrite it "
+                f"with an empty one. Pass --baseline <qmd bench --json file>, or "
+                f"--force if you really mean to discard the recorded numbers."
+            )
 
     lies_gate: dict[str, Any] | None = None
     if args.lies_gate:

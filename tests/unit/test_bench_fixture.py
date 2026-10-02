@@ -26,10 +26,18 @@ live collisions exist among the 5987 active documents.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import pathlib
+import re
+import sys
 from typing import Any
+
+import pytest
+
+REPO_ROOT = pathlib.Path(__file__).parents[2]
+GENERATOR_PATH = REPO_ROOT / "tools" / "qmd_bench_fixture.py"
 
 # The committed fixture. `QMD_BENCH_FIXTURE` overrides it, so the same
 # shape tests can be pointed at a candidate fixture in Task 4/6 without
@@ -43,8 +51,21 @@ def fixture_path() -> pathlib.Path:
     return pathlib.Path(os.environ.get("QMD_BENCH_FIXTURE", DEFAULT_FIXTURE))
 
 
-# The default, for callers that want the committed fixture specifically.
-FIXTURE = DEFAULT_FIXTURE
+def generator() -> Any:
+    """Import ``tools/qmd_bench_fixture.py`` as a module.
+
+    ``tools/`` is not a package and is not on ``sys.path``, so it is
+    loaded by path. The generator is imported rather than restated: the
+    query table and the ``lies_gate`` key list are each a single source
+    of truth, and a second transcription of either is how the two drift.
+    """
+    spec = importlib.util.spec_from_file_location("_qmd_bench_fixture", GENERATOR_PATH)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
 
 # The four collections the routing work must cover. `opencode` is required
 # by the multi-collection starvation queries, so it is in the span even
@@ -92,6 +113,67 @@ def test_fixture_path_honors_the_env_override(tmp_path: pathlib.Path, monkeypatc
 def test_fixture_has_ten_or_more_queries() -> None:
     data = _load()
     assert len(data["queries"]) >= 10
+
+
+def test_fixture_meets_the_step_four_minimum() -> None:
+    """The brief's Step 4 asks for 12; the count above is a looser floor.
+
+    Two separate numbers because they are two different claims: "the suite
+    has a known-answer set worth scoring" (>=10) and "the brief's coverage
+    requirement is met" (>=12). Trimming QUERIES to 10 must fail here.
+    """
+    data = _load()
+    assert len(data["queries"]) >= 12, [q["id"] for q in data["queries"]]
+
+
+def test_generator_refuses_to_wipe_a_recorded_baseline(tmp_path: pathlib.Path, monkeypatch) -> None:
+    """The bare generator invocation must not erase the recorded numbers.
+
+    `uv run python tools/qmd_bench_fixture.py` used to be the first
+    documented form, and an omitted `--baseline` meant it wrote
+    `"baseline": {}` over the committed scores. It failed loudly, so it was
+    recoverable, but the primary documented command destroyed the artifact
+    it regenerates. It now refuses unless `--force` is passed.
+    """
+    out = tmp_path / "fixture.json"
+    out.write_text(
+        json.dumps(
+            {
+                "description": "x",
+                "version": 1,
+                "queries": [],
+                "baseline": {"qmd_bench": {"summary": {"bm25": {"avg_recall": 0.5}}}},
+            }
+        )
+    )
+    before = out.read_text()
+
+    monkeypatch.setattr(sys, "argv", ["qmd_bench_fixture.py", "--out", str(out)])
+    with pytest.raises(SystemExit) as exc:
+        generator().main()
+    assert exc.value.code == 2, "a refusal should be argparse's usage error"
+    assert out.read_text() == before, "the fixture must be left untouched"
+
+    # --force is the documented way to discard a recorded baseline.
+    monkeypatch.setattr(sys, "argv", ["qmd_bench_fixture.py", "--out", str(out), "--force"])
+    generator().main()
+    assert json.loads(out.read_text())["baseline"]["qmd_bench"] == {}
+
+
+def test_committed_fixture_matches_the_generator() -> None:
+    """The committed JSON is generated, not hand-maintained.
+
+    A hand-edit correcting a wrong `expected` in the fixture looks like a
+    fix and is silently reverted by the next regeneration. Pinning the
+    committed file to `build()` means the correction has to happen in the
+    generator, where it survives. The baseline half is excluded: it records
+    a measurement of a run, not an input.
+    """
+    committed = _load()
+    rebuilt = generator().build(committed["baseline"].get("qmd_bench") or None)
+    for key in committed:
+        if key != "baseline":
+            assert committed[key] == rebuilt[key], key
 
 
 def test_every_query_declares_its_expected_document() -> None:
@@ -173,15 +255,32 @@ def test_at_least_two_queries_are_multi_collection() -> None:
     assert len(multi) >= 2, [q["id"] for q in data["queries"]]
 
 
+def _content_words(text: str) -> set[str]:
+    return {w for w in re.findall(r"[a-z]+", text.lower()) if len(w) >= 3}
+
+
 def test_at_least_one_query_is_a_paraphrase() -> None:
     """A query whose wording shares no vocabulary with its expected document.
 
-    Without one, the fixture only measures lexical overlap and the
-    `hyde`/paraphrase-count questions are unanswerable.
+    What is actually checked, precisely: for every query flagged
+    `paraphrase`, the query and the *expected document's path* share no
+    content word of three or more letters. The document body is not in this
+    repo, so "shares no vocabulary with the document" cannot be verified
+    here and is not claimed — the path is a proxy that the generator
+    controls, and it is enough to catch the real failure, which is a
+    paraphrase quietly rewritten into a keyword query.
+
+    The `paraphrase` flag on its own would not catch that: the fixture
+    agreeing with itself is not evidence.
     """
     data = _load()
     paraphrase = [q for q in data["queries"] if q.get("paraphrase")]
     assert len(paraphrase) >= 1, [q["id"] for q in data["queries"]]
+    for q in paraphrase:
+        query_words = _content_words(q["query"])
+        path_words = _content_words(q["expected"].rsplit("/", 1)[-1])
+        shared = query_words & path_words
+        assert not shared, (q["id"], sorted(shared))
 
 
 def test_baseline_is_recorded() -> None:
@@ -189,26 +288,89 @@ def test_baseline_is_recorded() -> None:
     data = _load()
     baseline = data["baseline"]
     assert baseline, "baseline is the regression gate; an empty one measures nothing"
-    assert baseline["qmd_bench"]["summary"], baseline
-    for backend, scores in baseline["qmd_bench"]["summary"].items():
+    bench = baseline["qmd_bench"]
+    assert bench["summary"], baseline
+    for backend, scores in bench["summary"].items():
         assert "avg_recall" in scores, backend
         assert 0.0 <= scores["avg_recall"] <= 1.0, (backend, scores)
+
+
+def test_baseline_is_bound_to_a_corpus_and_index() -> None:
+    """A baseline is only comparable against the same corpus and index.
+
+    It used to record the fixture's own absolute path, which is
+    worktree-specific, wrong in every other checkout, and tells the reader
+    nothing about what was measured.
+    """
+    bench = _load()["baseline"]["qmd_bench"]
+    assert isinstance(bench["corpus_documents"], int) and bench["corpus_documents"] > 0
+    assert bench["index_path"].endswith(".sqlite"), bench["index_path"]
+    assert bench["qmd_version"].startswith("qmd "), bench["qmd_version"]
+
+
+def test_latency_is_outside_the_gate_block() -> None:
+    """`avg_latency_ms` swings ~10x on model-cache warmth, so it is not a metric.
+
+    It is lifted out of `summary` rather than annotated in place: a task
+    reading `summary[backend]["avg_latency_ms"]` mechanically would never
+    see a note explaining why the number is noise.
+    """
+    bench = _load()["baseline"]["qmd_bench"]
+    for backend, scores in bench["summary"].items():
+        assert "avg_latency_ms" not in scores, backend
+    assert bench["latency_observed_ms"], "the observation is kept, just not in the gate"
+    assert bench["latency_note"], "and it says why it is not a gate"
+
+
+def _assert_gate_shape(gate: dict[str, Any]) -> None:
+    """The shape `lies_gate` must have once Task 4/6 populate it.
+
+    Reads the key list from the generator rather than restating it, so the
+    two cannot drift into disagreeing about what "valid" means.
+    """
+    for key in generator().LIES_GATE_KEYS:
+        assert key in gate, key
+    assert 0 <= gate["queries_passing"] <= gate["queries_total"], gate
 
 
 def test_lies_gate_slot_is_reserved() -> None:
     """The `lies_gate` slot exists so Task 4/6 have somewhere to record.
 
     It is `null` until they fill it, and the suite stays green while it is.
-    What matters is that the key is reserved and, once populated, carries
-    the documented keys — otherwise the routing comparison lands
-    somewhere unasserted and nothing checks its shape.
+    What is guaranteed today is the slot itself and the rationale beside
+    it, so the routing comparison cannot land somewhere unasserted and
+    undocumented.
     """
     baseline = _load()["baseline"]
     assert "lies_gate" in baseline, "the LIES-routing gate slot must be reserved"
+    assert baseline["lies_gate_note"], "the slot's rationale must be readable from the file"
 
     gate = baseline["lies_gate"]
-    if gate is None:
-        return  # not yet recorded; the slot is what this test guards
-    for key in ("recorded_from", "qmd_version", "method", "queries_total", "queries_passing"):
-        assert key in gate, key
-    assert 0 <= gate["queries_passing"] <= gate["queries_total"], gate
+    if gate is not None:
+        _assert_gate_shape(gate)
+
+
+def test_lies_gate_shape_check_works_today() -> None:
+    """Exercise the shape check against a populated sample.
+
+    The committed value is `null`, so leaving the check inline would mean
+    the first exercise of it is the first real value Task 4 records — a
+    broken check discovered exactly when it matters. It runs here, on a
+    well-formed sample and a malformed one.
+    """
+    sample = {key: None for key in generator().LIES_GATE_KEYS}
+    sample.update(
+        {
+            "corpus_documents": 5987,
+            "qmd_version": "qmd 2.5.3",
+            "method": "lies ground() fan-out over the fixture's collections",
+            "queries_total": 15,
+            "queries_passing": 15,
+        }
+    )
+    _assert_gate_shape(sample)  # a well-formed gate passes
+
+    with pytest.raises(AssertionError):
+        _assert_gate_shape({k: v for k, v in sample.items() if k != "method"})
+    with pytest.raises(AssertionError):
+        _assert_gate_shape({**sample, "queries_passing": 99})
