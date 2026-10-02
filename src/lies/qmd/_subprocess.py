@@ -126,6 +126,40 @@ class QmdWedgeError(subprocess.TimeoutExpired):
         return f"qmd {which} (idle bound {self.idle_timeout:g}s){tail}"
 
 
+def _child_env() -> dict[str, str]:
+    """The environment every qmd subprocess runs with.
+
+    ``NO_COLOR`` is forced on for the child, and that is the whole point
+    of this function.
+
+    qmd renders a spinner — ``⠋ Gathering information`` with cursor
+    escapes — **on stdout**, while gating it on ``process.stderr.isTTY``.
+    LIES always pipes both streams, so the gate is false but the write
+    still happens, and the spinner lands in the middle of the JSON that
+    ``qmd_query`` parses. The result is
+    ``qmd query returned invalid JSON: Expecting value: line 1 column 1
+    (char 0)`` — raised only when the query is slow enough for the
+    spinner to render, which is why it looked intermittent.
+
+    Verified directly against qmd 2.5.3: with the same command and the
+    same fixture, default env puts the spinner on stdout and
+    ``NO_COLOR=1`` puts clean JSON there. The spinner is also suppressed
+    by ``CI=1`` and ``TERM=dumb``, but neither is under LIES' control —
+    the child inherits whatever the operator's shell happens to export.
+
+    Overriding rather than passing ``env=os.environ`` through: an
+    operator who has *already* exported ``NO_COLOR=0`` to re-enable
+    colour in their own terminal must not be able to reintroduce a
+    spinner into a machine-parsed stream.
+
+    Progress on stderr is unaffected — that is the wedge signal
+    :mod:`lies.qmd._subprocess` exists to read, and it stays on.
+    """
+    env = dict(os.environ)
+    env["NO_COLOR"] = "1"
+    return env
+
+
 def _run_qmd(
     args: list[str],
     cwd: Path,
@@ -162,7 +196,7 @@ def _run_qmd(
             stdin=stdin_fd,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            env=None,
+            env=_child_env(),
             text=False,  # bytes mode — caller decodes explicitly
             # ``start_new_session=True`` puts the child (and every
             # descendant it forks, including qmd's node.js grandchild

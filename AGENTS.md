@@ -566,7 +566,34 @@ transport serves which operation. Read it before adding any qmd call.
   comes back 404 — which the taxonomy reads as a transport failure and
   reports as a down daemon, advising the operator to start a daemon
   that is already running. `qmd.lifecycle` always built the URL with
-  the path; the config default had not caught up.
+  the path; the config default had not caught up. The other two
+  spellings of this URL — `QmdCapability.__init__`'s `url` default and
+  `QmdMcpClient.url` — now *source* the constant rather than repeating
+  it, so a fourth spelling cannot appear.
+- **Every qmd subprocess runs with `NO_COLOR=1`.** qmd writes a spinner
+  to **stdout** while gating it on `process.stderr.isTTY`. LIES pipes
+  both streams, so the gate is false but the write still happens, and
+  the spinner lands inside the JSON `qmd_query` parses:
+  `qmd query returned invalid JSON: Expecting value: line 1 column 1`.
+  It fired only on queries slow enough for the spinner to render, which
+  is what made it look intermittent. `_child_env()` in
+  `qmd/_subprocess.py` sets the variable for the child — overriding an
+  operator's exported `NO_COLOR=0`, since a colour setting in the
+  operator's shell must not be able to corrupt a stream LIES parses.
+  Progress on stderr is untouched; that is the wedge signal the
+  subprocess helper exists to read.
+- **The idle bound is right for queries and wrong for `embed`.** The
+  wedge detector fires after 30s of silence, which is exactly right for
+  an interactive query. Embedding is silent for its *whole* duration —
+  `qmd embed` prints a spinner and then nothing while the model loads
+  and runs — so the silence is the operation, not a symptom. Measured:
+  9.4s of unbroken silence for one tiny document on a cold cache, and
+  four collections under host contention crossed 30s and were killed
+  mid-progress. `qmd_embed` therefore passes `idle_timeout=timeout`;
+  `_run` still defaults to `DEFAULT_IDLE_TIMEOUT_S`. When adding a qmd
+  command, ask whether it talks while it works: if it does not, its
+  idle bound has to follow its total bound or it will be killed for
+  making progress.
 
 ## The read tool's bodies (`mcp/read.py`)
 
@@ -591,14 +618,21 @@ properties are load-bearing rather than incidental.
   found: …`, both as TextContent blocks alongside the bodies.
   `_resource_texts` and `_notices` keep them apart, and a result with
   no resource block raises rather than returning `""`.
-- **Who owns the failure decides whether it is skippable.** A document
-  qmd cannot resolve is logged and skipped with its siblings intact. A
-  daemon that is down or wedged re-raises: swallowing it turns a
-  reachable failure into `ToolError("all reads failed")`, a claim about
-  the corpus that is really a claim about the process. Extraction sits
-  *outside* the skippable `try` for the same reason — a successful call
-  whose result has no body is a defect in the answer, and skipping it
-  would return a partial batch whose missing half is invisible.
+- **Who owns the failure decides whether it is skippable.** A daemon
+  that is down or wedged re-raises: swallowing it turns a reachable
+  failure into `ToolError("all reads failed")`, a claim about the corpus
+  that is really a claim about the process.
+- **Both spellings of "no body for this path" are skipped together.**
+  qmd says it two ways — the call raises (`Document not found`), or the
+  call succeeds and returns only notice blocks. An earlier version
+  treated the second as fatal and ran extraction *outside* the
+  per-path `try`; because the exception propagated, the partially-filled
+  result was discarded, so one anomalous document silently cost the
+  caller every good body in the batch. Do not branch on which channel
+  qmd used: that is an implementation detail of its error signalling,
+  and a batch's outcome must not depend on it. `ToolError("all reads
+  failed")` is the loud failure, raised once, when the batch genuinely
+  produced nothing.
 - **The sync bridge runs its own loop when one is already running.**
   `_read_impl` is sync (the `Tool.from_function` registration and
   `server.py` both assume it) while `daemon_tool` is async.

@@ -56,19 +56,31 @@ def test_a_quote_from_the_live_document_appears_in_the_returned_body() -> None:
 def test_a_large_document_comes_back_whole() -> None:
     """A body far past multi_get's 10KB cap is returned intact.
 
-    ``claude_code/hooks.md`` is ~320KB — well over the cap, and a document
-    ``multi_get`` would skip outright. Two properties are checked at once
-    because either one alone is satisfiable by a broken read: the body has
-    to be large (not a stub, not a truncation notice) and it has to be
-    the same size qmd itself serves.
+    ``claude_code/hooks.md`` is ~320KB — well over the cap, and a
+    document ``multi_get`` would skip outright.
+
+    Asserted as *both ends* rather than a byte count. A floor of
+    ``> 10_000`` alone is satisfied by a truncated read, and a floor of
+    ``> 300_000`` (the document's size today) fails the moment anyone
+    edits or splits ``hooks.md``, for a reason that has nothing to do
+    with truncation. So: a modest floor proving the body is past the
+    cap, plus the document's own last section, which is only present if
+    the tail actually arrived.
     """
     from lies.mcp.read import read
 
     body = read.fn(paths=["claude_code/hooks.md"])["claude_code/hooks.md"]
 
-    assert len(body) > 300_000, f"expected the full ~320KB document, got {len(body)} chars"
+    assert len(body) > 10_000, f"body must clear multi_get's 10KB cap; got {len(body)} chars"
     assert LIVE_QUOTE in body
     assert not _NUMBERED_LINE.search(body)
+    # The final section of the live document. Proves the tail arrived,
+    # which is what truncation would remove.
+    assert "## Debug hooks" in body, "the document's last section is missing; body was truncated"
+    non_empty = [line for line in body.splitlines() if line.strip()]
+    assert non_empty[-1].startswith("For troubleshooting common issues"), (
+        f"expected the document's closing prose; got {non_empty[-1][:80]!r}"
+    )
 
 
 def test_a_second_document_needs_no_special_handling() -> None:

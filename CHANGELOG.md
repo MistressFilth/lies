@@ -4,7 +4,7 @@ All notable changes to LIES are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/) adapted for
 [Semantic Versioning](https://semver.org/).
 
-## [0.43.2] - 2026-10-01
+## [0.43.3] - 2026-10-01
 
 ### Fixed
 
@@ -35,6 +35,55 @@ All notable changes to LIES are documented here. The format follows
   at the default reached a live daemon, got a 404, and was classified
   and reported as a *down* daemon — with "start it with `lies qmd up`"
   as the advice, for a daemon that was already running.
+- **One bad page discarded every good body in a `read` batch.** When the
+  daemon answered a request with notices but no document block, the
+  extraction ran *outside* the per-path `try`; the exception propagated
+  and the partially-filled result was lost, so a single anomalous
+  document silently cost the caller every other body it had asked for.
+  Both spellings of "no body for this path" — the call raised, or the
+  call succeeded with nothing usable — are now treated identically:
+  logged, skipped, siblings intact. Which channel qmd picks is an
+  implementation detail of its error signalling, and a batch's outcome
+  must not depend on it. `ToolError("all reads failed")` remains the
+  loud failure, raised once when the batch genuinely produced nothing.
+- **`qmd query --json` returned unparsable output.** qmd renders a
+  spinner (`⠋ Gathering information` plus cursor escapes) on
+  **stdout** while gating it on `process.stderr.isTTY`. LIES pipes both
+  streams, so the gate is false but the write still happens, and the
+  spinner landed inside the JSON — surfacing as
+  `qmd query returned invalid JSON: Expecting value: line 1 column 1
+  (char 0)`. It reproduced only on queries slow enough for the spinner
+  to render, which is why it looked intermittent. Every qmd subprocess
+  now runs with `NO_COLOR=1`, which suppresses the spinner; progress on
+  stderr — the wedge signal the subprocess helper exists to read — is
+  unaffected.
+- **`fastmcp>=2.0` advertised compatibility the code does not have.**
+  `Client.call_tool(..., raise_on_error=False)` is keyword-only on
+  FastMCP 4 and absent on 2.x, and the access seam calls it on every
+  daemon call, so a 2.x install would die with a `TypeError` at the
+  first call rather than at install time. The floor is now `>=4.0`.
+- **`qmd embed` was killed as a wedge while it was working.** The wedge
+  detector fires after 30s of silence, which is a good default for an
+  interactive query — but embedding is silent for its *entire*
+  duration: `qmd embed` prints a spinner and then says nothing while the
+  model loads and runs. Measured on a cold cache, one tiny document
+  takes 9.4s of unbroken silence, and four collections under host
+  contention crossed the bound and were killed mid-progress. `qmd_embed`
+  now raises the idle bound to the caller's `timeout`, which is already
+  their statement about how long the work may take. Retrieval commands
+  keep the 30s default: a query silent for 30s genuinely is wedged.
+
+### Changed
+
+- **Both qmd URL defaults now source `config.DEFAULT_QMD_URL`.** The
+  same bare-origin `http://127.0.0.1:8181` was written out three times,
+  and only the config one was corrected. The two class defaults are not
+  reachable today — the sole production construction site
+  (`orchestrator.py`) passes `get_qmd_url()` explicitly, and
+  `QmdMcpClient` has no production construction site at all — so nothing
+  was broken by them; but any future caller omitting `url=` would have
+  reproduced the 404-as-down-daemon misdiagnosis. Sourcing the constant
+  closes the class rather than the three instances.
 
 ## [0.43.1] - 2026-10-01
 

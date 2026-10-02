@@ -43,6 +43,8 @@ from fastmcp.client.transports import StreamableHttpTransport
 from pydantic_ai import ModelRetry, ToolFailed
 from pydantic_ai.toolsets import WrapperToolset
 
+from lies.config import DEFAULT_QMD_URL
+
 try:
     from pydantic_ai.mcp import MCPToolset  # type: ignore[import-not-found]
 except ImportError:  # pragma: no cover — pydantic_ai[mcp] is a runtime extra
@@ -152,11 +154,15 @@ class QmdMcpClient:
         transport: Either "stdio" (default; spawns `qmd` as an MCP server)
             or "http" (connects to a running `qmd mcp --http` server).
         url: Required when transport is "http". Defaults to
-            "http://localhost:8181".
+            ``config.DEFAULT_QMD_URL``, which carries the ``/mcp`` path
+            qmd's HTTP server serves. A bare origin 404s, and that 404 is
+            classified as an unreachable daemon. Sourced from the one
+            config constant rather than spelled out so a fourth spelling
+            of this URL cannot reappear here.
     """
 
     transport: str = "stdio"
-    url: str = "http://localhost:8181"
+    url: str = DEFAULT_QMD_URL
 
     def as_capability(self) -> Any:
         """Return a pydantic-ai capability that exposes qmd's MCP tools.

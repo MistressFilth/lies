@@ -290,34 +290,137 @@ def test_multi_get_resource_blocks_and_notice_blocks_are_distinguished() -> None
     assert all("SKIPPED" in n or "not found" in n for n in _notices(result))
 
 
-def test_a_result_with_no_resource_block_is_not_an_empty_body(
+def test_read_takes_the_body_from_a_mixed_result_and_drops_the_notice(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Notices alone raise; they never become a ``""`` body.
+    """The same discrimination, exercised through ``read`` rather than the helpers.
 
-    The 10KB-cap skip is the case this exists for: a caller that reads text
-    blocks instead of resource blocks sees nothing for a 315KB document and
-    concludes the document is empty.
+    ``test_multi_get_resource_blocks_and_notice_blocks_are_distinguished``
+    calls the two private helpers directly, so nothing stopped a future
+    ``read`` from bypassing them and concatenating every block's text —
+    which is the exact defect the helpers exist to prevent. This goes
+    through the public entry point with the mixed shape qmd actually
+    returns, and asserts the notice text never reaches the body.
+    """
+    from lies.mcp.read import read
+
+    notice = (
+        "[SKIPPED: claude_code/hooks.md - File too large (315KB > 10KB). "
+        "Use 'qmd_get' with file=\"claude_code/hooks.md\" to retrieve.]"
+    )
+
+    async def daemon_tool(name: str, arguments: dict[str, Any]) -> _Result:
+        return _Result(
+            content=[
+                _Text(text="Errors:\nFile not found: claude_code/nope-zzz.md"),
+                _Embedded(
+                    resource=_Resource(
+                        uri="qmd://claude_code/claude-tag.md",
+                        text="# Claude Tag\n\nbody that must survive verbatim",
+                    )
+                ),
+                _Text(text=notice),
+            ]
+        )
+
+    monkeypatch.setattr("lies.mcp.read.access", SimpleNamespace(daemon_tool=daemon_tool))
+
+    out = read.fn(paths=["claude_code/claude-tag.md"])
+
+    body = out["claude_code/claude-tag.md"]
+    assert body == "# Claude Tag\n\nbody that must survive verbatim"
+    assert "SKIPPED" not in body, "a notice was stored as the page body"
+    assert "File not found" not in body, "a notice was stored as the page body"
+
+
+def test_a_result_with_no_resource_block_is_skipped_not_stored_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Notice-only results are skipped, and never stored as ``""``.
+
+    The 10KB-cap skip is the case this exists for: a caller that reads
+    text blocks instead of resource blocks sees nothing for a 315KB
+    document and concludes the document is empty.
+
+    Skipped, *not* raised — see
+    ``test_a_notice_only_result_does_not_cancel_siblings_that_succeeded``.
     """
     from lies.mcp.read import read
 
     async def daemon_tool(name: str, arguments: dict[str, Any]) -> _Result:
+        if arguments["file"] == "alpha/ok.md":
+            return _get_result(f"qmd://{arguments['file']}", "<body ok>")
         return _Result(
             content=[_Text(text="[SKIPPED: claude_code/hooks.md - File too large (315KB > 10KB).]")]
         )
 
     monkeypatch.setattr("lies.mcp.read.access", SimpleNamespace(daemon_tool=daemon_tool))
 
-    with pytest.raises(RuntimeError, match="no document body"):
-        read.fn(paths=["claude_code/hooks.md"])
+    out = read.fn(paths=["claude_code/hooks.md", "alpha/ok.md"])
+
+    # The skipped path is absent rather than present-and-empty, and the
+    # sibling that did produce a body survives — which is the whole point:
+    # a notice-only result does not cancel the rest of the batch.
+    assert out == {"alpha/ok.md": "<body ok>"}
+    assert "claude_code/hooks.md" not in out
+
+
+def test_a_notice_only_result_does_not_cancel_siblings_that_succeeded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One empty result must not discard the bodies already collected.
+
+    The defect this pins: extraction sat *outside* the per-path ``try``,
+    so a notice-only result raised after earlier paths had been written
+    into ``out`` — and because the exception propagated, ``out`` was
+    discarded entirely. One anomalous document silently cost the caller
+    every good body in the batch.
+
+    qmd signals "no body for this path" two ways (it raises for a
+    missing document, and returns notices for a skipped one), and which
+    one it uses is an implementation detail of its error signalling. The
+    contract is one contract: per-path failures are skipped, whatever
+    channel they arrive on.
+    """
+    from lies.mcp.read import read
+
+    async def daemon_tool(name: str, arguments: dict[str, Any]) -> _Result:
+        if "notice" in arguments["file"]:
+            return _Result(content=[_Text(text="[SKIPPED: too large]")])
+        if "raises" in arguments["file"]:
+            raise RuntimeError("Document not found")
+        return _get_result(f"qmd://{arguments['file']}", f"<body {arguments['file']}>")
+
+    monkeypatch.setattr("lies.mcp.read.access", SimpleNamespace(daemon_tool=daemon_tool))
+
+    out = read.fn(
+        paths=[
+            "alpha/good.md",
+            "beta/notice-only.md",  # succeeded call, no body
+            "gamma/raises.md",  # failed call
+            "delta/also-good.md",
+        ]
+    )
+
+    assert out == {
+        "alpha/good.md": "<body alpha/good.md>",
+        "delta/also-good.md": "<body delta/also-good.md>",
+    }
+    assert "beta/notice-only.md" not in out
+    assert "gamma/raises.md" not in out
 
 
 def test_a_page_over_the_multi_get_cap_comes_back_whole(monkeypatch: pytest.MonkeyPatch) -> None:
-    """``get`` has no size cap, so a body far past 10KB is returned intact.
+    """``read`` never batches through ``multi_get``.
 
-    ``multi_get`` skips anything over its 10KB default, which is 1854 of the
-    5987 documents in this corpus. ``read`` therefore issues ``get`` per
-    path: one round trip is cheaper than losing a third of the corpus.
+    ``multi_get`` *skips* — does not truncate — any file over its 10KB
+    default, and 1854 of this corpus's 5987 documents are over it, so a
+    batched read would drop nearly a third of what a reader can ask for.
+
+    This unit test only pins the tool choice; the size claim is measured
+    against the live corpus by
+    ``tests/integration/mcp/test_read_daemon.py::test_a_large_document_comes_back_whole``,
+    which reads a 320KB document through the real daemon.
     """
     from lies.mcp.read import read
 
@@ -376,15 +479,18 @@ def test_read_dispatches_mixed_wiki_and_library_paths(monkeypatch: pytest.Monkey
     }
 
 
-def test_read_skips_failed_paths_logs_warning(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A document qmd cannot resolve is logged + dropped; siblings survive."""
+def test_read_skips_failed_paths_and_logs_a_warning(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A document qmd cannot resolve is logged + dropped; siblings survive.
+
+    The ``caplog`` assertion is the point of the test's name. Silently
+    dropping a path is indistinguishable to the caller from the corpus
+    not having it, which is how a retrieval gap becomes an unfalsifiable
+    claim; the log line is what makes the drop visible to an operator.
+    """
     from lies.mcp.read import read
-
-    class _Mem:
-        def read(self, ids: list[str]) -> dict[str, str]:
-            return {pid: f"<wiki {pid}>" for pid in ids}
-
-    monkeypatch.setattr("lies.mcp.read._memory_service", lambda: _Mem())
 
     async def daemon_tool(name: str, arguments: dict[str, Any]) -> _Result:
         if "missing" in arguments["file"]:
@@ -393,9 +499,15 @@ def test_read_skips_failed_paths_logs_warning(monkeypatch: pytest.MonkeyPatch) -
 
     monkeypatch.setattr("lies.mcp.read.access", SimpleNamespace(daemon_tool=daemon_tool))
 
-    out = read.fn(paths=["alpha/ok.md", "alpha/missing.md"])
+    with caplog.at_level("WARNING", logger="lies.mcp.read"):
+        out = read.fn(paths=["alpha/ok.md", "alpha/missing.md"])
+
     assert "alpha/ok.md" in out
     assert "alpha/missing.md" not in out
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert any("alpha/missing.md" in r.getMessage() for r in warnings), (
+        f"the skipped path must be logged; got {[r.getMessage() for r in warnings]}"
+    )
 
 
 def test_read_empty_input_returns_empty_dict() -> None:

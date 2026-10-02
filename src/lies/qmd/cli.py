@@ -18,7 +18,7 @@ from typing import Any
 
 from lies.qmd import _proc
 from lies.qmd._models import ReindexResult
-from lies.qmd._subprocess import _run_qmd
+from lies.qmd._subprocess import DEFAULT_IDLE_TIMEOUT_S, _run_qmd
 from lies.qmd.lock import with_qmd_lock
 
 # Real `qmd query --format json` returns each hit's `file` field as
@@ -76,7 +76,13 @@ class QmdTimeoutError(QmdCommandError):
         self.stderr = stderr
 
 
-def _run(args: list[str], cwd: Path, timeout: int = 300) -> subprocess.CompletedProcess[Any]:
+def _run(
+    args: list[str],
+    cwd: Path,
+    timeout: int = 300,
+    *,
+    idle_timeout: float | None = None,
+) -> subprocess.CompletedProcess[Any]:
     """Run a qmd command via the deadlock-free :func:`_run_qmd` helper.
 
     Spec A of the qmd-drain plan: every subprocess call in this module
@@ -86,13 +92,34 @@ def _run(args: list[str], cwd: Path, timeout: int = 300) -> subprocess.Completed
     to preserve the prior contract that callers (e.g. ``qmd_status``
     returning the raw stdout text) depend on.
 
+    ``idle_timeout`` overrides the wedge detector's silence bound, which
+    defaults to 30s. It exists because *some* qmd commands are silent
+    for their whole duration and that is not a wedge: ``qmd embed``
+    prints a spinner and then says nothing while the embedding model
+    loads and runs, so the silence is the entire operation. Measured on
+    a cold model cache, one tiny document takes 9.4s of unbroken
+    silence; four collections under host contention crossed 30s and were
+    killed as wedged while making progress.
+
+    The right bound for those is the one the caller already passed as
+    ``timeout`` (600s for embed) — that is the caller's statement about
+    how long the work may take, whereas 30s is a default sized for
+    interactive queries. Retrieval commands leave the default alone: a
+    query that stops emitting for 30s genuinely is wedged, and widening
+    it there would reintroduce the hang the bound exists to prevent.
+
     Raises:
         QmdNotInstalledError: ``qmd`` is not on PATH at exec time.
     """
     if shutil.which("qmd") is None:
         raise QmdNotInstalledError("`qmd` not found on PATH. Install: npm i -g @tobilu/qmd")
     try:
-        result = _run_qmd(["qmd", *args], cwd=cwd, timeout=timeout)
+        result = _run_qmd(
+            ["qmd", *args],
+            cwd=cwd,
+            timeout=timeout,
+            idle_timeout=DEFAULT_IDLE_TIMEOUT_S if idle_timeout is None else idle_timeout,
+        )
     except FileNotFoundError as exc:
         raise QmdNotInstalledError("`qmd` not found on PATH") from exc
     # ``_run_qmd`` returns bytes; convert to str so callers can keep
@@ -260,11 +287,26 @@ def qmd_embed(cwd: Path, collection_name: str, *, timeout: int = 1800) -> None:
     pages). The default was picked to be generous enough for the
     largest realistic wiki without making small syncs feel hung.
 
+    The wedge detector's *idle* bound is raised to match ``timeout``,
+    because embedding is silent for its whole duration and that is not
+    a wedge: ``qmd embed`` prints a spinner and then nothing while the
+    model loads and runs. Measured on a cold cache, a single tiny
+    document takes 9.4s of unbroken silence — inside the 30s default
+    alone, but four collections under host contention crossed it and
+    were killed mid-progress. The caller's ``timeout`` is already their
+    statement about how long this may take; the idle bound now defers
+    to it rather than imposing a second, smaller one.
+
     Raises ``QmdError`` on non-zero exit so the post-commit hook in
     ``etl/stages/write.py`` can wrap the call in try/except and
     surface a stderr warning without rolling back the wiki commit.
     """
-    result = _run(["embed", "-c", collection_name], cwd=cwd, timeout=timeout)
+    result = _run(
+        ["embed", "-c", collection_name],
+        cwd=cwd,
+        timeout=timeout,
+        idle_timeout=float(timeout),
+    )
     if result.returncode != 0:
         raise QmdError(f"qmd embed failed: {result.stderr.strip()}")
 

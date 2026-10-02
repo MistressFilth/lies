@@ -5,6 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import subprocess
+
 import pytest
 
 from lies.qmd import cli as qmd_cli
@@ -21,7 +23,7 @@ def _run_record():
     recorded: list[list[str]] = []
 
     def make(responses):
-        def fake(args, cwd, timeout=300):
+        def fake(args, cwd, timeout=300, *, idle_timeout=None):
             idx = len(recorded)
             recorded.append(list(args))
             if idx >= len(responses):
@@ -189,21 +191,61 @@ def test_qmd_embed_invokes_per_collection_flag(
 def test_qmd_embed_default_timeout_is_thirty_minutes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Default timeout = 1800 s. Override path takes the kwarg value."""
+    """Default timeout = 1800 s. Override path takes the kwarg value.
+
+    The idle bound tracks the total bound rather than staying at the
+    30 s default, because ``qmd embed`` is silent for its entire
+    duration: it prints a spinner and then says nothing while the model
+    loads and runs, so the silence is the operation, not a wedge. A
+    30 s idle bound killed it mid-progress (measured: 9.4 s of unbroken
+    silence for one tiny document on a cold cache; four collections
+    under host contention crossed 30 s). Retrieval commands keep the
+    default — a query silent for 30 s genuinely is wedged.
+    """
     seen_timeouts: list[int] = []
+    seen_idles: list[float | None] = []
     recorded: list[list[str]] = []
 
-    def fake(args, cwd, timeout=300):
+    def fake(args, cwd, timeout=300, *, idle_timeout=None):
         recorded.append(list(args))
         seen_timeouts.append(timeout)
+        seen_idles.append(idle_timeout)
         return _completed(0)
 
     monkeypatch.setattr(qmd_cli, "_run", fake)
     qmd_cli.qmd_embed(tmp_path, "claude_code")
     assert seen_timeouts == [1800]
+    assert seen_idles == [1800.0], "embed's idle bound must follow its total bound"
 
     qmd_cli.qmd_embed(tmp_path, "claude_code", timeout=42)
     assert seen_timeouts == [1800, 42]
+    assert seen_idles == [1800.0, 42.0], "the idle bound must track an overridden timeout too"
+
+
+def test_run_keeps_the_default_idle_bound_for_other_commands(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Commands that are not embed leave the 30 s default in place.
+
+    The companion to the test above: raising embed's idle bound must not
+    silently raise it for everything. ``_run`` passes
+    ``DEFAULT_IDLE_TIMEOUT_S`` when the caller does not override, so a
+    retrieval call keeps the bound that catches a real wedge.
+    """
+    seen: list[float] = []
+
+    def fake(args, cwd, timeout, idle_timeout):
+        seen.append(idle_timeout)
+        # ``_run_qmd`` returns bytes; ``_run`` decodes them.
+        return subprocess.CompletedProcess(args, 0, stdout=b"[]", stderr=b"")
+
+    monkeypatch.setattr(qmd_cli, "_run_qmd", fake)
+    monkeypatch.setattr(qmd_cli.shutil, "which", lambda _name: "/usr/bin/qmd")
+
+    result = qmd_cli._run(["query", "x"], cwd=tmp_path, timeout=60)
+
+    assert seen == [qmd_cli.DEFAULT_IDLE_TIMEOUT_S]
+    assert result.returncode == 0
 
 
 def test_qmd_embed_propagates_qmd_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

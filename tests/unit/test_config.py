@@ -61,5 +61,42 @@ def test_get_qmd_url_default() -> None:
     assert config.get_qmd_url() == "http://127.0.0.1:8181/mcp"
 
 
+def test_every_qmd_url_default_is_sourced_from_the_one_config_constant() -> None:
+    """No module may spell its own bare-origin qmd URL.
+
+    This URL was written out in three places — ``config.DEFAULT_QMD_URL``,
+    ``QmdCapability.__init__``'s ``url`` default, and
+    ``QmdMcpClient.url`` — and only the first was corrected. The two
+    class defaults were unreachable at the time (the sole production
+    construction site, ``orchestrator.py``, passes ``get_qmd_url()``
+    explicitly, and ``QmdMcpClient`` has no production construction site
+    at all), so nothing failed; a future caller that omits ``url=`` would
+    have reproduced the exact 404-as-down-daemon misdiagnosis.
+
+    The fix that closes the class rather than the three instances: both
+    defaults now *source* ``DEFAULT_QMD_URL``. This test asserts the
+    sourcing, so a module that re-spells the literal fails here instead of
+    at runtime against a live daemon.
+    """
+    import inspect
+
+    from lies.qmd.capability import QmdCapability
+    from lies.qmd.mcp import QmdMcpClient
+
+    cap_default = inspect.signature(QmdCapability.__init__).parameters["url"].default
+    assert cap_default == config.DEFAULT_QMD_URL, (
+        f"QmdCapability's url default is {cap_default!r}, not the config constant"
+    )
+    assert QmdMcpClient().url == config.DEFAULT_QMD_URL, (
+        f"QmdMcpClient's url default is {QmdMcpClient().url!r}, not the config constant"
+    )
+
+    # And the shared constant itself must carry the path, since a
+    # sourced default is only as good as its source.
+    assert config.DEFAULT_QMD_URL.endswith("/mcp"), (
+        "qmd serves exactly one route; a bare origin 404s and reads as a down daemon"
+    )
+
+
 def test_get_wiki_root_removed() -> None:
     assert not hasattr(config, "get_wiki_root")

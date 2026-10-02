@@ -193,3 +193,74 @@ def test_run_qmd_long_stderr_kills_grandchild(tmp_path: Path):
     assert probe.returncode != 0 or not probe.stdout.strip(), (
         f"orphan subprocesses still alive after killpg: {probe.stdout!r}"
     )
+
+
+# --- the child environment ----------------------------------------------
+#
+# qmd writes a spinner to *stdout* while gating it on
+# ``process.stderr.isTTY``. LIES pipes both streams, so the gate is false
+# but the write still happens, and the spinner lands inside the JSON that
+# ``qmd_query`` parses. Measured against qmd 2.5.3: the same command
+# emitted ``\x1b[?25l⠋ Gathering information…`` before the JSON by
+# default, and clean JSON under ``NO_COLOR=1``.
+
+
+def test_child_env_forces_no_color(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``NO_COLOR`` is set on every qmd child, so stdout stays machine-parsable."""
+    from lies.qmd._subprocess import _child_env
+
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    assert _child_env()["NO_COLOR"] == "1"
+
+
+def test_child_env_overrides_an_operator_who_re_enabled_color(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An exported ``NO_COLOR=0`` must not reintroduce the spinner.
+
+    The subprocess inherits the operator's shell environment. Someone who
+    deliberately re-enabled colour in their own terminal would otherwise
+    be able to put escape sequences back into a stream LIES parses.
+    """
+    from lies.qmd._subprocess import _child_env
+
+    monkeypatch.setenv("NO_COLOR", "0")
+    assert _child_env()["NO_COLOR"] == "1"
+
+
+def test_child_env_inherits_the_rest_of_the_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only ``NO_COLOR`` is overridden; nothing else is dropped.
+
+    qmd needs the inherited environment for its cache roots
+    (``XDG_CACHE_HOME``), index override (``QMD_INDEX``), embedding
+    parallelism, and credentials. Replacing the environment wholesale
+    would break every one of those.
+    """
+    from lies.qmd._subprocess import _child_env
+
+    monkeypatch.setenv("QMD_INDEX", "/tmp/some-index.sqlite")
+    monkeypatch.setenv("QMD_EMBED_PARALLELISM", "1")
+    env = _child_env()
+    assert env["QMD_INDEX"] == "/tmp/some-index.sqlite"
+    assert env["QMD_EMBED_PARALLELISM"] == "1"
+
+
+def test_run_qmd_passes_the_child_env_to_the_process(tmp_path: Path) -> None:
+    """The override is actually applied, not merely computed.
+
+    A ``_child_env`` that nothing calls would pass the three tests above
+    while changing nothing. This runs a real child through ``_run_qmd``
+    and reads back what it actually received.
+    """
+    import sys
+
+    script = tmp_path / "show_env.py"
+    script.write_text("import os, sys\nsys.stdout.write(os.environ.get('NO_COLOR', '<unset>'))\n")
+
+    result = _run_qmd([sys.executable, str(script)], cwd=tmp_path, timeout=10.0)
+
+    assert result.stdout.decode().strip() == "1", (
+        f"child did not receive NO_COLOR=1; got {result.stdout.decode()!r}"
+    )

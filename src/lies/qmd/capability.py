@@ -29,6 +29,7 @@ import httpx
 import mcp
 from pydantic_ai.capabilities import MCP
 
+from lies.config import DEFAULT_QMD_URL
 from lies.qmd.health import qmd_daemon_reachable
 from lies.qmd.mcp import QmdRecycleToolset, _build_qmd_http_toolset
 
@@ -77,7 +78,16 @@ class QmdCapability:
         wiki: Wiki,
         *,
         transport: str,
-        url: str = "http://127.0.0.1:8181",
+        # Sourced from config rather than spelled out. qmd's HTTP MCP
+        # server serves exactly one route, `/mcp`, so a bare
+        # `http://127.0.0.1:8181` reaches a live daemon and comes back
+        # 404 — which the access seam reads as a transport failure and
+        # reports as a *down* daemon. The only production construction
+        # site (orchestrator.py) passes `url=get_qmd_url()` explicitly,
+        # so this default is a fallback, not a live path; sourcing it
+        # from the one config constant means a bare-origin spelling
+        # cannot reappear here as a fourth copy.
+        url: str = DEFAULT_QMD_URL,
         timeout: float = _DEFAULT_TIMEOUT_S,
     ) -> None:
         if transport not in {"stdio", "http"}:

@@ -28,9 +28,10 @@ the only way the body is read here.
 TextContent blocks: a ``[SKIPPED: …]`` line for a document over its 10KB
 default cap, an ``Errors:`` block for an entry it could not resolve. A
 caller that concatenates every block's text stores the notice as if it
-were the page. :func:`_notices` keeps the two apart, and a ``get`` result
-carrying notices but no resource block raises rather than returning
-``""``.
+were the page. :func:`_resource_texts` and :func:`_notices` keep the two
+apart, and a result carrying notices but no resource block yields *no
+body for that path* — never an empty string, which would reach the
+synthesizer as a page with no content.
 
 Why one ``get`` per path and not one ``multi_get`` per batch: the cap.
 1854 of this corpus's 5987 documents are over ``multi_get``'s 10KB
@@ -38,12 +39,18 @@ default, and they arrive skipped rather than truncated — so batching
 would silently drop nearly a third of what a reader can ask for, while
 costing a round trip we do not need. ``get`` has no size cap.
 
-Failure handling splits by who owns the failure. A document qmd cannot
-resolve is logged and skipped, with its siblings still returned. A daemon
-that is down or wedged is re-raised: the batch would otherwise come back
-empty and surface as ``ToolError("all reads failed")`` — a claim about the
-corpus that is really a claim about the process, reaching a caller as
-"the library has nothing" for a library nobody has read yet.
+Failure handling splits by who owns the failure, and only by that. A
+document qmd cannot produce a body for — because the call raised, or
+because it succeeded with nothing but notices — is logged and skipped
+with its siblings intact. Both spellings of "no body for this path" are
+treated identically on purpose: which one qmd chooses is an
+implementation detail of its error signalling, not a fact about the
+document, and branching on it would make a batch's outcome depend on
+it. A daemon that is down or wedged is the one thing that re-raises.
+When a batch genuinely yields nothing, ``ToolError("all reads failed")``
+is the loud failure — raised once, at the end, rather than as a side
+effect of the first bad page discarding every good body already
+collected.
 
 Known interaction: qmd's ``get`` prefixes ``<!-- Context: … -->`` when the
 document's collection has a context configured. None of the registered
@@ -51,7 +58,11 @@ collections do, so no body carries one today; if that changes, the prefix
 becomes part of the returned body and the citation contract has to be
 re-checked.
 
-Spec: docs/superpowers/specs/2026-09-26-librarian-v040-port-design.md.
+Prior design (pre-daemon dispatch, still describes the tool surface and
+the librarian's role):
+``docs/superpowers/specs/2026-09-26-librarian-v040-port-design.md``.
+Transport and body format are specified by the access seam
+(``src/lies/qmd/access.py``) and this module's own contract above.
 """
 
 from __future__ import annotations
@@ -69,8 +80,8 @@ from lies.qmd.access import QmdDaemonUnavailable, QmdDaemonWedged
 
 log = logging.getLogger(__name__)
 
-#: Failures the daemon owns rather than the document. These re-raise; every
-#: other per-path exception is a statement about one page and is skipped.
+#: Failures the daemon owns rather than the document. These re-raise;
+#: everything else is a statement about one page and is skipped.
 _DAEMON_FAILURES = (QmdDaemonUnavailable, QmdDaemonWedged)
 
 
@@ -142,29 +153,45 @@ def _run_blocking(coro: Any) -> Any:
         return pool.submit(asyncio.run, coro).result()
 
 
-def _daemon_get_result(path: str) -> Any:
-    """One ``CallToolResult`` for ``path`` from the qmd daemon.
+def _daemon_body(path: str) -> str | None:
+    """One verbatim body for ``path``, or ``None`` if qmd produced none.
 
-    Raises ``QmdDaemonUnavailable`` / ``QmdDaemonWedged`` from the seam,
-    which the caller re-raises rather than skipping.
+    ``None`` covers both ways this read can come back empty: the call
+    raised (``Document not found``), and the call succeeded but the
+    result carried only notice blocks. Both are statements about *this
+    document*, and both are reported the same way to the caller — logged
+    and skipped — because the difference between them is an
+    implementation detail of qmd's error signalling that this module
+    does not control. Treating one as fatal and the other as skippable
+    would make a batch's outcome depend on which channel qmd happened to
+    use for the same fact.
+
+    What is *not* skippable is a daemon that is down or wedged; the seam
+    raises those before this function can, and the caller re-raises them.
     """
-    return _run_blocking(access.daemon_tool("get", {"file": path, "lineNumbers": False}))
+    try:
+        result = _run_blocking(access.daemon_tool("get", {"file": path, "lineNumbers": False}))
+    except _DAEMON_FAILURES:
+        # The daemon is not serving, or accepted the call and stopped
+        # answering. Neither is a statement about this document, and
+        # swallowing either turns a reachable failure into "all reads
+        # failed" — a claim about the corpus the operator is the only
+        # person who can correct.
+        raise
+    except Exception as exc:
+        log.warning("read: qmd get(%s) failed: %s", path, exc)
+        return None
 
-
-def _body_from_result(path: str, result: Any) -> str:
-    """The document body out of a qmd ``get`` result.
-
-    Raises when the result carries no resource block. That is not a
-    per-document miss and is not skippable: the call succeeded, so a
-    notice-only answer means the daemon said something this module cannot
-    turn into a page, and returning ``""`` for it would be the silent
-    empty body this branch exists to prevent.
-    """
     bodies = _resource_texts(result)
     if not bodies:
+        # The call succeeded and qmd still gave no document. Never
+        # return "" here: an empty body reaches the synthesizer as a
+        # page with no content, which reads downstream as "this page is
+        # empty" and cites nothing.
         notices = _notices(result)
         detail = f"; qmd said: {' | '.join(notices)}" if notices else ""
-        raise RuntimeError(f"qmd get({path!r}) returned no document body{detail}")
+        log.warning("read: qmd get(%s) returned no document body%s", path, detail)
+        return None
     return "\n".join(bodies)
 
 
@@ -194,26 +221,15 @@ def _read_impl(paths: list[str]) -> dict[str, str]:
         out.update(wiki_out)
 
     for p in library_paths:
-        try:
-            result = _daemon_get_result(p)
-        except _DAEMON_FAILURES:
-            # The daemon is not serving, or accepted the call and stopped
-            # answering. Neither is a statement about this document, and
-            # swallowing either here turns a reachable failure into
-            # "all reads failed" — a claim about the corpus the operator
-            # is the only person who can correct.
-            raise
-        except Exception as exc:
-            # A document qmd cannot resolve is a statement about one
-            # page. Siblings still get returned.
-            log.warning("read: qmd get(%s) failed: %s", p, exc)
-            continue
-        # Deliberately outside the try above. The call succeeded, so a
-        # result with no body is a defect in the answer rather than a
-        # miss, and skipping it would return a partial batch whose
-        # missing half is invisible to the caller.
-        out[p] = _body_from_result(p, result)
+        body = _daemon_body(p)
+        if body is not None:
+            out[p] = body
 
+    # The loud failure, raised once and only when the batch genuinely
+    # produced nothing. Reaching here with an empty `out` means every
+    # requested page failed, which is a different claim from "the caller
+    # asked for one page and we did not have it" — and it is the claim
+    # worth surfacing, since it is the one an operator can act on.
     if paths and not out:
         raise ToolError("all reads failed")
 
