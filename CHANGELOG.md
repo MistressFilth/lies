@@ -4,6 +4,38 @@ All notable changes to LIES are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/) adapted for
 [Semantic Versioning](https://semver.org/).
 
+## [0.43.2] - 2026-10-01
+
+### Fixed
+
+- **`read` returned bodies that could not be quoted.** F19's citation
+  contract is `[[slug]]: "verbatim quote from the cited span"`, and the
+  library branch answered with the CLI's `qmd get` output: every line
+  prefixed `N: `, behind a `qmd://path  #docid` header that
+  `--no-line-numbers` does not remove. The branch now issues the daemon's
+  `get` with `lineNumbers: false`, which is the only source of clean
+  text in qmd, and reads the body from the content block rather than
+  `result.data` — qmd answers with an EmbeddedResource block, so a
+  `.data` read stores `""` for a document with content.
+- **A down daemon was reported as "all reads failed".** The library
+  branch wrapped every call in `except Exception: log.warning(...)` and
+  skipped, so `QmdDaemonUnavailable` was swallowed, every path was
+  skipped, and the batch surfaced as `ToolError("all reads failed")` —
+  a claim about the corpus that is really a claim about the process. A
+  daemon that is down or wedged now re-raises; a document qmd cannot
+  resolve is still logged and skipped with its siblings intact.
+- **`read` raised from inside a running event loop.** The sync tool
+  bridges the async seam, and `asyncio.run` from a thread that already
+  has a loop raises `RuntimeError` — the bug `ground()` shipped with in
+  #106. The bridge now runs the coroutine on its own thread and loop
+  when one is already present.
+- **The default qmd daemon URL 404'd.** `DEFAULT_QMD_URL` was
+  `http://127.0.0.1:8181`; qmd's HTTP MCP server serves exactly one
+  route, `/mcp`, which `qmd.lifecycle` has always included. Every call
+  at the default reached a live daemon, got a 404, and was classified
+  and reported as a *down* daemon — with "start it with `lies qmd up`"
+  as the advice, for a daemon that was already running.
+
 ## [0.43.1] - 2026-10-01
 
 ### Added

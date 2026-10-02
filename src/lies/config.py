@@ -8,7 +8,14 @@ from pathlib import Path
 from lies import xdg
 
 DEFAULT_QMD_TRANSPORT = "http"
-DEFAULT_QMD_URL = "http://127.0.0.1:8181"
+# The path qmd's HTTP MCP server actually serves. qmd listens on exactly
+# one route (`dist/mcp/server.js`: `if (pathname === "/mcp" && …)`), so a
+# URL without it reaches a live daemon and comes back 404 — which the
+# access seam classifies as a transport failure and reports as a *down*
+# daemon, telling the operator to start a daemon that is already running.
+# `qmd.lifecycle` has always built this URL with `/mcp`; this default
+# simply had not caught up.
+DEFAULT_QMD_URL = "http://127.0.0.1:8181/mcp"
 DEFAULT_WIKI_NAME = "default"
 # Per-call deadline for a qmd *retrieval* subprocess. Read at call
 # time, not import time, so a test (or an operator inside one process)

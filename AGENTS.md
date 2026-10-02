@@ -560,6 +560,51 @@ transport serves which operation. Read it before adding any qmd call.
   error** (the CLI exits 1 on the same class), so the `isError` branch
   is for genuine tool errors only — validate scope against the registry
   before dispatching.
+- **The default daemon URL carries `/mcp`.** `DEFAULT_QMD_URL` is
+  `http://127.0.0.1:8181/mcp`, not the bare origin. qmd serves exactly
+  one route, and a URL without the path reaches a *live* daemon and
+  comes back 404 — which the taxonomy reads as a transport failure and
+  reports as a down daemon, advising the operator to start a daemon
+  that is already running. `qmd.lifecycle` always built the URL with
+  the path; the config default had not caught up.
+
+## The read tool's bodies (`mcp/read.py`)
+
+`read` is where F19's citation contract is met or missed, so two of its
+properties are load-bearing rather than incidental.
+
+- **The body is the document and nothing else.** A citation is
+  `[[slug]]: "verbatim quote from the cited span"`, so the library
+  branch issues the daemon's `get` with `lineNumbers: false`. The CLI's
+  `qmd get` cannot supply this: it line-numbers every line by default
+  and `--no-line-numbers` still leaves its `qmd://path  #docid` header.
+- **One `get` per path, never `multi_get` for a batch.** `multi_get`
+  *skips* (does not truncate) any file over its 10KB default, and 1854
+  of this corpus's 5987 documents are over it. A batched read would
+  silently drop nearly a third of what a reader can ask for, and would
+  also collapse on a single unresolvable entry. `get` has no size cap
+  and one failure per call. Measured: a warm `get` is 0.07s against the
+  live daemon, so the round trip batching would save is not worth the
+  corpus it loses.
+- **A notice is not a body.** `multi_get` reports a skipped file as
+  `[SKIPPED: …]` and an unresolvable entry as `Errors:\nFile not
+  found: …`, both as TextContent blocks alongside the bodies.
+  `_resource_texts` and `_notices` keep them apart, and a result with
+  no resource block raises rather than returning `""`.
+- **Who owns the failure decides whether it is skippable.** A document
+  qmd cannot resolve is logged and skipped with its siblings intact. A
+  daemon that is down or wedged re-raises: swallowing it turns a
+  reachable failure into `ToolError("all reads failed")`, a claim about
+  the corpus that is really a claim about the process. Extraction sits
+  *outside* the skippable `try` for the same reason — a successful call
+  whose result has no body is a defect in the answer, and skipping it
+  would return a partial batch whose missing half is invisible.
+- **The sync bridge runs its own loop when one is already running.**
+  `_read_impl` is sync (the `Tool.from_function` registration and
+  `server.py` both assume it) while `daemon_tool` is async.
+  `asyncio.run` from a thread that already has a loop raises
+  `RuntimeError` — the bug `ground()` shipped with in #106 — so that
+  case gets a dedicated thread and its own loop instead of an error.
 
 ## Grounding archivist
 
@@ -639,7 +684,7 @@ grounded in a primary source. Library hits render unprefixed.
 [secondary] [[default/concepts/pydantic]] (Pydantic concept): "..."      # wiki-only (secondary)
 ```
 
-**Read-side dispatch:** `_wiki_read` is source-aware. Wiki page IDs (`page-` + sha1-12) route to `memory_service.read()`. Library paths (`<collection>/<page>`) read from the library's qmd chunks via `qmd_get(library_git_root(), "qmd://<path>")`. Library hits carry `page_id=None` so the calling LLM doesn't try to read them via the wiki service.
+**Read-side dispatch:** the `read` tool is source-aware. Wiki page IDs (`page-` + sha1-12) route to `memory_service.read()`. Library paths (`<collection>/<page>`) route to the qmd daemon's `get` with `lineNumbers: false`, and the body is read from the content block rather than `.data` — see "The read tool's bodies" above. Library hits carry `page_id=None` so the calling LLM doesn't try to read them via the wiki service.
 
 ## Quality gates
 

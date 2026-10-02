@@ -48,7 +48,17 @@ def test_get_qmd_transport_default() -> None:
 
 
 def test_get_qmd_url_default() -> None:
-    assert config.get_qmd_url() == "http://127.0.0.1:8181"
+    """The default URL is the path qmd actually serves.
+
+    qmd's HTTP MCP server listens on exactly one route — ``/mcp``
+    (``dist/mcp/server.js``: ``if (pathname === "/mcp" && …)``), and
+    ``qmd.lifecycle`` has always built ``http://host:port/mcp``. A URL
+    without that path reaches the daemon and comes back 404, which the
+    access seam classifies as a transport failure and reports as a down
+    daemon: a live daemon reported as absent, with the fix ("start it")
+    being the one action that would change nothing.
+    """
+    assert config.get_qmd_url() == "http://127.0.0.1:8181/mcp"
 
 
 def test_get_wiki_root_removed() -> None:

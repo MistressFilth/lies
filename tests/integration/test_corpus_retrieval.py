@@ -40,6 +40,7 @@ integration workflow runs them with that env set.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -336,25 +337,53 @@ def test_ask_includes_librarian_searched_scope(
     )
 
 
-def test_read_dispatches_library_paths_to_qmd(
+def test_read_dispatches_library_paths_to_the_qmd_daemon(
     curated_corpus: object,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """``read(['alpha/cli-plugin.md'])`` returns the page body via ``_qmd_get``.
+    """``read(['alpha/cli-plugin.md'])`` returns the page body via the daemon.
 
     The source-aware dispatch routes library paths (``<collection>/<page>``)
-    to ``qmd_get`` against the library's git root. The stub returns
-    a body containing ``Plugin.define`` (the marker the brief pins).
-    The test does not need real qmd — ``_qmd_get`` is the seam.
+    to the qmd daemon's ``get``. The stub returns a body containing
+    ``Plugin.define`` (the marker the brief pins), wrapped in the content
+    block the daemon really sends — ``data`` is ``None`` and the text is one
+    hop down at ``content[].resource.text``. The test does not need real
+    qmd: ``access.daemon_tool`` is the seam.
     """
+    from dataclasses import dataclass, field
+
     from lies.mcp.read import read
 
-    monkeypatch.setattr(
-        "lies.mcp.read._qmd_get",
-        lambda cwd, qmd_path, timeout=60: (
-            "---\ntitle: CLI plugin overview\n---\n\nThe CLI plugin model uses Plugin.define.\n"
-        ),
-    )
+    @dataclass
+    class _Resource:
+        uri: str
+        text: str
+
+    @dataclass
+    class _Embedded:
+        resource: _Resource
+
+    @dataclass
+    class _Result:
+        content: list = field(default_factory=list)
+        data: None = None
+
+    async def fake_daemon_tool(name: str, arguments: dict) -> _Result:
+        return _Result(
+            content=[
+                _Embedded(
+                    resource=_Resource(
+                        uri=f"qmd://{arguments['file']}",
+                        text=(
+                            "---\ntitle: CLI plugin overview\n---\n\n"
+                            "The CLI plugin model uses Plugin.define.\n"
+                        ),
+                    )
+                )
+            ]
+        )
+
+    monkeypatch.setattr("lies.mcp.read.access", SimpleNamespace(daemon_tool=fake_daemon_tool))
 
     out = read.fn(paths=["alpha/cli-plugin.md"])
 
@@ -423,11 +452,23 @@ def test_librarian_snippet_review_picks_authoring_over_install(
 
     monkeypatch.setattr("lies.mcp.search._post_query", fake_post_query)
 
-    # Step 2 — read returns a body for any path the librarian picks.
-    monkeypatch.setattr(
-        "lies.mcp.read._qmd_get",
-        lambda cwd, qmd_path, timeout=60: (f"stub body for {qmd_path}"),
-    )
+    # Step 2 — read returns a body for any path the librarian picks. The
+    # stub answers in the daemon's shape: an EmbeddedResource content
+    # block, with ``data`` None.
+    async def fake_daemon_tool(name, arguments):
+        return SimpleNamespace(
+            content=[
+                SimpleNamespace(
+                    resource=SimpleNamespace(
+                        uri=f"qmd://{arguments['file']}",
+                        text=f"stub body for {arguments['file']}",
+                    )
+                )
+            ],
+            data=None,
+        )
+
+    monkeypatch.setattr("lies.mcp.read.access", SimpleNamespace(daemon_tool=fake_daemon_tool))
 
     # Step 3 — the librarian's snippet-review chose authoring over install.
     # This canned output is what snippet-review PRODUCES for the
