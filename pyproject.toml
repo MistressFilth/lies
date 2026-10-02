@@ -16,7 +16,16 @@ dependencies = [
     "pymupdf>=1.24",
     "pdfplumber>=0.10",
     "pydantic>=2.0",
-    "fastmcp>=2.0",
+    # 4.x, not 2.x: `Client.call_tool(..., raise_on_error=False)` is
+    # keyword-only on 4.0 and absent on 2.x, and `access.py` calls it on
+    # every daemon call. A `>=2.0` floor advertised compatibility the code
+    # does not have — a 2.x install dies with a TypeError at the first
+    # qmd call, not at import. 4 also supplies
+    # `fastmcp.server.transforms.PromptsAsTools`, which server.py imports
+    # directly (PR #115). Note fastmcp 4 vendors its own httpx as
+    # `httpx2`, which is why `classify_call_error` matches exception
+    # class *names* rather than httpx types.
+    "fastmcp>=4.0",
     "mcp>=1.0",
     "ahocorasick_rs>=1.0,<2.0",
 ]

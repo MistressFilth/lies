@@ -844,7 +844,7 @@ dev = [
 requires-dist = [
     { name = "ahocorasick-rs", specifier = ">=1.0,<2.0" },
     { name = "anthropic", specifier = ">=0.40" },
-    { name = "fastmcp", specifier = ">=2.0" },
+    { name = "fastmcp", specifier = ">=4.0" },
     { name = "logfire" },
     { name = "mcp", specifier = ">=1.0" },
     { name = "pdfplumber", specifier = ">=0.10" },
