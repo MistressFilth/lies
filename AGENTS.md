@@ -506,13 +506,18 @@ transport serves which operation. Read it before adding any qmd call.
   the same payload. Unreachable recycles and retries once. A
   protocol-level rejection is not a transport failure and re-raises
   unchanged. `classify_call_error` is the only place that decides.
-- **`last_output` is read before the recycle, never after.** qmd
-  truncates `mcp.log` on every daemon start and `recycle_qmd_daemon` is
-  reap+spawn, so a tail read after it describes the *replacement*
-  daemon — exactly the thing the field exists to stop saying. The same
-  applies to a retry that wedges again: the tail there is from the
-  second daemon, which is the right one, because that is the daemon
-  that wedged.
+- **`last_output` must come from the daemon that actually wedged.** The
+  two sites read on opposite sides of their recycle, and both are
+  correct. The first call wedges → the recycle below spawns its
+  replacement and qmd truncates `mcp.log` on every start, so the read
+  comes *before*. A retry wedges → the recycle above already started
+  that daemon and it has been logging since, so the read comes
+  *after*. The question is never "which side of the recycle am I on"
+  but "which daemon wedged"; a tail attributed to the wrong daemon is
+  worse than no tail, because it is confidently wrong.
+  `test_each_wedge_carries_the_log_of_the_daemon_that_actually_wedged`
+  pins both, and a mutation that "harmonises" the second site with the
+  first is caught by it.
 - **A retry's failure is classified, not assumed.** After a recycle the
   second failure takes one of three routes: a reason the taxonomy does
   not own propagates unchanged; a re-wedge raises `QmdDaemonWedged`;

@@ -398,6 +398,65 @@ async def test_a_retry_that_wedges_reports_a_wedge_not_a_down_daemon(
     assert e.value.last_output == "expanding query 1/9"
 
 
+async def test_each_wedge_carries_the_log_of_the_daemon_that_actually_wedged(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    seam: _Recycle,
+) -> None:
+    """Both tail reads are correct, and they are correct for opposite reasons.
+
+    Two branches report a wedge, and each reads the log on the other
+    side of its recycle:
+
+    - the first call wedges — D1 wedged, and the recycle below spawns
+      its replacement D2, which truncates mcp.log. The read precedes
+      the recycle, so the tail is D1's.
+    - a retry wedges — the recycle already spawned D2 and the retry ran
+      against it, so the read follows that recycle and the tail is D2's.
+
+    One daemon log stands in for both; each recycle rewrites it with the
+    identity of the daemon it started. A read on the wrong side
+    therefore does not produce a missing tail but a *misattributed*
+    one, which is the direction this field exists to prevent — so the
+    test asserts which daemon's words arrived, not merely that some
+    text did.
+    """
+    log = tmp_path / "mcp.log"
+    log.write_text("D1: expanding query 3/7")
+    generation = {"n": 1}
+
+    async def _recycle_spawns_the_next_daemon(**_kwargs: Any) -> QmdState:
+        # qmd truncates mcp.log on every start; the replacement writes
+        # its own.
+        generation["n"] += 1
+        log.write_text(f"D{generation['n']}: expanding query 1/2")
+        return QmdState(installed=True, running=True, pid=generation["n"], detail="fresh")
+
+    monkeypatch.setattr(access, "recycle_qmd_daemon", _recycle_spawns_the_next_daemon)
+    monkeypatch.setattr(access, "_daemon_log_tail", lambda: log.read_text())
+    _use_client(monkeypatch, _FakeClient([httpx.ReadTimeout("wedged")]))
+
+    # The first call wedges. D1 is the daemon that wedged, and the
+    # recycle that follows only starts D2 — the tail must be D1's.
+    with pytest.raises(access.QmdDaemonWedged) as first:
+        await access.daemon_tool("query", {"searches": [{"type": "lex", "query": "x"}]})
+    assert first.value.last_output == "D1: expanding query 3/7"
+
+    # A transport error, then a retry that wedges. D2 is the daemon that
+    # wedged, and it has been logging since the recycle started it — the
+    # tail must be D2's, not D1's pre-recycle log.
+    access._reset_client()
+    _use_client(
+        monkeypatch,
+        _FakeClient([httpx.ConnectError("refused"), httpx.ReadTimeout("wedged again")]),
+    )
+    generation["n"] = 1
+    log.write_text("D1: starting up")
+    with pytest.raises(access.QmdDaemonWedged) as second:
+        await access.daemon_tool("query", {"searches": [{"type": "lex", "query": "x"}]})
+    assert second.value.last_output == "D2: expanding query 1/2"
+
+
 async def test_a_wrapped_connect_timeout_is_recycled_not_leaked_as_a_protocol_error(
     monkeypatch: pytest.MonkeyPatch,
     seam: _Recycle,

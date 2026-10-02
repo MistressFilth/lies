@@ -341,19 +341,29 @@ async def daemon_tool(name: str, arguments: dict[str, Any]) -> Any:
         if action == "passthrough":
             raise
         if not retryable:
-            # Read the log BEFORE the recycle. `recycle_qmd_daemon` is
-            # reap+spawn, and qmd truncates mcp.log on every start — so
-            # a tail read after it describes the replacement daemon,
-            # which is the one thing the wedge exception must not
-            # report. Capturing first is the only ordering that puts the
-            # wedged daemon's own last words on the exception.
+            # Which daemon wedged? The first call, on the one running
+            # when this except was entered. Name it D1 — the recycle
+            # immediately below spawns its replacement, D2, and qmd
+            # truncates mcp.log on every start, so the tail has to be
+            # read before that recycle or it describes D2 instead. A
+            # log attributed to the wrong daemon is worse than no log:
+            # it is confidently wrong, and in the one direction this
+            # field exists to prevent.
+            #
+            # Branch-local rule, not a project-wide one. The retry path
+            # below reads the tail *after* its recycle, and that is
+            # correct there because the wedge it reports happened in the
+            # daemon that recycle started. "Read before the recycle"
+            # holds on this branch because D1 is the daemon that wedged;
+            # the question is always *which daemon wedged*, never
+            # *which side of the recycle am I on*.
             #
             # Read on this branch only. A transport error recycles and
-            # retries without ever carrying a tail, so reading here
-            # would spend an open+seek+read of the daemon's log on a
-            # value that is thrown away — on the common path, where a
-            # daemon that is restarting is the ordinary case rather
-            # than the exception.
+            # retries without ever carrying a tail, so reading on that
+            # path would spend an open+seek+read of the daemon's log on
+            # a value that is thrown away — on the common path, where a
+            # daemon that is restarting is ordinary rather than
+            # exceptional.
             last_output = _daemon_log_tail()
             await _recycle(url)
             raise QmdDaemonWedged(
@@ -382,6 +392,21 @@ async def daemon_tool(name: str, arguments: dict[str, Any]) -> Any:
             if retry_action == "passthrough":
                 raise
             if retry_action == "recycle-raise":
+                # Which daemon wedged? The retry's — call it D2, the one
+                # `await _recycle(url)` above spawned. The recycle
+                # truncated mcp.log and D2 has been writing to it since,
+                # so reading *here* is what puts D2's own last words on
+                # the exception.
+                #
+                # This is the mirror image of the first branch, where
+                # the read precedes the recycle because the wedge
+                # happened in the daemon that existed beforehand. The
+                # rule is not "read before" or "read after" — it is
+                # "read from the daemon that wedged", and the side of
+                # the recycle is only how you tell which one that is.
+                # Moving this read earlier, to "match" the branch above,
+                # would attach D1's pre-recycle log to a wedge that
+                # happened in D2.
                 raise QmdDaemonWedged(
                     f"qmd daemon wedged again on call to {name!r} after a recycle",
                     last_output=_daemon_log_tail(),
