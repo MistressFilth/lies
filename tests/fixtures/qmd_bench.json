@@ -266,9 +266,63 @@
         "full": 3016
       },
       "latency_note": "Observed once, at the time of recording. NOT A GATE: three runs against an unchanged index gave bit-identical quality metrics and 10x-different latency (cold vs warm embedding/reranker models). Compare the quality metrics; ignore this. The 2026-10-02 re-measurement was taken with a COLD model cache (the llm_cache had just been cleared), so its vector/hybrid/full latencies are cold figures and must not be compared against a warm baseline.",
-      "remeasured": "2026-10-02, against qmd 2.5.3, corpus 5987 documents, after `qmd cleanup` (0 orphan hashes) and with a cold model cache. bm25 and vector quality are bit-identical to the previous recording; hybrid and full MOVED DOWN (full avg_recall 0.933 -> 0.867, avg_mrr 0.763 -> 0.743), entirely attributable to two queries scoring zero: cc-context-window-paraphrase and fm-server-context. Neither change in this branch touches retrieval ranking - the subprocess change sets NO_COLOR (qmd's only consumer of it is a TTY-gated colour switch, already false under a pipe) and the idle-bound change affects only when a long embed/update is killed. The corpus changed underneath the baseline (cleanup re-chunked: 91070 -> 48984 vectors across the same 5987 documents, mean 8.18 chunks/doc, every document still vectorised), which is the likelier cause."
+      "stability": {
+        "method": "Run twice back to back with `qmd bench tests/fixtures/qmd_bench.json --json` and compare every quality metric. This is the Task 1 method: three runs against an unchanged index gave bit-identical quality.",
+        "runs": 2,
+        "quality_metrics_bit_identical": true,
+        "verified_on": "2026-10-02"
+      },
+      "superseded_baseline": {
+        "recorded_against": {
+          "vectors": 91070,
+          "orphan_hashes": 1566,
+          "corpus_documents": 5987
+        },
+        "summary": {
+          "bm25": {
+            "avg_precision": 0.7333333333333333,
+            "avg_recall": 0.8666666666666667,
+            "avg_recall_at_1": 0.7333333333333333,
+            "avg_recall_at_3": 0.7333333333333333,
+            "avg_recall_at_5": 0.7333333333333333,
+            "avg_mrr": 0.7502645502645502,
+            "avg_f1": 0.7333333333333333
+          },
+          "vector": {
+            "avg_precision": 0.4666666666666667,
+            "avg_recall": 1,
+            "avg_recall_at_1": 0.4666666666666667,
+            "avg_recall_at_3": 0.8,
+            "avg_recall_at_5": 0.9333333333333333,
+            "avg_mrr": 0.6522222222222223,
+            "avg_f1": 0.4666666666666667
+          },
+          "hybrid": {
+            "avg_precision": 0.6666666666666666,
+            "avg_recall": 1,
+            "avg_recall_at_1": 0.6666666666666666,
+            "avg_recall_at_3": 0.8666666666666667,
+            "avg_recall_at_5": 0.9333333333333333,
+            "avg_mrr": 0.7833333333333333,
+            "avg_f1": 0.6666666666666666
+          },
+          "full": {
+            "avg_precision": 0.6666666666666666,
+            "avg_recall": 0.9333333333333333,
+            "avg_recall_at_1": 0.6666666666666666,
+            "avg_recall_at_3": 0.8666666666666667,
+            "avg_recall_at_5": 0.8666666666666667,
+            "avg_mrr": 0.762962962962963,
+            "avg_f1": 0.6666666666666666
+          }
+        },
+        "why_replaced": "These numbers cannot be reproduced by the current index and must not be gated against. Superseded on 2026-10-02, NOT because a code change moved them, and not because the index was re-chunked. Two findings, both verified: (1) `qmd bench` runs in-process -- `dist/cli/qmd.js` `case \"bench\"` imports `../bench/bench.js` directly, which has no daemon, no MCP server and no subprocess, so no LIES code is on the path at all; every change this branch makes is in LIES. (2) The index changed underneath the gate. The old figures were measured at 91070 vectors and 1566 orphan hashes; the index is now 48984 vectors with 0 orphans and 0 documents lacking vectors (all 14 collections fully covered). The cleanup deleted only rows with no backing `content`, i.e. exactly the orphans -- no document lost coverage and nothing was re-chunked. The delta is environmental.",
+        "which_queries_moved": {
+          "note": "Two reranker-sensitive queries account for the whole delta: `cc-context-window-paraphrase` (semantic) and `fm-server-context` (topical) now score 0 recall. Both expected files are still present, active and vectorised, so this is ranking, not missing documents."
+        }
+      }
     },
     "lies_gate": null,
-    "lies_gate_note": "Not filled by qmd bench. That summary measures qmd's own four backends in-process (no daemon, no per-query collection scope, no LIES ground() fan-out), so no LIES routing change can move it. This slot measures LIES as it actually routes, and is therefore the only place the multi-collection starvation signal can land: the two multi-collection queries below are inert in the qmd_bench numbers, because the harness takes one global -c and never exercises per-query scope. Record here: corpus_documents, qmd_version, method, queries_total, queries_passing."
+    "lies_gate_note": "Not filled by qmd bench. That summary measures qmd's own four backends in-process (no daemon, no per-query collection scope, no LIES ground() fan-out), so no LIES routing change can move it. This slot measures LIES as it actually routes, and is therefore the only place the multi-collection starvation signal can land: the two multi-collection queries below are inert in the qmd_bench numbers, because the harness takes one global -c and never exercises per-query scope. Record here: corpus_documents, qmd_version, method, queries_total, queries_passing. ADDED 2026-10-02: a qmd_bench number moved once and no LIES change was behind it. `qmd bench` runs in-process (dist/cli/qmd.js `case \"bench\"` imports ../bench/bench.js, which has no daemon, no MCP server and no subprocess), so every change this branch makes is provably off its path. The index changed instead: 1566 orphan hashes -> 0 and 91070 -> 48984 vectors, across the same 5987 documents, all of them still vectorised. The qmd_bench block was re-recorded against that index and verified reproducible (two runs, every quality metric bit-identical); the superseded figures and the index state they belong to are kept in `qmd_bench.superseded_baseline`. The lesson for whoever reads the next delta: a change here means the index or qmd moved, and only a change in the slot below means LIES moved."
   }
 }

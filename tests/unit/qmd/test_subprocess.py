@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from lies.qmd._subprocess import _run_qmd
+from lies.qmd._subprocess import QmdWedgeError, _run_qmd
 
 
 def test_run_qmd_returns_completed_process_on_success(tmp_path: Path):
@@ -277,4 +277,57 @@ def test_run_qmd_passes_the_child_env_to_the_process(tmp_path: Path) -> None:
 
     assert result.stdout.decode().strip() == "1", (
         f"child did not receive NO_COLOR=1; got {result.stdout.decode()!r}"
+    )
+
+
+@pytest.mark.slow
+def test_idle_bound_fires_before_the_total_bound(tmp_path: Path) -> None:
+    """A silent child is reported ``idle``, with its output tail — not ``total``.
+
+    The reader loop checks the total bound first, so an idle bound set at
+    or above the total would be dead code: every kill would report
+    ``bound="total"`` and drop ``last_output``, the only evidence of
+    where the time went. That is exactly what happened when
+    ``idle_timeout == timeout`` was first written for ``qmd_embed`` and
+    ``qmd_update``.
+
+    So the ordering is pinned rather than inferred: a child that says
+    nothing at all, under an idle bound well below its total, must come
+    back as an idle wedge carrying whatever it had emitted. It emits a
+    marker first, so ``last_output`` is not the empty case.
+
+    Marked slow because it waits out the idle bound.
+    """
+    script = tmp_path / "silent.py"
+    script.write_text(
+        "import sys, time\nsys.stderr.write('phase 1\\n'); sys.stderr.flush()\ntime.sleep(60)\n"
+    )
+
+    with pytest.raises(QmdWedgeError) as excinfo:
+        _run_qmd(
+            [sys.executable, str(script)],
+            cwd=tmp_path,
+            timeout=30.0,
+            idle_timeout=1.0,
+        )
+
+    assert excinfo.value.bound == "idle", (
+        f"expected an idle wedge, got bound={excinfo.value.bound!r}"
+    )
+    assert "phase 1" in excinfo.value.last_output, (
+        f"the output tail was lost; last_output={excinfo.value.last_output!r}"
+    )
+
+
+def test_silent_command_idle_bound_stays_below_the_total() -> None:
+    """The fraction is strictly below 1.0, or the idle bound is dead code.
+
+    Cheap guard against someone "simplifying" the constant to 1.0, which
+    would read as harmless and silently cost every wedge its diagnostic.
+    """
+    from lies.qmd._subprocess import SILENT_COMMAND_IDLE_TIMEOUT_FRACTION
+
+    assert 0 < SILENT_COMMAND_IDLE_TIMEOUT_FRACTION < 1, (
+        "the idle bound must stay below the total, or the total bound is "
+        "always checked first and the idle branch never fires"
     )

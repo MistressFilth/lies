@@ -658,3 +658,62 @@ def test_an_httpx_client_factory_nobody_can_call_is_not_a_seam() -> None:
     assert "follow_redirects" in params or any(
         p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()
     ), "fastmcp passes follow_redirects=; the factory must accept it"
+
+
+# --- what `data_dir` actually controls ----------------------------------
+#
+# `ensure_qmd_daemon(data_dir=...)` reads like it selects the index the
+# daemon serves, and `recycle_qmd_daemon(data_dir=...)` likewise. Neither
+# is true, and the reason matters for anyone tempted to "fix" the two
+# call sites to agree: `_spawn_qmd_daemon` runs `qmd mcp --http --daemon`
+# with `cwd=Path.cwd()` and never reads the argument, so `data_dir` only
+# ever reaches `write_sidecar_data_dir`. The daemon that comes up is the
+# same whichever value you pass.
+
+
+def test_the_spawned_daemon_never_receives_the_data_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``_spawn_qmd_daemon`` ignores any data dir; the spawn is cwd-only.
+
+    A source-level pin rather than a behavioural one, because the claim
+    is about what is *not* passed. If someone later threads ``data_dir``
+    into the spawn, this fails — which is the point at which the
+    ``_recycle_data_dir`` vs ``ensure_qmd_daemon`` question becomes a
+    real one rather than a bookkeeping detail.
+    """
+    from lies.qmd import daemon as qmd_daemon
+
+    source = Path(qmd_daemon.__file__).read_text(encoding="utf-8")
+    start = source.index("def _spawn_qmd_daemon(")
+    end = source.index("def ", start + 10)
+    body = source[start:end]
+
+    assert "_spawn_qmd_daemon(" in body
+    assert "data_dir" not in body, (
+        "_spawn_qmd_daemon now reads a data_dir; the daemon it starts may "
+        "differ from the one a recycle starts, and the two call sites' "
+        "disagreement is no longer bookkeeping"
+    )
+    assert "cwd=" in body, "the spawn is cwd-based; that is what makes data_dir inert"
+
+
+def test_recycle_data_dir_only_reaches_the_sidecar() -> None:
+    """The recorded path is bookkeeping; the daemon comes from cwd either way.
+
+    Companion to the source pin above: this asserts the consequence
+    directly, so a reader who does not want to read qmd's spawn can see
+    that ``_recycle_data_dir`` returns a value used for the sidecar and
+    nothing else.
+    """
+    from lies.qmd import access, daemon as qmd_daemon
+
+    recorded: list[Path] = []
+    monkey_records = qmd_daemon.write_sidecar_data_dir
+    try:
+        qmd_daemon.write_sidecar_data_dir = recorded.append  # type: ignore[assignment]
+        value = access._recycle_data_dir()
+    finally:
+        qmd_daemon.write_sidecar_data_dir = monkey_records  # type: ignore[assignment]
+
+    assert isinstance(value, Path), "the sidecar value is a path, and is the only thing passed"

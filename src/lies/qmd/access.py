@@ -439,13 +439,38 @@ def _result_text(result: Any) -> str:
 
 
 def _recycle_data_dir() -> Path:
-    """The ``data-dir`` to record for a daemon started by :func:`_recycle`.
+    """The ``data-dir`` to *record* for a daemon started by :func:`_recycle`.
 
-    Read from the sidecar, which is what the daemon currently running was
-    started with; falling back to the library root, which is the index
-    every library-mode collection is registered under. Recycling with
-    anything else would make the next ``ensure_qmd_daemon`` believe it
-    is looking at a foreign daemon.
+    Read from the sidecar — what the running daemon was recorded with —
+    falling back to the library root, the index every library-mode
+    collection is registered under.
+
+    **Decided, and the reasoning matters if this is ever changed.**
+    ``ensure_qmd_daemon`` takes a ``data_dir`` that looks like it
+    controls the daemon, and it does not: ``_spawn_qmd_daemon`` runs
+    ``qmd mcp --http --daemon`` with ``cwd=Path.cwd()`` and never reads
+    the argument (``daemon.py:250-259``). ``data_dir`` only ever reaches
+    ``write_sidecar_data_dir``. So a recycle and an ensure can *disagree*
+    on what to record — ``ensure`` is handed ``wiki.wiki_dir`` by
+    ``operator.py:151``, this falls back to ``library_git_root()`` — and
+    **the daemon that comes up is the same either way**, because neither
+    value is passed to qmd.
+
+    The blast radius of that disagreement is therefore bounded and small:
+    the sidecar records one path or the other, and the consequence is
+    only that a *later* ``ensure_qmd_daemon`` with the other value sees
+    ``check_data_dir_match`` as False and reaps a healthy daemon once.
+    It is not a wrong-index read: the daemon serves whatever qmd's global
+    index holds, and neither value changes that. The user-visible cost is
+    one unnecessary restart.
+
+    Left as-is deliberately. Making the two agree means changing which
+    surface owns the daemon's recorded identity — a design decision
+    about ``ensure_qmd_daemon``'s signature, wider than a routing branch
+    should carry, and with a real behavioural consequence either way
+    (reaping more, or less). Recorded here so the next reader meets the
+    reasoning at the code rather than having to rediscover that the
+    argument looks load-bearing and is not.
     """
     recorded = read_sidecar_data_dir()
     if recorded is not None:
