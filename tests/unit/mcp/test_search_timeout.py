@@ -18,15 +18,27 @@ from tests.unit.mcp._prompt_body import rendered_body  # noqa: F401  (import gua
 
 @pytest.fixture(autouse=True)
 def _registry(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Non-empty collection registry.
+    """Non-empty collection registry, and no live daemon.
 
-    Unit-test mode ships an empty one, so ``c:claude_code``
+    Unit-test mode ships an empty registry, so ``c:claude_code``
     resolves to an unknown tag and ``_search_impl`` short-circuits
     before it reaches the qmd call these tests are about.
+
+    ``_search_impl`` also validates scope against the daemon's own
+    ``status`` before dispatching. That is a real reachability probe,
+    and every test here stubs ``_post_query`` rather than exercising
+    the daemon -- so the probe is stubbed too, to the same names. A
+    unit test that needs a live daemon on 127.0.0.1:8181 is a unit
+    test that fails in CI and passes on a machine that happens to have
+    one running.
     """
     import lies.library.registry as registry
 
     monkeypatch.setattr(registry, "library_collection_names", lambda: ["claude_code", "typer"])
+    monkeypatch.setattr(
+        "lies.mcp.search._qmd_collection_names_for_check",
+        lambda: frozenset({"claude_code", "typer"}),
+    )
 
 
 def test_a_timeout_is_not_reported_as_unreachable(monkeypatch: pytest.MonkeyPatch) -> None:
