@@ -71,6 +71,26 @@ _DRAIN_TIMEOUT_S = 2.0
 # finish, whatever the absolute ceiling says.
 DEFAULT_IDLE_TIMEOUT_S = 30.0
 
+# The idle bound used by commands that are silent for their whole
+# duration — ``qmd embed`` and ``qmd update``, neither of which writes to
+# stderr under a pipe.
+#
+# It is deliberately *below* the total bound rather than equal to it. The
+# reader loop checks total first (``if now - started > timeout``), so an
+# idle bound equal to the total can never fire: every such kill would
+# report ``bound="total"`` and the ``last_output`` tail — the only
+# evidence of where the time went — would be lost. At half the total the
+# idle bound still fires first for a genuinely hung command, and the
+# total bound remains the backstop for one that talks forever.
+#
+# The cost is stated rather than hidden: because these commands hold
+# ``with_qmd_lock()`` for the whole run, a wedged one now holds the lock
+# for up to half its total bound instead of 30s. That is the trade —
+# the alternative was killing healthy long-running work mid-progress,
+# which is the worse failure, and the lock is only contended by other
+# qmd operations from this process.
+SILENT_COMMAND_IDLE_TIMEOUT_FRACTION = 0.5
+
 # How often the reader loop wakes to check the two bounds. Short
 # enough that the idle bound is honoured to within a fraction of a
 # second, long enough not to spin a core.
@@ -129,28 +149,23 @@ class QmdWedgeError(subprocess.TimeoutExpired):
 def _child_env() -> dict[str, str]:
     """The environment every qmd subprocess runs with.
 
-    ``NO_COLOR`` is forced on for the child, and that is the whole point
-    of this function.
+    ``NO_COLOR`` is forced on for the child, so qmd never emits ANSI
+    colour into a stream LIES parses.
 
-    qmd renders a spinner — ``⠋ Gathering information`` with cursor
-    escapes — **on stdout**, while gating it on ``process.stderr.isTTY``.
-    LIES always pipes both streams, so the gate is false but the write
-    still happens, and the spinner lands in the middle of the JSON that
-    ``qmd_query`` parses. The result is
-    ``qmd query returned invalid JSON: Expecting value: line 1 column 1
-    (char 0)`` — raised only when the query is slow enough for the
-    spinner to render, which is why it looked intermittent.
+    Verified against qmd 2.5.3's source, not inferred: its only
+    ``NO_COLOR`` consumer is ``dist/cli/qmd.js:92``,
+    ``const useColor = !process.env.NO_COLOR && process.stdout.isTTY``.
+    Because LIES always pipes, ``isTTY`` is already false and colour is
+    already off, so **this override cannot change a single byte of
+    today's output**. It is defence in depth, not a fix for an observed
+    failure: it removes qmd's colour output as a variable, so a future
+    qmd that consults ``NO_COLOR`` before a TTY check, or that is
+    invoked through a pty by some caller, still cannot put escapes into
+    ``stdout_text``.
 
-    Verified directly against qmd 2.5.3: with the same command and the
-    same fixture, default env puts the spinner on stdout and
-    ``NO_COLOR=1`` puts clean JSON there. The spinner is also suppressed
-    by ``CI=1`` and ``TERM=dumb``, but neither is under LIES' control —
-    the child inherits whatever the operator's shell happens to export.
-
-    Overriding rather than passing ``env=os.environ`` through: an
-    operator who has *already* exported ``NO_COLOR=0`` to re-enable
-    colour in their own terminal must not be able to reintroduce a
-    spinner into a machine-parsed stream.
+    Why force it rather than inherit: an operator who has exported
+    ``NO_COLOR=0`` to re-enable colour in their own shell must not be
+    able to change what LIES parses out of a subprocess.
 
     Progress on stderr is unaffected — that is the wedge signal
     :mod:`lies.qmd._subprocess` exists to read, and it stays on.

@@ -18,7 +18,11 @@ from typing import Any
 
 from lies.qmd import _proc
 from lies.qmd._models import ReindexResult
-from lies.qmd._subprocess import DEFAULT_IDLE_TIMEOUT_S, _run_qmd
+from lies.qmd._subprocess import (
+    DEFAULT_IDLE_TIMEOUT_S,
+    SILENT_COMMAND_IDLE_TIMEOUT_FRACTION,
+    _run_qmd,
+)
 from lies.qmd.lock import with_qmd_lock
 
 # Real `qmd query --format json` returns each hit's `file` field as
@@ -94,19 +98,20 @@ def _run(
 
     ``idle_timeout`` overrides the wedge detector's silence bound, which
     defaults to 30s. It exists because *some* qmd commands are silent
-    for their whole duration and that is not a wedge: ``qmd embed``
-    prints a spinner and then says nothing while the embedding model
-    loads and runs, so the silence is the entire operation. Measured on
-    a cold model cache, one tiny document takes 9.4s of unbroken
-    silence; four collections under host contention crossed 30s and were
-    killed as wedged while making progress.
+    for their whole duration and that is not a wedge: under a pipe,
+    ``qmd embed`` writes a single spinner escape and ``qmd update``
+    writes nothing at all, because qmd's progress for both is written to
+    stderr behind an ``isTTY`` check. The silence is the operation, not a
+    symptom. Measured on a cold model cache, one tiny embed takes 9.4s
+    of unbroken silence; four collections under host contention crossed
+    30s and were killed while making progress.
 
-    The right bound for those is the one the caller already passed as
-    ``timeout`` (600s for embed) — that is the caller's statement about
-    how long the work may take, whereas 30s is a default sized for
-    interactive queries. Retrieval commands leave the default alone: a
-    query that stops emitting for 30s genuinely is wedged, and widening
-    it there would reintroduce the hang the bound exists to prevent.
+    Callers that pass it should derive it from their own ``timeout`` —
+    see :data:`SILENT_COMMAND_IDLE_TIMEOUT_FRACTION` for why it must
+    stay strictly below the total. Retrieval commands leave the default
+    alone: a query that stops emitting for 30s genuinely is wedged, and
+    widening it there would reintroduce the hang the bound exists to
+    prevent.
 
     Raises:
         QmdNotInstalledError: ``qmd`` is not on PATH at exec time.
@@ -135,15 +140,28 @@ def _run(
 
 
 @with_qmd_lock()
-def qmd_update(cwd: Path) -> None:
+def qmd_update(cwd: Path, timeout: int = 1800) -> None:
     """Run ``qmd update`` in ``cwd``.
 
     ``qmd update`` reindexes every collection registered under ``cwd``;
     it has no per-collection flag (only ``--pull``). Callers that want
     a per-collection refresh must filter at the qmd config layer, not
     via this CLI.
+
+    The idle bound is raised for the same reason as ``qmd_embed``'s: under a pipe ``qmd update`` emits **nothing** while
+    it works. qmd's own progress for this command is an unconditional
+    stderr write gated on ``isTTY`` (``dist/cli/qmd.js:552-566``), so a
+    piped run looks wedged to a silence detector even while it is
+    indexing. Leaving the 30s default here meant the same class of
+    mid-progress kill the embed fix removed, one command earlier on the
+    ``lies sync`` path.
     """
-    result = _run(["update"], cwd=cwd)
+    result = _run(
+        ["update"],
+        cwd=cwd,
+        timeout=timeout,
+        idle_timeout=timeout * SILENT_COMMAND_IDLE_TIMEOUT_FRACTION,
+    )
     if result.returncode != 0:
         raise QmdError(f"qmd update failed: {result.stderr.strip()}")
 
@@ -305,7 +323,7 @@ def qmd_embed(cwd: Path, collection_name: str, *, timeout: int = 1800) -> None:
         ["embed", "-c", collection_name],
         cwd=cwd,
         timeout=timeout,
-        idle_timeout=float(timeout),
+        idle_timeout=timeout * SILENT_COMMAND_IDLE_TIMEOUT_FRACTION,
     )
     if result.returncode != 0:
         raise QmdError(f"qmd embed failed: {result.stderr.strip()}")
@@ -410,6 +428,41 @@ def is_qmd_installed() -> bool:
     return shutil.which("qmd") is not None
 
 
+def _parse_json_list(stdout_text: str) -> list[Any] | None:
+    """Parse qmd's JSON list from stdout, tolerating a progress prefix.
+
+    qmd itself writes nothing but the JSON here — but when its model
+    cache is cold it first downloads the embedding / reranker weights,
+    and that download is driven by ``ipull`` (a transitive dependency of
+    ``node-llama-cpp``) through ``stdout-update``, whose
+    ``UpdateManager.getInstance()`` defaults ``stdout = process.stdout``
+    and writes there with **no TTY guard and no NO_COLOR check**. LIES
+    always pipes, so that progress lands in front of the JSON:
+
+        ``\x1b[?25l⠋ Gathering information\n\x1b[2K\x1b[1A...``
+
+    ``json.loads`` on that fails at char 0, which surfaced as
+    ``qmd query returned invalid JSON: Expecting value: line 1 column 1``
+    — on exactly the runs where the cache was cold, which is why it read
+    as intermittent.
+
+    So: find the JSON array rather than demanding the stream begin with
+    one. Scanning for the first ``[`` or ``{`` is safe because the prefix
+    contains neither; the parse itself still validates the payload, so a
+    genuinely malformed response is still rejected, and the error now
+    quotes what actually arrived. Returns ``None`` when nothing parses as
+    a JSON list, leaving the raise to the caller.
+    """
+    for index, char in enumerate(stdout_text):
+        if char in "[{":
+            try:
+                parsed = json.loads(stdout_text[index:])
+            except json.JSONDecodeError:
+                continue
+            return parsed if isinstance(parsed, list) else None
+    return None
+
+
 @with_qmd_lock()
 def qmd_query(
     cwd: Path,
@@ -484,10 +537,11 @@ def qmd_query(
     if not stdout_text:
         raise QmdNoResultsError(f"qmd query returned no results for: {question!r}")
 
-    try:
-        data = json.loads(stdout_text)
-    except json.JSONDecodeError as exc:
-        raise QmdCommandError(f"qmd query returned invalid JSON: {exc}") from exc
+    data = _parse_json_list(stdout_text)
+    if data is None:
+        raise QmdCommandError(
+            f"qmd query returned invalid JSON; first 200 chars of stdout: {stdout_text[:200]!r}"
+        )
 
     if not isinstance(data, list):
         raise QmdCommandError(f"qmd query expected a JSON list, got {type(data).__name__}")

@@ -244,28 +244,29 @@
           "avg_precision": 0.6666666666666666,
           "avg_recall": 1,
           "avg_recall_at_1": 0.6666666666666666,
-          "avg_recall_at_3": 0.8666666666666667,
-          "avg_recall_at_5": 0.9333333333333333,
-          "avg_mrr": 0.7833333333333333,
+          "avg_recall_at_3": 0.8,
+          "avg_recall_at_5": 0.8666666666666667,
+          "avg_mrr": 0.7688888888888887,
           "avg_f1": 0.6666666666666666
         },
         "full": {
           "avg_precision": 0.6666666666666666,
-          "avg_recall": 0.9333333333333333,
+          "avg_recall": 0.8666666666666667,
           "avg_recall_at_1": 0.6666666666666666,
-          "avg_recall_at_3": 0.8666666666666667,
-          "avg_recall_at_5": 0.8666666666666667,
-          "avg_mrr": 0.762962962962963,
+          "avg_recall_at_3": 0.8,
+          "avg_recall_at_5": 0.8,
+          "avg_mrr": 0.7428571428571428,
           "avg_f1": 0.6666666666666666
         }
       },
       "latency_observed_ms": {
-        "bm25": 18.2,
-        "vector": 568.4666666666667,
-        "hybrid": 1151.9333333333334,
-        "full": 1574.6
+        "bm25": 26.4,
+        "vector": 256.3333333333333,
+        "hybrid": 2838,
+        "full": 3016
       },
-      "latency_note": "Observed once, at the time of recording. Not a gate: three runs against an unchanged index gave bit-identical quality metrics and 10x-different latency (cold vs warm embedding/reranker models). Compare the quality metrics; ignore this."
+      "latency_note": "Observed once, at the time of recording. NOT A GATE: three runs against an unchanged index gave bit-identical quality metrics and 10x-different latency (cold vs warm embedding/reranker models). Compare the quality metrics; ignore this. The 2026-10-02 re-measurement was taken with a COLD model cache (the llm_cache had just been cleared), so its vector/hybrid/full latencies are cold figures and must not be compared against a warm baseline.",
+      "remeasured": "2026-10-02, against qmd 2.5.3, corpus 5987 documents, after `qmd cleanup` (0 orphan hashes) and with a cold model cache. bm25 and vector quality are bit-identical to the previous recording; hybrid and full MOVED DOWN (full avg_recall 0.933 -> 0.867, avg_mrr 0.763 -> 0.743), entirely attributable to two queries scoring zero: cc-context-window-paraphrase and fm-server-context. Neither change in this branch touches retrieval ranking - the subprocess change sets NO_COLOR (qmd's only consumer of it is a TTY-gated colour switch, already false under a pipe) and the idle-bound change affects only when a long embed/update is killed. The corpus changed underneath the baseline (cleanup re-chunked: 91070 -> 48984 vectors across the same 5987 documents, mean 8.18 chunks/doc, every document still vectorised), which is the likelier cause."
     },
     "lies_gate": null,
     "lies_gate_note": "Not filled by qmd bench. That summary measures qmd's own four backends in-process (no daemon, no per-query collection scope, no LIES ground() fan-out), so no LIES routing change can move it. This slot measures LIES as it actually routes, and is therefore the only place the multi-collection starvation signal can land: the two multi-collection queries below are inert in the qmd_bench numbers, because the harness takes one global -c and never exercises per-query scope. Record here: corpus_documents, qmd_version, method, queries_total, queries_passing."

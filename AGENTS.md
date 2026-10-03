@@ -570,30 +570,61 @@ transport serves which operation. Read it before adding any qmd call.
   spellings of this URL — `QmdCapability.__init__`'s `url` default and
   `QmdMcpClient.url` — now *source* the constant rather than repeating
   it, so a fourth spelling cannot appear.
-- **Every qmd subprocess runs with `NO_COLOR=1`.** qmd writes a spinner
-  to **stdout** while gating it on `process.stderr.isTTY`. LIES pipes
-  both streams, so the gate is false but the write still happens, and
-  the spinner lands inside the JSON `qmd_query` parses:
-  `qmd query returned invalid JSON: Expecting value: line 1 column 1`.
-  It fired only on queries slow enough for the spinner to render, which
-  is what made it look intermittent. `_child_env()` in
-  `qmd/_subprocess.py` sets the variable for the child — overriding an
-  operator's exported `NO_COLOR=0`, since a colour setting in the
-  operator's shell must not be able to corrupt a stream LIES parses.
-  Progress on stderr is untouched; that is the wedge signal the
-  subprocess helper exists to read.
-- **The idle bound is right for queries and wrong for `embed`.** The
-  wedge detector fires after 30s of silence, which is exactly right for
-  an interactive query. Embedding is silent for its *whole* duration —
-  `qmd embed` prints a spinner and then nothing while the model loads
-  and runs — so the silence is the operation, not a symptom. Measured:
-  9.4s of unbroken silence for one tiny document on a cold cache, and
-  four collections under host contention crossed 30s and were killed
-  mid-progress. `qmd_embed` therefore passes `idle_timeout=timeout`;
-  `_run` still defaults to `DEFAULT_IDLE_TIMEOUT_S`. When adding a qmd
-  command, ask whether it talks while it works: if it does not, its
-  idle bound has to follow its total bound or it will be killed for
-  making progress.
+- **Every qmd subprocess runs with `NO_COLOR=1`, as policy rather
+  than as a fix.** qmd's only `NO_COLOR` consumer is
+  `dist/cli/qmd.js:92`, `useColor = !NO_COLOR && process.stdout.isTTY`
+  — and LIES always pipes, so colour is already off and this override
+  cannot change today's bytes. It is defence in depth: it removes qmd's
+  colour output as a variable, and it forces rather than inherits so an
+  operator who exported `NO_COLOR=0` to re-enable colour in their own
+  shell cannot change what `qmd_query` parses. Do not cite it as the fix
+  for anything.
+- **The `⠋ Gathering information` spinner is `ipull`, not qmd — and
+  only during a model download.** qmd 2.5.3 has no spinner: no
+  `Gathering information` or `⠋` anywhere in the package, no
+  `ora`/`clack`/`cli-spinners` dependency, and its only cursor control
+  is `hide()` at `qmd.js:105`, which writes `\x1b[?25l` to **stderr**.
+  The spinner comes from `ipull` (a transitive dependency of
+  `node-llama-cpp`, which qmd uses for its models) driving
+  `stdout-update`, whose `UpdateManager.getInstance()` defaults
+  `stdout = process.stdout` and writes there with **no TTY guard**. It
+  therefore *does* land on stdout and *can* corrupt `qmd_query`'s
+  `json.loads` — but only while qmd is downloading a model into a cold
+  cache, which is why it presented as intermittent.
+  `NO_COLOR` does not suppress it; `stdout-update` never reads it.
+  An earlier version of this file claimed qmd wrote the spinner to
+  stdout while gating on `stderr.isTTY`. That was wrong on both halves
+  and was corrected against the installed package. **If you need this
+  suppressed, the lever is a warm model cache**, not an env var — the
+  production answer is `lies sync` having embedded already.
+- **The idle bound is right for queries and wrong for `embed` and
+  `update`.** The wedge detector fires after 30s of silence, which is
+  exactly right for an interactive query. But two commands are silent
+  for their *whole* duration, and there the silence is the operation,
+  not a symptom: under a pipe `qmd embed` writes exactly one byte (its
+  spinner escape, `dist/cli/qmd.js:105`, which is stderr) and then
+  nothing while the model loads and runs, and `qmd update` writes
+  nothing at all — its progress is a stderr write behind an `isTTY`
+  check (`qmd.js:552-566`). Measured: 9.4s of unbroken silence for one
+  tiny embed on a cold cache, and four collections under host contention
+  crossed 30s and were killed mid-progress.
+  `qmd_embed` and `qmd_update` therefore pass
+  `idle_timeout=timeout * SILENT_COMMAND_IDLE_TIMEOUT_FRACTION`;
+  `_run` still defaults to `DEFAULT_IDLE_TIMEOUT_S`.
+- **That fraction is 0.5, not 1.0, and the reason is load-bearing.**
+  The reader loop checks the *total* bound first, so an idle bound equal
+  to the total can never fire: every such kill would report
+  `bound="total"` and the `last_output` tail — the only evidence of
+  where the time went — would be lost. At half the total, a genuinely
+  hung command is still caught by the idle bound and keeps its
+  diagnostic. The cost is stated rather than hidden: these commands hold
+  `with_qmd_lock()` for the whole run, so a wedged one now holds the lock
+  for up to half its total bound instead of 30s. That is the trade — the
+  alternative was killing healthy long-running work, which is worse, and
+  the lock is only contended by other qmd operations from this process.
+  **When adding a qmd command, ask whether it talks while it works.** If
+  it does not, its idle bound has to follow its total bound or it will be
+  killed for making progress.
 
 ## The read tool's bodies (`mcp/read.py`)
 

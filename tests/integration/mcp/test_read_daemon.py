@@ -56,16 +56,23 @@ def test_a_quote_from_the_live_document_appears_in_the_returned_body() -> None:
 def test_a_large_document_comes_back_whole() -> None:
     """A body far past multi_get's 10KB cap is returned intact.
 
-    ``claude_code/hooks.md`` is ~320KB — well over the cap, and a
-    document ``multi_get`` would skip outright.
+    Asserted against the document **on disk**, not against a byte count
+    or a remembered heading. Two earlier versions of this test each had a
+    coupling that was not about truncation:
 
-    Asserted as *both ends* rather than a byte count. A floor of
-    ``> 10_000`` alone is satisfied by a truncated read, and a floor of
-    ``> 300_000`` (the document's size today) fails the moment anyone
-    edits or splits ``hooks.md``, for a reason that has nothing to do
-    with truncation. So: a modest floor proving the body is past the
-    cap, plus the document's own last section, which is only present if
-    the tail actually arrived.
+    - ``len(body) > 300_000`` fails the day anyone trims ``hooks.md``.
+    - ``non_empty[-1].startswith("For troubleshooting…")`` fails the day
+      anyone appends a section — the same defect wearing a different
+      hat, and it was mine.
+
+    The invariant that actually matters is that the body qmd returns is
+    the file, end to end. Reading the file and comparing the returned
+    body's head *and* tail against it proves non-truncation directly and
+    survives any edit to the document that leaves it in the index. The
+    >10_000 floor stays because it is the one number that is about qmd's
+    cap rather than about the corpus: below it, ``multi_get`` would not
+    have skipped this document at all, so the assertion would prove
+    nothing about why ``get`` is used.
     """
     from lies.mcp.read import read
 
@@ -74,13 +81,46 @@ def test_a_large_document_comes_back_whole() -> None:
     assert len(body) > 10_000, f"body must clear multi_get's 10KB cap; got {len(body)} chars"
     assert LIVE_QUOTE in body
     assert not _NUMBERED_LINE.search(body)
-    # The final section of the live document. Proves the tail arrived,
-    # which is what truncation would remove.
-    assert "## Debug hooks" in body, "the document's last section is missing; body was truncated"
-    non_empty = [line for line in body.splitlines() if line.strip()]
-    assert non_empty[-1].startswith("For troubleshooting common issues"), (
-        f"expected the document's closing prose; got {non_empty[-1][:80]!r}"
+
+    on_disk = _live_document("claude_code/hooks.md")
+    head = 2_000
+    tail = 2_000
+    assert body[:head] == on_disk[:head], (
+        "the head of the returned body differs from the file on disk"
     )
+    assert body[-tail:] == on_disk[-tail:], (
+        "the tail of the returned body differs from the file on disk; "
+        "the body was truncated or the index is stale"
+    )
+
+
+def _live_document(collection_and_page: str) -> str:
+    """Read the indexed source file for a library page off disk.
+
+    Library pages live at ``<library>/collections/<collection>/<page>``.
+    Going to the filesystem rather than pinning literal text is what
+    keeps the truncation assertion independent of the document's current
+    contents — and, necessarily, resolves to whatever the live library
+    root is at run time.
+
+    Under ``tests/integration/`` the autouse XDG redirect points
+    ``library_git_root()`` at a per-test fixture copy, which does not
+    contain the corpus. This test therefore reads the *real* root rather
+    than the redirected one, and skips if it is not there: a host without
+    a populated library cannot assert anything about a document in it.
+    """
+    import os
+    from pathlib import Path
+
+    # Deliberately not ``library_git_root()``: under ``tests/integration/``
+    # the autouse XDG redirect points that at a per-test fixture copy,
+    # which does not contain the corpus. This assertion is about the live
+    # document qmd indexed, so it must read that same document.
+    root = Path(os.path.expanduser("~")) / ".local" / "share" / "lies" / "library"
+    page = root / "collections" / collection_and_page
+    if not page.exists():
+        pytest.skip(f"live library document not found: {page}")
+    return page.read_text(encoding="utf-8")
 
 
 def test_a_second_document_needs_no_special_handling() -> None:

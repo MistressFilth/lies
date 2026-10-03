@@ -193,14 +193,19 @@ def test_qmd_embed_default_timeout_is_thirty_minutes(
 ) -> None:
     """Default timeout = 1800 s. Override path takes the kwarg value.
 
-    The idle bound tracks the total bound rather than staying at the
-    30 s default, because ``qmd embed`` is silent for its entire
-    duration: it prints a spinner and then says nothing while the model
-    loads and runs, so the silence is the operation, not a wedge. A
+    The idle bound tracks the total bound rather than staying at the 30 s
+    default, because ``qmd embed`` is silent for its entire duration under a
+    pipe: it writes one stderr spinner escape and then nothing while the
+    model loads and runs, so the silence is the operation, not a wedge. A
     30 s idle bound killed it mid-progress (measured: 9.4 s of unbroken
-    silence for one tiny document on a cold cache; four collections
-    under host contention crossed 30 s). Retrieval commands keep the
-    default — a query silent for 30 s genuinely is wedged.
+    silence for one tiny document on a cold cache; four collections under
+    host contention crossed 30 s). Retrieval commands keep the default — a
+    query silent for 30 s genuinely is wedged.
+
+    It tracks at a **fraction**, not at 1.0: the reader loop checks the total
+    bound first, so an idle bound equal to the total could never fire and
+    every kill would lose its ``last_output`` diagnostic. See
+    ``SILENT_COMMAND_IDLE_TIMEOUT_FRACTION``.
     """
     seen_timeouts: list[int] = []
     seen_idles: list[float | None] = []
@@ -215,11 +220,14 @@ def test_qmd_embed_default_timeout_is_thirty_minutes(
     monkeypatch.setattr(qmd_cli, "_run", fake)
     qmd_cli.qmd_embed(tmp_path, "claude_code")
     assert seen_timeouts == [1800]
-    assert seen_idles == [1800.0], "embed's idle bound must follow its total bound"
+    half = qmd_cli.SILENT_COMMAND_IDLE_TIMEOUT_FRACTION
+    assert seen_idles == [1800.0 * half], "embed's idle bound must follow its total bound"
 
     qmd_cli.qmd_embed(tmp_path, "claude_code", timeout=42)
     assert seen_timeouts == [1800, 42]
-    assert seen_idles == [1800.0, 42.0], "the idle bound must track an overridden timeout too"
+    assert seen_idles == [1800.0 * half, 42.0 * half], (
+        "the idle bound must track an overridden timeout too"
+    )
 
 
 def test_run_keeps_the_default_idle_bound_for_other_commands(

@@ -256,6 +256,56 @@ def test_read_bridges_the_daemon_call_from_inside_a_running_event_loop(
     assert out == {"alpha/a.md": "<body alpha>"}
 
 
+def test_a_down_daemon_is_not_swallowed_by_the_running_loop_bridge(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The bridge must carry the daemon's failure back, not absorb it.
+
+    Both daemon exceptions subclass ``RuntimeError``, and ``_run_blocking``
+    contains an ``except RuntimeError`` — for ``asyncio.get_running_loop()``,
+    not for the coroutine. That is a one-line change away from silently
+    turning "the daemon is down" into a skipped page, so it is pinned
+    here on the thread-and-loop path, which is the one that could plausibly
+    lose it: the exception has to cross a thread boundary and come back
+    out of ``Future.result()`` as the same type.
+    """
+    from lies.qmd.access import QmdDaemonUnavailable
+
+    from lies.mcp.read import read
+
+    async def daemon_tool(name: str, arguments: dict[str, Any]) -> _Result:
+        raise QmdDaemonUnavailable("qmd daemon is not serving")
+
+    monkeypatch.setattr("lies.mcp.read.access", SimpleNamespace(daemon_tool=daemon_tool))
+
+    with pytest.raises(QmdDaemonUnavailable, match="not serving"):
+        _call_from_a_running_loop(lambda: read.fn(paths=["alpha/a.md"]))
+
+
+def test_a_wedged_daemon_survives_the_running_loop_bridge(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Same crossing, for the wedge type and its ``last_output`` tail.
+
+    ``last_output`` is the only evidence of where the wedge happened, so
+    a bridge that reconstructed the exception would destroy the one thing
+    the operator needs.
+    """
+    from lies.qmd.access import QmdDaemonWedged
+
+    from lies.mcp.read import read
+
+    async def daemon_tool(name: str, arguments: dict[str, Any]) -> _Result:
+        raise QmdDaemonWedged("qmd daemon wedged on call to 'get'", last_output="phase 3")
+
+    monkeypatch.setattr("lies.mcp.read.access", SimpleNamespace(daemon_tool=daemon_tool))
+
+    with pytest.raises(QmdDaemonWedged) as excinfo:
+        _call_from_a_running_loop(lambda: read.fn(paths=["alpha/a.md"]))
+
+    assert excinfo.value.last_output == "phase 3", "the log tail was lost crossing the bridge"
+
+
 # --- multi_get's two traps (Review Focus #1 and #4) ---------------------
 
 

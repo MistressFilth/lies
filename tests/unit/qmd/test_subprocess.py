@@ -197,16 +197,28 @@ def test_run_qmd_long_stderr_kills_grandchild(tmp_path: Path):
 
 # --- the child environment ----------------------------------------------
 #
-# qmd writes a spinner to *stdout* while gating it on
-# ``process.stderr.isTTY``. LIES pipes both streams, so the gate is false
-# but the write still happens, and the spinner lands inside the JSON that
-# ``qmd_query`` parses. Measured against qmd 2.5.3: the same command
-# emitted ``\x1b[?25l⠋ Gathering information…`` before the JSON by
-# default, and clean JSON under ``NO_COLOR=1``.
+# `_child_env` forces NO_COLOR=1 on every qmd child. Verified against
+# qmd 2.5.3's source: its only NO_COLOR consumer is
+# `dist/cli/qmd.js:92`, `useColor = !NO_COLOR && process.stdout.isTTY`,
+# and LIES always pipes, so colour is already off and the override
+# cannot change today's bytes.
+#
+# These tests therefore pin the POLICY (colour is not a variable, and an
+# operator's exported NO_COLOR=0 cannot reach a stream LIES parses) and
+# the environment plumbing — not a bug fix. An earlier version of them
+# asserted that the override prevented a spinner landing in parsed JSON.
+# That was false: the `⠋ Gathering information` spinner is emitted by
+# `ipull` (a transitive dep of node-llama-cpp) during a *model
+# download*, via `stdout-update`, and is not gated by NO_COLOR at all.
 
 
 def test_child_env_forces_no_color(monkeypatch: pytest.MonkeyPatch) -> None:
-    """``NO_COLOR`` is set on every qmd child, so stdout stays machine-parsable."""
+    """``NO_COLOR`` is set on every qmd child.
+
+    Defence in depth, not a live fix: under a pipe qmd's colour is
+    already off (see the module comment), so this removes a future
+    variable rather than repairing a present failure.
+    """
     from lies.qmd._subprocess import _child_env
 
     monkeypatch.delenv("NO_COLOR", raising=False)
@@ -216,11 +228,13 @@ def test_child_env_forces_no_color(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_child_env_overrides_an_operator_who_re_enabled_color(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """An exported ``NO_COLOR=0`` must not reintroduce the spinner.
+    """An exported ``NO_COLOR=0`` must not reach a stream LIES parses.
 
     The subprocess inherits the operator's shell environment. Someone who
     deliberately re-enabled colour in their own terminal would otherwise
-    be able to put escape sequences back into a stream LIES parses.
+    be able to change what ``qmd_query`` parses. This is the policy the
+    override exists to enforce, independent of whether qmd consults
+    ``NO_COLOR`` before its TTY check today.
     """
     from lies.qmd._subprocess import _child_env
 

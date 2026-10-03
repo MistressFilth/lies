@@ -6,6 +6,11 @@ All notable changes to LIES are documented here. The format follows
 
 ## [0.43.3] - 2026-10-01
 
+> Version numbering: this branch has no `0.43.2` entry because nothing was
+> released as 0.43.2 — the last tag is `v0.40.0`. The release-scaffold
+> bump was renumbered 0.43.2 → 0.43.3 when the fastmcp-floor change landed
+> alongside it. Nothing was deleted; no 0.43.2 record ever shipped.
+
 ### Fixed
 
 - **`read` returned bodies that could not be quoted.** F19's citation
@@ -46,32 +51,55 @@ All notable changes to LIES are documented here. The format follows
   implementation detail of its error signalling, and a batch's outcome
   must not depend on it. `ToolError("all reads failed")` remains the
   loud failure, raised once when the batch genuinely produced nothing.
-- **`qmd query --json` returned unparsable output.** qmd renders a
-  spinner (`⠋ Gathering information` plus cursor escapes) on
-  **stdout** while gating it on `process.stderr.isTTY`. LIES pipes both
-  streams, so the gate is false but the write still happens, and the
-  spinner landed inside the JSON — surfacing as
-  `qmd query returned invalid JSON: Expecting value: line 1 column 1
-  (char 0)`. It reproduced only on queries slow enough for the spinner
-  to render, which is why it looked intermittent. Every qmd subprocess
-  now runs with `NO_COLOR=1`, which suppresses the spinner; progress on
-  stderr — the wedge signal the subprocess helper exists to read — is
-  unaffected.
+- **Every qmd subprocess now runs with `NO_COLOR=1`.** Policy, not a
+  fix: qmd's only `NO_COLOR` consumer is
+  `const useColor = !NO_COLOR && process.stdout.isTTY`, and LIES always
+  pipes, so colour is already off and the override cannot change
+  today's output. It is defence in depth — it removes colour as a
+  variable, and forcing rather than inheriting means an operator who
+  exported `NO_COLOR=0` for their own terminal cannot change what
+  `qmd_query` parses. An earlier draft of this entry claimed the
+  override suppressed a `⠋ Gathering information` spinner that qmd
+  writes to stdout, and that is wrong: qmd 2.5.3 has no such spinner
+  (its only cursor control writes to stderr). The spinner is real but
+  belongs to `ipull`, a transitive dependency of `node-llama-cpp`,
+  writing through `stdout-update` to stdout with no TTY guard — and it
+  only runs while a model is downloading into a cold cache.
+  `NO_COLOR` does not suppress it; the lever is a warm model cache.
 - **`fastmcp>=2.0` advertised compatibility the code does not have.**
   `Client.call_tool(..., raise_on_error=False)` is keyword-only on
   FastMCP 4 and absent on 2.x, and the access seam calls it on every
   daemon call, so a 2.x install would die with a `TypeError` at the
   first call rather than at install time. The floor is now `>=4.0`.
-- **`qmd embed` was killed as a wedge while it was working.** The wedge
-  detector fires after 30s of silence, which is a good default for an
-  interactive query — but embedding is silent for its *entire*
-  duration: `qmd embed` prints a spinner and then says nothing while the
-  model loads and runs. Measured on a cold cache, one tiny document
-  takes 9.4s of unbroken silence, and four collections under host
-  contention crossed the bound and were killed mid-progress. `qmd_embed`
-  now raises the idle bound to the caller's `timeout`, which is already
-  their statement about how long the work may take. Retrieval commands
-  keep the 30s default: a query silent for 30s genuinely is wedged.
+- **`qmd embed` and `qmd update` were killed as wedges while they were
+  working.** The wedge detector fires after 30s of silence, which is a
+  good default for an interactive query — but both of these are silent
+  for their *entire* duration under a pipe. `qmd embed` writes exactly
+  one byte (a stderr spinner escape) and then nothing while the model
+  loads and runs; `qmd update` writes nothing at all, its progress being
+  a stderr write behind an `isTTY` check. Measured on a cold cache, one
+  tiny document takes 9.4s of unbroken silence, and four collections
+  under host contention crossed the bound and were killed mid-progress.
+  Both now pass an idle bound of `timeout * 0.5`. Half rather than all:
+  the loop checks the total bound first, so an idle bound equal to the
+  total could never fire and every kill would lose its `last_output`
+  diagnostic. The cost is a wedged command holding `with_qmd_lock()` for
+  up to half its total bound instead of 30s — stated, not hidden, and
+  still the better trade against killing healthy work. Retrieval
+  commands keep the 30s default: a query silent for 30s genuinely is
+  wedged.
+- **`qmd query --json` failed on a cold model cache.** When qmd's models
+  are not yet cached it downloads them, and that download is driven by
+  `ipull` (a transitive dependency of `node-llama-cpp`) through
+  `stdout-update`, whose `UpdateManager` defaults to `process.stdout`
+  and writes there with no TTY guard and no `NO_COLOR` check. Under a
+  pipe that progress lands in front of the JSON, and `json.loads` failed
+  at char 0 — reported as `qmd query returned invalid JSON`, on exactly
+  the runs with a cold cache, which is why it read as intermittent.
+  `_parse_json_list` now finds the JSON rather than demanding the stream
+  begin with it, and still rejects genuinely malformed output — quoting
+  what actually arrived when it does. Reproduced deliberately: a test
+  that forces a cold cache sees the spinner on stdout today.
 
 ### Changed
 
@@ -84,6 +112,10 @@ All notable changes to LIES are documented here. The format follows
   was broken by them; but any future caller omitting `url=` would have
   reproduced the 404-as-down-daemon misdiagnosis. Sourcing the constant
   closes the class rather than the three instances.
+  `QmdMcpClient.url` therefore also changes host `localhost` →
+  `127.0.0.1` by inheriting the constant. Inert today — the class has no
+  production construction site — but it is a behaviour change and is
+  recorded as one.
 
 ## [0.43.1] - 2026-10-01
 

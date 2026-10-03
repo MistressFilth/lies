@@ -80,3 +80,50 @@ def test_qmd_query_does_not_deadlock_on_long_stderr(
         pass
     dt = time.monotonic() - t0
     assert dt < 3.0, f"qmd_query took {dt:.2f}s; expected < 3s"
+
+
+# --- parsing qmd's stdout ------------------------------------------------
+#
+# qmd writes only JSON to stdout — except while its model cache is cold,
+# when the download is driven by `ipull` (a transitive dep of
+# node-llama-cpp) through `stdout-update`, which defaults to
+# `process.stdout` with no TTY guard and no NO_COLOR check. LIES always
+# pipes, so that progress lands in front of the JSON.
+
+
+def test_parse_json_list_accepts_a_clean_payload() -> None:
+    from lies.qmd.cli import _parse_json_list
+
+    assert _parse_json_list('[{"path": "a/b.md"}]') == [{"path": "a/b.md"}]
+
+
+def test_parse_json_list_tolerates_a_download_progress_prefix() -> None:
+    """The real qmd shape: ipull's spinner, then the JSON."""
+    from lies.qmd.cli import _parse_json_list
+
+    prefix = (
+        "\x1b[?25l⠋ Gathering information\n"
+        "\x1b[2K\x1b[1A\x1b[2K\x1b[G⠙ Gathering information\n"
+        "\x1b[2K\x1b[1A\x1b[2K\x1b[G"
+    )
+    assert _parse_json_list(prefix + '[{"path": "a/b.md"}]') == [{"path": "a/b.md"}]
+
+
+def test_parse_json_list_rejects_output_that_is_not_json() -> None:
+    """Tolerating a prefix is not the same as accepting anything.
+
+    A genuinely malformed response must still be rejected, or the caller
+    would silently treat a broken qmd as "no results".
+    """
+    from lies.qmd.cli import _parse_json_list
+
+    assert _parse_json_list("not json at all") is None
+    assert _parse_json_list('[{"path": "truncated"') is None
+    assert _parse_json_list("") is None
+
+
+def test_parse_json_list_rejects_a_json_object_where_a_list_is_required() -> None:
+    """qmd's contract is a list; an object means something else broke."""
+    from lies.qmd.cli import _parse_json_list
+
+    assert _parse_json_list('{"error": "boom"}') is None

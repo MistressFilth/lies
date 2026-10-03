@@ -4,9 +4,21 @@ Drives the real ``qmd`` CLI against a fixture library of three collections
 so the post-qmd per-collection drop
 (:func:`lies.qmd.cli.qmd_query`) and the ``searched_scope`` envelope
 (:func:`lies.query.synthesizer._searched_scope`) are exercised as they
-actually run, not as a mock would. The orchestrator's LLM is stubbed at the
-synthesizer-agent seam so the round-trip is deterministic (per F4a's
-precedent in ``test_end_to_end.py``); the qmd path is **not** mocked.
+actually run, not as a mock would.
+
+What is real and what is stubbed: **the qmd path is not mocked.** The
+librarian's retrieval here is the production
+:func:`lies.qmd.cli.qmd_query` running against the live index, so the
+per-collection drop under test is the real one. What *is* stubbed is the
+LLM — at two seams, ``_patched_librarian`` (which decides which paths to
+read, and does so by asking that same real ``qmd_query``) and
+``_patched_synthesizer`` (which turns excerpts into prose). A
+``TestModel`` cannot stand in for either: it calls each tool once with
+*generated* arguments, so the librarian called ``read(["a"])`` and every
+page was skipped as unrecognised — which left ``captured`` empty and
+made every ``for rel_path in captured`` loop in this file vacuously
+true. Substituting the LLM is what makes retrieval assertions possible at
+all; it is not the same as mocking the thing under test.
 
 Tests are gated on ``INTEGRATION=1``; default CI skips them via
 ``pytest.mark.skipif``. The integration workflow in
@@ -268,13 +280,26 @@ def _seed_qmd(wiki: Wiki) -> None:
 
 @pytest.fixture
 def qmd_fixture_library(tmp_path: Path) -> Wiki:
-    """A wiki with four tagged collections, registered and embedded with qmd."""
+    """A wiki with four tagged collections, registered and embedded with qmd.
+
+    Function-scoped, and deliberately so. The wiki is built under the
+    per-test ``tmp_path`` because ``_isolated_xdg`` redirects the XDG
+    roots per test, and ``Wiki`` construction reads them from the
+    environment — a session-scoped fixture built the wiki before that
+    redirect existed for it and every test then errored at setup with
+    ``KeyError: 'XDG_CONFIG_HOME'``.
+
+    That means four embed cycles per test. It is affordable as long as
+    they are sequential, which they are (``QMD_EMBED_PARALLELISM=1`` and
+    a lock around each call). A CUDA OOM here means two suites were
+    embedding concurrently, not that the fixture is wrong.
+    """
     if shutil.which("qmd") is None:
         pytest.skip("qmd not installed on PATH")
-    # Real qmd daemon must be reachable: the per-test fixture embeds
-    # collections into the daemon's global index and the integration
-    # tests assert that ``wiki_search`` surfaces indexed hits. CI
-    # doesn't run a qmd daemon by default; skip rather than fail.
+    # Real qmd daemon must be reachable: the fixture embeds collections
+    # into the daemon's global index and the tests assert that
+    # ``wiki_search`` surfaces indexed hits. CI doesn't run a qmd daemon
+    # by default; skip rather than fail.
     from lies.qmd.health import qmd_daemon_reachable
 
     if not qmd_daemon_reachable("http://127.0.0.1:8181", timeout=0.5):
@@ -289,86 +314,135 @@ def qmd_fixture_library(tmp_path: Path) -> Wiki:
 # ---------------------------------------------------------------------------
 
 
-def _patched_librarian(
-    orch: Orchestrator,
-    *,
-    collections: set[str] | None = None,
-) -> mock._patch:
-    """Stub ``orch._librarian_agent.run_sync`` the way the synthesizer is stubbed.
+#: The collection names the librarian's real qmd search spanned, recorded
+#: by ``_patched_librarian``. A module-level record because the assertion
+#: that reads it runs *after* the patch context has exited.
+_librarian_queried_collections: set[str] = set()
+
+ALL_FIXTURE_COLLECTIONS = ("airflow", "amazon", "pyspark", "prefect")
+
+
+def _collection_of(rel_path: str) -> str:
+    """The fixture collection a returned path belongs to.
+
+    A path from a real qmd query is ``<qmd collection>/<collection>/<page>``
+    — the leading segment is the qmd *collection* (this wiki, registered as
+    ``wiki_<name>``), and the second is the fixture collection the tag
+    filter addresses. Comparing the leading segment, as these tests did
+    before the librarian started doing real retrieval, asserted against
+    the wiki's own name rather than the thing under test.
+
+    Returning the last-but-one segment would be wrong for nested paths, so
+    this strips exactly one known prefix: if the first segment is the
+    wiki collection, the fixture collection is the second.
+    """
+    segments = rel_path.split("/")
+    if len(segments) >= 2 and segments[0].startswith("wiki_"):
+        return segments[1]
+    return segments[0] if segments else ""
+
+
+def _patched_librarian(orch: Orchestrator) -> mock._patch:
+    """Replace the librarian agent with one that retrieves for real.
 
     The librarian runs on a pydantic-ai ``TestModel`` (the orchestrator is
     built with ``models_for_tests("test")``). A ``TestModel`` does not
     *decide* anything — it calls each tool once with generated arguments,
     so it called ``read(["a"])``, every path was skipped as unrecognised,
-    and the synthesizer received zero excerpts. The test then asserted
-    ``captured == []`` against a failure that had nothing to do with the
-    tag filter under test.
+    and the synthesizer received zero excerpts. Since #78 the librarian
+    has to ``search()`` and then read the paths that come back; a
+    ``TestModel`` cannot perform that sequence, so any test asserting on
+    retrieved pages must supply it.
 
-    This is not cosmetic. ``run_query``'s retrieval became library-mode
-    in #78, so the librarian has to ``search()`` and then read the paths
-    that come back; a ``TestModel`` cannot perform that sequence, and any
-    test asserting on real retrieved pages must supply it itself.
+    What this substitutes is only the *LLM* — the part no test can assert
+    on deterministically. Retrieval stays real: the stub calls the
+    production :func:`lies.qmd.cli.qmd_query` with the filter under test
+    and builds excerpts from the pages it returns, so the post-qmd
+    per-collection drop — the seam this test exists to exercise — runs
+    unmodified against the live index.
 
-    Scope, deliberately narrow: the librarian's *choice* of which paths
-    to read is the part no test can assert on deterministically, so that
-    is what is replaced. ``qmd_query`` still runs for real on both the
-    library pass and the wiki pass, so the post-qmd per-collection drop —
-    the seam under test — executes unchanged. The excerpts are built from
-    the fixture's own page files on disk, so a renamed fixture page fails
-    here rather than silently excerpting a path that no longer exists.
+    The stub searches *every* fixture collection with no filter, exactly
+    as a librarian that had not yet applied the tag would. The filter
+    under test is then what narrows the result, which is the whole point:
+    a stub handed the resolved set would make "nothing leaked" true by
+    construction. ``_librarian_queried_collections`` records what was
+    searched so the test can prove the filter had something to remove.
 
-    Patched on the **instance**, not on ``type(agent)``: the librarian
-    and the synthesizer are both ``pydantic_ai.Agent``, so a class-level
-    patch of ``run_sync`` is shared by both and whichever is applied last
-    wins. The synthesizer's stub would then serve the librarian too, and
-    its canned ``QueryAnswer`` would be handed back where a
-    ``LibrarianOutput`` is expected.
-
-    ``collections`` narrows which fixture collections the librarian is
-    allowed to read, standing in for the filter resolution the real
-    librarian would perform via ``search()``. Passing it is what makes
-    the test meaningful: a stub that returns all four collections
-    regardless would make "no non-airflow page was read" true by
-    construction, and the assertion would be testing the stub.
+    Patched on the **instance**, not on ``type(agent)``: the librarian and
+    the synthesizer are both ``pydantic_ai.Agent``, so a class-level
+    patch of ``run_sync`` is shared by both and the synthesizer's stub
+    would serve the librarian too, handing back a canned ``QueryAnswer``
+    where a ``LibrarianOutput`` is expected.
     """
     from lies.agents.librarian import LibrarianOutput, PageExcerpt
-    from lies.markdown_spans import Span
+    from lies.markdown_spans import parse_spans
+    from lies.qmd.cli import qmd_query
+    from lies.query.synthesizer import _collections_matching
 
+    _librarian_queried_collections.clear()
     wiki_dir = orch.wiki.wiki_dir
 
     def fake_run_sync(prompt: str, **kwargs: object) -> mock.Mock:
-        all_collections = (
-            ("airflow", AIRFLOW_PAGES),
-            ("amazon", AMAZON_PAGES),
-            ("pyspark", PYSPARK_PAGES),
-            ("prefect", PREFECT_PAGES),
+        deps = kwargs.get("deps")
+        question = getattr(deps, "question", prompt)
+
+        # First, an unscoped pass across every collection — recorded, so
+        # the test can assert the filter had something to remove. This is
+        # what a librarian that had not yet applied the tag would see.
+        unscoped = qmd_query(orch.wiki.data_root, str(question), limit=10)
+        _librarian_queried_collections.update(
+            _collection_of(str(h.get("path", ""))) for h in unscoped
         )
-        excerpts = [
-            PageExcerpt(
-                collection=coll,
-                slug=f"{coll}/{page_name}",
-                title=page_name,
-                spans=[
-                    Span(
-                        heading_path=[coll],
-                        body=(wiki_dir / coll / page_name).read_text(encoding="utf-8"),
-                        code_fence=False,
-                        start_line=1,
-                    )
-                ],
-                source_kind="wiki",
+
+        # Then the real filtered pass: the production
+        # ``_collections_matching`` resolves the tag expression under
+        # test, and the production ``qmd_query`` applies it as
+        # ``collection_filter``. Both are the article under test, so
+        # neither may be stubbed — a stub handed the resolved set would
+        # make "nothing leaked" true by construction.
+        resolved = _collections_matching(
+            ResolvedTagFilter(
+                include=getattr(deps, "tag_expr", None),
+                exclude=getattr(deps, "exclude_expr", None),
             )
-            for coll, pages in all_collections
-            if collections is None or coll in collections
-            for page_name in pages
-        ]
+        )
+        hits = (
+            unscoped
+            if not resolved
+            else qmd_query(
+                orch.wiki.data_root,
+                str(question),
+                limit=10,
+                collection_filter=resolved,
+            )
+        )
+
+        excerpts = []
+        for hit in hits:
+            rel = str(hit.get("path", ""))
+            collection, _, page = rel.partition("/")
+            on_disk = wiki_dir / collection / page
+            text = (
+                on_disk.read_text(encoding="utf-8")
+                if on_disk.exists()
+                else str(hit.get("snippet", ""))
+            )
+            excerpts.append(
+                PageExcerpt(
+                    collection=collection,
+                    slug=rel,
+                    title=str(hit.get("title", page)),
+                    spans=parse_spans(text),
+                    source_kind="wiki",
+                )
+            )
         return mock.Mock(
             output=LibrarianOutput(
                 tag_expr=None,
                 exclude_expr=None,
                 excerpts=excerpts,
                 distinct_pages=len(excerpts),
-                no_coverage=False,
+                no_coverage=not excerpts,
                 searched_scope=sorted({e.collection for e in excerpts}),
             )
         )
@@ -464,33 +538,56 @@ def test_plus_tag_filters_to_one_collection(
     orch = _orchestrator(qmd_fixture_library)
     captured: list[str] = []
     tf = ResolvedTagFilter(include=Include("airflow"))
-    # ``_collections_matching`` resolves ``+airflow`` (no qualifier ⇒ the
-    # implicit self-tag rule) to airflow AND prefect, since prefect's tags
-    # include "airflow". Passing that same resolved set to the librarian
-    # stub keeps the test honest: the assertion below is then about the
-    # filter the pipeline resolved, not about a stub that was told the
-    # answer up front.
+
     from lies.query.synthesizer import _collections_matching
 
     resolved = _collections_matching(tf)
+
+    # The floor. ``+airflow`` (no qualifier ⇒ implicit self-tag) must
+    # admit the ``airflow`` collection by name AND ``prefect`` by tag.
+    # Without this, everything below is circular: if the tag expression
+    # stopped selecting these two, the scope assertion would fail for a
+    # reason that has nothing to do with retrieval, and the librarian
+    # below would be handed an empty set and return nothing at all.
+    assert resolved == {"airflow", "prefect"}, (
+        f"+airflow must resolve to airflow and prefect (prefect is tagged "
+        f"airflow); got {sorted(resolved)!r}"
+    )
+    assert not (resolved & {"amazon", "pyspark"}), (
+        f"+airflow must not resolve to amazon or pyspark; got {sorted(resolved)!r}"
+    )
+
     with (
-        _patched_librarian(orch, collections=resolved),
+        _patched_librarian(orch),
         _patched_synthesizer(orch, captured=captured),
     ):
         answer = orch.run_query(AIRFLOW_PROBE, tag_filter=tf, file=False)
 
-    # Every page the synthesizer saw must live under one of the
-    # resolved (airflow-tagged) subdirs; the post-qmd drop in
-    # ``qmd_query`` is the seam being tested, and any leakage into
-    # ``amazon/`` or ``pyspark/`` would mean the filter failed.
+    # The librarian resolves the collection set itself, by calling the
+    # production ``qmd_query`` with the filter under test — the seam this
+    # test is named for. It is NOT handed ``resolved`` above: if the stub
+    # were given the answer, "no non-airflow page leaked" would be true by
+    # construction and could not fail.
+    #
+    # What it asserts is that the filtered qmd pass returned only pages
+    # whose first path segment is in the resolved set. That is the
+    # post-qmd per-collection drop in ``qmd_query``, running for real.
     assert captured, (
         f"+airflow should have surfaced at least one airflow-tagged page via real qmd; "
         f"captured={captured!r}"
     )
     for rel_path in captured:
-        assert rel_path.startswith(("airflow/", "prefect/")), (
+        assert _collection_of(rel_path) in {"airflow", "prefect"}, (
             f"+airflow post-qmd filter leaked non-airflow-tagged page: {rel_path!r}"
         )
+
+    # And the librarian really did see every collection, so the filter
+    # had something to remove. Without this, a stub that quietly searched
+    # only the resolved set would satisfy the loop above vacuously.
+    assert _librarian_queried_collections == {"airflow", "amazon", "pyspark", "prefect"}, (
+        f"the librarian must search across every collection so the filter "
+        f"has something to exclude; it searched {_librarian_queried_collections!r}"
+    )
 
     # searched_scope is the resolved collection set per spec
     # §"Retriever consumption": with a filter, the scope is the resolved
@@ -517,7 +614,7 @@ def test_plus_tag_with_exclude(
     # Task 3 / f15-exclude-compound: ``exclude`` is now an ``Include``
     # AST (no more flat-string + qualifier shim).
     tf = ResolvedTagFilter(include=Include("airflow"), exclude=Include("amazon"))
-    with _patched_synthesizer(orch, captured=captured):
+    with _patched_librarian(orch), _patched_synthesizer(orch, captured=captured):
         answer = orch.run_query(AIRFLOW_PROBE, tag_filter=tf, file=False)
 
     assert answer.searched_scope == ["airflow", "prefect"]
@@ -525,7 +622,7 @@ def test_plus_tag_with_exclude(
     # (no airflow-tagged collection also carries ``amazon``), but
     # the synthesizer must still see only airflow-tagged pages.
     for rel_path in captured:
-        assert rel_path.startswith(("airflow/", "prefect/")), (
+        assert _collection_of(rel_path) in {"airflow", "prefect"}, (
             f"+airflow -amazon post-qmd filter leaked: {rel_path!r}"
         )
 
@@ -543,12 +640,12 @@ def test_plus_tag_and_precise(
     tf = ResolvedTagFilter(
         include=And(Include("airflow"), Include("provider")),
     )
-    with _patched_synthesizer(orch, captured=captured):
+    with _patched_librarian(orch), _patched_synthesizer(orch, captured=captured):
         answer = orch.run_query(AIRFLOW_PROBE, tag_filter=tf, file=False)
 
     assert answer.searched_scope == ["airflow"]
     for rel_path in captured:
-        assert rel_path.startswith("airflow/"), (
+        assert _collection_of(rel_path) == "airflow", (
             f"+airflow&provider post-qmd filter leaked: {rel_path!r}"
         )
 
@@ -567,12 +664,12 @@ def test_plus_tag_or_broad(
     tf = ResolvedTagFilter(
         include=Or(Include("airflow"), Include("provider")),
     )
-    with _patched_synthesizer(orch, captured=captured):
+    with _patched_librarian(orch), _patched_synthesizer(orch, captured=captured):
         answer = orch.run_query(AIRFLOW_PROBE, tag_filter=tf, file=False)
 
     assert answer.searched_scope == ["airflow", "prefect"]
     for rel_path in captured:
-        assert rel_path.startswith(("airflow/", "prefect/")), (
+        assert _collection_of(rel_path) in {"airflow", "prefect"}, (
             f"+airflow|provider post-qmd filter leaked: {rel_path!r}"
         )
 
@@ -596,7 +693,7 @@ def test_plus_unknown_tag_no_coverage(
     orch = _orchestrator(qmd_fixture_library)
     captured: list[str] = []
     tf = ResolvedTagFilter(include=Include("nope"))
-    with _patched_synthesizer(orch, captured=captured):
+    with _patched_librarian(orch), _patched_synthesizer(orch, captured=captured):
         answer = orch.run_query(AIRFLOW_PROBE, tag_filter=tf, file=False)
 
     # No collection matches `+nope`: the resolved set is empty, so
@@ -642,14 +739,14 @@ def test_plus_c_qualifier_returns_only_named_collection(
     orch = _orchestrator(qmd_fixture_library)
     captured: list[str] = []
     tf = ResolvedTagFilter(include=Include("airflow", qualifier="c"))
-    with _patched_synthesizer(orch, captured=captured):
+    with _patched_librarian(orch), _patched_synthesizer(orch, captured=captured):
         answer = orch.run_query(AIRFLOW_PROBE, tag_filter=tf, file=False)
 
     # Strict-name dispatch: prefect is excluded even though it carries
     # ``airflow`` in its tags.
     assert answer.searched_scope == ["airflow"]
     for rel_path in captured:
-        assert rel_path.startswith("airflow/"), (
+        assert _collection_of(rel_path) == "airflow", (
             f"+c:airflow post-qmd filter leaked non-airflow page: {rel_path!r}"
         )
 
@@ -668,7 +765,7 @@ def test_plus_t_qualifier_returns_all_carriers(
     orch = _orchestrator(qmd_fixture_library)
     captured: list[str] = []
     tf = ResolvedTagFilter(include=Include("airflow", qualifier="t"))
-    with _patched_synthesizer(orch, captured=captured):
+    with _patched_librarian(orch), _patched_synthesizer(orch, captured=captured):
         answer = orch.run_query(AIRFLOW_PROBE, tag_filter=tf, file=False)
 
     # Tag-or-name dispatch: both airflow (by name) and prefect (by tag)
@@ -677,7 +774,7 @@ def test_plus_t_qualifier_returns_all_carriers(
     # Every page the synthesizer saw must live under one of the two
     # resolved collections — no leakage into amazon / pyspark.
     for rel_path in captured:
-        assert rel_path.startswith(("airflow/", "prefect/")), (
+        assert _collection_of(rel_path) in {"airflow", "prefect"}, (
             f"+t:airflow post-qmd filter leaked: {rel_path!r}"
         )
 
@@ -717,7 +814,7 @@ def test_plus_t_then_c_exclude_drops_named_only(
         include=Include("airflow", qualifier="t"),
         exclude=Include("airflow", qualifier="c"),
     )
-    with _patched_synthesizer(orch, captured=captured):
+    with _patched_librarian(orch), _patched_synthesizer(orch, captured=captured):
         answer = orch.run_query(AIRFLOW_PROBE, tag_filter=tf, file=False)
 
     # Include resolved both airflow + prefect; exclude (c:) dropped
