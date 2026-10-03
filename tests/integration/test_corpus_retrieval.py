@@ -249,6 +249,15 @@ def test_search_returns_searched_scope(
     """
     from lies.mcp.search import search
 
+    # ``_search_impl`` validates scope against the daemon's own
+    # ``status`` before dispatching, which is a real reachability
+    # probe. This test stubs ``_post_query`` and does not exercise the
+    # daemon, so the probe is stubbed to the same collection the test
+    # asks about.
+    monkeypatch.setattr(
+        "lies.mcp.search._qmd_collection_names_for_check",
+        lambda: frozenset({"alpha", "beta"}),
+    )
     monkeypatch.setattr(
         "lies.mcp.search._post_query",
         lambda doc, scope, limit, timeout: [
@@ -450,6 +459,12 @@ def test_librarian_snippet_review_picks_authoring_over_install(
             },
         ]
 
+    # The pre-dispatch scope check is a real reachability probe. This
+    # test stubs ``_post_query`` and does not exercise the daemon.
+    monkeypatch.setattr(
+        "lies.mcp.search._qmd_collection_names_for_check",
+        lambda: frozenset({"alpha", "beta"}),
+    )
     monkeypatch.setattr("lies.mcp.search._post_query", fake_post_query)
 
     # Step 2 — read returns a body for any path the librarian picks. The

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import warnings
+from types import SimpleNamespace
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -545,6 +546,17 @@ def test_ground_searched_scope_tagged_returns_matching_only(monkeypatch) -> None
         )
 
     _patch_librarian(monkeypatch, grounding, fake_librarian)
+
+    # A bare (unqualified) tag still resolves to the tagged fast-path,
+    # which dispatches through the seam. The assertion below is about
+    # ``searched_scope``, so an empty result set is fine — the seam
+    # merely must not be reached live.
+    async def fake_daemon_tool(name, arguments, *, timeout=None):  # noqa: ARG001
+        return SimpleNamespace(content=[], is_error=False, structured_content={"results": []})
+
+    import lies.qmd.access
+
+    monkeypatch.setattr(lies.qmd.access, "daemon_tool", fake_daemon_tool)
 
     digest = _ground("q", tag_expr="opencode")
     assert digest.searched_scope == ["opencode"]
@@ -1106,30 +1118,30 @@ def test_ground_tagged_dispatches_via_qmd_fanout_not_librarian(monkeypatch) -> N
     from lies.mcp import grounding
 
     qmd_calls: list[dict] = []
+    rows = [
+        {
+            "file": "switchyard/concepts/switchyard",
+            "title": "Switchyard",
+            "score": 0.95,
+            "line": 1,
+            # The daemon's hit carries a snippet, which is what
+            # ``_fanout_collections`` turns into the PageExcerpt's
+            # spans. Without it the citation-building loop in
+            # :func:`ground` skips the excerpt (no prose body to
+            # truncate) and the digest's citations list is empty.
+            "snippet": "Switchyard is the LiteLLM replacement.",
+        },
+    ]
 
-    def fake_qmd_query(*_args, **kwargs):
+    async def fake_daemon_tool(name, arguments, *, timeout=None):  # noqa: ARG001
         qmd_calls.append(
             {
-                "question": kwargs.get("question") or _args[1] if len(_args) > 1 else None,
-                "limit": kwargs.get("limit"),
-                "collection_filter": kwargs.get("collection_filter"),
+                "question": arguments.get("searches"),
+                "limit": arguments.get("limit"),
+                "collection_filter": set(arguments.get("collections") or ()),
             }
         )
-        # Mirror the qmd wire shape (``path``, ``title``, ``score``,
-        # ``snippet``) so the production ``_fanout_collections``
-        # populates the PageExcerpt's spans list from the snippet
-        # field. Without ``snippet``, the citation-building loop in
-        # :func:`ground` skips the excerpt (no prose body to
-        # truncate) and the digest's citations list is empty.
-        return [
-            {
-                "path": "switchyard/concepts/switchyard",
-                "title": "Switchyard",
-                "score": 0.95,
-                "line": 1,
-                "snippet": "Switchyard is the LiteLLM replacement.",
-            },
-        ]
+        return SimpleNamespace(content=[], is_error=False, structured_content={"results": rows})
 
     librarian_called = []
 
@@ -1166,14 +1178,12 @@ def test_ground_tagged_dispatches_via_qmd_fanout_not_librarian(monkeypatch) -> N
         lambda: frozenset(),
     )
 
-    # Patch the qmd CLI callable that ``_fanout_collections`` dispatches
-    # against. Importing it lazily inside the helper means we patch
-    # the ``lies.qmd.cli`` module attribute, which is what the
-    # ``from lies.qmd.cli import qmd_query`` inside
-    # ``_fanout_collections`` rebinds every call.
-    import lies.qmd.cli as qmd_cli
+    # ``_fanout_collections`` dispatches through the seam, not the CLI.
+    # Stubbing ``qmd_query`` no longer intercepts it, and the real
+    # reachability probe fires.
+    import lies.qmd.access
 
-    monkeypatch.setattr(qmd_cli, "qmd_query", fake_qmd_query)
+    monkeypatch.setattr(lies.qmd.access, "daemon_tool", fake_daemon_tool)
 
     digest = _ground(
         "Set up Switchyard to replace LiteLLM",
@@ -1487,15 +1497,17 @@ def test_ground_tagged_with_resolved_collection_calls_fanout_only(
 
     qmd_calls: list[set] = []
 
-    def fake_qmd_query(*_args, **kwargs):
-        filter_set = kwargs.get("collection_filter")
-        qmd_calls.append(frozenset(filter_set) if filter_set is not None else None)
+    async def fake_daemon_tool(name, arguments, *, timeout=None):  # noqa: ARG001
+        collections = arguments.get("collections")
+        filter_set = frozenset(collections) if collections is not None else None
+        qmd_calls.append(filter_set)
         coll = next(iter(filter_set)) if filter_set else "unknown"
-        return [{"path": f"{coll}/concepts/x", "title": "X", "score": 0.9}]
+        rows = [{"file": f"{coll}/concepts/x", "title": "X", "score": 0.9}]
+        return SimpleNamespace(content=[], is_error=False, structured_content={"results": rows})
 
-    import lies.qmd.cli as qmd_cli
+    import lies.qmd.access
 
-    monkeypatch.setattr(qmd_cli, "qmd_query", fake_qmd_query)
+    monkeypatch.setattr(lies.qmd.access, "daemon_tool", fake_daemon_tool)
 
     digest = _ground(
         "test",
@@ -1503,14 +1515,14 @@ def test_ground_tagged_with_resolved_collection_calls_fanout_only(
         top_k=5,
     )
 
-    # The fan-out dispatched against each matched collection
-    # exactly once — never against the unrelated ``claude_platform``.
-    unique_filters = set(qmd_calls)
-    matched_names = {next(iter(f)) for f in unique_filters if f}
+    # The dispatch covered each matched collection and no other. The
+    # fan-out is one call carrying the whole ``collections`` list rather
+    # than one call per collection, so the recorded sets union.
+    matched_names = set().union(*(f for f in qmd_calls if f))
     assert {"switchyard", "opencode"}.issubset(matched_names), (
         f"expected dispatch against switchyard + opencode; saw {matched_names!r}"
     )
-    # No filter set included ``claude_platform`` (unmatched).
+    # No dispatch included ``claude_platform`` (unmatched).
     for f in qmd_calls:
         if f is None:
             continue
