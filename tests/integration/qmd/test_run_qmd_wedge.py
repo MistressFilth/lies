@@ -1,29 +1,19 @@
 """A slow qmd call and a wedged qmd call are not the same failure.
 
-``_run_qmd`` had one primitive: ``proc.communicate(timeout=N)``, an
-absolute deadline. That cannot separate "slow" from "hung" — the two
-distributions overlap, so any single threshold either kills legitimate
-work or waits forever on a wedge. Raising the number moves the line
-without moving the problem, which is what changing 15s to 60s did.
+An absolute deadline (``communicate(timeout=N)``) cannot separate them:
+the two distributions overlap, so any single threshold either kills
+legitimate work or waits forever on a wedge.
 
-The primitive that *does* separate them is idle: qmd writes progress
-to stderr as it works —
+Idle time can. qmd writes progress to stderr as it works —
 
     Expanding query... (1ms)
     Embedding 35 queries... (2.6s)
     Reranking 40 chunks... (1ms)
 
-— so "no new output for N seconds" is evidence of a wedge, while
-"running for M seconds while still emitting" is evidence of slow
-work. A slow query is never killed no matter how long it runs; a
-wedged one dies N seconds after it stops talking, whatever the
-absolute budget says.
-
-Two bounds, and the error says which fired:
-
-``idle``  — no output for ``idle_timeout`` seconds. The wedge signal.
-``total`` — the absolute ceiling, the backstop for a process that
-           talks forever without finishing.
+— so "no new output for N seconds" is a wedge and "M seconds while
+still emitting" is slow work. Two bounds, and the error says which
+fired: ``idle`` (no output for ``idle_timeout``) is the wedge signal,
+``total`` is the backstop for a process that talks forever.
 
 Mutation behind these tests: revert ``_run_qmd`` to
 ``communicate(timeout=N)`` and every one of them fails.
@@ -67,7 +57,6 @@ def _child(src: str, path: Path) -> list[str]:
 def test_a_slow_but_progressing_child_is_not_killed(tmp_path: Path) -> None:
     """Progress resets the idle clock, so a slow query is never a wedge.
 
-    This is the property the old absolute deadline could not express.
     The child takes 1.8s of wall time; the idle bound is 1.0s. It
     emits every 0.3s, so it should survive a bound it *exceeds in
     total* — and it does, because it never goes idle.
@@ -101,7 +90,6 @@ def test_a_silent_child_is_killed_on_the_idle_bound(tmp_path: Path) -> None:
 def test_the_whole_process_group_is_reaped_on_a_wedge(tmp_path: Path) -> None:
     """A wedged grandchild must not outlive its parent.
 
-    ``_run_qmd`` already kills the group for exactly this reason —
     qmd forks a node.js grandchild under the bun shim. The idle path
     has to reach the same cleanup; a wedge that leaves a live child
     holding the embedding model is worse than the timeout.
@@ -135,10 +123,8 @@ def test_a_child_that_never_stops_talking_still_hits_the_total_ceiling(
 ) -> None:
     """The idle bound cannot be the only one.
 
-    A process that emits forever without finishing would reset the idle
-    clock indefinitely. The absolute ceiling is the backstop, and the
-    error distinguishes it so a reader knows the difference between
-    "stopped responding" and "never finished".
+    A process that emits forever would reset the idle clock
+    indefinitely; the absolute ceiling is the backstop.
     """
     src = r"""
 import sys, time
@@ -158,8 +144,6 @@ while True:
 def test_the_wedge_error_names_the_last_output_it_saw(tmp_path: Path) -> None:
     """The evidence travels with the error.
 
-    The first cut of this change raised a message with a constant
-    string and no stderr, so a stall arrived with nothing to act on.
     ``last_output`` is what a reader uses to decide whether the process
     was working hard or had gone quiet at a phase boundary.
     """
