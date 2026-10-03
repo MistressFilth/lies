@@ -511,7 +511,7 @@ def status(
                 conn.close()
             except Exception:
                 pass
-    except (OSError, sqlite3.Error, LibraryError):
+    except OSError, sqlite3.Error, LibraryError:
         # Status is observability; we still want to surface the wiki
         # section. Narrow catch so a regression that mis-spells
         # ``list_pages`` (e.g. ``NameError``) surfaces instead of being

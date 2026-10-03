@@ -30,5 +30,5 @@ def qmd_daemon_reachable(url: str, *, timeout: float = 0.5) -> bool:
     try:
         with socket.create_connection((parsed.hostname, parsed.port), timeout=timeout):
             return True
-    except (TimeoutError, OSError):
+    except TimeoutError, OSError:
         return False

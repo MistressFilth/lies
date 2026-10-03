@@ -197,7 +197,7 @@ def _run_qmd(
             except subprocess.TimeoutExpired:
                 try:
                     os.killpg(proc.pid, signal.SIGKILL)
-                except (ProcessLookupError, PermissionError):
+                except ProcessLookupError, PermissionError:
                     pass
                 try:
                     proc.wait(timeout=_DRAIN_TIMEOUT_S)
@@ -218,7 +218,7 @@ def _run_qmd(
             # the bound. ``killpg`` raises if the group is already gone.
             try:
                 os.killpg(proc.pid, signal.SIGKILL)
-            except (ProcessLookupError, PermissionError):
+            except ProcessLookupError, PermissionError:
                 pass
             try:
                 proc.communicate(timeout=_DRAIN_TIMEOUT_S)
@@ -237,7 +237,7 @@ def _run_qmd(
         # forked must still be reaped.
         try:
             os.killpg(proc.pid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError):
+        except ProcessLookupError, PermissionError:
             pass
         return subprocess.CompletedProcess(
             args=args,

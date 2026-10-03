@@ -257,7 +257,7 @@ def _spawn_qmd_daemon() -> None:
             cwd=_Path.cwd(),
             timeout=STATUS_TIMEOUT_S,
         )
-    except (subprocess.TimeoutExpired, OSError):
+    except subprocess.TimeoutExpired, OSError:
         pass
 
 

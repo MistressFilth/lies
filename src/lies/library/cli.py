@@ -34,7 +34,7 @@ def _coerce_source(value: str | Path | None) -> Path | str | None:
         return value
     try:
         p = Path(value)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return value
     if p.exists():
         return p

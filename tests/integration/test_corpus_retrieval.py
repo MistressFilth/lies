@@ -596,7 +596,7 @@ def test_ask_envelope_carries_fallback_reason_on_no_coverage(
     synth_called: list[object] = []
     monkeypatch.setattr(
         "lies.mcp.synth.synthesizer_agent_run",
-        lambda lib_out_arg, question: (synth_called.append(True) or MagicMock()),
+        lambda lib_out_arg, question: synth_called.append(True) or MagicMock(),
     )
 
     out = lib_ask.fn(

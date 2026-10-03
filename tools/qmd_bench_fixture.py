@@ -292,7 +292,7 @@ def _index_identity() -> dict[str, Any]:
     """
     try:
         out = subprocess.run(["qmd", "status"], capture_output=True, text=True, timeout=120).stdout
-    except (OSError, subprocess.SubprocessError):
+    except OSError, subprocess.SubprocessError:
         return {"index_path": "unknown", "corpus_documents": None}
 
     index = re.search(r"^\s*Index:\s*(.+)$", out, re.M)
@@ -427,7 +427,7 @@ def _qmd_version() -> str:
         out = subprocess.run(
             ["qmd", "--version"], capture_output=True, text=True, timeout=30
         ).stdout.strip()
-    except (OSError, subprocess.SubprocessError):
+    except OSError, subprocess.SubprocessError:
         return "unknown"
     return out or "unknown"
 

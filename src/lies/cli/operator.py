@@ -141,7 +141,7 @@ def up(
         for line in daemon.tail_log(wiki, 20):
             typer.echo(line, err=True)
         raise typer.Exit(code=1) from exc
-    except (daemon.NonLoopbackBind, daemon.PortUnavailable, daemon.DaemonBusy):
+    except daemon.NonLoopbackBind, daemon.PortUnavailable, daemon.DaemonBusy:
         typer.echo(f"error: {sys.exc_info()[1]}", err=True)
         raise typer.Exit(code=1)
     typer.echo(f"lies mcp daemon running at {daemon.daemon_url(rec)} (pid {rec.pid})")
@@ -179,7 +179,7 @@ def down(
     wiki = resolve_wiki(name)
     try:
         result = daemon.stop_daemon(wiki, grace=grace)
-    except (daemon.DaemonBusy, daemon.DaemonStopFailed):
+    except daemon.DaemonBusy, daemon.DaemonStopFailed:
         typer.echo(f"error: {sys.exc_info()[1]}", err=True)
         raise typer.Exit(code=1)
     if result.action == "none":

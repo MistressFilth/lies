@@ -67,7 +67,7 @@ def _read_pid() -> int | None:
         return None
     try:
         return int(pf.read_text().strip())
-    except (OSError, ValueError):
+    except OSError, ValueError:
         return None
 
 
@@ -77,7 +77,7 @@ def _port_listening(port: int) -> bool:
         try:
             s.connect((_HOST, port))
             return True
-        except (ConnectionRefusedError, OSError):
+        except ConnectionRefusedError, OSError:
             return False
 
 
@@ -171,7 +171,7 @@ def _down(port: int = _DEFAULT_PORT) -> None:
             cwd=Path(os.getcwd()),
             timeout=_STOP_TIMEOUT_S,
         )
-    except (subprocess.TimeoutExpired, RuntimeError):
+    except subprocess.TimeoutExpired, RuntimeError:
         return
 
 
@@ -191,7 +191,7 @@ def serves_query(port: int = _DEFAULT_PORT, timeout: float = _SERVES_QUERY_TIMEO
             resp = client.post(f"http://{_HOST}:{port}/query", json=payload)
             resp.raise_for_status()
             resp.json()
-    except (httpx.HTTPError, ValueError):
+    except httpx.HTTPError, ValueError:
         return False
     return True
 
