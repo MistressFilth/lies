@@ -4,6 +4,29 @@ All notable changes to LIES are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/) adapted for
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+## [0.44.0] - 2026-10-03
+
+### Added
+
+- **`lies.qmd.integrity` — read-only SQLite inspection of the qmd index.**
+  qmd has no read-only open mode, and the index has no `content_vectors`
+  → `content` foreign key, so vector rows can outlive the documents they
+  belong to and nothing cascades them. LIES now reads the index directly
+  via `file:$XDG_CACHE_HOME/qmd/index.sqlite?mode=ro` rather than shelling
+  out to qmd for diagnosis — every entry point opens read-only, with
+  `open_readonly(db)` as the module's only connection constructor.
+  Three named functions: `index_orphans(db) -> OrphanReport` (counts
+  vector rows whose hash has no backing `content`), `is_embedded(db, h)
+  -> bool` (the per-document semantic-search reachability check), and
+  `collection_drift(db) -> dict[str, list[str]]` (registered paths
+  that no longer exist on disk). An `integrity_summary(db)` aggregator
+  composes the three with three coverage queries (`documents_total`,
+  `documents_active`, `documents_active_without_vectors`) for the
+  status command. `lies qmd status` now prints this as an `index` block
+  alongside the daemon fields; `null` when the index is absent.
+
 ## [0.43.3] - 2026-10-01
 
 > Version numbering: this branch has no `0.43.2` entry because nothing was

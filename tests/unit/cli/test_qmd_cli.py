@@ -54,6 +54,12 @@ def test_qmd_status_serializes_all_daemon_status_fields(monkeypatch) -> None:
 
     Pins ``running``, ``pid``, ``port``, and ``url`` so downstream
     shell callers parsing the JSON can rely on the schema.
+
+    The ``index`` block is null under the autouse XDG isolation —
+    ``qmd_index_path()`` resolves to ``tmp_path/xdg/cache/qmd/index.sqlite``
+    which is never created in this run. A live operator invocation
+    surfaces the integrity snapshot; see ``test_integrity_summary_*``
+    for the populated shape.
     """
     fake = DaemonStatus(running=False, pid=None, port=8181, url="http://127.0.0.1:8181/mcp")
     monkeypatch.setattr(qmd_cli, "status", lambda port=8181: fake)
@@ -67,6 +73,7 @@ def test_qmd_status_serializes_all_daemon_status_fields(monkeypatch) -> None:
         "pid": None,
         "port": 8181,
         "url": "http://127.0.0.1:8181/mcp",
+        "index": None,
     }
 
 

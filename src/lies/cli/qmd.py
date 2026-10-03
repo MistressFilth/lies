@@ -103,8 +103,18 @@ def _lifecycle(name: str):
 def status_cmd(
     port: int = typer.Option(_DEFAULT_PORT, "--port", "-p"),
 ) -> None:
-    """Print daemon status as JSON."""
+    """Print daemon status as JSON, plus an integrity snapshot.
+
+    The integrity surface is read-only against qmd's index
+    (``$XDG_CACHE_HOME/qmd/index.sqlite``); see
+    :mod:`lies.qmd.integrity`. A missing index is reported as
+    ``null`` so a stale or freshly-spawned daemon does not raise.
+
+    The four existing fields (``running``, ``pid``, ``port``,
+    ``url``) are unchanged. The ``index`` block is additive.
+    """
     s = _lifecycle("status")(port=port)
+    index_block = _integrity_block()
     typer.echo(
         json.dumps(
             {
@@ -112,10 +122,36 @@ def status_cmd(
                 "pid": s.pid,
                 "port": s.port,
                 "url": s.url,
+                "index": index_block,
             },
             indent=2,
         )
     )
+
+
+def _integrity_block() -> dict[str, object] | None:
+    """The ``index`` block for the status command, or ``None``.
+
+    A clean exit means a present, openable index. A missing index
+    (the daemon was just spawned and ``lies sync`` has not run, or
+    the cache root was wiped) reports ``null`` — daemon state is
+    still meaningful, and an empty index is not an error.
+    """
+    import sqlite3
+
+    from lies.qmd.integrity import integrity_summary, qmd_index_path
+
+    db = qmd_index_path()
+    if not db.exists():
+        return None
+    try:
+        return integrity_summary(db)
+    except sqlite3.OperationalError:
+        # The file exists but is not a SQLite database (corrupt,
+        # mid-write, foreign). Daemon state is still meaningful;
+        # the integrity block degrades to ``null`` rather than failing
+        # the operator command.
+        return None
 
 
 @app.command()
