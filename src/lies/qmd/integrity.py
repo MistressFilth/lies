@@ -2,11 +2,8 @@
 
 Corpus at ``$XDG_CACHE_HOME/qmd/index.sqlite``: ``store_collections``,
 ``content`` (bodies keyed by hash), ``documents`` (FK to ``content``),
-``content_vectors`` (one row per chunk).
-
-Connections are read-only — qmd has no read-only mode, and a
-diagnostic CLI (``qmd doctor``) opened the live index read-write
-during the probe that produced this module.
+``content_vectors`` (one row per chunk). Connections are read-only —
+qmd has no read-only mode.
 """
 
 from __future__ import annotations
@@ -21,9 +18,8 @@ from typing import Any
 @dataclass(frozen=True)
 class OrphanReport:
     """Counts of ``content_vectors`` rows with no backing ``content``.
-
     Attributes:
-        orphan_hashes: Distinct hash values with no row in ``content``.
+        orphan_hashes: Distinct hashes with no row in ``content``.
         orphan_rows: ``content_vectors`` rows in that state. One hash
             spans chunks, so ``orphan_rows >= orphan_hashes``.
     """
@@ -35,13 +31,11 @@ class OrphanReport:
 @dataclass(frozen=True)
 class LiveIndexSnapshot:
     """Point-in-time aggregates for diffing two qmd-index readings.
-
     Attributes:
         collection_names: ``frozenset[str]`` of ``store_collections.name``.
         active_doc_count: ``COUNT(*) FROM documents WHERE active = 1``.
         total_vectors: ``COUNT(*) FROM content_vectors``.
-        orphan_vectors: ``content_vectors`` rows whose hash has no row
-            in ``content`` (vectors alive with no FK).
+        orphan_vectors: rows in ``content_vectors`` with no ``content``.
     """
 
     collection_names: frozenset[str]
@@ -53,8 +47,7 @@ class LiveIndexSnapshot:
 def qmd_index_path() -> Path:
     """Path to qmd's index, resolved from ``$XDG_CACHE_HOME``.
 
-    Matches qmd's ``getDefaultDbPath``
-    (``@tobilu/qmd/dist/store.js:418-433``).
+    Matches qmd's ``getDefaultDbPath`` (``@tobilu/qmd/dist/store.js:418-433``).
     """
     from lies.xdg import cache_home
 
@@ -64,7 +57,7 @@ def qmd_index_path() -> Path:
 def open_readonly(db: Path) -> sqlite3.Connection:
     """Open the qmd index read-only. The only connection constructor.
 
-    ``file:{db}?mode=ro`` + ``uri=True``. Missing path raises.
+    ``file:{db}?mode=ro`` + ``uri=True``.
 
     Raises:
         sqlite3.OperationalError: ``db`` does not exist or is not a
@@ -74,11 +67,7 @@ def open_readonly(db: Path) -> sqlite3.Connection:
 
 
 def index_orphans(db: Path) -> OrphanReport:
-    """Count ``content_vectors`` rows whose hash has no backing content.
-
-    Row count matches what ``qmd cleanup`` reports as ``Removed N
-    orphaned embedding chunks``.
-    """
+    """Count ``content_vectors`` rows whose hash has no backing content."""
     with closing(open_readonly(db)) as conn:
         cur = conn.execute(
             "SELECT COUNT(*) FROM ("
@@ -112,9 +101,7 @@ def collection_drift(db: Path) -> dict[str, list[str]]:
     """Per-collection drift an operator should look at.
 
     Reports registered paths that no longer exist on disk.
-    Empty-but-present collections (``wiki_default``) are not drift —
-    registered with an empty source tree; ``lies sync`` indexes them.
-
+    Empty-but-present collections (``wiki_default``) are not drift.
     Returns ``{name: [messages]}``; empty means no drift.
     """
     drift: dict[str, list[str]] = {}
@@ -129,8 +116,7 @@ def collection_drift(db: Path) -> dict[str, list[str]]:
 def live_index_snapshot(db: Path) -> LiveIndexSnapshot | None:
     """Snapshot the four aggregates that detect a write to a qmd index.
 
-    Returns ``None`` when ``db`` does not exist (callers no-op on hosts
-    without a reachable index).
+    Returns ``None`` when ``db`` does not exist.
     """
     if not db.exists():
         return None
@@ -157,9 +143,8 @@ def snapshots_differ(
 ) -> tuple[bool, str]:
     """``(changed, message)`` for the session guard's before/after pair.
 
-    ``None`` on either side means "no live index was reachable" — a
-    no-op, not a change. On a change, ``message`` names the field and
-    values on either side.
+    ``None`` on either side is a no-op. On a change, ``message``
+    names the field and values on either side.
     """
     if before is None or after is None:
         return False, ""
@@ -188,8 +173,7 @@ def integrity_summary(db: Path) -> dict[str, Any]:
     """Full integrity snapshot for ``lies qmd status``.
 
     Combines :func:`index_orphans` and :func:`collection_drift` with
-    three coverage queries: active-vs-total document split, active
-    documents without embeddings, registered-collection count.
+    three coverage queries.
     """
     orphans = index_orphans(db)
     drift = collection_drift(db)
