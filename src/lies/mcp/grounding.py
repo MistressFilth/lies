@@ -12,6 +12,7 @@ push-down (one call replaces a per-collection loop).
 
 from __future__ import annotations
 
+import logging
 import warnings
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
@@ -25,6 +26,9 @@ if TYPE_CHECKING:
 
 
 from lies.agents.librarian import librarian_agent  # noqa: E402,F401
+
+
+_log = logging.getLogger(__name__)
 
 
 def _current_timeout() -> int:
@@ -64,7 +68,12 @@ class ArchivistDigest:
         exclude_expr: Compiled NOT AST (``None`` when no ``-`` chain).
         citations: Snippets, one per retrieved excerpt.
         no_coverage: True on a scope miss (librarian's
-            ``LibrarianOutput.no_coverage``).
+            ``LibrarianOutput.no_coverage``) or a clean zero-hits
+            result. A *process* failure sets ``transient`` instead.
+        transient: True on a dispatch failure (process-side,
+            not corpus-side). The two flags are independent:
+            ``no_coverage=False, transient=True`` is a slow / failed
+            retrieval, not "the corpus has nothing".
         distinct_pages: ``len({c.slug for c in citations})``.
         searched_scope: Sorted, unique collection names searched.
         no_library: True when the library is uninitialized.
@@ -78,6 +87,7 @@ class ArchivistDigest:
     distinct_pages: int
     searched_scope: list[str] = field(default_factory=list)
     no_library: bool = False
+    transient: bool = False
 
 
 class ArchivistCoverageError(Exception):
@@ -140,6 +150,12 @@ async def _fanout_collections(
     collection. ``exclude_expr`` is preserved for signature parity
     but not enforced here (per-collection qmd filters are include-only).
 
+    Pre-validates ``collection_names`` against the daemon's binding
+    collection set via :func:`access.validate_scope` so one
+    unresolvable name inside the batched array cannot silently
+    surface as a clean miss. The shared helper is the same one
+    ``search`` uses, so the two cannot drift.
+
     Raises:
         QmdDaemonUnavailable: the daemon is not serving (operator action).
         QmdDaemonWedged: the daemon stopped answering; ``last_output``
@@ -154,6 +170,10 @@ async def _fanout_collections(
     if not collection_names:
         return []
 
+    validated, _unknown = await access.validate_scope(collection_names)
+    if not validated:
+        return []
+
     searches = [
         {"type": "lex", "query": question},
         {"type": "vec", "query": question},
@@ -161,7 +181,7 @@ async def _fanout_collections(
     arguments: dict[str, object] = {
         "searches": searches,
         "limit": top_k,
-        "collections": sorted(set(collection_names)),
+        "collections": sorted(set(validated)),
         "intent": "lies.mcp.grounding fan-out (single-batch hybrid)",
     }
 
@@ -378,19 +398,26 @@ async def ground(
                 last_output=exc.last_output,
             ) from exc
         except Exception as exc:
-            warnings.warn(
-                f"ground: fan-out dispatch failed: {type(exc).__name__}: {exc}",
-                stacklevel=2,
+            # A dispatch failure is a process claim, not a corpus
+            # claim. ``transient=True`` distinguishes "the daemon
+            # failed" from "the corpus has nothing", and the logger
+            # line keeps a persistently failing daemon visible
+            # (``warnings.warn`` filters once per location by default).
+            _log.error(
+                "ground: fan-out dispatch failed: %s: %s",
+                type(exc).__name__,
+                exc,
             )
             return ArchivistDigest(
                 question=question,
                 tag_expr=resolved_tag_expr,
                 exclude_expr=exclude_expr,
                 citations=[],
-                no_coverage=True,
+                no_coverage=False,
                 distinct_pages=0,
                 searched_scope=searched_scope_list,
                 no_library=False,
+                transient=True,
             )
         out = LibrarianOutput(
             tag_expr=None,
@@ -419,19 +446,21 @@ async def ground(
                 last_output=exc.last_output,
             ) from exc
         except Exception as exc:
-            warnings.warn(
-                f"ground: tagged fan-out dispatch failed: {type(exc).__name__}: {exc}",
-                stacklevel=2,
+            _log.error(
+                "ground: tagged fan-out dispatch failed: %s: %s",
+                type(exc).__name__,
+                exc,
             )
             return ArchivistDigest(
                 question=question,
                 tag_expr=resolved_tag_expr,
                 exclude_expr=exclude_expr,
                 citations=[],
-                no_coverage=True,
+                no_coverage=False,
                 distinct_pages=0,
                 searched_scope=searched_scope_list,
                 no_library=False,
+                transient=True,
             )
         out = LibrarianOutput(
             tag_expr=resolved_tag_expr,
@@ -477,19 +506,21 @@ async def ground(
             librarian_result = agent.run_sync(question, deps=deps)
             out = librarian_result.output
         except Exception as exc:
-            warnings.warn(
-                f"ground: librarian dispatch failed: {type(exc).__name__}: {exc}",
-                stacklevel=2,
+            _log.error(
+                "ground: librarian dispatch failed: %s: %s",
+                type(exc).__name__,
+                exc,
             )
             return ArchivistDigest(
                 question=question,
                 tag_expr=resolved_tag_expr,
                 exclude_expr=exclude_expr,
                 citations=[],
-                no_coverage=True,
+                no_coverage=False,
                 distinct_pages=0,
                 searched_scope=searched_scope_list,
                 no_library=False,
+                transient=True,
             )
 
     citations: list[CitationSnippet] = []

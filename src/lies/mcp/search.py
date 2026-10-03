@@ -107,34 +107,33 @@ def _resolve_tag_collections(tag_expr: str | None) -> tuple[list[str], list[str]
     return sorted(names & available), []
 
 
-def _qmd_collection_names() -> frozenset[str]:
-    """The collection set the daemon is currently serving.
-
-    No cache: there is no daemon-side invalidation signal, and LIES'
-    own ingest paths do not clear it. Measured ~42ms / call — under
-    1% of a 5.6–6.0s warm search.
-    """
-    result = _run_blocking(access.daemon_tool("status", {}))
-    structured = getattr(result, "structured_content", None) or {}
-    rows = structured.get("collections") or []
-    if not isinstance(rows, list):
-        return frozenset()
-    names: set[str] = set()
-    for row in rows:
-        # Both shapes read so the schema choice does not lock the helper.
-        if isinstance(row, str):
-            if row:
-                names.add(row)
-        elif isinstance(row, dict):
-            name = row.get("name")
-            if isinstance(name, str) and name:
-                names.add(name)
-    return frozenset(names)
+def _validate_scope_blocking(scope: list[str]) -> tuple[list[str], list[str]]:
+    """Run :func:`access.validate_scope` from a sync call site, loop-safe."""
+    coro = access.validate_scope(scope)
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+    with ThreadPoolExecutor(max_workers=1, thread_name_prefix="search-bridge") as pool:
+        future = pool.submit(asyncio.run, coro)
+        result = future.result()
+        assert isinstance(result, tuple) and len(result) == 2
+        return result
 
 
 def _qmd_collection_names_for_check() -> frozenset[str]:
-    """Indirection over :func:`_qmd_collection_names` so tests can stub."""
-    return _qmd_collection_names()
+    """Indirection over :func:`access.qmd_collection_names` so tests can stub.
+
+    Calls :func:`access.validate_scope` with the full library
+    registry and returns just the validated set. The legacy name
+    survives for tests; the only site that called the old helper is
+    gone.
+    """
+    from lies.library.registry import library_collection_names
+
+    scope = sorted(library_collection_names())
+    validated, _ = _validate_scope_blocking(scope)
+    return frozenset(validated)
 
 
 def _run_blocking(coro: Any) -> Any:
@@ -299,21 +298,33 @@ def _search_impl(
     # collection with an empty result and **no error**. A name in
     # the LIES registry can be absent from qmd (or have been dropped
     # by ``qmd cleanup``); the daemon's ``status`` is the binding
-    # truth.
-    qmd_collections = _qmd_collection_names_for_check()
-    if any(name not in qmd_collections for name in scope):
+    # truth. ``validate_scope`` is the shared seam so ``search`` and
+    # ``ground`` cannot drift on this rule.
+    try:
+        scope, unknown = _validate_scope_blocking(scope)
+    except access.QmdDaemonUnavailable:
+        raise
+    except access.QmdDaemonWedged as exc:
+        detail = f"; last qmd output: {exc.last_output!r}" if exc.last_output else ""
         return {
             "hit": None,
             "hits": [],
-            "unknown_tags": [tag_expr]
-            if tag_expr
-            else [name for name in scope if name not in qmd_collections],
+            "unknown_tags": [],
+            "no_coverage": False,
+            "transient": True,
+            "searched_scope": [],
+            "fallback_reason": f"qmd wedged during scope validation{detail}",
+        }
+    if unknown:
+        return {
+            "hit": None,
+            "hits": [],
+            "unknown_tags": [tag_expr] if tag_expr else unknown,
             "no_coverage": False,
             "transient": False,
             "searched_scope": [],
             "fallback_reason": f"unknown tag: {tag_expr!r}" if tag_expr else "unknown tag",
         }
-    scope = [name for name in scope if name in qmd_collections]
 
     doc = hypothetical or question
 

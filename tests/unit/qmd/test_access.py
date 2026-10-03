@@ -20,6 +20,7 @@ Error taxonomy under test:
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -735,6 +736,91 @@ def test_local_protocol_error_wrapped_by_fastmcp_still_classifies_as_passthrough
     wrapped.__cause__ = httpx.LocalProtocolError("illegal header value")
 
     assert access.classify_call_error(wrapped) == ("passthrough", False)
+
+
+# --- the shared scope-pre-check (I-6) ------------------------------------
+#
+# ``search`` and ``ground`` both issue ``query`` calls with a batched
+# ``collections`` array. The daemon answers an unknown collection
+# with an empty result and **no error**, so a single unresolvable
+# name in the batch silently returns zero rows. ``validate_scope``
+# is the shared pre-check that closes the class. Pinning both
+# branches here means a future call site that ships a new batched
+# tool cannot forget the pre-check.
+
+
+def test_validate_scope_returns_input_for_empty_scope() -> None:
+    """No scope in, no scope out — and no daemon call."""
+    assert asyncio.run(access.validate_scope([])) == ([], [])
+
+
+def test_validate_scope_separates_known_from_unknown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``validate_scope`` partitions input order into served + absent."""
+
+    async def _status(name: str, arguments: dict[str, Any], **kw: Any) -> Any:
+        assert name == "status"
+        return SimpleNamespace(
+            content=[],
+            structured_content={"collections": ["alpha", "beta"]},
+            is_error=False,
+        )
+
+    monkeypatch.setattr(access, "daemon_tool", _status)
+
+    validated, unknown = asyncio.run(access.validate_scope(["alpha", "gamma", "beta"]))
+    assert validated == ["alpha", "beta"]
+    assert unknown == ["gamma"]
+
+
+def test_validate_scope_accepts_dict_shaped_collections(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The daemon's structured ``collections`` can be ``list[dict]`` too."""
+
+    async def _status(name: str, arguments: dict[str, Any], **kw: Any) -> Any:
+        return SimpleNamespace(
+            content=[],
+            structured_content={"collections": [{"name": "alpha"}]},
+            is_error=False,
+        )
+
+    monkeypatch.setattr(access, "daemon_tool", _status)
+
+    validated, unknown = asyncio.run(access.validate_scope(["alpha", "beta"]))
+    assert validated == ["alpha"]
+    assert unknown == ["beta"]
+
+
+def test_validate_scope_propagates_qmd_daemon_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A down daemon reaches the caller as ``QmdDaemonUnavailable``."""
+    from lies.qmd.access import QmdDaemonUnavailable
+
+    async def _down(name: str, arguments: dict[str, Any], **kw: Any) -> Any:
+        raise QmdDaemonUnavailable("daemon is down")
+
+    monkeypatch.setattr(access, "daemon_tool", _down)
+
+    with pytest.raises(QmdDaemonUnavailable):
+        asyncio.run(access.validate_scope(["alpha"]))
+
+
+def test_validate_scope_propagates_qmd_daemon_wedged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A wedged daemon reaches the caller as ``QmdDaemonWedged``."""
+    from lies.qmd.access import QmdDaemonWedged
+
+    async def _wedge(name: str, arguments: dict[str, Any], **kw: Any) -> Any:
+        raise QmdDaemonWedged("daemon wedged", last_output="")
+
+    monkeypatch.setattr(access, "daemon_tool", _wedge)
+
+    with pytest.raises(QmdDaemonWedged):
+        asyncio.run(access.validate_scope(["alpha"]))
 
 
 # --- the taxonomy matches what fastmcp actually raises -----------------

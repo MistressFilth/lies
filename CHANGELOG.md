@@ -75,6 +75,105 @@ All notable changes to LIES are documented here. The format follows
   (the heartbeat writers), so a future reader does not assume
   the constants are the live lock path.
 
+## [0.46.0] - 2026-10-03
+
+### Added
+
+- **`ArchivistDigest.transient: bool`** (additive). The grounding archivist
+  can now distinguish a process failure from an empty corpus. A
+  ``transient=True`` ``ArchivistDigest`` is a slow or failed
+  retrieval — the librarian should retry — not "the corpus has
+  nothing", which is what ``no_coverage=True`` already meant. The
+  two flags are independent: ``no_coverage=False, transient=True``
+  is the new envelope on a fan-out dispatch failure. Defaults to
+  ``False`` so existing call sites and tests that build a digest
+  by keyword remain stable. Pinned by
+  ``tests/unit/mcp/test_ground.py::test_archivist_digest_transient_defaults_false``
+  and the dispatch-failure envelope tests below.
+
+- **`lies.qmd.access.validate_scope(scope)`** and
+  **`lies.qmd.access.qmd_collection_names()`** — the shared seam
+  every batched collection filter goes through before reaching the
+  daemon. ``qmd_collection_names`` reads the daemon's ``status``
+  tool; ``validate_scope`` partitions ``scope`` into the names the
+  daemon serves and the names it does not, in input order.
+  ``search`` and ``ground`` both call it before issuing a
+  ``query``, so a single unresolvable name inside the batched
+  ``collections`` array can no longer silently return zero rows
+  — a regression from the per-collection fan-out the prior shape
+  dropped individually. ``QmdDaemonUnavailable`` /
+  ``QmdDaemonWedged`` propagate; an empty ``scope`` returns
+  ``([], [])`` with no daemon call. Pinned by
+  ``tests/unit/qmd/test_access.py::test_validate_scope_*``
+  (five tests: empty input, served/unknown partition, dict-shaped
+  status, daemon-down, daemon-wedged).
+
+### Fixed
+
+- **`mcp.search` — `Exception` no longer becomes a corpus claim.**
+  The generic ``except Exception`` in ``_search_impl`` previously
+  mapped any non-typed exception to ``no_coverage=True`` — a
+  false claim about the corpus, for anything outside the
+  ``QmdDaemonUnavailable`` / ``QmdDaemonWedged`` taxonomy. The
+  handler now sets ``transient=True, no_coverage=False`` with
+  ``fallback_reason`` naming the exception, and the unreachable
+  ``except QmdCommandError`` branch (which carried the exact
+  "qmd unreachable" wording this branch exists to remove) is
+  deleted. ``QmdTimeoutError`` keeps its defensive-parity
+  envelope. Pinned by
+  ``tests/unit/mcp/test_search.py::test_search_unexpected_post_query_failure_returns_transient``
+  (renamed from ``...returns_no_coverage``).
+
+- **`mcp.search` — a tag expression that resolves to zero
+  collections no longer silently widens to the whole library.**
+  ``tag_expr=None`` still widens (the caller did not narrow, so
+  every collection is in scope); a non-empty ``tag_expr`` that
+  resolves to nothing now reports ``unknown_tags=[tag_expr]`` and
+  refuses, rather than answering from the whole library with
+  ``unknown_tags == []`` — the shape ``AGENTS.md`` calls out for
+  the prompt surface as "a query the user scoped by tag, answered
+  from the whole library, with nothing in the response saying
+  so". Pinned by
+  ``tests/unit/mcp/test_search.py::test_search_tag_only_filter_is_not_silently_widened``.
+
+- **`qmd.access.classify_call_error` — `LocalProtocolError` is a
+  passthrough, not a recycle-retry.** The docstring and
+  ``AGENTS.md`` "Deliberate taxonomy gap" paragraph both said
+  ``HTTPStatusError`` and ``RemoteProtocolError`` were
+  passthrough — wrong on the second half (measured against
+  installed httpx 0.28.1: ``RemoteProtocolError`` classifies as
+  ``recycle-retry`` because it inherits ``ProtocolError →
+  TransportError``) and silent on a third: ``LocalProtocolError``
+  classifies the same way but a retry against a malformed
+  request sends the same bytes back to fail the same way, and a
+  recycle kills in-flight work belonging to other clients of a
+  machine-global daemon. ``LocalProtocolError`` joins an explicit
+  passthrough set; ``RemoteProtocolError`` keeps
+  ``recycle-retry`` (the daemon's response was malformed, which
+  is server-side state). All three classes pinned in
+  ``tests/unit/qmd/test_access.py``, including a
+  wrapped-by-fastmcp case for ``LocalProtocolError`` so the
+  ``__cause__`` chain walk cannot silently re-merge the
+  client-side case.
+
+- **`qmd.access._recycle_data_dir` — six unreachable lines past
+  the ``return`` removed.** A copy-paste artifact from the
+  recycle rewrite.
+
+- **`mcp.grounding` — fan-out dispatch failures now log and
+  surface as `transient=True, no_coverage=False`.** Three
+  ``except Exception`` handlers (the unscoped fan-out, the tagged
+  fan-out, and the legacy librarian dispatch) previously folded
+  any process failure into ``no_coverage=True`` and emitted one
+  ``warnings.warn`` line — which the default filter prints once
+  per location, so a persistently failing daemon goes quiet. The
+  three handlers now log through ``_log.error`` and return an
+  ``ArchivistDigest`` with ``transient=True, no_coverage=False``.
+  Pinned by
+  ``tests/unit/mcp/test_ground.py::test_ground_fanout_dispatch_failure_surfaces_as_transient``
+  and the tagged-path version, so the unscoped and tagged
+  fast-paths cannot drift on the failure envelope.
+
 ## [Unreleased]
 
 ### Added

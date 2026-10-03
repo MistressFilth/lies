@@ -42,6 +42,24 @@ def _silence_wiring_skipped_warning() -> None:
     )
 
 
+@pytest.fixture(autouse=True)
+def _bypass_daemon_precheck(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stub ``access.validate_scope`` so the fan-out does not probe status.
+
+    Every fan-out helper here calls ``access.validate_scope`` first
+    to drop names the daemon does not serve. The unit tests stub
+    ``access.daemon_tool`` directly and want the ``query`` leg
+    exercised — the scope pre-check is a real reachability probe and
+    must be bypassed the same way the ``search`` suite bypasses it.
+    """
+    from lies.qmd import access
+
+    async def _passthrough(scope: list[str]) -> tuple[list[str], list[str]]:
+        return list(scope), []
+
+    monkeypatch.setattr(access, "validate_scope", _passthrough)
+
+
 def test_archivist_digest_has_no_library_field_default_false() -> None:
     """`no_library` defaults to False for back-compat with existing call sites."""
     from lies.mcp.grounding import ArchivistDigest
@@ -56,6 +74,97 @@ def test_archivist_digest_has_no_library_field_default_false() -> None:
         searched_scope=[],
     )
     assert digest.no_library is False
+    assert digest.transient is False
+
+
+def test_archivist_digest_transient_defaults_false() -> None:
+    """``transient`` is additive and defaults to False.
+
+    A clean miss (``no_coverage=True``) and a transient failure
+    (``transient=True, no_coverage=False``) are distinct shapes.
+    The default-False keeps existing call sites that construct a
+    digest by keyword stable — ``ArchivistDigest(...)`` without
+    ``transient=`` still means "this was a clean run".
+    """
+    from lies.mcp.grounding import ArchivistDigest
+
+    digest = ArchivistDigest(
+        question="q",
+        tag_expr=None,
+        exclude_expr=None,
+        citations=[],
+        no_coverage=False,
+        distinct_pages=0,
+        searched_scope=[],
+    )
+    assert digest.transient is False
+
+
+def test_ground_fanout_dispatch_failure_surfaces_as_transient(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unscoped fan-out dispatch failure is a process claim, not a corpus claim.
+
+    The previous shape folded any fan-out ``Exception`` into
+    ``no_coverage=True`` — the same defect the timeout branch
+    exists to remove. The fix sets ``transient=True,
+    no_coverage=False`` and logs through ``_log.error`` so a
+    persistently failing daemon does not go quiet under
+    ``warnings.warn``'s once-per-location filter.
+    """
+    from lies.library import registry as reg_mod
+    from lies.library.registry import LibraryCollectionMeta
+    from lies.mcp import grounding
+    from lies.query import synthesizer as synth_mod
+
+    metas = [LibraryCollectionMeta(name="alpha", tags=())]
+    monkeypatch.setattr(reg_mod, "library_collection_metas", lambda: iter(metas))
+    monkeypatch.setattr(synth_mod, "_all_collection_names", lambda: ["alpha"])
+
+    async def _boom(*a: object, **kw: object) -> object:
+        raise RuntimeError("bridge broke")
+
+    monkeypatch.setattr(grounding, "_fanout_unscoped", _boom)
+
+    digest = asyncio.run(grounding.ground("anything", tag_expr=None))
+    assert digest.transient is True
+    assert digest.no_coverage is False
+    assert digest.citations == []
+    assert digest.no_library is False
+
+
+def test_ground_tagged_fanout_dispatch_failure_surfaces_as_transient(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A tagged fan-out dispatch failure is a process claim, not a corpus claim.
+
+    Same shape as the unscoped path. Pinned separately so the
+    tagged and untagged fast-paths cannot drift on the failure
+    envelope.
+    """
+    from lies.library import registry as reg_mod
+    from lies.library.registry import LibraryCollectionMeta
+    from lies.mcp import grounding
+    from lies.query import synthesizer as synth_mod
+    import lies.mcp.server as server_mod
+
+    metas = [LibraryCollectionMeta(name="alpha", tags=())]
+    monkeypatch.setattr(reg_mod, "library_collection_metas", lambda: iter(metas))
+    monkeypatch.setattr(synth_mod, "_all_collection_names", lambda: ["alpha"])
+    monkeypatch.setattr(
+        server_mod,
+        "_collect_available_tags_mcp",
+        lambda wiki=None: {"alpha", "c:alpha"},
+    )
+
+    async def _boom(*a: object, **kw: object) -> object:
+        raise RuntimeError("bridge broke")
+
+    monkeypatch.setattr(grounding, "_query_tagged_collections", _boom)
+
+    digest = asyncio.run(grounding.ground("anything", tag_expr="c:alpha"))
+    assert digest.transient is True
+    assert digest.no_coverage is False
 
 
 def test_ground_unscoped_uses_fanout(monkeypatch) -> None:

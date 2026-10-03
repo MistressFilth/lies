@@ -37,18 +37,16 @@ def _patch_registry(monkeypatch: pytest.MonkeyPatch, names: list[str]) -> None:
 def _bypass_daemon_precheck(monkeypatch: pytest.MonkeyPatch, names: list[str]) -> None:
     """Stub the daemon-side pre-check to claim ``names`` is the qmd view.
 
-    The pre-check in ``_search_impl`` calls the daemon's ``status``
-    tool to learn the collection list qmd is *actually* serving
-    against. Tests that stub ``_post_query`` (and so do not
-    exercise the daemon path) need to bypass that read; this
-    stub makes the pre-check pass for the same ``names`` the
-    LIES registry returned, so the existing tests can keep
-    asserting on the question/scope/envelope without going
-    through the seam.
+    The pre-check in ``_search_impl`` calls
+    ``access.validate_scope`` to learn the collection list qmd is
+    *actually* serving against. Tests that stub ``_post_query`` (and
+    so do not exercise the daemon path) need to bypass that read;
+    this stub returns ``(names, [])`` so the pre-check passes for
+    the same ``names`` the LIES registry returned.
     """
     monkeypatch.setattr(
-        "lies.mcp.search._qmd_collection_names_for_check",
-        lambda: frozenset(names),
+        "lies.mcp.search._validate_scope_blocking",
+        lambda scope: (list(scope), []),
     )
 
 
@@ -396,6 +394,12 @@ def _fake_access(
             is_error=False,
         )
 
+    async def _validate_scope(scope: list[str]) -> tuple[list[str], list[str]]:
+        served = set(qmd_collections)
+        validated = [n for n in scope if n in served]
+        unknown = [n for n in scope if n not in served]
+        return validated, unknown
+
     # Carry the typed exceptions on the SimpleNamespace so the
     # ``except`` clauses can evaluate ``access.QmdDaemonUnavailable``
     # and ``access.QmdDaemonWedged`` even when ``access`` is a fake.
@@ -403,6 +407,7 @@ def _fake_access(
         "lies.mcp.search.access",
         SimpleNamespace(
             daemon_tool=_fake,
+            validate_scope=_validate_scope,
             QmdDaemonUnavailable=QmdDaemonUnavailable,
             QmdDaemonWedged=QmdDaemonWedged,
         ),
@@ -550,10 +555,15 @@ def test_a_collection_that_cannot_serve_is_reported_not_scoped_away(
     # ``except`` time, so the SimpleNamespace fake must carry both
     # or the first evaluated ``except`` clause raises
     # ``AttributeError`` before the matching one runs.
+    async def _fake_scope(scope: list[str]) -> tuple[list[str], list[str]]:
+        served = {"claude_code"}
+        return [n for n in scope if n in served], [n for n in scope if n not in served]
+
     monkeypatch.setattr(
         "lies.mcp.search.access",
         SimpleNamespace(
             daemon_tool=_fake,
+            validate_scope=_fake_scope,
             QmdDaemonUnavailable=QmdDaemonUnavailable,
             QmdDaemonWedged=QmdDaemonWedged,
         ),
@@ -598,10 +608,17 @@ def test_daemon_down_is_re_raised_not_swallowed_into_no_coverage(
             "Start it with 'lies qmd up', or point LIES_QMD_URL at a daemon that is."
         )
 
+    async def _down_scope(scope: list[str]) -> tuple[list[str], list[str]]:
+        raise QmdDaemonUnavailable(
+            "qmd daemon is not serving at http://127.0.0.1:8181/mcp. "
+            "Start it with 'lies qmd up', or point LIES_QMD_URL at a daemon that is."
+        )
+
     monkeypatch.setattr(
         "lies.mcp.search.access",
         SimpleNamespace(
             daemon_tool=_down,
+            validate_scope=_down_scope,
             QmdDaemonUnavailable=QmdDaemonUnavailable,
             QmdDaemonWedged=QmdDaemonWedged,
         ),
@@ -640,10 +657,16 @@ def test_daemon_wedged_surfaces_as_transient_with_daemon_log(
             "qmd daemon wedged on call to 'query'", last_output="Reranking 40 chunks..."
         )
 
+    async def _wedge_scope(scope: list[str]) -> tuple[list[str], list[str]]:
+        raise QmdDaemonWedged(
+            "qmd daemon wedged on call to 'status'", last_output="Reranking 40 chunks..."
+        )
+
     monkeypatch.setattr(
         "lies.mcp.search.access",
         SimpleNamespace(
             daemon_tool=_wedge,
+            validate_scope=_wedge_scope,
             QmdDaemonUnavailable=QmdDaemonUnavailable,
             QmdDaemonWedged=QmdDaemonWedged,
         ),
@@ -740,12 +763,11 @@ def test_pre_check_calls_daemon_status_on_every_search(
     5.6-6.0 s warm, so the per-search ``status`` call is ~0.7 % of
     the operation and the staleness class is closed in exchange.
 
-    This test pins the property: a cache that survives between
-    searches (the prior lru_cache) would let the second ``_search_impl``
-    see the first call's value, so daemon ``status`` would be called
-    once across two searches. Without the cache, it is called
-    twice. The assertion is the bound — a cache that "no test
-    exercises" was exactly the field's defect.
+    This test pins the property through the public seam:
+    ``validate_scope`` (which calls the daemon's ``status`` tool)
+    must be invoked once per search, with no cache that survives
+    between calls. The implementation in production is the shared
+    ``access.validate_scope``; the stub here records each call.
     """
     from lies.mcp.search import _search_impl
     from lies.qmd.access import QmdDaemonUnavailable, QmdDaemonWedged
@@ -768,10 +790,15 @@ def test_pre_check_calls_daemon_status_on_every_search(
             is_error=False,
         )
 
+    async def _fake_validate_scope(scope: list[str]) -> tuple[list[str], list[str]]:
+        calls.append(("validate_scope", list(scope)))
+        return list(scope), []
+
     monkeypatch.setattr(
         "lies.mcp.search.access",
         SimpleNamespace(
             daemon_tool=_fake_daemon_tool,
+            validate_scope=_fake_validate_scope,
             QmdDaemonUnavailable=QmdDaemonUnavailable,
             QmdDaemonWedged=QmdDaemonWedged,
         ),
@@ -780,10 +807,10 @@ def test_pre_check_calls_daemon_status_on_every_search(
     _search_impl("first question")
     _search_impl("second question")
 
-    status_calls = [c for c in calls if c[0] == "status"]
-    assert len(status_calls) == 2, (
-        f"every search must read the live daemon status; got "
-        f"{len(status_calls)} status calls across 2 searches. "
-        f"A cache that survived between searches is exactly the "
-        f"staleness class this test exists to prevent."
+    scope_calls = [c for c in calls if c[0] == "validate_scope"]
+    assert len(scope_calls) == 2, (
+        f"every search must read the live daemon status (via validate_scope); "
+        f"got {len(scope_calls)} validate_scope calls across 2 searches. "
+        f"A cache that survived between searches is exactly the staleness "
+        f"class this test exists to prevent."
     )

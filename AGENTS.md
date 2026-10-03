@@ -708,10 +708,18 @@ The module exports:
   (e.g. `"concepts/pydantic"`); `snippet` is the first ≤200 chars
   of the first prose span.
 - **`ArchivistDigest(question, tag_expr, exclude_tags, citations,
-  no_coverage, distinct_pages)`** — frozen dataclass. `no_coverage`
-  is true only when the librarian dispatch fails; the F15 coverage
-  gate is the typed `ArchivistCoverageError` raised on unknown
-  include tags (translated to `ToolError` at the MCP layer).
+  no_coverage, distinct_pages, searched_scope, no_library, transient)`**
+  — frozen dataclass. `no_coverage` is true only when the librarian
+  dispatch *succeeds* and returns zero hits (or when the library is
+  uninitialized — `no_library=True`). `transient` (added in 0.46.0)
+  is the new flag for *dispatch* failures: a fan-out ``Exception``,
+  a tagged fan-out ``Exception``, or a librarian ``Exception``
+  sets ``transient=True, no_coverage=False`` so the caller can
+  distinguish "the daemon failed" from "the corpus has nothing".
+  Defaults to ``False``; existing call sites that build a digest by
+  keyword remain stable. The F15 coverage gate is the typed
+  `ArchivistCoverageError` raised on unknown include tags
+  (translated to `ToolError` at the MCP layer).
 - **`ArchivistCoverageError`** — raised on unknown tag or unparseable
   include expression. The MCP `ground` tool catches it and re-raises
   as a `ToolError` so LLM callers can react.
