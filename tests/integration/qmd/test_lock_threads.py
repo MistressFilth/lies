@@ -12,6 +12,23 @@ two decorated helpers compose — ``qmd_collection_add_or_update`` calls
 ``qmd_reindex`` — and an unreentrant lock deadlocks against itself. Reentrancy
 that leaked across threads would disable the lock entirely, which is what
 this guards.
+
+**What the move cost, stated so it is not mistaken for free.** The
+same-thread half (``test_the_lock_is_reentrant_on_one_thread``) *does*
+live in ``tests/unit/qmd/test_lock.py`` and runs on every unit run — this
+file is only the cross-thread half. So a unit-only run still catches a
+lock that deadlocks against itself, and only the "reentrancy leaked across
+threads and turned the lock off" regression needs the slower path. That is
+the division, and it is why this file is a supplement rather than the
+only coverage.
+
+**It does not skip silently.** There is no ``skipif`` here: the test runs
+whenever the file is collected, and the ``tests/integration`` gate is the
+same one every other integration test honours (``INTEGRATION=1``). Nothing
+in this file turns a green suite into one that has quietly stopped testing
+anything — the failure mode this branch produced repeatedly was a
+condition that quietly excluded the check, not a check that ran in the
+wrong directory.
 """
 
 from __future__ import annotations

@@ -30,6 +30,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
 from unittest import mock
@@ -49,6 +50,7 @@ from lies.query.tag_expr import (
 from lies.qmd.cli import (
     QmdNotInstalledError,
     qmd_collection_add_if_missing,
+    qmd_collection_remove,
     qmd_embed,
 )
 from lies.wiki.wiki import Wiki
@@ -258,6 +260,12 @@ def _build_tag_filter_library(tmp_path: Path, *, name: str) -> Wiki:
     return wiki
 
 
+#: The collections this fixture registers in the SHARED qmd index. Every
+#: place that registers or removes them iterates this one tuple, so a
+#: collection cannot be added without also being cleaned up.
+FIXTURE_COLLECTIONS = ("airflow", "amazon", "pyspark", "prefect")
+
+
 def _seed_qmd(wiki: Wiki) -> None:
     """Register each fixture collection with qmd and embed it.
 
@@ -272,15 +280,90 @@ def _seed_qmd(wiki: Wiki) -> None:
     """
     if shutil.which("qmd") is None:
         raise QmdNotInstalledError("`qmd` not found on PATH")
-    for coll in ("airflow", "amazon", "pyspark", "prefect"):
+    for coll in FIXTURE_COLLECTIONS:
         coll_path = (wiki.wiki_dir / coll).resolve()
         qmd_collection_add_if_missing(wiki.data_root, coll_path, coll)
         qmd_embed(wiki.data_root, coll, timeout=600)
 
 
+def _unseed_qmd(wiki: Wiki) -> None:
+    """Remove every collection :func:`_seed_qmd` registered, then assert it.
+
+    Without this the fixture writes into the *shared* index and never
+    cleans up. Each test's ``tmp_path`` is deleted by pytest at teardown,
+    so the registration is left pointing at a path that no longer exists;
+    a later ``qmd update`` / ``qmd cleanup`` reaps it and deletes its
+    documents. The next run of this file then queries collections whose
+    documents are not in the index, and qmd spends the full budget
+    searching for them.
+
+    Measured on this host after the leak had happened: a bare
+    ``qmd_query`` for ``airflow``/``prefect`` took **30.2s** and returned
+    nothing, against **4.9s** for a collection that exists. In-suite it
+    surfaced as ``QmdTimeoutError: qmd query timed out after 60s`` and
+    ``QmdWedgeError`` — indistinguishable from a real retrieval failure,
+    and in fact the same as the OOM class of problem: a shared resource
+    left in a state the next run does not expect.
+
+    Removing rather than using a throwaway ``--index`` is deliberate. A
+    throwaway index would never touch the shared one, but it reloads the
+    embedding model per test (the 1.2 GB cost), and this file's whole
+    point is exercising the *real* index the way the product does. Teardown
+    keeps that realism and costs one ``qmd collection remove`` per
+    collection.
+
+    The post-condition is asserted, not assumed: a leftover registration
+    here is what made the next run's numbers wrong, so it should fail
+    loudly here rather than surface three runs later as a timeout.
+    """
+    leftovers: list[str] = []
+    for coll in FIXTURE_COLLECTIONS:
+        try:
+            qmd_collection_remove(wiki.data_root, coll)
+        except Exception as exc:  # noqa: BLE001 - teardown must not mask test failures
+            leftovers.append(f"{coll}: removal failed ({type(exc).__name__}: {exc})")
+            continue
+        if coll in _registered_collections():
+            leftovers.append(f"{coll}: still registered after removal")
+    if leftovers:
+        pytest.fail(
+            "the fixture left collections in the shared qmd index: "
+            + "; ".join(leftovers)
+            + ". The next run of this file would query documents that a "
+            "later `qmd update` reaps, and time out on them."
+        )
+
+
+def _registered_collections() -> set[str]:
+    """The collection names currently registered in qmd's global index."""
+    from lies.qmd.cli import _run
+
+    result = _run(["collection", "list"], cwd=Path.cwd(), timeout=120)
+    if result.returncode != 0:
+        return set()
+    return {
+        line.split("(")[0].strip()
+        for line in result.stdout.splitlines()
+        if line.strip() and "(" in line
+    }
+
+
 @pytest.fixture
-def qmd_fixture_library(tmp_path: Path) -> Wiki:
+def qmd_fixture_library(tmp_path: Path) -> Iterator[Wiki]:
     """A wiki with four tagged collections, registered and embedded with qmd.
+
+    **Yields, and tears the qmd registration down.** The collections go
+    into qmd's *shared* global index, keyed by an absolute path under this
+    test's ``tmp_path``. pytest deletes that path at teardown, so without
+    the cleanup below the registration is left pointing at nothing, a
+    later ``qmd update`` reaps it, and the next run of this file queries
+    documents that no longer exist. See :func:`_unseed_qmd` for what that
+    costs — it is a 30.2s search returning nothing, surfacing as a
+    timeout that reads exactly like a real retrieval failure.
+
+    The teardown also *asserts* the collections are gone, so a recurrence
+    fails here rather than three runs later as somebody else's timeout.
+
 
     Function-scoped, and deliberately so. The wiki is built under the
     per-test ``tmp_path`` because ``_isolated_xdg`` redirects the XDG
@@ -306,7 +389,10 @@ def qmd_fixture_library(tmp_path: Path) -> Wiki:
         pytest.skip("qmd daemon not reachable at http://127.0.0.1:8181")
     wiki = _build_tag_filter_library(tmp_path, name="tag-filter-lib")
     _seed_qmd(wiki)
-    return wiki
+    try:
+        yield wiki
+    finally:
+        _unseed_qmd(wiki)
 
 
 # ---------------------------------------------------------------------------
