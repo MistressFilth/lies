@@ -327,7 +327,7 @@ def build(
 ) -> dict[str, Any]:
     return {
         "description": (
-            "Known-answer benchmark for the LIES qmd read surface. Twelve-plus "
+            "Known-answer benchmark for the LIES qmd read surface. Fifteen "
             "queries spanning five collections, two of them multi-collection and "
             "one a deliberate paraphrase. Regenerate with tools/qmd_bench_fixture.py; "
             "every expected path is verified against the live index, never guessed."

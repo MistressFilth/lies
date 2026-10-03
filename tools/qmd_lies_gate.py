@@ -140,6 +140,37 @@ def _gate_from_fixture(fixture: dict, *, top_k: int = 1) -> dict:
     }
 
 
+def _compare(measured: dict, committed: dict) -> int:
+    """Report per-query movement against a committed gate block.
+
+    Returns 0 when nothing regressed, 1 when a previously-passing query
+    now fails. Improvements are reported but do not fail the run — the
+    committed block is the reference, and a change that improves recall
+    should be recorded deliberately rather than by a Make target.
+    """
+    old = {q["id"]: q["passing"] for q in committed.get("per_query", [])}
+    moved = [
+        q["id"]
+        for q in measured["per_query"]
+        if q["id"] in old and old[q["id"]] and not q["passing"]
+    ]
+    gained = [
+        q["id"]
+        for q in measured["per_query"]
+        if q["id"] in old and not old[q["id"]] and q["passing"]
+    ]
+    print(
+        f"lies_gate: {measured['queries_passing']}/{measured['queries_total']} passing "
+        f"(committed {committed['queries_passing']}/{committed['queries_total']}, "
+        f"corpus {measured['corpus_documents']} vs {committed['corpus_documents']} docs)"
+    )
+    for qid in moved:
+        print(f"  REGRESSED: {qid}")
+    for qid in gained:
+        print(f"  improved: {qid}")
+    return 1 if moved else 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument(
@@ -154,10 +185,22 @@ def main() -> int:
         default=None,
         help="output path (default: stdout)",
     )
+    parser.add_argument(
+        "--compare",
+        type=Path,
+        default=None,
+        help="score, diff against the committed lies_gate block, and exit "
+        "non-zero if a passing query regressed. Does not write the fixture.",
+    )
     args = parser.parse_args()
 
     fixture = json.loads(args.fixture.read_text())
     gate = _gate_from_fixture(fixture)
+
+    if args.compare is not None:
+        committed = json.loads(args.compare.read_text())["baseline"]["lies_gate"]
+        return _compare(gate, committed)
+
     payload = json.dumps(gate, indent=2) + "\n"
     if args.out is not None:
         args.out.write_text(payload)

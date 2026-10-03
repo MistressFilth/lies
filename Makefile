@@ -66,6 +66,19 @@ test: ## Run all tests (unit + features/integration).
 # pre-commit hook runs, budget gate included.
 RUNSLOW ?= --runslow
 
+# `tools/qmd_lies_gate.py` is the only producer of the fixture's
+# `lies_gate` block. Unwired, that block is a constant nobody can
+# regenerate and `test_lies_gate_slot_is_reserved` keeps passing against
+# a number with no source. A Make target rather than a pre-commit hook:
+# it needs a live daemon, and a recall measurement in a commit hook is
+# the kind of gate that flakes and then gets bypassed. It compares
+# rather than writing -- `qmd_bench_fixture.py` needs `--force` to
+# overwrite a populated baseline, and a target that can silently clobber
+# one is a hazard.
+.PHONY: lies-gate
+lies-gate: ## Re-measure LIES-routing recall against the committed lies_gate block.
+	$(PY) tools/qmd_lies_gate.py --compare $(TESTS)/fixtures/qmd_bench.json
+
 .PHONY: time-unit-tests
 time-unit-tests: ## Run unit tests; print per-test ms. RUNSLOW= for the pre-commit population (see below).
 	@echo "population: $(if $(RUNSLOW),all unit tests including slow-marked (gate exempts those),pre-commit population only — excludes --runslow; this is what the pre-commit hook runs)"

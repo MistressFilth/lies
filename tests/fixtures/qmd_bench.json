@@ -1,5 +1,5 @@
 {
-  "description": "Known-answer benchmark for the LIES qmd read surface. Twelve-plus queries spanning five collections, two of them multi-collection and one a deliberate paraphrase. Regenerate with tools/qmd_bench_fixture.py; every expected path is verified against the live index, never guessed.",
+  "description": "Known-answer benchmark for the LIES qmd read surface. Fifteen queries spanning five collections, two of them multi-collection and one a deliberate paraphrase. Regenerate with tools/qmd_bench_fixture.py; every expected path is verified against the live index, never guessed.",
   "version": 1,
   "queries": [
     {
