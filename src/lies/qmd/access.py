@@ -60,6 +60,13 @@ class QmdDaemonWedged(RuntimeError):
         self.last_output = last_output
 
 
+#: Typed errors that mean "the daemon as a whole is in the wrong
+#: state" — a per-path ``call_tool`` raised one of these, and the
+#: whole session (and every path in it) must be abandoned. Anything
+#: else is a per-path failure that siblings survive.
+_DAEMON_FAILURES = (QmdDaemonUnavailable, QmdDaemonWedged)
+
+
 # Cached per process so the daemon's model is not re-warmed per call.
 # An MCP session is bound to the event loop that opened it, and this
 # seam is called from `asyncio.run` bridges that each get a fresh loop.
@@ -366,6 +373,78 @@ async def _call(
     if getattr(result, "is_error", False):
         raise RuntimeError(f"qmd tool {name!r} failed: {_result_text(result)}")
     return result
+
+
+async def read_library_bodies(
+    paths: list[str],
+    *,
+    timeout: float | None = None,
+) -> list[Any]:
+    """Issue one ``get`` per path over a single MCP session.
+
+    Hoists the MCP session handshake out of the per-path loop
+    measured against the live daemon (2026-10-03, 10 warm
+    samples, ``claude_code/concepts/hooks.md``): one-shot session
+    p50 75.4 ms; persistent-session ``call_tool`` p50 41.9 ms.
+    The ~33 ms per-session handshake was 40 % of a 20-path read;
+    a hoisted bridge saves ~600 ms per 20-path read while
+    preserving the one-``get``-per-path decision
+    (``multi_get`` silently skips 10KB+ documents — 1854 of this
+    corpus's 5987 are over the cap).
+
+    Args:
+        paths: Library paths (``<collection>/<page>``) to fetch.
+        timeout: Per-call read deadline in seconds.
+
+    Returns:
+        List of ``CallToolResult`` in input order. Each entry is
+        one path's result; ``is_error=True`` on tool-side errors,
+        ``.content`` carrying the body or the skip/error notice.
+        A per-path failure (the daemon raised for a single
+        missing document, or returned a notice-only result) maps
+        to ``None`` in the output list so siblings survive; only
+        a session-level failure propagates.
+
+    Raises:
+        QmdDaemonUnavailable: the daemon is not serving (operator action).
+        QmdDaemonWedged: the session wedge — the whole batch is
+            re-raised against the parent tool, which decides.
+    """
+    if not paths:
+        return []
+    url = get_qmd_url()
+    if not qmd_daemon_reachable(url, timeout=_PROBE_TIMEOUT_S):
+        raise QmdDaemonUnavailable(
+            f"qmd daemon is not serving at {url}. Start it with 'lies qmd up', "
+            f"or point LIES_QMD_URL at a daemon that is."
+        )
+
+    client = _daemon_client(url)
+    out: list[Any] = []
+    async with client:
+        for path in paths:
+            args: dict[str, Any] = {"file": path, "lineNumbers": False}
+            try:
+                if timeout is None:
+                    result = await client.call_tool("get", args, raise_on_error=False)
+                else:
+                    result = await client.call_tool(
+                        "get", args, raise_on_error=False, timeout=timeout
+                    )
+            except _DAEMON_FAILURES:
+                raise
+            except Exception:
+                # Per-path failure (document missing, decode error,
+                # etc.) — siblings survive. The parent tool logs the
+                # path and adds it to ``_missing``. ``_DAEMON_FAILURES``
+                # is a session-level state and propagates above.
+                out.append(None)
+                continue
+            if getattr(result, "is_error", False):
+                out.append(None)
+                continue
+            out.append(result)
+    return out
 
 
 def _result_text(result: Any) -> str:

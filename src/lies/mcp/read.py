@@ -116,6 +116,49 @@ def _daemon_body(path: str) -> str | None:
     return "\n".join(bodies)
 
 
+def _daemon_bodies_batched(paths: list[str]) -> list[str | None]:
+    """One body per path over a single MCP session.
+
+    Hoists the per-path handshake out of the loop. A down or
+    wedged daemon raises before reaching here; per-path tool-side
+    errors (the daemon's ``is_error`` flag, or a per-path exception
+    caught inside ``read_library_bodies``) are mapped to
+    ``None`` and logged so a partial batch still surfaces the
+    missing paths via ``_missing``.
+    """
+    if not paths:
+        return []
+    try:
+        results = _run_blocking(access.read_library_bodies(paths))
+    except _DAEMON_FAILURES:
+        raise
+    except Exception as exc:
+        # Session-level failure: every path this batch read is
+        # lost. Match the previous per-path behaviour by logging
+        # each and returning all-None, so the parent tool's
+        # ``_missing`` machinery catches them. The session is
+        # closed before the raise.
+        for p in paths:
+            log.warning("read: qmd get(%s) failed: %s", p, exc)
+        return [None] * len(paths)
+
+    bodies: list[str | None] = []
+    for path, result in zip(paths, results, strict=True):
+        if result is None or getattr(result, "is_error", False):
+            log.warning("read: qmd get(%s) returned no document body", path)
+            bodies.append(None)
+            continue
+        text_blocks = _resource_texts(result)
+        if not text_blocks:
+            notices = _notices(result)
+            detail = f"; qmd said: {' | '.join(notices)}" if notices else ""
+            log.warning("read: qmd get(%s) returned no document body%s", path, detail)
+            bodies.append(None)
+            continue
+        bodies.append("\n".join(text_blocks))
+    return bodies
+
+
 _MISSING_KEY = "_missing"
 
 
@@ -158,12 +201,17 @@ def _read_impl(paths: list[str]) -> dict[str, str | list[str]]:
         out.update(wiki_out)
 
     missing: list[str] = []
-    for p in library_paths:
-        body = _daemon_body(p)
-        if body is None:
-            missing.append(p)
-        else:
-            out[p] = body
+    if library_paths:
+        # One MCP session for the whole batch. Measured against the
+        # live daemon: one-shot session p50 75.4 ms; persistent
+        # session p50 41.9 ms per call (see I-9 numbers in
+        # ``access.read_library_bodies``). A 20-path read drops
+        # from ~1.5 s to ~900 ms.
+        for p, body in zip(library_paths, _daemon_bodies_batched(library_paths), strict=True):
+            if body is None:
+                missing.append(p)
+            else:
+                out[p] = body
 
     # Paths the wiki service omitted from its result (asked for
     # 5 IDs, received 4) are also a soft missing.

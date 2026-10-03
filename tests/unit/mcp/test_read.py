@@ -66,11 +66,51 @@ def _get_result(uri: str, text: str) -> _Result:
     return _Result(content=[_Embedded(resource=_Resource(uri=uri, text=text))])
 
 
+def _hoisted_bridge(daemon_tool: Any) -> Any:
+    """Wrap ``daemon_tool`` to also serve as ``read_library_bodies``.
+
+    The hoisted bridge is a thin wrapper that issues one ``get``
+    per path under the hood. Tests that stub ``daemon_tool`` get
+    a ``read_library_bodies`` for free via this adapter; tests
+    that exercise the wedge/down path raise from the first call
+    so the wrapping is invisible.
+
+    Per-path errors (anything ``daemon_tool`` raises for a
+    specific path) become ``None`` in the result list, mirroring
+    the production ``read_library_bodies``'s per-path tolerance.
+    Only the typed ``QmdDaemonUnavailable`` / ``QmdDaemonWedged``
+    propagate, because they are session-level states.
+    """
+
+    async def _read_library_bodies(
+        paths: list[str], *, timeout: float | None = None
+    ) -> list[_Result | None]:
+        from lies.qmd.access import QmdDaemonUnavailable, QmdDaemonWedged
+
+        out: list[_Result | None] = []
+        for p in paths:
+            try:
+                out.append(await daemon_tool("get", {"file": p, "lineNumbers": False}))
+            except QmdDaemonUnavailable, QmdDaemonWedged:
+                raise
+            except Exception:
+                out.append(None)
+        return out
+
+    return _read_library_bodies
+
+
 def _fake_access(monkeypatch: pytest.MonkeyPatch, bodies: dict[str, str]) -> list[tuple]:
     """Patch the seam; record every ``(name, arguments)`` call.
 
     Keys are the ``file`` argument, so a body keyed by an unrequested path
     shows up as a lookup miss rather than as a silently wrong body.
+
+    Stubs both ``daemon_tool`` (the per-path tool) and
+    ``read_library_bodies`` (the I-9 hoisted bridge) so a test
+    does not have to care which path the read tool takes.
+    ``read_library_bodies`` issues one ``get`` per path under
+    the hood — same wire shape, one MCP session.
     """
     calls: list[tuple[str, dict[str, Any]]] = []
 
@@ -81,7 +121,13 @@ def _fake_access(monkeypatch: pytest.MonkeyPatch, bodies: dict[str, str]) -> lis
         text = bodies[arguments["file"]]
         return _get_result(f"qmd://{arguments['file']}", text)
 
-    monkeypatch.setattr("lies.mcp.read.access", SimpleNamespace(daemon_tool=daemon_tool))
+    monkeypatch.setattr(
+        "lies.mcp.read.access",
+        SimpleNamespace(
+            daemon_tool=daemon_tool,
+            read_library_bodies=_hoisted_bridge(daemon_tool),
+        ),
+    )
     return calls
 
 
@@ -183,7 +229,10 @@ def test_a_daemon_that_is_down_raises_instead_of_skipping(
     async def daemon_tool(name: str, arguments: dict[str, Any]) -> _Result:
         raise QmdDaemonUnavailable("qmd daemon is not serving at http://127.0.0.1:8181")
 
-    monkeypatch.setattr("lies.mcp.read.access", SimpleNamespace(daemon_tool=daemon_tool))
+    monkeypatch.setattr(
+        "lies.mcp.read.access",
+        SimpleNamespace(daemon_tool=daemon_tool, read_library_bodies=_hoisted_bridge(daemon_tool)),
+    )
 
     with pytest.raises(QmdDaemonUnavailable, match="not serving"):
         read.fn(paths=["alpha/a.md"])
@@ -198,7 +247,10 @@ def test_a_wedged_daemon_raises_with_its_log_tail(monkeypatch: pytest.MonkeyPatc
     async def daemon_tool(name: str, arguments: dict[str, Any]) -> _Result:
         raise QmdDaemonWedged("qmd daemon wedged on call to 'get'", last_output="phase 3")
 
-    monkeypatch.setattr("lies.mcp.read.access", SimpleNamespace(daemon_tool=daemon_tool))
+    monkeypatch.setattr(
+        "lies.mcp.read.access",
+        SimpleNamespace(daemon_tool=daemon_tool, read_library_bodies=_hoisted_bridge(daemon_tool)),
+    )
 
     with pytest.raises(QmdDaemonWedged) as excinfo:
         read.fn(paths=["alpha/a.md"])
@@ -227,7 +279,10 @@ def test_a_down_daemon_fails_a_mixed_batch_instead_of_returning_the_wiki_half(
     async def daemon_tool(name: str, arguments: dict[str, Any]) -> _Result:
         raise QmdDaemonUnavailable("qmd daemon is not serving")
 
-    monkeypatch.setattr("lies.mcp.read.access", SimpleNamespace(daemon_tool=daemon_tool))
+    monkeypatch.setattr(
+        "lies.mcp.read.access",
+        SimpleNamespace(daemon_tool=daemon_tool, read_library_bodies=_hoisted_bridge(daemon_tool)),
+    )
 
     with pytest.raises(QmdDaemonUnavailable):
         read.fn(paths=["page-abc123", "alpha/a.md"])
@@ -276,7 +331,10 @@ def test_a_down_daemon_is_not_swallowed_by_the_running_loop_bridge(
     async def daemon_tool(name: str, arguments: dict[str, Any]) -> _Result:
         raise QmdDaemonUnavailable("qmd daemon is not serving")
 
-    monkeypatch.setattr("lies.mcp.read.access", SimpleNamespace(daemon_tool=daemon_tool))
+    monkeypatch.setattr(
+        "lies.mcp.read.access",
+        SimpleNamespace(daemon_tool=daemon_tool, read_library_bodies=_hoisted_bridge(daemon_tool)),
+    )
 
     with pytest.raises(QmdDaemonUnavailable, match="not serving"):
         _call_from_a_running_loop(lambda: read.fn(paths=["alpha/a.md"]))
@@ -298,7 +356,10 @@ def test_a_wedged_daemon_survives_the_running_loop_bridge(
     async def daemon_tool(name: str, arguments: dict[str, Any]) -> _Result:
         raise QmdDaemonWedged("qmd daemon wedged on call to 'get'", last_output="phase 3")
 
-    monkeypatch.setattr("lies.mcp.read.access", SimpleNamespace(daemon_tool=daemon_tool))
+    monkeypatch.setattr(
+        "lies.mcp.read.access",
+        SimpleNamespace(daemon_tool=daemon_tool, read_library_bodies=_hoisted_bridge(daemon_tool)),
+    )
 
     with pytest.raises(QmdDaemonWedged) as excinfo:
         _call_from_a_running_loop(lambda: read.fn(paths=["alpha/a.md"]))
@@ -373,7 +434,10 @@ def test_read_takes_the_body_from_a_mixed_result_and_drops_the_notice(
             ]
         )
 
-    monkeypatch.setattr("lies.mcp.read.access", SimpleNamespace(daemon_tool=daemon_tool))
+    monkeypatch.setattr(
+        "lies.mcp.read.access",
+        SimpleNamespace(daemon_tool=daemon_tool, read_library_bodies=_hoisted_bridge(daemon_tool)),
+    )
 
     out = read.fn(paths=["claude_code/claude-tag.md"])
 
@@ -404,7 +468,10 @@ def test_a_result_with_no_resource_block_is_skipped_not_stored_empty(
             content=[_Text(text="[SKIPPED: claude_code/hooks.md - File too large (315KB > 10KB).]")]
         )
 
-    monkeypatch.setattr("lies.mcp.read.access", SimpleNamespace(daemon_tool=daemon_tool))
+    monkeypatch.setattr(
+        "lies.mcp.read.access",
+        SimpleNamespace(daemon_tool=daemon_tool, read_library_bodies=_hoisted_bridge(daemon_tool)),
+    )
 
     out = read.fn(paths=["claude_code/hooks.md", "alpha/ok.md"])
 
@@ -446,7 +513,10 @@ def test_a_notice_only_result_does_not_cancel_siblings_that_succeeded(
             raise RuntimeError("Document not found")
         return _get_result(f"qmd://{arguments['file']}", f"<body {arguments['file']}>")
 
-    monkeypatch.setattr("lies.mcp.read.access", SimpleNamespace(daemon_tool=daemon_tool))
+    monkeypatch.setattr(
+        "lies.mcp.read.access",
+        SimpleNamespace(daemon_tool=daemon_tool, read_library_bodies=_hoisted_bridge(daemon_tool)),
+    )
 
     out = read.fn(
         paths=[
@@ -555,7 +625,10 @@ def test_read_skips_failed_paths_and_logs_a_warning(
             raise RuntimeError("Document not found: alpha/missing.md")
         return _get_result(f"qmd://{arguments['file']}", f"<body {arguments['file']}>")
 
-    monkeypatch.setattr("lies.mcp.read.access", SimpleNamespace(daemon_tool=daemon_tool))
+    monkeypatch.setattr(
+        "lies.mcp.read.access",
+        SimpleNamespace(daemon_tool=daemon_tool, read_library_bodies=_hoisted_bridge(daemon_tool)),
+    )
 
     with caplog.at_level("WARNING", logger="lies.mcp.read"):
         out = read.fn(paths=["alpha/ok.md", "alpha/missing.md"])
@@ -594,7 +667,10 @@ def test_read_partial_batch_surfaces_unresolved_paths(
             raise RuntimeError(f"Document not found: {path}")
         return _get_result(f"qmd://{path}", bodies[path])
 
-    monkeypatch.setattr("lies.mcp.read.access", SimpleNamespace(daemon_tool=daemon_tool))
+    monkeypatch.setattr(
+        "lies.mcp.read.access",
+        SimpleNamespace(daemon_tool=daemon_tool, read_library_bodies=_hoisted_bridge(daemon_tool)),
+    )
 
     paths = sorted(bodies)
     out = read.fn(paths=paths)
@@ -625,7 +701,10 @@ def test_read_full_failure_still_raises_tool_error(
     async def daemon_tool(name: str, arguments: dict[str, Any]) -> _Result:
         raise RuntimeError(f"Document not found: {arguments['file']}")
 
-    monkeypatch.setattr("lies.mcp.read.access", SimpleNamespace(daemon_tool=daemon_tool))
+    monkeypatch.setattr(
+        "lies.mcp.read.access",
+        SimpleNamespace(daemon_tool=daemon_tool, read_library_bodies=_hoisted_bridge(daemon_tool)),
+    )
 
     with pytest.raises(ToolError) as excinfo:
         read.fn(paths=["alpha/missing1.md", "alpha/missing2.md"])
@@ -649,7 +728,10 @@ def test_read_all_failures_raises_tool_error(monkeypatch: pytest.MonkeyPatch) ->
     async def daemon_tool(name: str, arguments: dict[str, Any]) -> _Result:
         raise RuntimeError(f"Document not found: {arguments['file']}")
 
-    monkeypatch.setattr("lies.mcp.read.access", SimpleNamespace(daemon_tool=daemon_tool))
+    monkeypatch.setattr(
+        "lies.mcp.read.access",
+        SimpleNamespace(daemon_tool=daemon_tool, read_library_bodies=_hoisted_bridge(daemon_tool)),
+    )
 
     with pytest.raises(ToolError, match="all reads failed"):
         read.fn(paths=["alpha/a.md", "beta/b.md"])

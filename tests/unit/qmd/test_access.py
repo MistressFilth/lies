@@ -823,6 +823,90 @@ def test_validate_scope_propagates_qmd_daemon_wedged(
         asyncio.run(access.validate_scope(["alpha"]))
 
 
+# --- the read-library-bodies hoisted bridge (I-9) ----------------------
+#
+# ``read_library_bodies`` opens one MCP session and issues one
+# ``get`` per path under it. The tests below pin the per-path
+# tolerance (a per-path exception becomes ``None`` in the
+# output) and the session-level propagation (a typed
+# ``QmdDaemonUnavailable`` / ``QmdDaemonWedged`` short-circuits
+# the whole batch). The FastMCP wire cannot be exercised in a
+# unit test; the tests target ``read_library_bodies`` directly.
+
+
+def test_read_library_bodies_returns_empty_list_for_empty_input() -> None:
+    """No paths in, no daemon call, no session."""
+    assert asyncio.run(access.read_library_bodies([])) == []
+
+
+def test_read_library_bodies_per_path_failure_yields_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A per-path exception becomes ``None`` in the result list.
+
+    The previous per-path behaviour caught ``Exception`` and
+    logged + skipped; the hoisted bridge preserves that for
+    individual paths while still hoisting the session. A
+    document qmd cannot resolve must not kill the batch.
+    """
+    calls: list[str] = []
+
+    async def _call_tool(name: str, arguments: dict[str, Any], **kw: Any) -> Any:
+        calls.append(arguments.get("file", "?"))
+        if "missing" in arguments["file"]:
+            raise RuntimeError("Document not found")
+        return SimpleNamespace(content=[], is_error=False)
+
+    class _StubClient:
+        async def __aenter__(self) -> "_StubClient":
+            return self
+
+        async def __aexit__(self, *exc: object) -> None:
+            pass
+
+        async def call_tool(self, name: str, arguments: dict[str, Any], **kw: Any) -> Any:
+            return await _call_tool(name, arguments, **kw)
+
+    monkeypatch.setattr(access, "_daemon_client", lambda url: _StubClient())
+    monkeypatch.setattr(access, "qmd_daemon_reachable", lambda url, timeout: True)
+
+    results = asyncio.run(access.read_library_bodies(["alpha/ok.md", "alpha/missing.md"]))
+    assert calls == ["alpha/ok.md", "alpha/missing.md"], (
+        "one get per path, single session — the I-9 hoist"
+    )
+    assert results[0] is not None, "the ok path survives"
+    assert results[1] is None, "the missing path is a None, not a session kill"
+
+
+def test_read_library_bodies_session_failure_propagates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A ``QmdDaemonUnavailable`` on the first path kills the batch.
+
+    Session-level states cannot be rescued by per-path tolerance;
+    the parent caller (``_read_impl``) raises ``ToolError("all
+    reads failed")`` for the all-None case and otherwise surfaces
+    the typed error.
+    """
+    from lies.qmd.access import QmdDaemonUnavailable
+
+    class _StubClient:
+        async def __aenter__(self) -> "_StubClient":
+            return self
+
+        async def __aexit__(self, *exc: object) -> None:
+            pass
+
+        async def call_tool(self, name: str, arguments: dict[str, Any], **kw: Any) -> Any:
+            raise QmdDaemonUnavailable("daemon down")
+
+    monkeypatch.setattr(access, "_daemon_client", lambda url: _StubClient())
+    monkeypatch.setattr(access, "qmd_daemon_reachable", lambda url, timeout: True)
+
+    with pytest.raises(QmdDaemonUnavailable):
+        asyncio.run(access.read_library_bodies(["alpha/a.md", "alpha/b.md"]))
+
+
 # --- the taxonomy matches what fastmcp actually raises -----------------
 #
 # The three cases below are transcribed from a probe run against the
