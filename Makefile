@@ -58,9 +58,18 @@ features-test: ## Run behavior/feature/integration tests (requires INTEGRATION=1
 test: ## Run all tests (unit + features/integration).
 	$(PYTEST)
 
+# `--runslow` changes *which tests run*, so a durations table from the
+# full run is not comparable to the gate's: the slow-marked tests the
+# gate exempts are exactly the ones above 0.15 s, so they dominate the
+# table and make a clean gate look like a wall of violations. Pass
+# `RUNSLOW=` to `time-unit-tests` to measure the same population the
+# pre-commit hook runs, budget gate included.
+RUNSLOW ?= --runslow
+
 .PHONY: time-unit-tests
-time-unit-tests: ## Run unit tests; print per-test ms (verbose; no duration floor).
-	$(PYTEST) $(TESTS)/unit/ --runslow --durations=0 --durations-min=0 -vv --tb=short --no-header
+time-unit-tests: ## Run unit tests; print per-test ms. RUNSLOW= for the pre-commit population (see below).
+	@echo "population: $(if $(RUNSLOW),all unit tests including slow-marked (gate exempts those),pre-commit population only — excludes --runslow; this is what the pre-commit hook runs)"
+	$(PYTEST) $(TESTS)/unit/ $(RUNSLOW) --durations=0 --durations-min=0 -vv --tb=short --no-header
 
 .PHONY: time-features-tests
 time-features-tests: ## Run integration tests; print per-test ms (verbose; requires INTEGRATION=1).
