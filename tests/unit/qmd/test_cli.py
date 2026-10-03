@@ -171,3 +171,56 @@ def test_parse_json_list_does_not_requalify_the_whole_stream_per_bracket() -> No
 
     noisy = "[" * 500 + "x" * 500
     assert _parse_json_list(noisy + ' [{"path": "a.md"}]') == [{"path": "a.md"}]
+
+
+def test_qmd_query_enforces_the_envelope_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``qmd_query(limit=N)`` returns at most N rows, even if the CLI ignores ``--limit``.
+
+    The qmd CLI's option table at ``dist/cli/qmd.js:2550`` reads
+    only ``values.n`` (the long option ``--limit`` is not parsed),
+    and the call at ``:2428`` passes ``limit: results.length`` into
+    the search, overriding the value outright. ``qmd_query(limit=5)``
+    therefore returns whatever the CLI returned (typically 20) and
+    the LIES envelope would silently ship a wider top-N than the
+    caller asked for. The LIES-side slice at the bottom of
+    ``qmd_query`` is the load-bearing half; the daemon path forwards
+    ``limit`` to a backend that honours it, but the CLI path does
+    not, and the slice is duplicated on every path because every
+    caller depends on it.
+    """
+    # Simulate the CLI returning 20 rows despite limit=5: a real
+    # ``qmd query --limit 5 --json`` produces 20 today. The LIES
+    # envelope must slice down to the asked-for 5.
+    many_rows = [{"path": f"claude_code/p{i}.md", "title": f"P{i}"} for i in range(20)]
+    seen: dict[str, object] = {}
+
+    def _fake_qmd(args, *, cwd, timeout, **kwargs):  # noqa: ARG001
+        seen["args"] = list(args)
+        from types import SimpleNamespace
+        from lies.qmd.cli import _parse_json_list
+
+        return SimpleNamespace(
+            args=tuple(args),
+            returncode=0,
+            stdout=_parse_json_list.__module__
+            and None
+            or __import__("json").dumps(many_rows).encode(),
+            stderr=b"",
+        )
+
+    monkeypatch.setattr("lies.qmd.cli._run_qmd", _fake_qmd)
+    monkeypatch.setattr(
+        "lies.library.registry.library_git_root", lambda: __import__("pathlib").Path("/tmp/fake")
+    )
+
+    out = qmd_query(
+        cwd=__import__("pathlib").Path("/tmp/fake"), question="anything", limit=5, timeout=10
+    )
+
+    assert len(out) == 5, f"limit=5 must slice a 20-row response; got {len(out)}"
+    # The CLI was *asked* for --limit 5; the slice in qmd_query
+    # is what enforces it, not the backend. ``qmd query <q>
+    # --limit 5 --json`` puts the flag two positions before the
+    # tail of the argv list.
+    args = seen["args"]
+    assert args[-3:-1] == ["--limit", "5"], args

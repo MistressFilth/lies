@@ -336,18 +336,22 @@ def _assert_gate_shape(gate: dict[str, Any]) -> None:
 def test_lies_gate_slot_is_reserved() -> None:
     """The `lies_gate` slot exists so Task 4/6 have somewhere to record.
 
-    It is `null` until they fill it, and the suite stays green while it is.
-    What is guaranteed today is the slot itself and the rationale beside
-    it, so the routing comparison cannot land somewhere unasserted and
-    undocumented.
+    Task 4 populated the slot with a measured run of the
+    fixture through ``lies.mcp.search``. The shape check is now
+    strict — a null slot would mean the gate is empty and the
+    routing comparison has no number to diff against.
     """
     baseline = _load()["baseline"]
     assert "lies_gate" in baseline, "the LIES-routing gate slot must be reserved"
     assert baseline["lies_gate_note"], "the slot's rationale must be readable from the file"
 
     gate = baseline["lies_gate"]
-    if gate is not None:
-        _assert_gate_shape(gate)
+    assert gate is not None, (
+        "Task 4 committed to populating the lies_gate; a null slot "
+        "means the gate number was not recorded and the routing "
+        "comparison has no number to diff against"
+    )
+    _assert_gate_shape(gate)
 
 
 def test_lies_gate_shape_check_works_today() -> None:

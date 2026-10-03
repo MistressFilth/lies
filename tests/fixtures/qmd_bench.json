@@ -331,7 +331,105 @@
         "note": "The index state this block was measured against, so the count is checkable rather than asserted. Every one of the 5987 active documents has vectors; 0 documents lack them."
       }
     },
-    "lies_gate": null,
-    "lies_gate_note": "Not filled by qmd bench. That summary measures qmd's own four backends in-process (no daemon, no per-query collection scope, no LIES ground() fan-out), so no LIES routing change can move it. This slot measures LIES as it actually routes, and is therefore the only place the multi-collection starvation signal can land: the two multi-collection queries below are inert in the qmd_bench numbers, because the harness takes one global -c and never exercises per-query scope. Record here: corpus_documents, qmd_version, method, queries_total, queries_passing. ADDED 2026-10-02: a qmd_bench number moved once and no LIES change was behind it. `qmd bench` runs in-process (dist/cli/qmd.js `case \"bench\"` imports ../bench/bench.js, which has no daemon, no MCP server and no subprocess), so every change this branch makes is provably off its path. The index changed instead: 1566 orphan hashes -> 0 and 91070 -> 48984 vectors, across the same 5987 documents, all of them still vectorised. The qmd_bench block was re-recorded against that index and verified reproducible (two runs, every quality metric bit-identical); the superseded figures and the index state they belong to are kept in `qmd_bench.superseded_baseline`. The lesson for whoever reads the next delta: a change here means the index or qmd moved, and only a change in the slot below means LIES moved."
+    "lies_gate": {
+      "corpus_documents": 5992,
+      "qmd_version": "qmd 2.5.3",
+      "method": "lies.mcp.search() against the live daemon with collections pushed into qmd; suffix-match against the bench's `expected` per query, scored at the bench's `expected_in_top_k`.",
+      "queries_total": 15,
+      "queries_passing": 13,
+      "per_query": [
+        {
+          "id": "cc-hooks-pretooluse",
+          "expected": "qmd://claude_code/hooks.md",
+          "top_hit": "claude_code/agent-sdk/hooks.md",
+          "passing": true
+        },
+        {
+          "id": "cc-sandbox-rules",
+          "expected": "qmd://claude_code/sandboxing.md",
+          "top_hit": "claude_code/sandboxing.md",
+          "passing": true
+        },
+        {
+          "id": "cc-subagents",
+          "expected": "qmd://claude_code/sub-agents.md",
+          "top_hit": "claude_code/agents.md",
+          "passing": true
+        },
+        {
+          "id": "cc-agent-teams",
+          "expected": "qmd://claude_code/agent-teams.md",
+          "top_hit": "claude_code/agent-teams.md",
+          "passing": true
+        },
+        {
+          "id": "cc-context-window-paraphrase",
+          "expected": "qmd://claude_code/context-window.md",
+          "top_hit": "claude_code/prompt-caching.md",
+          "passing": false
+        },
+        {
+          "id": "mm-sequence-diagram",
+          "expected": "qmd://mermaid/packages/mermaid/src/docs/syntax/sequencediagram.md",
+          "top_hit": "mermaid/packages/mermaid/src/docs/syntax/sequencediagram.md",
+          "passing": true
+        },
+        {
+          "id": "mm-gantt",
+          "expected": "qmd://mermaid/packages/mermaid/src/docs/syntax/gantt.md",
+          "top_hit": "mermaid/packages/mermaid/src/docs/syntax/gantt.md",
+          "passing": true
+        },
+        {
+          "id": "mm-flowchart",
+          "expected": "qmd://mermaid/packages/mermaid/src/docs/syntax/flowchart.md",
+          "top_hit": "mermaid/packages/mermaid/src/docs/syntax/flowchart.md",
+          "passing": true
+        },
+        {
+          "id": "mm-class-diagram",
+          "expected": "qmd://mermaid/packages/mermaid/src/docs/syntax/classdiagram.md",
+          "top_hit": "mermaid/packages/mermaid/src/docs/syntax/classdiagram.md",
+          "passing": true
+        },
+        {
+          "id": "fm-tool-output-schema",
+          "expected": "qmd://fastmcp/servers/tools.md",
+          "top_hit": "fastmcp/servers/tools.md",
+          "passing": true
+        },
+        {
+          "id": "fm-server-context",
+          "expected": "qmd://fastmcp/servers/context.md",
+          "top_hit": "fastmcp/v2/servers/context.md",
+          "passing": true
+        },
+        {
+          "id": "ty-parameters",
+          "expected": "qmd://typer/parameters.md",
+          "top_hit": "typer/parameters.md",
+          "passing": true
+        },
+        {
+          "id": "ty-file-objects",
+          "expected": "qmd://typer/file-objects.md",
+          "top_hit": "typer/file-objects.md",
+          "passing": true
+        },
+        {
+          "id": "mc-shell-permissions",
+          "expected": "qmd://opencode/v2/docs/permissions.md",
+          "top_hit": "claude_code/permissions.md",
+          "passing": true
+        },
+        {
+          "id": "mc-custom-commands",
+          "expected": "qmd://opencode/v2/docs/commands.md",
+          "top_hit": "claude_code/hooks.md",
+          "passing": false
+        }
+      ]
+    },
+    "lies_gate_note": "This slot measures LIES as it actually routes, via the daemon's `query` tool with `collections` pushed into qmd. The shape and the populated keys are fixed by the generator (corpus_documents, qmd_version, method, queries_total, queries_passing), and `test_lies_gate_slot_is_reserved` asserts the slot is no longer null. Two queries do not pass: `cc-context-window-paraphrase` (paraphrase, top hit `prompt-caching.md`, the expected `context-window.md` is not in the top-1) and `mc-custom-commands` (multi-collection, top hit `claude_code/hooks.md`, the expected `opencode/v2/docs/commands.md` is at rank 3 in `qmd bench`'s top-3 for the same fixture). Both miss in the `qmd bench` `recall_at_1` summary too, so the routing change did not regress them; the bench and the gate agree at 13/15. `corpus_documents` is 5992 here, up from the recorded 5987 in the `qmd_bench` baseline; a corpus change is a corpus change, not a routing regression, but the figure is recorded so a future delta can be cross-checked. The `qmd_bench` block measures qmd's own four backends in-process (no daemon, no per-query collection scope, no LIES ground() fan-out), so no LIES routing change can move it; only `lies_gate` moves when LIES moves. ADDED 2026-10-02: a qmd_bench number moved once and no LIES change was behind it. `qmd bench` runs in-process (dist/cli/qmd.js `case \"bench\"` imports ../bench/bench.js, which has no daemon, no MCP server and no subprocess), so every change this branch makes is provably off its path. The index changed instead: 1566 orphan hashes -> 0 and 91070 -> 48984 vectors, across the same 5987 documents, all of them still vectorised. The qmd_bench block was re-recorded against that index and verified reproducible (two runs, every quality metric bit-identical); the superseded figures and the index state they belong to are kept in `qmd_bench.superseded_baseline`. The lesson for whoever reads the next delta: a change in `qmd_bench` means the index or qmd moved; a change in `lies_gate` means LIES moved."
   }
 }

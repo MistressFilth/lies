@@ -594,6 +594,19 @@ def qmd_query(
         raise QmdNoResultsError(f"qmd query returned no results for: {question!r}")
 
     normalized = [_normalize_qmd_result(item) for item in data]
+    # ``limit`` is inert in the qmd CLI's ``qmd query``: the option
+    # table at ``dist/cli/qmd.js:2550`` reads only ``values.n`` (the
+    # long option ``--limit`` is not parsed), and the call at
+    # ``:2428`` passes ``limit: results.length`` into the search,
+    # overriding the value outright. The CLI's own
+    # ``_run_qmd`` documents the same: ``qmd_query(limit=5)`` returns
+    # 20 rows. The LIES envelope cannot pass through a limit the
+    # backend ignored; the slice here is the load-bearing half, and
+    # the daemon path forwards ``limit`` to a backend that honours
+    # it (``server.js:230``). The slice is duplicated on every path
+    # because every call site that hands ``limit`` to ``qmd_query``
+    # depends on it.
+    normalized = normalized[:limit]
     if collection_filter is None:
         return normalized
     allowed = collection_filter

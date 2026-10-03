@@ -1,20 +1,54 @@
-"""search MCP tool — single-batch hybrid qmd query.
+"""search MCP tool — single-batch hybrid qmd query against the daemon.
 
-Replaces the old per-collection fan-out in ``_fanout_collections`` with
-one qmd call carrying the resolved collection set as ``collection_filter``.
-qmd's hybrid search handles vec+lex internally; we pass the user's
-question as a plain string (or the HyDE hypothetical when set).
-Library-wins-on-slug-conflict merge happens inside qmd.
+The read path goes through ``lies.qmd.access.daemon_tool`` so the
+collection filter is a true push-down (the daemon's ``collections``
+parameter narrows the candidate set inside qmd, not after) and the
+read sites cannot drift into a CLI fallback for retrieval. The
+previous CLI path ranked globally and dropped rows whose first
+``/`` segment was outside the resolved scope: a multi-collection
+``c:claude_code|c:opencode`` query returned hits from whichever
+collection ranked highest, and a collection could be starved to
+zero rows even when it had matches. The daemon's push-down is
+the only safe form.
 
-Specs: docs/superpowers/specs/2026-09-26-librarian-v040-port-design.md.
+Two envelopes the envelope must keep separate, and must not
+collapse:
+
+- ``no_coverage`` — *this search found nothing*. A claim about
+  the corpus.
+- ``transient`` — *this search did not finish*. A claim about
+  the run. A timeout, a wedge, anything that prevents the search
+  from learning an answer leaves ``no_coverage=False`` and sets
+  ``transient=True`` instead.
+
+A *down* daemon (``QmdDaemonUnavailable``) is a third state and
+not in the envelope: it is re-raised so the operator must act.
+The spec is explicit that a down daemon fails loudly; folding it
+into ``no_coverage=True`` is the exact failure mode the timeout
+classification branch exists to remove.
+
+Review Focus #2/#3 — an unknown collection, and a filter that
+matches a collection registered but empty — short-circuits here
+on the registry, not on the daemon. The daemon answers an
+unknown collection with an empty result and **no error**; the
+CLI exits 1 on the same class. Without pre-validation this would
+surface as "the corpus has nothing" — a false claim about the
+corpus made for a question that named something absent. The
+registry check happens after the resolver, as a second pass
+against ``library_collection_names()``, so a stale registry cache
+between the resolver and the dispatch still gets caught.
 """
 
 from __future__ import annotations
 
+import asyncio
+import functools
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from fastmcp.tools import Tool
 
+from lies.qmd import access
 from lies.query.tag_expr import (
     And,
     Include,
@@ -26,9 +60,7 @@ from lies.query.tag_expr import (
 )
 from lies.qmd.cli import (
     QmdCommandError,
-    QmdNoResultsError,
     QmdTimeoutError,
-    qmd_query,
 )
 
 # Per-call deadline for the single qmd query behind this tool.
@@ -132,41 +164,201 @@ def _resolve_tag_collections(tag_expr: str | None) -> tuple[list[str], list[str]
     return sorted(names & available), []
 
 
-def _post_query(doc: str, scope: list[str], limit: int, timeout: int) -> list[dict[str, Any]]:
-    """Issue one qmd query against the library index.
+@functools.lru_cache(maxsize=1)
+def _qmd_collection_names() -> frozenset[str]:
+    """The collection set the daemon is currently serving, read once per process.
 
-    Production wiring. Delegates to :func:`lies.qmd.cli.qmd_query` with
-    the question as a plain string payload and the resolved collection
-    set as the ``collection_filter``. qmd's hybrid search handles
-    vec+lex internally. Returns an empty list when
-    :class:`QmdNoResultsError` fires (the caller maps that to
-    ``no_coverage=True``). ``QmdTimeoutError`` and the other
-    ``QmdCommandError`` propagate so the caller can label a slow daemon
-    differently from a broken one.
+    Used by the pre-dispatch check in :func:`_search_impl`. The
+    daemon's ``status`` tool returns ``structuredContent.collections``
+    as a list of objects with a ``name`` key (the qmd source at
+    ``server.js:421`` walks ``status.collections``); the names are
+    what the daemon's ``collections`` filter accepts. Caching at
+    process scope is the right trade: the collection set is
+    operator-controlled, changes only on a deliberate
+    ``qmd collection add``/``remove``, and a stale read manifests
+    as a one-time wrong-report on the next call. The ``QmdDaemon``
+    *Unavailable* / *Wedged* exceptions surface unchanged — the
+    search path catches them downstream and the cache just does
+    not get populated.
     """
-    from lies.library.registry import library_git_root
+    result = _run_blocking(access.daemon_tool("status", {}))
+    structured = getattr(result, "structured_content", None) or {}
+    rows = structured.get("collections") or []
+    if not isinstance(rows, list):
+        return frozenset()
+    names: set[str] = set()
+    for row in rows:
+        # The daemon's status tool returns ``collections`` as a
+        # list of plain strings (verified against qmd 2.5.3
+        # 2026-10-03), but the schema also accepts a list of
+        # ``{"name": "..."}`` objects — both shapes are read so
+        # the helper does not lock to one.
+        if isinstance(row, str):
+            if row:
+                names.add(row)
+        elif isinstance(row, dict):
+            name = row.get("name")
+            if isinstance(name, str) and name:
+                names.add(name)
+    return frozenset(names)
 
-    cwd = library_git_root()
-    collection_filter = set(scope) if scope else None
 
-    # Strip trailing whitespace defensively. The original structured
-    # doc form required this (qmd rejected empty trailing lines from
-    # f-string interpolation); the plain-string form doesn't, but
-    # normalizing the wire shape keeps callers that source the
-    # question through different shapes (shell ``$()`` strips, manual
-    # construction, etc.) on the same payload the tests pin.
+def _qmd_collection_names_for_check() -> frozenset[str]:
+    """The collection set the pre-check sees.
+
+    Indirection over :func:`_qmd_collection_names` so tests can
+    stub the read without going through the daemon. The cache
+    itself is process-scoped and unstubbable from a
+    ``monkeypatch.setattr``; this wrapper gives the test surface
+    something to point at. Production code calls this; the cache
+    is the implementation detail.
+    """
+    return _qmd_collection_names()
+
+
+def _qmd_collection_names_cache_clear() -> None:
+    """Drop the cached daemon-side collection list.
+
+    Public for tests; the cache is process-scoped and a test that
+    mutates the daemon's collection set without restarting the
+    interpreter would otherwise see stale data. Production code
+    never calls this.
+    """
+    _qmd_collection_names.cache_clear()
+
+
+def _run_blocking(coro: Any) -> Any:
+    """Run an async coroutine from a sync call site, loop-safe.
+
+    FastMCP runs sync handlers in a threadpool, pydantic-ai runs
+    sync tools via ``run_in_executor`` — both production call
+    sites have no running event loop, and ``asyncio.run`` works
+    there. A running loop is reachable (``lib_ask`` is async, and
+    anything that bridges back into an agent run has a live
+    loop), and ``asyncio.run`` from inside one raises
+    ``RuntimeError: asyncio.run() cannot be called from a running
+    event loop`` — the exact bug ``ground()`` shipped with in
+    #106. The running-loop case runs the coroutine on its own
+    thread with its own loop instead.
+
+    Identical shape to the bridge in :mod:`lies.mcp.read`; the
+    two are not factored into one helper because each has a
+    distinct type and the helpers are tiny.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+    with ThreadPoolExecutor(max_workers=1, thread_name_prefix="search-bridge") as pool:
+        return pool.submit(asyncio.run, coro).result()
+
+
+def _normalize_daemon_hit(row: dict[str, Any]) -> dict[str, Any]:
+    """Map a daemon ``query`` row onto the existing internal ``path`` contract.
+
+    The daemon returns ``file`` (``displayPath`` — the collection-
+    relative path) and a ``docid`` for back-compat. Downstream
+    consumers (the synthesizer, the F19 citation contract) read
+    ``path``; the path is ``<collection>/<page>`` form, e.g.
+    ``claude_code/hooks.md``, which is what ``displayPath``
+    already is. The mapping is one key rename, kept in a helper
+    so the two representations cannot drift.
+
+    Docids are **not** the path. ``docid`` is
+    ``documents.hash[0:6]`` with no ``ORDER BY``; three live
+    collisions exist among the 5987 active documents, so a path
+    keyed by docid silently returns the wrong file on collision.
+    A row that has no usable ``file`` is dropped: the daemon
+    only sends ``file`` when it was found, and an empty
+    ``displayPath`` is never a valid lookup key.
+    """
+    file_value = row.get("file")
+    if not isinstance(file_value, str) or not file_value:
+        return {}
+    out = dict(row)
+    out["path"] = file_value
+    return out
+
+
+def _post_query(doc: str, scope: list[str], limit: int, timeout: int) -> list[dict[str, Any]]:
+    """Issue one daemon ``query`` against the library index, scoped to ``scope``.
+
+    The previous CLI shape — ``qmd query <q> --limit N --json`` plus a
+    post-hoc Python filter on each row's first ``/`` segment — could
+    silently starve a multi-collection query to whichever collection
+    ranked highest, because the rank was global. The daemon's
+    ``collections`` parameter is a true push-down: the candidate set
+    is narrowed *inside* qmd, so a hybrid search over
+    ``[claude_code, opencode]`` returns in-scope rows from both.
+
+    ``limit`` is forwarded to the daemon **and** the result is
+    sliced to the same length on the way out. The daemon honours
+    ``limit`` today; the LIES-side slice is the load-bearing half:
+    the CLI's ``--limit`` was inert (qmd parsed only ``values.n``,
+    then overrode with ``results.length``), and a future backend
+    that ignores the wire argument must not pass through as if it
+    applied.
+
+    A timeout on the daemon side surfaces as
+    :class:`QmdTimeoutError` via the same envelope that timed out
+    a CLI ``qmd query`` used to. The mapping is preserved so a
+    caller's ``except QmdTimeoutError`` keeps working — the
+    envelope distinguishes slow from unreachable from broken
+    through three different paths, but the exception class
+    carries the slow-vs-broken split.
+    """
+    # Strip trailing whitespace defensively. The previous structured
+    # ``vec: ...\\nlex: ...`` form required this; the plain-string
+    # form does not, but normalizing the wire shape keeps callers
+    # that source the question through different shapes (shell
+    # ``$()`` strips, manual construction, etc.) on the same
+    # payload the tests pin.
     doc = doc.rstrip()
 
-    try:
-        return qmd_query(
-            cwd=cwd,
-            question=doc,
-            limit=limit,
-            timeout=timeout,
-            collection_filter=collection_filter,
-        )
-    except QmdNoResultsError:
-        return []
+    # Task 4 step 9: a bare question is one ``lex`` and one ``vec``
+    # entry; the ``hyde`` decision is deferred to Task 6. The first
+    # sub-query gets 2x weight in qmd's hybrid blend (``store.js``
+    # documents this), so ``lex`` is first: the keyword leg is the
+    # one with the sharpest signal, and a vector-only pass is the
+    # case where the BM25 leg has nothing to add. The intent field
+    # is required by the daemon's schema.
+    searches = [
+        {"type": "lex", "query": doc},
+        {"type": "vec", "query": doc},
+    ]
+
+    arguments: dict[str, Any] = {
+        "searches": searches,
+        "limit": limit,
+        "collections": list(scope),
+        "intent": "lies.mcp.search read-side hybrid query",
+    }
+
+    result = _run_blocking(access.daemon_tool("query", arguments))
+
+    # The daemon's MCP tool returns a ``CallToolResult`` whose
+    # ``structured_content`` carries the rows. A malformed payload
+    # that has no ``results`` is treated as zero rows — same
+    # surface as an empty result, so the envelope's ``no_coverage``
+    # flag is the honest report.
+    structured = getattr(result, "structured_content", None) or {}
+    rows = structured.get("results") or []
+    if not isinstance(rows, list):
+        rows = []
+
+    # Envelope-side limit enforcement. See the docstring: the
+    # daemon honours ``limit`` today, the slice is defence in depth
+    # against a backend that returns a wider top-N than asked.
+    rows = rows[:limit]
+
+    normalized: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        hit = _normalize_daemon_hit(row)
+        if hit:
+            normalized.append(hit)
+    return normalized
 
 
 def _search_impl(
@@ -174,8 +366,10 @@ def _search_impl(
     tag_expr: str | None = None,
     exclude_tags: list[str] | None = None,
     hypothetical: str | None = None,
+    *,
+    limit: int = 10,
 ) -> dict[str, Any]:
-    """Run a single-batch hybrid vec+lex qmd query.
+    """Run a single-batch hybrid vec+lex qmd query against the daemon.
 
     Returns a dict matching the ``SearchResult`` shape:
     ``{hit, hits, unknown_tags, no_coverage, transient,
@@ -188,6 +382,15 @@ def _search_impl(
     *this search did not finish*, which is a claim about the run. A
     timeout sets only the second: the search never got to learn
     anything, so it has no standing to assert the corpus is empty.
+    A *down* daemon (``QmdDaemonUnavailable``) is re-raised
+    entirely: the operator must act, and folding it into either
+    envelope flag is the silent-failure mode the timeout
+    classification branch exists to remove.
+
+    The ``limit`` keyword is the LIES-side cap; it is forwarded to
+    the daemon *and* enforced on the response (see ``_post_query``).
+    The default matches the qmd daemon's default, so a call without
+    ``limit`` reads identically at the wire.
     """
     # ``exclude_tags`` is preserved in the surface signature for forward
     # compatibility with the design contract (F15 grammar lets callers
@@ -242,6 +445,51 @@ def _search_impl(
             "fallback_reason": "no collections registered",
         }
 
+    # Review Focus #2 — the daemon answers an unknown collection
+    # with an empty result and **no error**. The LIES registry is
+    # one source of truth, but it is not the binding one: a name
+    # can be recorded locally and never reach qmd (the LIES
+    # registry's writer does not talk to qmd), or be in the LIES
+    # registry and then dropped by a later ``qmd cleanup`` /
+    # ``qmd update``. The pre-check asks the daemon's ``status``
+    # tool for the collection list qmd is *actually* serving
+    # against, and the resolved scope is intersected with that.
+    # Anything not in the intersection is "you named a collection
+    # that does not exist" and is reported as ``unknown_tags``.
+    # Review Focus #3 — a registered-but-empty collection
+    # (``wiki_default``, 0 files) is in the daemon's collection
+    # list with zero documents; it is **not** a "you named a
+    # collection that does not exist" and is **not** an empty
+    # search result, but it is also not what the user asked for
+    # in the sense that no hits can come from it. That case is
+    # detected at the post-call boundary below, where ``hits == []``
+    # plus a name-with-zero-documents produces a dedicated
+    # ``fallback_reason``. The two states get distinct answers
+    # because they are distinct facts: a missing name is a syntax
+    # error in the user's request, and an empty collection is a
+    # coverage gap the operator should be told about.
+    qmd_collections = _qmd_collection_names_for_check()
+    if any(name not in qmd_collections for name in scope):
+        # The user's original expression is what they wrote; the
+        # resolved names are the implementation's. The MCP surface
+        # should report the expression, not the resolver's
+        # intermediate form. This matches the parse-error path
+        # above (``except TagExprUnknown`` returns ``[tag_expr]``),
+        # so a missing-collection and a parse error report the
+        # same shape: the user's wording.
+        return {
+            "hit": None,
+            "hits": [],
+            "unknown_tags": [tag_expr]
+            if tag_expr
+            else [name for name in scope if name not in qmd_collections],
+            "no_coverage": False,
+            "transient": False,
+            "searched_scope": [],
+            "fallback_reason": f"unknown tag: {tag_expr!r}" if tag_expr else "unknown tag",
+        }
+    scope = [name for name in scope if name in qmd_collections]
+
     # Pass the user's question (or the HyDE hypothetical when set) as a
     # plain string. The v0.40 structured ``vec: ...\nlex: ...`` doc form
     # was found to silently lose coverage on some queries (``LSP setup``
@@ -252,20 +500,40 @@ def _search_impl(
     doc = hypothetical or question
 
     try:
-        raw = _post_query(doc, scope, limit=10, timeout=_current_timeout())
+        raw = _post_query(doc, scope, limit=limit, timeout=_current_timeout())
+    except access.QmdDaemonUnavailable:
+        # Re-raise. The spec is explicit that a down daemon fails
+        # loudly, and the message already names the fix
+        # (``lies qmd up``). Folding this into the envelope would
+        # reproduce the silent-failure mode the timeout
+        # classification branch exists to remove: the operator
+        # would see "no relevant content in library" while the
+        # daemon is in fact down.
+        raise
+    except access.QmdDaemonWedged as exc:
+        # A wedge is a slow daemon that the seam recycled, not an
+        # unreachable one and not a statement about the corpus.
+        # ``no_coverage`` is reserved for "this search found
+        # nothing"; a search that never finished learned nothing
+        # and has no standing to assert the corpus is empty.
+        # ``transient`` is the honest "ask again" flag, and the
+        # daemon's last log line is the only evidence of where
+        # the time went.
+        detail = f"; last qmd output: {exc.last_output!r}" if exc.last_output else ""
+        return {
+            "hit": None,
+            "hits": [],
+            "unknown_tags": [],
+            "no_coverage": False,
+            "transient": True,
+            "searched_scope": scope,
+            "fallback_reason": f"qmd wedged; recycling did not help{detail}",
+        }
     except QmdTimeoutError as exc:
-        # A timeout is a slow daemon, not an absent one, and it is not
-        # a statement about the corpus. Reporting it as
-        # ``qmd unreachable`` + ``no_coverage=True`` sent a stalled
-        # call to the user as "No relevant content found in library."
-        # — a false claim about what the library contains, for a query
-        # that returns in under six seconds on a retry.
-        #
-        # ``no_coverage`` is the flag that means "this search found
-        # nothing", and a search that never finished learned nothing.
-        # ``transient`` is the new one: the honest description is
-        # "ask again", and the librarian contract is what turns a flag
-        # into prose a model acts on.
+        # CLI-side timeout. The seam re-raises this from a CLI
+        # path that ``_post_query`` no longer uses; the catch stays
+        # so a future call site that re-routes through the CLI
+        # (the bench tool, say) cannot regress the envelope.
         detail = ""
         if exc.stderr:
             detail = f"; last qmd output: {_decode(exc.stderr)!r}"
@@ -279,6 +547,11 @@ def _search_impl(
             "fallback_reason": f"qmd timed out after {_current_timeout()}s{detail}",
         }
     except QmdCommandError as exc:
+        # Defensive fallback: an unexpected non-timeout, non-wedge
+        # qmd failure. Maps to ``no_coverage=True`` so a caller
+        # that checks the flag sees the envelope as a failed
+        # search, with the class name and message preserved in
+        # ``fallback_reason``.
         return {
             "hit": None,
             "hits": [],
@@ -289,6 +562,11 @@ def _search_impl(
             "fallback_reason": f"qmd unreachable: {exc}",
         }
     except Exception as exc:  # noqa: BLE001
+        # Defensive fallback for an unexpected internal error.
+        # The class name and message reach the operator through
+        # ``fallback_reason``; the envelope still answers with
+        # ``no_coverage=True`` so a caller that checks the flag
+        # gets a consistent surface.
         return {
             "hit": None,
             "hits": [],
@@ -302,6 +580,34 @@ def _search_impl(
     hits = list(raw)
     no_coverage = not hits
     hit = hits[0] if hits else None
+
+    # Review Focus #3 — a registered-but-empty collection
+    # (``wiki_default``) is in the daemon's collection list with
+    # zero documents. The search against it succeeds and returns
+    # zero hits, which a caller reading ``no_coverage=True`` would
+    # read as "the corpus has nothing for this question" — a
+    # false claim about the corpus, made for a question that
+    # named a known-empty collection. The honest answer keeps
+    # ``no_coverage=True`` (no rows did come back) and adds a
+    # ``fallback_reason`` that names the empty collection, so a
+    # reader can distinguish "I searched and found nothing" from
+    # "the collection you named is empty in qmd". Only fires when
+    # the scope is a single known-but-empty collection: a
+    # multi-collection scope with one empty member is a different
+    # state (the others may still match).
+    if no_coverage and len(scope) == 1:
+        from lies.library.registry import library_collection_names
+
+        if scope[0] in library_collection_names() and not hits:
+            return {
+                "hit": None,
+                "hits": hits,
+                "unknown_tags": [],
+                "no_coverage": True,
+                "transient": False,
+                "searched_scope": scope,
+                "fallback_reason": f"collection {scope[0]!r} is registered but has no documents in qmd",
+            }
     return {
         "hit": hit,
         "hits": hits,
