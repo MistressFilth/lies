@@ -18,6 +18,7 @@ from __future__ import annotations
 import functools
 import logging
 import os
+import threading
 import time
 from pathlib import Path
 from typing import Any, Callable
@@ -182,6 +183,10 @@ def _release(fd: int) -> None:
         _log.warning("release_create_lock raised: %s", exc)
 
 
+#: Per-thread reentrancy depth for :func:`with_qmd_lock`.
+_held = threading.local()
+
+
 def with_qmd_lock(
     *,
     timeout_s: float = 30.0,
@@ -200,6 +205,23 @@ def with_qmd_lock(
 
     Returns a decorator. The decorator's wrapper acquires on entry,
     releases on exit (including exceptions).
+
+    **Reentrant.** A nested call in the same thread does not re-acquire.
+    Two helpers here call others that are themselves decorated --
+    ``qmd_collection_add_or_update`` calls ``qmd_collection_show`` and
+    ``qmd_collection_add``, and ``qmd_cleanup`` calls ``qmd_reindex`` -- so
+    without this the outer call holds the flock while the inner one polls
+    for it and times out against *itself* with ``QmdLockBusy``. That
+    never fired while the acquire path used the import-time constant:
+    the inner acquire opened a *different* file (whatever the frozen
+    constant happened to be), so it never contended, and the nesting was
+    invisible. Per-acquisition resolution exposed it.
+
+    Reentrancy is per-thread, via ``threading.local``, so a genuine second
+    thread still contends and is still serialized -- which is the point of
+    the lock. The nesting here is same-thread composition, not
+    concurrency, and serializing it against itself is a deadlock, not
+    safety.
     """
 
     def decorator(fn: Callable[..., Any]) -> Callable[..., Any]:
@@ -207,10 +229,21 @@ def with_qmd_lock(
             fn
         )  # sets __wrapped__, __name__, __doc__ — the meta-test reads __wrapped__
         def wrapper(*args: Any, **kwargs: Any) -> Any:
+            state = getattr(_held, "depth", 0)
+            if state:
+                # Already held by this thread: run without re-acquiring.
+                _held.depth = state + 1
+                try:
+                    return fn(*args, **kwargs)
+                finally:
+                    _held.depth = state
+
             fd = _acquire_with_poll(retry_budget_s=timeout_s, max_age_s=max_age_s)
+            _held.depth = 1
             try:
                 return fn(*args, **kwargs)
             finally:
+                _held.depth = 0
                 _release(fd)
 
         return wrapper

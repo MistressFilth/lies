@@ -474,3 +474,44 @@ def test_embed_is_lock_wrapped() -> None:
     assert cli.qmd_embed.__wrapped__ is not None, (
         "qmd_embed is wrapped but the wrapper is None, so the lock is not actually applied"
     )
+
+
+def test_the_lock_is_reentrant_on_one_thread(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A nested acquire in the same thread must not deadlock against itself.
+
+    Two decorated helpers compose: ``qmd_collection_add_or_update`` calls
+    ``qmd_collection_show`` and ``qmd_collection_add``, and
+    ``qmd_cleanup`` calls ``qmd_reindex``. ``flock`` on a second fd blocks
+    even within one process, so without reentrancy the inner call polls
+    for a lock its own outer frame holds and times out with
+    ``QmdLockBusy``.
+
+    This never fired while the acquire path used the import-time constant:
+    the inner acquire opened a *different* file, so it never contended and
+    the nesting was invisible. Per-acquisition resolution exposed it, and
+    this pins the fix.
+
+    The nesting is same-thread composition, not concurrency -- a genuine
+    second thread must still serialize, which
+    ``test_a_second_thread_still_contends`` covers.
+    """
+    from lies.qmd.lock import with_qmd_lock
+
+    monkeypatch.setenv("LIES_QMD_LOCK_PATH", str(tmp_path / "reentrant.lock"))
+    order: list[str] = []
+
+    @with_qmd_lock(timeout_s=5.0)
+    def inner() -> None:
+        order.append("inner")
+
+    @with_qmd_lock(timeout_s=5.0)
+    def outer() -> None:
+        order.append("outer-enter")
+        inner()
+        order.append("outer-exit")
+
+    outer()  # must not raise QmdLockBusy
+
+    assert order == ["outer-enter", "inner", "outer-exit"]
