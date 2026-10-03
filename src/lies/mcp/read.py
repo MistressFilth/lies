@@ -1,69 +1,28 @@
 """read MCP tool — verbatim page bodies via source-aware dispatch.
 
-Replaces the old ``wiki_read`` tool. Dispatches:
+Dispatches wiki page IDs (``page-…``) to ``memory_service.read()``
+and library paths (``<collection>/<page>``) to the qmd daemon's
+``get`` with ``lineNumbers: false`` (the CLI line-numbers by
+default; ``--no-line-numbers`` still leaves a ``qmd://path``
+header).
 
-- wiki page IDs (``page-…``) → ``memory_service.read()``
-- library paths (``<collection>/<page>``) → the qmd daemon's ``get``
+The body is the document and nothing else — the citation
+contract is ``[[slug]]: "verbatim quote"``. ``daemon_tool``
+returns a raw ``CallToolResult``; ``.data`` is ``None`` on
+both tools; the text lives at
+``.content[].resource.text``. ``_resource_texts`` reads
+bodies; ``_notices`` reads TextContent (``[SKIPPED: …]``,
+``Errors: …``).
 
-The library branch answers F19's citation contract, and that contract is
-why the branch is a daemon call and not a CLI one. A citation is
-``[[slug]]: "verbatim quote from the cited span"``, so the body this tool
-returns has to be the document and nothing else. ``qmd get`` on the CLI
-cannot supply that: it line-numbers every line by default, and
-``--no-line-numbers`` still leaves its ``qmd://path  #docid`` header. The
-daemon's ``get`` with ``lineNumbers: false`` is the only source of clean
-text in qmd.
+One ``get`` per path, never ``multi_get``: 1854 of this
+corpus's 5987 documents are over ``multi_get``'s 10KB default
+and arrive *skipped*, so batching silently drops nearly a
+third of what a reader can ask for. ``get`` has no size cap.
 
-Two shapes of that answer, both load-bearing:
-
-**The payload is a content block, not a string.** ``daemon_tool`` returns
-the raw ``CallToolResult``; for both ``get`` and ``multi_get`` its
-``.data`` is ``None`` and the text lives at ``.content[].resource.text``.
-A caller that reaches for ``.data`` stores ``""`` — a page that reads as
-empty, cited for nothing, with nothing in the response to say so. That is
-the failure this module is shaped around, so :func:`_resource_texts` is
-the only way the body is read here.
-
-**Notices are not bodies.** ``multi_get`` reports per-file problems as
-TextContent blocks: a ``[SKIPPED: …]`` line for a document over its 10KB
-default cap, an ``Errors:`` block for an entry it could not resolve. A
-caller that concatenates every block's text stores the notice as if it
-were the page. :func:`_resource_texts` and :func:`_notices` keep the two
-apart, and a result carrying notices but no resource block yields *no
-body for that path* — never an empty string, which would reach the
-synthesizer as a page with no content.
-
-Why one ``get`` per path and not one ``multi_get`` per batch: the cap.
-1854 of this corpus's 5987 documents are over ``multi_get``'s 10KB
-default, and they arrive skipped rather than truncated — so batching
-would silently drop nearly a third of what a reader can ask for, while
-costing a round trip we do not need. ``get`` has no size cap.
-
-Failure handling splits by who owns the failure, and only by that. A
-document qmd cannot produce a body for — because the call raised, or
-because it succeeded with nothing but notices — is logged and skipped
-with its siblings intact. Both spellings of "no body for this path" are
-treated identically on purpose: which one qmd chooses is an
-implementation detail of its error signalling, not a fact about the
-document, and branching on it would make a batch's outcome depend on
-it. A daemon that is down or wedged is the one thing that re-raises.
-When a batch genuinely yields nothing, ``ToolError("all reads failed")``
-is the loud failure — raised once, at the end, rather than as a side
-effect of the first bad page discarding every good body already
-collected.
-
-Known interaction: qmd's ``get`` prefixes ``<!-- Context: … -->`` when the
-document's collection has a context configured. None of the registered
-collections do, so no body carries one today; if that changes, the prefix
-becomes part of the returned body and the citation contract has to be
-re-checked.
-
-Prior design (pre-daemon dispatch, still describes the tool surface and
-the librarian's role):
-``docs/superpowers/specs/2026-09-26-librarian-v040-port-design.md``.
-Transport and body format are specified by the access seam
-(``src/lies/qmd/access.py``) and this module's own contract above.
-"""
+A down or wedged daemon re-raises; both spellings of "no body
+for this path" are treated identically (qmd's implementation
+detail); a batch that yields nothing raises
+``ToolError("all reads failed")`` once."""
 
 from __future__ import annotations
 
@@ -80,47 +39,26 @@ from lies.qmd.access import QmdDaemonUnavailable, QmdDaemonWedged
 
 log = logging.getLogger(__name__)
 
-#: Failures the daemon owns rather than the document. These re-raise;
-#: everything else is a statement about one page and is skipped.
 _DAEMON_FAILURES = (QmdDaemonUnavailable, QmdDaemonWedged)
 
 
 def _memory_service() -> Any:
-    """Lazy accessor for the wiki memory service.
-
-    Returns a stub that raises if anyone actually tries to call it
-    before the orchestrator wires a real service in. Production callers
-    re-bind this attribute at module import time in Task 9.
-    """
+    """Stub; raises until the orchestrator wires a real service in."""
     raise RuntimeError("read._memory_service not wired")
 
 
 def _resource_texts(result: Any) -> list[str]:
-    """The document bodies in a qmd ``get`` / ``multi_get`` result.
-
-    ``result.data`` is ``None`` on both tools — qmd answers with an
-    EmbeddedResource content block. Reading ``.data`` is not a degraded
-    read; it yields an empty body for a document that has content, and the
-    empty body then reads downstream as "this page is empty".
-    """
+    """Bodies: EmbeddedResource ``text`` fields. ``.data`` is always None."""
     blocks = getattr(result, "content", None) or []
-    texts = []
-    for block in blocks:
-        text = getattr(getattr(block, "resource", None), "text", None)
-        if isinstance(text, str):
-            texts.append(text)
-    return texts
+    return [
+        t
+        for t in (getattr(getattr(block, "resource", None), "text", None) for block in blocks)
+        if isinstance(t, str)
+    ]
 
 
 def _notices(result: Any) -> list[str]:
-    """The TextContent blocks in a qmd result — qmd's prose, never a body.
-
-    ``multi_get`` reports a document over its size cap as
-    ``[SKIPPED: <path> - …]`` and an unresolvable entry as
-    ``Errors:\\nFile not found: <path>``, both as text blocks alongside the
-    bodies. They are diagnostics about the read; treating one as a page is
-    how a 315KB document comes back as a sentence saying it was skipped.
-    """
+    """TextContent blocks (``[SKIPPED: …]``, ``Errors: …``) — never a body."""
     blocks = getattr(result, "content", None) or []
     return [t for t in (getattr(block, "text", None) for block in blocks) if isinstance(t, str)]
 
@@ -128,25 +66,14 @@ def _notices(result: Any) -> list[str]:
 def _run_blocking(coro: Any) -> Any:
     """Drain a coroutine from sync code, with or without a running loop.
 
-    ``_read_impl`` is sync — ten-odd existing tests, the
-    ``Tool.from_function`` registration and ``server.py`` all assume it —
-    while ``daemon_tool`` is async. FastMCP runs sync handlers in a
-    threadpool and pydantic-ai runs sync tools in an executor, so both
-    production call sites have no loop and ``asyncio.run`` is the whole
-    story. ``lib_ask`` is async, though, and ``asyncio.run`` from inside a
-    running loop raises ``RuntimeError: asyncio.run() cannot be called
-    from a running event loop`` — the exact bug ``ground()`` shipped with
-    (#106) and had to be unpicked afterwards.
-
-    So the running-loop case gets its own thread and its own loop rather
-    than an error. A thread is the honest answer here: the caller asked
-    for a synchronous result, and blocking is the only way to produce one
-    while the work needs an event loop that already exists elsewhere.
+    FastMCP runs sync handlers in an executor with no loop, so
+    ``asyncio.run`` is the whole story there. A genuinely running
+    loop gets its own thread and its own loop — ``asyncio.run``
+    from inside a running loop raises ``RuntimeError``.
     """
     try:
         asyncio.get_running_loop()
     except RuntimeError:
-        # No loop in this thread — the ordinary case.
         return asyncio.run(coro)
 
     with ThreadPoolExecutor(max_workers=1, thread_name_prefix="lies-read") as pool:
@@ -154,29 +81,12 @@ def _run_blocking(coro: Any) -> Any:
 
 
 def _daemon_body(path: str) -> str | None:
-    """One verbatim body for ``path``, or ``None`` if qmd produced none.
-
-    ``None`` covers both ways this read can come back empty: the call
-    raised (``Document not found``), and the call succeeded but the
-    result carried only notice blocks. Both are statements about *this
-    document*, and both are reported the same way to the caller — logged
-    and skipped — because the difference between them is an
-    implementation detail of qmd's error signalling that this module
-    does not control. Treating one as fatal and the other as skippable
-    would make a batch's outcome depend on which channel qmd happened to
-    use for the same fact.
-
-    What is *not* skippable is a daemon that is down or wedged; the seam
-    raises those before this function can, and the caller re-raises them.
+    """One body for ``path``; ``None`` if qmd produced no body (raised or
+    only-notices). A down or wedged daemon raises before reaching here.
     """
     try:
         result = _run_blocking(access.daemon_tool("get", {"file": path, "lineNumbers": False}))
     except _DAEMON_FAILURES:
-        # The daemon is not serving, or accepted the call and stopped
-        # answering. Neither is a statement about this document, and
-        # swallowing either turns a reachable failure into "all reads
-        # failed" — a claim about the corpus the operator is the only
-        # person who can correct.
         raise
     except Exception as exc:
         log.warning("read: qmd get(%s) failed: %s", path, exc)
@@ -184,10 +94,6 @@ def _daemon_body(path: str) -> str | None:
 
     bodies = _resource_texts(result)
     if not bodies:
-        # The call succeeded and qmd still gave no document. Never
-        # return "" here: an empty body reaches the synthesizer as a
-        # page with no content, which reads downstream as "this page is
-        # empty" and cites nothing.
         notices = _notices(result)
         detail = f"; qmd said: {' | '.join(notices)}" if notices else ""
         log.warning("read: qmd get(%s) returned no document body%s", path, detail)
@@ -225,18 +131,10 @@ def _read_impl(paths: list[str]) -> dict[str, str]:
         if body is not None:
             out[p] = body
 
-    # The loud failure, raised once and only when the batch genuinely
-    # produced nothing. Reaching here with an empty `out` means every
-    # requested page failed, which is a different claim from "the caller
-    # asked for one page and we did not have it" — and it is the claim
-    # worth surfacing, since it is the one an operator can act on.
     if paths and not out:
         raise ToolError("all reads failed")
 
     return out
 
 
-# Wrap as a FastMCP ``Tool`` so the MCP wire can serialize the dispatch
-# surface and tests can reach the underlying function via ``read.fn(...)``.
-# Mirrors the pattern in ``search.py`` (Task 4).
 read = Tool.from_function(_read_impl, name="read")
