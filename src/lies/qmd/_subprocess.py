@@ -1,36 +1,21 @@
 """Deadlock-free subprocess helper for qmd CLI invocations.
 
-The previous implementation in :func:`lies.qmd.cli.qmd_query` used
-``subprocess.run(capture_output=True, ...)``, which opens a pipe
-for stderr. When qmd emits a long Node.js stack trace (typically
-30+ KB on VRAM OOM), the child blocks writing stderr because the
-OS pipe buffer (~64 KB) fills. The parent's
-``subprocess.run(timeout=5)`` then waits forever: the child is
-alive but stalled, and the timeout cannot fire.
+The previous implementation in ``lies.qmd.cli.qmd_query`` used
+``subprocess.run(capture_output=True, ...)``, which opens a pipe for
+stderr. When qmd emits a long Node.js stack trace (~30+ KB on VRAM
+OOM), the child blocks writing stderr because the OS pipe buffer
+(~64 KB) fills; the parent's timeout cannot fire.
 
-This module replaces that pattern. The subprocess is launched
-with ``stdin=DEVNULL`` (caller never writes), ``stdout=PIPE``,
-``stderr=PIPE``. The helper reads via ``communicate(timeout=...)``
-and SIGKILLs the entire process group on timeout before
-propagating. Stderr is truncated to ``_MAX_STDERR_BYTES`` so a
-runaway subprocess cannot return a multi-megabyte trace.
+Replaces that pattern: ``stdin=DEVNULL``, piped stdout/stderr,
+SIGKILL on the whole process group on timeout, stderr truncated to
+``_MAX_STDERR_BYTES``.
 
-The ask project solved the same problem years ago in
-``repo/ask/scripts/qmd-daemon.py:213-219`` with ``DEVNULL``
-explicitly. LIES diverged; this fix restores the pattern.
-
-Process-group note (do NOT strip ``start_new_session=True``):
-on this host, ``qmd`` is a bun-injected bash shim that forks a
-node.js grandchild and exec's into it. ``subprocess.Popen``
-without ``start_new_session=True`` puts the immediate child in
-the parent's process group, but the grandchild lands in a fresh
-group after the fork+exec and survives a plain ``proc.kill()``.
-Live verification reproduced 14 zombie grandchildren at 77-89%
-CPU when the SIGKILL-only path was exercised; that is the exact
-hang scenario Spec A was supposed to fix. ``start_new_session=True``
-puts every descendant in one process group rooted at the helper,
-and ``os.killpg`` on timeout reaps them all. Reverting the flag
-will reintroduce the leak.
+**Do NOT strip ``start_new_session=True``.** qmd is a bun-injected
+bash shim that forks a node.js grandchild; without the flag the
+grandchild survives ``proc.kill()`` (14 zombie grandchildren at 77-89%
+CPU reproduced live). ``start_new_session=True`` puts every
+descendant in one group rooted at the helper; ``os.killpg`` reaps
+them all.
 """
 
 from __future__ import annotations
@@ -44,80 +29,35 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import IO
 
-# Diagnostic cap on stderr returned to callers. Larger than any
-# reasonable qmd error message (~2 KB in practice); truncates the
-# pathological Node.js stack traces that VRAM OOM and similar
-# failures emit. Captured bytes beyond the cap are dropped, not
-# left in the pipe (would block child on write).
+# Diagnostic cap on stderr returned to callers. Truncates the
+# pathological Node.js stack traces VRAM OOM emits; bytes beyond the
+# cap are dropped, not left in the pipe.
 _MAX_STDERR_BYTES = 8 * 1024
 
-# Post-kill drain window. Long enough for a child to react to
-# SIGKILL and let the kernel reap it; short enough that a wedged
-# child cannot stall the parent for more than a couple of seconds
-# on its way out the door.
+# Post-kill drain window. Long enough for a child to react to SIGKILL
+# and let the kernel reap it.
 _DRAIN_TIMEOUT_S = 2.0
 
-# How long a qmd subprocess may go without emitting a single byte of
-# stderr before it is considered wedged.
-#
-# This is the bound that separates "slow" from "hung", which an
-# absolute deadline cannot do. qmd reports each phase as it works --
-# ``Expanding query... (1ms)``, ``Embedding 35 queries... (2.6s)``,
-# ``Reranking 40 chunks... (1ms)`` -- so silence is evidence and
-# duration is not. Measured on the 5987-document corpus: the embedding
-# step alone runs 2.6s, and a cold first call was 13.8s. A query that
-# keeps talking is doing work and is never killed here, however long
-# it runs; one that stops talking for this long is not going to
-# finish, whatever the absolute ceiling says.
+# Silence = wedge. qmd reports each phase ("Embedding 35 queries...",
+# "Reranking 40 chunks..."); silence is evidence, duration is not.
 DEFAULT_IDLE_TIMEOUT_S = 30.0
 
-# The idle bound used by commands that are silent for their whole
-# duration — ``qmd embed`` and ``qmd update``, neither of which writes to
-# stderr under a pipe.
-#
-# It is deliberately *below* the total bound rather than equal to it. The
-# reader loop checks total first (``if now - started > timeout``), so an
-# idle bound equal to the total can never fire: every such kill would
-# report ``bound="total"`` and the ``last_output`` tail — the only
-# evidence of where the time went — would be lost. At half the total the
-# idle bound still fires first for a genuinely hung command, and the
-# total bound remains the backstop for one that talks forever.
-#
-# The cost is stated rather than hidden: because these commands hold
-# ``with_qmd_lock()`` for the whole run, a wedged one now holds the lock
-# for up to half its total bound instead of 30s. That is the trade —
-# the alternative was killing healthy long-running work mid-progress,
-# which is the worse failure, and the lock is only contended by other
-# qmd operations from this process.
+# Idle bound for commands silent for their whole duration (``qmd
+# embed``, ``qmd update``). Below the total bound: an idle bound
+# equal to the total can never fire. Cost: a wedged one holds
+# ``with_qmd_lock()`` for half its total bound.
 SILENT_COMMAND_IDLE_TIMEOUT_FRACTION = 0.5
 
-# How often the reader loop wakes to check the two bounds. Short
-# enough that the idle bound is honoured to within a fraction of a
-# second, long enough not to spin a core.
 _POLL_INTERVAL_S = 0.1
 
 
 class QmdWedgeError(subprocess.TimeoutExpired):
     """A qmd subprocess was killed for going silent or overrunning.
 
-    A subclass of the stdlib exception so every existing
-    ``except subprocess.TimeoutExpired`` in the product keeps working
-    unchanged -- the seam is the one thing callers already handle.
-
-    ``bound`` records *which* limit fired, which is the whole point:
-
-    ``"idle"``
-        The process stopped emitting. This is the wedge signal, and it
-        fires on its own schedule regardless of the total budget.
-    ``"total"``
-        The absolute ceiling. The process kept talking and never
-        finished -- a backstop for work that progresses but does not
-        converge, not evidence of a hang.
-
-    ``last_output`` is the tail of stderr at the moment of the kill.
-    It is the difference between "died mid-embedding" and "went quiet
-    right after reranking started", which is the only thing that tells
-    a reader whether to look at VRAM or at the index.
+    Subclass of the stdlib exception so existing
+    ``except subprocess.TimeoutExpired`` keeps working. ``bound`` is
+    ``"idle"`` or ``"total"``; ``last_output`` is the tail of stderr
+    at the moment of the kill.
     """
 
     def __init__(
@@ -149,26 +89,10 @@ class QmdWedgeError(subprocess.TimeoutExpired):
 def _child_env() -> dict[str, str]:
     """The environment every qmd subprocess runs with.
 
-    ``NO_COLOR`` is forced on for the child, so qmd never emits ANSI
-    colour into a stream LIES parses.
-
-    Verified against qmd 2.5.3's source, not inferred: its only
-    ``NO_COLOR`` consumer is ``dist/cli/qmd.js:92``,
-    ``const useColor = !process.env.NO_COLOR && process.stdout.isTTY``.
-    Because LIES always pipes, ``isTTY`` is already false and colour is
-    already off, so **this override cannot change a single byte of
-    today's output**. It is defence in depth, not a fix for an observed
-    failure: it removes qmd's colour output as a variable, so a future
-    qmd that consults ``NO_COLOR`` before a TTY check, or that is
-    invoked through a pty by some caller, still cannot put escapes into
-    ``stdout_text``.
-
-    Why force it rather than inherit: an operator who has exported
-    ``NO_COLOR=0`` to re-enable colour in their own shell must not be
-    able to change what LIES parses out of a subprocess.
-
-    Progress on stderr is unaffected — that is the wedge signal
-    :mod:`lies.qmd._subprocess` exists to read, and it stays on.
+    ``NO_COLOR`` is forced on. Verified against qmd 2.5.3's source
+    (``dist/cli/qmd.js:92``); LIES always pipes so colour is already
+    off. Defence in depth: an operator who exported ``NO_COLOR=0``
+    must not be able to change what LIES parses out of a subprocess.
     """
     env = dict(os.environ)
     env["NO_COLOR"] = "1"
@@ -185,22 +109,21 @@ def _run_qmd(
 ) -> subprocess.CompletedProcess[bytes]:
     """Run a qmd subprocess with DEVNULL stdin + bounded stderr capture.
 
+    The idle clock is reset by every byte qmd writes; only a process
+    that has gone quiet is killed. The absolute ceiling is the
+    backstop.
+
     Args:
         args: argv list. First entry is the qmd binary path.
         cwd: working directory.
         timeout: seconds before SIGKILL.
 
     Returns:
-        ``subprocess.CompletedProcess`` with stdout bytes (untruncated)
-        and stderr bytes (truncated to ``_MAX_STDERR_BYTES``). Both are
-        bytes — callers decode explicitly because the wrapper enforces
-        a single encoding contract (UTF-8).
+        ``subprocess.CompletedProcess`` with stdout bytes and stderr
+        bytes (truncated to ``_MAX_STDERR_BYTES``).
 
     Raises:
-        subprocess.TimeoutExpired: when the subprocess exceeds
-            ``timeout``. The entire process group is SIGKILL'd so
-            descendants (qmd's node.js grandchild when invoked via
-            the bun shim) cannot outlive the parent's deadline.
+        subprocess.TimeoutExpired: whole process group SIGKILL'd.
         FileNotFoundError: when ``args[0]`` does not exist.
     """
     stdin_fd = os.open(os.devnull, os.O_RDONLY)
@@ -213,23 +136,8 @@ def _run_qmd(
             stderr=subprocess.PIPE,
             env=_child_env(),
             text=False,  # bytes mode — caller decodes explicitly
-            # ``start_new_session=True`` puts the child (and every
-            # descendant it forks, including qmd's node.js grandchild
-            # via the bun shim) in a fresh process group rooted at
-            # the helper. The timeout-kill path signals the whole
-            # group via ``os.killpg``, not just the immediate child;
-            # see the module docstring for the bug history.
             start_new_session=True,
         )
-        # Two bounds, watched together. ``communicate(timeout=N)`` was
-        # all-or-nothing: one absolute deadline cannot tell a slow query
-        # from a wedged one, and the only answer it gave was "timed out"
-        # -- true of both, and therefore useful for neither. Here the
-        # idle clock is reset by every byte qmd writes, so a query that
-        # keeps reporting progress survives no matter how long it takes,
-        # and only a process that has genuinely gone quiet is killed.
-        # The absolute ceiling remains as the backstop for work that
-        # progresses forever without converging.
         started = time.monotonic()
         last_output_at = started
         captured = bytearray()
@@ -255,23 +163,12 @@ def _run_qmd(
                     break
                 for key, _ in sel.select(_POLL_INTERVAL_S):
                     stream = key.fileobj
-                    # ``selectors`` types ``fileobj`` as an fd or a
-                    # HasFileno; both streams registered above are
-                    # buffered readers, and reading through the
-                    # selector key would have to be suppressed to
-                    # typecheck. Re-binding the value the loop already
-                    # knows is honest and needs no ignore.
                     reader = out_stream if key.data == "out" else err_stream
                     assert reader is not None
-                    # ``read1`` returns whatever is already buffered
-                    # without waiting to fill 64 KiB, which is the
-                    # entire point of a progress reader -- the idle
-                    # clock has to see bytes as they arrive, not in
-                    # 64 KiB quanta. It is a ``BufferedReader``
-                    # method, so it is absent from the ``IO``
-                    # protocol this local is declared against; the
-                    # value is a real pipe from ``Popen(stdout=PIPE)``
-                    # and always a buffered reader in practice.
+                    # ``read1`` returns whatever is buffered without
+                    # waiting to fill 64 KiB — the entire point of a
+                    # progress reader. ``BufferedReader`` method, not on
+                    # the ``IO`` protocol; the value is a real pipe.
                     chunk = reader.read1(65536)  # ty: ignore[unresolved-attribute]
                     if not chunk:
                         sel.unregister(stream)
@@ -282,9 +179,9 @@ def _run_qmd(
                         out_chunks.append(chunk)
                     else:
                         # Keep draining even past the capture cap:
-                        # bytes left sitting in the pipe would block
-                        # the child on write, which is the very
-                        # deadlock this module exists to prevent.
+                        # bytes left in the pipe would block the
+                        # child, which is the deadlock this module
+                        # exists to prevent.
                         captured.extend(chunk)
                         if on_output is not None:
                             on_output(chunk.decode("utf-8", errors="replace"))
@@ -294,17 +191,10 @@ def _run_qmd(
         stdout_b = b"".join(out_chunks)
         stderr_b = bytes(captured)
         if bound is None:
-            # Both pipes at EOF does not mean the child has been
-            # reaped -- only that it closed its streams. Without this
-            # the CompletedProcess below carries ``returncode=None``
-            # and every caller sees a successful run as a mystery.
+            # Both pipes at EOF does not mean the child has been reaped.
             try:
                 proc.wait(timeout=_DRAIN_TIMEOUT_S)
             except subprocess.TimeoutExpired:
-                # A child that closed stdout/stderr but will not exit
-                # is the same class of problem as one that says
-                # nothing: it is not making progress. Fall through to
-                # the total-bound path rather than reporting success.
                 try:
                     os.killpg(proc.pid, signal.SIGKILL)
                 except (ProcessLookupError, PermissionError):
@@ -324,16 +214,12 @@ def _run_qmd(
                     stderr=stderr_b,
                 ) from None
         if bound is not None:
-            # Kill the entire process group so descendants (e.g. qmd's
-            # node grandchild forked by the bun shim) cannot outlive
-            # the bound that fired. ``killpg`` raises if the group is
-            # already empty (race with natural exit before we got
-            # here); swallow that.
+            # Kill the whole process group so descendants cannot outlive
+            # the bound. ``killpg`` raises if the group is already gone.
             try:
                 os.killpg(proc.pid, signal.SIGKILL)
             except (ProcessLookupError, PermissionError):
                 pass
-            # Drain post-kill so the kernel can reap the child.
             try:
                 proc.communicate(timeout=_DRAIN_TIMEOUT_S)
             except subprocess.TimeoutExpired:
@@ -347,11 +233,8 @@ def _run_qmd(
                 last_output=lines_seen[-1] if lines_seen else "",
                 stderr=stderr_b,
             )
-        # Normal-exit safety net: if the immediate child exited but
-        # forked a long-running grandchild we still want to signal
-        # the group empty. ``killpg`` is a no-op when only the helper
-        # remains; ``ProcessLookupError`` is the documented signal
-        # that the group is already gone.
+        # Normal-exit safety net: a long-running grandchild the child
+        # forked must still be reaped.
         try:
             os.killpg(proc.pid, signal.SIGKILL)
         except (ProcessLookupError, PermissionError):

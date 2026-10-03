@@ -1,24 +1,12 @@
 """Read-only SQLite inspection of qmd's index.
 
-qmd stores its corpus in a SQLite database at the cache root
-(``$XDG_CACHE_HOME/qmd/index.sqlite``). The schema is:
+Corpus at ``$XDG_CACHE_HOME/qmd/index.sqlite``: ``store_collections``,
+``content`` (bodies keyed by hash), ``documents`` (FK to ``content``),
+``content_vectors`` (one row per chunk).
 
-- ``store_collections`` — registered collection metadata
-- ``content`` — verbatim document bodies, keyed by content hash
-- ``documents`` — one row per ``(collection, path)``, FK to ``content``
-- ``content_vectors`` — embedding rows, one per chunk
-
-The connection is opened read-only at every entry point. qmd has no
-read-only mode, and a CLI call for diagnosis (e.g. ``qmd doctor``)
-opened the live index read-write and wrote a row during the probe
-that produced this module. The seam exists so that a read-only
-inspection is the only inspection this module can perform.
-
-A read-only connection is enforced by :func:`open_readonly`, the
-module's only connection constructor. ``Test suite uses it too
-(test_a_write_against_the_index_is_rejected), so a future change that
-constructs a writable connection elsewhere fails the moment it is
-touched.
+Connections are read-only — qmd has no read-only mode, and a
+diagnostic CLI (``qmd doctor``) opened the live index read-write
+during the probe that produced this module.
 """
 
 from __future__ import annotations
@@ -34,14 +22,10 @@ from typing import Any
 class OrphanReport:
     """Counts of ``content_vectors`` rows with no backing ``content``.
 
-    Both counts are zero on a clean index.
-
     Attributes:
-        orphan_hashes: Number of distinct hash values in
-            ``content_vectors`` that have no row in ``content``.
-        orphan_rows: Number of ``content_vectors`` rows in that state.
-            A single hash can hold several rows, one per chunk, so
-            ``orphan_rows >= orphan_hashes`` always.
+        orphan_hashes: Distinct hash values with no row in ``content``.
+        orphan_rows: ``content_vectors`` rows in that state. One hash
+            spans chunks, so ``orphan_rows >= orphan_hashes``.
     """
 
     orphan_hashes: int
@@ -50,44 +34,14 @@ class OrphanReport:
 
 @dataclass(frozen=True)
 class LiveIndexSnapshot:
-    """A point-in-time reading of a qmd index, for diffing two of them.
-
-    Each field is a count a regression actually moves, and the
-    pre-fix guard's blind spot was the last one. Snapshots are equal iff
-    every field is equal; :func:`snapshots_differ` does the comparison
-    and renders the diff message that the session guard fails with.
+    """Point-in-time aggregates for diffing two qmd-index readings.
 
     Attributes:
-
-    ``collection_names``
-        ``frozenset[str]`` of every ``store_collections.name``. A
-        :func:`qmd collection add` that landed against the live index
-        moves this set, as does the ``syncConfigToDb`` reconciliation
-        that drops names no longer in the YAML config.
-
-    ``active_doc_count``
-        ``int`` — ``COUNT(*) FROM documents WHERE active = 1``. A
-        ``qmd update`` that landed against the live index moves it.
-
-    ``total_vectors``
-        ``int`` — ``COUNT(*) FROM content_vectors``. Any write that
-        touches ``content_vectors`` moves it, including an orphan write
-        (one whose content/document row was never written or was later
-        hard-deleted by an intervening ``qmd collection remove``).
-
-    ``orphan_vectors``
-        ``int`` — ``COUNT(*) FROM content_vectors WHERE hash NOT IN
-        (SELECT hash FROM content)``. The pre-fix guard's blind spot.
-        Catches the specific defect class where vectors are added but
-        their backing ``content`` row is never written or was deleted,
-        which leaves ``content_vectors`` rows alive (no FK) while
-        ``documents`` and ``content`` rows are gone.
-
-    Captured at session start and again at session end by the live-index
-    guard (``tests/integration/test_tag_filter_end_to_end.py``). A
-    regression that bypasses the XDG redirect and writes to the live
-    index moves at least one field; the guard catches which one and
-    fails with a precise diff.
+        collection_names: ``frozenset[str]`` of ``store_collections.name``.
+        active_doc_count: ``COUNT(*) FROM documents WHERE active = 1``.
+        total_vectors: ``COUNT(*) FROM content_vectors``.
+        orphan_vectors: ``content_vectors`` rows whose hash has no row
+            in ``content`` (vectors alive with no FK).
     """
 
     collection_names: frozenset[str]
@@ -97,14 +51,10 @@ class LiveIndexSnapshot:
 
 
 def qmd_index_path() -> Path:
-    """The path to qmd's index, resolved from ``$XDG_CACHE_HOME``.
+    """Path to qmd's index, resolved from ``$XDG_CACHE_HOME``.
 
-    qmd's ``getDefaultDbPath`` resolves the default index to
-    ``$XDG_CACHE_HOME/qmd/index.sqlite`` (or
-    ``~/.cache/qmd/index.sqlite`` if XDG is unset) — confirmed in
-    ``@tobilu/qmd/dist/store.js:418-433``. LIES reads the same path
-    so ``lies qmd status`` inspects the index the daemon serves,
-    not a sibling.
+    Matches qmd's ``getDefaultDbPath``
+    (``@tobilu/qmd/dist/store.js:418-433``).
     """
     from lies.xdg import cache_home
 
@@ -114,14 +64,7 @@ def qmd_index_path() -> Path:
 def open_readonly(db: Path) -> sqlite3.Connection:
     """Open the qmd index read-only. The only connection constructor.
 
-    ``file:{db}?mode=ro`` + ``uri=True`` is what SQLite offers for
-    read-only access; without ``mode=ro``, ``sqlite3.connect`` opens
-    the file read-write and creates it if absent, which is exactly
-    what the qmd probe did to the live index.
-
-    Args:
-        db: Path to the SQLite index. It is never created: a path that
-            does not exist raises rather than yielding an empty index.
+    ``file:{db}?mode=ro`` + ``uri=True``. Missing path raises.
 
     Raises:
         sqlite3.OperationalError: ``db`` does not exist or is not a
@@ -133,25 +76,8 @@ def open_readonly(db: Path) -> sqlite3.Connection:
 def index_orphans(db: Path) -> OrphanReport:
     """Count ``content_vectors`` rows whose hash has no backing content.
 
-    Two queries, one each for distinct hashes and rows. The row
-    count is what ``qmd cleanup`` reports as ``Removed N orphaned
-    embedding chunks``; the hash count is the distinct documents
-    the cleanup affects.
-
-    Live readings against ``$XDG_CACHE_HOME/qmd/index.sqlite``
-    vary; the **2026-10-01 probe baseline** (pre-``qmd cleanup``)
-    was 1566 orphan hashes spanning 41332 ``content_vectors`` rows.
-    The **2026-10-03 post-cleanup reading** was 4 / 4 (after the
-    partner's ``qmd cleanup`` and the operator's unrelated sync).
-    The test that pins the contract uses a throwaway index with a
-    known shape; live values are a reading, not an assertion.
-
-    Args:
-        db: Path to the SQLite index, opened read-only.
-
-    Returns:
-        An :class:`OrphanReport` holding the distinct hash count and
-        the row count. Both are zero on a clean index.
+    Row count matches what ``qmd cleanup`` reports as ``Removed N
+    orphaned embedding chunks``.
     """
     with closing(open_readonly(db)) as conn:
         cur = conn.execute(
@@ -171,27 +97,8 @@ def index_orphans(db: Path) -> OrphanReport:
 def is_embedded(db: Path, content_hash: str) -> bool:
     """True iff at least one ``content_vectors`` row exists for ``content_hash``.
 
-    A cheap, single-row check. The question it answers is "is this
-    document retrievable through semantic search?" — yes iff an embedding
-    has been persisted for the document's content hash.
-
-    Empty / unknown hashes return False. The hash is bound as a query
-    parameter, so no SQL is built from it.
-
-    Args:
-        db: Path to the SQLite index, opened read-only.
-        content_hash: The document's content hash, as stored in
-            ``content.hash``.
-
-    Returns:
-        ``False`` for an empty hash (no row can match), and for a hash
-        that has no embedding rows. Designed as a guard:
-
-        .. code-block:: python
-
-            if not is_embedded(db, h):
-                skip(h)
-
+    Hash is bound as a query parameter; empty / unknown hashes return
+    ``False``.
     """
     with closing(open_readonly(db)) as conn:
         cur = conn.execute(
@@ -202,30 +109,13 @@ def is_embedded(db: Path, content_hash: str) -> bool:
 
 
 def collection_drift(db: Path) -> dict[str, list[str]]:
-    """Per-collection drift conditions an operator should look at.
+    """Per-collection drift an operator should look at.
 
-    Currently reports one condition: a registered path that no
-    longer exists on disk. Empty-but-present collections (the
-    ``wiki_default`` case, registered with an empty source tree) are
-    **not** drift — they are a registered collection whose source
-    has not been populated yet, and ``lies sync`` will index them
-    on demand.
+    Reports registered paths that no longer exist on disk.
+    Empty-but-present collections (``wiki_default``) are not drift —
+    registered with an empty source tree; ``lies sync`` indexes them.
 
-    Returns a ``{name: [messages]}`` map. An empty dict means
-    no drift.
-
-    A registered path that does not exist is not a soft hint; the
-    ``qmd cleanup`` and ``qmd update`` verbs operate against the
-    registered path, so a missing tree means qmd will silently
-    produce nothing for that collection until the path is restored
-    or the collection is removed with ``qmd collection remove``.
-
-    Args:
-        db: Path to the SQLite index, opened read-only.
-
-    Returns:
-        A ``{collection_name: [message, ...]}`` map, empty when there
-        is no drift.
+    Returns ``{name: [messages]}``; empty means no drift.
     """
     drift: dict[str, list[str]] = {}
     with closing(open_readonly(db)) as conn:
@@ -239,28 +129,8 @@ def collection_drift(db: Path) -> dict[str, list[str]]:
 def live_index_snapshot(db: Path) -> LiveIndexSnapshot | None:
     """Snapshot the four aggregates that detect a write to a qmd index.
 
-    Read-only via :func:`open_readonly`. Returns ``None`` when ``db``
-    does not exist, so callers (the session guard in particular) can
-    no-op on hosts without a reachable index — a CI sandbox with no
-    host fixture should not block a test run.
-
-    The four fields are the load-bearing ones for catching leaks from
-    the tag-filter test fixture (see :class:`LiveIndexSnapshot` for the
-    per-field semantics). The pre-fix snapshot only captured the first
-    two and missed ``content_vectors`` writes that did not also move
-    ``store_collections`` or ``documents.active=1``; that is the exact
-    defect class the four live-index orphans on 2026-10-03 belong to.
-
-    Args:
-        db: Path to the SQLite index, opened read-only.
-
-    Returns:
-        A :class:`LiveIndexSnapshot`, or ``None`` when ``db`` does not
-        exist — a host with no qmd index is not a drift condition.
-
-    The unit tests in ``tests/unit/qmd/test_integrity.py`` pin each
-    field's discriminating power against a throwaway index, including
-    a mutation test for the orphan-write class.
+    Returns ``None`` when ``db`` does not exist (callers no-op on hosts
+    without a reachable index).
     """
     if not db.exists():
         return None
@@ -287,30 +157,9 @@ def snapshots_differ(
 ) -> tuple[bool, str]:
     """``(changed, message)`` for the session guard's before/after pair.
 
-    ``None`` on either side means "no live index was reachable" — that
-    is a no-op, not a change; the session guard skips the assertion
-    rather than failing on a host without a live index. Equality on
-    every field of a populated pair is the no-change case.
-
-    On a change, ``message`` names the field whose value moved and the
-    values on either side, so the failing test's diagnostic points at
-    the exact aggregate the regression touched. The ``collection_names``
-    diff is rendered as ``added`` / ``removed`` so a regression that
-    drops a name from the YAML-driven reconciliation can also be read
-    at a glance.
-
-    Args:
-        before: The snapshot taken before the run.
-        after: The snapshot taken after the run.
-
-    Returns:
-        ``(False, "")`` when the two match, otherwise ``(True, msg)``
-        naming the fields that moved.
-
-    Pure function — the unit tests in
-    ``tests/unit/qmd/test_integrity.py`` exercise the comparator
-    against throwaway indices without depending on the host's live
-    index state.
+    ``None`` on either side means "no live index was reachable" — a
+    no-op, not a change. On a change, ``message`` names the field and
+    values on either side.
     """
     if before is None or after is None:
         return False, ""
@@ -336,27 +185,11 @@ def snapshots_differ(
 
 
 def integrity_summary(db: Path) -> dict[str, Any]:
-    """The full integrity snapshot for ``lies qmd status``.
+    """Full integrity snapshot for ``lies qmd status``.
 
-    Combines the three named entry points (:func:`index_orphans`,
-    :func:`is_embedded`'s coverage view, :func:`collection_drift`)
-    with three coverage queries the plan's Step 6 names explicitly:
-
-    - active-vs-total document split (``documents.active`` flag)
-    - count of active documents lacking any embedding row
-    - registered-collection count
-
-    An empty-but-present registered collection (the ``wiki_default``
-    case) is not in the drift map; it is registered with a real path
-    and 0 documents, which is what ``lies sync`` populates.
-
-    Args:
-        db: Path to the SQLite index, opened read-only.
-
-    Returns:
-        A JSON-serialisable dict; the CLI command at
-        ``src/lies/cli/qmd.py`` prints
-    it under an ``index`` key alongside the daemon fields.
+    Combines :func:`index_orphans` and :func:`collection_drift` with
+    three coverage queries: active-vs-total document split, active
+    documents without embeddings, registered-collection count.
     """
     orphans = index_orphans(db)
     drift = collection_drift(db)

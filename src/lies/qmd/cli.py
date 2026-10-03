@@ -26,15 +26,9 @@ from lies.qmd._subprocess import (
 from lies.qmd.lock import with_qmd_lock
 
 # Real `qmd query --format json` returns each hit's `file` field as
-# ``qmd://<collection>/<path-within-collection>``. Downstream consumers
-# (synthesizer, memory retrieval) consume a flat ``path`` key, so we strip
-# the ``qmd://`` prefix once at this boundary. The ``<collection>/`` segment
-# is **kept** in the normalized path because wiki pages live at
-# ``wiki.wiki_dir/<collection>/<page>`` (per-collection subdir layout, PR
-# #39). Joining the normalized path onto ``wiki.wiki_dir`` lands on the
-# correct on-disk file. The contract documented in :func:`qmd_query`
-# ("Each result is a dict with at least a ``path`` key") is what every
-# caller depends on.
+# ``qmd://<collection>/<path>``. Strip the prefix once at this boundary;
+# keep the ``<collection>/`` segment (wiki pages live at
+# ``wiki.wiki_dir/<collection>/<page>``).
 _QMD_URI_PREFIX_RE = re.compile(r"^qmd://")
 _QMD_URI_PREFIX_PREFIX = "qmd://"
 
@@ -58,21 +52,11 @@ class QmdCommandError(QmdError):
 class QmdTimeoutError(QmdCommandError):
     """Raised when a `qmd` subprocess outlives its deadline.
 
-    A timeout is its own type because it is a different failure from
-    every other :class:`QmdCommandError`. A non-zero exit means qmd
-    ran and rejected the work; a timeout means qmd was running and had
-    not finished. The distinction decides what a caller does next, and
-    collapsing the two made ``search`` report a slow daemon as
-    ``qmd unreachable`` — a claim about the connection that the
-    evidence did not support.
-
-    ``stderr`` carries whatever qmd printed before the deadline. It is
-    the only evidence of where the time went (``Embedding 35
-    queries... (2.6s)`` versus ``Reranking 40 chunks...``), and it was
-    being dropped at the boundary: the one failure that most needed
-    diagnostics arrived with a constant string and nothing else.
-    ``None`` when the post-kill drain also timed out, so
-    ``_run_qmd``'s empty-bytes path stays representable.
+    A timeout is its own type — qmd was running and had not finished,
+    not rejecting work. Collapsing the two made ``search`` report a
+    slow daemon as ``qmd unreachable``. ``stderr`` carries qmd's own
+    output before the deadline — the only evidence of where the time
+    went. ``None`` when the post-kill drain also timed out.
     """
 
     def __init__(self, message: str, stderr: bytes | str | None = None) -> None:
@@ -89,29 +73,16 @@ def _run(
 ) -> subprocess.CompletedProcess[Any]:
     """Run a qmd command via the deadlock-free :func:`_run_qmd` helper.
 
-    Spec A of the qmd-drain plan: every subprocess call in this module
-    routes through ``_run_qmd`` so a runaway qmd stderr trace cannot
-    block the parent on a full pipe buffer. ``_run_qmd`` returns
-    ``CompletedProcess`` with bytes stdout/stderr; we decode to str
-    to preserve the prior contract that callers (e.g. ``qmd_status``
-    returning the raw stdout text) depend on.
+    ``idle_timeout`` overrides the wedge detector's silence bound
+    (default 30s). Some qmd commands are silent for their whole
+    duration (``qmd embed`` writes a single spinner escape;
+    ``qmd update`` writes nothing, gated on ``isTTY``). The silence
+    is the operation, not a symptom — widening the bound keeps
+    healthy progress from being killed.
 
-    ``idle_timeout`` overrides the wedge detector's silence bound, which
-    defaults to 30s. It exists because *some* qmd commands are silent
-    for their whole duration and that is not a wedge: under a pipe,
-    ``qmd embed`` writes a single spinner escape and ``qmd update``
-    writes nothing at all, because qmd's progress for both is written to
-    stderr behind an ``isTTY`` check. The silence is the operation, not a
-    symptom. Measured on a cold model cache, one tiny embed takes 9.4s
-    of unbroken silence; four collections under host contention crossed
-    30s and were killed while making progress.
-
-    Callers that pass it should derive it from their own ``timeout`` —
-    see :data:`SILENT_COMMAND_IDLE_TIMEOUT_FRACTION` for why it must
-    stay strictly below the total. Retrieval commands leave the default
-    alone: a query that stops emitting for 30s genuinely is wedged, and
-    widening it there would reintroduce the hang the bound exists to
-    prevent.
+    Callers that pass it derive it from their own ``timeout``; see
+    :data:`SILENT_COMMAND_IDLE_TIMEOUT_FRACTION` for why it must
+    stay strictly below the total.
 
     Raises:
         QmdNotInstalledError: ``qmd`` is not on PATH at exec time.
@@ -127,10 +98,6 @@ def _run(
         )
     except FileNotFoundError as exc:
         raise QmdNotInstalledError("`qmd` not found on PATH") from exc
-    # ``_run_qmd`` returns bytes; convert to str so callers can keep
-    # using the existing ``result.stdout`` / ``result.stderr`` text
-    # contract (these are read by ``qmd_status``'s return path and
-    # several ``QmdError`` message strings).
     return subprocess.CompletedProcess(
         args=result.args,
         returncode=result.returncode,
@@ -143,35 +110,11 @@ def _run(
 def qmd_update(cwd: Path, timeout: int = 1800) -> None:
     """Run ``qmd update`` in ``cwd``.
 
-    ``qmd update`` reindexes every collection registered under ``cwd``;
-    it has no per-collection flag (only ``--pull``). Callers that want
-    a per-collection refresh must filter at the qmd config layer, not
-    via this CLI.
-
-    **The total bound moved from 300s to 1800s, and every call site
-    inherited it.** The three production callers --
-    ``memory/service.py``, ``etl/stages/write.py`` and
-    ``library/cli_migrate.py`` -- pass no timeout, so each went from a
-    5-minute ceiling to 30 minutes. That is deliberate: ``qmd update``
-    reindexes *every* collection registered under the root, and on a
-    corpus this size 300s is not a generous budget, it is a wrong one.
-    But it is a real change and it is not free.
-
-    The idle bound is raised for the same reason as ``qmd_embed``'s:
-    under a pipe ``qmd update`` emits **nothing** while it works. qmd's
-    own progress for this command is a stderr write gated on ``isTTY``
-    (``dist/cli/qmd.js:552-566``), so a piped run looks wedged to a
-    silence detector even while it is indexing.
-
-    Combined with the half-total idle bound, the cost is that a wedged
-    update now holds ``with_qmd_lock()`` for up to **900s** rather than
-    30s, blocking other qmd operations from this process. Across these
-    three call sites -- all of which run inside a write envelope -- that
-    is the sharper edge: a hung update stalls the write path, not just a
-    background reindex. The trade is still the right one (the alternative
-    is killing a healthy full-corpus reindex), but it is the largest
-    behavioural change in this branch and is recorded here rather than
-    left to be discovered.
+    The total bound is 1800s — ``qmd update`` reindexes every
+    collection registered under ``cwd``. The idle bound is raised
+    because under a pipe ``qmd update`` emits nothing (its progress
+    is a stderr write gated on ``isTTY``). Cost: a wedged update
+    holds ``with_qmd_lock()`` for up to 900s rather than 30s.
     """
     result = _run(
         ["update"],
@@ -204,9 +147,7 @@ def qmd_collection_add(cwd: Path, path: Path, name: str) -> None:
 def qmd_collection_add_if_missing(cwd: Path, path: Path, name: str) -> None:
     """Register ``name`` with qmd, treating "already exists" as success.
 
-    Idempotent. Lets callers re-run a sync without raising on the second
-    pass. Any other non-zero exit (real qmd error) still propagates so
-    the pipeline can react.
+    Idempotent. Real qmd errors still propagate.
     """
     result = _run(["collection", "add", str(path), "--name", name], cwd=cwd)
     if result.returncode == 0:
@@ -219,14 +160,7 @@ def qmd_collection_add_if_missing(cwd: Path, path: Path, name: str) -> None:
 
 @with_qmd_lock()
 def qmd_collection_remove(cwd: Path, name: str) -> None:
-    """Run ``qmd collection remove <name>`` in ``cwd``.
-
-    Used by the ingest-to-library cleanup hook (Task 14) to unregister
-    the per-wiki ``<wiki>_<collection>`` index once a collection has
-    moved into the library. Raises ``QmdError`` on non-zero exit so the
-    caller can wrap in try/except and continue without rolling back
-    the migration commit.
-    """
+    """Run ``qmd collection remove <name>`` in ``cwd``."""
     result = _run(["collection", "remove", name], cwd=cwd)
     if result.returncode != 0:
         raise QmdError(f"qmd collection remove failed: {result.stderr.strip()}")
@@ -236,24 +170,14 @@ def qmd_collection_remove(cwd: Path, name: str) -> None:
 def qmd_collection_show(cwd: Path, name: str) -> dict[str, str] | None:
     """Return parsed ``qmd collection show <name>`` output, or None if missing.
 
-    Output shape (verified against qmd 3.x):
-
-        Collection: <name>
-          Path:     <abs path>
-          Pattern:  **/*.md
-          Include:  yes (default)
-
-    We only care about the Path line today; other keys parsed from
-    ``qmd collection show`` output are dropped. Non-zero exit code
-    (collection missing, qmd error) returns None instead of raising so
-    the caller can branch on "register vs refresh".
+    Non-zero exit (collection missing, qmd error) returns None instead
+    of raising so the caller can branch on "register vs refresh".
     """
     result = _run(["collection", "show", name], cwd=cwd)
     if result.returncode != 0:
         return None
     info: dict[str, str] = {}
     for line in result.stdout.splitlines():
-        # Each info line is two-space indented: "  Key:     Value".
         if not line.startswith("  "):
             continue
         try:
@@ -276,22 +200,12 @@ def qmd_collection_add_or_update(
 ) -> None:
     """Register ``name`` at ``path`` with qmd, refreshing an existing entry.
 
-    Behavior:
+    Missing → ``qmd collection add``. Same path → no-op. Different path
+    → ``qmd collection remove`` then ``qmd collection add``; ``remove``
+    failures are logged and the ``add`` proceeds.
 
-    - Collection missing -> ``qmd collection add``.
-    - Collection present at the same path -> no-op (idempotent).
-    - Collection present at a different path -> ``qmd collection remove``
-      then ``qmd collection add``. ``remove`` failures are logged and
-      the ``add`` proceeds; this handles the case where qmd accepts the
-      ``add`` and replaces the existing entry even if ``remove`` errors.
-
-    When ``library_target`` is set (Task 12 — library writer integration),
-    that path is what gets registered with qmd; ``path`` is ignored for
-    the show/remove/add call. Without ``library_target``, the existing
-    wiki behavior uses ``path`` verbatim.
-
-    Resolves the effective path to an absolute string so the comparison
-    is not tripped up by relative paths from callers.
+    When ``library_target`` is set (library writer integration), that
+    path is what gets registered.
     """
     register_path = library_target if library_target is not None else path
     target = str(register_path.resolve())
@@ -302,7 +216,6 @@ def qmd_collection_add_or_update(
     existing = info.get("path", "")
     if existing == target:
         return
-    # Path differs; refresh.
     result = _run(["collection", "remove", name], cwd=cwd)
     if result.returncode != 0:
         print(
@@ -317,36 +230,19 @@ def qmd_collection_add_or_update(
 def qmd_embed(cwd: Path, collection_name: str, *, timeout: int = 1800) -> None:
     """Run ``qmd embed -c <collection_name>`` in ``cwd``.
 
-    Default timeout is 30 minutes; embedding a large wiki on first
-    ingest can be slow (CPU-bound model inference over hundreds of
-    pages). The default was picked to be generous enough for the
-    largest realistic wiki without making small syncs feel hung.
+    Default 30 minutes (embedding a large wiki on first ingest can be
+    slow). The idle bound is raised to
+    ``timeout * SILENT_COMMAND_IDLE_TIMEOUT_FRACTION`` — half the
+    total, because the reader loop checks the total bound first and
+    an idle bound equal to the total can never fire.
 
-    The wedge detector's *idle* bound is raised to
-    ``timeout * SILENT_COMMAND_IDLE_TIMEOUT_FRACTION`` — half the total,
-    **not** the whole of it, because the reader loop checks the total
-    bound first: an idle bound equal to the total can never fire, so
-    every kill would report ``bound="total"`` and lose the ``last_output``
-    tail. At half, a hung command is still caught as ``idle`` and keeps
-    its diagnostic. See that constant for the full reasoning.
+    Embedding is silent for its whole duration (under a pipe ``qmd
+    embed`` writes a single spinner escape and then nothing while
+    the model runs). Measured 9.4s of unbroken silence on a cold
+    cache.
 
-    It is raised at all because embedding is silent for its whole
-    duration and that is not a wedge: under a pipe ``qmd embed`` writes
-    exactly one byte (a stderr spinner escape) and then nothing while the
-    model loads and runs. Measured on a cold cache, a single tiny
-    document takes 9.4s of unbroken silence — inside the 30s default
-    alone, but four collections under host contention crossed it and
-    were killed mid-progress.
-
-    The cost, since it is a real one: a wedged embed holds
-    ``with_qmd_lock()`` for up to half its total bound — 900s at the
-    1800s default — instead of 30s, blocking other qmd operations from
-    this process. The alternative is killing healthy long-running work,
-    which is the failure the bound exists to prevent.
-
-    Raises ``QmdError`` on non-zero exit so the post-commit hook in
-    ``etl/stages/write.py`` can wrap the call in try/except and
-    surface a stderr warning without rolling back the wiki commit.
+    Cost: a wedged embed holds ``with_qmd_lock()`` for up to half its
+    total bound instead of 30s.
     """
     result = _run(
         ["embed", "-c", collection_name],
@@ -369,12 +265,7 @@ def qmd_ls(cwd: Path, collection: str) -> str:
 
 @with_qmd_lock()
 def qmd_cleanup(cwd: Path) -> None:
-    """Drop orphan rows from qmd's FTS5 db.
-
-    Restored from PR #17 (which deleted it as dead code). F38 wires
-    this into ``qmd_reindex(cleanup=True, ...)`` and the
-    ``lies reindex --cleanup`` CLI flag.
-    """
+    """Drop orphan rows from qmd's FTS5 db."""
     result = _proc.run(["cleanup"], cwd=cwd)
     if result.returncode != 0:
         raise subprocess.CalledProcessError(
@@ -396,22 +287,10 @@ def qmd_reindex(
 ) -> ReindexResult:
     """Restore the qmd index; gate destructive stages.
 
-    PR #17 deleted this as dead code. F38 restores it as the work
-    layer for ``lies reindex`` and the MCP ``reindex`` tool.
-
-    Flags:
-        embed — re-embed stale chunks (non-destructive).
-        cleanup — drop orphan rows before reindex (destructive).
-        all_ — full rebuild: cleanup + reindex + embed (destructive).
-        force — drop qmd's cached state and rebuild from scratch
-                (non-destructive per ask's classification; the cache
-                rebuild is idempotent).
-
     Returns ``ReindexResult`` with the stages that ran. Failures are
     collected as ``errors`` rather than raised; the caller decides
     whether to surface them. Subsequent stages are skipped on prior
-    failure so the envelope doesn't accumulate cascading errors from
-    a half-broken qmd state.
+    failure so the envelope doesn't accumulate cascading errors.
     """
     result = ReindexResult()
     errors: list[str] = []
@@ -423,10 +302,6 @@ def qmd_reindex(
         else:
             result.cleaned = True
 
-    # Subsequent stages only run if no prior stage failed. ``force``
-    # itself is non-destructive (cache rebuild is idempotent), so it
-    # runs even after a cleanup failure — the operator still wants
-    # the cache cleared regardless.
     if force:
         cache_dir = cwd / ".qmd" / "cache"
         if cache_dir.exists():
@@ -440,8 +315,6 @@ def qmd_reindex(
             result.indexed = True
 
     if (all_ or embed) and not errors:
-        # Without a collection name, qmd embed accepts no -c; we invoke
-        # ``qmd embed`` to re-embed every registered collection.
         embed_result = _proc.run(["embed"], cwd=cwd, timeout=1800)
         if embed_result.returncode != 0:
             errors.append(f"embed: {embed_result.stderr.strip()}")
@@ -460,39 +333,16 @@ def is_qmd_installed() -> bool:
 def _parse_json_list(stdout_text: str) -> list[Any] | None:
     """Parse qmd's JSON list from stdout, tolerating a progress prefix.
 
-    qmd itself writes nothing but the JSON here — but when its model
-    cache is cold it first downloads the embedding / reranker weights,
-    and that download is driven by ``ipull`` (a transitive dependency of
-    ``node-llama-cpp``) through ``stdout-update``, whose
-    ``UpdateManager.getInstance()`` defaults ``stdout = process.stdout``
-    and writes there with **no TTY guard and no NO_COLOR check**. LIES
-    always pipes, so that progress lands in front of the JSON:
+    When qmd's model cache is cold, ``ipull`` (a transitive dependency
+    of ``node-llama-cpp``) writes progress to stdout through
+    ``stdout-update`` with no TTY guard. LIES pipes, so progress lands
+    in front of the JSON and ``json.loads`` fails at char 0 — on
+    exactly the runs where the cache was cold.
 
-        ``\x1b[?25l⠋ Gathering information\n\x1b[2K\x1b[1A...``
-
-    ``json.loads`` on that fails at char 0, which surfaced as
-    ``qmd query returned invalid JSON: Expecting value: line 1 column 1``
-    — on exactly the runs where the cache was cold, which is why it read
-    as intermittent.
-
-    So: find the JSON array rather than demanding the stream begin with
-    one. Scanning for ``[``/``{`` is safe because the progress prefix
-    contains neither, and the parse itself still validates the payload,
-    so a genuinely malformed response is still rejected and the error
-    quotes what actually arrived. Returns ``None`` when nothing parses as
-    a JSON list, leaving the raise to the caller.
-
-    Two things this deliberately does *not* do:
-
-    - It keeps scanning past a JSON **object**. The progress prefix
-      cannot contain a brace, but a stream that is ``{...}{...}`` --
-      or an object followed by the real list -- must not be reported as
-      "no list here" just because the first parse succeeded and was not
-      one. A non-list is skipped, not terminal.
-    - It does not re-parse the whole remainder at every candidate
-      position. ``json.JSONDecoder().raw_decode`` parses forward from
-      one offset without re-scanning, so a large stream is O(n) overall
-      rather than O(n*m) in the number of bracket characters.
+    Find the JSON array rather than demanding the stream begin with
+    one. Scanning for ``[``/``{`` is safe (the prefix contains
+    neither); the parse itself validates the payload. Keeps scanning
+    past a JSON object and uses ``raw_decode`` (O(n) overall).
     """
     decoder = json.JSONDecoder()
     for index, char in enumerate(stdout_text):
@@ -504,9 +354,6 @@ def _parse_json_list(stdout_text: str) -> list[Any] | None:
             continue
         if isinstance(parsed, list):
             return parsed
-        # A non-list at this offset: keep looking. Reporting it here
-        # would make "a JSON object precedes the list" indistinguishable
-        # from "there is no list".
     return None
 
 
@@ -521,34 +368,17 @@ def qmd_query(
 ) -> list[dict[str, Any]]:
     """Run `qmd query` and return parsed JSON results.
 
-    Each result is a dict with at least a ``path`` key (the wiki-relative
-    path of the matching page). The synthesizer only consumes ``path``;
-    additional keys are preserved for callers that need scores/snippets.
-
-    ``collection_filter`` is the resolved set of collection names the
-    retriever is allowed to consider. The seam for per-collection
-    filtering is **post-qmd in lies** (not upstream): qmd's CLI does not
-    support ``--include-collection`` on the call shape we use, so the
-    filter is applied here by dropping any hit whose ``path`` first
-    segment is not in ``collection_filter``. The path's first segment is
-    the collection name (``qmd://<collection>/<rest>`` normalizes to
-    ``<collection>/<rest>``). This works regardless of qmd CLI version.
-
-    When ``collection_filter`` is None, every hit is returned as-is so
-    the existing no-filter behavior is preserved. When it is an empty
-    set, every hit is dropped — the retriever only ever constructs an
-    empty filter when the resolved tag filter matches zero collections,
-    so qmd is still invoked (the CLI call is unconditional) and every
-    row is dropped before reaching the synthesizer; with zero hits left
-    the post-filter list is empty, the not-empty pre-condition still
-    holds (qmd returned data, even if all dropped), so the function
-    raises :class:`QmdNoResultsError` to signal "no usable hits" to the
-    synthesizer's fallback path.
+    Each result has at least a ``path`` key. ``collection_filter`` is
+    applied post-qmd (the CLI does not support ``--include-collection``
+    on the call shape we use). ``limit`` is inert in qmd's CLI
+    (``dist/cli/qmd.js:2550`` reads only ``values.n``); the slice is
+    applied *after* the filter so a scoped caller gets rows the
+    filter kept.
 
     Raises:
         QmdNotInstalledError: If `qmd` is not on PATH.
-        QmdCommandError: If the qmd command exits non-zero or returns
-            malformed output.
+        QmdCommandError: If qmd exits non-zero or returns malformed output.
+        QmdTimeoutError: If qmd outlives ``timeout``.
         QmdNoResultsError: If qmd returns an empty result list (after
             the post-filter is applied).
     """
@@ -564,13 +394,6 @@ def qmd_query(
     except FileNotFoundError as exc:
         raise QmdNotInstalledError("`qmd` binary not found at exec time") from exc
     except subprocess.TimeoutExpired as exc:
-        # Keep qmd's own output. The deadline message alone is a
-        # constant, so a timeout used to arrive with no indication of
-        # whether the time went into expansion, embedding, or
-        # reranking — which is the only question worth asking when
-        # picking a larger budget. ``exc.stderr`` is ``None`` on the
-        # stdlib's timeout path and bytes on the drained one; both
-        # shapes are passed through rather than normalized away.
         raise QmdTimeoutError(
             f"qmd query timed out after {timeout}s",
             stderr=getattr(exc, "stderr", None),
@@ -594,55 +417,16 @@ def qmd_query(
         raise QmdNoResultsError(f"qmd query returned no results for: {question!r}")
 
     normalized = [_normalize_qmd_result(item) for item in data]
-    # ``limit`` is inert in the qmd CLI's ``qmd query``: the option
-    # table at ``dist/cli/qmd.js:2550`` reads only ``values.n`` (the
-    # long option ``--limit`` is not parsed), and the call at
-    # ``:2428`` passes ``limit: results.length`` into the search,
-    # overriding the value outright. The CLI's own
-    # ``_run_qmd`` documents the same: ``qmd_query(limit=5)`` returns
-    # 20 rows. The LIES envelope cannot pass through a limit the
-    # backend ignored, so the slice is the load-bearing half, and the
-    # daemon path forwards ``limit`` to a backend that honours it
-    # (``server.js:230``).
-    #
-    # The slice is applied *after* the collection filter, never before.
-    # Slicing first makes the limit and the filter fight: rows the
-    # caller asked for are discarded by the top-N before the filter
-    # ever sees them, so a scoped caller gets fewer rows than it asked
-    # for even when the corpus has them. The failure mode is worse than
-    # a shortfall — with every in-scope row ranked below the cut,
-    # ``filtered`` comes back empty and the call raises
-    # ``QmdNoResultsError``, a claim that the corpus has no hits for
-    # hits that were sitting at rank 6. The librarian contract tells
-    # the model that flag means the corpus is empty for this question.
-    #
-    # This is the same defect the daemon-side push-down removed, and
-    # the CLI path still ranks globally, so it still needs the
-    # ordering. Pinned by ``test_a_scoped_query_filters_before_it_slices``
-    # and ``test_a_scoped_query_still_honours_the_limit``.
     if collection_filter is None:
         return normalized[:limit]
     allowed = collection_filter
     filtered: list[dict[str, Any]] = []
     for hit in normalized:
         path = hit.get("path", "")
-        # The collection name is the path's first ``/``-separated
-        # segment: ``qmd://<collection>/<rest>`` normalizes to
-        # ``<collection>/<rest>``. A row with an empty path (no
-        # ``qmd://`` URI; the pre-existing warning emission surfaces
-        # the degradation) is dropped here too — it can never match a
-        # collection by definition.
         first_segment = path.split("/", 1)[0] if path else ""
         if first_segment and first_segment in allowed:
             filtered.append(hit)
     if not filtered:
-        # Post-filter list is empty: the synthesizer's ``_QmdNoResults``
-        # sentinel path (qmd_failed / qmd_unavailable / qmd_no_results
-        # → ``wiki/index.md`` fallback) is the right behavior. Raising
-        # ``QmdNoResultsError`` triggers that fallback rather than
-        # silently returning an empty list and skipping the index
-        # scan, which would be a regression for the tag-filter
-        # branch.
         raise QmdNoResultsError(
             f"qmd query returned no results matching collection filter "
             f"{sorted(allowed)!r} for: {question!r}"
@@ -653,14 +437,13 @@ def qmd_query(
 def _normalize_qmd_result(item: Any) -> dict[str, Any]:
     """Normalize one qmd hit into the internal ``path`` contract.
 
-    The real qmd CLI emits each hit with ``file: "qmd://<collection>/<path>"``
-    and no top-level ``path`` key. We strip just the ``qmd://`` prefix into
-    ``path`` — the ``<collection>/`` segment is preserved because wiki
-    pages live at ``wiki.wiki_dir/<collection>/<page>`` (per-collection
-    subdir layout, PR #39). Downstream consumers (synthesizer,
-    :func:`lies.memory.retrieval.search_wiki`) join ``path`` onto
-    ``wiki.wiki_dir``. If qmd already emitted a ``path`` key, leave it
-    alone (the caller's explicit value wins).
+    The real qmd CLI emits each hit with ``file:
+    "qmd://<collection>/<path>"`` and no top-level ``path`` key. We
+    strip just the ``qmd://`` prefix into ``path`` — the
+    ``<collection>/`` segment is preserved (PR #39 layout).
+    Downstream consumers (synthesizer, source-aware ``wiki_read``)
+    join ``path`` onto ``wiki.wiki_dir``. If qmd already emitted a
+    ``path`` key, leave it alone.
     """
     if not isinstance(item, dict):
         return {"path": ""}
@@ -671,11 +454,6 @@ def _normalize_qmd_result(item: Any) -> dict[str, Any]:
     if isinstance(file_value, str) and file_value.startswith(_QMD_URI_PREFIX_PREFIX):
         result["path"] = _QMD_URI_PREFIX_RE.sub("", file_value, count=1)
     else:
-        # No usable file field; synthesize an empty path so consumers can
-        # drop the hit cleanly instead of crashing on missing keys.
-        # Surface the degradation as a warning so unexpected qmd shape
-        # changes (e.g., a future qmd that omits the qmd:// URI prefix)
-        # are visible rather than silently invisible.
         warnings.warn(
             "qmd hit lacks a `qmd://` URI; `path` defaults to empty and the "
             "row will be dropped by downstream consumers.",
@@ -690,17 +468,13 @@ def _normalize_qmd_result(item: Any) -> dict[str, Any]:
 def qmd_get(cwd: Path, qmd_path: str, timeout: int = 60) -> str:
     """Run ``qmd get <qmd_path>`` in ``cwd`` and return the file content.
 
-    Reads a single document from qmd's index by its
-    ``qmd://<collection>/<page>`` URI. Used by the librarian's
-    source-aware ``wiki_read`` dispatch to fetch library-side page
-    bodies that qmd already indexes but that the wiki memory
-    service does not know about (the wiki side carries wiki page
-    IDs only - library pages never had a wiki-side ID).
+    Used by the librarian's source-aware ``wiki_read`` dispatch to
+    fetch library-side page bodies that qmd already indexes.
 
     Raises:
         QmdNotInstalledError: If ``qmd`` is not on PATH.
-        QmdCommandError: If ``qmd get`` exits non-zero, times
-            out, or the binary is missing at exec time.
+        QmdCommandError: If ``qmd get`` exits non-zero, times out, or
+            the binary is missing at exec time.
     """
     if not is_qmd_installed():
         raise QmdNotInstalledError("`qmd` not found on PATH")
@@ -712,8 +486,6 @@ def qmd_get(cwd: Path, qmd_path: str, timeout: int = 60) -> str:
     except subprocess.TimeoutExpired as exc:
         raise QmdCommandError(f"qmd get timed out after {timeout}s") from exc
 
-    # ``_run_qmd`` returns bytes; decode for the text-return contract
-    # (the librarian's source-aware ``_wiki_read`` expects a str body).
     stderr_text = result.stderr.decode("utf-8", errors="replace").strip()
     if result.returncode != 0:
         raise QmdCommandError(f"qmd get failed (exit {result.returncode}): {stderr_text}")
