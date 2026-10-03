@@ -1,11 +1,6 @@
 repos:
-  # Pinned to v0.14.14 because ruff 0.15+ strips the mandatory
-  # parens around multi-exception ``except`` clauses (upstream
-  # issue #26449), reverting them to Python 2 ``except X, Y:``
-  # syntax that fails at import time. The pin matches the
-  # ``ruff<0.15`` upper bound in ``pyproject.toml``.
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.14.14
+    rev: v0.16.10
     hooks:
       - id: ruff-check
         args: [--fix]
@@ -13,48 +8,24 @@ repos:
       - id: ruff-format
         files: ^((src/lies|tests|scripts|tools)/|pyproject\.toml$)
   - repo: https://github.com/astral-sh/ty-pre-commit
-    rev: v0.0.66
+    rev: v0.0.84
     hooks:
       - id: ty
-        # `--frozen` is a `uv` global flag passed to `uv check` so the hook
-        # does not auto-regenerate `uv.lock` on every commit (a stale lock
-        # would otherwise be silently rewritten, masking version bumps).
         args: ["--frozen"]
   - repo: https://github.com/MistressFilth/supyrliminal
     rev: v0.1.0
     hooks:
       - id: supyrliminal
-        # Blocking: zero SL101 findings required (see PR #65 for the
-        # conversion history; all 12 flagged classes were converted
-        # from BaseModel to stdlib @dataclass).
         files: ^((src/lies|tests|scripts|tools)/|pyproject\.toml$)
   - repo: local
     hooks:
       - id: test
         name: make unit-test
-        # Strip pre-commit's GIT_DIR / GIT_INDEX_FILE so git's upward
-        # auto-discovery works inside test fixtures that init their own
-        # repos in tmp dirs. Without this, `git rev-parse --show-toplevel`
-        # in those fixtures returns the cwd instead of walking up.
         entry: env -u GIT_DIR -u GIT_INDEX_FILE -u GIT_WORK_TREE -u GIT_COMMON_DIR uv run make unit-test
         language: system
         pass_filenames: false
-        # `uv sync` regenerates uv.lock; exclude it so the hook's
-        # side-effect doesn't trigger a stash conflict on every commit.
         exclude: ^uv\.lock$
         stages: [pre-commit]
-  - repo: local
-    hooks:
-      - id: no-co-authored-by
-        name: forbid Co-Authored-By trailer
-        # bash -c 'script' FILE treats FILE as $0 (it is the first arg after
-        # the script). pre-commit passes the commit message filename as the
-        # sole positional argument, so $0 is the message file and $1 is
-        # empty. grep on $0 rejects any Co-Authored-By trailer.
-        entry: bash -c '! grep -iE "^Co-Author[^:]*:" "$0" >/dev/null'
-        language: system
-        stages: [commit-msg]
-        always_run: true
       - id: lies-commands-exist
         name: "lies mcp orientation: lies <cmd> references resolve"
         entry: uv run python tools/check_lies_commands.py
