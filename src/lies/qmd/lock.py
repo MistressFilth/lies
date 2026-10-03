@@ -111,14 +111,25 @@ def _acquire_with_poll(
     single contended call near the boundary resolves in at most one poll
     interval past ``retry_budget_s``.
     """
+    # Resolved here, not read from the module constant. The constant is
+    # frozen at import, which silently defeats anything that sets the
+    # environment afterwards -- a test's per-session pin, or an operator
+    # changing XDG_STATE_HOME between operations. This is what
+    # ``_lock_paths`` has always claimed to do ("Resolved on every call so
+    # environment changes between acquisitions are honored"); the claim
+    # was false until here, and the docstring said so before the code did.
+    #
+    # Cost is one env read per acquisition. Acquiring is an flock open
+    # with a poll loop; the read is not measurable next to it.
+    lock_path, pid_path, state_path = _lock_paths()
     deadline = time.monotonic() + retry_budget_s
     started_at = time.monotonic()
     while True:
         result = acquire_create_lock(
-            _LOCK_PATH,
+            lock_path,
             max_age_s=max_age_s,
-            pid_path=_PID_PATH,
-            state_json_path=_STATE_PATH,
+            pid_path=pid_path,
+            state_json_path=state_path,
         )
         if result is None:
             # Legacy path: only hit if ``exclusive.py`` raises the
@@ -159,8 +170,14 @@ def _release(fd: int) -> None:
     Calls :func:`release_create_lock` with the resolved paths. Safe to
     call when ``fd`` is invalid (raises ``OSError`` is caught and logged).
     """
+    # Re-resolved for the same reason as the acquire path: releasing
+    # through a stale constant would unlock a file this call never held
+    # (and leave the one it did hold locked). The environment is
+    # unchanged within a single decorated call, so this normally
+    # resolves to the same path the acquire used.
+    lock_path, pid_path, state_path = _lock_paths()
     try:
-        release_create_lock(_LOCK_PATH, fd, pid_path=_PID_PATH, state_json_path=_STATE_PATH)
+        release_create_lock(lock_path, fd, pid_path=pid_path, state_json_path=state_path)
     except OSError as exc:
         _log.warning("release_create_lock raised: %s", exc)
 

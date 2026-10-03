@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import tempfile
@@ -154,8 +155,13 @@ def _isolated_xdg(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     # Pin it to one path shared by every test in the session, which is
     # what production gets. It is deliberately NOT `xdg_root / "state"`:
     # that would reproduce the bug in a different guise.
+    # Per-user, not just per-tempdir: `gettempdir()` is shared on a
+    # multi-account CI host, and two accounts on the same path would
+    # contend -- one of them deterministically losing to `QmdLockBusy`
+    # rather than running its own tests.
     monkeypatch.setenv(
-        "LIES_QMD_LOCK_PATH", str(Path(tempfile.gettempdir()) / "lies-test-qmd.lock")
+        "LIES_QMD_LOCK_PATH",
+        str(Path(tempfile.gettempdir()) / f"lies-test-qmd-{os.getuid()}.lock"),
     )
     # The qmd sidecar is host-global: it records which ``data-dir`` the
     # *machine's* daemon was started with, at

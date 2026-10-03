@@ -7,7 +7,6 @@ import inspect
 import os
 import subprocess
 import sys
-import tempfile
 import textwrap
 import threading
 import time
@@ -319,33 +318,98 @@ def test_is_qmd_installed_does_not_have_lock_wrapper():
 # symptom was `CUDA error: out of memory` from `ggml-cuda.cu`.
 
 
-def test_every_test_resolves_the_same_qmd_lock() -> None:
-    """Two tests must contend for one lock, not two.
+def _flock_path_used_by_the_decorator(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """The file ``with_qmd_lock`` actually opens, observed rather than computed.
 
-    Resolves the lock as a test actually does, then again with a
-    *different* ``XDG_STATE_HOME`` -- the situation that used to arise
-    whenever two tests (or two suites) embedded at once. Both must land on
-    the same inode, or the exclusion is gone and the CUDA reservation race
-    is live.
+    An earlier version of these tests called ``_lock_paths()`` directly,
+    which certifies a guarantee the suite did not have: the acquire path
+    never called the resolver, it used a constant frozen at import, so
+    ``_isolated_xdg``\'s pin landed after the freeze and every test flocked
+    the *host default* instead. Asserting on the resolver therefore tested
+    a function the decorator does not use.
+
+    This one intercepts the real call: acquire with a sentinel
+    ``LIES_QMD_LOCK_PATH`` and read back which file appeared. That
+    catches a regression back to import-time freezing, because the
+    sentinel set after import would be ignored and the host default would
+    be opened instead.
+    """
+    # Import first, then set the environment. That order is the whole
+    # point: the module constant is resolved at import, so a sentinel set
+    # beforehand would be baked into it and the acquire path would look
+    # correct whether it used the constant or the resolver. Setting it
+    # afterwards is what distinguishes them.
+    import lies.qmd.lock as lock_mod
+
+    sentinel = tmp_path / "observed-qmd.lock"
+    monkeypatch.setenv("LIES_QMD_LOCK_PATH", str(sentinel))
+
+    with_qmd_lock = lock_mod.with_qmd_lock
+
+    # Observed *during* the hold, not after: the release path unlinks the
+    # lock file, so checking afterwards would pass whether or not the
+    # decorator ever opened it.
+    seen: dict[str, bool] = {}
+
+    @with_qmd_lock(timeout_s=5.0)
+    def _hold() -> None:
+        seen["lock"] = sentinel.exists()
+
+    _hold()
+    assert seen.get("lock"), (
+        f"the decorator never opened {sentinel} while holding the lock. It is "
+        f"resolving from the import-time constant ({lock_mod._LOCK_PATH}) "
+        f"instead of per acquisition."
+    )
+    return sentinel
+
+
+def test_the_decorator_uses_the_pinned_lock_not_the_import_time_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The pin must reach the flock, not just the resolver.
+
+    This is the defect the previous round shipped: the pin was real, the
+    tests passed, and the lock still went to
+    ``~/.local/state/lies/qmd.lock`` because the acquire path read a
+    constant frozen at import. If resolution regresses to import-time,
+    the sentinel below is ignored and the host default is opened --
+    which the ``host default not used`` assertion catches.
     """
     from lies.qmd.lock import _lock_paths
 
-    here = _lock_paths()[0]
+    sentinel = _flock_path_used_by_the_decorator(tmp_path, monkeypatch)
 
-    original = os.environ.get("XDG_STATE_HOME")
-    try:
-        os.environ["XDG_STATE_HOME"] = str(Path(tempfile.gettempdir()) / "elsewhere-state")
-        there = _lock_paths()[0]
-    finally:
-        if original is None:
-            os.environ.pop("XDG_STATE_HOME", None)
-        else:
-            os.environ["XDG_STATE_HOME"] = original
-
-    assert here == there, (
-        f"XDG isolation split the qmd lock: {here} vs {there}. Every test "
-        f"must contend for one inode or the CUDA reservation race is live."
+    # The file the decorator touched is the one the environment names.
+    assert _lock_paths()[0] == sentinel, (
+        f"the decorator opened {_lock_paths()[0]}, not the pinned {sentinel}"
     )
+    # And it is not the host default that the frozen constant still holds.
+    assert _lock_paths()[0] != Path("~/.local/state/lies/qmd.lock").expanduser(), (
+        "the decorator used the import-time host default; resolution is frozen again"
+    )
+
+
+def test_acquire_after_import_honours_a_later_env_change(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Changing the environment *after* import must still take effect.
+
+    This is what ``_lock_paths`` has always claimed ("Resolved on every
+    call so environment changes between acquisitions are honored") and
+    what the code now does. The claim outlived the behaviour for the life
+    of the module, so it is pinned here directly.
+    """
+    import lies.qmd.lock as lock_mod
+
+    first = _flock_path_used_by_the_decorator(tmp_path / "a", monkeypatch)
+    second = _flock_path_used_by_the_decorator(tmp_path / "b", monkeypatch)
+
+    assert first != second, (
+        "two different LIES_QMD_LOCK_PATH values produced the same lock; "
+        "resolution is frozen at import again"
+    )
+    assert lock_mod._lock_paths()[0] == second
 
 
 def test_the_shared_qmd_lock_is_outside_the_per_test_xdg_root(tmp_path: Path) -> None:
@@ -367,6 +431,33 @@ def test_the_shared_qmd_lock_is_outside_the_per_test_xdg_root(tmp_path: Path) ->
     assert _lock_paths()[0] == lock, "and it must be stable across calls within one test"
 
 
+def test_the_pinned_test_lock_is_per_user(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The shared test lock must be per-user, not just per-tempdir.
+
+    ``gettempdir()`` is shared on a multi-account CI host. Two accounts
+    naming the same file contend, and one deterministically loses to
+    ``QmdLockBusy`` rather than running its own tests.
+    """
+    from lies.qmd.lock import _lock_paths
+
+    # Read the expression out of the fixture rather than restating it, so
+    # a change to the pin is visible here instead of silently diverging.
+    root_conftest = Path(__file__).resolve().parents[2] / "conftest.py"
+    source = root_conftest.read_text(encoding="utf-8")
+    assert "lies-test-qmd-" in source, "the per-user test lock pin is gone from conftest"
+    assert "os.getuid()" in source, (
+        "the pinned test lock must carry the uid, or two accounts on a "
+        "shared CI host contend on one file"
+    )
+
+    lock = _lock_paths()[0]
+    assert f"-{os.getuid()}.lock" in lock.name, (
+        f"the pinned test lock {lock.name} carries no uid; two accounts on a "
+        f"shared host would contend on it"
+    )
+    assert str(os.getuid()) in lock.name
+
+
 def test_embed_is_lock_wrapped() -> None:
     """The exclusion this depends on has to actually cover ``qmd_embed``.
 
@@ -376,6 +467,10 @@ def test_embed_is_lock_wrapped() -> None:
     """
     from lies.qmd import cli
 
-    assert getattr(cli.qmd_embed, "__wrapped__", None) is not None or hasattr(
-        cli.qmd_embed, "__wrapped__"
-    ), "qmd_embed must still be wrapped by with_qmd_lock"
+    # One condition, stated once. The previous version was a disjunction
+    # of a condition with itself, whose `hasattr` arm also passed when
+    # the attribute existed with value None.
+    assert hasattr(cli.qmd_embed, "__wrapped__"), "qmd_embed must still be wrapped by with_qmd_lock"
+    assert cli.qmd_embed.__wrapped__ is not None, (
+        "qmd_embed is wrapped but the wrapper is None, so the lock is not actually applied"
+    )
