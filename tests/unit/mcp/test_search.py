@@ -124,6 +124,40 @@ def test_search_unknown_tag_marks_unknown_tags(monkeypatch: pytest.MonkeyPatch) 
     assert qmd_called == [], "must short-circuit on unknown tag"
 
 
+def test_search_tag_only_filter_is_not_silently_widened(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A ``t:``-qualifier-only filter resolves to no collections and refuses.
+
+    ``_resolve_tag_collections`` drops ``t:`` atoms by design, so a
+    ``tag_expr`` made only of those resolves to an empty scope
+    without raising. The previous behaviour silently widened to
+    ``library_collection_names()`` with ``unknown_tags == []`` —
+    a query the caller scoped by tag, answered from the whole
+    library, with nothing in the response to say so. The fix
+    refuses the scope and reports the dropped expression.
+    """
+    from lies.mcp.search import search
+
+    _patch_registry(monkeypatch, ["alpha", "beta"])
+    _bypass_daemon_precheck(monkeypatch, ["alpha", "beta"])
+
+    qmd_called: list[Any] = []
+    monkeypatch.setattr(
+        "lies.mcp.search._post_query",
+        lambda *a, **kw: qmd_called.append((a, kw)) or [],
+    )
+    result = search.fn(
+        question="anything",
+        tag_expr="t:plugins",
+    )
+    assert result["unknown_tags"] == ["t:plugins"]
+    assert result["no_coverage"] is False
+    assert result["searched_scope"] == []
+    assert result["hits"] == []
+    assert qmd_called == [], "must short-circuit on tag-only filter that resolved to zero"
+
+
 def test_search_returns_searched_scope(monkeypatch: pytest.MonkeyPatch) -> None:
     """search() returns searched_scope = sorted resolved collection names."""
     from lies.mcp.search import search
@@ -156,7 +190,7 @@ def test_search_no_coverage_when_qmd_returns_empty(monkeypatch: pytest.MonkeyPat
     assert result["hits"] == []
 
 
-def test_search_unexpected_post_query_failure_returns_no_coverage(
+def test_search_unexpected_post_query_failure_returns_transient(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """An unexpected error from the seam is folded into the envelope.
@@ -164,10 +198,10 @@ def test_search_unexpected_post_query_failure_returns_no_coverage(
     The seam raises two typed errors (``QmdDaemonUnavailable``,
     ``QmdDaemonWedged``) and a process failure is something else.
     A genuine exception that is neither is a defensive
-    ``no_coverage=True, fallback_reason=<class>: <msg>`` — the
-    caller still gets an envelope, with the class name visible in
-    the reason, so an internal bug surfaces to the operator without
-    becoming a silent empty result.
+    ``transient=True, no_coverage=False`` — the caller still gets
+    an envelope, with the class name visible in the reason, so an
+    internal bug surfaces to the operator without becoming a silent
+    "the corpus has nothing" claim.
     """
     from lies.mcp.search import search
 
@@ -179,7 +213,8 @@ def test_search_unexpected_post_query_failure_returns_no_coverage(
 
     monkeypatch.setattr("lies.mcp.search._post_query", boom)
     result = search.fn(question="anything")
-    assert result["no_coverage"] is True
+    assert result["transient"] is True
+    assert result["no_coverage"] is False
     assert "RuntimeError" in (result.get("fallback_reason") or "")
     assert "bridge broke" in (result.get("fallback_reason") or "")
 

@@ -60,21 +60,6 @@ def test_a_timeout_is_not_reported_as_unreachable(monkeypatch: pytest.MonkeyPatc
     assert "60s" in reason, reason
 
 
-def test_a_genuine_connection_failure_still_says_unreachable(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The two failures must stay distinguishable, not collapse together."""
-    from lies.mcp import search as search_mod
-
-    def boom(*_args: object, **_kwargs: object) -> None:
-        raise search_mod.QmdCommandError("qmd query failed (exit 1): ENOENT: no such index")
-
-    monkeypatch.setattr(search_mod, "_post_query", boom)
-
-    result = search_mod._search_impl("plugin hooks", tag_expr="c:claude_code")
-    assert "unreachable" in result["fallback_reason"], result["fallback_reason"]
-
-
 def test_a_timeout_keeps_qmds_own_words(monkeypatch: pytest.MonkeyPatch) -> None:
     """stderr survives the boundary.
 

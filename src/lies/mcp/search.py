@@ -35,7 +35,6 @@ from lies.query.tag_expr import (
     resolve,
 )
 from lies.qmd.cli import (
-    QmdCommandError,
     QmdTimeoutError,
 )
 
@@ -263,6 +262,24 @@ def _search_impl(
         }
 
     if not scope:
+        # ``tag_expr is None`` widens to the whole library — the
+        # caller did not narrow, so every collection is in scope.
+        # ``tag_expr is not None`` and resolved to nothing is a real
+        # scope miss: the caller asked for a tag-only filter (e.g.
+        # ``t:foo``), and ``_resolve_tag_collections`` drops
+        # ``t:``-qualifier atoms by design. Widening silently here
+        # would answer from the whole library with no word to the
+        # user about the dropped tag.
+        if tag_expr is not None:
+            return {
+                "hit": None,
+                "hits": [],
+                "unknown_tags": [tag_expr],
+                "no_coverage": False,
+                "transient": False,
+                "searched_scope": [],
+                "fallback_reason": f"tag expression resolved to no collections: {tag_expr!r}",
+            }
         from lies.library.registry import library_collection_names
 
         scope = sorted(library_collection_names())
@@ -320,6 +337,12 @@ def _search_impl(
         }
     except QmdTimeoutError as exc:
         # CLI-side timeout fallback — does not fire on this path today.
+        # The seam raises ``QmdDaemonWedged`` (recycle-and-raise) for a
+        # daemon-side timeout, which is caught above; ``QmdTimeoutError``
+        # is a CLI-only class and would only surface if a future
+        # re-routed this call to a subprocess. Kept as a defensive
+        # envelope; the honest answer is ``transient=True,
+        # no_coverage=False`` regardless.
         detail = ""
         if exc.stderr:
             detail = f"; last qmd output: {_decode(exc.stderr)!r}"
@@ -332,25 +355,19 @@ def _search_impl(
             "searched_scope": scope,
             "fallback_reason": f"qmd timed out after {_current_timeout()}s{detail}",
         }
-    except QmdCommandError as exc:
-        return {
-            "hit": None,
-            "hits": [],
-            "unknown_tags": [],
-            "no_coverage": True,
-            "transient": False,
-            "searched_scope": scope,
-            "fallback_reason": f"qmd unreachable: {exc}",
-        }
     except Exception as exc:  # noqa: BLE001
+        # Anything outside the typed taxonomy (``QmdDaemonUnavailable``
+        # is re-raised; ``QmdDaemonWedged`` is caught above) is a
+        # process failure, not a statement about the corpus. Mapping
+        # to ``no_coverage=True`` would be a false corpus claim.
         return {
             "hit": None,
             "hits": [],
             "unknown_tags": [],
-            "no_coverage": True,
-            "transient": False,
+            "no_coverage": False,
+            "transient": True,
             "searched_scope": scope,
-            "fallback_reason": f"{type(exc).__name__}: {exc}",
+            "fallback_reason": f"qmd query failed: {type(exc).__name__}: {exc}",
         }
 
     hits = list(raw)

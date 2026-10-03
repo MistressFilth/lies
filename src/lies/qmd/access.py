@@ -288,12 +288,6 @@ def _recycle_data_dir() -> Path:
     from lies.library.registry import library_git_root
 
     return library_git_root()
-    recorded = read_sidecar_data_dir()
-    if recorded is not None:
-        return recorded
-    from lies.library.registry import library_git_root
-
-    return library_git_root()
 
 
 async def _recycle(url: str) -> None:
