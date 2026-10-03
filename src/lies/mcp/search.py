@@ -42,7 +42,6 @@ between the resolver and the dispatch still gets caught.
 from __future__ import annotations
 
 import asyncio
-import functools
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
@@ -164,22 +163,37 @@ def _resolve_tag_collections(tag_expr: str | None) -> tuple[list[str], list[str]
     return sorted(names & available), []
 
 
-@functools.lru_cache(maxsize=1)
 def _qmd_collection_names() -> frozenset[str]:
-    """The collection set the daemon is currently serving, read once per process.
+    """The collection set the daemon is currently serving.
 
     Used by the pre-dispatch check in :func:`_search_impl`. The
     daemon's ``status`` tool returns ``structuredContent.collections``
-    as a list of objects with a ``name`` key (the qmd source at
-    ``server.js:421`` walks ``status.collections``); the names are
-    what the daemon's ``collections`` filter accepts. Caching at
-    process scope is the right trade: the collection set is
-    operator-controlled, changes only on a deliberate
-    ``qmd collection add``/``remove``, and a stale read manifests
-    as a one-time wrong-report on the next call. The ``QmdDaemon``
-    *Unavailable* / *Wedged* exceptions surface unchanged — the
-    search path catches them downstream and the cache just does
-    not get populated.
+    as a list of plain strings (verified against qmd 2.5.3
+    2026-10-03; the schema also accepts a list of ``{"name": "..."}``
+    objects, both shapes are read so the helper does not lock to
+    one). The names are what the daemon's ``collections`` filter
+    accepts.
+
+    **No cache.** A previous version held the set in an
+    ``lru_cache(maxsize=1)`` on the grounds that the collection
+    list "changes only on a deliberate ``qmd collection add`` /
+    ``remove``." That is true on paper, but the cache had no
+    production-side invalidation path: there is no signal from
+    the daemon when its collection list changes, and LIES'
+    own ``lies library new`` / ``lies sync`` / ingest paths do
+    not clear it. A long-running MCP server that the operator
+    ingested into would silently keep its pre-ingest view until
+    restart, and a ``qmd cleanup`` that drops collections would
+    leave the cache claiming they exist. The staleness was a
+    known-unbounded cost the field was not paying.
+
+    Measured cost of the cached call against the live daemon
+    (2026-10-03, 10 warm samples after 3 warm-ups): **p50 41.9 ms,
+    max 45.8 ms, stdev 1.7 ms**. A search query runs in 5.6-6.0s
+    warm, so the status call is ~0.7% of a single search and
+    negligible against the 30s+ cold-query ceiling. Drop the
+    cache; pay the round trip on every search; the staleness
+    class is closed.
     """
     result = _run_blocking(access.daemon_tool("status", {}))
     structured = getattr(result, "structured_content", None) or {}
@@ -188,11 +202,8 @@ def _qmd_collection_names() -> frozenset[str]:
         return frozenset()
     names: set[str] = set()
     for row in rows:
-        # The daemon's status tool returns ``collections`` as a
-        # list of plain strings (verified against qmd 2.5.3
-        # 2026-10-03), but the schema also accepts a list of
-        # ``{"name": "..."}`` objects — both shapes are read so
-        # the helper does not lock to one.
+        # Both shapes read so the daemon's schema choice does
+        # not lock the helper to one.
         if isinstance(row, str):
             if row:
                 names.add(row)
@@ -207,24 +218,11 @@ def _qmd_collection_names_for_check() -> frozenset[str]:
     """The collection set the pre-check sees.
 
     Indirection over :func:`_qmd_collection_names` so tests can
-    stub the read without going through the daemon. The cache
-    itself is process-scoped and unstubbable from a
-    ``monkeypatch.setattr``; this wrapper gives the test surface
-    something to point at. Production code calls this; the cache
-    is the implementation detail.
+    stub the read without going through the daemon. Production
+    code calls this; the implementation is a direct daemon
+    ``status`` round trip with no cache.
     """
     return _qmd_collection_names()
-
-
-def _qmd_collection_names_cache_clear() -> None:
-    """Drop the cached daemon-side collection list.
-
-    Public for tests; the cache is process-scoped and a test that
-    mutates the daemon's collection set without restarting the
-    interpreter would otherwise see stale data. Production code
-    never calls this.
-    """
-    _qmd_collection_names.cache_clear()
 
 
 def _run_blocking(coro: Any) -> Any:

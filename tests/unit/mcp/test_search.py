@@ -46,32 +46,10 @@ def _bypass_daemon_precheck(monkeypatch: pytest.MonkeyPatch, names: list[str]) -
     asserting on the question/scope/envelope without going
     through the seam.
     """
-    # The cache is process-scoped; clear it so a previous test's
-    # value (which would have been derived from a different
-    # ``daemon_tool`` stub) does not leak into this test.
-    from lies.mcp import search as _search_module
-
-    _search_module._qmd_collection_names_cache_clear()
     monkeypatch.setattr(
         "lies.mcp.search._qmd_collection_names_for_check",
         lambda: frozenset(names),
     )
-
-
-@pytest.fixture(autouse=True)
-def _reset_qmd_collection_cache() -> None:
-    """Drop the process-scoped qmd-collection cache between tests.
-
-    ``_qmd_collection_names`` is ``lru_cache``d at module scope.
-    Tests that stub ``access.daemon_tool`` populate it with one
-    value; a later test whose stub would produce a different
-    value would otherwise see the stale one because the cache
-    key is empty. Clearing once per test is the cheap fix; the
-    cache is repopulated by the next call that needs it.
-    """
-    from lies.mcp import search as _search_module
-
-    _search_module._qmd_collection_names_cache_clear()
 
 
 def test_search_passes_question_as_plain_string(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -711,3 +689,66 @@ def test_searches_emits_lex_and_vec_only(monkeypatch: pytest.MonkeyPatch) -> Non
     queries = [s["query"] for s in seen["searches"]]
     assert queries == ["plugin hooks", "plugin hooks"]
     assert seen["intent"], "intent is required by the daemon's schema"
+
+
+def test_pre_check_calls_daemon_status_on_every_search(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The pre-check has no cache, so every search pays one daemon ``status`` call.
+
+    Round-2 review found that the previous ``lru_cache(maxsize=1)``
+    on ``_qmd_collection_names`` had no production-side clear path,
+    so a long-running MCP server that the operator ingested into
+    would silently keep its pre-ingest view until restart. Measured
+    cost of one daemon ``status`` call against the live daemon
+    (2026-10-03, 10 warm samples): p50 41.9 ms. A search runs in
+    5.6-6.0 s warm, so the per-search ``status`` call is ~0.7 % of
+    the operation and the staleness class is closed in exchange.
+
+    This test pins the property: a cache that survives between
+    searches (the prior lru_cache) would let the second ``_search_impl``
+    see the first call's value, so daemon ``status`` would be called
+    once across two searches. Without the cache, it is called
+    twice. The assertion is the bound — a cache that "no test
+    exercises" was exactly the field's defect.
+    """
+    from lies.mcp.search import _search_impl
+    from lies.qmd.access import QmdDaemonUnavailable, QmdDaemonWedged
+
+    _patch_registry(monkeypatch, ["claude_code"])
+
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    async def _fake_daemon_tool(name: str, arguments: dict[str, Any]) -> Any:
+        calls.append((name, dict(arguments)))
+        if name == "status":
+            return SimpleNamespace(
+                content=[],
+                structured_content={"collections": ["claude_code"]},
+                is_error=False,
+            )
+        return SimpleNamespace(
+            content=[],
+            structured_content={"results": []},
+            is_error=False,
+        )
+
+    monkeypatch.setattr(
+        "lies.mcp.search.access",
+        SimpleNamespace(
+            daemon_tool=_fake_daemon_tool,
+            QmdDaemonUnavailable=QmdDaemonUnavailable,
+            QmdDaemonWedged=QmdDaemonWedged,
+        ),
+    )
+
+    _search_impl("first question")
+    _search_impl("second question")
+
+    status_calls = [c for c in calls if c[0] == "status"]
+    assert len(status_calls) == 2, (
+        f"every search must read the live daemon status; got "
+        f"{len(status_calls)} status calls across 2 searches. "
+        f"A cache that survived between searches is exactly the "
+        f"staleness class this test exists to prevent."
+    )

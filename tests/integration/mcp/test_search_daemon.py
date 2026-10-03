@@ -46,10 +46,7 @@ def test_scoped_search_returns_rows_from_every_named_collection() -> None:
     # LIES library at an empty ``tmp_path``; the resolver then
     # rejects every collection name. Populate the LIES registry
     # from the daemon's own view so the test exercises the
-    # routing layer rather than the registry, and clear the
-    # cached collection set so a previous test's value does not
-    # leak.
-    search_module._qmd_collection_names_cache_clear()
+    # routing layer rather than the registry.
     live_collections = search_module._qmd_collection_names_for_check()
 
     import lies.library.registry as _registry
@@ -86,7 +83,6 @@ def test_hits_carry_a_path_never_a_docid() -> None:
     import lies.mcp.search as search_module
     from lies.mcp.search import search
 
-    search_module._qmd_collection_names_cache_clear()
     live_collections = search_module._qmd_collection_names_for_check()
     _registry.library_collection_names = lambda: live_collections  # type: ignore[assignment]
 
@@ -120,7 +116,6 @@ def test_unknown_collection_is_reported_not_silently_widened() -> None:
     import lies.mcp.search as search_module
     from lies.mcp.search import search
 
-    search_module._qmd_collection_names_cache_clear()
     live_collections = search_module._qmd_collection_names_for_check()
     _registry.library_collection_names = lambda: live_collections  # type: ignore[assignment]
 
