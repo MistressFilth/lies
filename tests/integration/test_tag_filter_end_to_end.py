@@ -35,7 +35,6 @@ from __future__ import annotations
 
 import os
 import shutil
-import sqlite3
 import subprocess
 from collections.abc import Iterator
 from datetime import UTC, datetime
@@ -60,6 +59,7 @@ from lies.qmd.cli import (
     qmd_collection_remove,
     qmd_embed,
 )
+from lies.qmd.integrity import live_index_snapshot, snapshots_differ
 from lies.wiki.wiki import Wiki
 
 
@@ -287,49 +287,68 @@ def _live_qmd_index_path() -> Path | None:
     return candidate if candidate.exists() else None
 
 
-def _live_index_snapshot() -> tuple[frozenset[str], int] | None:
-    """Snapshot of the live qmd index: (collection_names, active_doc_count).
+def _live_index_snapshot():
+    """Snapshot the live qmd index via :func:`lies.qmd.integrity.live_index_snapshot`.
 
-    Read-only via ``sqlite3 ?mode=ro``. Returns ``None`` if the live
-    index is not present (no host fixture to assert against).
+    Thin wrapper that resolves the live path under ``~/.cache`` (the
+    XDG default the daemon serves against) and returns the four-field
+    snapshot the comparator :func:`lies.qmd.integrity.snapshots_differ`
+    diffs. Returns ``None`` if no live index is present.
+
+    The pre-fix guard snapshot only captured two aggregates
+    (collection names, active document count). The four live-index
+    orphans on 2026-10-03 belong to the exact defect class that two-
+    field snapshot could not see — ``content_vectors`` rows whose
+    backing ``content`` and ``documents`` rows never landed — and the
+    guard therefore passed silently while the writes happened. The
+    :class:`LiveIndexSnapshot` adds ``total_vectors`` and
+    ``orphan_vectors``, both of which move on that write. The unit
+    tests in ``tests/unit/qmd/test_integrity.py`` pin each field's
+    discriminating power against a throwaway index.
     """
-    live = _live_qmd_index_path()
-    if live is None:
-        return None
-    uri = f"file:{live}?mode=ro"
-    con = sqlite3.connect(uri, uri=True)
-    try:
-        names = frozenset(row[0] for row in con.execute("SELECT name FROM store_collections"))
-        (n,) = con.execute("SELECT COUNT(*) FROM documents WHERE active = 1").fetchone()
-    finally:
-        con.close()
-    return names, int(n)
+    return live_index_snapshot(_live_qmd_index_path())
 
 
 @pytest.fixture(scope="session", autouse=True)
 def _live_qmd_index_unchanged(request: pytest.FixtureRequest) -> Iterator[None]:
     """Assert the live qmd index is unchanged before and after this file.
 
-    "Unchanged" means two aggregates — the collection-name set and the
-    count of ``documents WHERE active = 1`` — not a byte comparison. Two
-    runs that embed nothing into it produce byte-identical files anyway;
-    the aggregates are what a leak would actually move, and comparing
-    bytes would be a claim this does not make.
+    "Unchanged" means the four aggregates from
+    :class:`lies.qmd.integrity.LiveIndexSnapshot` are equal on both
+    sides — not a byte comparison. Two runs that embed nothing against
+    the live index produce byte-identical files anyway; the aggregates
+    are what a leak would actually move, and comparing bytes would be
+    a claim this does not make.
 
     The fixture's qmd subprocesses inherit the redirected
     ``XDG_CACHE_HOME`` from ``_isolated_xdg`` and write to
     ``tmp_path/xdg/cache/qmd/index.sqlite`` — a throwaway. The guard
     bypasses XDG and reads ``~/.cache/qmd/index.sqlite`` directly,
-    capturing the collection set and the active-document count at
-    session start and asserting the same at session end. A regression
-    that points the fixture at the live index (the exact class of
-    failure the previous commit message warned against) trips this
-    assertion with a precise diff.
+    capturing the snapshot at session start and asserting equality at
+    session end. A regression that points the fixture at the live
+    index (the exact class of failure this branch exists to detect)
+    trips this assertion with a precise diff that names which
+    aggregate moved.
 
-    The guard never writes to the live index. Read-only ``sqlite3`` is
-    the only I/O. Fires only under ``INTEGRATION=1`` (the same gate
-    that collects this file) and only on hosts with a live index.
-    No-ops otherwise so a CI sandbox with no host index is not blocked.
+    The four aggregates are the load-bearing ones for the defects
+    observed on this branch:
+
+    - ``collection_names`` — ``qmd collection add`` against the live
+      index, or ``syncConfigToDb``-driven reconciliation.
+    - ``active_doc_count`` — ``qmd update`` against the live index.
+    - ``total_vectors`` — any write that touches ``content_vectors``,
+      including an orphan write whose ``content`` / ``documents``
+      rows never landed.
+    - ``orphan_vectors`` — the pre-fix blind spot. The four live
+      orphans on 2026-10-03 are ``content_vectors`` rows whose hash
+      is not in ``content`` and not in ``documents``. The pre-fix
+      guard could not detect them; this one does.
+
+    The guard never writes to the live index. Read-only ``sqlite3``
+    via :func:`lies.qmd.integrity.open_readonly` is the only I/O. Fires
+    only under ``INTEGRATION=1`` (the same gate that collects this
+    file) and only on hosts with a live index. No-ops otherwise so a
+    CI sandbox with no host index is not blocked.
     """
     if os.environ.get("INTEGRATION") != "1":
         yield
@@ -337,21 +356,9 @@ def _live_qmd_index_unchanged(request: pytest.FixtureRequest) -> Iterator[None]:
     before = _live_index_snapshot()
     yield
     after = _live_index_snapshot()
-    if before is None or after is None:
-        return
-    if before != after:
-        before_names, before_n = before
-        after_names, after_n = after
-        added = sorted(after_names - before_names)
-        removed = sorted(before_names - after_names)
-        pytest.fail(
-            "the live qmd index changed during this run: "
-            f"collections before={sorted(before_names)!r} after={sorted(after_names)!r} "
-            f"(added={added!r}, removed={removed!r}); "
-            f"active docs before={before_n} after={after_n}. "
-            f"This file's fixture is meant to write to a throwaway "
-            f"under XDG_CACHE_HOME, not the live index."
-        )
+    changed, msg = snapshots_differ(before, after)
+    if changed:
+        pytest.fail(msg)
 
 
 def _seed_qmd(wiki: Wiki) -> None:

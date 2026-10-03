@@ -6,6 +6,21 @@ All notable changes to LIES are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **`lies.qmd.integrity.live_index_snapshot` and `snapshots_differ`** —
+  read-only snapshot of four aggregates from the live qmd index
+  (`collection_names`, `active_doc_count`, `total_vectors`,
+  `orphan_vectors`) plus the pure comparator the session guard uses.
+  The pre-fix tag-filter guard was blind to ``content_vectors`` writes
+  whose backing ``content`` and ``documents`` rows never landed —
+  the exact class of write that produced the four live-index orphans
+  on 2026-10-03 — because the old snapshot only carried the first
+  two aggregates. The four-field snapshot and its mutation test
+  pin that class. See
+  `.superpowers/sdd/2026-10-01-qmd-daemon-routing/live-index-orphans.md`
+  for the root-cause investigation.
+
 ## [0.44.0] - 2026-10-03
 
 ### Added

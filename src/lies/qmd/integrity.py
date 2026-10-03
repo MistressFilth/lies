@@ -45,6 +45,54 @@ class OrphanReport:
     orphan_rows: int
 
 
+@dataclass(frozen=True)
+class LiveIndexSnapshot:
+    """Four aggregates that detect a write to the live qmd index.
+
+    Each is the count of fields a regression actually moves, and the
+    pre-fix guard's blind spot was the last one. Snapshots are equal iff
+    every field is equal; :func:`snapshots_differ` does the comparison
+    and renders the diff message that the session guard fails with.
+
+    Fields:
+
+    ``collection_names``
+        ``frozenset[str]`` of every ``store_collections.name``. A
+        :func:`qmd collection add` that landed against the live index
+        moves this set, as does the ``syncConfigToDb`` reconciliation
+        that drops names no longer in the YAML config.
+
+    ``active_doc_count``
+        ``int`` — ``COUNT(*) FROM documents WHERE active = 1``. A
+        ``qmd update`` that landed against the live index moves it.
+
+    ``total_vectors``
+        ``int`` — ``COUNT(*) FROM content_vectors``. Any write that
+        touches ``content_vectors`` moves it, including an orphan write
+        (one whose content/document row was never written or was later
+        hard-deleted by an intervening ``qmd collection remove``).
+
+    ``orphan_vectors``
+        ``int`` — ``COUNT(*) FROM content_vectors WHERE hash NOT IN
+        (SELECT hash FROM content)``. The pre-fix guard's blind spot.
+        Catches the specific defect class where vectors are added but
+        their backing ``content`` row is never written or was deleted,
+        which leaves ``content_vectors`` rows alive (no FK) while
+        ``documents`` and ``content`` rows are gone.
+
+    Captured at session start and again at session end by the live-index
+    guard (``tests/integration/test_tag_filter_end_to_end.py``). A
+    regression that bypasses the XDG redirect and writes to the live
+    index moves at least one field; the guard catches which one and
+    fails with a precise diff.
+    """
+
+    collection_names: frozenset[str]
+    active_doc_count: int
+    total_vectors: int
+    orphan_vectors: int
+
+
 def qmd_index_path() -> Path:
     """The path to qmd's index, resolved from ``$XDG_CACHE_HOME``.
 
@@ -157,6 +205,90 @@ def collection_drift(db: Path) -> dict[str, list[str]]:
         if not Path(path).exists():
             drift.setdefault(name, []).append(f"registered path does not exist on disk: {path}")
     return drift
+
+
+def live_index_snapshot(db: Path) -> LiveIndexSnapshot | None:
+    """Snapshot the four aggregates that detect a write to a qmd index.
+
+    Read-only via :func:`open_readonly`. Returns ``None`` when ``db``
+    does not exist, so callers (the session guard in particular) can
+    no-op on hosts without a reachable index — a CI sandbox with no
+    host fixture should not block a test run.
+
+    The four fields are the load-bearing ones for catching leaks from
+    the tag-filter test fixture (see :class:`LiveIndexSnapshot` for the
+    per-field semantics). The pre-fix snapshot only captured the first
+    two and missed ``content_vectors`` writes that did not also move
+    ``store_collections`` or ``documents.active=1``; that is the exact
+    defect class the four live-index orphans on 2026-10-03 belong to.
+
+    The unit tests in ``tests/unit/qmd/test_integrity.py`` pin each
+    field's discriminating power against a throwaway index, including
+    a mutation test for the orphan-write class.
+    """
+    if not db.exists():
+        return None
+    with closing(open_readonly(db)) as conn:
+        names = frozenset(row[0] for row in conn.execute("SELECT name FROM store_collections"))
+        (active_doc_count,) = conn.execute(
+            "SELECT COUNT(*) FROM documents WHERE active = 1"
+        ).fetchone()
+        (total_vectors,) = conn.execute("SELECT COUNT(*) FROM content_vectors").fetchone()
+        (orphan_vectors,) = conn.execute(
+            "SELECT COUNT(*) FROM content_vectors WHERE hash NOT IN (SELECT hash FROM content)"
+        ).fetchone()
+    return LiveIndexSnapshot(
+        collection_names=names,
+        active_doc_count=int(active_doc_count),
+        total_vectors=int(total_vectors),
+        orphan_vectors=int(orphan_vectors),
+    )
+
+
+def snapshots_differ(
+    before: LiveIndexSnapshot | None,
+    after: LiveIndexSnapshot | None,
+) -> tuple[bool, str]:
+    """``(changed, message)`` for the session guard's before/after pair.
+
+    ``None`` on either side means "no live index was reachable" — that
+    is a no-op, not a change; the session guard skips the assertion
+    rather than failing on a host without a live index. Equality on
+    every field of a populated pair is the no-change case.
+
+    On a change, ``message`` names the field whose value moved and the
+    values on either side, so the failing test's diagnostic points at
+    the exact aggregate the regression touched. The ``collection_names``
+    diff is rendered as ``added`` / ``removed`` so a regression that
+    drops a name from the YAML-driven reconciliation can also be read
+    at a glance.
+
+    Pure function — the unit tests in
+    ``tests/unit/qmd/test_integrity.py`` exercise the comparator
+    against throwaway indices without depending on the host's live
+    index state.
+    """
+    if before is None or after is None:
+        return False, ""
+    if before == after:
+        return False, ""
+    added = sorted(after.collection_names - before.collection_names)
+    removed = sorted(before.collection_names - after.collection_names)
+    msg = (
+        "the live qmd index changed during this run: "
+        f"collections before={sorted(before.collection_names)!r} "
+        f"after={sorted(after.collection_names)!r} "
+        f"(added={added!r}, removed={removed!r}); "
+        f"active docs before={before.active_doc_count} "
+        f"after={after.active_doc_count}; "
+        f"total vectors before={before.total_vectors} "
+        f"after={after.total_vectors}; "
+        f"orphan vectors before={before.orphan_vectors} "
+        f"after={after.orphan_vectors}. "
+        f"This file's fixture is meant to write to a throwaway "
+        f"under XDG_CACHE_HOME, not the live index."
+    )
+    return True, msg
 
 
 def integrity_summary(db: Path) -> dict[str, Any]:

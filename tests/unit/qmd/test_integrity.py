@@ -29,13 +29,16 @@ from pathlib import Path
 import pytest
 
 from lies.qmd.integrity import (
+    LiveIndexSnapshot,
     OrphanReport,
     collection_drift,
     index_orphans,
     integrity_summary,
     is_embedded,
+    live_index_snapshot,
     open_readonly,
     qmd_index_path,
+    snapshots_differ,
 )
 
 
@@ -534,3 +537,300 @@ def test_integrity_summary_surfaces_drift(tmp_path: Path, _empty_index_template:
         conn.commit()
     summary = integrity_summary(db)
     assert "stale" in summary["drift"]
+
+
+# ---------------------------------------------------------------------------
+# live_index_snapshot / snapshots_differ — the session guard for the
+# tag-filter fixture. The pre-fix guard's two-aggregate snapshot
+# (collection names, active document count) was blind to the exact
+# class of write that produced the four live-index orphans on
+# 2026-10-03: a ``content_vectors`` row whose backing ``content`` and
+# ``documents`` rows never landed (or were hard-deleted by an
+# intervening ``qmd collection remove``). The four-field snapshot
+# adds ``total_vectors`` and ``orphan_vectors``; both move on that
+# write, and the unit tests below pin each field's discriminating
+# power against a throwaway index, including a mutation test that
+# fails the comparator when the orphan-write class is exercised.
+# ---------------------------------------------------------------------------
+
+
+def test_live_index_snapshot_returns_none_for_missing_index(
+    tmp_path: Path,
+) -> None:
+    """A non-existent db returns ``None`` so the session guard can no-op.
+
+    The integration guard skips its assertion on ``None`` so a CI
+    sandbox without a host fixture is not blocked; the unit test pins
+    the missing-index branch separately from the populated-index branch.
+    """
+    missing = tmp_path / "does-not-exist.sqlite"
+    assert live_index_snapshot(missing) is None
+
+
+def test_live_index_snapshot_reads_four_aggregates(
+    tmp_path: Path, _empty_index_template: Path
+) -> None:
+    """All four fields are populated, not just the two the pre-fix guard read.
+
+    The pre-fix snapshot only carried ``collection_names`` and
+    ``active_doc_count``. The four live-index orphans on 2026-10-03
+    belong to a class that the two-field snapshot could not see —
+    content_vectors writes with no backing ``content`` row — and the
+    guard therefore passed silently while the writes happened. The
+    four-field snapshot adds ``total_vectors`` and ``orphan_vectors``
+    so the guard catches that class.
+    """
+    db = _tiny_index(tmp_path, _empty_index_template)
+    with sqlite3.connect(str(db)) as conn:
+        conn.execute(
+            "INSERT INTO content(hash, doc, created_at) VALUES (?, ?, ?)",
+            ("h1", "doc1", "2026-10-03T00:00:00Z"),
+        )
+        conn.execute(
+            "INSERT INTO documents(collection, path, title, hash, "
+            "created_at, modified_at, active) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                "alpha",
+                "p.md",
+                "T",
+                "h1",
+                "2026-10-03T00:00:00Z",
+                "2026-10-03T00:00:00Z",
+                1,
+            ),
+        )
+        conn.execute(
+            "INSERT INTO store_collections(name, path) VALUES (?, ?)",
+            ("alpha", "/collections/alpha"),
+        )
+        # Vector with backing content: does NOT count toward orphan_vectors.
+        conn.execute(
+            "INSERT INTO content_vectors(hash, seq, pos, model, "
+            "embed_fingerprint, total_chunks, embedded_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                "h1",
+                0,
+                0,
+                "m",
+                "fp",
+                1,
+                "2026-10-03T00:00:00Z",
+            ),
+        )
+        # Orphan vector: hash NOT IN content. Counts toward orphan_vectors.
+        conn.execute(
+            "INSERT INTO content_vectors(hash, seq, pos, model, "
+            "embed_fingerprint, total_chunks, embedded_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                "orphan_hash",
+                0,
+                0,
+                "m",
+                "fp",
+                1,
+                "2026-10-03T00:00:00Z",
+            ),
+        )
+        conn.commit()
+
+    snap = live_index_snapshot(db)
+    assert snap == LiveIndexSnapshot(
+        collection_names=frozenset({"alpha"}),
+        active_doc_count=1,
+        total_vectors=2,
+        orphan_vectors=1,
+    )
+
+
+def test_snapshots_differ_returns_no_change_for_identical_snapshots(
+    tmp_path: Path, _empty_index_template: Path
+) -> None:
+    """Equality on every field ⇒ ``(False, "")`` — the comparator's no-op."""
+    db = _tiny_index(tmp_path, _empty_index_template)
+    snap = live_index_snapshot(db)
+    changed, msg = snapshots_differ(snap, snap)
+    assert changed is False
+    assert msg == ""
+
+
+def test_snapshots_differ_treats_either_side_none_as_no_op() -> None:
+    """Either side ``None`` (no live index reachable) is a no-op, not a change.
+
+    The integration guard skips the assertion on this path so a CI
+    sandbox without a host fixture is not blocked.
+    """
+    none = None
+    snap = LiveIndexSnapshot(
+        collection_names=frozenset(),
+        active_doc_count=0,
+        total_vectors=0,
+        orphan_vectors=0,
+    )
+    changed_a, _ = snapshots_differ(none, snap)
+    changed_b, _ = snapshots_differ(snap, none)
+    changed_c, _ = snapshots_differ(none, none)
+    assert changed_a is False
+    assert changed_b is False
+    assert changed_c is False
+
+
+def test_snapshots_differ_catches_an_orphan_vectors_increase(
+    tmp_path: Path, _empty_index_template: Path
+) -> None:
+    """The mutation test the brief asks for.
+
+    Pre-fix the guard could not detect the four live-index orphans on
+    2026-10-03 because neither ``collection_names`` nor
+    ``active_doc_count`` moved on the write. With ``orphan_vectors``
+    in the snapshot, the comparator now flags the change. The test
+    reproduces the exact write against a throwaway index and asserts
+    the comparator returns ``(True, message)`` with ``"orphan
+    vectors"`` in the diagnostic.
+
+    This is the test the pre-fix guard could not pass — a future
+    change that drops ``orphan_vectors`` from the snapshot will see
+    this fail before any live index is touched.
+    """
+    db = _tiny_index(tmp_path, _empty_index_template)
+    before = live_index_snapshot(db)
+
+    # The orphan write: ``content_vectors`` row whose hash is not in
+    # ``content`` and not in ``documents`` — the exact defect class the
+    # four live-index orphans on 2026-10-03 belong to.
+    with sqlite3.connect(str(db)) as conn:
+        conn.execute(
+            "INSERT INTO content_vectors(hash, seq, pos, model, "
+            "embed_fingerprint, total_chunks, embedded_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                "0073bb30aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                0,
+                0,
+                "m",
+                "fp",
+                1,
+                "2026-10-03T07:42:53.369Z",
+            ),
+        )
+        conn.commit()
+
+    after = live_index_snapshot(db)
+    changed, msg = snapshots_differ(before, after)
+    assert changed, (
+        "comparator returned no-change for an orphan write — the exact "
+        "defect the four live-index orphans on 2026-10-03 belong to. "
+        "The guard is blind again; ``orphan_vectors`` must stay in the snapshot."
+    )
+    assert "orphan vectors" in msg
+    assert "before=" in msg and "after=" in msg
+
+
+def test_snapshots_differ_catches_a_total_vectors_increase_with_backing_content(
+    tmp_path: Path, _empty_index_template: Path
+) -> None:
+    """``total_vectors`` catches writes that ``orphan_vectors`` cannot.
+
+    A vector whose hash *is* in ``content`` does not move
+    ``orphan_vectors`` — the orphan count stays at zero — but it does
+    move ``total_vectors``. A write of that class is also a write
+    against the live index, and the guard must catch it. The pre-fix
+    guard caught neither class.
+    """
+    db = _tiny_index(tmp_path, _empty_index_template)
+    before = live_index_snapshot(db)
+
+    with sqlite3.connect(str(db)) as conn:
+        conn.execute(
+            "INSERT INTO content(hash, doc, created_at) VALUES (?, ?, ?)",
+            ("h", "d", "2026-10-03T00:00:00Z"),
+        )
+        conn.execute(
+            "INSERT INTO content_vectors(hash, seq, pos, model, "
+            "embed_fingerprint, total_chunks, embedded_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                "h",
+                0,
+                0,
+                "m",
+                "fp",
+                1,
+                "2026-10-03T00:00:00Z",
+            ),
+        )
+        conn.commit()
+
+    after = live_index_snapshot(db)
+    changed, msg = snapshots_differ(before, after)
+    assert changed
+    assert "total vectors" in msg
+
+
+def test_snapshots_differ_catches_a_collection_added_to_store_collections(
+    tmp_path: Path, _empty_index_template: Path
+) -> None:
+    """``collection_names`` catches ``qmd collection add`` against the live index.
+
+    The pre-fix guard already covered this field. The test pins that
+    the four-field comparator still names the field that moved when
+    only ``store_collections`` changed, so the diagnostic is not a
+    regression that drops back to two fields silently.
+    """
+    db = _tiny_index(tmp_path, _empty_index_template)
+    before = live_index_snapshot(db)
+
+    with sqlite3.connect(str(db)) as conn:
+        conn.execute(
+            "INSERT INTO store_collections(name, path) VALUES (?, ?)",
+            ("alpha", "/collections/alpha"),
+        )
+        conn.commit()
+
+    after = live_index_snapshot(db)
+    changed, msg = snapshots_differ(before, after)
+    assert changed
+    assert "collections before=" in msg
+    assert "added=['alpha']" in msg
+
+
+def test_snapshots_differ_catches_an_active_doc_insertion(
+    tmp_path: Path, _empty_index_template: Path
+) -> None:
+    """``active_doc_count`` catches ``qmd update`` that inserted documents.
+
+    Pin that the four-field comparator still names ``active docs``
+    when only ``documents WHERE active = 1`` moved, so a future change
+    that removes the field is caught by this test before the guard
+    goes blind to it.
+    """
+    db = _tiny_index(tmp_path, _empty_index_template)
+    before = live_index_snapshot(db)
+
+    with sqlite3.connect(str(db)) as conn:
+        conn.execute(
+            "INSERT INTO content(hash, doc, created_at) VALUES (?, ?, ?)",
+            ("h", "d", "2026-10-03T00:00:00Z"),
+        )
+        conn.execute(
+            "INSERT INTO documents(collection, path, title, hash, "
+            "created_at, modified_at, active) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                "alpha",
+                "p.md",
+                "T",
+                "h",
+                "2026-10-03T00:00:00Z",
+                "2026-10-03T00:00:00Z",
+                1,
+            ),
+        )
+        conn.commit()
+
+    after = live_index_snapshot(db)
+    changed, msg = snapshots_differ(before, after)
+    assert changed
+    assert "active docs" in msg
