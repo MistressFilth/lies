@@ -167,12 +167,18 @@ def test_committed_fixture_matches_the_generator() -> None:
     fix and is silently reverted by the next regeneration. Pinning the
     committed file to `build()` means the correction has to happen in the
     generator, where it survives. The baseline half is excluded: it records
-    a measurement of a run, not an input.
+    a measurement of a run, not an input. The decisions half is also excluded
+    for the same reason — Task 6 records measurements of the daemon's behaviour
+    against the fixture, not generator inputs.
     """
     committed = _load()
-    rebuilt = generator().build(committed["baseline"].get("qmd_bench") or None)
+    rebuilt = generator().build(
+        committed["baseline"].get("qmd_bench") or None,
+        committed["baseline"].get("lies_gate"),
+        committed.get("decisions"),
+    )
     for key in committed:
-        if key != "baseline":
+        if key not in ("baseline", "decisions"):
             assert committed[key] == rebuilt[key], key
 
 
@@ -378,3 +384,98 @@ def test_lies_gate_shape_check_works_today() -> None:
         _assert_gate_shape({k: v for k, v in sample.items() if k != "method"})
     with pytest.raises(AssertionError):
         _assert_gate_shape({**sample, "queries_passing": 99})
+
+
+# Task 6 — settle the three open questions the design could not close
+# from a single sample. The decisions are recorded in the fixture as
+# data (not assertions over prose) so a future reader can diff the
+# numbers without running anything. The shape checks below pin the
+# recorded shape; the per-query numbers are owned by the recording
+# round (`.superpowers/sdd/.../measurements/raw.json`).
+DECISION_KEYS = ("hyde", "paraphrase_count", "recall_regression")
+
+
+def test_decisions_block_exists_with_three_keys() -> None:
+    """The plan's three open questions, all recorded.
+
+    Each one is a settled decision with the numbers behind it; the
+    block is the only place those numbers live. A missing key means
+    one of the three questions was answered in prose and forgotten
+    here.
+    """
+    decisions = _load().get("decisions")
+    assert decisions is not None, "Task 6 must record a decisions block"
+    assert set(decisions) == set(DECISION_KEYS), decisions
+
+
+def test_hyde_decision_records_top1_and_rank_deltas() -> None:
+    """The hyde decision carries the two numbers the brief asked for.
+
+    Per-query top-1 file URIs (so a future rerun can diff them) and the
+    per-query expected-rank within top-5 (so the rank-level effect the
+    vendor doc claims is recorded even though the LIES gate's top-1
+    metric does not depend on it).
+    """
+    hyde = _load()["decisions"]["hyde"]
+    assert hyde["queries_measured"] == 15
+    for q in hyde["per_query"]:
+        assert q["baseline_top1"], q
+        assert q["hyde_top1"], q
+        assert isinstance(q["baseline_expected_rank"], int), q
+        assert isinstance(q["hyde_expected_rank"], int), q
+        assert isinstance(q["top1_changed"], bool), q
+        assert isinstance(q["rank_changed"], bool), q
+    # The aggregate counters are derived from the per-query table; the
+    # assertion pins the rule that worked today (hyde stays out unless a
+    # top-1 moves) and catches a future edit that flips the rule
+    # without re-running the measurement.
+    assert hyde["top1_changed_count"] == sum(1 for q in hyde["per_query"] if q["top1_changed"])
+
+
+def test_paraphrase_count_decision_records_the_curve() -> None:
+    """The paraphrase-count curve carries the per-query and aggregate data.
+
+    `passing_by_vec_count` is the LIES-relevant gate metric at each N;
+    `avg_latency_ms_by_vec_count` is the cost. The per-query table is
+    the per-N rank, so a later reader can re-decide without rerunning
+    qmd.
+    """
+    para = _load()["decisions"]["paraphrase_count"]
+    assert para["queries_measured"] == 15
+    for n in (1, 2, 3, 4):
+        assert str(n) in para["passing_by_vec_count"], n
+        assert str(n) in para["avg_latency_ms_by_vec_count"], n
+    # A regression in this curve — `passing_by_vec_count[1]` < the
+    # baseline — is what would force a re-decision.
+    baseline_passing = _load()["baseline"]["lies_gate"]["queries_passing"]
+    assert para["passing_by_vec_count"]["1"] == baseline_passing, (
+        "vec1 passing must equal the LIES-baseline passing; otherwise "
+        "the paraphrase-count decision was taken against a different "
+        "lies_gate number than the one the fixture commits"
+    )
+
+
+def test_recall_regression_decision_records_diff_with_task4() -> None:
+    """The recall-regression decision pins the comparison the plan asked for.
+
+    A drop in any query's top-1 score vs Task 4's recorded `lies_gate`
+    is captured in `regressions` (the IDs of previously-passing queries
+    that no longer pass). The plan's rule: any drop is a defect to fix,
+    not a result to record; a passing `regressions == []` is the gate.
+    """
+    rec = _load()["decisions"]["recall_regression"]
+    assert rec["queries_total"] == 15
+    assert rec["queries_passing"] == 13
+    # Task 4 recorded 13/15 in `lies_gate.queries_passing`. The rule is
+    # that today's `queries_passing` is the baseline the next change
+    # diffs against; this asserts the round's recorded number matches
+    # the round's actual measurement.
+    fixture_baseline_passing = _load()["baseline"]["lies_gate"]["queries_passing"]
+    assert rec["queries_passing"] == fixture_baseline_passing, (
+        "the recorded recall_regression.queries_passing must equal the "
+        "lies_gate.queries_passing the fixture commits"
+    )
+    # The empty-regressions assertion is the load-bearing one: a
+    # regression in this round is a defect to fix, not a result to
+    # record.
+    assert rec["regressions"] == [], rec["regressions"]

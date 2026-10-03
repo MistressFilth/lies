@@ -321,7 +321,9 @@ def _qmd_bench_block(raw: dict[str, Any]) -> dict[str, Any]:
 
 
 def build(
-    baseline: dict[str, Any] | None, lies_gate: dict[str, Any] | None = None
+    baseline: dict[str, Any] | None,
+    lies_gate: dict[str, Any] | None = None,
+    decisions: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return {
         "description": (
@@ -343,6 +345,7 @@ def build(
             # file, not this module.
             "lies_gate_note": LIES_GATE_NOTE,
         },
+        "decisions": decisions,
     }
 
 
@@ -363,6 +366,11 @@ def main() -> int:
         "--lies-gate",
         type=Path,
         help="a JSON file holding the recorded LIES-routing gate result (Task 4/6)",
+    )
+    parser.add_argument(
+        "--decisions",
+        type=Path,
+        help="a JSON file holding the recorded Task 6 decisions block (hyde / paraphrase_count / recall_regression)",
     )
     parser.add_argument(
         "--force",
@@ -399,8 +407,17 @@ def main() -> int:
         if missing:
             parser.error(f"--lies-gate is missing required keys: {', '.join(missing)}")
 
+    decisions: dict[str, Any] | None = None
+    if args.decisions:
+        decisions = json.loads(args.decisions.read_text())
+        missing = [
+            k for k in ("hyde", "paraphrase_count", "recall_regression") if k not in decisions
+        ]
+        if missing:
+            parser.error(f"--decisions is missing required keys: {', '.join(missing)}")
+
     args.out.parent.mkdir(parents=True, exist_ok=True)
-    args.out.write_text(json.dumps(build(baseline, lies_gate), indent=2) + "\n")
+    args.out.write_text(json.dumps(build(baseline, lies_gate, decisions), indent=2) + "\n")
     print(f"wrote {len(QUERIES)} queries to {args.out}")
     return 0
 

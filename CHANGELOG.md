@@ -21,6 +21,26 @@ All notable changes to LIES are documented here. The format follows
   `.superpowers/sdd/2026-10-01-qmd-daemon-routing/live-index-orphans.md`
   for the root-cause investigation.
 
+- **`tests.fixtures.qmd_bench.decisions` — Task 6's three questions.**
+  The fixture's top-level `decisions` block records the per-query
+  numbers behind the three open questions the design could not
+  close from a single sample: `hyde` stays out (0 of 15 top-1
+  changes; the earlier n=1 probe is confirmed at n=15);
+  `paraphrase_count = 1` (no authored-paraphrase curve moves a
+  failing query into passing rank; latency grows linearly);
+  `recall_regression` records today's `lies_gate` 13/15 as the
+  reference baseline for the next routing change, with `regressions`
+  empty against Task 4's 13/15. The block is fixture data so a
+  future reader can diff the numbers without rerunning qmd, and
+  `tests/unit/test_bench_fixture.py` pins its shape. Measurement
+  harness lives at
+  `.superpowers/sdd/2026-10-01-qmd-daemon-routing/measurements/measure_task6.py`;
+  full report at
+  `.superpowers/sdd/2026-10-01-qmd-daemon-routing/task-6-report.md`.
+  Index state at measurement time: 5992 documents, 48992 vector
+  rows, 4 orphan hashes (residue from the round-2 investigation,
+  none of the 15 fixture queries' expected paths).
+
 ## [0.44.0] - 2026-10-03
 
 ### Added

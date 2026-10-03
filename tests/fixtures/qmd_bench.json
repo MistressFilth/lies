@@ -1303,5 +1303,412 @@
       ]
     },
     "lies_gate_note": "This slot measures LIES as it actually routes, via the daemon's `query` tool with `collections` pushed into qmd. The shape and the populated keys are fixed by the generator (corpus_documents, qmd_version, method, queries_total, queries_passing), and `test_lies_gate_slot_is_reserved` asserts the slot is no longer null. Two queries do not pass. Reading the agreement with qmd bench requires naming the k and the backend, because the comparison is per-query, per-backend, and the summary `avg_recall_at_k` numbers are averages across all 15 (they reflect but do not break out the misses). LIES routes a `lex + vec` blend (`search.py:325-328`), which is closest to qmd's `hybrid` and `full` backends; that is the comparison that is load-bearing. Per the `qmd_bench.per_query` block (added 2026-10-03, two runs quality-bit-identical): for `cc-context-window-paraphrase` the expected `context-window.md` is at rank 3 in `vector` (recall_at_1=0, recall_at_3=1) and, under `hybrid`, only in the tail beyond the top five (recall_at_1=0, recall_at_3=0, recall_at_5=0, recall=1 \u2014 so rank 6-10), and is missing from `bm25`/`full` top-10 entirely (recall=0); the LIES gate's top hit is `prompt-caching.md`, also a top-1 miss. For `mc-custom-commands` the expected `opencode/v2/docs/commands.md` is at rank 1 under `bm25` (recall_at_1=1) \u2014 the only backend that hits it \u2014 and at rank 3 in `vector`/`hybrid` (recall_at_1=0, recall_at_3=1) and rank 2 in `full`; the LIES gate's top hit is `claude_code/hooks.md`, also a top-1 miss. The bench and the gate agree at top-1 against the LIES-relevant backends (`hybrid`/`full`) for both queries; the disagreement under `bm25` is not in scope because LIES does not route a bm25-only query. `corpus_documents` is 5992 here, up from the recorded 5987 in the `qmd_bench` baseline; a corpus change is a corpus change, not a routing regression, but the figure is recorded so a future delta can be cross-checked. The `qmd_bench` block measures qmd's own four backends in-process (no daemon, no per-query collection scope, no LIES ground() fan-out), so no LIES routing change can move it; only `lies_gate` moves when LIES moves. ADDED 2026-10-02: a qmd_bench number moved once and no LIES change was behind it. `qmd bench` runs in-process (dist/cli/qmd.js `case \"bench\"` imports ../bench/bench.js, which has no daemon, no MCP server and no subprocess), so every change this branch makes is provably off its path. The index changed instead: 1566 orphan hashes -> 0 and 91070 -> 48984 vectors, across the same 5987 documents, all of them still vectorised. The qmd_bench block was re-recorded against that index and verified reproducible (two runs, every quality metric bit-identical); the superseded figures and the index state they belong to are kept in `qmd_bench.superseded_baseline`. The lesson for whoever reads the next delta: a change in `qmd_bench` means the index or qmd moved; a change in `lies_gate` means LIES moved. ADDED 2026-10-03: `qmd_bench.per_query` carries the per-backend `recall_at_1`/`recall_at_3`/`recall_at_5` and the top-5 hits per query, so the comparison in `lies_gate` is checkable from the artifact rather than from prose. The previous version of this note asserted `Both miss in qmd bench's recall_at_1 summary too` without naming the backend, which conflated an average into a per-query claim; the comparison is now stated per-backend (`hybrid`/`full`, the LIES-relevant blends) and is verifiable against `qmd_bench.per_query[id].backends.<backend>.recall_at_1`."
+  },
+  "decisions": {
+    "hyde": {
+      "decision": "stays out",
+      "method": "daemon `query` tool; each fixture query run twice \u2014 once with `lex + 1 vec` (the LIES routing shape) and once with `lex + 1 vec + 1 hyde`. Per-query top-1 file URI and expected-file rank within the top-5 recorded. Per-query decision rule: hyde stays out unless it changes a top-1 on at least one query.",
+      "ran_at": "2026-10-03",
+      "queries_measured": 15,
+      "top1_changed_count": 0,
+      "rank_within_top5_changed_count": 2,
+      "per_query": [
+        {
+          "id": "cc-hooks-pretooluse",
+          "baseline_top1": "claude_code/agent-sdk/hooks.md",
+          "hyde_top1": "claude_code/agent-sdk/hooks.md",
+          "baseline_expected_rank": 1,
+          "hyde_expected_rank": 1,
+          "top1_changed": false,
+          "rank_changed": false
+        },
+        {
+          "id": "cc-sandbox-rules",
+          "baseline_top1": "claude_code/sandboxing.md",
+          "hyde_top1": "claude_code/sandboxing.md",
+          "baseline_expected_rank": 1,
+          "hyde_expected_rank": 1,
+          "top1_changed": false,
+          "rank_changed": false
+        },
+        {
+          "id": "cc-subagents",
+          "baseline_top1": "claude_code/agents.md",
+          "hyde_top1": "claude_code/agents.md",
+          "baseline_expected_rank": 1,
+          "hyde_expected_rank": 1,
+          "top1_changed": false,
+          "rank_changed": false
+        },
+        {
+          "id": "cc-agent-teams",
+          "baseline_top1": "claude_code/agent-teams.md",
+          "hyde_top1": "claude_code/agent-teams.md",
+          "baseline_expected_rank": 1,
+          "hyde_expected_rank": 1,
+          "top1_changed": false,
+          "rank_changed": false
+        },
+        {
+          "id": "cc-context-window-paraphrase",
+          "baseline_top1": "claude_code/prompt-caching.md",
+          "hyde_top1": "claude_code/prompt-caching.md",
+          "baseline_expected_rank": -1,
+          "hyde_expected_rank": 3,
+          "top1_changed": false,
+          "rank_changed": true
+        },
+        {
+          "id": "mm-sequence-diagram",
+          "baseline_top1": "mermaid/packages/mermaid/src/docs/syntax/sequencediagram.md",
+          "hyde_top1": "mermaid/packages/mermaid/src/docs/syntax/sequencediagram.md",
+          "baseline_expected_rank": 1,
+          "hyde_expected_rank": 1,
+          "top1_changed": false,
+          "rank_changed": false
+        },
+        {
+          "id": "mm-gantt",
+          "baseline_top1": "mermaid/packages/mermaid/src/docs/syntax/gantt.md",
+          "hyde_top1": "mermaid/packages/mermaid/src/docs/syntax/gantt.md",
+          "baseline_expected_rank": 1,
+          "hyde_expected_rank": 1,
+          "top1_changed": false,
+          "rank_changed": false
+        },
+        {
+          "id": "mm-flowchart",
+          "baseline_top1": "mermaid/packages/mermaid/src/docs/syntax/flowchart.md",
+          "hyde_top1": "mermaid/packages/mermaid/src/docs/syntax/flowchart.md",
+          "baseline_expected_rank": 1,
+          "hyde_expected_rank": 1,
+          "top1_changed": false,
+          "rank_changed": false
+        },
+        {
+          "id": "mm-class-diagram",
+          "baseline_top1": "mermaid/packages/mermaid/src/docs/syntax/classdiagram.md",
+          "hyde_top1": "mermaid/packages/mermaid/src/docs/syntax/classdiagram.md",
+          "baseline_expected_rank": 1,
+          "hyde_expected_rank": 1,
+          "top1_changed": false,
+          "rank_changed": false
+        },
+        {
+          "id": "fm-tool-output-schema",
+          "baseline_top1": "fastmcp/servers/tools.md",
+          "hyde_top1": "fastmcp/servers/tools.md",
+          "baseline_expected_rank": 1,
+          "hyde_expected_rank": 1,
+          "top1_changed": false,
+          "rank_changed": false
+        },
+        {
+          "id": "fm-server-context",
+          "baseline_top1": "fastmcp/v2/servers/context.md",
+          "hyde_top1": "fastmcp/v2/servers/context.md",
+          "baseline_expected_rank": 1,
+          "hyde_expected_rank": 1,
+          "top1_changed": false,
+          "rank_changed": false
+        },
+        {
+          "id": "ty-parameters",
+          "baseline_top1": "typer/parameters.md",
+          "hyde_top1": "typer/parameters.md",
+          "baseline_expected_rank": 1,
+          "hyde_expected_rank": 1,
+          "top1_changed": false,
+          "rank_changed": false
+        },
+        {
+          "id": "ty-file-objects",
+          "baseline_top1": "typer/file-objects.md",
+          "hyde_top1": "typer/file-objects.md",
+          "baseline_expected_rank": 1,
+          "hyde_expected_rank": 1,
+          "top1_changed": false,
+          "rank_changed": false
+        },
+        {
+          "id": "mc-shell-permissions",
+          "baseline_top1": "claude_code/permissions.md",
+          "hyde_top1": "claude_code/permissions.md",
+          "baseline_expected_rank": 1,
+          "hyde_expected_rank": 1,
+          "top1_changed": false,
+          "rank_changed": false
+        },
+        {
+          "id": "mc-custom-commands",
+          "baseline_top1": "claude_code/hooks.md",
+          "hyde_top1": "claude_code/hooks.md",
+          "baseline_expected_rank": 3,
+          "hyde_expected_rank": 4,
+          "top1_changed": false,
+          "rank_changed": true
+        }
+      ],
+      "summary": "0 of 15 queries changed top-1 between vec1 and vec1+hyde. Two queries changed expected-rank within the top-5, in opposite directions (cc-context-window-paraphrase: -1->3 improved; mc-custom-commands: 3->4 regressed). The fixture's lies_gate metric is top-1 = expected (suffix match); that is unchanged by hyde on all 15 queries. The earlier single-query probe's zero delta is confirmed at n=15.",
+      "not_established": "Whether a *model-generated* hyde (rather than an authored one) moves the score. Out of scope for the paraphrase-count decision the plan asked for, which is about authored vec entries."
+    },
+    "paraphrase_count": {
+      "decision": 1,
+      "method": "daemon `query` tool; each fixture query run with `lex + N vec` for N in {1,2,3,4}, where vec_1 is the original query text and vec_2..4 are three additional authored paraphrases of the same intent (held in PARAPHRASES in measurements/measure_task6.py). Per-query expected-rank and wall latency recorded for each N.",
+      "ran_at": "2026-10-03",
+      "queries_measured": 15,
+      "passing_by_vec_count": {
+        "1": 13,
+        "2": 13,
+        "3": 12,
+        "4": 12
+      },
+      "avg_latency_ms_by_vec_count": {
+        "1": 145.7,
+        "2": 228.8,
+        "3": 303.4,
+        "4": 305.3
+      },
+      "per_query": [
+        {
+          "id": "cc-hooks-pretooluse",
+          "expected_rank_by_vec_count": {
+            "1": 1,
+            "2": 1,
+            "3": 1,
+            "4": 1
+          },
+          "latency_ms_by_vec_count": {
+            "1": 142.7,
+            "2": 222.0,
+            "3": 306.4,
+            "4": 299.7
+          }
+        },
+        {
+          "id": "cc-sandbox-rules",
+          "expected_rank_by_vec_count": {
+            "1": 1,
+            "2": 1,
+            "3": 1,
+            "4": 1
+          },
+          "latency_ms_by_vec_count": {
+            "1": 143.0,
+            "2": 241.0,
+            "3": 329.3,
+            "4": 326.9
+          }
+        },
+        {
+          "id": "cc-subagents",
+          "expected_rank_by_vec_count": {
+            "1": 1,
+            "2": 1,
+            "3": 1,
+            "4": 1
+          },
+          "latency_ms_by_vec_count": {
+            "1": 132.8,
+            "2": 210.7,
+            "3": 274.7,
+            "4": 277.2
+          }
+        },
+        {
+          "id": "cc-agent-teams",
+          "expected_rank_by_vec_count": {
+            "1": 1,
+            "2": 1,
+            "3": 1,
+            "4": 1
+          },
+          "latency_ms_by_vec_count": {
+            "1": 137.4,
+            "2": 223.4,
+            "3": 275.4,
+            "4": 278.1
+          }
+        },
+        {
+          "id": "cc-context-window-paraphrase",
+          "expected_rank_by_vec_count": {
+            "1": -1,
+            "2": -1,
+            "3": -1,
+            "4": -1
+          },
+          "latency_ms_by_vec_count": {
+            "1": 144.8,
+            "2": 228.2,
+            "3": 298.5,
+            "4": 308.4
+          }
+        },
+        {
+          "id": "mm-sequence-diagram",
+          "expected_rank_by_vec_count": {
+            "1": 1,
+            "2": 1,
+            "3": 1,
+            "4": 1
+          },
+          "latency_ms_by_vec_count": {
+            "1": 95.4,
+            "2": 177.1,
+            "3": 242.1,
+            "4": 234.3
+          }
+        },
+        {
+          "id": "mm-gantt",
+          "expected_rank_by_vec_count": {
+            "1": 1,
+            "2": 1,
+            "3": 1,
+            "4": 1
+          },
+          "latency_ms_by_vec_count": {
+            "1": 95.5,
+            "2": 170.3,
+            "3": 231.5,
+            "4": 237.7
+          }
+        },
+        {
+          "id": "mm-flowchart",
+          "expected_rank_by_vec_count": {
+            "1": 1,
+            "2": 1,
+            "3": 1,
+            "4": 1
+          },
+          "latency_ms_by_vec_count": {
+            "1": 101.8,
+            "2": 170.7,
+            "3": 234.1,
+            "4": 247.2
+          }
+        },
+        {
+          "id": "mm-class-diagram",
+          "expected_rank_by_vec_count": {
+            "1": 1,
+            "2": 1,
+            "3": 1,
+            "4": 1
+          },
+          "latency_ms_by_vec_count": {
+            "1": 99.9,
+            "2": 177.1,
+            "3": 231.1,
+            "4": 234.9
+          }
+        },
+        {
+          "id": "fm-tool-output-schema",
+          "expected_rank_by_vec_count": {
+            "1": 1,
+            "2": 1,
+            "3": 1,
+            "4": 1
+          },
+          "latency_ms_by_vec_count": {
+            "1": 105.6,
+            "2": 181.8,
+            "3": 242.4,
+            "4": 240.4
+          }
+        },
+        {
+          "id": "fm-server-context",
+          "expected_rank_by_vec_count": {
+            "1": 1,
+            "2": 1,
+            "3": 2,
+            "4": 2
+          },
+          "latency_ms_by_vec_count": {
+            "1": 112.6,
+            "2": 184.9,
+            "3": 247.4,
+            "4": 263.2
+          }
+        },
+        {
+          "id": "ty-parameters",
+          "expected_rank_by_vec_count": {
+            "1": 1,
+            "2": 1,
+            "3": 1,
+            "4": 1
+          },
+          "latency_ms_by_vec_count": {
+            "1": 96.8,
+            "2": 167.0,
+            "3": 236.0,
+            "4": 228.4
+          }
+        },
+        {
+          "id": "ty-file-objects",
+          "expected_rank_by_vec_count": {
+            "1": 1,
+            "2": 1,
+            "3": 1,
+            "4": 1
+          },
+          "latency_ms_by_vec_count": {
+            "1": 94.3,
+            "2": 159.6,
+            "3": 222.7,
+            "4": 222.5
+          }
+        },
+        {
+          "id": "mc-shell-permissions",
+          "expected_rank_by_vec_count": {
+            "1": 1,
+            "2": 1,
+            "3": 1,
+            "4": 1
+          },
+          "latency_ms_by_vec_count": {
+            "1": 209.8,
+            "2": 334.7,
+            "3": 457.8,
+            "4": 459.4
+          }
+        },
+        {
+          "id": "mc-custom-commands",
+          "expected_rank_by_vec_count": {
+            "1": 3,
+            "2": 3,
+            "3": 3,
+            "4": 3
+          },
+          "latency_ms_by_vec_count": {
+            "1": 473.0,
+            "2": 583.9,
+            "3": 721.0,
+            "4": 721.4
+          }
+        }
+      ],
+      "summary": "13/15 passing at vec1 (the LIES routing today); no vec count above 1 moves any failing query into passing rank. One query (fm-server-context) regresses from rank 1 to rank 2 at vec2 and stays there. Latency grows linearly with vec count (144ms at vec1 -> 318ms at vec4 across the 15-query average). Adding authored vec entries costs latency and either does nothing or, in one case, hurts.",
+      "not_established": "Whether a *model-generated* paraphrase (rather than an authored one) improves recall. The plan asked the authored-paraphrase question; the answer is 1."
+    },
+    "recall_regression": {
+      "method": "daemon `query` tool with the LIES routing shape (`lex + 1 vec`); top-1 file URI suffix-matched against each fixture query's `expected`. The 15 query results are compared to Task 4's recorded lies_gate per_query (fixture['baseline']['lies_gate']['per_query']). Pre-Task-4 LIES-routing recall is not established: lies_gate was null until Task 4 populated it; `qmd bench` is qmd's own four backends in-process (no daemon, no per-query collection scope, no LIES ground() fan-out) and is provably off the LIES path.",
+      "ran_at": "2026-10-03",
+      "queries_total": 15,
+      "queries_passing": 13,
+      "task4_passing": 13,
+      "diff_with_task4_in_top1": [],
+      "regressions": [],
+      "summary": "13/15 passing today matches Task 4's recorded 13/15. The two failing queries are the same two in both rounds (cc-context-window-paraphrase and mc-custom-commands); their top-1 file URIs are also identical between Task 4's recorded lies_gate and this round's measurement. Zero previously-passing queries regressed; zero previously-failing queries improved. Pre-Task-4 LIES-routing recall was never captured, so a pre-routing diff is impossible to produce \u2014 today's 13/15 is established as the reference baseline for the next routing change.",
+      "not_established": "Pre-Task-4 LIES-routing recall. lies_gate was null before Task 4 populated it; qmd bench measures qmd's in-process backends and cannot move on a LIES change. The earlier qmd_bench number drift between the committed baseline (2026-10-02) and today (hybrid avg_recall_at_1 0.667->0.733, full avg_recall 0.867->0.933) is a tool-format / candidate-pool shift that does not affect the LIES gate (the LIES gate's 13/15 is bit-identical to Task 4's 13/15), but the cause is not isolated (qmd 2.5.3 binary unchanged since 2026-07-27; corpus_documents 5987 -> 5992; reranker cache state unknown; five wiki_tag-filter-lib documents present in `documents` but absent from `store_collections` is the most likely pool-asymmetry mechanism but is not proven)."
+    }
   }
 }
