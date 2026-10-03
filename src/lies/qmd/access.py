@@ -268,6 +268,16 @@ def classify_call_error(exc: Exception) -> tuple[str, bool]:
     ``retryable`` is ``True`` only for ``"recycle-retry"``, so a caller
     that wants just the yes/no still reads correctly.
 
+    Args:
+        exc: The exception raised by the daemon call. Its class name
+            and its ``__cause__`` chain are what the taxonomy reads.
+            httpx types are not, because fastmcp vendors its own httpx
+            and a dead session arrives as a bare ``RuntimeError``.
+
+    Returns:
+        ``(action, retryable)``, where ``action`` is one of
+        ``"recycle-raise"``, ``"recycle-retry"`` or ``"passthrough"``.
+
     Order matters: a read timeout is *also* a transport error, so the
     wedge case is decided first or every wedge would be silently
     retried against a daemon that re-wedges on the same payload. A
@@ -325,9 +335,18 @@ async def daemon_tool(
     deadline change takes effect on the next call rather than waiting
     for the cached client to be invalidated.
 
-    Returns the raw ``CallToolResult``. Callers read ``.content`` —
-    ``get``/``multi_get`` answer with a content block and ``.data`` is
-    ``None``, so a caller reaching for ``.data`` stores an empty body.
+    Args:
+        name: A member of :data:`DAEMON_TOOLS`. Anything else raises
+            rather than being dispatched.
+        arguments: The tool's arguments, forwarded verbatim.
+        timeout: Per-call read deadline in seconds, or ``None`` to use
+            the cached client's own deadline.
+
+    Returns:
+        The raw ``CallToolResult``. Callers read ``.content`` —
+        ``get``/``multi_get`` answer with a content block and ``.data``
+        is ``None``, so a caller reaching for ``.data`` stores an empty
+        body.
 
     Raises:
         ValueError: ``name`` is not a daemon tool. The capability map is

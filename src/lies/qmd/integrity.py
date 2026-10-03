@@ -34,11 +34,14 @@ from typing import Any
 class OrphanReport:
     """Counts of ``content_vectors`` rows with no backing ``content``.
 
-    ``orphan_hashes`` counts distinct hash values; ``orphan_rows`` counts
-    ``content_vectors`` rows. A single hash can hold multiple rows (one
-    per chunk), so ``orphan_rows >= orphan_hashes`` always.
-
     Both counts are zero on a clean index.
+
+    Attributes:
+        orphan_hashes: Number of distinct hash values in
+            ``content_vectors`` that have no row in ``content``.
+        orphan_rows: Number of ``content_vectors`` rows in that state.
+            A single hash can hold several rows, one per chunk, so
+            ``orphan_rows >= orphan_hashes`` always.
     """
 
     orphan_hashes: int
@@ -47,14 +50,14 @@ class OrphanReport:
 
 @dataclass(frozen=True)
 class LiveIndexSnapshot:
-    """Four aggregates that detect a write to the live qmd index.
+    """A point-in-time reading of a qmd index, for diffing two of them.
 
-    Each is the count of fields a regression actually moves, and the
+    Each field is a count a regression actually moves, and the
     pre-fix guard's blind spot was the last one. Snapshots are equal iff
     every field is equal; :func:`snapshots_differ` does the comparison
     and renders the diff message that the session guard fails with.
 
-    Fields:
+    Attributes:
 
     ``collection_names``
         ``frozenset[str]`` of every ``store_collections.name``. A
@@ -116,6 +119,10 @@ def open_readonly(db: Path) -> sqlite3.Connection:
     the file read-write and creates it if absent, which is exactly
     what the qmd probe did to the live index.
 
+    Args:
+        db: Path to the SQLite index. It is never created: a path that
+            does not exist raises rather than yielding an empty index.
+
     Raises:
         sqlite3.OperationalError: ``db`` does not exist or is not a
             SQLite database.
@@ -138,6 +145,13 @@ def index_orphans(db: Path) -> OrphanReport:
     partner's ``qmd cleanup`` and the operator's unrelated sync).
     The test that pins the contract uses a throwaway index with a
     known shape; live values are a reading, not an assertion.
+
+    Args:
+        db: Path to the SQLite index, opened read-only.
+
+    Returns:
+        An :class:`OrphanReport` holding the distinct hash count and
+        the row count. Both are zero on a clean index.
     """
     with closing(open_readonly(db)) as conn:
         cur = conn.execute(
@@ -164,13 +178,20 @@ def is_embedded(db: Path, content_hash: str) -> bool:
     Empty / unknown hashes return False. The hash is bound as a query
     parameter, so no SQL is built from it.
 
-    Returns ``False`` for an empty hash (no row can match), and for
-    a hash that has no embedding rows. Designed as a guard:
+    Args:
+        db: Path to the SQLite index, opened read-only.
+        content_hash: The document's content hash, as stored in
+            ``content.hash``.
 
-    .. code-block:: python
+    Returns:
+        ``False`` for an empty hash (no row can match), and for a hash
+        that has no embedding rows. Designed as a guard:
 
-        if not is_embedded(db, h):
-            skip(h)
+        .. code-block:: python
+
+            if not is_embedded(db, h):
+                skip(h)
+
     """
     with closing(open_readonly(db)) as conn:
         cur = conn.execute(
@@ -198,6 +219,13 @@ def collection_drift(db: Path) -> dict[str, list[str]]:
     registered path, so a missing tree means qmd will silently
     produce nothing for that collection until the path is restored
     or the collection is removed with ``qmd collection remove``.
+
+    Args:
+        db: Path to the SQLite index, opened read-only.
+
+    Returns:
+        A ``{collection_name: [message, ...]}`` map, empty when there
+        is no drift.
     """
     drift: dict[str, list[str]] = {}
     with closing(open_readonly(db)) as conn:
@@ -222,6 +250,13 @@ def live_index_snapshot(db: Path) -> LiveIndexSnapshot | None:
     two and missed ``content_vectors`` writes that did not also move
     ``store_collections`` or ``documents.active=1``; that is the exact
     defect class the four live-index orphans on 2026-10-03 belong to.
+
+    Args:
+        db: Path to the SQLite index, opened read-only.
+
+    Returns:
+        A :class:`LiveIndexSnapshot`, or ``None`` when ``db`` does not
+        exist — a host with no qmd index is not a drift condition.
 
     The unit tests in ``tests/unit/qmd/test_integrity.py`` pin each
     field's discriminating power against a throwaway index, including
@@ -263,6 +298,14 @@ def snapshots_differ(
     diff is rendered as ``added`` / ``removed`` so a regression that
     drops a name from the YAML-driven reconciliation can also be read
     at a glance.
+
+    Args:
+        before: The snapshot taken before the run.
+        after: The snapshot taken after the run.
+
+    Returns:
+        ``(False, "")`` when the two match, otherwise ``(True, msg)``
+        naming the fields that moved.
 
     Pure function — the unit tests in
     ``tests/unit/qmd/test_integrity.py`` exercise the comparator
@@ -307,7 +350,12 @@ def integrity_summary(db: Path) -> dict[str, Any]:
     case) is not in the drift map; it is registered with a real path
     and 0 documents, which is what ``lies sync`` populates.
 
-    Returns a dict; the CLI command at ``src/lies/cli/qmd.py`` prints
+    Args:
+        db: Path to the SQLite index, opened read-only.
+
+    Returns:
+        A JSON-serialisable dict; the CLI command at
+        ``src/lies/cli/qmd.py`` prints
     it under an ``index`` key alongside the daemon fields.
     """
     orphans = index_orphans(db)
