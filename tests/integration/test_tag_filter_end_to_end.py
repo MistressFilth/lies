@@ -45,7 +45,11 @@ from lies.qmd.cli import (
     qmd_collection_remove,
     qmd_embed,
 )
-from lies.qmd.integrity import live_index_snapshot, snapshots_differ
+from lies.qmd.integrity import (
+    LiveIndexSnapshot,
+    live_index_snapshot,
+    snapshots_differ,
+)
 from lies.wiki.wiki import Wiki
 
 
@@ -257,12 +261,20 @@ def _live_qmd_index_path() -> Path | None:
     return candidate if candidate.exists() else None
 
 
-def _live_index_snapshot():
+def _live_index_snapshot() -> LiveIndexSnapshot | None:
     """Snapshot the live qmd index via :func:`lies.qmd.integrity.live_index_snapshot`.
 
-    Returns ``None`` if no live index is present.
+    Returns ``None`` when no live index is present, which is the normal
+    case on a CI runner. ``_live_qmd_index_path`` returns ``None`` for a
+    host with no index, and passing that straight into
+    ``live_index_snapshot`` reaches ``db.exists()`` on ``None``. The
+    guard's whole contract is that it no-ops on such a host, so the
+    check belongs here rather than only inside the library function.
     """
-    return live_index_snapshot(_live_qmd_index_path())
+    live = _live_qmd_index_path()
+    if live is None:
+        return None
+    return live_index_snapshot(live)
 
 
 @pytest.fixture(scope="session", autouse=True)
