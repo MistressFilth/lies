@@ -141,16 +141,14 @@ PREFECT_PAGES = {
 def _build_tag_filter_library(tmp_path: Path, *, name: str) -> Wiki:
     """Build a wiki with four tagged collections ready for qmd registration.
 
-    The collections match the brief verbatim:
+    The collections match the brief:
 
       - ``airflow``: tags ``[airflow, provider]``
       - ``amazon``:  tags ``[amazon, aws]``
       - ``pyspark``: tags ``[pyspark, spark]``
-      - ``prefect``: tags ``[prefect, airflow]`` — added for the F15
-        ``t:`` / ``c:`` qualifier tests; its name is ``prefect``
-        (not ``airflow``) but its effective tags include ``airflow``
-        so ``+t:airflow`` resolves to two collections while
-        ``+c:airflow`` resolves to exactly one.
+      - ``prefect``: tags ``[prefect, airflow]`` (name is not airflow
+        but tags include airflow — distinguishes ``+t:airflow`` from
+        ``+c:airflow``).
     """
     data_root = tmp_path / name
     data_root.mkdir()
@@ -173,7 +171,6 @@ def _build_tag_filter_library(tmp_path: Path, *, name: str) -> Wiki:
     wiki.collections_dir.mkdir(parents=True, exist_ok=True)
     (wiki.config_root / "schema.md").write_text("## Page types\n- concept\n", encoding="utf-8")
 
-    # Per-collection subdirs + page bodies.
     for coll, pages in (
         ("airflow", AIRFLOW_PAGES),
         ("amazon", AMAZON_PAGES),
@@ -184,7 +181,6 @@ def _build_tag_filter_library(tmp_path: Path, *, name: str) -> Wiki:
         for page_name, body in pages.items():
             (wiki_dir / coll / page_name).write_text(body, encoding="utf-8")
 
-    # Collection YAMLs (source of truth for filter resolution).
     tags_per = {
         "airflow": ("airflow", "provider"),
         "amazon": ("amazon", "aws"),
@@ -233,9 +229,9 @@ def _build_tag_filter_library(tmp_path: Path, *, name: str) -> Wiki:
     return wiki
 
 
-#: The collections this fixture registers in qmd's throwaway per-test
-#: index. The teardown's iteration set is derived from this tuple
-#: plus the wiki-named collection (see :func:`_registered_by_this_fixture`).
+#: Collections registered in qmd's throwaway per-test index. The
+#: teardown's iteration set is derived from this tuple plus the
+#: wiki-named collection.
 FIXTURE_COLLECTIONS = ("airflow", "amazon", "pyspark", "prefect")
 
 
@@ -244,8 +240,8 @@ def _registered_by_this_fixture(wiki: Wiki) -> tuple[str, ...]:
 
     Single source of truth for both the seed loop and the teardown
     loop. The four :data:`FIXTURE_COLLECTIONS` are registered by
-    :func:`_seed_qmd`; the ``wiki_<name>`` collection is registered
-    by ``Orchestrator.run_query`` via
+    :func:`_seed_qmd`; ``wiki_<name>`` is registered by
+    ``Orchestrator.run_query`` via
     :func:`lies.wiki.layout.ensure_wiki_qmd_registered`.
     """
     return (*FIXTURE_COLLECTIONS, f"wiki_{wiki.name}")
@@ -255,8 +251,7 @@ def _live_qmd_index_path() -> Path | None:
     """Absolute path to qmd's live (host-default) index, if present.
 
     Bypasses XDG so the autouse ``_isolated_xdg`` redirect does not
-    shadow it. ``~/.cache`` is the ``XDG_CACHE_HOME`` default on this
-    host. Returns ``None`` when no live index is reachable.
+    shadow it.
     """
     candidate = Path.home() / ".cache" / "qmd" / "index.sqlite"
     return candidate if candidate.exists() else None
@@ -265,10 +260,7 @@ def _live_qmd_index_path() -> Path | None:
 def _live_index_snapshot():
     """Snapshot the live qmd index via :func:`lies.qmd.integrity.live_index_snapshot`.
 
-    Returns ``None`` if no live index is present. The pre-fix snapshot
-    only captured two aggregates; the four live-index orphans on
-    2026-10-03 belong to the exact defect class that two-field
-    snapshot could not see.
+    Returns ``None`` if no live index is present.
     """
     return live_index_snapshot(_live_qmd_index_path())
 
@@ -279,12 +271,8 @@ def _live_qmd_index_unchanged(request: pytest.FixtureRequest) -> Iterator[None]:
 
     "Unchanged" means the four aggregates from
     :class:`lies.qmd.integrity.LiveIndexSnapshot` are equal on both
-    sides — not a byte comparison.
-
-    The fixture's qmd subprocesses inherit the redirected
-    ``XDG_CACHE_HOME`` and write to a throwaway. The guard bypasses
-    XDG and reads the live index directly. The guard never writes;
-    fires only under ``INTEGRATION=1``.
+    sides — not a byte comparison. The guard bypasses XDG and reads
+    the live index directly; the fixture writes to a throwaway.
     """
     if os.environ.get("INTEGRATION") != "1":
         yield
@@ -300,12 +288,10 @@ def _live_qmd_index_unchanged(request: pytest.FixtureRequest) -> Iterator[None]:
 def _seed_qmd(wiki: Wiki) -> None:
     """Register each fixture collection with qmd and embed it.
 
-    Uses absolute paths. ``qmd_collection_add_if_missing`` is
-    idempotent on re-runs.
-
-    The subprocess inherits the redirected ``XDG_CACHE_HOME`` from
-    ``_isolated_xdg``, so registration and embedding both target the
-    per-test throwaway.
+    Uses absolute paths; ``qmd_collection_add_if_missing`` is
+    idempotent. The subprocess inherits the redirected
+    ``XDG_CACHE_HOME`` so registration and embedding both target
+    the per-test throwaway.
     """
     if shutil.which("qmd") is None:
         raise QmdNotInstalledError("`qmd` not found on PATH")
@@ -319,11 +305,9 @@ def _unseed_qmd(wiki: Wiki) -> None:
     """Remove every collection :func:`_seed_qmd` registered, then assert it.
 
     Each test writes to its own throwaway index at
-    ``tmp_path/xdg/cache/qmd/index.sqlite`` (pytest deletes that path
-    with ``tmp_path`` at teardown), so the teardown's purpose is
-    hygiene on the throwaway, not leak prevention on a shared index.
-    The post-condition is asserted: a leftover registration here is
-    what made the next test's retrieval silent.
+    ``tmp_path/xdg/cache/qmd/index.sqlite`` (pytest deletes it with
+    ``tmp_path`` at teardown), so teardown is hygiene on the throwaway,
+    not leak prevention on a shared index.
     """
     leftovers: list[str] = []
     for coll in _registered_by_this_fixture(wiki):
@@ -346,11 +330,7 @@ def _unseed_qmd(wiki: Wiki) -> None:
 
 
 def _registered_collections(cwd: Path) -> set[str]:
-    """Collection names registered in the qmd index that ``cwd`` resolves to.
-
-    Takes the cwd explicitly and the caller passes the *same*
-    ``wiki.data_root`` that seeding and removal use.
-    """
+    """Collection names registered in the qmd index that ``cwd`` resolves to."""
     from lies.qmd.cli import _run
 
     result = _run(["collection", "list"], cwd=cwd, timeout=120)
@@ -369,12 +349,8 @@ def qmd_fixture_library(tmp_path: Path) -> Iterator[Wiki]:
 
     Yields, then tears the qmd registration down. The collections
     go into qmd's *throwaway per-test* index at
-    ``$XDG_CACHE_HOME/qmd/index.sqlite`` (redirected by ``_isolated_xdg``
-    to ``tmp_path/xdg/cache/``). pytest deletes ``tmp_path`` at
-    teardown, taking the throwaway with it.
-
-    Function-scoped: ``_isolated_xdg`` redirects the XDG roots per
-    test.
+    ``$XDG_CACHE_HOME/qmd/index.sqlite`` (redirected by
+    ``_isolated_xdg`` to ``tmp_path/xdg/cache/``).
     """
     if shutil.which("qmd") is None:
         pytest.skip("qmd not installed on PATH")
@@ -393,14 +369,9 @@ def qmd_fixture_library(tmp_path: Path) -> Iterator[Wiki]:
         _unseed_qmd(wiki)
 
 
-# ---------------------------------------------------------------------------
-# Stub helpers
-# ---------------------------------------------------------------------------
-
-
-#: The collection names the librarian's real qmd search spanned,
-#: recorded by ``_patched_librarian``. Module-level because the
-#: assertion that reads it runs *after* the patch context has exited.
+#: Collection names the librarian's real qmd search spanned.
+#: Module-level because the assertion reads it after the patch context
+#: has exited.
 _librarian_queried_collections: set[str] = set()
 
 
@@ -424,13 +395,9 @@ def _patched_librarian(orch: Orchestrator) -> mock._patch:
     """Replace the librarian agent with one that retrieves for real.
 
     The librarian runs on a pydantic-ai ``TestModel``, which calls
-    each tool once with generated arguments (so it cannot perform
-    the search-then-read sequence).
-
-    What this substitutes is only the *LLM*. Retrieval stays real:
-    the stub calls the production :func:`lies.qmd.cli.qmd_query`
-    with the filter under test and builds excerpts from the pages
-    it returns.
+    each tool once with generated arguments. What this substitutes
+    is only the *LLM*; retrieval stays real and uses the production
+    :func:`lies.qmd.cli.qmd_query` with the filter under test.
 
     Patched on the **instance**, not on ``type(agent)``: the librarian
     and the synthesizer are both ``pydantic_ai.Agent``, so a
@@ -448,16 +415,15 @@ def _patched_librarian(orch: Orchestrator) -> mock._patch:
         deps = kwargs.get("deps")
         question = getattr(deps, "question", prompt)
 
-        # First, an unscoped pass across every collection — recorded, so
-        # the test can assert the filter had something to remove.
+        # Unscoped pass — recorded so the test can assert the filter
+        # had something to remove.
         unscoped = qmd_query(orch.wiki.data_root, str(question), limit=10)
         _librarian_queried_collections.update(
             _collection_of(str(h.get("path", ""))) for h in unscoped
         )
 
-        # Then the real filtered pass: the production ``_collections_matching``
-        # resolves the tag expression and the production ``qmd_query``
-        # applies it as ``collection_filter``.
+        # Real filtered pass: production ``_collections_matching`` +
+        # production ``qmd_query`` apply the resolved filter.
         resolved = _collections_matching(
             ResolvedTagFilter(
                 include=getattr(deps, "tag_expr", None),
@@ -542,15 +508,9 @@ def _patched_synthesizer(
     )
 
 
-# ---------------------------------------------------------------------------
-# Tests
-# ---------------------------------------------------------------------------
-
-
-# Probe questions by discriminating term. ``AIRFLOW_PROBE`` carries
-# a generic ZEPHYR + DAG phrasing so a single qmd invocation surfaces
-# airflow first AND the other collections (the post-filter still
-# drops non-airflow hits in the ``+airflow`` tests).
+# AIRFLOW_PROBE carries generic ZEPHYR + DAG phrasing so a single
+# qmd invocation surfaces airflow first AND the other collections
+# (the post-filter still drops non-airflow hits in the ``+airflow`` tests).
 AIRFLOW_PROBE = "ZEPHYR Apache Airflow DAG workflow operators providers"
 
 
@@ -588,12 +548,8 @@ def test_plus_tag_filters_to_one_collection(
 
     resolved = _collections_matching(tf)
 
-    # The floor. ``+airflow`` (no qualifier ⇒ implicit self-tag) must
-    # admit the ``airflow`` collection by name AND ``prefect`` by tag.
-    # Without this, everything below is circular: if the tag expression
-    # stopped selecting these two, the scope assertion would fail for a
-    # reason that has nothing to do with retrieval, and the librarian
-    # below would be handed an empty set and return nothing at all.
+    # Floor: ``+airflow`` (no qualifier ⇒ implicit self-tag) must
+    # admit ``airflow`` by name AND ``prefect`` by tag.
     assert resolved == {"airflow", "prefect"}, (
         f"+airflow must resolve to airflow and prefect (prefect is tagged "
         f"airflow); got {sorted(resolved)!r}"
@@ -629,12 +585,9 @@ def test_plus_tag_filters_to_one_collection(
         f"has something to exclude; it searched {_librarian_queried_collections!r}"
     )
 
-    # searched_scope is the resolved collection set per spec
-    # §"Retriever consumption": with a filter, the scope is the resolved
-    # set; without, every registered collection. The implicit-self-tag
-    # rule (F15's ``t:`` / no-prefix default) admits both the
-    # ``airflow`` collection (by name) and the ``prefect`` collection
-    # (by tag).
+    # searched_scope is the resolved collection set: with a filter,
+    # the scope is the resolved set; without, every registered
+    # collection.
     assert answer.searched_scope == ["airflow", "prefect"]
 
 
@@ -731,16 +684,11 @@ def test_plus_unknown_tag_no_coverage(
     assert answer.fallback_reason in {"qmd_no_results", "qmd_failed"}
 
 
-# ---------------------------------------------------------------------------
-# F15 ``t:`` / ``c:`` qualifier prefix integration tests
-#
-# The fixture's ``prefect`` collection carries the ``airflow`` tag (without
-# being named ``airflow``), so the three tests below can distinguish the
-# implicit-self-tag rule (``+t:airflow`` — matches airflow + prefect) from
-# the strict-name rule (``+c:airflow`` — matches airflow only). The
-# exclude-c variant then drops the airflow collection by name from an
-# already-resolved set.
-# ---------------------------------------------------------------------------
+# F15 ``t:`` / ``c:`` qualifier prefix integration tests. The
+# ``prefect`` collection carries the ``airflow`` tag (without being
+# named ``airflow``), so the three tests below can distinguish
+# implicit-self-tag (``+t:airflow`` matches airflow + prefect) from
+# strict-name (``+c:airflow`` matches airflow only).
 
 
 def test_plus_c_qualifier_returns_only_named_collection(
@@ -748,10 +696,8 @@ def test_plus_c_qualifier_returns_only_named_collection(
 ) -> None:
     """``+c:airflow`` resolves to the airflow collection only.
 
-    The strict collection-name dispatch (``coll.name == include.tag``)
-    matches the airflow-named collection but ignores ``prefect``'s
-    ``airflow`` tag — prefect has airflow in its tags but is not
-    *named* airflow.
+    Strict collection-name dispatch (``coll.name == include.tag``):
+    prefect is excluded even though it carries ``airflow`` in its tags.
     """
     orch = _orchestrator(qmd_fixture_library)
     captured: list[str] = []
@@ -759,8 +705,6 @@ def test_plus_c_qualifier_returns_only_named_collection(
     with _patched_librarian(orch), _patched_synthesizer(orch, captured=captured):
         answer = orch.run_query(AIRFLOW_PROBE, tag_filter=tf, file=False)
 
-    # Strict-name dispatch: prefect is excluded even though it carries
-    # ``airflow`` in its tags.
     assert answer.searched_scope == ["airflow"]
     for rel_path in captured:
         assert _collection_of(rel_path) == "airflow", (
