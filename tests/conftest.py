@@ -155,13 +155,18 @@ def _isolated_xdg(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     # Pin it to one path shared by every test in the session, which is
     # what production gets. It is deliberately NOT `xdg_root / "state"`:
     # that would reproduce the bug in a different guise.
-    # Per-user, not just per-tempdir: `gettempdir()` is shared on a
-    # multi-account CI host, and two accounts on the same path would
-    # contend -- one of them deterministically losing to `QmdLockBusy`
-    # rather than running its own tests.
+    # Per-user *and* per-session. `gettempdir()` is shared on a
+    # multi-account CI host, so the uid keeps two accounts off one path.
+    # The pid keeps two *sessions* off one path too: a per-uid-only key
+    # made every pytest process owned by this user contend, so running
+    # the unit suite while any other `lies` work was live produced six
+    # 30-second hangs and six `QmdLockBusy` failures that read as product
+    # bugs. Intra-session sharing — the property that actually prevents
+    # two tests embedding concurrently — is untouched: one process, one
+    # path, every test in it.
     monkeypatch.setenv(
         "LIES_QMD_LOCK_PATH",
-        str(Path(tempfile.gettempdir()) / f"lies-test-qmd-{os.getuid()}.lock"),
+        str(Path(tempfile.gettempdir()) / f"lies-test-qmd-{os.getuid()}-{os.getpid()}.lock"),
     )
     # The qmd sidecar is host-global: it records which ``data-dir`` the
     # *machine's* daemon was started with, at

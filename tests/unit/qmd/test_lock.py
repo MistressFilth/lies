@@ -444,12 +444,20 @@ def test_the_shared_qmd_lock_is_outside_the_per_test_xdg_root(tmp_path: Path) ->
     assert _lock_paths()[0] == lock, "and it must be stable across calls within one test"
 
 
-def test_the_pinned_test_lock_is_per_user(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """The shared test lock must be per-user, not just per-tempdir.
+def test_the_pinned_test_lock_is_per_user_and_per_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The shared test lock must be keyed by uid *and* by session.
 
-    ``gettempdir()`` is shared on a multi-account CI host. Two accounts
-    naming the same file contend, and one deterministically loses to
-    ``QmdLockBusy`` rather than running its own tests.
+    ``gettempdir()`` is shared on a multi-account CI host, so the uid
+    keeps two accounts off one file. The pid keeps two *pytest
+    processes* off one file as well: a uid-only key made every pytest
+    process owned by this user contend, so running the unit suite while
+    any other ``lies`` work was live produced six 30-second hangs and
+    six ``QmdLockBusy`` failures that read as product bugs.
+
+    Intra-session sharing is the property that actually matters — one
+    process, one path, every test in it — and the pid preserves it.
     """
     from lies.qmd.lock import _lock_paths
 
@@ -457,16 +465,24 @@ def test_the_pinned_test_lock_is_per_user(tmp_path: Path, monkeypatch: pytest.Mo
     # a change to the pin is visible here instead of silently diverging.
     root_conftest = Path(__file__).resolve().parents[2] / "conftest.py"
     source = root_conftest.read_text(encoding="utf-8")
-    assert "lies-test-qmd-" in source, "the per-user test lock pin is gone from conftest"
+    assert "lies-test-qmd-" in source, "the shared test lock pin is gone from conftest"
     assert "os.getuid()" in source, (
         "the pinned test lock must carry the uid, or two accounts on a "
         "shared CI host contend on one file"
     )
+    assert "os.getpid()" in source, (
+        "the pinned test lock must carry the pid, or two pytest sessions "
+        "on this user contend and hang for 30s each"
+    )
 
     lock = _lock_paths()[0]
-    assert f"-{os.getuid()}.lock" in lock.name, (
+    assert f"{os.getuid()}" in lock.name, (
         f"the pinned test lock {lock.name} carries no uid; two accounts on a "
         f"shared host would contend on it"
+    )
+    assert f"{os.getpid()}" in lock.name, (
+        f"the pinned test lock {lock.name} carries no pid; two pytest "
+        f"sessions on this user would contend on it"
     )
     assert str(os.getuid()) in lock.name
 
