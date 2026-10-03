@@ -8,32 +8,6 @@ import pytest
 from lies.qmd import daemon as qmd_daemon
 
 
-@pytest.fixture(autouse=True)
-def _isolated_qmd_sidecar(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
-    """Point the sidecar at a per-test file. Never touch the real one.
-
-    ``SIDECAR_PATH`` is machine-global
-    (``~/.local/share/qmd/mcp.data-dir``) and records which ``data-dir``
-    the *host's* daemon was started with. ``ensure_qmd_daemon`` calls
-    ``write_sidecar_data_dir(data_dir)`` on every path that gets far
-    enough, so a test passing ``tmp_path / "wiki"`` writes a temp path
-    into the operator's real sidecar.
-
-    The damage is not cosmetic. ``check_data_dir_match`` then reports
-    False against the real library root, and the next
-    ``ensure_qmd_daemon`` concludes a foreign daemon is serving and
-    **reaps and respawns a healthy daemon** — and any ``_recycle`` reads
-    that same path as the data dir to respawn with. Observed on this
-    host: the sidecar held
-    ``/tmp/pytest-of-.../pytest-11/.../wiki`` after a unit-test run.
-    """
-    monkeypatch.setattr(
-        qmd_daemon,
-        "SIDECAR_PATH",
-        tmp_path / "mcp.data-dir",
-    )
-
-
 _STATUS_RUNNING = """QMD Status
 
 Index: /home/u/.cache/qmd/index.sqlite
