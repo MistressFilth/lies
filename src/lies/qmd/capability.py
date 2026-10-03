@@ -1,18 +1,16 @@
 """Daemon-aware capability for the agent's qmd tool surface.
 
-By default the agent advertises the native qmd MCP server (the shared
-qmd daemon at ``LIES_QMD_URL``). When the daemon is unreachable at
-construction time, the capability advertises an in-process
-:class:`QmdFallbackMcp` server instead and prints a single stderr
-warning naming the URL and the fix.
+By default the agent advertises the native qmd MCP server (the
+shared qmd daemon at ``LIES_QMD_URL``). When the daemon is
+unreachable at construction time, the capability advertises an
+in-process :class:`QmdFallbackMcp` server and prints a single
+stderr warning naming the URL and the fix.
 
-The probe runs every :meth:`as_capability` call, so the capability
-transparently flips back to native if the daemon comes online.
-
-The capability is implemented as a thin wrapper around
-:class:`pydantic_ai.capabilities.MCP` — we don't subclass `MCP`
-because `MCP` is the public primitive for "native-or-local" already,
-and we only vary which arguments we pass it.
+The probe runs every :meth:`as_capability` call, so the
+capability transparently flips back to native if the daemon comes
+online. Implemented as a thin wrapper around
+:class:`pydantic_ai.capabilities.MCP` — ``MCP`` is already the
+public "native-or-local" primitive; we only vary the arguments.
 """
 
 from __future__ import annotations
@@ -33,12 +31,8 @@ from lies.config import DEFAULT_QMD_URL
 from lies.qmd.health import qmd_daemon_reachable
 from lies.qmd.mcp import QmdRecycleToolset, _build_qmd_http_toolset
 
-# F14-residual: the construction-time reap block in
-# ``QmdCapability.as_capability`` reads these names off
-# ``lies.qmd.capability`` at import time so that tests can
-# ``monkeypatch.setattr`` them before the method runs. Local imports
-# inside the method would not survive ``monkeypatch.setattr`` because
-# the attributes wouldn't exist on the module yet.
+# Construction-time reap reads these names at import time so tests
+# can ``monkeypatch.setattr`` before :meth:`as_capability` runs.
 from lies.qmd.daemon import (
     _is_daemon_stale,
     _reap_qmd_daemon,
@@ -52,18 +46,16 @@ if TYPE_CHECKING:
     from lies.wiki.wiki import Wiki
 
 
+# TCP-connect probe. 0.5s is a fast binary yes/no; the 120x gap vs
+# the 60s JSON-RPC read budget is justified because the read budget
+# covers the wedge *after* connect.
 _DEFAULT_TIMEOUT_S = 0.5
-# TCP-connect probe: a half-second is enough to confirm a listener exists on
-# the qmd daemon port (connect is a fast, binary yes/no — 0.5s vs the 60s
-# JSON-RPC read budget is a 120× gap, justified because the read budget covers
-# the wedge *after* connect where the daemon must answer ``list_tools``).
 
 
 # Errors the construction-time liveness probe (a fastmcp.Client
-# session + list_tools() round-trip) treats as "daemon not actually
-# serving", which trips the in-process fallback. Broader than what
-# :func:`recycle_qmd_daemon` catches because the probe does not
-# retry — any one error means we cannot advertise the native toolset.
+# session + ``list_tools()``) treats as "daemon not actually
+# serving", tripping the in-process fallback. Broader than what
+# ``recycle_qmd_daemon`` catches because the probe does not retry.
 _MCP_PROBE_ERRORS: tuple[type[BaseException], ...] = (
     mcp.MCPError,
     OSError,
@@ -71,22 +63,15 @@ _MCP_PROBE_ERRORS: tuple[type[BaseException], ...] = (
 
 
 class QmdCapability:
-    """Decides which `MCP(...)` shape the agent should advertise."""
+    """Decides which ``MCP(...)`` shape the agent should advertise."""
 
     def __init__(
         self,
         wiki: Wiki,
         *,
         transport: str,
-        # Sourced from config rather than spelled out. qmd's HTTP MCP
-        # server serves exactly one route, `/mcp`, so a bare
-        # `http://127.0.0.1:8181` reaches a live daemon and comes back
-        # 404 — which the access seam reads as a transport failure and
-        # reports as a *down* daemon. The only production construction
-        # site (orchestrator.py) passes `url=get_qmd_url()` explicitly,
-        # so this default is a fallback, not a live path; sourcing it
-        # from the one config constant means a bare-origin spelling
-        # cannot reappear here as a fourth copy.
+        # Sourced from ``config.DEFAULT_QMD_URL`` so a bare-origin
+        # spelling cannot reappear here as a fourth copy.
         url: str = DEFAULT_QMD_URL,
         timeout: float = _DEFAULT_TIMEOUT_S,
     ) -> None:
@@ -96,9 +81,6 @@ class QmdCapability:
         self._url = url
         self._wiki = wiki
         # ``WikiLayout`` exposes ``root``; ``Wiki`` exposes ``data_root``.
-        # Both name the on-disk path the qmd sidecar belongs to. Pick
-        # whichever exists; the second ``getattr`` is lazy because the
-        # first already short-circuits when ``data_root`` is present.
         _data_root = getattr(wiki, "data_root", None) or getattr(wiki, "root", None)
         self._data_dir: Path = cast("Path", _data_root)
         self._timeout = timeout
@@ -110,12 +92,9 @@ class QmdCapability:
             _warn_degraded(self._url)
             return _build_fallback_mcp(self._wiki)
 
-        # F14-residual: if the daemon is serving a pre-write index
-        # (marker mtime > daemon pidfile mtime), reap+respawn before
-        # advertising the toolset. Cheap (two stat() calls); runs once
-        # per Orchestrator init. The orchestrator's own writes cannot
-        # make itself stale — see spec
-        # superpowers/specs/2026-09-16-bundle-d-construction-staleness-reap-design.md.
+        # Reap+respawn if the daemon is serving a pre-write index
+        # (marker mtime > daemon pidfile mtime). Cheap (two stat()
+        # calls); runs once per Orchestrator init.
         if _is_daemon_stale():
             _log.info("qmd daemon stale at construction; reaping before advertising toolset")
             _reap_qmd_daemon()
@@ -130,29 +109,23 @@ class QmdCapability:
 
 
 def _build_native_mcp(url: str, data_dir: Path) -> MCP:
-    """MCP wrapping a QmdRecycleToolset around an inner MCPToolset.
+    """MCP wrapping a ``QmdRecycleToolset`` around an inner ``MCPToolset``.
 
     Construction is non-destructive: a fastmcp liveness probe (a
     one-shot ``Client.list_tools()`` round-trip) confirms the daemon
-    is actually serving before we advertise the native toolset. If
-    the probe fails we raise and the caller falls back to the
-    in-process :class:`QmdFallbackMcp`. The actual reap+spawn path
-    lives in :class:`QmdRecycleToolset.call_tool` — that is where
-    per-call recovery belongs.
+    is actually serving. If the probe fails we raise and the caller
+    falls back to the in-process toolset.
 
     Args:
         url: The qmd daemon's HTTP base URL.
-        data_dir: The on-disk wiki root; passed to the recycle callback
-            so a per-call recycle can write the sidecar correctly.
+        data_dir: The on-disk wiki root; passed to the recycle
+            callback so a per-call recycle can write the sidecar.
 
     Raises:
         httpx.HTTPError: probe transport failure.
         mcp.MCPError: probe protocol-level rejection.
-        OSError: probe transport-level failure (e.g. refused connection).
+        OSError: probe transport-level failure.
     """
-    # ``TYPE_CHECKING`` keeps the fastmcp import out of the module
-    # top; the probe constructs a real client here so a daemon-side
-    # failure surfaces to the caller, not to module import.
     inner = _build_qmd_http_toolset(url)
 
     async def _recycle() -> Any:
@@ -160,12 +133,8 @@ def _build_native_mcp(url: str, data_dir: Path) -> MCP:
 
         return await recycle_qmd_daemon(data_dir=data_dir, daemon_url=url)
 
-    # Synchronous construction-time liveness probe. The TCP probe
-    # in :meth:`as_capability` only confirms a listener exists; this
-    # proves the daemon actually serves a JSON-RPC session. The probe
-    # runs synchronously via ``asyncio.run``; any async caller MUST
-    # construct the capability outside the loop (``asyncio.run``
-    # raises ``RuntimeError`` when an event loop is already running).
+    # Synchronous liveness probe via ``asyncio.run``; async callers
+    # MUST construct outside the loop.
     asyncio.run(_probe_liveness(url))
 
     wrapped = QmdRecycleToolset(wrapped=inner, recycle_cb=_recycle)
@@ -182,9 +151,10 @@ def _build_native_mcp(url: str, data_dir: Path) -> MCP:
 
 
 async def _probe_liveness(url: str) -> None:
-    """Open a one-shot fastmcp.Client + call ``list_tools`` to prove
-    the daemon is actually serving. Raises on transport / protocol /
-    OS errors so the caller can fall back to the in-process toolset.
+    """Open a one-shot fastmcp.Client + call ``list_tools``.
+
+    Raises on transport / protocol / OS errors so the caller can
+    fall back to the in-process toolset.
     """
     async with fastmcp.Client(url) as client:  # type: ignore[attr-defined]
         await client.list_tools()
@@ -212,7 +182,7 @@ def _build_fallback_mcp(wiki: Wiki) -> MCP:
 
 
 def _build_stdio_mcp() -> MCP:
-    """LIES_QMD_TRANSPORT=stdio — old subprocess-per-agent behavior."""
+    """``LIES_QMD_TRANSPORT=stdio`` — subprocess-per-agent behavior."""
 
     def _factory() -> Any:
         from fastmcp import Client
@@ -226,7 +196,7 @@ def _build_stdio_mcp() -> MCP:
 
 
 def _warn_degraded(url: str) -> None:
-    """One stderr line, operator-meaningful, names the URL and the fix."""
+    """One stderr line naming the URL and the fix."""
     print(
         f"warning: qmd daemon unreachable at {url}; "
         f"wiki search is running degraded (in-process index scan). "
