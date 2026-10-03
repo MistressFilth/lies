@@ -47,8 +47,14 @@ class LibrarianDeps:
 
     Attributes:
         question: The user's natural-language question.
-        tag_expr: Body of a single include token (no leading sigil),
-            e.g. ``'a&b|c'``. ``None`` for untagged queries.
+        tag_expr: Compiled include AST (Task 3 / f15-exclude-compound),
+            a TagExpr tree. ``None`` for untagged queries. Carries
+            the AST rather than a flat string because the F15 grammar
+            accepts compound includes (``+c:foo&c:bar``,
+            ``+c:foo|c:bar``) whose per-collection dispatch walks
+            the tree. Historical flat-string contract retired in
+            Task 3 along with the ``ResolvedTagFilter.exclude``
+            counterpart.
         exclude_expr: Compiled exclude AST (Task 3 /
             f15-exclude-compound). ``None`` when no ``-`` chain was
             supplied. The dep carries the AST rather than a flat
@@ -62,7 +68,9 @@ class LibrarianDeps:
     """
 
     question: str
-    tag_expr: str | None
+    tag_expr: Any  # TagExpr | None AST; Any at runtime so pydantic-ai's
+    # TypeAdapter doesn't try to build a schema for TagExpr (a stdlib
+    # @dataclass, not pydantic).
     exclude_expr: Any  # TagExpr | None AST (Task 3); Any at runtime so
     # pydantic-ai's TypeAdapter doesn't try to build a schema for
     # TagExpr (a stdlib @dataclass, not pydantic).
@@ -121,7 +129,9 @@ class LibrarianOutput:
             pre-v0.40 construction sites stay back-compat.
     """
 
-    tag_expr: str | None
+    tag_expr: Any  # TagExpr | None AST; Any at runtime so pydantic-ai's
+    # TypeAdapter doesn't try to build a schema for TagExpr (a stdlib
+    # @dataclass, not pydantic).
     exclude_expr: Any  # TagExpr | None AST (Task 3); Any at runtime so
     # pydantic-ai's TypeAdapter doesn't try to build a schema for
     # TagExpr (a stdlib @dataclass, not pydantic).

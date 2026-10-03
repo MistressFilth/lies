@@ -8,16 +8,22 @@ actually run, not as a mock would.
 
 What is real and what is stubbed: **the qmd path is not mocked.** The
 librarian's retrieval here is the production
-:func:`lies.qmd.cli.qmd_query` running against the live index, so the
-per-collection drop under test is the real one. What *is* stubbed is the
-LLM — at two seams, ``_patched_librarian`` (which decides which paths to
-read, and does so by asking that same real ``qmd_query``) and
-``_patched_synthesizer`` (which turns excerpts into prose). A
-``TestModel`` cannot stand in for either: it calls each tool once with
-*generated* arguments, so the librarian called ``read(["a"])`` and every
-page was skipped as unrecognised — which left ``captured`` empty and
-made every ``for rel_path in captured`` loop in this file vacuously
-true. Substituting the LLM is what makes retrieval assertions possible at
+:func:`lies.qmd.cli.qmd_query` running against a *throwaway per-test*
+index at ``$XDG_CACHE_HOME/qmd/index.sqlite`` (which the autouse
+``_isolated_xdg`` redirects to ``tmp_path/xdg/cache/qmd/``), so the
+per-collection drop under test is the real one. The session-scoped
+``_live_qmd_index_unchanged`` guard verifies the live index at
+``~/.cache/qmd/index.sqlite`` is byte-identical before and after the
+run, so a regression that points the fixture at the live index trips
+the guard. What *is* stubbed is the LLM — at two seams,
+``_patched_librarian`` (which decides which paths to read, and does so
+by asking that same real ``qmd_query``) and ``_patched_synthesizer``
+(which turns excerpts into prose). A ``TestModel`` cannot stand in for
+either: it calls each tool once with *generated* arguments, so the
+librarian called ``read(["a"])`` and every page was skipped as
+unrecognised — which left ``captured`` empty and made every
+``for rel_path in captured`` loop in this file vacuously true.
+Substituting the LLM is what makes retrieval assertions possible at
 all; it is not the same as mocking the thing under test.
 
 Tests are gated on ``INTEGRATION=1``; default CI skips them via
@@ -29,6 +35,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import sqlite3
 import subprocess
 from collections.abc import Iterator
 from datetime import UTC, datetime
@@ -260,19 +267,100 @@ def _build_tag_filter_library(tmp_path: Path, *, name: str) -> Wiki:
     return wiki
 
 
-#: The collections this fixture registers in the SHARED qmd index. Every
-#: place that registers or removes them iterates this one tuple, so a
-#: collection cannot be added without also being cleaned up.
+#: The collections this fixture registers in qmd's throwaway per-test
+#: index. Every place that registers or removes them iterates this one
+#: tuple, so a collection cannot be added without also being cleaned up.
 FIXTURE_COLLECTIONS = ("airflow", "amazon", "pyspark", "prefect")
+
+
+def _live_qmd_index_path() -> Path | None:
+    """Absolute path to qmd's live (host-default) index, if present.
+
+    Bypasses XDG so the autouse ``_isolated_xdg`` redirect does not
+    shadow it. qmd's only well-known cache layout is
+    ``$XDG_CACHE_HOME/qmd/index.sqlite``; ``~/.cache`` is the
+    ``XDG_CACHE_HOME`` default on this host, and the spec's global
+    constraint scopes all read-only diagnostics to this absolute path.
+    Returns ``None`` when no live index is reachable (e.g. on CI).
+    """
+    candidate = Path.home() / ".cache" / "qmd" / "index.sqlite"
+    return candidate if candidate.exists() else None
+
+
+def _live_index_snapshot() -> tuple[frozenset[str], int] | None:
+    """Snapshot of the live qmd index: (collection_names, active_doc_count).
+
+    Read-only via ``sqlite3 ?mode=ro``. Returns ``None`` if the live
+    index is not present (no host fixture to assert against).
+    """
+    live = _live_qmd_index_path()
+    if live is None:
+        return None
+    uri = f"file:{live}?mode=ro"
+    con = sqlite3.connect(uri, uri=True)
+    try:
+        names = frozenset(row[0] for row in con.execute("SELECT name FROM store_collections"))
+        (n,) = con.execute("SELECT COUNT(*) FROM documents WHERE active = 1").fetchone()
+    finally:
+        con.close()
+    return names, int(n)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _live_qmd_index_unchanged(request: pytest.FixtureRequest) -> Iterator[None]:
+    """Assert the live qmd index is byte-identical before and after this file.
+
+    The fixture's qmd subprocesses inherit the redirected
+    ``XDG_CACHE_HOME`` from ``_isolated_xdg`` and write to
+    ``tmp_path/xdg/cache/qmd/index.sqlite`` — a throwaway. The guard
+    bypasses XDG and reads ``~/.cache/qmd/index.sqlite`` directly,
+    capturing the collection set and the active-document count at
+    session start and asserting the same at session end. A regression
+    that points the fixture at the live index (the exact class of
+    failure the previous commit message warned against) trips this
+    assertion with a precise diff.
+
+    The guard never writes to the live index. Read-only ``sqlite3`` is
+    the only I/O. Fires only under ``INTEGRATION=1`` (the same gate
+    that collects this file) and only on hosts with a live index.
+    No-ops otherwise so a CI sandbox with no host index is not blocked.
+    """
+    if os.environ.get("INTEGRATION") != "1":
+        yield
+        return
+    before = _live_index_snapshot()
+    yield
+    after = _live_index_snapshot()
+    if before is None or after is None:
+        return
+    if before != after:
+        before_names, before_n = before
+        after_names, after_n = after
+        added = sorted(after_names - before_names)
+        removed = sorted(before_names - after_names)
+        pytest.fail(
+            "the live qmd index changed during this run: "
+            f"collections before={sorted(before_names)!r} after={sorted(after_names)!r} "
+            f"(added={added!r}, removed={removed!r}); "
+            f"active docs before={before_n} after={after_n}. "
+            f"This file's fixture is meant to write to a throwaway "
+            f"under XDG_CACHE_HOME, not the live index."
+        )
 
 
 def _seed_qmd(wiki: Wiki) -> None:
     """Register each fixture collection with qmd and embed it.
 
-    Uses absolute paths so qmd stores absolute paths in the global index —
+    Uses absolute paths so qmd stores absolute paths in the index —
     transient test tmp paths must not depend on the cwd at call time.
     ``qmd_collection_add_if_missing`` is idempotent on re-runs (its
     stderr check ignores "already exists").
+
+    The subprocess inherits the redirected ``XDG_CACHE_HOME`` from
+    ``_isolated_xdg``, so registration and embedding both target
+    ``tmp_path/xdg/cache/qmd/index.sqlite`` (a throwaway), not
+    ``~/.cache/qmd/index.sqlite``. The session-scoped
+    ``_live_qmd_index_unchanged`` guard pins that invariant.
 
     Raises ``QmdNotInstalledError`` if qmd is missing; the per-test
     fixture-level ``skipif`` on ``shutil.which('qmd')`` usually catches
@@ -289,32 +377,25 @@ def _seed_qmd(wiki: Wiki) -> None:
 def _unseed_qmd(wiki: Wiki) -> None:
     """Remove every collection :func:`_seed_qmd` registered, then assert it.
 
-    Without this the fixture writes into the *shared* index and never
-    cleans up. Each test's ``tmp_path`` is deleted by pytest at teardown,
-    so the registration is left pointing at a path that no longer exists;
-    a later ``qmd update`` / ``qmd cleanup`` reaps it and deletes its
-    documents. The next run of this file then queries collections whose
-    documents are not in the index, and qmd spends the full budget
-    searching for them.
+    Each test writes to its own throwaway index at
+    ``tmp_path/xdg/cache/qmd/index.sqlite`` (because ``_isolated_xdg``
+    redirects ``XDG_CACHE_HOME``), and pytest deletes that path with
+    ``tmp_path`` at teardown. So the teardown's purpose is hygiene on
+    the throwaway, not leak prevention on a shared index. The
+    session-scoped ``_live_qmd_index_unchanged`` guard pins the
+    live-index invariant independently.
 
-    Measured on this host after the leak had happened: a bare
-    ``qmd_query`` for ``airflow``/``prefect`` took **30.2s** and returned
-    nothing, against **4.9s** for a collection that exists. In-suite it
-    surfaced as ``QmdTimeoutError: qmd query timed out after 60s`` and
-    ``QmdWedgeError`` — indistinguishable from a real retrieval failure,
-    and in fact the same as the OOM class of problem: a shared resource
-    left in a state the next run does not expect.
-
-    Removing rather than using a throwaway ``--index`` is deliberate. A
-    throwaway index would never touch the shared one, but it reloads the
-    embedding model per test (the 1.2 GB cost), and this file's whole
-    point is exercising the *real* index the way the product does. Teardown
-    keeps that realism and costs one ``qmd collection remove`` per
-    collection.
+    Within a single test run the teardown is still load-bearing: an
+    earlier test's seeded data must not survive to a later test that
+    shares the same XDG root. (Pytest's per-test ``tmp_path`` normally
+    gives every test a fresh root, but tests that run together in the
+    same process share the autouse fixture, and a misconfigured
+    session-scoped ``tmp_path`` is the exact class of regression this
+    fixture's teardown makes loud.)
 
     The post-condition is asserted, not assumed: a leftover registration
-    here is what made the next run's numbers wrong, so it should fail
-    loudly here rather than surface three runs later as a timeout.
+    here is what made the next test's retrieval silent, so it fails
+    loudly here rather than three tests later as a no-results assertion.
     """
     leftovers: list[str] = []
     for coll in FIXTURE_COLLECTIONS:
@@ -353,16 +434,17 @@ def qmd_fixture_library(tmp_path: Path) -> Iterator[Wiki]:
     """A wiki with four tagged collections, registered and embedded with qmd.
 
     **Yields, and tears the qmd registration down.** The collections go
-    into qmd's *shared* global index, keyed by an absolute path under this
-    test's ``tmp_path``. pytest deletes that path at teardown, so without
-    the cleanup below the registration is left pointing at nothing, a
-    later ``qmd update`` reaps it, and the next run of this file queries
-    documents that no longer exist. See :func:`_unseed_qmd` for what that
-    costs — it is a 30.2s search returning nothing, surfacing as a
-    timeout that reads exactly like a real retrieval failure.
+    into qmd's *throwaway per-test* index at
+    ``$XDG_CACHE_HOME/qmd/index.sqlite`` — which the autouse
+    ``_isolated_xdg`` redirects to ``tmp_path/xdg/cache/``. pytest
+    deletes ``tmp_path`` at teardown, taking the throwaway with it.
+    The teardown's ``qmd collection remove`` is therefore hygiene on
+    the throwaway, not a leak fix on a shared index; the
+    session-scoped ``_live_qmd_index_unchanged`` guard pins the
+    live-index invariant independently.
 
     The teardown also *asserts* the collections are gone, so a recurrence
-    fails here rather than three runs later as somebody else's timeout.
+    fails here rather than three tests later as somebody else's timeout.
 
 
     Function-scoped, and deliberately so. The wiki is built under the
@@ -375,7 +457,10 @@ def qmd_fixture_library(tmp_path: Path) -> Iterator[Wiki]:
     That means four embed cycles per test. It is affordable as long as
     they are sequential, which they are (``QMD_EMBED_PARALLELISM=1`` and
     a lock around each call). A CUDA OOM here means two suites were
-    embedding concurrently, not that the fixture is wrong.
+    embedding concurrently, not that the fixture is wrong. The model
+    reload cost is the trade for full per-test isolation; a
+    session-scoped embed would share the warm model across tests but
+    cannot share the XDG root without losing the per-test wiki.
     """
     if shutil.which("qmd") is None:
         pytest.skip("qmd not installed on PATH")
