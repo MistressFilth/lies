@@ -79,6 +79,7 @@ def acquire_create_lock(  # type: ignore[no-untyped-def]
     state_json_path: Path | None = None,
     pid_alive_fn: Callable[[int], Literal["alive", "dead", "indeterminate"]] | None = None,
     force_repair: bool = False,
+    self_acquire_is_stale: bool = True,
 ) -> AcquireResult | None:
     """Atomically create ``path``. Return ``AcquireResult`` on win, ``None`` on contention.
 
@@ -117,6 +118,13 @@ def acquire_create_lock(  # type: ignore[no-untyped-def]
     ``force_repair``, a live holder always wins (returns an
     ``AcquireResult`` with ``status="busy"`` when the envelope was
     supplied, otherwise ``None``).
+
+    ``self_acquire_is_stale=False`` disables the same-pid self-recovery
+    branch in :func:`_reap_if_stale`. A caller that tracks re-entry
+    itself must set it: the default assumes a same-pid create-lock is
+    this process's own abandoned lock, which is wrong the moment a
+    *second thread* of the same process contends and the depth
+    bookkeeping is not shared across threads.
 
     The fd is left open so the OS holds the inode reference; the caller
     must pass it to :func:`release_create_lock`.
@@ -157,7 +165,14 @@ def acquire_create_lock(  # type: ignore[no-untyped-def]
                 except FileExistsError:
                     return None
             try:
-                if _reap_if_stale(path, pid_path, state_json_path, max_age_s, pid_alive_fn):
+                if _reap_if_stale(
+                    path,
+                    pid_path,
+                    state_json_path,
+                    max_age_s,
+                    pid_alive_fn,
+                    self_acquire_is_stale=self_acquire_is_stale,
+                ):
                     # Reap removed the create-lock; retry the create once.
                     try:
                         return _wrap(
@@ -203,12 +218,18 @@ def _reap_if_stale(  # type: ignore[no-untyped-def]
     state_json_path: Path,
     max_age_s: float,
     pid_alive_fn: Callable[[int], Literal["alive", "dead", "indeterminate"]],
+    *,
+    self_acquire_is_stale: bool = True,
 ) -> bool:
     """Return True if reap happened (caller should retry), False otherwise.
 
     Reap triggers:
       - pid file missing: race; treat as non-stale (caller treats as busy).
-      - stored PID == os.getpid(): self-recovery; reap + retry.
+      - stored PID == os.getpid() **and** ``self_acquire_is_stale``:
+        self-recovery; reap + retry. A caller that tracks re-entry
+        itself passes ``False``, because a second thread of the same
+        process stores the same PID and would otherwise reap a live
+        lock.
       - pid_alive_fn(stored) is "dead": reap + retry.
       - heartbeat started_at is older than (now - max_age_s) AND
         pid_alive_fn(stored) is "indeterminate": raise
@@ -226,7 +247,7 @@ def _reap_if_stale(  # type: ignore[no-untyped-def]
         _log.warning("could not parse pid file %s", pid_path)
         return False
 
-    if stored_pid == os.getpid():
+    if stored_pid == os.getpid() and self_acquire_is_stale:
         # Self-acquire: not contended. Reap the stale lock and let retry succeed.
         _reap_files(create_lock, pid_path, state_json_path)
         return True

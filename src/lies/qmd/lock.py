@@ -76,11 +76,12 @@ _LOCK_PATH, _PID_PATH, _STATE_PATH = _lock_paths()
 
 def _register_holder(fd: int) -> None:
     """Write the holder pid + heartbeat. Best-effort: ``OSError`` is logged."""
+    _, pid_path, state_path = _lock_paths()
     try:
         pid = os.getpid()
-        write_owner_pid(_PID_PATH, pid)
+        write_owner_pid(pid_path, pid)
         write_heartbeat(
-            _STATE_PATH,
+            state_path,
             Heartbeat(pid=pid, started_at=time.time(), scope="qmd-cli"),
         )
     except OSError as exc:
@@ -104,6 +105,13 @@ def _acquire_with_poll(
             max_age_s=max_age_s,
             pid_path=pid_path,
             state_json_path=state_path,
+            # Re-entry is tracked by the depth counter above, not by
+            # pid equality. A second *thread* of this process stores
+            # the same pid, so the default same-pid self-recovery
+            # would reap a lock this thread is still holding and let
+            # both into the critical section — which is the CUDA
+            # reservation race this lock exists to prevent.
+            self_acquire_is_stale=False,
         )
         if result is None:
             # Defensive: only reached if ``exclusive.py`` raises
