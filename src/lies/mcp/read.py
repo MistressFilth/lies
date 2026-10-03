@@ -22,7 +22,22 @@ third of what a reader can ask for. ``get`` has no size cap.
 A down or wedged daemon re-raises; both spellings of "no body
 for this path" are treated identically (qmd's implementation
 detail); a batch that yields nothing raises
-``ToolError("all reads failed")`` once."""
+``ToolError("all reads failed")`` once.
+
+Partial batches: paths that ``qmd`` could not resolve are
+omitted from the body mapping and surfaced under the
+synthetic key ``"_missing"`` as a list of paths. The
+``"_"`` prefix keeps the signal out of the path space
+(library paths are ``<collection>/<page>``; wiki IDs are
+``page-...``; neither begins with an underscore), and the
+field's type is a list so a caller iterating ``out.items()``
+can filter it with ``key.startswith("_")`` if it is strict
+about the body shape. The two-channel
+shape — bodies by path, a sibling list of unresolved paths —
+is the wire-shape change that closes the silent-drop class
+the partial-batch read had: a 20-path read where 3 were
+unresolvable previously returned a 17-key dict with
+``log.warning`` lines that did not reach the agent."""
 
 from __future__ import annotations
 
@@ -101,8 +116,24 @@ def _daemon_body(path: str) -> str | None:
     return "\n".join(bodies)
 
 
-def _read_impl(paths: list[str]) -> dict[str, str]:
-    """Read verbatim bodies for a mix of wiki page IDs and library paths."""
+_MISSING_KEY = "_missing"
+
+
+def _read_impl(paths: list[str]) -> dict[str, str | list[str]]:
+    """Read verbatim bodies for a mix of wiki page IDs and library paths.
+
+    Returns a dict mapping each successfully read path to its
+    body. Paths the daemon (or wiki service) could not resolve
+    are *omitted* from the body mapping and surfaced under the
+    synthetic key ``"_missing"`` as a list of paths in input
+    order. A caller that ignores ``_missing`` sees the prior
+    shape and is forward-compatible; a caller that reads the
+    key gets the new soft-signal class.
+
+    A batch that yields *no* bodies at all (every path failed)
+    raises ``ToolError("all reads failed")`` — the loud
+    failure is preserved.
+    """
     if not paths:
         return {}
 
@@ -116,7 +147,7 @@ def _read_impl(paths: list[str]) -> dict[str, str]:
         else:
             log.warning("read: unrecognized path format: %r (skipped)", p)
 
-    out: dict[str, str] = {}
+    out: dict[str, str | list[str]] = {}
 
     if wiki_ids:
         try:
@@ -126,14 +157,25 @@ def _read_impl(paths: list[str]) -> dict[str, str]:
             wiki_out = {}
         out.update(wiki_out)
 
+    missing: list[str] = []
     for p in library_paths:
         body = _daemon_body(p)
-        if body is not None:
+        if body is None:
+            missing.append(p)
+        else:
             out[p] = body
+
+    # Paths the wiki service omitted from its result (asked for
+    # 5 IDs, received 4) are also a soft missing.
+    for p in wiki_ids:
+        if p not in out:
+            missing.append(p)
 
     if paths and not out:
         raise ToolError("all reads failed")
 
+    if missing:
+        out[_MISSING_KEY] = missing
     return out
 
 

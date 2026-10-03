@@ -410,9 +410,14 @@ def test_a_result_with_no_resource_block_is_skipped_not_stored_empty(
 
     # The skipped path is absent rather than present-and-empty, and the
     # sibling that did produce a body survives — which is the whole point:
-    # a notice-only result does not cancel the rest of the batch.
-    assert out == {"alpha/ok.md": "<body ok>"}
-    assert "claude_code/hooks.md" not in out
+    # a notice-only result does not cancel the rest of the batch. The
+    # skipped path moves to ``_missing`` so the caller can react to the
+    # silent drop machine-readably.
+    assert out == {
+        "alpha/ok.md": "<body ok>",
+        "_missing": ["claude_code/hooks.md"],
+    }
+    assert "claude_code/hooks.md" not in {k for k in out if k != "_missing"}
 
 
 def test_a_notice_only_result_does_not_cancel_siblings_that_succeeded(
@@ -455,9 +460,10 @@ def test_a_notice_only_result_does_not_cancel_siblings_that_succeeded(
     assert out == {
         "alpha/good.md": "<body alpha/good.md>",
         "delta/also-good.md": "<body delta/also-good.md>",
+        "_missing": ["beta/notice-only.md", "gamma/raises.md"],
     }
-    assert "beta/notice-only.md" not in out
-    assert "gamma/raises.md" not in out
+    assert "beta/notice-only.md" not in {k for k in out if k != "_missing"}
+    assert "gamma/raises.md" not in {k for k in out if k != "_missing"}
 
 
 def test_a_page_over_the_multi_get_cap_comes_back_whole(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -539,6 +545,8 @@ def test_read_skips_failed_paths_and_logs_a_warning(
     dropping a path is indistinguishable to the caller from the corpus
     not having it, which is how a retrieval gap becomes an unfalsifiable
     claim; the log line is what makes the drop visible to an operator.
+    The path moves to ``out["_missing"]`` so the caller can react
+    machine-readably, not just via log scraping.
     """
     from lies.mcp.read import read
 
@@ -554,10 +562,74 @@ def test_read_skips_failed_paths_and_logs_a_warning(
 
     assert "alpha/ok.md" in out
     assert "alpha/missing.md" not in out
+    assert out.get("_missing") == ["alpha/missing.md"], (
+        "an unresolvable path must surface on the wire so the calling "
+        "agent can see it, not just in the operator log"
+    )
     warnings = [r for r in caplog.records if r.levelname == "WARNING"]
     assert any("alpha/missing.md" in r.getMessage() for r in warnings), (
         f"the skipped path must be logged; got {[r.getMessage() for r in warnings]}"
     )
+
+
+def test_read_partial_batch_surfaces_unresolved_paths(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A 20-path read with 3 unresolved returns 17 bodies + ``_missing=[3]``.
+
+    The previous shape returned a 17-key dict and three
+    ``log.warning`` lines that did not reach the agent. The
+    missing list closes the silent-drop class — the caller
+    asked for 20 documents and can now see exactly which 3
+    were unresolvable, ordered, in input order.
+    """
+    from lies.mcp.read import read
+
+    bodies = {f"alpha/p{i:02d}.md": f"<body {i}>" for i in range(20)}
+    unresolved = {"alpha/p03.md", "alpha/p07.md", "alpha/p15.md"}
+
+    async def daemon_tool(name: str, arguments: dict[str, Any]) -> _Result:
+        path = arguments["file"]
+        if path in unresolved:
+            raise RuntimeError(f"Document not found: {path}")
+        return _get_result(f"qmd://{path}", bodies[path])
+
+    monkeypatch.setattr("lies.mcp.read.access", SimpleNamespace(daemon_tool=daemon_tool))
+
+    paths = sorted(bodies)
+    out = read.fn(paths=paths)
+
+    assert len(out) == 18, f"expected 17 bodies + 1 _missing key; got {len(out)}"
+    body_keys = [k for k in out if k != "_missing"]
+    assert sorted(body_keys) == sorted(p for p in paths if p not in unresolved)
+    assert out["_missing"] == ["alpha/p03.md", "alpha/p07.md", "alpha/p15.md"], (
+        "missing paths must appear in input order so a reader scanning "
+        "the response can match them against the request"
+    )
+
+
+def test_read_full_failure_still_raises_tool_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A batch that yields *no* bodies still raises — the loud failure.
+
+    ``ToolError("all reads failed")`` is the I-8 review's load-bearing
+    requirement: the partial case is a soft signal; the all-fail case
+    stays loud. A regression here would mean a partial failure was
+    quietly turned into a successful empty read.
+    """
+    from fastmcp.exceptions import ToolError
+
+    from lies.mcp.read import read
+
+    async def daemon_tool(name: str, arguments: dict[str, Any]) -> _Result:
+        raise RuntimeError(f"Document not found: {arguments['file']}")
+
+    monkeypatch.setattr("lies.mcp.read.access", SimpleNamespace(daemon_tool=daemon_tool))
+
+    with pytest.raises(ToolError) as excinfo:
+        read.fn(paths=["alpha/missing1.md", "alpha/missing2.md"])
+    assert "all reads failed" in str(excinfo.value)
 
 
 def test_read_empty_input_returns_empty_dict() -> None:
