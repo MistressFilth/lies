@@ -270,7 +270,13 @@
         "method": "Run twice back to back with `qmd bench tests/fixtures/qmd_bench.json --json` and compare every quality metric. This is the Task 1 method: three runs against an unchanged index gave bit-identical quality.",
         "runs": 2,
         "quality_metrics_bit_identical": true,
-        "verified_on": "2026-10-02"
+        "verified_on": "2026-10-02",
+        "per_query_check": {
+          "method": "Two back-to-back qmd bench runs; diff quality metrics and top_files across the per_query extract. Two runs are quality-bit-identical when the diff is empty (timestamps and latencies are excluded).",
+          "runs": 2,
+          "verified_on": "2026-10-03",
+          "verified_diff": "empty on quality metrics, expected_files, and top_files; timestamps and latency_ms differ between runs."
+        }
       },
       "superseded_baseline": {
         "recorded_against": {
@@ -329,7 +335,873 @@
         "orphan_hashes": 0,
         "orphan_rows": 0,
         "note": "The index state this block was measured against, so the count is checkable rather than asserted. Every one of the 5987 active documents has vectors; 0 documents lack them."
-      }
+      },
+      "per_query": [
+        {
+          "id": "cc-hooks-pretooluse",
+          "expected": "qmd://claude_code/hooks.md",
+          "backends": {
+            "bm25": {
+              "recall_at_1": 1,
+              "recall_at_3": 1,
+              "recall_at_5": 1,
+              "recall": 1,
+              "top_files": [
+                "qmd://claude_code/agent-sdk/hooks.md",
+                "qmd://claude_code/hooks-guide.md",
+                "qmd://claude_code/hooks.md",
+                "qmd://claude_code/agent-sdk/claude-code-features.md",
+                "qmd://claude_code/debug-your-config.md"
+              ]
+            },
+            "vector": {
+              "recall_at_1": 1,
+              "recall_at_3": 1,
+              "recall_at_5": 1,
+              "recall": 1,
+              "top_files": [
+                "qmd://claude_code/agent-sdk/hooks.md",
+                "qmd://claude_code/tools-reference.md",
+                "qmd://claude_code/hooks.md",
+                "qmd://claude_code/hooks-guide.md",
+                "qmd://claude_code/debug-your-config.md"
+              ]
+            },
+            "hybrid": {
+              "recall_at_1": 1,
+              "recall_at_3": 1,
+              "recall_at_5": 1,
+              "recall": 1,
+              "top_files": [
+                "qmd://claude_code/agent-sdk/hooks.md",
+                "qmd://claude_code/hooks.md",
+                "qmd://claude_code/hooks-guide.md",
+                "qmd://claude_code/sub-agents.md",
+                "qmd://claude_code/tools-reference.md"
+              ]
+            },
+            "full": {
+              "recall_at_1": 1,
+              "recall_at_3": 1,
+              "recall_at_5": 1,
+              "recall": 1,
+              "top_files": [
+                "qmd://claude_code/agent-sdk/hooks.md",
+                "qmd://claude_code/hooks.md",
+                "qmd://claude_code/settings-example.md",
+                "qmd://claude_code/monitoring-usage.md",
+                "qmd://claude_code/claude-directory.md"
+              ]
+            }
+          }
+        },
+        {
+          "id": "cc-sandbox-rules",
+          "expected": "qmd://claude_code/sandboxing.md",
+          "backends": {
+            "bm25": {
+              "recall_at_1": 1,
+              "recall_at_3": 1,
+              "recall_at_5": 1,
+              "recall": 1,
+              "top_files": [
+                "qmd://claude_code/sandboxing.md",
+                "qmd://claude_code/permissions.md",
+                "qmd://claude_code/settings-example.md",
+                "qmd://claude_code/permission-modes.md",
+                "qmd://claude_code/settings-reference.md"
+              ]
+            },
+            "vector": {
+              "recall_at_1": 0,
+              "recall_at_3": 1,
+              "recall_at_5": 1,
+              "recall": 1,
+              "top_files": [
+                "qmd://claude_code/settings-reference.md",
+                "qmd://claude_code/sandboxing.md",
+                "qmd://claude_code/glossary.md",
+                "qmd://claude_code/agent-sdk/python.md",
+                "qmd://claude_code/memory.md"
+              ]
+            },
+            "hybrid": {
+              "recall_at_1": 1,
+              "recall_at_3": 1,
+              "recall_at_5": 1,
+              "recall": 1,
+              "top_files": [
+                "qmd://claude_code/sandboxing.md",
+                "qmd://claude_code/settings-reference.md",
+                "qmd://claude_code/sandbox-environments.md",
+                "qmd://claude_code/permissions.md",
+                "qmd://claude_code/security.md"
+              ]
+            },
+            "full": {
+              "recall_at_1": 1,
+              "recall_at_3": 1,
+              "recall_at_5": 1,
+              "recall": 1,
+              "top_files": [
+                "qmd://claude_code/sandboxing.md",
+                "qmd://claude_code/settings-reference.md",
+                "qmd://claude_code/server-managed-settings.md",
+                "qmd://opencode/v2/docs/policies.md",
+                "qmd://claude_code/tools-reference.md"
+              ]
+            }
+          }
+        },
+        {
+          "id": "cc-subagents",
+          "expected": "qmd://claude_code/sub-agents.md",
+          "backends": {
+            "bm25": {
+              "recall_at_1": 1,
+              "recall_at_3": 1,
+              "recall_at_5": 1,
+              "recall": 1,
+              "top_files": [
+                "qmd://claude_code/agents.md",
+                "qmd://claude_code/agent-teams.md",
+                "qmd://pydantic_ai/harness/subagents/index.md",
+                "qmd://claude_code/common-workflows.md",
+                "qmd://claude_code/agent-sdk/subagents.md"
+              ]
+            },
+            "vector": {
+              "recall_at_1": 0,
+              "recall_at_3": 0,
+              "recall_at_5": 1,
+              "recall": 1,
+              "top_files": [
+                "qmd://claude_code/tools-reference.md",
+                "qmd://pydantic_ai/capabilities/third-party/index.md",
+                "qmd://claude_code/agent-sdk/subagents.md",
+                "qmd://claude_code/sub-agents.md",
+                "qmd://claude_code/agents.md"
+              ]
+            },
+            "hybrid": {
+              "recall_at_1": 1,
+              "recall_at_3": 1,
+              "recall_at_5": 1,
+              "recall": 1,
+              "top_files": [
+                "qmd://claude_code/agents.md",
+                "qmd://claude_code/sub-agents.md",
+                "qmd://pydantic_ai/harness/subagents/index.md",
+                "qmd://claude_code/agent-teams.md",
+                "qmd://claude_platform/build-with-claude/prompt-engineering/claude-prompting-best-practices.md"
+              ]
+            },
+            "full": {
+              "recall_at_1": 1,
+              "recall_at_3": 1,
+              "recall_at_5": 1,
+              "recall": 1,
+              "top_files": [
+                "qmd://claude_code/agents.md",
+                "qmd://claude_code/sub-agents.md",
+                "qmd://claude_code/agent-sdk/python.md",
+                "qmd://claude_code/common-workflows.md",
+                "qmd://pydantic_ai/harness/dynamic-workflow/index.md"
+              ]
+            }
+          }
+        },
+        {
+          "id": "cc-agent-teams",
+          "expected": "qmd://claude_code/agent-teams.md",
+          "backends": {
+            "bm25": {
+              "recall_at_1": 1,
+              "recall_at_3": 1,
+              "recall_at_5": 1,
+              "recall": 1,
+              "top_files": [
+                "qmd://claude_code/agent-teams.md",
+                "qmd://claude_code/agents.md",
+                "qmd://claude_code/cross-session-messaging.md",
+                "qmd://claude_code/sub-agents.md",
+                "qmd://claude_code/glossary.md"
+              ]
+            },
+            "vector": {
+              "recall_at_1": 1,
+              "recall_at_3": 1,
+              "recall_at_5": 1,
+              "recall": 1,
+              "top_files": [
+                "qmd://claude_code/agent-teams.md",
+                "qmd://claude_code/agents.md",
+                "qmd://claude_code/glossary.md",
+                "qmd://claude_code/pt-br.md",
+                "qmd://claude_code/sub-agents.md"
+              ]
+            },
+            "hybrid": {
+              "recall_at_1": 1,
+              "recall_at_3": 1,
+              "recall_at_5": 1,
+              "recall": 1,
+              "top_files": [
+                "qmd://claude_code/agent-teams.md",
+                "qmd://claude_code/agents.md",
+                "qmd://claude_code/glossary.md",
+                "qmd://claude_code/best-practices.md",
+                "qmd://claude_code/cross-session-messaging.md"
+              ]
+            },
+            "full": {
+              "recall_at_1": 1,
+              "recall_at_3": 1,
+              "recall_at_5": 1,
+              "recall": 1,
+              "top_files": [
+                "qmd://claude_code/agent-teams.md",
+                "qmd://claude_code/agents.md",
+                "qmd://claude_code/id.md",
+                "qmd://claude_code/desktop.md",
+                "qmd://claude_code/it.md"
+              ]
+            }
+          }
+        },
+        {
+          "id": "cc-context-window-paraphrase",
+          "expected": "qmd://claude_code/context-window.md",
+          "backends": {
+            "bm25": {
+              "recall_at_1": 0,
+              "recall_at_3": 0,
+              "recall_at_5": 0,
+              "recall": 0,
+              "top_files": [
+                "qmd://claude_code/prompt-caching.md",
+                "qmd://claude_code/remote-control.md",
+                "qmd://claude_code/agent-sdk/agent-loop.md",
+                "qmd://claude_code/workflows.md",
+                "qmd://claude_code/best-practices.md"
+              ]
+            },
+            "vector": {
+              "recall_at_1": 0,
+              "recall_at_3": 1,
+              "recall_at_5": 1,
+              "recall": 1,
+              "top_files": [
+                "qmd://pydantic_ai/core-concepts/agent/index.md",
+                "qmd://claude_code/errors.md",
+                "qmd://claude_code/context-window.md",
+                "qmd://claude_code/prompt-caching.md",
+                "qmd://claude_platform/release-notes/system-prompts/claude-opus-5.md"
+              ]
+            },
+            "hybrid": {
+              "recall_at_1": 0,
+              "recall_at_3": 0,
+              "recall_at_5": 0,
+              "recall": 1,
+              "top_files": [
+                "qmd://claude_code/prompt-caching.md",
+                "qmd://pydantic_ai/core-concepts/agent/index.md",
+                "qmd://claude_code/errors.md",
+                "qmd://claude_code/agent-sdk/agent-loop.md",
+                "qmd://claude_platform/api/beta.md"
+              ]
+            },
+            "full": {
+              "recall_at_1": 0,
+              "recall_at_3": 0,
+              "recall_at_5": 0,
+              "recall": 0,
+              "top_files": [
+                "qmd://claude_code/prompt-caching.md",
+                "qmd://pydantic_ai/core-concepts/agent/index.md",
+                "qmd://pydantic_ai/harness/compaction/index.md",
+                "qmd://claude_code/errors.md",
+                "qmd://claude_code/agent-sdk/agent-loop.md"
+              ]
+            }
+          }
+        },
+        {
+          "id": "mm-sequence-diagram",
+          "expected": "qmd://mermaid/packages/mermaid/src/docs/syntax/sequencediagram.md",
+          "backends": {
+            "bm25": {
+              "recall_at_1": 1,
+              "recall_at_3": 1,
+              "recall_at_5": 1,
+              "recall": 1,
+              "top_files": [
+                "qmd://mermaid/packages/mermaid/src/docs/syntax/sequencediagram.md",
+                "qmd://mermaid/packages/mermaid/src/docs/config/theming.md",
+                "qmd://mermaid/packages/mermaid/src/docs/syntax/usecase.md",
+                "qmd://mermaid/packages/mermaid/src/docs/intro/examples.md",
+                "qmd://mermaid/packages/mermaid/src/docs/syntax/swimlanes.md"
+              ]
+            },
+            "vector": {
+              "recall_at_1": 1,
+              "recall_at_3": 1,
+              "recall_at_5": 1,
+              "recall": 1,
+              "top_files": [
+                "qmd://mermaid/packages/mermaid/src/docs/syntax/sequencediagram.md",
+                "qmd://mermaid/packages/mermaid/src/docs/config/accessibility.md",
+                "qmd://mermaid/packages/mermaid/src/docs/syntax/zenuml.md",
+                "qmd://claude_platform/api/compliance.md"
+              ]
+            },
+            "hybrid": {
+              "recall_at_1": 1,
+              "recall_at_3": 1,
+              "recall_at_5": 1,
+              "recall": 1,
+              "top_files": [
+                "qmd://mermaid/packages/mermaid/src/docs/syntax/sequencediagram.md",
+                "qmd://mermaid/packages/mermaid/src/docs/syntax/zenuml.md",
+                "qmd://mermaid/packages/mermaid/src/docs/syntax/usecase.md",
+                "qmd://mermaid/packages/mermaid/src/docs/community/new-diagram-jison.md",
+                "qmd://mermaid/packages/mermaid/src/docs/config/accessibility.md"
+              ]
+            },
+            "full": {
+              "recall_at_1": 1,
+              "recall_at_3": 1,
+              "recall_at_5": 1,
+              "recall": 1,
+              "top_files": [
+                "qmd://mermaid/packages/mermaid/src/docs/syntax/sequencediagram.md",
+                "qmd://mermaid/packages/mermaid/src/docs/syntax/zenuml.md",
+                "qmd://mermaid/packages/mermaid/src/docs/syntax/usecase.md",
+                "qmd://mermaid/packages/mermaid/src/docs/config/theming.md",
+                "qmd://mermaid/packages/mermaid/src/docs/community/new-diagram-jison.md"
+              ]
+            }
+          }
+        },
+        {
+          "id": "mm-gantt",
+          "expected": "qmd://mermaid/packages/mermaid/src/docs/syntax/gantt.md",
+          "backends": {
+            "bm25": {
+              "recall_at_1": 1,
+              "recall_at_3": 1,
+              "recall_at_5": 1,
+              "recall": 1,
+              "top_files": [
+                "qmd://mermaid/packages/mermaid/src/docs/syntax/gantt.md",
+                "qmd://mermaid/packages/mermaid/src/docs/intro/examples.md"
+              ]
+            },
+            "vector": {
+              "recall_at_1": 1,
+              "recall_at_3": 1,
+              "recall_at_5": 1,
+              "recall": 1,
+              "top_files": [
+                "qmd://mermaid/packages/mermaid/src/docs/syntax/gantt.md",
+                "qmd://python/library/datetime.md",
+                "qmd://python/library-datetime.md",
+                "qmd://python/library-time.md",
+                "qmd://python/library/time.md"
+              ]
+            },
+            "hybrid": {
+              "recall_at_1": 1,
+              "recall_at_3": 1,
+              "recall_at_5": 1,
+              "recall": 1,
+              "top_files": [
+                "qmd://mermaid/packages/mermaid/src/docs/syntax/gantt.md",
+                "qmd://python/library/datetime.md",
+                "qmd://python/library-datetime.md",
+                "qmd://peps/pep-0371.md",
+                "qmd://pydantic_validation/docs/validation/latest/concepts/conversion-table/index.md"
+              ]
+            },
+            "full": {
+              "recall_at_1": 1,
+              "recall_at_3": 1,
+              "recall_at_5": 1,
+              "recall": 1,
+              "top_files": [
+                "qmd://mermaid/packages/mermaid/src/docs/syntax/gantt.md",
+                "qmd://python/library/datetime.md",
+                "qmd://mermaid/packages/mermaid/src/docs/intro/examples.md",
+                "qmd://python/library-datetime.md",
+                "qmd://peps/pep-0371.md"
+              ]
+            }
+          }
+        },
+        {
+          "id": "mm-flowchart",
+          "expected": "qmd://mermaid/packages/mermaid/src/docs/syntax/flowchart.md",
+          "backends": {
+            "bm25": {
+              "recall_at_1": 1,
+              "recall_at_3": 1,
+              "recall_at_5": 1,
+              "recall": 1,
+              "top_files": [
+                "qmd://mermaid/packages/mermaid/src/docs/syntax/flowchart.md",
+                "qmd://mermaid/packages/mermaid/src/docs/syntax/swimlanes.md",
+                "qmd://mermaid/packages/mermaid/src/docs/config/directives.md",
+                "qmd://mermaid/packages/mermaid/src/docs/community/layout-makers-guide.md",
+                "qmd://mermaid/packages/mermaid/src/docs/config/theming.md"
+              ]
+            },
+            "vector": {
+              "recall_at_1": 1,
+              "recall_at_3": 1,
+              "recall_at_5": 1,
+              "recall": 1,
+              "top_files": [
+                "qmd://mermaid/packages/mermaid/src/docs/syntax/flowchart.md",
+                "qmd://mermaid/packages/mermaid/src/docs/syntax/entityrelationshipdiagram.md",
+                "qmd://mermaid/packages/mermaid/src/docs/syntax/swimlanes.md",
+                "qmd://mermaid/packages/mermaid/src/docs/syntax/classdiagram.md",
+                "qmd://mermaid/packages/mermaid/src/docs/community/layout-makers-guide.md"
+              ]
+            },
+            "hybrid": {
+              "recall_at_1": 1,
+              "recall_at_3": 1,
+              "recall_at_5": 1,
+              "recall": 1,
+              "top_files": [
+                "qmd://mermaid/packages/mermaid/src/docs/syntax/flowchart.md",
+                "qmd://mermaid/packages/mermaid/src/docs/syntax/swimlanes.md",
+                "qmd://mermaid/packages/mermaid/src/docs/config/directives.md",
+                "qmd://mermaid/packages/mermaid/src/docs/community/layout-makers-guide.md",
+                "qmd://mermaid/packages/mermaid/src/docs/config/theming.md"
+              ]
+            },
+            "full": {
+              "recall_at_1": 1,
+              "recall_at_3": 1,
+              "recall_at_5": 1,
+              "recall": 1,
+              "top_files": [
+                "qmd://mermaid/packages/mermaid/src/docs/syntax/flowchart.md",
+                "qmd://mermaid/packages/mermaid/src/docs/syntax/swimlanes.md",
+                "qmd://mermaid/packages/mermaid/src/diagrams/agentflow/notes.md",
+                "qmd://mermaid/packages/mermaid/src/docs/community/layout-makers-guide.md",
+                "qmd://mermaid/packages/mermaid/src/docs/syntax/usecase.md"
+              ]
+            }
+          }
+        },
+        {
+          "id": "mm-class-diagram",
+          "expected": "qmd://mermaid/packages/mermaid/src/docs/syntax/classdiagram.md",
+          "backends": {
+            "bm25": {
+              "recall_at_1": 1,
+              "recall_at_3": 1,
+              "recall_at_5": 1,
+              "recall": 1,
+              "top_files": [
+                "qmd://mermaid/packages/mermaid/src/docs/syntax/classdiagram.md",
+                "qmd://mermaid/packages/mermaid/src/docs/intro/examples.md",
+                "qmd://mermaid/packages/mermaid/src/docs/config/accessibility.md"
+              ]
+            },
+            "vector": {
+              "recall_at_1": 1,
+              "recall_at_3": 1,
+              "recall_at_5": 1,
+              "recall": 1,
+              "top_files": [
+                "qmd://mermaid/packages/mermaid/src/docs/syntax/classdiagram.md",
+                "qmd://mermaid/readme-zh-cn.md",
+                "qmd://mermaid/packages/mermaid/src/docs/syntax/entityrelationshipdiagram.md",
+                "qmd://mermaid/packages/mermaid/src/docs/syntax/requirementdiagram.md",
+                "qmd://python/whatsnew-2-2.md"
+              ]
+            },
+            "hybrid": {
+              "recall_at_1": 1,
+              "recall_at_3": 1,
+              "recall_at_5": 1,
+              "recall": 1,
+              "top_files": [
+                "qmd://mermaid/packages/mermaid/src/docs/syntax/classdiagram.md",
+                "qmd://mermaid/packages/mermaid/src/docs/intro/examples.md",
+                "qmd://mermaid/packages/mermaid/src/docs/syntax/requirementdiagram.md",
+                "qmd://mermaid/packages/mermaid/src/docs/syntax/entityrelationshipdiagram.md",
+                "qmd://mermaid/readme-zh-cn.md"
+              ]
+            },
+            "full": {
+              "recall_at_1": 1,
+              "recall_at_3": 1,
+              "recall_at_5": 1,
+              "recall": 1,
+              "top_files": [
+                "qmd://mermaid/packages/mermaid/src/docs/syntax/classdiagram.md",
+                "qmd://mermaid/packages/mermaid/src/docs/intro/examples.md",
+                "qmd://mermaid/readme-zh-cn.md",
+                "qmd://mermaid/packages/mermaid/src/docs/syntax/requirementdiagram.md",
+                "qmd://mermaid/packages/mermaid/src/docs/config/accessibility.md"
+              ]
+            }
+          }
+        },
+        {
+          "id": "fm-tool-output-schema",
+          "expected": "qmd://fastmcp/servers/tools.md",
+          "backends": {
+            "bm25": {
+              "recall_at_1": 0,
+              "recall_at_3": 0,
+              "recall_at_5": 0,
+              "recall": 1,
+              "top_files": [
+                "qmd://claude_code/agent-sdk/structured-outputs.md",
+                "qmd://minimax/docs/api-reference/text-post.md",
+                "qmd://pydantic_ai/core-concepts/agent-spec/index.md",
+                "qmd://fastmcp/v3/cli/client.md",
+                "qmd://fastmcp/cli/client.md"
+              ]
+            },
+            "vector": {
+              "recall_at_1": 0,
+              "recall_at_3": 1,
+              "recall_at_5": 1,
+              "recall": 1,
+              "top_files": [
+                "qmd://pydantic_ai/core-concepts/output/index.md",
+                "qmd://fastmcp/servers/tools.md",
+                "qmd://fastmcp/v2/servers/tools.md",
+                "qmd://fastmcp/v3/servers/tools.md",
+                "qmd://claude_platform/api/beta.md"
+              ]
+            },
+            "hybrid": {
+              "recall_at_1": 1,
+              "recall_at_3": 1,
+              "recall_at_5": 1,
+              "recall": 1,
+              "top_files": [
+                "qmd://fastmcp/servers/tools.md",
+                "qmd://pydantic_ai/core-concepts/agent-spec/index.md",
+                "qmd://pydantic_ai/core-concepts/output/index.md",
+                "qmd://fastmcp/v2/servers/tools.md",
+                "qmd://fastmcp/v3/servers/tools.md"
+              ]
+            },
+            "full": {
+              "recall_at_1": 1,
+              "recall_at_3": 1,
+              "recall_at_5": 1,
+              "recall": 1,
+              "top_files": [
+                "qmd://fastmcp/servers/tools.md",
+                "qmd://pydantic_ai/core-concepts/agent-spec/index.md",
+                "qmd://pydantic_ai/api/pydantic-ai/tools/index.md",
+                "qmd://pydantic_ai/api/pydantic-ai/messages/index.md",
+                "qmd://claude_platform/agents-and-tools/tool-use/strict-tool-use.md"
+              ]
+            }
+          }
+        },
+        {
+          "id": "fm-server-context",
+          "expected": "qmd://fastmcp/servers/context.md",
+          "backends": {
+            "bm25": {
+              "recall_at_1": 1,
+              "recall_at_3": 1,
+              "recall_at_5": 1,
+              "recall": 1,
+              "top_files": [
+                "qmd://fastmcp/v2/servers/context.md",
+                "qmd://fastmcp/servers/context.md",
+                "qmd://fastmcp/v2/servers/middleware.md",
+                "qmd://fastmcp/getting-started/upgrading/from-mcp-sdk-v2.md",
+                "qmd://fastmcp/v3/servers/dependency-injection.md"
+              ]
+            },
+            "vector": {
+              "recall_at_1": 0,
+              "recall_at_3": 0,
+              "recall_at_5": 0,
+              "recall": 1,
+              "top_files": [
+                "qmd://fastmcp/v3/servers/authorization.md",
+                "qmd://fastmcp/servers/auth/authentication.md",
+                "qmd://fastmcp/servers/authorization.md",
+                "qmd://fastmcp/servers/auth/remote-oauth.md",
+                "qmd://claude_code/agent-sdk/secure-deployment.md"
+              ]
+            },
+            "hybrid": {
+              "recall_at_1": 0,
+              "recall_at_3": 0,
+              "recall_at_5": 0,
+              "recall": 1,
+              "top_files": [
+                "qmd://fastmcp/v3/servers/authorization.md",
+                "qmd://claude_code/agent-sdk/secure-deployment.md",
+                "qmd://fastmcp/servers/auth/authentication.md",
+                "qmd://fastmcp/getting-started/upgrading/from-mcp-sdk-v1.md",
+                "qmd://fastmcp/python-sdk/fastmcp-server-auth-middleware.md"
+              ]
+            },
+            "full": {
+              "recall_at_1": 0,
+              "recall_at_3": 0,
+              "recall_at_5": 0,
+              "recall": 0,
+              "top_files": [
+                "qmd://fastmcp/v3/servers/authorization.md",
+                "qmd://claude_code/agent-sdk/secure-deployment.md",
+                "qmd://fastmcp/v2/servers/middleware.md",
+                "qmd://fastmcp/python-sdk/fastmcp-server-auth-middleware.md",
+                "qmd://fastmcp/servers/dependency-injection.md"
+              ]
+            }
+          }
+        },
+        {
+          "id": "ty-parameters",
+          "expected": "qmd://typer/parameters.md",
+          "backends": {
+            "bm25": {
+              "recall_at_1": 0,
+              "recall_at_3": 0,
+              "recall_at_5": 0,
+              "recall": 0,
+              "top_files": [
+                "qmd://python/library/pdb.md",
+                "qmd://python/library-pdb.md",
+                "qmd://python/library/ftplib.md",
+                "qmd://python/library-ftplib.md",
+                "qmd://python/library/argparse.md"
+              ]
+            },
+            "vector": {
+              "recall_at_1": 0,
+              "recall_at_3": 1,
+              "recall_at_5": 1,
+              "recall": 1,
+              "top_files": [
+                "qmd://peps/pep-0457.md",
+                "qmd://typer/parameters.md",
+                "qmd://python/library-optparse.md",
+                "qmd://python/library/optparse.md",
+                "qmd://python/whatsnew/2-7.md"
+              ]
+            },
+            "hybrid": {
+              "recall_at_1": 0,
+              "recall_at_3": 1,
+              "recall_at_5": 1,
+              "recall": 1,
+              "top_files": [
+                "qmd://python/library-optparse.md",
+                "qmd://python/library/optparse.md",
+                "qmd://typer/parameters.md",
+                "qmd://python/library/argparse.md",
+                "qmd://peps/pep-0457.md"
+              ]
+            },
+            "full": {
+              "recall_at_1": 0,
+              "recall_at_3": 1,
+              "recall_at_5": 1,
+              "recall": 1,
+              "top_files": [
+                "qmd://python/library-optparse.md",
+                "qmd://python/library/optparse.md",
+                "qmd://typer/parameters.md",
+                "qmd://python/howto/argparse.md",
+                "qmd://python/howto-argparse.md"
+              ]
+            }
+          }
+        },
+        {
+          "id": "ty-file-objects",
+          "expected": "qmd://typer/file-objects.md",
+          "backends": {
+            "bm25": {
+              "recall_at_1": 0,
+              "recall_at_3": 0,
+              "recall_at_5": 0,
+              "recall": 1,
+              "top_files": [
+                "qmd://python/library/tempfile.md",
+                "qmd://python/library-tempfile.md",
+                "qmd://python/library/email-parser.md",
+                "qmd://python/library-email-parser.md",
+                "qmd://peps/pep-0214.md"
+              ]
+            },
+            "vector": {
+              "recall_at_1": 1,
+              "recall_at_3": 1,
+              "recall_at_5": 1,
+              "recall": 1,
+              "top_files": [
+                "qmd://typer/file-objects.md",
+                "qmd://python/reference-datamodel.md",
+                "qmd://python/reference/datamodel.md",
+                "qmd://python/library/fileformats.md",
+                "qmd://python/library-mailbox.md"
+              ]
+            },
+            "hybrid": {
+              "recall_at_1": 1,
+              "recall_at_3": 1,
+              "recall_at_5": 1,
+              "recall": 1,
+              "top_files": [
+                "qmd://typer/file-objects.md",
+                "qmd://python/reference-datamodel.md",
+                "qmd://python/reference/datamodel.md",
+                "qmd://python/library-mailbox.md",
+                "qmd://python/library/mailbox.md"
+              ]
+            },
+            "full": {
+              "recall_at_1": 1,
+              "recall_at_3": 1,
+              "recall_at_5": 1,
+              "recall": 1,
+              "top_files": [
+                "qmd://typer/file-objects.md",
+                "qmd://python/reference-datamodel.md",
+                "qmd://peps/pep-3116.md",
+                "qmd://python/library-tempfile.md",
+                "qmd://peps/pep-0214.md"
+              ]
+            }
+          }
+        },
+        {
+          "id": "mc-shell-permissions",
+          "expected": "qmd://opencode/v2/docs/permissions.md",
+          "backends": {
+            "bm25": {
+              "recall_at_1": 1,
+              "recall_at_3": 1,
+              "recall_at_5": 1,
+              "recall": 1,
+              "top_files": [
+                "qmd://opencode/v2/docs/permissions.md",
+                "qmd://claude_code/permissions.md",
+                "qmd://claude_code/hooks-guide.md",
+                "qmd://claude_code/permission-modes.md",
+                "qmd://claude_code/agent-sdk/permissions.md"
+              ]
+            },
+            "vector": {
+              "recall_at_1": 0,
+              "recall_at_3": 0,
+              "recall_at_5": 1,
+              "recall": 1,
+              "top_files": [
+                "qmd://claude_code/auto-mode-config.md",
+                "qmd://pydantic_ai/harness/shell/index.md",
+                "qmd://claude_code/hooks.md",
+                "qmd://claude_code/self-hosted-environments-configuration.md",
+                "qmd://claude_code/permissions.md"
+              ]
+            },
+            "hybrid": {
+              "recall_at_1": 0,
+              "recall_at_3": 1,
+              "recall_at_5": 1,
+              "recall": 1,
+              "top_files": [
+                "qmd://claude_code/self-hosted-environments-configuration.md",
+                "qmd://opencode/v2/docs/permissions.md",
+                "qmd://claude_code/auto-mode-config.md",
+                "qmd://claude_code/hooks.md",
+                "qmd://claude_code/permissions.md"
+              ]
+            },
+            "full": {
+              "recall_at_1": 0,
+              "recall_at_3": 1,
+              "recall_at_5": 1,
+              "recall": 1,
+              "top_files": [
+                "qmd://claude_code/self-hosted-environments-configuration.md",
+                "qmd://opencode/v2/docs/permissions.md",
+                "qmd://claude_code/hooks.md",
+                "qmd://claude_code/vs-code.md",
+                "qmd://claude_code/auto-mode-config.md"
+              ]
+            }
+          }
+        },
+        {
+          "id": "mc-custom-commands",
+          "expected": "qmd://opencode/v2/docs/commands.md",
+          "backends": {
+            "bm25": {
+              "recall_at_1": 1,
+              "recall_at_3": 1,
+              "recall_at_5": 1,
+              "recall": 1,
+              "top_files": [
+                "qmd://opencode/v2/docs/commands.md",
+                "qmd://opencode/v2/docs/agents.md",
+                "qmd://claude_code/claude-directory.md",
+                "qmd://claude_code/agent-sdk/plugins.md",
+                "qmd://claude_code/skills.md"
+              ]
+            },
+            "vector": {
+              "recall_at_1": 0,
+              "recall_at_3": 1,
+              "recall_at_5": 1,
+              "recall": 1,
+              "top_files": [
+                "qmd://claude_code/hooks.md",
+                "qmd://claude_code/agent-sdk/modifying-system-prompts.md",
+                "qmd://claude_code/commands.md",
+                "qmd://claude_code/cli-reference.md",
+                "qmd://fastmcp/python-sdk/fastmcp-server-server.md"
+              ]
+            },
+            "hybrid": {
+              "recall_at_1": 0,
+              "recall_at_3": 1,
+              "recall_at_5": 1,
+              "recall": 1,
+              "top_files": [
+                "qmd://claude_code/hooks.md",
+                "qmd://claude_code/commands.md",
+                "qmd://claude_code/mcp.md",
+                "qmd://opencode/v2/docs/commands.md",
+                "qmd://claude_code/agent-sdk/modifying-system-prompts.md"
+              ]
+            },
+            "full": {
+              "recall_at_1": 0,
+              "recall_at_3": 1,
+              "recall_at_5": 1,
+              "recall": 1,
+              "top_files": [
+                "qmd://claude_code/hooks.md",
+                "qmd://claude_code/commands.md",
+                "qmd://opencode/v2/docs/commands.md",
+                "qmd://claude_code/scheduled-tasks.md",
+                "qmd://fastmcp/cli/client.md"
+              ]
+            }
+          }
+        }
+      ]
     },
     "lies_gate": {
       "corpus_documents": 5992,
@@ -430,6 +1302,6 @@
         }
       ]
     },
-    "lies_gate_note": "This slot measures LIES as it actually routes, via the daemon's `query` tool with `collections` pushed into qmd. The shape and the populated keys are fixed by the generator (corpus_documents, qmd_version, method, queries_total, queries_passing), and `test_lies_gate_slot_is_reserved` asserts the slot is no longer null. Two queries do not pass: `cc-context-window-paraphrase` (paraphrase, top hit `prompt-caching.md`, the expected `context-window.md` is not in the top-1) and `mc-custom-commands` (multi-collection, top hit `claude_code/hooks.md`, the expected `opencode/v2/docs/commands.md` is at rank 3 in `qmd bench`'s top-3 for the same fixture). Both miss in the `qmd bench` `recall_at_1` summary too, so the routing change did not regress them; the bench and the gate agree at 13/15. `corpus_documents` is 5992 here, up from the recorded 5987 in the `qmd_bench` baseline; a corpus change is a corpus change, not a routing regression, but the figure is recorded so a future delta can be cross-checked. The `qmd_bench` block measures qmd's own four backends in-process (no daemon, no per-query collection scope, no LIES ground() fan-out), so no LIES routing change can move it; only `lies_gate` moves when LIES moves. ADDED 2026-10-02: a qmd_bench number moved once and no LIES change was behind it. `qmd bench` runs in-process (dist/cli/qmd.js `case \"bench\"` imports ../bench/bench.js, which has no daemon, no MCP server and no subprocess), so every change this branch makes is provably off its path. The index changed instead: 1566 orphan hashes -> 0 and 91070 -> 48984 vectors, across the same 5987 documents, all of them still vectorised. The qmd_bench block was re-recorded against that index and verified reproducible (two runs, every quality metric bit-identical); the superseded figures and the index state they belong to are kept in `qmd_bench.superseded_baseline`. The lesson for whoever reads the next delta: a change in `qmd_bench` means the index or qmd moved; a change in `lies_gate` means LIES moved."
+    "lies_gate_note": "This slot measures LIES as it actually routes, via the daemon's `query` tool with `collections` pushed into qmd. The shape and the populated keys are fixed by the generator (corpus_documents, qmd_version, method, queries_total, queries_passing), and `test_lies_gate_slot_is_reserved` asserts the slot is no longer null. Two queries do not pass. Reading the agreement with qmd bench requires naming the k and the backend, because the comparison is per-query, per-backend, and the summary `avg_recall_at_k` numbers are averages across all 15 (they reflect but do not break out the misses). LIES routes a `lex + vec` blend (`search.py:325-328`), which is closest to qmd's `hybrid` and `full` backends; that is the comparison that is load-bearing. Per the `qmd_bench.per_query` block (added 2026-10-03, two runs quality-bit-identical): for `cc-context-window-paraphrase` the expected `context-window.md` is at rank 3 in `vector` (recall_at_1=0, recall_at_3=1) and at rank 5 in `hybrid` (recall_at_5=1), and is missing from `bm25`/`full` top-10 entirely (recall=0); the LIES gate's top hit is `prompt-caching.md`, also a top-1 miss. For `mc-custom-commands` the expected `opencode/v2/docs/commands.md` is at rank 1 under `bm25` (recall_at_1=1) — the only backend that hits it — and at rank 3 in `vector`/`hybrid` (recall_at_1=0, recall_at_3=1) and rank 2 in `full`; the LIES gate's top hit is `claude_code/hooks.md`, also a top-1 miss. The bench and the gate agree at top-1 against the LIES-relevant backends (`hybrid`/`full`) for both queries; the disagreement under `bm25` is not in scope because LIES does not route a bm25-only query. `corpus_documents` is 5992 here, up from the recorded 5987 in the `qmd_bench` baseline; a corpus change is a corpus change, not a routing regression, but the figure is recorded so a future delta can be cross-checked. The `qmd_bench` block measures qmd's own four backends in-process (no daemon, no per-query collection scope, no LIES ground() fan-out), so no LIES routing change can move it; only `lies_gate` moves when LIES moves. ADDED 2026-10-02: a qmd_bench number moved once and no LIES change was behind it. `qmd bench` runs in-process (dist/cli/qmd.js `case \"bench\"` imports ../bench/bench.js, which has no daemon, no MCP server and no subprocess), so every change this branch makes is provably off its path. The index changed instead: 1566 orphan hashes -> 0 and 91070 -> 48984 vectors, across the same 5987 documents, all of them still vectorised. The qmd_bench block was re-recorded against that index and verified reproducible (two runs, every quality metric bit-identical); the superseded figures and the index state they belong to are kept in `qmd_bench.superseded_baseline`. The lesson for whoever reads the next delta: a change in `qmd_bench` means the index or qmd moved; a change in `lies_gate` means LIES moved. ADDED 2026-10-03: `qmd_bench.per_query` carries the per-backend `recall_at_1`/`recall_at_3`/`recall_at_5` and the top-5 hits per query, so the comparison in `lies_gate` is checkable from the artifact rather than from prose. The previous version of this note asserted `Both miss in qmd bench's recall_at_1 summary too` without naming the backend, which conflated an average into a per-query claim; the comparison is now stated per-backend (`hybrid`/`full`, the LIES-relevant blends) and is verifiable against `qmd_bench.per_query[id].backends.<backend>.recall_at_1`."
   }
 }
