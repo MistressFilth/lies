@@ -224,3 +224,96 @@ def test_qmd_query_enforces_the_envelope_limit(monkeypatch: pytest.MonkeyPatch) 
     # tail of the argv list.
     args = seen["args"]
     assert args[-3:-1] == ["--limit", "5"], args
+
+
+def test_a_scoped_query_filters_before_it_slices(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A collection filter must narrow the result set *before* the top-N slice.
+
+    ``qmd_query`` ranks globally, slices to ``limit``, and only then drops
+    the rows outside ``collection_filter``. That ordering makes the
+    filter and the limit fight each other: rows the caller asked for are
+    discarded by the slice before the filter ever sees them, so a scoped
+    caller gets fewer rows than it asked for even when the corpus has
+    them.
+
+    It is the same defect Task 4 exists to remove, one layer down. The
+    push-down fixed it on the daemon path; the CLI path still ranks
+    globally and filters afterwards.
+
+    The worse half is the failure mode, not the shortfall. With every
+    in-scope row ranked below the slice, ``filtered`` comes back empty
+    and ``qmd_query`` raises ``QmdNoResultsError`` — a claim that the
+    corpus has no hits, issued for a query whose hits are sitting at
+    rank 6. The librarian contract tells the model that flag means the
+    corpus is empty for this question.
+
+    Both orderings return 2 here. Only one of them gets there honestly.
+    """
+    import json
+    from types import SimpleNamespace
+
+    rows = [{"path": f"claude_code/p{i}.md", "title": f"P{i}"} for i in range(20)]
+    # Both mermaid rows rank *below* a limit=5 slice, so slicing first
+    # loses every one of them.
+    rows.append({"path": "mermaid/flowchart.md", "title": "Flowchart"})
+    rows.append({"path": "mermaid/sequence.md", "title": "Sequence"})
+
+    def _fake_qmd(args, *, cwd, timeout, **kwargs):  # noqa: ARG001
+        return SimpleNamespace(
+            args=tuple(args),
+            returncode=0,
+            stdout=json.dumps(rows).encode(),
+            stderr=b"",
+        )
+
+    monkeypatch.setattr("lies.qmd.cli._run_qmd", _fake_qmd)
+    monkeypatch.setattr("lies.library.registry.library_git_root", lambda: Path("/tmp/fake"))
+
+    out = qmd_query(
+        cwd=Path("/tmp/fake"),
+        question="anything",
+        limit=5,
+        collection_filter={"mermaid"},
+        timeout=10,
+    )
+
+    assert len(out) == 2, (
+        f"a scoped query must return the in-scope rows, not the in-scope "
+        f"subset of a global top-{5}; got {len(out)} of 2"
+    )
+    assert {hit["path"] for hit in out} == {"mermaid/flowchart.md", "mermaid/sequence.md"}
+
+
+def test_a_scoped_query_still_honours_the_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The fix must not become "the limit stopped applying to scoped calls".
+
+    The other half of the same ordering bug: moving the slice after the
+    filter must not turn ``limit`` into a no-op whenever a filter is
+    present. Ten mermaid rows and ``limit=3`` returns three.
+    """
+    import json
+    from types import SimpleNamespace
+
+    rows = [{"path": f"mermaid/m{i}.md", "title": f"M{i}"} for i in range(10)]
+    rows += [{"path": f"claude_code/p{i}.md", "title": f"P{i}"} for i in range(10)]
+
+    def _fake_qmd(args, *, cwd, timeout, **kwargs):  # noqa: ARG001
+        return SimpleNamespace(
+            args=tuple(args),
+            returncode=0,
+            stdout=json.dumps(rows).encode(),
+            stderr=b"",
+        )
+
+    monkeypatch.setattr("lies.qmd.cli._run_qmd", _fake_qmd)
+    monkeypatch.setattr("lies.library.registry.library_git_root", lambda: Path("/tmp/fake"))
+
+    out = qmd_query(
+        cwd=Path("/tmp/fake"),
+        question="anything",
+        limit=3,
+        collection_filter={"mermaid"},
+        timeout=10,
+    )
+
+    assert len(out) == 3, f"limit=3 must still apply to a scoped query; got {len(out)}"

@@ -601,14 +601,27 @@ def qmd_query(
     # overriding the value outright. The CLI's own
     # ``_run_qmd`` documents the same: ``qmd_query(limit=5)`` returns
     # 20 rows. The LIES envelope cannot pass through a limit the
-    # backend ignored; the slice here is the load-bearing half, and
-    # the daemon path forwards ``limit`` to a backend that honours
-    # it (``server.js:230``). The slice is duplicated on every path
-    # because every call site that hands ``limit`` to ``qmd_query``
-    # depends on it.
-    normalized = normalized[:limit]
+    # backend ignored, so the slice is the load-bearing half, and the
+    # daemon path forwards ``limit`` to a backend that honours it
+    # (``server.js:230``).
+    #
+    # The slice is applied *after* the collection filter, never before.
+    # Slicing first makes the limit and the filter fight: rows the
+    # caller asked for are discarded by the top-N before the filter
+    # ever sees them, so a scoped caller gets fewer rows than it asked
+    # for even when the corpus has them. The failure mode is worse than
+    # a shortfall — with every in-scope row ranked below the cut,
+    # ``filtered`` comes back empty and the call raises
+    # ``QmdNoResultsError``, a claim that the corpus has no hits for
+    # hits that were sitting at rank 6. The librarian contract tells
+    # the model that flag means the corpus is empty for this question.
+    #
+    # This is the same defect the daemon-side push-down removed, and
+    # the CLI path still ranks globally, so it still needs the
+    # ordering. Pinned by ``test_a_scoped_query_filters_before_it_slices``
+    # and ``test_a_scoped_query_still_honours_the_limit``.
     if collection_filter is None:
-        return normalized
+        return normalized[:limit]
     allowed = collection_filter
     filtered: list[dict[str, Any]] = []
     for hit in normalized:
@@ -634,7 +647,7 @@ def qmd_query(
             f"qmd query returned no results matching collection filter "
             f"{sorted(allowed)!r} for: {question!r}"
         )
-    return filtered
+    return filtered[:limit]
 
 
 def _normalize_qmd_result(item: Any) -> dict[str, Any]:
