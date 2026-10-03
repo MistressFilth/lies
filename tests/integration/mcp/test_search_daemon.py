@@ -1,25 +1,19 @@
 """The search tool against the live qmd daemon, not against a stub.
 
 Companion to ``test_read_daemon.py``: where read's integration test
-checks the *body* the tool returns, search's checks the *envelope*
-the tool returns. The unit suite pins the wire shape and the
-contract; the integration suite pins that the wire shape and the
-contract hold against a daemon that is doing the actual ranking
-and reranking.
+checks the *body* the tool returns, search's checks the *envelope*.
+The unit suite pins the wire shape and the contract; the
+integration suite pins that they hold against a daemon doing the
+actual ranking and reranking.
 
-Two properties are checked here, because the unit tests cannot
-verify them:
-
-- The collection filter is a true push-down. A multi-collection
-  query against a real corpus returns in-scope rows from every
-  named collection; the unit test stubs the daemon and so cannot
-  tell whether the daemon honours the filter or whether the
-  envelope is doing the post-filtering the spec is trying to
-  eliminate.
-- The hit shape is what the F19 citation contract expects. Each
-  hit's ``path`` is a ``<collection>/<page>`` form (e.g.
-  ``claude_code/hooks.md``), not a docid, and the path's first
-  segment is in the resolved scope.
+Two properties only the integration suite can verify: the
+collection filter is a true push-down (the daemon honours the
+filter rather than the envelope doing post-filtering), and the
+hit shape is what the citation contract expects — each hit's
+``path`` is a ``<collection>/<page>`` form, never a docid.
+``docid`` is ``documents.hash[0:6]`` resolved by
+``LIKE '<prefix>%' LIMIT 1`` with no ``ORDER BY``; three live
+prefix collisions exist among 5987 active documents.
 """
 
 from __future__ import annotations
@@ -36,8 +30,8 @@ def test_scoped_search_returns_rows_from_every_named_collection() -> None:
     dropped in Python, so a multi-collection query could return
     rows from only one of the named collections even when all
     three had matches. The daemon's ``collections`` parameter is
-    a true push-down; this test pins that property against the
-    live corpus, not a stub.
+    a true push-down; this pins that property against the live
+    corpus.
     """
     import lies.mcp.search as search_module
     from lies.mcp.search import search
@@ -71,13 +65,10 @@ def test_scoped_search_returns_rows_from_every_named_collection() -> None:
 def test_hits_carry_a_path_never_a_docid() -> None:
     """Every hit's path is a ``<collection>/<page>`` form, never a docid.
 
-    ``docid`` is ``documents.hash[0:6]`` resolved by
-    ``LIKE '<prefix>%' LIMIT 1`` with no ``ORDER BY``; three live
-    collisions exist among 5987 active documents. A hit keyed by
-    docid silently returns the wrong file on collision. The
-    daemon's ``query`` tool always sends ``file`` as
-    ``displayPath``; this test pins that the contract holds
-    against the live corpus, not a stub.
+    A hit keyed by docid silently returns the wrong file on
+    collision. The daemon's ``query`` tool always sends ``file``
+    as ``displayPath``; this pins that the contract holds against
+    the live corpus.
     """
     import lies.library.registry as _registry
     import lies.mcp.search as search_module
@@ -94,10 +85,6 @@ def test_hits_carry_a_path_never_a_docid() -> None:
         assert not hit["path"].startswith("#"), (
             f"hit path is a docid, not a file path: {hit['path']!r}"
         )
-        # Daemon `file` should already be a path, and the envelope
-        # should set `path` to the same value. The two assertions
-        # below are the unit-level wire shape; this is the
-        # integration-level confirmation.
         assert "/" in hit["path"], f"hit path is not collection/page form: {hit['path']!r}"
 
 
@@ -108,9 +95,8 @@ def test_unknown_collection_is_reported_not_silently_widened() -> None:
     and no error. The pre-check in ``_search_impl`` asks the
     daemon's ``status`` tool for the real collection list and
     surfaces an unknown name in ``unknown_tags`` instead of
-    returning an empty ``hits`` (which a caller would read as
-    "the corpus has nothing" — a false claim about the corpus
-    for a question that named something absent).
+    returning empty ``hits`` (which a caller would read as
+    "the corpus has nothing" — a false claim about the corpus).
     """
     import lies.library.registry as _registry
     import lies.mcp.search as search_module
