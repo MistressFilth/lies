@@ -69,8 +69,9 @@ class LibrarianDeps:
 
     question: str
     tag_expr: Any  # TagExpr | None AST; Any at runtime so pydantic-ai's
-    # TypeAdapter doesn't try to build a schema for TagExpr (a stdlib
-    # @dataclass, not pydantic).
+    # TypeAdapter doesn't try to build a schema for the AST (a stdlib
+    # base class whose concrete variants are frozen dataclasses, not
+    # pydantic models).
     exclude_expr: Any  # TagExpr | None AST (Task 3); Any at runtime so
     # pydantic-ai's TypeAdapter doesn't try to build a schema for
     # TagExpr (a stdlib @dataclass, not pydantic).
@@ -130,8 +131,9 @@ class LibrarianOutput:
     """
 
     tag_expr: Any  # TagExpr | None AST; Any at runtime so pydantic-ai's
-    # TypeAdapter doesn't try to build a schema for TagExpr (a stdlib
-    # @dataclass, not pydantic).
+    # TypeAdapter doesn't try to build a schema for the AST (a stdlib
+    # base class whose concrete variants are frozen dataclasses, not
+    # pydantic models).
     exclude_expr: Any  # TagExpr | None AST (Task 3); Any at runtime so
     # pydantic-ai's TypeAdapter doesn't try to build a schema for
     # TagExpr (a stdlib @dataclass, not pydantic).

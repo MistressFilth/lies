@@ -308,7 +308,13 @@ def _live_index_snapshot() -> tuple[frozenset[str], int] | None:
 
 @pytest.fixture(scope="session", autouse=True)
 def _live_qmd_index_unchanged(request: pytest.FixtureRequest) -> Iterator[None]:
-    """Assert the live qmd index is byte-identical before and after this file.
+    """Assert the live qmd index is unchanged before and after this file.
+
+    "Unchanged" means two aggregates — the collection-name set and the
+    count of ``documents WHERE active = 1`` — not a byte comparison. Two
+    runs that embed nothing into it produce byte-identical files anyway;
+    the aggregates are what a leak would actually move, and comparing
+    bytes would be a claim this does not make.
 
     The fixture's qmd subprocesses inherit the redirected
     ``XDG_CACHE_HOME`` from ``_isolated_xdg`` and write to
@@ -404,22 +410,31 @@ def _unseed_qmd(wiki: Wiki) -> None:
         except Exception as exc:  # noqa: BLE001 - teardown must not mask test failures
             leftovers.append(f"{coll}: removal failed ({type(exc).__name__}: {exc})")
             continue
-        if coll in _registered_collections():
+        if coll in _registered_collections(wiki.data_root):
             leftovers.append(f"{coll}: still registered after removal")
     if leftovers:
         pytest.fail(
-            "the fixture left collections in the shared qmd index: "
-            + "; ".join(leftovers)
-            + ". The next run of this file would query documents that a "
-            "later `qmd update` reaps, and time out on them."
+            "the fixture left collections registered in this test's own "
+            "qmd index: " + "; ".join(leftovers) + ". That index is the "
+            "per-test throwaway under tmp_path (qmd resolves it from "
+            "XDG_CACHE_HOME), not the live one -- so this is hygiene "
+            "within the run, not a leak into the operator's index, which "
+            "the session-scoped _live_qmd_index_unchanged guard covers."
         )
 
 
-def _registered_collections() -> set[str]:
-    """The collection names currently registered in qmd's global index."""
+def _registered_collections(cwd: Path) -> set[str]:
+    """Collection names registered in the qmd index that ``cwd`` resolves to.
+
+    Takes the cwd explicitly and the caller passes the *same* ``wiki.data_root``
+    that seeding and removal use. Reading ``Path.cwd()`` here instead would
+    query a different root than the one being written to, and the check
+    would silently pass on an empty answer -- a safety check that can
+    never fail is worse than none, because it reads as one.
+    """
     from lies.qmd.cli import _run
 
-    result = _run(["collection", "list"], cwd=Path.cwd(), timeout=120)
+    result = _run(["collection", "list"], cwd=cwd, timeout=120)
     if result.returncode != 0:
         return set()
     return {
