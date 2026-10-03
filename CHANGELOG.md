@@ -4,6 +4,77 @@ All notable changes to LIES are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/) adapted for
 [Semantic Versioning](https://semver.org/).
 
+## [0.45.1] - 2026-10-03
+
+### Fixed
+
+- **`mcp.search._post_query` — the `timeout` parameter is no longer dead.**
+  The seam (`lies.qmd.access.daemon_tool`) now accepts a per-call
+  `timeout=` keyword and forwards it to `fastmcp.Client.call_tool`
+  as the per-request MCP read deadline. `_post_query` threads
+  `_current_timeout()` through, so a `LIES_QMD_FANOUT_TIMEOUT` change
+  takes effect on the next daemon call instead of waiting for the
+  cached httpx client to be invalidated by a `LIES_QMD_URL` change.
+  The previous shape implied a guarantee the code did not provide;
+  the CLI path read its deadline per call and the daemon path did
+  not. Both paths now agree. The cached client's cache key is the
+  URL only — the deadline is the per-call argument, not part of
+  the key. Pinned by
+  `tests/unit/qmd/test_access.py::test_a_per_call_timeout_is_forwarded_to_call_tool`
+  and friends.
+
+- **`mcp.grounding._fanout_collections` — route through the qmd access seam.**
+  The previous shape was a per-collection CLI subprocess fan-out
+  with a consecutive-error counter that fired a manual `recycle()`
+  on threshold. The seam's typed errors (`QmdDaemonUnavailable`,
+  `QmdDaemonWedged`) now reach the archivist unchanged — a
+  process failure is no longer folded into `no_coverage=True`,
+  which would be a false claim about the corpus. The fan-out is
+  one daemon `query` against the resolved collection list with
+  the daemon's `collections` push-down; the push-down is exact,
+  so one round trip replaces N. The pre-#106 VRAM rationale (per-
+  collection subprocess fan-out spiked the embedding model under
+  OR-scoped queries) is gone with the per-collection loop, and
+  the corresponding `AGENTS.md` paragraph is rewritten to name
+  the daemon path. Pinned by
+  `tests/unit/mcp/test_ground.py::test_fanout_unscoped_routes_through_the_daemon_seam`
+  and the typed-error propagation tests.
+
+- **Stale orphan counts in `qmd.integrity.index_orphans` docstring.**
+  The 2026-10-01 probe baseline (1566 / 41332) and the 2026-10-03
+  post-cleanup reading (4 / 4) are now both labeled as dated
+  measurements rather than quoting the older number as the live
+  state. The probe numbers remain in `tests/fixtures/qmd_bench.json`
+  with the full historical context (re-baselined 2026-10-02 with
+  two quality-bit-identical runs).
+
+- **Stale tool-name vocabulary in `qmd.mcp_fallback` module docstring.**
+  The fallback's tool surface (only `wiki_search` and `wiki_read`
+  for the agent's retrieval) is now described in the seam's
+  vocabulary instead of dangling references to `qmd_query` /
+  `qmd_get` / `qmd_status` / `qmd_update` that the seam does not
+  re-implement.
+
+- **Stale `QmdTimeoutError` narrative in `mcp.search._post_query`**
+  — the docstring's "A timeout on the daemon side surfaces as
+  `QmdTimeoutError`" was the pre-#106 CLI behaviour. The seam
+  raises `QmdDaemonWedged` (recycle-and-raise) for a daemon-side
+  timeout, and `QmdTimeoutError` is a CLI-only class. The
+  `except QmdTimeoutError` clauses are kept as defensive
+  fallbacks for a future CLI re-route, with the docstring
+  updated to say so.
+
+- **Stale framing in `tests/unit/qmd/test_lock.py`**
+  — three tests at lines 32-62 assert on the module constants
+  `_LOCK_PATH` / `_PID_PATH` / `_STATE_PATH`, which are frozen
+  at import. The acquire/release path now resolves per
+  acquisition via `_lock_paths()`, so the constants are no
+  longer on the locking hot path. They are still used by
+  `_register_holder` for the heartbeat siblings, and the test
+  docstring is updated to name the constant's *real* use
+  (the heartbeat writers), so a future reader does not assume
+  the constants are the live lock path.
+
 ## [Unreleased]
 
 ### Added

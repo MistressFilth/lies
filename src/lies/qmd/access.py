@@ -127,6 +127,14 @@ class QmdDaemonWedged(RuntimeError):
 # that opened it, and this seam is called from `asyncio.run` bridges that
 # each get a fresh loop. A cached session would outlive its loop; a
 # cached client rebuilt from a dead one is merely a small allocation.
+#
+# Cache key is the daemon URL. The cached client is rebuilt on a
+# ``LIES_QMD_URL`` change (``_reset_client`` is exported for tests
+# and operator tooling); the read deadline is *not* part of the key
+# — a deadline change is read on the next call via the per-call
+# ``timeout=`` argument to :func:`daemon_tool`, which forwards to
+# ``fastmcp.Client.call_tool`` and overrides the client-level
+# deadline for that call only.
 
 _client: fastmcp.Client | None = None
 _client_url: str | None = None
@@ -295,8 +303,27 @@ def classify_call_error(exc: Exception) -> tuple[str, bool]:
 # --- the seam ----------------------------------------------------------
 
 
-async def daemon_tool(name: str, arguments: dict[str, Any]) -> Any:
+async def daemon_tool(
+    name: str,
+    arguments: dict[str, Any],
+    *,
+    timeout: float | None = None,
+) -> Any:
     """Call one qmd daemon tool, recovering per the taxonomy above.
+
+    ``timeout``, when set, is the per-call read deadline in seconds —
+    forwarded to ``fastmcp.Client.call_tool`` as its ``timeout=``
+    keyword, which threads through to the per-request MCP read
+    timeout (``read_timeout_seconds`` in
+    ``fastmcp/client/mixins/tools.py``). ``None`` falls back to the
+    client-level deadline baked into the cached httpx client at
+    factory construction (``mcp._default_read_timeout_s()``); a
+    explicit ``timeout`` wins over it. The seam and the CLI's
+    ``_run_qmd`` both honour the same env var
+    (``LIES_QMD_FANOUT_TIMEOUT``) and read it at call time — a value
+    the CLI path would have applied is now applied here too, so a
+    deadline change takes effect on the next call rather than waiting
+    for the cached client to be invalidated.
 
     Returns the raw ``CallToolResult``. Callers read ``.content`` —
     ``get``/``multi_get`` answer with a content block and ``.data`` is
@@ -335,7 +362,7 @@ async def daemon_tool(name: str, arguments: dict[str, Any]) -> Any:
 
     client = _daemon_client(url)
     try:
-        return await _call(client, name, arguments)
+        return await _call(client, name, arguments, timeout=timeout)
     except Exception as exc:
         action, retryable = classify_call_error(exc)
         if action == "passthrough":
@@ -418,15 +445,43 @@ async def daemon_tool(name: str, arguments: dict[str, Any]) -> Any:
             ) from retry_exc
 
 
-async def _call(client: fastmcp.Client, name: str, arguments: dict[str, Any]) -> Any:
+async def _call(
+    client: fastmcp.Client,
+    name: str,
+    arguments: dict[str, Any],
+    *,
+    timeout: float | None = None,
+) -> Any:
     """One tool call, with the daemon's own error text surfaced.
 
     ``raise_on_error=False`` so a tool error arrives as a result to read
     rather than an exception to unwrap; the text qmd wrote is more
     useful than any phrasing this module could add.
+
+    ``timeout``, when set, is the per-call read deadline in seconds
+    forwarded to ``client.call_tool``. ``None`` defers to the
+    client-level deadline built into the cached httpx client at
+    factory construction (see :func:`_daemon_client`).
     """
     async with client:
-        result = await client.call_tool(name, arguments, raise_on_error=False)
+        # ``timeout=None`` is intentionally NOT forwarded: the cached
+        # client's read deadline is the one that applies, and a wire
+        # capture of ``timeout=None`` would lie to a reader about
+        # whether the seam intends to override. ``None`` means "do
+        # nothing extra" rather than "send a None".
+        if timeout is None:
+            result = await client.call_tool(
+                name,
+                arguments,
+                raise_on_error=False,
+            )
+        else:
+            result = await client.call_tool(
+                name,
+                arguments,
+                raise_on_error=False,
+                timeout=timeout,
+            )
     if getattr(result, "is_error", False):
         raise RuntimeError(f"qmd tool {name!r} failed: {_result_text(result)}")
     return result

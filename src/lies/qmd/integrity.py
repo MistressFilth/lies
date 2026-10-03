@@ -131,12 +131,13 @@ def index_orphans(db: Path) -> OrphanReport:
     embedding chunks``; the hash count is the distinct documents
     the cleanup affects.
 
-    Live readings against ``$XDG_CACHE_HOME/qmd/index.sqlite`` over
-    the 2026-10-03 session — 4 / 4 (probe-time, after the operator's
-    unrelated sync re-created 4 single-row orphans), following the
-    partner's ``qmd cleanup`` earlier that took 91070 → 48984
-    vectors. The test that pins the contract uses a throwaway index
-    with a known shape; live values are a reading, not an assertion.
+    Live readings against ``$XDG_CACHE_HOME/qmd/index.sqlite``
+    vary; the **2026-10-01 probe baseline** (pre-``qmd cleanup``)
+    was 1566 orphan hashes spanning 41332 ``content_vectors`` rows.
+    The **2026-10-03 post-cleanup reading** was 4 / 4 (after the
+    partner's ``qmd cleanup`` and the operator's unrelated sync).
+    The test that pins the contract uses a throwaway index with a
+    known shape; live values are a reading, not an assertion.
     """
     with closing(open_readonly(db)) as conn:
         cur = conn.execute(

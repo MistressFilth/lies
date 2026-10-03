@@ -1,12 +1,24 @@
-"""Tests for src/lies/mcp/grounding.py — Task 1 fan-out wiring.
+"""Tests for src/lies/mcp/grounding.py — daemon-based fan-out.
 
 Pins the unscoped-query brick-wall fix: ``ArchivistDigest.no_library``
-additive field, ``_fanout_unscoped()`` parallel dispatcher, and the
-``no_library=True`` fast-path when no library collections are
-registered. The fan-out path replaces the F18 librarian LLM round-trip
-on unscoped queries (which timed out at ~42s / returned 0 citations
-per session 2505630b's reproduction) with direct qmd fan-out across
-registered library collections.
+additive field, ``_fanout_unscoped()`` single-batch daemon
+dispatcher, and the ``no_library=True`` fast-path when no library
+collections are registered. The fan-out path replaces the F18
+librarian LLM round-trip on unscoped queries (which timed out at
+~42s / returned 0 citations per session 2505630b's reproduction)
+with a single daemon ``query`` against the resolved collection set
+via ``lies.qmd.access.daemon_tool`` — the daemon's
+``collections`` parameter is a true push-down, so a hybrid search
+returns in-scope rows from every named collection.
+
+The previous shape was a per-collection subprocess fan-out with a
+consecutive-error counter and a recycle trigger; both are gone
+because the seam does its own recycle and the seam's typed errors
+(``QmdDaemonUnavailable`` / ``QmdDaemonWedged``) propagate to the
+archivist rather than being silently dropped. A new test
+(``test_ground_propagates_daemon_unavailable``) pins the
+propagation so a future regression that folds a daemon failure
+into ``no_coverage=True`` is caught.
 """
 
 from __future__ import annotations
@@ -14,7 +26,8 @@ from __future__ import annotations
 import asyncio
 import warnings
 from dataclasses import dataclass, field
-from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -27,24 +40,6 @@ def _silence_wiring_skipped_warning() -> None:
         message=r"^ground: tool wiring skipped\b",
         category=UserWarning,
     )
-
-
-@pytest.fixture(autouse=True)
-def _reset_consecutive_qmd_errors() -> None:
-    """Reset the recycle-trigger counter between tests.
-
-    The counter lives at module scope on ``lies.mcp.grounding`` so a
-    wedged-daemon simulation can persist across the fan-out (the
-    recycle path expects exactly that). Without this fixture the
-    second test in the file sees a counter residue from the first —
-    autouse yields both pre-test and post-test resets so adjacent
-    tests stay hermetic regardless of order.
-    """
-    from lies.mcp import grounding
-
-    grounding._consecutive_qmd_errors = 0
-    yield
-    grounding._consecutive_qmd_errors = 0
 
 
 def test_archivist_digest_has_no_library_field_default_false() -> None:
@@ -127,371 +122,331 @@ def test_ground_unscoped_no_library_returns_no_library_true(monkeypatch) -> None
     assert digest.searched_scope == []
 
 
-def test_fanout_unscoped_threads_module_timeout_and_drops_failures(monkeypatch) -> None:
-    """Per-call timeout comes from the shared getter, and
-    ``QmdCommandError`` drops timed-out collections silently.
+def test_fanout_unscoped_routes_through_the_daemon_seam(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``_fanout_unscoped`` issues one daemon ``query`` with the full push-down.
 
-    Pins the fan-out's deadline: ``qmd_query`` is invoked with
-    ``grounding._current_timeout()`` — the value
-    ``lies.config.get_qmd_query_timeout`` returns, shared with the
-    ``search`` tool so the two qmd query call sites cannot disagree.
-    That sharing is what replaced this module's own 15s literal; the
-    live-corpus warm cost is 5.6-6.0s and the default is 60s, with
-    ``LIES_QMD_FANOUT_TIMEOUT`` as the override.
+    The previous shape was a per-collection subprocess fan-out that
+    paid a model-load cost per call. The seam now serves the
+    fan-out: one daemon ``query`` with the resolved collection
+    list passed as ``collections=`` and the resolved question as
+    ``lex`` + ``vec`` sub-queries. The push-down is exact, so no
+    post-filter is needed and one round trip replaces N.
 
-    The value is asserted ``isinstance(int) >= 10`` so a regression to
-    a too-tight literal (the historical 5s bug) trips immediately.
-
-    1. ``qmd_query`` is invoked with ``timeout=grounding._current_timeout()``.
-       The two-collection assertion pins the new value end-to-end.
-    2. ``QmdCommandError`` — the error ``qmd_query`` raises on
-       ``subprocess.TimeoutExpired`` — is caught by ``_one`` and the
-       collection is dropped (returns ``None``).
-    3. The fan-out still returns the surviving collections' hits.
-
-    A real ``subprocess.run(timeout=N)`` would fire at N seconds in
-    production; the mock emulates the observable contract
-    (QmdCommandError) without burning the test budget on a sleep.
-    The fail-soft envelope is what the budget needs to guard.
-    Sequential dispatch is independently covered by
-    ``test_fanout_unscoped_dispatches_sequentially`` below.
+    This test pins the wire shape: the daemon tool is ``query``;
+    the collection list is the resolved one; the limit is
+    ``top_k``; the search payload is exactly ``[lex, vec]`` (no
+    ``hyde``, matching the read-side search contract).
     """
     from lies.library import registry as reg_mod
     from lies.library.registry import LibraryCollectionMeta
     from lies.mcp import grounding
-    from lies.qmd import cli as qmd_mod
-    from lies.qmd.cli import QmdCommandError
+    from lies.qmd import access
 
     metas = [
-        LibraryCollectionMeta(name="slow", tags=()),
-        LibraryCollectionMeta(name="fast", tags=()),
+        LibraryCollectionMeta(name="alpha", tags=()),
+        LibraryCollectionMeta(name="beta", tags=()),
     ]
     monkeypatch.setattr(reg_mod, "library_collection_metas", lambda: iter(metas))
-    monkeypatch.setattr(reg_mod, "library_git_root", lambda: Path("/tmp/fake-lib"))
 
-    observed_timeouts: list[int] = []
+    captured: dict[str, Any] = {}
 
-    def fake_qmd_query(*, cwd, question, limit, timeout, collection_filter):
-        observed_timeouts.append(timeout)
-        name = next(iter(collection_filter))
-        if name == "slow":
-            # Same shape ``qmd_query`` raises on
-            # ``subprocess.TimeoutExpired`` — see ``src/lies/qmd/cli.py``.
-            raise QmdCommandError(f"qmd query timed out after {timeout}s")
-        return [
+    async def _fake_daemon(name: str, arguments: dict[str, Any], **kw: Any) -> Any:
+        captured["name"] = name
+        captured["arguments"] = arguments
+        captured["kw"] = kw
+        return SimpleNamespace(
+            structured_content={
+                "results": [
+                    {
+                        "file": "alpha/page.md",
+                        "title": "Page",
+                        "score": 0.9,
+                        "snippet": "alpha snippet",
+                        "line": 1,
+                    },
+                    {
+                        "file": "beta/page.md",
+                        "title": "Page B",
+                        "score": 0.7,
+                        "snippet": "beta snippet",
+                        "line": 5,
+                    },
+                ]
+            },
+        )
+
+    monkeypatch.setattr(access, "daemon_tool", _fake_daemon)
+
+    excerpts = asyncio.run(grounding._fanout_unscoped("test question", None, top_k=5))
+
+    # One call, not N — the push-down is the whole point.
+    assert captured["name"] == "query", (
+        f"fan-out must reach the daemon via the query tool; got {captured['name']!r}"
+    )
+    args = captured["arguments"]
+    assert sorted(args["collections"]) == ["alpha", "beta"], (
+        f"the resolved collection list must reach the daemon as the "
+        f"``collections`` push-down; got {args.get('collections')!r}"
+    )
+    assert args["limit"] == 5, (
+        f"top_k must reach the daemon as ``limit=``; got {args.get('limit')!r}"
+    )
+    assert [s["type"] for s in args["searches"]] == ["lex", "vec"], (
+        f"a bare question is one lex + one vec; got {[s['type'] for s in args['searches']]!r}"
+    )
+    assert all(s["query"] == "test question" for s in args["searches"])
+    assert args["intent"], "intent is required by the daemon's schema"
+
+    # The per-call timeout from the shared getter reaches the wire.
+    # The seam reads ``_current_timeout()`` and forwards it; the
+    # assertion pins the value, not the transport.
+    assert captured["kw"].get("timeout") == float(grounding._current_timeout()), (
+        f"per-call timeout must reach the daemon; got {captured['kw'].get('timeout')!r}, "
+        f"expected {float(grounding._current_timeout())!r}"
+    )
+
+    # Both rows surface as PageExcerpts, in score order, with the
+    # snippet as a single prose span. ``collection`` is the first
+    # ``/`` segment of the path; ``slug`` is the full path.
+    assert [e.slug for e in excerpts] == ["alpha/page.md", "beta/page.md"]
+    assert [e.collection for e in excerpts] == ["alpha", "beta"]
+    assert all(e.source_kind == "library" for e in excerpts)
+    assert excerpts[0].spans[0].body == "alpha snippet"
+    assert excerpts[1].spans[0].body == "beta snippet"
+
+
+def test_fanout_unscoped_drops_rows_with_no_file(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Daemon rows missing ``file`` are dropped, not converted to bad paths.
+
+    The daemon never sends a row without ``file`` today (Review
+    Focus #2 — a row that has no usable ``file`` is a wire-shape
+    defect), but a future daemon version that does would slip
+    through ``[collection]/[rest]`` parsing and produce
+    ``collection=""`` rows. The LIES-side guard is the same one
+    ``search`` ships: a missing ``file`` drops the row, so a wire
+    defect never lands in the digest as a malformed citation.
+    """
+    from lies.library import registry as reg_mod
+    from lies.library.registry import LibraryCollectionMeta
+    from lies.mcp import grounding
+    from lies.qmd import access
+
+    metas = [LibraryCollectionMeta(name="alpha", tags=())]
+    monkeypatch.setattr(reg_mod, "library_collection_metas", lambda: iter(metas))
+
+    async def _fake_daemon(name: str, arguments: dict[str, Any], **kw: Any) -> Any:
+        return SimpleNamespace(
+            structured_content={
+                "results": [
+                    {"file": "", "title": "Bad", "score": 0.9, "snippet": "x"},
+                    {"file": "alpha/ok.md", "title": "OK", "score": 0.7, "snippet": "ok"},
+                ]
+            },
+        )
+
+    monkeypatch.setattr(access, "daemon_tool", _fake_daemon)
+
+    excerpts = asyncio.run(grounding._fanout_unscoped("q", None, top_k=5))
+    assert [e.slug for e in excerpts] == ["alpha/ok.md"]
+
+
+def test_fanout_unscoped_empty_daemon_result_yields_empty_excerpts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An empty ``structuredContent.results`` is mapped to ``[]``.
+
+    The daemon answers an unknown collection (or any unscoped
+    query that finds nothing) with an empty result and **no
+    error**. The fan-out is a no-op on that wire shape — the
+    caller reads the empty list as ``no_coverage=True`` through
+    the archivist's envelope, which is the honest "the corpus
+    had no in-scope hits" answer.
+    """
+    from lies.library import registry as reg_mod
+    from lies.library.registry import LibraryCollectionMeta
+    from lies.mcp import grounding
+    from lies.qmd import access
+
+    metas = [LibraryCollectionMeta(name="alpha", tags=())]
+    monkeypatch.setattr(reg_mod, "library_collection_metas", lambda: iter(metas))
+
+    async def _fake_daemon(name: str, arguments: dict[str, Any], **kw: Any) -> Any:
+        return SimpleNamespace(structured_content={"results": []})
+
+    monkeypatch.setattr(access, "daemon_tool", _fake_daemon)
+
+    excerpts = asyncio.run(grounding._fanout_unscoped("anything", None, top_k=5))
+    assert excerpts == []
+
+
+def test_fanout_unscoped_enforces_limit_lies_side(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The LIES-side ``rows[:top_k]`` slice is defence in depth.
+
+    The daemon honours ``limit`` today; the slice is what stops a
+    future backend that ignores the wire argument from returning a
+    wider top-N than asked. Seven rows come back, the cap is five,
+    only five reach the caller. The same belt-and-braces lives in
+    ``_post_query`` for ``search``.
+    """
+    from lies.library import registry as reg_mod
+    from lies.library.registry import LibraryCollectionMeta
+    from lies.mcp import grounding
+    from lies.qmd import access
+
+    metas = [LibraryCollectionMeta(name="alpha", tags=())]
+    monkeypatch.setattr(reg_mod, "library_collection_metas", lambda: iter(metas))
+
+    async def _fake_daemon(name: str, arguments: dict[str, Any], **kw: Any) -> Any:
+        rows = [
             {
-                "path": f"{name}/page.md",
-                "title": "Page",
-                "score": 1.0,
+                "file": f"alpha/p{i}.md",
+                "title": f"P{i}",
+                "score": 1.0 - i * 0.01,
+                "snippet": f"snippet {i}",
+                "line": 1,
             }
+            for i in range(7)
         ]
+        return SimpleNamespace(structured_content={"results": rows})
 
-    monkeypatch.setattr(qmd_mod, "qmd_query", fake_qmd_query)
+    monkeypatch.setattr(access, "daemon_tool", _fake_daemon)
 
-    excerpts = asyncio.run(grounding._fanout_unscoped("test question", None, top_k=5))
-
-    # Timeout constant shape (must be ``int >= 10``): cold-daemon
-    # reranking needs ~7s plus tail margin (matches the live-corpus
-    # probe in features/2026-09-25-fanout-timeout/README.md). A
-    # regression to ``5`` or a string-coerced value trips here.
-    assert isinstance(grounding._current_timeout(), int), (
-        f"the query timeout must be int, got {type(grounding._current_timeout()).__name__}"
+    excerpts = asyncio.run(grounding._fanout_unscoped("anything", None, top_k=5))
+    assert len(excerpts) == 5, (
+        f"a backend that returns more than the limit must be sliced; got {len(excerpts)} rows"
     )
-    assert grounding._current_timeout() >= 10, (
-        f"the query timeout={grounding._current_timeout()} is below "
-        f"the 10s cold-daemon reranking floor — qmd needs ~7s on "
-        f"limit=10 plus tail margin"
-    )
-    # The fix: the shared value threaded through, and identical on
-    # both calls. Two calls because two collections are registered.
-    assert observed_timeouts == [
-        grounding._current_timeout(),
-        grounding._current_timeout(),
-    ]
-    # Slow collection's QmdCommandError caught and dropped; fast
-    # collection's hit survives.
-    assert len(excerpts) == 1
-    assert excerpts[0].slug == "fast/page.md"
 
 
-def test_fanout_unscoped_triggers_recycle_after_n_failures(monkeypatch) -> None:
-    """``N`` consecutive ``QmdCommandError`` results trigger ``recycle()`` once.
+def test_ground_propagates_daemon_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A down daemon is re-raised, not folded into ``no_coverage=True``.
 
-    Pins the Task 5 fan-out recycle hook: when every dispatched
-    ``_one`` raises ``QmdCommandError`` and the consecutive-error
-    counter crosses ``_RECYCLE_THRESHOLD``, the fan-out fires
-    ``recycle()`` exactly once before returning the (empty) excerpt
-    list. Threshold is monkeypatched down to 2 so the test fires
-    fast; the recycle mock clears the counter so a second batch of
-    fan-outs would not see it double-count.
+    The previous CLI path's ``except Exception`` swallowed a
+    fan-out failure into ``no_coverage=True`` — a claim about the
+    corpus, made for a process failure, exactly the class of
+    silent failure the timeout-classification branch exists to
+    remove. The seam now raises ``QmdDaemonUnavailable`` for a
+    down daemon, and ``ground()`` re-raises it so the MCP layer
+    (or the Python caller) sees the typed error and the operator
+    message names ``lies qmd up``.
+
+    The behaviour pinned here is the *digest shape* on a daemon
+    failure: the typed error is what reaches the caller, not a
+    silent ``ArchivistDigest(no_coverage=True, citations=[])``
+    that the librarian would read as "the corpus has nothing".
     """
     from lies.library import registry as reg_mod
     from lies.library.registry import LibraryCollectionMeta
     from lies.mcp import grounding
-    from lies.qmd import cli as qmd_mod
+    from lies.qmd import access
+    from lies.query import synthesizer as synth_mod
 
-    metas = [
-        LibraryCollectionMeta(name="c0", tags=()),
-        LibraryCollectionMeta(name="c1", tags=()),
-        LibraryCollectionMeta(name="c2", tags=()),
-    ]
+    # Both stubs: ``_all_collection_names`` is the archivist's
+    # own scope resolver; ``library_collection_metas`` is the
+    # registry the fast-path helper reads. The unit-test
+    # conftest isolates XDG so the real registry is empty in
+    # tests; without this patch the helper short-circuits on an
+    # empty list and the daemon is never called.
+    metas = [LibraryCollectionMeta(name="alpha", tags=())]
     monkeypatch.setattr(reg_mod, "library_collection_metas", lambda: iter(metas))
-    monkeypatch.setattr(reg_mod, "library_git_root", lambda: Path("/tmp/fake-lib"))
-
-    monkeypatch.setattr(grounding, "_RECYCLE_THRESHOLD", 2)
-
-    recycle_calls: list[str] = []
-
-    def fake_recycle(*args, **kwargs):
-        recycle_calls.append("called")
-        # Mirror the real recycle: clear the counter so subsequent
-        # fan-outs start fresh. Without this the counter is permanent
-        # residue from the mock and every future test trips it.
-        grounding._consecutive_qmd_errors = 0
-
-    monkeypatch.setattr("lies.qmd.lifecycle.recycle", fake_recycle)
-
-    def fake_qmd_query(*, cwd, question, limit, timeout, collection_filter):
-        raise qmd_mod.QmdCommandError(f"simulated qmd failure for {next(iter(collection_filter))}")
-
-    monkeypatch.setattr(qmd_mod, "qmd_query", fake_qmd_query)
-
-    excerpts = asyncio.run(grounding._fanout_unscoped("any question", None, top_k=5))
-
-    assert excerpts == []
-    assert len(recycle_calls) == 1, (
-        f"recycle called {len(recycle_calls)} times; expected 1 — "
-        f"the consecutive-failure threshold tripped and one recycle "
-        f"should fire per wedged-daemon batch."
+    monkeypatch.setattr(synth_mod, "_all_collection_names", lambda: ["alpha"])
+    monkeypatch.setattr(
+        "lies.mcp.server._collect_available_tags_mcp",
+        lambda wiki=None: {"alpha", "c:alpha"},
     )
+    monkeypatch.setattr(grounding, "_current_timeout", lambda: 60)
 
-
-def test_fanout_unscoped_qmd_no_results_is_clean_miss(monkeypatch) -> None:
-    """`QmdNoResultsError` is a clean miss — counter stays at 0, no recycle.
-
-    Pins the post-PR #106 except-split: a per-collection
-    ``QmdNoResultsError`` (qmd ran cleanly and returned zero hits for
-    the question) must NOT increment ``_consecutive_qmd_errors``
-    and must NOT trip ``recycle()``. The pre-fix tuple-caught both
-    ``QmdCommandError`` AND ``QmdNoResultsError``, so the
-    recycle counter tripped on legitimate empty results, eventually
-    recycling a healthy daemon. The split promoted clean misses to
-    a silent drop.
-
-    Surface observed live: ``pydantic_validation`` legitimately
-    returns ``QmdNoResultsError`` at ``top_k=10`` (the collection
-    has limited reranking candidates). Pre-fix, this incremented
-    the counter on every query; after enough calls the operator's
-    healthy daemon was recycled.
-    """
-    from lies.library import registry as reg_mod
-    from lies.library.registry import LibraryCollectionMeta
-    from lies.mcp import grounding
-    from lies.qmd import cli as qmd_mod
-
-    metas = [
-        LibraryCollectionMeta(name="c0", tags=()),
-        LibraryCollectionMeta(name="c1", tags=()),
-        LibraryCollectionMeta(name="c2", tags=()),
-    ]
-    monkeypatch.setattr(reg_mod, "library_collection_metas", lambda: iter(metas))
-    monkeypatch.setattr(reg_mod, "library_git_root", lambda: Path("/tmp/fake-lib"))
-
-    # Threshold below the failure count to demonstrate the bug if
-    # the split regresses: with all 3 collections raising
-    # ``QmdNoResultsError`` and threshold=2, the pre-fix tuple
-    # incremented on every raise and would fire ``recycle()`` once
-    # (counter goes 1 → 2 → reset → 1, threshold=2 trips once).
-    monkeypatch.setattr(grounding, "_RECYCLE_THRESHOLD", 2)
-
-    recycle_calls: list[str] = []
-
-    def fake_recycle(*args, **kwargs):
-        recycle_calls.append("called")
-        # Mirror the real recycle: clear the counter so a subsequent
-        # fan-out starts fresh (defense-in-depth — the split should
-        # never let the counter trip in the first place).
-        grounding._consecutive_qmd_errors = 0
-
-    monkeypatch.setattr("lies.qmd.lifecycle.recycle", fake_recycle)
-
-    def fake_qmd_query(*, cwd, question, limit, timeout, collection_filter):
-        # Clean miss — qmd ran, found nothing for this query against
-        # this collection's corpus. NOT a subprocess failure; the
-        # post-split branch treats it as a silent drop with no
-        # counter side-effect.
-        raise qmd_mod.QmdNoResultsError(
-            f"simulated qmd no-results for {next(iter(collection_filter))}"
+    async def _down(name: str, arguments: dict[str, Any], **kw: Any) -> Any:
+        raise access.QmdDaemonUnavailable(
+            "qmd daemon is not serving at http://127.0.0.1:8181/mcp. "
+            "Start it with 'lies qmd up', or point LIES_QMD_URL at a daemon that is."
         )
 
-    monkeypatch.setattr(qmd_mod, "qmd_query", fake_qmd_query)
+    monkeypatch.setattr(access, "daemon_tool", _down)
 
-    excerpts = asyncio.run(grounding._fanout_unscoped("any question", None, top_k=5))
-
-    # Load-bearing assertion #1: no hits (every collection was a
-    # clean miss), but the digest shape is empty NOT a recycled
-    # daemon side-effect.
-    assert excerpts == []
-    # Load-bearing assertion #2: ``recycle()`` was NOT called.
-    # Pre-fix: tuple-caught ``QmdCommandError, QmdNoResultsError``
-    # and the counter tripped on every raise — recycle fires when
-    # counter crosses _RECYCLE_THRESHOLD=2. Post-fix: ``QmdNoResultsError``
-    # is silently dropped without touching the counter, so the
-    # recycle threshold never trips.
-    assert recycle_calls == [], (
-        f"recycle called {len(recycle_calls)} times on clean misses; "
-        f"expected 0 — QmdNoResultsError must be a clean miss with "
-        f"no counter side-effect (post-PR #106 except split)."
-    )
-    # Load-bearing assertion #3: the counter stayed at 0
-    # end-to-end. The post-fix split leaves ``QmdNoResultsError``
-    # out of the increment branch, so no failure of any kind
-    # touches the counter on a clean-miss fan-out.
-    assert grounding._consecutive_qmd_errors == 0, (
-        f"_consecutive_qmd_errors={grounding._consecutive_qmd_errors} "
-        f"after clean-miss fan-out; expected 0 — QmdNoResultsError "
-        f"must not increment the recycle counter."
+    with pytest.raises(access.QmdDaemonUnavailable) as excinfo:
+        asyncio.run(grounding.ground("anything", tag_expr=None))
+    assert "lies qmd up" in str(excinfo.value), (
+        f"operator-actionable message must name lies qmd up; got {str(excinfo.value)!r}"
     )
 
 
-def test_fanout_unscoped_resets_counter_after_success(monkeypatch) -> None:
-    """A success between failures prevents the recycle trigger.
+def test_ground_propagates_daemon_wedged(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A wedged daemon is re-raised with the seam's ``last_output`` attached.
 
-    Pins the success-reset branch of the recycle hook: with three
-    collections and a threshold of 3, a (fail, success, fail) pattern
-    keeps the counter below the threshold (it goes 1 → 0 → 1) and
-    ``recycle()`` is never called. The success is keyed on the
-    collection name rather than call count so the test is robust to
-    the executor's thread-scheduling order.
+    A wedge is a process-level claim: the search never finished,
+    so the digest has no standing to assert coverage. Folding it
+    into ``no_coverage=True`` would be the same false-claim
+    class the seam's recycle path was built to prevent. The
+    archivist re-raises the typed error so a debugging reader
+    can see the daemon's last log tail.
     """
     from lies.library import registry as reg_mod
     from lies.library.registry import LibraryCollectionMeta
     from lies.mcp import grounding
-    from lies.qmd import cli as qmd_mod
+    from lies.qmd import access
+    from lies.query import synthesizer as synth_mod
+
+    metas = [LibraryCollectionMeta(name="alpha", tags=())]
+    monkeypatch.setattr(reg_mod, "library_collection_metas", lambda: iter(metas))
+    monkeypatch.setattr(synth_mod, "_all_collection_names", lambda: ["alpha"])
+    monkeypatch.setattr(
+        "lies.mcp.server._collect_available_tags_mcp",
+        lambda wiki=None: {"alpha", "c:alpha"},
+    )
+    monkeypatch.setattr(grounding, "_current_timeout", lambda: 60)
+
+    async def _wedge(name: str, arguments: dict[str, Any], **kw: Any) -> Any:
+        raise access.QmdDaemonWedged(
+            "qmd daemon wedged on call to 'query'",
+            last_output="Reranking 40 chunks...",
+        )
+
+    monkeypatch.setattr(access, "daemon_tool", _wedge)
+
+    with pytest.raises(access.QmdDaemonWedged) as excinfo:
+        asyncio.run(grounding.ground("anything", tag_expr=None))
+    assert excinfo.value.last_output == "Reranking 40 chunks...", (
+        f"the wedge's last_output must reach the caller; got {excinfo.value.last_output!r}"
+    )
+
+
+def test_ground_tagged_path_propagates_daemon_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The tagged fast-path also re-raises ``QmdDaemonUnavailable``.
+
+    A tagged ``ground()`` against a populated library that
+    resolves to a non-empty collection set takes the tagged
+    fast-path. The same honesty rule applies: a down daemon is
+    the operator's action, not a coverage claim. The test pins
+    that the tagged path's ``except`` branches mirror the
+    unscoped path's.
+    """
+    from lies.library import registry as reg_mod
+    from lies.library.registry import LibraryCollectionMeta
+    from lies.mcp import grounding
+    from lies.qmd import access
+    from lies.query import synthesizer as synth_mod
 
     metas = [
-        LibraryCollectionMeta(name="c0", tags=()),
-        LibraryCollectionMeta(name="c1", tags=()),
-        LibraryCollectionMeta(name="c2", tags=()),
+        LibraryCollectionMeta(name="alpha", tags=()),
+        LibraryCollectionMeta(name="beta", tags=()),
     ]
     monkeypatch.setattr(reg_mod, "library_collection_metas", lambda: iter(metas))
-    monkeypatch.setattr(reg_mod, "library_git_root", lambda: Path("/tmp/fake-lib"))
-
-    monkeypatch.setattr(grounding, "_RECYCLE_THRESHOLD", 3)
-
-    recycle_calls: list[str] = []
-
-    def fake_recycle(*args, **kwargs):
-        recycle_calls.append("called")
-        grounding._consecutive_qmd_errors = 0
-
-    monkeypatch.setattr("lies.qmd.lifecycle.recycle", fake_recycle)
-
-    def fake_qmd_query(*, cwd, question, limit, timeout, collection_filter):
-        name = next(iter(collection_filter))
-        if name == "c1":
-            # Mid-fan-out success: clears the counter so the third
-            # collection's failure restarts at 1, not at 2.
-            return [
-                {
-                    "path": "c1/page.md",
-                    "title": "Page",
-                    "score": 0.9,
-                    "snippet": "",
-                }
-            ]
-        raise qmd_mod.QmdCommandError(f"simulated qmd failure for {name}")
-
-    monkeypatch.setattr(qmd_mod, "qmd_query", fake_qmd_query)
-
-    excerpts = asyncio.run(grounding._fanout_unscoped("any question", None, top_k=5))
-
-    # The successful collection's excerpt survives; the two failures
-    # are dropped. The point of the assertion is the empty recycle list.
-    surviving_slugs = sorted(e.slug for e in excerpts)
-    assert surviving_slugs == ["c1/page.md"]
-    assert recycle_calls == [], (
-        f"recycle called {len(recycle_calls)} times; expected 0 — "
-        f"the success between failures must reset the counter before "
-        f"the threshold trips."
+    monkeypatch.setattr(synth_mod, "_all_collection_names", lambda: ["alpha", "beta"])
+    monkeypatch.setattr(
+        "lies.mcp.server._collect_available_tags_mcp",
+        lambda wiki=None: {"alpha", "beta", "c:alpha", "c:beta"},
     )
 
+    async def _down(name: str, arguments: dict[str, Any], **kw: Any) -> Any:
+        raise access.QmdDaemonUnavailable("daemon is not serving")
 
-def test_fanout_unscoped_dispatches_sequentially(monkeypatch) -> None:
-    """``_fanout_unscoped`` fires one qmd subprocess at a time.
+    monkeypatch.setattr(access, "daemon_tool", _down)
 
-    Pins the VRAM-spike fix: per-collection ``qmd_query`` calls must
-    run strictly serially, not in parallel. Each concurrent
-    ``qmd_query`` subprocess independently loads the embedding model
-    into VRAM (live corpus reproduction: ``+c:opencode|c:claude_code``
-    spiked VRAM when two subprocesses fired at once). The dispatch
-    contract is one subprocess at a time, full stop.
-
-    The test uses an event-list recording fake: every ``qmd_query``
-    call appends ``(name, "start")`` on entry and ``(name, "end")``
-    on exit. A 5ms ``time.sleep`` inside the fake ensures the
-    start/end timestamps are deterministic across machines. The
-    load-bearing assertion is the strict ``[start, end, start, end,
-    start, end]`` interleaving — under the pre-fix ``asyncio.gather``
-    dispatch, the three calls would interleave as
-    ``[start, start, start, end, end, end]``.
-    """
-    import threading
-    import time
-
-    from lies.library import registry as reg_mod
-    from lies.library.registry import LibraryCollectionMeta
-    from lies.mcp import grounding
-    from lies.qmd import cli as qmd_mod
-
-    n = 3
-    # 20ms per call keeps the wall-clock at ~60ms (3 × 20ms) for
-    # sequential dispatch — well within the 0.15s unit-test hard
-    # limit. Parallel dispatch would overlap all three calls at
-    # ~20ms wall time; the strict interleaving assertion below
-    # distinguishes the two regimes.
-    hold_s = 0.02
-    metas = [LibraryCollectionMeta(name=f"c{i}", tags=()) for i in range(n)]
-    monkeypatch.setattr(reg_mod, "library_collection_metas", lambda: iter(metas))
-    monkeypatch.setattr(reg_mod, "library_git_root", lambda: Path("/tmp/fake-lib"))
-
-    events: list[tuple[str, str]] = []
-    events_lock = threading.Lock()
-
-    def fake_qmd_query(*, cwd, question, limit, timeout, collection_filter):
-        name = next(iter(collection_filter))
-        # ``asyncio.to_thread`` schedules each call on the default
-        # executor's worker pool; appends are GIL-atomic in CPython,
-        # but lock explicitly so the test reads as obviously correct.
-        with events_lock:
-            events.append((name, "start"))
-        time.sleep(hold_s)
-        with events_lock:
-            events.append((name, "end"))
-        return [{"path": f"{name}/page.md", "title": "Page", "score": 1.0}]
-
-    monkeypatch.setattr(qmd_mod, "qmd_query", fake_qmd_query)
-
-    excerpts = asyncio.run(grounding._fanout_unscoped("test question", None, top_k=5))
-
-    # All N collections returned (none failed).
-    assert len(excerpts) == n
-    # Strict serial interleaving: each call's "start" follows the
-    # previous call's "end". Under parallel ``asyncio.gather`` the
-    # events would interleave as ``[start, start, start, end, end,
-    # end]`` because all three workers fire before any of them
-    # finishes. The dispatch contract is one subprocess at a time.
-    assert len(events) == 2 * n, (
-        f"events has {len(events)} entries; expected {2 * n} — "
-        f"either a call did not record its end event or the dispatch "
-        f"recorded extra starts"
-    )
-    for i in range(n):
-        assert events[2 * i] == (f"c{i}", "start"), (
-            f"event[{2 * i}] = {events[2 * i]}; expected (c{i}, start) — "
-            f"dispatch fired out of order or with overlap"
-        )
-        assert events[2 * i + 1] == (f"c{i}", "end"), (
-            f"event[{2 * i + 1}] = {events[2 * i + 1]}; expected (c{i}, end) — "
-            f"dispatch interleaved or overlapped (parallel regression)"
-        )
+    with pytest.raises(access.QmdDaemonUnavailable):
+        asyncio.run(grounding.ground("anything", tag_expr="c:alpha"))

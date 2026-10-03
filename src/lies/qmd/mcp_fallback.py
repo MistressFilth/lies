@@ -7,9 +7,9 @@ so a wiki that already degrades honestly through the host falls back
 to the same data here.
 
 The tool surface is intentionally narrow — only the two tools the
-agent actually uses for retrieval. ``qmd_query`` / ``qmd_get`` /
-``qmd_status`` / ``qmd_update`` are not re-implemented. This is the
-honest "I have less capability than the daemon" surface.
+agent actually uses for retrieval. None of the daemon's tools are
+re-implemented. This is the honest "I have less capability than the
+daemon" surface.
 
 Every result carries ``degraded: True`` plus the same
 ``fallback_reason`` the host path uses, so a model that reads the

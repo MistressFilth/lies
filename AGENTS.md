@@ -187,21 +187,31 @@ The library-mode read surface is split between two MCP tools:
 
 - **`ground`** — snippet digest for agents. `ArchivistDigest` with
   `[[collection/slug]] (Title): "<verbatim snippet>"` rendering.
-  Uses sequential qmd fan-out (`_fanout_collections._one` awaited
-  one at a time in a `for` loop) — one qmd subprocess at a time,
-  full stop. Each concurrent `qmd_query` independently loads the
-  embedding model into VRAM, so OR-scoped queries
-  (`+c:opencode|c:claude_code`) used to spike VRAM when two
-  subprocesses fired at once. Per-call timeout comes from
+  Routes through the qmd access seam
+  (`lies.qmd.access.daemon_tool("query", ...)`) — a single daemon
+  `query` against the resolved collection set with the daemon's
+  `collections` push-down. The pre-#106 fan-out was a per-collection
+  CLI subprocess loop that ranked globally and could starve a
+  multi-collection query to zero rows even when it had matches; the
+  daemon's `collections` parameter is a true push-down and returns
+  in-scope rows from every named collection in one round trip.
+  The seam also owns the recycle-and-raise contract
+  (`QmdDaemonWedged` carrying the daemon's last log tail,
+  `QmdDaemonUnavailable` for the operator), and `ground()` re-raises
+  both — a process failure is no longer folded into `no_coverage=True`.
+  Per-call timeout comes from
   `lies.config.get_qmd_query_timeout` (default 60s, override
   `LIES_QMD_FANOUT_TIMEOUT`), read at call time and shared by every
-  qmd *retrieval* call site — the fan-out and the `search` tool both
-  read it, because the first cut of that fix left each holding its own
-  literal (60 and 15) under one env var. Liveness probes in
+  qmd *retrieval* call site — the fan-out, the `search` tool, and the
+  agent path's HTTP transport all read it. The seam forwards the
+  timeout to `fastmcp.Client.call_tool` as a per-call deadline, so
+  a change takes effect on the next call without waiting for the
+  cached httpx client to be invalidated. Liveness probes in
   `qmd.lifecycle` / `qmd.daemon` keep their own short deadlines and
   must not be widened: a slow answer to "is this alive?" is the
-  failure. The recycle trigger counts only `QmdCommandError` (real
-  subprocess failures); `QmdNoResultsError` (clean miss) is silent.
+  failure. The pre-#106 consecutive-error recycle counter is gone
+  because the seam does its own recycle and the seam's typed errors
+  propagate to the archivist unchanged.
 
 - **A qmd timeout is a slow daemon, not an unreachable one, and not
   a statement about the corpus.** `QmdTimeoutError` is a distinct

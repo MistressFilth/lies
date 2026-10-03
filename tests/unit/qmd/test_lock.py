@@ -39,6 +39,19 @@ def test_lock_path_default_resolves_to_xdg_state_home(monkeypatch):
 
     With neither ``LIES_QMD_LOCK_PATH`` nor ``XDG_STATE_HOME`` set, the
     resolved lock path falls back to ``~/.local/state/lies/qmd.lock``.
+
+    **What this test covers vs. the live lock path:** the module
+    constants ``_LOCK_PATH`` / ``_PID_PATH`` / ``_STATE_PATH`` are
+    frozen at import time from the env at module load. They are
+    used by :func:`lies.qmd.lock._register_holder` to write the
+    pid and state siblings next to the lock file. The acquire
+    path (:func:`lies.qmd.lock._acquire_with_poll`) resolves the
+    lock path *per acquisition* via :func:`lies.qmd.lock._lock_paths`
+    rather than reading the constant — so an operator changing
+    ``LIES_QMD_LOCK_PATH`` between acquisitions is honoured. The
+    tests at :file:`tests/unit/qmd/test_lock_with_qmd_lock.py` cover
+    the per-acquisition resolution; this test covers the import-
+    time constant that the heartbeat writers use.
     """
     monkeypatch.delenv("LIES_QMD_LOCK_PATH", raising=False)
     monkeypatch.delenv("XDG_STATE_HOME", raising=False)

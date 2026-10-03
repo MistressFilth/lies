@@ -219,7 +219,7 @@ def test_post_query_delegates_to_daemon_with_library_root(
 
     seen: dict[str, Any] = {}
 
-    async def _fake_daemon(name: str, arguments: dict[str, Any]) -> Any:
+    async def _fake_daemon(name: str, arguments: dict[str, Any], **kw: Any) -> Any:
         seen["name"] = name
         seen.update(arguments)
         return SimpleNamespace(
@@ -259,7 +259,7 @@ def test_post_query_maps_empty_daemon_result_to_empty_list(
     """
     from lies.mcp.search import _post_query
 
-    async def _empty(name: str, arguments: dict[str, Any]) -> Any:
+    async def _empty(name: str, arguments: dict[str, Any], **kw: Any) -> Any:
         return SimpleNamespace(
             content=[],
             structured_content={"results": []},
@@ -288,7 +288,7 @@ def test_post_query_strips_trailing_whitespace(monkeypatch: pytest.MonkeyPatch) 
 
     captured: dict[str, Any] = {}
 
-    async def _capture(name: str, arguments: dict[str, Any]) -> Any:
+    async def _capture(name: str, arguments: dict[str, Any], **kw: Any) -> Any:
         captured["name"] = name
         captured["searches"] = arguments["searches"]
         return SimpleNamespace(
@@ -346,7 +346,7 @@ def _fake_access(
 
         qmd_collections = sorted(library_collection_names())
 
-    async def _fake(name: str, arguments: dict[str, Any]) -> Any:
+    async def _fake(name: str, arguments: dict[str, Any], **kw: Any) -> Any:
         seen["name"] = name
         seen.update(arguments)
         if name == "status":
@@ -498,7 +498,7 @@ def test_a_collection_that_cannot_serve_is_reported_not_scoped_away(
     # collection list under ``structuredContent.collections`` because
     # that is the shape the daemon's ``status`` tool surfaces
     # (``server.js:421`` walks ``status.collections``).
-    async def _fake(name: str, arguments: dict[str, Any]) -> Any:
+    async def _fake(name: str, arguments: dict[str, Any], **kw: Any) -> Any:
         if name == "status":
             return SimpleNamespace(
                 content=[],
@@ -551,7 +551,7 @@ def test_daemon_down_is_re_raised_not_swallowed_into_no_coverage(
 
     _patch_registry(monkeypatch, ["claude_code"])
 
-    async def _down(name: str, arguments: dict[str, Any]) -> Any:
+    async def _down(name: str, arguments: dict[str, Any], **kw: Any) -> Any:
         if name == "status":
             return SimpleNamespace(
                 content=[],
@@ -594,7 +594,7 @@ def test_daemon_wedged_surfaces_as_transient_with_daemon_log(
 
     _patch_registry(monkeypatch, ["claude_code"])
 
-    async def _wedge(name: str, arguments: dict[str, Any]) -> Any:
+    async def _wedge(name: str, arguments: dict[str, Any], **kw: Any) -> Any:
         if name == "status":
             return SimpleNamespace(
                 content=[],
@@ -719,7 +719,7 @@ def test_pre_check_calls_daemon_status_on_every_search(
 
     calls: list[tuple[str, dict[str, Any]]] = []
 
-    async def _fake_daemon_tool(name: str, arguments: dict[str, Any]) -> Any:
+    async def _fake_daemon_tool(name: str, arguments: dict[str, Any], **kw: Any) -> Any:
         calls.append((name, dict(arguments)))
         if name == "status":
             return SimpleNamespace(

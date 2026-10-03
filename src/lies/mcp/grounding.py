@@ -14,12 +14,26 @@ file holds the library function plus the :class:`CitationSnippet`,
 :class:`ArchivistDigest`, :class:`ArchivistCoverageError`, and
 span-picking helpers. Library vs wiki discrimination lives on
 ``CitationSnippet.collection``. No LLM call in this module.
+
+The read path goes through ``lies.qmd.access.daemon_tool`` so the
+fan-out uses the daemon's ``query`` tool with the full
+``collections`` push-down. The previous per-collection subprocess
+shape ranked globally and dropped rows whose first ``/`` segment
+was outside the resolved scope: a multi-collection query could
+starve a collection to zero rows even when it had matches. The
+daemon's ``collections`` parameter is a true push-down and
+returns in-scope rows from every named collection, so a single
+call with the resolved list replaces the per-collection loop. The
+seam also recycles the daemon on a wedge and re-raises
+``QmdDaemonWedged`` carrying the daemon's last log tail — the
+per-collection ``QmdCommandError``-counter recycle path is gone
+because the seam does its own recycle and the operator-action
+errors (``QmdDaemonUnavailable``) now propagate to the archivist
+unchanged rather than being silently dropped.
 """
 
 from __future__ import annotations
 
-import asyncio
-import os
 import warnings
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
@@ -37,38 +51,15 @@ if TYPE_CHECKING:
 # cheap; the pydantic_ai cost only pays when ``.run_sync(...)`` fires.
 from lies.agents.librarian import librarian_agent  # noqa: E402,F401
 
-# Consecutive-qmd-error counter for the fan-out recycle trigger (Task 5).
-# When the fan-out helper observes ``_RECYCLE_THRESHOLD`` consecutive
-# ``QmdCommandError`` / ``QmdNoResultsError`` results across collections,
-# it triggers a single ``recycle()`` to unstick a wedged daemon before
-# surfacing the failure. The threshold defaults to 3 and is overridable
-# via the ``LIES_QMD_RECYCLE_THRESHOLD`` env var for ops. The counter
-# is module-level state — the brief's tests reset it via a fixture to
-# keep the fan-out tests hermetic.
-_RECYCLE_THRESHOLD = int(os.environ.get("LIES_QMD_RECYCLE_THRESHOLD", "3"))
-_consecutive_qmd_errors = 0
-
-# Sequential dispatch on qmd subprocess fan-out in
-# :func:`_fanout_collections`: one ``qmd_query`` subprocess at a
-# time, full stop. Concurrent fan-out spiked VRAM because each
-# subprocess independently loaded the embedding model (live
-# corpus reproduction: ``+c:opencode|c:claude_code`` fired two
-# concurrent qmd subprocesses, two model loads at once). Operators
-# trade ``max(N) * per-call latency`` for ``ceil(N) * per-call
-# latency`` in exchange for VRAM stability — verified on the live
-# corpus 2026-09-26.
-
-# Per-call timeout for the ``qmd_query`` subprocess fired by
-# :func:`_fanout_collections._one`. The value and its rationale live
-# in ``lies.config.get_qmd_query_timeout``, shared with the
+# Per-call timeout for the daemon ``query`` fired by
+# :func:`_fanout_collections`. The value and its rationale live in
+# ``lies.config.get_qmd_query_timeout``, shared with the
 # ``search`` tool so the two qmd query call sites cannot disagree —
 # the first cut of that fix left this at 15s and ``search`` at 60s,
-# which meant one env var had two answers.
-#
-# The sequential dispatch above caps worst-case fan-out latency at
-# ``ceil(N) * timeout``, so the deadline multiplies across collections.
-# That is a reason to keep it tunable, not a reason to make it
-# smaller: the per-call cost is the same qmd query either way.
+# which meant one env var had two answers. The seam forwards this
+# to ``fastmcp.Client.call_tool`` as a per-call deadline, so a
+# change takes effect on the next call without waiting for the
+# cached httpx client to be invalidated.
 
 
 def _current_timeout() -> int:
@@ -217,157 +208,162 @@ async def _fanout_collections(
     top_k: int,
     collection_names: list[str],
 ) -> "list[PageExcerpt]":
-    """Sequential-scan ``collection_names`` for the question, no LLM round-trip.
+    """One daemon ``query`` against the resolved collection set, no LLM round-trip.
 
     Shared core for both the unscoped fan-out
-    (:func:`_fanout_unscoped`, Task 1) and the tagged fan-out
-    (:func:`_query_tagged_collections`, this task). Bypasses the F18
-    librarian entirely by dispatching per-collection ``qmd_query``
-    calls one at a time and merging the results sorted by score
-    desc. Sequential dispatch is load-bearing: each ``qmd_query``
-    subprocess independently loads the embedding model into VRAM,
-    so concurrent fan-out caused a model-per-process VRAM spike
-    (live corpus reproduction: ``+c:opencode|c:claude_code`` fired
-    two concurrent qmd subprocesses and spiked VRAM). Operators
-    trade ``max(N) * per-call latency`` for ``ceil(N) *
-    per-call latency`` in exchange for VRAM stability. Each
-    ``collection_names`` entry is passed as a qmd
-    ``collection_filter`` set so the per-collection post-filter
-    retains the same semantics the unscoped fan-out has shipped with.
+    (:func:`_fanout_unscoped`) and the tagged fan-out
+    (:func:`_query_tagged_collections`). Bypasses the F18 librarian
+    entirely by dispatching a single daemon ``query`` call with the
+    full ``collections`` push-down.
 
-    Per-collection timeout: ``_current_timeout()`` (default 15s;
-    ``LIES_current_timeout()`` env override). Failed collections
-    dropped silently. ``QmdCommandError`` (real subprocess failure)
-    feeds the consecutive-error counter and may trigger
-    ``recycle()``; ``QmdNoResultsError`` (clean miss) is dropped
-    without touching the counter. The ``exclude_expr`` parameter
-    is preserved for signature parity
-    with the broader ground() surface; per-collection qmd filters are
-    include-only, so excludes are not enforced at this layer (the
-    include filter already constrains the addressable set).
+    **Why one call, not a per-collection loop.** The previous
+    per-collection subprocess shape ranked globally and dropped rows
+    whose first ``/`` segment was outside the resolved scope — a
+    multi-collection query could starve a collection to zero rows
+    even when it had matches. The daemon's ``collections``
+    parameter is a true push-down: the candidate set is narrowed
+    *inside* qmd, so a single hybrid call against
+    ``[claude_code, opencode, ...]`` returns in-scope rows from
+    every named collection. One round trip replaces ``N``; the
+    push-down is exact so no per-collection post-filter is needed.
+
+    **What was removed.** A multi-collection loop existed in the
+    CLI path to survive a per-collection subprocess failure, and
+    that failure mode came with its own recycle trigger
+    (``_RECYCLE_THRESHOLD`` consecutive ``QmdCommandError`` results
+    fired ``recycle()`` to unstick a wedged daemon). The daemon
+    path moves both responsibilities into the seam
+    (:func:`lies.qmd.access.daemon_tool`): the seam recycles on a
+    wedge and re-raises ``QmdDaemonWedged`` carrying the daemon's
+    last log tail, and an unreachable daemon surfaces as
+    :class:`QmdDaemonUnavailable` for the operator to act on. The
+    consecutive-error counter and the per-collection failure
+    bookkeeping are gone because the seam does its own recycle
+    and a process-level failure (down daemon) is no longer
+    silently dropped.
+
+    **What ``exclude_expr`` does here.** Per-collection qmd
+    filters are include-only at the daemon, so excludes are not
+    enforced inside the helper. The include filter already
+    constrains the addressable collection set; the resolved
+    ``exclude_expr`` is the layer that, in a future shape, the
+    daemon's payload contract may grow a nested filter for. The
+    parameter is preserved for signature parity with the broader
+    ``ground()`` surface — callers that pass an exclude AST see
+    no different behaviour here.
 
     Args:
         question: Natural-language question.
-        exclude_expr: Compiled NOT AST (Task 3 / f15-exclude-compound).
-            ``None`` when no ``-`` chain supplied. Retained for
-            signature parity; not enforced inside the helper.
-        top_k: Maximum excerpts to return.
+        exclude_expr: Compiled NOT AST. ``None`` when no ``-`` chain
+            was supplied. Retained for signature parity; not enforced
+            inside the helper.
+        top_k: Maximum excerpts to return. Forwarded to the daemon
+            as ``limit=`` so the cap is on the wire; the daemon
+            honours it today and the response is sliced on the way
+            out as defence in depth.
         collection_names: Library collection names to scan. The
-            caller is responsible for resolving the set — this helper
-            does not consult the library registry. Order is
-            irrelevant; duplicates are de-duped by sorting.
+            caller resolves the set — this helper does not consult
+            the library registry. Order is irrelevant; duplicates
+            are de-duped by sorting.
 
     Returns:
         ``list[PageExcerpt]`` sorted by score desc, length ≤ ``top_k``.
-        Empty list when ``collection_names`` is empty or all fan-outs
-        fail.
+        Empty list when ``collection_names`` is empty.
+
+    Raises:
+        QmdDaemonUnavailable: the daemon is not serving. The seam
+            raises this typed error so the operator must act; the
+            archivist surfaces the failure through the existing
+            ``ground()`` envelope (no longer folded into
+            ``no_coverage=True``, which would be a false claim
+            about the corpus).
+        QmdDaemonWedged: the daemon stopped answering and the
+            seam recycled it once. ``last_output`` carries the
+            tail of the daemon's own log so a reader can tell
+            where the time went. Like ``QmdDaemonUnavailable``,
+            this is a process-level claim and propagates to the
+            ``ground()`` envelope rather than becoming a silent
+            drop.
     """
     from lies.agents.librarian import PageExcerpt
-    from lies.library.registry import library_git_root
     from lies.markdown_spans import Span
-    from lies.qmd.cli import QmdCommandError, QmdNoResultsError, qmd_query
+    from lies.qmd import access
+
+    del exclude_expr  # include-only at the daemon; see docstring
 
     if not collection_names:
         return []
 
-    lib_root = library_git_root()
-    names = sorted(set(collection_names))
+    # ``intent`` is required by the daemon's schema; the value is
+    # a routing breadcrumb that lands in qmd's ``llm_cache`` so a
+    # later probe can attribute the call. ``lies.mcp.search`` uses
+    # the same convention.
+    searches = [
+        {"type": "lex", "query": question},
+        {"type": "vec", "query": question},
+    ]
+    arguments: dict[str, object] = {
+        "searches": searches,
+        "limit": top_k,
+        "collections": sorted(set(collection_names)),
+        "intent": "lies.mcp.grounding fan-out (single-batch hybrid)",
+    }
 
-    async def _one(name: str) -> list[dict] | None:
-        # Outer ``for`` loop in :func:`_fanout_collections` awaits
-        # each ``_one`` before dispatching the next — sequential
-        # fan-out is the VRAM contract. Task 5 recycle counter
-        # threaded through the same body: ``N`` consecutive errors
-        # trigger a single ``recycle()`` to recover from a wedged
-        # daemon before propagating the failure; any success between
-        # failures resets the counter. The lazy ``recycle`` import
-        # keeps ``grounding`` off the daemon-lifecycle import path
-        # until the threshold trips.
-        global _consecutive_qmd_errors
-        try:
-            return await asyncio.to_thread(
-                qmd_query,
-                cwd=lib_root,
-                question=question,
-                limit=top_k,
-                timeout=_current_timeout(),
-                collection_filter={name},
-            )
-        except QmdCommandError:
-            # Real subprocess failure (timeout, crash, transport).
-            # Increment counter; recycle when threshold trips.
-            _consecutive_qmd_errors += 1
-            if _consecutive_qmd_errors >= _RECYCLE_THRESHOLD:
-                # Reset BEFORE the await so any subsequent failure
-                # that lands during the in-flight ``recycle()`` does
-                # not double-trip the threshold. The clear happens
-                # under the same ``except`` branch as the increment,
-                # so two racing ``_one`` tasks cannot both observe a
-                # tripped counter for the same wedged batch.
-                _consecutive_qmd_errors = 0
-                try:
-                    from lies.qmd.lifecycle import recycle
+    # The seam recycles the daemon on a wedge and re-raises
+    # ``QmdDaemonWedged`` carrying the daemon's last log tail; an
+    # unreachable daemon surfaces as ``QmdDaemonUnavailable``
+    # naming ``lies qmd up`` and ``LIES_QMD_URL``. Both propagate
+    # to ``ground()`` unchanged. A down daemon is the operator's
+    # action; a wedge is recoverable machine state. The seam
+    # never returns a "downgraded" result — the archivist's
+    # contract is to surface a process failure honestly, not
+    # fold it into a coverage claim.
+    result = await access.daemon_tool("query", arguments, timeout=float(_current_timeout()))
 
-                    await asyncio.to_thread(recycle)
-                except Exception:
-                    # ``recycle`` is best-effort — a failed recycle
-                    # does not mask the original qmd failure. The
-                    # caller surfaces the dropped-collection result
-                    # via the empty excerpts list.
-                    pass
-            return None
-        except QmdNoResultsError:
-            # qmd ran cleanly; this collection has no hits for the
-            # query. Clean miss — do NOT increment counter, do NOT
-            # recycle. Pre-split, the tuple-caught
-            # ``(QmdCommandError, QmdNoResultsError)`` treated clean
-            # misses as failures; a ``pydantic_validation``-class
-            # collection with limited reranking candidates would
-            # trip the recycle threshold on legitimate empty
-            # results, eventually recycling a healthy daemon.
-            return None
-        # Any successful collection query resets the counter so a
-        # transient error doesn't accumulate against later successes.
-        _consecutive_qmd_errors = 0
+    structured = getattr(result, "structured_content", None) or {}
+    rows = structured.get("results") or []
+    if not isinstance(rows, list):
+        rows = []
 
-    # Sequential dispatch: exactly one qmd subprocess at a time. The
-    # operator pays wall-clock cost (ceil(N) × per-call latency) in
-    # exchange for VRAM stability — concurrent qmd_query invocations
-    # each load the embedding model independently, and N parallel
-    # subprocesses cause a model-per-process VRAM spike (verified on
-    # the live corpus with +c:opencode|c:claude_code).
-    raw: list[list[dict] | None] = []
-    for name in names:
-        raw.append(await _one(name))
-    merged: list[tuple[float, dict]] = []
-    for batch in raw:
-        if not batch:
-            continue
-        for hit in batch:
-            score = float(hit.get("score", 0.0))
-            merged.append((score, hit))
-    merged.sort(key=lambda x: x[0], reverse=True)
-    top_hits = merged[:top_k]
+    # Defence in depth: the daemon honours ``limit`` today; the
+    # slice is what stops a future backend that ignores the wire
+    # argument from returning a wider top-N than asked. The same
+    # belt-and-braces lives in ``_post_query`` for ``search``.
+    rows = rows[:top_k]
 
     out: list[PageExcerpt] = []
-    for score, hit in top_hits:
-        path = hit.get("path", "")
-        # path is "<collection>/<rest>"; collection name is the first segment
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        # The daemon's ``file`` is ``displayPath`` — the
+        # collection-relative path (``claude_code/hooks.md``). It
+        # is the same key ``search`` uses; the bare path and the
+        # ``file``-keyed form are the same string here.
+        file_value = row.get("file")
+        if not isinstance(file_value, str) or not file_value:
+            continue
+        # ``path`` is the full ``<collection>/<rest>`` form the
+        # rest of the archivist surfaces. ``search`` aliases the
+        # two; the archivist reads ``file`` as the canonical
+        # path because the daemon's wire shape does not name
+        # ``path`` (no collision with a future field of the same
+        # name).
+        path = file_value
         coll = path.split("/", 1)[0] if path else ""
         slug = path
-        title = hit.get("title") or path.rsplit("/", 1)[-1].replace(".md", "")
-        # qmd's wire payload carries a ``snippet`` field with a brief
-        # diff-style excerpt (``@@ -N,M @@ (before, after) ...``) — use
-        # it to seed a single prose span so the downstream citation-
-        # building loop in :func:`ground` can produce a
+        title = row.get("title") or path.rsplit("/", 1)[-1].replace(".md", "")
+        # qmd's wire payload carries a ``snippet`` field with a
+        # brief diff-style excerpt (``@@ -N,M @@ (before, after) ...``).
+        # Use it to seed a single prose span so the downstream
+        # citation-building loop in :func:`ground` can produce a
         # :class:`CitationSnippet`. Without a span, the loop skips
-        # the excerpt (no prose body to truncate), producing an empty
-        # citations list — pre-this-change the fan-out path always
-        # returned 0 citations in production despite the qmd scan
-        # surfacing real hits. Falls back to an empty spans list when
-        # qmd omits the field (older qmd CLI versions, edge-case
-        # qmd-shape changes).
-        snippet = hit.get("snippet")
+        # the excerpt (no prose body to truncate), producing an
+        # empty citations list — pre-this-change the fan-out path
+        # always returned 0 citations in production despite the
+        # qmd scan surfacing real hits. Falls back to an empty
+        # spans list when qmd omits the field (older qmd CLI
+        # versions, edge-case qmd-shape changes).
+        snippet = row.get("snippet")
         spans: list[Span] = []
         if snippet:
             spans = [
@@ -375,7 +371,7 @@ async def _fanout_collections(
                     heading_path=[],
                     body=str(snippet),
                     code_fence=False,
-                    start_line=int(hit.get("line", 1)),
+                    start_line=int(row.get("line", 1)),
                 ),
             ]
         out.append(
@@ -395,31 +391,35 @@ async def _fanout_unscoped(
     exclude_expr: "TagExpr | None",
     top_k: int,
 ) -> "list[PageExcerpt]":
-    """Sequential-scan every registered library collection for unscoped queries.
+    """Daemon ``query`` against every registered library collection, unscoped.
 
     Thin wrapper around :func:`_fanout_collections` that resolves
     the collection set from the library registry. Bypasses the F18
     librarian LLM round-trip (which times out at ~42s/empty on
-    unscoped queries — session 2505630b reproduction) by fanning
-    out directly to qmd with a per-collection post-filter. Returns
-    merged ``PageExcerpt`` rows sorted by score desc and truncated
-    to ``top_k``.
+    unscoped queries — session 2505630b reproduction) by issuing a
+    single daemon ``query`` against the resolved collection list
+    with the daemon's ``collections`` push-down. Returns merged
+    ``PageExcerpt`` rows sorted by score desc and truncated to
+    ``top_k``.
 
-    Per-collection timeout: 15s (``_current_timeout()``). Failed
-    collections dropped silently. The fan-out is sequential —
-    one qmd subprocess at a time — to avoid a model-per-process
-    VRAM spike on OR-scoped queries (see
-    :func:`_fanout_collections`).
+    Per-call timeout: ``_current_timeout()`` (default 60s; the
+    shared ``LIES_QMD_FANOUT_TIMEOUT`` override applies). Process
+    failures propagate via the seam's typed errors
+    (:class:`QmdDaemonUnavailable`, :class:`QmdDaemonWedged`) — a
+    down daemon is the operator's action, a wedge is recoverable
+    machine state, and neither is silently folded into
+    ``no_coverage``.
 
     Args:
         question: Natural-language question.
-        exclude_expr: Compiled NOT AST (Task 3 / f15-exclude-compound).
-            ``None`` when no ``-`` chain supplied.
+        exclude_expr: Compiled NOT AST. ``None`` when no ``-`` chain
+            was supplied. Retained for signature parity; not enforced
+            inside the helper.
         top_k: Maximum excerpts to return.
 
     Returns:
         ``list[PageExcerpt]`` sorted by score desc, length ≤ ``top_k``.
-        Empty list when no collections registered or all fan-outs fail.
+        Empty list when no collections are registered.
     """
     from lies.library.registry import library_collection_metas
 
@@ -433,27 +433,29 @@ async def _query_tagged_collections(
     top_k: int,
     collection_names: list[str],
 ) -> "list[PageExcerpt]":
-    """Sequential-scan the tag-resolved collection set without the F18 librarian.
+    """Daemon ``query`` against the tag-resolved collection set, no LLM round-trip.
 
     Tagged ``ground()`` previously took the F18 librarian path even
     when the resolved AST matched one or more library collections
-    (session 2505630b reproduction — ``ground(tag_expr="c:switchyard")``
-    timed out at ~197s with ``no_coverage=True``). This fast-path
-    replaces the librarian LLM round-trip with a direct qmd fan-out
-    across ONLY the tag-matched collections (the unscoped fast-path
-    fanned across every registered collection).
+    (session 2505630b reproduction —
+    ``ground(tag_expr="c:switchyard")`` timed out at ~197s with
+    ``no_coverage=True``). This fast-path replaces the librarian
+    LLM round-trip with a single daemon ``query`` against ONLY the
+    tag-matched collections (the unscoped fast-path fans across
+    every registered collection).
 
     Mirrors the F18 ``LibrarianOutput.excerpts`` shape so the
-    downstream citation-building loop in :func:`ground` is identical
-    between the unscoped and the tagged fast-path. The library is
-    the universe for retrieval; the wiki surface contributes only
-    via the legacy F18 librarian fallback when the resolved AST
-    matches zero collections.
+    downstream citation-building loop in :func:`ground` is
+    identical between the unscoped and the tagged fast-path. The
+    library is the universe for retrieval; the wiki surface
+    contributes only via the legacy F18 librarian fallback when
+    the resolved AST matches zero collections.
 
     Args:
         question: Natural-language question.
-        exclude_expr: Compiled NOT AST (Task 3 / f15-exclude-compound).
-            ``None`` when no ``-`` chain supplied.
+        exclude_expr: Compiled NOT AST. ``None`` when no ``-`` chain
+            was supplied. Retained for signature parity; not enforced
+            inside the helper.
         top_k: Maximum excerpts to return.
         collection_names: Sorted collection names from the F15
             ``_collections_matching`` walker — the addressable set
@@ -461,8 +463,7 @@ async def _query_tagged_collections(
 
     Returns:
         ``list[PageExcerpt]`` sorted by score desc, length ≤ ``top_k``.
-        Empty list when ``collection_names`` is empty or all fan-outs
-        fail.
+        Empty list when ``collection_names`` is empty.
     """
     return await _fanout_collections(question, exclude_expr, top_k, collection_names)
 
@@ -695,20 +696,42 @@ async def ground(
         LibrarianOutput,
         register_librarian_tools,
     )
+    from lies.qmd import access
 
     out: LibrarianOutput
     if tag_expr is None and exclude_expr is None:
         # Unscoped fast-path: bypass the F18 librarian LLM round-trip
-        # and fan out directly to qmd across every registered library
-        # collection. ``await`` resolves on the async fan-out helper;
-        # the surface is now itself ``async`` so the daemon's event
-        # loop does not raise ``RuntimeError`` on a nested
-        # ``asyncio.run`` (pre-this-change bug: ``synthesize`` →
-        # ``ground`` → ``asyncio.run`` raised from inside the daemon
-        # loop). Skips the librarian tool-wiring block entirely (no
-        # LLM round-trip happens here).
+        # and dispatch a single daemon ``query`` against every
+        # registered library collection via the qmd access seam.
+        # ``await`` resolves on the async fan-out helper; the surface
+        # is now itself ``async`` so the daemon's event loop does not
+        # raise ``RuntimeError`` on a nested ``asyncio.run``
+        # (pre-this-change bug: ``synthesize`` → ``ground`` →
+        # ``asyncio.run`` raised from inside the daemon loop). Skips
+        # the librarian tool-wiring block entirely (no LLM round-trip
+        # happens here).
         try:
             excerpts = await _fanout_unscoped(question, exclude_expr, top_k)
+        except access.QmdDaemonUnavailable:
+            # The operator's action. Folding this into
+            # ``no_coverage=True`` would be a false claim about the
+            # corpus, made for a process failure — exactly the
+            # class of silent failure the timeout-classification
+            # branch exists to remove. Let the typed error reach
+            # the MCP layer / Python caller unchanged.
+            raise
+        except access.QmdDaemonWedged as exc:
+            # A wedge is a process-level failure too: the search
+            # never finished, so the digest has no standing to
+            # assert coverage. Surface the wedge honestly with the
+            # daemon's last log tail in ``last_output`` so a
+            # debugging reader can tell where the time went.
+            raise access.QmdDaemonWedged(
+                f"ground: qmd daemon wedged during fan-out; last qmd output: {exc.last_output!r}"
+                if exc.last_output
+                else "ground: qmd daemon wedged during fan-out",
+                last_output=exc.last_output,
+            ) from exc
         except Exception as exc:
             warnings.warn(
                 f"ground: fan-out dispatch failed: {type(exc).__name__}: {exc}",
@@ -736,10 +759,11 @@ async def ground(
         # library collection, bypass the F18 librarian LLM round-trip
         # (session 2505630b reproduction: ``ground(tag_expr="c:switchyard")``
         # previously timed out at ~197s with ``no_coverage=True`` and 0
-        # citations) and fan out directly to qmd across ONLY the matched
-        # collections. Same async-to-sync bridge as the unscoped path;
-        # same ``LibrarianOutput`` shape downstream so the citation-
-        # building loop is identical between the two fast-paths.
+        # citations) and dispatch a single daemon ``query`` against ONLY
+        # the matched collections. Same async-to-sync bridge as the
+        # unscoped path; same ``LibrarianOutput`` shape downstream so
+        # the citation-building loop is identical between the two
+        # fast-paths.
         #
         # Gate: ``tag_expr is not None or exclude_expr is not None`` keeps
         # the unscoped path exclusive (this branch is for tagged queries
@@ -757,6 +781,19 @@ async def ground(
                 top_k,
                 searched_scope_list,
             )
+        except access.QmdDaemonUnavailable:
+            # Same as the unscoped path: a down daemon is the
+            # operator's action, not a coverage claim. Let the
+            # typed error reach the caller.
+            raise
+        except access.QmdDaemonWedged as exc:
+            raise access.QmdDaemonWedged(
+                f"ground: qmd daemon wedged during tagged fan-out; "
+                f"last qmd output: {exc.last_output!r}"
+                if exc.last_output
+                else "ground: qmd daemon wedged during tagged fan-out",
+                last_output=exc.last_output,
+            ) from exc
         except Exception as exc:
             warnings.warn(
                 f"ground: tagged fan-out dispatch failed: {type(exc).__name__}: {exc}",

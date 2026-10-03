@@ -42,6 +42,13 @@ class _FakeClient:
     something it can ``async with`` and call ``call_tool`` on. Each
     entry in ``outcomes`` is either an exception to raise or a value to
     return; the last one repeats once the list is exhausted.
+
+    Records every ``call_tool`` invocation in ``calls`` with the
+    full kwargs so a test can pin the per-call ``timeout=`` argument
+    is threaded through. ``_FakeClient.call_tool`` is the only place
+    the seam's deadline lands on the wire, so an assertion on the
+    captured kwargs is the assertion on the property the
+    ``LIES_QMD_FANOUT_TIMEOUT`` knob depends on.
     """
 
     def __init__(self, outcomes: list[Any]) -> None:
@@ -54,8 +61,8 @@ class _FakeClient:
     async def __aexit__(self, *_exc: object) -> None:
         return None
 
-    async def call_tool(self, name: str, arguments: dict[str, Any], **_kw: Any) -> Any:
-        self.calls.append((name, arguments))
+    async def call_tool(self, name: str, arguments: dict[str, Any], **kw: Any) -> Any:
+        self.calls.append((name, arguments, kw))
         outcome = self._outcomes.pop(0) if self._outcomes else None
         if isinstance(outcome, BaseException):
             raise outcome
@@ -560,6 +567,105 @@ async def test_a_changed_daemon_url_rebuilds_the_client(
     await access.daemon_tool("get", {"file": "a.md"})
 
     assert len(built) == 2, "a cached client would keep calling the old daemon"
+
+
+async def test_a_per_call_timeout_is_forwarded_to_call_tool(
+    monkeypatch: pytest.MonkeyPatch,
+    seam: _Recycle,
+) -> None:
+    """``daemon_tool(..., timeout=N)`` reaches the wire as ``call_tool(timeout=N)``.
+
+    The pre-final-review seam took a ``timeout`` argument at the search
+    call site and never read it, so a deadline the CLI path would have
+    applied was silently dropped on the daemon path. The cache invalidates
+    on ``LIES_QMD_URL`` change but not on a deadline change, so
+    ``LIES_QMD_FANOUT_TIMEOUT`` had no effect on the daemon transport
+    until something else rebuilt the client. This test pins the property
+    the knob depends on: the per-call timeout reaches ``call_tool`` as
+    a keyword argument, so ``fastmcp.Client``'s per-request
+    ``read_timeout_seconds`` honours it on the next call.
+    """
+    fake = _FakeClient([{"ok": 1}, {"ok": 2}])
+    monkeypatch.setattr(access, "_daemon_client", lambda url: fake)
+    monkeypatch.setattr(access, "get_qmd_url", lambda: "http://127.0.0.1:8181")
+
+    await access.daemon_tool("get", {"file": "a.md"}, timeout=7.5)
+    await access.daemon_tool("get", {"file": "b.md"}, timeout=12.0)
+
+    # Two calls recorded, each with the per-call timeout threaded
+    # through. ``raise_on_error=False`` is the seam's own choice (see
+    # ``_call``); the assertion is the timeout, not that flag.
+    assert len(fake.calls) == 2
+    for call in fake.calls:
+        assert call[2].get("timeout") is not None, (
+            f"per-call timeout did not reach call_tool kwargs: {call[2]!r}"
+        )
+    assert fake.calls[0][2]["timeout"] == 7.5
+    assert fake.calls[1][2]["timeout"] == 12.0
+
+
+async def test_no_per_call_timeout_falls_back_to_the_cached_client_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+    seam: _Recycle,
+) -> None:
+    """A ``timeout=None`` call leaves the client-level deadline in place.
+
+    The cached httpx client is built at factory construction with
+    ``read=_default_read_timeout_s()``. ``daemon_tool(timeout=None)``
+    must NOT pass ``timeout=None`` to ``call_tool`` — the FastMCP
+    signature accepts it (no-op) but it would be confusing in the
+    wire capture and would lie to a reader about whether the seam
+    intends to override. The seam forwards ``None`` as "don't
+    override"; the assertion pins the seam's choice.
+    """
+    fake = _FakeClient([{"ok": 1}])
+    monkeypatch.setattr(access, "_daemon_client", lambda url: fake)
+    monkeypatch.setattr(access, "get_qmd_url", lambda: "http://127.0.0.1:8181")
+
+    await access.daemon_tool("get", {"file": "a.md"})
+
+    assert len(fake.calls) == 1
+    # The keyword is absent; the cached client's read deadline is the
+    # one that applies. ``"timeout" not in kwargs`` is what
+    # ``Client.call_tool`` reads as "use my default".
+    assert "timeout" not in fake.calls[0][2], (
+        f"a None timeout should not be forwarded as a kwarg; got {fake.calls[0][2]!r}"
+    )
+
+
+async def test_a_deadline_change_does_not_rebuild_the_cached_client(
+    monkeypatch: pytest.MonkeyPatch,
+    seam: _Recycle,
+) -> None:
+    """Cache key is the URL. Deadline moves on the next call, not via rebuild.
+
+    A deadline change (``LIES_QMD_FANOUT_TIMEOUT``) is now read on the
+    next call via the per-call ``timeout=`` argument, so the cached
+    client can outlive a deadline change. This test pins that: a
+    call with a different timeout leaves the cached client alone.
+    A future change that adds the deadline to the cache key would
+    rebuild the client on every deadline change and re-pay the
+    model-load cost (3.11s warm vs 10.77s cold) for nothing.
+    """
+    built: list[str] = []
+    fake = _FakeClient([{"ok": 1}, {"ok": 2}])
+
+    def _factory(url: str) -> _FakeClient:
+        built.append(url)
+        return fake
+
+    monkeypatch.setattr(access, "fastmcp", SimpleNamespace(Client=_factory))
+    monkeypatch.setattr(access, "get_qmd_url", lambda: "http://127.0.0.1:8181")
+
+    await access.daemon_tool("get", {"file": "a.md"}, timeout=7.5)
+    await access.daemon_tool("get", {"file": "b.md"}, timeout=12.0)
+
+    assert len(built) == 1, (
+        f"a deadline change should not rebuild the cached client; "
+        f"got {len(built)} builds. Rebuilding re-pays the 3.11s "
+        f"model-load cost for nothing — the per-call timeout "
+        f"overrides on the wire."
+    )
 
 
 # --- the classification ------------------------------------------------

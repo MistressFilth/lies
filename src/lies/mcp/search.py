@@ -297,13 +297,28 @@ def _post_query(doc: str, scope: list[str], limit: int, timeout: int) -> list[di
     that ignores the wire argument must not pass through as if it
     applied.
 
+    ``timeout`` is the per-call read deadline, in seconds, forwarded
+    to the daemon as the ``timeout=`` keyword on
+    ``fastmcp.Client.call_tool`` via
+    :func:`lies.qmd.access.daemon_tool`. A value the seam would have
+    applied on a CLI subprocess is now applied on the daemon
+    transport too, so ``LIES_QMD_FANOUT_TIMEOUT`` takes effect on
+    the next call without waiting for the cached client to be
+    invalidated.
+
     A timeout on the daemon side surfaces as
-    :class:`QmdTimeoutError` via the same envelope that timed out
-    a CLI ``qmd query`` used to. The mapping is preserved so a
-    caller's ``except QmdTimeoutError`` keeps working — the
-    envelope distinguishes slow from unreachable from broken
-    through three different paths, but the exception class
-    carries the slow-vs-broken split.
+    :class:`QmdDaemonWedged` (the seam's recycle-and-raise path,
+    not a CLI subprocess failure) — the docstring above predates
+    the daemon transport and reflects the pre-#106 CLI behaviour.
+    The ``except QmdTimeoutError`` clauses below are kept as
+    defensive fallbacks: they do not fire on this path today,
+    but a future call site that re-routes through the CLI (the
+    bench tool, say) cannot regress the envelope if they
+    silently drop a timeout. The CLI's
+    :class:`QmdTimeoutError` is a subclass of
+    :class:`QmdCommandError`, so a CLI re-routing here is caught
+    by the same clause that catches other unexpected
+    subprocess failures.
     """
     # Strip trailing whitespace defensively. The previous structured
     # ``vec: ...\\nlex: ...`` form required this; the plain-string
@@ -332,7 +347,7 @@ def _post_query(doc: str, scope: list[str], limit: int, timeout: int) -> list[di
         "intent": "lies.mcp.search read-side hybrid query",
     }
 
-    result = _run_blocking(access.daemon_tool("query", arguments))
+    result = _run_blocking(access.daemon_tool("query", arguments, timeout=float(timeout)))
 
     # The daemon's MCP tool returns a ``CallToolResult`` whose
     # ``structured_content`` carries the rows. A malformed payload
