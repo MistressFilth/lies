@@ -689,6 +689,54 @@ def test_a_protocol_rejection_is_not_ours_to_recycle() -> None:
     assert access.classify_call_error(err) == ("passthrough", False)
 
 
+# --- the protocol-error split (I-4) -------------------------------------
+#
+# ``LocalProtocolError`` and ``RemoteProtocolError`` both inherit
+# ``ProtocolError -> TransportError`` in the installed httpx 0.28.1, so
+# the generic ``_TRANSPORT_NAMES`` matcher would lump them into
+# ``recycle-retry`` even though the failures live on opposite sides of
+# the wire. The split pins the project's stated principle: server-side
+# state -> recycle; client-side malformed request -> passthrough, since
+# a retry against the same bytes fails the same way and a recycle
+# kills in-flight work belonging to other clients of a machine-global
+# daemon. ``HTTPStatusError`` is its own server-state passthrough.
+# All three classes are pinned here so a future match-by-name rewrite
+# cannot silently re-merge the client-side case.
+
+
+def test_http_status_error_is_a_passthrough() -> None:
+    """5xx from a daemon is a server-state response, not a transport failure."""
+    req = httpx.Request("GET", "http://example.test/q")
+    resp = httpx.Response(500, request=req)
+    err = httpx.HTTPStatusError("500", request=req, response=resp)
+    assert access.classify_call_error(err) == ("passthrough", False)
+
+
+def test_remote_protocol_error_stays_a_recycle_retry() -> None:
+    """The daemon's response was malformed — server-side state."""
+    assert access.classify_call_error(httpx.RemoteProtocolError("x")) == ("recycle-retry", True)
+
+
+def test_local_protocol_error_is_a_passthrough_not_a_recycle_retry() -> None:
+    """A client-side malformed request cannot be fixed by restarting the daemon.
+
+    ``httpx`` raises ``LocalProtocolError`` for illegal header
+    values, unsupported URL schemes, and similar client-side
+    problems. The daemon is not at fault; recycling it kills
+    in-flight work for other clients of a machine-global daemon,
+    and a retry sends the same bytes back to fail the same way.
+    """
+    assert access.classify_call_error(httpx.LocalProtocolError("x")) == ("passthrough", False)
+
+
+def test_local_protocol_error_wrapped_by_fastmcp_still_classifies_as_passthrough() -> None:
+    """The ``__cause__`` chain still resolves to the client-side class."""
+    wrapped = RuntimeError("Client failed to connect: bad request")
+    wrapped.__cause__ = httpx.LocalProtocolError("illegal header value")
+
+    assert access.classify_call_error(wrapped) == ("passthrough", False)
+
+
 # --- the taxonomy matches what fastmcp actually raises -----------------
 #
 # The three cases below are transcribed from a probe run against the

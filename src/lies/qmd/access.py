@@ -102,6 +102,17 @@ _WEDGE_NAMES = frozenset({"ReadTimeout", "WriteTimeout", "PoolTimeout"})
 #: Names that mean "the daemon was not there".
 _TRANSPORT_NAMES = frozenset({"TransportError", "TimeoutException", "ConnectError"})
 
+#: Names that mean the *client* sent something the server rejected.
+#: ``LocalProtocolError`` is httpx's name for an illegal header value,
+#: unsupported URL scheme, or otherwise malformed request — a retry
+#: is provably futile (the same bytes will fail the same way) and a
+#: recycle kills in-flight work belonging to other clients of the
+#: machine-global daemon. Treat as ``passthrough`` like the
+#: server-state ``HTTPStatusError``. ``RemoteProtocolError`` keeps
+#: the ``recycle-retry`` path: the daemon's response was malformed,
+#: which is a server-side state.
+_LOCAL_PROTOCOL_NAMES = frozenset({"LocalProtocolError"})
+
 #: JSON-RPC code for session death under an in-flight call. Literal
 #: because the SDK constant moved between releases.
 _CONNECTION_CLOSED = -32000
@@ -118,6 +129,11 @@ def _is_wedge(exc: BaseException) -> bool:
 def _is_transport(exc: BaseException) -> bool:
     """True for any transport-level failure, in either httpx generation."""
     return any(klass.__name__ in _TRANSPORT_NAMES for klass in type(exc).__mro__)
+
+
+def _is_local_protocol_error(exc: BaseException) -> bool:
+    """True for a client-side malformed-request protocol error."""
+    return any(klass.__name__ in _LOCAL_PROTOCOL_NAMES for klass in type(exc).__mro__)
 
 
 def _transport_cause(exc: BaseException) -> Exception | None:
@@ -149,7 +165,11 @@ def classify_call_error(exc: Exception) -> tuple[str, bool]:
     Order matters: a read timeout is *also* a transport error, so the
     wedge case is decided first. A connect timeout is a transport
     error and not a wedge. ``httpx.HTTPStatusError`` and
-    ``httpx.RemoteProtocolError`` are ``"passthrough"``.
+    ``httpx.LocalProtocolError`` are ``"passthrough"`` — server-side
+    status and client-side malformed requests both leave the daemon
+    reachable and are not reasons to recycle a machine-global daemon.
+    ``httpx.RemoteProtocolError`` keeps ``"recycle-retry"`` (the
+    daemon's response was malformed — server-side state).
 
     Args:
         exc: Class name and ``__cause__`` chain — httpx types are not.
@@ -159,6 +179,8 @@ def classify_call_error(exc: Exception) -> tuple[str, bool]:
     """
     if _is_wedge(exc):
         return ("recycle-raise", False)
+    if _is_local_protocol_error(exc):
+        return ("passthrough", False)
     if _is_transport(exc):
         return ("recycle-retry", True)
     cause = _transport_cause(exc)

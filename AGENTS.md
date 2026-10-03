@@ -536,10 +536,19 @@ transport serves which operation. Read it before adding any qmd call.
   agent path's `QmdRecycleToolset` does the same on its retry, so a
   decode error is not reported to the model as *unreachable*.
 - **Deliberate taxonomy gap.** `httpx.HTTPStatusError` (a 5xx from a
-  daemon failing internally) and `httpx.RemoteProtocolError` (a read
-  that died on a broken connection) classify as `"passthrough"` and get
-  no recycle. Both are server-side states rather than reachability
-  states. Recorded at the classifier so it reads as considered.
+  daemon failing internally) and `httpx.LocalProtocolError` (an
+  illegal header value, unsupported URL scheme, or other client-side
+  malformed request — a retry sends the same bytes back to fail the
+  same way, and a recycle kills in-flight work belonging to other
+  clients of a machine-global daemon) classify as `"passthrough"`
+  and get no recycle. `httpx.RemoteProtocolError` (the daemon's
+  response was malformed — server-side state) keeps the
+  `"recycle-retry"` path through `_TRANSPORT_NAMES`. All three classes
+  are pinned in `tests/unit/qmd/test_access.py` (the
+  `RemoteProtocolError` and `LocalProtocolError` tests are the I-4
+  pin) so a future match-by-name rewrite cannot silently re-merge the
+  client-side case. Recorded at the classifier so it reads as
+  considered.
 - **The taxonomy matches exception class *names*, not httpx types.**
   fastmcp 4 vendors its own httpx as `httpx2`, and `httpx2.ReadTimeout`
   is not a subclass of `httpx.ReadTimeout`; a dead session additionally
