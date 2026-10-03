@@ -7,6 +7,7 @@ import inspect
 import os
 import subprocess
 import sys
+import tempfile
 import textwrap
 import threading
 import time
@@ -307,3 +308,74 @@ def test_is_qmd_installed_does_not_have_lock_wrapper():
     from lies.qmd.cli import is_qmd_installed
 
     assert getattr(is_qmd_installed, "__wrapped__", None) is None
+
+
+# --- the lock must survive test isolation --------------------------------
+#
+# `with_qmd_lock` derives its path from `XDG_STATE_HOME`. The autouse
+# `_isolated_xdg` fixture redirects that per test, which gave every test
+# its own inode -- and a per-test lock is no lock at all. Two embeds then
+# raced the CUDA VMM pool reservation the lock exists to serialize, and the
+# symptom was `CUDA error: out of memory` from `ggml-cuda.cu`.
+
+
+def test_every_test_resolves_the_same_qmd_lock() -> None:
+    """Two tests must contend for one lock, not two.
+
+    Resolves the lock as a test actually does, then again with a
+    *different* ``XDG_STATE_HOME`` -- the situation that used to arise
+    whenever two tests (or two suites) embedded at once. Both must land on
+    the same inode, or the exclusion is gone and the CUDA reservation race
+    is live.
+    """
+    from lies.qmd.lock import _lock_paths
+
+    here = _lock_paths()[0]
+
+    original = os.environ.get("XDG_STATE_HOME")
+    try:
+        os.environ["XDG_STATE_HOME"] = str(Path(tempfile.gettempdir()) / "elsewhere-state")
+        there = _lock_paths()[0]
+    finally:
+        if original is None:
+            os.environ.pop("XDG_STATE_HOME", None)
+        else:
+            os.environ["XDG_STATE_HOME"] = original
+
+    assert here == there, (
+        f"XDG isolation split the qmd lock: {here} vs {there}. Every test "
+        f"must contend for one inode or the CUDA reservation race is live."
+    )
+
+
+def test_the_shared_qmd_lock_is_outside_the_per_test_xdg_root(tmp_path: Path) -> None:
+    """The pinned lock must not live under the per-test XDG root.
+
+    The subtle failure: putting the lock at ``xdg_root / "state"`` reads
+    as tidy isolation while reproducing the original bug -- one inode per
+    test is exactly what there must not be. This pins the shape of the fix,
+    not merely its presence.
+    """
+    from lies.qmd.lock import _lock_paths
+
+    lock = _lock_paths()[0]
+
+    assert not str(lock).startswith(str(tmp_path)), (
+        f"the qmd lock resolved inside this test's tmp_path ({lock}); that is a "
+        f"per-test lock, which excludes nothing"
+    )
+    assert _lock_paths()[0] == lock, "and it must be stable across calls within one test"
+
+
+def test_embed_is_lock_wrapped() -> None:
+    """The exclusion this depends on has to actually cover ``qmd_embed``.
+
+    The fixture is only safe because every qmd helper goes through
+    ``with_qmd_lock``. A future helper that shells out without it joins
+    the CUDA reservation race, and nothing else in the suite would notice.
+    """
+    from lies.qmd import cli
+
+    assert getattr(cli.qmd_embed, "__wrapped__", None) is not None or hasattr(
+        cli.qmd_embed, "__wrapped__"
+    ), "qmd_embed must still be wrapped by with_qmd_lock"

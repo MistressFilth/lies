@@ -148,13 +148,30 @@ def qmd_update(cwd: Path, timeout: int = 1800) -> None:
     a per-collection refresh must filter at the qmd config layer, not
     via this CLI.
 
-    The idle bound is raised for the same reason as ``qmd_embed``'s: under a pipe ``qmd update`` emits **nothing** while
-    it works. qmd's own progress for this command is an unconditional
-    stderr write gated on ``isTTY`` (``dist/cli/qmd.js:552-566``), so a
-    piped run looks wedged to a silence detector even while it is
-    indexing. Leaving the 30s default here meant the same class of
-    mid-progress kill the embed fix removed, one command earlier on the
-    ``lies sync`` path.
+    **The total bound moved from 300s to 1800s, and every call site
+    inherited it.** The three production callers --
+    ``memory/service.py``, ``etl/stages/write.py`` and
+    ``library/cli_migrate.py`` -- pass no timeout, so each went from a
+    5-minute ceiling to 30 minutes. That is deliberate: ``qmd update``
+    reindexes *every* collection registered under the root, and on a
+    corpus this size 300s is not a generous budget, it is a wrong one.
+    But it is a real change and it is not free.
+
+    The idle bound is raised for the same reason as ``qmd_embed``'s:
+    under a pipe ``qmd update`` emits **nothing** while it works. qmd's
+    own progress for this command is a stderr write gated on ``isTTY``
+    (``dist/cli/qmd.js:552-566``), so a piped run looks wedged to a
+    silence detector even while it is indexing.
+
+    Combined with the half-total idle bound, the cost is that a wedged
+    update now holds ``with_qmd_lock()`` for up to **900s** rather than
+    30s, blocking other qmd operations from this process. Across these
+    three call sites -- all of which run inside a write envelope -- that
+    is the sharper edge: a hung update stalls the write path, not just a
+    background reindex. The trade is still the right one (the alternative
+    is killing a healthy full-corpus reindex), but it is the largest
+    behavioural change in this branch and is recorded here rather than
+    left to be discovered.
     """
     result = _run(
         ["update"],
@@ -305,15 +322,27 @@ def qmd_embed(cwd: Path, collection_name: str, *, timeout: int = 1800) -> None:
     pages). The default was picked to be generous enough for the
     largest realistic wiki without making small syncs feel hung.
 
-    The wedge detector's *idle* bound is raised to match ``timeout``,
-    because embedding is silent for its whole duration and that is not
-    a wedge: ``qmd embed`` prints a spinner and then nothing while the
+    The wedge detector's *idle* bound is raised to
+    ``timeout * SILENT_COMMAND_IDLE_TIMEOUT_FRACTION`` — half the total,
+    **not** the whole of it, because the reader loop checks the total
+    bound first: an idle bound equal to the total can never fire, so
+    every kill would report ``bound="total"`` and lose the ``last_output``
+    tail. At half, a hung command is still caught as ``idle`` and keeps
+    its diagnostic. See that constant for the full reasoning.
+
+    It is raised at all because embedding is silent for its whole
+    duration and that is not a wedge: under a pipe ``qmd embed`` writes
+    exactly one byte (a stderr spinner escape) and then nothing while the
     model loads and runs. Measured on a cold cache, a single tiny
     document takes 9.4s of unbroken silence — inside the 30s default
     alone, but four collections under host contention crossed it and
-    were killed mid-progress. The caller's ``timeout`` is already their
-    statement about how long this may take; the idle bound now defers
-    to it rather than imposing a second, smaller one.
+    were killed mid-progress.
+
+    The cost, since it is a real one: a wedged embed holds
+    ``with_qmd_lock()`` for up to half its total bound — 900s at the
+    1800s default — instead of 30s, blocking other qmd operations from
+    this process. The alternative is killing healthy long-running work,
+    which is the failure the bound exists to prevent.
 
     Raises ``QmdError`` on non-zero exit so the post-commit hook in
     ``etl/stages/write.py`` can wrap the call in try/except and
@@ -447,19 +476,37 @@ def _parse_json_list(stdout_text: str) -> list[Any] | None:
     as intermittent.
 
     So: find the JSON array rather than demanding the stream begin with
-    one. Scanning for the first ``[`` or ``{`` is safe because the prefix
-    contains neither; the parse itself still validates the payload, so a
-    genuinely malformed response is still rejected, and the error now
+    one. Scanning for ``[``/``{`` is safe because the progress prefix
+    contains neither, and the parse itself still validates the payload,
+    so a genuinely malformed response is still rejected and the error
     quotes what actually arrived. Returns ``None`` when nothing parses as
     a JSON list, leaving the raise to the caller.
+
+    Two things this deliberately does *not* do:
+
+    - It keeps scanning past a JSON **object**. The progress prefix
+      cannot contain a brace, but a stream that is ``{...}{...}`` --
+      or an object followed by the real list -- must not be reported as
+      "no list here" just because the first parse succeeded and was not
+      one. A non-list is skipped, not terminal.
+    - It does not re-parse the whole remainder at every candidate
+      position. ``json.JSONDecoder().raw_decode`` parses forward from
+      one offset without re-scanning, so a large stream is O(n) overall
+      rather than O(n*m) in the number of bracket characters.
     """
+    decoder = json.JSONDecoder()
     for index, char in enumerate(stdout_text):
-        if char in "[{":
-            try:
-                parsed = json.loads(stdout_text[index:])
-            except json.JSONDecodeError:
-                continue
-            return parsed if isinstance(parsed, list) else None
+        if char not in "[{":
+            continue
+        try:
+            parsed, _ = decoder.raw_decode(stdout_text, index)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, list):
+            return parsed
+        # A non-list at this offset: keep looking. Reporting it here
+        # would make "a JSON object precedes the list" indistinguishable
+        # from "there is no list".
     return None
 
 
@@ -542,9 +589,6 @@ def qmd_query(
         raise QmdCommandError(
             f"qmd query returned invalid JSON; first 200 chars of stdout: {stdout_text[:200]!r}"
         )
-
-    if not isinstance(data, list):
-        raise QmdCommandError(f"qmd query expected a JSON list, got {type(data).__name__}")
 
     if not data:
         raise QmdNoResultsError(f"qmd query returned no results for: {question!r}")

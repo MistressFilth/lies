@@ -98,8 +98,13 @@ All notable changes to LIES are documented here. The format follows
   the runs with a cold cache, which is why it read as intermittent.
   `_parse_json_list` now finds the JSON rather than demanding the stream
   begin with it, and still rejects genuinely malformed output — quoting
-  what actually arrived when it does. Reproduced deliberately: a test
-  that forces a cold cache sees the spinner on stdout today.
+  what actually arrived when it does. Covered by four tests, one of which
+  feeds the real ipull byte sequence (`\x1b[?25l⠋ Gathering information…`)
+  and asserts the JSON is still recovered, and three of which assert that
+  garbage, truncated output, an empty stream and a JSON *object* are all
+  still rejected. A test that reproduced this against the live binary was
+  written and deliberately not shipped: forcing a cold cache makes qmd
+  download ~1.2 GB of models per run.
 
 ### Changed
 

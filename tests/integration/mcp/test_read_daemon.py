@@ -106,8 +106,15 @@ def _live_document(collection_and_page: str) -> str:
     Under ``tests/integration/`` the autouse XDG redirect points
     ``library_git_root()`` at a per-test fixture copy, which does not
     contain the corpus. This test therefore reads the *real* root rather
-    than the redirected one, and skips if it is not there: a host without
-    a populated library cannot assert anything about a document in it.
+    than the redirected one.
+
+    A missing document is a **failure, not a skip.** A skip would mean a
+    host without a populated corpus reports this file green while the
+    truncation invariant is never checked — the same "green for a reason
+    other than the one it names" failure the tag-filter loops had. The
+    whole point of comparing against the file on disk is that both sides
+    must exist; if the corpus is gone, that is a real finding about the
+    host, and it should say so rather than go quiet.
     """
     import os
     from pathlib import Path
@@ -119,7 +126,13 @@ def _live_document(collection_and_page: str) -> str:
     root = Path(os.path.expanduser("~")) / ".local" / "share" / "lies" / "library"
     page = root / "collections" / collection_and_page
     if not page.exists():
-        pytest.skip(f"live library document not found: {page}")
+        pytest.fail(
+            f"live library document not found: {page}\n"
+            f"This test compares the daemon's body against the file on disk to "
+            f"prove non-truncation. Both sides must exist: without the file "
+            f"there is nothing to compare against, and skipping would leave the "
+            f"truncation invariant silently untested on this host."
+        )
     return page.read_text(encoding="utf-8")
 
 

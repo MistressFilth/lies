@@ -449,7 +449,7 @@ def _recycle_data_dir() -> Path:
     ``ensure_qmd_daemon`` takes a ``data_dir`` that looks like it
     controls the daemon, and it does not: ``_spawn_qmd_daemon`` runs
     ``qmd mcp --http --daemon`` with ``cwd=Path.cwd()`` and never reads
-    the argument (``daemon.py:250-259``). ``data_dir`` only ever reaches
+    the argument (``daemon.py:252-261``). ``data_dir`` only ever reaches
     ``write_sidecar_data_dir``. So a recycle and an ensure can *disagree*
     on what to record — ``ensure`` is handed ``wiki.wiki_dir`` by
     ``operator.py:151``, this falls back to ``library_git_root()`` — and

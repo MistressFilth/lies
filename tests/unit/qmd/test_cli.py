@@ -127,3 +127,47 @@ def test_parse_json_list_rejects_a_json_object_where_a_list_is_required() -> Non
     from lies.qmd.cli import _parse_json_list
 
     assert _parse_json_list('{"error": "boom"}') is None
+
+
+def test_parse_json_list_keeps_scanning_past_a_json_object() -> None:
+    """A JSON object before the list must not be reported as "no list".
+
+    The progress prefix cannot contain a brace, so the first successful
+    parse at a bracket position is normally the answer. Returning on a
+    non-list made "an object precedes the list" indistinguishable from
+    "there is no list here", and the caller could not tell a real
+    protocol change from a stream it should have kept reading.
+    """
+    from lies.qmd.cli import _parse_json_list
+
+    assert _parse_json_list('{"meta": 1}\n[{"path": "a/b.md"}]') == [{"path": "a/b.md"}]
+
+
+def test_parse_json_list_handles_several_json_values_in_one_stream() -> None:
+    """Later lists are still found after earlier non-list values."""
+    from lies.qmd.cli import _parse_json_list
+
+    assert _parse_json_list('{"a": 1}{"b": 2}\n[{"path": "x.md"}]') == [{"path": "x.md"}]
+
+
+def test_parse_json_list_rejects_a_stream_of_only_objects() -> None:
+    """Objects all the way through is still "no list", not an empty result."""
+    from lies.qmd.cli import _parse_json_list
+
+    assert _parse_json_list('{"a": 1}\n{"b": 2}') is None
+
+
+def test_parse_json_list_does_not_requalify_the_whole_stream_per_bracket() -> None:
+    """Uses forward parsing, so a large stream is not re-scanned per bracket.
+
+    A behavioural proxy for the cost concern: a stream of many opening
+    brackets followed by a valid list must recover, and must do so by
+    advancing rather than re-parsing the remainder at each one. Kept
+    cheap by construction -- the point is that the function is not
+    O(n*m) in the number of bracket characters, which a raw_decode loop
+    guarantees and the previous json.loads-per-index did not.
+    """
+    from lies.qmd.cli import _parse_json_list
+
+    noisy = "[" * 500 + "x" * 500
+    assert _parse_json_list(noisy + ' [{"path": "a.md"}]') == [{"path": "a.md"}]

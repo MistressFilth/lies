@@ -681,14 +681,20 @@ def test_plus_unknown_tag_no_coverage(
 
     No collection has ``nope`` in its effective tags (name or tag
     list), so :func:`_collections_matching` returns an empty set and
-    the post-qmd drop raises ``QmdNoResultsError`` (every qmd hit is
-    filtered out — the path's first ``/``-segment is never in the
-    empty allowed set). That triggers the index-fallback path; the
-    fallback's own per-page read is *not* filter-scoped (it walks
-    ``wiki/index.md`` directly), so the synthesizer still sees one
-    page from the index. The test pins the ``searched_scope``
-    envelope (the effective scope the operator's filter implies)
-    while accepting that the fallback path bypassed the filter.
+    the resolved collection set is empty, so the librarian's filtered
+    pass is skipped (an empty ``collection_filter`` would drop every
+    hit) and the orchestrator takes its index fallback, whose own
+    per-page read walks ``wiki/index.md`` directly and is therefore
+    not filter-scoped. The synthesizer still sees a page from the
+    index. The test pins the ``searched_scope`` envelope — the
+    effective scope the operator's filter implies — while accepting
+    that the fallback bypassed the filter to produce content.
+
+    Note the mechanism is the *stub's*, not ``qmd_query``'s: the
+    librarian here short-circuits on an empty resolved set rather than
+    issuing a filtered query that would raise ``QmdNoResultsError``.
+    A docstring that attributed this to the post-qmd drop would be
+    describing a path this file no longer takes.
     """
     orch = _orchestrator(qmd_fixture_library)
     captured: list[str] = []
@@ -703,11 +709,11 @@ def test_plus_unknown_tag_no_coverage(
     # The fallback path read ``wiki/index.md``; the synthesizer saw
     # whatever was listed there. The contract under test is the
     # filter, not the fallback contents. ``fallback_reason`` is
-    # either ``"qmd_no_results"`` (the post-filter drop raised
-    # :class:`QmdNoResultsError`) or ``"qmd_failed"`` (a qmd command
-    # error such as a stderr-only non-zero exit that surfaced as
-    # :class:`QmdCommandError`); both indicate the post-qmd filter
-    # path did its job and the orchestrator fell back to the index.
+    # either ``"qmd_no_results"`` (nothing survived retrieval) or
+    # ``"qmd_failed"`` (a qmd command error surfaced as
+    # :class:`QmdCommandError`); both mean the same thing to a reader
+    # here — the filter left nothing to answer from, and the
+    # orchestrator fell back to the index.
     assert answer.fallback_used is True
     assert answer.fallback_reason in {"qmd_no_results", "qmd_failed"}
 

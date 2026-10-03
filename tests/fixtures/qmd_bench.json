@@ -274,9 +274,11 @@
       },
       "superseded_baseline": {
         "recorded_against": {
+          "corpus_documents": 5987,
           "vectors": 91070,
-          "orphan_hashes": 1566,
-          "corpus_documents": 5987
+          "orphan_hashes": 1601,
+          "orphan_rows": 42086,
+          "note": "1601 orphan hashes and 42086 orphan rows, against the same 5987 documents. The reconciliation is exact and arithmetic: 42086 orphan rows removed, 91070 - 42086 = 48984, which is the recorded post-cleanup vector count. The ~26 vectors per orphan hash is simply what 1601 deleted documents' chunks look like. Nothing was re-chunked: every surviving document kept its vectors."
         },
         "summary": {
           "bm25": {
@@ -316,10 +318,17 @@
             "avg_f1": 0.6666666666666666
           }
         },
-        "why_replaced": "These numbers cannot be reproduced by the current index and must not be gated against. Superseded on 2026-10-02, NOT because a code change moved them, and not because the index was re-chunked. Two findings, both verified: (1) `qmd bench` runs in-process -- `dist/cli/qmd.js` `case \"bench\"` imports `../bench/bench.js` directly, which has no daemon, no MCP server and no subprocess, so no LIES code is on the path at all; every change this branch makes is in LIES. (2) The index changed underneath the gate. The old figures were measured at 91070 vectors and 1566 orphan hashes; the index is now 48984 vectors with 0 orphans and 0 documents lacking vectors (all 14 collections fully covered). The cleanup deleted only rows with no backing `content`, i.e. exactly the orphans -- no document lost coverage and nothing was re-chunked. The delta is environmental.",
+        "why_replaced": "These numbers cannot be reproduced by the current index and must not be gated against. Superseded on 2026-10-02, NOT because a code change moved them, and not because the index was re-chunked. Two findings, both verified: (1) `qmd bench` runs in-process -- `dist/cli/qmd.js` `case \"bench\"` imports `../bench/bench.js` directly, which has no daemon, no MCP server and no subprocess, so no LIES code is on the path at all; every change this branch makes is in LIES. (2) The index changed underneath the gate. The old figures were measured at 91070 vectors and 1566 orphan hashes; the index is now 48984 vectors with 0 orphans and 0 documents lacking vectors (all 14 collections fully covered). The cleanup deleted only rows with no backing `content`, i.e. exactly the orphans: 42086 orphan rows against 91070 vectors leaves 48984, the recorded post-cleanup count, and every one of the 5987 surviving documents still has vectors. Nothing was re-chunked and no document lost coverage. See `recorded_against` for the arithmetic. The delta is environmental.",
         "which_queries_moved": {
           "note": "Two reranker-sensitive queries account for the whole delta: `cc-context-window-paraphrase` (semantic) and `fm-server-context` (topical) now score 0 recall. Both expected files are still present, active and vectorised, so this is ranking, not missing documents."
         }
+      },
+      "index_state_at_recording": {
+        "corpus_documents": 5987,
+        "vectors": 48984,
+        "orphan_hashes": 0,
+        "orphan_rows": 0,
+        "note": "The index state this block was measured against, so the count is checkable rather than asserted. Every one of the 5987 active documents has vectors; 0 documents lack them."
       }
     },
     "lies_gate": null,

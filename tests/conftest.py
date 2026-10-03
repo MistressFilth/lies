@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -141,6 +142,21 @@ def _isolated_xdg(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("XDG_CACHE_HOME", str(xdg_root / "cache"))
     monkeypatch.setenv("XDG_STATE_HOME", str(xdg_root / "state"))
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(xdg_root / "runtime"))
+    # The qmd lock is a *host*-wide resource, and per-test XDG isolation
+    # silently defanged it. `with_qmd_lock` derives its path from
+    # `XDG_STATE_HOME`, so redirecting that per test gave every test its
+    # own inode -- two embeds in two tests then never excluded each
+    # other, which is exactly the CUDA VMM reservation race
+    # (`cuMemAddressReserve`) the lock exists to prevent. Observed as
+    # `CUDA error: out of memory` from `ggml-cuda.cu` when two suites
+    # embedded concurrently.
+    #
+    # Pin it to one path shared by every test in the session, which is
+    # what production gets. It is deliberately NOT `xdg_root / "state"`:
+    # that would reproduce the bug in a different guise.
+    monkeypatch.setenv(
+        "LIES_QMD_LOCK_PATH", str(Path(tempfile.gettempdir()) / "lies-test-qmd.lock")
+    )
     # The qmd sidecar is host-global: it records which ``data-dir`` the
     # *machine's* daemon was started with, at
     # ``~/.local/share/qmd/mcp.data-dir``. Redirect it to the per-test
