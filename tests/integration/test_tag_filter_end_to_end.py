@@ -268,9 +268,36 @@ def _build_tag_filter_library(tmp_path: Path, *, name: str) -> Wiki:
 
 
 #: The collections this fixture registers in qmd's throwaway per-test
-#: index. Every place that registers or removes them iterates this one
-#: tuple, so a collection cannot be added without also being cleaned up.
+#: index. The teardown's iteration set is derived from this tuple plus
+#: the wiki-named collection (see :func:`_registered_by_this_fixture`),
+#: so a collection added here is removed by teardown without anyone
+#: having to remember the second site.
 FIXTURE_COLLECTIONS = ("airflow", "amazon", "pyspark", "prefect")
+
+
+def _registered_by_this_fixture(wiki: Wiki) -> tuple[str, ...]:
+    """The qmd collection names the fixture and reachable product code register.
+
+    Single source of truth for both the seed loop and the teardown loop,
+    so a future change that adds a collection cannot add to one without
+    the other. The four :data:`FIXTURE_COLLECTIONS` are registered by
+    :func:`_seed_qmd`; the ``wiki_<name>`` collection is registered by
+    the product's :func:`lies.wiki.layout.ensure_wiki_qmd_registered`,
+    which ``Orchestrator.run_query`` calls on every MCP query path. The
+    fixture does not invoke that helper directly, but the test's
+    orchestrator does on every ``run_query`` call, and the teardown's
+    job is hygiene on the throwaway the test writes to -- which a
+    wiki-named collection counts as, whether the fixture wrote it or
+    a reachable product path did.
+
+    The unit tests
+    ``test_registered_by_this_fixture_includes_the_wiki_collection`` and
+    ``test_unseed_qmd_iterates_the_fixture_owned_set`` pin the union:
+    a regression that iterates only :data:`FIXTURE_COLLECTIONS` would
+    leave the wiki collection behind and the second test fails with
+    a precise diff.
+    """
+    return (*FIXTURE_COLLECTIONS, f"wiki_{wiki.name}")
 
 
 def _live_qmd_index_path() -> Path | None:
@@ -411,7 +438,7 @@ def _unseed_qmd(wiki: Wiki) -> None:
     loudly here rather than three tests later as a no-results assertion.
     """
     leftovers: list[str] = []
-    for coll in FIXTURE_COLLECTIONS:
+    for coll in _registered_by_this_fixture(wiki):
         try:
             qmd_collection_remove(wiki.data_root, coll)
         except Exception as exc:  # noqa: BLE001 - teardown must not mask test failures
@@ -511,8 +538,6 @@ def qmd_fixture_library(tmp_path: Path) -> Iterator[Wiki]:
 #: by ``_patched_librarian``. A module-level record because the assertion
 #: that reads it runs *after* the patch context has exited.
 _librarian_queried_collections: set[str] = set()
-
-ALL_FIXTURE_COLLECTIONS = ("airflow", "amazon", "pyspark", "prefect")
 
 
 def _collection_of(rel_path: str) -> str:
