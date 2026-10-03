@@ -197,14 +197,11 @@ def test_qmd_query_enforces_the_envelope_limit(monkeypatch: pytest.MonkeyPatch) 
     def _fake_qmd(args, *, cwd, timeout, **kwargs):  # noqa: ARG001
         seen["args"] = list(args)
         from types import SimpleNamespace
-        from lies.qmd.cli import _parse_json_list
 
         return SimpleNamespace(
             args=tuple(args),
             returncode=0,
-            stdout=_parse_json_list.__module__
-            and None
-            or __import__("json").dumps(many_rows).encode(),
+            stdout=__import__("json").dumps(many_rows).encode(),
             stderr=b"",
         )
 
