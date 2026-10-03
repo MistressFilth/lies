@@ -15,10 +15,10 @@ Heartbeat ``max_age_s``: 1800 s (matches :func:`qmd_embed`'s 30-min wall budget)
 
 from __future__ import annotations
 
+import contextvars
 import functools
 import logging
 import os
-import threading
 import time
 from pathlib import Path
 from typing import Any, Callable
@@ -183,8 +183,13 @@ def _release(fd: int) -> None:
         _log.warning("release_create_lock raised: %s", exc)
 
 
-#: Per-thread reentrancy depth for :func:`with_qmd_lock`.
-_held = threading.local()
+#: Reentrancy depth for :func:`with_qmd_lock`, keyed on the *context*
+#: rather than the thread. A ``ContextVar`` is isolated per thread (a new
+#: thread starts from the default) and per asyncio task (a new task copies
+#: its parent's context at creation), so neither can observe another's
+#: hold. ``threading.local`` isolates threads but is shared by every task
+#: on a thread.
+_held_depth: contextvars.ContextVar[int] = contextvars.ContextVar("lies_qmd_lock_depth", default=0)
 
 
 def with_qmd_lock(
@@ -207,21 +212,41 @@ def with_qmd_lock(
     releases on exit (including exceptions).
 
     **Reentrant.** A nested call in the same thread does not re-acquire.
-    Two helpers here call others that are themselves decorated --
     ``qmd_collection_add_or_update`` calls ``qmd_collection_show`` and
-    ``qmd_collection_add``, and ``qmd_cleanup`` calls ``qmd_reindex`` -- so
-    without this the outer call holds the flock while the inner one polls
-    for it and times out against *itself* with ``QmdLockBusy``. That
-    never fired while the acquire path used the import-time constant:
-    the inner acquire opened a *different* file (whatever the frozen
-    constant happened to be), so it never contended, and the nesting was
-    invisible. Per-acquisition resolution exposed it.
+    ``qmd_collection_add``, each of which is itself decorated, so without
+    this the outer call holds the flock while the inner one polls for it
+    and times out against *itself* with ``QmdLockBusy``. That never fired
+    while the acquire path used the import-time constant: the inner
+    acquire opened a *different* file (whatever the frozen constant
+    happened to be), so it never contended, and the nesting was invisible.
+    Per-acquisition resolution exposed it.
 
-    Reentrancy is per-thread, via ``threading.local``, so a genuine second
-    thread still contends and is still serialized -- which is the point of
-    the lock. The nesting here is same-thread composition, not
+    That is the *only* composed case. ``qmd_cleanup`` and
+    ``qmd_reindex(cleanup=True)`` both call ``_proc.run(["cleanup"], ...)``
+    directly rather than going through each other, so neither nests.
+    An earlier version of this docstring named them as a second example;
+    it was wrong, and a future maintainer reading it to find a second
+    nesting would not find one.
+
+    Reentrancy is keyed on the **context**, not the thread, so a genuine
+    second thread still contends and is still serialized -- which is the
+    point of the lock. The nesting here is same-context composition, not
     concurrency, and serializing it against itself is a deadlock, not
     safety.
+
+    On *why* context and not thread: every helper this decorates is
+    synchronous, and a synchronous function runs to completion without
+    yielding, so two of them cannot interleave on one thread -- on today's
+    call paths ``threading.local`` and ``ContextVar`` behave identically.
+    ``ContextVar`` is the keying that keeps holding if that ever stops
+    being true (a decorated helper that awaits, or a lock held across a
+    task boundary that runs a *sibling* task rather than a child of the
+    holder): it is isolated per thread, since a new thread starts from the
+    default, and per task, since a new task copies its parent's context
+    but not a sibling's. Note the "copies its parent's" half cuts the
+    other way -- a task *spawned by* the holder inherits the depth and is
+    correctly treated as already holding, which is the nesting this
+    decorator exists for.
     """
 
     def decorator(fn: Callable[..., Any]) -> Callable[..., Any]:
@@ -229,21 +254,23 @@ def with_qmd_lock(
             fn
         )  # sets __wrapped__, __name__, __doc__ — the meta-test reads __wrapped__
         def wrapper(*args: Any, **kwargs: Any) -> Any:
-            state = getattr(_held, "depth", 0)
+            state = _held_depth.get()
             if state:
-                # Already held by this thread: run without re-acquiring.
-                _held.depth = state + 1
+                # Already held in this context: run without re-acquiring.
+                token = _held_depth.set(state + 1)
                 try:
                     return fn(*args, **kwargs)
                 finally:
-                    _held.depth = state
+                    _held_depth.reset(token)
 
             fd = _acquire_with_poll(retry_budget_s=timeout_s, max_age_s=max_age_s)
-            _held.depth = 1
+            token = _held_depth.set(1)
             try:
                 return fn(*args, **kwargs)
             finally:
-                _held.depth = 0
+                # reset(), not `set(0)`: it restores the exact prior value
+                # and cannot clobber a depth an inner frame raised.
+                _held_depth.reset(token)
                 _release(fd)
 
         return wrapper

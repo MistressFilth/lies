@@ -479,23 +479,29 @@ def test_embed_is_lock_wrapped() -> None:
 def test_the_lock_is_reentrant_on_one_thread(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A nested acquire in the same thread must not deadlock against itself.
+    """A nested acquire in the same context must not deadlock against itself.
 
-    Two decorated helpers compose: ``qmd_collection_add_or_update`` calls
-    ``qmd_collection_show`` and ``qmd_collection_add``, and
-    ``qmd_cleanup`` calls ``qmd_reindex``. ``flock`` on a second fd blocks
-    even within one process, so without reentrancy the inner call polls
-    for a lock its own outer frame holds and times out with
+    One pair of decorated helpers composes: ``qmd_collection_add_or_update``
+    calls ``qmd_collection_show`` and ``qmd_collection_add``. ``flock`` on
+    a second fd blocks even within one process, so without reentrancy the
+    inner call polls for a lock its own outer frame holds and times out with
     ``QmdLockBusy``.
+
+    (``qmd_cleanup`` and ``qmd_reindex(cleanup=True)`` are *not* a second
+    example, though an earlier version of this docstring said they were:
+    both call ``_proc.run(["cleanup"], ...)`` directly instead of going
+    through each other, so neither nests.)
 
     This never fired while the acquire path used the import-time constant:
     the inner acquire opened a *different* file, so it never contended and
     the nesting was invisible. Per-acquisition resolution exposed it, and
     this pins the fix.
 
-    The nesting is same-thread composition, not concurrency -- a genuine
+    The nesting is same-context composition, not concurrency -- a genuine
     second thread must still serialize, which
-    ``test_a_second_thread_still_contends`` covers.
+    ``test_a_second_thread_still_contends`` covers, and a raise through
+    the nested frame must not strand the depth, which
+    ``test_a_raising_nested_frame_restores_the_depth`` covers.
     """
     from lies.qmd.lock import with_qmd_lock
 
@@ -515,3 +521,62 @@ def test_the_lock_is_reentrant_on_one_thread(
     outer()  # must not raise QmdLockBusy
 
     assert order == ["outer-enter", "inner", "outer-exit"]
+
+
+def test_a_raising_nested_frame_restores_the_depth(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A raise through the nested frame must not strand the depth counter.
+
+    Reentrancy is bookkeeping: the outer frame bumps the depth, the inner
+    frame runs without acquiring, and both restore on the way out. If a
+    raise skipped the restore on either frame, the depth would be left
+    above zero for the rest of the process -- and because the very next
+    acquire consults that depth, **every** subsequent call in that process
+    would skip the flock. That is a silent, permanent loss of the mutual
+    exclusion the lock exists to provide, and it would not raise anywhere:
+    it would just stop protecting.
+
+    Asserts on the counter rather than on observed contention. A
+    contention-shaped version needs a thread to hold the lock while this
+    one blocks on it, which costs more than the 0.15s unit budget
+    (`test_a_second_thread_still_contends` measures 0.214s and lives in
+    tests/integration for that reason). The stranded-depth failure *is*
+    "the counter is not 0", so read it directly rather than inferring it
+    through a timing window.
+    """
+    from lies.qmd.lock import _held_depth, with_qmd_lock
+
+    monkeypatch.setenv("LIES_QMD_LOCK_PATH", str(tmp_path / "raise-depth.lock"))
+
+    @with_qmd_lock(timeout_s=5.0)
+    def raises() -> None:
+        raise ValueError("boom")
+
+    @with_qmd_lock(timeout_s=5.0)
+    def outer() -> None:
+        raises()
+
+    with pytest.raises(ValueError, match="boom"):
+        outer()
+
+    assert _held_depth.get() == 0, (
+        "the depth was left above zero by a raise, so every later acquire "
+        "in this process will skip the flock"
+    )
+
+    # And the counter is still usable: a normal call after the raise must
+    # take the outermost path (depth goes 0 -> 1 -> 0), not the reentrant
+    # one. If it took the reentrant path the file would never be opened.
+    seen: list[int] = []
+
+    @with_qmd_lock(timeout_s=5.0)
+    def probe() -> None:
+        seen.append(_held_depth.get())
+
+    probe()
+    assert seen == [1], (
+        f"a post-raise call ran at depth {seen!r} rather than 1, so it took "
+        "the reentrant path and never acquired the flock"
+    )
+    assert _held_depth.get() == 0
