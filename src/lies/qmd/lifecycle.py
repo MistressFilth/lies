@@ -12,6 +12,7 @@ deadlocks — see :mod:`lies.qmd._subprocess`.
 
 from __future__ import annotations
 
+import logging
 import os
 import shutil
 import socket
@@ -19,6 +20,8 @@ import subprocess
 import time
 from pathlib import Path
 from typing import Any
+
+_log = logging.getLogger(__name__)
 
 _HOST = "127.0.0.1"
 _DEFAULT_PORT = 8181
@@ -59,6 +62,62 @@ def _logfile() -> Path:
     from lies.xdg import cache_home
 
     return cache_home() / "qmd" / "mcp.log"
+
+
+#: How many preserved generations of the daemon log to keep. Each
+#: stop adds one; the oldest is discarded past this. Unbounded
+#: retention would trade the diagnostic gap for a slow disk leak in
+#: the directory qmd owns.
+LOG_GENERATIONS_KEPT = 5
+
+
+def _preserve_daemon_log() -> Path | None:
+    """Copy the daemon's log aside before it is truncated.
+
+    ``mcp.log`` is the only record of what a qmd daemon did, and qmd
+    truncates it on every start. LIES restarts the daemon routinely,
+    so without this the artefact that would explain an unexpected
+    death is destroyed by the recovery attempt.
+
+    Best-effort throughout: a log that cannot be read or written is
+    not a reason to fail the stop, which is the operation that
+    actually has a purpose.
+
+    Returns:
+        The preserved path, or ``None`` when there was nothing to
+        preserve or the copy failed.
+    """
+    log = _logfile()
+    try:
+        if not log.exists():
+            return None
+        stamp = time.strftime("%Y%m%dT%H%M%S", time.localtime())
+        dest = log.with_name(f"{log.name}.{stamp}")
+        # Two stops inside one second would collide on the name;
+        # disambiguate rather than overwrite a generation.
+        suffix = 0
+        while dest.exists():
+            suffix += 1
+            dest = log.with_name(f"{log.name}.{stamp}-{suffix}")
+        dest.write_bytes(log.read_bytes())
+        _prune_preserved_logs(log, keep=LOG_GENERATIONS_KEPT)
+        return dest
+    except OSError as exc:
+        _log.warning("could not preserve the qmd daemon log %s: %s", log, exc)
+        return None
+
+
+def _prune_preserved_logs(log: Path, *, keep: int) -> None:
+    """Drop the oldest preserved generations past ``keep``."""
+    try:
+        generations = sorted(
+            (p for p in log.parent.glob(f"{log.name}.*") if p.is_file()),
+            key=lambda p: p.stat().st_mtime,
+        )
+        for stale in generations[: max(0, len(generations) - keep)]:
+            stale.unlink(missing_ok=True)
+    except OSError as exc:
+        _log.warning("could not prune preserved qmd daemon logs in %s: %s", log.parent, exc)
 
 
 def _read_pid() -> int | None:
@@ -158,11 +217,21 @@ def _down(port: int = _DEFAULT_PORT) -> None:
     ``_up()`` will bind a fresh listener on the same port,
     superseding the stuck process. Surface-level errors propagate
     (the daemon is not wedged if it raises).
+
+    The daemon's log is preserved first. qmd truncates ``mcp.log`` on
+    every start, so the stop is what makes the previous run's output
+    unrecoverable -- and an unexpected death is exactly when that
+    output is the only evidence there is.
     """
     from lies.qmd._subprocess import _run_qmd
 
     if not _port_listening(port) and _read_pid() is None:
         return
+
+    try:
+        _preserve_daemon_log()
+    except Exception as exc:  # noqa: BLE001 - preserving a log must never block a stop
+        _log.warning("preserving the qmd daemon log failed: %s", exc)
 
     qmd_bin = _find_qmd()
     try:
