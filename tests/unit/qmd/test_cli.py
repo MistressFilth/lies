@@ -245,3 +245,102 @@ def test_a_scoped_query_still_honours_the_limit(monkeypatch: pytest.MonkeyPatch)
     )
 
     assert len(out) == 3, f"limit=3 must still apply to a scoped query; got {len(out)}"
+
+
+def test_an_embed_that_aborts_on_the_cuda_reservation_is_retried(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The intermittent VMM-reservation abort is absorbed, not surfaced.
+
+    Measured on this host: 1-3 aborts per 32 embeds across three full
+    runs of the tag-filter integration file, a different test failing
+    each time, never more than one qmd subprocess running and never
+    above 7.7 GB of 24.5 GB of VRAM. The reservation is inside
+    node-llama-cpp and cannot be fixed from here; the flake can be.
+    Embedding is idempotent and the abort writes nothing, so retrying
+    is safe.
+    """
+    from types import SimpleNamespace
+
+    from lies.qmd import cli
+
+    calls: list[int] = []
+
+    def fake_run(args, cwd, timeout, **kwargs):  # noqa: ARG001
+        calls.append(1)
+        if len(calls) < 3:  # abort twice, then succeed
+            return SimpleNamespace(
+                args=tuple(args),
+                returncode=1,
+                stdout=b"",
+                stderr=(
+                    b"ggml-cuda.cu:98: CUDA error: out of memory\n"
+                    b"  cuMemAddressReserve(&pool_addr, CUDA_POOL_VMM_MAX_SIZE, 0, 0, 0)"
+                ),
+            )
+        return SimpleNamespace(args=tuple(args), returncode=0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr(cli, "_run", fake_run)
+    monkeypatch.setattr(cli.time, "sleep", lambda _s: None)
+
+    cli.qmd_embed(Path("/tmp"), "coll", timeout=600)
+
+    assert len(calls) == 3, f"expected two retries then success, got {len(calls)} calls"
+
+
+def test_a_real_embed_failure_is_not_retried(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A genuine qmd error must still surface on the first attempt.
+
+    The retry is deliberately narrow. Absorbing a real failure would
+    triple the wall time of every genuine embed error and hide it.
+    """
+    from types import SimpleNamespace
+
+    from lies.qmd import cli
+
+    calls: list[int] = []
+
+    def fake_run(args, cwd, timeout, **kwargs):  # noqa: ARG001
+        calls.append(1)
+        return SimpleNamespace(
+            args=tuple(args),
+            returncode=1,
+            stdout=b"",
+            stderr=b"qmd: no such collection: nope",
+        )
+
+    monkeypatch.setattr(cli, "_run", fake_run)
+    monkeypatch.setattr(cli.time, "sleep", lambda _s: None)
+
+    with pytest.raises(cli.QmdError, match="no such collection"):
+        cli.qmd_embed(Path("/tmp"), "coll", timeout=600)
+
+    assert len(calls) == 1, f"a real failure was retried {len(calls)} times"
+
+
+def test_an_embed_that_never_stops_aborting_eventually_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The retry is bounded: a persistent abort still surfaces."""
+    from types import SimpleNamespace
+
+    from lies.qmd import cli
+
+    calls: list[int] = []
+
+    def fake_run(args, cwd, timeout, **kwargs):  # noqa: ARG001
+        calls.append(1)
+        return SimpleNamespace(
+            args=tuple(args),
+            returncode=1,
+            stdout=b"",
+            stderr=b"cuMemAddressReserve: CUDA error: out of memory",
+        )
+
+    monkeypatch.setattr(cli, "_run", fake_run)
+    monkeypatch.setattr(cli.time, "sleep", lambda _s: None)
+
+    with pytest.raises(cli.QmdError, match="cuMemAddressReserve"):
+        cli.qmd_embed(Path("/tmp"), "coll", timeout=600)
+
+    assert len(calls) == cli._EMBED_RESERVATION_RETRIES + 1
