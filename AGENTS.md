@@ -30,6 +30,22 @@ Before opening or merging a PR, the agent MUST:
    than only in `CHANGELOG.md` so the next agent to bump a version sees
    it before choosing a segment.
 
+   **A tool *response field* is not a tool signature.** The major
+   rule is about signatures: a parameter removed, a return type
+   changed, a tool dropped. Adding a field to a response envelope is
+   additive and takes a minor, even when an existing field's
+   *semantics* shift. The 0.47.0 release is the worked example:
+   `search` gained `transient`, and `no_coverage` stopped being set on
+   a dispatch failure. Both are additive or corrective — the old
+   `no_coverage=True` on a timeout violated the field's own documented
+   meaning ("the corpus has zero hits"), so the change moved the code
+   onto the contract rather than away from it. A caller that read
+   `no_coverage` alone is not broken; it stops being told a falsehood.
+
+   The distinction that decides it: ask whether a caller following the
+   *documented* contract still works. If yes, minor. If the caller
+   has to change code to keep working, major.
+
    **The `!` marker does not follow the segment.** Conventional Commits
    ties `!` to a major bump, and version-bump automation reads the
    marker. When the only break is on the prompt surface, write
@@ -819,6 +835,64 @@ grounded in a primary source. Library hits render unprefixed.
 ```
 
 **Read-side dispatch:** the `read` tool is source-aware. Wiki page IDs (`page-` + sha1-12) route to `memory_service.read()`. Library paths (`<collection>/<page>`) route to the qmd daemon's `get` with `lineNumbers: false`, and the body is read from the content block rather than `.data` — see "The read tool's bodies" above. Library hits carry `page_id=None` so the calling LLM doesn't try to read them via the wiki service.
+
+## Known flakes
+
+Measured failures that are real, are not a bug in LIES, and have no
+fix available from this side. Recorded here so the next agent does not
+spend a cycle rediscovering them — and, more importantly, does not try
+a mitigation that was already measured and rejected.
+
+### `qmd embed` aborts on the CUDA VMM reservation
+
+node-llama-cpp intermittently fails `cuMemAddressReserve` and the
+`qmd embed` subprocess dies mid-run. The error text reads
+`CUDA error: out of memory`, which is misleading: the call reserves
+*virtual address space*, not physical memory, so the string is not
+evidence that VRAM is exhausted. Measured peak under a 4 Hz sampler
+during the failing runs was 7650 MiB of 24564 (31%).
+
+What is established, so it is not re-derived:
+
+- Three full runs failed on a *different* test each time, 1-3 errors
+  per run.
+- Not VRAM (above), and not contention: the sampler never saw more
+  than one `qmd` subprocess alive.
+- Not positional and not count-driven. It does not reproduce across
+  32 sequential embeds, nor with the failing test's exact
+  `qmd embed -c <name>` invocation, nor with a daemon query
+  interleaved between embeds.
+
+**A retry was implemented, measured, and reverted** (`05ec942`,
+`49196fe`, `dda200e`, reverted in `cbba1b7`):
+
+| variant                   | CUDA aborts | timeout/wedge errors |
+|---------------------------|-------------|----------------------|
+| baseline (3 runs)         | 3, 1, 1     | 0                    |
+| 2 retries + 2s/4s backoff | 0           | 4                    |
+| 1 retry, no backoff       | 0           | 5                    |
+
+The retry absorbs the abort and the extra embed is paid by the next
+query in the same run: `QmdWedgeError: qmd stopped emitting for 30s`
+plus `QmdTimeoutError: qmd query timed out after 60s`, with
+`last output: 'Embedding 3 queries...'`. Fifteen timeout/wedge
+occurrences across the two mitigated runs against three CUDA aborts
+across three baseline runs — a net loss on a shared machine.
+
+The reservation belongs to node-llama-cpp, so the remaining levers are
+an upstream fix or a different embedder. Until one lands, this stays
+unmitigated. The reason the qmd CLI helpers serialize under
+`lies.qmd.lock` is the same reservation; the lock removes LIES' own
+contention, which is not what fails here.
+
+### Live-index residue
+
+Four orphan `content_vectors` rows and five `documents` rows for
+`wiki_tag-filter-lib`, a collection absent from `store_collections`.
+Cause unestablished after two investigations searched every session
+log. `lies.qmd.integrity` reports both classes — `collection_drift`
+and `document_drift` — and the tag-filter session guard fails loudly
+on recurrence. Cleaning the existing rows is an operator action.
 
 ## Quality gates
 

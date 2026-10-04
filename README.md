@@ -159,7 +159,17 @@ After registration, Claude Code sees these tools (v0.40 surface):
   `unknown_tags`.
 - `read(paths)` — verbatim page bodies. Wiki page IDs route to
   `memory_service.read`; library paths (`<collection>/<page>`) route
-  to `qmd_get`. Source-aware dispatch.
+  to the qmd daemon's `get` with `lineNumbers: false`, over one MCP
+  session for the whole batch. Source-aware dispatch.
+
+  The response maps each resolved path to its body. Paths qmd could
+  not resolve are omitted from that mapping and returned under the
+  synthetic key `"_missing"` as a list, in input order — filter it
+  with `key.startswith("_")` if you iterate the dict. A batch that
+  resolves nothing raises rather than returning an empty map. A slow
+  or unreachable daemon raises a typed error rather than appearing as
+  a missing path, so `"_missing"` means "not in the index" and never
+  means "the daemon failed".
 - `lib_ask(question, tag_expr?, exclude_tags?, file_back?)` — prose
   answer for human reading. Calls the librarian subagent (Classify →
   Search → Read → Return 4-step pipeline) then the synthesizer.
@@ -372,14 +382,15 @@ The returned dict carries:
 - `searched_scope` — sorted list of resolved collection names (or
   every registered collection when untagged).
 - `unknown_tags` — list of unparseable / unknown `tag_expr` atoms.
-- `no_coverage` — true when qmd ran and returned no hits, or the
-  dispatch failed. It is a claim about the **corpus**: this search
-  found nothing. It is `false` for a timeout, because a search that
-  never finished learned nothing and has no standing to assert the
-  library is empty.
-- `transient` — true when qmd outlived its deadline. A claim about the
-  **run**, not the corpus. Retry once; if it stays transient, report
-  the lookup as inconclusive rather than as missing content.
+- `no_coverage` — true when qmd ran and returned no hits. A claim
+  about the **corpus**: this search found nothing. It is `false` for
+  every process failure, because a search that did not finish learned
+  nothing and has no standing to assert the library is empty.
+- `transient` — true when the search did not finish: the daemon
+  wedged, the call outlived its deadline, or an error outside the
+  transport taxonomy propagated. A claim about the **run**, not the
+  corpus. Retry once; if it stays transient, report the lookup as
+  inconclusive rather than as missing content.
 - `fallback_reason` — error string when the dispatch did not return
   hits. Carries qmd's own last output on a timeout, so a stall can be
   attributed to expansion, embedding, or reranking.
@@ -404,9 +415,23 @@ with the F15 grammar but is no-op today (the include filter
 already constrains the addressable collection set).
 
 The `ArchivistDigest` / `CitationSnippet` dataclasses still live at
-`src/lies/mcp/grounding.py` for legacy Python callers (`synthesize`,
-tests, integration scripts); the module is no longer wired into the
-MCP surface.
+`src/lies/mcp/grounding.py` for Python callers (`synthesize`, tests,
+integration scripts); the module is not itself a registered MCP tool.
+
+`ArchivistDigest` carries four fields that answer different questions
+and must not be collapsed:
+
+- `no_coverage` — the retrieval finished and found nothing. A claim
+  about the corpus.
+- `transient` — the dispatch failed. A claim about the run. A digest
+  with `transient=True` has `no_coverage=False` even with zero
+  citations, because a dispatch that never ran learned nothing.
+- `searched_scope` — the collections actually dispatched.
+- `unserved_scope` — the requested collections the qmd daemon does
+  not serve, in input order, disjoint from `searched_scope`. An empty
+  `searched_scope` with a populated `unserved_scope` means nothing
+  was searched; that is a scope problem, not an empty corpus, and the
+  names are logged at warning.
 
 Spec: `~/code/project-notes/lies/superpowers/specs/2026-09-26-librarian-v040-port-design.md`.
 
@@ -1001,8 +1026,11 @@ CLI commands (`src/lies/cli/`):
   daemon (`status` prints a JSON snapshot of the daemon plus an
   `index` block — orphan vector rows, active-vs-total document split,
   count of active documents lacking any embedding row, and any
-  registered collection whose path is missing on disk; `null` when
-  the index is absent; `up` is idempotent; `down` is best-effort;
+  registered collection whose path is missing on disk. `null` when
+  the index is absent; `{"error": …}` when it is present but cannot
+  be read — a WAL database needing recovery, which `null` used to
+  report as "no index" and which is a one-command fix.
+  `up` is idempotent; `down` is best-effort;
   `recycle` restarts and waits for liveness). Mirrors ask's daemon
   operator surface so an operator fluent in ask's commands can apply
   them to LIES unchanged. `lies mcp down` still does not stop qmd —
