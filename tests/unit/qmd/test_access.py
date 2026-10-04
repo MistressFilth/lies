@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -311,6 +312,64 @@ async def test_a_wedge_survives_a_recycle_that_never_served(
 
     with pytest.raises(access.QmdDaemonWedged):
         await access.daemon_tool("query", {"searches": [{"type": "lex", "query": "x"}]})
+
+
+async def test_a_failed_recycle_tells_the_operator_the_daemon_is_down(
+    monkeypatch: pytest.MonkeyPatch,
+    seam: _Recycle,
+) -> None:
+    """A recycle that never served leaves a machine-global daemon stopped.
+
+    The wedge message said "recycled" unconditionally, so a restart
+    that exhausted its budget told the operator the opposite of what
+    happened -- and named no command. The diagnosis stays a wedge; the
+    operator-actionable fact rides with it, because that is the fact
+    the next action depends on and it is the one that was being lost.
+    """
+
+    async def _failed_recycle(**_kwargs: Any) -> QmdState:
+        raise QmdRecycleFailed(30.0, QmdState(False, False, None, "stuck"))
+
+    monkeypatch.setattr(access, "recycle_qmd_daemon", _failed_recycle)
+    _use_client(monkeypatch, _FakeClient([httpx.ReadTimeout("wedged")]))
+
+    with pytest.raises(access.QmdDaemonWedged) as excinfo:
+        await access.daemon_tool("query", {"searches": [{"type": "lex", "query": "x"}]})
+
+    message = str(excinfo.value)
+    assert "recycled," not in message, (
+        "the message asserts a successful recycle; it did not succeed"
+    )
+    assert "lies qmd up" in message, (
+        f"a stopped machine-global daemon names no way to start it; got {message!r}"
+    )
+
+
+async def test_a_failed_recycle_still_logs_the_exhausted_budget(
+    monkeypatch: pytest.MonkeyPatch,
+    seam: _Recycle,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The failure is loud in the log as well as in the raised error.
+
+    A caller that catches ``QmdDaemonWedged`` and retries -- which is
+    a reasonable thing to do -- gets no console trace of the daemon
+    being down. The log is the only place that fact survives.
+    """
+
+    async def _failed_recycle(**_kwargs: Any) -> QmdState:
+        raise QmdRecycleFailed(30.0, QmdState(False, False, None, "stuck"))
+
+    monkeypatch.setattr(access, "recycle_qmd_daemon", _failed_recycle)
+    _use_client(monkeypatch, _FakeClient([httpx.ReadTimeout("wedged")]))
+
+    with caplog.at_level(logging.ERROR, logger="lies.qmd.access"):
+        with pytest.raises(access.QmdDaemonWedged):
+            await access.daemon_tool("query", {"searches": [{"type": "lex", "query": "x"}]})
+
+    assert any(
+        "recycle" in r.getMessage() and "lies qmd up" in r.getMessage() for r in caplog.records
+    ), f"the stopped daemon must be logged; got {[r.getMessage() for r in caplog.records]!r}"
 
 
 # --- the transport-error path ------------------------------------------
