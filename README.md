@@ -157,6 +157,17 @@ After registration, Claude Code sees these tools (v0.40 surface):
   single-batch hybrid vec+lex qmd query. Returns top-1 + top-10
   ranked hits with snippets, plus `searched_scope` and
   `unknown_tags`.
+
+  An atom with no qualifier names a **tag**; `t:` says so explicitly and
+  resolves identically; `c:` is a strict collection-name match. `|` unions
+  and `&` intersects over the collection sets the atoms name, and a
+  `t:`/bare atom also matches a collection by its own name (the implicit
+  self-tag). So `plugins`, `t:plugins`, and `plugins|legacy` are all
+  filter expressions, and `c:opencode` is the only spelling that means
+  the collection called `opencode` and nothing else. An atom in neither
+  vocabulary, or a tree that selects no collection, is reported whole in
+  `unknown_tags` with an empty `searched_scope` — the scope is refused,
+  never widened to the whole library.
 - `read(paths)` — verbatim page bodies. Wiki page IDs route to
   `memory_service.read`; library paths (`<collection>/<page>`) route
   to the qmd daemon's `get` with `lineNumbers: false`, over one MCP

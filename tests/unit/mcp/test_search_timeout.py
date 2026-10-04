@@ -33,9 +33,34 @@ def _registry(monkeypatch: pytest.MonkeyPatch) -> None:
     one running.
     """
     import lies.library.registry as registry
+    from lies.library.registry import LibraryCollectionMeta
     from lies.qmd import access
 
-    monkeypatch.setattr(registry, "library_collection_names", lambda: ["claude_code", "typer"])
+    _names = ["claude_code", "typer"]
+    monkeypatch.setattr(registry, "library_collection_names", lambda: list(_names))
+    # The tag filter resolves through the same registry accessors the
+    # archivist uses — names, the ``c:``-prefixed spellings, the tags,
+    # and the per-collection meta rows. Stubbing names alone left the
+    # metas empty, so a ``c:claude_code`` filter validated and then
+    # matched nothing, which the tool correctly reported as an unknown
+    # tag. Every test here is about the daemon boundary, so a filter that
+    # cannot resolve would have masked the assertion it is making.
+    monkeypatch.setattr(
+        registry,
+        "library_collection_metas",
+        lambda: iter(
+            [
+                LibraryCollectionMeta(
+                    name=n,
+                    source_url=f"https://example.test/{n}",
+                    tags=frozenset({"plugins"}),
+                    scope_keywords=frozenset(),
+                )
+                for n in _names
+            ]
+        ),
+    )
+    monkeypatch.setattr(registry, "library_collection_tags", lambda: frozenset({"plugins"}))
 
     async def _served() -> frozenset[str]:
         return frozenset({"claude_code", "typer"})
