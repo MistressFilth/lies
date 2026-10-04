@@ -26,13 +26,7 @@ from fastmcp.tools import Tool
 
 from lies.qmd import access
 from lies.query.tag_expr import (
-    And,
-    Include,
-    Or,
-    TagExpr,
-    TagExprUnknown,
     parse,
-    resolve,
 )
 from lies.qmd.cli import (
     QmdTimeoutError,
@@ -59,52 +53,52 @@ def _decode(stderr: bytes | str) -> str:
 def _resolve_tag_collections(tag_expr: str | None) -> tuple[list[str], list[str]]:
     """Resolve ``tag_expr`` body to ``(resolved_collections, unknown_tags)``.
 
-    Each Include atom with qualifier ``None`` or ``"c"`` contributes
-    its bare tag. T-qualifier atoms are filtered out — the tag side
-    is not part of the addressable collection set for ``search()``.
-    Returns sorted(resolved & available) for determinism. On any
-    parse / resolution error, surfaces the entire ``tag_expr`` as a
-    single unknown-tag entry and returns an empty resolved list.
+    An atom with no qualifier names a tag; ``t:`` says so explicitly and
+    resolves identically; ``c:`` is a strict collection-name match. Per
+    the F15 dispatch in :func:`lies.query.synthesizer._collections_matching`,
+    a ``t:``/bare atom matches a collection when the atom is one of its
+    tags *or* the collection's own name — the implicit self-tag — so
+    ``plugins`` and ``t:plugins`` select the same collections and a bare
+    collection name still reaches that collection.
+
+    The resolution itself is that shared function rather than a second
+    implementation. ``search`` and ``ground``/``lib_ask`` answer the same
+    filter, and the ``ground`` prompt body already routes ``+tag`` here,
+    so a filter the archivist accepts is a filter this tool accepts.
+    Previously ``t:`` atoms were dropped here, which made a tag-qualified
+    query an unknown tag with an empty scope, and before that silently
+    widened to every registered collection.
+
+    On a parse error, an atom in neither vocabulary, or a tree that
+    selects no collection, the whole ``tag_expr`` is surfaced as one
+    unknown-tag entry and the resolved list is empty — the caller learns
+    its scope was refused rather than being handed a search over the
+    whole library it did not ask for. Returns ``sorted`` for determinism.
     """
     if tag_expr is None:
         return [], []
-    from lies.library.registry import library_collection_names
-
-    available = set(library_collection_names())
+    # Imported here: ``mcp.server`` imports this module.
+    from lies.mcp.server import _collect_available_tags_mcp
+    from lies.query.synthesizer import _collections_matching
+    from lies.query.tag_expr import (
+        TagExprUnknown,
+        resolve,
+    )
 
     try:
-        ast = parse(tag_expr)
-        resolved = resolve(ast, available=available)
+        resolved = resolve(
+            parse(tag_expr),
+            available=_collect_available_tags_mcp(wiki=None),
+        )
     except TagExprUnknown:
         return [], [tag_expr]
     except Exception:
         return [], [tag_expr]
 
-    names: set[str] = set()
-
-    def _walk(node: TagExpr | None) -> None:
-        if node is None:
-            return
-        if isinstance(node, Include):
-            if node.qualifier in (None, "c"):
-                names.add(node.tag)
-            return
-        if isinstance(node, Or):
-            _walk(node.left)
-            _walk(node.right)
-            return
-        if isinstance(node, And):
-            _walk(node.left)
-            _walk(node.right)
-            return
-        # Defensive fallback: walk whatever ``left``/``right`` children exist.
-        for attr in ("left", "right"):
-            child = getattr(node, attr, None)
-            if child is not None:
-                _walk(child)
-
-    _walk(resolved.include)
-    return sorted(names & available), []
+    scoped = _collections_matching(resolved)
+    if not scoped:
+        return [], [tag_expr]
+    return sorted(scoped), []
 
 
 def _validate_scope_blocking(scope: list[str]) -> tuple[list[str], list[str]]:

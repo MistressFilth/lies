@@ -18,20 +18,40 @@ from typing import Any
 import pytest
 
 
-def _patch_registry(monkeypatch: pytest.MonkeyPatch, names: list[str]) -> None:
+def _patch_registry(
+    monkeypatch: pytest.MonkeyPatch,
+    names: list[str],
+    tags_by_name: dict[str, frozenset[str]] | None = None,
+) -> None:
+    """Stub the library registry with ``names``, each tagged ``plugins``.
+
+    ``library_collection_tags`` is patched alongside the name and meta
+    accessors because the shared filter vocabulary is built from all
+    three: ``_collect_available_tags_mcp`` unions the collection names,
+    their ``c:``-prefixed spellings, and every registered tag with its
+    ``t:``-prefixed spelling. A tag vocabulary that came from the real
+    registry instead of the fixture's would leave ``resolve`` rejecting
+    the fixture's own tag.
+    """
     from lies.library.registry import LibraryCollectionMeta
 
+    if tags_by_name is None:
+        tags_by_name = {n: frozenset({"plugins"}) for n in names}
     metas = [
         LibraryCollectionMeta(
             name=n,
             source_url=f"https://example.test/{n}",
-            tags=frozenset({"plugins"}),
+            tags=tags_by_name[n],
             scope_keywords=frozenset(),
         )
         for n in names
     ]
+    all_tags = sorted({t for ts in tags_by_name.values() for t in ts})
     monkeypatch.setattr("lies.library.registry.library_collection_metas", lambda: iter(metas))
     monkeypatch.setattr("lies.library.registry.library_collection_names", lambda: frozenset(names))
+    monkeypatch.setattr(
+        "lies.library.registry.library_collection_tags", lambda: frozenset(all_tags)
+    )
 
 
 def _bypass_daemon_precheck(monkeypatch: pytest.MonkeyPatch, names: list[str]) -> None:
@@ -122,18 +142,131 @@ def test_search_unknown_tag_marks_unknown_tags(monkeypatch: pytest.MonkeyPatch) 
     assert qmd_called == [], "must short-circuit on unknown tag"
 
 
-def test_search_tag_only_filter_is_not_silently_widened(
+def test_search_tag_only_filter_resolves_the_tagged_scope(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A ``t:``-qualifier-only filter resolves to no collections and refuses.
+    """A ``t:``-qualifier-only filter resolves to the collections carrying the tag.
 
-    ``_resolve_tag_collections`` drops ``t:`` atoms by design, so a
-    ``tag_expr`` made only of those resolves to an empty scope
-    without raising. The previous behaviour silently widened to
-    ``library_collection_names()`` with ``unknown_tags == []`` —
-    a query the caller scoped by tag, answered from the whole
-    library, with nothing in the response to say so. The fix
-    refuses the scope and reports the dropped expression.
+    ``_resolve_tag_collections`` used to drop ``t:`` atoms by design, so a
+    ``tag_expr`` made only of those resolved to an empty scope and the
+    whole expression came back as an unknown tag. The behaviour before
+    that one silently widened to ``library_collection_names()`` with
+    ``unknown_tags == []`` — a query the caller scoped by tag, answered
+    from the whole library, with nothing in the response to say so.
+    Resolving the atom against the registry's tag index keeps the scope
+    the caller asked for *and* keeps it from widening: the filter reaches
+    the daemon as exactly the collection set the tag names.
+    """
+    from lies.mcp.search import search
+
+    _patch_registry(monkeypatch, ["alpha", "beta"])
+    _bypass_daemon_precheck(monkeypatch, ["alpha", "beta"])
+
+    captured: list[Any] = []
+    monkeypatch.setattr(
+        "lies.mcp.search._post_query",
+        lambda doc, scope, limit, timeout: captured.append(scope) or [],
+    )
+    result = search.fn(question="anything", tag_expr="t:plugins")
+    assert result["unknown_tags"] == []
+    assert result["searched_scope"] == ["alpha", "beta"]
+    assert captured == [["alpha", "beta"]], "scope must reach the daemon, not widen"
+
+
+def test_search_unqualified_atom_is_an_implicit_t_qualifier(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``plugins`` and ``t:plugins`` resolve identically.
+
+    The tag side is the default: an atom carrying no qualifier names a
+    tag, and ``t:`` says so out loud. ``c:`` is the only qualifier that
+    addresses a collection by name. This is the same convention
+    ``collections_read("tag_list")`` already uses — it strips the
+    qualifier and surfaces bare atoms as tags.
+    """
+    from lies.mcp.search import _resolve_tag_collections
+
+    _patch_registry(monkeypatch, ["alpha", "beta", "gamma"])
+    assert _resolve_tag_collections("plugins") == _resolve_tag_collections("t:plugins")
+    assert _resolve_tag_collections("plugins") == (["alpha", "beta", "gamma"], [])
+
+
+def test_search_c_qualifier_still_addresses_a_collection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``c:`` keeps its collection meaning, and a tag name is not a collection.
+
+    ``c:`` is the only qualifier that reads the body as a collection
+    name, so qualifying a tag with it must not resolve that tag's
+    collections — otherwise ``c:plugins`` would quietly mean
+    ``t:plugins`` and the qualifier would carry no information.
+    """
+    from lies.mcp.search import _resolve_tag_collections
+
+    _patch_registry(monkeypatch, ["alpha", "beta", "gamma"])
+    assert _resolve_tag_collections("c:alpha") == (["alpha"], [])
+    resolved, unknown = _resolve_tag_collections("c:plugins")
+    assert resolved == []
+    assert unknown == ["c:plugins"], "a tag name is not a collection name"
+
+
+def test_search_tag_expr_set_algebra(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``|`` unions and ``&`` intersects, over the collection sets atoms name.
+
+    Atoms resolve to collections, so the operators are evaluated on those
+    sets: a union of disjoint tags is every collection either names, and
+    an intersection no collection satisfies is empty. An empty scope is
+    reported rather than searched, because widening it to the whole
+    library is the failure this function exists to prevent.
+    """
+    from lies.mcp.search import _resolve_tag_collections
+
+    _patch_registry(
+        monkeypatch,
+        ["alpha", "beta", "gamma"],
+        tags_by_name={
+            "alpha": frozenset({"plugins"}),
+            "beta": frozenset({"plugins"}),
+            "gamma": frozenset({"only_gamma"}),
+        },
+    )
+    assert _resolve_tag_collections("plugins|only_gamma") == (["alpha", "beta", "gamma"], [])
+    assert _resolve_tag_collections("plugins&only_gamma") == ([], ["plugins&only_gamma"])
+    assert _resolve_tag_collections("c:alpha|c:beta") == (["alpha", "beta"], [])
+    assert _resolve_tag_collections("c:alpha&t:plugins") == (["alpha"], [])
+
+
+def test_search_bare_collection_name_is_its_own_implicit_tag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A collection name resolves through the bare/t: side as itself.
+
+    Spec: "Collection name as implicit self-tag" — a ``t:``/bare atom
+    matches a collection whose name is the atom even when the config
+    carries no such tag. Without it, ``search`` would need ``c:`` for
+    every collection name while ``ground`` accepted the bare spelling,
+    and the same filter would mean two things across the two tools.
+    """
+    from lies.mcp.search import _resolve_tag_collections
+
+    _patch_registry(
+        monkeypatch,
+        ["alpha", "beta"],
+        tags_by_name={"alpha": frozenset(), "beta": frozenset({"plugins"})},
+    )
+    assert _resolve_tag_collections("alpha") == (["alpha"], [])
+    assert _resolve_tag_collections("t:alpha") == (["alpha"], [])
+    assert _resolve_tag_collections("c:alpha") == (["alpha"], [])
+
+
+def test_search_unknown_qualified_tag_marks_unknown_tags(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A tag no collection carries is unknown, and still refuses the call.
+
+    Resolving tags does not relax the no-widen invariant: an atom naming
+    neither a tag nor a collection reports the expression and the daemon
+    is never called.
     """
     from lies.mcp.search import search
 
@@ -145,15 +278,11 @@ def test_search_tag_only_filter_is_not_silently_widened(
         "lies.mcp.search._post_query",
         lambda *a, **kw: qmd_called.append((a, kw)) or [],
     )
-    result = search.fn(
-        question="anything",
-        tag_expr="t:plugins",
-    )
-    assert result["unknown_tags"] == ["t:plugins"]
-    assert result["no_coverage"] is False
+    result = search.fn(question="anything", tag_expr="t:nosuchtag")
+    assert result["unknown_tags"] == ["t:nosuchtag"]
     assert result["searched_scope"] == []
     assert result["hits"] == []
-    assert qmd_called == [], "must short-circuit on tag-only filter that resolved to zero"
+    assert qmd_called == [], "must short-circuit rather than widen to the whole library"
 
 
 def test_search_returns_searched_scope(monkeypatch: pytest.MonkeyPatch) -> None:
