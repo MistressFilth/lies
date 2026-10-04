@@ -37,6 +37,23 @@ All notable changes to LIES are documented here. The format follows
   could act on. The message now appends the operator instruction when
   the restart failed, and keeps the wedge as the diagnosis.
 
+- **The live-index residue is gone.** Four orphan `content_vectors`
+  rows and five `documents` rows for `wiki_tag-filter-lib` — the
+  tag-filter fixture's own page set, for a collection that was never
+  registered — were removed on 2026-10-04. The index now reads **15
+  collections, 5987 documents = 5987 content = 5987 FTS, 48984
+  vectors**, with `integrity_check` ok, `foreign_key_check` clean,
+  and all three residue classes zero through `lies qmd status`. The
+  corpus is back to the 5987 these docs carried before the leak.
+
+  Removing the documents left five `content` rows carrying vectors
+  and no document, and removing those cascaded four vectors away.
+  Both steps are needed to land on 1:1:1; a cleanup that stops at
+  the documents trades one residue class for another, and
+  `index_orphans` — which checks vectors against content — would not
+  have seen the documentless content at all. A verified backup
+  precedes the write at `~/qmd-index-backup-20261004.sqlite`.
+
 ### Added
 
 - **The daemon's log is preserved across a stop.** qmd truncates
