@@ -104,7 +104,13 @@ def test_the_librarian_contract_does_not_call_a_timeout_a_coverage_gap() -> None
 def test_a_timeout_is_reported_as_transient_on_the_envelope(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The envelope distinguishes 'slow' from 'nothing there' and 'broken'."""
+    """A timeout is 'slow', which is the other end of the field from 'nothing there'.
+
+    Split from the clean-miss half: two ``_search_impl`` calls in one test
+    measured 0.14-0.16 s against the 0.15 s budget depending on suite
+    load, so it flapped. Each assertion stands on its own and neither is
+    weakened by the split.
+    """
     from lies.mcp import search as search_mod
 
     def boom(*_args: object, **_kwargs: object) -> None:
@@ -119,7 +125,13 @@ def test_a_timeout_is_reported_as_transient_on_the_envelope(
         "zero hits for the question, which the search never established"
     )
 
-    # Clean miss: opposite end of the field.
+
+def test_a_clean_miss_is_the_opposite_end_of_the_field(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A genuinely empty result is the one case that *is* a corpus claim."""
+    from lies.mcp import search as search_mod
+
     monkeypatch.setattr(search_mod, "_post_query", lambda *a, **k: [])
     clean = search_mod._search_impl("plugin hooks", tag_expr="c:claude_code")
     assert clean["transient"] is False, clean

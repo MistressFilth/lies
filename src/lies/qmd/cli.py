@@ -226,33 +226,6 @@ def qmd_collection_add_or_update(
     qmd_collection_add(cwd, register_path, name)
 
 
-#: Bounded retries for an embed whose child aborted reserving CUDA's VMM
-#: pool. See :func:`qmd_embed` for the measurement behind this.
-_EMBED_RESERVATION_RETRIES = 1
-
-#: ``str`` because ``_run`` returns a decoded ``CompletedProcess`` --
-#: ``stderr`` arrives as text. (These were ``bytes`` first, which raised
-#: ``TypeError: 'in <string>' requires string as left operand, not
-#: bytes`` on every real embed, and the unit tests missed it because
-#: their fake used ``bytes`` too -- the fake had to match reality, not
-#: the implementation's assumption of it.)
-_CUDA_RESERVATION_MARKERS = (
-    "cuMemAddressReserve",
-    "CUDA error: out of memory",
-    "ggml-cuda.cu:98",
-)
-
-
-def _is_cuda_reservation_failure(stderr: str) -> bool:
-    """True when the child aborted reserving CUDA's VMM pool.
-
-    Matched on the markers node-llama-cpp prints. Deliberately narrow: a
-    retry must not absorb a genuine embed failure, and these are what
-    distinguish the reservation abort from qmd's own errors.
-    """
-    return any(marker in stderr for marker in _CUDA_RESERVATION_MARKERS)
-
-
 @with_qmd_lock()
 def qmd_embed(cwd: Path, collection_name: str, *, timeout: int = 1800) -> None:
     """Run ``qmd embed -c <collection_name>`` in ``cwd``.
@@ -271,39 +244,14 @@ def qmd_embed(cwd: Path, collection_name: str, *, timeout: int = 1800) -> None:
     Cost: a wedged embed holds ``with_qmd_lock()`` for up to half its
     total bound instead of 30s.
     """
-    for attempt in range(1, _EMBED_RESERVATION_RETRIES + 2):
-        result = _run(
-            ["embed", "-c", collection_name],
-            cwd=cwd,
-            timeout=timeout,
-            idle_timeout=timeout * SILENT_COMMAND_IDLE_TIMEOUT_FRACTION,
-        )
-        if result.returncode == 0:
-            return
-        stderr = result.stderr.strip()
-        if not _is_cuda_reservation_failure(stderr) or attempt > _EMBED_RESERVATION_RETRIES:
-            raise QmdError(f"qmd embed failed: {stderr}")
-        # node-llama-cpp reserves a fixed VMM pool on first use
-        # (`cuMemAddressReserve(CUDA_POOL_VMM_MAX_SIZE)`) and aborts the
-        # process when that reservation cannot be satisfied. Measured on
-        # this host across three full runs of the tag-filter integration
-        # file: 1-3 aborts per 32 embeds, a different test failing each
-        # time, never more than one qmd subprocess running, and never
-        # above 7.7 GB of 24.5 GB of VRAM — so it is intermittent and
-        # inside the child, not exhaustion and not contention. It does
-        # not reproduce across 32 sequential embeds, nor with this
-        # file's exact `qmd embed -c` call, nor with a daemon query
-        # interleaved between embeds.
-        #
-        # The reservation is node-llama-cpp's and cannot be fixed from
-        # here. The flake can be: embedding is idempotent — it writes
-        # embeddings for documents that lack them — and the abort leaves
-        # the child with nothing written, so a bounded retry is safe.
-        # No backoff. The reservation abort is immediate, not gradual, so a
-        # delay buys nothing; and every extra embed is load the *queries*
-        # in the same run then contend with. Measured: a 2-retry variant
-        # with backoff replaced the CUDA abort with `QmdTimeoutError` on
-        # the following query -- a strictly worse flake.
+    result = _run(
+        ["embed", "-c", collection_name],
+        cwd=cwd,
+        timeout=timeout,
+        idle_timeout=timeout * SILENT_COMMAND_IDLE_TIMEOUT_FRACTION,
+    )
+    if result.returncode != 0:
+        raise QmdError(f"qmd embed failed: {result.stderr.strip()}")
 
 
 @with_qmd_lock()
