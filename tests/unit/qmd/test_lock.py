@@ -1,4 +1,4 @@
-"""Tests for src/lies/qmd/lock.py — path constants and decorator signature."""
+"""Tests for src/lies/qmd/lock.py — path resolution and decorator signature."""
 
 from __future__ import annotations
 
@@ -15,18 +15,16 @@ from pathlib import Path
 import pytest
 
 
-def _reload_lock_module() -> object:
-    """Re-import ``lies.qmd.lock`` so module-level constants re-resolve.
+def _lock_module():
+    """Return the cached ``lies.qmd.lock`` module.
 
-    Path constants are evaluated once at import time from
-    ``$LIES_QMD_LOCK_PATH`` / ``$XDG_STATE_HOME``. The conftest's
-    ``_isolated_xdg`` autouse fixture mutates ``XDG_STATE_HOME`` per
-    test, and individual tests may setenv ``LIES_QMD_LOCK_PATH``. A plain
-    ``import_module`` returns the cached module on subsequent calls; only
-    ``reload()`` re-executes the module-level statements and re-reads the
-    env vars.
+    The module no longer pre-resolves a lock triad at import
+    time (M-6); the production acquire/release pair threads its
+    own paths through ``_lock_paths()``, and tests do the same.
+    No ``reload()`` is needed because there is nothing frozen at
+    the module level any more.
     """
-    return importlib.reload(importlib.import_module("lies.qmd.lock"))
+    return importlib.import_module("lies.qmd.lock")
 
 
 def test_lock_module_imports():
@@ -40,39 +38,35 @@ def test_lock_path_default_resolves_to_xdg_state_home(monkeypatch):
     With neither ``LIES_QMD_LOCK_PATH`` nor ``XDG_STATE_HOME`` set, the
     resolved lock path falls back to ``~/.local/state/lies/qmd.lock``.
 
-    **What this test covers vs. the live lock path:** the module
-    constants ``_LOCK_PATH`` / ``_PID_PATH`` / ``_STATE_PATH`` are
-    frozen at import time from the env at module load. They are
-    used by :func:`lies.qmd.lock._register_holder` to write the
-    pid and state siblings next to the lock file. The acquire
-    path (:func:`lies.qmd.lock._acquire_with_poll`) resolves the
-    lock path *per acquisition* via :func:`lies.qmd.lock._lock_paths`
-    rather than reading the constant — so an operator changing
-    ``LIES_QMD_LOCK_PATH`` between acquisitions is honoured. The
-    tests at :file:`tests/unit/qmd/test_lock_with_qmd_lock.py` cover
-    the per-acquisition resolution; this test covers the import-
-    time constant that the heartbeat writers use.
+    The lock module no longer pre-creates the lock directory at
+    import time (M-6); the path is resolved per acquisition through
+    :func:`lies.qmd.lock._lock_paths`, which honours
+    ``LIES_QMD_LOCK_PATH`` first, then ``XDG_STATE_HOME``, then
+    ``~/.local/state``.
     """
     monkeypatch.delenv("LIES_QMD_LOCK_PATH", raising=False)
     monkeypatch.delenv("XDG_STATE_HOME", raising=False)
-    mod = _reload_lock_module()
+    mod = _lock_module()
+    lock_path, _, _ = mod._lock_paths()
     expected = os.path.expanduser("~/.local/state/lies/qmd.lock")
-    assert str(mod._LOCK_PATH) == expected
+    assert str(lock_path) == expected
 
 
 def test_lock_path_env_override_takes_precedence(monkeypatch):
     monkeypatch.setenv("LIES_QMD_LOCK_PATH", "/tmp/override-lies-qmd.lock")
-    mod = _reload_lock_module()
-    assert str(mod._LOCK_PATH) == "/tmp/override-lies-qmd.lock"
+    mod = _lock_module()
+    lock_path, _, _ = mod._lock_paths()
+    assert str(lock_path) == "/tmp/override-lies-qmd.lock"
 
 
 def test_pid_and_state_paths_share_lock_path_directory(monkeypatch, tmp_path):
     monkeypatch.setenv("LIES_QMD_LOCK_PATH", str(tmp_path / "qmd.lock"))
-    mod = _reload_lock_module()
-    assert mod._PID_PATH.parent == mod._LOCK_PATH.parent
-    assert mod._STATE_PATH.parent == mod._LOCK_PATH.parent
-    assert mod._PID_PATH.name.startswith(mod._LOCK_PATH.name)
-    assert mod._STATE_PATH.name.startswith(mod._LOCK_PATH.name)
+    mod = _lock_module()
+    lock_path, pid_path, state_path = mod._lock_paths()
+    assert pid_path.parent == lock_path.parent
+    assert state_path.parent == lock_path.parent
+    assert pid_path.name.startswith(lock_path.name)
+    assert state_path.name.startswith(lock_path.name)
 
 
 def test_with_qmd_lock_default_signature():
@@ -162,16 +156,17 @@ def test_with_qmd_lock_acquires_and_releases_on_clean_path(tmp_path, monkeypatch
     monkeypatch.setenv("LIES_QMD_LOCK_PATH", str(tmp_path / "qmd.lock"))
     mod = importlib.reload(lock_mod)
 
-    assert not mod._LOCK_PATH.exists()
+    lock_path, pid_path, state_path = mod._lock_paths()
+    assert not lock_path.exists()
 
     @mod.with_qmd_lock()
     def noop() -> str:
         return "ok"
 
     assert noop() == "ok"
-    assert not mod._LOCK_PATH.exists()
-    assert not mod._PID_PATH.exists()
-    assert not mod._STATE_PATH.exists()
+    assert not lock_path.exists()
+    assert not pid_path.exists()
+    assert not state_path.exists()
 
 
 @pytest.mark.slow
@@ -248,12 +243,13 @@ def test_holder_pid_in_qmd_lock_busy_when_holder_writes_heartbeat(monkeypatch, t
     mod = importlib.reload(lock_mod)
 
     holder, _ = _spawn_qmd_holder(tmp_path, hold_s=2.0)
+    lock_path, pid_path, _ = mod._lock_paths()
     try:
         # Confirm the holder's pid was registered to the pid file before
         # we attempt the contended acquire; this verifies the write path
         # is engaged by ``_acquire_with_poll`` (not just the decorator).
-        _wait_for_marker(mod._PID_PATH, timeout=5.0)
-        holder_pid = int(mod._PID_PATH.read_text(encoding="utf-8").strip())
+        _wait_for_marker(pid_path, timeout=5.0)
+        holder_pid = int(pid_path.read_text(encoding="utf-8").strip())
         assert holder_pid != os.getpid(), "holder pid should differ from the test pid"
 
         @mod.with_qmd_lock(timeout_s=0.1, max_age_s=1800.0)
@@ -275,9 +271,10 @@ def test_stale_holder_recovery_via_dead_pid(monkeypatch, tmp_path):
     mod = importlib.reload(lock_mod)
 
     # Manually stage: create-lock + pid file pointing at a dead pid.
-    mod._LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
-    mod._LOCK_PATH.touch()
-    mod._PID_PATH.write_text("999999", encoding="utf-8")  # likely-dead pid
+    lock_path, pid_path, _ = mod._lock_paths()
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path.touch()
+    pid_path.write_text("999999", encoding="utf-8")  # likely-dead pid
 
     # Acquire should reap and succeed.
     fd = mod._acquire_with_poll(retry_budget_s=1.0, max_age_s=60.0)
@@ -369,10 +366,14 @@ def _flock_path_used_by_the_decorator(tmp_path: Path, monkeypatch: pytest.Monkey
         seen["lock"] = sentinel.exists()
 
     _hold()
+    resolved_path, _, _ = lock_mod._lock_paths()
     assert seen.get("lock"), (
         f"the decorator never opened {sentinel} while holding the lock. It is "
-        f"resolving from the import-time constant ({lock_mod._LOCK_PATH}) "
-        f"instead of per acquisition."
+        f"resolving from a stale path ({resolved_path}) instead of the "
+        f"sentinel set after import."
+    )
+    assert resolved_path == sentinel, (
+        f"_lock_paths() must honour LIES_QMD_LOCK_PATH at call time; got {resolved_path}"
     )
     return sentinel
 

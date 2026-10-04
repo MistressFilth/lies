@@ -104,7 +104,14 @@ def _reset_client() -> None:
 # real error on ``__cause__``; ``_transport_cause`` follows the chain.
 
 #: Names that mean "the daemon accepted the request and stopped answering".
-_WEDGE_NAMES = frozenset({"ReadTimeout", "WriteTimeout", "PoolTimeout"})
+#: ``PoolTimeout`` is excluded: a pool timeout means LIES' own
+#: concurrency exhausted the httpx connection pool (a client-side
+#: state, not a daemon-stalling signal), and ``recycle-raise`` on a
+#: machine-global daemon would kill in-flight work belonging to
+#: other clients. ``PoolTimeout`` keeps the ``recycle-retry`` path
+#: through ``_TRANSPORT_NAMES`` (its MRO walks through
+#: ``TimeoutException``).
+_WEDGE_NAMES = frozenset({"ReadTimeout", "WriteTimeout"})
 
 #: Names that mean "the daemon was not there".
 _TRANSPORT_NAMES = frozenset({"TransportError", "TimeoutException", "ConnectError"})
@@ -335,7 +342,7 @@ async def daemon_tool(
             ) from exc
         await _recycle(url)
         try:
-            return await _call(client, name, arguments)
+            return await _call(client, name, arguments, timeout=timeout)
         except Exception as retry_exc:
             retry_action = classify_call_error(retry_exc)[0]
             if retry_action == "passthrough":

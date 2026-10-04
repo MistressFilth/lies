@@ -1022,22 +1022,7 @@ def test_the_spawned_daemon_never_receives_the_data_dir(
     assert "cwd=" in body, "the spawn is cwd-based; that is what makes data_dir inert"
 
 
-def test_recycle_data_dir_only_reaches_the_sidecar() -> None:
-    """The recorded path is bookkeeping; the daemon comes from cwd either way.
-
-    Companion to the source pin above: this asserts the consequence
-    directly, so a reader who does not want to read qmd's spawn can see
-    that ``_recycle_data_dir`` returns a value used for the sidecar and
-    nothing else.
-    """
-    from lies.qmd import access, daemon as qmd_daemon
-
-    recorded: list[Path] = []
-    monkey_records = qmd_daemon.write_sidecar_data_dir
-    try:
-        qmd_daemon.write_sidecar_data_dir = recorded.append  # type: ignore[assignment]
-        value = access._recycle_data_dir()
-    finally:
-        qmd_daemon.write_sidecar_data_dir = monkey_records  # type: ignore[assignment]
-
-    assert isinstance(value, Path), "the sidecar value is a path, and is the only thing passed"
+# Removed under M-7: a tautology that monkeypatched
+# ``write_sidecar_data_dir`` (a function ``_recycle_data_dir`` never
+# calls) and asserted the result was a Path. The source-level pin
+# above is the load-bearing test for the data-dir flow.

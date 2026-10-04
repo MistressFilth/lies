@@ -52,12 +52,15 @@ def _default_lock_dir() -> Path:
 
 
 def _lock_paths() -> tuple[Path, Path, Path]:
-    """Return (``_LOCK_PATH``, ``_PID_PATH``, ``_STATE_PATH``).
+    """Return the lock triad for the current environment.
 
     Resolved on every call so environment changes between
-    acquisitions are honored. (A module-level constant would be
-    frozen at import and silently defeat anything that sets the
-    env afterwards.)
+    acquisitions are honored. The production acquire/release
+    pair threads its own paths; the heartbeat writer in
+    :func:`_register_holder` also calls this helper. A
+    module-level constant would have frozen the lock triad at
+    import and silently defeated any test that sets
+    ``LIES_QMD_LOCK_PATH`` afterwards.
     """
     explicit = os.environ.get("LIES_QMD_LOCK_PATH")
     if explicit:
@@ -69,9 +72,6 @@ def _lock_paths() -> tuple[Path, Path, Path]:
     pid_path = Path(f"{lock_path}.pid")
     state_path = Path(f"{lock_path}.state.json")
     return lock_path, pid_path, state_path
-
-
-_LOCK_PATH, _PID_PATH, _STATE_PATH = _lock_paths()
 
 
 def _register_holder(fd: int) -> None:

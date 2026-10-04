@@ -24,7 +24,6 @@ _DEFAULT_PORT = 8181
 _READY_TIMEOUT_S = 30.0
 _STOP_TIMEOUT_S = 10.0
 _SERVES_QUERY_TIMEOUT_S = 5.0
-_DEFAULT_URL = f"http://{_HOST}:{_DEFAULT_PORT}"
 
 
 class DaemonStatus:
@@ -176,24 +175,44 @@ def _down(port: int = _DEFAULT_PORT) -> None:
 
 
 def serves_query(port: int = _DEFAULT_PORT, timeout: float = _SERVES_QUERY_TIMEOUT_S) -> bool:
-    """True iff the daemon answers a trivial ``lex`` query within ``timeout``.
+    """True iff the daemon's MCP endpoint answers a JSON-RPC ``initialize`` within ``timeout``.
 
     A bound port is not enough — a daemon can pass a port probe
-    and still hang on the first real query. This catches the qmd
-    subprocess hung at 98% CPU emitting long traces (TCP accepted,
-    no response).
+    and still hang on the first real request. This catches the
+    qmd subprocess hung at 98% CPU emitting long traces (TCP
+    accepted, no response).
+
+    The daemon speaks MCP at ``/mcp``; the previous shape posted
+    to ``/query`` (the HTTP-API spelling qmd never served) and
+    therefore always returned False on a live daemon.
     """
     import httpx
 
-    payload = {"searches": [{"type": "lex", "query": "ready"}], "limit": 1}
+    payload = {
+        "jsonrpc": "2.0",
+        "method": "initialize",
+        "params": {
+            "protocolVersion": "2025-03-26",
+            "capabilities": {},
+            "clientInfo": {"name": "lies-lifecycle-probe", "version": "0.0.0"},
+        },
+        "id": 1,
+    }
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json, text/event-stream",
+    }
     try:
         with httpx.Client(base_url=f"http://{_HOST}:{port}", timeout=timeout) as client:
-            resp = client.post(f"http://{_HOST}:{port}/query", json=payload)
+            resp = client.post(f"http://{_HOST}:{port}/mcp", json=payload, headers=headers)
             resp.raise_for_status()
-            resp.json()
+            body = resp.json()
     except httpx.HTTPError, ValueError:
         return False
-    return True
+    # A JSON-RPC error response means the daemon is alive but
+    # rejected the request — still a serving daemon for the
+    # recycle poll. A 200 with ``result`` means a full handshake.
+    return "jsonrpc" in body or "result" in body or "error" in body
 
 
 def recycle(port: int = _DEFAULT_PORT, ready_timeout: float = _READY_TIMEOUT_S) -> DaemonStatus:
