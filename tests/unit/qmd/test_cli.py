@@ -268,7 +268,7 @@ def test_an_embed_that_aborts_on_the_cuda_reservation_is_retried(
 
     def fake_run(args, cwd, timeout, **kwargs):  # noqa: ARG001
         calls.append(1)
-        if len(calls) < 3:  # abort twice, then succeed
+        if len(calls) < 2:  # abort once, then succeed
             return SimpleNamespace(
                 args=tuple(args),
                 returncode=1,
@@ -281,11 +281,11 @@ def test_an_embed_that_aborts_on_the_cuda_reservation_is_retried(
         return SimpleNamespace(args=tuple(args), returncode=0, stdout=b"", stderr=b"")
 
     monkeypatch.setattr(cli, "_run", fake_run)
-    monkeypatch.setattr(cli.time, "sleep", lambda _s: None)
+    # No backoff remains, so there is no sleep to stub.
 
     cli.qmd_embed(Path("/tmp"), "coll", timeout=600)
 
-    assert len(calls) == 3, f"expected two retries then success, got {len(calls)} calls"
+    assert len(calls) == 2, f"expected one retry then success, got {len(calls)} calls"
 
 
 def test_a_real_embed_failure_is_not_retried(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -310,7 +310,7 @@ def test_a_real_embed_failure_is_not_retried(monkeypatch: pytest.MonkeyPatch) ->
         )
 
     monkeypatch.setattr(cli, "_run", fake_run)
-    monkeypatch.setattr(cli.time, "sleep", lambda _s: None)
+    # No backoff remains, so there is no sleep to stub.
 
     with pytest.raises(cli.QmdError, match="no such collection"):
         cli.qmd_embed(Path("/tmp"), "coll", timeout=600)
@@ -338,7 +338,7 @@ def test_an_embed_that_never_stops_aborting_eventually_raises(
         )
 
     monkeypatch.setattr(cli, "_run", fake_run)
-    monkeypatch.setattr(cli.time, "sleep", lambda _s: None)
+    # No backoff remains, so there is no sleep to stub.
 
     with pytest.raises(cli.QmdError, match="cuMemAddressReserve"):
         cli.qmd_embed(Path("/tmp"), "coll", timeout=600)

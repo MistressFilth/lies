@@ -11,7 +11,6 @@ import json
 import re
 import shutil
 import subprocess
-import time
 import sys
 import warnings
 from pathlib import Path
@@ -229,8 +228,7 @@ def qmd_collection_add_or_update(
 
 #: Bounded retries for an embed whose child aborted reserving CUDA's VMM
 #: pool. See :func:`qmd_embed` for the measurement behind this.
-_EMBED_RESERVATION_RETRIES = 2
-_EMBED_RESERVATION_BACKOFF_S = 2.0
+_EMBED_RESERVATION_RETRIES = 1
 
 #: ``str`` because ``_run`` returns a decoded ``CompletedProcess`` --
 #: ``stderr`` arrives as text. (These were ``bytes`` first, which raised
@@ -301,7 +299,11 @@ def qmd_embed(cwd: Path, collection_name: str, *, timeout: int = 1800) -> None:
         # here. The flake can be: embedding is idempotent — it writes
         # embeddings for documents that lack them — and the abort leaves
         # the child with nothing written, so a bounded retry is safe.
-        time.sleep(_EMBED_RESERVATION_BACKOFF_S * attempt)
+        # No backoff. The reservation abort is immediate, not gradual, so a
+        # delay buys nothing; and every extra embed is load the *queries*
+        # in the same run then contend with. Measured: a 2-retry variant
+        # with backoff replaced the CUDA abort with `QmdTimeoutError` on
+        # the following query -- a strictly worse flake.
 
 
 @with_qmd_lock()
