@@ -464,29 +464,15 @@ def _normalize_qmd_result(item: Any) -> dict[str, Any]:
     return result
 
 
-@with_qmd_lock()
-def qmd_get(cwd: Path, qmd_path: str, timeout: int = 60) -> str:
-    """Run ``qmd get <qmd_path>`` in ``cwd`` and return the file content.
-
-    Used by the librarian's source-aware ``wiki_read`` dispatch to
-    fetch library-side page bodies that qmd already indexes.
-
-    Raises:
-        QmdNotInstalledError: If ``qmd`` is not on PATH.
-        QmdCommandError: If ``qmd get`` exits non-zero, times out, or
-            the binary is missing at exec time.
-    """
-    if not is_qmd_installed():
-        raise QmdNotInstalledError("`qmd` not found on PATH")
-
-    try:
-        result = _run_qmd(["qmd", "get", qmd_path], cwd=cwd, timeout=timeout)
-    except FileNotFoundError as exc:
-        raise QmdNotInstalledError("`qmd` binary not found at exec time") from exc
-    except subprocess.TimeoutExpired as exc:
-        raise QmdCommandError(f"qmd get timed out after {timeout}s") from exc
-
-    stderr_text = result.stderr.decode("utf-8", errors="replace").strip()
-    if result.returncode != 0:
-        raise QmdCommandError(f"qmd get failed (exit {result.returncode}): {stderr_text}")
-    return result.stdout.decode("utf-8", errors="replace")
+# ``qmd_get`` was deleted here. It shelled out to ``qmd get`` for the
+# librarian's source-aware read, which the seam moved to the daemon's
+# ``get`` with ``lineNumbers: false``: the CLI line-numbers every line
+# unconditionally and ``--no-line-numbers`` still leaves a
+# ``qmd://path  #docid`` header, so the F19 citation contract
+# ``[[slug]]: "verbatim quote"`` could not be met through it. The
+# function had no remaining caller, and its docstring still named the
+# dispatch that no longer existed. It also raised ``QmdCommandError``
+# on a timeout where its sibling in this module raised
+# ``QmdTimeoutError`` carrying qmd's stderr -- an asymmetry inside one
+# file, which is the kind of thing the next caller copies. Use
+# ``access.daemon_tool("get", {"file": path, "lineNumbers": False})``.

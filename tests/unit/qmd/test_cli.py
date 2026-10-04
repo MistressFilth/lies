@@ -245,3 +245,39 @@ def test_a_scoped_query_still_honours_the_limit(monkeypatch: pytest.MonkeyPatch)
     )
 
     assert len(out) == 3, f"limit=3 must still apply to a scoped query; got {len(out)}"
+
+
+def test_the_timeout_type_is_reachable_from_the_package() -> None:
+    """``from lies.qmd import QmdTimeoutError`` works.
+
+    The type introduced in 0.43.0 as *the* way to distinguish a slow
+    daemon from a broken one was absent from the package's imports and
+    ``__all__``, so a caller asking "slow or broken" could not name
+    the distinction without reaching into ``lies.qmd.cli``.
+    """
+    import lies.qmd as pkg
+    from lies.qmd import QmdCommandError, QmdTimeoutError
+
+    assert "QmdTimeoutError" in pkg.__all__
+    assert issubclass(QmdTimeoutError, QmdCommandError), (
+        "existing handlers catch QmdCommandError; a sibling raising the base type would bypass them"
+    )
+
+
+def test_qmd_get_is_gone_from_the_cli_module() -> None:
+    """The CLI ``qmd get`` shim is deleted, not left to rot.
+
+    It shelled out for the librarian's source-aware read, which the
+    seam moved to the daemon's ``get`` with ``lineNumbers: false``
+    because the CLI line-numbers every line unconditionally. Its
+    docstring still named a dispatch that no longer existed, and it
+    raised ``QmdCommandError`` on a timeout where ``qmd_query`` in the
+    same module raised ``QmdTimeoutError`` carrying qmd's stderr.
+    """
+    from lies.qmd import cli
+
+    assert not hasattr(cli, "qmd_get"), (
+        "qmd_get is dead: no callers, a docstring naming a removed "
+        "dispatch, and an output shape that cannot satisfy the "
+        "verbatim-quote citation contract"
+    )
