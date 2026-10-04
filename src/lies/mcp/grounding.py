@@ -43,7 +43,12 @@ class CitationSnippet:
 
     Attributes:
         collection: ``"wiki"`` or library-collection-name.
-        slug: Bare slug for ``[[slug]]: "snippet"`` rendering.
+        slug: ``<collection>/<page>`` form (e.g. ``claude_code/hooks.md``),
+            not the bare ``page`` segment. The full path is what the
+            citation contract renders as ``[[slug]]: "snippet"`` and
+            is what an agent needs to disambiguate hits across
+            collections with the same page name (``setup.md`` in two
+            collections is two distinct documents).
         title: Human-readable page title.
         snippet: First ≤200 chars of the first prose span.
         source_kind: ``"library"`` (primary) or ``"wiki"`` (wiki-only,

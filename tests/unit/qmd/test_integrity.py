@@ -385,6 +385,85 @@ def test_collection_drift_reports_multiple_messages_per_collection(
     assert len(drift["x"]) >= 1
 
 
+# --- document_drift (P-4) -----------------------------------------------
+#
+# The complement of ``collection_drift``: documents whose
+# ``collection`` field has no ``store_collections`` row. The
+# live observation on 2026-10-03 (PR #116 review) had a
+# ``wiki_tag-filter-lib`` residue: 5 documents with no
+# registry entry. ``collection_drift`` returned ``{}`` because
+# it iterates ``store_collections`` only; the residue is
+# structurally blind to that walker.
+
+
+def test_document_drift_reports_unregistered_collection_with_documents(
+    tmp_path: Path, _empty_index_template: Path
+) -> None:
+    """A collection name that has no registry row but holds documents is drift.
+
+    The shape mirrors ``collection_drift``: ``{collection_name:
+    [messages]}``. Today the message names the document count.
+    This is the drift class :class:`collection_drift` cannot
+    see by construction, and the union in
+    :func:`integrity_summary` is what surfaces it to operators.
+    """
+    import sqlite3 as _sqlite3
+
+    db = _tiny_index(tmp_path, _empty_index_template)
+    with _sqlite3.connect(str(db)) as conn:
+        # Three documents under an unregistered collection name.
+        conn.executemany(
+            "INSERT INTO documents(collection, path, title, hash, "
+            "created_at, modified_at, active) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [
+                ("wiki_tag-filter-lib", "a.md", "A", "ha", "t", "t", 1),
+                ("wiki_tag-filter-lib", "b.md", "B", "hb", "t", "t", 1),
+                ("wiki_tag-filter-lib", "c.md", "C", "hc", "t", "t", 1),
+            ],
+        )
+        conn.commit()
+
+    from lies.qmd.integrity import document_drift
+
+    drift = document_drift(db)
+    assert "wiki_tag-filter-lib" in drift, (
+        "an unregistered collection name with rows must surface; "
+        "collection_drift was blind to this case on the live index"
+    )
+    assert any("3 document" in m for m in drift["wiki_tag-filter-lib"]), (
+        "the count must be in the message so the operator knows how "
+        "much residue is in the orphan collection"
+    )
+
+
+def test_document_drift_is_empty_when_every_document_is_registered(
+    tmp_path: Path, _empty_index_template: Path
+) -> None:
+    """A clean index has no document drift."""
+    import sqlite3 as _sqlite3
+
+    db = _tiny_index(tmp_path, _empty_index_template)
+    coll_dir = tmp_path / "alpha"
+    coll_dir.mkdir()
+    with _sqlite3.connect(str(db)) as conn:
+        conn.execute(
+            "INSERT INTO store_collections(name, path) VALUES (?, ?)",
+            ("alpha", str(coll_dir)),
+        )
+        conn.execute(
+            "INSERT INTO documents(collection, path, title, hash, "
+            "created_at, modified_at, active) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("alpha", "a.md", "A", "ha", "t", "t", 1),
+        )
+        conn.commit()
+
+    from lies.qmd.integrity import document_drift
+
+    assert document_drift(db) == {}
+
+
 def test_qmd_index_path_resolves_under_xdg_cache_home(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, _empty_index_template: Path
 ) -> None:

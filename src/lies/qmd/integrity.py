@@ -103,6 +103,15 @@ def collection_drift(db: Path) -> dict[str, list[str]]:
     Reports registered paths that no longer exist on disk.
     Empty-but-present collections (``wiki_default``) are not drift.
     Returns ``{name: [messages]}``; empty means no drift.
+
+    Note: a *collection name that has documents but no
+    ``store_collections`` entry* is invisible to this function. The
+    case is real (the live qmd index on this host had a
+    ``wiki_tag-filter-lib`` residue with 5 documents and no
+    registry entry that this function returned ``{}`` for). The
+    companion :func:`document_drift` reports that case; the two
+    are unioned in :func:`integrity_summary` so a drift never
+    silently passes.
     """
     drift: dict[str, list[str]] = {}
     with closing(open_readonly(db)) as conn:
@@ -110,6 +119,39 @@ def collection_drift(db: Path) -> dict[str, list[str]]:
     for name, path in rows:
         if not Path(path).exists():
             drift.setdefault(name, []).append(f"registered path does not exist on disk: {path}")
+    return drift
+
+
+def document_drift(db: Path) -> dict[str, list[str]]:
+    """Documents whose ``collection`` field has no ``store_collections`` row.
+
+    Reports ``{collection_name: [messages]}`` for every distinct
+    ``documents.collection`` value that is absent from
+    ``store_collections``. Empty means every document's collection
+    is registered.
+
+    The complement of :func:`collection_drift`, which iterates
+    ``store_collections`` only. A collection that has documents but
+    no registry entry is invisible to ``collection_drift`` while
+    being a real drift — the documents were indexed against a
+    collection the daemon no longer knows about, so any
+    collection-filtered query will silently drop them. Measured
+    on this host (2026-10-03): the residue was 5 documents under
+    ``wiki_tag-filter-lib``; ``collection_drift`` returned ``{}``;
+    this function returns the missed name with a single message.
+    """
+    drift: dict[str, list[str]] = {}
+    with closing(open_readonly(db)) as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT collection, COUNT(*) "
+            "FROM documents "
+            "WHERE collection NOT IN (SELECT name FROM store_collections) "
+            "GROUP BY collection"
+        ).fetchall()
+    for collection_name, count in rows:
+        drift.setdefault(collection_name, []).append(
+            f"{count} document(s) reference a collection absent from store_collections"
+        )
     return drift
 
 
@@ -172,11 +214,17 @@ def snapshots_differ(
 def integrity_summary(db: Path) -> dict[str, Any]:
     """Full integrity snapshot for ``lies qmd status``.
 
-    Combines :func:`index_orphans` and :func:`collection_drift` with
-    three coverage queries.
+    Combines :func:`index_orphans`, :func:`collection_drift`, and
+    :func:`document_drift` with three coverage queries. The two
+    drift functions are complementary: ``collection_drift`` walks
+    ``store_collections`` and finds registered paths missing on
+    disk; ``document_drift`` walks ``documents`` and finds
+    unregistered collections. A drift that exists on one side
+    only is invisible to the other; the union closes the class.
     """
     orphans = index_orphans(db)
-    drift = collection_drift(db)
+    collection_d = collection_drift(db)
+    document_d = document_drift(db)
     with closing(open_readonly(db)) as conn:
         cur = conn.execute("SELECT COUNT(*) FROM documents")
         documents_total = cur.fetchone()[0]
@@ -198,5 +246,6 @@ def integrity_summary(db: Path) -> dict[str, Any]:
         "documents_active": documents_active,
         "documents_active_without_vectors": documents_active_without_vectors,
         "collections": collections,
-        "drift": drift,
+        "drift": collection_d,
+        "document_drift": document_d,
     }
