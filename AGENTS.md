@@ -899,10 +899,40 @@ contention, which is not what fails here.
 
 Four orphan `content_vectors` rows and five `documents` rows for
 `wiki_tag-filter-lib`, a collection absent from `store_collections`.
-Cause unestablished after two investigations searched every session
-log. `lies.qmd.integrity` reports both classes — `collection_drift`
-and `document_drift` — and the tag-filter session guard fails loudly
-on recurrence. Cleaning the existing rows is an operator action.
+
+**The cause is established.** `tests/integration/test_tag_filter_end_to_end.py`
+registered the collection and then called `qmd_embed`; the embed hit
+the CUDA reservation flake above, the exception propagated out of
+seeding before the fixture's `yield`, and the fixture's teardown was
+wrapped around the `yield` — so it never ran. Observed 2026-10-03
+22:46, thirteen minutes after a run that produced three such aborts:
+`leaked collections --- wiki_tag-filter-lib` in the live index. Two
+earlier investigations had searched session logs for an unexplained
+write; the write was this fixture, failing.
+
+Fixed in 0.47.1: the cleanup moved into `_seeded_qmd_context`, which
+wraps the *seeding*, and a cleanup that fails now rides along as a
+note on the in-flight exception instead of replacing it. The residue
+itself is still on disk — four orphan vector rows and five document
+rows — and cleaning it is an operator action.
+`lies.qmd.integrity` reports both classes (`collection_drift`,
+`document_drift`) and the tag-filter session guard fails loudly on
+recurrence.
+
+### A stopped qmd daemon is diagnosable only if the log survives
+
+qmd truncates `mcp.log` on every start, so the artefact that could
+explain an unexpected daemon death is destroyed by the recovery
+attempt — and LIES recycles the daemon routinely. On 2026-10-03 the
+machine-global daemon stopped between 23:02Z and 06:35Z with no
+answerable cause: no OOM record, the staleness marker older than the
+pidfile, the CUDA abort followed by a verified-live daemon, no WSL
+restart, and both integration runs clean.
+
+`_down` now copies the log to `mcp.log.<stamp>` before stopping,
+keeping `LOG_GENERATIONS_KEPT` (5). If a daemon dies again, look in
+`~/.cache/qmd/` for the preserved generations first — and add a
+generation here, because the next death should be answerable.
 
 ## Quality gates
 
