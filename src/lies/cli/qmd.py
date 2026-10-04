@@ -26,6 +26,12 @@ app = typer.Typer(help="qmd daemon lifecycle", no_args_is_help=True)
 _DEFAULT_PORT = 8181
 
 
+#: Names :func:`__getattr__` resolves from :mod:`lies.qmd.lifecycle` on
+#: first access. A module ``__getattr__`` fires on attribute access
+#: only, so a command body dereferencing ``status`` as a bare name
+#: goes to ``globals()`` then ``builtins`` and raises ``NameError``.
+#: Every command therefore calls :func:`_lifecycle` instead;
+#: ``tests/unit/cli/test_cli_qmd.py`` calls each one for real.
 _LAZY_LIFECYCLE_ATTRS: tuple[str, ...] = ("status", "_up", "_down", "recycle")
 
 

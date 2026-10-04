@@ -18,6 +18,7 @@ import socket
 import subprocess
 import time
 from pathlib import Path
+from typing import Any
 
 _HOST = "127.0.0.1"
 _DEFAULT_PORT = 8181
@@ -174,6 +175,11 @@ def _down(port: int = _DEFAULT_PORT) -> None:
         return
 
 
+#: Response header carrying the MCP session id. Literal because the
+#: constant is a protocol value, not an SDK one.
+_SESSION_HEADER = "mcp-session-id"
+
+
 def serves_query(port: int = _DEFAULT_PORT, timeout: float = _SERVES_QUERY_TIMEOUT_S) -> bool:
     """True iff the daemon's MCP endpoint answers a JSON-RPC ``initialize`` within ``timeout``.
 
@@ -207,12 +213,51 @@ def serves_query(port: int = _DEFAULT_PORT, timeout: float = _SERVES_QUERY_TIMEO
             resp = client.post(f"http://{_HOST}:{port}/mcp", json=payload, headers=headers)
             resp.raise_for_status()
             body = resp.json()
+            _close_probe_session(client, port, resp.headers.get(_SESSION_HEADER), headers)
     except httpx.HTTPError, ValueError:
         return False
     # A JSON-RPC error response means the daemon is alive but
     # rejected the request — still a serving daemon for the
     # recycle poll. A 200 with ``result`` means a full handshake.
     return "jsonrpc" in body or "result" in body or "error" in body
+
+
+def _close_probe_session(
+    client: Any,
+    port: int,
+    session_id: str | None,
+    headers: dict[str, str],
+) -> None:
+    """Complete and tear down the MCP session ``initialize`` allocated.
+
+    An ``initialize`` POST is not a request, it is the start of a
+    session: the server allocates one and returns its id in
+    ``Mcp-Session-Id``. A client that stops there leaves the session
+    live on the daemon. ``recycle`` polls this probe every 0.5 s for
+    up to ``ready_timeout``, so one recycle stranded on the order of
+    sixty of them, each held against a machine-global daemon other
+    clients share.
+
+    Sends the ``notifications/initialized`` the handshake requires and
+    then the ``DELETE`` that ends the session. Both are best-effort:
+    a daemon that answers neither is still a serving daemon, which
+    is the only question this probe asks.
+    """
+    import httpx
+
+    if not session_id:
+        return
+    url = f"http://{_HOST}:{port}/mcp"
+    session_headers = {**headers, _SESSION_HEADER: session_id}
+    try:
+        client.post(
+            url,
+            json={"jsonrpc": "2.0", "method": "notifications/initialized"},
+            headers=session_headers,
+        )
+        client.delete(url, headers=session_headers)
+    except httpx.HTTPError:
+        return
 
 
 def recycle(port: int = _DEFAULT_PORT, ready_timeout: float = _READY_TIMEOUT_S) -> DaemonStatus:

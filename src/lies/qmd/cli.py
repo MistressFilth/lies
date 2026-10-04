@@ -368,12 +368,23 @@ def qmd_query(
 ) -> list[dict[str, Any]]:
     """Run `qmd query` and return parsed JSON results.
 
-    Each result has at least a ``path`` key. ``collection_filter`` is
-    applied post-qmd (the CLI does not support ``--include-collection``
-    on the call shape we use). ``limit`` is inert in qmd's CLI
-    (``dist/cli/qmd.js:2550`` reads only ``values.n``); the slice is
-    applied *after* the filter so a scoped caller gets rows the
-    filter kept.
+    Each result has at least a ``path`` key.
+
+    ``collection_filter`` is applied post-qmd even though the CLI
+    accepts ``-c, --collection <name>`` (verified against
+    ``qmd query --help``; an earlier version of this docstring
+    claimed the flag did not exist). The post-filter is kept for a
+    reason that has nothing to do with availability: qmd applies its
+    own row cap before LIES sees anything, so a filter applied inside
+    qmd can still be starved when the rows it drops consumed the
+    budget. Filtering after the fact cannot recover a row qmd never
+    returned, which is why retrieval goes to the daemon's
+    ``collections`` push-down instead -- and why a scoped CLI query
+    remains bounded by qmd's own cap.
+
+    ``limit`` is inert in qmd's CLI (``dist/cli/qmd.js:2550`` reads
+    only ``values.n``); the slice is applied *after* the filter so a
+    scoped caller gets rows the filter kept.
 
     Raises:
         QmdNotInstalledError: If `qmd` is not on PATH.

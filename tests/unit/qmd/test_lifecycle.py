@@ -276,6 +276,108 @@ def test_serves_query_returns_false_when_httpx_raises(
     assert serves_query(timeout=1.0) is False
 
 
+def test_the_probe_terminates_the_mcp_session_it_opens(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``initialize`` starts a session; the probe ends it.
+
+    An ``initialize`` POST is not a request -- the server allocates
+    a session and returns its id in ``Mcp-Session-Id``. A probe that
+    stops after the response leaves that session live on a
+    machine-global daemon. ``recycle`` polls this probe every 0.5 s
+    for up to ``ready_timeout``, so one recycle stranded around
+    sixty of them.
+    """
+    seen: list[tuple[str, str, dict]] = []
+
+    class _Response:
+        # ``httpx.Headers``, not a dict: the real response header map
+        # is case-insensitive, and a plain dict would miss the
+        # lower-case lookup the code does and hide the teardown.
+        headers = httpx.Headers({"Mcp-Session-Id": "sess-42"})
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return {"jsonrpc": "2.0", "id": 1, "result": {}}
+
+    class _Client:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+        def __enter__(self) -> _Client:
+            return self
+
+        def __exit__(self, *args: object) -> bool:
+            return False
+
+        def post(
+            self, url: str, json: dict | None = None, headers: dict | None = None
+        ) -> _Response:
+            seen.append(("POST", json.get("method", ""), dict(headers or {})))
+            return _Response()
+
+        def delete(self, url: str, headers: dict | None = None) -> _Response:
+            seen.append(("DELETE", "", dict(headers or {})))
+            return _Response()
+
+    monkeypatch.setattr(httpx, "Client", _Client)
+
+    assert serves_query(timeout=1.0) is True
+
+    methods = [(verb, body) for verb, body, _ in seen]
+    assert ("POST", "initialize") in methods
+    assert ("POST", "notifications/initialized") in methods, (
+        "the handshake is incomplete without the notification the protocol requires"
+    )
+    assert ("DELETE", "") in methods, "the session must be released, not left live"
+    # Every follow-up carries the id the daemon handed out, or the
+    # daemon cannot match the request to the session it allocated.
+    for _verb, _body, headers in seen[1:]:
+        assert headers.get("mcp-session-id") == "sess-42", headers
+
+
+def test_a_daemon_that_issues_no_session_id_is_still_serving(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No session id means nothing to tear down, and the probe still passes.
+
+    The teardown is best-effort by design: the only question this
+    probe asks is whether the daemon answers, and a daemon that
+    answers without allocating a session is a serving daemon.
+    """
+
+    class _Response:
+        headers: dict[str, str] = {}
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return {"jsonrpc": "2.0", "id": 1, "result": {}}
+
+    class _Client:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+        def __enter__(self) -> _Client:
+            return self
+
+        def __exit__(self, *args: object) -> bool:
+            return False
+
+        def post(self, *args: object, **kwargs: object) -> _Response:
+            return _Response()
+
+        def delete(self, *args: object, **kwargs: object) -> _Response:
+            raise AssertionError("no session to delete")
+
+    monkeypatch.setattr(httpx, "Client", _Client)
+
+    assert serves_query(timeout=1.0) is True
+
+
 # --- recycle ----------------------------------------------------------------
 
 
