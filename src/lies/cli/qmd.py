@@ -1,42 +1,14 @@
 """``lies qmd`` -- operator subcommands for the shared qmd daemon.
 
-Mirrors ask's ``scripts/qmd-daemon.py`` operator surface so
-operators fluent in ask's daemon management can apply the same
-commands to LIES. Subcommands:
+Mirrors ask's ``scripts/qmd-daemon.py``. Subcommands: ``status``,
+``up``, ``down``, ``recycle``. The actual subprocess work lives
+in :mod:`lies.qmd.lifecycle`; this module is a thin typer
+wrapper that forwards CLI flags and prints operator-facing
+messages.
 
-- ``status`` -- print daemon snapshot as JSON.
-- ``up`` -- start the daemon (idempotent; safe to re-run).
-- ``down`` -- stop the daemon (best-effort).
-- ``recycle`` -- restart the daemon and wait for liveness.
-
-The actual subprocess work lives in :mod:`lies.qmd.lifecycle`; this
-module is a thin typer wrapper that forwards CLI flags and prints
-operator-facing messages. No subprocess is spawned here.
-
-Lazy ``lies.qmd.lifecycle`` binding
------------------------------------
-
-The lifecycle primitives (``status``, ``_up``, ``_down``,
-``recycle``) are loaded on first use rather than at import.
-``import lies.qmd.lifecycle`` triggers loading of :mod:`lies.qmd`'s
-package ``__init__``, which eagerly imports :class:`QmdCapability`
-from :mod:`lies.qmd.capability` -- that import pulls in
-:mod:`fastmcp` and :mod:`pydantic_ai`, both of which are heavy
-startup costs that must NOT ride the ``import lies.cli`` chain
-(``tests/unit/cli/test_cli_lazy_imports`` pins this contract).
-
-The binding goes through :func:`_lifecycle`, which resolves a name
-into this module's ``globals`` on first use. It did not used to work:
-the command bodies dereferenced the bare name (``status``) on the
-theory that a PEP 562 module ``__getattr__`` would catch it. A module
-``__getattr__`` fires on *attribute* access (``qmd_cli.status``),
-never on the bare-global lookup a function body performs -- that goes
-``globals()`` then ``builtins``. Every one of these four commands
-raised ``NameError: name 'status' is not defined`` on the first real
-invocation, and the ``# noqa: F821 -- resolved via __getattr__``
-comment asserted the opposite. Nothing caught it: the module had no
-test, and a test that patched ``qmd_cli.status`` would have masked it
-by writing the name into ``globals`` first.
+The lifecycle primitives are loaded on first use; ``import
+lies.qmd.lifecycle`` eagerly imports :class:`QmdCapability`,
+which pulls in :mod:`fastmcp` and :mod:`pydantic_ai`.
 """
 
 from __future__ import annotations
@@ -48,51 +20,41 @@ import typer
 app = typer.Typer(help="qmd daemon lifecycle", no_args_is_help=True)
 
 
-# Mirror of ``lies.qmd.lifecycle._DEFAULT_PORT`` so the @app.command()
-# option defaults can reference a constant without importing the
-# heavy lifecycle module at CLI startup. Update both sides if the
-# default ever changes.
+# Mirror of ``lies.qmd.lifecycle._DEFAULT_PORT`` so @app.command()
+# option defaults can reference it without importing the heavy
+# lifecycle module at CLI startup.
 _DEFAULT_PORT = 8181
 
 
+#: Names :func:`__getattr__` resolves from :mod:`lies.qmd.lifecycle` on
+#: first access. A module ``__getattr__`` fires on attribute access
+#: only, so a command body dereferencing ``status`` as a bare name
+#: goes to ``globals()`` then ``builtins`` and raises ``NameError``.
+#: Every command therefore calls :func:`_lifecycle` instead;
+#: ``tests/unit/cli/test_cli_qmd.py`` calls each one for real.
 _LAZY_LIFECYCLE_ATTRS: tuple[str, ...] = ("status", "_up", "_down", "recycle")
 
 
 def __getattr__(name: str):
-    """Resolve ``status`` / ``_up`` / ``_down`` / ``recycle`` on first access.
+    """Resolve lazy lifecycle attrs on first access (PEP 562).
 
-    PEP 562 module-level ``__getattr__`` — Python calls it when
-    ``qmd_cli.<name>`` is looked up and the name is not in the
-    module's ``globals()``. It caches the resolved symbol in the
-    globals so later lookups are a plain attribute read.
-
-    It does **not** fire for the bare name a function body in this
-    module would resolve; :func:`_lifecycle` is what the command
-    bodies call, and it is the only thing that makes them work.
+    Caches the resolved symbol in ``globals``. :func:`_lifecycle`
+    is what the command bodies call — a module ``__getattr__``
+    does not fire for a bare name inside a function body.
     """
     if name in _LAZY_LIFECYCLE_ATTRS:
-        from lies import qmd as _qmd_pkg  # noqa: PLC0415 - PEP 562 lazy import
-
-        _qmd_pkg  # touch: ensures ``import lies.cli`` does not pre-load this
         from lies.qmd import lifecycle as _lifecycle_mod  # noqa: PLC0415 - PEP 562 lazy import
 
-        value = getattr(_lifecycle_mod, name)
-        globals()[name] = value
-        return value
+        globals()[name] = getattr(_lifecycle_mod, name)
+        return globals()[name]
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def _lifecycle(name: str):
-    """The lazy lifecycle primitive ``name``, resolved on first use.
+    """Resolve the lazy lifecycle primitive ``name`` on first use.
 
-    The command bodies call this rather than dereferencing a bare
-    name. A module ``__getattr__`` only sees attribute access, so
-    ``globals()[name]`` inside a function body would never find it —
-    that is the ``NameError`` this helper exists to prevent.
-
-    A cached name short-circuits, so a
-    ``monkeypatch.setattr(qmd_cli, "status", …)`` that runs after the
-    first call is still what later calls see.
+    A module ``__getattr__`` only sees attribute access, so a
+    bare name inside a function body would never find it.
     """
     if name not in globals():
         __getattr__(name)
@@ -103,8 +65,9 @@ def _lifecycle(name: str):
 def status_cmd(
     port: int = typer.Option(_DEFAULT_PORT, "--port", "-p"),
 ) -> None:
-    """Print daemon status as JSON."""
+    """Print daemon status as JSON, plus an integrity snapshot."""
     s = _lifecycle("status")(port=port)
+    index_block = _integrity_block()
     typer.echo(
         json.dumps(
             {
@@ -112,10 +75,34 @@ def status_cmd(
                 "pid": s.pid,
                 "port": s.port,
                 "url": s.url,
+                "index": index_block,
             },
             indent=2,
         )
     )
+
+
+def _integrity_block() -> dict[str, object] | None:
+    """The ``index`` block for the status command, or ``None``.
+
+    ``None`` means qmd was never indexed here. A database that
+    exists but cannot be read -- a WAL that needs recovery, so a
+    ``mode=ro`` connection gets ``SQLITE_CANTOPEN`` while creating
+    the ``-shm`` file -- reports ``{"error": ...}`` instead.
+    Collapsing the two into ``null`` told the operator "no index"
+    about an index that is right there and needs one command to open.
+    """
+    import sqlite3
+
+    from lies.qmd.integrity import integrity_summary, qmd_index_path
+
+    db = qmd_index_path()
+    if not db.exists():
+        return None
+    try:
+        return integrity_summary(db)
+    except sqlite3.OperationalError as exc:
+        return {"error": f"{type(exc).__name__}: {exc}"}
 
 
 @app.command()

@@ -7,6 +7,7 @@ import pytest
 
 from lies.qmd import daemon as qmd_daemon
 
+
 _STATUS_RUNNING = """QMD Status
 
 Index: /home/u/.cache/qmd/index.sqlite

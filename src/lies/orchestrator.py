@@ -250,7 +250,7 @@ def _build_lint_report(
         for page in pages:
             try:
                 text = (wiki.wiki_dir / page).read_text(encoding="utf-8")
-            except (OSError, UnicodeDecodeError):
+            except OSError, UnicodeDecodeError:
                 continue
             linked.update(_extract_local_md_links(text, page, wiki.data_root))
         orphans = sorted(pages - linked)
@@ -277,7 +277,7 @@ def _build_lint_report(
         for page in pages:
             try:
                 text = (wiki.wiki_dir / page).read_text(encoding="utf-8")
-            except (OSError, UnicodeDecodeError):
+            except OSError, UnicodeDecodeError:
                 continue
             title = _extract_frontmatter_title(text)
             if title:
@@ -296,7 +296,7 @@ def _build_lint_report(
         for page in pages:
             try:
                 text = (wiki.wiki_dir / page).read_text(encoding="utf-8")
-            except (OSError, UnicodeDecodeError):
+            except OSError, UnicodeDecodeError:
                 continue
             page_links[page] = _extract_local_md_links(text, page, wiki.data_root)
 
@@ -309,7 +309,7 @@ def _build_lint_report(
                 body = body_cache.setdefault(
                     page, _strip_frontmatter((wiki.wiki_dir / page).read_text(encoding="utf-8"))
                 )
-            except (OSError, UnicodeDecodeError):
+            except OSError, UnicodeDecodeError:
                 continue
             body_lower = body.lower()
             page_targets = page_links.get(page, set())
@@ -338,7 +338,7 @@ def _build_lint_report(
     for page in pages:
         try:
             text = (wiki.wiki_dir / page).read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
+        except OSError, UnicodeDecodeError:
             continue
         for source in _extract_frontmatter_sources(text):
             resolved = (wiki.data_root / source).resolve()
@@ -359,7 +359,7 @@ def _build_lint_report(
     for page in pages:
         try:
             text = (wiki.wiki_dir / page).read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
+        except OSError, UnicodeDecodeError:
             continue
         for raw_target in _extract_wikilinks(text):
             if resolver.resolve(raw_target) is None:
@@ -404,7 +404,7 @@ def _build_lint_report(
     for page in section_pages:
         try:
             text = (wiki.wiki_dir / page).read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
+        except OSError, UnicodeDecodeError:
             continue
         page_type = _extract_frontmatter_type(text)
         if page_type is not None:

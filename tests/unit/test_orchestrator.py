@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 from pydantic_ai.models.test import TestModel
 
+from lies import config
 from lies.orchestrator import Orchestrator
 from tests.conftest import make_wiki, models_for_tests
 
@@ -164,7 +165,11 @@ def test_orchestrator_uses_qmd_http_transport(
     orch = Orchestrator(wiki=wiki_root, models=models_for_tests("test"))
     assert built, "QmdCapability was not constructed"
     assert built[0]["transport"] == "http"
-    assert built[0]["url"] == "http://127.0.0.1:8181"
+    # The orchestrator threads ``get_qmd_url()`` through, so this pins the
+    # config default rather than a second spelling of it. That default
+    # carries the ``/mcp`` path qmd actually serves.
+    assert built[0]["url"] == config.get_qmd_url()
+    assert built[0]["url"].endswith("/mcp")
     assert built[0]["wiki"] is orch.wiki
 
 

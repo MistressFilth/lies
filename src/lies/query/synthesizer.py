@@ -518,7 +518,7 @@ def _build_library_page_read(
 
     try:
         content = path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
+    except OSError, UnicodeDecodeError:
         return None
     lib_root = Library.open().collections_root.resolve()
     rel = path.relative_to(lib_root).as_posix()
@@ -555,7 +555,7 @@ def _try_read(
         return None
     try:
         content = path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
+    except OSError, UnicodeDecodeError:
         return None
 
     rel = path.relative_to(wiki.data_root).as_posix()

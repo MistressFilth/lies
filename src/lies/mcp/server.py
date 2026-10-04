@@ -351,7 +351,7 @@ def lint(
     orch = Orchestrator(wiki=wiki)
     try:
         return orch.run_lint(apply=fix, force_repair=force_repair, check=check)
-    except (WikiFlockUnrepairable, WikiLockBusy):
+    except WikiFlockUnrepairable, WikiLockBusy:
         return f"error: {sys.exc_info()[1]}"
 
 

@@ -47,8 +47,14 @@ class LibrarianDeps:
 
     Attributes:
         question: The user's natural-language question.
-        tag_expr: Body of a single include token (no leading sigil),
-            e.g. ``'a&b|c'``. ``None`` for untagged queries.
+        tag_expr: Compiled include AST (Task 3 / f15-exclude-compound),
+            a TagExpr tree. ``None`` for untagged queries. Carries
+            the AST rather than a flat string because the F15 grammar
+            accepts compound includes (``+c:foo&c:bar``,
+            ``+c:foo|c:bar``) whose per-collection dispatch walks
+            the tree. Historical flat-string contract retired in
+            Task 3 along with the ``ResolvedTagFilter.exclude``
+            counterpart.
         exclude_expr: Compiled exclude AST (Task 3 /
             f15-exclude-compound). ``None`` when no ``-`` chain was
             supplied. The dep carries the AST rather than a flat
@@ -62,7 +68,10 @@ class LibrarianDeps:
     """
 
     question: str
-    tag_expr: str | None
+    tag_expr: Any  # TagExpr | None AST; Any at runtime so pydantic-ai's
+    # TypeAdapter doesn't try to build a schema for the AST (a stdlib
+    # base class whose concrete variants are frozen dataclasses, not
+    # pydantic models).
     exclude_expr: Any  # TagExpr | None AST (Task 3); Any at runtime so
     # pydantic-ai's TypeAdapter doesn't try to build a schema for
     # TagExpr (a stdlib @dataclass, not pydantic).
@@ -119,9 +128,22 @@ class LibrarianOutput:
             so the CLI / MCP layer can render the scope envelope
             without re-resolving the AST. Defaults to ``[]`` so
             pre-v0.40 construction sites stay back-compat.
+        transient: v0.47 additive — the *dispatch* failed, so the
+            bundle says nothing about the corpus. A model outage, a
+            ``UsageLimitExceeded``, a response pydantic-ai could not
+            validate after its retry budget: each is a fact about
+            the run, and this branch existed with only
+            ``no_coverage=True`` to report it with, which is the
+            canonical false corpus claim. Set together with
+            ``no_coverage=False``; the two are independent, exactly
+            as on :class:`~lies.mcp.grounding.ArchivistDigest` and
+            the ``search`` envelope. Defaults to ``False``.
     """
 
-    tag_expr: str | None
+    tag_expr: Any  # TagExpr | None AST; Any at runtime so pydantic-ai's
+    # TypeAdapter doesn't try to build a schema for the AST (a stdlib
+    # base class whose concrete variants are frozen dataclasses, not
+    # pydantic models).
     exclude_expr: Any  # TagExpr | None AST (Task 3); Any at runtime so
     # pydantic-ai's TypeAdapter doesn't try to build a schema for
     # TagExpr (a stdlib @dataclass, not pydantic).
@@ -129,6 +151,7 @@ class LibrarianOutput:
     distinct_pages: int
     no_coverage: bool = False
     searched_scope: list[str] = field(default_factory=list)
+    transient: bool = False
 
 
 LIBRARIAN_SYSTEM_PROMPT = """# librarian — Classify, Search, Read, Return
@@ -170,7 +193,8 @@ registry — never a hardcoded map.
 Call `search(question, tag_expr, exclude_tags)` with the `tag_expr`
 from step 1. `search` is a single-batch hybrid vec+lex qmd query
 that returns a `SearchResult` envelope:
-`{hit, hits, unknown_tags, no_coverage, searched_scope, fallback_reason}`.
+`{hit, hits, unknown_tags, no_coverage, transient, searched_scope,
+fallback_reason}`.
 
 `hits` is a list of `{path, title, score, snippet}` rows; each
 snippet is a ~200-char window around the matched line in the source
@@ -180,9 +204,23 @@ markdown.
   unknown spec in the envelope. Do NOT silently retry without tags.
 - `no_coverage=True` → return an empty bundle; the corpus has zero
   hits for this question.
-- `fallback_reason` non-None → the daemon errored; return an empty
-  bundle with `no_coverage=True` and surface the reason in the
-  envelope metadata.
+- `transient=True` → the search **did not finish** (qmd outlived its
+  deadline). This is a fact about the run, not about the corpus: the
+  search learned nothing, so it has no standing to say the library
+  lacks this topic. Retry the same search **once**. If it is still
+  transient, return an empty bundle with `no_coverage=False` and put
+  the reason in the envelope metadata, and say the lookup was
+  inconclusive — never that the content is missing.
+- `fallback_reason` non-None with `transient=False` → the daemon
+  genuinely failed; return an empty bundle and surface the reason in
+  the envelope metadata.
+
+`no_coverage` and `transient` are deliberately separate flags. An
+earlier version set `no_coverage=True` on a timeout, and because this
+contract told the model that flag means "the corpus has zero hits",
+a slow call reached the user as "No relevant content found in
+library." — a false statement about the corpus, for a question that
+answered in under six seconds on the retry.
 
 `searched_scope` is the resolved collection list — mirror it
 verbatim onto `LibrarianOutput.searched_scope` so the synthesizer

@@ -12,6 +12,7 @@ def _fake_librarian_output(
     searched_scope: list[str] | None = None,
     excerpts: list | None = None,
     distinct_pages: int = 0,
+    transient: bool = False,
 ) -> MagicMock:
     out = MagicMock()
     out.tag_expr = "c:alpha"
@@ -20,6 +21,9 @@ def _fake_librarian_output(
     out.distinct_pages = distinct_pages
     out.no_coverage = False
     out.searched_scope = searched_scope or []
+    # Set explicitly: an unset attribute on a MagicMock is a truthy
+    # Mock, which would take the transient branch of every test here.
+    out.transient = transient
     return out
 
 
@@ -113,17 +117,22 @@ def test_ask_envelope_propagates_searched_scope(monkeypatch: pytest.MonkeyPatch)
     assert out.searched_scope == ["alpha", "beta"]
 
 
-def test_ask_returns_no_coverage_envelope_when_librarian_dispatch_fails(
+def test_ask_returns_an_inconclusive_envelope_when_librarian_dispatch_fails(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """librarian_agent.run_sync raising → lib_ask() returns gap envelope, no crash.
+    """librarian_agent.run_sync raising → lib_ask() is inconclusive, not empty.
 
     Reproduces the v0.40 live-test failure: pydantic-ai raises
     ``UsageLimitExceeded("Exceeded maximum output retries (1)")`` when the
     librarian LLM cannot produce a valid ``LibrarianOutput``. The MCP
-    ``lib_ask`` tool must surface an honest gap envelope instead of
-    propagating the exception. Mirrors ``test_ground_returns_empty_digest_on_librarian_exception``
-    in :mod:`tests.integration.test_grounding_unit` for the new lib_ask path.
+    ``lib_ask`` tool must not crash.
+
+    The envelope it returns used to be the "No relevant content found in
+    library" gap, which named a corpus problem for a model outage --
+    on the primary human-facing tool, using the exact string the
+    librarian contract designates as the canonical false claim. A
+    dispatch that never ran says nothing about the library, so the
+    envelope says so instead.
     """
     from lies.mcp import synth
 
@@ -150,10 +159,13 @@ def test_ask_returns_no_coverage_envelope_when_librarian_dispatch_fails(
     with caplog.at_level("WARNING", logger="lies.mcp.synth"):
         out = synth.lib_ask.fn(question="what is pydantic?", tag_expr="c:alpha")
 
-    assert out.answer == "No relevant content found in library."
+    assert "inconclusive" in out.answer, out.answer
+    assert "No relevant content found in library." not in out.answer, (
+        "a dispatch failure must not be reported as an empty corpus"
+    )
     assert out.synthesis_used is False
     assert out.fallback_used is True
-    assert "no excerpts" in (out.fallback_reason or "").lower()
+    assert "dispatch failed" in (out.fallback_reason or "").lower()
     assert out.searched_scope == []
     assert synth_called == []
     # The operator should see one warning explaining the fallback fired.
@@ -161,3 +173,74 @@ def test_ask_returns_no_coverage_envelope_when_librarian_dispatch_fails(
         "librarian_agent_run" in record.getMessage() and "RuntimeError" in record.getMessage()
         for record in caplog.records
     ), f"expected fallback warning, got: {[r.getMessage() for r in caplog.records]}"
+
+
+def test_a_transient_librarian_bundle_never_becomes_a_corpus_claim(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The two flags travel together, and only the right one is read.
+
+    ``no_coverage`` alone cannot express "the dispatch failed": the
+    bundle has zero excerpts either way. A consumer that branches on
+    ``not excerpts`` first would emit the corpus claim, so
+    ``_ask_impl`` checks ``transient`` first, and a bundle that says
+    ``transient=True, no_coverage=False`` -- the pair
+    ``librarian_agent_run`` now returns -- takes the inconclusive
+    branch even though ``no_coverage`` is False.
+    """
+    from lies.mcp.synth import lib_ask
+
+    lib_out = _fake_librarian_output(
+        searched_scope=["alpha"], distinct_pages=0, excerpts=[], transient=True
+    )
+    lib_out.no_coverage = False
+    monkeypatch.setattr("lies.mcp.synth.librarian_agent_run", lambda deps: lib_out)
+
+    synth_called: list[bool] = []
+    monkeypatch.setattr(
+        "lies.mcp.synth.synthesizer_agent_run",
+        lambda lib_out, q: synth_called.append(True) or MagicMock(),
+    )
+
+    out = lib_ask.fn(question="what is pydantic?", tag_expr="c:alpha")
+
+    assert "inconclusive" in out.answer
+    assert "No relevant content found in library." not in out.answer
+    assert synth_called == []
+
+
+async def test_synthesize_reports_a_transient_digest_as_inconclusive(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``ArchivistDigest.transient`` finally has a reader.
+
+    The field was set at three sites in ``grounding`` and read
+    nowhere in the package, while the 0.46.0 changelog advertised it
+    as the way to tell "the daemon failed" from "the corpus has
+    nothing". ``synthesize`` is the one registered consumer of a
+    digest, so it is where the distinction has to land.
+    """
+    from lies.mcp import synth
+    from lies.mcp.grounding import ArchivistDigest
+
+    digest = ArchivistDigest(
+        question="what is pydantic?",
+        tag_expr=None,
+        exclude_expr=None,
+        citations=[],
+        no_coverage=False,
+        distinct_pages=0,
+        transient=True,
+    )
+
+    async def _fake_ground(**_kwargs):
+        return digest
+
+    monkeypatch.setattr(synth, "ground", _fake_ground)
+
+    out = await synth.synthesize(question="what is pydantic?")
+
+    assert "inconclusive" in out.answer
+    assert "No relevant content found in library." not in out.answer
+    assert out.synthesis_used is False
+    assert "dispatch failed" in (out.fallback_reason or "").lower()

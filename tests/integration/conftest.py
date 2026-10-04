@@ -105,12 +105,18 @@ def child_env(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
 #
 # Why no qmd registration:
 #   The tests stub the librarian + qmd seams (``librarian_agent_run``,
-#   ``_post_query``, ``_qmd_get``) for determinism — no real qmd
-#   round-trips, no BM25 variance. The corpus on disk is the source of
+#   ``_post_query``, ``lies.mcp.read.access``) for determinism — no real
+#   qmd round-trips, no BM25 variance. The corpus on disk is the source of
 #   canned excerpt slugs the stubbed librarian returns; making the
 #   collections visible via the registry is enough to keep the wire
 #   contract honest (e.g., ``c:alpha`` resolves against
 #   ``library_collection_names()``).
+#
+#   ``read`` used to be stubbed at ``lies.mcp.read._qmd_get``, a wrapper
+#   around the ``qmd get`` CLI. That wrapper is gone: the library branch
+#   goes through the daemon seam (``lies.qmd.access.daemon_tool``), whose
+#   result is a content block rather than a string. The stubs answer in
+#   that shape.
 
 
 @pytest.fixture

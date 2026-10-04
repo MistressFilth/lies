@@ -66,11 +66,21 @@ def _stub_post_query(
     with a missing-binary error in CI sandboxes). Each row mirrors
     ``qmd_query``'s wire shape (``path`` / ``title`` / ``score`` /
     ``snippet``).
+
+    ``_search_impl`` also validates scope against the daemon's own
+    ``status`` before dispatching, which is a real reachability probe.
+    That goes with the fan-out, or these tests reach a live daemon —
+    which is exactly what the module claims they do not need.
     """
     monkeypatch.setattr(
         "lies.mcp.search._post_query",
         lambda doc, scope, limit, timeout: list(rows),
     )
+
+    async def _served() -> frozenset[str]:
+        return frozenset({"switchyard"})
+
+    monkeypatch.setattr("lies.qmd.access.qmd_collection_names", _served)
 
 
 # ---------------------------------------------------------------------------
@@ -100,6 +110,7 @@ async def test_live_corpus_search_scoped_under_15s(monkeypatch: pytest.MonkeyPat
       - The hit's path matches the seeded ``switchyard`` collection.
     """
     from fastmcp import Client
+
     from lies.mcp.server import mcp
 
     # Seed the addressable collection so ``c:switchyard`` validates
@@ -164,6 +175,7 @@ async def test_live_corpus_search_unscoped_under_15s(monkeypatch: pytest.MonkeyP
       - The hit's path matches the seeded ``switchyard`` collection.
     """
     from fastmcp import Client
+
     from lies.mcp.server import mcp
 
     # Seed the addressable collection so the unscoped fan-out sees
@@ -235,7 +247,6 @@ async def test_live_corpus_ask_envelope_shape(monkeypatch: pytest.MonkeyPatch) -
     ``fallback_used=True``).
     """
     from fastmcp import Client
-    from lies.mcp.server import mcp
 
     # Stub the librarian with a canned output (zero excerpts) so the
     # envelope falls onto the empty-prose branch — the
@@ -243,6 +254,7 @@ async def test_live_corpus_ask_envelope_shape(monkeypatch: pytest.MonkeyPatch) -
     # real synthesizer dispatch. The branch is the same as an
     # untagged-scoped search against an empty library.
     from lies.agents.librarian import LibrarianOutput
+    from lies.mcp.server import mcp
 
     lib_out = LibrarianOutput(
         tag_expr="c:switchyard",

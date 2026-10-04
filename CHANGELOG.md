@@ -6,6 +6,644 @@ All notable changes to LIES are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.47.0] - 2026-10-03
+### Added
+
+- **`transient` on `LibrarianOutput`, and both consumers read it.** A
+  librarian LLM dispatch that raised — a `UsageLimitExceeded`, a model
+  outage, a response pydantic-ai could not validate after its retry
+  budget — returned `no_coverage=True`, so `lib_ask` answered "No
+  relevant content found in library." on the primary human-facing tool,
+  naming a corpus problem for a process failure. That is the exact
+  string the librarian contract designates as the canonical false
+  claim. `LibrarianOutput.transient` is the new flag, and `_ask_impl`
+  checks it before it looks at the excerpts.
+
+- **`synthesize` reads `ArchivistDigest.transient`.** The field was
+  set at three sites in `ground` and read nowhere in the package while
+  0.46.0's changelog entry advertised it as delivered. A transient
+  digest now returns an inconclusive envelope; a clean miss still
+  returns the gap prose.
+
+- **`ArchivistDigest.unserved_scope`.** The collection names a
+  `ground` fan-out asked for that the daemon does not serve, in input
+  order, and disjoint from `searched_scope`. A digest with an empty
+  `searched_scope` and a populated `unserved_scope` searched nothing,
+  which is not a statement about the corpus.
+
+- **`lies.qmd.QmdTimeoutError`.** The type that distinguishes a slow
+  daemon from a broken one was in neither the import list nor
+  `__all__` of `lies.qmd`, so the distinction could not be named
+  without reaching into `lies.qmd.cli`.
+- **`lies.qmd.integrity.live_index_snapshot` and `snapshots_differ`** —
+  read-only snapshot of four aggregates from the live qmd index
+  (`collection_names`, `active_doc_count`, `total_vectors`,
+  `orphan_vectors`) plus the pure comparator the session guard uses.
+  The pre-fix tag-filter guard was blind to ``content_vectors`` writes
+  whose backing ``content`` and ``documents`` rows never landed —
+  the exact class of write that produced the four live-index orphans
+  on 2026-10-03 — because the old snapshot only carried the first
+  two aggregates. The four-field snapshot and its mutation test
+  pin that class. See
+  `.superpowers/sdd/2026-10-01-qmd-daemon-routing/live-index-orphans.md`
+  for the root-cause investigation.
+
+- **`tests.fixtures.qmd_bench.decisions` — Task 6's three questions.**
+  The fixture's top-level `decisions` block records the per-query
+  numbers behind the three open questions the design could not
+  close from a single sample: `hyde` stays out (0 of 15 top-1
+  changes; the earlier n=1 probe is confirmed at n=15);
+  `paraphrase_count = 1` (no authored-paraphrase curve moves a
+  failing query into passing rank; latency grows linearly);
+  `recall_regression` records today's `lies_gate` 13/15 as the
+  reference baseline for the next routing change, with `regressions`
+  empty against Task 4's 13/15. The block is fixture data so a
+  future reader can diff the numbers without rerunning qmd, and
+  `tests/unit/test_bench_fixture.py` pins its shape. Measurement
+  harness lives at
+  `.superpowers/sdd/2026-10-01-qmd-daemon-routing/measurements/measure_task6.py`;
+  full report at
+  `.superpowers/sdd/2026-10-01-qmd-daemon-routing/task-6-report.md`.
+  Index state at measurement time: 5992 documents, 48992 vector
+  rows, 4 orphan hashes (residue from the round-2 investigation,
+  none of the 15 fixture queries' expected paths).
+
+### Changed
+
+- **`read_library_bodies` classifies transport errors.** It called
+  `client.call_tool` directly while `classify_call_error` lived only
+  in `daemon_tool`, so the `except _DAEMON_FAILURES` inside its
+  per-path loop was unreachable. Every transport failure became a
+  `None` entry, and `read.py` turned that into a `_missing` row: "the
+  daemon could not resolve this path". A `ReadTimeout` was
+  indistinguishable from a document that is genuinely absent, on the
+  one path the batched read exists to make fast. `daemon_tool`'s
+  recovery is now `_call_with_recovery(url, name, make_call)` and both
+  call sites route through it.
+
+- **`ground` reports the scope it dispatched, not the scope it
+  requested.** It bound the unknown set to `_unknown` and returned
+  `[]`, which became `no_coverage=True` — a collection set the daemon
+  does not serve reached the user as an empty corpus, with
+  `searched_scope` naming collections that were never dispatched, and
+  nothing logged. The unserved names are logged at warning.
+
+- **`qmd_get` is deleted.** It shelled out for the librarian's
+  source-aware read, which the seam moved to the daemon's `get` with
+  `lineNumbers: false` — the CLI line-numbers every line
+  unconditionally, so `[[slug]]: "verbatim quote"` could not be met
+  through it. No callers remained, its docstring still named a
+  dispatch that no longer existed, and it raised `QmdCommandError` on
+  a timeout where `qmd_query` in the same module raised
+  `QmdTimeoutError` carrying qmd's stderr.
+
+- **`lies qmd status` distinguishes an unreadable index from an absent
+  one.** Both returned `"index": null`. A WAL database needing
+  recovery now reports `{"error": ...}`, because "no index" about an
+  index that is right there hides a one-command fix.
+
+- **The `lies qmd` liveness probe no longer leaks an MCP session per
+  poll.** `initialize` is not a request but the start of a session: the
+  probe read the response and stopped, leaving a live session on a
+  machine-global daemon every time. `recycle` polls every 0.5 s for up
+  to `ready_timeout`, so one recycle stranded around sixty.
+
+### Fixed
+
+- **A qmd timeout on the batched read is no longer reported as a
+  missing document.** The `_missing` entry was built from a transport
+  error that never went through the taxonomy.
+
+- **stderr is capped on the wedge paths too.** `_run_qmd` truncated to
+  `_MAX_STDERR_BYTES` on the success path only, while
+  `search._decode` documented the opposite and renders
+  `QmdTimeoutError.stderr` into the user-visible `fallback_reason`. A
+  long Node stack trace landed verbatim in the MCP envelope precisely
+  when something had gone wrong.
+
+- **`integrity.open_readonly` percent-escapes the path.** A `?` or `#`
+  in a path ended the path and started the query string, so the
+  connection opened a different file than the caller named.
+
+- **The `lies_gate` tool no longer scores a configuration failure as a
+  recall regression.** It read only `result["hits"]`, so an unknown
+  collection, a wedge and a timeout all looked like "the document
+  ranked low". Faulted queries are excluded from the score and printed
+  as `NOT MEASURED`, and the denominator counts the queries actually
+  scored rather than every query in the fixture.
+
+- **`_LAZY_LIFECYCLE_ATTRS` was assigned twice** in `cli/qmd.py`, once
+  unannotated and once annotated with the same value.
+
+### Removed
+
+- `lies.qmd.cli.qmd_get` — dead since the seam moved the librarian's
+  read to the daemon. See "Changed".
+
+### Documentation
+
+- `AGENTS.md` gained a `## Known flakes` section. The `qmd embed` CUDA
+  reservation abort is measured, characterised, and left unmitigated,
+  and it lived only in a commit message — so the next agent would try
+  the same retry, because nothing told them it had been measured and
+  found worse.
+- `qmd_query`'s docstring claimed the CLI has no collection flag;
+  `qmd query --help` documents `-c, --collection <name>`. The
+  post-filter stays for a different reason, now the stated one.
+- The `ground` exclude is documented as applied before the fan-out
+  rather than dropped. `del exclude_expr` is true and reads as
+  "inert"; it is enforced, because `ground` resolves the AST into
+  `searched_scope_list` first, and the behaviour is now pinned.
+
+
+
+## [0.46.0] - 2026-10-03
+
+### Added
+
+- **`ArchivistDigest.transient: bool`** (additive). The grounding archivist
+  can now distinguish a process failure from an empty corpus. A
+  ``transient=True`` ``ArchivistDigest`` is a slow or failed
+  retrieval — the librarian should retry — not "the corpus has
+  nothing", which is what ``no_coverage=True`` already meant. The
+  two flags are independent: ``no_coverage=False, transient=True``
+  is the new envelope on a fan-out dispatch failure. Defaults to
+  ``False`` so existing call sites and tests that build a digest
+  by keyword remain stable. Pinned by
+  ``tests/unit/mcp/test_ground.py::test_archivist_digest_transient_defaults_false``
+  and the dispatch-failure envelope tests below.
+
+- **`lies.qmd.access.validate_scope(scope)`** and
+  **`lies.qmd.access.qmd_collection_names()`** — the shared seam
+  every batched collection filter goes through before reaching the
+  daemon. ``qmd_collection_names`` reads the daemon's ``status``
+  tool; ``validate_scope`` partitions ``scope`` into the names the
+  daemon serves and the names it does not, in input order.
+  ``search`` and ``ground`` both call it before issuing a
+  ``query``, so a single unresolvable name inside the batched
+  ``collections`` array can no longer silently return zero rows
+  — a regression from the per-collection fan-out the prior shape
+  dropped individually. ``QmdDaemonUnavailable`` /
+  ``QmdDaemonWedged`` propagate; an empty ``scope`` returns
+  ``([], [])`` with no daemon call. Pinned by
+  ``tests/unit/qmd/test_access.py::test_validate_scope_*``
+  (five tests: empty input, served/unknown partition, dict-shaped
+  status, daemon-down, daemon-wedged).
+
+### Fixed
+
+- **`mcp.search` — `Exception` no longer becomes a corpus claim.**
+  The generic ``except Exception`` in ``_search_impl`` previously
+  mapped any non-typed exception to ``no_coverage=True`` — a
+  false claim about the corpus, for anything outside the
+  ``QmdDaemonUnavailable`` / ``QmdDaemonWedged`` taxonomy. The
+  handler now sets ``transient=True, no_coverage=False`` with
+  ``fallback_reason`` naming the exception, and the unreachable
+  ``except QmdCommandError`` branch (which carried the exact
+  "qmd unreachable" wording this branch exists to remove) is
+  deleted. ``QmdTimeoutError`` keeps its defensive-parity
+  envelope. Pinned by
+  ``tests/unit/mcp/test_search.py::test_search_unexpected_post_query_failure_returns_transient``
+  (renamed from ``...returns_no_coverage``).
+
+- **`mcp.search` — a tag expression that resolves to zero
+  collections no longer silently widens to the whole library.**
+  ``tag_expr=None`` still widens (the caller did not narrow, so
+  every collection is in scope); a non-empty ``tag_expr`` that
+  resolves to nothing now reports ``unknown_tags=[tag_expr]`` and
+  refuses, rather than answering from the whole library with
+  ``unknown_tags == []`` — the shape ``AGENTS.md`` calls out for
+  the prompt surface as "a query the user scoped by tag, answered
+  from the whole library, with nothing in the response saying
+  so". Pinned by
+  ``tests/unit/mcp/test_search.py::test_search_tag_only_filter_is_not_silently_widened``.
+
+- **`qmd.access.classify_call_error` — `LocalProtocolError` is a
+  passthrough, not a recycle-retry.** The docstring and
+  ``AGENTS.md`` "Deliberate taxonomy gap" paragraph both said
+  ``HTTPStatusError`` and ``RemoteProtocolError`` were
+  passthrough — wrong on the second half (measured against
+  installed httpx 0.28.1: ``RemoteProtocolError`` classifies as
+  ``recycle-retry`` because it inherits ``ProtocolError →
+  TransportError``) and silent on a third: ``LocalProtocolError``
+  classifies the same way but a retry against a malformed
+  request sends the same bytes back to fail the same way, and a
+  recycle kills in-flight work belonging to other clients of a
+  machine-global daemon. ``LocalProtocolError`` joins an explicit
+  passthrough set; ``RemoteProtocolError`` keeps
+  ``recycle-retry`` (the daemon's response was malformed, which
+  is server-side state). All three classes pinned in
+  ``tests/unit/qmd/test_access.py``, including a
+  wrapped-by-fastmcp case for ``LocalProtocolError`` so the
+  ``__cause__`` chain walk cannot silently re-merge the
+  client-side case.
+
+- **`qmd.access._recycle_data_dir` — six unreachable lines past
+  the ``return`` removed.** A copy-paste artifact from the
+  recycle rewrite.
+
+- **`mcp.grounding` — fan-out dispatch failures now log and
+  surface as `transient=True, no_coverage=False`.** Three
+  ``except Exception`` handlers (the unscoped fan-out, the tagged
+  fan-out, and the legacy librarian dispatch) previously folded
+  any process failure into ``no_coverage=True`` and emitted one
+  ``warnings.warn`` line — which the default filter prints once
+  per location, so a persistently failing daemon goes quiet. The
+  three handlers now log through ``_log.error`` and return an
+  ``ArchivistDigest`` with ``transient=True, no_coverage=False``.
+  Pinned by
+  ``tests/unit/mcp/test_ground.py::test_ground_fanout_dispatch_failure_surfaces_as_transient``
+  and the tagged-path version, so the unscoped and tagged
+  fast-paths cannot drift on the failure envelope.
+
+## [0.45.1] - 2026-10-03
+
+### Fixed
+
+- **`mcp.search._post_query` — the `timeout` parameter is no longer dead.**
+  The seam (`lies.qmd.access.daemon_tool`) now accepts a per-call
+  `timeout=` keyword and forwards it to `fastmcp.Client.call_tool`
+  as the per-request MCP read deadline. `_post_query` threads
+  `_current_timeout()` through, so a `LIES_QMD_FANOUT_TIMEOUT` change
+  takes effect on the next daemon call instead of waiting for the
+  cached httpx client to be invalidated by a `LIES_QMD_URL` change.
+  The previous shape implied a guarantee the code did not provide;
+  the CLI path read its deadline per call and the daemon path did
+  not. Both paths now agree. The cached client's cache key is the
+  URL only — the deadline is the per-call argument, not part of
+  the key. Pinned by
+  `tests/unit/qmd/test_access.py::test_a_per_call_timeout_is_forwarded_to_call_tool`
+  and friends.
+
+- **`mcp.grounding._fanout_collections` — route through the qmd access seam.**
+  The previous shape was a per-collection CLI subprocess fan-out
+  with a consecutive-error counter that fired a manual `recycle()`
+  on threshold. The seam's typed errors (`QmdDaemonUnavailable`,
+  `QmdDaemonWedged`) now reach the archivist unchanged — a
+  process failure is no longer folded into `no_coverage=True`,
+  which would be a false claim about the corpus. The fan-out is
+  one daemon `query` against the resolved collection list with
+  the daemon's `collections` push-down; the push-down is exact,
+  so one round trip replaces N. The pre-#106 VRAM rationale (per-
+  collection subprocess fan-out spiked the embedding model under
+  OR-scoped queries) is gone with the per-collection loop, and
+  the corresponding `AGENTS.md` paragraph is rewritten to name
+  the daemon path. Pinned by
+  `tests/unit/mcp/test_ground.py::test_fanout_unscoped_routes_through_the_daemon_seam`
+  and the typed-error propagation tests.
+
+- **Stale orphan counts in `qmd.integrity.index_orphans` docstring.**
+  The 2026-10-01 probe baseline (1566 / 41332) and the 2026-10-03
+  post-cleanup reading (4 / 4) are now both labeled as dated
+  measurements rather than quoting the older number as the live
+  state. The probe numbers remain in `tests/fixtures/qmd_bench.json`
+  with the full historical context (re-baselined 2026-10-02 with
+  two quality-bit-identical runs).
+
+- **Stale tool-name vocabulary in `qmd.mcp_fallback` module docstring.**
+  The fallback's tool surface (only `wiki_search` and `wiki_read`
+  for the agent's retrieval) is now described in the seam's
+  vocabulary instead of dangling references to `qmd_query` /
+  `qmd_get` / `qmd_status` / `qmd_update` that the seam does not
+  re-implement.
+
+- **Stale `QmdTimeoutError` narrative in `mcp.search._post_query`**
+  — the docstring's "A timeout on the daemon side surfaces as
+  `QmdTimeoutError`" was the pre-#106 CLI behaviour. The seam
+  raises `QmdDaemonWedged` (recycle-and-raise) for a daemon-side
+  timeout, and `QmdTimeoutError` is a CLI-only class. The
+  `except QmdTimeoutError` clauses are kept as defensive
+  fallbacks for a future CLI re-route, with the docstring
+  updated to say so.
+
+- **Stale framing in `tests/unit/qmd/test_lock.py`**
+  — three tests at lines 32-62 assert on the module constants
+  `_LOCK_PATH` / `_PID_PATH` / `_STATE_PATH`, which are frozen
+  at import. The acquire/release path now resolves per
+  acquisition via `_lock_paths()`, so the constants are no
+  longer on the locking hot path. They are still used by
+  `_register_holder` for the heartbeat siblings, and the test
+  docstring is updated to name the constant's *real* use
+  (the heartbeat writers), so a future reader does not assume
+  the constants are the live lock path.
+
+## [0.45.0] - 2026-10-03
+
+### Fixed
+
+- **The live-index guard missed the orphan-write class.** The
+  tag-filter session guard snapshot carried only two aggregates —
+  `store_collections` names and active document count. The four
+  live-index `content_vectors` rows observed at 2026-10-03 03:50
+  PDT belong to a class a two-field snapshot cannot see:
+  `content_vectors` writes whose backing `content` and `documents`
+  rows never landed, or were later hard-deleted by an intervening
+  `qmd collection remove`. The pre-fix guard returned `equal=True`
+  on that write and the orphan rows slipped past.
+
+  The fix is a four-field snapshot (`collection_names`,
+  `active_doc_count`, `total_vectors`, `orphan_vectors`); the
+  fourth is the load-bearing one. The comparator is now a pure
+  function, `lies.qmd.integrity.snapshots_differ`, so the unit
+  tests do not need the integration harness.
+
+### Added
+
+- **`lies.qmd.integrity.live_index_snapshot`** — the read-only
+  four-aggregate snapshot the guard compares, exposed so the guard
+  and any other consumer read the same numbers.
+
+### Changed
+
+- **The bench fixture records the three questions a single sample
+  could not close.** `hyde` stays out (0 of 15 top-1 changes at
+  n=15), `paraphrase_count = 1` (no authored-paraphrase curve moves
+  a failing query into passing rank; latency grows linearly), and
+  `recall_regression` records today's `lies_gate` 13/15 as the
+  reference for the next routing change. The block is fixture data,
+  pinned by `tests/unit/test_bench_fixture.py`, so a future reader
+  can diff the numbers without rerunning qmd.
+
+
+## [0.44.0] - 2026-10-03
+
+### Added
+
+- **`lies.qmd.integrity` — read-only SQLite inspection of the qmd index.**
+  qmd has no read-only open mode, and the index has no `content_vectors`
+  → `content` foreign key, so vector rows can outlive the documents they
+  belong to and nothing cascades them. LIES now reads the index directly
+  via `file:$XDG_CACHE_HOME/qmd/index.sqlite?mode=ro` rather than shelling
+  out to qmd for diagnosis — every entry point opens read-only, with
+  `open_readonly(db)` as the module's only connection constructor.
+  Three named functions: `index_orphans(db) -> OrphanReport` (counts
+  vector rows whose hash has no backing `content`), `is_embedded(db, h)
+  -> bool` (the per-document semantic-search reachability check), and
+  `collection_drift(db) -> dict[str, list[str]]` (registered paths
+  that no longer exist on disk). An `integrity_summary(db)` aggregator
+  composes the three with three coverage queries (`documents_total`,
+  `documents_active`, `documents_active_without_vectors`) for the
+  status command. `lies qmd status` now prints this as an `index` block
+  alongside the daemon fields; `null` when the index is absent.
+
+## [0.43.3] - 2026-10-01
+
+> Version numbering: this branch has no `0.43.2` entry because nothing was
+> released as 0.43.2 — the last tag is `v0.40.0`. The release-scaffold
+> bump was renumbered 0.43.2 → 0.43.3 when the fastmcp-floor change landed
+> alongside it. Nothing was deleted; no 0.43.2 record ever shipped.
+
+### Fixed
+
+- **`read` returned bodies that could not be quoted.** F19's citation
+  contract is `[[slug]]: "verbatim quote from the cited span"`, and the
+  library branch answered with the CLI's `qmd get` output: every line
+  prefixed `N: `, behind a `qmd://path  #docid` header that
+  `--no-line-numbers` does not remove. The branch now issues the daemon's
+  `get` with `lineNumbers: false`, which is the only source of clean
+  text in qmd, and reads the body from the content block rather than
+  `result.data` — qmd answers with an EmbeddedResource block, so a
+  `.data` read stores `""` for a document with content.
+- **A down daemon was reported as "all reads failed".** The library
+  branch wrapped every call in `except Exception: log.warning(...)` and
+  skipped, so `QmdDaemonUnavailable` was swallowed, every path was
+  skipped, and the batch surfaced as `ToolError("all reads failed")` —
+  a claim about the corpus that is really a claim about the process. A
+  daemon that is down or wedged now re-raises; a document qmd cannot
+  resolve is still logged and skipped with its siblings intact.
+- **`read` raised from inside a running event loop.** The sync tool
+  bridges the async seam, and `asyncio.run` from a thread that already
+  has a loop raises `RuntimeError` — the bug `ground()` shipped with in
+  #106. The bridge now runs the coroutine on its own thread and loop
+  when one is already present.
+- **The default qmd daemon URL 404'd.** `DEFAULT_QMD_URL` was
+  `http://127.0.0.1:8181`; qmd's HTTP MCP server serves exactly one
+  route, `/mcp`, which `qmd.lifecycle` has always included. Every call
+  at the default reached a live daemon, got a 404, and was classified
+  and reported as a *down* daemon — with "start it with `lies qmd up`"
+  as the advice, for a daemon that was already running.
+- **One bad page discarded every good body in a `read` batch.** When the
+  daemon answered a request with notices but no document block, the
+  extraction ran *outside* the per-path `try`; the exception propagated
+  and the partially-filled result was lost, so a single anomalous
+  document silently cost the caller every other body it had asked for.
+  Both spellings of "no body for this path" — the call raised, or the
+  call succeeded with nothing usable — are now treated identically:
+  logged, skipped, siblings intact. Which channel qmd picks is an
+  implementation detail of its error signalling, and a batch's outcome
+  must not depend on it. `ToolError("all reads failed")` remains the
+  loud failure, raised once when the batch genuinely produced nothing.
+- **Every qmd subprocess now runs with `NO_COLOR=1`.** Policy, not a
+  fix: qmd's only `NO_COLOR` consumer is
+  `const useColor = !NO_COLOR && process.stdout.isTTY`, and LIES always
+  pipes, so colour is already off and the override cannot change
+  today's output. It is defence in depth — it removes colour as a
+  variable, and forcing rather than inheriting means an operator who
+  exported `NO_COLOR=0` for their own terminal cannot change what
+  `qmd_query` parses. An earlier draft of this entry claimed the
+  override suppressed a `⠋ Gathering information` spinner that qmd
+  writes to stdout, and that is wrong: qmd 2.5.3 has no such spinner
+  (its only cursor control writes to stderr). The spinner is real but
+  belongs to `ipull`, a transitive dependency of `node-llama-cpp`,
+  writing through `stdout-update` to stdout with no TTY guard — and it
+  only runs while a model is downloading into a cold cache.
+  `NO_COLOR` does not suppress it; the lever is a warm model cache.
+- **`fastmcp>=2.0` advertised compatibility the code does not have.**
+  `Client.call_tool(..., raise_on_error=False)` is keyword-only on
+  FastMCP 4 and absent on 2.x, and the access seam calls it on every
+  daemon call, so a 2.x install would die with a `TypeError` at the
+  first call rather than at install time. The floor is now `>=4.0`.
+- **`qmd embed` and `qmd update` were killed as wedges while they were
+  working.** The wedge detector fires after 30s of silence, which is a
+  good default for an interactive query — but both of these are silent
+  for their *entire* duration under a pipe. `qmd embed` writes exactly
+  one byte (a stderr spinner escape) and then nothing while the model
+  loads and runs; `qmd update` writes nothing at all, its progress being
+  a stderr write behind an `isTTY` check. Measured on a cold cache, one
+  tiny document takes 9.4s of unbroken silence, and four collections
+  under host contention crossed the bound and were killed mid-progress.
+  Both now pass an idle bound of `timeout * 0.5`. Half rather than all:
+  the loop checks the total bound first, so an idle bound equal to the
+  total could never fire and every kill would lose its `last_output`
+  diagnostic. The cost is a wedged command holding `with_qmd_lock()` for
+  up to half its total bound instead of 30s — stated, not hidden, and
+  still the better trade against killing healthy work. Retrieval
+  commands keep the 30s default: a query silent for 30s genuinely is
+  wedged.
+- **`qmd query --json` failed on a cold model cache.** When qmd's models
+  are not yet cached it downloads them, and that download is driven by
+  `ipull` (a transitive dependency of `node-llama-cpp`) through
+  `stdout-update`, whose `UpdateManager` defaults to `process.stdout`
+  and writes there with no TTY guard and no `NO_COLOR` check. Under a
+  pipe that progress lands in front of the JSON, and `json.loads` failed
+  at char 0 — reported as `qmd query returned invalid JSON`, on exactly
+  the runs with a cold cache, which is why it read as intermittent.
+  `_parse_json_list` now finds the JSON rather than demanding the stream
+  begin with it, and still rejects genuinely malformed output — quoting
+  what actually arrived when it does. Covered by four tests, one of which
+  feeds the real ipull byte sequence (`\x1b[?25l⠋ Gathering information…`)
+  and asserts the JSON is still recovered, and three of which assert that
+  garbage, truncated output, an empty stream and a JSON *object* are all
+  still rejected. A test that reproduced this against the live binary was
+  written and deliberately not shipped: forcing a cold cache makes qmd
+  download ~1.2 GB of models per run.
+
+### Changed
+
+- **Both qmd URL defaults now source `config.DEFAULT_QMD_URL`.** The
+  same bare-origin `http://127.0.0.1:8181` was written out three times,
+  and only the config one was corrected. The two class defaults are not
+  reachable today — the sole production construction site
+  (`orchestrator.py`) passes `get_qmd_url()` explicitly, and
+  `QmdMcpClient` has no production construction site at all — so nothing
+  was broken by them; but any future caller omitting `url=` would have
+  reproduced the 404-as-down-daemon misdiagnosis. Sourcing the constant
+  closes the class rather than the three instances.
+  `QmdMcpClient.url` therefore also changes host `localhost` →
+  `127.0.0.1` by inheriting the constant. Inert today — the class has no
+  production construction site — but it is a behaviour change and is
+  recorded as one.
+
+## [0.43.2] - 2026-10-02
+
+### Fixed
+
+- **`read` returns verbatim bodies.** The CLI's `qmd get`
+  line-numbers every line and keeps its `qmd://path  #docid` header
+  even with `--no-line-numbers`, so every body the read tool
+  returned carried provenance F19 cannot quote. A citation is
+  `[[slug]]: "verbatim quote from the cited span"]`; against
+  `claude_code/plugins.md` the old path produced 493 numbered lines
+  behind a `qmd://claude_code/plugins.md  #f4a9c5` header. The
+  daemon's `get` with `lineNumbers: false` is the only source of
+  clean text in qmd, and it returns the same document as 492 lines
+  with zero numbered prefixes.
+
+  The daemon answers with an `EmbeddedResource` content block
+  rather than a string, so `result.data` is `None` and the text
+  lives one hop down at `content[].resource.text`; the read tool
+  reads it there.
+
+### Changed
+
+- **`fastmcp>=4.0` is now a hard floor.** `access.py` calls
+  `client.call_tool(name, arguments, raise_on_error=False)` on every
+  daemon call, and that keyword is keyword-only on FastMCP 4 and
+  absent on 2.x — so a 2.x install died with a `TypeError` at the
+  first qmd call rather than at install time. 4 also supplies
+  `fastmcp.server.transforms.PromptsAsTools`, which `server.py`
+  imports directly.
+
+
+## [0.43.1] - 2026-10-01
+
+### Added
+
+- **`lies.qmd.access` — the seam every qmd call goes through.** One
+  module owns the transport decision, so no call site picks one:
+  `DAEMON_TOOLS` (`query`, `get`, `multi_get`, `status`) and
+  `CLI_ONLY_OPS` (index maintenance, the collection and daemon
+  lifecycle verbs, `ls`/`doctor`/`bench`, and BM25 `search`, which the
+  daemon has no path for). `daemon_tool(name, arguments)` makes one
+  daemon call; `classify_call_error(exc)` answers
+  `(action, retryable)` for any qmd call and now has a second caller
+  outside the seam — the pydantic-ai `QmdRecycleToolset` — so the
+  agent path and the library path cannot disagree about what a wedge is.
+- **`QmdDaemonUnavailable`** and **`QmdDaemonWedged`**, the two daemon
+  failure modes as distinct types. A down daemon raises the first,
+  naming both `lies qmd up` and `LIES_QMD_URL`; there is no
+  availability-based fallback, no degraded tag, and no silently-empty
+  result. A wedged one raises the second, carrying `last_output` — the
+  tail of qmd's own daemon log, read *before* the recycle so it is the
+  wedged daemon's log and not the replacement's (qmd truncates
+  `mcp.log` on every start).
+
+### Fixed
+
+- **Every HTTP daemon call failed at connect with a `TypeError`.**
+  fastmcp invokes the httpx client factory with `follow_redirects=`,
+  which the shipped `_build_qmd_httpx_client` did not accept, so both
+  the agent toolset and any HTTP call through the seam raised before
+  reaching the recycle taxonomy. The factory now accepts the keyword and
+  builds its client from the httpx generation fastmcp actually installed.
+- **The recycle taxonomy matched nothing fastmcp raises.** fastmcp 4
+  vendors its own httpx as `httpx2`, and `httpx2.ReadTimeout` is not a
+  subclass of `httpx.ReadTimeout`; a dead session additionally arrives
+  wrapped in a bare `RuntimeError` with the real transport error on
+  `__cause__`. Every wedge therefore classified as a passthrough, so no
+  recycle ever ran. `classify_call_error` now matches both httpx
+  generations by exception class name and follows the cause chain
+  fastmcp's wrapper documents, and treats a `CONNECTION_CLOSED`
+  `MCPError` as the wedge it is. On the agent path the first call is now
+  caught broadly for the same reason; the *retry* still re-raises
+  anything the classifier does not own, so a decode error is no longer
+  reported to the model as the daemon being unreachable.
+- **The daemon read timeout was a second literal.** The HTTP factory
+  hardcoded `read=60.0` while the CLI paths read
+  `get_qmd_query_timeout()`, so the same retrieval could get two
+  different deadlines depending on the transport. Both now read the one
+  getter.
+
+## [0.43.0] - 2026-10-01
+
+### Added
+
+- **`transient` on the `search` envelope.** A qmd call that outlives
+  its deadline is a fact about the *run*, not the corpus, and the two
+  were conflated. `no_coverage` keeps its meaning ("this search found
+  nothing"); `transient` is new and true only when the search did not
+  finish. A caller can now distinguish *the library has nothing* from
+  *the lookup did not complete* without parsing prose.
+- **`QmdTimeoutError`**, a subclass of `QmdCommandError`, carrying
+  qmd's captured `stderr`. The deadline message is a constant, so a
+  timeout previously arrived with no indication of whether the time
+  went into query expansion, embedding, or reranking.
+- **One deadline for every qmd retrieval call site.**
+  `lies.config.get_qmd_query_timeout()` (default 60s, override
+  `LIES_QMD_FANOUT_TIMEOUT`) is now the single source, read at call
+  time by both the grounding fan-out and the `search` tool. Wiring
+  `search` to the variable alone left the fan-out on its own 15s
+  default, so one env var had two answers for the same subprocess;
+  the shared getter removes the second place to change.
+  `LIES_QMD_FANOUT_TIMEOUT` keeps its historical name because it has
+  been the fan-out's override since 0.40.0. A malformed or
+  non-positive value falls back to the default rather than raising —
+  an operator typo should cost the default budget, not the search.
+
+### Changed
+
+- **A qmd timeout is no longer reported as `qmd unreachable`.** The
+  label claimed a connection failure; a timeout means the daemon was
+  there and slow. Real `QmdCommandError`s (non-zero exit, malformed
+  output) keep the old wording — the two failures stay
+  distinguishable.
+- **The per-call search deadline is 60s, up from 15s.** The 15 was
+  inherited by copy from `grounding._QMD_FANOUT_TIMEOUT`, sized on a
+  2026-09-25 cold-daemon probe (~3-7s warm, cold rerank can pass
+  10s) and appropriate to a 14-collection fan-out where one stall is
+  15s out of a 210s ceiling. `search` is a single call, so the same
+  number was the whole operation. Measured warm latency against the
+  5987-document corpus (2026-10-01) is 5.6-6.0s; 60s is
+  `qmd_query`'s own default, so this is no longer stricter than the
+  layer beneath it. Liveness probes in `qmd.lifecycle` and
+  `qmd.daemon` are deliberately excluded and keep their own 15s/5s
+  deadlines (`DAEMON_START_TIMEOUT_S`, `PROBE_TIMEOUT_S`,
+  `STATUS_TIMEOUT_S`): a slow answer to "is this alive?" is itself the
+  failure, and a wedged daemon should be reported rather than waited
+  on.
+
+### Fixed
+
+- **A slow search no longer reaches the user as "No relevant content
+  found in library."** The librarian contract instructs the model that
+  `no_coverage=True` means the corpus has zero hits for the question;
+  a timeout set that flag, so an intermittent 15s stall asserted that
+  the library contained nothing on the topic — for a query that
+  returned in under six seconds on the retry. The librarian contract
+  now tells the model to retry once on `transient` and, if it stays
+  transient, to report the lookup as inconclusive rather than as
+  missing content.
+
 ## [0.42.0] - 2026-09-29
 
 ### Breaking changes
@@ -478,6 +1116,43 @@ All 7 prompts removed (`answer`, `orient`, `ingest`, `lint`, `sync`, `file-back`
   `tests/unit/ingestion/test_etl_quarantine.py` marked
   `@pytest.mark.slow` so the unit-test 0.15s wall-clock budget
   gate stops tripping.
+- `WebScraper._LLMS_LINK_RE` regex (which extracts `- [Title](url)`
+  entries from an `llms.txt` index) used `\s*` for in-line whitespace,
+  which silently consumed newlines. llms.txt indexes whose links
+  carry no `: description` (e.g. `https://opencode.ai/v2/llms.txt`,
+  every entry bare) lost every-other link: the lazy `(.*?)`
+  description group swallowed the next link line as its "description"
+  because the trailing `\s*$` allowed matches to span newlines.
+  Tightened whitespace to `[ \t]` so each match is confined to one
+  line. Regression pin in
+  `tests/unit/ingestion/test_scrapers_web.py::test_web_scraper_extract_llms_links_handles_bare_links`.
+
+### Added
+- `synthesize` MCP tool for human-reading prose answers. Calls `ground()`
+  for retrieval then runs `query_synthesizer_agent` over the result.
+- `library://catalog` and `library://catalog/{slug}` MCP resources as
+  the user-facing catalog surface.
+- Bespoke scraper path `~/.local/share/lies/scripts/opencode_llms_scraper.py`
+  for the `opencode` library collection. Subclasses `WebScraper` to add
+  `Accept: text/markdown` on per-page fetches; the OpenCode V2 docs site
+  returns HTML by default and only negotiates markdown when that header
+  is present (the same shape the site's "Copy page as Markdown" button
+  uses). Wired via `scraper_cmd` in `~/.local/share/lies/library/collections/opencode/config.yaml`,
+  pointing at the new `https://opencode.ai/v2/llms.txt` source.
+- `ground()` parallel fan-out for unscoped queries: ≤ 15s with non-empty
+  citations across all registered library collections.
+- `ArchivistDigest.no_library: bool` flag (additive).
+
+### Changed
+- `ground()` unscoped queries no longer fall through the F18 librarian
+  LLM round-trip; they take a parallel fan-out path.
+
+### Removed
+- `query`, `answer`, `wiki_search`, `wiki_read`, `wiki_changes`,
+  `file_knowledge` MCP tools.
+- `wiki://page/{path}`, `wiki://memory-changes`, `wiki://catalog`,
+  `wiki://catalog/{slug}` MCP resources.
+
 
 ## [0.39.1] - 2026-09-25
 
@@ -514,63 +1189,10 @@ All 7 prompts removed (`answer`, `orient`, `ingest`, `lint`, `sync`, `file-back`
 - All remaining `subprocess.run(capture_output=True, ...)` call sites in `src/lies/qmd/cli.py` (the `_run` helper + `qmd_get`) and `src/lies/qmd/_proc.py` now route through the deadlock-free `_run_qmd` helper introduced for `qmd_query`. The pre-existing daemon-lifecycle calls in `src/lies/qmd/daemon.py` are left with TODO markers for a follow-up PR (the bytes-vs-str conversion is not one-line trivial at those sites).
 - `src/lies/qmd/daemon.py` lifecycle calls (`qmd_daemon_state`, `_spawn_qmd_daemon`, `ensure_qmd_daemon`) now route through `_run_qmd` (Popen + bounded communicate + SIGKILL via process-group killpg). Closes the qmd pipe-buffer deadlock that the PR #105 sweep explicitly deferred for `daemon.py` due to the bytes-vs-str conversion. 3 source sites + 8 test mocks updated (7 unit + 1 integration).
 
-## [0.37.3] - 2026-09-23
-
-### Fixed
-- `/answer` slash prompt now takes a single `text` positional arg.
-  Claude Code's slash-command dispatcher forwards the rest of the
-  line as one string when the prompt has only one positional arg;
-  the previous three-arg signature was tokenizing the multi-word
-  invocation and dropping everything past the first token.
-- Librarian: wiki-side qmd hits are now mapped to the wiki's
-  `page-` + sha1-12 page_ids by joining on `path` against
-  `memory_service.search()` results. The qmd `#abc123` docid
-  format is no longer surfaced to `_wiki_read`.
-
-## [0.37.4] - 2026-09-23
-
-### Added
-- New MCP tool `ask_question(text)` that takes a single multi-word
-  string and parses the `+tag_expr` / `-exclude_tags` filter syntax.
-  Works around Claude Code's `/mcp__lies__answer` slash-command
-  dispatcher, which tokenizes the input on whitespace and discards
-  everything past the first token.
-
-### Fixed
-- Librarian: wiki-side and library-side qmd hits now strip the
-  qmd `docid` field (`#abc123` format) along with `page_id`. The
-  LLM agent was extracting `docid` from search results and passing
-  it to `wiki_read`, which then raised `WikiPageNotFound`.
-
-## [Unreleased]
-
-### Added
-- `synthesize` MCP tool for human-reading prose answers. Calls `ground()`
-  for retrieval then runs `query_synthesizer_agent` over the result.
-- `library://catalog` and `library://catalog/{slug}` MCP resources as
-  the user-facing catalog surface.
-- Bespoke scraper path `~/.local/share/lies/scripts/opencode_llms_scraper.py`
-  for the `opencode` library collection. Subclasses `WebScraper` to add
-  `Accept: text/markdown` on per-page fetches; the OpenCode V2 docs site
-  returns HTML by default and only negotiates markdown when that header
-  is present (the same shape the site's "Copy page as Markdown" button
-  uses). Wired via `scraper_cmd` in `~/.local/share/lies/library/collections/opencode/config.yaml`,
-  pointing at the new `https://opencode.ai/v2/llms.txt` source.
-- `ground()` parallel fan-out for unscoped queries: ≤ 15s with non-empty
-  citations across all registered library collections.
-- `ArchivistDigest.no_library: bool` flag (additive).
+## [0.38.0] - 2026-09-24
 
 ### Changed
-- `ground()` unscoped queries no longer fall through the F18 librarian
-  LLM round-trip; they take a parallel fan-out path.
 
-### Removed
-- `query`, `answer`, `wiki_search`, `wiki_read`, `wiki_changes`,
-  `file_knowledge` MCP tools.
-- `wiki://page/{path}`, `wiki://memory-changes`, `wiki://catalog`,
-  `wiki://catalog/{slug}` MCP resources.
-
-### Changed
 - BREAKING: every agent factory and `_resolve_default_models` no
   longer silently falls back to `anthropic:claude-opus-4-7` when
   no `providers.toml` and no `LIES_<AGENT>_MODEL` env override are
@@ -583,71 +1205,20 @@ All 7 prompts removed (`answer`, `orient`, `ingest`, `lint`, `sync`, `file-back`
   `uv run lies providers init` or export per-agent env vars.
 
 ### Added
+
 - New `lies.errors.ModelNotConfigured` exception raised by every
   agent factory and `_resolve_default_models` when no model is
   configured. Replaces the silent `anthropic:claude-opus-4-7`
   fallback.
 
 ### Fixed
+
 - `WikiMemoryService.search` now threads an optional
   `qmd_collection_filter` kwarg down to `_from_qmd` /
-  `search_wiki` so qmd applies the post-filter at qmd-time. The
-- `WebScraper._LLMS_LINK_RE` regex (which extracts `- [Title](url)`
-  entries from an `llms.txt` index) used `\s*` for in-line whitespace,
-  which silently consumed newlines. llms.txt indexes whose links
-  carry no `: description` (e.g. `https://opencode.ai/v2/llms.txt`,
-  every entry bare) lost every-other link: the lazy `(.*?)`
-  description group swallowed the next link line as its "description"
-  because the trailing `\s*$` allowed matches to span newlines.
-  Tightened whitespace to `[ \t]` so each match is confined to one
-  line. Regression pin in
-  `tests/unit/ingestion/test_scrapers_web.py::test_web_scraper_extract_llms_links_handles_bare_links`.
-  Hard cutover — no shim, no deprecated path.
-  librarian's `_wiki_search` resolves `LibrarianDeps.tag_expr`
-  via the F15 tag-expression filter and threads the resolved
-  collection set down. Library collections the operator excluded
-  no longer surface as phantom wiki-side hits.
+  `search_wiki` so qmd applies the post-filter at qmd-time, and
+  the caller's `tag_expr` reaches the library index instead of
+  being resolved against every registered collection.
 
-- `/cite` slash prompt now substitutes a default question when
-  Claude Code's slash dispatcher truncates the input to a
-  filter-only token. Reproduced in session a640ed1a (2026-09-24):
-  the operator ran
-  `/mcp__lies__cite +c:switchyard let's set up Switchyard...` and
-  the dispatcher dropped everything past the first whitespace, so
-  the prompt only saw `+c:switchyard` and returned
-  `Filter parse error: filter present but no question`. The prompt
-  now catches that exact error, re-parses the filter portion with
-  a synthetic trailing question, and templates a default question
-  (`"Summarize the most relevant snippets in the matched corpus."`)
-  so the `ground` tool runs anyway. Operators who want their
-  literal question preserved end-to-end should call the
-  `ask_ground_question` MCP tool directly with their full
-  multi-word input as `text` — that tool bypasses the slash
-  dispatcher entirely. The prompt's `description=` and docstring
-  now describe the truncation shape (rather than the older,
-  inaccurate "drops the `text` argument entirely" claim).
-
-- MCP `ground()` aborted with `ModelNotConfigured` because the
-  librarian subagent was missing from `AGENT_ROSTER` and the MCP
-  path bypassed the orchestrator's model-resolution fallback. The
-  librarian is now in `AGENT_ROSTER`; `ground()` resolves the model
-  via `load_providers_config` + `resolve_model`. User
-  `providers.toml` must include a `librarian` entry.
-
-- Live-runtime: `ask` MCP tool failed with
-  `UnexpectedModelBehavior: Exceeded maximum output retries (1)` when
-  the librarian LLM emitted a verbose prose preamble ("Confirmed —
-  no authoring page for OpenCode exists in this corpus. I have enough
-  material to assemble the bundle. Let me emit the final result.")
-  instead of a structured `LibrarianOutput`. Two changes:
-  `librarian_agent` now passes `output_retries=3` to pydantic-ai
-  (instead of the default 1), and the system prompt gains an
-  explicit "Output format (MANDATORY)" section that demands a bare
-  JSON object with no preamble, no thinking, no markdown fences, and
-  no recap of the failed attempt. The fail-soft envelope from the
-  prior `librarian_agent_run` change still returns
-  `"No relevant content found in library."` after the retry budget
-  exhausts.
 
 ## [0.37.11] - 2026-09-23
 
@@ -849,13 +1420,33 @@ All 7 prompts removed (`answer`, `orient`, `ingest`, `lint`, `sync`, `file-back`
   pointing the caller at `lies mcp down && lies mcp up` retry or
   `lies reindex --cleanup` direct shell invocation.
 
-## [Unreleased]
+## [0.37.4] - 2026-09-23
 
-- MCP prompt surface: `ask_wiki` and `query_prompt` prompts removed.
-  `/answer` slash unchanged (librarian + synthesizer). New `/cite`
-  slash templates a `ground()` tool call and renders the
-  `ArchivistDigest` as `[[collection/slug]] (Title): "<snippet>"`
-  citation lines.
+### Added
+- New MCP tool `ask_question(text)` that takes a single multi-word
+  string and parses the `+tag_expr` / `-exclude_tags` filter syntax.
+  Works around Claude Code's `/mcp__lies__answer` slash-command
+  dispatcher, which tokenizes the input on whitespace and discards
+  everything past the first token.
+
+### Fixed
+- Librarian: wiki-side and library-side qmd hits now strip the
+  qmd `docid` field (`#abc123` format) along with `page_id`. The
+  LLM agent was extracting `docid` from search results and passing
+  it to `wiki_read`, which then raised `WikiPageNotFound`.
+
+## [0.37.3] - 2026-09-23
+
+### Fixed
+- `/answer` slash prompt now takes a single `text` positional arg.
+  Claude Code's slash-command dispatcher forwards the rest of the
+  line as one string when the prompt has only one positional arg;
+  the previous three-arg signature was tokenizing the multi-word
+  invocation and dropping everything past the first token.
+- Librarian: wiki-side qmd hits are now mapped to the wiki's
+  `page-` + sha1-12 page_ids by joining on `path` against
+  `memory_service.search()` results. The qmd `#abc123` docid
+  format is no longer surfaced to `_wiki_read`.
 
 ## [0.37.2] - 2026-09-22
 
@@ -913,6 +1504,14 @@ All 7 prompts removed (`answer`, `orient`, `ingest`, `lint`, `sync`, `file-back`
   not grounded in a primary source. New field
   `CitationSnippet.source_kind` (defaults to `"library"` for
   backward compat).
+
+### Added
+- MCP prompt surface: `ask_wiki` and `query_prompt` prompts removed.
+  `/answer` slash unchanged (librarian + synthesizer). New `/cite`
+  slash templates a `ground()` tool call and renders the
+  `ArchivistDigest` as `[[collection/slug]] (Title): "<snippet>"`
+  citation lines.
+
 
 ## [0.36.0] - 2026-09-21
 

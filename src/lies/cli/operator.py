@@ -141,7 +141,7 @@ def up(
         for line in daemon.tail_log(wiki, 20):
             typer.echo(line, err=True)
         raise typer.Exit(code=1) from exc
-    except (daemon.NonLoopbackBind, daemon.PortUnavailable, daemon.DaemonBusy):
+    except daemon.NonLoopbackBind, daemon.PortUnavailable, daemon.DaemonBusy:
         typer.echo(f"error: {sys.exc_info()[1]}", err=True)
         raise typer.Exit(code=1)
     typer.echo(f"lies mcp daemon running at {daemon.daemon_url(rec)} (pid {rec.pid})")
@@ -179,7 +179,7 @@ def down(
     wiki = resolve_wiki(name)
     try:
         result = daemon.stop_daemon(wiki, grace=grace)
-    except (daemon.DaemonBusy, daemon.DaemonStopFailed):
+    except daemon.DaemonBusy, daemon.DaemonStopFailed:
         typer.echo(f"error: {sys.exc_info()[1]}", err=True)
         raise typer.Exit(code=1)
     if result.action == "none":
@@ -487,18 +487,23 @@ def _qmd_flock_status() -> None:
     heartbeat. Exits 2 when no flock is held so shell callers can
     branch on it without parsing text.
     """
-    from lies.qmd.lock import _LOCK_PATH, _PID_PATH, _STATE_PATH
+    # Resolved live rather than read from the module constants, which are
+    # frozen at import. A status command that reported a path different
+    # from the one the lock is actually held on would be worse than no
+    # status: it would answer authoritatively about the wrong file.
+    from lies.qmd.lock import _lock_paths
     from lies.utils.lock_heartbeat import read_heartbeat, read_owner_pid
 
-    typer.echo(f"lock path:    {_LOCK_PATH}")
-    typer.echo(f"pid path:     {_PID_PATH}")
-    typer.echo(f"state path:   {_STATE_PATH}")
-    if not _LOCK_PATH.exists():
+    _lock_path, _pid_path, _state_path = _lock_paths()
+    typer.echo(f"lock path:    {_lock_path}")
+    typer.echo(f"pid path:     {_pid_path}")
+    typer.echo(f"state path:   {_state_path}")
+    if not _lock_path.exists():
         typer.echo("no flock held; qmd CLI is unlocked.")
         raise typer.Exit(code=2)
 
-    pid = read_owner_pid(_PID_PATH)
-    heartbeat = read_heartbeat(_STATE_PATH)
+    pid = read_owner_pid(_pid_path)
+    heartbeat = read_heartbeat(_state_path)
     if pid is not None:
         typer.echo(f"holder pid:   {pid} {'(alive)' if _pid_alive(pid) else '(dead)'}")
     if heartbeat is not None:
@@ -516,20 +521,24 @@ def _qmd_flock_force_repair() -> None:
     empty when the command exits. Exits 1 if a live contender survives
     the reap so shell callers can branch on it.
     """
-    from lies.qmd.lock import _LOCK_PATH, _PID_PATH, _STATE_PATH
+    # Resolved live, for the same reason as `status`: a force-repair that
+    # reaped a path other than the one held would report success while the
+    # real lock stayed held.
+    from lies.qmd.lock import _lock_paths
     from lies.utils.exclusive import acquire_create_lock, release_create_lock
 
+    _lock_path, _pid_path, _state_path = _lock_paths()
     result = acquire_create_lock(
-        _LOCK_PATH,
+        _lock_path,
         max_age_s=1800.0,
-        pid_path=_PID_PATH,
-        state_json_path=_STATE_PATH,
+        pid_path=_pid_path,
+        state_json_path=_state_path,
         force_repair=True,
     )
     if result is None:
         typer.echo("qmd flock still held; live contender survives force-repair.")
         raise typer.Exit(code=1)
-    release_create_lock(_LOCK_PATH, result.fd, pid_path=_PID_PATH, state_json_path=_STATE_PATH)
+    release_create_lock(_lock_path, result.fd, pid_path=_pid_path, state_json_path=_state_path)
     typer.echo("qmd flock reaped.")
 
 
