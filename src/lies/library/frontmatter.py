@@ -58,6 +58,49 @@ def _ingested_at_from_hash(source_hash: str) -> str:
     return (_BASE_DATE + timedelta(days=days)).isoformat()
 
 
+def strip_frontmatter(text: str) -> str:
+    """Return ``text`` without a leading frontmatter block.
+
+    The writer prepends frontmatter unconditionally, so a body that is
+    itself a mirrored page arrives here already carrying a block and used
+    to gain a second one on every run. Stripping first is what makes
+    :func:`lies.library.mirror.render_mirror` idempotent.
+
+    Only a *leading* block counts, and only one that closes: a document
+    opening with a thematic break has no second ``---`` and is returned
+    untouched, so a markdown rule at the top of a page is not mistaken for
+    frontmatter and thrown away. Line endings are not normalised, so the
+    returned body keeps the endings it arrived with.
+    """
+    if not text.startswith("---"):
+        return text
+    lines = text.split("\n")
+    # Every consecutive leading block goes, not just the first: a page the
+    # writer already stacked N times carries N blocks, and removing one per
+    # run would converge on two rather than one. Blank lines between blocks
+    # are what the writer itself emits (`fm + "\n" + body`), so they are
+    # stepped over — but only after a block has actually been removed, so a
+    # leading blank line in an ordinary document is never consumed.
+    index = 0
+    removed = False
+    while index < len(lines):
+        if removed:
+            while index < len(lines) and not lines[index].strip():
+                index += 1
+        if index >= len(lines) or lines[index].rstrip("\r").strip() != "---":
+            break
+        closer = index + 1
+        while closer < len(lines) and lines[closer].rstrip("\r").strip() != "---":
+            closer += 1
+        if closer >= len(lines):
+            return text  # unterminated: not frontmatter, leave it alone
+        index = closer + 1
+        removed = True
+    if not removed:
+        return text
+    return "\n".join(lines[index:]).lstrip("\r\n")
+
+
 def build_frontmatter(
     *,
     title: str,
@@ -80,4 +123,4 @@ def build_frontmatter(
     return "\n".join(lines) + "\n"
 
 
-__all__ = ("build_frontmatter",)
+__all__ = ("build_frontmatter", "strip_frontmatter")

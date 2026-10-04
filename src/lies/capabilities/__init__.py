@@ -1,6 +1,6 @@
 from lies.capabilities.code_mode import code_mode
 from lies.capabilities.dynamic_workflow import dynamic_workflow
-from lies.capabilities.file_system import file_system
+from lies.capabilities.file_system import file_system, local_workspace
 from lies.capabilities.memory import memory
 from lies.capabilities.planning import planning
 
@@ -8,6 +8,7 @@ __all__ = [
     "code_mode",
     "dynamic_workflow",
     "file_system",
+    "local_workspace",
     "memory",
     "planning",
 ]

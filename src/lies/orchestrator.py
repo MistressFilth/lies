@@ -31,6 +31,7 @@ from lies.capabilities import (
     dynamic_workflow,
     file_system,
     memory,
+    local_workspace,
     planning,
 )
 from lies.config import get_qmd_transport, get_qmd_url
@@ -1225,7 +1226,11 @@ class Orchestrator:
                 self._harness_memory,
                 planning(),
                 dynamic_workflow(agents=named_agents, max_agent_calls=20),
+                # Paired with file_system(): the FileSystem capability resolves
+                # through the run's workspace and refuses a run without one, so
+                # the agent carries both.
                 file_system(wiki_root=self.wiki.data_root),
+                local_workspace(self.wiki.data_root),
                 QmdCapability(
                     transport=get_qmd_transport(),
                     url=get_qmd_url(),
