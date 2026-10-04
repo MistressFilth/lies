@@ -586,11 +586,18 @@ transport serves which operation. Read it before adding any qmd call.
   returns zero rows. `validate_scope` reads the daemon's `status`
   tool, partitions the input into served + absent names in input
   order, and raises the typed errors `daemon_tool` raises. `search`
-  refuses on `unknown_tags`; `ground` filters silently and logs.
-  Without the pre-check, the per-collection fan-out the prior shape
-  dropped individually becomes a clean-miss claim about the corpus
-  on the batched path. Pinned by five tests in
-  `tests/unit/qmd/test_access.py::test_validate_scope_*`.
+  refuses on `unknown_tags`. `ground` reports the split on the
+  digest instead: `searched_scope` carries what was dispatched and
+  the new `unserved_scope` field names what the daemon does not
+  serve, so neither list can assert a collection the call never
+  reached. A fan-out whose `searched_scope` is empty searched
+  *nothing*, which is not a statement about the corpus, and says
+  so with `no_coverage=False`; the unserved names are logged at
+  warning. Without the pre-check, the per-collection fan-out the
+  prior shape dropped individually becomes a clean-miss claim about
+  the corpus on the batched path. Pinned by five tests in
+  `tests/unit/qmd/test_access.py::test_validate_scope_*` and three
+  in `tests/unit/mcp/test_ground.py` that cover the unserved set.
 - **The default daemon URL carries `/mcp`.** `DEFAULT_QMD_URL` is
   `http://127.0.0.1:8181/mcp`, not the bare origin. qmd serves exactly
   one route, and a URL without the path reaches a *live* daemon and

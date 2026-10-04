@@ -80,7 +80,17 @@ class ArchivistDigest:
             ``no_coverage=False, transient=True`` is a slow / failed
             retrieval, not "the corpus has nothing".
         distinct_pages: ``len({c.slug for c in citations})``.
-        searched_scope: Sorted, unique collection names searched.
+        searched_scope: Sorted, unique collection names actually
+            dispatched. The daemon serves an unknown collection with
+            an empty result and no error, so a scope that names
+            something the daemon does not have is reported here as
+            what was sent, not as what was asked for.
+        unserved_scope: Requested collection names the daemon does
+            not serve, in input order. Disjoint from
+            ``searched_scope``. A digest with a non-empty
+            ``unserved_scope`` and an empty ``searched_scope``
+            searched nothing, which is not a statement about the
+            corpus.
         no_library: True when the library is uninitialized.
     """
 
@@ -91,6 +101,7 @@ class ArchivistDigest:
     no_coverage: bool
     distinct_pages: int
     searched_scope: list[str] = field(default_factory=list)
+    unserved_scope: list[str] = field(default_factory=list)
     no_library: bool = False
     transient: bool = False
 
@@ -141,12 +152,30 @@ def pick_first_prose_span(spans: "list[Span]") -> "Span | None":
 # ---------------------------------------------------------------------------
 
 
+@dataclass(frozen=True)
+class _FanoutResult:
+    """What a single-batch fan-out actually did.
+
+    ``searched`` and ``unserved`` partition the requested collection
+    names. Returning them alongside the excerpts is what keeps
+    ``searched_scope`` a statement about the dispatch rather than
+    about the request: the daemon answers an unknown collection with
+    an empty result and no error, so a fan-out that silently drops
+    an unserved name reports the scope it *asked for* and lets a
+    caller read a scope problem as "the corpus has nothing".
+    """
+
+    excerpts: "list[PageExcerpt]"
+    searched: list[str]
+    unserved: list[str]
+
+
 async def _fanout_collections(
     question: str,
     exclude_expr: "TagExpr | None",
     top_k: int,
     collection_names: list[str],
-) -> "list[PageExcerpt]":
+) -> _FanoutResult:
     """One daemon ``query`` against the resolved collection set, no LLM round-trip.
 
     The daemon's ``collections`` parameter is a true push-down: the
@@ -161,6 +190,11 @@ async def _fanout_collections(
     surface as a clean miss. The shared helper is the same one
     ``search`` uses, so the two cannot drift.
 
+    When *every* requested name is unserved the result is a fan-out
+    that searched nothing, and says so: ``searched`` is empty and
+    ``unserved`` names the collections. The caller must not read that
+    as a clean miss.
+
     Raises:
         QmdDaemonUnavailable: the daemon is not serving (operator action).
         QmdDaemonWedged: the daemon stopped answering; ``last_output``
@@ -173,12 +207,20 @@ async def _fanout_collections(
     del exclude_expr
 
     if not collection_names:
-        return []
+        return _FanoutResult(excerpts=[], searched=[], unserved=[])
 
-    validated, _unknown = await access.validate_scope(collection_names)
+    validated, unserved = await access.validate_scope(collection_names)
+    if unserved:
+        _log.warning(
+            "ground: daemon does not serve %d of %d requested collections: %s",
+            len(unserved),
+            len(collection_names),
+            ", ".join(unserved),
+        )
     if not validated:
-        return []
+        return _FanoutResult(excerpts=[], searched=[], unserved=unserved)
 
+    searched = sorted(set(validated))
     searches = [
         {"type": "lex", "query": question},
         {"type": "vec", "query": question},
@@ -186,7 +228,7 @@ async def _fanout_collections(
     arguments: dict[str, object] = {
         "searches": searches,
         "limit": top_k,
-        "collections": sorted(set(validated)),
+        "collections": searched,
         "intent": "lies.mcp.grounding fan-out (single-batch hybrid)",
     }
 
@@ -232,14 +274,14 @@ async def _fanout_collections(
                 source_kind="library",
             )
         )
-    return out
+    return _FanoutResult(excerpts=out, searched=searched, unserved=unserved)
 
 
 async def _fanout_unscoped(
     question: str,
     exclude_expr: "TagExpr | None",
     top_k: int,
-) -> "list[PageExcerpt]":
+) -> _FanoutResult:
     """Daemon ``query`` against every registered library collection, unscoped.
 
     Bypasses the F18 librarian LLM round-trip by issuing a single
@@ -256,7 +298,7 @@ async def _query_tagged_collections(
     exclude_expr: "TagExpr | None",
     top_k: int,
     collection_names: list[str],
-) -> "list[PageExcerpt]":
+) -> _FanoutResult:
     """Daemon ``query`` against the tag-resolved collection set.
 
     Fast-path replacing the F18 librarian round-trip on tagged queries.
@@ -389,10 +431,11 @@ async def ground(
     from lies.qmd import access
 
     out: LibrarianOutput
+    fanout: _FanoutResult | None = None
     if tag_expr is None and exclude_expr is None:
         # Unscoped fast-path: bypass the F18 librarian LLM round-trip.
         try:
-            excerpts = await _fanout_unscoped(question, exclude_expr, top_k)
+            fanout = await _fanout_unscoped(question, exclude_expr, top_k)
         except access.QmdDaemonUnavailable:
             raise
         except access.QmdDaemonWedged as exc:
@@ -427,14 +470,14 @@ async def ground(
         out = LibrarianOutput(
             tag_expr=None,
             exclude_expr=None,
-            excerpts=excerpts,
-            distinct_pages=len({e.slug for e in excerpts}),
-            no_coverage=len(excerpts) == 0,
+            excerpts=fanout.excerpts,
+            distinct_pages=len({e.slug for e in fanout.excerpts}),
+            no_coverage=len(fanout.excerpts) == 0,
         )
     elif (tag_expr is not None or exclude_expr is not None) and searched_scope_list:
         # Tagged fast-path: bypass F18 when AST matches ≥1 collection.
         try:
-            excerpts = await _query_tagged_collections(
+            fanout = await _query_tagged_collections(
                 question,
                 exclude_expr,
                 top_k,
@@ -470,9 +513,9 @@ async def ground(
         out = LibrarianOutput(
             tag_expr=resolved_tag_expr,
             exclude_expr=exclude_expr,
-            excerpts=excerpts,
-            distinct_pages=len({e.slug for e in excerpts}),
-            no_coverage=len(excerpts) == 0,
+            excerpts=fanout.excerpts,
+            distinct_pages=len({e.slug for e in fanout.excerpts}),
+            no_coverage=len(fanout.excerpts) == 0,
         )
     else:
         # Legacy F18 librarian path: build the agent, wire its tools,
@@ -548,15 +591,35 @@ async def ground(
             )
         )
 
-    no_coverage = out.no_coverage
+    # A dispatch that searched nothing because the daemon serves none
+    # of the requested collections is not a clean miss. It reports an
+    # empty scope and names what it could not get; the caller decides
+    # what to tell the user, and nothing here claims the corpus is
+    # empty.
+    if fanout is not None and not fanout.searched:
+        return ArchivistDigest(
+            question=question,
+            tag_expr=resolved_tag_expr,
+            exclude_expr=exclude_expr,
+            citations=[],
+            no_coverage=False,
+            distinct_pages=0,
+            searched_scope=[],
+            unserved_scope=fanout.unserved,
+            no_library=False,
+        )
+
+    searched = fanout.searched if fanout is not None else searched_scope_list
+    unserved = fanout.unserved if fanout is not None else []
 
     return ArchivistDigest(
         question=question,
         tag_expr=resolved_tag_expr,
         exclude_expr=exclude_expr,
         citations=citations,
-        no_coverage=no_coverage,
+        no_coverage=out.no_coverage,
         distinct_pages=len({c.slug for c in citations}),
-        searched_scope=searched_scope_list,
+        searched_scope=searched,
+        unserved_scope=unserved,
         no_library=False,
     )

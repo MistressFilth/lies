@@ -205,7 +205,7 @@ def test_ground_unscoped_uses_fanout(monkeypatch) -> None:
         assert question == "test question"
         assert exclude_expr is None
         assert top_k == 5
-        return fake_excerpts
+        return grounding._FanoutResult(excerpts=fake_excerpts, searched=["switchyard"], unserved=[])
 
     monkeypatch.setattr(grounding, "_fanout_unscoped", fake_fanout)
 
@@ -288,7 +288,7 @@ def test_fanout_unscoped_routes_through_the_daemon_seam(
 
     monkeypatch.setattr(access, "daemon_tool", _fake_daemon)
 
-    excerpts = asyncio.run(grounding._fanout_unscoped("test question", None, top_k=5))
+    excerpts = asyncio.run(grounding._fanout_unscoped("test question", None, top_k=5)).excerpts
 
     # One call, not N — the push-down is the whole point.
     assert captured["name"] == "query", (
@@ -357,7 +357,7 @@ def test_fanout_unscoped_drops_rows_with_no_file(monkeypatch: pytest.MonkeyPatch
 
     monkeypatch.setattr(access, "daemon_tool", _fake_daemon)
 
-    excerpts = asyncio.run(grounding._fanout_unscoped("q", None, top_k=5))
+    excerpts = asyncio.run(grounding._fanout_unscoped("q", None, top_k=5)).excerpts
     assert [e.slug for e in excerpts] == ["alpha/ok.md"]
 
 
@@ -386,7 +386,7 @@ def test_fanout_unscoped_empty_daemon_result_yields_empty_excerpts(
 
     monkeypatch.setattr(access, "daemon_tool", _fake_daemon)
 
-    excerpts = asyncio.run(grounding._fanout_unscoped("anything", None, top_k=5))
+    excerpts = asyncio.run(grounding._fanout_unscoped("anything", None, top_k=5)).excerpts
     assert excerpts == []
 
 
@@ -424,7 +424,7 @@ def test_fanout_unscoped_enforces_limit_lies_side(
 
     monkeypatch.setattr(access, "daemon_tool", _fake_daemon)
 
-    excerpts = asyncio.run(grounding._fanout_unscoped("anything", None, top_k=5))
+    excerpts = asyncio.run(grounding._fanout_unscoped("anything", None, top_k=5)).excerpts
     assert len(excerpts) == 5, (
         f"a backend that returns more than the limit must be sliced; got {len(excerpts)} rows"
     )
@@ -559,3 +559,132 @@ def test_ground_tagged_path_propagates_daemon_unavailable(
 
     with pytest.raises(access.QmdDaemonUnavailable):
         asyncio.run(grounding.ground("anything", tag_expr="c:alpha"))
+
+
+def _registry_serving(monkeypatch: pytest.MonkeyPatch, *names: str) -> None:
+    """Stand in for a LIES registry holding ``names``.
+
+    Both resolvers, and eagerly. ``_all_collection_names`` feeds the
+    scope bookkeeping that runs first -- an empty list there takes the
+    ``no_library`` early return before the fan-out is ever reached --
+    and ``library_collection_metas`` is what the unscoped fan-out
+    dispatches against. Patching only the first leaves the second
+    empty under the autouse XDG isolation, and the fan-out silently
+    dispatches nothing: the very bug these tests exist to catch,
+    arrived at from the other direction.
+    """
+    metas = [SimpleNamespace(name=n) for n in names]
+    monkeypatch.setattr("lies.library.registry.library_collection_names", lambda: list(names))
+    monkeypatch.setattr("lies.library.registry.library_collection_metas", lambda: metas)
+    monkeypatch.setattr("lies.query.synthesizer._all_collection_names", lambda: list(names))
+
+
+# --- an unserved collection set is not an empty corpus ---------------
+#
+# The daemon answers an unknown collection with an empty result and no
+# error. `ground` used to drop the unknown set, return `[]`, and let
+# `LibrarianOutput(no_coverage=True)` render that as a clean miss --
+# so a scope the daemon cannot serve reached the user as "no relevant
+# content in the library", naming collections in `searched_scope` that
+# were never dispatched. It logged nothing.
+
+
+def test_ground_reports_an_unserved_collection_set_instead_of_no_coverage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from lies.mcp import grounding
+
+    _registry_serving(monkeypatch, "gone_from_qmd")
+
+    async def _validate(scope):
+        return [], list(scope)
+
+    monkeypatch.setattr("lies.qmd.access.validate_scope", _validate)
+
+    digest = asyncio.run(grounding.ground("anything", tag_expr=None))
+
+    assert digest.no_coverage is False, (
+        "nothing was searched; 'no coverage' is a claim about the corpus and "
+        "this fan-out never reached it"
+    )
+    assert digest.transient is False, (
+        "the daemon is serving; this is a scope problem, not a failure"
+    )
+    assert digest.citations == []
+    assert digest.searched_scope == [], "no collection was dispatched, so none may be reported"
+    assert digest.unserved_scope == ["gone_from_qmd"]
+
+
+def test_ground_reports_only_the_collections_it_actually_dispatched(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A partially-served scope reports what it sent, and what it could not.
+
+    ``searched_scope`` naming a collection that was filtered out
+    before the call tells the reader the daemon searched something it
+    did not.
+    """
+    from lies.mcp import grounding
+
+    _registry_serving(monkeypatch, "alpha", "beta")
+
+    async def _validate(scope):
+        return ["alpha"], ["beta"]
+
+    monkeypatch.setattr("lies.qmd.access.validate_scope", _validate)
+
+    captured: dict[str, Any] = {}
+
+    async def _fake_daemon_tool(name, arguments, **kwargs):
+        captured.update(arguments)
+        return SimpleNamespace(
+            structured_content={
+                "results": [
+                    {
+                        "file": "alpha/install.md",
+                        "title": "Install",
+                        "snippet": "install the binary",
+                        "line": 1,
+                    }
+                ]
+            }
+        )
+
+    monkeypatch.setattr("lies.qmd.access.daemon_tool", _fake_daemon_tool)
+
+    digest = asyncio.run(grounding.ground("how do i install", tag_expr=None, top_k=3))
+
+    assert captured["collections"] == ["alpha"], "the unserved name must not reach the daemon"
+    assert digest.searched_scope == ["alpha"]
+    assert digest.unserved_scope == ["beta"]
+    assert digest.no_coverage is False
+    assert [c.slug for c in digest.citations] == ["alpha/install.md"]
+
+
+def test_an_unserved_scope_is_logged(monkeypatch: pytest.MonkeyPatch, caplog) -> None:
+    """The unserved names reach the log, not just the envelope.
+
+    ``AGENTS.md`` says ground "filters silently and logs". The
+    silence was the defect: nothing on the operator's side showed
+    why a scoped ground found nothing.
+    """
+    import logging
+
+    from lies.mcp import grounding
+
+    _registry_serving(monkeypatch, "alpha", "gone")
+
+    async def _validate(scope):
+        return ["alpha"], ["gone"]
+
+    monkeypatch.setattr("lies.qmd.access.validate_scope", _validate)
+
+    async def _fake_daemon_tool(name, arguments, **kwargs):
+        return SimpleNamespace(structured_content={"results": []})
+
+    monkeypatch.setattr("lies.qmd.access.daemon_tool", _fake_daemon_tool)
+
+    with caplog.at_level(logging.WARNING, logger="lies.mcp.grounding"):
+        asyncio.run(grounding.ground("anything", tag_expr=None))
+
+    assert "gone" in caplog.text, f"the unserved name must be logged; got {caplog.text!r}"
