@@ -6,6 +6,55 @@ All notable changes to LIES are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.48.0] - 2026-10-04
+
+### Fixed
+
+- **`search` resolves `t:` filters and treats an unqualified atom as an
+  implicit `t:`.** `_resolve_tag_collections` validated its include tree
+  against `library_collection_names()` and then dropped every `t:` atom,
+  so a tag-qualified query resolved to an empty scope and came back as
+  `unknown_tags: ["t:activitypub"]` with zero hits. The behaviour before
+  that one widened to every registered collection with
+  `unknown_tags == []` — a query the caller scoped by tag, answered from
+  the whole library, with nothing in the response to say so. A bare atom
+  resolved as a *collection*, which is what made a `c:` prefix read as
+  necessary.
+
+  F15 already defines the opposite default: `server._collect_available_tags_mcp`
+  documents that "F15 treats a bare atom as the implicit-t alias for
+  `+t:tag`", and `synthesizer._collections_matching` implements the
+  `t:`/bare and `c:` dispatch plus the "collection name as implicit
+  self-tag" rule. `search` was the one surface that diverged from it —
+  and the `ground` prompt body already told agents to pass `t:` filters
+  to this tool, so the documented route produced `unknown_tags`.
+
+  The fix delegates to that same resolver rather than adding a second
+  implementation, so `search` and `ground`/`lib_ask` answer one filter
+  the same way and the two cannot drift. `|` unions and `&` intersects
+  over the collection sets the atoms name. Pinned by
+  `test_search_tag_only_filter_resolves_the_tagged_scope` (the scope
+  reaches the daemon, does not widen), `test_search_unqualified_atom_is_an_implicit_t_qualifier`,
+  `test_search_c_qualifier_still_addresses_a_collection`,
+  `test_search_bare_collection_name_is_its_own_implicit_tag`,
+  `test_search_tag_expr_set_algebra`, and
+  `test_search_unknown_qualified_tag_marks_unknown_tags`.
+
+  `test_search_tag_only_filter_is_not_silently_widened` is replaced rather
+  than kept: it asserted the drop-`t:` behaviour this fixes. Its
+  invariant survives in `test_search_unknown_qualified_tag_marks_unknown_tags`.
+
+- **Two test fixtures stubbed the registry incompletely.** Both
+  `_patch_registry` in `tests/unit/mcp/test_search.py` and the fixture in
+  `tests/unit/mcp/test_search_timeout.py` patched
+  `library_collection_names` and left `library_collection_metas` and
+  `library_collection_tags` reading the real registry. The filter
+  vocabulary is built from all three, so a filter that should have
+  resolved matched nothing and the tool reported it as an unknown tag —
+  which, in the timeout tests, masked the daemon-boundary assertion each
+  one exists to make.
+
+
 ## [0.47.2] - 2026-10-04
 
 ### Fixed
