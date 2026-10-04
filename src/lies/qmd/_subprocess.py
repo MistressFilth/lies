@@ -57,7 +57,11 @@ class QmdWedgeError(subprocess.TimeoutExpired):
     Subclass of the stdlib exception so existing
     ``except subprocess.TimeoutExpired`` keeps working. ``bound`` is
     ``"idle"`` or ``"total"``; ``last_output`` is the tail of stderr
-    at the moment of the kill.
+    at the moment of the kill. ``stderr`` is the same bounded buffer
+    the success path returns -- a wedge carries the same cap, so a
+    consumer that renders it into a user-visible envelope cannot be
+    handed an unbounded Node stack trace on the failure path while
+    the success path keeps it out.
     """
 
     def __init__(
@@ -211,7 +215,7 @@ def _run_qmd(
                     last_output=(
                         stderr_b.decode("utf-8", errors="replace").strip().splitlines() or [""]
                     )[-1],
-                    stderr=stderr_b,
+                    stderr=stderr_b[:_MAX_STDERR_BYTES],
                 ) from None
         if bound is not None:
             # Kill the whole process group so descendants cannot outlive
@@ -231,7 +235,7 @@ def _run_qmd(
                 timeout=timeout,
                 idle_timeout=idle_timeout,
                 last_output=lines_seen[-1] if lines_seen else "",
-                stderr=stderr_b,
+                stderr=stderr_b[:_MAX_STDERR_BYTES],
             )
         # Normal-exit safety net: a long-running grandchild the child
         # forked must still be reaped.

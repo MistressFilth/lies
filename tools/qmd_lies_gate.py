@@ -84,16 +84,29 @@ def _corpus_identity() -> tuple[str, int]:
     return version or "unknown", int(total.group(1)) if total else 0
 
 
-def _run_query(question: str, collections: list[str]) -> list[str]:
-    """One LIES-routed query; returns hit paths in rank order.
+def _run_query(question: str, collections: list[str]) -> tuple[list[str], str | None]:
+    """One LIES-routed query: hit paths in rank order, plus a fault.
 
     ``search.fn`` is the live MCP entry point; using it (rather
     than a private helper) is the point of the gate.
+
+    The second element is ``None`` on a clean run and otherwise
+    names why the run is not a measurement: an unknown collection,
+    a wedge, a timeout. Those all arrive as zero hits, and scoring
+    zero hits as "the document ranked low" diagnoses a configuration
+    or availability failure as a recall regression -- the gate's own
+    stated purpose, inverted. A faulted query is not counted at all.
     """
     from lies.mcp.search import search
 
     result = search.fn(question=question, tag_expr="|".join(f"c:{c}" for c in collections))
-    return [hit.get("path", "") for hit in result.get("hits", [])]
+    fault = result.get("fallback_reason")
+    if result.get("unknown_tags"):
+        fault = f"unknown tag: {result['unknown_tags'][0]}"
+    elif result.get("transient"):
+        fault = f"transient: {fault or 'daemon did not finish'}"
+    paths = [hit.get("path", "") for hit in result.get("hits", [])]
+    return paths, fault
 
 
 def _gate_from_fixture(fixture: dict, *, top_k: int = 1) -> dict:
@@ -105,15 +118,34 @@ def _gate_from_fixture(fixture: dict, *, top_k: int = 1) -> dict:
     version, corpus_docs = _corpus_identity()
 
     queries = fixture.get("queries", [])
-    queries_total = len(queries)
+    # The denominator is what was actually scored. Counting every
+    # query in the file while skipping any that lacks an `expected`
+    # silently inflates it, and a gate that can never reach its own
+    # total is one nobody trusts.
+    scored = [q for q in queries if q.get("expected")]
+    queries_total = len(scored)
     queries_passing = 0
+    queries_faulted = 0
     per_query: list[dict] = []
-    for q in queries:
-        expected = q.get("expected", "")
-        if not expected:
-            continue
+    for q in scored:
+        expected = q["expected"]
         k = q.get("expected_in_top_k", top_k)
-        hit_paths = _run_query(q["query"], q.get("collections", []))
+        hit_paths, fault = _run_query(q["query"], q.get("collections", []))
+        if fault is not None:
+            # Not a measurement. Scored as neither pass nor fail and
+            # named in the record, so a run against a stopped daemon
+            # is visibly incomplete rather than uniformly red.
+            queries_faulted += 1
+            per_query.append(
+                {
+                    "id": q.get("id"),
+                    "expected": expected,
+                    "top_hit": None,
+                    "passing": False,
+                    "fault": fault,
+                }
+            )
+            continue
         passing = any(_paths_match(p, expected) for p in hit_paths[:k])
         if passing:
             queries_passing += 1
@@ -136,6 +168,7 @@ def _gate_from_fixture(fixture: dict, *, top_k: int = 1) -> dict:
         ),
         "queries_total": queries_total,
         "queries_passing": queries_passing,
+        "queries_faulted": queries_faulted,
         "per_query": per_query,
     }
 
@@ -148,17 +181,22 @@ def _compare(measured: dict, committed: dict) -> int:
     committed block is the reference, and a change that improves recall
     should be recorded deliberately rather than by a Make target.
     """
-    old = {q["id"]: q["passing"] for q in committed.get("per_query", [])}
+    # A faulted query is not a regression: nothing was measured. Reading
+    # its `passing=False` against a previously-passing row would fail
+    # the gate for a stopped daemon, which is the exact confusion this
+    # tool exists to prevent.
+    old = {q["id"]: q["passing"] for q in committed.get("per_query", []) if not q.get("fault")}
     moved = [
         q["id"]
         for q in measured["per_query"]
-        if q["id"] in old and old[q["id"]] and not q["passing"]
+        if not q.get("fault") and q["id"] in old and old[q["id"]] and not q["passing"]
     ]
     gained = [
         q["id"]
         for q in measured["per_query"]
-        if q["id"] in old and not old[q["id"]] and q["passing"]
+        if not q.get("fault") and q["id"] in old and not old[q["id"]] and q["passing"]
     ]
+    faulted = [q for q in measured["per_query"] if q.get("fault")]
     print(
         f"lies_gate: {measured['queries_passing']}/{measured['queries_total']} passing "
         f"(committed {committed['queries_passing']}/{committed['queries_total']}, "
@@ -168,6 +206,8 @@ def _compare(measured: dict, committed: dict) -> int:
         print(f"  REGRESSED: {qid}")
     for qid in gained:
         print(f"  improved: {qid}")
+    for q in faulted:
+        print(f"  NOT MEASURED: {q['id']}: {q['fault']}")
     return 1 if moved else 0
 
 
@@ -205,9 +245,9 @@ def main() -> int:
     if args.out is not None:
         args.out.write_text(payload)
         print(
-            f"recorded {gate['queries_passing']}/{gate['queries_total']} "
-            f"passing ({gate['corpus_documents']} docs, {gate['qmd_version']}) "
-            f"to {args.out}",
+            f"recorded {gate['queries_passing']}/{gate['queries_total']} passing "
+            f"({gate['queries_faulted']} not measured, {gate['corpus_documents']} docs, "
+            f"{gate['qmd_version']}) to {args.out}",
             file=sys.stderr,
         )
     else:

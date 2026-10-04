@@ -262,3 +262,35 @@ def test_silent_command_idle_bound_stays_below_the_total() -> None:
         "the idle bound must stay below the total, or the total bound is "
         "always checked first and the idle branch never fires"
     )
+
+
+def test_a_wedge_stderr_is_capped_like_the_success_path(tmp_path: Path):
+    """Both wedge raises carry the same ``_MAX_STDERR_BYTES`` buffer.
+
+    ``search._decode`` documents that ``_run_qmd`` truncates stderr
+    before it reaches the caller, and renders ``QmdTimeoutError``'s
+    copy into the user-visible ``fallback_reason``. That was true on
+    the success path only: both wedge raises passed the whole buffer
+    through, so a long Node stack trace -- the ~30 KB case the cap
+    exists for -- landed verbatim in the MCP envelope precisely when
+    something had gone wrong.
+    """
+    from lies.qmd._subprocess import _MAX_STDERR_BYTES
+
+    script = tmp_path / "loud_then_hang.py"
+    script.write_text(
+        "import sys, time\nsys.stderr.write('x' * 100_000)\nsys.stderr.flush()\ntime.sleep(30)\n"
+    )
+
+    with pytest.raises(QmdWedgeError) as excinfo:
+        _run_qmd(
+            [sys.executable, str(script)],
+            cwd=tmp_path,
+            timeout=0.12,
+            idle_timeout=0.08,
+        )
+
+    captured = excinfo.value.stderr or b""
+    assert len(captured) <= _MAX_STDERR_BYTES, (
+        f"a wedge handed back {len(captured)} bytes of stderr; the cap is {_MAX_STDERR_BYTES}"
+    )

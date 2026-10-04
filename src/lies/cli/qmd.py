@@ -26,9 +26,6 @@ app = typer.Typer(help="qmd daemon lifecycle", no_args_is_help=True)
 _DEFAULT_PORT = 8181
 
 
-_LAZY_LIFECYCLE_ATTRS = ("status", "_up", "_down", "recycle")
-
-
 _LAZY_LIFECYCLE_ATTRS: tuple[str, ...] = ("status", "_up", "_down", "recycle")
 
 
@@ -82,7 +79,12 @@ def status_cmd(
 def _integrity_block() -> dict[str, object] | None:
     """The ``index`` block for the status command, or ``None``.
 
-    A missing or corrupt index reports ``null``.
+    ``None`` means qmd was never indexed here. A database that
+    exists but cannot be read -- a WAL that needs recovery, so a
+    ``mode=ro`` connection gets ``SQLITE_CANTOPEN`` while creating
+    the ``-shm`` file -- reports ``{"error": ...}`` instead.
+    Collapsing the two into ``null`` told the operator "no index"
+    about an index that is right there and needs one command to open.
     """
     import sqlite3
 
@@ -93,8 +95,8 @@ def _integrity_block() -> dict[str, object] | None:
         return None
     try:
         return integrity_summary(db)
-    except sqlite3.OperationalError:
-        return None
+    except sqlite3.OperationalError as exc:
+        return {"error": f"{type(exc).__name__}: {exc}"}
 
 
 @app.command()

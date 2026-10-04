@@ -57,13 +57,23 @@ def qmd_index_path() -> Path:
 def open_readonly(db: Path) -> sqlite3.Connection:
     """Open the qmd index read-only. The only connection constructor.
 
-    ``file:{db}?mode=ro`` + ``uri=True``.
+    ``file:{db}?mode=ro`` + ``uri=True``, with the path
+    percent-escaped: a ``?`` or ``#`` in a path would otherwise end
+    the path and start the query string, and the connection would
+    open a different file than the caller named.
+
+    A WAL database needing recovery is the case a caller meets
+    before any of this is documented to them: a read-only
+    connection cannot create the ``-shm`` file, so it gets
+    ``SQLITE_CANTOPEN`` rather than a summary.
 
     Raises:
         sqlite3.OperationalError: ``db`` does not exist or is not a
             SQLite database.
     """
-    return sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    from urllib.parse import quote
+
+    return sqlite3.connect(f"file:{quote(str(db))}?mode=ro", uri=True)
 
 
 def index_orphans(db: Path) -> OrphanReport:
