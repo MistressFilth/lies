@@ -33,12 +33,14 @@ def _registry(monkeypatch: pytest.MonkeyPatch) -> None:
     one running.
     """
     import lies.library.registry as registry
+    from lies.qmd import access
 
     monkeypatch.setattr(registry, "library_collection_names", lambda: ["claude_code", "typer"])
-    monkeypatch.setattr(
-        "lies.mcp.search._qmd_collection_names_for_check",
-        lambda: frozenset({"claude_code", "typer"}),
-    )
+
+    async def _served() -> frozenset[str]:
+        return frozenset({"claude_code", "typer"})
+
+    monkeypatch.setattr(access, "qmd_collection_names", _served)
 
 
 def test_a_timeout_is_not_reported_as_unreachable(monkeypatch: pytest.MonkeyPatch) -> None:

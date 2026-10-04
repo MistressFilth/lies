@@ -254,10 +254,10 @@ def test_search_returns_searched_scope(
     # probe. This test stubs ``_post_query`` and does not exercise the
     # daemon, so the probe is stubbed to the same collection the test
     # asks about.
-    monkeypatch.setattr(
-        "lies.mcp.search._qmd_collection_names_for_check",
-        lambda: frozenset({"alpha", "beta"}),
-    )
+    async def _served() -> frozenset[str]:
+        return frozenset({"alpha", "beta"})
+
+    monkeypatch.setattr("lies.qmd.access.qmd_collection_names", _served)
     monkeypatch.setattr(
         "lies.mcp.search._post_query",
         lambda doc, scope, limit, timeout: [
@@ -377,22 +377,30 @@ def test_read_dispatches_library_paths_to_the_qmd_daemon(
         content: list = field(default_factory=list)
         data: None = None
 
-    async def fake_daemon_tool(name: str, arguments: dict) -> _Result:
-        return _Result(
-            content=[
-                _Embedded(
-                    resource=_Resource(
-                        uri=f"qmd://{arguments['file']}",
-                        text=(
-                            "---\ntitle: CLI plugin overview\n---\n\n"
-                            "The CLI plugin model uses Plugin.define.\n"
-                        ),
+    async def fake_read_library_bodies(paths: list[str]) -> list:
+        return [
+            _Result(
+                content=[
+                    _Embedded(
+                        resource=_Resource(
+                            uri=f"qmd://{p}",
+                            text=(
+                                "---\ntitle: CLI plugin overview\n---\n\n"
+                                "The CLI plugin model uses Plugin.define.\n"
+                            ),
+                        )
                     )
-                )
-            ]
-        )
+                ]
+            )
+            for p in paths
+        ]
 
-    monkeypatch.setattr("lies.mcp.read.access", SimpleNamespace(daemon_tool=fake_daemon_tool))
+    # ``read_library_bodies``, not ``daemon_tool``: the batched read
+    # is what ``read.py`` calls, and a stub of any other symbol is a
+    # stub the production path never reaches. ``SimpleNamespace`` in
+    # place of the whole ``access`` module is what turned a stale
+    # attribute into ``ToolError("all reads failed")`` here.
+    monkeypatch.setattr("lies.mcp.read.access.read_library_bodies", fake_read_library_bodies)
 
     out = read.fn(paths=["alpha/cli-plugin.md"])
 
@@ -461,10 +469,10 @@ def test_librarian_snippet_review_picks_authoring_over_install(
 
     # The pre-dispatch scope check is a real reachability probe. This
     # test stubs ``_post_query`` and does not exercise the daemon.
-    monkeypatch.setattr(
-        "lies.mcp.search._qmd_collection_names_for_check",
-        lambda: frozenset({"alpha", "beta"}),
-    )
+    async def _served() -> frozenset[str]:
+        return frozenset({"alpha", "beta"})
+
+    monkeypatch.setattr("lies.qmd.access.qmd_collection_names", _served)
     monkeypatch.setattr("lies.mcp.search._post_query", fake_post_query)
 
     # Step 2 — read returns a body for any path the librarian picks. The

@@ -76,10 +76,11 @@ def _stub_post_query(
         "lies.mcp.search._post_query",
         lambda doc, scope, limit, timeout: list(rows),
     )
-    monkeypatch.setattr(
-        "lies.mcp.search._qmd_collection_names_for_check",
-        lambda: frozenset({"switchyard"}),
-    )
+
+    async def _served() -> frozenset[str]:
+        return frozenset({"switchyard"})
+
+    monkeypatch.setattr("lies.qmd.access.qmd_collection_names", _served)
 
 
 # ---------------------------------------------------------------------------

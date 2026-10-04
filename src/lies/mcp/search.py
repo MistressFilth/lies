@@ -121,21 +121,6 @@ def _validate_scope_blocking(scope: list[str]) -> tuple[list[str], list[str]]:
         return result
 
 
-def _qmd_collection_names_for_check() -> frozenset[str]:
-    """Indirection over :func:`access.qmd_collection_names` so tests can stub.
-
-    Calls :func:`access.validate_scope` with the full library
-    registry and returns just the validated set. The legacy name
-    survives for tests; the only site that called the old helper is
-    gone.
-    """
-    from lies.library.registry import library_collection_names
-
-    scope = sorted(library_collection_names())
-    validated, _ = _validate_scope_blocking(scope)
-    return frozenset(validated)
-
-
 def _run_blocking(coro: Any) -> Any:
     """Run an async coroutine from a sync call site, loop-safe.
 
