@@ -14,7 +14,7 @@ plus a rationale.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, cast
+from typing import Any
 
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent
@@ -80,8 +80,15 @@ class CollectionAuthorDeps:
 
 def collection_author_agent(
     model: Any | None = None,
-) -> Agent[CollectionAuthorDeps, AuthorOutput]:
-    """Construct the structured-output CollectionAuthorAgent."""
+) -> Agent[CollectionAuthorDeps, AuthorQuestion | AuthorProposal]:
+    """Construct the structured-output CollectionAuthorAgent.
+
+    The return annotation spells the union out rather than naming
+    ``AuthorOutput``. They are the same type, but the alias does not
+    survive as the agent's own type parameter, so a checker comparing
+    the two does not see them as equal. Spelling it out is what the
+    value is.
+    """
     if model is None:
         from lies.errors import ModelNotConfigured
 
@@ -91,12 +98,16 @@ def collection_author_agent(
             "/ configure providers.toml."
         )
     resolved: Any = model
-    # pydantic-ai's Agent constructor overloads don't include `type[X | Y]`
-    # for `output_type`; the union is valid at runtime, so we cast to Any
-    # to satisfy mypy while preserving the static return-type annotation.
+    # The union goes to `output_type` uncast. It used to be
+    # `cast(Any, AuthorOutput)`, on the claim that the Agent
+    # constructor's overloads do not accept `type[X | Y]`; as of
+    # pydantic-ai 2.54 they do. The cast was not buying silence so much
+    # as erasing the type: the checker then inferred the constructor's
+    # default `output_type` of `str`, so the declared return type was a
+    # claim nothing in the body supported.
     return Agent(
         resolved,
         deps_type=CollectionAuthorDeps,
-        output_type=cast(Any, AuthorOutput),
+        output_type=AuthorOutput,
         system_prompt=AUTHOR_SYSTEM_PROMPT,
     )

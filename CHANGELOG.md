@@ -6,6 +6,63 @@ All notable changes to LIES are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.48.1] - 2026-10-04
+
+Three regressions from `uv lock --upgrade`, which moved
+`pydantic-ai-harness` 0.31.0 -> 0.54.0, `pydantic-ai` 2.43.0 -> 2.54.0 and
+`fastmcp` 4.0.3 -> 4.0.10. The lock upgrade is included: the suite was green
+against 4.0.3 only because the tool install resolved separately and took the
+newer set, so the tests were not exercising the versions in production. The
+upgrade is what made all three visible.
+
+### Fixed
+
+- **The orchestrator's agent carries a workspace again.**
+  `pydantic-ai-harness` 0.54.0 changed `FileSystem` from self-rooted to
+  workspace-backed: `root_dir` is now a guardrail bounding the model's file
+  tools, while every operation resolves through the *run's* workspace.
+  `FileSystem.before_run` calls `require_workspace`, and a run with no
+  workspace attached fails at its start -- before the model is called. The
+  shim set only `root_dir`, so it was half a configuration and
+  `Orchestrator.run` failed on every invocation:
+
+      UserError: `FileSystem` needs a workspace, but none is attached to this
+      run. Add `LocalWorkspace('.')` ... or pass `workspace=` to the run.
+
+  The harness documents the wiring as
+  `Agent(..., capabilities=[LocalWorkspace(path)])`, and `local_workspace()`
+  adds it there rather than to each run: `Agent.__init__` accepts no
+  workspace, and `run_sync` rejects a `LocalWorkspace` outright ("is a
+  capability ... or pass a backend such as `LocalWorkspaceBackend(path)` as
+  `workspace=`"). Putting it on the capabilities list covers every run,
+  including one added later, rather than the two `run_sync` call sites.
+
+- **`collection_author_agent` declares the output type it actually has.**
+  The function returned `Agent[..., AuthorOutput]` while constructing
+  `Agent(resolved, output_type=cast(Any, AuthorOutput))`. The cast erased the
+  union, so the checker inferred the constructor's default `output_type` of
+  `str` and `ty` reported the mismatch. The comment above the `cast` claimed
+  the Agent overloads do not accept `type[X | Y]`; as of pydantic-ai 2.54 they
+  do. Removing the cast makes the declared type one the body supports, and
+  the return annotation now spells the union out rather than naming the alias
+  -- the alias does not survive as the agent's own type parameter, so a
+  checker comparing the two does not see them as equal.
+
+- **`render_mirror` is idempotent.** The writer prepended frontmatter
+  unconditionally and nothing stripped an existing block, so re-ingesting a
+  file that was already a mirror stacked a second block on every run -- and a
+  third on the page ingested three times. `strip_frontmatter` now removes
+  *every* consecutive leading block, stepping over the blank line the writer
+  itself emits between them, and leaves an unterminated `---` alone so a
+  markdown rule at the top of a page is not mistaken for frontmatter and
+  discarded. Line endings are preserved rather than normalised: the body is
+  written back out verbatim, and a CRLF document should not be rewritten to
+  LF. Pinned by `test_strip_frontmatter` (six cases -- stacked blocks, an
+  unterminated block, a leading thematic break, CRLF) and by
+  `test_render_mirror_is_idempotent`, which renders a mirror of a mirror and
+  asserts the result is byte-identical.
+
+
 ## [0.48.0] - 2026-10-04
 
 ### Fixed

@@ -1,6 +1,7 @@
 import frontmatter
 
 from lies.library.frontmatter import build_frontmatter
+import pytest
 
 
 def test_build_frontmatter_full() -> None:
@@ -183,3 +184,37 @@ def test_default_title_from_slug_still_parses() -> None:
     )
     parsed = frontmatter.loads(fm)
     assert parsed["title"] == "Getting Started"
+
+
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        # A body with no block is returned untouched.
+        ("# Title\n\nbody\n", "# Title\n\nbody\n"),
+        # One leading block is removed.
+        ('---\ntitle: "T"\n---\n\nbody\n', "body\n"),
+        # A second stacked block is removed too: the writer prepends, so
+        # re-mirroring an already-mirrored file is exactly this input.
+        (
+            '---\ntitle: "outer"\n---\n\n---\ntitle: "inner"\n---\n\nbody\n',
+            "body\n",
+        ),
+        # No closing delimiter: not frontmatter, returned untouched.
+        ('---\ntitle: "unterminated"\nbody\n', '---\ntitle: "unterminated"\nbody\n'),
+        # A document that opens with a thematic break keeps it.
+        ("---\n\nbody with a rule\n", "---\n\nbody with a rule\n"),
+        # CRLF line endings still delimit the block.
+        ('---\r\ntitle: "T"\r\n---\r\n\r\nbody\r\n', "body\r\n"),
+    ],
+)
+def test_strip_frontmatter(text: str, expected: str) -> None:
+    """``strip_frontmatter`` removes a leading block and nothing else.
+
+    The writer prepends frontmatter unconditionally, so re-ingesting a
+    file that is already a mirror stacks a second block. Stripping first
+    is what makes ``render_mirror`` idempotent. An unterminated block is
+    left alone: a document opening with a thematic break must survive.
+    """
+    from lies.library.frontmatter import strip_frontmatter
+
+    assert strip_frontmatter(text) == expected

@@ -154,3 +154,29 @@ def test_write_mirror_invalid_slug_raises(lib: Library) -> None:
             source_hash="a",
             fetched_via="web",
         )
+
+
+def test_render_mirror_is_idempotent() -> None:
+    """Re-mirroring a mirror yields one frontmatter block, not two.
+
+    The ingest path mirrors from a directory that can already hold
+    previously-mirrored pages, so the body handed to the writer may
+    itself begin with a frontmatter block. Prepending unconditionally
+    grew a second one on every run; observed as 102 pages carrying two
+    stacked blocks, and three on the one page ingested three times.
+    """
+    kwargs: dict[str, object] = {
+        "slug": "doc",
+        "source_url": "https://example.test/doc",
+        "source_path": "doc.md",
+        "source_hash": "a" * 64,
+        "fetched_via": "local",
+    }
+    once = render_mirror(body="# Body\n", **kwargs)  # type: ignore[arg-type]
+    twice = render_mirror(body=once, **kwargs)  # type: ignore[arg-type]
+    delims = [ln for ln in twice.split("\n") if ln.strip() == "---"]
+    assert len(delims) == 2, f"one block is two delimiters, got {len(delims)}"
+    assert twice.startswith("---\n")
+    assert twice.count("title:") == 1
+    assert twice.endswith("# Body\n"), "the body survives the round trip"
+    assert once == twice, "rendering a mirror of a mirror changes nothing"

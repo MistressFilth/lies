@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from lies.library.frontmatter import build_frontmatter
+from lies.library.frontmatter import build_frontmatter, strip_frontmatter
 from lies.library.paths import LibraryCollection
 from lies.library.slug import validate_slug
 
@@ -37,6 +37,9 @@ def render_mirror(
         source_hash=source_hash,
         fetched_via=fetched_via,
     )
+    # A body that is itself a mirrored page already carries a block;
+    # strip it so re-ingesting a mirror does not stack a second one.
+    body = strip_frontmatter(body)
     body = body if body.endswith("\n") else body + "\n"
     return fm + "\n" + body
 
