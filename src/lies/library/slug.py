@@ -71,6 +71,14 @@ def derive_nested_slug(source: Path | str) -> str:
     raw = Path(source).as_posix()
     *parents, tail = raw.rsplit("/", 1)
     stem = tail.rsplit(".", 1)[0] if "." in tail else tail
+    # ``rsplit("/", 1)`` yields at most two values, so ``parents`` is a
+    # single string holding every remaining separator, not a list of
+    # segments. Split it before normalizing, or a dotted or underscored
+    # *interior* directory (``.claude`` -> ``-claude``) keeps the leading
+    # dash its own normalization produced and the whole slug fails
+    # validation. One directory level was unaffected: there ``parents``
+    # happens to hold a single genuine segment.
+    segments = [seg for parent in parents for seg in parent.split("/")]
     normalized_parts = [
         # ``.txt`` / version-like tokens (``3.14``) inside source paths
         # must collapse to dashes -- the nested slug regex
@@ -80,7 +88,7 @@ def derive_nested_slug(source: Path | str) -> str:
         # become ``--future`` after underscore-to-dash) still match
         # the per-segment ``[a-z0-9]`` prefix requirement.
         seg.lower().replace("_", "-").replace(".", "-").strip("-")
-        for seg in parents + [stem]
+        for seg in segments + [stem]
         if seg
     ]
     if not normalized_parts or any(not p for p in normalized_parts):

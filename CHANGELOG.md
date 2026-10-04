@@ -6,6 +6,43 @@ All notable changes to LIES are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.47.2] - 2026-10-04
+
+### Fixed
+
+- **`derive_nested_slug` normalizes every path segment, not the whole
+  parents string.** `*parents, tail = raw.rsplit("/", 1)` yields at most
+  two values, so for a source two or more directory levels deep
+  `parents` is a *single string* carrying the remaining separators
+  rather than a list of segments. The normalization comprehension
+  treated it as one segment, so its `.strip("-")` only cleaned the
+  string's outer edges and an *interior* directory kept the leading
+  dash its own normalization produced: `.claude` → `-claude`. Every
+  segment has to match `[a-z0-9][a-z0-9_-]*`, so the whole slug failed
+  `validate_slug`.
+
+  The fix splits `parents` on `/` before normalizing, which is what
+  the docstring and the code comment above the comprehension both
+  already claimed it did — and what `scrapers/web.py` does for the
+  same job (`parts = [seg for seg in p.path.split("/") if seg]`).
+
+  Every pre-existing case had one directory level, where `parents`
+  happens to hold a single genuine segment, so the defect was
+  invisible to the suite. It surfaces on a source tree with a dotted or
+  underscored interior directory. Observed on the live corpus: the
+  `switchyard` collection's
+  `experimental/craft-taskgen/.claude/skills/harbor-f2p-p2p-deep-dive/SKILL.md`
+  derived `experimental/craft-taskgen/-claude/skills/harbor-f2p-p2p-deep-dive/skill`
+  and raised `ValueError: invalid slug`. `_process_item` quarantines an
+  invalid slug on the URL branch but not on the path branch, so the
+  exception escaped and aborted the whole collection sync —
+  `lies reindex --reconcile` died before indexing any collection, and
+  with it the tag index that `t:<tag>` search filters read.
+
+  Covered by `test_derive_nested_slug_normalizes_every_segment`,
+  parametrized on the observed path plus a leading-dot first segment,
+  an interior underscore-and-dot pair, and a dunder in the middle.
+
 ## [0.47.1] - 2026-10-04
 
 ### Fixed
