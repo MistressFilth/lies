@@ -899,10 +899,65 @@ contention, which is not what fails here.
 
 Four orphan `content_vectors` rows and five `documents` rows for
 `wiki_tag-filter-lib`, a collection absent from `store_collections`.
-Cause unestablished after two investigations searched every session
-log. `lies.qmd.integrity` reports both classes — `collection_drift`
-and `document_drift` — and the tag-filter session guard fails loudly
-on recurrence. Cleaning the existing rows is an operator action.
+
+**The cause is a defect that no longer exists.** The five rows were
+the tag-filter fixture's own page set — `index.md` plus the four
+`FIXTURE_COLLECTIONS` — for a collection that was never registered in
+`store_collections`. `tests/integration/test_tag_filter_end_to_end.py`
+registers a collection and then calls `qmd_embed`; the embed hit the
+CUDA reservation flake above, the exception propagated out of seeding
+before the fixture's `yield`, and the fixture's teardown was wrapped
+around the `yield` — so it never ran. Observed leaking at 2026-10-03
+22:46, thirteen minutes after a run with three such aborts:
+`leaked collections --- wiki_tag-filter-lib` in the live index. Two
+earlier investigations had searched session logs for an unexplained
+write; the write was this fixture, failing.
+
+The rows themselves are stamped 07:42–08:15Z that morning, from a
+run not recorded in any session transcript, and the four orphan
+vectors *predate* the five documents — which one clean seed cannot
+produce. So the same defect, run more than once, and the specific
+rows are not attributable to the 22:46 run. The defect is the finding;
+the exact run is not, and 0.47.1's claim does not rest on it.
+
+**Cleaned 2026-10-04, operator action.** The daemon was stopped, the
+residue removed in two transactions, and the index verified: 15
+collections, **5987 documents = 5987 content = 5987 FTS**, 48984
+vectors, `integrity_check` ok, `foreign_key_check` clean, and all
+three residue classes zero through `lies qmd status` itself. The
+corpus is back to 5987 — the count these docs carried before the
+leak. A verified backup precedes the write at
+`~/qmd-index-backup-20261004.sqlite`.
+
+Removing the documents left five `content` rows with vectors and no
+document, and removing those cascaded four vectors away. Both steps
+were needed to land on 1:1:1; a cleanup that stops at the documents
+trades one residue class for another. `index_orphans` checks
+vectors-against-content and would not have seen the documentless
+content, so the final verification checks all three directions
+explicitly.
+
+Fixed in 0.47.1: the cleanup moved into `_seeded_qmd_context`, which
+wraps the *seeding*, and a cleanup that fails now rides along as a
+note on the in-flight exception instead of replacing it.
+`lies.qmd.integrity` reports all three classes (`collection_drift`,
+`document_drift`, `index_orphans`) and the tag-filter session guard
+fails loudly on recurrence.
+
+### A stopped qmd daemon is diagnosable only if the log survives
+
+qmd truncates `mcp.log` on every start, so the artefact that could
+explain an unexpected daemon death is destroyed by the recovery
+attempt — and LIES recycles the daemon routinely. On 2026-10-03 the
+machine-global daemon stopped between 23:02Z and 06:35Z with no
+answerable cause: no OOM record, the staleness marker older than the
+pidfile, the CUDA abort followed by a verified-live daemon, no WSL
+restart, and both integration runs clean.
+
+`_down` now copies the log to `mcp.log.<stamp>` before stopping,
+keeping `LOG_GENERATIONS_KEPT` (5). If a daemon dies again, look in
+`~/.cache/qmd/` for the preserved generations first — and add a
+generation here, because the next death should be answerable.
 
 ## Quality gates
 

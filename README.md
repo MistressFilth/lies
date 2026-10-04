@@ -1023,7 +1023,13 @@ CLI commands (`src/lies/cli/`):
 - `lies mcp` / `lies mcp start` — run the MCP server on stdio.
 - `lies mcp up` / `down` / `status` — manage the detached http MCP daemon.
 - `lies qmd status` / `up` / `down` / `recycle` — manage the shared qmd
-  daemon (`status` prints a JSON snapshot of the daemon plus an
+  daemon (`recycle` and `down` preserve the daemon's `mcp.log` to
+  `mcp.log.<timestamp>` first, keeping 5 generations, because qmd
+  truncates that file on every start and a preserved copy is the only
+  record of what a daemon did before it was replaced. If the daemon
+  dies unexpectedly, look in `~/.cache/qmd/` for the preserved
+  generations;
+  `status` prints a JSON snapshot of the daemon plus an
   `index` block — orphan vector rows, active-vs-total document split,
   count of active documents lacking any embedding row, and any
   registered collection whose path is missing on disk. `null` when

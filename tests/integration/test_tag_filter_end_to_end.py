@@ -19,6 +19,7 @@ Gated on ``INTEGRATION=1``.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import shutil
 import subprocess
@@ -355,6 +356,47 @@ def _registered_collections(cwd: Path) -> set[str]:
     }
 
 
+@contextlib.contextmanager
+def _seeded_qmd_context(wiki: Wiki) -> Iterator[Wiki]:
+    """Seed qmd, yield, and unseed -- with the unseed covering the seed.
+
+    The cleanup has to wrap the *seeding*, not just the yield.
+    :func:`_seed_qmd` registers a collection and then embeds it, and
+    the embed can raise: node-llama-cpp intermittently aborts on the
+    CUDA VMM reservation (``cuMemAddressReserve`` ->
+    ``CUDA error: out of memory`` -> ``ggml_abort``), which reaches
+    the test as ``QmdError: qmd embed failed``. When it does, seeding
+    never reaches a yield -- and a ``try/finally`` written around the
+    yield alone never runs its ``finally``. That is how
+    ``wiki_tag-filter-lib`` came to be registered in the operator's
+    live index and stayed there.
+
+    Ordering is the whole invariant, so it lives in one named context
+    manager rather than spread across a fixture body.
+    ``tests/unit/test_qmd_fixture_envelope.py`` drives it directly,
+    which it could not do through a fixture.
+    """
+    try:
+        _seed_qmd(wiki)
+        yield wiki
+    except BaseException as exc:
+        # Cleanup runs on every path, and a cleanup that fails must not
+        # replace the exception already in flight. A bare
+        # ``finally: _unseed_qmd(...)`` does exactly that: ``_unseed``
+        # calls ``pytest.fail`` when a collection is still registered,
+        # and the reader loses "the embed aborted on the CUDA
+        # reservation" in favour of a hygiene message about a
+        # throwaway index. The cleanup outcome rides along as a note.
+        try:
+            _unseed_qmd(wiki)
+        except BaseException as cleanup_exc:
+            exc.add_note(f"qmd fixture cleanup also failed: {cleanup_exc!r}")
+        raise
+    else:
+        # Clean run: a cleanup failure is the finding, so it surfaces.
+        _unseed_qmd(wiki)
+
+
 @pytest.fixture
 def qmd_fixture_library(tmp_path: Path) -> Iterator[Wiki]:
     """A wiki with four tagged collections, registered and embedded with qmd.
@@ -374,11 +416,8 @@ def qmd_fixture_library(tmp_path: Path) -> Iterator[Wiki]:
     if not qmd_daemon_reachable("http://127.0.0.1:8181", timeout=0.5):
         pytest.skip("qmd daemon not reachable at http://127.0.0.1:8181")
     wiki = _build_tag_filter_library(tmp_path, name="tag-filter-lib")
-    _seed_qmd(wiki)
-    try:
+    with _seeded_qmd_context(wiki):
         yield wiki
-    finally:
-        _unseed_qmd(wiki)
 
 
 #: Collection names the librarian's real qmd search spanned.

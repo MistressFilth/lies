@@ -6,6 +6,65 @@ All notable changes to LIES are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.47.1] - 2026-10-04
+
+### Fixed
+
+- **The tag-filter qmd fixture's cleanup now covers its seeding.**
+  `_seed_qmd` registers a collection with qmd and *then* embeds it.
+  The embed raises on the CUDA VMM reservation flake — node-llama-cpp's
+  `cuMemAddressReserve` aborting with `CUDA error: out of memory` and
+  `ggml_abort` — so seeding never reached the fixture's `yield`, and a
+  `try/finally` written around the yield alone never ran its `finally`.
+  Observed 2026-10-03 22:46, thirteen minutes after a run with three
+  such aborts: `wiki_tag-filter-lib` registered in the live index and
+  left there. This is where the residue recorded under *Known flakes*
+  came from; two investigations had searched session logs for an
+  unexplained write.
+
+  A cleanup that fails also no longer replaces the exception in
+  flight. `_unseed_qmd` calls `pytest.fail` when a collection is still
+  registered, and from inside a `finally` that hid "the embed aborted
+  on the CUDA reservation" behind a hygiene message about a throwaway
+  index. It rides along as a note instead.
+
+- **A recycle that fails now says the daemon is down.** `_recycle`
+  caught `QmdRecycleFailed`, logged a warning, and returned — so a
+  restart that exhausted its budget left a machine-global daemon
+  stopped, and the caller's error said "recycled" about a restart
+  that did not happen. The wedge message named no command, and every
+  qmd call on the host then failed with a `QmdDaemonWedged` nobody
+  could act on. The message now appends the operator instruction when
+  the restart failed, and keeps the wedge as the diagnosis.
+
+- **The live-index residue is gone.** Four orphan `content_vectors`
+  rows and five `documents` rows for `wiki_tag-filter-lib` — the
+  tag-filter fixture's own page set, for a collection that was never
+  registered — were removed on 2026-10-04. The index now reads **15
+  collections, 5987 documents = 5987 content = 5987 FTS, 48984
+  vectors**, with `integrity_check` ok, `foreign_key_check` clean,
+  and all three residue classes zero through `lies qmd status`. The
+  corpus is back to the 5987 these docs carried before the leak.
+
+  Removing the documents left five `content` rows carrying vectors
+  and no document, and removing those cascaded four vectors away.
+  Both steps are needed to land on 1:1:1; a cleanup that stops at
+  the documents trades one residue class for another, and
+  `index_orphans` — which checks vectors against content — would not
+  have seen the documentless content at all. A verified backup
+  precedes the write at `~/qmd-index-backup-20261004.sqlite`.
+
+### Added
+
+- **The daemon's log is preserved across a stop.** qmd truncates
+  `mcp.log` on every start, so the artefact that could explain an
+  unexpected death was destroyed by the recovery attempt — and LIES
+  recycles the daemon routinely. `_down` copies it to
+  `mcp.log.<stamp>` before stopping, keeping 5 generations. The copy
+  is best-effort throughout: a log that cannot be read or written
+  never blocks the stop.
+
+
 ## [0.47.0] - 2026-10-03
 ### Added
 

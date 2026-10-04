@@ -372,13 +372,18 @@ async def _call_with_recovery(
             # Wedge branch: read the daemon's log *before* the recycle.
             # qmd truncates mcp.log on every daemon start.
             last_output = _daemon_log_tail()
-            await _recycle(url)
+            recycled = await _recycle_or_report(url)
+            outcome = (
+                "recycled, but the same payload is not retried against a "
+                "daemon that re-wedges on it"
+                if recycled
+                else f"the restart also failed, so {_DAEMON_DOWN_HINT}"
+            )
             raise QmdDaemonWedged(
-                f"qmd daemon wedged on call to {name!r}; recycled, but the same "
-                f"payload is not retried against a daemon that re-wedges on it",
+                f"qmd daemon wedged on call to {name!r}; {outcome}",
                 last_output=last_output,
             ) from exc
-        await _recycle(url)
+        await _recycle_or_report(url)
         try:
             return await make_call()
         except Exception as retry_exc:
@@ -397,6 +402,22 @@ async def _call_with_recovery(
                 f"({retry_exc}); start it with 'lies qmd up', or point "
                 f"LIES_QMD_URL at a daemon that is."
             ) from retry_exc
+
+
+async def _recycle_or_report(url: str) -> bool:
+    """Recycle, reporting rather than propagating a failed restart.
+
+    Returns ``True`` when a replacement served. The caller keeps its
+    own diagnosis -- a wedge stays a wedge -- and appends the
+    operator-actionable fact when this returns ``False``. A bare
+    ``await _recycle(url)`` would replace the diagnosis with a
+    recycle failure, which is the *consequence*, not the cause.
+    """
+    try:
+        await _recycle(url)
+    except Exception:
+        return False
+    return True
 
 
 async def _call(
@@ -539,19 +560,38 @@ def _recycle_data_dir() -> Path:
     return library_git_root()
 
 
+#: Operator instruction attached whenever a recycle leaves the daemon
+#: stopped. A machine-global daemon that is not running is an
+#: operator action, and the one action that resolves it.
+_DAEMON_DOWN_HINT = (
+    "the qmd daemon is DOWN and must be started with 'lies qmd up' "
+    "(or point LIES_QMD_URL at a daemon that is running)"
+)
+
+
 async def _recycle(url: str) -> None:
-    """Restart the daemon. A recycle that never served is logged, not raised."""
+    """Restart the daemon. Raises when the replacement never served.
+
+    Raising is the point. A recycle that exhausts its budget has
+    stopped a machine-global daemon and left it stopped, and the only
+    remedy is an operator starting one -- so the fact has to reach
+    both the log and the caller. This used to log a warning and
+    return, which meant the caller's error said "recycled" about a
+    restart that did not happen and named no command; every qmd call
+    on this host then failed with a wedge nobody could act on.
+    """
     from lies.qmd.daemon import QmdRecycleFailed
 
     try:
         state = await recycle_qmd_daemon(data_dir=_recycle_data_dir(), daemon_url=url)
     except QmdRecycleFailed as exc:
-        _log.warning(
-            "qmd recycle exhausted ready_timeout=%gs; last_state=%s",
+        _log.error(
+            "qmd recycle exhausted ready_timeout=%gs; last_state=%s; %s",
             exc.ready_timeout_s,
             exc.last_state.detail,
+            _DAEMON_DOWN_HINT,
         )
-        return
+        raise
     _log.info("qmd daemon recycled (pid=%s); reason=%s", state.pid, state.detail)
 
 
