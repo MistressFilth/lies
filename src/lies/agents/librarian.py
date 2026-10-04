@@ -128,6 +128,16 @@ class LibrarianOutput:
             so the CLI / MCP layer can render the scope envelope
             without re-resolving the AST. Defaults to ``[]`` so
             pre-v0.40 construction sites stay back-compat.
+        transient: v0.47 additive — the *dispatch* failed, so the
+            bundle says nothing about the corpus. A model outage, a
+            ``UsageLimitExceeded``, a response pydantic-ai could not
+            validate after its retry budget: each is a fact about
+            the run, and this branch existed with only
+            ``no_coverage=True`` to report it with, which is the
+            canonical false corpus claim. Set together with
+            ``no_coverage=False``; the two are independent, exactly
+            as on :class:`~lies.mcp.grounding.ArchivistDigest` and
+            the ``search`` envelope. Defaults to ``False``.
     """
 
     tag_expr: Any  # TagExpr | None AST; Any at runtime so pydantic-ai's
@@ -141,6 +151,7 @@ class LibrarianOutput:
     distinct_pages: int
     no_coverage: bool = False
     searched_scope: list[str] = field(default_factory=list)
+    transient: bool = False
 
 
 LIBRARIAN_SYSTEM_PROMPT = """# librarian — Classify, Search, Read, Return
