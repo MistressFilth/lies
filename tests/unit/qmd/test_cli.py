@@ -274,8 +274,8 @@ def test_an_embed_that_aborts_on_the_cuda_reservation_is_retried(
                 returncode=1,
                 stdout=b"",
                 stderr=(
-                    b"ggml-cuda.cu:98: CUDA error: out of memory\n"
-                    b"  cuMemAddressReserve(&pool_addr, CUDA_POOL_VMM_MAX_SIZE, 0, 0, 0)"
+                    "ggml-cuda.cu:98: CUDA error: out of memory\n"
+                    "  cuMemAddressReserve(&pool_addr, CUDA_POOL_VMM_MAX_SIZE, 0, 0, 0)"
                 ),
             )
         return SimpleNamespace(args=tuple(args), returncode=0, stdout=b"", stderr=b"")
@@ -306,7 +306,7 @@ def test_a_real_embed_failure_is_not_retried(monkeypatch: pytest.MonkeyPatch) ->
             args=tuple(args),
             returncode=1,
             stdout=b"",
-            stderr=b"qmd: no such collection: nope",
+            stderr="qmd: no such collection: nope",
         )
 
     monkeypatch.setattr(cli, "_run", fake_run)
@@ -334,7 +334,7 @@ def test_an_embed_that_never_stops_aborting_eventually_raises(
             args=tuple(args),
             returncode=1,
             stdout=b"",
-            stderr=b"cuMemAddressReserve: CUDA error: out of memory",
+            stderr="cuMemAddressReserve: CUDA error: out of memory",
         )
 
     monkeypatch.setattr(cli, "_run", fake_run)

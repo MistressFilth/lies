@@ -232,14 +232,20 @@ def qmd_collection_add_or_update(
 _EMBED_RESERVATION_RETRIES = 2
 _EMBED_RESERVATION_BACKOFF_S = 2.0
 
+#: ``str`` because ``_run`` returns a decoded ``CompletedProcess`` --
+#: ``stderr`` arrives as text. (These were ``bytes`` first, which raised
+#: ``TypeError: 'in <string>' requires string as left operand, not
+#: bytes`` on every real embed, and the unit tests missed it because
+#: their fake used ``bytes`` too -- the fake had to match reality, not
+#: the implementation's assumption of it.)
 _CUDA_RESERVATION_MARKERS = (
-    b"cuMemAddressReserve",
-    b"CUDA error: out of memory",
-    b"ggml-cuda.cu:98",
+    "cuMemAddressReserve",
+    "CUDA error: out of memory",
+    "ggml-cuda.cu:98",
 )
 
 
-def _is_cuda_reservation_failure(stderr: bytes) -> bool:
+def _is_cuda_reservation_failure(stderr: str) -> bool:
     """True when the child aborted reserving CUDA's VMM pool.
 
     Matched on the markers node-llama-cpp prints. Deliberately narrow: a
