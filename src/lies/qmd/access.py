@@ -9,6 +9,7 @@ Routing is by capability, never by availability.
 from __future__ import annotations
 
 import logging
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
@@ -324,8 +325,45 @@ async def daemon_tool(
         _spawn_qmd_daemon()
 
     client = _daemon_client(url)
+    return await _call_with_recovery(
+        url, name, lambda: _call(client, name, arguments, timeout=timeout)
+    )
+
+
+async def _call_with_recovery(
+    url: str,
+    name: str,
+    make_call: Callable[[], Awaitable[Any]],
+) -> Any:
+    """Run ``make_call`` with the taxonomy applied to any failure.
+
+    The single place a daemon failure is classified. Every daemon
+    call site routes through here: a site that calls
+    ``client.call_tool`` directly bypasses the taxonomy, and a
+    transport failure it swallows becomes a per-path "not in the
+    corpus" — a fact about the process reported as a fact about
+    the index.
+
+    Args:
+        url: Daemon URL, for the recycle and the raise text.
+        name: Tool name, for the raise text.
+        make_call: Zero-argument callable returning the awaitable.
+            Invoked once, and a second time only after a recycle on
+            a retryable failure.
+
+    Returns:
+        Whatever ``make_call`` returns.
+
+    Raises:
+        QmdDaemonWedged: the daemon accepted the call and stopped
+            answering, before or after a recycle.
+        QmdDaemonUnavailable: not serving, or still not serving after
+            one recycle-and-retry.
+        Exception: re-raised unchanged for a ``"passthrough"`` class,
+            and for a second failure the taxonomy does not own.
+    """
     try:
-        return await _call(client, name, arguments, timeout=timeout)
+        return await make_call()
     except Exception as exc:
         action, retryable = classify_call_error(exc)
         if action == "passthrough":
@@ -342,7 +380,7 @@ async def daemon_tool(
             ) from exc
         await _recycle(url)
         try:
-            return await _call(client, name, arguments, timeout=timeout)
+            return await make_call()
         except Exception as retry_exc:
             retry_action = classify_call_error(retry_exc)[0]
             if retry_action == "passthrough":
@@ -382,6 +420,28 @@ async def _call(
     return result
 
 
+def _get_in_session(
+    client: fastmcp.Client,
+    path: str,
+    *,
+    timeout: float | None,
+) -> Awaitable[Any]:
+    """The per-path ``get`` inside an already-open session.
+
+    Separate from :func:`_call` because that helper opens and closes
+    the session; the batched read holds one open for the whole
+    batch.
+
+    ``raise_on_error=False`` — qmd's "no body for this path" arrives
+    as a result shape, not an exception, which is what lets the
+    batch distinguish a missing document from a transport failure.
+    """
+    args: dict[str, Any] = {"file": path, "lineNumbers": False}
+    if timeout is None:
+        return client.call_tool("get", args, raise_on_error=False)
+    return client.call_tool("get", args, raise_on_error=False, timeout=timeout)
+
+
 async def read_library_bodies(
     paths: list[str],
     *,
@@ -407,10 +467,12 @@ async def read_library_bodies(
         List of ``CallToolResult`` in input order. Each entry is
         one path's result; ``is_error=True`` on tool-side errors,
         ``.content`` carrying the body or the skip/error notice.
-        A per-path failure (the daemon raised for a single
-        missing document, or returned a notice-only result) maps
-        to ``None`` in the output list so siblings survive; only
-        a session-level failure propagates.
+        A per-path failure maps to ``None`` in the output list so
+        siblings survive. The two channels qmd actually uses for
+        "no body for this path" are result shapes, not
+        exceptions: an ``is_error`` result, and a notice-only
+        result. Both are ``None`` entries. A transport failure is
+        neither — it goes through the taxonomy and propagates.
 
     Raises:
         QmdDaemonUnavailable: the daemon is not serving (operator action).
@@ -430,21 +492,23 @@ async def read_library_bodies(
     out: list[Any] = []
     async with client:
         for path in paths:
-            args: dict[str, Any] = {"file": path, "lineNumbers": False}
             try:
-                if timeout is None:
-                    result = await client.call_tool("get", args, raise_on_error=False)
-                else:
-                    result = await client.call_tool(
-                        "get", args, raise_on_error=False, timeout=timeout
-                    )
+                result = await _call_with_recovery(
+                    url,
+                    "get",
+                    lambda p=path: _get_in_session(client, p, timeout=timeout),
+                )
             except _DAEMON_FAILURES:
                 raise
-            except Exception:
-                # Per-path failure (document missing, decode error,
-                # etc.) — siblings survive. The parent tool logs the
-                # path and adds it to ``_missing``. ``_DAEMON_FAILURES``
-                # is a session-level state and propagates above.
+            except Exception as exc:
+                # The taxonomy owns every transport failure, so what
+                # reaches here is a ``"passthrough"`` class: the
+                # daemon is serving and this one request was bad.
+                # That is genuinely per-path, so siblings survive.
+                # A bug raised here (a ``TypeError`` from a bad
+                # argument) is not — see the test that pins a
+                # transport error to a raise rather than a ``None``.
+                _log.warning("read: qmd get(%s) failed per-path: %s", path, exc)
                 out.append(None)
                 continue
             if getattr(result, "is_error", False):

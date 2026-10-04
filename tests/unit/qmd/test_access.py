@@ -826,12 +826,14 @@ def test_validate_scope_propagates_qmd_daemon_wedged(
 # --- the read-library-bodies hoisted bridge (I-9) ----------------------
 #
 # ``read_library_bodies`` opens one MCP session and issues one
-# ``get`` per path under it. The tests below pin the per-path
-# tolerance (a per-path exception becomes ``None`` in the
-# output) and the session-level propagation (a typed
-# ``QmdDaemonUnavailable`` / ``QmdDaemonWedged`` short-circuits
-# the whole batch). The FastMCP wire cannot be exercised in a
-# unit test; the tests target ``read_library_bodies`` directly.
+# ``get`` per path under it. The tests below pin the tolerance
+# boundary: a *passthrough* failure becomes ``None`` in the
+# output, and every transport failure routes through the taxonomy
+# and raises. The boundary is the point — a batched read that
+# reports a slow daemon as an absent document tells the caller
+# the corpus has nothing when the process is at fault. The FastMCP
+# wire cannot be exercised in a unit test; the tests target
+# ``read_library_bodies`` directly.
 
 
 def test_read_library_bodies_returns_empty_list_for_empty_input() -> None:
@@ -878,17 +880,25 @@ def test_read_library_bodies_per_path_failure_yields_none(
     assert results[1] is None, "the missing path is a None, not a session kill"
 
 
-def test_read_library_bodies_session_failure_propagates(
+def test_read_library_bodies_a_transport_error_raises_not_none(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A ``QmdDaemonUnavailable`` on the first path kills the batch.
+    """A read timeout on path 2 raises; it is never a ``None`` entry.
 
-    Session-level states cannot be rescued by per-path tolerance;
-    the parent caller (``_read_impl``) raises ``ToolError("all
-    reads failed")`` for the all-None case and otherwise surfaces
-    the typed error.
+    The defect this pins: ``read_library_bodies`` used to call
+    ``client.call_tool`` directly, with the taxonomy living only in
+    ``daemon_tool``. Every transport failure therefore became a
+    per-path ``None``, and ``read.py`` turned that into a
+    ``_missing`` entry — "the daemon could not resolve this path",
+    a claim about the corpus that was really a claim about the
+    process. A ``ReadTimeout`` was indistinguishable from a document
+    that is genuinely absent.
+
+    The stub raises the class fastmcp 4 actually raises for a slow
+    daemon. ``httpx2.ReadTimeout`` is outside every ``httpx``-typed
+    check, which is why the classifier matches on names.
     """
-    from lies.qmd.access import QmdDaemonUnavailable
+    httpx2 = pytest.importorskip("httpx2")
 
     class _StubClient:
         async def __aenter__(self) -> "_StubClient":
@@ -898,13 +908,55 @@ def test_read_library_bodies_session_failure_propagates(
             pass
 
         async def call_tool(self, name: str, arguments: dict[str, Any], **kw: Any) -> Any:
-            raise QmdDaemonUnavailable("daemon down")
+            if "b.md" in arguments["file"]:
+                raise httpx2.ReadTimeout("slow daemon")
+            return SimpleNamespace(content=[], is_error=False)
+
+    monkeypatch.setattr(access, "_daemon_client", lambda url: _StubClient())
+    monkeypatch.setattr(access, "qmd_daemon_reachable", lambda url, timeout: True)
+    monkeypatch.setattr(access, "_daemon_log_tail", lambda: "expanding query 2/5")
+
+    async def _recycle(**_kwargs: Any) -> Any:
+        from lies.qmd.daemon import QmdState
+
+        return QmdState(installed=True, running=True, pid=4242, detail="recycled")
+
+    monkeypatch.setattr(access, "recycle_qmd_daemon", _recycle)
+
+    with pytest.raises(access.QmdDaemonWedged) as excinfo:
+        asyncio.run(access.read_library_bodies(["alpha/a.md", "alpha/b.md"]))
+    assert excinfo.value.last_output == "expanding query 2/5"
+
+
+def test_read_library_bodies_a_passthrough_failure_stays_per_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only the taxonomy's passthrough class becomes a ``None``.
+
+    The complement to the test above: after the taxonomy owns the
+    transport classes, what is left reaching the per-path handler is
+    a request the daemon rejected. That is genuinely per-path, so
+    siblings survive it.
+    """
+
+    class _StubClient:
+        async def __aenter__(self) -> "_StubClient":
+            return self
+
+        async def __aexit__(self, *exc: object) -> None:
+            pass
+
+        async def call_tool(self, name: str, arguments: dict[str, Any], **kw: Any) -> Any:
+            if "b.md" in arguments["file"]:
+                raise ValueError("illegal header value")
+            return SimpleNamespace(content=[], is_error=False)
 
     monkeypatch.setattr(access, "_daemon_client", lambda url: _StubClient())
     monkeypatch.setattr(access, "qmd_daemon_reachable", lambda url, timeout: True)
 
-    with pytest.raises(QmdDaemonUnavailable):
-        asyncio.run(access.read_library_bodies(["alpha/a.md", "alpha/b.md"]))
+    results = asyncio.run(access.read_library_bodies(["alpha/a.md", "alpha/b.md"]))
+    assert results[0] is not None
+    assert results[1] is None
 
 
 # --- the taxonomy matches what fastmcp actually raises -----------------

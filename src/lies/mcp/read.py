@@ -50,11 +50,8 @@ from fastmcp.exceptions import ToolError
 from fastmcp.tools import Tool
 
 from lies.qmd import access
-from lies.qmd.access import QmdDaemonUnavailable, QmdDaemonWedged
 
 log = logging.getLogger(__name__)
-
-_DAEMON_FAILURES = (QmdDaemonUnavailable, QmdDaemonWedged)
 
 
 def _memory_service() -> Any:
@@ -95,52 +92,27 @@ def _run_blocking(coro: Any) -> Any:
         return pool.submit(asyncio.run, coro).result()
 
 
-def _daemon_body(path: str) -> str | None:
-    """One body for ``path``; ``None`` if qmd produced no body (raised or
-    only-notices). A down or wedged daemon raises before reaching here.
-    """
-    try:
-        result = _run_blocking(access.daemon_tool("get", {"file": path, "lineNumbers": False}))
-    except _DAEMON_FAILURES:
-        raise
-    except Exception as exc:
-        log.warning("read: qmd get(%s) failed: %s", path, exc)
-        return None
-
-    bodies = _resource_texts(result)
-    if not bodies:
-        notices = _notices(result)
-        detail = f"; qmd said: {' | '.join(notices)}" if notices else ""
-        log.warning("read: qmd get(%s) returned no document body%s", path, detail)
-        return None
-    return "\n".join(bodies)
-
-
 def _daemon_bodies_batched(paths: list[str]) -> list[str | None]:
     """One body per path over a single MCP session.
 
     Hoists the per-path handshake out of the loop. A down or
-    wedged daemon raises before reaching here; per-path tool-side
-    errors (the daemon's ``is_error`` flag, or a per-path exception
-    caught inside ``read_library_bodies``) are mapped to
-    ``None`` and logged so a partial batch still surfaces the
-    missing paths via ``_missing``.
+    wedged daemon raises out of here — ``read_library_bodies``
+    classifies every transport failure, so a slow daemon is a typed
+    raise and never a ``None`` entry. Per-path misses reach the
+    result loop below as ``None`` and are logged so a partial batch
+    still surfaces the missing paths via ``_missing``.
+
+    There is no blanket catch around the call. A previous version
+    mapped any exception to all-``None``, which converted a bug in
+    the call itself — an ``AttributeError`` from a stale test stub,
+    observed in this branch's own integration run — into
+    ``ToolError("all reads failed")``. That is a claim about the
+    corpus built from a defect in the run, which is the same
+    process-versus-corpus confusion this module exists to remove.
     """
     if not paths:
         return []
-    try:
-        results = _run_blocking(access.read_library_bodies(paths))
-    except _DAEMON_FAILURES:
-        raise
-    except Exception as exc:
-        # Session-level failure: every path this batch read is
-        # lost. Match the previous per-path behaviour by logging
-        # each and returning all-None, so the parent tool's
-        # ``_missing`` machinery catches them. The session is
-        # closed before the raise.
-        for p in paths:
-            log.warning("read: qmd get(%s) failed: %s", p, exc)
-        return [None] * len(paths)
+    results = _run_blocking(access.read_library_bodies(paths))
 
     bodies: list[str | None] = []
     for path, result in zip(paths, results, strict=True):
