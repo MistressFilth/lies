@@ -126,3 +126,48 @@ def test_derive_nested_slug_collapse_dots_and_leading_dashes(source: str, expect
     quarantines one-by-one, aborting the run.
     """
     assert derive_nested_slug(source) == expected
+
+
+@pytest.mark.parametrize(
+    "source,expected",
+    [
+        # Repro from the live corpus: the switchyard collection's
+        # ``experimental/craft-taskgen/.claude/skills/...`` tree. ``.claude``
+        # normalizes to ``-claude``, and every segment of the path has to be
+        # cleaned independently or the interior one survives the strip and
+        # ``validate_slug`` rejects the whole slug.
+        (
+            "experimental/craft-taskgen/.claude/skills/harbor-f2p-p2p-deep-dive/SKILL.md",
+            "experimental/craft-taskgen/claude/skills/harbor-f2p-p2p-deep-dive/skill",
+        ),
+        # A leading dot on the *first* directory is the same defect at the
+        # front of the string rather than the middle.
+        (".github/workflows/ci_build.py", "github/workflows/ci-build"),
+        # Interior underscore and dot in different segments of a deep path.
+        (
+            "agents/skills/deep_dive/notes_on.v2.md",
+            "agents/skills/deep-dive/notes-on-v2",
+        ),
+        # Three-plus levels with a dunder in the middle, not at the tail.
+        ("pkg/__init__/sub/module.py", "pkg/init/sub/module"),
+    ],
+)
+def test_derive_nested_slug_normalizes_every_segment(source: str, expected: str) -> None:
+    """Normalization is per segment, at every depth.
+
+    The unpacking ``*parents, tail = raw.rsplit("/", 1)`` yields at most
+    two values, so ``parents`` is a single string carrying the remaining
+    slashes rather than a list of segments. Normalizing that string as one
+    unit strips only its outer edges, and an interior ``.claude`` becomes
+    ``-claude`` with its leading dash intact — which ``_NESTED_RE`` then
+    rejects because every segment must start ``[a-z0-9]``.
+
+    Every existing case above has one directory level, where ``parents``
+    happens to be a single genuine segment and the defect is invisible.
+    A source tree two or more levels deep with a dotted or underscored
+    interior directory is where it surfaces, and there the raised
+    ``ValueError`` escapes ``_process_item``'s quarantine handler and
+    aborts the whole collection sync — observed as
+    ``lies reindex --reconcile`` dying on the switchyard collection.
+    """
+    assert derive_nested_slug(source) == expected
