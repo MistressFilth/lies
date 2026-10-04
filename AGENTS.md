@@ -579,6 +579,18 @@ transport serves which operation. Read it before adding any qmd call.
   error** (the CLI exits 1 on the same class), so the `isError` branch
   is for genuine tool errors only — validate scope against the registry
   before dispatching.
+- **`validate_scope(scope)` is the shared pre-check.** `search` and
+  `ground` both issue `query` calls with a batched `collections`
+  array. The daemon answers an unknown name with an empty result and
+  no error, so a single unresolvable name inside the batch silently
+  returns zero rows. `validate_scope` reads the daemon's `status`
+  tool, partitions the input into served + absent names in input
+  order, and raises the typed errors `daemon_tool` raises. `search`
+  refuses on `unknown_tags`; `ground` filters silently and logs.
+  Without the pre-check, the per-collection fan-out the prior shape
+  dropped individually becomes a clean-miss claim about the corpus
+  on the batched path. Pinned by five tests in
+  `tests/unit/qmd/test_access.py::test_validate_scope_*`.
 - **The default daemon URL carries `/mcp`.** `DEFAULT_QMD_URL` is
   `http://127.0.0.1:8181/mcp`, not the bare origin. qmd serves exactly
   one route, and a URL without the path reaches a *live* daemon and
@@ -663,6 +675,17 @@ properties are load-bearing rather than incidental.
   and one failure per call. Measured: a warm `get` is 0.07s against the
   live daemon, so the round trip batching would save is not worth the
   corpus it loses.
+- **One MCP session per batch, via `read_library_bodies`.** The
+  previous shape opened a fresh `async with client:` per path and
+  paid a ~33 ms handshake each time. Measured against the live
+  daemon (2026-10-03, 10 warm samples, `claude_code/concepts/hooks.md`):
+  one-shot session p50 75.4 ms; persistent-session `call_tool`
+  p50 41.9 ms. A 20-path read drops from ~1.5 s to ~900 ms.
+  `read_library_bodies(paths)` opens one session and issues one
+  `get` per path under it; per-path failures (`RuntimeError` on a
+  missing document, `is_error=True`, notice-only `content`) map
+  to `None` in the output list, and only `QmdDaemonUnavailable`
+  / `QmdDaemonWedged` short-circuit the batch.
 - **A notice is not a body.** `multi_get` reports a skipped file as
   `[SKIPPED: …]` and an unresolvable entry as `Errors:\nFile not
   found: …`, both as TextContent blocks alongside the bodies.
@@ -683,6 +706,18 @@ properties are load-bearing rather than incidental.
   and a batch's outcome must not depend on it. `ToolError("all reads
   failed")` is the loud failure, raised once, when the batch genuinely
   produced nothing.
+- **Partial batches carry the unresolved paths on the wire.** A
+  20-path read where 3 paths could not be resolved returns a
+  17-body dict *plus* the synthetic key `"_missing"` whose value is
+  a list of the three paths in input order. The `"_"` prefix
+  keeps the signal out of the path space (library paths are
+  `<collection>/<page>`, wiki IDs are `page-…`); the field's type
+  is a list so a caller iterating `out.items()` can filter with
+  `key.startswith("_")` if it wants the prior shape. The loud
+  all-or-nothing `ToolError("all reads failed")` is preserved for
+  the all-fail case. Without this, the previous shape returned a
+  17-key dict with `log.warning` lines that did not reach the
+  agent — the I-9 partial-batch class.
 - **The sync bridge runs its own loop when one is already running.**
   `_read_impl` is sync (the `Tool.from_function` registration and
   `server.py` both assume it) while `daemon_tool` is async.
