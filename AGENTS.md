@@ -521,6 +521,16 @@ transport serves which operation. Read it before adding any qmd call.
   the previous behaviour reported an unreachable daemon as "no
   relevant content in the library", a claim about the corpus that was
   really a claim about the process.
+- **The CLI half is not only maintenance.** `CLI_ONLY_OPS` also
+  carries the *diagnostic* surface the daemon has no path for, and
+  each of these is reachable from the product:
+  `doctor` (index + collection health), `ls` (inspect indexed files),
+  `bench` (score a known-answer fixture), `cleanup` (reclaim orphaned
+  index rows), `collection` (registry CRUD), and `mcp` (the daemon
+  lifecycle itself). `search` sits there because BM25 is a CLI path.
+  A capability unlocked on the CLI and left undocumented reads as
+  unimplemented, so `tests/unit/test_agents_claims.py` checks this
+  list against the module.
 - **`lies mcp up` is not the fix.** It starts LIES' *own* MCP server
   (`mcp/daemon.py`). The qmd daemon is `lies qmd up` (`cli/qmd.py`).
   An operator who follows the wrong one changes nothing and never sees
