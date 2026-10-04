@@ -56,6 +56,7 @@ def _stub_librarian(
     excerpts: list | None = None,
     searched_scope: list[str] | None = None,
     no_coverage: bool = False,
+    transient: bool = False,
 ) -> MagicMock:
     """Replace ``librarian_agent_run`` with a canned ``LibrarianOutput``.
 
@@ -64,6 +65,14 @@ def _stub_librarian(
     ``excerpts`` / ``searched_scope``. The production
     ``librarian_agent_run`` builds a real pydantic-ai agent; tests
     bypass it by replacing the function reference entirely.
+
+    Every field the caller reads is assigned, including the ones that
+    default to False. ``MagicMock(spec=...)`` answers an attribute it
+    has not been given with a fresh child Mock, and a child Mock is
+    truthy -- so a new boolean field on the dataclass silently takes
+    whatever branch tests its truthiness, and every test using this
+    stub takes it at once. Assigning the field is the only thing that
+    distinguishes a clean-miss bundle from a failed dispatch.
     """
     from lies.agents.librarian import LibrarianOutput
 
@@ -79,6 +88,7 @@ def _stub_librarian(
     lib_out.distinct_pages = len({e.slug for e in excerpts})
     lib_out.no_coverage = no_coverage
     lib_out.searched_scope = list(searched_scope or [])
+    lib_out.transient = transient
     return lib_out
 
 
@@ -524,6 +534,7 @@ def test_librarian_snippet_review_picks_authoring_over_install(
     lib_out.distinct_pages = 2
     lib_out.no_coverage = False
     lib_out.searched_scope = ["alpha", "beta"]
+    lib_out.transient = False
     # Snippet-review's choice: pages_read surfaces the authoring page
     # first, install second. (The ordering pins that snippet-review
     # PICKED authoring over install, not that it called read on every
