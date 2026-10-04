@@ -688,3 +688,50 @@ def test_an_unserved_scope_is_logged(monkeypatch: pytest.MonkeyPatch, caplog) ->
         asyncio.run(grounding.ground("anything", tag_expr=None))
 
     assert "gone" in caplog.text, f"the unserved name must be logged; got {caplog.text!r}"
+
+
+# --- the exclude side, measured --------------------------------------
+#
+# `_fanout_collections` opens with `del exclude_expr`, and qmd's
+# `collections` push-down is include-only, so a `-tag` in a `ground`
+# tail looks inert. It is not: `ground()` resolves the exclude into
+# `searched_scope_list` *before* choosing a fast path, and that list
+# is what the fan-out dispatches. The parameter is discarded at the
+# point where the information has already been applied, and
+# `searched_scope` reports the result so a reader can see it applied.
+#
+# The test below measures that, so the next reader of the `del` can
+# check it rather than re-derive it.
+
+
+def test_an_exclude_only_ground_drops_the_collection_from_the_dispatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from lies.mcp import grounding
+    from lies.query.tag_expr import parse
+
+    _registry_serving(monkeypatch, "alpha", "beta", "gamma")
+
+    async def _validate(scope):
+        return list(scope), []
+
+    monkeypatch.setattr("lies.qmd.access.validate_scope", _validate)
+
+    seen: list[Any] = []
+
+    async def _fake_daemon_tool(name, arguments, **kwargs):
+        seen.append(arguments["collections"])
+        return SimpleNamespace(structured_content={"results": []})
+
+    monkeypatch.setattr("lies.qmd.access.daemon_tool", _fake_daemon_tool)
+
+    exclude = parse("c:beta")
+    digest = asyncio.run(grounding.ground("anything", tag_expr=None, exclude_expr=exclude))
+
+    assert seen == [["alpha", "gamma"]], (
+        f"the excluded collection must not reach the daemon; got {seen!r}"
+    )
+    assert digest.searched_scope == ["alpha", "gamma"], (
+        "searched_scope must show the exclusion took effect, not the requested scope"
+    )
+    assert digest.exclude_expr is exclude, "the digest still reports the expression it was given"

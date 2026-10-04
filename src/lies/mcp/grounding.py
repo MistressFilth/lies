@@ -181,8 +181,17 @@ async def _fanout_collections(
     The daemon's ``collections`` parameter is a true push-down: the
     candidate set is narrowed inside qmd, so a single hybrid call
     against the resolved list returns in-scope rows from every named
-    collection. ``exclude_expr`` is preserved for signature parity
-    but not enforced here (per-collection qmd filters are include-only).
+    collection.
+
+    ``exclude_expr`` is not enforced here because by this point it
+    has already been applied. ``ground`` resolves the include and
+    exclude AST into ``searched_scope_list`` -- the include against
+    ``_collections_matching``, the exclude subtracted -- and that
+    list is the ``collection_names`` argument. qmd's own filters are
+    include-only, which is why there is nothing left to pass down.
+    The parameter stays for signature parity across the three
+    fan-out entry points. Pinned by
+    ``test_an_exclude_only_ground_drops_the_collection_from_the_dispatch``.
 
     Pre-validates ``collection_names`` against the daemon's binding
     collection set via :func:`access.validate_scope` so one
