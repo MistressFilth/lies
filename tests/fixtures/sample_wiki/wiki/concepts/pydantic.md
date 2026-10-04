@@ -22,11 +22,14 @@ without writing a hand-rolled encoder.
 ```python
 from pydantic import BaseModel
 
+
 class Inner(BaseModel):
     n: int
 
+
 class Outer(BaseModel):
     inner: Inner
+
 
 Outer(inner={"n": 1})  # parses + validates recursively
 ```

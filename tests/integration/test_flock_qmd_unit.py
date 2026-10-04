@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import importlib
 import os
 from pathlib import Path
 
@@ -14,20 +13,21 @@ from lies.cli.operator import flock_app
 
 @pytest.fixture
 def qmd_lock_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Path]:
-    """Redirect the qmd lock-path constants to ``tmp_path`` and reload the lock module.
+    """Redirect the qmd lock path to ``tmp_path``.
 
-    ``_LOCK_PATH`` / ``_PID_PATH`` / ``_STATE_PATH`` are module-level
-    constants resolved at import time. After ``setenv`` we
-    ``importlib.reload`` the lock module so the new path is captured.
+    The lock module no longer pre-creates a module-level triad
+    at import time (M-6); production acquire/release threads its
+    own paths through ``_lock_paths()``. The fixture sets the
+    env var and resolves the triad once for this test.
     """
     monkeypatch.setenv("LIES_QMD_LOCK_PATH", str(tmp_path / "qmd.lock"))
     from lies.qmd import lock as lock_mod  # type: ignore[import-not-found]
 
-    importlib.reload(lock_mod)
+    lock_path, pid_path, state_path = lock_mod._lock_paths()
     return {
-        "lock": lock_mod._LOCK_PATH,
-        "pid": lock_mod._PID_PATH,
-        "state": lock_mod._STATE_PATH,
+        "lock": lock_path,
+        "pid": pid_path,
+        "state": state_path,
     }
 
 

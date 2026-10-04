@@ -137,7 +137,29 @@ async def synthesize(
         top_k=10,  # more context for the synthesizer
     )
 
-    # 2. Empty digest → honest gap prose, no LLM call.
+    # 2. The retrieval did not finish → inconclusive, not empty. This
+    # branch is why ``ArchivistDigest.transient`` exists: a dispatch
+    # failure and a clean miss both arrive with zero citations, and
+    # collapsing them tells the user their library has nothing when
+    # the process is at fault. The field was set at three sites and
+    # read at none.
+    if digest.transient:
+        return SynthesizeEnvelope(
+            question=question,
+            tag_expr=tag_expr,
+            answer=(
+                "Retrieval could not complete, so this lookup is "
+                "inconclusive — it is not a statement about the library."
+            ),
+            citations=[],
+            pages_read=[],
+            fallback_used=True,
+            synthesis_used=False,
+            fallback_reason="ground() dispatch failed; no corpus claim made",
+            searched_scope=list(digest.searched_scope or []),
+        )
+
+    # 3. Empty digest → honest gap prose, no LLM call.
     if not digest.citations:
         return SynthesizeEnvelope(
             question=question,
@@ -148,9 +170,10 @@ async def synthesize(
             fallback_used=True,
             synthesis_used=False,
             fallback_reason="ground() returned no citations",
+            searched_scope=list(digest.searched_scope or []),
         )
 
-    # 3. Re-hydrate ArchivistDigest → LibrarianOutput-compatible PageExcerpts.
+    # 4. Re-hydrate ArchivistDigest → LibrarianOutput-compatible PageExcerpts.
     excerpts: list[PageExcerpt] = []
     for cite in digest.citations:
         span = Span(
@@ -169,7 +192,7 @@ async def synthesize(
             )
         )
 
-    # 4. Build the QueryDeps the synthesizer consumes.
+    # 5. Build the QueryDeps the synthesizer consumes.
     lib_out = LibrarianOutput(
         tag_expr=tag_expr,
         exclude_expr=exclude_expr,
@@ -183,7 +206,7 @@ async def synthesize(
         format_hint="md",
     )
 
-    # 5. Resolve the synthesizer model.
+    # 6. Resolve the synthesizer model.
     try:
         model = _resolve_synthesizer_model()
     except Exception as exc:
@@ -198,7 +221,7 @@ async def synthesize(
             fallback_reason=f"{type(exc).__name__}: {exc}",
         )
 
-    # 6. Run the synthesizer agent.
+    # 7. Run the synthesizer agent.
     #
     # ``synthesize`` is itself ``async`` (so it can ``await ground()``
     # from inside the daemon's event loop without ``asyncio.run``).
@@ -327,8 +350,18 @@ def librarian_agent_run(deps: Any) -> Any:
         # but a log reader can correlate the fallback against the
         # user's question. ``searched_scope`` is empty because the
         # librarian never executed its ``search()`` tool.
+        #
+        # ``transient=True, no_coverage=False`` rather than
+        # ``no_coverage=True``: the librarian LLM never ran, so this
+        # bundle is a fact about the run and carries no information
+        # about the corpus. ``no_coverage=True`` here rendered as
+        # "No relevant content found in library" on the primary
+        # human-facing tool, naming a corpus problem for a model
+        # outage. This branch predates the seam work and sat
+        # unchanged beside the contract that was rewritten next to
+        # it.
         log.warning(
-            "librarian_agent_run: dispatch failed (%s: %s); returning empty no_coverage fallback",
+            "librarian_agent_run: dispatch failed (%s: %s); returning transient fallback",
             type(exc).__name__,
             exc,
         )
@@ -337,8 +370,9 @@ def librarian_agent_run(deps: Any) -> Any:
             exclude_expr=getattr(deps, "exclude_expr", None),
             excerpts=[],
             distinct_pages=0,
-            no_coverage=True,
+            no_coverage=False,
             searched_scope=[],
+            transient=True,
         )
     out = result.output
     # Defensive: pydantic-ai's ``output_type=LibrarianOutput`` means
@@ -488,6 +522,26 @@ def _ask_impl(
 
     deps = _build_query_deps(question=question, tag_expr=tag_expr, exclude_tags=exclude_tags)
     lib_out = librarian_agent_run(deps)
+
+    if lib_out.transient:
+        # The librarian never dispatched. "No relevant content found
+        # in library" would name a corpus problem for a model
+        # outage, and the string is the one the librarian contract
+        # designates as the false claim.
+        return SynthesizeEnvelope(
+            question=question,
+            tag_expr=tag_expr,
+            answer=(
+                "The librarian could not be dispatched, so this lookup is "
+                "inconclusive — it is not a statement about the library."
+            ),
+            citations=[],
+            pages_read=[],
+            fallback_used=True,
+            synthesis_used=False,
+            fallback_reason="librarian dispatch failed; no corpus claim made",
+            searched_scope=list(lib_out.searched_scope or []),
+        )
 
     if not lib_out.excerpts:
         return SynthesizeEnvelope(

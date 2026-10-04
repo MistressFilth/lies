@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import logging
 import warnings
+from types import SimpleNamespace
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -208,27 +210,27 @@ def test_ground_returns_empty_digest_on_librarian_exception(monkeypatch) -> None
     assert digest.distinct_pages == 0
 
 
-def test_ground_librarian_exception_emits_no_logfire_warning(monkeypatch, recwarn) -> None:
-    """Regression for the LogfireNotConfiguredWarning noise on the exception path.
+def test_ground_dispatch_failure_logs_and_stays_off_logfire(
+    monkeypatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A dispatch failure is logged, and logfire never sees a warning.
 
-    Pins Fix 4: when the dispatch path raises, the warning must flow
-    through stdlib ``warnings`` (not ``logfire.warning``) so a
-    non-configured logfire environment does not emit
-    ``LogfireNotConfiguredWarning`` on every ground() call. The
-    user-visible signal still surfaces via ``recwarn`` — one
-    ``UserWarning`` carrying the dispatch's failure reason.
+    Regression for the ``LogfireNotConfiguredWarning`` noise on the
+    exception path: the failure must not go through ``logfire.warning``
+    at all, or a non-configured logfire environment emits a
+    ``LogfireNotConfiguredWarning`` on every ``ground()`` call.
 
-    After the library-mode read-side rewrite, unscoped ``ground()``
-    dispatches via the fan-out helper (``_fanout_unscoped``) rather
-    than the F18 librarian. The migration: the dispatch-exception
-    branch is exercised by raising from the fan-out mock; the
-    surfaced warning now carries "fan-out dispatch failed" instead
-    of "librarian dispatch failed". The stdlib-warnings contract is
-    unchanged — logfire never sees the warning.
+    The surface changed from a stdlib ``UserWarning`` to an ``ERROR``
+    log line, and both halves matter. ``warnings.warn`` is filtered
+    once per location by default, so a daemon that fails on every
+    call went silent after the first one — the operator saw it once
+    and then had nothing. A log line repeats. What the test pins is
+    that the failure is *visible* and that it does not arrive via
+    logfire.
 
-    Seeds ``library_collection_names`` with a non-empty set so the
-    ``no_library=True`` early return doesn't short-circuit before
-    the fan-out mock can be exercised.
+    The flag changed with it: a dispatch that raised used to report
+    ``no_coverage=True``, which claims the corpus is empty because a
+    process failed.
     """
     from lies.library import registry as registry_mod
     from lies.mcp import grounding
@@ -246,17 +248,19 @@ def test_ground_librarian_exception_emits_no_logfire_warning(monkeypatch, recwar
 
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        digest = _ground("what is pydantic?")
+        with caplog.at_level(logging.ERROR, logger="lies.mcp.grounding"):
+            digest = _ground("what is pydantic?")
 
-    assert digest.no_coverage is True
+    assert digest.transient is True
+    assert digest.no_coverage is False, (
+        "a dispatch that raised learned nothing about the corpus; reporting it "
+        "as empty is the false claim the transient flag exists to prevent"
+    )
     logfire_warns = [w for w in caught if "LogfireNotConfiguredWarning" in type(w.message).__name__]
     assert logfire_warns == [], f"unexpected LogfireNotConfiguredWarning: {logfire_warns}"
-    # The user-visible signal still surfaces — but as a stdlib warning,
-    # not a logfire one. After the rewrite the unscoped path surfaces
-    # "fan-out dispatch failed"; the contract (stdlib warnings, not
-    # logfire) is the same as the pre-rewrite librarian path.
-    user_warns = [w for w in caught if "fan-out dispatch failed" in str(w.message)]
-    assert len(user_warns) >= 1
+    assert any("fan-out dispatch failed" in r.getMessage() for r in caplog.records), (
+        f"the failure must be logged; got {[r.getMessage() for r in caplog.records]!r}"
+    )
 
 
 def test_ground_clamps_top_k_to_bounds(monkeypatch) -> None:
@@ -490,6 +494,33 @@ def test_ground_searched_scope_untagged_returns_all_collections(monkeypatch) -> 
         "library_collection_names",
         lambda: frozenset({"opencode", "claude_platform", "mermaid"}),
     )
+    # The unscoped fan-out dispatches against
+    # ``library_collection_metas``, not ``library_collection_names``.
+    # Unseeded, the real ``_fanout_unscoped`` dispatches nothing -- and
+    # ``searched_scope`` now reports what was dispatched, so the
+    # assertion below is a statement about the dispatch rather than
+    # about the request.
+    monkeypatch.setattr(
+        registry_mod,
+        "library_collection_metas",
+        lambda: [
+            registry_mod.LibraryCollectionMeta(name="opencode", tags=("cli",)),
+            registry_mod.LibraryCollectionMeta(name="claude_platform", tags=("api",)),
+            registry_mod.LibraryCollectionMeta(name="mermaid", tags=("docs",)),
+        ],
+    )
+
+    async def _all_served(scope):
+        return list(scope), []
+
+    monkeypatch.setattr("lies.qmd.access.validate_scope", _all_served)
+
+    async def _no_rows(name, arguments, **kwargs):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(structured_content={"results": []})
+
+    monkeypatch.setattr("lies.qmd.access.daemon_tool", _no_rows)
 
     def fake_librarian(deps):
         from lies.agents.librarian import LibrarianOutput
@@ -546,19 +577,34 @@ def test_ground_searched_scope_tagged_returns_matching_only(monkeypatch) -> None
 
     _patch_librarian(monkeypatch, grounding, fake_librarian)
 
+    # A bare (unqualified) tag still resolves to the tagged fast-path,
+    # which dispatches through the seam. The assertion below is about
+    # ``searched_scope``, so an empty result set is fine — the seam
+    # merely must not be reached live.
+    async def fake_daemon_tool(name, arguments, *, timeout=None):  # noqa: ARG001
+        return SimpleNamespace(content=[], is_error=False, structured_content={"results": []})
+
+    import lies.qmd.access
+
+    monkeypatch.setattr(lies.qmd.access, "daemon_tool", fake_daemon_tool)
+    _stub_seam(monkeypatch)
+
     digest = _ground("q", tag_expr="opencode")
     assert digest.searched_scope == ["opencode"]
 
 
 def test_ground_searched_scope_populated_on_librarian_exception(monkeypatch) -> None:
-    """Librarian dispatch failure → ``searched_scope`` is still populated.
+    """Librarian dispatch failure → ``transient``, and the scope is still reported.
 
-    Pins Bug C fail-soft posture: ``searched_scope`` is computed
-    once (before the librarian dispatch) and threaded through every
-    return path. A failed dispatch reports ``no_coverage=True`` but
-    the digest still tells the caller which collections were
-    searched — same contract as ``Orchestrator.run_query`` writing
-    ``searched_scope`` before the F18 ``no_coverage`` decision.
+    Pins the fail-soft posture: ``searched_scope`` is computed once
+    (before the dispatch) and threaded through every return path.
+
+    The flag changed. A dispatch that raised used to report
+    ``no_coverage=True``, which told the caller the corpus had nothing
+    — a claim about the index produced by a failure of the process. It
+    is now ``transient=True, no_coverage=False``. The scope is
+    unchanged and still reported, because that part was always a
+    statement about what was attempted.
     """
     from lies.library import registry as registry_mod
     from lies.mcp import grounding
@@ -574,9 +620,14 @@ def test_ground_searched_scope_populated_on_librarian_exception(monkeypatch) -> 
             raise RuntimeError("qmd daemon offline")
 
     monkeypatch.setattr(grounding, "librarian_agent", lambda: _BoomAgent())
+    monkeypatch.setattr(grounding, "_fanout_unscoped", _boom_unscoped_fanout)
 
     digest = _ground("q")
-    assert digest.no_coverage is True
+    assert digest.transient is True
+    assert digest.no_coverage is False, (
+        "a dispatch that raised learned nothing about the corpus and has no "
+        "standing to report it as empty"
+    )
     assert digest.searched_scope == ["claude_platform", "opencode"]
 
 
@@ -620,8 +671,8 @@ def test_ground_library_collection_names_cached_across_calls(monkeypatch, tmp_pa
     # actually walks the qmd CLI — the cache assertion only cares
     # about the registry's underlying-body call count, not the
     # retrieval outcome.
-    async def _empty_fanout(*_args, **_kwargs):
-        return []
+    async def _empty_fanout(*args, **kwargs):
+        return grounding._FanoutResult(excerpts=[], searched=[], unserved=[])
 
     monkeypatch.setattr(grounding, "_fanout_unscoped", _empty_fanout)
     monkeypatch.setattr(grounding, "_query_tagged_collections", _empty_fanout)
@@ -740,6 +791,45 @@ def _patch_librarian(monkeypatch, grounding_module, fake_fn):
     monkeypatch.setattr(grounding_module, "librarian_agent", lambda: _FakeAgent())
 
 
+async def _boom_unscoped_fanout(*_args, **_kwargs):
+    """A fan-out that never dispatched, for the transient-branch tests."""
+    raise RuntimeError("qmd daemon offline")
+
+
+def _stub_seam(monkeypatch, rows: list | None = None, *, stub_daemon: bool = True) -> list[dict]:
+    """Stub the qmd seam so a fan-out dispatches and returns ``rows``.
+
+    Both halves, or neither. Stubbing only ``daemon_tool`` leaves the
+    real ``validate_scope`` running, which reads the served set off
+    the stub's ``structured_content`` -- empty -- and reports every
+    requested collection as unserved. The digest then says it searched
+    nothing, which is correct and is not what these tests are about.
+
+    Returns the list the recorded calls are appended to, so a test can
+    assert on what reached the daemon. ``stub_daemon=False`` stubs
+    only the scope check, for a test that supplies its own
+    ``daemon_tool`` recorder -- stubbing both would silently discard
+    the recorder and the test would assert on an empty call list.
+    """
+    import lies.qmd.access
+
+    calls: list[dict] = []
+
+    async def _served(scope):
+        return list(scope), []
+
+    async def _daemon_tool(name, arguments, **kwargs):  # noqa: ARG001
+        calls.append(dict(arguments))
+        return SimpleNamespace(
+            content=[], is_error=False, structured_content={"results": rows or []}
+        )
+
+    monkeypatch.setattr(lies.qmd.access, "validate_scope", _served)
+    if stub_daemon:
+        monkeypatch.setattr(lies.qmd.access, "daemon_tool", _daemon_tool)
+    return calls
+
+
 def _patch_fanout(monkeypatch, grounding_module, fake_fn):
     """Replace ``_fanout_unscoped(...)`` with an async fake returning ``fake_fn(...)``.
 
@@ -762,8 +852,19 @@ def _patch_fanout(monkeypatch, grounding_module, fake_fn):
     the mock bypasses it.
     """
 
-    async def _async_fake(*args, **kwargs):
-        return fake_fn(*args, **kwargs)
+    # The fake takes the real signature rather than ``*args``. Two
+    # reasons, both learned the hard way: a positional read of the
+    # scope argument raised inside the fake, and ``ground`` reported
+    # that as a *dispatch failure* rather than as the test's own bug;
+    # and ``_fanout_unscoped`` takes three arguments while
+    # ``_query_tagged_collections`` takes four, so one shared
+    # ``*args`` fake cannot have a single explicit signature.
+    async def _async_fake(question, exclude_expr, top_k):
+        return grounding_module._FanoutResult(
+            excerpts=fake_fn(question, exclude_expr, top_k),
+            searched=["_patch_fanout_fake"],
+            unserved=[],
+        )
 
     monkeypatch.setattr(grounding_module, "_fanout_unscoped", _async_fake)
 
@@ -801,8 +902,17 @@ def _patch_tagged_fanout(monkeypatch, grounding_module, fake_fn):
     legacy F18 librarian path (which is its own contract test).
     """
 
-    async def _async_fake(*args, **kwargs):
-        return fake_fn(*args, **kwargs)
+    # ``searched`` is what the daemon was actually asked for, so the
+    # fake takes the real signature rather than ``*args`` -- the call
+    # site uses keywords, and a positional read of argument 3 raised
+    # inside the fake, which ``ground`` then reported as a dispatch
+    # failure rather than as the test's own bug.
+    async def _async_fake(question, exclude_expr, top_k, collection_names):
+        return grounding_module._FanoutResult(
+            excerpts=fake_fn(question, exclude_expr, top_k, collection_names),
+            searched=list(collection_names),
+            unserved=[],
+        )
 
     monkeypatch.setattr(grounding_module, "_query_tagged_collections", _async_fake)
 
@@ -1106,30 +1216,30 @@ def test_ground_tagged_dispatches_via_qmd_fanout_not_librarian(monkeypatch) -> N
     from lies.mcp import grounding
 
     qmd_calls: list[dict] = []
+    rows = [
+        {
+            "file": "switchyard/concepts/switchyard",
+            "title": "Switchyard",
+            "score": 0.95,
+            "line": 1,
+            # The daemon's hit carries a snippet, which is what
+            # ``_fanout_collections`` turns into the PageExcerpt's
+            # spans. Without it the citation-building loop in
+            # :func:`ground` skips the excerpt (no prose body to
+            # truncate) and the digest's citations list is empty.
+            "snippet": "Switchyard is the LiteLLM replacement.",
+        },
+    ]
 
-    def fake_qmd_query(*_args, **kwargs):
+    async def fake_daemon_tool(name, arguments, *, timeout=None):  # noqa: ARG001
         qmd_calls.append(
             {
-                "question": kwargs.get("question") or _args[1] if len(_args) > 1 else None,
-                "limit": kwargs.get("limit"),
-                "collection_filter": kwargs.get("collection_filter"),
+                "question": arguments.get("searches"),
+                "limit": arguments.get("limit"),
+                "collection_filter": set(arguments.get("collections") or ()),
             }
         )
-        # Mirror the qmd wire shape (``path``, ``title``, ``score``,
-        # ``snippet``) so the production ``_fanout_collections``
-        # populates the PageExcerpt's spans list from the snippet
-        # field. Without ``snippet``, the citation-building loop in
-        # :func:`ground` skips the excerpt (no prose body to
-        # truncate) and the digest's citations list is empty.
-        return [
-            {
-                "path": "switchyard/concepts/switchyard",
-                "title": "Switchyard",
-                "score": 0.95,
-                "line": 1,
-                "snippet": "Switchyard is the LiteLLM replacement.",
-            },
-        ]
+        return SimpleNamespace(content=[], is_error=False, structured_content={"results": rows})
 
     librarian_called = []
 
@@ -1166,14 +1276,13 @@ def test_ground_tagged_dispatches_via_qmd_fanout_not_librarian(monkeypatch) -> N
         lambda: frozenset(),
     )
 
-    # Patch the qmd CLI callable that ``_fanout_collections`` dispatches
-    # against. Importing it lazily inside the helper means we patch
-    # the ``lies.qmd.cli`` module attribute, which is what the
-    # ``from lies.qmd.cli import qmd_query`` inside
-    # ``_fanout_collections`` rebinds every call.
-    import lies.qmd.cli as qmd_cli
+    # ``_fanout_collections`` dispatches through the seam, not the CLI.
+    # Stubbing ``qmd_query`` no longer intercepts it, and the real
+    # reachability probe fires.
+    import lies.qmd.access
 
-    monkeypatch.setattr(qmd_cli, "qmd_query", fake_qmd_query)
+    _stub_seam(monkeypatch, stub_daemon=False)
+    monkeypatch.setattr(lies.qmd.access, "daemon_tool", fake_daemon_tool)
 
     digest = _ground(
         "Set up Switchyard to replace LiteLLM",
@@ -1269,15 +1378,23 @@ def test_ground_tagged_fast_path_under_budget(monkeypatch) -> None:
     assert digest.citations[0].snippet.startswith("Switchyard")
 
 
-def test_ground_tagged_dispatch_exception_returns_no_coverage(monkeypatch) -> None:
-    """Tagged fast-path dispatch exception → ``no_coverage=True``, stdlib warning.
+def test_ground_tagged_dispatch_exception_is_transient(
+    monkeypatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Tagged fast-path dispatch exception → ``transient``, and a logged failure.
 
     Pins the fail-soft posture on the tagged fast-path: when
     ``_query_tagged_collections`` raises (qmd daemon offline,
-    timeout, etc.), ``ground()`` returns a digest with
-    ``no_coverage=True`` and surfaces the failure via stdlib
-    ``warnings`` — same contract as the unscoped fast-path and the
-    legacy librarian path. No logfire warning is emitted.
+    timeout, etc.), ``ground()`` does not raise and does not crash.
+
+    Two things changed and both are the point. The flag: it was
+    ``no_coverage=True``, a claim about the corpus produced by a
+    failure of the process; it is now ``transient=True,
+    no_coverage=False``. The surface: the failure was surfaced
+    through stdlib ``warnings``, which Python filters once per
+    location by default, so a persistently failing daemon went quiet
+    after the first occurrence. It is now an ``ERROR`` log line,
+    which repeats.
     """
     from lies.library import registry as registry_mod
     from lies.library.registry import LibraryCollectionMeta
@@ -1304,28 +1421,26 @@ def test_ground_tagged_dispatch_exception_returns_no_coverage(monkeypatch) -> No
 
     monkeypatch.setattr(grounding, "_query_tagged_collections", _boom_tagged)
 
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
+    with caplog.at_level(logging.ERROR, logger="lies.mcp.grounding"):
         digest = _ground(
             "Set up Switchyard to replace LiteLLM",
             tag_expr="c:switchyard",
             top_k=5,
         )
 
-    assert digest.no_coverage is True
+    assert digest.transient is True
+    assert digest.no_coverage is False, (
+        "a dispatch that raised learned nothing about the corpus; reporting "
+        "it as empty is the false claim the transient flag exists to prevent"
+    )
     assert digest.citations == []
     assert digest.distinct_pages == 0
     # ``searched_scope`` reflects the resolved scope even on the
     # exception path — the operator still sees which collections
     # the system attempted.
     assert digest.searched_scope == ["switchyard"]
-    # The user-visible signal surfaces as a stdlib warning, not a
-    # logfire one.
-    logfire_warns = [w for w in caught if "LogfireNotConfiguredWarning" in type(w.message).__name__]
-    assert logfire_warns == [], f"unexpected LogfireNotConfiguredWarning: {logfire_warns!r}"
-    tagged_warns = [w for w in caught if "tagged fan-out dispatch failed" in str(w.message)]
-    assert len(tagged_warns) >= 1, (
-        f"expected a 'tagged fan-out dispatch failed' warning, saw: {[str(w.message) for w in caught]!r}"
+    assert any("tagged fan-out dispatch failed" in r.getMessage() for r in caplog.records), (
+        f"the failure must be logged, not warned once; got {[r.getMessage() for r in caplog.records]!r}"
     )
 
 
@@ -1487,15 +1602,18 @@ def test_ground_tagged_with_resolved_collection_calls_fanout_only(
 
     qmd_calls: list[set] = []
 
-    def fake_qmd_query(*_args, **kwargs):
-        filter_set = kwargs.get("collection_filter")
-        qmd_calls.append(frozenset(filter_set) if filter_set is not None else None)
+    async def fake_daemon_tool(name, arguments, *, timeout=None):  # noqa: ARG001
+        collections = arguments.get("collections")
+        filter_set = frozenset(collections) if collections is not None else None
+        qmd_calls.append(filter_set)
         coll = next(iter(filter_set)) if filter_set else "unknown"
-        return [{"path": f"{coll}/concepts/x", "title": "X", "score": 0.9}]
+        rows = [{"file": f"{coll}/concepts/x", "title": "X", "score": 0.9}]
+        return SimpleNamespace(content=[], is_error=False, structured_content={"results": rows})
 
-    import lies.qmd.cli as qmd_cli
+    import lies.qmd.access
 
-    monkeypatch.setattr(qmd_cli, "qmd_query", fake_qmd_query)
+    _stub_seam(monkeypatch, stub_daemon=False)
+    monkeypatch.setattr(lies.qmd.access, "daemon_tool", fake_daemon_tool)
 
     digest = _ground(
         "test",
@@ -1503,14 +1621,14 @@ def test_ground_tagged_with_resolved_collection_calls_fanout_only(
         top_k=5,
     )
 
-    # The fan-out dispatched against each matched collection
-    # exactly once — never against the unrelated ``claude_platform``.
-    unique_filters = set(qmd_calls)
-    matched_names = {next(iter(f)) for f in unique_filters if f}
+    # The dispatch covered each matched collection and no other. The
+    # fan-out is one call carrying the whole ``collections`` list rather
+    # than one call per collection, so the recorded sets union.
+    matched_names = set().union(*(f for f in qmd_calls if f))
     assert {"switchyard", "opencode"}.issubset(matched_names), (
         f"expected dispatch against switchyard + opencode; saw {matched_names!r}"
     )
-    # No filter set included ``claude_platform`` (unmatched).
+    # No dispatch included ``claude_platform`` (unmatched).
     for f in qmd_calls:
         if f is None:
             continue

@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from lies.qmd._subprocess import _run_qmd
+from lies.qmd._subprocess import QmdWedgeError, _run_qmd
 
 
 def test_run_qmd_returns_completed_process_on_success(tmp_path: Path):
@@ -29,18 +29,14 @@ def test_run_qmd_returns_completed_process_on_success(tmp_path: Path):
 def test_run_qmd_kills_child_on_timeout(tmp_path: Path):
     """A subprocess that ignores SIGTERM gets SIGKILL'd on timeout.
 
-    Marked slow because the test necessarily waits the full
-    ``timeout`` (1.0s) for the SIGKILL path to fire; this is well
-    over the 0.15s hard-limit gate enforced for non-slow tests.
-    Sibling qmd timeout tests in the repo follow the same
-    convention.
+    Marked slow: waits the full ``timeout`` (1.0s) for the SIGKILL
+    path to fire, well over the 0.15s hard-limit gate.
     """
     import signal
 
     script = tmp_path / "zombie.py"
     script.write_text(
         "import signal, time, os\n"
-        # Ignore SIGTERM so communicate(timeout=...) can't interrupt cleanly.
         f"signal.signal({signal.SIGTERM}, signal.SIG_IGN)\n"
         "time.sleep(60)\n"
     )
@@ -50,28 +46,16 @@ def test_run_qmd_kills_child_on_timeout(tmp_path: Path):
             cwd=tmp_path,
             timeout=1.0,
         )
-    # If the helper didn't SIGKILL, the zombie would persist. Check
-    # by trying to start a fresh process — should succeed promptly.
-    # (If the test machine is slow, this assertion is informational;
-    # the SIGKILL semantics are best-effort.)
 
 
 def test_run_qmd_does_not_deadlock_on_long_stderr(tmp_path: Path):
     """A subprocess writing 100 KB to stderr must not hang the parent.
 
-    The previous ``capture_output=True`` implementation would block
-    on the OS pipe buffer fill (64 KB); the helper's Popen + bounded
-    communicate(timeout=...) returns cleanly.
+    Popen + bounded communicate(timeout=...) drains pipes
+    concurrently; the previous ``capture_output=True`` would block
+    on the 64 KB OS pipe buffer.
     """
     script = tmp_path / "loud.py"
-    # The brief's original draft used time.sleep(0.5) here. Compressed
-    # to 0.05s to fit the 0.15s wall-clock budget enforced by the
-    # pre-commit unit-test gate. The test's contract (parent doesn't
-    # deadlock on a long stderr write) is independent of the post-
-    # write hold time: Popen + communicate either reads the pipe
-    # promptly or stalls, and a 0.05s hold is enough to surface the
-    # stall on a regression. The ``dt < 3.0`` budget gives plenty of
-    # headroom for the spawn + 100KB-stderr-write + 50ms-sleep cycle.
     script.write_text(
         "import sys\n"
         "sys.stderr.write('x' * 100_000)\n"
@@ -94,38 +78,20 @@ def test_run_qmd_does_not_deadlock_on_long_stderr(tmp_path: Path):
 def test_run_qmd_kills_process_group_on_timeout(tmp_path: Path):
     """Timeout SIGKILLs the entire process group, not just the immediate child.
 
-    On this host, qmd is a bun shim that forks node.js as a grandchild
-    and exec's into it. ``proc.kill()`` alone leaves the grandchild
-    orphaned in its own process group. This test pins the
-    ``start_new_session=True`` + ``os.killpg`` contract: a forked
-    grandchild that ignores SIGTERM and outlasts the timeout must be
-    reaped along with its parent.
-
-    Marked slow because the test waits the full ``timeout`` (1.0s)
-    for the SIGKILL path to fire, well over the 0.15s hard-limit
-    gate enforced for non-slow tests.
+    Pins the ``start_new_session=True`` + ``os.killpg`` contract:
+    a forked grandchild that ignores SIGTERM and outlasts the
+    timeout must be reaped along with its parent. qmd is a bun
+    shim that forks node.js; ``proc.kill()`` alone would leave
+    the grandchild orphaned.
     """
     script = tmp_path / "spawn_grandchild.py"
-    # Two-child tree:
-    # - immediate child of helper: forks the grandchild, then sleeps
-    #   long enough that the helper's timeout fires while both are
-    #   still alive.
-    # - grandchild: ignores SIGTERM (SIGKILL is uncatchable, so the
-    #   only way for it to survive a killpg is for the group to be
-    #   intact — which is exactly the regression we are guarding
-    #   against).
     script.write_text(
         "import os, signal, time\n"
         "pid = os.fork()\n"
         "if pid == 0:\n"
-        # Grandchild: ignore SIGTERM so only SIGKILL via killpg can
-        # end it. SIGKILL on the wrong process group leaves this
-        # orphan alive — the regression we're pinning.
         "    signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
         "    time.sleep(60)\n"
         "else:\n"
-        # Immediate child: wait so the helper sees both processes
-        # alive at timeout, then the helper's killpg must reap both.
         "    time.sleep(60)\n"
     )
     with pytest.raises(subprocess.TimeoutExpired):
@@ -134,11 +100,7 @@ def test_run_qmd_kills_process_group_on_timeout(tmp_path: Path):
             cwd=tmp_path,
             timeout=1.0,
         )
-    # Allow the kernel a moment to reap both children after killpg.
     time.sleep(0.5)
-    # ``pgrep`` returns 1 (and empty stdout) when no matches. If the
-    # helper failed to kill the group, the grandchild or the immediate
-    # child would still be alive and pgrep would list them.
     probe = subprocess.run(
         ["pgrep", "-f", "spawn_grandchild.py"],
         capture_output=True,
@@ -154,20 +116,14 @@ def test_run_qmd_kills_process_group_on_timeout(tmp_path: Path):
 def test_run_qmd_long_stderr_kills_grandchild(tmp_path: Path):
     """Long-stderr path also kills the entire process group on timeout.
 
-    The bug fixed in this branch surfaces most acutely when qmd's
-    stderr fills the OS pipe buffer AND the process is slow enough
-    to hit the timeout: the child blocks writing stderr, the parent
-    hits the timeout, and the SIGKILL must reach the whole group so
-    the grandchild does not outlive the parent. This test combines
-    both failure modes (100 KB stderr write + forked grandchild
-    that ignores SIGTERM) into one scenario.
+    Combines both failure modes (100 KB stderr write + forked
+    grandchild that ignores SIGTERM): child blocks writing stderr,
+    parent hits the timeout, SIGKILL must reach the whole group
+    so the grandchild does not outlive the parent.
     """
     script = tmp_path / "loud_grandchild.py"
     script.write_text(
         "import os, signal, sys, time\n"
-        # Fill the OS pipe buffer so the parent cannot drain stderr
-        # promptly. This is the precondition for the timeout path to
-        # fire rather than a clean exit.
         "sys.stderr.write('x' * 100_000)\n"
         "sys.stderr.flush()\n"
         "pid = os.fork()\n"
@@ -192,4 +148,149 @@ def test_run_qmd_long_stderr_kills_grandchild(tmp_path: Path):
     )
     assert probe.returncode != 0 or not probe.stdout.strip(), (
         f"orphan subprocesses still alive after killpg: {probe.stdout!r}"
+    )
+
+
+# `_child_env` forces NO_COLOR=1 on every qmd child. Verified against
+# qmd 2.5.3: its only NO_COLOR consumer is
+# `dist/cli/qmd.js:92`, `useColor = !NO_COLOR && process.stdout.isTTY`,
+# and LIES always pipes, so colour is already off and the override
+# cannot change today's bytes. The `⠋ Gathering information` spinner
+# that motivated an earlier form of these tests is emitted by `ipull`
+# during a *model download*, not gated by NO_COLOR — the fix is a warm
+# model cache, not an env var.
+
+
+def test_child_env_forces_no_color(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``NO_COLOR`` is set on every qmd child.
+
+    Defence in depth, not a live fix: under a pipe qmd's colour is
+    already off.
+    """
+    from lies.qmd._subprocess import _child_env
+
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    assert _child_env()["NO_COLOR"] == "1"
+
+
+def test_child_env_overrides_an_operator_who_re_enabled_color(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An exported ``NO_COLOR=0`` must not reach a stream LIES parses.
+
+    The subprocess inherits the operator's shell environment;
+    someone who re-enabled colour in their own terminal would
+    otherwise change what ``qmd_query`` parses.
+    """
+    from lies.qmd._subprocess import _child_env
+
+    monkeypatch.setenv("NO_COLOR", "0")
+    assert _child_env()["NO_COLOR"] == "1"
+
+
+def test_child_env_inherits_the_rest_of_the_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only ``NO_COLOR`` is overridden; nothing else is dropped.
+
+    qmd needs the inherited environment for its cache roots,
+    index override, embedding parallelism, and credentials.
+    """
+    from lies.qmd._subprocess import _child_env
+
+    monkeypatch.setenv("QMD_INDEX", "/tmp/some-index.sqlite")
+    monkeypatch.setenv("QMD_EMBED_PARALLELISM", "1")
+    env = _child_env()
+    assert env["QMD_INDEX"] == "/tmp/some-index.sqlite"
+    assert env["QMD_EMBED_PARALLELISM"] == "1"
+
+
+def test_run_qmd_passes_the_child_env_to_the_process(tmp_path: Path) -> None:
+    """The override is actually applied, not merely computed.
+
+    Runs a real child through ``_run_qmd`` and reads back what it
+    received.
+    """
+    import sys
+
+    script = tmp_path / "show_env.py"
+    script.write_text("import os, sys\nsys.stdout.write(os.environ.get('NO_COLOR', '<unset>'))\n")
+
+    result = _run_qmd([sys.executable, str(script)], cwd=tmp_path, timeout=10.0)
+
+    assert result.stdout.decode().strip() == "1", (
+        f"child did not receive NO_COLOR=1; got {result.stdout.decode()!r}"
+    )
+
+
+@pytest.mark.slow
+def test_idle_bound_fires_before_the_total_bound(tmp_path: Path) -> None:
+    """A silent child is reported ``idle`` with its output tail — not ``total``.
+
+    The reader loop checks the total bound first, so an idle bound
+    at or above the total is dead code: every kill would report
+    ``bound="total"`` and drop ``last_output``. A child that says
+    nothing at all, under an idle bound well below its total, must
+    come back as an idle wedge carrying whatever it had emitted.
+    """
+    script = tmp_path / "silent.py"
+    script.write_text(
+        "import sys, time\nsys.stderr.write('phase 1\\n'); sys.stderr.flush()\ntime.sleep(60)\n"
+    )
+
+    with pytest.raises(QmdWedgeError) as excinfo:
+        _run_qmd(
+            [sys.executable, str(script)],
+            cwd=tmp_path,
+            timeout=30.0,
+            idle_timeout=1.0,
+        )
+
+    assert excinfo.value.bound == "idle", (
+        f"expected an idle wedge, got bound={excinfo.value.bound!r}"
+    )
+    assert "phase 1" in excinfo.value.last_output, (
+        f"the output tail was lost; last_output={excinfo.value.last_output!r}"
+    )
+
+
+def test_silent_command_idle_bound_stays_below_the_total() -> None:
+    """The fraction is strictly below 1.0, or the idle bound is dead code."""
+    from lies.qmd._subprocess import SILENT_COMMAND_IDLE_TIMEOUT_FRACTION
+
+    assert 0 < SILENT_COMMAND_IDLE_TIMEOUT_FRACTION < 1, (
+        "the idle bound must stay below the total, or the total bound is "
+        "always checked first and the idle branch never fires"
+    )
+
+
+def test_a_wedge_stderr_is_capped_like_the_success_path(tmp_path: Path):
+    """Both wedge raises carry the same ``_MAX_STDERR_BYTES`` buffer.
+
+    ``search._decode`` documents that ``_run_qmd`` truncates stderr
+    before it reaches the caller, and renders ``QmdTimeoutError``'s
+    copy into the user-visible ``fallback_reason``. That was true on
+    the success path only: both wedge raises passed the whole buffer
+    through, so a long Node stack trace -- the ~30 KB case the cap
+    exists for -- landed verbatim in the MCP envelope precisely when
+    something had gone wrong.
+    """
+    from lies.qmd._subprocess import _MAX_STDERR_BYTES
+
+    script = tmp_path / "loud_then_hang.py"
+    script.write_text(
+        "import sys, time\nsys.stderr.write('x' * 100_000)\nsys.stderr.flush()\ntime.sleep(30)\n"
+    )
+
+    with pytest.raises(QmdWedgeError) as excinfo:
+        _run_qmd(
+            [sys.executable, str(script)],
+            cwd=tmp_path,
+            timeout=0.12,
+            idle_timeout=0.08,
+        )
+
+    captured = excinfo.value.stderr or b""
+    assert len(captured) <= _MAX_STDERR_BYTES, (
+        f"a wedge handed back {len(captured)} bytes of stderr; the cap is {_MAX_STDERR_BYTES}"
     )

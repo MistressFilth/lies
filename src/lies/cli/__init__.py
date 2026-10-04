@@ -101,7 +101,7 @@ def main(
     while True:
         try:
             line = console.input("lies> ")
-        except (EOFError, KeyboardInterrupt):
+        except EOFError, KeyboardInterrupt:
             break
         line = line.strip()
         if not line:

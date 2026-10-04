@@ -1,4 +1,4 @@
-"""Tests for src/lies/qmd/lock.py — path constants and decorator signature."""
+"""Tests for src/lies/qmd/lock.py — path resolution and decorator signature."""
 
 from __future__ import annotations
 
@@ -15,18 +15,16 @@ from pathlib import Path
 import pytest
 
 
-def _reload_lock_module() -> object:
-    """Re-import ``lies.qmd.lock`` so module-level constants re-resolve.
+def _lock_module():
+    """Return the cached ``lies.qmd.lock`` module.
 
-    Path constants are evaluated once at import time from
-    ``$LIES_QMD_LOCK_PATH`` / ``$XDG_STATE_HOME``. The conftest's
-    ``_isolated_xdg`` autouse fixture mutates ``XDG_STATE_HOME`` per
-    test, and individual tests may setenv ``LIES_QMD_LOCK_PATH``. A plain
-    ``import_module`` returns the cached module on subsequent calls; only
-    ``reload()`` re-executes the module-level statements and re-reads the
-    env vars.
+    The module no longer pre-resolves a lock triad at import
+    time (M-6); the production acquire/release pair threads its
+    own paths through ``_lock_paths()``, and tests do the same.
+    No ``reload()`` is needed because there is nothing frozen at
+    the module level any more.
     """
-    return importlib.reload(importlib.import_module("lies.qmd.lock"))
+    return importlib.import_module("lies.qmd.lock")
 
 
 def test_lock_module_imports():
@@ -39,27 +37,36 @@ def test_lock_path_default_resolves_to_xdg_state_home(monkeypatch):
 
     With neither ``LIES_QMD_LOCK_PATH`` nor ``XDG_STATE_HOME`` set, the
     resolved lock path falls back to ``~/.local/state/lies/qmd.lock``.
+
+    The lock module no longer pre-creates the lock directory at
+    import time (M-6); the path is resolved per acquisition through
+    :func:`lies.qmd.lock._lock_paths`, which honours
+    ``LIES_QMD_LOCK_PATH`` first, then ``XDG_STATE_HOME``, then
+    ``~/.local/state``.
     """
     monkeypatch.delenv("LIES_QMD_LOCK_PATH", raising=False)
     monkeypatch.delenv("XDG_STATE_HOME", raising=False)
-    mod = _reload_lock_module()
+    mod = _lock_module()
+    lock_path, _, _ = mod._lock_paths()
     expected = os.path.expanduser("~/.local/state/lies/qmd.lock")
-    assert str(mod._LOCK_PATH) == expected
+    assert str(lock_path) == expected
 
 
 def test_lock_path_env_override_takes_precedence(monkeypatch):
     monkeypatch.setenv("LIES_QMD_LOCK_PATH", "/tmp/override-lies-qmd.lock")
-    mod = _reload_lock_module()
-    assert str(mod._LOCK_PATH) == "/tmp/override-lies-qmd.lock"
+    mod = _lock_module()
+    lock_path, _, _ = mod._lock_paths()
+    assert str(lock_path) == "/tmp/override-lies-qmd.lock"
 
 
 def test_pid_and_state_paths_share_lock_path_directory(monkeypatch, tmp_path):
     monkeypatch.setenv("LIES_QMD_LOCK_PATH", str(tmp_path / "qmd.lock"))
-    mod = _reload_lock_module()
-    assert mod._PID_PATH.parent == mod._LOCK_PATH.parent
-    assert mod._STATE_PATH.parent == mod._LOCK_PATH.parent
-    assert mod._PID_PATH.name.startswith(mod._LOCK_PATH.name)
-    assert mod._STATE_PATH.name.startswith(mod._LOCK_PATH.name)
+    mod = _lock_module()
+    lock_path, pid_path, state_path = mod._lock_paths()
+    assert pid_path.parent == lock_path.parent
+    assert state_path.parent == lock_path.parent
+    assert pid_path.name.startswith(lock_path.name)
+    assert state_path.name.startswith(lock_path.name)
 
 
 def test_with_qmd_lock_default_signature():
@@ -149,16 +156,17 @@ def test_with_qmd_lock_acquires_and_releases_on_clean_path(tmp_path, monkeypatch
     monkeypatch.setenv("LIES_QMD_LOCK_PATH", str(tmp_path / "qmd.lock"))
     mod = importlib.reload(lock_mod)
 
-    assert not mod._LOCK_PATH.exists()
+    lock_path, pid_path, state_path = mod._lock_paths()
+    assert not lock_path.exists()
 
     @mod.with_qmd_lock()
     def noop() -> str:
         return "ok"
 
     assert noop() == "ok"
-    assert not mod._LOCK_PATH.exists()
-    assert not mod._PID_PATH.exists()
-    assert not mod._STATE_PATH.exists()
+    assert not lock_path.exists()
+    assert not pid_path.exists()
+    assert not state_path.exists()
 
 
 @pytest.mark.slow
@@ -235,12 +243,13 @@ def test_holder_pid_in_qmd_lock_busy_when_holder_writes_heartbeat(monkeypatch, t
     mod = importlib.reload(lock_mod)
 
     holder, _ = _spawn_qmd_holder(tmp_path, hold_s=2.0)
+    lock_path, pid_path, _ = mod._lock_paths()
     try:
         # Confirm the holder's pid was registered to the pid file before
         # we attempt the contended acquire; this verifies the write path
         # is engaged by ``_acquire_with_poll`` (not just the decorator).
-        _wait_for_marker(mod._PID_PATH, timeout=5.0)
-        holder_pid = int(mod._PID_PATH.read_text(encoding="utf-8").strip())
+        _wait_for_marker(pid_path, timeout=5.0)
+        holder_pid = int(pid_path.read_text(encoding="utf-8").strip())
         assert holder_pid != os.getpid(), "holder pid should differ from the test pid"
 
         @mod.with_qmd_lock(timeout_s=0.1, max_age_s=1800.0)
@@ -262,9 +271,10 @@ def test_stale_holder_recovery_via_dead_pid(monkeypatch, tmp_path):
     mod = importlib.reload(lock_mod)
 
     # Manually stage: create-lock + pid file pointing at a dead pid.
-    mod._LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
-    mod._LOCK_PATH.touch()
-    mod._PID_PATH.write_text("999999", encoding="utf-8")  # likely-dead pid
+    lock_path, pid_path, _ = mod._lock_paths()
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path.touch()
+    pid_path.write_text("999999", encoding="utf-8")  # likely-dead pid
 
     # Acquire should reap and succeed.
     fd = mod._acquire_with_poll(retry_budget_s=1.0, max_age_s=60.0)
@@ -307,3 +317,296 @@ def test_is_qmd_installed_does_not_have_lock_wrapper():
     from lies.qmd.cli import is_qmd_installed
 
     assert getattr(is_qmd_installed, "__wrapped__", None) is None
+
+
+# --- the lock must survive test isolation --------------------------------
+#
+# `with_qmd_lock` derives its path from `XDG_STATE_HOME`. The autouse
+# `_isolated_xdg` fixture redirects that per test, which gave every test
+# its own inode -- and a per-test lock is no lock at all. Two embeds then
+# raced the CUDA VMM pool reservation the lock exists to serialize, and the
+# symptom was `CUDA error: out of memory` from `ggml-cuda.cu`.
+
+
+def _flock_path_used_by_the_decorator(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """The file ``with_qmd_lock`` actually opens, observed rather than computed.
+
+    An earlier version of these tests called ``_lock_paths()`` directly,
+    which certifies a guarantee the suite did not have: the acquire path
+    never called the resolver, it used a constant frozen at import, so
+    ``_isolated_xdg``\'s pin landed after the freeze and every test flocked
+    the *host default* instead. Asserting on the resolver therefore tested
+    a function the decorator does not use.
+
+    This one intercepts the real call: acquire with a sentinel
+    ``LIES_QMD_LOCK_PATH`` and read back which file appeared. That
+    catches a regression back to import-time freezing, because the
+    sentinel set after import would be ignored and the host default would
+    be opened instead.
+    """
+    # Import first, then set the environment. That order is the whole
+    # point: the module constant is resolved at import, so a sentinel set
+    # beforehand would be baked into it and the acquire path would look
+    # correct whether it used the constant or the resolver. Setting it
+    # afterwards is what distinguishes them.
+    import lies.qmd.lock as lock_mod
+
+    sentinel = tmp_path / "observed-qmd.lock"
+    monkeypatch.setenv("LIES_QMD_LOCK_PATH", str(sentinel))
+
+    with_qmd_lock = lock_mod.with_qmd_lock
+
+    # Observed *during* the hold, not after: the release path unlinks the
+    # lock file, so checking afterwards would pass whether or not the
+    # decorator ever opened it.
+    seen: dict[str, bool] = {}
+
+    @with_qmd_lock(timeout_s=5.0)
+    def _hold() -> None:
+        seen["lock"] = sentinel.exists()
+
+    _hold()
+    resolved_path, _, _ = lock_mod._lock_paths()
+    assert seen.get("lock"), (
+        f"the decorator never opened {sentinel} while holding the lock. It is "
+        f"resolving from a stale path ({resolved_path}) instead of the "
+        f"sentinel set after import."
+    )
+    assert resolved_path == sentinel, (
+        f"_lock_paths() must honour LIES_QMD_LOCK_PATH at call time; got {resolved_path}"
+    )
+    return sentinel
+
+
+def test_the_decorator_uses_the_pinned_lock_not_the_import_time_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The pin must reach the flock, not just the resolver.
+
+    This is the defect the previous round shipped: the pin was real, the
+    tests passed, and the lock still went to
+    ``~/.local/state/lies/qmd.lock`` because the acquire path read a
+    constant frozen at import. If resolution regresses to import-time,
+    the sentinel below is ignored and the host default is opened --
+    which the ``host default not used`` assertion catches.
+    """
+    from lies.qmd.lock import _lock_paths
+
+    sentinel = _flock_path_used_by_the_decorator(tmp_path, monkeypatch)
+
+    # The file the decorator touched is the one the environment names.
+    assert _lock_paths()[0] == sentinel, (
+        f"the decorator opened {_lock_paths()[0]}, not the pinned {sentinel}"
+    )
+    # And it is not the host default that the frozen constant still holds.
+    assert _lock_paths()[0] != Path("~/.local/state/lies/qmd.lock").expanduser(), (
+        "the decorator used the import-time host default; resolution is frozen again"
+    )
+
+
+def test_acquire_after_import_honours_a_later_env_change(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Changing the environment *after* import must still take effect.
+
+    This is what ``_lock_paths`` has always claimed ("Resolved on every
+    call so environment changes between acquisitions are honored") and
+    what the code now does. The claim outlived the behaviour for the life
+    of the module, so it is pinned here directly.
+    """
+    import lies.qmd.lock as lock_mod
+
+    first = _flock_path_used_by_the_decorator(tmp_path / "a", monkeypatch)
+    second = _flock_path_used_by_the_decorator(tmp_path / "b", monkeypatch)
+
+    assert first != second, (
+        "two different LIES_QMD_LOCK_PATH values produced the same lock; "
+        "resolution is frozen at import again"
+    )
+    assert lock_mod._lock_paths()[0] == second
+
+
+def test_the_shared_qmd_lock_is_outside_the_per_test_xdg_root(tmp_path: Path) -> None:
+    """The pinned lock must not live under the per-test XDG root.
+
+    The subtle failure: putting the lock at ``xdg_root / "state"`` reads
+    as tidy isolation while reproducing the original bug -- one inode per
+    test is exactly what there must not be. This pins the shape of the fix,
+    not merely its presence.
+    """
+    from lies.qmd.lock import _lock_paths
+
+    lock = _lock_paths()[0]
+
+    assert not str(lock).startswith(str(tmp_path)), (
+        f"the qmd lock resolved inside this test's tmp_path ({lock}); that is a "
+        f"per-test lock, which excludes nothing"
+    )
+    assert _lock_paths()[0] == lock, "and it must be stable across calls within one test"
+
+
+def test_the_pinned_test_lock_is_per_user_and_per_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The shared test lock must be keyed by uid *and* by session.
+
+    ``gettempdir()`` is shared on a multi-account CI host, so the uid
+    keeps two accounts off one file. The pid keeps two *pytest
+    processes* off one file as well: a uid-only key made every pytest
+    process owned by this user contend, so running the unit suite while
+    any other ``lies`` work was live produced six 30-second hangs and
+    six ``QmdLockBusy`` failures that read as product bugs.
+
+    Intra-session sharing is the property that actually matters — one
+    process, one path, every test in it — and the pid preserves it.
+    """
+    from lies.qmd.lock import _lock_paths
+
+    # Read the expression out of the fixture rather than restating it, so
+    # a change to the pin is visible here instead of silently diverging.
+    root_conftest = Path(__file__).resolve().parents[2] / "conftest.py"
+    source = root_conftest.read_text(encoding="utf-8")
+    assert "lies-test-qmd-" in source, "the shared test lock pin is gone from conftest"
+    assert "os.getuid()" in source, (
+        "the pinned test lock must carry the uid, or two accounts on a "
+        "shared CI host contend on one file"
+    )
+    assert "os.getpid()" in source, (
+        "the pinned test lock must carry the pid, or two pytest sessions "
+        "on this user contend and hang for 30s each"
+    )
+
+    lock = _lock_paths()[0]
+    assert f"{os.getuid()}" in lock.name, (
+        f"the pinned test lock {lock.name} carries no uid; two accounts on a "
+        f"shared host would contend on it"
+    )
+    assert f"{os.getpid()}" in lock.name, (
+        f"the pinned test lock {lock.name} carries no pid; two pytest "
+        f"sessions on this user would contend on it"
+    )
+    assert str(os.getuid()) in lock.name
+
+
+def test_embed_is_lock_wrapped() -> None:
+    """The exclusion this depends on has to actually cover ``qmd_embed``.
+
+    The fixture is only safe because every qmd helper goes through
+    ``with_qmd_lock``. A future helper that shells out without it joins
+    the CUDA reservation race, and nothing else in the suite would notice.
+    """
+    from lies.qmd import cli
+
+    # One condition, stated once. The previous version was a disjunction
+    # of a condition with itself, whose `hasattr` arm also passed when
+    # the attribute existed with value None.
+    assert hasattr(cli.qmd_embed, "__wrapped__"), "qmd_embed must still be wrapped by with_qmd_lock"
+    assert cli.qmd_embed.__wrapped__ is not None, (
+        "qmd_embed is wrapped but the wrapper is None, so the lock is not actually applied"
+    )
+
+
+def test_the_lock_is_reentrant_on_one_thread(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A nested acquire in the same context must not deadlock against itself.
+
+    One pair of decorated helpers composes: ``qmd_collection_add_or_update``
+    calls ``qmd_collection_show`` and ``qmd_collection_add``. ``flock`` on
+    a second fd blocks even within one process, so without reentrancy the
+    inner call polls for a lock its own outer frame holds and times out with
+    ``QmdLockBusy``.
+
+    (``qmd_cleanup`` and ``qmd_reindex(cleanup=True)`` are *not* a second
+    example, though an earlier version of this docstring said they were:
+    both call ``_proc.run(["cleanup"], ...)`` directly instead of going
+    through each other, so neither nests.)
+
+    This never fired while the acquire path used the import-time constant:
+    the inner acquire opened a *different* file, so it never contended and
+    the nesting was invisible. Per-acquisition resolution exposed it, and
+    this pins the fix.
+
+    The nesting is same-context composition, not concurrency -- a genuine
+    second thread must still serialize, which
+    ``test_a_second_thread_still_contends`` covers, and a raise through
+    the nested frame must not strand the depth, which
+    ``test_a_raising_nested_frame_restores_the_depth`` covers.
+    """
+    from lies.qmd.lock import with_qmd_lock
+
+    monkeypatch.setenv("LIES_QMD_LOCK_PATH", str(tmp_path / "reentrant.lock"))
+    order: list[str] = []
+
+    @with_qmd_lock(timeout_s=5.0)
+    def inner() -> None:
+        order.append("inner")
+
+    @with_qmd_lock(timeout_s=5.0)
+    def outer() -> None:
+        order.append("outer-enter")
+        inner()
+        order.append("outer-exit")
+
+    outer()  # must not raise QmdLockBusy
+
+    assert order == ["outer-enter", "inner", "outer-exit"]
+
+
+def test_a_raising_nested_frame_restores_the_depth(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A raise through the nested frame must not strand the depth counter.
+
+    Reentrancy is bookkeeping: the outer frame bumps the depth, the inner
+    frame runs without acquiring, and both restore on the way out. If a
+    raise skipped the restore on either frame, the depth would be left
+    above zero for the rest of the process -- and because the very next
+    acquire consults that depth, **every** subsequent call in that process
+    would skip the flock. That is a silent, permanent loss of the mutual
+    exclusion the lock exists to provide, and it would not raise anywhere:
+    it would just stop protecting.
+
+    Asserts on the counter rather than on observed contention. A
+    contention-shaped version needs a thread to hold the lock while this
+    one blocks on it, which costs more than the 0.15s unit budget
+    (`test_a_second_thread_still_contends` measures 0.214s and lives in
+    tests/integration for that reason). The stranded-depth failure *is*
+    "the counter is not 0", so read it directly rather than inferring it
+    through a timing window.
+    """
+    from lies.qmd.lock import _held_depth, with_qmd_lock
+
+    monkeypatch.setenv("LIES_QMD_LOCK_PATH", str(tmp_path / "raise-depth.lock"))
+
+    @with_qmd_lock(timeout_s=5.0)
+    def raises() -> None:
+        raise ValueError("boom")
+
+    @with_qmd_lock(timeout_s=5.0)
+    def outer() -> None:
+        raises()
+
+    with pytest.raises(ValueError, match="boom"):
+        outer()
+
+    assert _held_depth.get() == 0, (
+        "the depth was left above zero by a raise, so every later acquire "
+        "in this process will skip the flock"
+    )
+
+    # And the counter is still usable: a normal call after the raise must
+    # take the outermost path (depth goes 0 -> 1 -> 0), not the reentrant
+    # one. If it took the reentrant path the file would never be opened.
+    seen: list[int] = []
+
+    @with_qmd_lock(timeout_s=5.0)
+    def probe() -> None:
+        seen.append(_held_depth.get())
+
+    probe()
+    assert seen == [1], (
+        f"a post-raise call ran at depth {seen!r} rather than 1, so it took "
+        "the reentrant path and never acquired the flock"
+    )
+    assert _held_depth.get() == 0

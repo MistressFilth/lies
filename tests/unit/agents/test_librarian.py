@@ -70,8 +70,10 @@ def test_librarian_agent_calls_collections_read_first(monkeypatch: pytest.Monkey
     calls: list[tuple] = []
     monkeypatch.setattr(
         "lies.mcp.collections.collections_read",
-        lambda subcommand, name=None: calls.append(("list",))
-        or [{"name": "alpha", "tags": ["plugins"], "scope_keywords": []}],
+        lambda subcommand, name=None: (
+            calls.append(("list",))
+            or [{"name": "alpha", "tags": ["plugins"], "scope_keywords": []}]
+        ),
     )
     _patch_tools(monkeypatch)
 
@@ -132,11 +134,13 @@ def test_librarian_agent_runs_4_step_pipeline(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setattr(
         "lies.mcp.collections.collections_read",
         lambda subcommand, name=None: (
-            collections_read_calls.append((subcommand, name)),
-            [{"name": "alpha", "tags": ["plugins"], "scope_keywords": []}],
-        )[1]
-        if subcommand == "list"
-        else {},
+            (
+                collections_read_calls.append((subcommand, name)),
+                [{"name": "alpha", "tags": ["plugins"], "scope_keywords": []}],
+            )[1]
+            if subcommand == "list"
+            else {}
+        ),
     )
 
     # Step 2 (Search) — single-batch hybrid response with snippets.

@@ -34,10 +34,12 @@ def _stub_qmd_registration(monkeypatch: pytest.MonkeyPatch, request: pytest.Fixt
     monkeypatch.setattr(
         layout_mod,
         "__getattr__",
-        lambda _name: (lambda *_a, **_kw: None)
-        if _name == "qmd_collection_add_or_update"
-        else (_ for _ in ()).throw(
-            AttributeError(f"module 'lies.wiki.layout' has no attribute {_name!r}")
+        lambda _name: (
+            (lambda *_a, **_kw: None)
+            if _name == "qmd_collection_add_or_update"
+            else (_ for _ in ()).throw(
+                AttributeError(f"module 'lies.wiki.layout' has no attribute {_name!r}")
+            )
         ),
     )
 

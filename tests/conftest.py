@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -141,6 +143,50 @@ def _isolated_xdg(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("XDG_CACHE_HOME", str(xdg_root / "cache"))
     monkeypatch.setenv("XDG_STATE_HOME", str(xdg_root / "state"))
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(xdg_root / "runtime"))
+    # The qmd lock is a *host*-wide resource, and per-test XDG isolation
+    # silently defanged it. `with_qmd_lock` derives its path from
+    # `XDG_STATE_HOME`, so redirecting that per test gave every test its
+    # own inode -- two embeds in two tests then never excluded each
+    # other, which is exactly the CUDA VMM reservation race
+    # (`cuMemAddressReserve`) the lock exists to prevent. Observed as
+    # `CUDA error: out of memory` from `ggml-cuda.cu` when two suites
+    # embedded concurrently.
+    #
+    # Pin it to one path shared by every test in the session, which is
+    # what production gets. It is deliberately NOT `xdg_root / "state"`:
+    # that would reproduce the bug in a different guise.
+    # Per-user *and* per-session. `gettempdir()` is shared on a
+    # multi-account CI host, so the uid keeps two accounts off one path.
+    # The pid keeps two *sessions* off one path too: a per-uid-only key
+    # made every pytest process owned by this user contend, so running
+    # the unit suite while any other `lies` work was live produced six
+    # 30-second hangs and six `QmdLockBusy` failures that read as product
+    # bugs. Intra-session sharing — the property that actually prevents
+    # two tests embedding concurrently — is untouched: one process, one
+    # path, every test in it.
+    monkeypatch.setenv(
+        "LIES_QMD_LOCK_PATH",
+        str(Path(tempfile.gettempdir()) / f"lies-test-qmd-{os.getuid()}-{os.getpid()}.lock"),
+    )
+    # The qmd sidecar is host-global: it records which ``data-dir`` the
+    # *machine's* daemon was started with, at
+    # ``~/.local/share/qmd/mcp.data-dir``. Redirect it to the per-test
+    # tmp path so a test calling ``ensure_qmd_daemon(tmp_path / "wiki")``
+    # cannot leave a pytest temp path in the operator's real sidecar.
+    #
+    # It is not cosmetic. A stray sidecar makes
+    # ``check_data_dir_match(library_git_root())`` report False, and the
+    # next ``ensure_qmd_daemon`` then concludes a foreign daemon is
+    # serving and reaps a healthy one; ``_recycle_data_dir`` would then
+    # respawn against the same wrong path. Observed twice on this host,
+    # from a unit test and from an integration test, before this landed.
+    from lies.qmd import daemon as _qmd_daemon
+
+    monkeypatch.setattr(
+        _qmd_daemon,
+        "SIDECAR_PATH",
+        xdg_root / "qmd" / "mcp.data-dir",
+    )
     # Seed a minimal ``providers.toml`` at the XDG-isolated config root.
     # ``ground()`` (and other model-resolving entry points) reads
     # ``$XDG_CONFIG_HOME/<LIES_DATA_SUBDIR>/providers.toml`` via

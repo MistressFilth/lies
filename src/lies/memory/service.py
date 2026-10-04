@@ -241,7 +241,7 @@ def _read_page(wiki: Wiki, path: str) -> str | None:
         return None
     try:
         return resolved.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
+    except OSError, UnicodeDecodeError:
         return ""
 
 

@@ -111,7 +111,7 @@ class WebScraper(BaseScraper):
             with urllib.request.urlopen(req) as resp:
                 final_url = resp.geturl()
                 body: bytes = resp.read()
-        except (HTTPError, URLError):
+        except HTTPError, URLError:
             return None
 
         if final_url.rstrip("/") != url.rstrip("/"):
@@ -145,7 +145,7 @@ class WebScraper(BaseScraper):
             with urllib.request.urlopen(req, timeout=30) as resp:
                 final_url = resp.geturl()
                 body: bytes = resp.read()
-        except (HTTPError, URLError, TimeoutError, OSError, ValueError):
+        except HTTPError, URLError, TimeoutError, OSError, ValueError:
             return None
 
         if final_url.rstrip("/") != resolved.rstrip("/"):

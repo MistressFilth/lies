@@ -40,6 +40,7 @@ integration workflow runs them with that env set.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -55,6 +56,7 @@ def _stub_librarian(
     excerpts: list | None = None,
     searched_scope: list[str] | None = None,
     no_coverage: bool = False,
+    transient: bool = False,
 ) -> MagicMock:
     """Replace ``librarian_agent_run`` with a canned ``LibrarianOutput``.
 
@@ -63,6 +65,14 @@ def _stub_librarian(
     ``excerpts`` / ``searched_scope``. The production
     ``librarian_agent_run`` builds a real pydantic-ai agent; tests
     bypass it by replacing the function reference entirely.
+
+    Every field the caller reads is assigned, including the ones that
+    default to False. ``MagicMock(spec=...)`` answers an attribute it
+    has not been given with a fresh child Mock, and a child Mock is
+    truthy -- so a new boolean field on the dataclass silently takes
+    whatever branch tests its truthiness, and every test using this
+    stub takes it at once. Assigning the field is the only thing that
+    distinguishes a clean-miss bundle from a failed dispatch.
     """
     from lies.agents.librarian import LibrarianOutput
 
@@ -78,6 +88,7 @@ def _stub_librarian(
     lib_out.distinct_pages = len({e.slug for e in excerpts})
     lib_out.no_coverage = no_coverage
     lib_out.searched_scope = list(searched_scope or [])
+    lib_out.transient = transient
     return lib_out
 
 
@@ -248,6 +259,15 @@ def test_search_returns_searched_scope(
     """
     from lies.mcp.search import search
 
+    # ``_search_impl`` validates scope against the daemon's own
+    # ``status`` before dispatching, which is a real reachability
+    # probe. This test stubs ``_post_query`` and does not exercise the
+    # daemon, so the probe is stubbed to the same collection the test
+    # asks about.
+    async def _served() -> frozenset[str]:
+        return frozenset({"alpha", "beta"})
+
+    monkeypatch.setattr("lies.qmd.access.qmd_collection_names", _served)
     monkeypatch.setattr(
         "lies.mcp.search._post_query",
         lambda doc, scope, limit, timeout: [
@@ -336,25 +356,61 @@ def test_ask_includes_librarian_searched_scope(
     )
 
 
-def test_read_dispatches_library_paths_to_qmd(
+def test_read_dispatches_library_paths_to_the_qmd_daemon(
     curated_corpus: object,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """``read(['alpha/cli-plugin.md'])`` returns the page body via ``_qmd_get``.
+    """``read(['alpha/cli-plugin.md'])`` returns the page body via the daemon.
 
     The source-aware dispatch routes library paths (``<collection>/<page>``)
-    to ``qmd_get`` against the library's git root. The stub returns
-    a body containing ``Plugin.define`` (the marker the brief pins).
-    The test does not need real qmd — ``_qmd_get`` is the seam.
+    to the qmd daemon's ``get``. The stub returns a body containing
+    ``Plugin.define`` (the marker the brief pins), wrapped in the content
+    block the daemon really sends — ``data`` is ``None`` and the text is one
+    hop down at ``content[].resource.text``. The test does not need real
+    qmd: ``access.daemon_tool`` is the seam.
     """
+    from dataclasses import dataclass, field
+
     from lies.mcp.read import read
 
-    monkeypatch.setattr(
-        "lies.mcp.read._qmd_get",
-        lambda cwd, qmd_path, timeout=60: (
-            "---\ntitle: CLI plugin overview\n---\n\nThe CLI plugin model uses Plugin.define.\n"
-        ),
-    )
+    @dataclass
+    class _Resource:
+        uri: str
+        text: str
+
+    @dataclass
+    class _Embedded:
+        resource: _Resource
+
+    @dataclass
+    class _Result:
+        content: list = field(default_factory=list)
+        data: None = None
+
+    async def fake_read_library_bodies(paths: list[str]) -> list:
+        return [
+            _Result(
+                content=[
+                    _Embedded(
+                        resource=_Resource(
+                            uri=f"qmd://{p}",
+                            text=(
+                                "---\ntitle: CLI plugin overview\n---\n\n"
+                                "The CLI plugin model uses Plugin.define.\n"
+                            ),
+                        )
+                    )
+                ]
+            )
+            for p in paths
+        ]
+
+    # ``read_library_bodies``, not ``daemon_tool``: the batched read
+    # is what ``read.py`` calls, and a stub of any other symbol is a
+    # stub the production path never reaches. ``SimpleNamespace`` in
+    # place of the whole ``access`` module is what turned a stale
+    # attribute into ``ToolError("all reads failed")`` here.
+    monkeypatch.setattr("lies.mcp.read.access.read_library_bodies", fake_read_library_bodies)
 
     out = read.fn(paths=["alpha/cli-plugin.md"])
 
@@ -421,13 +477,31 @@ def test_librarian_snippet_review_picks_authoring_over_install(
             },
         ]
 
+    # The pre-dispatch scope check is a real reachability probe. This
+    # test stubs ``_post_query`` and does not exercise the daemon.
+    async def _served() -> frozenset[str]:
+        return frozenset({"alpha", "beta"})
+
+    monkeypatch.setattr("lies.qmd.access.qmd_collection_names", _served)
     monkeypatch.setattr("lies.mcp.search._post_query", fake_post_query)
 
-    # Step 2 — read returns a body for any path the librarian picks.
-    monkeypatch.setattr(
-        "lies.mcp.read._qmd_get",
-        lambda cwd, qmd_path, timeout=60: (f"stub body for {qmd_path}"),
-    )
+    # Step 2 — read returns a body for any path the librarian picks. The
+    # stub answers in the daemon's shape: an EmbeddedResource content
+    # block, with ``data`` None.
+    async def fake_daemon_tool(name, arguments):
+        return SimpleNamespace(
+            content=[
+                SimpleNamespace(
+                    resource=SimpleNamespace(
+                        uri=f"qmd://{arguments['file']}",
+                        text=f"stub body for {arguments['file']}",
+                    )
+                )
+            ],
+            data=None,
+        )
+
+    monkeypatch.setattr("lies.mcp.read.access", SimpleNamespace(daemon_tool=fake_daemon_tool))
 
     # Step 3 — the librarian's snippet-review chose authoring over install.
     # This canned output is what snippet-review PRODUCES for the
@@ -460,6 +534,7 @@ def test_librarian_snippet_review_picks_authoring_over_install(
     lib_out.distinct_pages = 2
     lib_out.no_coverage = False
     lib_out.searched_scope = ["alpha", "beta"]
+    lib_out.transient = False
     # Snippet-review's choice: pages_read surfaces the authoring page
     # first, install second. (The ordering pins that snippet-review
     # PICKED authoring over install, not that it called read on every
@@ -540,7 +615,7 @@ def test_ask_envelope_carries_fallback_reason_on_no_coverage(
     synth_called: list[object] = []
     monkeypatch.setattr(
         "lies.mcp.synth.synthesizer_agent_run",
-        lambda lib_out_arg, question: (synth_called.append(True) or MagicMock()),
+        lambda lib_out_arg, question: synth_called.append(True) or MagicMock(),
     )
 
     out = lib_ask.fn(
