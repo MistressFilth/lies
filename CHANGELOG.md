@@ -6,6 +6,51 @@ All notable changes to LIES are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.48.2] - 2026-10-04
+
+### Fixed
+
+- **`lies ingest --batch` admits only documents, not every regular file.**
+  `ScraperFetcher._iter_directory` walked a directory and yielded one
+  `FetchItem` per file. Every guard in it was about filesystem mechanics --
+  `is_dir` to recurse, `is_file` to keep, `OSError` to drop on read -- and
+  none tested *what kind of file it was*. So a non-document in the batch
+  directory was read, decoded as UTF-8, and written out as a page.
+
+  Observed in the live library: **36 collections each carrying a
+  `config.md`** -- the collection's own `config.yaml`, ingested because
+  pointing a batch at a collection directory is the obvious way to re-sync
+  it, and that directory always holds the config beside its pages. A
+  `providers.toml` anywhere beneath the batch directory did the same. The
+  index residue this left was cleaned separately (36 inactive `documents`
+  rows, with their `content` and `content_vectors`).
+
+  The walk is now gated on `_DOCUMENT_SUFFIXES`. The filter could not live
+  in `should_skip_filename`, which is the pipeline's designated filter step
+  (spec: "filter -- `should_skip_filename` + `should_skip_content`"): it is
+  a *denylist* of known stems -- `license`, `contributing`, `credits`,
+  `authors`, and the `changelog` prefix -- plus operator `--exclude-stem`
+  entries. A denylist cannot express "is a document", and `should_skip_content`
+  cannot either: it refused a two-word test document as `thin-content` while
+  a full `config.yaml` passed it comfortably.
+
+  The type test belongs at the walk because that is the last layer that
+  still knows what a file *is*; downstream the item is decoded bytes and a
+  slug, and the type is gone.
+
+  `.md`/`.markdown` are the primary format, `.rst`/`.txt` cover the
+  whole-doc-archive case this walker's own docstring names (a plain-text
+  Python docs tarball), and `.html`/`.htm` are a declared `source_format`.
+  Binary formats are excluded deliberately: this branch decodes with
+  `errors="replace"`, so admitting a `.pdf` would write a page of
+  replacement characters. Note this narrows the spec's "one `FetchItem` per
+  file" to documents; if a caller needs another text format admitted, the
+  set is one line.
+
+  Pinned by `test_batch_walk_admits_only_document_extensions` and
+  `test_batch_walk_skips_binary_and_config_files`.
+
+
 ## [0.48.1] - 2026-10-04
 
 Three regressions from `uv lock --upgrade`, which moved

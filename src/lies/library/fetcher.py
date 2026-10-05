@@ -54,6 +54,7 @@ from typing import TYPE_CHECKING
 from lies.library.errors import LibraryFetchUnreachable
 from lies.library.ingest import FetchItem
 from lies.scrapers import base as _scraper_base
+from lies.builders.errors import BuilderParseError
 from lies.scrapers.base import BaseScraper, ParsedDoc
 from lies.scrapers.errors import ScraperUnavailable
 
@@ -285,6 +286,34 @@ def _normalize_body(
     return dispatch(doc.content, doc.source_format)
 
 
+# What the directory walk admits, in two classes.
+#
+# A non-document reaching the pipeline is not cosmetic: ``config.yaml`` in a
+# collection directory became a ``config.md`` page (36 of them, in the live
+# library), and a ``providers.toml`` anywhere under the batch directory did
+# the same. The pipeline's only other filter is ``should_skip_filename``, a
+# *denylist* of known stems plus the ``changelog`` prefix, and a denylist
+# cannot express "is a document". The type test belongs here -- the one
+# layer that still knows what a file *is*.
+#
+# Text documents are decoded directly: ``.md``/``.markdown`` are the primary
+# format, and ``.rst``/``.txt`` are the whole-doc-archive case this walker's
+# docstring names (a plain-text Python docs tarball).
+#
+# Everything the builder REGISTRY can turn into markdown is admitted too and
+# routed through :func:`_normalize_body`, the same path ``--source`` takes:
+# a PDF goes to ``PDFBuilder`` (pdfplumber, with the pymupdf fallback) and
+# an HTML file to ``HTMLBuilder``. Decoding those as UTF-8 would have written
+# a page of replacement characters, so they are never decoded here.
+_TEXT_SUFFIXES: frozenset[str] = frozenset({".md", ".markdown", ".rst", ".txt"})
+
+# Extension -> ``source_format`` for the formats a Builder can render. Kept
+# as an explicit map rather than derived from ``REGISTRY.formats()`` because
+# the registry is keyed by format name, not by file extension: ``liquid`` and
+# ``sphinx`` name build inputs, not suffixes, and ``bespoke`` names none.
+_REGISTRY_SUFFIX_FORMATS: dict[str, str] = {".pdf": "pdf", ".html": "html", ".htm": "html"}
+
+
 class ScraperFetcher:
     """Concrete ``Fetcher`` driving an existing scraper + format dispatch.
 
@@ -377,8 +406,7 @@ class ScraperFetcher:
         if emitted == 0:
             raise LibraryFetchUnreachable(f"scraper produced 0 items for {source}")
 
-    @staticmethod
-    def _iter_directory(directory: Path) -> Iterator[FetchItem]:
+    def _iter_directory(self, directory: Path) -> Iterator[FetchItem]:
         """Recursive walk of ``directory``; yield one ``FetchItem`` per file.
 
         Each yielded ``FetchItem.path`` is the file's full path relative
@@ -405,15 +433,42 @@ class ScraperFetcher:
                     continue
                 if not entry.is_file():
                     continue
+                suffix = entry.suffix.lower()
+                source_format = _REGISTRY_SUFFIX_FORMATS.get(suffix)
+                if source_format is None and suffix not in _TEXT_SUFFIXES:
+                    continue
                 try:
                     body_bytes = entry.read_bytes()
                 except OSError:
                     continue
+                raw_hash = hashlib.sha256(body_bytes).hexdigest()
+                if source_format is None:
+                    body = body_bytes.decode("utf-8", errors="replace")
+                else:
+                    # Same route as ``--source``: materialize into a temp
+                    # workspace and let the Builder render it to markdown, so
+                    # a PDF becomes its extracted text and ``source_hash``
+                    # stays the hash of the *raw bytes* per the spec.
+                    try:
+                        body = _normalize_body(
+                            ParsedDoc(
+                                path=entry.name,
+                                content=body_bytes,
+                                source_sha256=raw_hash,
+                                source_format=source_format,
+                            ),
+                            collection=self._collection,
+                        )
+                    except BuilderParseError:
+                        # A file that will not render is dropped, matching the
+                        # walker's stance on unreadable files -- raising here
+                        # would abort the whole batch.
+                        continue
                 yield FetchItem(
                     path=entry.relative_to(base),
                     url=None,
-                    body=body_bytes.decode("utf-8", errors="replace"),
-                    source_hash=hashlib.sha256(body_bytes).hexdigest(),
+                    body=body,
+                    source_hash=raw_hash,
                     fetched_via="local",
                 )
 
