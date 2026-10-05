@@ -961,8 +961,34 @@ unmitigated. The reason the qmd CLI helpers serialize under
 `lies.qmd.lock` is the same reservation; the lock removes LIES' own
 contention, which is not what fails here.
 
-### Live-index residue
+### `INTEGRATION=1 pytest` locally is a different suite than plain `pytest`
 
+`tests/integration/` is gated on `INTEGRATION=1`, so a plain `pytest`
+run reports the whole file as skipped and exits 0. That green is not
+evidence about the integration suite. Two things were found only by
+running it locally, and CI could not have found either — CI has no qmd
+daemon and skips the daemon-dependent tests:
+
+- `test_release.py::test_the_declared_version_has_a_section` enforces
+  that `pyproject.toml`'s version has a dated CHANGELOG section or is
+  named in the `[Unreleased]` body. A version bump with three
+  well-formed `[Unreleased]` entries and no version mentioned anywhere
+  fails it.
+- `test_search_daemon.py` (fixed in 0.48.3) patched one of the two
+  registry accessors `_resolve_tag_collections` reads, so the retriever
+  saw an empty collection set and `search` reported the whole tag
+  expression as unknown — an assertion that read like a resolver bug.
+
+**Run `INTEGRATION=1` before declaring a change verified locally.**
+What survives that: `tests/integration/test_tag_filter_end_to_end.py`
+fails intermittently with `QmdTimeoutError: qmd query timed out after
+60s` on this host, and **a different subset on each run** (observed: 3,
+then 5, then 2 failures, no two runs agreeing). The varying subset is
+the diagnosis — a logic bug fails the same tests every time. This is
+the contention stall recorded above, reaching the retriever through the
+per-test throwaway index these tests seed.
+
+### Live-index residue
 Four orphan `content_vectors` rows and five `documents` rows for
 `wiki_tag-filter-lib`, a collection absent from `store_collections`.
 
