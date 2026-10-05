@@ -6,6 +6,10 @@ All notable changes to LIES are documented here. The format follows
 
 ## [Unreleased]
 
+Staged for **0.48.3**. Both version surfaces (`pyproject.toml`,
+`src/lies/__init__.py`) are already bumped; `make release` collapses
+this into a dated release heading.
+
 ### Fixed
 
 - **A self-ingest is refused instead of run into a silent no-op.**
