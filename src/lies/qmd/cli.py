@@ -7,12 +7,15 @@ Use this for: `qmd update`, `qmd status`, `qmd collection add/remove`,
 
 from __future__ import annotations
 
+import functools
 import json
+import os
 import re
 import shutil
 import subprocess
 import sys
 import warnings
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -25,10 +28,78 @@ from lies.qmd._subprocess import (
 )
 from lies.qmd.lock import with_qmd_lock
 
+
 # Real `qmd query --format json` returns each hit's `file` field as
 # ``qmd://<collection>/<path>``. Strip the prefix once at this boundary;
 # keep the ``<collection>/`` segment (wiki pages live at
 # ``wiki.wiki_dir/<collection>/<page>``).
+def _is_default_root(env_var: str, lies_var: str, spec_default: str) -> bool:
+    """True when this XDG root resolves to its spec default.
+
+    Both spellings count, and ``LIES_XDG_*`` is read first by
+    :mod:`lies.xdg` -- a guard inspecting only ``XDG_*`` would pass a
+    caller who sandboxed through the LIES-prefixed variable, which is
+    the spelling this repository documents.
+    """
+    for key in (lies_var, env_var):
+        value = os.environ.get(key)
+        if value:
+            return Path(value).expanduser() == Path(spec_default).expanduser()
+    return True
+
+
+def _assert_qmd_index_isolated() -> None:
+    """Refuse a qmd write when the library is sandboxed but the index is not.
+
+    Only the write path is guarded. A sandboxed library may still read
+    the live index -- the qmd daemon is machine-global and serves it
+    to every client on the machine, so guarding reads would break the
+    read path for the one configuration that is actually safe.
+    """
+    from lies.xdg import _LIES_OVERRIDE, _SPEC_DEFAULTS
+
+    data_default = _is_default_root(
+        "XDG_DATA_HOME", _LIES_OVERRIDE["XDG_DATA_HOME"], _SPEC_DEFAULTS["XDG_DATA_HOME"]
+    )
+    cache_default = _is_default_root(
+        "XDG_CACHE_HOME", _LIES_OVERRIDE["XDG_CACHE_HOME"], _SPEC_DEFAULTS["XDG_CACHE_HOME"]
+    )
+    # The dangerous combination is a sandboxed library (data NOT at
+    # its default) against a live index (cache AT its default).
+    # Either half the other way round shares nothing.
+    if data_default or not cache_default:
+        return
+
+    from lies.xdg import cache_home
+
+    data_value = os.environ.get("XDG_DATA_HOME") or os.environ.get("LIES_XDG_DATA_HOME")
+    raise QmdIndexIsolationError(
+        "refusing to write the qmd index: the library is sandboxed "
+        f"(data root {data_value}) but the qmd index is the live one "
+        f"({cache_home() / 'qmd' / 'index.sqlite'}). qmd resolves its index "
+        "from XDG_CACHE_HOME, not XDG_DATA_HOME, so redirecting the data root "
+        "alone sandboxes the mirror files and still registers the collections "
+        "in the shared index. Set XDG_CACHE_HOME (or LIES_XDG_CACHE_HOME) to "
+        "the same sandbox to isolate the index, or unset the data redirect to "
+        "write the real library."
+    )
+
+
+def _guards_qmd_index(fn: Callable[..., Any]) -> Callable[..., Any]:
+    """Refuse the write when the library is sandboxed and the index is not.
+
+    Applied *above* ``@with_qmd_lock()`` so the refusal costs nothing
+    and the host-wide lock is never taken just to say no.
+    """
+
+    @functools.wraps(fn)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        _assert_qmd_index_isolated()
+        return fn(*args, **kwargs)
+
+    return wrapper
+
+
 _QMD_URI_PREFIX_RE = re.compile(r"^qmd://")
 _QMD_URI_PREFIX_PREFIX = "qmd://"
 
@@ -43,6 +114,23 @@ class QmdNotInstalledError(QmdError):
 
 class QmdNoResultsError(QmdError):
     """Raised when `qmd query` returns an empty result set."""
+
+
+class QmdIndexIsolationError(QmdError):
+    """A qmd write would land in the live index from a sandboxed library.
+
+    qmd resolves its index from ``$XDG_CACHE_HOME``, and that index is
+    one file shared by every process on the machine. Redirecting the
+    library root alone therefore sandboxes the mirror files and
+    nothing else. Measured::
+
+        $ XDG_DATA_HOME=/tmp/sandbox qmd --help | grep ^Index:
+        Index: /home/<user>/.cache/qmd/index.sqlite
+
+    A refusal rather than better advice, because the combination has
+    no legitimate caller: a throwaway library writing rows into an
+    index every other collection shares.
+    """
 
 
 class QmdCommandError(QmdError):
@@ -106,6 +194,7 @@ def _run(
     )
 
 
+@_guards_qmd_index
 @with_qmd_lock()
 def qmd_update(cwd: Path, timeout: int = 1800) -> None:
     """Run ``qmd update`` in ``cwd``.
@@ -135,6 +224,7 @@ def qmd_status(cwd: Path) -> str:
     return str(result.stdout)
 
 
+@_guards_qmd_index
 @with_qmd_lock()
 def qmd_collection_add(cwd: Path, path: Path, name: str) -> None:
     """Register a collection with qmd."""
@@ -143,6 +233,7 @@ def qmd_collection_add(cwd: Path, path: Path, name: str) -> None:
         raise QmdError(f"qmd collection add failed: {result.stderr.strip()}")
 
 
+@_guards_qmd_index
 @with_qmd_lock()
 def qmd_collection_add_if_missing(cwd: Path, path: Path, name: str) -> None:
     """Register ``name`` with qmd, treating "already exists" as success.
@@ -158,6 +249,7 @@ def qmd_collection_add_if_missing(cwd: Path, path: Path, name: str) -> None:
     raise QmdError(f"qmd collection add failed: {stderr}")
 
 
+@_guards_qmd_index
 @with_qmd_lock()
 def qmd_collection_remove(cwd: Path, name: str) -> None:
     """Run ``qmd collection remove <name>`` in ``cwd``."""
@@ -190,6 +282,7 @@ def qmd_collection_show(cwd: Path, name: str) -> dict[str, str] | None:
     return {"path": info["path"]}
 
 
+@_guards_qmd_index
 @with_qmd_lock()
 def qmd_collection_add_or_update(
     cwd: Path,
@@ -226,6 +319,7 @@ def qmd_collection_add_or_update(
     qmd_collection_add(cwd, register_path, name)
 
 
+@_guards_qmd_index
 @with_qmd_lock()
 def qmd_embed(cwd: Path, collection_name: str, *, timeout: int = 1800) -> None:
     """Run ``qmd embed -c <collection_name>`` in ``cwd``.
@@ -263,6 +357,7 @@ def qmd_ls(cwd: Path, collection: str) -> str:
     return str(result.stdout)
 
 
+@_guards_qmd_index
 @with_qmd_lock()
 def qmd_cleanup(cwd: Path) -> None:
     """Drop orphan rows from qmd's FTS5 db."""
@@ -276,6 +371,7 @@ def qmd_cleanup(cwd: Path) -> None:
         )
 
 
+@_guards_qmd_index
 @with_qmd_lock()
 def qmd_reindex(
     cwd: Path,
