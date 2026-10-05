@@ -133,6 +133,7 @@ def register(app: typer.Typer) -> None:
         ] = False,
     ) -> None:
         """Ingest a single source or a directory of sources into the library."""
+        from lies.library.errors import SelfIngestRefused
         from lies.library.fetcher import ScraperFetcher
         from lies.library.ingest import run_batch_ingest, run_source_ingest
         from lies.library.paths import Library
@@ -172,31 +173,40 @@ def register(app: typer.Typer) -> None:
         stems_list = list(exclude_stem)
         dirs_list = list(exclude_dir)
 
-        if coerced_source is not None:
-            result = run_source_ingest(
-                lib,
-                coll_name,
-                coerced_source,
-                fetcher=fetcher,
-                slug=slug,
-                title=title,
-                exclude_stems=stems_list,
-                exclude_dirs=dirs_list,
-                force=force,
-                dry_run=dry_run,
-            )
-        else:
-            assert coerced_batch is not None
-            result = run_batch_ingest(
-                lib,
-                coll_name,
-                coerced_batch,
-                fetcher=fetcher,
-                exclude_stems=stems_list,
-                exclude_dirs=dirs_list,
-                force=force,
-                dry_run=dry_run,
-            )
+        # A refusal is rendered like the other refusals in this command
+        # (``error: …`` on stderr, exit 2). Letting the typed error
+        # escape produces a Rich traceback, which is louder but says
+        # less: the operator is told which line of a library module they
+        # tripped, not what to pass instead.
+        try:
+            if coerced_source is not None:
+                result = run_source_ingest(
+                    lib,
+                    coll_name,
+                    coerced_source,
+                    fetcher=fetcher,
+                    slug=slug,
+                    title=title,
+                    exclude_stems=stems_list,
+                    exclude_dirs=dirs_list,
+                    force=force,
+                    dry_run=dry_run,
+                )
+            else:
+                assert coerced_batch is not None
+                result = run_batch_ingest(
+                    lib,
+                    coll_name,
+                    coerced_batch,
+                    fetcher=fetcher,
+                    exclude_stems=stems_list,
+                    exclude_dirs=dirs_list,
+                    force=force,
+                    dry_run=dry_run,
+                )
+        except SelfIngestRefused as exc:
+            typer.echo(f"error: {exc}", err=True)
+            raise typer.Exit(code=2) from exc
 
         summary = (
             f"created={result.created} updated={result.updated} "

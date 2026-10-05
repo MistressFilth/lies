@@ -6,6 +6,91 @@ All notable changes to LIES are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **A self-ingest is refused instead of run into a silent no-op.**
+  `lies ingest --batch <collection_dir>` -- pointing a batch at a live
+  collection, which is the obvious way to "re-sync" one -- makes the
+  same file both the source and the mirror destination. The slug is
+  derived from the source's path and the target is `coll.dir /
+  f"{slug}.md"`, so every page resolves its own target onto itself.
+
+  The run could not converge, and did not: measured in a sandbox with
+  `--force` absent, three consecutive runs each reported
+  `errors=1`, quarantined the page, and wrote nothing.
+
+  ```
+  NORMAL ingest, run 1  created=1  errors=0
+  NORMAL ingest, run 2  skipped=1  errors=0
+  SELF   ingest, run 1  errors=1  QUARANTINE mirror-collision:page:existing-!=new-55d67183
+  SELF   ingest, run 2  errors=1  QUARANTINE mirror-collision:page:existing-!=new-55d67183
+  ```
+
+  A prior report of this described the symptom as "`updated=1` on every
+  run, never `skipped`". That is `--force`, which skips the idempotency
+  check outright (`if existed and not force:`) and is behaving as
+  documented. The same report proposed hashing the body rather than the
+  file, which addresses a self-referential hash but is never reached
+  here: the run quarantines before the hash comparison.
+
+  `run_batch_ingest` and `run_source_ingest` now raise
+  `SelfIngestRefused` when the source is the collection directory or
+  anywhere inside it, and the CLI renders it as `error: …` with exit 2
+  rather than a traceback. Containment, not equality: `--batch
+  <coll>/guides` is the same defect, because `derive_nested_slug`
+  mirrors the path segment for segment.
+
+  This is the caller mistake that produced the 36 stray `config.md`
+  pages fixed in 0.48.2 -- that release gated the walk on document
+  suffixes, which stopped the config becoming a page but left the
+  underlying no-op in place.
+
+- **A mirror with no `source_hash` is no longer reported as a hash
+  conflict.** The idempotency guard asked one yes/no question
+  (`if existing_hash and existing_hash == item.source_hash`) over a
+  three-valued domain, so a mirror the pipeline never wrote fell
+  through to the branch that means "the mirror disagrees with the
+  source", and said so with an empty left-hand side:
+
+  ```
+  mirror-collision:page:existing-!=new-55d67183
+  ```
+
+  A page an operator wrote by hand, sitting where a mirror would sit and
+  carrying no frontmatter, produced that message on every run against a
+  perfectly ordinary outside source -- reachable without any self-ingest
+  at all. An absence of evidence was being printed as a disagreement.
+
+  It now quarantines under `mirror-unmanaged:<slug>:no-source-hash`.
+  The outcome is unchanged (fail loud, preserve the page) and a genuine
+  mismatch keeps its `mirror-collision` name; only the claim is
+  corrected. Pre-existing since the pipeline landed in 0.19.0 (#62).
+
+- **A qmd write from a sandboxed library is refused.**
+  `qmd` resolves its index from `$XDG_CACHE_HOME`, not
+  `$XDG_DATA_HOME`, and that index is a single machine-shared file keyed
+  by collection name. Redirecting the library root into a temp
+  directory therefore sandboxed the mirror files and nothing else: the
+  collection rows still landed in `~/.cache/qmd/index.sqlite`.
+
+  ```
+  $ XDG_DATA_HOME=/tmp/sandbox-data qmd --help | grep ^Index:
+  Index: /home/divinefilth/.cache/qmd/index.sqlite
+
+  $ XDG_DATA_HOME=/tmp/sandbox-data XDG_CACHE_HOME=/tmp/sandbox-cache qmd --help | grep ^Index:
+  Index: /tmp/sandbox-cache/qmd/index.sqlite
+  ```
+
+  `AGENTS.local.md` says to run ingest work "against a sandboxed XDG
+  root", which reads as sufficient and is not. The qmd write helpers
+  (`update`, `collection add` / `add_if_missing` / `remove` /
+  `add_or_update`, `embed`, `cleanup`, `reindex`) now refuse the
+  combination -- data root redirected, cache root at its default --
+  and name both variables. Redirecting both, neither, or the cache alone
+  are all allowed; reads are unguarded, because the daemon is
+  machine-global and serving the live index to every client is the only
+  configuration that is safe.
+
 ## [0.48.2] - 2026-10-04
 
 ### Fixed

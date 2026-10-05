@@ -49,6 +49,12 @@ directory of sources into one collection, or `--exclude-stem` /
 `--exclude-dir` to skip noise. The ingest path is purely deterministic
 (no LLM call).
 
+The source directory must be *outside* the collection it writes to.
+Pointing `--batch` at a collection directory — the obvious way to
+"re-sync" one — makes every page both the source and the mirror
+destination, which cannot converge; `ingest` refuses it with exit 2
+rather than running a no-op that reports an error per page.
+
 Launch the REPL (no subcommand) for an interactive session:
 
 ```bash

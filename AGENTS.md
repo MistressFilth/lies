@@ -846,6 +846,72 @@ grounded in a primary source. Library hits render unprefixed.
 
 **Read-side dispatch:** the `read` tool is source-aware. Wiki page IDs (`page-` + sha1-12) route to `memory_service.read()`. Library paths (`<collection>/<page>`) route to the qmd daemon's `get` with `lineNumbers: false`, and the body is read from the content block rather than `.data` — see "The read tool's bodies" above. Library hits carry `page_id=None` so the calling LLM doesn't try to read them via the wiki service.
 
+## The ingest idempotency check has three states, not two
+
+`library/ingest.py::_process_item` compares the incoming
+`source_hash` against the existing mirror's frontmatter. A mirror
+carrying a matching hash is a **skip**; a mirror carrying a different
+hash is a **conflict**; a mirror carrying *no* `source_hash` is neither.
+It was written as one yes/no question —
+
+```python
+if existing_hash and existing_hash == item.source_hash:  # skip
+...                                                     # quarantine
+```
+
+— so the third state fell through to the second and was reported as a
+disagreement with an empty left-hand side printed into the message:
+`mirror-collision:page:existing-!=new-<hash>`. A hand-written page
+sitting where a mirror would sit produced that on every run, against a
+perfectly ordinary outside source. It is now
+`mirror-unmanaged:<slug>:no-source-hash`; the outcome is unchanged
+(fail loud, preserve the page) and a real mismatch keeps its
+`mirror-collision` name. Pre-existing since #62.
+
+**The lesson is the shape, not the string.** A guard written as
+`if x and x == y` has two states on paper and three in the domain, and
+the third is always the one nobody writes a test for.
+
+A **self-ingest** — `--batch` pointed at a collection directory, the
+obvious way to "re-sync" one — is the degenerate case of that third
+state, and is now refused outright (`SelfIngestRefused`, exit 2). The
+source and the mirror target are the same path, because the slug is
+derived from the source's relative path and the target is
+`coll.dir / f"{slug}.md"`, and `derive_nested_slug` mirrors that path
+segment for segment. It can only ever "skip everything" or "rewrite
+everything"; measured, it did neither — three runs, `errors=1` each,
+nothing written.
+
+**This is the caller mistake that produced the 36 stray `config.md`
+pages** (fixed in 0.48.2 by gating the walk on document suffixes). That
+release stopped the config becoming a page and left the no-op in place.
+When reading a 0.48.2-shaped ingest bug, check the direction of
+`--batch` before the filter.
+
+The same 0.48.2 report described the symptom as "`updated=1` on every
+run, never `skipped`". That is `--force`, which skips the check
+entirely (`if existed and not force:`) and works as documented. A
+reproduction that uses `--force` measures the flag, not the code.
+
+## The qmd index is keyed by `$XDG_CACHE_HOME`, not `$XDG_DATA_HOME`
+
+`qmd` keeps its index in one machine-shared file, `~/.cache/qmd/
+index.sqlite`, resolved from `$XDG_CACHE_HOME`. A sandbox that redirects
+the library root sandboxes the mirror files and nothing else:
+
+```
+$ XDG_DATA_HOME=/tmp/sandbox-data qmd --help | grep ^Index:
+Index: /home/divinefilth/.cache/qmd/index.sqlite
+```
+
+`tests/conftest.py::_isolated_xdg` redirects every root, which is why
+the suite never hit this and why a hand-rolled sandbox does. The qmd
+write helpers (`update`, `collection add` / `add_if_missing` / `remove`
+/ `add_or_update`, `embed`, `cleanup`, `reindex`) refuse the
+data-only combination and name both variables; reads are unguarded,
+because the daemon is machine-global and serving the live index to
+every client is the only configuration that is safe.
+
 ## Known flakes
 
 Measured failures that are real, are not a bug in LIES, and have no
