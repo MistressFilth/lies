@@ -42,16 +42,42 @@ def _registry_from_daemon(monkeypatch: pytest.MonkeyPatch) -> frozenset[str]:
     routing layer, not the registry, so the resolver is fed the
     daemon's own view.
 
+    **Both** registry accessors, because ``_resolve_tag_collections``
+    reads two of them and they are not the same one. Validation calls
+    ``_collect_available_tags_mcp`` (built from
+    ``library_collection_names``); the retriever then calls
+    ``_collections_matching``, which imports
+    ``library_collection_metas`` (``query/synthesizer.py:857``). Patching
+    only the names accessor satisfies validation and then returns an
+    empty match set, which ``search`` reports as the *whole* expression
+    being an unknown tag::
+
+        assert result["unknown_tags"] == []
+        E  AssertionError: assert ['c:claude_code|c:opencode'] == []
+
+    which reads as a resolver bug and is not one. The metas carry a
+    ``name`` and ``tags``; with no real ``config.yaml`` under the
+    isolated root there is nothing for it to read, so the daemon's set
+    is synthesised directly. ``tags`` is left empty, which the implicit
+    self-tag rule (``name in tags ∪ {name}``) covers — a ``c:`` atom is
+    a strict name match and does not consult tags at all.
+
     Through ``monkeypatch`` rather than a bare assignment: a raw
     rebind of the registry module attribute outlives the test and
     silently re-points every later test's resolver at the live
     daemon's collection list.
     """
     import lies.library.registry as registry
+    from lies.library.registry import LibraryCollectionMeta
 
     live = _live_collections()
     assert live, "the daemon reported no collections; every assertion below would be vacuous"
     monkeypatch.setattr(registry, "library_collection_names", lambda: live)
+    monkeypatch.setattr(
+        registry,
+        "library_collection_metas",
+        lambda: iter([LibraryCollectionMeta(name=n, tags=()) for n in sorted(live)]),
+    )
     return live
 
 
