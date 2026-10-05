@@ -14,6 +14,10 @@ from lies.library.ingest import FetchItem
 from lies.scrapers.base import BaseScraper, ParsedDoc
 
 
+def _walk(directory: Path):
+    return ScraperFetcher(library=None)._iter_directory(directory)
+
+
 class _FakeScraper:
     """Fake scraper exposing the real ``fetch`` + ``parse`` interface."""
 
@@ -783,3 +787,121 @@ def test_fetcher_passes_collection_to_registry_builder(monkeypatch, tmp_path: Pa
 
     assert seen_collection["value"] is coll
     assert items[0].body == "# from builder\n"
+
+
+def test_batch_walk_admits_only_document_extensions(tmp_path: Path) -> None:
+    """``--batch`` on a directory yields documents, not every regular file.
+
+    Repro from the live library: 36 collections each carried a
+    ``config.md`` — the collection's own ``config.yaml``, read by the
+    walker, decoded as UTF-8 and written out as a page. The only filter
+    downstream is ``should_skip_filename``, a *denylist* of known stems
+    (``license``, ``contributing``, ``credits``, ...) plus the ``changelog``
+    prefix. A denylist cannot express "is a document", so ``config`` was
+    never going to be caught. The type test has to happen here, at the one
+    layer that still knows what a file *is*: downstream sees decoded bytes
+    and a slug, and cannot recover the type.
+    """
+    (tmp_path / "doc.md").write_text("# Doc\n\n" + "prose line\n" * 8)
+    (tmp_path / "config.yaml").write_text("name: demo\ntags: []\n")
+    (tmp_path / "notes.txt").write_text("plain text doc\n" * 8)
+    (tmp_path / "page.rst").write_text("Title\n=====\n\nbody\n" * 2)
+    (tmp_path / "data.json").write_text('{"a": 1}\n')
+    nested = tmp_path / "sub"
+    nested.mkdir()
+    (nested / "deep.md").write_text("# Deep\n\n" + "prose\n" * 8)
+
+    got = {item.path.as_posix() for item in _walk(tmp_path)}
+
+    assert got == {"doc.md", "notes.txt", "page.rst", "sub/deep.md"}, (
+        f"non-document extensions admitted: {sorted(got)}"
+    )
+    assert "config.yaml" not in got
+    assert "data.json" not in got
+
+
+def test_batch_walk_skips_binary_and_config_files(tmp_path: Path) -> None:
+    """The concrete residue: a collection directory holds a ``config.yaml``.
+
+    Ingesting a collection into itself is the obvious way to re-sync it,
+    and that directory always contains the collection's own
+    ``config.yaml`` next to its pages.
+    """
+    coll = tmp_path / "coll"
+    coll.mkdir()
+    (coll / "config.yaml").write_text("name: coll\nversion: '1'\n")
+    (coll / "coll.md").write_text("# Coll\n\n" + "prose\n" * 8)
+
+    got = {item.path.as_posix() for item in _walk(coll)}
+
+    assert got == {"coll.md"}, f"config.yaml became a page: {sorted(got)}"
+
+
+_MINIMAL_PDF = (
+    b"%PDF-1.4\n"
+    b"1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n"
+    b"2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n"
+    b"3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 300 300]"
+    b"/Contents 4 0 R/Resources<</Font<</F1 5 0 R>>>>>>endobj\n"
+    b"4 0 obj<</Length 46>>stream\n"
+    b"BT /F1 12 Tf 20 100 Td (Batch ingest handles PDF sources) Tj ET\n"
+    b"endstream endobj\n"
+    b"5 0 obj<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>endobj\n"
+    b"trailer<</Root 1 0 R>>\n%%EOF\n"
+)
+
+
+def test_batch_walk_extracts_pdf_text_through_the_builder(tmp_path: Path) -> None:
+    """A PDF in a batch directory becomes its text, not replacement characters.
+
+    The walk decodes text documents directly but must not decode a PDF --
+    ``errors="replace"`` would turn it into a page of mojibake. PDFs go
+    through ``_normalize_body``, the same route ``--source`` takes, so the
+    Builder renders them to markdown.
+    """
+    import hashlib
+
+    (tmp_path / "guide.pdf").write_bytes(_MINIMAL_PDF)
+    (tmp_path / "config.yaml").write_text("name: demo\n")
+
+    items = {item.path.as_posix(): item for item in _walk(tmp_path)}
+
+    assert set(items) == {"guide.pdf"}, f"unexpected pages: {sorted(items)}"
+    pdf = items["guide.pdf"]
+    assert "Batch ingest handles PDF sources" in pdf.body, (
+        f"pdf text not extracted: {pdf.body[:80]!r}"
+    )
+    assert "�" not in pdf.body, "decoded as text instead of rendered"
+    # source_hash is the SHA256 of the RAW bytes, per the spec -- not of the
+    # extracted text -- so re-ingesting an unchanged PDF is a skip.
+    assert pdf.source_hash == hashlib.sha256(_MINIMAL_PDF).hexdigest()
+    assert pdf.url is None
+    assert pdf.fetched_via == "local"
+
+
+def test_batch_walk_renders_html_through_the_builder(tmp_path: Path) -> None:
+    """HTML is a registry format, so it is rendered rather than dumped raw."""
+    (tmp_path / "page.html").write_text(
+        "<html><body><h1>Title</h1>" + "<p>prose paragraph</p>" * 8 + "</body></html>"
+    )
+
+    got = {item.path.as_posix(): item.body for item in _walk(tmp_path)}
+
+    assert set(got) == {"page.html"}
+    assert "Title" in got["page.html"]
+    assert "<html>" not in got["page.html"], "raw HTML passed through unrendered"
+
+
+def test_batch_walk_drops_a_pdf_it_cannot_render(tmp_path: Path) -> None:
+    """An unparseable PDF is dropped, not raised.
+
+    The walker drops files it cannot read; a Builder that throws must not
+    abort the batch either, or one bad file costs every other document in
+    the directory.
+    """
+    (tmp_path / "broken.pdf").write_bytes(b"%PDF-1.4 not really a pdf")
+    (tmp_path / "good.md").write_text("# Good\n\n" + "prose line\n" * 8)
+
+    got = {item.path.as_posix() for item in _walk(tmp_path)}
+
+    assert got == {"good.md"}, f"a bad pdf changed the batch outcome: {sorted(got)}"
