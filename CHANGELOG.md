@@ -10,6 +10,32 @@ Staged for **0.48.4**. Both version surfaces (`pyproject.toml`,
 `src/lies/__init__.py`) are already bumped; `make release` collapses
 this into a dated release heading.
 
+### Changed
+
+- **The per-test budget gate re-measures up to three times and keeps the
+  fastest.** `tests/unit/conftest.py` re-ran each in-suite breach in a
+  fresh pytest process and compared that *one* measurement to the 0.15s
+  line. One draw from a distribution this noisy is not a measurement:
+  the same test on the same commit came back 0.143s from one pass and
+  0.016s from twelve more, with the limit sitting between the two — a
+  test costing 16ms, passing by 7ms. A marginally colder run would have
+  rejected a commit over it, and the only remedy the rubric offers is
+  `@pytest.mark.slow`, which removes the test from the default run
+  rather than fixing anything.
+
+  The verdict is now the minimum over up to three passes, because what
+  the re-measure asks is what the test costs when nothing else competes,
+  and that is a floor rather than a draw. The direction is sound — a test
+  whose fastest pass is still over the limit still fails — and the loop
+  stops as soon as a pass clears, so an ordinary run still spawns one
+  process. The subprocess timeout is sized by passes as well as tests; a
+  bound computed for one pass under-bounds the rest, and a killed pass
+  reports as "the re-measure was unavailable", which reads as a broken
+  harness that is not broken.
+
+  Contributor-visible: a gate that occasionally rejects a cheap test is
+  a gate people learn to work around.
+
 ### Fixed
 
 - **An emptied collection registry is reported as one event, not N

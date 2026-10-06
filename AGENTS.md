@@ -1113,6 +1113,17 @@ run passes. Reaching for `@pytest.mark.slow` to silence a gate failure
 removes the test from the default run rather than fixing anything; mark
 only what genuinely costs more than the budget.
 
+**The re-measure takes the minimum of up to `_ISOLATION_REPEATS` (3)
+passes, not one.** One draw from a distribution this noisy is not a
+measurement. Measured on this host, the same test on the same commit came
+back 0.143s from one pass and 0.016s from twelve more, with the 0.15s
+line between the two — a test costing 16ms, passing by 7ms. The question
+the re-measure answers is what the test costs when nothing else competes,
+and that is a floor over repeated observations rather than a draw. The
+direction is sound: a test whose *fastest* pass is over the limit still
+fails. The loop stops as soon as a pass clears, so the common run spawns
+exactly one process.
+
 ## References
 
 - Project overview: README.md
