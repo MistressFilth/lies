@@ -221,6 +221,70 @@ def snapshots_differ(
     return True, msg
 
 
+def registry_divergence(db: Path) -> dict[str, Any] | None:
+    """The registry is *empty* while documents still reference collections.
+
+    Returns one finding describing the event, its counts, and its
+    remedy; ``None`` when the registry is not empty.
+
+    **Why this is not ordinary drift.** :func:`document_drift` reports
+    each unregistered collection separately, so an emptied registry
+    arrives as N near-identical entries that each name a collection the
+    operator never lost. Measured on this host (2026-10-05): 117
+    entries, every one reading "1 document(s) reference a collection
+    absent from store_collections", for a corpus that was intact.
+
+    **The cause, read from qmd 2.5.3's source.** ``syncConfigToDb``
+    (``dist/store.js:887``) upserts the external config's collections
+    and then deletes every ``store_collections`` row the config does
+    not name. It early-returns when ``store_config.config_hash``
+    already matches. A config that momentarily declares zero
+    collections therefore empties the table, and the hash written for
+    *that* config then matches — making the wipe self-perpetuating
+    until the config changes again. The config is
+    ``~/.config/qmd/index.yml``.
+
+    **Why retrieval kept working.** The daemon serves reads without
+    passing through that sync, and ``validate_scope`` reads the
+    daemon's own ``status`` tool rather than ``store_collections``. So
+    every query path saw a healthy index while ``lies qmd status``
+    reported 117 broken collections.
+
+    Deliberately narrow: it fires only on a *fully* empty registry.
+    A partial overlap is ordinary per-collection drift with a
+    different remedy, and escalating it here would bury the precise
+    ``document_drift`` finding under a diagnosis that does not fit.
+    """
+    with closing(open_readonly(db)) as conn:
+        registered = conn.execute("SELECT COUNT(*) FROM store_collections").fetchone()[0]
+        referenced = conn.execute("SELECT COUNT(DISTINCT collection) FROM documents").fetchone()[0]
+        documents = conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0]
+
+    if registered or not referenced:
+        return None
+
+    return {
+        "registered": registered,
+        "referenced": referenced,
+        "documents": documents,
+        "cause": (
+            "qmd's syncConfigToDb (dist/store.js:887) deletes every "
+            "store_collections row the external config does not name, and "
+            "early-returns while store_config.config_hash matches. A config "
+            "declaring zero collections emptied the table; the hash written "
+            "for it then matched, so the wipe did not self-repair."
+        ),
+        "config": "~/.config/qmd/index.yml",
+        "remedy": (
+            "Check the collections block in ~/.config/qmd/index.yml. If it "
+            "still declares them, any qmd command re-syncs the config into "
+            "store_collections and the divergence clears. If it does not, "
+            "restore the config first -- re-syncing an empty config is what "
+            "emptied the table."
+        ),
+    }
+
+
 def integrity_summary(db: Path) -> dict[str, Any]:
     """Full integrity snapshot for ``lies qmd status``.
 
@@ -231,6 +295,13 @@ def integrity_summary(db: Path) -> dict[str, Any]:
     disk; ``document_drift`` walks ``documents`` and finds
     unregistered collections. A drift that exists on one side
     only is invisible to the other; the union closes the class.
+
+    ``registry_divergence`` *supplements* that union rather than
+    replacing any of it. It names the one case where the per-collection
+    entries are symptoms of a single event, and carries the cause and the
+    remedy; the raw ``document_drift`` breakdown stays so nothing is lost
+    and a consumer parsing the summary cannot mistake a divergence for a
+    healthy index.
     """
     orphans = index_orphans(db)
     collection_d = collection_drift(db)
@@ -258,4 +329,5 @@ def integrity_summary(db: Path) -> dict[str, Any]:
         "collections": collections,
         "drift": collection_d,
         "document_drift": document_d,
+        "registry_divergence": registry_divergence(db),
     }
