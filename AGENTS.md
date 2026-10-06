@@ -988,6 +988,52 @@ the diagnosis — a logic bug fails the same tests every time. This is
 the contention stall recorded above, reaching the retriever through the
 per-test throwaway index these tests seed.
 
+### `store_collections` can be emptied by qmd itself, and it does not announce it
+
+Observed on this host 2026-10-04/05: `lies qmd status` reported
+`collections: 0` with `document_drift` on all 117 collections, for a
+corpus that was intact (6131 documents, 6131 content, 0 orphans).
+
+**The cause is qmd's, not LIES'.** `syncConfigToDb`
+(`@tobilu/qmd/dist/store.js:887`) upserts the external config's
+collections and then **deletes every `store_collections` row the config
+does not name**:
+
+```js
+const configNames = new Set(Object.keys(config.collections));
+for (const [name, coll] of Object.entries(config.collections)) upsertStoreCollection(db, name, coll);
+const dbCollections = db.prepare(`SELECT name FROM store_collections`).all();
+for (const row of dbCollections) {
+    if (!configNames.has(row.name)) db.prepare(`DELETE FROM store_collections WHERE name = ?`).run(row.name);
+}
+```
+
+It is guarded only by `store_config.config_hash`, and it early-returns
+while that matches. So a config at `~/.config/qmd/index.yml` that
+momentarily declares **zero** collections empties the table, and the
+hash written *for that empty config* then matches — making the wipe
+self-perpetuating until the config changes again. `getStore()` runs the
+sync on every qmd CLI store open (`dist/cli/qmd.js:26-40`), and
+`resyncConfig()` clears the hash to force it.
+
+**Why retrieval stays healthy through it**, which is what makes it hard
+to spot: the daemon serves reads without passing through that sync, and
+`validate_scope` reads the daemon's own `status` tool rather than
+`store_collections`. Every query path saw a healthy index.
+
+**What repairs it.** A later qmd store open with a mismatching hash
+re-syncs every collection from `index.yml`. That is what happened here:
+`store_collections` read 0 and then read 117 with no write in between.
+Had the config *not* been restored, nothing would have — so check the
+`collections:` block in `~/.config/qmd/index.yml` first, because
+re-syncing an empty config is precisely what emptied the table.
+
+`lies qmd status` reports this as one `registry_divergence` finding
+carrying the cause and the remedy, rather than leaving it as N
+identical drift entries. Read that field first when `collections` is 0
+and `document_drift` is large; the two numbers being wildly different is
+the signature.
+
 ### Live-index residue
 Four orphan `content_vectors` rows and five `documents` rows for
 `wiki_tag-filter-lib`, a collection absent from `store_collections`.

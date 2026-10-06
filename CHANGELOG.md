@@ -6,11 +6,49 @@ All notable changes to LIES are documented here. The format follows
 
 ## [Unreleased]
 
-Staged for **0.48.3**. Both version surfaces (`pyproject.toml`,
+Staged for **0.48.4**. Both version surfaces (`pyproject.toml`,
 `src/lies/__init__.py`) are already bumped; `make release` collapses
 this into a dated release heading.
 
 ### Fixed
+
+- **An emptied collection registry is reported as one event, not N
+  drift entries.** On 2026-10-05 the live index reported `collections:
+  0` plus 117 `document_drift` entries, every one of them "1
+  document(s) reference a collection absent from store_collections" —
+  117 identical messages that are the symptom of a single event and
+  read as 117 unrelated broken collections.
+
+  The cause is in qmd's own source. `syncConfigToDb`
+  (`dist/store.js:887`) upserts the external config's collections and
+  then deletes every `store_collections` row the config does not name,
+  and it early-returns while `store_config.config_hash` matches. A
+  config that momentarily declares zero collections therefore empties
+  the table, and the hash written *for that empty config* then matches
+  — so the wipe is self-perpetuating until the config changes again.
+  The config is `~/.config/qmd/index.yml`.
+
+  Retrieval never noticed, which is what made the diagnosis hard: the
+  daemon serves reads without passing through that sync, and
+  `validate_scope` reads the daemon's own `status` tool rather than
+  `store_collections`. Every query path saw a healthy index.
+
+  The same day, reading the index directly, `store_collections` read 0
+  and then read 117 with no write in between — a later qmd store open
+  ran with a mismatching hash and re-synced the 117 collections from
+  `index.yml`. Nothing in LIES reported that as an event, and nothing
+  would have repaired it had the config not been restored.
+
+  `lies qmd status` now carries `registry_divergence`: the counts, the
+  cause, the config that governs it, and which branch of the remedy
+  applies. It fires only on a *fully* empty registry — a partial
+  overlap is ordinary per-collection drift with a different remedy, and
+  escalating it would bury the precise `document_drift` finding. It
+  supplements `document_drift` rather than replacing it.
+
+  Reproduced end-to-end on a throwaway copy of the real
+  6131-document index with the registry emptied. The live index was not
+  opened read-write; its mtime is unchanged.
 
 - **A self-ingest is refused instead of run into a silent no-op.**
   `lies ingest --batch <collection_dir>` -- pointing a batch at a live
