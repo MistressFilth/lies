@@ -30,7 +30,7 @@ from typing import Protocol
 import frontmatter  # type: ignore[import-untyped]
 
 from lies.library.catalog import LibraryCatalogPage
-from lies.library.errors import LibraryFetchUnreachable
+from lies.library.errors import LibraryFetchUnreachable, SelfIngestRefused
 from lies.library.filter import should_skip_content, should_skip_filename
 from lies.library.mirror import write_mirror
 from lies.library.paths import Library, LibraryCollection
@@ -278,18 +278,28 @@ def _process_item(
         # the exit-0 behavior for re-runs of unchanged sources (Task 11
         # fix #2). Mismatched hashes still fall through to the
         # error+quarantine branch below so genuine conflicts stay fail-loud.
-        if existing_hash and existing_hash == item.source_hash:
-            _record_skip(result, "mirror-collision:up_to_date")
-            return
-        result.errors += 1
-        result.quarantine_records.append(
-            _quarantine_to_poison(
-                coll,
-                slug,
-                item.body,
-                f"mirror-collision:{slug}:existing-{existing_hash[:8]}!=new-{item.source_hash[:8]}",
+        #
+        # Three states, not two. The previous guard was
+        # ``if existing_hash and existing_hash == item.source_hash``,
+        # which asks one yes/no question over a three-valued domain, so
+        # a mirror carrying *no* ``source_hash`` fell through to the
+        # branch that means "the mirror disagrees with the source" and
+        # reported ``existing-!=new-<hash>`` — an empty left-hand side
+        # printed as a disagreement. A page the pipeline never wrote is
+        # an absence of evidence, and it is quarantined under a reason
+        # that says so. The outcome is unchanged (fail loud, preserve
+        # the page); only the claim is corrected.
+        if existing_hash:
+            if existing_hash == item.source_hash:
+                _record_skip(result, "mirror-collision:up_to_date")
+                return
+            reason = (
+                f"mirror-collision:{slug}:existing-{existing_hash[:8]}!=new-{item.source_hash[:8]}"
             )
-        )
+        else:
+            reason = f"mirror-unmanaged:{slug}:no-source-hash"
+        result.errors += 1
+        result.quarantine_records.append(_quarantine_to_poison(coll, slug, item.body, reason))
         return
 
     if dry_run:
@@ -376,6 +386,37 @@ def _finalize(
     return result
 
 
+def _assert_not_self_ingest(library: Library, collection_name: str, source: Path | str) -> None:
+    """Refuse a run whose source and mirror destination are one path.
+
+    ``_process_item`` derives ``target = coll.dir / f"{slug}.md"`` from
+    the source's *relative* path, and ``derive_nested_slug`` mirrors
+    that path segment for segment. So any source that already lives
+    inside the collection directory resolves its own mirror target onto
+    itself, and the run can only ever "skip everything" or "rewrite
+    everything".
+
+    Checked by containment rather than equality: ``--batch <coll>/guides``
+    is the same defect as ``--batch <coll>``, because
+    ``guides/page.md`` still lands on ``<coll>/guides/page.md``.
+
+    A URL is a string here and has no local mirror to collide with, so
+    it passes through untouched.
+    """
+    if not isinstance(source, Path):
+        return
+    try:
+        coll_dir = library.collection(collection_name).dir.resolve()
+        source_path = source.resolve()
+    except OSError, ValueError:
+        # Unresolvable path (dangling symlink, unreadable parent). The
+        # walk itself will report it; a guard that raises here would
+        # replace a specific fetch error with a less specific one.
+        return
+    if source_path == coll_dir or source_path.is_relative_to(coll_dir):
+        raise SelfIngestRefused(source, collection_name)
+
+
 def run_source_ingest(
     library: Library,
     collection_name: str,
@@ -396,7 +437,11 @@ def run_source_ingest(
     aborts so the operator notices (no silent empty batch). When the
     fetcher produces per-doc dispatch failures, those are quarantined
     and the run continues with whatever items survived.
+
+    Raises ``SelfIngestRefused`` when ``source`` is a path inside the
+    target collection, where source and mirror would be the same file.
     """
+    _assert_not_self_ingest(library, collection_name, source)
     result = BatchIngestResult()
     items = list(_iter_fetch_items(fetcher, source, result))
     if not items and not result.quarantine_records:
@@ -451,7 +496,13 @@ def run_batch_ingest(
     failure quarantines the bad doc and the run continues with whatever
     items survived. ``LibraryFetchUnreachable`` is only raised when both
     the fetch yielded zero items AND no per-doc quarantine records exist.
+
+    Raises ``SelfIngestRefused`` when ``source_dir`` is inside the target
+    collection, which is the shape reported against this command: it
+    enumerates the mirrors and asks each one whether its own source has
+    changed.
     """
+    _assert_not_self_ingest(library, collection_name, source_dir)
     result = BatchIngestResult()
     items = list(_iter_fetch_items(fetcher, source_dir, result))
     # Empty batch is a no-op (spec: "lies ingest --batch <empty-dir> →

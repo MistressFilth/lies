@@ -6,6 +6,159 @@ All notable changes to LIES are documented here. The format follows
 
 ## [Unreleased]
 
+Staged for **0.48.4**. Both version surfaces (`pyproject.toml`,
+`src/lies/__init__.py`) are already bumped; `make release` collapses
+this into a dated release heading.
+
+### Changed
+
+- **The per-test budget gate re-measures up to three times and keeps the
+  fastest.** `tests/unit/conftest.py` re-ran each in-suite breach in a
+  fresh pytest process and compared that *one* measurement to the 0.15s
+  line. One draw from a distribution this noisy is not a measurement:
+  the same test on the same commit came back 0.143s from one pass and
+  0.016s from twelve more, with the limit sitting between the two — a
+  test costing 16ms, passing by 7ms. A marginally colder run would have
+  rejected a commit over it, and the only remedy the rubric offers is
+  `@pytest.mark.slow`, which removes the test from the default run
+  rather than fixing anything.
+
+  The verdict is now the minimum over up to three passes, because what
+  the re-measure asks is what the test costs when nothing else competes,
+  and that is a floor rather than a draw. The direction is sound — a test
+  whose fastest pass is still over the limit still fails — and the loop
+  stops as soon as a pass clears, so an ordinary run still spawns one
+  process. The subprocess timeout is sized by passes as well as tests; a
+  bound computed for one pass under-bounds the rest, and a killed pass
+  reports as "the re-measure was unavailable", which reads as a broken
+  harness that is not broken.
+
+  Contributor-visible: a gate that occasionally rejects a cheap test is
+  a gate people learn to work around.
+
+### Fixed
+
+- **An emptied collection registry is reported as one event, not N
+  drift entries.** On 2026-10-05 the live index reported `collections:
+  0` plus 117 `document_drift` entries, every one of them "1
+  document(s) reference a collection absent from store_collections" —
+  117 identical messages that are the symptom of a single event and
+  read as 117 unrelated broken collections.
+
+  The cause is in qmd's own source. `syncConfigToDb`
+  (`dist/store.js:887`) upserts the external config's collections and
+  then deletes every `store_collections` row the config does not name,
+  and it early-returns while `store_config.config_hash` matches. A
+  config that momentarily declares zero collections therefore empties
+  the table, and the hash written *for that empty config* then matches
+  — so the wipe is self-perpetuating until the config changes again.
+  The config is `~/.config/qmd/index.yml`.
+
+  Retrieval never noticed, which is what made the diagnosis hard: the
+  daemon serves reads without passing through that sync, and
+  `validate_scope` reads the daemon's own `status` tool rather than
+  `store_collections`. Every query path saw a healthy index.
+
+  The same day, reading the index directly, `store_collections` read 0
+  and then read 117 with no write in between — a later qmd store open
+  ran with a mismatching hash and re-synced the 117 collections from
+  `index.yml`. Nothing in LIES reported that as an event, and nothing
+  would have repaired it had the config not been restored.
+
+  `lies qmd status` now carries `registry_divergence`: the counts, the
+  cause, the config that governs it, and which branch of the remedy
+  applies. It fires only on a *fully* empty registry — a partial
+  overlap is ordinary per-collection drift with a different remedy, and
+  escalating it would bury the precise `document_drift` finding. It
+  supplements `document_drift` rather than replacing it.
+
+  Reproduced end-to-end on a throwaway copy of the real
+  6131-document index with the registry emptied. The live index was not
+  opened read-write; its mtime is unchanged.
+
+- **A self-ingest is refused instead of run into a silent no-op.**
+  `lies ingest --batch <collection_dir>` -- pointing a batch at a live
+  collection, which is the obvious way to "re-sync" one -- makes the
+  same file both the source and the mirror destination. The slug is
+  derived from the source's path and the target is `coll.dir /
+  f"{slug}.md"`, so every page resolves its own target onto itself.
+
+  The run could not converge, and did not: measured in a sandbox with
+  `--force` absent, three consecutive runs each reported
+  `errors=1`, quarantined the page, and wrote nothing.
+
+  ```
+  NORMAL ingest, run 1  created=1  errors=0
+  NORMAL ingest, run 2  skipped=1  errors=0
+  SELF   ingest, run 1  errors=1  QUARANTINE mirror-collision:page:existing-!=new-55d67183
+  SELF   ingest, run 2  errors=1  QUARANTINE mirror-collision:page:existing-!=new-55d67183
+  ```
+
+  A prior report of this described the symptom as "`updated=1` on every
+  run, never `skipped`". That is `--force`, which skips the idempotency
+  check outright (`if existed and not force:`) and is behaving as
+  documented. The same report proposed hashing the body rather than the
+  file, which addresses a self-referential hash but is never reached
+  here: the run quarantines before the hash comparison.
+
+  `run_batch_ingest` and `run_source_ingest` now raise
+  `SelfIngestRefused` when the source is the collection directory or
+  anywhere inside it, and the CLI renders it as `error: …` with exit 2
+  rather than a traceback. Containment, not equality: `--batch
+  <coll>/guides` is the same defect, because `derive_nested_slug`
+  mirrors the path segment for segment.
+
+  This is the caller mistake that produced the 36 stray `config.md`
+  pages fixed in 0.48.2 -- that release gated the walk on document
+  suffixes, which stopped the config becoming a page but left the
+  underlying no-op in place.
+
+- **A mirror with no `source_hash` is no longer reported as a hash
+  conflict.** The idempotency guard asked one yes/no question
+  (`if existing_hash and existing_hash == item.source_hash`) over a
+  three-valued domain, so a mirror the pipeline never wrote fell
+  through to the branch that means "the mirror disagrees with the
+  source", and said so with an empty left-hand side:
+
+  ```
+  mirror-collision:page:existing-!=new-55d67183
+  ```
+
+  A page an operator wrote by hand, sitting where a mirror would sit and
+  carrying no frontmatter, produced that message on every run against a
+  perfectly ordinary outside source -- reachable without any self-ingest
+  at all. An absence of evidence was being printed as a disagreement.
+
+  It now quarantines under `mirror-unmanaged:<slug>:no-source-hash`.
+  The outcome is unchanged (fail loud, preserve the page) and a genuine
+  mismatch keeps its `mirror-collision` name; only the claim is
+  corrected. Pre-existing since the pipeline landed in 0.19.0 (#62).
+
+- **A qmd write from a sandboxed library is refused.**
+  `qmd` resolves its index from `$XDG_CACHE_HOME`, not
+  `$XDG_DATA_HOME`, and that index is a single machine-shared file keyed
+  by collection name. Redirecting the library root into a temp
+  directory therefore sandboxed the mirror files and nothing else: the
+  collection rows still landed in `~/.cache/qmd/index.sqlite`.
+
+  ```
+  $ XDG_DATA_HOME=/tmp/sandbox-data qmd --help | grep ^Index:
+  Index: /home/divinefilth/.cache/qmd/index.sqlite
+
+  $ XDG_DATA_HOME=/tmp/sandbox-data XDG_CACHE_HOME=/tmp/sandbox-cache qmd --help | grep ^Index:
+  Index: /tmp/sandbox-cache/qmd/index.sqlite
+  ```
+
+  `AGENTS.local.md` says to run ingest work "against a sandboxed XDG
+  root", which reads as sufficient and is not. The qmd write helpers
+  (`update`, `collection add` / `add_if_missing` / `remove` /
+  `add_or_update`, `embed`, `cleanup`, `reindex`) now refuse the
+  combination -- data root redirected, cache root at its default --
+  and name both variables. Redirecting both, neither, or the cache alone
+  are all allowed; reads are unguarded, because the daemon is
+  machine-global and serving the live index to every client is the only
+  configuration that is safe.
+
 ## [0.48.2] - 2026-10-04
 
 ### Fixed

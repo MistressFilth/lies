@@ -21,6 +21,34 @@ class LibraryAtomicCommitFailed(LibraryError):
     """git commit failed after files staged; staged files preserved for forensics."""
 
 
+class SelfIngestRefused(LibraryError):
+    """The source and the mirror destination are the same path.
+
+    Raised when ``ingest`` is pointed at a collection directory (or at
+    a page inside one). A run of that shape enumerates the mirrors and
+    asks each one whether its own source has changed, which is a
+    question with no non-circular answer: the only reachable outcomes
+    are "skip everything" and "rewrite everything". Before this was
+    refused it was neither — every page quarantined, nothing was
+    written, and the reason named a hash conflict that had not
+    happened.
+
+    Refused at the run boundary rather than per page, because the fault
+    is the caller's and one refusal names it once, instead of a poison
+    copy and a ``.reason`` sidecar per page.
+    """
+
+    def __init__(self, source: Path, collection: str) -> None:
+        self.source = source
+        self.collection = collection
+        super().__init__(
+            f"refusing to ingest {source} into collection {collection!r}: the source "
+            f"is the collection's own directory, so every page would be both the "
+            f"source and the mirror. Ingest the upstream source instead, or name a "
+            f"different --collection."
+        )
+
+
 """Library-collection config error types (replaces the legacy wiki-yaml collection error module)."""
 
 
@@ -114,6 +142,7 @@ __all__ = (
     "LibraryCatalogLocked",
     "LibraryError",
     "LibraryFetchUnreachable",
+    "SelfIngestRefused",
     "WikiLayoutInitFailed",
     "WizardAborted",
     "WizardRequiresTTY",

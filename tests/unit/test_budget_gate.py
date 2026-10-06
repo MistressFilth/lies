@@ -136,6 +136,12 @@ def test_the_bound_reaches_subprocess_run(monkeypatch: pytest.MonkeyPatch) -> No
     A helper that computes the right number and a call site that still
     passes a constant is a very ordinary way to ship the old behaviour
     wearing the fix, so this reads the ``timeout`` off the call.
+
+    Sized by *passes* as well as tests: the gate now makes up to
+    ``_ISOLATION_REPEATS`` isolated runs, each a separate process paying
+    the interpreter-start floor, so a bound computed for one pass
+    under-bounds the rest and a killed pass is reported as "the
+    re-measure was unavailable" — a broken harness that is not broken.
     """
     seen: dict[str, object] = {}
 
@@ -148,7 +154,7 @@ def test_the_bound_reaches_subprocess_run(monkeypatch: pytest.MonkeyPatch) -> No
     monkeypatch.setattr(subprocess, "run", capture)
     nodeids = [f"tests/unit/test_x.py::test_{i}" for i in range(20)]
     gate._remeasure_in_isolation(nodeids)
-    assert seen["timeout"] == gate._isolation_timeout_s(20)
+    assert seen["timeout"] == gate._isolation_timeout_s(20, repeats=gate._ISOLATION_REPEATS)
 
 
 class _ExitRecorder:

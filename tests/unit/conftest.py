@@ -32,11 +32,30 @@ HARD_LIMIT_S = 0.15
 # to prevent.
 _ISOLATION_BASE_S = 60
 _ISOLATION_PER_TEST_S = 5
+# How many isolated passes the gate makes before giving up on clearing a
+# breach. One pass is one draw from a noisy distribution, and this gate
+# sits close enough to the scheduler's noise floor that the draw decides
+# the verdict: measured on this host, the same test on the same commit
+# measured 0.143s in one pass and 0.016s across twelve more, with the
+# 0.15s limit between them. A test costing 16ms passed by 7ms.
+#
+# The verdict is the *minimum* over the passes, because the question the
+# re-measure asks is what the test costs when nothing else competes, and
+# the answer to that is a floor rather than a draw. The direction is
+# sound: a genuinely expensive test still fails, because its fastest
+# pass is still expensive.
+_ISOLATION_REPEATS = 3
 
 
-def _isolation_timeout_s(count: int) -> float:
-    """Wall-clock bound for re-running ``count`` tests in one process."""
-    return _ISOLATION_BASE_S + _ISOLATION_PER_TEST_S * max(count, 1)
+def _isolation_timeout_s(count: int, repeats: int = 1) -> float:
+    """Wall-clock bound for re-running ``count`` tests, ``repeats`` times.
+
+    Sized by *processes*, not just tests. A bound computed for one pass
+    under-bounds the second, the killed pass is reported as "the
+    re-measure was unavailable", and the reader goes looking for a broken
+    harness instead of a slow machine.
+    """
+    return (repeats or 1) * (_ISOLATION_BASE_S + _ISOLATION_PER_TEST_S * max(count, 1))
 
 
 # CI runs the full test suite (``make test`` with ``--runslow`` and
@@ -165,8 +184,13 @@ class _Remeasure:
 def _remeasure_in_isolation(
     nodeids: list[str], terminalreporter: pytest.TerminalReporter | None = None
 ) -> _Remeasure:
-    """Re-run ``nodeids`` in a fresh pytest process and return their
+    """Re-run ``nodeids`` in fresh pytest processes and return their
     call-phase durations.
+
+    Up to ``_ISOLATION_REPEATS`` passes, keeping the **minimum** duration
+    per test and stopping early once nothing is still over the limit. See
+    ``_ISOLATION_REPEATS`` for why one draw is not enough and why the
+    minimum is the sound estimator.
 
     A full-suite run measures each test under contention: scheduler
     latency and GC pauses land on whichever test happens to be running,
@@ -224,6 +248,7 @@ def pytest_runtest_makereport(item, call):
 def pytest_terminal_summary(terminalreporter, exitstatus, config):
     print("LIES_BUDGET_JSON=" + json.dumps(_durations))
 '''
+    best: dict[str, float] = {}
     with tempfile.TemporaryDirectory() as tmp:
         (Path(tmp) / "_lies_budget_probe.py").write_text(reporter, encoding="utf-8")
         env = dict(os.environ, LIES_SKIP_BUDGET_GATE="1", PYTEST_ADDOPTS="")
@@ -231,58 +256,82 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
             [tmp, *([os.environ["PYTHONPATH"]] if os.environ.get("PYTHONPATH") else [])]
         )
         env.pop("PYTEST_CURRENT_TEST", None)
-        timeout_s = _isolation_timeout_s(len(nodeids))
-        try:
-            proc = subprocess.run(
-                [
-                    sys.executable,
-                    "-m",
-                    "pytest",
-                    *nodeids,
-                    "-p",
-                    "no:randomly",
-                    "-p",
-                    "no:cacheprovider",
-                    "-p",
-                    "_lies_budget_probe",
-                    "-q",
-                    "--no-header",
-                    "-s",
-                ],
-                capture_output=True,
-                text=True,
-                timeout=timeout_s,
-                env=env,
-                cwd=Path.cwd(),
-            )
-        except subprocess.TimeoutExpired:
-            return bail(
-                f"the re-run exceeded its {timeout_s:.0f}s bound "
-                f"({len(nodeids)} test(s) at "
-                f"{_ISOLATION_BASE_S:.0f}s + {_ISOLATION_PER_TEST_S:.0f}s each)"
-            )
-        except OSError as exc:
-            return bail("the re-run process could not start", str(exc))
-    if proc.returncode != 0:
-        # A non-zero exit here is usually NOT a slow test — it is the
-        # test erroring in a fresh process (a broken import, a fixture
-        # that needs a real network), which is the one thing the
-        # in-suite run already passed. Both streams are quoted: a
-        # collection error lands on stderr, and the old code read only
-        # stdout, so the detail it showed was usually the wrong (or an
-        # empty) one.
-        return bail(
-            "the re-run process failed",
-            f"exit {proc.returncode}\n{_tail(proc.stderr, 'stderr')}{_tail(proc.stdout, 'stdout')}",
-        )
-    for line in proc.stdout.splitlines():
-        if line.startswith("LIES_BUDGET_JSON="):
+
+        for attempt in range(1, _ISOLATION_REPEATS + 1):
+            timeout_s = _isolation_timeout_s(len(nodeids), repeats=_ISOLATION_REPEATS)
             try:
-                parsed = json.loads(line.removeprefix("LIES_BUDGET_JSON="))
-            except json.JSONDecodeError as exc:
-                return bail("the re-run emitted unparseable durations", str(exc))
-            return _Remeasure(durations={k: float(v) for k, v in parsed.items()})
-    return bail("the re-run emitted no duration line")
+                proc = subprocess.run(
+                    [
+                        sys.executable,
+                        "-m",
+                        "pytest",
+                        *nodeids,
+                        "-p",
+                        "no:randomly",
+                        "-p",
+                        "no:cacheprovider",
+                        "-p",
+                        "_lies_budget_probe",
+                        "-q",
+                        "--no-header",
+                        "-s",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout_s,
+                    env=env,
+                    cwd=Path.cwd(),
+                )
+            except subprocess.TimeoutExpired:
+                return bail(
+                    f"the re-run exceeded its {timeout_s:.0f}s bound "
+                    f"({len(nodeids)} test(s) at "
+                    f"{_ISOLATION_BASE_S:.0f}s + {_ISOLATION_PER_TEST_S:.0f}s each, "
+                    f"x{_ISOLATION_REPEATS} passes)"
+                )
+            except OSError as exc:
+                return bail("the re-run process could not start", str(exc))
+            if proc.returncode != 0:
+                # A non-zero exit here is usually NOT a slow test — it is the
+                # test erroring in a fresh process (a broken import, a fixture
+                # that needs a real network), which is the one thing the
+                # in-suite run already passed. Both streams are quoted: a
+                # collection error lands on stderr, and the old code read only
+                # stdout, so the detail it showed was usually the wrong (or an
+                # empty) one.
+                return bail(
+                    "the re-run process failed",
+                    f"exit {proc.returncode}\n{_tail(proc.stderr, 'stderr')}"
+                    f"{_tail(proc.stdout, 'stdout')}",
+                )
+            parsed: dict[str, float] | None = None
+            for line in proc.stdout.splitlines():
+                if line.startswith("LIES_BUDGET_JSON="):
+                    try:
+                        raw = json.loads(line.removeprefix("LIES_BUDGET_JSON="))
+                    except json.JSONDecodeError as exc:
+                        return bail("the re-run emitted unparseable durations", str(exc))
+                    parsed = {k: float(v) for k, v in raw.items()}
+                    break
+            if parsed is None:
+                return bail("the re-run emitted no duration line")
+
+            for nodeid, seconds in parsed.items():
+                prior = best.get(nodeid)
+                best[nodeid] = seconds if prior is None else min(prior, seconds)
+
+            # Nothing left over the limit means the remaining passes would
+            # only ever lower a number that is already in the clear, so
+            # stop. Almost every run breaches nothing and pays one spawn.
+            if not any(v > HARD_LIMIT_S for v in best.values()):
+                break
+            if attempt < _ISOLATION_REPEATS and terminalreporter is not None:
+                terminalreporter.write_line(
+                    f"  [budget gate] pass {attempt}/{_ISOLATION_REPEATS}: "
+                    f"{sum(1 for v in best.values() if v > HARD_LIMIT_S)} test(s) still over "
+                    f"{HARD_LIMIT_S:.2f}s; re-measuring",
+                )
+    return _Remeasure(durations=best)
 
 
 def pytest_terminal_summary(

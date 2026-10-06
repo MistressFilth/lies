@@ -846,6 +846,72 @@ grounded in a primary source. Library hits render unprefixed.
 
 **Read-side dispatch:** the `read` tool is source-aware. Wiki page IDs (`page-` + sha1-12) route to `memory_service.read()`. Library paths (`<collection>/<page>`) route to the qmd daemon's `get` with `lineNumbers: false`, and the body is read from the content block rather than `.data` — see "The read tool's bodies" above. Library hits carry `page_id=None` so the calling LLM doesn't try to read them via the wiki service.
 
+## The ingest idempotency check has three states, not two
+
+`library/ingest.py::_process_item` compares the incoming
+`source_hash` against the existing mirror's frontmatter. A mirror
+carrying a matching hash is a **skip**; a mirror carrying a different
+hash is a **conflict**; a mirror carrying *no* `source_hash` is neither.
+It was written as one yes/no question —
+
+```python
+if existing_hash and existing_hash == item.source_hash:  # skip
+...                                                     # quarantine
+```
+
+— so the third state fell through to the second and was reported as a
+disagreement with an empty left-hand side printed into the message:
+`mirror-collision:page:existing-!=new-<hash>`. A hand-written page
+sitting where a mirror would sit produced that on every run, against a
+perfectly ordinary outside source. It is now
+`mirror-unmanaged:<slug>:no-source-hash`; the outcome is unchanged
+(fail loud, preserve the page) and a real mismatch keeps its
+`mirror-collision` name. Pre-existing since #62.
+
+**The lesson is the shape, not the string.** A guard written as
+`if x and x == y` has two states on paper and three in the domain, and
+the third is always the one nobody writes a test for.
+
+A **self-ingest** — `--batch` pointed at a collection directory, the
+obvious way to "re-sync" one — is the degenerate case of that third
+state, and is now refused outright (`SelfIngestRefused`, exit 2). The
+source and the mirror target are the same path, because the slug is
+derived from the source's relative path and the target is
+`coll.dir / f"{slug}.md"`, and `derive_nested_slug` mirrors that path
+segment for segment. It can only ever "skip everything" or "rewrite
+everything"; measured, it did neither — three runs, `errors=1` each,
+nothing written.
+
+**This is the caller mistake that produced the 36 stray `config.md`
+pages** (fixed in 0.48.2 by gating the walk on document suffixes). That
+release stopped the config becoming a page and left the no-op in place.
+When reading a 0.48.2-shaped ingest bug, check the direction of
+`--batch` before the filter.
+
+The same 0.48.2 report described the symptom as "`updated=1` on every
+run, never `skipped`". That is `--force`, which skips the check
+entirely (`if existed and not force:`) and works as documented. A
+reproduction that uses `--force` measures the flag, not the code.
+
+## The qmd index is keyed by `$XDG_CACHE_HOME`, not `$XDG_DATA_HOME`
+
+`qmd` keeps its index in one machine-shared file, `~/.cache/qmd/
+index.sqlite`, resolved from `$XDG_CACHE_HOME`. A sandbox that redirects
+the library root sandboxes the mirror files and nothing else:
+
+```
+$ XDG_DATA_HOME=/tmp/sandbox-data qmd --help | grep ^Index:
+Index: /home/divinefilth/.cache/qmd/index.sqlite
+```
+
+`tests/conftest.py::_isolated_xdg` redirects every root, which is why
+the suite never hit this and why a hand-rolled sandbox does. The qmd
+write helpers (`update`, `collection add` / `add_if_missing` / `remove`
+/ `add_or_update`, `embed`, `cleanup`, `reindex`) refuse the
+data-only combination and name both variables; reads are unguarded,
+because the daemon is machine-global and serving the live index to
+every client is the only configuration that is safe.
+
 ## Known flakes
 
 Measured failures that are real, are not a bug in LIES, and have no
@@ -895,8 +961,80 @@ unmitigated. The reason the qmd CLI helpers serialize under
 `lies.qmd.lock` is the same reservation; the lock removes LIES' own
 contention, which is not what fails here.
 
-### Live-index residue
+### `INTEGRATION=1 pytest` locally is a different suite than plain `pytest`
 
+`tests/integration/` is gated on `INTEGRATION=1`, so a plain `pytest`
+run reports the whole file as skipped and exits 0. That green is not
+evidence about the integration suite. Two things were found only by
+running it locally, and CI could not have found either — CI has no qmd
+daemon and skips the daemon-dependent tests:
+
+- `test_release.py::test_the_declared_version_has_a_section` enforces
+  that `pyproject.toml`'s version has a dated CHANGELOG section or is
+  named in the `[Unreleased]` body. A version bump with three
+  well-formed `[Unreleased]` entries and no version mentioned anywhere
+  fails it.
+- `test_search_daemon.py` (fixed in 0.48.3) patched one of the two
+  registry accessors `_resolve_tag_collections` reads, so the retriever
+  saw an empty collection set and `search` reported the whole tag
+  expression as unknown — an assertion that read like a resolver bug.
+
+**Run `INTEGRATION=1` before declaring a change verified locally.**
+What survives that: `tests/integration/test_tag_filter_end_to_end.py`
+fails intermittently with `QmdTimeoutError: qmd query timed out after
+60s` on this host, and **a different subset on each run** (observed: 3,
+then 5, then 2 failures, no two runs agreeing). The varying subset is
+the diagnosis — a logic bug fails the same tests every time. This is
+the contention stall recorded above, reaching the retriever through the
+per-test throwaway index these tests seed.
+
+### `store_collections` can be emptied by qmd itself, and it does not announce it
+
+Observed on this host 2026-10-04/05: `lies qmd status` reported
+`collections: 0` with `document_drift` on all 117 collections, for a
+corpus that was intact (6131 documents, 6131 content, 0 orphans).
+
+**The cause is qmd's, not LIES'.** `syncConfigToDb`
+(`@tobilu/qmd/dist/store.js:887`) upserts the external config's
+collections and then **deletes every `store_collections` row the config
+does not name**:
+
+```js
+const configNames = new Set(Object.keys(config.collections));
+for (const [name, coll] of Object.entries(config.collections)) upsertStoreCollection(db, name, coll);
+const dbCollections = db.prepare(`SELECT name FROM store_collections`).all();
+for (const row of dbCollections) {
+    if (!configNames.has(row.name)) db.prepare(`DELETE FROM store_collections WHERE name = ?`).run(row.name);
+}
+```
+
+It is guarded only by `store_config.config_hash`, and it early-returns
+while that matches. So a config at `~/.config/qmd/index.yml` that
+momentarily declares **zero** collections empties the table, and the
+hash written *for that empty config* then matches — making the wipe
+self-perpetuating until the config changes again. `getStore()` runs the
+sync on every qmd CLI store open (`dist/cli/qmd.js:26-40`), and
+`resyncConfig()` clears the hash to force it.
+
+**Why retrieval stays healthy through it**, which is what makes it hard
+to spot: the daemon serves reads without passing through that sync, and
+`validate_scope` reads the daemon's own `status` tool rather than
+`store_collections`. Every query path saw a healthy index.
+
+**What repairs it.** A later qmd store open with a mismatching hash
+re-syncs every collection from `index.yml`. That is what happened here:
+`store_collections` read 0 and then read 117 with no write in between.
+Had the config *not* been restored, nothing would have — so check the
+`collections:` block in `~/.config/qmd/index.yml` first, because
+re-syncing an empty config is precisely what emptied the table.
+
+`lies qmd status` reports this as one `registry_divergence` finding
+carrying the cause and the remedy, rather than leaving it as N
+identical drift entries. Read that field first when `collections` is 0
+and `document_drift` is large; the two numbers being wildly different is
+the signature.
+
+### Live-index residue
 Four orphan `content_vectors` rows and five `documents` rows for
 `wiki_tag-filter-lib`, a collection absent from `store_collections`.
 
@@ -974,6 +1112,17 @@ for cost. A breach that clears on re-measure is reported as noise and the
 run passes. Reaching for `@pytest.mark.slow` to silence a gate failure
 removes the test from the default run rather than fixing anything; mark
 only what genuinely costs more than the budget.
+
+**The re-measure takes the minimum of up to `_ISOLATION_REPEATS` (3)
+passes, not one.** One draw from a distribution this noisy is not a
+measurement. Measured on this host, the same test on the same commit came
+back 0.143s from one pass and 0.016s from twelve more, with the 0.15s
+line between the two — a test costing 16ms, passing by 7ms. The question
+the re-measure answers is what the test costs when nothing else competes,
+and that is a floor over repeated observations rather than a draw. The
+direction is sound: a test whose *fastest* pass is over the limit still
+fails. The loop stops as soon as a pass clears, so the common run spawns
+exactly one process.
 
 ## References
 
