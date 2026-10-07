@@ -1134,24 +1134,37 @@ carries the loaded library's full path; read it, and treat a successful
 
 #### Re-arming the backend after a `bun` refresh
 
-The rebuild lives in a compiled artifact inside a **bun global install**,
-not in this repository, and any `bun install`, package refresh, or
-reinstall of `@tobilu/qmd` overwrites it. `tools/nlc_novmm.sh` rebuilds
-and reinstalls the `linux-x64-cuda` copy and `status` reports which
-backend is present — but read the section above first, because that is
-probably not the file this host loads.
+The fix lives in a compiled artifact inside a **bun global install**,
+not in this repository. Any `bun install`, package refresh, or reinstall
+of `@tobilu/qmd` replaces `llama/localBuilds/` and the abort returns
+silently.
 
-Two implementation notes, both load-bearing:
+`tools/nlc_novmm.sh` is the executable form of the recipe above:
+
+```bash
+tools/nlc_novmm.sh status    # which backend is installed; changes nothing
+tools/nlc_novmm.sh verify    # VMM-free AND GPU-up; changes nothing
+tools/nlc_novmm.sh apply     # build if needed, patch both copies, verify
+tools/nlc_novmm.sh revert    # restore the unpatched backend
+```
+
+Run `verify` first — it checks both conditions together, because either
+one alone can be satisfied while the fix is not. **`apply` re-edits
+`CMakeCache.txt` rather than passing `-D`** (which is silently ignored),
+refuses to install a build whose `flags.make` lacks `-DGGML_CUDA_NO_VMM`,
+and patches **both** `bin/` and `Release/` rather than only the file the
+rebuild touched.
+
+Build output is cached in `localBuilds/`, so a reapply after a bun wipe
+does not recompile. The unpatched originals are preserved under
+`~/.local/share/lies/nlc-backup/`, which is what `revert` reads.
+
+One implementation note, load-bearing:
 
 - **Build the same tag.** `b8390`, which is what qmd's
-  `node-llama-cpp` 3.18.1 bundles. A mismatched backend risks an ABI
-  break that is far harder to diagnose than the abort.
-- **The build emits `libggml-base.so.0`** while the shipped backend is
-  unversioned. The script satisfies this with a symlink rather than a
-  second copy: glibc registers a library by its **SONAME**, so both
-  names resolve to one loaded copy instead of two copies of the backend
-  registry. Verified all 40 ggml/llama symbols the rebuilt backend
-  imports resolve against the shipped same-commit `libggml-base.so`.
+  `node-llama-cpp` 3.18.1 bundles, and what the script passes to
+  `nlc source download`. A mismatched backend risks an ABI break that
+  is far harder to diagnose than the abort.
 
 #### What is ruled out
 

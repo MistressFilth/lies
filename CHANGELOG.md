@@ -112,6 +112,13 @@ this into a dated release heading.
   `Release/`, so patching only the rebuilt one leaves the abort entirely
   intact while every check on that file passes.
 
+  `tools/nlc_novmm.sh` automates it: `status` and `verify` change
+  nothing, `apply` builds (via node-llama-cpp's own toolchain), patches
+  both copies, and verifies, and `revert` restores the originals from
+  `~/.local/share/lies/nlc-backup/`. `verify` checks BOTH that the VMM
+  pool is gone and that `qmd doctor` still reports GPU cuda -- either
+  alone can be satisfied while the fix is not.
+
   The generalisable error, and the one this investigation kept
   repeating: **the file that was rebuilt is not the file that runs.**
   Verifying the artifact you changed says nothing about the process, and
