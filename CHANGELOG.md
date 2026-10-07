@@ -6,11 +6,96 @@ All notable changes to LIES are documented here. The format follows
 
 ## [Unreleased]
 
-Staged for **0.48.4**. Both version surfaces (`pyproject.toml`,
+Staged for **0.48.5**. Both version surfaces (`pyproject.toml`,
 `src/lies/__init__.py`) are already bumped; `make release` collapses
 this into a dated release heading.
 
 ### Changed
+
+- **The `qmd embed` CUDA abort is diagnosed, and a rebuild to avoid it is
+  reproducible from the repository.** `node-llama-cpp` intermittently
+  hard-aborts inside `qmd embed` at
+  `cuMemAddressReserve(&pool_addr, CUDA_POOL_VMM_MAX_SIZE, 0, 0, 0)`,
+  reporting `CUDA error: out of memory`. That label is false: the call
+  reserves *virtual address space*, and `CUDA_POOL_VMM_MAX_SIZE` is
+  hardcoded at 32 GB. Measured here on a 24 GiB RTX 4090 — peak embed
+  usage 4775 MiB at 38% utilisation, ~20 GB free — so it is an
+  address-space reservation failing, not VRAM exhaustion.
+
+  The host is WSL2, so CUDA runs on the same WDDM-backed stack as
+  native Windows, where `withcatai/node-llama-cpp#580` reports the
+  identical abort and the workaround `GGML_CUDA_NO_VMM=ON`. The runtime
+  fallback requested there (#610) is still open, which is why a build
+  flag remains the only lever. qmd's own guard for this failure mode
+  keys on `process.platform === "win32"`, which is `linux` under WSL2 —
+  so it never fires on the platform that needs it.
+
+  `tools/nlc_novmm.sh` rebuilds the CUDA backend at the tag qmd bundles
+  (`b8390`) with the VMM pool compiled out and installs it. This matters
+  because the fix lives in a compiled artifact inside a **bun global
+  install**, not in this repository: any `bun install` or package refresh
+  silently restores the stock backend and the abort with it. The script's
+  `build` refuses to install unless the flag reached nvcc *and* the
+  artifact has zero VMM symbols; `install` restores from cache without
+  recompiling; `revert` puts the stock library back.
+
+  Verified on the rebuilt artifact: `ggml_cuda_pool_vmm` symbols 18 → 0,
+  `cuMemAddressReserve` references 18 → 0, undefined CUDA driver symbols
+  11 → 0 (the VMM pool was the backend's only driver-API consumer).
+
+  **This does not fix the abort, and the rebuild is installed in the
+  wrong place.** Measured A/B on
+  `tests/integration/test_tag_filter_end_to_end.py`, alternating backends
+  so host drift could not masquerade as an arm difference:
+
+  | arm | suite runs | runs with ≥1 abort |
+  |---|---|---|
+  | NO_VMM (rebuilt) | 5 | 4 |
+  | stock | 4 | 3 |
+
+  Same rate, and a run verified patched immediately before *and* after
+  still produced 2 aborts. The cause: a **second, unpatched CUDA backend**
+  exists at `/usr/local/lib/libggml-cuda.so`, from a separate llama.cpp
+  build, carrying the VMM pool and registered with `ldconfig` — so a
+  SONAME-resolved `dlopen` can land there instead of node-llama-cpp's
+  copy. `tools/nlc_novmm.sh` only touches the node-llama-cpp path.
+
+  **Which library aborts is not the obvious one.** `node-llama-cpp`
+  ships two CUDA variants (`linux-x64-cuda` and `linux-x64-cuda-ext`)
+  that expose an identical `getBinsDir()`, and the parent package
+  selects one at runtime. On this host it selects `linux-x64-cuda-ext`,
+  whose `bins/` contains **only** `fallback/`:
+
+      linux-x64-cuda-ext/bins/linux-x64-cuda/fallback/libggml-cuda.so
+        464 MB, 18 ggml_cuda_pool_vmm symbols
+
+  Every other library (`libggml-base.so`, the `*.b8390.so` shims) still
+  comes from `linux-x64-cuda/bins/`, which is why the backtraces name
+  that path. Patching `linux-x64-cuda/bins/linux-x64-cuda/libggml-cuda.so`
+  changes nothing here — seven rebuild attempts failed for exactly that
+  reason, and a directory glob misses the target because `bins/` holds
+  only `fallback/`.
+
+  **The fix remains unvalidated.** Dropping a rebuild into the correct
+  path removed the abort across three suite runs — and the same runs
+  printed `QMD Warning: no GPU acceleration, running on CPU (slow)`, then
+  failed with `QmdTimeoutError` at the 60s deadline. The original is a
+  464 MB fat binary; an `sm_89`-only build loads but does not bring up
+  CUDA acceleration there. **The abort disappeared because the GPU was
+  turned off, not because VMM was removed.**
+
+  The generalisable error: the artifact was verified **built and
+  correct**, and separately verified **loaded** — and was still the
+  wrong one. Sweeping for the file that carries the symbol is what
+  finally located it.
+
+- **A concurrency explanation for the same abort is ruled out.** qmd
+  creates up to 8 embedding contexts computed from free VRAM, each doing
+  its own reservation, which is the obvious suspect and is wrong:
+  forcing `QMD_EMBED_PARALLELISM=1` measured 1 abort with and 1 without,
+  neither backend patched. The failure is one reservation's *size*, not
+  a race between them. The knob is not shipped; `lies.qmd.lock`
+  already serialises qmd processes, which a 4 Hz sampler confirmed.
 
 - **The per-test budget gate re-measures up to three times and keeps the
   fastest.** `tests/unit/conftest.py` re-ran each in-suite breach in a

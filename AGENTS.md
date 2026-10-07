@@ -914,52 +914,226 @@ every client is the only configuration that is safe.
 
 ## Known flakes
 
-Measured failures that are real, are not a bug in LIES, and have no
-fix available from this side. Recorded here so the next agent does not
-spend a cycle rediscovering them — and, more importantly, does not try
-a mitigation that was already measured and rejected.
+Measured failures that are real and are not a bug in LIES. Recorded
+here so the next agent does not spend a cycle rediscovering them — and,
+more importantly, does not try a mitigation that was already measured
+and rejected. Where a fix exists it is named; where none does, that is
+stated rather than left to be re-derived.
 
 ### `qmd embed` aborts on the CUDA VMM reservation
 
-node-llama-cpp intermittently fails `cuMemAddressReserve` and the
-`qmd embed` subprocess dies mid-run. The error text reads
-`CUDA error: out of memory`, which is misleading: the call reserves
-*virtual address space*, not physical memory, so the string is not
-evidence that VRAM is exhausted. Measured peak under a 4 Hz sampler
-during the failing runs was 7650 MiB of 24564 (31%).
+node-llama-cpp intermittently hard-aborts inside `qmd embed`:
 
-What is established, so it is not re-derived:
+```
+[node-llama-cpp] CUDA error: out of memory
+[node-llama-cpp]   current device: 0, in function alloc at
+  .../ggml/src/ggml-cuda/ggml-cuda.cu:492
+[node-llama-cpp]   cuMemAddressReserve(&pool_addr, CUDA_POOL_VMM_MAX_SIZE, 0, 0, 0)
+... ggml_abort -> SIGILL
+```
 
-- Three full runs failed on a *different* test each time, 1-3 errors
-  per run.
-- Not VRAM (above), and not contention: the sampler never saw more
-  than one `qmd` subprocess alive.
-- Not positional and not count-driven. It does not reproduce across
-  32 sequential embeds, nor with the failing test's exact
-  `qmd embed -c <name>` invocation, nor with a daemon query
-  interleaved between embeds.
+**"Out of memory" is a false label.** The call reserves *virtual address
+space*, and `CUDA_POOL_VMM_MAX_SIZE` is hardcoded at **32 GB**. Measured
+on this host (RTX 4090, 24 GiB): peak embed usage was **4775 MiB at 38%
+utilisation with ~20 GB free**. The reservation fails with memory to
+spare — it is an address-space reservation failing, not VRAM exhaustion,
+and no amount of free VRAM changes the outcome.
 
-**A retry was implemented, measured, and reverted** (`05ec942`,
-`49196fe`, `dda200e`, reverted in `cbba1b7`):
+**It is WSL2-specific.** This host is WSL2 (`6.18.33.2-microsoft-standard-WSL2`,
+`WSL_DISTRO_NAME=Ubuntu`, driver 616.64, `/usr/lib/wsl/lib/libcuda.so.1.1`),
+so CUDA runs on the same WDDM-backed stack as native Windows. Upstream
+`withcatai/node-llama-cpp#580` reports the identical failure on Windows
+CUDA (RTX 3090, same 32 GB reservation, same hard abort, same qmd
+workload) and states the reservation fails "even with plenty of actual
+VRAM available". The runtime fallback requested there is
+`withcatai/node-llama-cpp#610` — **still open**, which is why a build
+flag is currently the only lever.
 
-| variant                   | CUDA aborts | timeout/wedge errors |
-|---------------------------|-------------|----------------------|
-| baseline (3 runs)         | 3, 1, 1     | 0                    |
-| 2 retries + 2s/4s backoff | 0           | 4                    |
-| 1 retry, no backoff       | 0           | 5                    |
+**Why qmd's own guard misses this platform.** qmd pins embedding
+parallelism to 1 for exactly this failure mode, but keys it on
+`process.platform`:
 
-The retry absorbs the abort and the extra embed is paid by the next
-query in the same run: `QmdWedgeError: qmd stopped emitting for 30s`
-plus `QmdTimeoutError: qmd query timed out after 60s`, with
-`last output: 'Embedding 3 queries...'`. Fifteen timeout/wedge
-occurrences across the two mitigated runs against three CUDA aborts
-across three baseline runs — a net loss on a shared machine.
+```js
+// node-llama-cpp/llama.cpp CUDA on Windows is unstable with multiple
+// simultaneous contexts (ggml-cuda.cu:98 in #519). Vulkan and CPU do not
+// show the same failure mode, so only serialize Windows CUDA by default.
+if (platform === "win32" && gpu === "cuda") return 1;
+```
 
-The reservation belongs to node-llama-cpp, so the remaining levers are
-an upstream fix or a different embedder. Until one lands, this stays
-unmitigated. The reason the qmd CLI helpers serialize under
-`lies.qmd.lock` is the same reservation; the lock removes LIES' own
-contention, which is not what fails here.
+Under WSL2 `process.platform` reports **`linux`**, so the one platform
+running the vulnerable stack is the one platform this never fires on.
+That guard is *not* the fix, though — see the parallelism note below.
+
+#### The fix: rebuild the CUDA backend with `GGML_CUDA_NO_VMM=ON`
+
+`GGML_CUDA_NO_VMM` is a CMake option (`ggml/CMakeLists.txt:202`, default
+`OFF`) that `#define`s out the VMM pool (`ggml/src/ggml-cuda/common.cuh:189,221`)
+and falls back to the legacy pool. Verified on the artifact:
+
+| check | stock | rebuilt |
+|---|---|---|
+| `ggml_cuda_pool_vmm` symbols | 18 | **0** |
+| `cuMemAddressReserve` references | 18 | **0** |
+| undefined CUDA **driver** symbols | 11 | **0** |
+
+The driver-symbol drop is the clean confirmation: the VMM pool was the
+*only* consumer of the CUDA driver API in the backend, so compiling it
+out removes the `libcuda.so.1` dependency entirely. Everything else runs
+on the CUDA runtime API (`libcudart.so.13`).
+
+Measured on `tests/integration/test_tag_filter_end_to_end.py` (8 tests
+x 4 collections of fresh embeds per run), alternating backends so host
+drift cannot masquerade as an arm difference:
+
+| arm | suite runs | runs containing ≥1 CUDA abort |
+|---|---|---|
+| **NO_VMM (rebuilt)** | 5 | **4** |
+| **stock** | 4 | **3** |
+
+**The rebuild is NOT a fix.** Both arms abort at the same rate, and a
+standalone run verified patched immediately before *and* after still
+produced 2 aborts. The library was patched; the process did not care.
+
+**Why: the wrong file was patched.** `qmd` loads llama.cpp through
+`node-llama-cpp`, but that is not the only CUDA backend on this host.
+`/usr/local/lib/libggml-cuda.so` — a **separate llama.cpp build** —
+carries `ggml_cuda_pool_vmm` (18 symbols) and `cuMemAddressReserve`
+(3 references), and is registered with the dynamic linker:
+
+```
+$ ldconfig -p | grep libggml-cuda
+	libggml-cuda.so   (libc6,x86_64) => /usr/local/lib/libggml-cuda.so
+	libggml-cuda.so.0 (libc6,x86_64) => /usr/local/lib/libggml-cuda.so.0
+```
+
+A `dlopen` resolved by SONAME can land there instead of
+`node-llama-cpp`'s copy, and `/usr/local/lib/libggml-cuda.so.0` was
+never patched. The backtraces name `libggml-base.so` frames throughout,
+which was a further hint that the faulting object was not the file being
+edited.
+
+The error generalises: the artifact was verified **built and correct**,
+but never verified **loaded**. Patching a library and checking the file
+is not evidence that any process used it.
+
+#### Which library actually aborts — the file to patch
+
+**`node-llama-cpp` ships two CUDA variants and this host loads neither of
+the obvious ones.** `@node-llama-cpp/linux-x64-cuda` and
+`@node-llama-cpp/linux-x64-cuda-ext` both expose an identical
+`getBinsDir()`, so the parent package selects one at runtime. On this
+host it selects **`linux-x64-cuda-ext`**, whose `bins/` directory
+contains **only** `fallback/`:
+
+```
+~/.bun/install/global/node_modules/@node-llama-cpp/
+  linux-x64-cuda/bins/linux-x64-cuda/          <- the OTHER variant
+      libggml-base.so, libggml.cuda.b8390.so, libllama.cuda.b8390.so
+      libggml-cuda.so            (464 MB is NOT here; ~59 MB build)
+  linux-x64-cuda-ext/bins/linux-x64-cuda/fallback/
+      libggml-cuda.so            <- 464 MB, 18 ggml_cuda_pool_vmm symbols
+```
+
+Every other library — `libggml-base.so`, the `*.b8390.so` shims — still
+comes from `linux-x64-cuda/bins/`, which is why the backtraces name
+`libggml-base.so` under that path while the CUDA backend itself came
+from the other variant's `fallback/`. **Patching
+`linux-x64-cuda/bins/linux-x64-cuda/libggml-cuda.so` changes nothing
+on this host.** Seven rebuild attempts failed for exactly that reason.
+
+Two ways to find the real file, both of which a directory glob misses:
+
+```bash
+# the directory contains only `fallback/`, so `bins/*/*.so` finds nothing
+find ~/.bun/install/global/node_modules/@node-llama-cpp -name '*.so*' -type f \
+  | while read -r f; do
+      n=$(strings "$f" 2>/dev/null | grep -c ggml_cuda_pool_vmm)
+      [ "$n" != 0 ] && echo "$n  $f"
+    done
+```
+
+**The fix is still unvalidated.** Dropping a rebuild into that path did
+remove the abort across three suite runs — and the same runs printed
+`QMD Warning: no GPU acceleration, running on CPU (slow)`, then failed
+with `QmdTimeoutError` at the 60s deadline. The original is a 464 MB
+fat binary; an `sm_89`-only build loads but does not bring up CUDA
+acceleration there. **The abort disappeared because the GPU was turned
+off, not because VMM was removed.** A real attempt must rebuild the
+variant node-llama-cpp actually bundles, at the same commit, as a fat
+binary, and re-check that GPU acceleration survives.
+
+#### Re-arming the backend after a `bun` refresh
+
+The rebuild lives in a compiled artifact inside a **bun global install**,
+not in this repository, and any `bun install`, package refresh, or
+reinstall of `@tobilu/qmd` overwrites it. `tools/nlc_novmm.sh` rebuilds
+and reinstalls the `linux-x64-cuda` copy and `status` reports which
+backend is present — but read the section above first, because that is
+probably not the file this host loads.
+
+Two implementation notes, both load-bearing:
+
+- **Build the same tag.** `b8390`, which is what qmd's
+  `node-llama-cpp` 3.18.1 bundles. A mismatched backend risks an ABI
+  break that is far harder to diagnose than the abort.
+- **The build emits `libggml-base.so.0`** while the shipped backend is
+  unversioned. The script satisfies this with a symlink rather than a
+  second copy: glibc registers a library by its **SONAME**, so both
+  names resolve to one loaded copy instead of two copies of the backend
+  registry. Verified all 40 ggml/llama symbols the rebuilt backend
+  imports resolve against the shipped same-commit `libggml-base.so`.
+
+#### What is ruled out
+
+- **VRAM pressure.** ~20 GB free throughout; peak 4775 MiB.
+- **Concurrency between qmd processes.** `lies.qmd.lock` already
+  serialises those, and the earlier 4 Hz sampler never saw more than
+  one `qmd` subprocess alive.
+- **Concurrency *within* one qmd process.** qmd creates up to 8
+  embedding contexts, computed from VRAM, each doing its own
+  reservation — which looked like the obvious culprit and is **not**.
+  Forcing `QMD_EMBED_PARALLELISM=1` was measured at **1 abort with,
+  1 without**, neither library patched: the failure is one
+  reservation's *size*, not a race between them.
+- **Shadowing the CUDA library via `LD_LIBRARY_PATH`.** This produces a
+  *false all-clear*, and it is the subtlest failure here. Pointing
+  `LD_LIBRARY_PATH` at a rebuilt ggml set makes qmd report **zero CUDA
+  aborts across three clean-looking runs** — because **all eight tests
+  ERROR** (`EEEEEEEE`) and no embed ever runs. The surface symptom is
+  `qmd embed failed` with *empty* stderr, so the run reads as a pass.
+  Prepending a directory shadows **every** ggml library inside it, and
+  node-llama-cpp's set is built for a single commit; swapping in another
+  is an ABI mismatch. **Read the per-test outcome, never the abort
+  count alone** — an abort count of zero is also what "nothing ran"
+  looks like.
+- **A retry.** Implemented, measured, and reverted (`05ec942`,
+  `49196fe`, `dda200e`, reverted in `cbba1b7`):
+
+  | variant                   | CUDA aborts | timeout/wedge errors |
+  |---------------------------|-------------|----------------------|
+  | baseline (3 runs)         | 3, 1, 1     | 0                    |
+  | 2 retries + 2s/4s backoff | 0           | 4                    |
+  | 1 retry, no backoff       | 0           | 5                    |
+
+  The retry absorbs the abort and the extra embed is paid by the next
+  query in the same run: `QmdWedgeError: qmd stopped emitting for 30s`
+  plus `QmdTimeoutError: qmd query timed out after 60s`, with
+  `last output: 'Embedding 3 queries...'`. Fifteen timeout/wedge
+  occurrences against three CUDA aborts — a net loss on a shared
+  machine. That behaviour (fix this, break that) is what an external
+  flaky failure looks like, and it is *why the reservation size, not
+  the concurrency, was the thing to check.*
+
+#### Reproducing the abort at all
+
+It is intermittent and does not reproduce in a simple embed loop: 25
+sequential `qmd embed` calls over one reused index produced **0 aborts
+with the stock backend**. It has only been observed through
+`tests/integration/test_tag_filter_end_to_end.py`, which differs in
+building a **fresh per-test index** for each of 8 tests while a qmd
+daemon holds its own context. A repro harness that does not have those
+properties will report a false all-clear — that is how the 25-embed
+loop nearly produced a confident false negative.
 
 ### `INTEGRATION=1 pytest` locally is a different suite than plain `pytest`
 
@@ -981,12 +1155,21 @@ daemon and skips the daemon-dependent tests:
 
 **Run `INTEGRATION=1` before declaring a change verified locally.**
 What survives that: `tests/integration/test_tag_filter_end_to_end.py`
-fails intermittently with `QmdTimeoutError: qmd query timed out after
-60s` on this host, and **a different subset on each run** (observed: 3,
-then 5, then 2 failures, no two runs agreeing). The varying subset is
-the diagnosis — a logic bug fails the same tests every time. This is
-the contention stall recorded above, reaching the retriever through the
-per-test throwaway index these tests seed.
+fails intermittently on this host, with **a different subset on each
+run** (observed: 3, then 5, then 2 failures, no two runs agreeing). The
+varying subset is the diagnosis — a logic bug fails the same tests every
+time.
+
+Two distinct causes share this file, and they were long conflated:
+
+- **`QmdTimeoutError: qmd query timed out after 60s`** — the contention
+  stall recorded in the CUDA section above, reaching the retriever
+  through the per-test throwaway index these tests seed.
+- **A CUDA hard-abort during the fixture's `qmd_embed`** — see
+  `qmd embed aborts on the CUDA VMM reservation` above for the real
+  cause and its fix. This one surfaces as a setup ERROR with a
+  `cuMemAddressReserve` backtrace, not a timeout, and a `bun install`
+  will bring it straight back.
 
 ### `store_collections` can be emptied by qmd itself, and it does not announce it
 
