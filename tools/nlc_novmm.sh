@@ -30,37 +30,34 @@
 #
 #   HONESTY NOTE ON VERIFICATION
 #
-#   This script does NOT fix the abort, and on this host it patches
-#   PROBABLY NOT THE FILE THAT ABORTS. node-llama-cpp ships two CUDA
-#   variants; the parent package picks one at runtime. On this host it
-#   picks `linux-x64-cuda-ext`, whose bins/ contains ONLY `fallback/`:
+#   This script is NOT the fix. It patches `linux-x64-cuda/bins/`, which
+#   this host does not load; an A/B showed 4/5 suite runs aborting with
+#   it against 3/4 with stock -- no difference, because none was
+#   possible.
 #
-#     linux-x64-cuda-ext/bins/linux-x64-cuda/fallback/libggml-cuda.so
-#       <- 464 MB, 18 ggml_cuda_pool_vmm symbols, THIS is the one
+#   What DOES work is rebuilding with node-llama-cpp's own toolchain and
+#   `GGML_CUDA_NO_VMM=ON`, then installing over BOTH `bin/` and
+#   `Release/` in llama/localBuilds/. See AGENTS.md, "Fixing it", for
+#   the exact commands -- the short version is that a hand-rolled build
+#   `dlopen`s cleanly but never brings the GPU up, because it misses
+#   `-DGGML_SHARED -DNAPI_VERSION=7` and a pinned `CUDAToolkit_ROOT`.
 #
-#   This script patches `linux-x64-cuda/bins/linux-x64-cuda/`, which
-#   this host does not load. See AGENTS.md, "Which library actually
-#   aborts". To find the real file:
+#   To find the library that actually carries the VMM pool:
 #
-#     find ~/.bun/install/global/node_modules/@node-llama-cpp -name '*.so*' -type f \
+#     find ~/.bun/install/global/node_modules -name '*.so*' -type f \
 #       | while read -r f; do
 #           n=$(strings "$f" 2>/dev/null | grep -c ggml_cuda_pool_vmm)
 #           [ "$n" != 0 ] && echo "$n  $f"
 #         done
 #
-#   An A/B on tests/integration/test_tag_filter_end_to_end.py: patched
-#   4/5 suite runs aborted, stock 3/4. No difference, because no
-#   difference was possible.
+#   And to find the one that is actually LOADED, read the backtrace --
+#   it carries the full path, which is the thing worth doing first:
 #
-#   The general error, repeated: the artifact was verified BUILT and
-#   CORRECT, and separately verified LOADED -- and it was still the
-#   wrong one. "The file I patched is not the file the process uses" is
-#   a distinct failure from "the patch did not work", and no amount of
-#   checking the patched file distinguishes them. Sweep for the target
-#   before building anything.
+#     grep -oE '/[^ ]*libggml-cuda[^ )]*' <abort log> | sort -u
 #
-#   Do not cite this script as a fix. It does correctly rebuild and
-#   reinstall, which is worth having for the day the right path is used.
+#   The general error, repeated throughout: the file that was rebuilt is
+#   not the file that runs, and a successful `dlopen` is no evidence a
+#   library works.
 #
 # WHY A SCRIPT AND NOT A CONFIG
 #

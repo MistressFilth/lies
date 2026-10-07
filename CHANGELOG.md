@@ -43,8 +43,8 @@ this into a dated release heading.
   `cuMemAddressReserve` references 18 → 0, undefined CUDA driver symbols
   11 → 0 (the VMM pool was the backend's only driver-API consumer).
 
-  **This does not fix the abort, and the rebuild is installed in the
-  wrong place.** Measured A/B on
+  **This first rebuild did not fix the abort: it patched a library the
+  host never loads.** Measured A/B on
   `tests/integration/test_tag_filter_end_to_end.py`, alternating backends
   so host drift could not masquerade as an arm difference:
 
@@ -76,18 +76,47 @@ this into a dated release heading.
   reason, and a directory glob misses the target because `bins/` holds
   only `fallback/`.
 
-  **The fix remains unvalidated.** Dropping a rebuild into the correct
-  path removed the abort across three suite runs — and the same runs
-  printed `QMD Warning: no GPU acceleration, running on CPU (slow)`, then
-  failed with `QmdTimeoutError` at the 60s deadline. The original is a
-  464 MB fat binary; an `sm_89`-only build loads but does not bring up
-  CUDA acceleration there. **The abort disappeared because the GPU was
-  turned off, not because VMM was removed.**
+  **Fixed** by rebuilding the CUDA backend with node-llama-cpp's own
+  toolchain plus `GGML_CUDA_NO_VMM=ON`:
 
-  The generalisable error: the artifact was verified **built and
-  correct**, and separately verified **loaded** — and was still the
-  wrong one. Sweeping for the file that carries the symbol is what
-  finally located it.
+  ```bash
+  node node-llama-cpp/dist/cli/cli.js source download \
+      --release b8390 --gpu cuda --arch x64
+  # set GGML_CUDA_NO_VMM:BOOL=ON in localBuilds/.../CMakeCache.txt, reconfigure
+  cmake --build localBuilds/linux-x64-cuda --target ggml-cuda
+  # install over BOTH bin/ and Release/, then verify the GPU still comes up
+  ```
+
+  | | suite runs with ≥1 CUDA abort |
+  |---|---|
+  | stock | 4 of 5 |
+  | patched | **0 of 5** |
+
+  GPU acceleration verified on the same build (`qmd doctor` →
+  `device probe: GPU cuda … RTX 4090`), so this is the removal of the
+  abort and not a silent fall back to CPU. Four of the five runs were
+  entirely clean; the fifth failed on the separate `QmdTimeoutError`
+  flake with zero CUDA aborts. Strongly supported rather than proven —
+  it still has to survive a `bun install`, which replaces `localBuilds/`.
+
+  Three things had to match, or the library `dlopen`s cleanly and the
+  GPU never comes up: `-DGGML_SHARED -DNAPI_VERSION=7` (node addon ABI),
+  a pinned `CUDAToolkit_ROOT` (otherwise CMake links a different
+  toolkit's `libcudart` than the `nvcc` you named), and single-arch
+  `GGML_NATIVE=ON` rather than the fat binary a shipped prebuilt uses.
+  `cmake -DGGML_CUDA_NO_VMM=ON` is silently ignored by node-llama-cpp's
+  configure; the cache has to be edited directly.
+
+  **Both copies must be patched.** `localBuilds/` holds `bin/` and
+  `Release/`; rebuilding updates `bin/` while the process loads
+  `Release/`, so patching only the rebuilt one leaves the abort entirely
+  intact while every check on that file passes.
+
+  The generalisable error, and the one this investigation kept
+  repeating: **the file that was rebuilt is not the file that runs.**
+  Verifying the artifact you changed says nothing about the process, and
+  a successful `dlopen` is no evidence a library works — the backtrace
+  names the loaded path, and it is worth reading.
 
 - **A concurrency explanation for the same abort is ruled out.** qmd
   creates up to 8 embedding contexts computed from free VRAM, each doing

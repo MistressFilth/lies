@@ -990,9 +990,11 @@ drift cannot masquerade as an arm difference:
 | **NO_VMM (rebuilt)** | 5 | **4** |
 | **stock** | 4 | **3** |
 
-**The rebuild is NOT a fix.** Both arms abort at the same rate, and a
+**This rebuild is not the fix.** Both arms abort at the same rate, and a
 standalone run verified patched immediately before *and* after still
-produced 2 aborts. The library was patched; the process did not care.
+produced 2 aborts — because `nlc_novmm.sh` patches a library this host
+does not load. See "Which library actually aborts" and "Fixing it"
+below for the build that does work.
 
 **Why: the wrong file was patched.** `qmd` loads llama.cpp through
 `node-llama-cpp`, but that is not the only CUDA backend on this host.
@@ -1058,9 +1060,77 @@ remove the abort across three suite runs — and the same runs printed
 with `QmdTimeoutError` at the 60s deadline. The original is a 464 MB
 fat binary; an `sm_89`-only build loads but does not bring up CUDA
 acceleration there. **The abort disappeared because the GPU was turned
-off, not because VMM was removed.** A real attempt must rebuild the
-variant node-llama-cpp actually bundles, at the same commit, as a fat
-binary, and re-check that GPU acceleration survives.
+off, not because VMM was removed.**
+
+#### Fixing it: build with node-llama-cpp's own toolchain
+
+Hand-rolled CMake produces a library that `dlopen`s cleanly and **still
+does not register as a usable backend**, so the GPU never comes up. Four
+things must match, and none are guessable — read them from a real build:
+
+```bash
+node node-llama-cpp/dist/cli/cli.js source download \
+    --release b8390 --gpu cuda --arch x64
+grep -E '^(CMAKE_CUDA_COMPILER|GGML_NATIVE):' \
+    node-llama-cpp/llama/localBuilds/linux-x64-cuda/CMakeCache.txt
+# CUDA 13.3 nvcc; GGML_NATIVE=ON (single arch, not a fat binary)
+grep -m1 CUDA_DEFINES \
+    node-llama-cpp/llama/localBuilds/linux-x64-cuda/llama.cpp/ggml/src/ggml-cuda/CMakeFiles/ggml-cuda.dir/flags.make
+# -DGGML_SHARED -DNAPI_VERSION=7 ...
+```
+
+- **`-DGGML_SHARED -DNAPI_VERSION=7`** bind the backend to node's addon
+  ABI. Without them the library loads but cannot serve as a backend —
+  precisely the "loads fine, no GPU" symptom. **`dlopen` success is
+  worthless as a proxy for working.**
+- **`CUDAToolkit_ROOT` must be pinned**, not just `CMAKE_CUDA_COMPILER`:
+  `/usr/local/cuda` resolves through `/etc/alternatives` to the newest
+  toolkit, so CMake compiles with the nvcc you named and links the
+  *other* version's `libcudart`.
+- **The shipped `fallback/` prebuilt and a local build are not
+  interchangeable** — the prebuilt is a 464 MB fat binary over
+  `sm_50..89`; a local build is single-arch.
+
+`cmake -DGGML_CUDA_NO_VMM=ON` is **silently ignored** here (the option
+is pinned by node-llama-cpp's configure). Edit `CMakeCache.txt` to `ON`,
+re-run configure, and verify `-DGGML_CUDA_NO_VMM` actually appears in
+`flags.make` before rebuilding.
+
+**Two copies exist and only one is loaded.** `localBuilds/` holds both
+`bin/libggml-cuda.so` and `Release/libggml-cuda.so`. Rebuilding updates
+`bin/`; the process loads `Release/`. Patching the built one alone
+leaves the abort fully intact while every check on the rebuilt file
+passes. The backtrace names the loaded path in full — read it rather
+than inferring:
+
+```bash
+grep -oE '/[^ ]*libggml-cuda[^ )]*' <abort log> | sort -u
+# .../localBuilds/linux-x64-cuda/Release/libggml-cuda.so
+```
+
+Copy the rebuilt library over **both**, confirm every CUDA library on
+the host is VMM-free, and verify GPU acceleration with `qmd doctor`
+*before* measuring.
+
+**Result** — with `Release/` also patched and `✓ device probe: GPU cuda
+... RTX 4090`:
+
+| | suite runs with ≥1 CUDA abort |
+|---|---|
+| stock | **4 of 5** |
+| patched | **0 of 5** |
+
+Four of the five runs were entirely clean; the fifth failed on the
+*separate* `QmdTimeoutError` flake with zero CUDA aborts. Strongly
+supported, not proven — it still has to survive a `bun install`, which
+overwrites the whole `localBuilds/` tree.
+
+#### The failure this whole thread ran into
+
+**The file that was rebuilt is not the file that runs.** Verifying the
+artifact you changed says nothing about the process. The backtrace
+carries the loaded library's full path; read it, and treat a successful
+`dlopen` as no evidence at all that a library works.
 
 #### Re-arming the backend after a `bun` refresh
 
