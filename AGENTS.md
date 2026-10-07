@@ -1159,6 +1159,25 @@ Build output is cached in `localBuilds/`, so a reapply after a bun wipe
 does not recompile. The unpatched originals are preserved under
 `~/.local/share/lies/nlc-backup/`, which is what `revert` reads.
 
+**The revert is caught automatically.**
+`tests/unit/qmd/test_cuda_backend_novmm.py` runs in the default suite
+and fails if any copy regains the VMM pool, so a `bun install` cannot
+silently restore the abort without `make check` going red. It skips
+when no CUDA build is present, so CI and CPU-only machines are
+unaffected — the asymmetry is deliberate: *absent* is a skip, *present
+and broken* is a failure.
+
+It checks **both** copies, which is the half that a symbol check on the
+rebuilt file gets wrong. It cannot cover the GPU half — `qmd doctor`
+takes ~10s, over the per-test budget — so that lives in
+`make qmd-backend-check`, which runs `nlc_novmm.sh verify` and is the
+only check that catches "VMM is gone but the GPU never came up".
+
+```bash
+make qmd-backend-check   # both conditions; the one to run after a bun install
+make qmd-backend-fix     # rebuild, patch both copies, verify
+```
+
 One implementation note, load-bearing:
 
 - **Build the same tag.** `b8390`, which is what qmd's
