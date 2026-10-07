@@ -127,6 +127,19 @@ check: ## Run the full gate stack: every pre-commit hook, in order.
 	$(PRECOMMIT) run --all-files supyrliminal
 	$(MAKE) unit-test
 
+.PHONY: qmd-backend-check
+qmd-backend-check: ## Verify node-llama-cpp's CUDA backend: VMM out AND GPU up.
+	## Not part of `check` because it probes the host's GPU and takes
+	## ~10s, over the per-test budget. The unit suite covers the VMM
+	## half; this covers the half that a plain symbol check cannot -- an
+	## abort count of zero is also what "the GPU never came up" looks
+	## like, so both have to be confirmed together.
+	bash tools/nlc_novmm.sh verify
+
+.PHONY: qmd-backend-fix
+qmd-backend-fix: ## Rebuild the CUDA backend with VMM compiled out, then verify.
+	bash tools/nlc_novmm.sh apply
+
 .PHONY: release
 release: check ## Bump version, update CHANGELOG, run gates, push tag.
 	$(UV) run python scripts/release.py $(if $(BUMP),--bump $(BUMP),)
