@@ -97,7 +97,9 @@ def test_a_timeout_keeps_qmds_own_words(monkeypatch: pytest.MonkeyPatch) -> None
 
     stderr = b"Expanding query... (1ms)\nEmbedding 35 queries... (2.6s)\nReranking 40 chunks...\n"
 
-    def raise_timeout(args: list[str], cwd: object, timeout: float) -> object:
+    # `idle_timeout` is passed by `qmd_query` (see QMD_QUERY_IDLE_TIMEOUT_S);
+    # accept and ignore it, as the real `_run_qmd` signature does.
+    def raise_timeout(args: list[str], cwd: object, timeout: float, **kwargs: object) -> object:
         raise subprocess.TimeoutExpired(cmd=args, timeout=timeout, output=None, stderr=stderr)
 
     monkeypatch.setattr(cli, "_run_qmd", raise_timeout)
