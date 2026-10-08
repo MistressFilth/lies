@@ -281,3 +281,48 @@ def test_qmd_get_is_gone_from_the_cli_module() -> None:
         "dispatch, and an output shape that cannot satisfy the "
         "verbatim-quote citation contract"
     )
+
+
+def test_a_query_bounds_its_idle_time_to_the_model_load_tail(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A CLI-path query must not be killed while it is loading models.
+
+    `qmd_query` spawns a fresh `qmd query` per call, so it pays a full
+    model load every time -- the daemon keeps models warm, the CLI path
+    never does. Measured on this host over 10 identical queries with a
+    warm model cache: 3.9-10.9s typical, with a tail of 31.2s and
+    67.7s. The 30s idle default fires inside that tail and reports a
+    healthy query as `QmdWedgeError`, then `QmdTimeoutError` at the
+    total bound.
+
+    Both bounds are raised to fit the measured tail. The idle bound
+    stays well under the total so a genuinely wedged subprocess is still
+    caught with its `last_output` tail intact.
+    """
+    import json
+    from types import SimpleNamespace
+
+    seen: dict[str, float] = {}
+
+    def _fake_qmd(args, *, cwd, timeout, **kwargs):  # noqa: ARG001
+        seen["timeout"] = timeout
+        seen["idle_timeout"] = kwargs.get("idle_timeout", 0.0)
+        return SimpleNamespace(
+            args=tuple(args),
+            returncode=0,
+            stdout=json.dumps([{"path": "a/b.md", "score": 1}]).encode(),
+            stderr=b"",
+        )
+
+    monkeypatch.setattr("lies.qmd.cli._run_qmd", _fake_qmd)
+
+    qmd_query(cwd=Path("/tmp/fake"), question="anything")
+
+    # idle must clear the observed tail but stay under the total, or a
+    # wedged subprocess is killed on the total bound and loses last_output
+    assert seen["idle_timeout"] >= 45, seen
+    assert seen["timeout"] >= 120, seen
+    assert seen["idle_timeout"] < seen["timeout"], (
+        "an idle bound at or above the total can never fire, so the last_output diagnostic is lost"
+    )

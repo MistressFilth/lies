@@ -453,12 +453,23 @@ def _parse_json_list(stdout_text: str) -> list[Any] | None:
     return None
 
 
+#: A CLI-path query pays a full model load on every call -- the daemon
+#: keeps models warm for ``DEFAULT_INACTIVITY_TIMEOUT_MS``, the CLI never
+#: does. Measured here over 10 identical queries with a warm model cache:
+#: 3.9-10.9s typical, tail 31.2s and 67.7s. The idle default of 30s
+#: fires inside that tail and reports a healthy query as ``QmdWedgeError``
+#: (then ``QmdTimeoutError`` at the total), intermittently and on a
+#: different call each time.
+QMD_QUERY_TIMEOUT_S = 120
+QMD_QUERY_IDLE_TIMEOUT_S = 45.0
+
+
 @with_qmd_lock()
 def qmd_query(
     cwd: Path,
     question: str,
     limit: int = 5,
-    timeout: int = 60,
+    timeout: int = QMD_QUERY_TIMEOUT_S,
     *,
     collection_filter: set[str] | None = None,
 ) -> list[dict[str, Any]]:
@@ -497,6 +508,7 @@ def qmd_query(
             ["qmd", "query", question, "--limit", str(limit), "--json"],
             cwd=cwd,
             timeout=timeout,
+            idle_timeout=QMD_QUERY_IDLE_TIMEOUT_S,
         )
     except FileNotFoundError as exc:
         raise QmdNotInstalledError("`qmd` binary not found at exec time") from exc
