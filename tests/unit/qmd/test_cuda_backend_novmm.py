@@ -74,35 +74,54 @@ def _carries_vmm(path: Path) -> bool:
     return False
 
 
+#: The prebuilt fallback under the *other* variant. `node-llama-cpp`
+#: ships `linux-x64-cuda` and `linux-x64-cuda-ext`, both exposing the
+#: same `getBinsDir()`, and picks one at runtime. When a local build
+#: exists it is used; when it does not -- which is exactly what a `bun
+#: install` leaves behind -- the prebuilt in `linux-x64-cuda-ext` serves.
+#: Checking only the local build misses the revert this test exists to
+#: catch.
+FALLBACK = Path(
+    os.environ.get(
+        "LIES_NLC_FALLBACK",
+        "~/.bun/install/global/node_modules/@node-llama-cpp/"
+        f"{VARIANT}-ext/bins/{VARIANT}/fallback/libggml-cuda.so",
+    )
+).expanduser()
+
+
 def _existing_backends() -> list[tuple[str, Path]]:
+    """Every CUDA backend this host could load, local build or prebuilt."""
     found = []
     for copy in COPIES:
         lib = LOCAL_BUILDS / VARIANT / copy / "libggml-cuda.so"
         if lib.is_file():
-            found.append((copy, lib))
+            found.append((f"localBuilds/{copy}", lib))
+    if FALLBACK.is_file():
+        found.append(("prebuilt-fallback", FALLBACK))
     return found
 
 
-def test_a_built_cuda_backend_has_the_vmm_pool_compiled_out() -> None:
-    """No copy of the CUDA backend may still reserve 32 GB of address space.
+def test_no_cuda_backend_still_carries_the_vmm_pool() -> None:
+    """No backend that could serve a query may reserve 32 GB of address space.
 
-    Fails with the path, because "which copy is live" was the entire
-    difficulty here -- `Release/` is loaded and `bin/` is not, and they
-    are easy to confuse.
+    Covers the local build *and* the prebuilt fallback. Checking only the
+    local build left the real failure mode open: `bun install` removes
+    `llama/localBuilds/`, the prebuilt takes over with VMM intact, and a
+    test that skips on a missing local build reports green throughout.
     """
     backends = _existing_backends()
     if not backends:
-        pytest.skip(f"no node-llama-cpp CUDA build at {LOCAL_BUILDS}")
+        pytest.skip(
+            f"no node-llama-cpp CUDA backend found (looked in {LOCAL_BUILDS} and {FALLBACK})"
+        )
 
-    still_vmm = [f"{copy}/{lib.name}" for copy, lib in backends if _carries_vmm(lib)]
-
+    still_vmm = [f"{label}" for label, lib in backends if _carries_vmm(lib)]
     assert not still_vmm, (
         "the CUDA backend still contains the VMM pool in: "
         + ", ".join(still_vmm)
-        + f" (under {LOCAL_BUILDS / VARIANT}). Re-apply with "
-        "`tools/nlc_novmm.sh apply`, then `tools/nlc_novmm.sh verify`. A "
-        "`bun install` restores the original backend and silently brings "
-        "the abort back."
+        + ". Re-apply with `make qmd-backend-fix`, then `make qmd-backend-check`. "
+        "A `bun install` restores the prebuilt and silently brings the abort back."
     )
 
 
@@ -113,12 +132,13 @@ def test_both_backend_copies_are_present_together() -> None:
     every check that inspects the rebuilt file passes. Naming both here
     is the cheap guard against repeating that.
     """
-    present = {copy for copy, _ in _existing_backends()}
-    if not present:
-        pytest.skip(f"no node-llama-cpp CUDA build at {LOCAL_BUILDS}")
+    local = {label for label, _ in _existing_backends() if label.startswith("localBuilds/")}
+    if not local:
+        pytest.skip(f"no local node-llama-cpp CUDA build at {LOCAL_BUILDS}")
 
-    assert present == set(COPIES), (
-        f"only {sorted(present)} of {list(COPIES)} present under "
+    expected = {f"localBuilds/{copy}" for copy in COPIES}
+    assert local == expected, (
+        f"only {sorted(local)} of {sorted(expected)} present under "
         f"{LOCAL_BUILDS / VARIANT}; patching one leaves the other "
         "VMM-enabled, and the loaded copy is the one that matters"
     )

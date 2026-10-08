@@ -162,8 +162,15 @@ enable_novmm() {
   local cache="$BUILD_DIR/CMakeCache.txt"
   [ -f "$cache" ] || die "no CMakeCache.txt at $cache"
   echo ">> setting GGML_CUDA_NO_VMM=ON in CMakeCache.txt (a -D is silently ignored)"
-  sed -i 's/^GGML_CUDA_NO_VVM:BOOL=OFF$/GGML_CUDA_NO_VMM:BOOL=ON/' "$cache"
-  grep -q '^GGML_CUDA_NO_VVM:BOOL=ON$' "$cache" || die "could not set the flag in $cache"
+  # Idempotent: re-running after a bun wipe must not fail just because the
+  # flag is already set. (It also silently did nothing when it was OFF,
+  # because the pattern below was misspelt -- hence the explicit set +
+  # verify rather than a bare sed.)
+  if ! grep -qE '^GGML_CUDA_NO_VMM:BOOL=(ON|OFF)$' "$cache"; then
+    die "CMakeCache.txt has no GGML_CUDA_NO_VMM entry at $cache"
+  fi
+  sed -i -E 's/^GGML_CUDA_NO_VMM:BOOL=(ON|OFF)$/GGML_CUDA_NO_VMM:BOOL=ON/' "$cache"
+  grep -q '^GGML_CUDA_NO_VMM:BOOL=ON$' "$cache" || die "could not set the flag in $cache"
 
   cmake -S "$SRC_DIR" -B "$BUILD_DIR" >/dev/null 2>&1 || die "reconfigure failed"
 
