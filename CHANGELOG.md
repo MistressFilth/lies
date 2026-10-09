@@ -159,6 +159,29 @@ this into a dated release heading.
 
 ### Fixed
 
+- **The streamable-HTTP daemon keeps its SSE stream warm, so a long
+  tool call stops losing its response.** A `tools/call` on the
+  streamable-HTTP transport is accepted with `202` and its response is
+  owed on the long-lived GET stream. A qmd `search` is 12-22s of
+  embed-and-scan that puts **zero bytes on the wire**, so an idle
+  stream is torn down by the client and the response to the *next*
+  call goes with it. The host then has no transport to receive on and
+  reports a tool-level interrupt — with no LIES-side error and no qmd
+  log line, because the request never reached the point of
+  dispatching a query.
+
+  Measured on this host: a freshly started daemon serves the same
+  `search` that aborts on an 8516s-idle one, and `vec+lex` completes
+  in 12.32s against a 120s bound. The predictor is stream idleness,
+  not call duration, which is why a slow query and a wedged daemon are
+  both the wrong diagnosis.
+
+  Fixed by registering FastMCP's `PingMiddleware` at 5s on the LIES
+  server. The interval is 5s rather than the 30s default because a
+  single qmd query takes 12-22s, so the default leaves the exact
+  window that fails uncovered. Pinned by
+  `tests/mcp/test_streamable_keepalive.py`.
+
 - **An emptied collection registry is reported as one event, not N
   drift entries.** On 2026-10-05 the live index reported `collections:
   0` plus 117 `document_drift` entries, every one of them "1

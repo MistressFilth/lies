@@ -30,6 +30,7 @@ from collections.abc import Callable
 from typing import Any, cast
 
 from fastmcp import FastMCP
+from fastmcp.server.middleware import PingMiddleware
 from fastmcp.server.transforms import PromptsAsTools
 from mcp.types import ToolAnnotations
 from pydantic import BaseModel, ConfigDict
@@ -54,6 +55,22 @@ mcp = FastMCP(
     "lies",
     instructions=load_instructions(),
 )
+
+# Keep the streamable-HTTP GET stream warm. A ``tools/call`` is
+# accepted with ``202`` and its response is owed on that long-lived
+# stream; a qmd ``search`` is 12-22s of embed-and-scan that puts zero
+# bytes on the wire. A client that tears down an idle stream loses the
+# response to the *next* call, and the caller sees a transport-level
+# interrupt with no LIES-side error and no qmd log line -- the request
+# never reached the point of dispatching a query. Measured on this
+# host: a fresh daemon serves the same ``search`` that aborts on an
+# 8516s-idle one.
+#
+# The interval is 5s rather than FastMCP's 30s default because a
+# single qmd query takes 12-22s, so the default leaves the whole window
+# that fails uncovered. Pinned by
+# ``tests/mcp/test_streamable_keepalive.py``.
+mcp.add_middleware(PingMiddleware(interval_ms=5000))
 
 
 # Bind slash-command prompts BEFORE tool registrations so prompts are
