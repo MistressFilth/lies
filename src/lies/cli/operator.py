@@ -158,6 +158,11 @@ def up(
 @mcp_app.command()
 def down(
     grace: float = typer.Option(10.0, help="Seconds to wait after SIGTERM before SIGKILL."),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        help="Stop even while the daemon is serving other clients.",
+    ),
     name: str | None = typer.Option(
         None,
         "--name",
@@ -170,6 +175,10 @@ def down(
     Only pidfile-tracked daemons are stopped. Stdio servers spawned by an
     MCP host are never touched, and qmd's daemon is never touched at all:
     it is machine-global and shared with other wikis and tools.
+
+    The LIES daemon is also shared, so this refuses while it is serving
+    and every other MCP client on the host would be disconnected at
+    once. Pass ``--force`` to stop it anyway.
     """
     from lies.cli import resolve_wiki
     from lies.cli._helpers import configure_logging
@@ -178,8 +187,8 @@ def down(
     configure_logging()
     wiki = resolve_wiki(name)
     try:
-        result = daemon.stop_daemon(wiki, grace=grace)
-    except daemon.DaemonBusy, daemon.DaemonStopFailed:
+        result = daemon.stop_daemon(wiki, grace=grace, force=force)
+    except daemon.DaemonBusy, daemon.DaemonStopFailed, daemon.DaemonInUse:
         typer.echo(f"error: {sys.exc_info()[1]}", err=True)
         raise typer.Exit(code=1)
     if result.action == "none":

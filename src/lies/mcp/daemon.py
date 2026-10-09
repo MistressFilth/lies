@@ -81,6 +81,15 @@ class DaemonStopFailed(DaemonError):
     """The daemon process survived SIGKILL."""
 
 
+class DaemonInUse(DaemonError):
+    """A live, serving daemon was stopped without ``force``.
+
+    The daemon is shared across every MCP client on the host, so
+    refusing by default keeps one session's ``down`` from silently
+    disconnecting all the others.
+    """
+
+
 @dataclass
 class PidRecord:
     """On-disk description of a running daemon.
@@ -249,6 +258,32 @@ def port_free(host: str, port: int) -> bool:
         except OSError:
             return False
     return True
+
+
+def _daemon_is_serving(rec: PidRecord, timeout: float = 1.0) -> bool:
+    """Return True when the tracked daemon accepts a streamable-HTTP request.
+
+    Deliberately a TCP/ASGI reachability probe rather than a session
+    count. The live session registry lives inside the daemon process
+    (``session_manager._server_instances``), so a count is not
+    available to the CLI without a new MCP tool; and a session count
+    would make the gate flaky, since a client that has finished its
+    work still legitimately holds an open stream.
+
+    What matters for the hazard is that the socket answers at all: a
+    daemon that is up and serving is one that other sessions may be
+    mid-call against, and that is the case worth refusing to kill.
+    A dead or wedged daemon fails this probe and stops cleanly, so a
+    crashed daemon can still be cleared.
+    """
+    try:
+        # `create_connection` resolves the address family itself, so
+        # there is no family to compute here -- an IPv6 literal in the
+        # record works without this branch.
+        with socket.create_connection((rec.host, rec.port), timeout=timeout):
+            return True
+    except OSError:
+        return False
 
 
 def tail_log(wiki: Wiki, lines: int = 20) -> list[str]:
@@ -466,15 +501,26 @@ def _pid_alive(pid: int) -> bool:
     return state != "Z"
 
 
-def stop_daemon(wiki: Wiki, *, grace: float = 10.0) -> StopResult:
+def stop_daemon(wiki: Wiki, *, grace: float = 10.0, force: bool = False) -> StopResult:
     """Stop the tracked daemon, escalating SIGTERM to SIGKILL.
 
     Only pidfile-tracked daemons are touched — never the stdio servers
     an MCP host spawned as its own children.
 
-    Raises :class:`DaemonBusy` on create-lock contention and
-    :class:`DaemonStopFailed` if the process survives SIGKILL. A missing
-    or stale record is a successful no-op, not an error.
+    The daemon is machine-global and every MCP client on the host holds
+    a long-lived SSE stream to it, so stopping it disconnects all of
+    them at once. That is the same class of failure the keepalive work
+    chased: the client reports a tool-level interrupt with nothing in
+    the LIES or qmd logs, and it reads as a hung query rather than as
+    someone else's ``lies mcp down``. With ``force=False`` (the
+    default) this refuses while the daemon is serving and names
+    ``--force``; ``down --force`` stops it anyway.
+
+    Raises :class:`DaemonBusy` on create-lock contention,
+    :class:`DaemonStopFailed` if the process survives SIGKILL, and
+    :class:`DaemonInUse` when a live daemon is serving and ``force``
+    is False. A missing or stale record is a successful no-op, not an
+    error.
     """
     lock = create_lock_path(wiki)
     lock_result = acquire_create_lock(lock, max_age_s=CREATE_LOCK_MAX_AGE_S)
@@ -492,6 +538,15 @@ def stop_daemon(wiki: Wiki, *, grace: float = 10.0) -> StopResult:
         if is_stale(rec):
             clear_record(wiki)
             return StopResult(action="cleared_stale", pid=rec.pid, signal=None)
+
+        if not force and _daemon_is_serving(rec):
+            raise DaemonInUse(
+                f"the LIES MCP daemon at {daemon_url(rec)} (pid {rec.pid}) is serving. "
+                "It is shared: every MCP client on this host holds a long-lived stream "
+                "to it, and stopping it disconnects all of them at once — their next "
+                "call fails with no error in the LIES or qmd logs. Stop it anyway "
+                "with `lies mcp down --force` if that is what you mean."
+            )
 
         try:
             os.kill(rec.pid, signal_module.SIGTERM)

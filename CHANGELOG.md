@@ -181,28 +181,56 @@ this into a dated release heading.
 
 ### Fixed
 
-- **The streamable-HTTP daemon keeps its SSE stream warm, so a long
-  tool call stops losing its response.** A `tools/call` on the
-  streamable-HTTP transport is accepted with `202` and its response is
-  owed on the long-lived GET stream. A qmd `search` is 12-22s of
-  embed-and-scan that puts **zero bytes on the wire**, so an idle
-  stream is torn down by the client and the response to the *next*
-  call goes with it. The host then has no transport to receive on and
-  reports a tool-level interrupt — with no LIES-side error and no qmd
-  log line, because the request never reached the point of
-  dispatching a query.
+- **`lies mcp down` refuses to stop a daemon that is serving.** The
+  LIES MCP daemon is machine-global and every MCP client on the host
+  holds a long-lived stream to it, so one session's `down` disconnects
+  all of them at once. Each disconnected client then sees a tool-level
+  interrupt with nothing in the LIES or qmd logs — which reads as a
+  hung query, and sends the next reader chasing the qmd daemon instead
+  of the lifecycle command that caused it. `down` now refuses while
+  the daemon is answering its socket, and the message names the
+  consequence and the `--force` escape hatch.
 
-  Measured on this host: a freshly started daemon serves the same
-  `search` that aborts on an 8516s-idle one, and `vec+lex` completes
-  in 12.32s against a 120s bound. The predictor is stream idleness,
-  not call duration, which is why a slow query and a wedged daemon are
-  both the wrong diagnosis.
+  The predicate is reachability, not a session count. The live session
+  registry lives inside the daemon process
+  (`session_manager._server_instances`), so a count is not available to
+  the CLI without a new tool; and a count would make the gate flaky,
+  since a client that has finished its work still holds an open
+  stream. A daemon nobody can reach fails the check and stops
+  cleanly, so a crashed or wedged daemon stays clearable — the gate
+  protects live clients, and one nobody can reach has none.
 
-  Fixed by registering FastMCP's `PingMiddleware` at 5s on the LIES
-  server. The interval is 5s rather than the 30s default because a
-  single qmd query takes 12-22s, so the default leaves the exact
-  window that fails uncovered. Pinned by
-  `tests/mcp/test_streamable_keepalive.py`.
+- **A keepalive ping now rides the streamable-HTTP stream — one per
+  request, which is *not* the same thing as a warm stream.** The
+  underlying defect is diagnosed and real: a `tools/call` on that
+  transport is accepted with `202` and its response is owed on the
+  long-lived GET stream, while a qmd `search` is 12-22s of
+  embed-and-scan that puts zero bytes on the wire. A client that tears
+  down an idle stream loses the response to the *next* call, and the
+  host reports a tool-level interrupt with no LIES-side error and no
+  qmd log line, because the request never reached the point of
+  dispatching a query. A freshly started daemon serves the same
+  `search` that aborts on an 8516s-idle one; `vec+lex` completes in
+  12.32s against a 120s bound. The predictor is stream idleness, not
+  call duration.
+
+  **What landed is a partial mitigation, not a fix.** FastMCP's
+  `PingMiddleware` is registered at 5s, and it emits exactly **one**
+  ping per connection: measured 1 frame in 62s and 1 in 25s where 12
+  and 5 were expected. The loop is created per request
+  (`ping.py:63`) and cancelled through that request's `Connection`
+  exit stack (`ping.py:84`), so it dies with the request that spawned
+  it — on the handshake era and the sessionless era alike, so protocol
+  era is not the variable. The MCP SDK's streamable-HTTP transport
+  ships no keepalive of its own, and `PingMiddleware`'s one ping per
+  request is an upstream defect.
+
+  The idle-stream failure therefore **remains open**. A working
+  keepalive needs pings driven from the session registry
+  (`session_manager._server_instances`) rather than from a request
+  hook; `tests/mcp/test_streamable_keepalive.py` pins the current
+  behaviour and marks the idle-stream case as a known failure so it
+  flips when the real remedy lands.
 
 - **An emptied collection registry is reported as one event, not N
   drift entries.** On 2026-10-05 the live index reported `collections:
