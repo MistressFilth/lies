@@ -25,7 +25,17 @@ dependencies = [
     # directly (PR #115). Note fastmcp 4 vendors its own httpx as
     # `httpx2`, which is why `classify_call_error` matches exception
     # class *names* rather than httpx types.
-    "fastmcp>=4.0",
+    #
+    # Capped at `<5` for the same reason the floor was raised: 4.x is the
+    # line the code is written against, and a 5.x install must fail at
+    # resolution rather than drift silently past the API breaks the 4.x
+    # upgrade guide lists (removed `PromptToolMiddleware`,
+    # `fastmcp.tools.tool`, `mount(prefix=)`, and the rest). A cap that
+    # is wrong in the permissive direction costs a loud resolution
+    # error; no cap at all costs a silent semantic drift at the first
+    # call that touches a renamed surface. Lift the cap deliberately,
+    # with the upgrade guide as the checklist.
+    "fastmcp>=4.0,<5",
     "mcp>=1.0",
     "ahocorasick_rs>=1.0,<2.0",
 ]

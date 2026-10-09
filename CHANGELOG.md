@@ -12,6 +12,28 @@ this into a dated release heading.
 
 ### Changed
 
+- **`fastmcp` is capped at `<5`.** The dependency was `fastmcp>=4.0`
+  after the 4.x floor landed, leaving the next major unpinned. 4.x is
+  the line the code is written against, and a 5.x install now fails at
+  resolution rather than drifting past the API breaks the 4.x upgrade
+  guide lists — removed `PromptToolMiddleware`, `fastmcp.tools.tool`,
+  `mount(prefix=)`, `import_server`, and the rest.
+
+  The asymmetry is the point, and it is the same one that raised the
+  floor: a cap that is wrong in the permissive direction costs a loud
+  resolution error, while no cap costs a silent semantic drift at the
+  first call that touches a renamed surface. Lift it deliberately,
+  with the upgrade guide as the checklist.
+
+  Resolution is unchanged at `fastmcp 4.0.10`; `uv.lock` records the
+  narrowed specifier. The three audits the migration implied are clean
+  and produced no code change: `except httpx.` appears in
+  `qmd/lifecycle.py` only, wrapping LIES's *own* `httpx.Client` to the
+  qmd daemon rather than a FastMCP call; the single `ctx.elicit` call
+  site already passes a `response_type`; and `src/` contains zero
+  camelCase reads of the 11 fields the bridge covers. `Middleware` and
+  `uriTemplate` were already on the 4.x spelling.
+
 - **The `qmd embed` CUDA abort is diagnosed, and a rebuild to avoid it is
   reproducible from the repository.** `node-llama-cpp` intermittently
   hard-aborts inside `qmd embed` at
