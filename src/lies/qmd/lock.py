@@ -10,17 +10,28 @@ Lock path: ``${LIES_QMD_LOCK_PATH:-${XDG_STATE_HOME:-~/.local/state}/lies}/qmd.l
 Wait budget: 30 s poll-retry; past 30 s, :class:`QmdLockBusy`
 raises. Heartbeat ``max_age_s``: 1800 s (matches
 :func:`qmd_embed`'s 30-min wall budget).
+
+The daemon query path is async, so it cannot use the decorator: the poll
+loop below sleeps with ``time.sleep`` and the MCP daemon runs many requests
+on one event loop, so a contended acquire would freeze every concurrent
+request -- including the ones that never touch qmd. :func:`qmd_lock_async`
+is the same envelope with an ``await`` between polls.
 """
 
 from __future__ import annotations
 
+import contextlib
 import contextvars
 import functools
 import logging
 import os
 import time
+from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Literal
+
+import anyio
 
 from lies.lock_errors import (
     QmdLockBusy,
@@ -88,6 +99,66 @@ def _register_holder(fd: int) -> None:
         _log.warning("qmd lock holder registration failed: %s", exc)
 
 
+@dataclass(frozen=True)
+class _Attempt:
+    """One non-blocking shot at the qmd flock.
+
+    Split out of the poll loops because there are now two of them -- one
+    that sleeps with ``time.sleep`` and one that awaits -- and the acquire,
+    the reap and the indeterminate escalation must not be allowed to drift
+    apart between them. A reap-policy change belongs here, once.
+
+    ``fd`` is ``-1`` on every losing outcome, matching
+    :class:`~lies.utils.lock_heartbeat.AcquireResult`'s convention.
+    """
+
+    outcome: Literal["won", "busy", "absent"]
+    fd: int = -1
+    holder_pid: int | None = None
+
+
+def _attempt_acquire(max_age_s: float) -> _Attempt:
+    """Try once to take the flock. Never blocks, never sleeps.
+
+    Returns ``outcome="won"`` on success -- the holder pid and heartbeat are
+    already registered by then -- ``"busy"`` when a live contender holds it,
+    or ``"absent"`` for the envelope-less ``None`` that
+    :func:`~lies.utils.exclusive.acquire_create_lock` returns.
+
+    Raises:
+        :class:`WikiFlockIndeterminate`: the contender's liveness cannot be
+            determined. The primitive did not reap.
+    """
+    lock_path, pid_path, state_path = _lock_paths()
+    result = acquire_create_lock(
+        lock_path,
+        max_age_s=max_age_s,
+        pid_path=pid_path,
+        state_json_path=state_path,
+        # Re-entry is tracked by the depth counter, not by pid equality.
+        # A second *thread* or *task* of this process stores the same
+        # pid, so the default same-pid self-recovery would reap a lock
+        # this process is still holding and let both into the critical
+        # section — which is the CUDA reservation race this lock exists
+        # to prevent.
+        self_acquire_is_stale=False,
+    )
+    if result is None:
+        # Defensive: only reached if ``exclusive.py`` returns the
+        # non-envelope ``None``-on-busy.
+        return _Attempt(outcome="absent")
+    if result.status in ("acquired", "dead_reaped"):
+        _register_holder(result.fd)
+        return _Attempt(outcome="won", fd=result.fd)
+    if result.status == "indeterminate":
+        raise WikiFlockIndeterminate(
+            f"qmd lock holder pid {result.holder_pid} indeterminate; "
+            f"run `lies flock qmd force-repair`"
+        )
+    # status == "busy"
+    return _Attempt(outcome="busy", holder_pid=result.holder_pid)
+
+
 def _acquire_with_poll(
     retry_budget_s: float,
     max_age_s: float,
@@ -95,53 +166,54 @@ def _acquire_with_poll(
     """Poll-retry until the qmd flock is acquired. Raises:
     - :class:`QmdLockBusy` past ``retry_budget_s``.
     - :class:`WikiFlockIndeterminate` if the envelope is indeterminate.
+
+    Blocking: every wait is a :func:`time.sleep`, so this is for sync call
+    sites only. An async caller that lands here stops the event loop for the
+    length of the wait; use :func:`qmd_lock_async` instead.
     """
-    lock_path, pid_path, state_path = _lock_paths()
     deadline = time.monotonic() + retry_budget_s
     started_at = time.monotonic()
     while True:
-        result = acquire_create_lock(
-            lock_path,
-            max_age_s=max_age_s,
-            pid_path=pid_path,
-            state_json_path=state_path,
-            # Re-entry is tracked by the depth counter above, not by
-            # pid equality. A second *thread* of this process stores
-            # the same pid, so the default same-pid self-recovery
-            # would reap a lock this thread is still holding and let
-            # both into the critical section — which is the CUDA
-            # reservation race this lock exists to prevent.
-            self_acquire_is_stale=False,
-        )
-        if result is None:
-            # Defensive: only reached if ``exclusive.py`` raises
-            # the non-envelope ``None``-on-busy.
-            if time.monotonic() >= deadline:
-                raise QmdLockBusy(
-                    waited_s=time.monotonic() - started_at,
-                    max_s=retry_budget_s,
-                )
-            time.sleep(_POLL_INTERVAL_S)
-            continue
-
-        if result.status in ("acquired", "dead_reaped"):
-            _register_holder(result.fd)
-            return result.fd
-
-        if result.status == "indeterminate":
-            raise WikiFlockIndeterminate(
-                f"qmd lock holder pid {result.holder_pid} indeterminate; "
-                f"run `lies flock qmd force-repair`"
-            )
-
-        # status == "busy"
+        attempt = _attempt_acquire(max_age_s)
+        if attempt.outcome == "won":
+            return attempt.fd
         if time.monotonic() >= deadline:
             raise QmdLockBusy(
-                holder_pid=result.holder_pid,
+                holder_pid=attempt.holder_pid,
                 waited_s=time.monotonic() - started_at,
                 max_s=retry_budget_s,
             )
         time.sleep(_POLL_INTERVAL_S)
+
+
+async def _acquire_with_poll_async(
+    retry_budget_s: float,
+    max_age_s: float,
+) -> int:
+    """:func:`_acquire_with_poll` with an ``await`` between attempts.
+
+    Same acquire, reaping and raise semantics; the only difference is that
+    the wait yields to the event loop instead of parking the thread.
+
+    The sleep is clamped to what is left of the budget. A flat
+    ``_POLL_INTERVAL_S`` overshoots a short budget by up to a full poll
+    interval -- a 50 ms wait costs 100 ms -- and the clamp bounds that to
+    one extra attempt.
+    """
+    deadline = time.monotonic() + retry_budget_s
+    started_at = time.monotonic()
+    while True:
+        attempt = _attempt_acquire(max_age_s)
+        if attempt.outcome == "won":
+            return attempt.fd
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise QmdLockBusy(
+                holder_pid=attempt.holder_pid,
+                waited_s=time.monotonic() - started_at,
+                max_s=retry_budget_s,
+            )
+        await anyio.sleep(min(_POLL_INTERVAL_S, remaining))
 
 
 def _release(fd: int) -> None:
@@ -211,3 +283,87 @@ def with_qmd_lock(
         return wrapper
 
     return decorator
+
+
+@contextlib.asynccontextmanager
+async def qmd_lock_async(
+    *,
+    timeout_s: float = 120.0,
+    max_age_s: float = 1800.0,
+) -> AsyncIterator[None]:
+    """Async twin of :func:`with_qmd_lock`, for the daemon query path.
+
+    Same flock, same heartbeat, same reaping, same
+    :class:`QmdLockBusy`; the wait *awaits* instead of calling
+    :func:`time.sleep`. That one difference is the point: the MCP daemon
+    serves every request on one event loop, so a blocking poll there would
+    freeze unrelated concurrent requests — including ones that never reach
+    qmd — for the length of the wait.
+
+    Args:
+        timeout_s: Wall-clock seconds to poll-retry when contended;
+            ``QmdLockBusy`` past this. Default 120 s, well above the CLI
+            decorator's 30 s: a query is queued against a daemon that is
+            already serving other work rather than starting a subprocess,
+            so the budget is spent waiting, not booting.
+        max_age_s: Staleness budget for a dead contender's heartbeat.
+            Default 1800 s, matching :func:`with_qmd_lock`.
+
+    Reentrant on the same context, exactly as the decorator is: a nested
+    acquire in one task runs without re-acquiring. Two *tasks* contend,
+    because each snapshots ``_held_depth`` at creation — which is the
+    production shape, since two concurrent requests are two tasks.
+
+    The fd is released in a ``finally``, so an exception and a cancellation
+    both unwind through it (``CancelledError`` is a ``BaseException`` and a
+    ``finally`` is the only construct that reliably covers it). Nothing
+    between the winning attempt and the ``yield`` awaits, so there is no
+    window in which a cancellation could strand an acquired fd.
+    """
+    state = _held_depth.get()
+    if state:
+        # Already held in this context: run without re-acquiring.
+        token = _held_depth.set(state + 1)
+        try:
+            yield None
+        finally:
+            _held_depth.reset(token)
+        return
+
+    fd = await _acquire_with_poll_async(retry_budget_s=timeout_s, max_age_s=max_age_s)
+    token = _held_depth.set(1)
+    try:
+        yield None
+    finally:
+        # reset(), not ``set(0)``: it restores the exact prior value and
+        # cannot clobber a depth an inner frame raised. Order matters --
+        # the release runs before the depth is visible again elsewhere.
+        _held_depth.reset(token)
+        _release(fd)
+
+
+#: Wait budget for the daemon query path, in seconds. 120 s is the number
+#: proven in the sibling ``ask`` project, whose single-flight gates every
+#: query reaching the same qmd daemon.
+_QUERY_LOCK_WAIT_S = 120.0
+_QUERY_LOCK_WAIT_ENV = "LIES_QMD_QUERY_LOCK_WAIT"
+
+
+def query_lock_wait_s() -> float:
+    """Wait budget in seconds for the qmd query lock.
+
+    Read per call so a host can retune it without restarting the daemon.
+
+    A malformed or non-positive value falls back to the default rather than
+    raising. This is read on the retrieval path, and raising here would turn
+    a typo in a shell profile into every query failing — a far worse outcome
+    than ignoring the knob.
+    """
+    raw = os.environ.get(_QUERY_LOCK_WAIT_ENV)
+    if raw is None:
+        return _QUERY_LOCK_WAIT_S
+    try:
+        value = float(raw)
+    except ValueError:
+        return _QUERY_LOCK_WAIT_S
+    return value if value > 0 else _QUERY_LOCK_WAIT_S

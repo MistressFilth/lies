@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import importlib
 import inspect
 import os
@@ -610,3 +612,377 @@ def test_a_raising_nested_frame_restores_the_depth(
         "the reentrant path and never acquired the flock"
     )
     assert _held_depth.get() == 0
+
+
+# --- the async acquire -------------------------------------------------------
+#
+# The MCP daemon's query path is async. `with_qmd_lock` polls with
+# `time.sleep`, so reusing it there would block the whole event loop for the
+# length of the wait -- inside the daemon that freezes every concurrent
+# request, including the ones that never touch qmd. That is worse than the
+# unbounded queue this primitive exists to bound, so the async context manager
+# awaits between polls instead.
+#
+# Two properties of the harness make the contention tests below non-obvious,
+# and both were verified against this codebase rather than assumed:
+#
+# 1. The lock path comes from `LIES_QMD_LOCK_PATH`, which `tests/conftest.py`
+#    pins to one file per session so two tests in a run still exclude each
+#    other. Patching `_default_lock_dir` redirects nothing: `_lock_paths()`
+#    consults the env var first and never reaches the fallback. These tests
+#    move the pin instead, into their own `tmp_path`.
+# 2. `_held_depth` is a `ContextVar`, and an `@contextlib.asynccontextmanager`
+#    body runs in its caller's context -- the `set()` inside it is visible to
+#    the caller for the duration of the `async with`. So a nested acquire in the
+#    same task is *reentrant* and never contends; it would sail through and
+#    never raise. Genuine contention is a second **task**, which snapshots the
+#    context at creation. Every contender below is therefore created *before*
+#    the outer acquire, so its snapshot carries depth 0 -- which is also the
+#    production shape, since two concurrent MCP requests are two tasks.
+
+
+def test_query_lock_wait_defaults_to_120(monkeypatch: pytest.MonkeyPatch) -> None:
+    from lies.qmd import lock as lock_mod
+
+    monkeypatch.delenv("LIES_QMD_QUERY_LOCK_WAIT", raising=False)
+    assert lock_mod.query_lock_wait_s() == 120.0
+
+
+def test_query_lock_wait_reads_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    from lies.qmd import lock as lock_mod
+
+    monkeypatch.setenv("LIES_QMD_QUERY_LOCK_WAIT", "45")
+    assert lock_mod.query_lock_wait_s() == 45.0
+
+
+def test_query_lock_wait_survives_malformed_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A bad env var must not take retrieval down.
+
+    The knob is read on the daemon's query path. Raising `ValueError` from
+    here would turn a typo in a shell profile into "every query fails", which
+    is a far worse failure than ignoring the knob.
+    """
+    from lies.qmd import lock as lock_mod
+
+    monkeypatch.setenv("LIES_QMD_QUERY_LOCK_WAIT", "not-a-number")
+    assert lock_mod.query_lock_wait_s() == 120.0
+
+
+def test_query_lock_wait_rejects_a_non_positive_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Zero or negative would mean "never wait", which is not what a timeout means.
+
+    Fall back to the default rather than honouring it: a wait budget that
+    fires instantly turns ordinary transient contention into a user-visible
+    failure on every concurrent request.
+    """
+    from lies.qmd import lock as lock_mod
+
+    monkeypatch.setenv("LIES_QMD_QUERY_LOCK_WAIT", "0")
+    assert lock_mod.query_lock_wait_s() == 120.0
+    monkeypatch.setenv("LIES_QMD_QUERY_LOCK_WAIT", "-30")
+    assert lock_mod.query_lock_wait_s() == 120.0
+
+
+def test_qmd_lock_async_default_signature() -> None:
+    """The daemon query path gets a 120s budget, not the CLI's 30s.
+
+    A query is dispatched to a daemon that is already serving other work and
+    answers in seconds; the 30s CLI budget was sized for a subprocess that
+    has not started yet. The signature is introspected rather than called so
+    this pins the declared default, which is what a call site that omits the
+    argument gets.
+    """
+    from lies.qmd import lock as lock_mod
+
+    sig = inspect.signature(lock_mod.qmd_lock_async)
+    assert sig.parameters["timeout_s"].default == 120.0
+    assert sig.parameters["max_age_s"].default == 1800.0
+    # And the CLI budget is untouched by any of this.
+    assert inspect.signature(lock_mod.with_qmd_lock).parameters["timeout_s"].default == 30.0
+
+
+async def test_qmd_lock_async_acquires_and_releases(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Clean path: acquires, yields, and leaves no lock file behind."""
+    from lies.qmd import lock as lock_mod
+
+    monkeypatch.setenv("LIES_QMD_LOCK_PATH", str(tmp_path / "qmd.lock"))
+    lock_path, pid_path, state_path = lock_mod._lock_paths()
+
+    async with lock_mod.qmd_lock_async(timeout_s=1.0) as held:
+        assert held is None
+        assert lock_path.exists(), "the acquire never opened the lock file"
+
+    assert not lock_path.exists()
+    assert not pid_path.exists()
+    assert not state_path.exists()
+    assert lock_mod._held_depth.get() == 0
+
+
+async def test_qmd_lock_async_raises_when_budget_exhausted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A second *task* contending for a held lock gets `QmdLockBusy`, naming the holder."""
+    from lies.qmd import lock as lock_mod
+
+    monkeypatch.setenv("LIES_QMD_LOCK_PATH", str(tmp_path / "qmd.lock"))
+
+    async def contender() -> None:
+        async with lock_mod.qmd_lock_async(timeout_s=0.05):
+            pytest.fail("a second task acquired a lock this test is holding")
+
+    # Created before the outer acquire: a task snapshots the context at
+    # creation, so this one carries depth 0 and contends for the real inode.
+    # Created afterwards it would snapshot depth 1 and take the reentrant
+    # path, which returns without touching the lock and never raises.
+    task = asyncio.create_task(contender())
+
+    async with lock_mod.qmd_lock_async(timeout_s=5.0):
+        with pytest.raises(lock_mod.QmdLockBusy) as excinfo:
+            await task
+
+    assert excinfo.value.max_s == pytest.approx(0.05)
+    assert excinfo.value.waited_s is not None
+    assert excinfo.value.waited_s >= 0.0
+    # Same process, so the holder is us; `self_acquire_is_stale=False` keeps
+    # the contender from reaping the lock its own process holds.
+    assert excinfo.value.holder_pid == os.getpid()
+
+
+async def test_qmd_lock_async_does_not_block_the_event_loop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A concurrent heartbeat must keep ticking while a contended acquire waits.
+
+    This is the whole reason the async context manager exists. `time.sleep` in
+    the poll loop would freeze the loop, so the heartbeat would never be
+    scheduled and the counter would stay at zero -- which is exactly the
+    failure mode inside the MCP daemon: one slow request stops every other
+    request in the process, including ones that never reach qmd.
+    """
+    from lies.qmd import lock as lock_mod
+
+    monkeypatch.setenv("LIES_QMD_LOCK_PATH", str(tmp_path / "qmd.lock"))
+    ticks = 0
+
+    async def heartbeat() -> None:
+        nonlocal ticks
+        while True:
+            await asyncio.sleep(0.005)
+            ticks += 1
+
+    async def contender() -> None:
+        async with lock_mod.qmd_lock_async(timeout_s=0.06):
+            pytest.fail("a second task acquired a lock this test is holding")
+
+    beat = asyncio.create_task(heartbeat())
+    task = asyncio.create_task(contender())  # depth-0 snapshot; see above
+    try:
+        with pytest.raises(lock_mod.QmdLockBusy):
+            async with lock_mod.qmd_lock_async(timeout_s=5.0):
+                await task
+    finally:
+        beat.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await beat
+
+    # ~12 ticks at 5ms over a 60ms wait. The floor is deliberately loose:
+    # the claim under test is "the loop ran at all", not a tick count.
+    assert ticks >= 3, (
+        f"the event loop was blocked while waiting for the lock (heartbeat ticked {ticks}x)"
+    )
+
+
+async def test_qmd_lock_async_releases_on_exception(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed caller must not strand the lock.
+
+    The next request would then poll against a lock nobody holds and burn its
+    whole budget before failing -- a self-inflicted denial of service with no
+    live process to blame.
+    """
+    from lies.qmd import lock as lock_mod
+
+    monkeypatch.setenv("LIES_QMD_LOCK_PATH", str(tmp_path / "qmd.lock"))
+    lock_path, pid_path, state_path = lock_mod._lock_paths()
+
+    with pytest.raises(RuntimeError, match="boom"):
+        async with lock_mod.qmd_lock_async(timeout_s=1.0):
+            assert lock_path.exists()
+            raise RuntimeError("boom")
+
+    assert not lock_path.exists()
+    assert not pid_path.exists()
+    assert not state_path.exists()
+    assert lock_mod._held_depth.get() == 0
+
+    # And the next caller gets it immediately rather than polling a stray file.
+    async with lock_mod.qmd_lock_async(timeout_s=0.05):
+        pass
+
+
+async def test_qmd_lock_async_releases_on_cancellation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An abandoned tool call is cancelled, not exceptioned.
+
+    `asyncio.CancelledError` is a `BaseException`, so a release wired only to
+    `except Exception` -- or to an `except` clause that does not name it --
+    would skip the cleanup. The next caller is then blocked for the remainder
+    of its budget by a lock held by a request that no longer exists.
+    """
+    from lies.qmd import lock as lock_mod
+
+    monkeypatch.setenv("LIES_QMD_LOCK_PATH", str(tmp_path / "qmd.lock"))
+    lock_path, pid_path, state_path = lock_mod._lock_paths()
+
+    with contextlib.suppress(TimeoutError):
+        async with lock_mod.qmd_lock_async(timeout_s=30.0):
+            assert lock_path.exists()
+            async with asyncio.timeout(0.02):
+                await asyncio.sleep(30.0)
+
+    assert not lock_path.exists(), "cancellation stranded the lock file"
+    assert not pid_path.exists()
+    assert not state_path.exists()
+    assert lock_mod._held_depth.get() == 0
+
+    # A stranded lock would make this poll out its budget and raise.
+    async with lock_mod.qmd_lock_async(timeout_s=0.05):
+        pass
+
+
+async def test_qmd_lock_async_is_reentrant_within_one_context(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A nested acquire in the same task must not deadlock against itself.
+
+    The async analogue of `test_the_lock_is_reentrant_on_one_thread`, and it
+    matters more here: a query path that composes two locked helpers nests the
+    way the CLI helpers do, and the inner acquire would otherwise poll for a
+    lock its own outer frame is holding. The inner budget is deliberately tiny
+    -- an implementation that actually acquires would raise rather than hang.
+    """
+    from lies.qmd import lock as lock_mod
+
+    monkeypatch.setenv("LIES_QMD_LOCK_PATH", str(tmp_path / "qmd.lock"))
+    order: list[str] = []
+
+    async with lock_mod.qmd_lock_async(timeout_s=5.0):
+        order.append("outer-enter")
+        async with lock_mod.qmd_lock_async(timeout_s=0.05):
+            order.append("inner")
+        order.append("outer-exit")
+
+    assert order == ["outer-enter", "inner", "outer-exit"]
+    assert lock_mod._held_depth.get() == 0
+
+
+async def test_qmd_lock_async_restores_the_depth_after_a_raise(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A raise through a nested frame must not strand the depth counter.
+
+    Reentrancy is bookkeeping, and a stranded counter fails silently: every
+    later acquire in that context sees depth > 0, skips the flock, and the
+    mutual exclusion is simply gone with nothing raised anywhere. Asserted on
+    the counter, as `test_a_raising_nested_frame_restores_the_depth` is --
+    the stranded state *is* "the counter is not 0".
+    """
+    from lies.qmd import lock as lock_mod
+
+    monkeypatch.setenv("LIES_QMD_LOCK_PATH", str(tmp_path / "qmd.lock"))
+
+    with pytest.raises(ValueError, match="boom"):
+        async with lock_mod.qmd_lock_async(timeout_s=5.0):
+            async with lock_mod.qmd_lock_async(timeout_s=0.05):
+                raise ValueError("boom")
+
+    assert lock_mod._held_depth.get() == 0, (
+        "the depth was left above zero by a raise, so every later acquire in "
+        "this context will skip the flock"
+    )
+
+    seen: list[int] = []
+
+    async def probe() -> None:
+        seen.append(lock_mod._held_depth.get())
+
+    async with lock_mod.qmd_lock_async(timeout_s=0.05):
+        await probe()
+
+    assert seen == [1], (
+        f"a post-raise acquire ran at depth {seen!r} rather than 1, so it took "
+        "the reentrant path and never acquired the flock"
+    )
+
+
+async def test_a_second_task_still_contends_under_the_async_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The depth counter must not leak across tasks, or the gate is a no-op.
+
+    Two concurrent MCP requests are two tasks, and that pair is exactly what
+    the single-flight is for. If the depth set by one task were visible to the
+    other, both would enter the critical section at once and the lock would
+    exclude nothing -- with no error raised anywhere.
+    """
+    from lies.qmd import lock as lock_mod
+
+    monkeypatch.setenv("LIES_QMD_LOCK_PATH", str(tmp_path / "qmd.lock"))
+    order: list[str] = []
+
+    async def holder() -> None:
+        async with lock_mod.qmd_lock_async(timeout_s=5.0):
+            order.append("holder-enter")
+            await asyncio.sleep(0.05)
+            order.append("holder-exit")
+
+    async def waiter() -> None:
+        # A fresh task starting at depth 0 has to wait for the holder's
+        # release; it cannot shortcut through the reentrant path.
+        await asyncio.sleep(0.01)
+        async with lock_mod.qmd_lock_async(timeout_s=5.0):
+            order.append("waiter-enter")
+
+    await asyncio.gather(holder(), waiter())
+
+    assert order == ["holder-enter", "holder-exit", "waiter-enter"]
+
+
+async def test_a_cancelled_waiter_does_not_release_the_holders_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Cancelling a *waiter* must not tear down the lock the holder has.
+
+    The other direction of the cancellation contract. The waiter never
+    acquired anything, so anything it does on the way out must be nothing --
+    an implementation that wrapped the acquire and the release in one
+    ``try``/``finally`` would close the holder's fd and unlink its lock file
+    out from under a request that is still running, admitting the next
+    caller into the critical section.
+    """
+    from lies.qmd import lock as lock_mod
+
+    monkeypatch.setenv("LIES_QMD_LOCK_PATH", str(tmp_path / "qmd.lock"))
+
+    async def waiter() -> None:
+        async with lock_mod.qmd_lock_async(timeout_s=30.0):
+            pytest.fail("the waiter acquired a lock this test is holding")
+
+    task = asyncio.create_task(waiter())  # depth-0 snapshot; see above
+
+    async with lock_mod.qmd_lock_async(timeout_s=5.0):
+        # Long enough for the waiter to reach its first poll and be parked
+        # inside the wait, not still at task start.
+        await asyncio.sleep(0.02)
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        assert lock_mod._lock_paths()[0].exists(), (
+            "the cancelled waiter released a lock it never held"
+        )
+
+    assert not lock_mod._lock_paths()[0].exists()
