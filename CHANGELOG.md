@@ -184,20 +184,42 @@ this into a dated release heading.
 - **The qmd seam builds a fresh client per call, so concurrent calls stop
   hanging.** `_daemon_client` returned a **process-wide cached**
   `fastmcp.Client`, and `_call` enters it with `async with` per call — so
-  two concurrent calls entered and exited the *same* object, and the first
-  exit tore down state the second still held. The daemon is
-  machine-global, so that one object was shared by every LIES session on
-  the host: any two concurrent calls, from any combination of sessions,
-  hung. Measured through the real daemon, 3 concurrent `search` calls:
+  two concurrent calls shared one object, and therefore one MCP session.
+  The daemon is machine-global, so that object was shared by every LIES
+  session on the host. The requirement is that **no two calls share a
+  client**, not that a client be exclusively owned while in use.
+
+  **Not a teardown race.** An earlier draft of this entry said "the first
+  exit tore down state the second still held". That is false for the
+  installed fastmcp 4.0.10: `Client._disconnect` decrements
+  `nesting_counter` and returns while it is still positive
+  (`fastmcp/client/client.py:1080-1084`), so an exiting context does not
+  stop a session a sibling is inside. Refcounted teardown is not the
+  mechanism, and that behaviour is fastmcp-version-specific.
+
+  What the probes do support, and nothing stronger: **>=2 concurrent long
+  calls on one shared session hang** — 2 concurrent `query` gave
+  `MCPError: Connection closed`, 3 gave a hang then
+  `BrokenResourceError`. **Fast calls do not reproduce it** — 3 concurrent
+  `status` all OK at ~0.1 s, 3 concurrent `get` all OK, and 1 `query` + 3
+  `get` concurrently all OK, so concurrency alone is not the trigger. And
+  **across event loops the shared client is unusable outright**: the
+  session is loop-affine, and `mcp/search.py:178` / `mcp/read.py` hand
+  each call a fresh `asyncio.run` loop via `_run_blocking`.
+
+  Headline, measured 2026-10-10 against the live daemon and
+  **transcribed, not re-measured at commit time** — flagged because this
+  unreleased section has already retracted two measurements:
 
   | config | result |
   |---|---|
   | shared client, narrow gate | **0/3 complete, 60.1 s hang** |
   | fresh per call, narrow gate | **3/3, 1.4 s** |
 
-  Load envelope, all clean (zero hangs, zero errors): N=6 6/6 in 2.6 s;
-  N=9 9/9 in 3.2 s; N=15 15/15 in 7.2 s; N=25 25/25 in 8.3 s; and 5
-  search + 5 read mixed 10/10 in 2.53 s, reads done at 0.33 s.
+  Load envelope on the fixed client, all clean (zero hangs, zero errors):
+  N=6 6/6 in 2.6 s; N=9 9/9 in 3.2 s; N=15 15/15 in 7.2 s; N=25 25/25 in
+  8.3 s; and 5 search + 5 read mixed 10/10 in 2.53 s, reads done at
+  0.33 s.
 
   **This is a correctness fix, not a latency win.** Warm-run wall times
   are equal — N=6 was 2.2–2.4 s shared against 2.6 s fresh, N=25 was
@@ -225,6 +247,14 @@ this into a dated release heading.
   gate is structurally immune: the only gated op is `query`, which makes
   no nested `daemon_tool` calls (the reachability probe is the separate
   `qmd_daemon_reachable()`), and reads never take the lock at all.
+
+  *Provenance for the rest of this entry's figures* — the 0/10
+  self-deadlock, the 90 s timeouts, the 120 s budget, the 119 ms query,
+  the +0.9 ms / +1 % rebuild cost, the 69.1 ms / 70.0 ms medians, the
+  0 MiB VRAM delta and the ~182 MiB LIES RSS: all measured 2026-10-10
+  against the live daemon and **transcribed, not re-measured at commit
+  time**. None of them was re-derived when the mechanism above was
+  corrected; only the *explanation* changed, not the numbers.
 
 - **The qmd query path single-flights, and its failure mode is now
   named instead of invisible.** Two concurrent `query` calls against one
@@ -256,13 +286,14 @@ this into a dated release heading.
   a deadline.
 
   **There is no log line on the wait path.** An earlier draft of this
-  entry claimed one; measurement says otherwise. A `search` blocked for
-  2 s added 12 lines to `qmd/mcp.log`, every one of them transport
-  plumbing, and not one mentioning the lock. The wait is invisible there
-  because it never reaches the daemon — the caller is waiting on a local
-  inode. Visibility survives in two other places: the ephemeral `.pid`
-  sidecar beside the lock, and the `fallback_reason` the exception's
-  fields are copied into on the ask path.
+  entry claimed one; measurement (2026-10-10, live daemon) says
+  otherwise. A `search` blocked for 2 s added 12 lines to `qmd/mcp.log`,
+  every one of them transport plumbing, and not one mentioning the lock.
+  The wait is invisible there because it never reaches the daemon — the
+  caller is waiting on a local inode. Visibility survives in two other
+  places: the ephemeral `.pid` sidecar beside the lock, and the
+  `fallback_reason` the exception's fields are copied into on the ask
+  path.
 
   **The gate surrounds the recycle path, and that is a real cost.** For
   `query` the held lock spans `_call_daemon_tool` →

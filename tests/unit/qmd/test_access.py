@@ -152,32 +152,44 @@ class _SlowClient:
 _QUERY_ARGS: dict[str, Any] = {"searches": [{"type": "lex", "query": "x"}]}
 
 
-class _OverlapClient:
-    """A client that records how many of its ``async with`` entries overlap.
+class _OverlapProbe:
+    """How many client call bodies were in flight at once, across all clients.
 
-    ``call_tool`` suspends, so concurrent calls really do overlap
-    instead of finishing before the next one starts — without a
-    suspension point a serialisation assertion passes vacuously.
-
-    The counter is **per object**, which is the whole point. The defect
-    was two calls entering and exiting the *same* ``Client``: one object
-    showing an entry peak of N. N per-call objects each show a peak of
-    1. So the assertion is about object identity and ownership, not
-    about wall-clock timing, and it stays inside the per-test budget.
+    Shared by every :class:`_OverlapClient` a test builds. This is what
+    distinguishes "the test exercised concurrency" from "the tasks ran
+    one after another and happened to pass": with no suspension point in
+    the fake, ``call_tool`` finishes before the next task is scheduled,
+    and a serialisation assertion passes vacuously.
     """
 
-    def __init__(self, label: int) -> None:
+    def __init__(self) -> None:
+        self.inflight = 0
+        self.peak = 0
+
+
+class _OverlapClient:
+    """A client that suspends in ``call_tool`` and tracks its own session.
+
+    ``call_tool`` awaits once, so concurrent calls really do overlap
+    rather than finishing before the next one starts. ``open_now`` lets a
+    test assert the ``async with`` actually exited — a leaked session is
+    a real failure that object identity alone would not catch.
+    """
+
+    def __init__(self, label: int, probe: _OverlapProbe) -> None:
         self.label = label
         self.open_now = 0
-        self.peak = 0
+        self._probe = probe
 
     async def __aenter__(self) -> _OverlapClient:
         self.open_now += 1
-        self.peak = max(self.peak, self.open_now)
+        self._probe.inflight += 1
+        self._probe.peak = max(self._probe.peak, self._probe.inflight)
         return self
 
     async def __aexit__(self, *_exc: object) -> None:
         self.open_now -= 1
+        self._probe.inflight -= 1
 
     async def call_tool(self, name: str, arguments: dict[str, Any], **kw: Any) -> Any:
         await asyncio.sleep(0)
@@ -704,16 +716,29 @@ async def test_each_call_builds_its_own_client(
     monkeypatch: pytest.MonkeyPatch,
     seam: _Recycle,
 ) -> None:
-    """Two calls, two client objects. Never one.
+    """N calls, N distinct client objects. Never one reused.
 
-    This is the fix, pinned. ``_call`` enters its client with
-    ``async with`` per call, so a process-wide cached ``Client`` is one
-    object whose session two concurrent calls enter and exit — and the
-    first exit tears down state the second still holds. The daemon is
-    machine-global, so that object is shared by every LIES session on
-    the host. Measured through the real daemon (2026-10-10), 3
-    concurrent ``search`` calls: 0/3 completed at 60.1 s with the
-    cache, 3/3 in 1.4 s without it.
+    This is the fix, pinned. The requirement is that **no two calls share
+    a client**: a cached ``Client`` is one object with one MCP session
+    behind it, and one session cannot serve concurrent long calls (it is
+    also bound to the loop that opened it). That is *not* the same as
+    exclusive ownership while the ``async with`` is open — fastmcp
+    4.0.10 refcounts ``_disconnect`` and does not stop a session a
+    sibling is still inside (``fastmcp/client/client.py:1080-1084``),
+    which is version-specific and not the mechanism.
+
+    The three calls below carry two different deadlines on purpose:
+    ``_daemon_client(url)`` takes no timeout argument at all, so a
+    deadline cannot influence construction. A separate test used to
+    assert that a deadline change did *not* rebuild a cached client,
+    which was a claim about a cache key that no longer exists; the
+    useful half of it — the deadline is not a construction input — is
+    what this pins.
+
+    Headline, measured 2026-10-10 against the live daemon and
+    transcribed (not re-measured at commit time): 3 concurrent ``search``
+    calls gave 0/3 completed at 60.1 s with the cache, 3/3 in 1.4 s
+    without.
 
     The claim "the cache avoids re-warming the model" was measurably
     false and is why this reads as an obvious optimisation to restore.
@@ -723,7 +748,7 @@ async def test_each_call_builds_its_own_client(
     +0.9 ms / +1 % on 20 ``status`` calls.
     """
     built: list[_FakeClient] = []
-    pending: list[Any] = [{"ok": 1}, {"ok": 2}]
+    pending: list[Any] = [{"ok": 1}, {"ok": 2}, {"ok": 3}]
 
     def _factory(transport: Any) -> _FakeClient:
         client = _FakeClient([pending.pop(0)])
@@ -734,30 +759,13 @@ async def test_each_call_builds_its_own_client(
     monkeypatch.setattr(access, "get_qmd_url", lambda: "http://127.0.0.1:8181")
 
     first = await access.daemon_tool("query", {"searches": [{"type": "lex", "query": "x"}]})
-    second = await access.daemon_tool("get", {"file": "a.md"})
+    second = await access.daemon_tool("get", {"file": "a.md"}, timeout=7.5)
+    third = await access.daemon_tool("get", {"file": "b.md"}, timeout=12.0)
 
-    assert (first, second) == ({"ok": 1}, {"ok": 2})
-    assert len(built) == 2, f"expected one client per call, got {len(built)}"
+    assert (first, second, third) == ({"ok": 1}, {"ok": 2}, {"ok": 3})
+    assert len(built) == 3, f"expected one client per call, got {len(built)}"
     assert built[0] is not built[1], "two calls were handed the same client object"
-
-
-async def test_a_changed_daemon_url_rebuilds_the_client(
-    monkeypatch: pytest.MonkeyPatch,
-    seam: _Recycle,
-) -> None:
-    built: list[str] = []
-    monkeypatch.setattr(
-        access,
-        "fastmcp",
-        SimpleNamespace(Client=lambda url: built.append(url) or _FakeClient([{"ok": 1}])),
-    )
-    monkeypatch.setattr(access, "get_qmd_url", lambda: "http://127.0.0.1:8181")
-    await access.daemon_tool("get", {"file": "a.md"})
-
-    monkeypatch.setattr(access, "get_qmd_url", lambda: "http://127.0.0.1:9999")
-    await access.daemon_tool("get", {"file": "a.md"})
-
-    assert len(built) == 2, "a client cached across a URL change would call the old daemon"
+    assert built[1] is not built[2], "two calls were handed the same client object"
 
 
 async def test_a_per_call_timeout_is_forwarded_to_call_tool(
@@ -824,56 +832,21 @@ async def test_no_per_call_timeout_falls_back_to_the_client_deadline(
     )
 
 
-async def test_a_deadline_change_still_gets_a_fresh_client(
-    monkeypatch: pytest.MonkeyPatch,
-    seam: _Recycle,
-) -> None:
-    """The deadline is not a cache key, because there is no cache.
-
-    The subject of this test used to be "a deadline change must NOT
-    rebuild the cached client" — a claim about a key that no longer
-    exists. The invariant worth keeping now is the weaker and always
-    true one: a deadline change changes nothing about how the client is
-    built, because every call builds one. This is what stops a future
-    reader from treating ``LIES_QMD_FANOUT_TIMEOUT`` as an input to
-    client construction.
-
-    (The old docstring's "3.11s warm vs 10.77s cold model-load cost"
-    was the cost the removed cache claimed to avoid. It was not real:
-    the model loads in the qmd daemon, once, and its RSS did not move
-    across any run in either configuration.)
-    """
-    built: list[_FakeClient] = []
-    pending: list[Any] = [{"ok": 1}, {"ok": 2}]
-
-    def _factory(transport: Any) -> _FakeClient:
-        client = _FakeClient([pending.pop(0)])
-        built.append(client)
-        return client
-
-    monkeypatch.setattr(access, "fastmcp", SimpleNamespace(Client=_factory))
-    monkeypatch.setattr(access, "get_qmd_url", lambda: "http://127.0.0.1:8181")
-
-    await access.daemon_tool("get", {"file": "a.md"}, timeout=7.5)
-    await access.daemon_tool("get", {"file": "b.md"}, timeout=12.0)
-
-    assert len(built) == 2, (
-        f"each call builds its own client regardless of deadline; got {len(built)}"
-    )
-    assert built[0] is not built[1]
-
-
 async def test_concurrent_calls_never_share_a_client(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, seam: _Recycle
+    monkeypatch: pytest.MonkeyPatch, seam: _Recycle
 ) -> None:
-    """The regression. No client object is ever entered twice at once.
+    """The regression. No two concurrent calls share one client object.
 
-    Reintroducing the process-wide cache makes this fail on two counts:
-    every call is handed the same object (``distinct`` collapses to one
-    id), and that one object is entered by all five calls at once, so
-    its entry peak is 5 rather than 1. A shared ``Client`` is a shared
-    session, and the first ``async with`` exit closes the stream the
-    siblings are still reading from.
+    Reintroducing the process-wide cache collapses the distinct-object
+    assertions to one id across five calls.
+
+    What a shared object is: one object, one MCP session, and that
+    session cannot serve concurrent long calls. It is **not** a teardown
+    race — fastmcp 4.0.10 refcounts ``_disconnect`` and leaves a session
+    alone while a sibling is still nested
+    (``fastmcp/client/client.py:1080-1084``), and that behaviour is
+    fastmcp-version-specific. Do not bring the cache back on the
+    strength of a teardown story.
 
     The stub is on ``fastmcp.Client``, **not** on ``_daemon_client`` —
     stubbing the function that holds the cache would hide the cache and
@@ -881,26 +854,37 @@ async def test_concurrent_calls_never_share_a_client(
     Verified: with the module-level ``_client``/``_client_url`` pair
     restored, this fails.
 
-    The load mirrors the measured failure — concurrent ``query`` and
-    ``get``, since the daemon hangs on either — but nothing here waits
-    on a real timeout. ``_OverlapClient.call_tool`` yields once, so the
-    overlap is real and deterministic rather than a timing race; the
-    ``get`` calls are ungated, so they are what actually overlap.
+    The load is 3 ``get`` + 2 ``query``. The ``get`` calls are ungated,
+    so they are what overlap; the narrow gate serialises the two
+    ``query`` calls, so with a restored cache the one shared object
+    would be entered by 4 calls at once, not 5.
 
-    Through the real daemon this scenario was 0/5 completing at 60 s
-    with a cached client and 5/5 in ~1 s without (2026-10-10). Envelope
-    runs: N=6 6/6, N=9 9/9, N=15 15/15, N=25 25/25, and 5 search +
-    5 read mixed 10/10 in 2.53 s, all clean.
+    Uses the file's ``_lock_stub`` rather than the real
+    ``qmd_lock_async``: the real lock polls at ``_POLL_INTERVAL_S =
+    0.1``, so the second ``query`` costs a full poll sleep. Measured on
+    the version that used the real lock, this test's call phase was
+    0.10-0.11 s against the repo's 0.15 s hard limit — systematic, so the
+    budget gate's min-of-3 re-measure cannot clear it. With the stub the
+    call phase is under 5 ms. The stub still excludes (``asyncio.Lock``),
+    so the serialisation relied on is real; it just does not sleep.
+
+    Measured 2026-10-10 against the live daemon, **transcribed, not
+    re-measured at commit time**: the headline was 3 concurrent ``search``
+    calls — 0/3 completing at 60.1 s with a cached client, 3/3 in 1.4 s
+    without. The 5-call mixed shape here is *analogous to* that, not
+    separately measured; the mixed load that was run was 5 search + 5
+    read (10/10 in 2.53 s), on the fixed client.
     """
-    monkeypatch.setenv("LIES_QMD_LOCK_PATH", str(tmp_path / "qmd.lock"))
+    probe = _OverlapProbe()
     made: list[_OverlapClient] = []
 
     def _factory(transport: Any) -> _OverlapClient:
-        client = _OverlapClient(len(made))
+        client = _OverlapClient(len(made), probe)
         made.append(client)
         return client
 
     monkeypatch.setattr(access, "fastmcp", SimpleNamespace(Client=_factory))
+    monkeypatch.setattr(access, "qmd_lock_async", _lock_stub([], gate=asyncio.Lock()))
     monkeypatch.setattr(access, "get_qmd_url", lambda: "http://127.0.0.1:8181")
 
     results = await asyncio.gather(
@@ -917,9 +901,15 @@ async def test_concurrent_calls_never_share_a_client(
         "concurrent calls were handed the same client object: "
         f"{len({id(c) for c in made})} distinct for {len(made)} calls"
     )
-    assert [client.peak for client in made] == [1] * 5, (
-        "a client was entered while a sibling call still held it: peaks "
-        f"{[client.peak for client in made]}"
+    # Guards the test itself. Without a suspension point in the fake,
+    # ``call_tool`` would finish before the next task starts and every
+    # assertion above would pass without any concurrency ever happening
+    # — the same vacuity this file's other concurrency tests call out.
+    # A per-object peak cannot guard that: five distinct single-use
+    # clients are each entered exactly once by construction, so it would
+    # be tautological.
+    assert probe.peak >= 2, (
+        f"the calls never actually overlapped (peak {probe.peak}); this test would be vacuous"
     )
     assert all(client.open_now == 0 for client in made), "a session was left open"
 

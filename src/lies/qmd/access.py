@@ -72,16 +72,40 @@ _DAEMON_FAILURES = (QmdDaemonUnavailable, QmdDaemonWedged)
 def _daemon_client(url: str) -> fastmcp.Client:
     """A qmd client for ``url``, built fresh per call.
 
-    Do NOT cache this. A cached ``Client`` is a single object with a
-    single session behind it, and ``_call`` enters it with
-    ``async with`` per call — so two concurrent calls enter and exit
-    the *same* object, and the first exit tears down state the second
-    still holds. The daemon is machine-global, so that one object is
-    shared by every LIES session on the host: any two concurrent
-    calls from any combination of sessions hang. Measured through the
-    real daemon (2026-10-10), 3 concurrent ``search`` calls: 0/3
-    completed, 60.1 s hang cached; 3/3 in 1.4 s fresh, and clean at
-    N=25 (8.3 s) and on mixed 5-search + 5-read load (10/10, 2.53 s).
+    Do NOT cache this. The requirement is that **no two calls share a
+    client**, not that a client be exclusively owned while in use — a
+    cached ``Client`` is a single object with a single MCP session
+    behind it, and one session cannot serve concurrent long calls.
+
+    What is *not* the mechanism, because it was measured and is false
+    for the installed fastmcp 4.0.10: ``Client._disconnect`` decrements
+    ``nesting_counter`` and returns while it is still positive
+    (`fastmcp/client/client.py:1080-1084`), so an exiting context does
+    **not** stop a session a sibling is inside. Refcounted teardown is
+    not what breaks. That behaviour is fastmcp-version-specific; do not
+    assume it without reading the installed file.
+
+    What the probes do support, and nothing stronger:
+
+    - **>=2 concurrent long calls on one shared session hang.** 2
+      concurrent ``query`` gave ``MCPError: Connection closed``; 3 gave
+      a hang then ``BrokenResourceError``.
+    - **Fast calls do not reproduce it.** 3 concurrent ``status`` were
+      all OK at ~0.1 s; 3 concurrent ``get`` were all OK; 1 ``query`` +
+      3 ``get`` concurrently were all OK. So "concurrent" alone is not
+      the trigger — concurrent *long* calls are.
+    - **Across event loops the shared client is unusable outright.** The
+      session is loop-affine, and ``mcp/search.py:178`` and
+      ``mcp/read.py`` hand each call a fresh ``asyncio.run`` loop via
+      ``_run_blocking``. This is the case that makes the cache
+      unusable regardless of timing.
+
+    Headline, measured 2026-10-10 against the live daemon and
+    transcribed (not re-measured at commit time): 3 concurrent ``search``
+    calls gave **0/3 complete at 60.1 s** with the cache and **3/3 in
+    1.4 s** without. Load envelope, all clean: N=6 6/6 in 2.6 s; N=9
+    9/9 in 3.2 s; N=15 15/15 in 7.2 s; N=25 25/25 in 8.3 s; and 5
+    search + 5 read mixed 10/10 in 2.53 s.
 
     Nothing is given up by rebuilding. The handshake already happened
     per call either way, because ``_call`` opened a session per call
@@ -304,7 +328,15 @@ async def daemon_tool(
     bounds it, nothing logs it and nothing can be waited on. Inside qmd
     that queue is invisible; from out here it arrives as a call that took
     too long. The gate moves the wait to a place with a budget
-    (:func:`query_lock_wait_s`), an owner, and a log line.
+    (:func:`query_lock_wait_s`) and an owner.
+
+    **There is no log line on the wait path.** ``_acquire_with_poll_async``
+    writes nothing while it polls, and a 2 s blocked ``search`` added 12
+    lines to ``qmd/mcp.log`` — all transport plumbing, none about the
+    lock — because the wait never reaches the daemon; the caller is
+    blocked on a local inode. What survives is the ephemeral ``.pid``
+    sidecar beside the lock and the ``fallback_reason`` the exception's
+    fields are copied into on the ask path.
 
     ``get``, ``multi_get`` and ``status`` stay unlocked. All three answer
     in milliseconds, and :func:`read_library_bodies` issues one ``get`` per
@@ -488,10 +520,13 @@ async def _call(
 
     ``raise_on_error=False`` so a tool error arrives as a result.
 
-    Owns ``client`` for the ``async with`` and must be handed one it can
-    close exclusively — that exclusivity is why
-    :func:`_daemon_client` does not cache. See that docstring for the
-    measurement.
+    ``client`` must not be shared with a concurrent call — that, not
+    exclusive ownership while the ``async with`` is open, is what
+    :func:`_daemon_client` buys by building one per call. A shared
+    client's session cannot serve two concurrent long calls, and it is
+    bound to the loop that opened it. See that docstring for the
+    measurements and for the fastmcp-version-specific refcounting
+    behaviour that is *not* the mechanism.
     """
     async with client:
         if timeout is None:
@@ -542,10 +577,11 @@ async def read_library_bodies(
     (``multi_get`` silently skips 10KB+ documents — 1854 of this
     corpus's 5987 are over the cap).
 
-    That session is per *batch* and is never shared with another
-    batch: it is entered with ``async with``, so sharing it would hand
-    one batch's exit to a sibling's live call. See
-    :func:`_daemon_client`.
+    That session is per *batch* and is never shared with another batch
+    or with a concurrent call. Not because an exit would tear it out from
+    under a sibling — fastmcp 4.0.10 refcounts that — but because one
+    session cannot serve two concurrent long calls and is bound to the
+    loop that opened it. See :func:`_daemon_client`.
 
     Args:
         paths: Library paths (``<collection>/<page>``) to fetch.

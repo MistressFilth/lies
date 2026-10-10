@@ -145,12 +145,14 @@ call.**
   other.
 
   **There is no log line on the wait path, and do not add one
-  expecting it to be read.** A `search` blocked for 2 s added 12 lines
-  to `qmd/mcp.log`, all transport plumbing, zero mentioning the lock:
-  the wait never reaches the daemon, because the caller is waiting on a
-  local inode. The heartbeat is an in-process timer, not a write. The
-  evidence that survives is the ephemeral `.pid` sidecar beside the
-  lock and the `fallback_reason` on the envelope.
+  expecting it to be read.** Measured 2026-10-10 against the live
+  daemon: a `search` blocked for 2 s added 12 lines to `qmd/mcp.log`,
+  all transport plumbing, zero mentioning the lock — the wait never
+  reaches the daemon, because the caller is waiting on a local inode.
+  `_acquire_with_poll_async` writes nothing while it polls, and the
+  heartbeat is an in-process timer, not a write. The evidence that
+  survives is the ephemeral `.pid` sidecar beside the lock and the
+  `fallback_reason` on the envelope.
 
   **Widening the gate to every daemon op self-deadlocks — measured.**
   With all four tools gated, mixed 5-search + 5-read load gave **0/10**,
@@ -163,15 +165,41 @@ call.**
   `daemon_tool` calls (the probe is the separate
   `qmd_daemon_reachable()`) and reads never take the lock.
 - **`_daemon_client` builds a fresh `Client` per call. Do NOT
-  "optimise" it back into a cache.** `_call` enters its client with
-  `async with` per call, so a process-wide cached `Client` is one
-  object with one session behind it: two concurrent calls enter and
-  exit the *same* object, and the first exit tears down state the
-  second still holds. The daemon is machine-global, so that object is
-  shared by every LIES session on the host and any two concurrent calls
-  hang. Measured, 3 concurrent `search` calls: **0/3 complete, 60.1 s
-  hang** cached; **3/3, 1.4 s** fresh, and clean at N=25 (8.3 s) and
-  on mixed 5-search + 5-read load (10/10, 2.53 s).
+  "optimise" it back into a cache.** The requirement is that **no two
+  calls share a client** — not that a client be exclusively owned while
+  in use. A cached `Client` is one object with one MCP session behind
+  it, and one session cannot serve concurrent long calls. The daemon is
+  machine-global, so that object is shared by every LIES session on the
+  host.
+
+  **The teardown story is false — do not reason from it.** It was
+  claimed here that "the first exit tears down state the second still
+  holds". That is wrong for the installed fastmcp 4.0.10:
+  `Client._disconnect` decrements `nesting_counter` and returns while
+  it is still positive (`fastmcp/client/client.py:1080-1084`), so an
+  exiting context does not stop a session a sibling is inside.
+  Refcounted teardown is not the mechanism, and that behaviour is
+  fastmcp-version-specific — read the installed file before relying on
+  it.
+
+  What the probes support, and nothing stronger: **>=2 concurrent long
+  calls on one shared session hang** (2 concurrent `query` gave
+  `MCPError: Connection closed`; 3 gave a hang then
+  `BrokenResourceError`). **Fast calls do not reproduce it** — 3
+  concurrent `status` were all OK at ~0.1 s, 3 concurrent `get` all OK,
+  and 1 `query` + 3 `get` concurrently all OK — so concurrency alone is
+  not the trigger. And **across event loops the shared client is
+  unusable outright**: the session is loop-affine, and
+  `mcp/search.py:178` and `mcp/read.py` hand each call a fresh
+  `asyncio.run` loop via `_run_blocking`.
+
+  Headline, measured 2026-10-10 against the live daemon and
+  **transcribed, not re-measured at commit time**: 3 concurrent `search`
+  calls gave **0/3 complete at 60.1 s** cached and **3/3 in 1.4 s**
+  fresh, and the fixed client was clean at N=25 (8.3 s) and on mixed
+  5-search + 5-read load (10/10, 2.53 s). Provenance matters more than
+  usual here: this unreleased section has already retracted two
+  measurements.
 
   The two claims that justified the cache were both false, which is why
   it looks free: the model does **not** get re-warmed (it lives in the
