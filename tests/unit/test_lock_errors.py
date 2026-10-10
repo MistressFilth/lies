@@ -52,11 +52,34 @@ def test_qmd_lock_busy_omits_the_path_clause_when_no_path_is_known():
 
 
 def test_qmd_lock_busy_optional_fields_default_to_none():
+    """The ``max_s`` default is a fallback, not a description of any site.
+
+    An earlier version of the trailing comment here said "default matches
+    the spec's 30 s wait budget", which contradicted
+    ``lock_errors.QmdLockBusy``'s own docstring: the budget belongs to
+    the *raiser*, and the two raisers disagree (``with_qmd_lock`` polls
+    30 s, ``qmd_lock_async`` 120 s). The ``30.0`` default matches no
+    production raise site — it only exists so a hand-built instance has
+    something to carry.
+
+    So what is true is narrower: the default is inert, and every real
+    raise overwrites it. Asserting the inertness rather than the number
+    keeps the test from re-asserting a figure that is an implementation
+    detail of neither raiser.
+    """
     exc = QmdLockBusy()
     assert exc.holder_pid is None
     assert exc.waited_s is None
     assert exc.lock_path is None
-    assert exc.max_s == 30.0  # default matches the spec's 30 s wait budget
+
+    # Inert for a hand-built instance...
+    assert exc.max_s == 30.0
+    # ...and never what a raiser actually reports. The CLI raiser polls
+    # 30 s by default, so 30.0 happens to coincide there; the async
+    # raiser polls 120 s, so it must differ.
+    assert exc.max_s != 120.0, "the default must not be read as a site budget"
+    explicitly = QmdLockBusy(holder_pid=1, waited_s=119.9, max_s=120.0)
+    assert explicitly.max_s == 120.0, "an explicit budget must win over the default"
 
 
 def test_qmd_lock_busy_is_distinct_from_wiki_lock_busy():

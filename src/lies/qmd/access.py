@@ -98,17 +98,24 @@ def _daemon_client(url: str) -> fastmcp.Client:
       the trigger. Duration as the discriminator is an inference from
       those cases, not something a probe isolated — do not upgrade it
       to a measured threshold.
-    - **Across event loops the shared client is unusable outright**,
-      structurally rather than empirically:
-      ``ClientSessionState.lock`` is an ``anyio.Lock`` built in
-      ``Client.__init__`` (``fastmcp/client/client.py:228`` via ``:587``)
-      and ``anyio.Lock`` binds its async backend at construction
+    - **Across event loops a shared client breaks under concurrency.**
+      3 concurrent ``status`` calls, each on its own ``asyncio.run``
+      loop: fresh per call **3/3 in 0.21 s**; one shared client
+      **0/3**, unfinished at a 30 s box with the 20 s per-call timeout
+      already expired (measured 2026-10-10, live daemon). So duration is
+      irrelevant across loops -- these are ~0.2 s calls -- and no
+      per-call deadline bounds the hang. Control: the same shared client
+      driven by three loops *one at a time* is 3/3 ok, so the failure
+      needs cross-loop concurrency, not mere cross-loop reuse.
+      Structurally, ``ClientSessionState.lock`` is an ``anyio.Lock``
+      built in ``Client.__init__``
+      (``fastmcp/client/client.py:228`` via ``:587``) and ``anyio.Lock``
+      binds its backend at construction
       (``anyio/_core/_synchronization.py:164-168``), so a cached client
-      carries a loop-A lock into loop B. ``mcp/search.py:178`` and
-      ``mcp/read.py`` hand each call a fresh ``asyncio.run`` loop via
-      ``_run_blocking``. The line numbers are for the installed fastmcp
-      and will drift with the version — this is the case that makes the
-      cache unusable regardless of timing.
+      carries a loop-A lock into loop B -- a hazard to design around,
+      but not by itself a proven cause, since sequential cross-loop use
+      works. Those line numbers are for the installed fastmcp and will
+      drift with the version.
 
     Headline, measured 2026-10-10 against the live daemon and
     transcribed (not re-measured at commit time): 3 concurrent ``search``

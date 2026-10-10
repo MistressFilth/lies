@@ -6,9 +6,17 @@ All notable changes to LIES are documented here. The format follows
 
 ## [Unreleased]
 
-Staged for **0.48.6**. Both version surfaces (`pyproject.toml`,
-`src/lies/__init__.py`) are already bumped; `make release` collapses
-this into a dated release heading.
+Staged for **0.49.0**. All three version surfaces (`pyproject.toml`,
+`src/lies/__init__.py`, `uv.lock`) are already bumped; `make release`
+collapses this into a dated release heading.
+
+The bump is minor, not patch, by this project's own rule: a tool
+*response field* is additive, and this series adds two of them
+(`ArchivistDigest.fallback_reason`, `LibrarianOutput.fallback_reason`)
+plus a new raise on `daemon_tool`'s documented contract. It was staged
+at 0.48.6 while those fields were still being added; 0.48.6 was never
+released, so nothing has shipped under it, but bookkeeping follows the
+rule rather than the accident.
 
 ### Changed
 
@@ -206,16 +214,35 @@ this into a dated release heading.
   the trigger. Duration as the discriminator is an inference from those
   cases, not a threshold a probe isolated.
 
-  And **across event loops the shared client is unusable outright**,
-  structurally rather than empirically: `ClientSessionState.lock` is an
+  And **across event loops, a shared client breaks under concurrency**.
+  Measured 2026-10-10 against the live daemon; the whole-branch review
+  reproduced this independently before it was written here, and the
+  numbers below are transcribed rather than re-measured at commit time.
+  3 concurrent `status` calls, each on its **own** `asyncio.run` loop:
+
+  | client | result |
+  |---|---|
+  | fresh per call | **3/3 in 0.21 s** |
+  | one shared client | **0/3** — unfinished at a 30 s box, with the 20 s per-call timeout already expired (the reviewer's run went past 300 s) |
+
+  Two consequences, both of which correct claims made above in this
+  entry. **Call duration is irrelevant here**: these are `status` calls
+  that finish in ~0.2 s, so "fast calls did not reproduce it" holds only
+  for a client shared *within* one loop and must not be carried across
+  the loop boundary. And **no per-call deadline bounds it** — `timeout=`
+  reaches `call_tool` and expires, and the call does not return.
+
+  Control, so the mechanism is not overstated: the same shared client
+  driven by three loops **one at a time** returns 3/3 ok. Mere cross-loop
+  *reuse* is fine; the failure needs cross-loop *concurrency*. The
+  structural hazard is real — `ClientSessionState.lock` is an
   `anyio.Lock` built in `Client.__init__`
-  (`fastmcp/client/client.py:228` via `:587`), and `anyio.Lock` binds
-  its async backend at construction
-  (`anyio/_core/_synchronization.py:164-168`), so a cached client
-  carries a loop-A lock into loop B. `mcp/search.py:178` /
-  `mcp/read.py` hand each call a fresh `asyncio.run` loop via
-  `_run_blocking`. The line numbers are for the installed fastmcp and
-  will drift with the version.
+  (`fastmcp/client/client.py:228` via `:587`) and `anyio.Lock` binds its
+  backend at construction (`anyio/_core/_synchronization.py:164-168`), so
+  a cached client carries a loop-A lock into loop B — but that alone does
+  not explain a sequential cross-loop call succeeding. It is a hazard to
+  design around, not a proven cause. Those line numbers are for the
+  installed fastmcp and will drift with the version.
 
   Headline, measured 2026-10-10 against the live daemon and
   **transcribed, not re-measured at commit time** — flagged because this
@@ -331,9 +358,33 @@ this into a dated release heading.
   the same mechanism `searched_scope` already depends on. The
   instruction ("verbatim, do not summarise, do not shorten, do not
   invent one") is in the librarian contract and pinned by a test,
-  because it fails silently rather than loudly. `ground()` and
-  `librarian_agent_run` catch `QmdLockBusy` in code and are not subject
-  to it.
+  because it fails silently rather than loudly.
+
+  An earlier draft of this paragraph also said `ground()` and
+  `librarian_agent_run` "catch `QmdLockBusy` in code", in the same
+  breath as the sentence above. That contradicted it: if `run_sync`
+  never raises the exception, nothing downstream can catch it either.
+  `librarian_agent_run` **had** such an arm — an `except QmdLockBusy`
+  ahead of its untyped one — and it was unreachable in production,
+  because `_search_impl` catches `Exception` and returns an envelope
+  before the exception can cross the tool boundary. The arm and its two
+  tests are gone. `ground()` catches `QmdLockBusy` for a different and
+  real reason: it has two such arms (the scoped and unscoped fanouts)
+  and it calls `access.daemon_tool` directly rather than through the
+  search tool's envelope, so the exception genuinely reaches them.
+
+  **What the user actually reads, and why it needed moving.**
+  `QmdLockBusy` is caught by `_search_impl`, which returns normally, so
+  its message reaches the user as
+  `fallback_reason`. With only the untyped arm there, that string opened
+  `qmd query failed: QmdLockBusy: ...` — the exact framing this gate
+  exists to delete, since it reads as a broken query and sends the
+  operator to restart a daemon that is answering fine. `_search_impl` now
+  carries a `QmdLockBusy` arm ahead of its untyped one and renders it as
+  queued-then-timed-out, keeping the holder pid, the elapsed wait, the
+  budget and the lock path. A test asserts the rendered string, because
+  the sentence is the entire user-visible payoff and nothing asserted on
+  it before.
 
 - **A cancelled tool call now names itself in the daemon log.** A call
   cancelled before it produced a result — server shutdown, a request

@@ -223,9 +223,17 @@ markdown.
   empty bundle with `no_coverage=False` and `transient=True`, copy
   the envelope's `fallback_reason` onto the bundle **verbatim**, and
   say the lookup was inconclusive — never that the content is missing.
-- `fallback_reason` non-None with `transient=False` → the daemon
-  genuinely failed; return an empty bundle, copy the `fallback_reason`
-  onto the bundle verbatim, and say the lookup was inconclusive.
+- `fallback_reason` non-None with `transient=False` → **not** a daemon
+  failure. This arm was previously described as "the daemon genuinely
+  failed", which is wrong: `search` sets `transient=False` alongside a
+  reason for an *empty question*, an unknown tag, a tag expression that
+  resolved to no collections, no collections registered, or a collection
+  that is registered but has no documents. Four of those are facts about
+  the request and one about the index; the daemon is answering fine in
+  every case. Return an empty bundle, copy the `fallback_reason` onto
+  the bundle verbatim, and say the lookup was inconclusive — the same
+  "ask again" posture as the transient arm above, because the reason
+  string tells the reader which of those it was.
 
 `no_coverage` and `transient` are deliberately separate flags. An
 earlier version set `no_coverage=True` on a timeout, and because this

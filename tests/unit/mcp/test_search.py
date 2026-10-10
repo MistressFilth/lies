@@ -812,6 +812,76 @@ def test_daemon_wedged_surfaces_as_transient_with_daemon_log(
     assert result["hits"] == []
 
 
+def test_a_lock_busy_reads_as_queued_then_timed_out(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The RENDERED string, which is the whole user-visible payoff.
+
+    ``_search_impl`` catches ``Exception``, so without a dedicated arm
+    this arrives as ``"qmd query failed: QmdLockBusy: ..."`` — which
+    reads as a broken query and sends the operator to restart the
+    daemon, when the daemon is answering fine and the caller merely
+    queued behind another qmd operation. That framing is precisely what
+    this branch exists to delete, and nothing asserted on it until now.
+
+    Asserted on the produced text, not on an exception type: the arm is
+    only worth anything if the *sentence* changes. Every fact from the
+    raised exception has to survive — holder pid, elapsed wait, budget,
+    lock path — because ``AGENTS.md`` and the CHANGELOG record that a
+    non-compliant model degrades to a generic reason, so this string is
+    the last place those facts can be lost.
+    """
+    from lies.lock_errors import QmdLockBusy
+    from lies.mcp.search import _search_impl
+
+    _patch_registry(monkeypatch, ["claude_code"])
+
+    async def _busy(name: str, arguments: dict[str, Any], **kw: Any) -> Any:
+        if name == "status":
+            return SimpleNamespace(
+                content=[],
+                structured_content={"collections": ["claude_code"]},
+                is_error=False,
+            )
+        raise QmdLockBusy(
+            holder_pid=4242,
+            waited_s=120.0,
+            max_s=120.0,
+            lock_path="/var/lib/lies/qmd.lock",
+        )
+
+    async def _scope(scope: list[str]) -> tuple[list[str], list[str]]:
+        return list(scope), []
+
+    monkeypatch.setattr(
+        "lies.mcp.search.access",
+        SimpleNamespace(
+            daemon_tool=_busy,
+            validate_scope=_scope,
+            QmdDaemonUnavailable=RuntimeError,
+            QmdDaemonWedged=RuntimeError,
+        ),
+    )
+
+    result = _search_impl("anything")
+    reason = result["fallback_reason"] or ""
+
+    # The framing this test exists for.
+    assert not reason.startswith("qmd query failed"), reason
+    assert "queued behind another qmd operation" in reason, reason
+    assert "timed out" in reason, reason
+    assert "wait and retry" in reason, reason
+    assert "restarting" in reason, reason
+
+    # The exception's facts survive.
+    assert "4242" in reason, reason
+    assert "120.0" in reason, reason
+    assert "/var/lib/lies/qmd.lock" in reason, reason
+
+    # Still a claim about the run, never about the corpus.
+    assert result["transient"] is True
+    assert result["no_coverage"] is False
+    assert result["hits"] == []
+
+
 def test_hits_carry_a_path_never_a_docid(monkeypatch: pytest.MonkeyPatch) -> None:
     """Every hit's path is a ``<collection>/<page>`` path, never a docid.
 

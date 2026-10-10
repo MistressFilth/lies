@@ -29,7 +29,6 @@ from typing import TYPE_CHECKING, Any
 from fastmcp.exceptions import ToolError
 from fastmcp.tools import Tool
 
-from lies.lock_errors import QmdLockBusy
 from lies.mcp.grounding import ground
 from lies.query.citation import Citation
 
@@ -344,31 +343,16 @@ def librarian_agent_run(deps: Any) -> Any:
     model = _resolve_librarian_model()
     agent = agent_factory(model=model)
     register_librarian_tools(agent)
+    # No ``except QmdLockBusy`` arm here, and there must not be one.
+    # ``QmdLockBusy`` originates inside ``access.daemon_tool``, which the
+    # ``search`` tool reaches through ``_search_impl`` -- and ``_search_impl``
+    # catches ``Exception`` and returns an envelope. So the exception cannot
+    # escape the tool, cannot cross the agent boundary, and cannot reach here.
+    # An arm for it described an event that never occurs. The real rendering
+    # lives in ``_search_impl``, which maps it onto ``fallback_reason`` ahead
+    # of its own untyped catch.
     try:
         result = agent.run_sync(deps.question, deps=deps)
-    except QmdLockBusy as exc:
-        # Ahead of the untyped arm on purpose. The site's query lock was
-        # held past its budget while this run was dispatching: the daemon
-        # is answering fine and the caller queued. That is a different
-        # fact from "the librarian could not be dispatched" and it wants
-        # a different operator action — wait, not restart — so the holder
-        # pid, the elapsed wait and the budget have to survive onto the
-        # bundle. ``lib_ask`` renders whatever reason this carries.
-        log.warning(
-            "librarian_agent_run: qmd lock busy (%s: %s); returning transient fallback",
-            type(exc).__name__,
-            exc,
-        )
-        return LibrarianOutput(
-            tag_expr=getattr(deps, "tag_expr", None),
-            exclude_expr=getattr(deps, "exclude_expr", None),
-            excerpts=[],
-            distinct_pages=0,
-            no_coverage=False,
-            searched_scope=[],
-            transient=True,
-            fallback_reason=f"qmd lock busy: {exc}",
-        )
     except Exception as exc:
         # Fail-soft: pydantic-ai raises (e.g.
         # ``UsageLimitExceeded("Exceeded maximum output retries (1)")``)

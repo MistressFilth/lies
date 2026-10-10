@@ -24,6 +24,7 @@ from typing import Any
 
 from fastmcp.tools import Tool
 
+from lies.lock_errors import QmdLockBusy
 from lies.qmd import access
 from lies.query.tag_expr import (
     parse,
@@ -344,6 +345,34 @@ def _search_impl(
             "transient": True,
             "searched_scope": scope,
             "fallback_reason": f"qmd timed out after {_current_timeout()}s{detail}",
+        }
+    except QmdLockBusy as exc:
+        # Ahead of the untyped arm, and this is the site where it is
+        # reachable. The site's query lock was held past its budget
+        # while this call was dispatching: the daemon is answering fine
+        # and the caller queued. That is a different fact from "the
+        # query failed", and it wants a different operator action —
+        # wait, not restart — so the holder pid, the elapsed wait and
+        # the budget have to survive into the string the user reads.
+        #
+        # Ahead of the untyped catch, the untyped arm would frame it as
+        # "qmd query failed: QmdLockBusy: ...", which reads as a broken
+        # query rather than a queued one — the exact framing this gate
+        # exists to delete. ``_search_impl`` catches ``Exception``, so
+        # without this arm the exception stops here and never crosses
+        # the agent boundary at all.
+        return {
+            "hit": None,
+            "hits": [],
+            "unknown_tags": [],
+            "no_coverage": False,
+            "transient": True,
+            "searched_scope": scope,
+            "fallback_reason": (
+                f"queued behind another qmd operation and timed out after "
+                f"{_current_timeout()}s; wait and retry rather than restarting "
+                f"the daemon ({exc})"
+            ),
         }
     except Exception as exc:  # noqa: BLE001
         # Anything outside the typed taxonomy (``QmdDaemonUnavailable``

@@ -853,6 +853,57 @@ async def test_qmd_lock_async_raises_when_budget_exhausted(
     assert excinfo.value.holder_pid == os.getpid()
 
 
+async def test_the_async_sleep_is_clamped_to_the_remaining_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``min(_POLL_INTERVAL_S, remaining)`` -- the clamp the docstring claims.
+
+    ``_acquire_with_poll_async`` is the only new algorithm this branch
+    introduced, and deleting the ``min(...)`` survives every other test
+    in this file and in ``test_access.py``. This is the only thing pinning
+    it, and the docstring makes a specific falsifiable claim about it: a
+    flat ``_POLL_INTERVAL_S`` "overshoots a short budget by up to a full
+    poll interval -- a 50 ms wait costs 100 ms".
+
+    The poll interval is **raised** to 2 s here rather than left at its
+    100 ms production default. That inverts the usual instinct and is
+    what makes the assertion robust rather than twitchy: with the clamp
+    the sleep is ``min(2.0, ~0.02)`` = 0.02 s, so the contention resolves
+    in ~20 ms and the ceiling can sit far from both candidate numbers;
+    without it the sleep is a flat 2.0 s. A 0.5 s ceiling therefore
+    clears comfortably on a loaded host and still fails the mutation
+    outright -- the alternative (asserting ``waited_s`` is merely under
+    the 0.1 s production interval) would be a 2 ms margin over a
+    contended acquire and would flake.
+
+    The contender task is created *before* the outer acquire so it
+    snapshots a depth-0 context; created afterwards it would take
+    ``qmd_lock_async``'s reentrant branch and return without contending.
+    """
+    from lies.qmd import lock as lock_mod
+
+    monkeypatch.setenv("LIES_QMD_LOCK_PATH", str(tmp_path / "qmd.lock"))
+    monkeypatch.setattr(lock_mod, "_POLL_INTERVAL_S", 2.0)
+
+    async def contender() -> None:
+        async with lock_mod.qmd_lock_async(timeout_s=0.02):
+            pytest.fail("a second task acquired a lock this test is holding")
+
+    task = asyncio.create_task(contender())
+
+    async with lock_mod.qmd_lock_async(timeout_s=5.0):
+        with pytest.raises(lock_mod.QmdLockBusy) as excinfo:
+            await task
+
+    waited = excinfo.value.waited_s
+    assert waited is not None
+    assert waited < 0.5, (
+        f"the wait was not clamped to the remaining budget: waited {waited:.3f}s "
+        f"on a 0.02s budget with a 2.0s poll interval (an unclamped sleep "
+        f"costs a full 2.0s)"
+    )
+
+
 async def test_the_busy_message_names_the_lock_path_and_the_budget(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1117,10 +1168,21 @@ async def test_a_second_task_still_contends_under_the_async_lock(
     the single-flight is for. If the depth set by one task were visible to the
     other, both would enter the critical section at once and the lock would
     exclude nothing -- with no error raised anywhere.
+
+    ``_POLL_INTERVAL_S`` is shortened to 10 ms for this test. The waiter's
+    first attempt lands at 10 ms while the holder still has 40 ms to go, so it
+    must poll; at the production 100 ms interval the waiter's *second* attempt
+    is at 110 ms and the whole test costs a full poll interval for one sleep
+    -- 0.12 s against the repo's 0.15 s hard limit, and systematic, so the
+    budget gate's min-of-3 re-measure could not clear it. Shortening the
+    interval leaves the holder's 50 ms hold and the contention window
+    untouched; it only makes the waiter notice the release sooner. This is
+    the real flock and the real gate, only sampled faster.
     """
     from lies.qmd import lock as lock_mod
 
     monkeypatch.setenv("LIES_QMD_LOCK_PATH", str(tmp_path / "qmd.lock"))
+    monkeypatch.setattr(lock_mod, "_POLL_INTERVAL_S", 0.01)
     order: list[str] = []
 
     async def holder() -> None:

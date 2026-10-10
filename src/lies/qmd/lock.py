@@ -16,10 +16,13 @@ what a caller should read. Heartbeat ``max_age_s``: 1800 s on both
 (matches :func:`qmd_embed`'s 30-min wall budget).
 
 The daemon query path is async, so it cannot use the decorator: the poll
-loop below sleeps with ``time.sleep`` and the MCP daemon runs many requests
-on one event loop, so a contended acquire would freeze every concurrent
-request -- including the ones that never touch qmd. :func:`qmd_lock_async`
-is the same envelope with an ``await`` between polls.
+loop in :func:`with_qmd_lock` sleeps with ``time.sleep``. What a blocking
+poll would cost there is **not** the event loop — see
+:func:`qmd_lock_async` for the real mechanism, which is a worker-thread
+token. :func:`qmd_lock_async` is the same envelope with an ``await``
+between polls, and it is still the right call: the wait is bounded and
+yields, so a contended acquire parks neither an event loop nor a scarce
+thread token for the length of the wait.
 """
 
 from __future__ import annotations
@@ -317,10 +320,30 @@ async def qmd_lock_async(
 
     Same flock, same heartbeat, same reaping, same
     :class:`QmdLockBusy`; the wait *awaits* instead of calling
-    :func:`time.sleep`. That one difference is the point: the MCP daemon
-    serves every request on one event loop, so a blocking poll there would
-    freeze unrelated concurrent requests — including ones that never reach
-    qmd — for the length of the wait.
+    :func:`time.sleep`.
+
+    **What a blocking poll would actually cost here.** An earlier
+    version of this docstring said the MCP daemon "runs many requests
+    on one event loop, so a contended acquire would freeze every
+    concurrent request". That is wrong for the production path, and it
+    was asserted without reading the dispatch code. ``search`` is a
+    *sync* ``FunctionTool`` (``search = Tool.from_function(_search_impl)``)
+    and FastMCP's default is ``run_in_thread=True``, so a sync tool body
+    is dispatched through
+    ``call_sync_fn_in_threadpool`` → ``anyio.to_thread.run_sync``
+    (``fastmcp/tools/function_tool.py:477-481``,
+    ``fastmcp/utilities/async_utils.py:26-34``). ``_run_blocking`` then
+    finds no running loop on that worker thread and takes
+    ``asyncio.run`` — so the wait runs on **its own event loop, on a
+    worker thread**. The daemon's serving loop is never blocked.
+
+    The design still stands, for a different and weaker reason: the
+    default thread limiter carries 40 tokens (measured with
+    ``anyio.to_thread.current_default_thread_limiter().total_tokens``),
+    so a blocking poll would park one of 40 for the length of the wait,
+    and 40 contended queries would exhaust the pool. Awaiting parks
+    none. That is the actual argument for this primitive — not loop
+    protection — and the 40 is anyio's default, not a LIES setting.
 
     Args:
         timeout_s: Wall-clock seconds to poll-retry when contended;
@@ -335,6 +358,19 @@ async def qmd_lock_async(
     acquire in one task runs without re-acquiring. Two *tasks* contend,
     because each snapshots ``_held_depth`` at creation — which is the
     production shape, since two concurrent requests are two tasks.
+
+    **Latent reentrancy hazard — do not build this shape.** ``_held_depth``
+    is a :class:`contextvars.ContextVar`, and contextvars propagate
+    *into* ``anyio.to_thread.run_sync`` workers (FastMCP says so itself:
+    "properly propagates contextvars", ``fastmcp/utilities/async_utils.py``).
+    So a future path that acquires the qmd lock and then dispatches a
+    ``query`` through ``_run_blocking`` would carry a non-zero
+    ``_held_depth`` into the worker thread, take the **reentrant** branch
+    above, and run the query with **no inode held** — silently, with no
+    error and no log line. Not reachable today: the only
+    ``qmd_lock_async`` holder is ``daemon_tool``, and no
+    ``with_qmd_lock``-wrapped helper calls ``daemon_tool``. Re-verify
+    that before assuming it still holds.
 
     The fd is released in a ``finally``, so an exception and a cancellation
     both unwind through it (``CancelledError`` is a ``BaseException`` and a

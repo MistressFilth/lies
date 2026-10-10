@@ -191,16 +191,31 @@ call.**
   not the trigger. Duration as the discriminator is an inference from
   those cases, not a threshold a probe isolated.
 
-  And **across event loops the shared client is unusable outright** —
-  structurally, not empirically. `ClientSessionState.lock` is an
-  `anyio.Lock` built in `Client.__init__`
-  (`fastmcp/client/client.py:228` via `:587`), and `anyio.Lock` binds
-  its async backend at construction
-  (`anyio/_core/_synchronization.py:164-168`), so a cached client
-  carries a loop-A lock into loop B. `mcp/search.py:178` and
-  `mcp/read.py` hand each call a fresh `asyncio.run` loop via
-  `_run_blocking`. Those line numbers are for the installed fastmcp and
-  will drift with the version.
+  And **across event loops, a shared client breaks under concurrency**.
+  Measured 2026-10-10 against the live daemon and **transcribed, not
+  re-measured at commit time** (the whole-branch review reproduced this
+  independently before it was written here): 3 concurrent `status` calls,
+  each on its **own** `asyncio.run` loop — fresh client per call gives
+  **3/3 in 0.21 s**; one shared client gives **0/3**, still unfinished at
+  a 30 s box *with the 20 s per-call timeout already expired* (the
+  reviewer's run went past 300 s). Two things follow, and both correct
+  claims made elsewhere in this section:
+
+  - **Call duration is irrelevant here.** These are `status` calls that
+    complete in ~0.2 s. "Fast calls did not reproduce it" holds only for
+    a client shared *within* one loop; across loops even a 0.2 s call
+    hangs. Do not carry the fast-call result across the loop boundary.
+  - **No per-call deadline bounds it.** `timeout=` reaches `call_tool`
+    and expires; the call does not return.
+
+  Control, so the mechanism is not overstated: the same shared client
+  driven by three loops **one at a time** returns 3/3 ok. So mere
+  cross-loop *reuse* is fine and the failure needs cross-loop
+  *concurrency*. The structural hazard is real and cited above — an
+  `anyio.Lock` binds its backend at construction, so a client built on
+  loop A carries an A-bound lock — but that alone does not explain a
+  sequential cross-loop call succeeding, so treat it as a hazard to
+  design around rather than a proven cause of the hang.
 
   Headline, measured 2026-10-10 against the live daemon and
   **transcribed, not re-measured at commit time**: 3 concurrent `search`

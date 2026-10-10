@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
-import os
-from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -178,47 +175,6 @@ def test_ask_returns_an_inconclusive_envelope_when_librarian_dispatch_fails(
     ), f"expected fallback warning, got: {[r.getMessage() for r in caplog.records]}"
 
 
-def test_librarian_agent_run_names_a_qmd_lock_busy_on_the_bundle(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The bundle's reason, asserted on the bundle rather than the envelope.
-
-    ``test_lib_ask_envelope_carries_real_lock_contention`` covers the
-    same failure from the lock side, under real contention. This one
-    pins the seam between the two: the arm exists, it is ahead of the
-    untyped one, and the string it builds is the one the envelope later
-    renders. Without a distinct arm the untyped catch wins and the
-    reason is prefixed "librarian dispatch failed", which reads as a
-    model outage for what was a lock the caller queued behind.
-    """
-    from lies.lock_errors import QmdLockBusy
-    from lies.mcp import synth
-
-    class _BusyAgent:
-        def run_sync(self, user_prompt, *, deps):
-            raise QmdLockBusy(
-                holder_pid=4242,
-                waited_s=120.0,
-                max_s=120.0,
-                lock_path="/var/lib/lies/qmd.lock",
-            )
-
-    monkeypatch.setattr(synth, "librarian_agent", lambda model=None: _BusyAgent())
-    monkeypatch.setattr(synth, "_resolve_librarian_model", lambda: "test-model")
-    monkeypatch.setattr("lies.agents.librarian.register_librarian_tools", lambda agent: None)
-
-    lib_out = synth.librarian_agent_run(
-        synth._build_query_deps(question="q", tag_expr=None, exclude_tags=None)
-    )
-
-    assert lib_out.transient is True
-    assert lib_out.no_coverage is False
-    reason = lib_out.fallback_reason or ""
-    assert reason.startswith("qmd lock busy: ")
-    assert not reason.startswith("librarian dispatch failed"), reason
-    assert "4242" in reason and "120" in reason and "/var/lib/lies/qmd.lock" in reason
-
-
 def test_librarian_agent_run_names_an_untyped_dispatch_failure_on_the_bundle(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -386,67 +342,3 @@ def test_lib_ask_keeps_the_fixed_sentence_when_the_bundle_carries_no_reason(
     out = lib_ask.fn(question="what is pydantic?", tag_expr="c:alpha")
 
     assert out.fallback_reason == "librarian dispatch failed; no corpus claim made"
-
-
-async def test_lib_ask_envelope_carries_real_lock_contention(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """End to end on the registered tool, against the real flock.
-
-    Not a fabricated exception: the test holds the site-wide lock, a
-    second task calls ``lib_ask.fn`` and takes a real contended acquire
-    inside the librarian dispatch, and the ``QmdLockBusy`` that comes
-    back out is the one the production raise site builds. Every
-    assertion below is a fact about the envelope the user receives, and
-    before this round they were all false — the envelope said
-    "librarian dispatch failed; no corpus claim made" and named neither
-    the holder, the budget, nor the lock path.
-
-    The contending task is created *before* the outer acquire so it
-    snapshots a depth-0 context; created afterwards it would take
-    ``qmd_lock_async``'s reentrant branch and never contend at all.
-
-    The budget is 0.0 s so the loser raises on its first attempt with no
-    ``time.sleep`` between polls — a real exhaustion on the real inode,
-    without a poll interval this test would pay for on every run.
-    """
-    from lies.mcp import synth
-    from lies.qmd import lock as lock_mod
-
-    monkeypatch.setenv("LIES_QMD_LOCK_PATH", str(tmp_path / "qmd.lock"))
-    lock_path, _, _ = lock_mod._lock_paths()
-
-    class _ContendedAgent:
-        """A librarian agent whose dispatch takes the contended lock."""
-
-        def tool(self, **_kwargs: object) -> object:
-            return lambda fn: fn
-
-        def run_sync(self, question: str, deps: object = None) -> object:
-            # The production raise site, called directly: a real acquire
-            # against the real flock this test is holding.
-            lock_mod._acquire_with_poll(retry_budget_s=0.0, max_age_s=1800.0)
-            raise AssertionError("the contended acquire should have raised")
-
-    monkeypatch.setattr(synth, "librarian_agent", lambda model: _ContendedAgent())
-    monkeypatch.setattr(synth, "_resolve_librarian_model", lambda: "test-model")
-
-    async def _call() -> object:
-        return synth.lib_ask.fn(question="what is pydantic?", tag_expr="c:alpha")
-
-    task = asyncio.create_task(_call())
-
-    async with lock_mod.qmd_lock_async(timeout_s=5.0):
-        assert lock_path.exists(), "the test never took the site-wide lock"
-        out = await task
-
-    reason = out.fallback_reason or ""
-    assert "qmd lock busy" in reason, reason
-    assert "qmd flock contention" in reason, reason
-    # The holder is this process — the test task holding the lock above.
-    assert str(os.getpid()) in reason, f"the holder pid must reach the caller; got {reason!r}"
-    assert str(lock_path) in reason, f"the lock path must reach the caller; got {reason!r}"
-    assert "max 0.0s" in reason, f"the exhausted budget must reach the caller; got {reason!r}"
-    # And the corpus claim is still refused.
-    assert "inconclusive" in out.answer
-    assert "No relevant content found in library." not in out.answer
