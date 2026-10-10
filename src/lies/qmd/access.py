@@ -28,6 +28,7 @@ from lies.qmd.daemon import (
     recycle_qmd_daemon,
 )
 from lies.qmd.health import qmd_daemon_reachable
+from lies.qmd.lock import qmd_lock_async, query_lock_wait_s
 
 _log = logging.getLogger(__name__)
 
@@ -294,6 +295,22 @@ async def daemon_tool(
 ) -> Any:
     """Call one qmd daemon tool, recovering per the taxonomy.
 
+    ``query`` alone is single-flighted on the site-wide qmd lock. The
+    daemon runs queries strictly one at a time — three concurrent ones
+    measured a 0.99x speedup, the second waiting for the first and the
+    third for both — so an ungated caller is not parallelising, it is
+    joining an unbounded queue inside another process, where nothing
+    bounds it, nothing logs it and nothing can be waited on. Inside qmd
+    that queue is invisible; from out here it arrives as a call that took
+    too long. The gate moves the wait to a place with a budget
+    (:func:`query_lock_wait_s`), an owner, and a log line.
+
+    ``get`` and ``status`` stay unlocked. Both answer in milliseconds,
+    and :func:`read_library_bodies` issues one ``get`` per path, so
+    gating them would park a whole batch behind the slowest query in the
+    process and buy nothing — the queue they would join is one long
+    query, not each other.
+
     Args:
         name: A member of :data:`DAEMON_TOOLS`. Anything else raises.
         arguments: The tool's arguments, forwarded verbatim.
@@ -301,6 +318,45 @@ async def daemon_tool(
 
     Returns:
         The raw ``CallToolResult``; ``.content`` for ``get``/``multi_get``.
+
+    Raises:
+        ValueError: not a daemon tool. QmdDaemonUnavailable: not serving.
+        QmdDaemonWedged: stopped answering. RuntimeError: tool error.
+        QmdLockBusy: a ``query`` found the lock held past its wait budget.
+            Deliberately *not* a daemon failure — the daemon is answering
+            fine, something else holds the slot, and the remedy is to wait
+            and retry rather than to restart anything.
+    """
+    if name == "query":
+        async with qmd_lock_async(timeout_s=query_lock_wait_s()):
+            return await _call_daemon_tool(name, arguments, timeout=timeout)
+    return await _call_daemon_tool(name, arguments, timeout=timeout)
+
+
+async def _call_daemon_tool(
+    name: str,
+    arguments: dict[str, Any],
+    *,
+    timeout: float | None = None,
+) -> Any:
+    """One daemon tool call: validate, probe, reap if stale, call, recover.
+
+    The body of :func:`daemon_tool`, split out so the query gate wraps a
+    named thing rather than the whole function. That split also decides
+    where the reachability probe sits: **inside** the gate, deliberately.
+    A probe in front of it would report a down daemon as
+    ``QmdLockBusy`` whenever any holder happened to be live, which
+    points the operator at the wrong remedy — wait and retry, when the
+    one that works is ``lies qmd up``. The caller should learn the
+    daemon is absent, not that it is busy.
+
+    Args:
+        name: A member of :data:`DAEMON_TOOLS`. Anything else raises.
+        arguments: The tool's arguments, forwarded verbatim.
+        timeout: Per-call read deadline in seconds, or ``None``.
+
+    Returns:
+        The raw ``CallToolResult``.
 
     Raises:
         ValueError: not a daemon tool. QmdDaemonUnavailable: not serving.
