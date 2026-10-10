@@ -181,6 +181,28 @@ this into a dated release heading.
 
 ### Fixed
 
+- **A cancelled tool call now names itself in the daemon log.** A call
+  cancelled before it produced a result — server shutdown, a request
+  timeout — left no trace at all: no LIES-side error, no qmd log line.
+  `AbandonedCallMiddleware` records the tool, the elapsed time, and the
+  exception that ended the call. Cancellation is a `BaseException`
+  subclass and needs naming explicitly; a bare `except Exception` is
+  what let these stay invisible.
+
+  **The log states the observation, not a cause.** An earlier version
+  read "client disconnected", which asserts something the runtime never
+  reports — and it sends the next reader after the wrong component,
+  which is how the investigation behind this spent its first hour
+  chasing the qmd daemon.
+
+  **What it does not catch: a plain client hang-up.** Measured against
+  the live daemon, a `tools/call` aborted by the client after 2s logs
+  the entry and then neither returns nor raises — no exception crosses
+  the tool boundary at all, and the result is discarded at the response
+  write, downstream of any tool-call hook. Catching that needs an
+  ASGI-level observer of `http.disconnect`, a different mechanism at a
+  different layer; the docstring says so rather than implying coverage.
+
 - **`lies mcp down` refuses to stop a daemon that is serving.** The
   LIES MCP daemon is machine-global and every MCP client on the host
   holds a long-lived stream to it, so one session's `down` disconnects

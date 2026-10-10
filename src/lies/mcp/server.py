@@ -25,12 +25,21 @@ Spec:
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import sys
+import time
 from collections.abc import Callable
 from typing import Any, cast
 
+import anyio
 from fastmcp import FastMCP
-from fastmcp.server.middleware import PingMiddleware
+from fastmcp.server.middleware import (
+    CallNext,
+    Middleware,
+    MiddlewareContext,
+    PingMiddleware,
+)
 from fastmcp.server.transforms import PromptsAsTools
 from mcp.types import ToolAnnotations
 from pydantic import BaseModel, ConfigDict
@@ -51,10 +60,100 @@ from lies.mcp.synth import lib_ask as _lib_ask_tool
 from lies.orchestrator import Orchestrator
 from lies.query.tag_expr import TagExprUnknown
 
+logger = logging.getLogger(__name__)
+
 mcp = FastMCP(
     "lies",
     instructions=load_instructions(),
 )
+
+
+class AbandonedCallMiddleware(Middleware):
+    """Log a tool call that was cancelled before it produced a result.
+
+    A cancelled call -- server shutdown, a request timeout, a client
+    that hangs up on a stack which propagates the cancellation -- leaves
+    no trace by default: no LIES-side error and no qmd log line. This
+    names the event: tool, elapsed time, and the exception that ended
+    the call. Cancellation is a ``BaseException`` subclass and needs
+    naming explicitly, because a bare ``except Exception`` is what let
+    these stay invisible.
+
+    **What this does not catch.** On this stack a plain client
+    disconnect does *not* cancel the server-side tool execution.
+    Measured against the live daemon: with this middleware in place, a
+    ``tools/call`` aborted by the client after 2s logs the entry and
+    then neither returns nor raises -- no exception crosses the tool
+    boundary at all, and the result is discarded at the response write,
+    downstream of this hook. So this names cancellations, and the
+    client-disconnect case remains the silent one. Catching it needs an
+    ASGI-level observer of ``http.disconnect``, which is a different
+    mechanism at a different layer.
+
+    Only abandonment is logged. A tool raising a normal exception
+    becomes an error *result* on the wire and is already reported to
+    the caller; conflating "the caller disliked the answer" with "the
+    caller never got an answer" would train operators to ignore this
+    line.
+    """
+
+    async def on_call_tool(
+        self, context: MiddlewareContext[Any], call_next: CallNext[Any, Any]
+    ) -> Any:
+        tool = _tool_name(context)
+        started = time.monotonic()
+        try:
+            return await call_next(context)
+        except _ABANDONMENT_ERRORS as exc:
+            # Say what was observed, not a cause. The runtime handed us
+            # a cancellation; whether a client hang-up produced it is
+            # not knowable from here, and on this stack a plain client
+            # disconnect does not raise at all -- it discards the result
+            # at the write. Naming a cause we cannot observe sends the
+            # next reader after the wrong component.
+            logger.warning(
+                "tool call abandoned: %s cancelled after %.1fs (%s)",
+                tool,
+                time.monotonic() - started,
+                type(exc).__name__,
+            )
+            raise
+
+
+# CancelledError is a BaseException and is named alongside the anyio
+# stream errors; every one of these means the caller is gone.
+_ABANDONMENT_ERRORS = (
+    asyncio.CancelledError,
+    anyio.ClosedResourceError,
+    anyio.BrokenResourceError,
+    anyio.EndOfStream,
+)
+
+
+def _tool_name(context: MiddlewareContext[Any]) -> str:
+    """Best-effort tool name for the log line.
+
+    Reads defensively at every step: a context shape that cannot yield a
+    name must still log, because an unnamed abandonment beats no log at
+    all. Every branch binds ``name`` before it is read -- the first
+    version left it unbound when ``context`` carried no ``tool_name``
+    at all, which is a real shape the PromptsAsTools path produces.
+    """
+    name: Any = None
+    getter = getattr(context, "tool_name", None)
+    if callable(getter):
+        try:
+            name = getter()
+        except Exception:  # noqa: BLE001 - naming is best-effort
+            name = None
+    if isinstance(name, str) and name:
+        return name
+    message = getattr(context, "message", None)
+    inner = getattr(message, "name", None)
+    if isinstance(inner, str) and inner:
+        return inner
+    return "<unknown tool>"
+
 
 # Keep the streamable-HTTP GET stream warm. A ``tools/call`` is
 # accepted with ``202`` and its response is owed on that long-lived
@@ -71,6 +170,12 @@ mcp = FastMCP(
 # that fails uncovered. Pinned by
 # ``tests/mcp/test_streamable_keepalive.py``.
 mcp.add_middleware(PingMiddleware(interval_ms=5000))
+
+# Name the abandonment when a client disconnects mid-call. Registered
+# after the ping middleware so the ping is not logged as an
+# abandonment. Pinned by
+# ``tests/unit/mcp/test_abandoned_call_logging.py``.
+mcp.add_middleware(AbandonedCallMiddleware())
 
 
 # Bind slash-command prompts BEFORE tool registrations so prompts are
