@@ -1,4 +1,4 @@
-"""Cross-process flock envelope for qmd CLI helpers.
+"""Cross-process flock envelope for the qmd CLI helpers and the daemon query path.
 
 Every :mod:`lies.qmd.cli` helper that shells out to ``qmd`` is
 wrapped in :func:`with_qmd_lock`. Concurrent subprocess callers
@@ -7,9 +7,13 @@ the flock makes that race unreachable by serializing through
 one site-wide inode.
 
 Lock path: ``${LIES_QMD_LOCK_PATH:-${XDG_STATE_HOME:-~/.local/state}/lies}/qmd.lock``.
-Wait budget: 30 s poll-retry; past 30 s, :class:`QmdLockBusy`
-raises. Heartbeat ``max_age_s``: 1800 s (matches
-:func:`qmd_embed`'s 30-min wall budget).
+Wait budget: belongs to the acquirer, so there is no module-wide
+number. ``with_qmd_lock`` polls for 30 s and :class:`QmdLockBusy`
+raises past it; ``qmd_lock_async`` polls for 120 s, overridable per
+call with ``LIES_QMD_QUERY_LOCK_WAIT`` (:func:`query_lock_wait_s`).
+Both carry the budget onto the raised instance's ``max_s``, which is
+what a caller should read. Heartbeat ``max_age_s``: 1800 s on both
+(matches :func:`qmd_embed`'s 30-min wall budget).
 
 The daemon query path is async, so it cannot use the decorator: the poll
 loop below sleeps with ``time.sleep`` and the MCP daemon runs many requests
