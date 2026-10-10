@@ -305,11 +305,11 @@ async def daemon_tool(
     too long. The gate moves the wait to a place with a budget
     (:func:`query_lock_wait_s`), an owner, and a log line.
 
-    ``get`` and ``status`` stay unlocked. Both answer in milliseconds,
-    and :func:`read_library_bodies` issues one ``get`` per path, so
-    gating them would park a whole batch behind the slowest query in the
-    process and buy nothing — the queue they would join is one long
-    query, not each other.
+    ``get``, ``multi_get`` and ``status`` stay unlocked. All three answer
+    in milliseconds, and :func:`read_library_bodies` issues one ``get`` per
+    path, so gating them would park a whole batch behind the slowest
+    query in the process and buy nothing — the queue they would join is
+    one long query, not each other.
 
     Args:
         name: A member of :data:`DAEMON_TOOLS`. Anything else raises.

@@ -1338,10 +1338,10 @@ async def test_two_concurrent_queries_against_a_real_holder_do_not_overlap(
     concurrent ``get`` runs while the query holds it, which is the whole
     reason ``get`` is left unlocked.
     """
-    from lies.qmd import lock as lock_mod
-
     monkeypatch.setenv("LIES_QMD_LOCK_PATH", str(tmp_path / "qmd.lock"))
-    monkeypatch.setattr(access, "qmd_lock_async", lock_mod.qmd_lock_async)
+    # No autouse fixture stubs the lock in this module, so
+    # ``access.qmd_lock_async`` is already the real one by module-scope
+    # import. Nothing to restore here.
     events: list[str] = []
     _use_client(monkeypatch, _SlowClient(events))
 
@@ -1561,7 +1561,6 @@ async def test_the_real_site_wide_lock_is_taken_for_query_and_not_for_get(
     from lies.qmd import lock as lock_mod
 
     monkeypatch.setenv("LIES_QMD_LOCK_PATH", str(tmp_path / "qmd.lock"))
-    monkeypatch.setattr(access, "qmd_lock_async", lock_mod.qmd_lock_async)
     lock_path, pid_path, state_path = lock_mod._lock_paths()
     held: list[tuple[str, bool]] = []
 
@@ -1600,7 +1599,6 @@ async def test_a_cancelled_query_releases_the_real_site_wide_lock(
     from lies.qmd import lock as lock_mod
 
     monkeypatch.setenv("LIES_QMD_LOCK_PATH", str(tmp_path / "qmd.lock"))
-    monkeypatch.setattr(access, "qmd_lock_async", lock_mod.qmd_lock_async)
     lock_path, _, _ = lock_mod._lock_paths()
     in_flight = asyncio.Event()
 

@@ -29,6 +29,8 @@ from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import Any
 
+from lies.lock_errors import QmdLockBusy
+
 import pytest
 
 
@@ -131,6 +133,116 @@ def test_ground_fanout_dispatch_failure_surfaces_as_transient(
     assert digest.no_coverage is False
     assert digest.citations == []
     assert digest.no_library is False
+
+
+def _busy_lock_exception() -> QmdLockBusy:
+    """The real exception, carrying the three facts a reader needs."""
+    return QmdLockBusy(
+        holder_pid=4242,
+        waited_s=120.0,
+        max_s=120.0,
+        lock_path="/var/lib/lies/qmd.lock",
+    )
+
+
+def test_ground_a_busy_qmd_lock_is_transient_and_carries_its_reason(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A contended lock is a process claim, and it says which process claim.
+
+    The ``except Exception`` arm below already turns this into
+    ``transient=True``, so no crash and no corpus claim — the point is
+    the *reason*. ``synth`` can only report what the digest carries, and
+    a contended lock is the one dispatch failure where the daemon is
+    healthy and the caller merely queued. Told only "dispatch failed", a
+    reader restarts a working daemon; told the holder pid and the budget,
+    they know they queued behind something and that it did not finish.
+    """
+    from lies.library import registry as reg_mod
+    from lies.library.registry import LibraryCollectionMeta
+    from lies.mcp import grounding
+    from lies.query import synthesizer as synth_mod
+
+    metas = [LibraryCollectionMeta(name="alpha", tags=())]
+    monkeypatch.setattr(reg_mod, "library_collection_metas", lambda: iter(metas))
+    monkeypatch.setattr(synth_mod, "_all_collection_names", lambda: ["alpha"])
+
+    async def _busy(*a: object, **kw: object) -> object:
+        raise _busy_lock_exception()
+
+    monkeypatch.setattr(grounding, "_fanout_unscoped", _busy)
+
+    digest = asyncio.run(grounding.ground("anything", tag_expr=None))
+
+    assert digest.transient is True
+    assert digest.no_coverage is False, "a busy lock is never a corpus claim"
+    assert digest.fallback_reason is not None
+    reason = digest.fallback_reason
+    assert reason.startswith("qmd lock busy: ")
+    assert "4242" in reason, f"the holder pid must survive to the reader; got {reason!r}"
+    assert "120" in reason, f"the budget must survive to the reader; got {reason!r}"
+    assert "/var/lib/lies/qmd.lock" in reason, f"the lock path must survive; got {reason!r}"
+
+
+def test_ground_a_busy_qmd_lock_on_the_tagged_path_carries_its_reason(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Same on the tagged fast-path, pinned separately so the two cannot drift."""
+    from lies.library import registry as reg_mod
+    from lies.library.registry import LibraryCollectionMeta
+    from lies.mcp import grounding
+    from lies.query import synthesizer as synth_mod
+    import lies.mcp.server as server_mod
+
+    metas = [LibraryCollectionMeta(name="alpha", tags=())]
+    monkeypatch.setattr(reg_mod, "library_collection_metas", lambda: iter(metas))
+    monkeypatch.setattr(synth_mod, "_all_collection_names", lambda: ["alpha"])
+    monkeypatch.setattr(
+        server_mod,
+        "_collect_available_tags_mcp",
+        lambda wiki=None: {"alpha", "c:alpha"},
+    )
+
+    async def _busy(*a: object, **kw: object) -> object:
+        raise _busy_lock_exception()
+
+    monkeypatch.setattr(grounding, "_query_tagged_collections", _busy)
+
+    digest = asyncio.run(grounding.ground("anything", tag_expr="c:alpha"))
+
+    assert digest.transient is True
+    assert digest.no_coverage is False
+    assert digest.fallback_reason is not None
+    assert "4242" in digest.fallback_reason
+
+
+def test_ground_an_ordinary_dispatch_failure_still_has_no_reason(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``fallback_reason`` is for named causes; the untyped arm keeps ``None``.
+
+    It is not a free-text excuse slot. A generic ``RuntimeError`` gets
+    the fixed wording at the envelope, exactly as before this change —
+    only a failure with a class worth naming rides along.
+    """
+    from lies.library import registry as reg_mod
+    from lies.library.registry import LibraryCollectionMeta
+    from lies.mcp import grounding
+    from lies.query import synthesizer as synth_mod
+
+    metas = [LibraryCollectionMeta(name="alpha", tags=())]
+    monkeypatch.setattr(reg_mod, "library_collection_metas", lambda: iter(metas))
+    monkeypatch.setattr(synth_mod, "_all_collection_names", lambda: ["alpha"])
+
+    async def _boom(*a: object, **kw: object) -> object:
+        raise RuntimeError("bridge broke")
+
+    monkeypatch.setattr(grounding, "_fanout_unscoped", _boom)
+
+    digest = asyncio.run(grounding.ground("anything", tag_expr=None))
+
+    assert digest.transient is True
+    assert digest.fallback_reason is None
 
 
 def test_ground_tagged_fanout_dispatch_failure_surfaces_as_transient(

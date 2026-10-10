@@ -17,6 +17,8 @@ memory-related errors will stop catching ``WikiLockBusy``; use
 
 from __future__ import annotations
 
+from pathlib import Path
+
 
 class WikiFlockError(Exception):
     """Base for memory-flock-specific errors."""
@@ -68,6 +70,11 @@ class QmdLockBusy(WikiFlockError):
             (e.g., the contention pre-dates the heartbeat envelope).
         waited_s: Wall-clock seconds spent polling before raising.
         max_s: Configured timeout (default ``30.0`` per the spec).
+        lock_path: The inode the wait was spent on, when the raise site
+            knows it — which is every site inside :mod:`lies.qmd.lock`,
+            because the triad is resolved once per acquisition and is
+            therefore already in hand. ``None`` only for a hand-built
+            instance (tests, a caller re-wrapping one).
     """
 
     def __init__(
@@ -76,13 +83,24 @@ class QmdLockBusy(WikiFlockError):
         *,
         waited_s: float | None = None,
         max_s: float = 30.0,
+        lock_path: str | Path | None = None,
         message: str | None = None,
     ) -> None:
         self.holder_pid = holder_pid
         self.waited_s = waited_s
         self.max_s = max_s
+        self.lock_path = str(lock_path) if lock_path is not None else None
         if message is None:
+            # The path is named because the flock is *resolvable*: it is
+            # the one operator step that tells a contended host from a
+            # broken one. A caller that queued and gave up needs to be
+            # able to go and look at the inode, and "waited 120s, max
+            # 120s" on its own does not say which one. `LIES_QMD_LOCK_PATH`
+            # overrides it, so the path in the message is the only record
+            # of *which* inode was contended.
+            where = f" on {self.lock_path}" if self.lock_path else ""
             message = (
-                f"qmd flock contention: holder PID {holder_pid}, waited {waited_s}s, max {max_s}s"
+                f"qmd flock contention{where}: holder PID {holder_pid}, "
+                f"waited {waited_s}s, max {max_s}s"
             )
         super().__init__(message)

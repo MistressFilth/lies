@@ -194,6 +194,7 @@ def _acquire_with_poll(
                 holder_pid=attempt.holder_pid,
                 waited_s=time.monotonic() - started_at,
                 max_s=retry_budget_s,
+                lock_path=lock_paths[0],
             )
         time.sleep(_POLL_INTERVAL_S)
 
@@ -228,6 +229,7 @@ async def _acquire_with_poll_async(
                 holder_pid=attempt.holder_pid,
                 waited_s=time.monotonic() - started_at,
                 max_s=retry_budget_s,
+                lock_path=lock_paths[0],
             )
         await anyio.sleep(min(_POLL_INTERVAL_S, remaining))
 

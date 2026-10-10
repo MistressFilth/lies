@@ -853,6 +853,44 @@ async def test_qmd_lock_async_raises_when_budget_exhausted(
     assert excinfo.value.holder_pid == os.getpid()
 
 
+async def test_the_busy_message_names_the_lock_path_and_the_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The exhausted-budget raise names the inode it waited on.
+
+    Spec §Testing item 2: the message must name *both* the lock path and
+    the budget. The path is not decoration — `LIES_QMD_LOCK_PATH`
+    overrides it, so the message is the only record of which inode was
+    contended, and a reader who queued for 120s and gave up needs to be
+    able to go and look at it.
+
+    The triad is resolved once per acquisition, so the raise site already
+    holds the path; this asserts it reaches the string a human reads, not
+    just an attribute on the exception. `test_lock_errors.py` covers the
+    constructor on its own; this is the seam from poll loop to message.
+    """
+    from lies.qmd import lock as lock_mod
+
+    monkeypatch.setenv("LIES_QMD_LOCK_PATH", str(tmp_path / "qmd.lock"))
+    lock_path, _, _ = lock_mod._lock_paths()
+
+    async def contender() -> None:
+        async with lock_mod.qmd_lock_async(timeout_s=0.05):
+            pytest.fail("a second task acquired a lock this test is holding")
+
+    task = asyncio.create_task(contender())  # depth-0 snapshot; see above
+
+    async with lock_mod.qmd_lock_async(timeout_s=5.0):
+        with pytest.raises(lock_mod.QmdLockBusy) as excinfo:
+            await task
+
+    message = str(excinfo.value)
+    assert str(lock_path) in message, (
+        f"the exhausted-budget raise must name the contended inode; got {message!r}"
+    )
+    assert "0.05" in message, f"the raise must name the budget it waited; got {message!r}"
+
+
 async def test_qmd_lock_async_does_not_block_the_event_loop(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

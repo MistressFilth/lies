@@ -26,6 +26,7 @@ if TYPE_CHECKING:
 
 
 from lies.agents.librarian import librarian_agent  # noqa: E402,F401
+from lies.lock_errors import QmdLockBusy
 
 
 _log = logging.getLogger(__name__)
@@ -92,6 +93,15 @@ class ArchivistDigest:
             searched nothing, which is not a statement about the
             corpus.
         no_library: True when the library is uninitialized.
+        fallback_reason: Why a transient dispatch failed, in the words
+            of the failure. ``None`` on every non-transient digest, and
+            on a transient one whose cause was not a named class. It
+            exists because ``transient`` is a flag: it says *that*
+            retrieval failed, not *how*, and a reader told only
+            "dispatch failed" cannot tell a wedged daemon from a
+            contended lock. The two want different operator actions —
+            restart the daemon, or wait — so the reason has to survive
+            to the envelope.
     """
 
     question: str
@@ -104,6 +114,7 @@ class ArchivistDigest:
     unserved_scope: list[str] = field(default_factory=list)
     no_library: bool = False
     transient: bool = False
+    fallback_reason: str | None = None
 
 
 class ArchivistCoverageError(Exception):
@@ -454,6 +465,35 @@ async def ground(
                 else "ground: qmd daemon wedged during fan-out",
                 last_output=exc.last_output,
             ) from exc
+        except QmdLockBusy as exc:
+            # Same transient digest as any other dispatch failure — the
+            # corpus claim is equally unfounded — but the *reason* rides
+            # along. A contended lock is the one failure here where the
+            # daemon is answering normally and the caller merely queued,
+            # and that is the distinction this change exists to deliver:
+            # the holder pid, the wait and the budget say "you queued
+            # behind something and it did not finish in time", which
+            # reads nothing like "the daemon is unhealthy". Without the
+            # reason, ``synth`` can only emit its fixed "dispatch
+            # failed" string and every one of these collapses into the
+            # same uninformative sentence.
+            _log.warning(
+                "ground: fan-out waited out the qmd lock: %s: %s",
+                type(exc).__name__,
+                exc,
+            )
+            return ArchivistDigest(
+                question=question,
+                tag_expr=resolved_tag_expr,
+                exclude_expr=exclude_expr,
+                citations=[],
+                no_coverage=False,
+                distinct_pages=0,
+                searched_scope=searched_scope_list,
+                no_library=False,
+                transient=True,
+                fallback_reason=f"qmd lock busy: {exc}",
+            )
         except Exception as exc:
             # A dispatch failure is a process claim, not a corpus
             # claim. ``transient=True`` distinguishes "the daemon
@@ -502,6 +542,27 @@ async def ground(
                 else "ground: qmd daemon wedged during tagged fan-out",
                 last_output=exc.last_output,
             ) from exc
+        except QmdLockBusy as exc:
+            # Same reason-carrying transient digest as the unscoped arm
+            # above; pinned separately so the two fast-paths cannot drift
+            # apart on the failure envelope.
+            _log.warning(
+                "ground: tagged fan-out waited out the qmd lock: %s: %s",
+                type(exc).__name__,
+                exc,
+            )
+            return ArchivistDigest(
+                question=question,
+                tag_expr=resolved_tag_expr,
+                exclude_expr=exclude_expr,
+                citations=[],
+                no_coverage=False,
+                distinct_pages=0,
+                searched_scope=searched_scope_list,
+                no_library=False,
+                transient=True,
+                fallback_reason=f"qmd lock busy: {exc}",
+            )
         except Exception as exc:
             _log.error(
                 "ground: tagged fan-out dispatch failed: %s: %s",

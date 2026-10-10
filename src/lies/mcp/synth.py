@@ -143,6 +143,14 @@ async def synthesize(
     # collapsing them tells the user their library has nothing when
     # the process is at fault. The field was set at three sites and
     # read at none.
+    #
+    # ``fallback_reason`` carries the digest's own reason when it has
+    # one. The fixed sentence it replaces named the *stage* that failed
+    # and nothing else, so every dispatch failure — a wedged daemon, a
+    # contended lock, a broken bridge — reported identically to a reader
+    # who then had no way to tell "your library is unsearchable" from
+    # "you queued behind another query and it did not finish in time".
+    # Only ``ground()`` knows which, and this is the last hop.
     if digest.transient:
         return SynthesizeEnvelope(
             question=question,
@@ -155,7 +163,9 @@ async def synthesize(
             pages_read=[],
             fallback_used=True,
             synthesis_used=False,
-            fallback_reason="ground() dispatch failed; no corpus claim made",
+            fallback_reason=(
+                digest.fallback_reason or "ground() dispatch failed; no corpus claim made"
+            ),
             searched_scope=list(digest.searched_scope or []),
         )
 
