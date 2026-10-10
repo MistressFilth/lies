@@ -6,7 +6,7 @@ All notable changes to LIES are documented here. The format follows
 
 ## [Unreleased]
 
-Staged for **0.48.5**. Both version surfaces (`pyproject.toml`,
+Staged for **0.48.6**. Both version surfaces (`pyproject.toml`,
 `src/lies/__init__.py`) are already bumped; `make release` collapses
 this into a dated release heading.
 
@@ -180,6 +180,65 @@ this into a dated release heading.
   a gate people learn to work around.
 
 ### Fixed
+
+- **The qmd query path single-flights, and its failure mode is now
+  named instead of invisible.** Two concurrent `query` calls against one
+  daemon now serialize on the site-wide `qmd.lock` rather than joining
+  an unbounded queue inside another process. The second caller waits in
+  a bounded, heartbeat-tracked gate — **120 s**, overridable per call
+  with `LIES_QMD_QUERY_LOCK_WAIT` — and exhaustion raises `QmdLockBusy`
+  carrying the lock path, the holder PID, the elapsed wait and the
+  budget. A query dispatched while `lies qmd embed` holds the lock used
+  to return as an opaque client-side timeout that read as a hung daemon;
+  it now returns an error that says what it was queued behind and for
+  how long.
+
+  `get`, `multi_get` and `status` are deliberately **not** gated. All
+  three answer in milliseconds, and `read_library_bodies` issues one
+  `get` per path — gating them would park an entire batch behind the
+  slowest query in the process, and the queue they would join is one
+  long query, not each other.
+
+  **`QmdLockBusy` is not a transport failure, and this does not make
+  queries faster.** Nothing was dispatched when it raised, so there is
+  no daemon state to recycle and no `mcp.log` line to read: recycle is
+  the wrong response, and waiting and retrying is the right one. Nor is
+  there a latency win here — the daemon still executes queries strictly
+  one at a time, and the measured **0.99x** concurrency speedup (29.48s
+  concurrent vs 29.18s serial) is unaffected. The gate does not make
+  the work faster; it moves a wait that was already happening from an
+  unbounded queue in another process to a bounded one with an owner, a
+  deadline and a log line.
+
+  **The gate surrounds the recycle path, and that is a real cost.** For
+  `query` the held lock spans `_call_daemon_tool` →
+  `_call_with_recovery` → `_recycle_or_report` →
+  `recycle_qmd_daemon(ready_timeout=30.0)`, together with
+  `_reap_qmd_daemon`'s up to 4 s of `time.sleep` and
+  `_spawn_qmd_daemon`. A wedged query therefore holds the site-wide
+  inode for **tens of seconds past its own 60 s read deadline**,
+  blocking `lies qmd embed` and `lies qmd update` host-wide while it
+  happens. This is a deliberate trade rather than an oversight: the
+  same inode is what makes the CUDA VMM reservation race unreachable,
+  and leaving the recycle outside it would reintroduce a
+  concurrent-subprocess race against the daemon lifecycle. **It is not
+  a deadlock.** `qmd/daemon.py` takes no qmd lock, and the spawn shells
+  `qmd mcp --http --daemon` directly, so the recycle never waits on the
+  inode it is already holding.
+
+  **Named limitation.** The ask-path lock diagnostics reach the user
+  only when the librarian mirrors the envelope's `fallback_reason`; a
+  non-compliant model degrades to a generic reason with no corpus
+  claim. The production route is prompt-mediated — `search` converts
+  the lock exception into its envelope and returns normally, so
+  `run_sync` never raises, and the only path from that string to the
+  user is the model copying it onto `LibrarianOutput.fallback_reason`,
+  the same mechanism `searched_scope` already depends on. The
+  instruction ("verbatim, do not summarise, do not shorten, do not
+  invent one") is in the librarian contract and pinned by a test,
+  because it fails silently rather than loudly. `ground()` and
+  `librarian_agent_run` catch `QmdLockBusy` in code and are not subject
+  to it.
 
 - **A cancelled tool call now names itself in the daemon log.** A call
   cancelled before it produced a result — server shutdown, a request

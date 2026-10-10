@@ -126,6 +126,40 @@ call.**
   dispatched, so the call queued and timed out rather than failing
   inside the daemon. Recycle-on-abort is the wrong reflex here — it
   costs a model reload and hides the real cause.
+- **The `query` path single-flights; `get`/`multi_get`/`status` do
+  not.** `daemon_tool` wraps `query` alone in `qmd_lock_async`, on the
+  same site-wide `qmd.lock` the CLI helpers use, for the 120 s budget
+  `query_lock_wait_s()` reads from `LIES_QMD_QUERY_LOCK_WAIT` — per
+  call, so a host can retune without a restart, and anything that is
+  not a positive finite number (including `inf`) falls back to 120
+  rather than raising on the retrieval path. The wait the daemon was
+  already imposing now has an owner, a deadline, a heartbeat and a log
+  line; exhaustion raises `QmdLockBusy` carrying the lock path, the
+  holder PID, the elapsed wait and the budget. The other three answer
+  in milliseconds and `read_library_bodies` issues one `get` per path,
+  so gating them would park a whole batch behind the slowest query in
+  the process — the queue they would join is one long query, not each
+  other.
+
+  **`QmdLockBusy` is not a transport failure.** Nothing was dispatched,
+  so there is no daemon state to recycle and no `mcp.log` line to
+  read: **recycle is the wrong response, wait and retry is the right
+  one.** The reachability probe sits *inside* the gate for the same
+  reason — in front of it, a down daemon would surface as
+  `QmdLockBusy` and send the operator to wait when the one that works
+  is `lies qmd up`.
+
+  **The gate wraps the recycle, so a wedge holds the inode for tens of
+  seconds past its own deadline.** The path under the lock is
+  `_call_daemon_tool` → `_call_with_recovery` → `_recycle_or_report` →
+  `recycle_qmd_daemon(ready_timeout=30.0)`, plus `_reap_qmd_daemon`'s
+  up to 4 s of `time.sleep` and `_spawn_qmd_daemon`. A wedged query
+  therefore blocks `lies qmd embed`/`update` host-wide for tens of
+  seconds after its own 60 s read deadline. That is a deliberate trade
+  — the inode is what makes the CUDA VMM reservation race unreachable
+  — and **it is not a deadlock**: `qmd/daemon.py` takes no qmd lock,
+  and the spawn shells `qmd mcp --http --daemon` directly, so the
+  recycle never waits on the lock it is holding.
 - **The streamable-HTTP transport does not time out idle streams.** A
   GET stream held open for 30 minutes survived intact, carrying one
   ping and then 29+ minutes of silence. There is no server-side idle
