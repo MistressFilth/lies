@@ -197,15 +197,25 @@ this into a dated release heading.
   stop a session a sibling is inside. Refcounted teardown is not the
   mechanism, and that behaviour is fastmcp-version-specific.
 
-  What the probes do support, and nothing stronger: **>=2 concurrent long
-  calls on one shared session hang** — 2 concurrent `query` gave
+  What the probes do support, and nothing stronger: **concurrent calls
+  on one shared session can hang** — 2 concurrent `query` gave
   `MCPError: Connection closed`, 3 gave a hang then
-  `BrokenResourceError`. **Fast calls do not reproduce it** — 3 concurrent
-  `status` all OK at ~0.1 s, 3 concurrent `get` all OK, and 1 `query` + 3
-  `get` concurrently all OK, so concurrency alone is not the trigger. And
-  **across event loops the shared client is unusable outright**: the
-  session is loop-affine, and `mcp/search.py:178` / `mcp/read.py` hand
-  each call a fresh `asyncio.run` loop via `_run_blocking`.
+  `BrokenResourceError`. **Fast calls did not reproduce it** — 3
+  concurrent `status` all OK at ~0.1 s, 3 concurrent `get` all OK, and 1
+  `query` + 3 `get` concurrently all OK, so concurrency alone is not
+  the trigger. Duration as the discriminator is an inference from those
+  cases, not a threshold a probe isolated.
+
+  And **across event loops the shared client is unusable outright**,
+  structurally rather than empirically: `ClientSessionState.lock` is an
+  `anyio.Lock` built in `Client.__init__`
+  (`fastmcp/client/client.py:228` via `:587`), and `anyio.Lock` binds
+  its async backend at construction
+  (`anyio/_core/_synchronization.py:164-168`), so a cached client
+  carries a loop-A lock into loop B. `mcp/search.py:178` /
+  `mcp/read.py` hand each call a fresh `asyncio.run` loop via
+  `_run_blocking`. The line numbers are for the installed fastmcp and
+  will drift with the version.
 
   Headline, measured 2026-10-10 against the live daemon and
   **transcribed, not re-measured at commit time** — flagged because this

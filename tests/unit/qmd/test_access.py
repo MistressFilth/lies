@@ -5,7 +5,7 @@ serves which operation. These tests are all I/O-free: the daemon probe,
 the staleness check, the client, the recycle, the daemon log, and the
 site-wide flock are stubbed, because the behaviour under test is the
 *decision* (which transport, which recovery, which lock, which
-exception) and not qmd's answers. Two tests at the end deliberately
+exception) and not qmd's answers. Three tests at the end deliberately
 step outside that rule and take the real flock, because the wiring
 between them is the thing being pinned.
 
@@ -217,7 +217,7 @@ def _lock_stub(
 
     ``asyncio.Lock`` is the right stand-in for the real flock here: both
     are exclusion over one resource, and both are held across an
-    ``await``. Two tests at the end take the real primitive.
+    ``await``. Three tests below take the real primitive instead.
     """
 
     @contextlib.asynccontextmanager
@@ -720,8 +720,11 @@ async def test_each_call_builds_its_own_client(
 
     This is the fix, pinned. The requirement is that **no two calls share
     a client**: a cached ``Client`` is one object with one MCP session
-    behind it, and one session cannot serve concurrent long calls (it is
-    also bound to the loop that opened it). That is *not* the same as
+    behind it, and one session cannot serve concurrent calls. Its
+    ``anyio.Lock`` also binds to the loop that opened it
+    (``fastmcp/client/client.py:228``; the loop-affinity argument is
+    structural, not probed — see ``_daemon_client``). Neither of those
+    is the same as
     exclusive ownership while the ``async with`` is open — fastmcp
     4.0.10 refcounts ``_disconnect`` and does not stop a session a
     sibling is still inside (``fastmcp/client/client.py:1080-1084``),
@@ -776,13 +779,16 @@ async def test_a_per_call_timeout_is_forwarded_to_call_tool(
 
     The pre-final-review seam took a ``timeout`` argument at the search
     call site and never read it, so a deadline the CLI path would have
-    applied was silently dropped on the daemon path. The cache invalidates
-    on ``LIES_QMD_URL`` change but not on a deadline change, so
+    applied was silently dropped on the daemon path. It used to matter
+    twice over: the client was cached and the cache invalidated on
+    ``LIES_QMD_URL`` change but not on a deadline change, so
     ``LIES_QMD_FANOUT_TIMEOUT`` had no effect on the daemon transport
-    until something else rebuilt the client. This test pins the property
-    the knob depends on: the per-call timeout reaches ``call_tool`` as
-    a keyword argument, so ``fastmcp.Client``'s per-request
-    ``read_timeout_seconds`` honours it on the next call.
+    until something else rebuilt the client. There is no cache now — see
+    ``_daemon_client`` — so only the per-call argument matters. This
+    test pins the property the knob depends on: the per-call timeout
+    reaches ``call_tool`` as a keyword argument, so
+    ``fastmcp.Client``'s per-request ``read_timeout_seconds`` honours it
+    on the next call.
     """
     fake = _FakeClient([{"ok": 1}, {"ok": 2}])
     monkeypatch.setattr(access, "_daemon_client", lambda url: fake)
@@ -841,7 +847,7 @@ async def test_concurrent_calls_never_share_a_client(
     assertions to one id across five calls.
 
     What a shared object is: one object, one MCP session, and that
-    session cannot serve concurrent long calls. It is **not** a teardown
+    session cannot serve concurrent calls. It is **not** a teardown
     race — fastmcp 4.0.10 refcounts ``_disconnect`` and leaves a session
     alone while a sibling is still nested
     (``fastmcp/client/client.py:1080-1084``), and that behaviour is
@@ -1341,11 +1347,11 @@ def test_the_spawned_daemon_never_receives_the_data_dir(
 # so locking them would park a whole batch behind the slowest query in
 # the process and buy nothing.
 #
-# Every test here stubs ``access.qmd_lock_async`` except the last two,
-# which take the real flock. The stubs carry an ``asyncio.Lock`` so the
-# assertions are about serialisation — "the second body did not start
-# until the first finished" — rather than about a context manager having
-# been entered.
+# Every test here stubs ``access.qmd_lock_async`` except three further
+# down, which take the real flock. The stubs carry an ``asyncio.Lock``
+# so the assertions are about serialisation — "the second body did not
+# start until the first finished" — rather than about a context manager
+# having been entered.
 
 
 async def test_query_tool_acquires_the_lock(
@@ -1426,13 +1432,32 @@ async def test_two_concurrent_queries_against_a_real_holder_do_not_overlap(
 ) -> None:
     """Same guarantee, against the real flock rather than a stub.
 
-    ``_FakeClient``'s ``call_tool`` returns without suspending, so this
-    also pins that the gate is not merely "around the wrapper": the body
-    the lock is supposed to cover contains the suspension point. A
-    concurrent ``get`` runs while the query holds it, which is the whole
-    reason ``get`` is left unlocked.
+    ``_SlowClient`` suspends for 20 ms inside ``call_tool``, so this is
+    a real serialisation test and not a wiring check: with the gate
+    absent both bodies start, both suspend at the same ``await``, and
+    ``_peak_overlap`` would be 2.
+
+    The lock is real but its **poll interval is shortened** to 1 ms.
+    ``_acquire_with_poll_async`` sleeps ``_POLL_INTERVAL_S`` (0.1 s)
+    between attempts, so the loser of the race always paid a full poll
+    — 0.127 s against the repo's 0.15 s per-test limit, measured across
+    four runs, and systematic, so the budget gate's min-of-3 re-measure
+    could not clear it. Shortening the interval keeps the flock, the
+    real acquisition path and the serialisation assertion intact; what
+    it removes is a sleep the test was never asserting on. Stubbing the
+    lock instead would delete the file's only real-flock serialisation
+    coverage, which is the point of having this test at all.
+
+    The separate claim that a ``get`` runs while a query holds the lock
+    is not asserted here — this body issues two ``query`` calls. It is
+    covered against the real flock by
+    ``test_the_real_site_wide_lock_is_taken_for_query_and_not_for_get``,
+    which records the lock file's absence during the ``get``.
     """
+    from lies.qmd import lock as lock_mod
+
     monkeypatch.setenv("LIES_QMD_LOCK_PATH", str(tmp_path / "qmd.lock"))
+    monkeypatch.setattr(lock_mod, "_POLL_INTERVAL_S", 0.001)
     # No autouse fixture stubs the lock in this module, so
     # ``access.qmd_lock_async`` is already the real one by module-scope
     # import. Nothing to restore here.

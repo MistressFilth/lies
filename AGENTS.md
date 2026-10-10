@@ -168,7 +168,7 @@ call.**
   "optimise" it back into a cache.** The requirement is that **no two
   calls share a client** — not that a client be exclusively owned while
   in use. A cached `Client` is one object with one MCP session behind
-  it, and one session cannot serve concurrent long calls. The daemon is
+  it, and one session cannot serve concurrent calls. The daemon is
   machine-global, so that object is shared by every LIES session on the
   host.
 
@@ -182,16 +182,25 @@ call.**
   fastmcp-version-specific — read the installed file before relying on
   it.
 
-  What the probes support, and nothing stronger: **>=2 concurrent long
-  calls on one shared session hang** (2 concurrent `query` gave
+  What the probes support, and nothing stronger: **concurrent calls on
+  one shared session can hang** (2 concurrent `query` gave
   `MCPError: Connection closed`; 3 gave a hang then
-  `BrokenResourceError`). **Fast calls do not reproduce it** — 3
+  `BrokenResourceError`). **Fast calls did not reproduce it** — 3
   concurrent `status` were all OK at ~0.1 s, 3 concurrent `get` all OK,
   and 1 `query` + 3 `get` concurrently all OK — so concurrency alone is
-  not the trigger. And **across event loops the shared client is
-  unusable outright**: the session is loop-affine, and
-  `mcp/search.py:178` and `mcp/read.py` hand each call a fresh
-  `asyncio.run` loop via `_run_blocking`.
+  not the trigger. Duration as the discriminator is an inference from
+  those cases, not a threshold a probe isolated.
+
+  And **across event loops the shared client is unusable outright** —
+  structurally, not empirically. `ClientSessionState.lock` is an
+  `anyio.Lock` built in `Client.__init__`
+  (`fastmcp/client/client.py:228` via `:587`), and `anyio.Lock` binds
+  its async backend at construction
+  (`anyio/_core/_synchronization.py:164-168`), so a cached client
+  carries a loop-A lock into loop B. `mcp/search.py:178` and
+  `mcp/read.py` hand each call a fresh `asyncio.run` loop via
+  `_run_blocking`. Those line numbers are for the installed fastmcp and
+  will drift with the version.
 
   Headline, measured 2026-10-10 against the live daemon and
   **transcribed, not re-measured at commit time**: 3 concurrent `search`

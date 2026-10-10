@@ -75,7 +75,9 @@ def _daemon_client(url: str) -> fastmcp.Client:
     Do NOT cache this. The requirement is that **no two calls share a
     client**, not that a client be exclusively owned while in use — a
     cached ``Client`` is a single object with a single MCP session
-    behind it, and one session cannot serve concurrent long calls.
+    behind it, and one session cannot serve concurrent calls. (The
+    bullets below record which shapes did and did not reproduce that;
+    call duration is an inference, not a measured threshold.)
 
     What is *not* the mechanism, because it was measured and is false
     for the installed fastmcp 4.0.10: ``Client._disconnect`` decrements
@@ -87,18 +89,26 @@ def _daemon_client(url: str) -> fastmcp.Client:
 
     What the probes do support, and nothing stronger:
 
-    - **>=2 concurrent long calls on one shared session hang.** 2
+    - **Concurrent calls on one shared session can hang.** 2
       concurrent ``query`` gave ``MCPError: Connection closed``; 3 gave
       a hang then ``BrokenResourceError``.
-    - **Fast calls do not reproduce it.** 3 concurrent ``status`` were
+    - **Fast calls did not reproduce it.** 3 concurrent ``status`` were
       all OK at ~0.1 s; 3 concurrent ``get`` were all OK; 1 ``query`` +
-      3 ``get`` concurrently were all OK. So "concurrent" alone is not
-      the trigger — concurrent *long* calls are.
-    - **Across event loops the shared client is unusable outright.** The
-      session is loop-affine, and ``mcp/search.py:178`` and
+      3 ``get`` concurrently were all OK. So concurrency *alone* is not
+      the trigger. Duration as the discriminator is an inference from
+      those cases, not something a probe isolated — do not upgrade it
+      to a measured threshold.
+    - **Across event loops the shared client is unusable outright**,
+      structurally rather than empirically:
+      ``ClientSessionState.lock`` is an ``anyio.Lock`` built in
+      ``Client.__init__`` (``fastmcp/client/client.py:228`` via ``:587``)
+      and ``anyio.Lock`` binds its async backend at construction
+      (``anyio/_core/_synchronization.py:164-168``), so a cached client
+      carries a loop-A lock into loop B. ``mcp/search.py:178`` and
       ``mcp/read.py`` hand each call a fresh ``asyncio.run`` loop via
-      ``_run_blocking``. This is the case that makes the cache
-      unusable regardless of timing.
+      ``_run_blocking``. The line numbers are for the installed fastmcp
+      and will drift with the version — this is the case that makes the
+      cache unusable regardless of timing.
 
     Headline, measured 2026-10-10 against the live daemon and
     transcribed (not re-measured at commit time): 3 concurrent ``search``
@@ -523,10 +533,12 @@ async def _call(
     ``client`` must not be shared with a concurrent call — that, not
     exclusive ownership while the ``async with`` is open, is what
     :func:`_daemon_client` buys by building one per call. A shared
-    client's session cannot serve two concurrent long calls, and it is
-    bound to the loop that opened it. See that docstring for the
-    measurements and for the fastmcp-version-specific refcounting
-    behaviour that is *not* the mechanism.
+    client's session cannot serve concurrent calls, and its
+    ``anyio.Lock`` binds to the loop that opened it (see
+    ``_daemon_client``). That docstring carries the measurements, which
+    recorded shapes, not a duration threshold, plus the
+    fastmcp-version-specific refcounting behaviour that is *not* the
+    mechanism.
     """
     async with client:
         if timeout is None:
@@ -580,8 +592,8 @@ async def read_library_bodies(
     That session is per *batch* and is never shared with another batch
     or with a concurrent call. Not because an exit would tear it out from
     under a sibling — fastmcp 4.0.10 refcounts that — but because one
-    session cannot serve two concurrent long calls and is bound to the
-    loop that opened it. See :func:`_daemon_client`.
+    session cannot serve concurrent calls and its ``anyio.Lock`` binds
+    to the loop that opened it. See :func:`_daemon_client`.
 
     Args:
         paths: Library paths (``<collection>/<page>``) to fetch.
