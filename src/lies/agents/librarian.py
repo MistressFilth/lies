@@ -138,6 +138,16 @@ class LibrarianOutput:
             ``no_coverage=False``; the two are independent, exactly
             as on :class:`~lies.mcp.grounding.ArchivistDigest` and
             the ``search`` envelope. Defaults to ``False``.
+        fallback_reason: v0.48 additive — the search envelope's own
+            ``fallback_reason``, mirrored verbatim, when Step 2's
+            ``search`` reported a dispatch failure. The bundle is the
+            boundary the librarian's evidence crosses, and until this
+            field existed the envelope's reason died there: ``search``
+            already names the qmd lock holder, the wait and the budget,
+            and ``lib_ask`` replaced all of it with one fixed sentence.
+            ``None`` whenever the search succeeded or the failure was
+            not a named dispatch failure. Mirrored the same way as
+            ``searched_scope`` — the librarian does not summarise it.
     """
 
     tag_expr: Any  # TagExpr | None AST; Any at runtime so pydantic-ai's
@@ -152,6 +162,7 @@ class LibrarianOutput:
     no_coverage: bool = False
     searched_scope: list[str] = field(default_factory=list)
     transient: bool = False
+    fallback_reason: str | None = None
 
 
 LIBRARIAN_SYSTEM_PROMPT = """# librarian — Classify, Search, Read, Return
@@ -205,15 +216,16 @@ markdown.
 - `no_coverage=True` → return an empty bundle; the corpus has zero
   hits for this question.
 - `transient=True` → the search **did not finish** (qmd outlived its
-  deadline). This is a fact about the run, not about the corpus: the
-  search learned nothing, so it has no standing to say the library
-  lacks this topic. Retry the same search **once**. If it is still
-  transient, return an empty bundle with `no_coverage=False` and put
-  the reason in the envelope metadata, and say the lookup was
-  inconclusive — never that the content is missing.
+  deadline, or the site-wide qmd lock was held past your budget). This
+  is a fact about the run, not about the corpus: the search learned
+  nothing, so it has no standing to say the library lacks this topic.
+  Retry the same search **once**. If it is still transient, return an
+  empty bundle with `no_coverage=False` and `transient=True`, copy
+  the envelope's `fallback_reason` onto the bundle **verbatim**, and
+  say the lookup was inconclusive — never that the content is missing.
 - `fallback_reason` non-None with `transient=False` → the daemon
-  genuinely failed; return an empty bundle and surface the reason in
-  the envelope metadata.
+  genuinely failed; return an empty bundle, copy the `fallback_reason`
+  onto the bundle verbatim, and say the lookup was inconclusive.
 
 `no_coverage` and `transient` are deliberately separate flags. An
 earlier version set `no_coverage=True` on a timeout, and because this
@@ -293,6 +305,15 @@ Emit a `LibrarianOutput` with:
   empty.
 - `searched_scope` — mirror the search tool's `searched_scope`
   field verbatim (the resolved collection list).
+- `fallback_reason` — mirror the search tool's `fallback_reason`
+  verbatim, or `null` when the search did not report a dispatch
+  failure. Copy the string; do not summarise it, do not shorten it,
+  and do not invent one. It is the only channel the reason has: the
+  caller renders this string verbatim, and a search that queued behind
+  the site-wide qmd lock and gave up puts the holder PID, the elapsed
+  wait and the budget in exactly this field. Rewrite that and the
+  caller cannot tell a contended lock from a wedged daemon, which
+  need different operator actions.
 
 ```python
 {
@@ -304,7 +325,8 @@ Emit a `LibrarianOutput` with:
   ],
   "distinct_pages": <int>,
   "no_coverage": <bool>,
-  "searched_scope": [...]
+  "searched_scope": [...],
+  "fallback_reason": null
 }
 ```
 
@@ -353,7 +375,8 @@ Concrete schema (the validator expects exactly this JSON shape):
   ],
   "distinct_pages": 1,
   "no_coverage": false,
-  "searched_scope": ["opencode"]
+  "searched_scope": ["opencode"],
+  "fallback_reason": null
 }
 ```
 

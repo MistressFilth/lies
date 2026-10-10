@@ -77,30 +77,28 @@ async def _raise_busy_lock(*a: object, **kw: object) -> object:
     )
 
 
-async def test_a_busy_qmd_lock_reaches_the_lib_ask_envelope(monkeypatch):
-    """The holder pid, the budget and the lock path survive to ``lib_ask``.
+async def test_a_busy_qmd_lock_reaches_the_synthesize_envelope(monkeypatch):
+    """The ``ground()`` / ``synthesize()`` path carries the diagnostics.
 
-    This is the whole point of threading ``fallback_reason``. The
-    transient branch used to emit one fixed sentence — "ground()
-    dispatch failed; no corpus claim made" — for *every* dispatch
-    failure, so a caller who queued behind a 120 s single-flight hold was
-    told exactly what a caller whose daemon had wedged was told. Both
-    answers are correct about the corpus (neither is a statement about
-    it) and both are useless to an operator, who needs "wait" in one case
-    and "restart the daemon" in the other.
+    Named for what it exercises. ``synthesize`` is **not** a registered
+    tool — its only production caller is ``ground()``'s counterpart and
+    nothing but tests reach it — so this is the digest→envelope hop,
+    not the user-facing ask path. The registered ``lib_ask`` path is a
+    different code path entirely (``_ask_impl`` → the librarian
+    boundary) and is covered by the ``lib_ask`` tests below.
 
-    Driven through the real ``ground()`` rather than a hand-built digest,
-    so the assertion covers the whole hop: lock raise → grounding arm →
-    digest field → envelope field. Stubbing ``ground`` would leave the
-    one link that actually broke untested.
+    Round 1 named this test ``..._reaches_the_lib_ask_envelope``, which
+    asserted a property it never exercised. The name was the only thing
+    wrong with it; the coverage it provides is real, just not that.
     """
-    from lies.library import registry as reg_mod
-    from lies.library.registry import LibraryCollectionMeta
     from lies.mcp import grounding, synth
-    from lies.query import synthesizer as synth_mod
 
     # A registered collection, or ``ground()`` takes the ``no_library``
     # fast-path and never reaches the fan-out this test is about.
+    from lies.library import registry as reg_mod
+    from lies.library.registry import LibraryCollectionMeta
+    from lies.query import synthesizer as synth_mod
+
     metas = [LibraryCollectionMeta(name="alpha", tags=())]
     monkeypatch.setattr(reg_mod, "library_collection_metas", lambda: iter(metas))
     monkeypatch.setattr(synth_mod, "_all_collection_names", lambda: ["alpha"])

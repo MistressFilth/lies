@@ -383,3 +383,60 @@ def test_librarian_output_searched_scope_default_empty() -> None:
 
     out = LibrarianOutput(tag_expr=None, exclude_expr=None, excerpts=[], distinct_pages=0)
     assert out.searched_scope == []
+
+
+def test_librarian_output_fallback_reason_defaults_none() -> None:
+    """The bundle has a slot for the search envelope's reason.
+
+    Without it the reason had nowhere to cross. ``search`` fills its
+    envelope's ``fallback_reason`` with the qmd lock holder, the wait
+    and the budget; the bundle could not receive it, so ``lib_ask``
+    rendered one fixed sentence for every transient failure and a caller
+    who had merely queued could not be distinguished from one whose
+    daemon had wedged. Additive with a ``None`` default, so every
+    existing construction site keeps compiling unchanged.
+    """
+    from lies.agents.librarian import LibrarianOutput
+
+    out = LibrarianOutput(tag_expr=None, exclude_expr=None, excerpts=[], distinct_pages=0)
+    assert out.fallback_reason is None
+
+    carried = LibrarianOutput(
+        tag_expr=None,
+        exclude_expr=None,
+        excerpts=[],
+        distinct_pages=0,
+        transient=True,
+        fallback_reason="qmd lock busy: holder PID 4242, waited 120.0s, max 120.0s",
+    )
+    assert carried.fallback_reason is not None
+    assert "4242" in carried.fallback_reason
+
+
+def test_the_prompt_tells_the_librarian_to_mirror_the_search_fallback_reason() -> None:
+    """The model is the carrier on the production path, so the contract must say so.
+
+    ``LibrarianOutput`` is the agent's ``output_type`` — the model emits
+    it. When the ``search`` tool returns a transient envelope, ``search``
+    has *already* converted the qmd lock exception into a
+    ``fallback_reason`` string, so nothing raises and ``run_sync``
+    returns normally; the only route from that string to the user is the
+    model copying it onto the bundle. That is the same mechanism
+    ``searched_scope`` already depends on, and it is exactly as silent
+    when it fails, which is why the instruction is pinned rather than
+    assumed.
+
+    The three "do not"s are the load-bearing half: a model told to
+    "carry the reason" will happily paraphrase one that names a holder
+    PID and a budget, and the paraphrase is the defect this closes.
+    """
+    from lies.agents.librarian import LIBRARIAN_SYSTEM_PROMPT
+
+    prompt = LIBRARIAN_SYSTEM_PROMPT
+    assert "fallback_reason" in prompt
+    assert "verbatim" in prompt
+    assert "do not summarise" in prompt or "do not summarize" in prompt
+    # And it is in the JSON the validator is told to expect, not only in
+    # prose: a schema block without the field invites the model to omit
+    # it under output-retry pressure.
+    assert '"fallback_reason": null' in prompt

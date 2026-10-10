@@ -29,6 +29,7 @@ from typing import TYPE_CHECKING, Any
 from fastmcp.exceptions import ToolError
 from fastmcp.tools import Tool
 
+from lies.lock_errors import QmdLockBusy
 from lies.mcp.grounding import ground
 from lies.query.citation import Citation
 
@@ -345,6 +346,29 @@ def librarian_agent_run(deps: Any) -> Any:
     register_librarian_tools(agent)
     try:
         result = agent.run_sync(deps.question, deps=deps)
+    except QmdLockBusy as exc:
+        # Ahead of the untyped arm on purpose. The site's query lock was
+        # held past its budget while this run was dispatching: the daemon
+        # is answering fine and the caller queued. That is a different
+        # fact from "the librarian could not be dispatched" and it wants
+        # a different operator action — wait, not restart — so the holder
+        # pid, the elapsed wait and the budget have to survive onto the
+        # bundle. ``lib_ask`` renders whatever reason this carries.
+        log.warning(
+            "librarian_agent_run: qmd lock busy (%s: %s); returning transient fallback",
+            type(exc).__name__,
+            exc,
+        )
+        return LibrarianOutput(
+            tag_expr=getattr(deps, "tag_expr", None),
+            exclude_expr=getattr(deps, "exclude_expr", None),
+            excerpts=[],
+            distinct_pages=0,
+            no_coverage=False,
+            searched_scope=[],
+            transient=True,
+            fallback_reason=f"qmd lock busy: {exc}",
+        )
     except Exception as exc:
         # Fail-soft: pydantic-ai raises (e.g.
         # ``UsageLimitExceeded("Exceeded maximum output retries (1)")``)
@@ -383,6 +407,7 @@ def librarian_agent_run(deps: Any) -> Any:
             no_coverage=False,
             searched_scope=[],
             transient=True,
+            fallback_reason=f"librarian dispatch failed: {type(exc).__name__}: {exc}",
         )
     out = result.output
     # Defensive: pydantic-ai's ``output_type=LibrarianOutput`` means
@@ -401,6 +426,11 @@ def librarian_agent_run(deps: Any) -> Any:
         distinct_pages=getattr(out, "distinct_pages", 0),
         no_coverage=getattr(out, "no_coverage", False),
         searched_scope=list(getattr(out, "searched_scope", None) or []),
+        # Carried for the same reason as the fields above: this branch is
+        # a shape conversion, and a field the model set is data, not
+        # something to drop because the container changed.
+        transient=bool(getattr(out, "transient", False)),
+        fallback_reason=getattr(out, "fallback_reason", None),
     )
 
 
@@ -538,6 +568,16 @@ def _ask_impl(
         # in library" would name a corpus problem for a model
         # outage, and the string is the one the librarian contract
         # designates as the false claim.
+        #
+        # The reason is rendered, not restated. This branch is the last
+        # hop before the user, and it used to discard whatever the
+        # bundle carried and emit one fixed sentence for every transient
+        # failure — so a run that queued behind the site-wide qmd lock
+        # and gave up reported identically to a model outage. The
+        # librarian bundle's ``fallback_reason`` is the only channel the
+        # cause has, and ``search`` already fills it with the holder pid,
+        # the elapsed wait and the budget. The fixed wording survives as
+        # the ``or`` fallback for a bundle that carries none.
         return SynthesizeEnvelope(
             question=question,
             tag_expr=tag_expr,
@@ -549,7 +589,9 @@ def _ask_impl(
             pages_read=[],
             fallback_used=True,
             synthesis_used=False,
-            fallback_reason="librarian dispatch failed; no corpus claim made",
+            fallback_reason=(
+                lib_out.fallback_reason or "librarian dispatch failed; no corpus claim made"
+            ),
             searched_scope=list(lib_out.searched_scope or []),
         )
 
