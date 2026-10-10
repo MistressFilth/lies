@@ -191,17 +191,63 @@ this into a dated release heading.
 
   **The log states the observation, not a cause.** An earlier version
   read "client disconnected", which asserts something the runtime never
-  reports — and it sends the next reader after the wrong component,
-  which is how the investigation behind this spent its first hour
-  chasing the qmd daemon.
+  reports — and a log line naming an unobserved cause sends the next
+  reader after the wrong component.
 
-  **What it does not catch: a plain client hang-up.** Measured against
-  the live daemon, a `tools/call` aborted by the client after 2s logs
-  the entry and then neither returns nor raises — no exception crosses
-  the tool boundary at all, and the result is discarded at the response
-  write, downstream of any tool-call hook. Catching that needs an
-  ASGI-level observer of `http.disconnect`, a different mechanism at a
-  different layer; the docstring says so rather than implying coverage.
+  **What it does not catch: a client that simply stops waiting.**
+  Measured against the live daemon, a `tools/call` abandoned by the
+  client after 2s logs the entry and then neither returns nor raises,
+  because the server was never told; the result is discarded at the
+  write, downstream of any tool-call hook. That case is not a transport
+  failure — see the entry above for what it actually is — and this
+  middleware names only cancellations that genuinely happen.
+
+- **`lies mcp down` refuses to stop a daemon that is serving.** The
+  LIES MCP daemon is machine-global and every MCP client on the host
+  holds a long-lived stream to it, so one session's `down` disconnects
+  all of them at once. Each disconnected client then sees a tool-level
+  interrupt with nothing in the LIES or qmd logs — which reads as a
+  hung query, and sends the next reader chasing the qmd daemon instead
+  of the lifecycle command that caused it. `down` now refuses while
+  the daemon is answering its socket, and the message names the
+  consequence and the `--force` escape hatch.
+
+  The predicate is reachability, not a session count. The live session
+  registry lives inside the daemon process
+  (`session_manager._server_instances`), so a count is not available to
+  the CLI without a new tool; and a count would make the gate flaky,
+  since a client that has finished its work still holds an open
+  stream. A daemon nobody can reach fails the check and stops
+  cleanly, so a crashed or wedged daemon stays clearable — the gate
+  protects live clients, and one nobody can reach has none.
+
+- **Investigated and rejected: the idle-SSE-stream theory.** A long
+  debugging effort concluded that a client disconnect mid-call was
+  losing the `202`-owed response on an idle stream. Two fixes were built
+  and shipped against that premise before any measurement tested it.
+  When tested, the premise was false on both sides:
+
+  - **The server does not drop idle streams.** A GET stream held open
+    for 30 minutes survived intact, carrying one ping and then 29+
+    minutes of silence.
+  - **The client reported no transport error at all** across the entire
+    window in which aborts occurred. Every `SSE stream disconnected` in
+    opencode's log sits within 1-3 seconds of a `lies mcp down`/`up` —
+    the daemon lifecycle, not idleness.
+
+  The real cause is queueing. The qmd daemon executes queries strictly
+  one at a time: **three concurrent queries measured a 0.99x speedup**
+  (29.48s concurrent vs 29.18s serial), so fanning out MCP calls
+  multiplies latency rather than reducing it, and the last caller parks
+  on a ~30s queue until a client-side budget expires. An
+  "interrupted"/"aborted" result on a LIES call is that budget
+  expiring, and is not evidence about the server.
+
+  `PingMiddleware` is therefore **not** registered — it was added for a
+  failure mode that does not exist. `AbandonedCallMiddleware` remains,
+  scoped in the entry below. The durable outcome is a usage rule in
+  `AGENTS.md`: one MCP call at a time, and read an abort as "too slow",
+  not "broken".
 
 - **`lies mcp down` refuses to stop a daemon that is serving.** The
   LIES MCP daemon is machine-global and every MCP client on the host

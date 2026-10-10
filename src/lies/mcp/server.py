@@ -34,12 +34,7 @@ from typing import Any, cast
 
 import anyio
 from fastmcp import FastMCP
-from fastmcp.server.middleware import (
-    CallNext,
-    Middleware,
-    MiddlewareContext,
-    PingMiddleware,
-)
+from fastmcp.server.middleware import CallNext, Middleware, MiddlewareContext
 from fastmcp.server.transforms import PromptsAsTools
 from mcp.types import ToolAnnotations
 from pydantic import BaseModel, ConfigDict
@@ -71,24 +66,31 @@ mcp = FastMCP(
 class AbandonedCallMiddleware(Middleware):
     """Log a tool call that was cancelled before it produced a result.
 
-    A cancelled call -- server shutdown, a request timeout, a client
-    that hangs up on a stack which propagates the cancellation -- leaves
-    no trace by default: no LIES-side error and no qmd log line. This
-    names the event: tool, elapsed time, and the exception that ended
-    the call. Cancellation is a ``BaseException`` subclass and needs
-    naming explicitly, because a bare ``except Exception`` is what let
-    these stay invisible.
+    A cancelled call -- server shutdown, a request timeout, an
+    explicitly aborted request -- leaves no trace by default: no
+    LIES-side error, no qmd log line. This names the event: tool,
+    elapsed time, and the exception that ended the call. Cancellation is
+    a ``BaseException`` subclass and needs naming explicitly, because a
+    bare ``except Exception`` is what let these stay invisible.
 
-    **What this does not catch.** On this stack a plain client
-    disconnect does *not* cancel the server-side tool execution.
-    Measured against the live daemon: with this middleware in place, a
-    ``tools/call`` aborted by the client after 2s logs the entry and
-    then neither returns nor raises -- no exception crosses the tool
-    boundary at all, and the result is discarded at the response write,
-    downstream of this hook. So this names cancellations, and the
-    client-disconnect case remains the silent one. Catching it needs an
-    ASGI-level observer of ``http.disconnect``, which is a different
-    mechanism at a different layer.
+    **What this does not catch, and why it is not the fix for the
+    aborts it was written for.** A client that merely stops waiting --
+    the ``Tool execution interrupted`` case -- does not cancel
+    anything here. Measured against the live daemon: a ``tools/call``
+    abandoned by the client after 2s logs the entry and then neither
+    returns nor raises, because the server was never told; the request
+    is left queued and the result is discarded at the write, downstream
+    of this hook. So this names cancellations that genuinely happen,
+    and the queue-timeout case stays silent.
+
+    That case is not a transport problem at all. The server holds an
+    idle GET stream open indefinitely (measured: 30 minutes, one ping,
+    no drop), and opencode's transport logged zero errors throughout.
+    The aborts were a client-side budget expiring on queued work, and
+    the reason the queue is long is that the qmd daemon executes
+    queries strictly one at a time -- three concurrent queries measured
+    a 0.99x speedup, so fanning out multiplies latency instead of
+    reducing it.
 
     Only abandonment is logged. A tool raising a normal exception
     becomes an error *result* on the wire and is already reported to
@@ -154,22 +156,6 @@ def _tool_name(context: MiddlewareContext[Any]) -> str:
         return inner
     return "<unknown tool>"
 
-
-# Keep the streamable-HTTP GET stream warm. A ``tools/call`` is
-# accepted with ``202`` and its response is owed on that long-lived
-# stream; a qmd ``search`` is 12-22s of embed-and-scan that puts zero
-# bytes on the wire. A client that tears down an idle stream loses the
-# response to the *next* call, and the caller sees a transport-level
-# interrupt with no LIES-side error and no qmd log line -- the request
-# never reached the point of dispatching a query. Measured on this
-# host: a fresh daemon serves the same ``search`` that aborts on an
-# 8516s-idle one.
-#
-# The interval is 5s rather than FastMCP's 30s default because a
-# single qmd query takes 12-22s, so the default leaves the whole window
-# that fails uncovered. Pinned by
-# ``tests/mcp/test_streamable_keepalive.py``.
-mcp.add_middleware(PingMiddleware(interval_ms=5000))
 
 # Name the abandonment when a client disconnects mid-call. Registered
 # after the ping middleware so the ping is not logged as an

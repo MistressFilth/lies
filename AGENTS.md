@@ -109,6 +109,35 @@ call.**
   is a claim about the corpus that is really a claim about the process.
 - **`lies mcp up` is not the fix.** It starts LIES' own MCP server. The
   qmd daemon is `lies qmd up`.
+- **One MCP call at a time. A search is ~10–30s, and fanning out
+  multiplies that instead of hiding it.** The qmd daemon executes
+  queries strictly one at a time: three concurrent queries measured a
+  **0.99x speedup** (29.48s vs 29.18s serial — the second waited for
+  the first, the third for both). So `Promise.all` over `search` calls
+  does not parallelise anything; it just parks the last caller on a
+  ~30s queue where it can exceed a client-side call budget.
+
+  **A tool-level "interrupted"/"aborted" result on a LIES call means
+  the budget expired on queued work — it is not evidence about the
+  server.** Read it as "this call took too long", not "the daemon is
+  wedged" and not "the stream dropped". The evidence that settles it is
+  in the logs, and it is a *negative*: an abort accompanied by **zero
+  new lines in `~/.cache/qmd/mcp.log`** means no query was ever
+  dispatched, so the call queued and timed out rather than failing
+  inside the daemon. Recycle-on-abort is the wrong reflex here — it
+  costs a model reload and hides the real cause.
+- **The streamable-HTTP transport does not time out idle streams.** A
+  GET stream held open for 30 minutes survived intact, carrying one
+  ping and then 29+ minutes of silence. There is no server-side idle
+  keepalive to add, and none is needed. FastMCP's `PingMiddleware` is
+  deliberately **not** registered: it was added for a failure mode that
+  does not exist, then removed once the hold falsified the premise.
+- **`lies mcp down` disconnects every client on the host.** The LIES
+  daemon is machine-global, so one session's `down` drops all of them
+  at once — and that *is* a real transport failure, visible as
+  `SSE stream disconnected` then `ConnectionRefused` in opencode's log.
+  `down` refuses while the daemon is serving; pass `--force` when you
+  mean it.
 - **Three daemon failure modes, three answers.** A *wedge* recycles and
   raises `QmdWedged` carrying a `mcp.log` tail; no transparent retry,
   because a fresh daemon re-wedges on the same payload. *Unreachable*
