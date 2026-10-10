@@ -135,8 +135,11 @@ call.**
   rather than raising on the retrieval path. The wait the daemon was
   already imposing now has an owner, a deadline, a heartbeat and a log
   line; exhaustion raises `QmdLockBusy` carrying the lock path, the
-  holder PID, the elapsed wait and the budget. The other three answer
-  in milliseconds and `read_library_bodies` issues one `get` per path,
+  holder PID, the elapsed wait and the budget — though on the ask path
+  those facts reach the user only if the librarian mirrors the
+  envelope's `fallback_reason`, and a non-compliant model degrades to a
+  generic reason with no corpus claim. The other three answer in
+  milliseconds and `read_library_bodies` issues one `get` per path,
   so gating them would park a whole batch behind the slowest query in
   the process — the queue they would join is one long query, not each
   other.

@@ -58,18 +58,38 @@ class WikiFlockIndeterminate(WikiFlockError):
 
 
 class QmdLockBusy(WikiFlockError):
-    """Another process holds the site-wide qmd CLI flock; 30 s wait exhausted.
+    """Another process holds the site-wide qmd flock past the wait budget.
+
+    **The budget belongs to the raiser, not to this class.** Two paths
+    share the flock and they wait for different lengths: the
+    :func:`~lies.qmd.lock.with_qmd_lock` CLI decorator polls for 30 s,
+    and the daemon query path
+    (:func:`~lies.qmd.lock.qmd_lock_async`) polls for 120 s,
+    overridable per call with ``LIES_QMD_QUERY_LOCK_WAIT``. So there is
+    no single number to read off this docstring — read ``max_s`` off the
+    instance, which every production raise site populates.
 
     Distinct from WikiLockBusy because (a) the qmd flock is site-wide, not
     per-wiki; (b) the operator recovery is to wait and retry the operation
     (concurrent CLI subprocesses are expected transient contention), not
     to run ``lies flock qmd force-repair``.
 
+    (b) applies to the query path too, for a sharper reason: the daemon
+    answered nothing because nothing was dispatched to it, so there is no
+    daemon state to recycle and no ``mcp.log`` line to read. Retry is the
+    remedy there; recycling is the wrong one and costs a model reload.
+
     Attributes:
         holder_pid: PID of the live holder, when known. ``None`` if unknown
             (e.g., the contention pre-dates the heartbeat envelope).
         waited_s: Wall-clock seconds spent polling before raising.
-        max_s: Configured timeout (default ``30.0`` per the spec).
+        max_s: The budget *that raiser* waited for, in seconds — read it
+            off the instance rather than assuming a number. Every
+            production raise site passes it explicitly: both raisers in
+            :mod:`lies.qmd.lock` pass their own ``retry_budget_s``, and
+            :meth:`~lies.library.writer.LibraryWriter.commit` forwards
+            the value it caught. The ``30.0`` in ``__init__`` is a default
+            for hand-built instances and matches no production raise site.
         lock_path: The inode the wait was spent on, when the raise site
             knows it — which is every site inside :mod:`lies.qmd.lock`,
             because the triad is resolved once per acquisition and is

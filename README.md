@@ -758,10 +758,19 @@ lock between reap and retry, the command exits 1 with
 lies flock qmd force-repair
 ```
 
-If a `qmd_*` call times out past the 30 s wait budget,
-`LibraryWriter.commit` raises `QmdLockBusy` with the holder PID.
-Wait a few seconds and retry, or inspect with
-`lies flock qmd status` first.
+Two callers share that flock, and they raise the same error on
+different budgets:
+
+- A `qmd_*` CLI helper waits 30 s. `LibraryWriter.commit` re-raises
+  `QmdLockBusy` with the holder PID when that budget is exhausted.
+- A daemon `query` queues behind the same lock for 120 s (override with
+  `LIES_QMD_QUERY_LOCK_WAIT`). On exhaustion it raises `QmdLockBusy`
+  too, carrying the lock path, the holder PID, the elapsed wait and the
+  budget.
+
+In both cases wait and retry rather than recycling the daemon: nothing
+was dispatched, so there is no daemon state to recycle and no `mcp.log`
+line to read. Inspect a live holder with `lies flock qmd status` first.
 
 ## Configuration
 
@@ -779,6 +788,10 @@ Environment variables:
 - `LIES_QMD_LOCK_PATH` — overrides the default
   `${XDG_STATE_HOME:-~/.local/state}/lies/qmd.lock` lock path; useful for
   sandboxing or per-wiki isolation
+- `LIES_QMD_QUERY_LOCK_WAIT` — wait budget in seconds for the daemon query
+  path's flock wait (default: `120`). Anything that is not a positive
+  finite number falls back to the default. The `qmd_*` CLI helpers keep
+  their own 30 s budget and are not affected.
 - `LIES_XDG_DATA_HOME` — overrides `$XDG_DATA_HOME` for LIES
 - `LIES_XDG_CONFIG_HOME` — overrides `$XDG_CONFIG_HOME` for LIES
 - `LIES_XDG_RUNTIME_DIR` — overrides `$XDG_RUNTIME_DIR` for LIES
