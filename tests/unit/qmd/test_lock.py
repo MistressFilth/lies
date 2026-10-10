@@ -286,6 +286,92 @@ def test_stale_holder_recovery_via_dead_pid(monkeypatch, tmp_path):
         mod._release(fd)
 
 
+def _stage_a_live_holder(lock_mod, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Stage a lock held by a *live* process -- this one.
+
+    Same-pid contention is what a second thread or task really looks like,
+    and ``self_acquire_is_stale=False`` is what keeps it contention rather
+    than self-recovery. Staging it by hand avoids a subprocess holder: the
+    reaping and escalation paths are covered above, and what is under test
+    here is what the poll loop does while losing, which a subprocess would
+    only make slower to arrange.
+    """
+    monkeypatch.setenv("LIES_QMD_LOCK_PATH", str(tmp_path / "qmd.lock"))
+    lock_path, pid_path, _ = lock_mod._lock_paths()
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path.touch()
+    pid_path.write_text(str(os.getpid()), encoding="utf-8")
+    return lock_path
+
+
+def _count_lock_path_resolutions(lock_mod, monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """Wrap ``_lock_paths`` with a counter. Returns the call-count list."""
+    real = lock_mod._lock_paths
+    calls = [0]
+
+    def counting() -> tuple[Path, Path, Path]:
+        calls[0] += 1
+        return real()
+
+    monkeypatch.setattr(lock_mod, "_lock_paths", counting)
+    return calls
+
+
+def test_a_contended_sync_acquire_resolves_the_lock_path_once(monkeypatch, tmp_path: Path) -> None:
+    """One resolution per *acquisition*, however many attempts it takes.
+
+    ``_lock_paths`` is not free: ``Path.resolve()`` walks the filesystem to
+    settle symlinks, and on the ``XDG_STATE_HOME`` fallback branch it
+    ``mkdir(parents=True)`` first. Resolving per attempt does that at the
+    poll rate — ten times a second, for the whole wait — on a path that
+    cannot change mid-acquire. The sync loop has always resolved once, and
+    the poll interval is short enough to multiply the waste into something
+    measurable on a contended host.
+
+    The poll interval is shrunk so the contended acquire takes many attempts
+    cheaply; that is what gives the assertion teeth. At one resolution per
+    attempt this would be double digits.
+    """
+    import lies.qmd.lock as lock_mod  # type: ignore[import-not-found]
+
+    _stage_a_live_holder(lock_mod, tmp_path, monkeypatch)
+    monkeypatch.setattr(lock_mod, "_POLL_INTERVAL_S", 0.005)
+    calls = _count_lock_path_resolutions(lock_mod, monkeypatch)
+
+    with pytest.raises(lock_mod.QmdLockBusy):
+        lock_mod._acquire_with_poll(retry_budget_s=0.05, max_age_s=1800.0)
+
+    assert calls[0] == 1, (
+        f"a contended sync acquire resolved the lock triad {calls[0]}x; it "
+        "must resolve once before the loop, not once per attempt"
+    )
+
+
+async def test_a_contended_async_acquire_resolves_the_lock_path_once(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """The async twin of the above, for the same reason.
+
+    Nothing in production preserved per-attempt resolution here, so this is
+    a choice rather than a regression guard: the async poll runs at the same
+    rate against the same helper, and a wait that can be 120s would do the
+    walk 1200 times for nothing.
+    """
+    import lies.qmd.lock as lock_mod  # type: ignore[import-not-found]
+
+    _stage_a_live_holder(lock_mod, tmp_path, monkeypatch)
+    monkeypatch.setattr(lock_mod, "_POLL_INTERVAL_S", 0.005)
+    calls = _count_lock_path_resolutions(lock_mod, monkeypatch)
+
+    with pytest.raises(lock_mod.QmdLockBusy):
+        await lock_mod._acquire_with_poll_async(retry_budget_s=0.05, max_age_s=1800.0)
+
+    assert calls[0] == 1, (
+        f"a contended async acquire resolved the lock triad {calls[0]}x; it "
+        "must resolve once before the loop, not once per attempt"
+    )
+
+
 """Meta-tests: every qmd_* helper in src/lies/qmd/cli.py is wrapped."""
 
 
@@ -683,6 +769,23 @@ def test_query_lock_wait_rejects_a_non_positive_override(monkeypatch: pytest.Mon
     assert lock_mod.query_lock_wait_s() == 120.0
 
 
+def test_query_lock_wait_rejects_a_non_finite_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`inf` parses and passes `> 0`, so the guard above it does not catch it.
+
+    Accepted, it turns the poll into an unbounded wait: a contended query
+    retries forever with no diagnostic anywhere, which is the "no bound and
+    no visibility" failure this primitive exists to remove — reintroduced
+    through the configuration meant to bound it. `nan` compares false
+    against `> 0` already; it is pinned here so the reason it falls back is
+    recorded rather than incidental.
+    """
+    from lies.qmd import lock as lock_mod
+
+    for raw in ("inf", "+inf", "Infinity", "nan", "-inf"):
+        monkeypatch.setenv("LIES_QMD_QUERY_LOCK_WAIT", raw)
+        assert lock_mod.query_lock_wait_s() == 120.0, f"{raw!r} was accepted as a wait budget"
+
+
 def test_qmd_lock_async_default_signature() -> None:
     """The daemon query path gets a 120s budget, not the CLI's 30s.
 
@@ -832,24 +935,72 @@ async def test_qmd_lock_async_releases_on_cancellation(
     `except Exception` -- or to an `except` clause that does not name it --
     would skip the cleanup. The next caller is then blocked for the remainder
     of its budget by a lock held by a request that no longer exists.
+
+    The cancellation is a real ``task.cancel()``, and that detail is the
+    test. ``asyncio.timeout`` -- the obvious way to write this -- *converts*
+    the CancelledError into a TimeoutError before it reaches the context
+    manager, so the generator unwinds on the exception path and the test
+    proves only what `test_qmd_lock_async_releases_on_exception` already
+    proves. An implementation whose release hangs off ``except Exception``
+    passes such a test and strands the lock on every real cancellation.
+
+    So the exception delivered at the generator's ``yield`` is observed
+    rather than assumed: `recording` wraps the real context manager and
+    records what unwound it, in the same task and therefore the same
+    ``_held_depth`` context.
     """
     from lies.qmd import lock as lock_mod
 
     monkeypatch.setenv("LIES_QMD_LOCK_PATH", str(tmp_path / "qmd.lock"))
     lock_path, pid_path, state_path = lock_mod._lock_paths()
+    seen: list[str] = []
+    depth_after: list[int] = []
 
-    with contextlib.suppress(TimeoutError):
-        async with lock_mod.qmd_lock_async(timeout_s=30.0):
-            assert lock_path.exists()
-            async with asyncio.timeout(0.02):
-                await asyncio.sleep(30.0)
+    @contextlib.asynccontextmanager
+    async def recording(inner):
+        try:
+            async with inner:
+                yield
+        except BaseException as exc:  # noqa: BLE001 — the point is to catch everything
+            seen.append(type(exc).__name__)
+            # Read in this task's context, after the inner generator has
+            # unwound: a stranded depth is invisible from the test body,
+            # because the holder ran in its own context.
+            depth_after.append(lock_mod._held_depth.get())
+            raise
 
+    async def holder() -> None:
+        async with recording(lock_mod.qmd_lock_async(timeout_s=1.0)):
+            await asyncio.sleep(30.0)  # cancelled from outside
+
+    task = asyncio.create_task(holder())
+    try:
+        # The holder acquires synchronously, so yielding once is enough for
+        # it to be inside the critical section. Assert rather than assume:
+        # cancelling before the acquire would test nothing.
+        await asyncio.sleep(0)
+        assert lock_path.exists(), "the holder never acquired the lock"
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+    finally:
+        if not task.done():
+            task.cancel()
+
+    assert seen == ["CancelledError"], (
+        f"the context manager unwound on {seen!r}, not on CancelledError — "
+        "this test is not exercising the cancellation path at all"
+    )
+    assert depth_after == [0], (
+        f"_held_depth was left at {depth_after!r} by the cancellation; every "
+        "later acquire in that context will skip the flock"
+    )
     assert not lock_path.exists(), "cancellation stranded the lock file"
     assert not pid_path.exists()
     assert not state_path.exists()
-    assert lock_mod._held_depth.get() == 0
 
-    # A stranded lock would make this poll out its budget and raise.
+    # And the next caller gets it immediately rather than polling a stray
+    # file, both here and in a fresh context.
     async with lock_mod.qmd_lock_async(timeout_s=0.05):
         pass
 

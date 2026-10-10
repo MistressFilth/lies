@@ -24,6 +24,7 @@ import contextlib
 import contextvars
 import functools
 import logging
+import math
 import os
 import time
 from collections.abc import AsyncIterator
@@ -117,8 +118,14 @@ class _Attempt:
     holder_pid: int | None = None
 
 
-def _attempt_acquire(max_age_s: float) -> _Attempt:
+def _attempt_acquire(paths: tuple[Path, Path, Path], max_age_s: float) -> _Attempt:
     """Try once to take the flock. Never blocks, never sleeps.
+
+    ``paths`` is the triad resolved by the caller, not resolved here. A
+    contended acquire runs one attempt per poll interval for the length of
+    its budget, so resolving per attempt would redo a ``Path.resolve()``
+    realpath walk — and, on the fallback branch, a ``mkdir`` — at the poll
+    rate for the whole wait.
 
     Returns ``outcome="won"`` on success -- the holder pid and heartbeat are
     already registered by then -- ``"busy"`` when a live contender holds it,
@@ -129,7 +136,7 @@ def _attempt_acquire(max_age_s: float) -> _Attempt:
         :class:`WikiFlockIndeterminate`: the contender's liveness cannot be
             determined. The primitive did not reap.
     """
-    lock_path, pid_path, state_path = _lock_paths()
+    lock_path, pid_path, state_path = paths
     result = acquire_create_lock(
         lock_path,
         max_age_s=max_age_s,
@@ -170,11 +177,16 @@ def _acquire_with_poll(
     Blocking: every wait is a :func:`time.sleep`, so this is for sync call
     sites only. An async caller that lands here stops the event loop for the
     length of the wait; use :func:`qmd_lock_async` instead.
+
+    The triad is resolved once, before the loop, as it always was — one
+    resolution per acquisition, however many attempts that acquisition
+    takes.
     """
+    lock_paths = _lock_paths()
     deadline = time.monotonic() + retry_budget_s
     started_at = time.monotonic()
     while True:
-        attempt = _attempt_acquire(max_age_s)
+        attempt = _attempt_acquire(lock_paths, max_age_s)
         if attempt.outcome == "won":
             return attempt.fd
         if time.monotonic() >= deadline:
@@ -199,11 +211,15 @@ async def _acquire_with_poll_async(
     ``_POLL_INTERVAL_S`` overshoots a short budget by up to a full poll
     interval -- a 50 ms wait costs 100 ms -- and the clamp bounds that to
     one extra attempt.
+
+    Resolved once per acquisition here too. The async path has no legacy
+    behaviour to preserve, but it has the same poll rate.
     """
+    lock_paths = _lock_paths()
     deadline = time.monotonic() + retry_budget_s
     started_at = time.monotonic()
     while True:
-        attempt = _attempt_acquire(max_age_s)
+        attempt = _attempt_acquire(lock_paths, max_age_s)
         if attempt.outcome == "won":
             return attempt.fd
         remaining = deadline - time.monotonic()
@@ -336,8 +352,7 @@ async def qmd_lock_async(
         yield None
     finally:
         # reset(), not ``set(0)``: it restores the exact prior value and
-        # cannot clobber a depth an inner frame raised. Order matters --
-        # the release runs before the depth is visible again elsewhere.
+        # cannot clobber a depth an inner frame raised.
         _held_depth.reset(token)
         _release(fd)
 
@@ -354,10 +369,15 @@ def query_lock_wait_s() -> float:
 
     Read per call so a host can retune it without restarting the daemon.
 
-    A malformed or non-positive value falls back to the default rather than
-    raising. This is read on the retrieval path, and raising here would turn
-    a typo in a shell profile into every query failing — a far worse outcome
-    than ignoring the knob.
+    Anything that is not a positive, finite number falls back to the default
+    rather than raising. This is read on the retrieval path, and raising
+    here would turn a typo in a shell profile into every query failing — a
+    far worse outcome than ignoring the knob.
+
+    ``inf`` is in that set deliberately: it parses, it passes ``> 0``, and
+    it turns the poll into an unbounded wait with no diagnostic anywhere.
+    A budget nobody set is exactly as real a mistake as a budget that is
+    not a number.
     """
     raw = os.environ.get(_QUERY_LOCK_WAIT_ENV)
     if raw is None:
@@ -366,4 +386,4 @@ def query_lock_wait_s() -> float:
         value = float(raw)
     except ValueError:
         return _QUERY_LOCK_WAIT_S
-    return value if value > 0 else _QUERY_LOCK_WAIT_S
+    return value if (math.isfinite(value) and value > 0) else _QUERY_LOCK_WAIT_S
