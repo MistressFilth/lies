@@ -109,14 +109,19 @@ agent's search routes through it. qmd is optional: if it is not
 installed or fails to start, the LIES daemon still comes up with a
 warning, and search runs degraded. Pass `--no-qmd` to skip the step.
 
-The daemon registers a 5s keepalive (`PingMiddleware`) on its
-streamable-HTTP transport. A `tools/call` is accepted with `202` and
-its response is owed on the long-lived GET stream, while a qmd search
-is 12-22s of embed-and-scan that sends nothing — so an unwarmed stream
-is torn down by the client and the response is lost, surfacing at the
-host as a tool-level interrupt with nothing in the LIES or qmd logs.
-The interval is 5s rather than FastMCP's 30s default because one
-query outlasts the default.
+A `tools/call` is accepted with `202` and its response is owed on the
+long-lived GET stream, while a qmd search is 12-22s of embed-and-scan
+that sends nothing. That gap once looked like it needed a keepalive:
+the daemon registered a 5s `PingMiddleware` to stop the client tearing
+down an "unwarmed" stream. **It does not any more, and the premise was
+wrong.** A GET stream held open for 30 minutes survived intact,
+carrying one ping and then 29+ minutes of silence — so there was no
+idle stream to keep alive, and a keepalive registered for that failure
+would only add a log line nobody can act on. The observable symptom it
+was chasing — a tool-level interrupt with nothing in the LIES or qmd
+logs — is real, but it has other causes: a timed-out budget, or another
+session's `lies mcp down`, which disconnects every client on the host
+at once.
 
 When the daemon is unreachable mid-session, `QmdCapability` falls back to
 an in-process FastMCP server that uses the same `wiki/index.md` path the

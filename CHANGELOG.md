@@ -181,6 +181,51 @@ this into a dated release heading.
 
 ### Fixed
 
+- **The qmd seam builds a fresh client per call, so concurrent calls stop
+  hanging.** `_daemon_client` returned a **process-wide cached**
+  `fastmcp.Client`, and `_call` enters it with `async with` per call — so
+  two concurrent calls entered and exited the *same* object, and the first
+  exit tore down state the second still held. The daemon is
+  machine-global, so that one object was shared by every LIES session on
+  the host: any two concurrent calls, from any combination of sessions,
+  hung. Measured through the real daemon, 3 concurrent `search` calls:
+
+  | config | result |
+  |---|---|
+  | shared client, narrow gate | **0/3 complete, 60.1 s hang** |
+  | fresh per call, narrow gate | **3/3, 1.4 s** |
+
+  Load envelope, all clean (zero hangs, zero errors): N=6 6/6 in 2.6 s;
+  N=9 9/9 in 3.2 s; N=15 15/15 in 7.2 s; N=25 25/25 in 8.3 s; and 5
+  search + 5 read mixed 10/10 in 2.53 s, reads done at 0.33 s.
+
+  **This is a correctness fix, not a latency win.** Warm-run wall times
+  are equal — N=6 was 2.2–2.4 s shared against 2.6 s fresh, N=25 was
+  8.5 s against 8.3 s. The win is that concurrent calls finish at all.
+
+  The `_client` / `_client_url` globals and `_reset_client()` are gone,
+  and with them the comment that justified them. Two of that comment's
+  claims were false and are worth naming, because the cache reads as an
+  obvious optimisation to restore. "The daemon's model is not re-warmed
+  per call" is false: the model lives in the qmd *daemon*, whose RSS
+  stayed flat at 1957–1965 MiB across every run. And the handshake was
+  already per-call under the cache too, because `_call` already opened a
+  session each call — so rebuilding adds **+0.9 ms / +1 %** on 20 `status`
+  calls (median 69.1 ms shared, 70.0 ms fresh), 0 MiB of VRAM delta
+  across 5 runs, and LIES RSS unchanged at ~182 MiB. Nothing is given up.
+
+  **The narrow gate stays narrow.** `if name == "query":` is unchanged,
+  and widening it was measured and is a trap: with every daemon call
+  gated, mixed 5-search + 5-read load gave **0/10, every call timing out
+  at 90 s**, with the log naming the *daemon's own* PID as the lock
+  holder for the full 120 s budget before `QmdLockBusy`. That is a
+  self-deadlock — a gated call making a nested daemon call from a
+  different context sees `_held_depth == 0` and blocks on a lock its own
+  process holds, while qmd kept answering queries in 119 ms. The narrow
+  gate is structurally immune: the only gated op is `query`, which makes
+  no nested `daemon_tool` calls (the reachability probe is the separate
+  `qmd_daemon_reachable()`), and reads never take the lock at all.
+
 - **The qmd query path single-flights, and its failure mode is now
   named instead of invisible.** Two concurrent `query` calls against one
   daemon now serialize on the site-wide `qmd.lock` rather than joining
@@ -207,8 +252,17 @@ this into a dated release heading.
   one at a time, and the measured **0.99x** concurrency speedup (29.48s
   concurrent vs 29.18s serial) is unaffected. The gate does not make
   the work faster; it moves a wait that was already happening from an
-  unbounded queue in another process to a bounded one with an owner, a
-  deadline and a log line.
+  unbounded queue in another process to a bounded one with an owner and
+  a deadline.
+
+  **There is no log line on the wait path.** An earlier draft of this
+  entry claimed one; measurement says otherwise. A `search` blocked for
+  2 s added 12 lines to `qmd/mcp.log`, every one of them transport
+  plumbing, and not one mentioning the lock. The wait is invisible there
+  because it never reaches the daemon — the caller is waiting on a local
+  inode. Visibility survives in two other places: the ephemeral `.pid`
+  sidecar beside the lock, and the `fallback_reason` the exception's
+  fields are copied into on the ask path.
 
   **The gate surrounds the recycle path, and that is a real cost.** For
   `query` the held lock spans `_call_daemon_tool` →
@@ -327,37 +381,28 @@ this into a dated release heading.
   cleanly, so a crashed or wedged daemon stays clearable — the gate
   protects live clients, and one nobody can reach has none.
 
-- **A keepalive ping now rides the streamable-HTTP stream — one per
-  request, which is *not* the same thing as a warm stream.** The
-  underlying defect is diagnosed and real: a `tools/call` on that
-  transport is accepted with `202` and its response is owed on the
-  long-lived GET stream, while a qmd `search` is 12-22s of
-  embed-and-scan that puts zero bytes on the wire. A client that tears
-  down an idle stream loses the response to the *next* call, and the
-  host reports a tool-level interrupt with no LIES-side error and no
-  qmd log line, because the request never reached the point of
-  dispatching a query. A freshly started daemon serves the same
-  `search` that aborts on an 8516s-idle one; `vec+lex` completes in
-  12.32s against a 120s bound. The predictor is stream idleness, not
-  call duration.
+- **The idle-stream theory was tested and falsified; no keepalive ships.**
+  This entry previously described a `PingMiddleware` keepalive as a
+  "partial mitigation" and cited `tests/mcp/test_streamable_keepalive.py`
+  as pinning it. Both are gone, and the reason is a measurement that
+  overturned the premise: a GET stream held open for **30 minutes**
+  survived intact, carrying one ping and then 29+ minutes of silence.
+  There is no idle stream being torn down, so there is nothing for a
+  keepalive to prevent, and one registered for it would emit log lines
+  nobody can act on.
 
-  **What landed is a partial mitigation, not a fix.** FastMCP's
-  `PingMiddleware` is registered at 5s, and it emits exactly **one**
-  ping per connection: measured 1 frame in 62s and 1 in 25s where 12
-  and 5 were expected. The loop is created per request
-  (`ping.py:63`) and cancelled through that request's `Connection`
-  exit stack (`ping.py:84`), so it dies with the request that spawned
-  it — on the handshake era and the sessionless era alike, so protocol
-  era is not the variable. The MCP SDK's streamable-HTTP transport
-  ships no keepalive of its own, and `PingMiddleware`'s one ping per
-  request is an upstream defect.
-
-  The idle-stream failure therefore **remains open**. A working
-  keepalive needs pings driven from the session registry
-  (`session_manager._server_instances`) rather than from a request
-  hook; `tests/mcp/test_streamable_keepalive.py` pins the current
-  behaviour and marks the idle-stream case as a known failure so it
-  flips when the real remedy lands.
+  What was real underneath survives as a mechanism, not as a bug: a
+  `tools/call` on that transport is accepted with `202` and its response
+  is owed on the long-lived GET stream, while a qmd `search` is 12-22s
+  of embed-and-scan that puts zero bytes on the wire. The diagnosis that
+  did hold is the upstream detail — `PingMiddleware` creates its loop per
+  request (`ping.py:63`) and cancels it through that request's
+  `Connection` exit stack (`ping.py:84`), so it emits exactly **one**
+  ping per connection, measured at 1 frame in 62s and 1 in 25s where 12
+  and 5 were expected. The MCP SDK's streamable-HTTP transport ships no
+  keepalive of its own. That is why the middleware was added and then
+  removed, and it is recorded in `AGENTS.md` as a usage rule rather than
+  as a defect to chase.
 
 - **An emptied collection registry is reported as one event, not N
   drift entries.** On 2026-10-05 the live index reported `collections:

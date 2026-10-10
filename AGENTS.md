@@ -133,8 +133,8 @@ call.**
   call, so a host can retune without a restart, and anything that is
   not a positive finite number (including `inf`) falls back to 120
   rather than raising on the retrieval path. The wait the daemon was
-  already imposing now has an owner, a deadline, a heartbeat and a log
-  line; exhaustion raises `QmdLockBusy` carrying the lock path, the
+  already imposing now has an owner, a deadline and a heartbeat;
+  exhaustion raises `QmdLockBusy` carrying the lock path, the
   holder PID, the elapsed wait and the budget — though on the ask path
   those facts reach the user only if the librarian mirrors the
   envelope's `fallback_reason`, and a non-compliant model degrades to a
@@ -143,6 +143,46 @@ call.**
   so gating them would park a whole batch behind the slowest query in
   the process — the queue they would join is one long query, not each
   other.
+
+  **There is no log line on the wait path, and do not add one
+  expecting it to be read.** A `search` blocked for 2 s added 12 lines
+  to `qmd/mcp.log`, all transport plumbing, zero mentioning the lock:
+  the wait never reaches the daemon, because the caller is waiting on a
+  local inode. The heartbeat is an in-process timer, not a write. The
+  evidence that survives is the ephemeral `.pid` sidecar beside the
+  lock and the `fallback_reason` on the envelope.
+
+  **Widening the gate to every daemon op self-deadlocks — measured.**
+  With all four tools gated, mixed 5-search + 5-read load gave **0/10**,
+  every call timing out at 90 s, the log naming the *daemon's own* PID
+  as holder for the full 120 s budget before `QmdLockBusy`, while qmd
+  kept answering in 119 ms. A gated call making a nested daemon call
+  from a different context sees `_held_depth == 0` and blocks on a lock
+  its own process holds. `if name == "query":` is narrow *and must stay
+  narrow*; it is structurally immune because `query` makes no nested
+  `daemon_tool` calls (the probe is the separate
+  `qmd_daemon_reachable()`) and reads never take the lock.
+- **`_daemon_client` builds a fresh `Client` per call. Do NOT
+  "optimise" it back into a cache.** `_call` enters its client with
+  `async with` per call, so a process-wide cached `Client` is one
+  object with one session behind it: two concurrent calls enter and
+  exit the *same* object, and the first exit tears down state the
+  second still holds. The daemon is machine-global, so that object is
+  shared by every LIES session on the host and any two concurrent calls
+  hang. Measured, 3 concurrent `search` calls: **0/3 complete, 60.1 s
+  hang** cached; **3/3, 1.4 s** fresh, and clean at N=25 (8.3 s) and
+  on mixed 5-search + 5-read load (10/10, 2.53 s).
+
+  The two claims that justified the cache were both false, which is why
+  it looks free: the model does **not** get re-warmed (it lives in the
+  qmd daemon, RSS flat at 1957-1965 MiB across every run), and the MCP
+  handshake was **already** per-call because `_call` opened a session
+  each call. Rebuilding costs +0.9 ms / +1 % on 20 `status` calls
+  (median 69.1 ms shared, 70.0 ms fresh), 0 MiB VRAM delta over 5 runs.
+  `tests/unit/qmd/test_access.py::test_concurrent_calls_never_share_a_client`
+  pins it, and it stubs `fastmcp.Client` rather than `_daemon_client` —
+  stubbing the function that holds the cache would leave it green
+  against the exact defect it exists to catch.
 
   **`QmdLockBusy` is not a transport failure.** Nothing was dispatched,
   so there is no daemon state to recycle and no `mcp.log` line to
@@ -199,9 +239,13 @@ call.**
   written against the httpx LIES declares matches none of them. Re-derive
   by probe before changing the matcher.
 - **`_build_qmd_httpx_client` takes `**kwargs`** — fastmcp calls it with
-  `follow_redirects=`; a fixed signature fails at connect. The cached
-  client is keyed on URL, and is a *client*, not a session (sessions are
-  bound to the event loop that opened them).
+  `follow_redirects=`; a fixed signature fails at connect. It builds a
+  fresh `AsyncClient` per call and caches nothing. (An earlier version
+  of this bullet described a cached client keyed on URL, and argued it
+  was safe because an httpx *client* is not bound to a loop the way an
+  MCP *session* is. That cache is gone — see the fresh-client bullet
+  above — so the distinction no longer buys anything here. The `**kwargs`
+  requirement is the part that still bites.)
 - **`daemon_tool` returns the raw `CallToolResult`.** `get`/`multi_get`
   answer with a content block and `.data` is `None`. The daemon also
   answers an *unknown collection* with an empty result and **no error**.

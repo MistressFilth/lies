@@ -69,34 +69,35 @@ class QmdDaemonWedged(RuntimeError):
 _DAEMON_FAILURES = (QmdDaemonUnavailable, QmdDaemonWedged)
 
 
-# Cached per process so the daemon's model is not re-warmed per call.
-# An MCP session is bound to the event loop that opened it, and this
-# seam is called from `asyncio.run` bridges that each get a fresh loop.
-_client: fastmcp.Client | None = None
-_client_url: str | None = None
-
-
 def _daemon_client(url: str) -> fastmcp.Client:
-    """The process-wide qmd client for ``url``, built on first use."""
-    global _client, _client_url
-    if _client is not None and _client_url == url:
-        return _client
+    """A qmd client for ``url``, built fresh per call.
+
+    Do NOT cache this. A cached ``Client`` is a single object with a
+    single session behind it, and ``_call`` enters it with
+    ``async with`` per call — so two concurrent calls enter and exit
+    the *same* object, and the first exit tears down state the second
+    still holds. The daemon is machine-global, so that one object is
+    shared by every LIES session on the host: any two concurrent
+    calls from any combination of sessions hang. Measured through the
+    real daemon (2026-10-10), 3 concurrent ``search`` calls: 0/3
+    completed, 60.1 s hang cached; 3/3 in 1.4 s fresh, and clean at
+    N=25 (8.3 s) and on mixed 5-search + 5-read load (10/10, 2.53 s).
+
+    Nothing is given up by rebuilding. The handshake already happened
+    per call either way, because ``_call`` opened a session per call
+    under the cache too — so this costs +0.9 ms / +1 % on 20 ``status``
+    calls (median 69.1 ms shared, 70.0 ms fresh). And the reason the
+    cache claimed to exist is false: the embedding model lives in the
+    *qmd daemon*, whose RSS stayed flat at 1957-1965 MiB across every
+    run; LIES' own RSS was ~182 MiB either way and VRAM moved 0 MiB.
+    """
     # Lazy: `lies.qmd.mcp` imports `classify_call_error` from here, so a
     # top-level import would close a cycle.
     from lies.qmd.mcp import _build_qmd_httpx_client
 
-    _client = fastmcp.Client(
+    return fastmcp.Client(
         StreamableHttpTransport(url, httpx_client_factory=_build_qmd_httpx_client)
     )
-    _client_url = url
-    return _client
-
-
-def _reset_client() -> None:
-    """Drop the cached client. For tests and for a changed daemon URL."""
-    global _client, _client_url
-    _client = None
-    _client_url = None
 
 
 # --- the taxonomy ------------------------------------------------------
@@ -486,6 +487,11 @@ async def _call(
     """One tool call, with the daemon's own error text surfaced.
 
     ``raise_on_error=False`` so a tool error arrives as a result.
+
+    Owns ``client`` for the ``async with`` and must be handed one it can
+    close exclusively — that exclusivity is why
+    :func:`_daemon_client` does not cache. See that docstring for the
+    measurement.
     """
     async with client:
         if timeout is None:
@@ -535,6 +541,11 @@ async def read_library_bodies(
     preserving the one-``get``-per-path decision
     (``multi_get`` silently skips 10KB+ documents — 1854 of this
     corpus's 5987 are over the cap).
+
+    That session is per *batch* and is never shared with another
+    batch: it is entered with ``async with``, so sharing it would hand
+    one batch's exit to a sibling's live call. See
+    :func:`_daemon_client`.
 
     Args:
         paths: Library paths (``<collection>/<page>``) to fetch.
