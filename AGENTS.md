@@ -135,14 +135,36 @@ call.**
   rather than raising on the retrieval path. The wait the daemon was
   already imposing now has an owner, a deadline and a heartbeat;
   exhaustion raises `QmdLockBusy` carrying the lock path, the
-  holder PID, the elapsed wait and the budget — though on the ask path
-  those facts reach the user only if the librarian mirrors the
-  envelope's `fallback_reason`, and a non-compliant model degrades to a
-  generic reason with no corpus claim. The other three answer in
-  milliseconds and `read_library_bodies` issues one `get` per path,
-  so gating them would park a whole batch behind the slowest query in
-  the process — the queue they would join is one long query, not each
-  other.
+  holder PID, the elapsed wait and the budget, and **all four reach
+  the caller as code, not as a prompt instruction.** The other three
+  answer in milliseconds and `read_library_bodies` issues one `get`
+  per path, so gating them would park a whole batch behind the
+  slowest query in the process — the queue they would join is one long
+  query, not each other.
+
+  **The last hop to the reader is deterministic; do not make it
+  model-mediated again.** `register_librarian_tools`' `_search`
+  closure records every envelope into a caller-supplied
+  `SearchDiagnostics`, and `librarian_agent_run` passes the bundle
+  through `with_search_diagnostics` before returning it. The
+  librarian is an LLM, and `LibrarianOutput` is its `output_type`,
+  so the model's own `transient` / `fallback_reason` are claims
+  rather than facts — before this existed, the only route from the
+  lock's holder PID to the reader was the model copying a string,
+  and a paraphrase silently dropped the facts the operator needs.
+  The prompt still tells the model to mirror the field; that is
+  hygiene for the bundle the synthesizer reads, **not** the delivery
+  mechanism, and both are pinned separately so neither can be
+  removed on the strength of the other. The record is a keyword-only
+  argument rather than a module global because the MCP server serves
+  overlapping `lib_ask` calls.
+
+  Two bounds on the overlay, both pinned: a bundle carrying
+  **excerpts** is returned untouched (it came from real page bodies
+  after a successful retry, and forcing `transient` onto it would
+  discard retrievable evidence), and a recorded failure is
+  **sticky** across a later clean search (the 120 s budget was
+  already spent queueing; a successful retry does not un-spend it).
 
   **There is no log line on the wait path, and do not add one
   expecting it to be read.** Measured 2026-10-10 against the live
@@ -474,6 +496,39 @@ call.**
 - **The sync bridge runs its own loop when one is already running** —
   `asyncio.run` from a threaded caller raises, which is the bug
   `ground()` shipped with in #106.
+
+## `ground()` is public API — its diagnostics are NOT dead code
+
+**`src/lies/mcp/__init__.py` declares `__all__ = ["ground", "mcp"]`
+and re-exports `ground` "for in-process callers ... so callers have
+one import surface". That is a supported surface, not an
+implementation detail.** Anyone reasoning about reachability from the
+in-tree call graph will get this wrong, and has: a whole-branch review
+flagged `ArchivistDigest.fallback_reason` and the two `except
+QmdLockBusy` arms in `mcp/grounding.py` as possibly unreachable,
+because `ground()`'s only in-tree caller is `synthesize()`, and
+`synthesize()` is called only by tests.
+
+That is true of the **call graph** and false of the **contract**. An
+in-process caller — the stated purpose of the re-export — reaches
+`ground()` and every diagnostic on it. Deleting those arms because
+`grep` finds no production caller would break the public surface and
+would be stopped by this section, not by a code comment.
+
+**Why the diagnostics look rare even though they are reachable:** the
+MCP tool path routes through the librarian instead. `lib_ask` goes
+`librarian_agent_run` → `register_librarian_tools`' `_search` →
+`search.fn`, and *that* path carries the lock's facts via
+`SearchDiagnostics` + `with_search_diagnostics` (see the qmd access
+seam section above). `ground()` reaches `access.daemon_tool` directly
+on its unscoped and tagged fast-paths, so the exception arrives as a
+real exception and its own `except QmdLockBusy` arms catch it —
+`grounding.py:468` and `:545`. Two mechanisms, two different
+shapes, both live.
+
+So: the arms are reachable, the digest field has a reader
+(`synthesize`), and removing either is a contract break. Do not
+propose it as dead code.
 
 ## Prompt surface
 

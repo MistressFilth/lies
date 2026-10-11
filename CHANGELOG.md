@@ -686,30 +686,59 @@ rule rather than the accident.
   `qmd mcp --http --daemon` directly, so the recycle never waits on the
   inode it is already holding.
 
-  **Named limitation.** The ask-path lock diagnostics reach the user
-  only when the librarian mirrors the envelope's `fallback_reason`; a
-  non-compliant model degrades to a generic reason with no corpus
-  claim. The production route is prompt-mediated — `search` converts
-  the lock exception into its envelope and returns normally, so
-  `run_sync` never raises, and the only path from that string to the
-  user is the model copying it onto `LibrarianOutput.fallback_reason`,
-  the same mechanism `searched_scope` already depends on. The
-  instruction ("verbatim, do not summarise, do not shorten, do not
-  invent one") is in the librarian contract and pinned by a test,
-  because it fails silently rather than loudly.
+  **The last hop to the reader is now deterministic, and the named
+  limitation it replaced is closed.** The ask-path lock diagnostics
+  used to reach the user only when the librarian mirrored the
+  envelope's `fallback_reason` — a non-compliant model degraded a
+  contended lock to a generic reason. The route was prompt-mediated:
+  `search` converts the lock exception into its envelope and returns
+  normally, so `run_sync` never raises, and the only path from that
+  string to the user was the model copying it onto
+  `LibrarianOutput.fallback_reason`. An instruction is not a
+  guarantee, and it fails silently.
 
-  An earlier draft of this paragraph also said `ground()` and
+  The `` `search` closure now records every envelope into a
+  caller-supplied `SearchDiagnostics`, and `librarian_agent_run`
+  passes the returned bundle through `with_search_diagnostics`
+  before returning it. The overlay **replaces** the model's copy
+  rather than merging it — a paraphrase that keeps the word "lock"
+  while dropping the pid, the wait, the budget or the lock path is
+  precisely the defect — and it forces `transient=True` and
+  `no_coverage=False` when the search reported a dispatch failure,
+  because nothing was dispatched and so nothing is known about the
+  corpus. The record is a keyword-only argument rather than a module
+  global because the MCP server serves overlapping `lib_ask` calls and
+  one shared mutable record would let a request's lock contention land
+  on another's envelope.
+
+  **The prompt instruction stays, and is no longer load-bearing.** It
+  remains the right contract for the bundle the *synthesizer* reads,
+  before the overlay corrects it. Both are pinned separately — one test
+  asserts the contract still says "verbatim, do not summarise", another
+  asserts it no longer claims to be the delivery mechanism — so neither
+  can be deleted on the strength of the other.
+
+  **Two bounds, both pinned.** A bundle carrying **excerpts** is
+  returned untouched: it was assembled from real page bodies after a
+  *successful* retry, and forcing `transient` onto it would make
+  `_ask_impl` discard retrievable evidence because an earlier attempt
+  queued. And a recorded failure is **sticky** across a later clean
+  search, because the 120 s budget was already spent waiting and a
+  successful retry does not un-spend it.
+
+  An earlier draft of this section also said `ground()` and
   `librarian_agent_run` "catch `QmdLockBusy` in code", in the same
-  breath as the sentence above. That contradicted it: if `run_sync`
-  never raises the exception, nothing downstream can catch it either.
-  `librarian_agent_run` **had** such an arm — an `except QmdLockBusy`
-  ahead of its untyped one — and it was unreachable in production,
-  because `_search_impl` catches `Exception` and returns an envelope
-  before the exception can cross the tool boundary. The arm and its two
-  tests are gone. `ground()` catches `QmdLockBusy` for a different and
-  real reason: it has two such arms (the scoped and unscoped fanouts)
-  and it calls `access.daemon_tool` directly rather than through the
-  search tool's envelope, so the exception genuinely reaches them.
+  breath as the prompt-mediated sentence. That contradicted it: if
+  `run_sync` never raises the exception, nothing downstream can catch
+  it either. `librarian_agent_run` **had** such an arm — an
+  `except QmdLockBusy` ahead of its untyped one — and it was
+  unreachable in production, because `_search_impl` catches
+  `Exception` and returns an envelope before the exception can cross
+  the tool boundary. The arm and its two tests are gone; the facts now
+  travel as data instead.
+
+  **`ground()` catches `QmdLockBusy` for a different and real
+  reason**, and that path is **not** dead code — see the note below.
 
   **What the user actually reads, and why it needed moving.**
   `QmdLockBusy` is caught by `_search_impl`, which returns normally, so
@@ -719,10 +748,42 @@ rule rather than the accident.
   exists to delete, since it reads as a broken query and sends the
   operator to restart a daemon that is answering fine. `_search_impl` now
   carries a `QmdLockBusy` arm ahead of its untyped one and renders it as
-  queued-then-timed-out, keeping the holder pid, the elapsed wait, the
-  budget and the lock path. A test asserts the rendered string, because
-  the sentence is the entire user-visible payoff and nothing asserted on
-  it before.
+  queued-then-gave-up, keeping the holder pid, the elapsed wait, the
+  budget and the lock path.
+
+  **That arm rendered the wrong budget, and the test below is how it
+  was found.** It interpolated `_current_timeout()` — the daemon read
+  deadline, 60 s by default — into "timed out after Ns", while the gate
+  it was describing had waited on `query_lock_wait_s()`, 120 s. The
+  user was handed two budgets in one sentence and the leading one
+  named a deadline that never expired. The budget belongs to the
+  raiser, so the arm now reads it off `exc.max_s`.
+
+  **The whole path is now tested end to end under real contention.**
+  A test forks a child process that takes the qmd lock through the
+  production decorator, then drives `lib_ask.fn` against it with a
+  librarian model that is *deliberately non-compliant* — it emits
+  `no_coverage=True` and drops the reason — and asserts the envelope
+  says "inconclusive" and names the holder, the budget and the
+  contended inode. That replaces an earlier test which called
+  `synth.synthesize` (no registered tool reaches it) and hand-built
+  the exception; it proved nothing about the shipped path and was
+  deleted.
+
+  **`ground()` is public API, so its diagnostics are reachable —
+  do not delete them as dead code.** `lies.mcp` declares
+  `__all__ = ["ground", "mcp"]` and re-exports `ground` "for in-process
+  callers ... so callers have one import surface". A whole-branch
+  review flagged `ArchivistDigest.fallback_reason` and the two `except
+  QmdLockBusy` arms in `mcp/grounding.py` as possibly unreachable,
+  because `ground()`'s only in-tree caller is `synthesize()` and
+  `synthesize()` is called only by tests. That is true of the call
+  graph and false of the contract. The arms appear rarely because the
+  MCP tool path routes through the librarian instead — `ground()`
+  calls `access.daemon_tool` directly, so the exception genuinely
+  reaches `grounding.py:468` and `:545` — but an in-process caller
+  reaches them too, and removing either is a contract break rather
+  than a cleanup.
 
 - **A cancelled tool call now names itself in the daemon log.** A call
   cancelled before it produced a result — server shutdown, a request

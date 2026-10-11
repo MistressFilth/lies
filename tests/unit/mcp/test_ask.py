@@ -147,7 +147,7 @@ def test_ask_returns_an_inconclusive_envelope_when_librarian_dispatch_fails(
     # imported lazily inside ``librarian_agent_run`` so we patch at the
     # source module to catch the local rebinding.
     monkeypatch.setattr(synth, "_resolve_librarian_model", lambda: "test-model")
-    monkeypatch.setattr("lies.agents.librarian.register_librarian_tools", lambda agent: None)
+    monkeypatch.setattr("lies.agents.librarian.register_librarian_tools", lambda agent, **_kw: None)
     # The synthesizer must NOT be reached on the fallback path.
     synth_called: list[bool] = []
     monkeypatch.setattr(
@@ -194,7 +194,10 @@ def test_librarian_agent_run_names_an_untyped_dispatch_failure_on_the_bundle(
 
     monkeypatch.setattr(synth, "librarian_agent", lambda model=None: _BoomAgent())
     monkeypatch.setattr(synth, "_resolve_librarian_model", lambda: "test-model")
-    monkeypatch.setattr("lies.agents.librarian.register_librarian_tools", lambda agent: None)
+    # ``**kwargs`` on the stub: the production call passes
+    # ``search_diagnostics=``, so a one-parameter lambda would raise
+    # ``TypeError`` and mask what this test is about.
+    monkeypatch.setattr("lies.agents.librarian.register_librarian_tools", lambda agent, **_kw: None)
 
     lib_out = synth.librarian_agent_run(
         synth._build_query_deps(question="q", tag_expr=None, exclude_tags=None)

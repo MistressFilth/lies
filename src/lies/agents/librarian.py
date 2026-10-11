@@ -27,7 +27,7 @@ librarian returns.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic_ai import Agent, RunContext
@@ -145,9 +145,14 @@ class LibrarianOutput:
             field existed the envelope's reason died there: ``search``
             already names the qmd lock holder, the wait and the budget,
             and ``lib_ask`` replaced all of it with one fixed sentence.
-            ``None`` whenever the search succeeded or the failure was
-            not a named dispatch failure. Mirrored the same way as
-            ``searched_scope`` — the librarian does not summarise it.
+
+            **The model's copy is a claim, not the delivery path.**
+            :class:`SearchDiagnostics` records the same string
+            independently and :func:`with_search_diagnostics` replaces
+            whatever the model emits with it, so this field is hygiene
+            for the bundle the synthesizer reads rather than the only
+            channel to the reader. ``None`` whenever the search
+            succeeded or the failure was not a named dispatch failure.
     """
 
     tag_expr: Any  # TagExpr | None AST; Any at runtime so pydantic-ai's
@@ -163,6 +168,119 @@ class LibrarianOutput:
     searched_scope: list[str] = field(default_factory=list)
     transient: bool = False
     fallback_reason: str | None = None
+
+
+@dataclass
+class SearchDiagnostics:
+    """The ``search`` tool's dispatch verdict, captured outside the model.
+
+    **Why this exists.** ``_search_impl`` catches ``QmdLockBusy`` and
+    returns an envelope — it never raises — so the string naming the
+    lock holder, the elapsed wait, the budget and the contended inode
+    has to travel to the user through the librarian LLM. Every other hop
+    is code; that one was a prompt instruction, and a model that
+    paraphrases, summarises or drops the field silently converts "you
+    queued behind PID 4242 for 120 s" into "dispatch failed". The
+    instruction is still in the contract (it keeps the field honest in
+    the transcript and in front of the synthesizer), but it is no
+    longer load-bearing.
+
+    One record per librarian dispatch, handed to
+    :func:`register_librarian_tools` and read back by the caller after
+    ``run_sync`` returns. It is an argument rather than a module global
+    on purpose: the MCP server serves concurrent ``lib_ask`` calls, and
+    a global would let one call's lock contention land on another's
+    envelope.
+
+    Attributes:
+        transient: The last ``search`` envelope reported ``transient=True``
+            — the dispatch did not finish. Monotonic: once a search has
+            failed this way it stays set, because a bundle assembled
+            after a failed search cannot claim to have learned nothing
+            about the corpus.
+        fallback_reason: The most recent non-empty ``fallback_reason``
+            the tool produced, verbatim. Recorded for *every* reason,
+            transient or not: the contract has an arm for a non-transient
+            reason too (an unknown tag, a registered-but-empty
+            collection) and those name the same kind of fact.
+        searched_scope: The resolved collection list from the last
+            envelope that carried one.
+    """
+
+    transient: bool = False
+    fallback_reason: str | None = None
+    searched_scope: list[str] = field(default_factory=list)
+
+    def record(self, envelope: dict[str, Any]) -> None:
+        """Fold one ``search`` envelope into the record.
+
+        A failure sticks; a later clean envelope does not clear it. The
+        librarian contract tells the model to retry a transient search
+        once, so the record deliberately keeps the first failure rather
+        than the last verdict — a run that failed twice and then
+        succeeded still spent its budget queueing, and the reason that
+        took a real ``QmdLockBusy`` to produce is the one the operator
+        needs. ``with_search_diagnostics`` is where that decision is
+        bounded (an evidence-bearing bundle is never overwritten).
+        """
+        if not isinstance(envelope, dict):
+            return
+        if envelope.get("transient"):
+            self.transient = True
+        reason = envelope.get("fallback_reason")
+        if reason:
+            self.fallback_reason = str(reason)
+        scope = envelope.get("searched_scope")
+        if scope:
+            self.searched_scope = [str(name) for name in scope]
+
+
+def with_search_diagnostics(out: LibrarianOutput, diag: SearchDiagnostics) -> LibrarianOutput:
+    """Overlay the recorded ``search`` verdict onto a librarian bundle.
+
+    This is the deterministic last hop. Before it existed the only route
+    from the ``search`` envelope's ``fallback_reason`` to the reader was
+    the model copying the string onto its own output, so a
+    non-compliant model degraded a lock-busy report to a generic reason
+    with no corpus claim.
+
+    Three rules, each of which the model cannot talk its way past:
+
+    - **Evidence wins.** A bundle carrying excerpts is returned
+      unchanged. It was assembled from real ``read`` bodies after a
+      later, successful search; forcing ``transient`` onto it would make
+      the caller throw away retrievable evidence because an earlier
+      attempt queued.
+    - **A recorded failure overwrites the bundle's own verdict.** When
+      the search tool reported ``transient=True`` and the bundle claims
+      otherwise, the tool is right and the model is not: nothing was
+      dispatched, so the bundle cannot have learned what the corpus
+      contains. That is why ``no_coverage`` is forced ``False`` — a
+      failed dispatch is never a statement about the corpus.
+    - **The reason is the tool's, verbatim.** The model's copy is
+      replaced rather than merged. A paraphrase that keeps the word
+      "lock" while dropping the pid, the wait, the budget or the lock
+      path is precisely the defect this closes.
+
+    A non-transient recorded reason (unknown tag, registered-but-empty
+    collection) replaces the reason but leaves ``transient`` and
+    ``no_coverage`` alone: those describe a dispatch that *ran*, and
+    overwriting them would convert a corpus statement into a run
+    statement.
+
+    Returns ``out`` itself when there is nothing to overlay, so a clean
+    run allocates nothing.
+    """
+    if not out.excerpts and diag.fallback_reason:
+        transient = out.transient or diag.transient
+        return replace(
+            out,
+            fallback_reason=diag.fallback_reason,
+            transient=transient,
+            no_coverage=False if diag.transient else out.no_coverage,
+            searched_scope=diag.searched_scope or out.searched_scope,
+        )
+    return out
 
 
 LIBRARIAN_SYSTEM_PROMPT = """# librarian — Classify, Search, Read, Return
@@ -316,12 +434,17 @@ Emit a `LibrarianOutput` with:
 - `fallback_reason` — mirror the search tool's `fallback_reason`
   verbatim, or `null` when the search did not report a dispatch
   failure. Copy the string; do not summarise it, do not shorten it,
-  and do not invent one. It is the only channel the reason has: the
-  caller renders this string verbatim, and a search that queued behind
-  the site-wide qmd lock and gave up puts the holder PID, the elapsed
-  wait and the budget in exactly this field. Rewrite that and the
-  caller cannot tell a contended lock from a wedged daemon, which
-  need different operator actions.
+  and do not invent one. **This is good hygiene, not the delivery
+  mechanism**: the caller records the search envelope's verdict
+  independently and overwrites this field with the verbatim string
+  when the search reported a failure, so a paraphrase here cannot
+  reach the user either way. Still copy it — a search that queued
+  behind the site-wide qmd lock and gave up puts the holder PID, the
+  elapsed wait, the budget and the contended inode in exactly this
+  field, and the synthesizer reads your bundle before the caller
+  corrects it. An empty bundle that names nothing reads as "the
+  corpus has nothing", which is the false claim this whole arm
+  exists to prevent.
 
 ```python
 {
@@ -454,6 +577,7 @@ def register_librarian_tools(
     memory_service: "WikiMemoryService | None" = None,
     qmd_query: Any = None,
     qmd_get: Any = None,
+    search_diagnostics: SearchDiagnostics | None = None,
 ) -> None:
     """Register ``collections_read`` / ``search`` / ``read`` on the librarian agent.
 
@@ -479,12 +603,26 @@ def register_librarian_tools(
     name; callers that own an agent lifecycle (e.g. the orchestrator)
     reuse the existing instance rather than re-wiring.
 
+    ``search_diagnostics`` is optional and defaults to ``None``, which
+    is the pre-existing behaviour exactly: the ``_search`` closure
+    records nothing and the model's own bundle is the only account of
+    what the search did. Supply one record per *dispatch* (not per
+    agent) when the caller assembles the bundle itself and needs the
+    search envelope's verdict to survive the model — see
+    :class:`SearchDiagnostics`. A long-lived agent shared across
+    concurrent asks must not share a record: the MCP server serves
+    overlapping ``lib_ask`` calls, and one shared mutable record would
+    let a lock-busy on one request reach a different request's
+    envelope.
+
     Args:
         agent: The librarian agent whose toolset to populate.
         wiki: Accepted for back-compat with the F18 call site; unused.
         memory_service: Accepted for back-compat; unused.
         qmd_query: Accepted for back-compat; unused.
         qmd_get: Accepted for back-compat; unused.
+        search_diagnostics: Optional per-dispatch record of the
+            ``search`` tool's envelope. ``None`` disables recording.
     """
     del wiki, memory_service, qmd_query, qmd_get  # back-compat: v0.39 callers
 
@@ -525,16 +663,28 @@ def register_librarian_tools(
         ``{path, title, score, snippet}`` rows; the snippet is the
         matched line's ~200-char window. The LLM uses the snippet
         to decide which hits to read in Step 3.
+
+        The envelope is handed to a caller-supplied
+        :class:`SearchDiagnostics` on its way out, *before* the model
+        ever sees it. That is the whole point of this closure recording:
+        the tool's verdict is a fact about the dispatch, and the model
+        is not the channel it should have to travel through. Recording
+        here rather than in ``_ask_impl`` also means a caller that never
+        reads the record pays nothing — the write is unconditional and
+        the interpretation is the caller's.
         """
         from lies.mcp import search as _search_mod
 
-        return _call_tool(
+        envelope = _call_tool(
             _search_mod.search,
             question=question,
             tag_expr=tag_expr,
             exclude_tags=exclude_tags,
             hypothetical=hypothetical,
         )
+        if search_diagnostics is not None:
+            search_diagnostics.record(envelope)
+        return envelope
 
     def _read(
         ctx: RunContext[LibrarianDeps],

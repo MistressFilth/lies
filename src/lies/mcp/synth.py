@@ -325,6 +325,16 @@ def librarian_agent_run(deps: Any) -> Any:
     (pydantic-ai returns a :class:`LibrarianOutput` dataclass
     directly when the registered ``output_type`` matches).
 
+    **The returned bundle's ``transient`` / ``fallback_reason`` are not
+    only what the model said.** The ``search`` tool closure records
+    every envelope into a per-dispatch :class:`SearchDiagnostics`, and
+    the returned bundle is passed through
+    :func:`~lies.agents.librarian.with_search_diagnostics`. The
+    librarian is an LLM; before that overlay the only route from the
+    qmd lock's holder pid, elapsed wait, budget and contended inode to
+    the reader was the model copying the string onto its own bundle,
+    which is an instruction rather than a guarantee.
+
     Args:
         deps: :class:`LibrarianDeps` carrying question / tag_expr /
             exclude_expr / top_k.
@@ -332,17 +342,33 @@ def librarian_agent_run(deps: Any) -> Any:
     Returns:
         :class:`LibrarianOutput` — the librarian's curated excerpt
         bundle with ``searched_scope`` populated from the search
-        tool's resolution.
+        tool's resolution and ``transient`` / ``fallback_reason``
+        reconciled against the recorded search verdict.
     """
-    from lies.agents.librarian import LibrarianOutput, register_librarian_tools
+    from lies.agents.librarian import (
+        LibrarianOutput,
+        SearchDiagnostics,
+        register_librarian_tools,
+        with_search_diagnostics,
+    )
 
     # ``librarian_agent`` is imported at module scope below so tests can
     # ``monkeypatch.setattr("lies.mcp.synth.librarian_agent", ...)``.
     agent_factory = librarian_agent
 
+    # The search tool's dispatch verdict, recorded before the model ever
+    # sees the envelope. This is the deterministic last hop: without it
+    # the qmd lock's holder pid / wait / budget / contended inode reach
+    # the reader only if the model copies ``fallback_reason`` onto its
+    # own bundle, which is an instruction and not a guarantee. Built
+    # per dispatch — not a module global — because the MCP server serves
+    # overlapping ``lib_ask`` calls and a shared record would let one
+    # request's lock contention land on another's envelope.
+    diagnostics = SearchDiagnostics()
+
     model = _resolve_librarian_model()
     agent = agent_factory(model=model)
-    register_librarian_tools(agent)
+    register_librarian_tools(agent, search_diagnostics=diagnostics)
     # No ``except QmdLockBusy`` arm here, and there must not be one.
     # ``QmdLockBusy`` originates inside ``access.daemon_tool``, which the
     # ``search`` tool reaches through ``_search_impl`` -- and ``_search_impl``
@@ -350,7 +376,8 @@ def librarian_agent_run(deps: Any) -> Any:
     # escape the tool, cannot cross the agent boundary, and cannot reach here.
     # An arm for it described an event that never occurs. The real rendering
     # lives in ``_search_impl``, which maps it onto ``fallback_reason`` ahead
-    # of its own untyped catch.
+    # of its own untyped catch, and ``diagnostics`` below is what carries
+    # that string the rest of the way.
     try:
         result = agent.run_sync(deps.question, deps=deps)
     except Exception as exc:
@@ -378,20 +405,31 @@ def librarian_agent_run(deps: Any) -> Any:
         # outage. This branch predates the seam work and sat
         # unchanged beside the contract that was rewritten next to
         # it.
+        #
+        # The bundle still goes through ``with_search_diagnostics``:
+        # ``run_sync`` raising does not un-happen a search the model
+        # already ran, and a lock-busy reason recorded before the model
+        # gave up is more useful to the operator than the wrapper
+        # string. It is the same last hop as the success branch, so a
+        # dispatch failure that followed a queued search does not lose
+        # the one fact that names the remedy.
         log.warning(
             "librarian_agent_run: dispatch failed (%s: %s); returning transient fallback",
             type(exc).__name__,
             exc,
         )
-        return LibrarianOutput(
-            tag_expr=getattr(deps, "tag_expr", None),
-            exclude_expr=getattr(deps, "exclude_expr", None),
-            excerpts=[],
-            distinct_pages=0,
-            no_coverage=False,
-            searched_scope=[],
-            transient=True,
-            fallback_reason=f"librarian dispatch failed: {type(exc).__name__}: {exc}",
+        return with_search_diagnostics(
+            LibrarianOutput(
+                tag_expr=getattr(deps, "tag_expr", None),
+                exclude_expr=getattr(deps, "exclude_expr", None),
+                excerpts=[],
+                distinct_pages=0,
+                no_coverage=False,
+                searched_scope=[],
+                transient=True,
+                fallback_reason=f"librarian dispatch failed: {type(exc).__name__}: {exc}",
+            ),
+            diagnostics,
         )
     out = result.output
     # Defensive: pydantic-ai's ``output_type=LibrarianOutput`` means
@@ -402,20 +440,22 @@ def librarian_agent_run(deps: Any) -> Any:
     # dataclass-shaped so consumers (synth, MCP layer, tests) see the
     # same shape regardless of the agent's output type.
     if isinstance(out, LibrarianOutput):
-        return out
-    return LibrarianOutput(
-        tag_expr=getattr(out, "tag_expr", None),
-        exclude_expr=getattr(out, "exclude_expr", None),
-        excerpts=list(getattr(out, "excerpts", []) or []),
-        distinct_pages=getattr(out, "distinct_pages", 0),
-        no_coverage=getattr(out, "no_coverage", False),
-        searched_scope=list(getattr(out, "searched_scope", None) or []),
-        # Carried for the same reason as the fields above: this branch is
-        # a shape conversion, and a field the model set is data, not
-        # something to drop because the container changed.
-        transient=bool(getattr(out, "transient", False)),
-        fallback_reason=getattr(out, "fallback_reason", None),
-    )
+        bundle = out
+    else:
+        bundle = LibrarianOutput(
+            tag_expr=getattr(out, "tag_expr", None),
+            exclude_expr=getattr(out, "exclude_expr", None),
+            excerpts=list(getattr(out, "excerpts", []) or []),
+            distinct_pages=getattr(out, "distinct_pages", 0),
+            no_coverage=getattr(out, "no_coverage", False),
+            searched_scope=list(getattr(out, "searched_scope", None) or []),
+            # Carried for the same reason as the fields above: this branch is
+            # a shape conversion, and a field the model set is data, not
+            # something to drop because the container changed.
+            transient=bool(getattr(out, "transient", False)),
+            fallback_reason=getattr(out, "fallback_reason", None),
+        )
+    return with_search_diagnostics(bundle, diagnostics)
 
 
 def synthesizer_agent_run(librarian_output: Any, question: str) -> Any:
@@ -558,10 +598,12 @@ def _ask_impl(
         # bundle carried and emit one fixed sentence for every transient
         # failure — so a run that queued behind the site-wide qmd lock
         # and gave up reported identically to a model outage. The
-        # librarian bundle's ``fallback_reason`` is the only channel the
-        # cause has, and ``search`` already fills it with the holder pid,
-        # the elapsed wait and the budget. The fixed wording survives as
-        # the ``or`` fallback for a bundle that carries none.
+        # bundle's ``fallback_reason`` carries the cause: ``search``
+        # fills it with the holder pid, the elapsed wait, the budget
+        # and the contended inode, and ``librarian_agent_run`` overlays
+        # that verbatim onto whatever the model emitted. The fixed
+        # wording survives as the ``or`` fallback for a bundle that
+        # carries none.
         return SynthesizeEnvelope(
             question=question,
             tag_expr=tag_expr,

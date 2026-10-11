@@ -828,6 +828,16 @@ def test_a_lock_busy_reads_as_queued_then_timed_out(monkeypatch: pytest.MonkeyPa
     lock path — because ``AGENTS.md`` and the CHANGELOG record that a
     non-compliant model degrades to a generic reason, so this string is
     the last place those facts can be lost.
+
+    **"gave up", not "timed out".** The wait ended because the gate's
+    budget expired, not because a deadline fired on a call in flight;
+    an earlier version of the arm rendered ``_current_timeout()`` — the
+    60 s daemon read deadline — into "timed out after 60s" beside
+    "waited 120.0s, max 120.0s" in the same sentence. The budget
+    belongs to the raiser, so the arm reads it off ``exc.max_s`` and
+    the wording says what happened. The end-to-end test in
+    ``test_ask_lock_contention.py`` pins the number against a real
+    lock hold; this one pins the shape against a hand-built instance.
     """
     from lies.lock_errors import QmdLockBusy
     from lies.mcp.search import _search_impl
@@ -867,7 +877,7 @@ def test_a_lock_busy_reads_as_queued_then_timed_out(monkeypatch: pytest.MonkeyPa
     # The framing this test exists for.
     assert not reason.startswith("qmd query failed"), reason
     assert "queued behind another qmd operation" in reason, reason
-    assert "timed out" in reason, reason
+    assert "gave up" in reason, reason
     assert "wait and retry" in reason, reason
     assert "restarting" in reason, reason
 
@@ -875,6 +885,14 @@ def test_a_lock_busy_reads_as_queued_then_timed_out(monkeypatch: pytest.MonkeyPa
     assert "4242" in reason, reason
     assert "120.0" in reason, reason
     assert "/var/lib/lies/qmd.lock" in reason, reason
+
+    # The budget rendered is the raiser's, not the daemon read
+    # deadline's — ``get_qmd_query_timeout()`` defaults to 60 and that
+    # deadline never fired here.
+    assert "120.0s; wait and retry" in reason, (
+        f"the rendered budget must be exc.max_s, not the 60s query timeout; got {reason!r}"
+    )
+    assert "60s" not in reason, reason
 
     # Still a claim about the run, never about the corpus.
     assert result["transient"] is True

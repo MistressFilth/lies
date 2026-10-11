@@ -361,6 +361,17 @@ def _search_impl(
         # exists to delete. ``_search_impl`` catches ``Exception``, so
         # without this arm the exception stops here and never crosses
         # the agent boundary at all.
+        #
+        # The budget is ``exc.max_s``, NOT ``_current_timeout()``. The
+        # gate that raised waited on ``query_lock_wait_s()`` — 120 s by
+        # default — while ``_current_timeout()`` is the daemon read
+        # deadline, 60 s by default. Rendering the latter here printed
+        # "timed out after 60s" beside "waited 120.0s, max 120.0s" in
+        # the same sentence: two budgets, one of them describing a
+        # deadline that never expired, and the wrong one leading. The
+        # exception carries its own budget because the budget belongs
+        # to the raiser (see ``QmdLockBusy``), so read it off the
+        # instance.
         return {
             "hit": None,
             "hits": [],
@@ -369,8 +380,8 @@ def _search_impl(
             "transient": True,
             "searched_scope": scope,
             "fallback_reason": (
-                f"queued behind another qmd operation and timed out after "
-                f"{_current_timeout()}s; wait and retry rather than restarting "
+                f"queued behind another qmd operation and gave up after "
+                f"{exc.max_s}s; wait and retry rather than restarting "
                 f"the daemon ({exc})"
             ),
         }

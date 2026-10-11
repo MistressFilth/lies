@@ -420,15 +420,21 @@ def test_the_prompt_tells_the_librarian_to_mirror_the_search_fallback_reason() -
     it. When the ``search`` tool returns a transient envelope, ``search``
     has *already* converted the qmd lock exception into a
     ``fallback_reason`` string, so nothing raises and ``run_sync``
-    returns normally; the only route from that string to the user is the
-    model copying it onto the bundle. That is the same mechanism
-    ``searched_scope`` already depends on, and it is exactly as silent
-    when it fails, which is why the instruction is pinned rather than
-    assumed.
+    returns normally.
 
-    The three "do not"s are the load-bearing half: a model told to
-    "carry the reason" will happily paraphrase one that names a holder
-    PID and a budget, and the paraphrase is the defect this closes.
+    **This instruction is no longer the delivery mechanism.** It used to
+    be: the only route from that string to the user was the model
+    copying it onto the bundle, and a paraphrase — which is exactly what
+    a model told to "carry the reason" will do to a string naming a
+    holder PID and a budget — silently dropped the facts. The
+    ``_search`` closure now records every envelope into a
+    :class:`SearchDiagnostics` and :func:`with_search_diagnostics`
+    overwrites the model's copy verbatim, so the instruction is hygiene
+    for the bundle the synthesizer reads rather than the guarantee.
+
+    It is still pinned. A prompt that stops mentioning the field would
+    invite the model to omit it under output-retry pressure, and the
+    field is what the synthesizer sees before the overlay corrects it.
     """
     from lies.agents.librarian import LIBRARIAN_SYSTEM_PROMPT
 
@@ -440,3 +446,30 @@ def test_the_prompt_tells_the_librarian_to_mirror_the_search_fallback_reason() -
     # prose: a schema block without the field invites the model to omit
     # it under output-retry pressure.
     assert '"fallback_reason": null' in prompt
+
+
+def test_the_prompt_does_not_claim_to_be_the_only_channel() -> None:
+    """The contract must not tell the model its copy is load-bearing.
+
+    A prompt that says "this string reaches the user only through you"
+    is a false statement about the system, and it is the statement that
+    made the old design's weakness invisible. Now that the caller
+    overlays the tool's own reason, the prompt says so — which is what
+    keeps a future reader from "simplifying" the overlay away on the
+    strength of an instruction that claims to be doing the work.
+    """
+    from lies.agents.librarian import LIBRARIAN_SYSTEM_PROMPT
+
+    prompt = LIBRARIAN_SYSTEM_PROMPT
+    assert "only channel" not in prompt, (
+        "the contract still claims the model is the sole carrier; the "
+        "caller now overlays the tool's reason deterministically"
+    )
+    # Wrapped across a line break in the prompt source, so matched on
+    # the words rather than the phrase: what is pinned is that the
+    # contract tells the model its copy is not the delivery path.
+    flat = " ".join(prompt.split())
+    assert "not the delivery mechanism" in flat, (
+        "the contract must state that copying the field is hygiene rather "
+        "than the delivery path, or a reader cannot tell which one holds"
+    )
