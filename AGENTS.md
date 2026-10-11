@@ -392,10 +392,15 @@ call.**
   port, sharing its cache root — and left `LIES_QMD_URL=...:9000`
   spawning a stray on 8181 while the probe polled 9000. Every spawn now
   threads the port from the URL it will probe
-  (`daemon.daemon_port_from_url`) — **all three sites**, including
-  `access.daemon_tool`'s stale-daemon path, which was missed once and
-  is the hottest of the three: `_is_daemon_stale()` is true on
-  essentially every call after any write.
+  (`daemon.daemon_port_from_url`). That is **six call sites across four
+  reap-then-respawn locations**: `capability.as_capability`
+  (`capability.py:105`), `access.daemon_tool` (`access.py:441`),
+  `recycle_qmd_daemon` (`daemon.py:618`), and `ensure_qmd_daemon`'s
+  three paths (`daemon.py:426/437/445`). `access.daemon_tool`'s was
+  missed by the first fix and is the hottest of the four, not the
+  coldest: `_is_daemon_stale()` is true on essentially every call after
+  any write. Pinned by `test_access.py`'s AST check for `access.py` and,
+  separately, by `test_qmd_capability.py` for `capability.py`.
 
   **The sidecar records a "scope", and a scope is not an index.** Four
   call sites used to pass four different values (`wiki.wiki_dir`,

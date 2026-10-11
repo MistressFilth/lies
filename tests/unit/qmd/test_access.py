@@ -354,8 +354,18 @@ async def test_every_respawn_site_threads_the_url_port(
     third site here was found by a reviewer probing it directly — a real
     ``_spawn_qmd_daemon called with {}`` — after the first two were fixed.
 
-    Counted over the AST so a fourth site is caught, and so prose in a
+    Counted over the AST so a further site is caught, and so prose in a
     docstring is not mistaken for code.
+
+    Scoped to ``access.py`` on purpose. The seam has **six** spawn call
+    sites across four reap-then-respawn locations in three modules:
+    ``access.daemon_tool`` here, ``capability.as_capability``
+    (``capability.py:105``), ``recycle_qmd_daemon``, and
+    ``ensure_qmd_daemon``'s three paths. The other two modules are
+    pinned by their own tests — ``test_qmd_capability.py`` asserts
+    ``spawn_calls[0]["port"]``, and ``test_daemon_recycle.py`` plus the
+    argv pin cover ``daemon.py``. This test cannot see them; a reader
+    counting sites should count all six.
     """
     import ast
     import re

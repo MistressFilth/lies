@@ -28,7 +28,12 @@ Everything here is isolated three ways, and all three matter:
 - **Teardown by the throwaway's own pidfile**, never ``qmd mcp stop``,
   which reads the pidfile under the *current* environment.
 
-The real daemon is asserted untouched, before and after.
+The machine daemon is asserted untouched, before and after — by
+``test_a_throwaway_daemon_serves_on_its_own_port_and_index``, which is
+the one test that reads the real ``mcp.pid``. The other two here assert
+isolation by their own means: this file redirects ``XDG_CACHE_HOME``, so
+a pidfile written by any of them is a throwaway's by construction, and
+each tears down only the pids it recorded.
 """
 
 from __future__ import annotations
@@ -129,17 +134,7 @@ def test_a_throwaway_daemon_serves_on_its_own_port_and_index(tmp_path: Path) -> 
             "_reap_qmd_daemon would now kill the wrong process"
         )
     finally:
-        if spawned_pid is not None:
-            try:
-                os.kill(spawned_pid, 15)
-            except OSError:
-                pass
-            for _ in range(100):
-                try:
-                    os.kill(spawned_pid, 0)
-                except OSError:
-                    break
-                time.sleep(0.05)
+        _stop_daemons([spawned_pid] if spawned_pid is not None else [], data_dir)
         shutil.rmtree(data_dir, ignore_errors=True)
 
     real_final = real_pidfile.read_text().strip() if real_pidfile.exists() else None
@@ -213,18 +208,7 @@ def test_a_recycle_against_a_non_default_port_restarts_on_that_port(
             "default would own the pidfile and the probe would have failed"
         )
     finally:
-        for pid in dict.fromkeys(spawned_pids):
-            try:
-                os.kill(pid, 15)
-            except OSError:
-                pass
-        for pid in dict.fromkeys(spawned_pids):
-            for _ in range(100):
-                try:
-                    os.kill(pid, 0)
-                except OSError:
-                    break
-                time.sleep(0.05)
+        _stop_daemons(spawned_pids, data_dir)
         shutil.rmtree(data_dir, ignore_errors=True)
 
 
@@ -367,19 +351,39 @@ def test_daemon_tool_stale_path_respawns_on_the_configured_port(
             f"site and the replacement bound qmd's default instead"
         )
     finally:
-        for pid in dict.fromkeys(pids):
-            try:
-                os.kill(pid, 15)
-            except OSError:
-                pass
-        for pid in dict.fromkeys(pids):
-            for _ in range(100):
-                try:
-                    os.kill(pid, 0)
-                except OSError:
-                    break
-                time.sleep(0.05)
+        _stop_daemons(pids, data_dir)
         shutil.rmtree(data_dir, ignore_errors=True)
+
+
+def _stop_daemons(pids: list[int], data_dir: Path) -> None:
+    """SIGTERM every pid we started, and whatever the pidfile now names.
+
+    Reading the pidfile matters: under a mutation that drops the spawn's
+    ``--port``, the replacement binds qmd's default and *takes the
+    pidfile*, and the test raises ``QmdRecycleFailed`` before recording
+    that pid. A teardown that only kills the pids it remembered leaves
+    that stray running for the rest of the session — observed once, and
+    the reason this helper exists rather than three inline loops.
+    """
+    known = list(pids)
+    pidfile = data_dir / "qmd" / "mcp.pid"
+    if pidfile.exists():
+        try:
+            known.append(int(pidfile.read_text().strip()))
+        except ValueError:
+            pass
+    for pid in dict.fromkeys(known):
+        try:
+            os.kill(pid, 15)
+        except OSError:
+            pass
+    for pid in dict.fromkeys(known):
+        for _ in range(100):
+            try:
+                os.kill(pid, 0)
+            except OSError:
+                break
+            time.sleep(0.05)
 
 
 def test_a_recycle_probe_against_a_dead_port_is_the_measured_shape() -> None:

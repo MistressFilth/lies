@@ -558,45 +558,66 @@ async def recycle_qmd_daemon(
             onto a *different* port than the one probed is the failure
             that shape prevents.
 
-    **Worst case: a ~31 s floor and a ~66 s ceiling**, measured, not
-    derived. Every constant was scaled by 1/100 and a real exhaustion
-    driven through the genuine ``_reap_qmd_daemon``, ``_spawn_qmd_daemon``,
-    probe loop and deadline, then scaled back (measured 2026-10-10):
+    **Worst case: a ~30 s floor and a ~63 s ceiling**, measured, not
+    derived (measured 2026-10-10). Every constant is scaled by 1/100, a
+    real exhaustion is driven through the genuine ``_reap_qmd_daemon``,
+    ``_spawn_qmd_daemon``, probe loop and deadline, and the result is
+    scaled back. The harness is committed — see
+    ``tests/integration/test_qmd_recycle_ceiling.py``, which re-derives
+    these and asserts their *structure* rather than their decimals.
 
-    ==========================  ===================================
-    scenario                    measured (real scale)
-    ==========================  ===================================
-    prompt status, prompt spawn            **31.0 s**  (floor)
-    prompt status, **spawn hangs**          **47.5 s**
-    **qmd status hangs**, prompt spawn      **48.6 s**
-    both hang                               **65.8 s**  (ceiling)
-    ==========================  ===================================
+    **Scaled:** ``STATUS_TIMEOUT_S``, ``ready_timeout``,
+    ``poll_interval``, the reap's ``grace``/``poll``, **and**
+    ``_subprocess._POLL_INTERVAL_S``. That last one is neither a timeout
+    nor a sleep — it is the reader loop's ``sel.select()`` granularity —
+    so it does not scale by itself, and leaving it alone lands as up to
+    ~6 s of real time per simulated hanging ``qmd status`` call. An
+    earlier version of this measurement omitted it and inflated every
+    hanging-status row by more than the bound being quoted.
 
-    Two things a reader should not get wrong:
+    The axis that decides these figures is **what ``qmd status``
+    reports**, not how fast it answers. That one fact sets whether the
+    reap spends its two grace windows, whether it kills anything, and
+    what each of its four status calls costs:
+
+    ===================================  ======================
+    configuration                         measured (real scale)
+    ===================================  ======================
+    daemon down, everything prompt          **30.4 s**  (floor)
+    status reports "running", SIGTERM missed **34.5 s**
+    daemon down, **spawn hangs**            **46.9 s**
+    **qmd status hangs**                    **49.5 s**
+    status and spawn both hang              **63.4 s**  (ceiling)
+    ===================================  ======================
+
+    Three things a reader should not get wrong:
 
     - **The spawn has its own 15 s bound.** "Prompt status" does not mean
-      prompt everything, and the spawn hanging is the *dominant*
-      intermediate case — +16.4 s, named by no single-figure summary.
-    - **A hanging ``qmd status`` makes the ceiling *lower*, not higher.**
-      ``qmd_daemon_state()`` then reports ``running=False``, so
-      ``_reap_qmd_daemon`` returns without killing anything and spends
-      neither grace window. That is why an earlier "~80 s if status
-      hangs" figure was not merely loose but **unreachable** — it added
-      4 s of reap time that the slow-status path specifically forgoes.
+      prompt everything, and the spawn hanging is the biggest single
+      contributor at +16 s — named by no single-figure summary.
+    - **The grace windows are reachable in exactly one row.** They cost
+      ~4 s, and only where ``qmd status`` reports *running* with a live
+      pid that then ignores SIGTERM. A hanging status reports
+      ``running=False``, so ``_reap_qmd_daemon`` returns at its first
+      line and spends neither. That is why the earlier "~80 s if status
+      hangs" was **unreachable** rather than merely loose.
+    - **The hanging-status row is genuinely unstable** — measured 17.7 s
+      and 19.7 s over the floor on consecutive runs — because it turns on
+      whether one more poll fits inside the 30 s budget when a status
+      call is 15 s wide. Its calls *displace* polling rather than adding
+      to it, so the net is one or two bounds, not three.
 
-    Add **up to 4 s** on any row where ``qmd status`` still answers
-    "running" while the daemon ignores SIGTERM: then the reap does spend
-    both grace windows. Measured that variant at 34.5 / 50.6 / 53.9 /
-    **69.0 s**.
-
-    The figures this replaces were wrong in two independent ways: a
-    single "~45 s" summed mutually exclusive component bounds, and the
-    "~80 s" it became was not an upper bound at all.
+    Two earlier answers were wrong in ways worth recording: a single
+    "~45 s" summed mutually exclusive component bounds, and the "~80 s"
+    it became was not an upper bound at all. A later "+up to 4 s"
+    variant then quoted a row whose delta was +5.3 s and which belonged
+    to the configuration that forgoes those windows — the same defect,
+    reintroduced one paragraph down.
 
     The per-poll ``qmd status`` is worth hoisting out of the loop (a
     subprocess per iteration, ~60 over a 30 s budget) and would collapse
-    this table to one figure. That is a pre-existing cost, deliberately
-    not changed here.
+    this table. That is a pre-existing cost, deliberately not changed
+    here.
 
     Measured 2026-10-10: against a stopped daemon the loop previously
     escaped on probe one in ~0.3 s, so none of this had ever been

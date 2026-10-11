@@ -115,6 +115,16 @@ def _no_socket_to_loopback() -> Iterator[None]:
     mistake is one any test in this file could repeat — a stub is easy
     to forget on the next test someone adds.
 
+    **It observes, it does not block.** A connection that gets through is
+    still made; the test is failed afterwards. That is deliberate: a
+    guard that raised mid-connection would leave the test's own state
+    inconsistent, and the thing being guarded is a test-suite accident,
+    not production traffic. Two known gaps, so nobody reads this as a
+    firewall: ``connect_ex`` is not intercepted, and a connect performed
+    in a thread that outlives the fixture would escape it. Neither
+    occurs in this file, and both would be caught by
+    ``tools/qmd_unit_network_audit.py``.
+
     Restored with an explicit ``delattr`` rather than ``monkeypatch``:
     ``socket.socket.connect`` is *inherited* from ``_socket.socket``, so
     a monkeypatch undo would leave a shadowing class attribute behind
@@ -442,61 +452,73 @@ async def test_an_http_not_ready_response_is_still_retried(
     assert mcp.MCPError in qmd_daemon._RECYCLE_PROBE_ERRORS
 
 
-def test_the_docstring_states_the_measured_floor_and_ceiling() -> None:
-    """The worst case is a floor and a ceiling, both from measurement.
+def test_the_docstring_states_a_measured_floor_and_ceiling() -> None:
+    """The worst case is a measured floor and ceiling, with its traps intact.
 
-    The docstring's history is a useful record of how wrong these
-    figures have been: a single "45 s" that summed mutually exclusive
-    component bounds, then a "~31 s / ~80 s" pair where the ceiling was
-    **unreachable** — a hanging ``qmd status`` makes ``qmd_daemon_state``
-    report ``running=False``, so ``_reap_qmd_daemon`` skips both grace
-    windows and the 4 s the old figure leaned on is exactly what the
-    slow-status path forgoes. The spawn's own 15 s bound dominated the
-    middle and was named by neither.
+    **Structure, not decimals.** Independent harnesses measure this path
+    and disagree at the 1-4 s level, because they differ in what they
+    treat as scaled. Asserting a literal like ``"31.0 s"`` pins one
+    harness's arithmetic as though it were a property of the code, and
+    makes a *more* accurate measurement look like a regression. So the
+    decimals live in the committed harness
+    (``tests/integration/test_qmd_recycle_ceiling.py``), which re-derives
+    them and asserts the shape. This test asserts the shape is still
+    *described*.
 
-    Asserting the literals so the arithmetic has to be edited in two
-    places. Whitespace is collapsed first: this is prose, and prose gets
-    re-wrapped by the formatter without anyone changing what it says.
-    """
-    doc = " ".join((qmd_daemon.recycle_qmd_daemon.__doc__ or "").split())
-
-    assert "31.0 s" in doc, "the measured floor must be stated"
-    assert "65.8 s" in doc, "the measured ceiling must be stated; ~80s was not an upper bound"
-    assert "47.5 s" in doc and "48.6 s" in doc, (
-        "both single-bound scenarios must be tabulated; the spawn-hang "
-        "case is the dominant intermediate and is what the old figures missed"
-    )
-    assert "unreachable" in doc, (
-        "the docstring must record that the earlier ~80s ceiling was "
-        "unreachable, not merely loose — that is why the shape changed"
-    )
-    assert "dominant" in doc and "spawn" in doc, "the spawn-hang case must be named as dominant"
-    assert "ever been observed" in doc, (
-        "the docstring must keep recording that none of this was "
-        "reachable before the except tuple was widened"
-    )
-
-
-def test_the_ceiling_is_a_measured_range_not_a_single_figure() -> None:
-    """No lone single figure may replace the table.
-
-    Two figures have now been wrong on this exact line — "45 s" and
-    "~80 s" — and both were single numbers presented as bounds. A
-    regression to one number is the failure mode worth pinning, and it
-    is cheap to check: a bound this path has is a range, so the docstring
-    must still name both ends of it.
+    Three wrong answers have lived on this line - "45 s" (mutually
+    exclusive bounds), "~80 s" (unreachable), and "+up to 4 s" attached
+    to a row that cannot satisfy it - so the trap each one fell into is
+    pinned as prose.
     """
     doc = " ".join((qmd_daemon.recycle_qmd_daemon.__doc__ or "").split())
 
     assert "floor" in doc and "ceiling" in doc, (
         "the docstring must frame the bound as a range with named ends"
     )
-    # "45 s" must not appear as a live bound. It may appear in the
-    # history paragraph, which says it was wrong; that is allowed, and
-    # distinguishing the two is the point.
+    assert "measured, not" in doc, (
+        "these are measurements; calling them derived invites re-deriving them wrongly"
+    )
+    assert "spawn has its own" in doc, (
+        "the spawn's own 15s bound must be named; it is the biggest "
+        "single contributor and no single-figure summary ever had it"
+    )
+    assert "reachable in exactly one row" in doc, (
+        "the grace windows are reachable in one configuration only; a "
+        "hanging qmd status reports running=False and forgoes them"
+    )
+    assert "unreachable" in doc, (
+        "the docstring must record that the earlier ~80s ceiling was "
+        "unreachable, not merely loose - that is why the shape changed"
+    )
+    assert "unstable" in doc, (
+        "the hanging-status row is genuinely unstable; presenting it as a "
+        "fixed figure is what produced the +5.3s anomaly"
+    )
+    assert "_POLL_INTERVAL_S" in doc, (
+        "the docstring must name the one constant that is neither a "
+        "timeout nor a sleep and therefore does not scale by itself"
+    )
+    assert "Scaled:" in doc and "does not scale by itself" in doc, (
+        "what was scaled must be stated precisely, not implied by a blanket 'every constant'"
+    )
+
+
+def test_the_ceiling_is_never_a_single_figure() -> None:
+    """A lone number on this line is the failure mode, three times over.
+
+    "45 s" and "~80 s" were both single numbers presented as bounds. If
+    the table ever collapses to one, the traps have nowhere to live.
+    """
+    doc = " ".join((qmd_daemon.recycle_qmd_daemon.__doc__ or "").split())
+
+    assert "configuration" in doc, (
+        "the figures must be presented per configuration; a single number "
+        "cannot be right for all of them"
+    )
+    # "45 s" may appear only in the sentence recording that it was wrong.
     for sentence in doc.split(". "):
         if "45 s" in sentence:
-            assert any(word in sentence for word in ("wrong", "summed", "replaces", "mutually")), (
+            assert any(w in sentence for w in ("wrong", "summed", "mutually")), (
                 f"'45 s' reads as a live bound here: {sentence!r}"
             )
 

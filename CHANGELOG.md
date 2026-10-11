@@ -210,33 +210,57 @@ rule rather than the accident.
   the qmd inode described a path no one had walked.
 
   The tuple now covers `RuntimeError`, and the worst case is now a
-  **~31 s floor and a ~66 s ceiling — measured, not derived.** Every
-  constant is scaled by 1/100 and a real exhaustion is driven through
-  the genuine `_reap_qmd_daemon`, `_spawn_qmd_daemon`, probe loop and
-  deadline, then scaled back. *Measured 2026-10-10 against the live
-  daemon; transcribed, not re-measured at commit time.*
+  **measured floor and ceiling**. Every constant is scaled by 1/100, a
+  real exhaustion is driven through the genuine `_reap_qmd_daemon`,
+  `_spawn_qmd_daemon`, probe loop and deadline, and the result is scaled
+  back. The harness is committed -
+  `tests/integration/test_qmd_recycle_ceiling.py` - and re-derives these
+  on demand, asserting their *structure* rather than their decimals.
+  *Measured 2026-10-10; transcribed, not re-measured at commit time.*
 
-  | scenario | measured (real scale) |
+  **Scaled:** `STATUS_TIMEOUT_S`, `ready_timeout`, `poll_interval`, the
+  reap's `grace`/`poll`, **and** `_subprocess._POLL_INTERVAL_S`. That
+  last is neither a timeout nor a sleep - it is the reader loop's
+  `sel.select()` granularity - so it does not scale by itself, and
+  leaving it alone lands as up to ~6 s of real time per simulated
+  hanging `qmd status` call. An earlier version of this measurement
+  omitted it and inflated every hanging-status row by more than the
+  bound it was quoting.
+
+  The axis that decides the figures is **what `qmd status` reports**, not
+  how fast it answers - that one fact sets whether the reap spends its
+  grace windows, whether it kills anything, and what each of its four
+  status calls costs:
+
+  | configuration | measured (real scale) |
   |---|---|
-  | prompt status, prompt spawn | **31.0 s** (floor) |
-  | prompt status, **spawn hangs** | **47.5 s** |
-  | **`qmd status` hangs**, prompt spawn | **48.6 s** |
-  | both hang | **65.8 s** (ceiling) |
+  | daemon down, everything prompt | **30.4 s** (floor) |
+  | status reports "running", SIGTERM missed | **34.5 s** |
+  | daemon down, **spawn hangs** | **46.9 s** |
+  | **`qmd status` hangs** | **49.5 s** |
+  | status and spawn both hang | **63.4 s** (ceiling) |
 
-  Two things a reader should not get wrong. The **spawn has its own 15 s
-  bound**, so "prompt status" does not mean prompt everything, and the
-  spawn-hang case dominates the middle. And a **hanging `qmd status`
-  makes the ceiling lower, not higher**: `qmd_daemon_state()` then
-  reports `running=False`, so `_reap_qmd_daemon` returns without killing
-  anything and spends neither grace window.
+  Three traps, each of which produced a wrong number here before:
 
-  The two figures this replaces were wrong in independent ways. A single
-  "45 s" summed `STATUS_TIMEOUT_S` as if the spawn ran long *and* the
-  budget ran long. The "~80 s" it became was **not an upper bound at
-  all** — it added 4 s of reap time that the slow-status path
-  specifically forgoes, so it described a state the code cannot reach.
-  Add up to 4 s on any row where the reap does spend both grace windows
-  (measured 34.5 / 50.6 / 53.9 / 69.0 s).
+  - **The spawn has its own 15 s bound**, the biggest single contributor
+    at +16 s, and named by no single-figure summary.
+  - **The grace windows are reachable in exactly one row.** ~4 s, and
+    only where `qmd status` reports *running* with a live pid that then
+    ignores SIGTERM. A hanging status reports `running=False`, so the
+    reap returns at its first line and spends neither.
+  - **The hanging-status row is genuinely unstable** - 17.7 s and 19.7 s
+    over the floor on consecutive runs - because it turns on whether one
+    more poll fits inside the 30 s budget when a status call is 15 s
+    wide. Its calls *displace* polling rather than adding to it.
+
+  Independent harnesses put the ceiling between 61.5 s and 63.4 s
+  depending on what they scale; over-estimating is the safe direction
+  for an upper bound. Earlier answers here were wrong three times: a
+  single "45 s" summed mutually exclusive component bounds, a "~80 s"
+  was **unreachable** (it added 4 s of reap time the slow-status path
+  specifically forgoes), and a later "+up to 4 s" variant quoted a row
+  whose delta was +5.3 s and belonged to the configuration that forgoes
+  those windows.
 
   Pinned in `tests/unit/qmd/test_daemon_recycle.py`, whose tests go red
   if the tuple is narrowed back.
@@ -297,15 +321,23 @@ rule rather than the accident.
   `tests/integration/test_qmd_spawn_throwaway.py`, which now recycles a
   live throwaway on a non-default port end to end.
 
-- **There is exactly one place LIES shells out to start qmd's daemon.**
+- **Every reap-then-respawn in the seam threads the configured port.**
   `ensure_qmd_daemon`'s "normal path" used to inline its *own* copy of
   `[_QMD_BIN, "mcp", "--http", "--daemon"]` with its own `timeout=`,
-  making three spawn sites where a pin counted two — and adding
-  `--port 9999` to that copy left every existing test green. It now
-  calls `_spawn_qmd_daemon(port=..., raise_on_error=True)`, which
-  returns the `CompletedProcess` so `Already running (PID N)` parsing
-  survives. The pin is an **AST** count of the argv over the whole
-  module, so it sees inline spawns and ignores prose about them.
+  and `lifecycle._up` still inlines its own argv — so "exactly one place
+  LIES shells out to start qmd's daemon" is not true, and this entry no
+  longer claims it. What *is* true is the property that matters: all
+  **six** spawn call sites across four reap-then-respawn locations
+  (`access.daemon_tool`, `capability.as_capability`,
+  `recycle_qmd_daemon`, and `ensure_qmd_daemon`'s three paths) pass
+  `--port` taken from the URL they serve, so none of them can bring a
+  daemon up on a port other than the one being probed.
+
+  `ensure_qmd_daemon`'s normal path now calls `_spawn_qmd_daemon`,
+  which returns the `CompletedProcess` so `Already running (PID N)`
+  parsing survives. The pin is an **AST** count of the argv over
+  `daemon.py` — a text count matches this file's own prose about the
+  defect, and a slice cannot see a site elsewhere in the file.
 
 - **The sidecar records a "scope", not a data-dir, and all callers pass
   one canonical value.** Four call sites passed four different values —
