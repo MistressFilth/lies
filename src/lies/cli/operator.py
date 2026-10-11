@@ -564,7 +564,10 @@ def _qmd_flock_force_repair() -> None:
 @_qmd_flock_app.command("recycle")
 def _qmd_flock_recycle(
     name: str = typer.Option(
-        ..., "--name", "-n", help="Wiki whose data_dir to recycle qmd against."
+        ...,
+        "--name",
+        "-n",
+        help="Wiki to validate before recycling; the recorded scope is canonical, not this wiki's.",
     ),
     ready_timeout: float = typer.Option(
         30.0,

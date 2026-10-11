@@ -16,8 +16,15 @@ Everything here is isolated three ways, and all three matter:
   ``mcp.pid`` to ``XDG_CACHE_HOME`` and **not** to the port, so a spare
   port *without* a spare cache dir would overwrite the real daemon's
   pidfile — and ``qmd_daemon_state`` and ``_reap_qmd_daemon`` both read
-  that file. That is why ``_spawn_qmd_daemon(port=...)`` without
-  ``data_dir=`` is refused.
+  that file. That is why a *throwaway* takes both arguments.
+
+  Production does the opposite, and legitimately: it passes ``port=``
+  **without** ``data_dir=``, sharing the real cache root, because
+  restarting *the* daemon on *its* configured port is the whole point.
+  The safety condition there is the caller's precondition — reap first,
+  so no live pidfile is held when the spawn runs — not the arguments.
+  ``_spawn_qmd_daemon`` no longer refuses that pairing; it did once,
+  which broke exactly that use.
 - **Teardown by the throwaway's own pidfile**, never ``qmd mcp stop``,
   which reads the pidfile under the *current* environment.
 
@@ -273,6 +280,106 @@ def _socket_inode(host: str, port: int) -> str | None:
                 continue
             return fields[9]
     return None
+
+
+def test_daemon_tool_stale_path_respawns_on_the_configured_port(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The third spawn site, end to end, against a real qmd binary.
+
+    ``access.daemon_tool`` respawns when the daemon is stale, and that
+    site was the one the unit pins could not protect on their own: with
+    both of them weakened to tautologies, dropping ``port=`` there
+    passed the entire unit suite. It is also the *hottest* of the three
+    — ``_is_daemon_stale()`` is true on essentially every call after any
+    write.
+
+    So this drives the real thing rather than asserting on a stub:
+    ``_is_daemon_stale`` is made genuinely true by touching the global
+    write marker (not by patching the predicate), ``LIES_QMD_URL`` points
+    at a throwaway on a spare port, and the reap and spawn are the
+    production functions.
+
+    ``_call_with_recovery`` is stubbed, and that is load-bearing rather
+    than convenient. Left real it **masks the defect**: the stale
+    respawn puts a stray on the wrong port, the next call fails to
+    connect, and the recovery path reaps that stray and respawns *with*
+    the port — so a full ``daemon_tool`` call succeeds under the bug and
+    this test passed while the port was demonstrably wrong. With the
+    recovery removed, what is left is exactly the subject: did the
+    stale-path respawn land on the configured port.
+
+    The real consequence, for the record: the bug creates and destroys a
+    daemon process on the hottest path in the seam (a stale respawn runs
+    on essentially every call after any write) and holds the host-global
+    ``mcp.pid`` throughout, so a concurrent reap elsewhere on the host
+    can kill the wrong process.
+    """
+    if not qmd_daemon.qmd_installed():  # pragma: no cover - environment-dependent
+        pytest.skip("qmd is not installed")
+
+    from lies.qmd import access
+
+    port = _free_port()
+    data_dir = tmp_path / "cache"
+    monkeypatch.setenv("XDG_CACHE_HOME", str(data_dir))
+    monkeypatch.setenv("LIES_QMD_URL", f"http://127.0.0.1:{port}/mcp")
+
+    # Isolate the stale respawn from the recovery that would repair it.
+    async def _no_recovery(url: str, name: str, make_call: object) -> dict[str, list]:
+        return {"hits": []}
+
+    monkeypatch.setattr(access, "_call_with_recovery", _no_recovery)
+
+    pids: list[int] = []
+    try:
+        qmd_daemon._spawn_qmd_daemon(port=port)
+        assert _wait_listening(port), f"no throwaway on {port}"
+        pidfile = data_dir / "qmd" / "mcp.pid"
+        first = int(pidfile.read_text().strip())
+        pids.append(first)
+
+        # Make staleness REAL: the daemon started before this write.
+        # ``_is_daemon_stale`` compares the marker against the pidfile,
+        # and both live under XDG_CACHE_HOME, so the throwaway owns them.
+        marker = data_dir / "qmd" / "last-write-marker"
+        marker.write_text("x")
+        assert qmd_daemon._is_daemon_stale(), (
+            "could not make the throwaway genuinely stale; this test would "
+            "otherwise pass without exercising the respawn at all"
+        )
+
+        result = asyncio.run(access.daemon_tool("status", {}))
+        assert result == {"hits": []}
+
+        second = int(pidfile.read_text().strip())
+        pids.append(second)
+        assert second != first, "the stale path did not actually respawn"
+        # The spawn is fire-and-forget — `qmd mcp --http --daemon`
+        # double-forks and returns — so the replacement needs a moment
+        # to bind. Poll rather than reading once.
+        deadline = time.monotonic() + 30.0
+        while time.monotonic() < deadline and not _port_owned_by(second, port):
+            time.sleep(0.2)
+        assert _port_owned_by(second, port), (
+            f"the respawned daemon (pid {second}) is not listening on the "
+            f"configured port {port}; the port was dropped at this spawn "
+            f"site and the replacement bound qmd's default instead"
+        )
+    finally:
+        for pid in dict.fromkeys(pids):
+            try:
+                os.kill(pid, 15)
+            except OSError:
+                pass
+        for pid in dict.fromkeys(pids):
+            for _ in range(100):
+                try:
+                    os.kill(pid, 0)
+                except OSError:
+                    break
+                time.sleep(0.05)
+        shutil.rmtree(data_dir, ignore_errors=True)
 
 
 def test_a_recycle_probe_against_a_dead_port_is_the_measured_shape() -> None:

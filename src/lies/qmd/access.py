@@ -24,6 +24,7 @@ from lies.qmd.daemon import (
     _is_daemon_stale,
     _reap_qmd_daemon,
     _spawn_qmd_daemon,
+    daemon_port_from_url,
     recycle_qmd_daemon,
 )
 from lies.qmd.health import qmd_daemon_reachable
@@ -427,7 +428,17 @@ async def _call_daemon_tool(
     if _is_daemon_stale():
         _log.info("qmd daemon stale; reaping before the call")
         _reap_qmd_daemon()
-        _spawn_qmd_daemon()
+        # The port comes from ``url`` — the daemon this call is about to
+        # use. Omitting it here was IMPORTANT 5's exact failure mode at a
+        # third site: against ``LIES_QMD_URL=...:9000`` the reap kills
+        # the 9000 daemon and a port-less spawn brings up a stray on
+        # qmd's default that also takes its ``mcp.pid``, while this call
+        # proceeds against a daemon that is no longer there.
+        #
+        # Not exotic, either: ``_is_daemon_stale`` is true on essentially
+        # every call after any write, since every ``LibraryWriter.commit``
+        # and ``apply_plan`` touches the one global marker.
+        _spawn_qmd_daemon(port=daemon_port_from_url(url))
 
     client = _daemon_client(url)
     return await _call_with_recovery(

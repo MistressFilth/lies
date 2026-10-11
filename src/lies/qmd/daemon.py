@@ -94,6 +94,21 @@ def check_scope_match(expected: _Path) -> bool:
 def _canonical_scope() -> _Path:
     """The one scope value every caller passes.
 
+    **What the value is for.** It answers exactly one question — *"is the
+    daemon that is serving the one LIES started?"* — and nothing else. It
+    never selects an index, never reaches a spawn, and is never opened;
+    it is only ever *compared* (by :func:`check_scope_match`) and
+    *recorded*. A value that is constant across every wiki is therefore
+    correct for that question: on a wiki-only install
+    ``library_git_root()`` resolves to a path that need not exist, and
+    that is fine, because nothing ever reads it.
+
+    What it cannot do is distinguish two concurrent LIES sessions. That
+    is inherent to a machine-global daemon: there is one qmd daemon
+    per host, so there is one scope per host, and no value in a
+    sidecar can do better without the daemon learning a concept it does
+    not have.
+
     ``library_git_root()``. It used to be three different values from
     three call sites — ``wiki.wiki_dir`` (``operator.py``'s ``up``),
     ``wiki.data_root`` (``operator.py``'s ``recycle``), and
@@ -314,7 +329,7 @@ def _spawn_qmd_daemon(
             ``values.http``, ``values.port``, ``values.daemon`` and
             ``values.index``. qmd resolves its whole cache dir from
             ``XDG_CACHE_HOME`` (``dist/cli/qmd.js:3981-3983`` and
-            ``dist/store.js:428.js:428-434``), covering
+            ``dist/store.js:428-434``), covering
             ``index.sqlite``, ``mcp.pid`` and ``mcp.log``. Note the
             off-by-one: qmd appends its own ``qmd/``, so a daemon
             started with ``data_dir=X`` uses ``X/qmd/``, not ``X``.
@@ -505,13 +520,17 @@ class QmdRecycleFailed(RuntimeError):
 #: third-party message string, and ``import httpx2`` is exactly the
 #: vendored-module import the taxonomy bullet warns against. Two facts make
 #: the breadth safe, and both are load-bearing: ``QmdRecycleFailed`` **is**
-#: a ``RuntimeError`` (it subclasses it), and it is raised at the bottom of
-#: the function, **outside** the ``try`` that this arm guards. If that
-#: ``raise`` ever moved inside the ``try``, this arm would swallow LIES'
-#: own failure contract and the loop would spin to the budget instead of
-#: reporting. ``tests/unit/qmd/test_daemon_recycle.py`` pins both facts —
-#: the subclass relation behaviourally and the ordering by source index,
-#: because a line-move is invisible to a runtime assertion.
+#: a ``RuntimeError`` (it subclasses it), and nothing inside the ``try``
+#: raises it — the ``raise`` is at the bottom of the function, outside the
+#: guarded block. If a ``raise QmdRecycleFailed`` ever appeared inside that
+#: ``try``, this arm would swallow LIES' own failure contract and the loop
+#: would spin to the budget instead of reporting. The pin below covers the
+#: **bare** form ``raise QmdRecycleFailed(...)``: it does not see a raise
+#: reached through an attribute (``daemon.QmdRecycleFailed(...)``), via a
+#: pre-built instance (``boom = ...; raise boom``), or through a helper
+#: called inside the try. It claims exactly what it enforces, no more.
+#: ``tests/unit/qmd/test_daemon_recycle.py`` asserts the subclass relation
+#: behaviourally and the try/except shape over the AST.
 _RECYCLE_PROBE_ERRORS = (httpx.HTTPError, mcp.MCPError, OSError, RuntimeError)
 
 
@@ -539,37 +558,51 @@ async def recycle_qmd_daemon(
             onto a *different* port than the one probed is the failure
             that shape prevents.
 
-    **Worst case is two figures, not one**, because ``qmd_daemon_state()``
-    runs a ``qmd status`` subprocess bounded at ``STATUS_TIMEOUT_S``
-    (15 s) and this path calls it repeatedly. Measured 2026-10-10 by
-    instrumenting ``_run_qmd``: 20 calls on a 1 s / 0.05 s run, all of
-    them ``qmd status``.
+    **Worst case: a ~31 s floor and a ~66 s ceiling**, measured, not
+    derived. Every constant was scaled by 1/100 and a real exhaustion
+    driven through the genuine ``_reap_qmd_daemon``, ``_spawn_qmd_daemon``,
+    probe loop and deadline, then scaled back (measured 2026-10-10):
 
-    - **~31 s when the replacement never serves and ``qmd status``
-      answers promptly.** The ``ready_timeout`` budget (30 s) plus a
-      little reap/spawn/probe overhead. Add up to 4 s more if SIGTERM
-      does not take within ``_reap_qmd_daemon``'s grace (two grace
-      windows of ``time.sleep``).
-    - **~80 s if ``qmd status`` also hangs** at its own 15 s bound: one
-      inside ``_reap_qmd_daemon`` (its first line), one before the loop,
-      and **one per failed poll** (~2 more inside a 30 s budget once
-      each costs 15 s).
+    ==========================  ===================================
+    scenario                    measured (real scale)
+    ==========================  ===================================
+    prompt status, prompt spawn            **31.0 s**  (floor)
+    prompt status, **spawn hangs**          **47.5 s**
+    **qmd status hangs**, prompt spawn      **48.6 s**
+    both hang                               **65.8 s**  (ceiling)
+    ==========================  ===================================
 
-    The single figure this docstring used to quote — a ~45-second bound
-    — summed ``STATUS_TIMEOUT_S`` as if the spawn ran long *and* the
-    budget ran long, which are different scenarios, and it omitted the
-    per-poll ``qmd status`` entirely.
+    Two things a reader should not get wrong:
 
-    The per-poll ``qmd status`` is itself worth hoisting out of the loop
-    (it is a subprocess spawn per iteration, ~60 over a 30 s budget) and
-    would make the arithmetic above a single figure. That is a pre-
-    existing cost, deliberately not changed here.
+    - **The spawn has its own 15 s bound.** "Prompt status" does not mean
+      prompt everything, and the spawn hanging is the *dominant*
+      intermediate case — +16.4 s, named by no single-figure summary.
+    - **A hanging ``qmd status`` makes the ceiling *lower*, not higher.**
+      ``qmd_daemon_state()`` then reports ``running=False``, so
+      ``_reap_qmd_daemon`` returns without killing anything and spends
+      neither grace window. That is why an earlier "~80 s if status
+      hangs" figure was not merely loose but **unreachable** — it added
+      4 s of reap time that the slow-status path specifically forgoes.
+
+    Add **up to 4 s** on any row where ``qmd status`` still answers
+    "running" while the daemon ignores SIGTERM: then the reap does spend
+    both grace windows. Measured that variant at 34.5 / 50.6 / 53.9 /
+    **69.0 s**.
+
+    The figures this replaces were wrong in two independent ways: a
+    single "~45 s" summed mutually exclusive component bounds, and the
+    "~80 s" it became was not an upper bound at all.
+
+    The per-poll ``qmd status`` is worth hoisting out of the loop (a
+    subprocess per iteration, ~60 over a 30 s budget) and would collapse
+    this table to one figure. That is a pre-existing cost, deliberately
+    not changed here.
 
     Measured 2026-10-10: against a stopped daemon the loop previously
-    escaped on probe one in ~0.3 s, so neither ceiling had ever been
-    observed being hit. They are ceilings, not typicals — a daemon that
-    boots probes green on the first or second attempt and returns in
-    well under a second.
+    escaped on probe one in ~0.3 s, so none of this had ever been
+    observed being reached. These are ceilings, not typicals — a daemon
+    that boots probes green on the first or second attempt and returns
+    in well under a second.
 
     Raises:
         QmdRecycleFailed: reap+spawn+probe never served within ready_timeout.

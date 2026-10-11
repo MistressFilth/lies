@@ -9,6 +9,8 @@ daemon is not this file's job; see
 
 from __future__ import annotations
 
+import socket
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -92,6 +94,55 @@ class _DeadSessionClient:
 
     async def list_tools(self) -> list[object]:
         raise AssertionError("__aenter__ raises first; this must never run")
+
+
+@pytest.fixture(autouse=True)
+def _no_socket_to_loopback() -> Iterator[None]:
+    """Fail this file's tests if any of them opens a loopback socket.
+
+    Every test here must stub ``fastmcp.Client``. One did not, and it
+    dialed whatever was listening on the hardcoded port — which on this
+    host is the operator's **live qmd daemon**, so the test's result
+    depended on their machine: it passed only while nothing happened to
+    be listening, and failed with ``DID NOT RAISE`` the moment a daemon
+    was up. That is the worst failure mode a unit test has — silent when
+    green, and a false verdict when red.
+
+    Intercepting ``socket.socket.connect`` is what catches it:
+    ``httpx2`` (fastmcp's vendored httpx) resolves a loopback URL
+    through the ordinary socket path, so no fastmcp-specific knowledge is
+    needed. The guard is module-wide rather than per-test because the
+    mistake is one any test in this file could repeat — a stub is easy
+    to forget on the next test someone adds.
+
+    Restored with an explicit ``delattr`` rather than ``monkeypatch``:
+    ``socket.socket.connect`` is *inherited* from ``_socket.socket``, so
+    a monkeypatch undo would leave a shadowing class attribute behind
+    rather than restoring the absence.
+    """
+    attempts: list[object] = []
+    real_connect = socket.socket.connect
+
+    def guarded(self: socket.socket, address: object) -> Any:  # type: ignore[no-untyped-def]
+        try:
+            host = str(address[0])  # type: ignore[index]
+        except TypeError, IndexError:
+            host = ""
+        if host.startswith("127.") or host in ("::1", "localhost"):
+            attempts.append(address)
+        return real_connect(self, address)  # type: ignore[arg-type]
+
+    socket.socket.connect = guarded  # type: ignore[method-assign]
+    try:
+        yield
+    finally:
+        del socket.socket.connect
+    assert not attempts, (
+        f"this test opened {len(attempts)} loopback socket connection(s) "
+        f"({attempts[:3]}). Unit tests must stub fastmcp.Client — one that "
+        f"dials a real address silently becomes a function of whether the "
+        f"operator happens to have a qmd daemon running."
+    )
 
 
 def _stub_spawn_and_reap(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -225,31 +276,44 @@ def test_the_measured_exception_is_not_in_any_legacy_arm() -> None:
 def test_the_widened_arm_cannot_swallow_our_own_failure_contract() -> None:
     """``RuntimeError`` is broad, and LIES' own failure is a ``RuntimeError``.
 
-    Two facts make that safe, and both are load-bearing:
+        Two facts make that safe, and both are load-bearing:
 
-    1. ``QmdRecycleFailed`` subclasses ``RuntimeError``, so the widened
-       arm *would* match it.
-    2. Nothing inside the guarded ``try`` raises it. The ``raise`` is
-       after the loop, outside the block.
+        1. ``QmdRecycleFailed`` subclasses ``RuntimeError``, so the widened
+           arm *would* match it.
+        2. Nothing inside the guarded ``try`` raises it. The ``raise`` is
+           after the loop, outside the block.
 
-    If a future edit moved that ``raise`` inside the ``try``, the loop
-    would catch its own failure, log it as "probe failed", and spin to
-    the budget instead of reporting — turning a clear failure into a
-    silent wait.
+        If a future edit moved that ``raise`` inside the ``try``, the loop
+        would catch its own failure, log it as "probe failed", and spin to
+        the budget instead of reporting — turning a clear failure into a
+        silent wait.
 
     Asserted **structurally, over the AST**, not by comparing source
-    line indices. An index comparison was tried first and is too weak:
-    it stays green when a ``raise QmdRecycleFailed`` is added *inside*
-    the try without moving the existing statement, which is the more
-    likely edit — a "final check" inside the loop body. The question is
-    "is the raise reachable from inside the guarded block", and only the
-    tree answers that.
+        line indices. An index comparison was tried first and is too weak:
+        it stays green when a ``raise QmdRecycleFailed`` is added *inside*
+        the try without moving the existing statement, which is the more
+        likely edit - a "final check" inside the loop body.
+
+        **What this does and does not enforce**, because a pin that reads
+        stronger than it is worse than none. It matches the *bare* form
+        only - ``raise QmdRecycleFailed(...)``, a ``Call`` whose func is a
+        plain ``Name`` with that id. It does **not** see:
+
+        - ``raise daemon.QmdRecycleFailed(...)`` (an ``Attribute`` func);
+        - ``boom = QmdRecycleFailed(...); raise boom`` (a pre-built
+          instance, where ``exc`` is a ``Name``);
+        - a raise of some *other* ``RuntimeError`` subclass;
+        - a raise reached by calling a helper from inside the try.
+
+        Catching all of those means resolving names, which is the kind of
+        inference that silently rots. The comment in ``daemon.py`` says the
+        same thing, so neither the pin nor the prose overclaims.
     """
     import ast
 
     assert issubclass(qmd_daemon.QmdRecycleFailed, RuntimeError), (
         "QmdRecycleFailed is no longer a RuntimeError; the widened probe "
-        "arm is no longer at risk of swallowing it — update the comment"
+        "arm is no longer at risk of swallowing it - update the comment"
     )
 
     tree = ast.parse(Path(qmd_daemon.__file__).read_text(encoding="utf-8"))
@@ -270,18 +334,22 @@ def test_the_widened_arm_cannot_swallow_our_own_failure_contract() -> None:
 
     assert guarded, "the probe's guarded try/except is gone; re-derive this"
 
-    def raises_recycle_failed(node: ast.AST) -> bool:
+    def raises_bare_recycle_failed(node: ast.AST) -> bool:
+        """The bare form only - see the docstring's 'does not enforce' list."""
         for child in ast.walk(node):
-            if isinstance(child, ast.Raise) and isinstance(child.exc, ast.Call):
-                func = child.exc.func
-                if isinstance(func, ast.Name) and func.id == "QmdRecycleFailed":
-                    return True
+            if (
+                isinstance(child, ast.Raise)
+                and isinstance(child.exc, ast.Call)
+                and isinstance(child.exc.func, ast.Name)
+                and child.exc.func.id == "QmdRecycleFailed"
+            ):
+                return True
         return False
 
     for node in guarded:
-        assert not raises_recycle_failed(node), (
-            "a `raise QmdRecycleFailed` now sits inside the try guarded by "
-            "the widened RuntimeError arm; it would be caught, logged as a "
+        assert not raises_bare_recycle_failed(node), (
+            "a `raise QmdRecycleFailed(...)` now sits inside the try guarded "
+            "by the widened RuntimeError arm; it would be caught, logged as a "
             "probe failure, and retried until the budget expires"
         )
 
@@ -374,43 +442,63 @@ async def test_an_http_not_ready_response_is_still_retried(
     assert mcp.MCPError in qmd_daemon._RECYCLE_PROBE_ERRORS
 
 
-def test_the_docstring_states_both_reachable_ceilings() -> None:
-    """The worst case is two figures, and both must be named.
+def test_the_docstring_states_the_measured_floor_and_ceiling() -> None:
+    """The worst case is a floor and a ceiling, both from measurement.
 
-    The docstring used to quote a single "45 s", which summed
-    ``STATUS_TIMEOUT_S`` as if the spawn ran long *and* the budget ran
-    long — different scenarios — and omitted the ``qmd status`` that runs
-    on every failed poll. A single unsound bound is worse than none: it
-    reads as measured.
+    The docstring's history is a useful record of how wrong these
+    figures have been: a single "45 s" that summed mutually exclusive
+    component bounds, then a "~31 s / ~80 s" pair where the ceiling was
+    **unreachable** — a hanging ``qmd status`` makes ``qmd_daemon_state``
+    report ``running=False``, so ``_reap_qmd_daemon`` skips both grace
+    windows and the 4 s the old figure leaned on is exactly what the
+    slow-status path forgoes. The spawn's own 15 s bound dominated the
+    middle and was named by neither.
 
-    Asserting the literal figures, so a change to the arithmetic has to
-    be an edit to the test as well as the text.
-
-    Whitespace is collapsed before matching: these are prose, and prose
-    gets re-wrapped by the formatter without anyone changing what it
-    says. A raw substring assert would fail on that and invite someone
-    to make it pass by deleting the claim.
+    Asserting the literals so the arithmetic has to be edited in two
+    places. Whitespace is collapsed first: this is prose, and prose gets
+    re-wrapped by the formatter without anyone changing what it says.
     """
     doc = " ".join((qmd_daemon.recycle_qmd_daemon.__doc__ or "").split())
 
-    assert "~31 s" in doc, "the fast-qmd-status ceiling must be stated"
-    assert "~80 s" in doc, (
-        "the hanging-qmd-status ceiling must be stated; a `qmd status` at "
-        "its 15s STATUS_TIMEOUT_S bound runs once in the reap, once before "
-        "the loop, and once per failed poll"
+    assert "31.0 s" in doc, "the measured floor must be stated"
+    assert "65.8 s" in doc, "the measured ceiling must be stated; ~80s was not an upper bound"
+    assert "47.5 s" in doc and "48.6 s" in doc, (
+        "both single-bound scenarios must be tabulated; the spawn-hang "
+        "case is the dominant intermediate and is what the old figures missed"
     )
-    assert "45 s" not in doc, (
-        "the single 45s bound was unsound — it summed mutually exclusive "
-        "component bounds and omitted the per-poll qmd status"
+    assert "unreachable" in doc, (
+        "the docstring must record that the earlier ~80s ceiling was "
+        "unreachable, not merely loose — that is why the shape changed"
     )
-    assert "qmd_daemon_state" in doc or "qmd status" in doc, (
-        "the docstring must enumerate the per-poll qmd status, which is "
-        "what makes the second figure"
-    )
+    assert "dominant" in doc and "spawn" in doc, "the spawn-hang case must be named as dominant"
     assert "ever been observed" in doc, (
-        "the docstring must keep recording that neither ceiling was "
+        "the docstring must keep recording that none of this was "
         "reachable before the except tuple was widened"
     )
+
+
+def test_the_ceiling_is_a_measured_range_not_a_single_figure() -> None:
+    """No lone single figure may replace the table.
+
+    Two figures have now been wrong on this exact line — "45 s" and
+    "~80 s" — and both were single numbers presented as bounds. A
+    regression to one number is the failure mode worth pinning, and it
+    is cheap to check: a bound this path has is a range, so the docstring
+    must still name both ends of it.
+    """
+    doc = " ".join((qmd_daemon.recycle_qmd_daemon.__doc__ or "").split())
+
+    assert "floor" in doc and "ceiling" in doc, (
+        "the docstring must frame the bound as a range with named ends"
+    )
+    # "45 s" must not appear as a live bound. It may appear in the
+    # history paragraph, which says it was wrong; that is allowed, and
+    # distinguishing the two is the point.
+    for sentence in doc.split(". "):
+        if "45 s" in sentence:
+            assert any(word in sentence for word in ("wrong", "summed", "replaces", "mutually")), (
+                f"'45 s' reads as a live bound here: {sentence!r}"
+            )
 
 
 async def test_the_recycle_spawns_on_the_port_it_probes(
@@ -428,9 +516,15 @@ async def test_the_recycle_spawns_on_the_port_it_probes(
     because the stray's pidfile is live.
 
     So the port is parsed out of ``daemon_url``, not defaulted.
+
+    The probe is stubbed (via the module's ``_no_socket_to_loopback``
+    guard, this test previously opened a real socket to the port it
+    names — see that fixture).
     """
     _stub_spawn_and_reap(monkeypatch)
     _fake_clock(monkeypatch, tick_s=0.5)
+    _DeadSessionClient.attempts = []
+    monkeypatch.setattr("lies.qmd.daemon.fastmcp.Client", _DeadSessionClient)
     spawned: list[dict[str, object]] = []
 
     def _capture(**kw: object) -> None:

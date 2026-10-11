@@ -257,8 +257,8 @@ call.**
   and the spawn shells `qmd mcp --http --daemon` directly, so the
   recycle never waits on the lock it is holding.
 
-  **The number is now reachable, and it is two figures, not one.**
-  Measured
+  **The number is now reachable: a ~31 s floor and a ~66 s ceiling,
+  both measured.** Measured
   2026-10-10 against the live daemon: the recycle's probe caught
   `(httpx.HTTPError, mcp.MCPError, OSError)`, but a stopped daemon
   raises a **bare** `RuntimeError` — fastmcp wraps every connect
@@ -273,16 +273,26 @@ call.**
   the restart had failed while the daemon it had just started was
   coming up. The tuple now covers `RuntimeError`.
 
-  **~31 s when the replacement never serves and `qmd status` answers
-  promptly** (the `ready_timeout` budget, plus up to 4 s more if SIGTERM
-  misses its grace). **~80 s if `qmd status` also hangs** — it runs
-  `qmd status` at a `STATUS_TIMEOUT_S` (15 s) bound once inside
-  `_reap_qmd_daemon`, once before the loop, and **once per failed
-  poll**. Measured by instrumenting `_run_qmd`: 20 calls on a
-  1 s / 0.05 s run, all `qmd status`. The single "45 s" this bullet
-  used to quote summed mutually exclusive component bounds and
-  omitted the per-poll call entirely. *Transcribed, not re-measured at
-  commit time.*
+  Measured by scaling every constant by 1/100 and driving real
+  exhaustion through the genuine reap, spawn, probe loop and deadline:
+
+  | scenario | measured (real scale) |
+  |---|---|
+  | prompt status, prompt spawn | **31.0 s** (floor) |
+  | prompt status, **spawn hangs** | **47.5 s** |
+  | **`qmd status` hangs**, prompt spawn | **48.6 s** |
+  | both hang | **65.8 s** (ceiling) |
+
+  Two traps in that table. **The spawn has its own 15 s bound**, so
+  "prompt status" does not mean prompt everything, and the spawn-hang
+  case dominates the middle. And a **hanging `qmd status` makes the
+  ceiling lower, not higher**: `qmd_daemon_state()` then reports
+  `running=False`, so `_reap_qmd_daemon` returns without killing
+  anything and spends neither grace window — which is why the "~80 s"
+  this bullet previously quoted was not merely loose but *unreachable*.
+  Add up to 4 s more where the reap does spend both grace windows
+  (measured 34.5 / 50.6 / 53.9 / 69.0 s). *Transcribed, not
+  re-measured at commit time.*
 - **The streamable-HTTP transport does not time out idle streams.** A
   GET stream held open for 30 minutes survived intact, carrying one
   ping and then 29+ minutes of silence. There is no server-side idle
@@ -382,7 +392,10 @@ call.**
   port, sharing its cache root — and left `LIES_QMD_URL=...:9000`
   spawning a stray on 8181 while the probe polled 9000. Every spawn now
   threads the port from the URL it will probe
-  (`daemon.daemon_port_from_url`).
+  (`daemon.daemon_port_from_url`) — **all three sites**, including
+  `access.daemon_tool`'s stale-daemon path, which was missed once and
+  is the hottest of the three: `_is_daemon_stale()` is true on
+  essentially every call after any write.
 
   **The sidecar records a "scope", and a scope is not an index.** Four
   call sites used to pass four different values (`wiki.wiki_dir`,

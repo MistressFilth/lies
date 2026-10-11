@@ -209,23 +209,37 @@ rule rather than the accident.
   started was still coming up. The documented "tens of seconds" hold on
   the qmd inode described a path no one had walked.
 
-  The tuple now covers `RuntimeError`, and the docstring states the real
-  ceiling as **two** figures, because `qmd_daemon_state()` runs a
-  `qmd status` subprocess bounded at `STATUS_TIMEOUT_S` (15 s) on this
-  path: once inside `_reap_qmd_daemon`, once before the loop, and **once
-  per failed poll**. *Measured 2026-10-10 against the live daemon;
-  transcribed, not re-measured at commit time.*
+  The tuple now covers `RuntimeError`, and the worst case is now a
+  **~31 s floor and a ~66 s ceiling — measured, not derived.** Every
+  constant is scaled by 1/100 and a real exhaustion is driven through
+  the genuine `_reap_qmd_daemon`, `_spawn_qmd_daemon`, probe loop and
+  deadline, then scaled back. *Measured 2026-10-10 against the live
+  daemon; transcribed, not re-measured at commit time.*
 
-  - **~31 s** when the replacement never serves and `qmd status` answers
-    promptly (the `ready_timeout` budget, plus up to 4 s more if SIGTERM
-    misses its grace).
-  - **~80 s** if `qmd status` also hangs at its 15 s bound.
+  | scenario | measured (real scale) |
+  |---|---|
+  | prompt status, prompt spawn | **31.0 s** (floor) |
+  | prompt status, **spawn hangs** | **47.5 s** |
+  | **`qmd status` hangs**, prompt spawn | **48.6 s** |
+  | both hang | **65.8 s** (ceiling) |
 
-  The single "45 s" this entry previously quoted was not a valid upper
-  bound: it summed `STATUS_TIMEOUT_S` as if the spawn ran long *and* the
-  budget ran long, which are different scenarios, and it omitted the
-  per-poll call entirely. Pinned in `tests/unit/qmd/test_daemon_recycle.py`,
-  whose tests go red if the tuple is narrowed back.
+  Two things a reader should not get wrong. The **spawn has its own 15 s
+  bound**, so "prompt status" does not mean prompt everything, and the
+  spawn-hang case dominates the middle. And a **hanging `qmd status`
+  makes the ceiling lower, not higher**: `qmd_daemon_state()` then
+  reports `running=False`, so `_reap_qmd_daemon` returns without killing
+  anything and spends neither grace window.
+
+  The two figures this replaces were wrong in independent ways. A single
+  "45 s" summed `STATUS_TIMEOUT_S` as if the spawn ran long *and* the
+  budget ran long. The "~80 s" it became was **not an upper bound at
+  all** — it added 4 s of reap time that the slow-status path
+  specifically forgoes, so it described a state the code cannot reach.
+  Add up to 4 s on any row where the reap does spend both grace windows
+  (measured 34.5 / 50.6 / 53.9 / 69.0 s).
+
+  Pinned in `tests/unit/qmd/test_daemon_recycle.py`, whose tests go red
+  if the tuple is narrowed back.
 
   AGENTS.md recorded this as *"a dead session arrives as a bare
   `RuntimeError` with the real error on `__cause__`"*. That is now a
@@ -261,6 +275,23 @@ rule rather than the accident.
   cache root. The precondition belongs to the caller, and both
   production callers satisfy it — they reap first, so no live pidfile is
   held when the spawn runs.
+
+  **All three spawn sites thread the port, not two.** `access.daemon_tool`
+  has a third (`_is_daemon_stale()` → reap + respawn) that the first fix
+  missed; a reviewer probing it found `_spawn_qmd_daemon called with {}`,
+  and against the real binary the replacement landed on 8181 while the
+  configured port kept serving — the identical failure mode one layer
+  out. It is the *hottest* of the three, not the coldest:
+  `_is_daemon_stale()` is true on essentially every `daemon_tool` call
+  after any write, since every `LibraryWriter.commit` and `apply_plan`
+  touches the one global marker.
+
+  That site also had **no pin**, and the obvious one was useless: the
+  test's stub was a zero-arg `lambda: spawned.append(True)`, so it broke
+  on the fix and could be "repaired" with `**kw` — which then made the
+  wrong-port mutation invisible to the whole suite. The stub now records
+  its kwargs and asserts on `port`, alongside an AST check that no
+  `_spawn_qmd_daemon(...)` call in `access.py` omits it.
 
   Verified against the real binary in
   `tests/integration/test_qmd_spawn_throwaway.py`, which now recycles a

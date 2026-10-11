@@ -309,11 +309,19 @@ async def test_a_stale_daemon_is_reaped_and_the_call_still_proceeds(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     reaped: list[bool] = []
-    spawned: list[bool] = []
+    # Recorded as a dict, not swallowed with ``**kw``. A stub that
+    # accepts arbitrary keywords is what made the wrong-port mutation
+    # invisible here: the call still "succeeded", the kwargs vanished,
+    # and nothing could tell the two behaviours apart.
+    spawned: list[dict[str, object]] = []
     monkeypatch.setattr(access, "qmd_daemon_reachable", lambda url, timeout=0.5: True)
     monkeypatch.setattr(access, "_is_daemon_stale", lambda: True)
     monkeypatch.setattr(access, "_reap_qmd_daemon", lambda: reaped.append(True))
-    monkeypatch.setattr(access, "_spawn_qmd_daemon", lambda: spawned.append(True))
+    monkeypatch.setattr(
+        access,
+        "_spawn_qmd_daemon",
+        lambda **kw: spawned.append(kw),  # type: ignore[arg-type]
+    )
     client = _FakeClient([{"hits": ["served-after-respawn"]}])
     _use_client(monkeypatch, client)
 
@@ -321,7 +329,63 @@ async def test_a_stale_daemon_is_reaped_and_the_call_still_proceeds(
 
     assert result == {"hits": ["served-after-respawn"]}
     assert reaped == [True]
-    assert spawned == [True]
+    assert len(spawned) == 1
+    # ``.get``, not ``[]``: a missing key must read as this test's
+    # message, not as a bare ``KeyError: 'port'`` that points at the
+    # assertion instead of at the bug.
+    assert spawned[0].get("port") == 8181, (
+        "the stale-daemon respawn must carry the port from the URL this "
+        f"call is about to use; got {spawned[0]!r}. Dropping it is "
+        "IMPORTANT 5's failure mode at this third site: the reap kills the "
+        "configured daemon and the replacement binds qmd's default "
+        "instead, while the call proceeds against a daemon that is gone."
+    )
+
+
+async def test_every_respawn_site_threads_the_url_port(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every reap-then-spawn in ``access.py`` passes the configured port.
+
+    Source-level because the claim is about what is *absent*: three sites
+    in the seam spawn a daemon (this module's stale-daemon path,
+    ``daemon.recycle_qmd_daemon`` and ``daemon.ensure_qmd_daemon``), and
+    a missing ``port=`` at any one of them reproduces the same stray. The
+    third site here was found by a reviewer probing it directly — a real
+    ``_spawn_qmd_daemon called with {}`` — after the first two were fixed.
+
+    Counted over the AST so a fourth site is caught, and so prose in a
+    docstring is not mistaken for code.
+    """
+    import ast
+    import re
+
+    source = Path(access.__file__).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+
+    spawns = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_spawn_qmd_daemon"
+    ]
+    assert spawns, "access.py no longer spawns a daemon — re-derive this pin"
+
+    for node in spawns:
+        kwargs = {kw.arg for kw in node.keywords if kw.arg}
+        assert "port" in kwargs, (
+            f"_spawn_qmd_daemon called without port= (line {node.lineno}); "
+            "it will bind qmd's default rather than the configured port"
+        )
+
+    # And the pin is load-bearing: the stale path really is reachable
+    # with a port, not merely present somewhere in the file.
+    stale = re.search(r"if _is_daemon_stale\(\).*?_spawn_qmd_daemon\(port=", source, re.DOTALL)
+    assert stale, (
+        "the stale-daemon path no longer threads the port; this is the "
+        "site that regressed once already"
+    )
 
 
 # --- the wedged path ---------------------------------------------------
