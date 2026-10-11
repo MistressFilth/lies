@@ -13,27 +13,27 @@ from lies.qmd import daemon as qmd_daemon
 
 def test_sidecar_read_write_roundtrip(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(qmd_daemon, "SIDECAR_PATH", tmp_path / "mcp.data-dir")
-    qmd_daemon.write_sidecar_data_dir(tmp_path / "expected")
-    assert qmd_daemon.read_sidecar_data_dir() == tmp_path / "expected"
+    qmd_daemon.write_sidecar_scope(tmp_path / "expected")
+    assert qmd_daemon.read_sidecar_scope() == tmp_path / "expected"
 
 
-def test_check_data_dir_match_returns_true_when_missing(
+def test_check_scope_match_returns_true_when_missing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(qmd_daemon, "SIDECAR_PATH", tmp_path / "mcp.data-dir")
     # Sidecar absent — first run, no mismatch.
-    assert qmd_daemon.check_data_dir_match(tmp_path / "expected") is True
+    assert qmd_daemon.check_scope_match(tmp_path / "expected") is True
 
 
-def test_check_data_dir_match_returns_false_on_mismatch(
+def test_check_scope_match_returns_false_on_mismatch(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(qmd_daemon, "SIDECAR_PATH", tmp_path / "mcp.data-dir")
-    qmd_daemon.write_sidecar_data_dir(tmp_path / "actual")
-    assert qmd_daemon.check_data_dir_match(tmp_path / "expected") is False
+    qmd_daemon.write_sidecar_scope(tmp_path / "actual")
+    assert qmd_daemon.check_scope_match(tmp_path / "expected") is False
 
 
-def test_check_data_dir_match_normalizes_paths(
+def test_check_scope_match_normalizes_paths(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """``Path("wiki")`` and ``Path("./wiki")`` must compare equal after
@@ -42,10 +42,10 @@ def test_check_data_dir_match_normalizes_paths(
     identical path objects.
     """
     monkeypatch.setattr(qmd_daemon, "SIDECAR_PATH", tmp_path / "mcp.data-dir")
-    qmd_daemon.write_sidecar_data_dir(tmp_path / "wiki")
+    qmd_daemon.write_sidecar_scope(tmp_path / "wiki")
     # `tmp_path / "." / "wiki"` resolves to the same path as `tmp_path / "wiki"`.
     dotted = Path(str(tmp_path)) / "." / "wiki"
-    assert qmd_daemon.check_data_dir_match(dotted) is True
+    assert qmd_daemon.check_scope_match(dotted) is True
 
 
 @pytest.mark.slow
@@ -53,17 +53,17 @@ def test_ensure_qmd_daemon_reaps_on_mismatch(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(qmd_daemon, "SIDECAR_PATH", tmp_path / "mcp.data-dir")
-    qmd_daemon.write_sidecar_data_dir(tmp_path / "stale")
+    qmd_daemon.write_sidecar_scope(tmp_path / "stale")
     # Mock qmd subprocess calls so the test does not require qmd.
     reap_called: list[bool] = []
     spawn_called: list[bool] = []
     monkeypatch.setattr(qmd_daemon, "_reap_qmd_daemon", lambda: reap_called.append(True))
-    monkeypatch.setattr(qmd_daemon, "_spawn_qmd_daemon", lambda: spawn_called.append(True))
+    monkeypatch.setattr(qmd_daemon, "_spawn_qmd_daemon", lambda **kw: spawn_called.append(True))
     monkeypatch.setattr(qmd_daemon, "qmd_installed", lambda: True)
-    qmd_daemon.ensure_qmd_daemon(data_dir=tmp_path / "fresh")
+    qmd_daemon.ensure_qmd_daemon(scope=tmp_path / "fresh")
     assert reap_called == [True]
     assert spawn_called == [True]
-    assert qmd_daemon.read_sidecar_data_dir() == tmp_path / "fresh"
+    assert qmd_daemon.read_sidecar_scope() == tmp_path / "fresh"
 
 
 def test_reap_qmd_daemon_sends_sigterm_and_waits_for_exit(
@@ -141,7 +141,7 @@ def test_ensure_qmd_daemon_runs_real_spawn_after_mocked_reap(
     is recorded. Regression test for the post-SIGTERM race window.
     """
     monkeypatch.setattr(qmd_daemon, "SIDECAR_PATH", tmp_path / "mcp.data-dir")
-    qmd_daemon.write_sidecar_data_dir(tmp_path / "stale")
+    qmd_daemon.write_sidecar_scope(tmp_path / "stale")
 
     # Stub qmd binary: `status` reports a running PID, `mcp` exits 0.
     script = tmp_path / "fake_qmd.py"
@@ -189,11 +189,11 @@ def test_ensure_qmd_daemon_runs_real_spawn_after_mocked_reap(
     reap_calls: list[bool] = []
     monkeypatch.setattr(qmd_daemon, "_reap_qmd_daemon", lambda: reap_calls.append(True))
 
-    qmd_daemon.ensure_qmd_daemon(data_dir=tmp_path / "fresh")
+    qmd_daemon.ensure_qmd_daemon(scope=tmp_path / "fresh")
 
     assert reap_calls == [True]
     # Sidecar recorded the new data-dir only after spawn returned.
-    assert qmd_daemon.read_sidecar_data_dir() == tmp_path / "fresh"
+    assert qmd_daemon.read_sidecar_scope() == tmp_path / "fresh"
 
 
 @pytest.mark.asyncio
@@ -208,11 +208,11 @@ async def test_recycle_qmd_daemon_probes_with_list_tools(
     spawn_calls: list[bool] = []
 
     monkeypatch.setattr(qmd_daemon, "_reap_qmd_daemon", lambda: reap_calls.append(True))
-    monkeypatch.setattr(qmd_daemon, "_spawn_qmd_daemon", lambda: spawn_calls.append(True))
+    monkeypatch.setattr(qmd_daemon, "_spawn_qmd_daemon", lambda **kw: spawn_calls.append(True))
     monkeypatch.setattr(
         qmd_daemon,
-        "write_sidecar_data_dir",
-        lambda data_dir: None,
+        "write_sidecar_scope",
+        lambda scope: None,
     )
     monkeypatch.setattr(
         qmd_daemon,
@@ -241,7 +241,7 @@ async def test_recycle_qmd_daemon_probes_with_list_tools(
     monkeypatch.setattr("lies.qmd.daemon.fastmcp.Client", _FakeFastmcpClient)
 
     state = await qmd_daemon.recycle_qmd_daemon(
-        data_dir=tmp_path,
+        scope=tmp_path,
         daemon_url="http://127.0.0.1:8181",
         ready_timeout=5.0,
         poll_interval=0.01,
@@ -262,8 +262,8 @@ async def test_recycle_qmd_daemon_raises_qmd_recycle_failed_when_probe_never_ser
     from lies.qmd import daemon as qmd_daemon
 
     monkeypatch.setattr(qmd_daemon, "_reap_qmd_daemon", lambda: None)
-    monkeypatch.setattr(qmd_daemon, "_spawn_qmd_daemon", lambda: None)
-    monkeypatch.setattr(qmd_daemon, "write_sidecar_data_dir", lambda data_dir: None)
+    monkeypatch.setattr(qmd_daemon, "_spawn_qmd_daemon", lambda **kw: None)
+    monkeypatch.setattr(qmd_daemon, "write_sidecar_scope", lambda scope: None)
     monkeypatch.setattr(
         qmd_daemon,
         "qmd_daemon_state",
@@ -285,7 +285,7 @@ async def test_recycle_qmd_daemon_raises_qmd_recycle_failed_when_probe_never_ser
 
     with pytest.raises(qmd_daemon.QmdRecycleFailed) as excinfo:
         await qmd_daemon.recycle_qmd_daemon(
-            data_dir=tmp_path,
+            scope=tmp_path,
             daemon_url="http://127.0.0.1:8181",
             ready_timeout=0.05,
             poll_interval=0.01,
@@ -327,10 +327,10 @@ async def test_ensure_qmd_daemon_reaps_stale_via_mtime_check(
         lambda: daemon_start,
     )
     monkeypatch.setattr(qmd_daemon, "_reap_qmd_daemon", lambda: reap_calls.append(True))
-    monkeypatch.setattr(qmd_daemon, "_spawn_qmd_daemon", lambda: spawn_calls.append(True))
-    monkeypatch.setattr(qmd_daemon, "write_sidecar_data_dir", lambda dd: None)
+    monkeypatch.setattr(qmd_daemon, "_spawn_qmd_daemon", lambda **kw: spawn_calls.append(True))
+    monkeypatch.setattr(qmd_daemon, "write_sidecar_scope", lambda scope: None)
     monkeypatch.setattr(qmd_daemon, "qmd_installed", lambda: True)
 
-    qmd_daemon.ensure_qmd_daemon(data_dir=tmp_path)
+    qmd_daemon.ensure_qmd_daemon(scope=tmp_path)
     assert reap_calls == [True], "F14 staleness should trigger reap+respawn"
     assert spawn_calls == [True]

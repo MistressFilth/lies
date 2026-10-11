@@ -170,6 +170,64 @@ def test_parent_prepared_still_heals_a_vanished_parent(tmp_path: Path) -> None:
     exclusive.release_create_lock(lock_path, result.fd)
 
 
+def test_the_heal_covers_the_reap_and_retry_creates_too(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The vanished-parent heal must reach *every* create, not just the first.
+
+    This is the path an earlier version of the mkdir hoist broke. The
+    heal sat around the first ``_create_exclusive`` call only, while
+    three retry creates sat inside the ``FileExistsError`` handler with
+    no such arm — so with the parent removed as the code entered the
+    reap-and-retry branch, ``FileNotFoundError`` escaped. The first
+    create healed correctly, which is exactly what made it look fine.
+
+    Driven through the real force-repair branch, with the parent removed
+    by the ``_reap_files`` the branch itself performs.
+    """
+    lock_path = tmp_path / "state" / "qmd.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    pid_path = Path(f"{lock_path}.pid")
+    state_path = Path(f"{lock_path}.state.json")
+
+    # A held lock with a full envelope, so the branch is entered.
+    fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+    pid_path.write_text("999999", encoding="utf-8")  # dead pid
+    state_path.write_text('{"pid": 999999, "started_at": 1e9}', encoding="utf-8")
+
+    # Remove the parent the way a concurrent cleanup would, at the exact
+    # moment the reap runs — i.e. after the contention is noticed and
+    # before the retry create.
+    real_reap = exclusive._reap_files
+
+    def reap_then_vanish(create_lock: Path, pid: Path, state: Path) -> None:
+        real_reap(create_lock, pid, state)
+        for child in create_lock.parent.iterdir():
+            child.unlink()
+        create_lock.parent.rmdir()
+
+    monkeypatch.setattr(exclusive, "_reap_files", reap_then_vanish)
+
+    result = exclusive.acquire_create_lock(
+        lock_path,
+        max_age_s=1800.0,
+        pid_path=pid_path,
+        state_json_path=state_path,
+        parent_prepared=True,
+        force_repair=True,
+    )
+
+    assert result is not None and result.status == "dead_reaped", (
+        "the reap-and-retry create must heal a vanished parent instead of "
+        "propagating FileNotFoundError out of acquire_create_lock"
+    )
+    assert lock_path.exists()
+    os.close(fd)
+    exclusive.release_create_lock(
+        lock_path, result.fd, pid_path=pid_path, state_json_path=state_path
+    )
+
+
 def test_ensure_lock_parent_is_a_noop_on_an_existing_directory(
     tmp_path: Path, count_mkdir: list[Path]
 ) -> None:

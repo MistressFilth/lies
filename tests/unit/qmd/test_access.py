@@ -111,7 +111,7 @@ def seam(monkeypatch: pytest.MonkeyPatch) -> _Recycle:
     monkeypatch.setattr(access, "qmd_daemon_reachable", lambda url, timeout=0.5: True)
     monkeypatch.setattr(access, "_is_daemon_stale", lambda: False)
     # The sidecar is a real file under $HOME; a test must not read it.
-    monkeypatch.setattr(access, "_recycle_data_dir", lambda: Path("/nonexistent"))
+    monkeypatch.setattr(access, "_recycle_scope", lambda: Path("/nonexistent"))
     recycle = _Recycle()
     monkeypatch.setattr(access, "recycle_qmd_daemon", recycle)
     return recycle
@@ -369,8 +369,8 @@ async def test_the_wedge_carries_the_log_as_it_was_before_the_recycle(
         return QmdState(installed=True, running=True, pid=4242, detail="fresh")
 
     # The `seam` fixture supplies the probe, the staleness check, and
-    # the `_recycle_data_dir` stub — the last of which keeps
-    # `read_sidecar_data_dir()` from reaching a real $HOME. Only the
+    # the `_recycle_scope` stub — the last of which keeps
+    # `read_sidecar_scope()` from reaching a real $HOME. Only the
     # recycle itself is replaced, because the truncation is the point.
     monkeypatch.setattr(access, "recycle_qmd_daemon", _recycle_that_truncates)
     monkeypatch.setattr(access, "_daemon_log_tail", lambda: log.read_text().strip())
@@ -616,7 +616,7 @@ async def test_each_wedge_carries_the_log_of_the_daemon_that_actually_wedged(
     unused: the test replaces the recycle because it has to control
     *when* the log is truncated, not *what* the recycle does, and the
     fixture is what stubs the daemon probe, the staleness check, and
-    `_recycle_data_dir`. Drop it as vestigial and `read_sidecar_data_dir`
+    `_recycle_scope`. Drop it as vestigial and `read_sidecar_scope`
     runs unstubbed, reaching `library_git_root()` → `Library.open()`
     against the real filesystem — contained today only by the autouse
     XDG isolation in `tests/conftest.py`.
@@ -1287,77 +1287,151 @@ def test_an_httpx_client_factory_nobody_can_call_is_not_a_seam() -> None:
     ), "fastmcp passes follow_redirects=; the factory must accept it"
 
 
-# --- what `data_dir` actually controls ----------------------------------
+# --- where qmd gets spawned, and what `scope` actually controls ----------
 #
-# `ensure_qmd_daemon(data_dir=...)` reads like it selects the index the
-# daemon serves, and `recycle_qmd_daemon(data_dir=...)` likewise. In
-# production neither is true: both call sites spawn with no arguments,
-# so `data_dir` only ever reaches `write_sidecar_data_dir`. The daemon
-# that comes up is the same whichever value you pass.
+# `_spawn_qmd_daemon` is the only place LIES shells out to start qmd's
+# daemon. That is a claim about a *string appearing exactly once in the
+# module*, and it has to be tested that way: the previous pin counted
+# `_spawn_qmd_daemon()` call sites, which is blind to any site that
+# inlines the argv itself. There were three such sites — two via the
+# helper and one inside `ensure_qmd_daemon`'s "normal path", which had
+# its own copy of `[_QMD_BIN, "mcp", "--http", "--daemon"]` and its own
+# `timeout=`. Adding `--port 9999` to that copy left the pin green.
 #
-# This used to be pinned by asserting `data_dir` appeared nowhere in
-# `_spawn_qmd_daemon`'s body. That pin is gone — the function now takes
-# an optional `data_dir`/`port` (verified against qmd 2.5.3: `--port` is
-# real, a `--data-dir` flag is not, and `XDG_CACHE_HOME` is the lever
-# that relocates the whole cache dir), which is what lets a throwaway
-# daemon be spawned on a spare port for tests. The pin that replaced it
-# is on the *call sites*, because the live hazard was never the
-# function's signature — it is that the two call sites disagree about
-# what `data_dir` means, and a production spawn that honoured either
-# would point a restarted daemon at a different index than the one it
-# replaces.
+# `scope` (formerly `data_dir`) is separate, and is NOT wired to the
+# spawn: it is recorded in the sidecar and compared by
+# `check_scope_match`, and it does not select an index. Four call sites
+# used to pass four different values (`wiki.wiki_dir`,
+# `wiki.data_root`, sidecar-or-library-root, and `library_git_root()`);
+# two of them differed by construction. All four now pass
+# `_canonical_scope()`, and `_spawn_qmd_daemon`'s `data_dir=` — the one
+# argument that really does move the index — has no production caller.
 
 
-def test_production_spawn_call_sites_still_pass_no_arguments() -> None:
-    """Neither production call site may spawn with a port or a data dir.
+def test_the_daemon_argv_appears_exactly_once_in_the_module() -> None:
+    """One argv literal in ``daemon.py``'s *code*: ``_spawn_qmd_daemon``'s.
 
-    A source-level pin, because the claim is about what is *not* passed.
+    Counted over the AST, not over the source text, and that distinction
+    is the whole point. A text count matches docstrings and comments — a
+    substring search for the argv hits this file's own prose about the
+    defect, which is a true statement and a false alarm. An AST walk
+    counts list literals, so it sees every inline spawn and none of the
+    writing about them.
 
-    `_recycle_data_dir()` returns the *sidecar's* recorded value, falling
-    back to the library git root; `ensure_qmd_daemon` is handed
-    `wiki.wiki_dir` from the CLI. Those are different directories. If
-    either started reaching the spawn, a recycle would bring up a daemon
-    on an index other than the one it replaced — silently, because the
-    probe only checks that *a* daemon serves. So this stays red until
-    the disagreement is actually resolved, rather than being inherited by
-    a signature that finally made it possible.
+    A text search over a *slice* cannot see a site elsewhere in the
+    file, and a call-site count cannot see an inline argv at all. That
+    combination is why `ensure_qmd_daemon` shipped a third spawn site
+    carrying its own copy of the argv and no ``--port``: adding a port
+    there left every existing pin green.
+    """
+    import ast
+
+    from lies.qmd import daemon as qmd_daemon
+
+    tree = ast.parse(Path(qmd_daemon.__file__).read_text(encoding="utf-8"))
+
+    def literal(node: ast.expr) -> str | None:
+        # ``_QMD_BIN`` is a Name, not a Constant; resolve it by its
+        # module-level binding so the match is on the value the argv
+        # actually carries.
+        if isinstance(node, ast.Name):
+            return "qmd" if node.id == "_QMD_BIN" else None
+        return node.value if isinstance(node, ast.Constant) else None
+
+    spawn_argvs: list[ast.List] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.List):
+            continue
+        elements = [literal(e) for e in node.elts]
+        # ["qmd", "mcp", "--http", "--daemon", ...] — any argv carrying
+        # the three mcp flags, with or without a trailing --port.
+        if elements[:1] != ["qmd"] or elements[1:4] != ["mcp", "--http", "--daemon"]:
+            continue
+        spawn_argvs.append(node)
+
+    assert len(spawn_argvs) == 1, (
+        f"{len(spawn_argvs)} inline qmd daemon argvs in daemon.py; only "
+        "_spawn_qmd_daemon may build one. Any other is a spawn site no "
+        "call-site count can see."
+    )
+
+    # And the one that survives is inside the helper, not merely unique.
+    enclosing = [
+        parent
+        for parent in ast.walk(tree)
+        if isinstance(parent, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and any(child is spawn_argvs[0] for child in ast.walk(parent))
+    ]
+    assert [f.name for f in enclosing] == ["_spawn_qmd_daemon"], (
+        f"the surviving argv is inside {[f.name for f in enclosing]}, not _spawn_qmd_daemon"
+    )
+
+
+def test_every_production_spawn_threads_the_url_port_and_no_data_dir() -> None:
+    """Each spawn site passes the port from the URL, and never a data dir.
+
+    The port is the live half of this: a recycle that spawns without it
+    brings up a stray on qmd's default and polls the configured port for
+    the whole budget. The data dir is the dangerous half: it is the only
+    argument that selects an index, and it must have no production
+    caller, because `scope` does not mean one.
     """
     from lies.qmd import daemon as qmd_daemon
 
     source = Path(qmd_daemon.__file__).read_text(encoding="utf-8")
-    start = source.index("def ensure_qmd_daemon(")
-    end = source.index("\n# --- ", start)
-    body = source[start:end]
+    body = source[source.index("def ensure_qmd_daemon(") :]
 
-    # Two call sites, both bare.
-    assert body.count("_spawn_qmd_daemon()") == 2, (
-        "a production call site now spawns with arguments; the two "
-        "data_dirs disagree, so the daemon that comes back may not be "
-        "serving the index the recycle replaced"
+    assert "_spawn_qmd_daemon(port=port)" in body, (
+        "ensure_qmd_daemon's reap+respawn paths must forward the port"
     )
-    assert "_spawn_qmd_daemon(" in body and "_spawn_qmd_daemon()" in body
+    assert "_spawn_qmd_daemon(port=port, raise_on_error=True)" in body, (
+        "ensure_qmd_daemon's normal path must forward the port too"
+    )
+    assert "data_dir=" not in body, (
+        "a production spawn now names a data_dir; it selects an index, and scope does not mean one"
+    )
+
+    recycle = source[source.index("async def recycle_qmd_daemon(") :]
+    assert "_spawn_qmd_daemon(port=daemon_port_from_url(daemon_url))" in recycle, (
+        "the recycle's spawn must take its port from the URL it probes"
+    )
 
 
-def test_recycle_qmd_daemon_data_dir_reaches_only_the_sidecar() -> None:
-    """``recycle_qmd_daemon`` records its ``data_dir`` and spawns bare.
+def test_recycle_qmd_daemon_records_its_scope_and_nothing_else() -> None:
+    """``recycle_qmd_daemon`` writes the scope to the sidecar; that is all.
 
-    The companion pin to the one above, on the recycle side, stated
-    behaviourally so it does not depend on how the spawn is spelled.
+    Stated behaviourally so it does not depend on how the spawn is
+    spelled, which is exactly the trap the module-wide argv pin exists
+    to catch.
     """
     from lies.qmd import daemon as qmd_daemon
 
     source = Path(qmd_daemon.__file__).read_text(encoding="utf-8")
-    start = source.index("async def recycle_qmd_daemon(")
-    body = source[start:]
+    body = source[source.index("async def recycle_qmd_daemon(") :]
 
-    assert "_spawn_qmd_daemon()" in body, "the recycle's spawn must stay bare"
-    assert "write_sidecar_data_dir(data_dir)" in body, (
-        "data_dir is recorded in the sidecar; that is its only use today"
+    assert "write_sidecar_scope(scope)" in body, (
+        "scope is recorded in the sidecar; that is its only use"
     )
-    assert qmd_daemon._spawn_qmd_daemon.__kwdefaults__ == {"port": None, "data_dir": None}, (
-        "the new spawn arguments must default to None; anything else "
-        "changes what a bare production call site does"
-    )
+    assert qmd_daemon._spawn_qmd_daemon.__kwdefaults__ == {
+        "port": None,
+        "data_dir": None,
+        "timeout": None,
+        "raise_on_error": False,
+    }, "the spawn's new arguments must all default to today's behaviour"
+
+
+def test_the_canonical_scope_is_the_library_root() -> None:
+    """Every caller passes one value, so the sidecar comparison means something.
+
+    `check_scope_match` compared three unrelated directories, so an
+    `ensure_qmd_daemon` scope could never match a sidecar a recycle had
+    written, and every comparison fell through to the reap-and-respawn
+    branch on a healthy daemon.
+    """
+    from lies.library.registry import library_git_root
+    from lies.qmd.daemon import _canonical_scope
+
+    assert _canonical_scope() == library_git_root()
 
 
 # --- the query single-flight gate ----------------------------------------

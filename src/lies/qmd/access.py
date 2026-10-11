@@ -24,7 +24,6 @@ from lies.qmd.daemon import (
     _is_daemon_stale,
     _reap_qmd_daemon,
     _spawn_qmd_daemon,
-    read_sidecar_data_dir,
     recycle_qmd_daemon,
 )
 from lies.qmd.health import qmd_daemon_reachable
@@ -522,6 +521,17 @@ async def _recycle_or_report(url: str) -> bool:
     try:
         await _recycle(url)
     except Exception:
+        # **This breadth is load-bearing; do not narrow it to
+        # ``QmdRecycleFailed``.** Before the recycle's probe tuple was
+        # widened it escaped with an undocumented bare ``RuntimeError``
+        # ("Client failed to connect: ...") that is not a
+        # ``QmdRecycleFailed`` and never was one — a ``QmdRecycleFailed``
+        # -only catch would have let it through here. Post-fix,
+        # ``recycle_qmd_daemon``'s contract is the single
+        # ``QmdRecycleFailed``, so this catch is defensive only; it stays
+        # broad because the failure it was absorbing was not one of ours
+        # to name, and because the wedge branch below relies on this
+        # returning False rather than replacing the caller's diagnosis.
         return False
     return True
 
@@ -667,16 +677,22 @@ def _result_text(result: Any) -> str:
     return " ".join(getattr(block, "text", "") for block in blocks).strip()
 
 
-def _recycle_data_dir() -> Path:
-    """The ``data-dir`` to record for a daemon started by :func:`_recycle`.
+def _recycle_scope() -> Path:
+    """The LIES scope to record for a daemon started by :func:`_recycle`.
 
-    Sidecar first, library root fallback. ``_spawn_qmd_daemon`` never
-    reads its ``data_dir`` (``daemon.py:252-261``), so the disagreement
-    is only what gets recorded.
+    Always ``library_git_root()``. This used to be "the sidecar's value,
+    else ``library_git_root()``", which is a fixed point: it perpetuates
+    whichever value ran last, including a stale one after a wiki moves.
+    The sidecar is a *record* of the last session, so reading it back to
+    decide the next one makes the record self-confirming and unfalsifiable.
+
+    It is also not an index. ``_spawn_qmd_daemon``'s ``data_dir``
+    argument is the only thing here that selects one, and it is
+    deliberately not fed from this — qmd resolves its own index from the
+    environment the reap-then-spawn inherits. See
+    ``daemon._canonical_scope`` for the three call sites that used to
+    disagree, and why two of them differed by construction.
     """
-    recorded = read_sidecar_data_dir()
-    if recorded is not None:
-        return recorded
     from lies.library.registry import library_git_root
 
     return library_git_root()
@@ -705,7 +721,7 @@ async def _recycle(url: str) -> None:
     from lies.qmd.daemon import QmdRecycleFailed
 
     try:
-        state = await recycle_qmd_daemon(data_dir=_recycle_data_dir(), daemon_url=url)
+        state = await recycle_qmd_daemon(scope=_recycle_scope(), daemon_url=url)
     except QmdRecycleFailed as exc:
         _log.error(
             "qmd recycle exhausted ready_timeout=%gs; last_state=%s; %s",

@@ -210,42 +210,86 @@ rule rather than the accident.
   the qmd inode described a path no one had walked.
 
   The tuple now covers `RuntimeError`, and the docstring states the real
-  ceiling: `ready_timeout` + one probe + reap + spawn ≈ **45 s**, reached
-  only when the replacement never serves. *Measured 2026-10-10 against
-  the live daemon; transcribed, not re-measured at commit time.*
-  Pinned in `tests/unit/qmd/test_daemon_recycle.py`, whose tests go red
-  if the tuple is narrowed back.
+  ceiling as **two** figures, because `qmd_daemon_state()` runs a
+  `qmd status` subprocess bounded at `STATUS_TIMEOUT_S` (15 s) on this
+  path: once inside `_reap_qmd_daemon`, once before the loop, and **once
+  per failed poll**. *Measured 2026-10-10 against the live daemon;
+  transcribed, not re-measured at commit time.*
+
+  - **~31 s** when the replacement never serves and `qmd status` answers
+    promptly (the `ready_timeout` budget, plus up to 4 s more if SIGTERM
+    misses its grace).
+  - **~80 s** if `qmd status` also hangs at its 15 s bound.
+
+  The single "45 s" this entry previously quoted was not a valid upper
+  bound: it summed `STATUS_TIMEOUT_S` as if the spawn ran long *and* the
+  budget ran long, which are different scenarios, and it omitted the
+  per-poll call entirely. Pinned in `tests/unit/qmd/test_daemon_recycle.py`,
+  whose tests go red if the tuple is narrowed back.
 
   AGENTS.md recorded this as *"a dead session arrives as a bare
   `RuntimeError` with the real error on `__cause__`"*. That is now a
   measurement rather than a hypothesis, and the note says so.
 
-- **`_spawn_qmd_daemon` can start a throwaway daemon on its own port and
-  its own index.** It was hardcoded to `qmd mcp --http --daemon`, so a
-  recycle could only ever restart the *real* daemon on the *real* port —
-  anything needing a disposable daemon had to be driven through a stub.
-  Read from qmd 2.5.3's `dist/cli/qmd.js`: `--port` is honoured,
-  `--index` exists, and **there is no `--data-dir` flag** — the `mcp`
-  block reads only `args[0]`, `values.http`, `values.port`,
-  `values.daemon` and `values.index`. `XDG_CACHE_HOME` is the available
-  lever; it relocates `index.sqlite`, `mcp.pid` and `mcp.log` together,
-  appending its own `qmd/` segment.
+- **`_spawn_qmd_daemon` takes a port, and every production spawn threads
+  it from the URL being served.** It was hardcoded to
+  `qmd mcp --http --daemon`, so a recycle could only ever restart the
+  *real* daemon on the *real* port — anything needing a disposable
+  daemon had to be driven through a stub. Read from qmd 2.5.3's
+  `dist/cli/qmd.js`: `--port` is honoured, `--index` exists, and
+  **there is no `--data-dir` flag** — the `mcp` block reads only
+  `args[0]`, `values.http`, `values.port`, `values.daemon` and
+  `values.index`. `XDG_CACHE_HOME` is the available lever; it relocates
+  `index.sqlite`, `mcp.pid` and `mcp.log` together, appending its own
+  `qmd/` segment.
 
-  `port=` without `data_dir=` is **refused**, because `mcp.pid` is keyed
-  to the cache root and not to the port: a throwaway sharing the real
-  cache root would overwrite the machine daemon's pidfile, which is the
-  one file both `qmd_daemon_state` and `_reap_qmd_daemon` read — the
-  reap would kill the throwaway and `qmd status` would report the
-  throwaway as the daemon.
+  **This fixes a live bug, not just a capability gap.** `LIES_QMD_URL`
+  supports a non-8181 daemon and `lifecycle._up(port)` already passed
+  `--port`, but the recycle did not. Against
+  `LIES_QMD_URL=http://127.0.0.1:9000/mcp`: the reap correctly kills the
+  9000 daemon, the spawn brought up a **stray on 8181** which also took
+  its `mcp.pid`, and the probe polled 9000 for the whole budget —
+  `QmdRecycleFailed`, with the operator's daemon gone and a squatting one
+  left. `qmd.js:4008-4013` then refuses a real start, because the
+  stray's pidfile is live.
 
-  **Both production call sites still spawn bare.** `_recycle_data_dir()`
-  returns the sidecar's recorded value (falling back to the library git
-  root) while `ensure_qmd_daemon` is handed `wiki.wiki_dir`; honouring
-  either would bring a restarted daemon up on a different index than the
-  one it replaced. The tripwire test that used to assert `data_dir`
-  appeared nowhere in the spawn body now pins the *call sites* instead.
+  **There is no `port`-without-`data_dir` refusal.** An earlier version
+  raised on that pairing, on the reasoning that a second daemon sharing
+  a cache root would take over `mcp.pid`. The hazard is real but the
+  guard was wrong: the legitimate production use *is* restarting the
+  real daemon on the configured port, which necessarily shares the real
+  cache root. The precondition belongs to the caller, and both
+  production callers satisfy it — they reap first, so no live pidfile is
+  held when the spawn runs.
+
   Verified against the real binary in
-  `tests/integration/test_qmd_spawn_throwaway.py`.
+  `tests/integration/test_qmd_spawn_throwaway.py`, which now recycles a
+  live throwaway on a non-default port end to end.
+
+- **There is exactly one place LIES shells out to start qmd's daemon.**
+  `ensure_qmd_daemon`'s "normal path" used to inline its *own* copy of
+  `[_QMD_BIN, "mcp", "--http", "--daemon"]` with its own `timeout=`,
+  making three spawn sites where a pin counted two — and adding
+  `--port 9999` to that copy left every existing test green. It now
+  calls `_spawn_qmd_daemon(port=..., raise_on_error=True)`, which
+  returns the `CompletedProcess` so `Already running (PID N)` parsing
+  survives. The pin is an **AST** count of the argv over the whole
+  module, so it sees inline spawns and ignores prose about them.
+
+- **The sidecar records a "scope", not a data-dir, and all callers pass
+  one canonical value.** Four call sites passed four different values —
+  `wiki.wiki_dir`, `wiki.data_root`, sidecar-or-`library_git_root()`,
+  `library_git_root()` — and two differed *by construction*
+  (`wiki.wiki_dir` is `data_root / "wiki"`). The system coped only
+  because the value never reached the spawn, so `check_scope_match` was
+  comparing unrelated directories and could never match across call
+  sites: every comparison fell through to the reap-and-respawn branch on
+  a healthy daemon. All four now pass `daemon._canonical_scope()`.
+  `_spawn_qmd_daemon`'s `data_dir=` — the one argument that really does
+  select an index — has no production caller, and the parameter is
+  renamed to `scope` so it stops promising an index it does not choose.
+  `_recycle_scope()` no longer reads the sidecar back: that made the
+  record self-confirming and perpetuated stale paths after a wiki moved.
 
 - **`exclusive.acquire_create_lock` creates the lock directory once per
   acquisition, not once per attempt.** It ran
@@ -264,6 +308,15 @@ rule rather than the accident.
   turn a contended poll into a `FileNotFoundError`. Callers that acquire
   once are unaffected — that is the first-ever-acquire case, where the
   parent may genuinely not exist.
+
+  The heal lives **inside** `_create_exclusive`, which every create goes
+  through. An intermediate version put it around the *first* create only,
+  while three retry creates sat inside the `FileExistsError` handler with
+  no such arm — so with the parent removed as the code entered the
+  reap-and-retry branch, `FileNotFoundError` escaped and the hoist had
+  traded one correct path for a broken one. The first create healing
+  correctly is what made it look fine. Pinned by
+  `test_the_heal_covers_the_reap_and_retry_creates_too`.
 
 - **The qmd seam builds a fresh client per call, so concurrent calls stop
   hanging.** `_daemon_client` returned a **process-wide cached**

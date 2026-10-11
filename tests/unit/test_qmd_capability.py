@@ -218,7 +218,7 @@ def test_as_capability_reaps_when_daemon_is_stale(
     monkeypatch.setattr("lies.qmd.capability.qmd_daemon_reachable", lambda url, timeout=0.5: True)
 
     reap_calls: list[bool] = []
-    spawn_calls: list[bool] = []
+    spawn_calls: list[dict] = []
     sidecar_calls: list[Path] = []
 
     monkeypatch.setattr(
@@ -227,11 +227,11 @@ def test_as_capability_reaps_when_daemon_is_stale(
     )
     monkeypatch.setattr(
         "lies.qmd.capability._spawn_qmd_daemon",
-        lambda: spawn_calls.append(True),
+        lambda **kw: spawn_calls.append(kw),
     )
     monkeypatch.setattr(
-        "lies.qmd.capability.write_sidecar_data_dir",
-        lambda data_dir: sidecar_calls.append(data_dir),
+        "lies.qmd.capability.write_sidecar_scope",
+        lambda scope: sidecar_calls.append(scope),
     )
     monkeypatch.setattr("lies.qmd.capability._is_daemon_stale", lambda: True)
 
@@ -245,7 +245,17 @@ def test_as_capability_reaps_when_daemon_is_stale(
     assert len(reap_calls) == 1
     assert len(spawn_calls) == 1
     assert len(sidecar_calls) == 1
-    assert sidecar_calls[0] == wiki.data_root
+    # The canonical scope, NOT ``wiki.data_root``. This path used to
+    # record the wiki's root, which is a fourth disagreeing value for a
+    # parameter that does not select an index; see
+    # ``daemon._canonical_scope``.
+    from lies.library.registry import library_git_root
+
+    assert sidecar_calls[0] == library_git_root()
+    assert sidecar_calls[0] != wiki.data_root
+    # And the spawn is told which port LIES is pointed at, so a
+    # non-default ``LIES_QMD_URL`` does not get a daemon on 8181.
+    assert spawn_calls[0]["port"] == 8181
 
 
 def test_as_capability_does_not_reap_when_daemon_is_fresh(
@@ -265,7 +275,7 @@ def test_as_capability_does_not_reap_when_daemon_is_fresh(
     monkeypatch.setattr("lies.qmd.capability.qmd_daemon_reachable", lambda url, timeout=0.5: True)
 
     reap_calls: list[bool] = []
-    spawn_calls: list[bool] = []
+    spawn_calls: list[dict] = []
     sidecar_calls: list[Path] = []
 
     monkeypatch.setattr(
@@ -274,11 +284,11 @@ def test_as_capability_does_not_reap_when_daemon_is_fresh(
     )
     monkeypatch.setattr(
         "lies.qmd.capability._spawn_qmd_daemon",
-        lambda: spawn_calls.append(True),
+        lambda **kw: spawn_calls.append(kw),
     )
     monkeypatch.setattr(
-        "lies.qmd.capability.write_sidecar_data_dir",
-        lambda data_dir: sidecar_calls.append(data_dir),
+        "lies.qmd.capability.write_sidecar_scope",
+        lambda scope: sidecar_calls.append(scope),
     )
     monkeypatch.setattr("lies.qmd.capability._is_daemon_stale", lambda: False)
 
@@ -314,8 +324,8 @@ def test_as_capability_falls_back_when_native_probe_fails_after_reap(
     monkeypatch.setattr(
         "lies.qmd.capability._reap_qmd_daemon", lambda *, grace=2.0, poll=0.05: None
     )
-    monkeypatch.setattr("lies.qmd.capability._spawn_qmd_daemon", lambda: None)
-    monkeypatch.setattr("lies.qmd.capability.write_sidecar_data_dir", lambda data_dir: None)
+    monkeypatch.setattr("lies.qmd.capability._spawn_qmd_daemon", lambda **kw: None)
+    monkeypatch.setattr("lies.qmd.capability.write_sidecar_scope", lambda scope: None)
 
     async def _probe_fails(url: str) -> None:
         raise httpx.ConnectError("freshly-spawned daemon refused connection")

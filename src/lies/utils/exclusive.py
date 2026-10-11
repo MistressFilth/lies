@@ -90,8 +90,37 @@ def ensure_lock_parent(path: Path) -> None:
     ``parent_prepared=True`` to :func:`acquire_create_lock`. Callers
     that acquire once should not pass the flag at all — that is the
     first-ever-acquire case, where the parent may genuinely not exist.
+    Note the up-front call is redundant even for those callers:
+    :func:`_create_exclusive` does the same thing on ``FileNotFoundError``,
+    so the flag buys the *avoidance of a repeated* ``mkdir``, never the
+    creation itself.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
+
+
+def _create_exclusive(path: Path) -> int:
+    """``O_CREAT | O_EXCL`` create, opened for writing.
+
+    Heals a parent that is missing, then creates — and the heal lives
+    **here** rather than at the call site because every create in
+    :func:`acquire_create_lock` goes through here. An earlier version
+    put the heal around the *first* create only, which read as a
+    guarantee it did not make: with the parent removed as the code
+    entered the reap-and-retry branch, ``FileNotFoundError`` escaped
+    from the retry creates (three of them) while the first create healed
+    correctly.
+
+    The hoist traded one correct path for a broken one; this closes it.
+    ``FileNotFoundError`` is not propagated by this function, so a
+    caller can never observe one. ``FileExistsError`` *is* propagated,
+    from both the first attempt and the heal's retry — that is the
+    contention signal every caller already handles.
+    """
+    try:
+        return os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+    except FileNotFoundError:
+        ensure_lock_parent(path)
+        return os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
 
 
 def acquire_create_lock(  # type: ignore[no-untyped-def]
@@ -115,9 +144,11 @@ def acquire_create_lock(  # type: ignore[no-untyped-def]
     ``parent_prepared=True`` says the caller has already run
     :func:`ensure_lock_parent` for this path — a polling caller does so
     once instead of once per attempt. The flag is only an optimisation:
-    the create below still heals a parent that vanished underneath a
-    wait, so skipping the up-front ``mkdir`` cannot turn a contended
-    poll into a ``FileNotFoundError``.
+    :func:`_create_exclusive` heals a parent that vanished underneath a
+    wait on **every** create it performs, so skipping the up-front
+    ``mkdir`` cannot turn a contended poll into a ``FileNotFoundError``.
+    That guarantee covers the reap-and-retry creates too, which is where
+    an earlier version of this refactor let the error escape.
 
     The returned ``AcquireResult.status`` is one of four outcomes:
 
@@ -183,17 +214,6 @@ def acquire_create_lock(  # type: ignore[no-untyped-def]
         ensure_lock_parent(path)
     try:
         return _wrap(_create_exclusive(path))
-    except FileNotFoundError:
-        # The parent disappeared after the caller prepared it (or was
-        # never prepared, and the mkdir above raced a removal). Today's
-        # per-attempt mkdir healed this silently; keep healing it, on
-        # the exceptional path only, so ``parent_prepared`` stays a
-        # pure optimisation rather than a new failure mode.
-        ensure_lock_parent(path)
-        try:
-            return _wrap(_create_exclusive(path))
-        except FileExistsError:
-            return None
     except FileExistsError:
         if pid_path is not None and state_json_path is not None:
             if force_repair:
@@ -247,16 +267,6 @@ def acquire_create_lock(  # type: ignore[no-untyped-def]
             return _wrap(_create_exclusive(path))
         except FileExistsError:
             return None
-
-
-def _create_exclusive(path: Path) -> int:
-    """``O_CREAT | O_EXCL`` create, opened for writing. Raises on contention.
-
-    Every create in :func:`acquire_create_lock` goes through here so the
-    ``FileNotFoundError`` heal covers the retries too, not just the
-    first shot.
-    """
-    return os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
 
 
 def _reap_if_stale(  # type: ignore[no-untyped-def]

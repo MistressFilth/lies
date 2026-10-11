@@ -103,7 +103,7 @@ def test_ensure_returns_running_on_clean_exit(
         return _completed(_STATUS_RUNNING)
 
     monkeypatch.setattr(qmd_daemon, "_run_qmd", _run)
-    state = qmd_daemon.ensure_qmd_daemon(data_dir=tmp_path / "wiki")
+    state = qmd_daemon.ensure_qmd_daemon(scope=tmp_path / "wiki")
     assert state.running is True
     assert ["qmd", "mcp", "--http", "--daemon"] in calls
 
@@ -120,7 +120,7 @@ def test_ensure_accepts_already_running_output(
         return _completed(_STATUS_RUNNING)
 
     monkeypatch.setattr(qmd_daemon, "_run_qmd", _run)
-    state = qmd_daemon.ensure_qmd_daemon(data_dir=tmp_path / "wiki")
+    state = qmd_daemon.ensure_qmd_daemon(scope=tmp_path / "wiki")
     assert state.running is True
 
 
@@ -129,7 +129,7 @@ def test_ensure_is_non_fatal_on_nonzero_exit(
 ) -> None:
     monkeypatch.setattr(qmd_daemon.shutil, "which", lambda _name: "/usr/bin/qmd")
     monkeypatch.setattr(qmd_daemon, "_run_qmd", lambda *a, **k: _completed("boom", returncode=1))
-    state = qmd_daemon.ensure_qmd_daemon(data_dir=tmp_path / "wiki")
+    state = qmd_daemon.ensure_qmd_daemon(scope=tmp_path / "wiki")
     assert state.running is False
     assert state.detail
 
@@ -141,7 +141,7 @@ def test_ensure_is_non_fatal_on_timeout(monkeypatch: pytest.MonkeyPatch, tmp_pat
         raise subprocess.TimeoutExpired(cmd="qmd", timeout=15.0)
 
     monkeypatch.setattr(qmd_daemon, "_run_qmd", _raise)
-    state = qmd_daemon.ensure_qmd_daemon(data_dir=tmp_path / "wiki")
+    state = qmd_daemon.ensure_qmd_daemon(scope=tmp_path / "wiki")
     assert state.running is False
     assert "timed out" in state.detail
 
@@ -150,7 +150,7 @@ def test_ensure_is_non_fatal_when_qmd_absent(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setattr(qmd_daemon.shutil, "which", lambda _name: None)
-    state = qmd_daemon.ensure_qmd_daemon(data_dir=tmp_path / "wiki")
+    state = qmd_daemon.ensure_qmd_daemon(scope=tmp_path / "wiki")
     assert state.installed is False
     assert state.running is False
 

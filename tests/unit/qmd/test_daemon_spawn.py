@@ -84,31 +84,41 @@ def test_a_port_is_passed_with_the_flag_qmd_actually_reads(
     assert call["env_overrides"] == {"XDG_CACHE_HOME": str(tmp_path / "cache")}
 
 
-def test_port_alone_is_refused(captured_spawn: list[dict[str, Any]]) -> None:
-    """A spare port without its own cache dir would take over the real pidfile.
+def test_port_alone_is_allowed_and_is_what_production_needs(
+    captured_spawn: list[dict[str, Any]],
+) -> None:
+    """A port with no ``data_dir`` — sharing the real cache root — works.
 
-    qmd keys ``mcp.pid`` to ``XDG_CACHE_HOME`` and **not** to the port.
-    A throwaway sharing the real daemon's cache dir overwrites the real
-    daemon's pidfile, and both ``qmd_daemon_state`` and
-    ``_reap_qmd_daemon`` read exactly that file — so the reap would
-    SIGTERM the throwaway and ``qmd status`` would report the throwaway
-    as *the* daemon. Refused loudly rather than allowed; the damage
-    would be to a machine-global process this function does not own.
+    The hazard is real: qmd keys ``mcp.pid`` to ``XDG_CACHE_HOME`` and
+    **not** to the port, so a throwaway sharing the real daemon's cache
+    dir overwrites the real daemon's pidfile, and both
+    ``qmd_daemon_state`` and ``_reap_qmd_daemon`` read exactly that
+    file. But an earlier version raised here, and that broke the
+    legitimate use outright: against
+    ``LIES_QMD_URL=http://127.0.0.1:9000/mcp`` the reap kills the 9000
+    daemon, a port-less spawn brings up a **stray on 8181** that takes
+    the pidfile, and the probe then polls 9000 for the whole budget —
+    ``QmdRecycleFailed``, with the operator's daemon gone and a squatting
+    one left. The guard belonged on the caller's precondition (reap
+    first, so no live pidfile), not on the argument.
     """
-    with pytest.raises(ValueError, match="mcp.pid"):
-        qmd_daemon._spawn_qmd_daemon(port=9999)
+    # The single call production needs: restart THE daemon, on ITS
+    # port, sharing ITS cache root.
+    qmd_daemon._spawn_qmd_daemon(port=9999)
 
-    assert captured_spawn == [], "a refused spawn must not shell out at all"
+    call = captured_spawn[0]
+    assert call["args"] == ["qmd", "mcp", "--http", "--daemon", "--port", "9999"]
+    assert call["env_overrides"] == {}, "the real cache root is inherited"
 
 
-def test_the_refusal_survives_a_spawn_that_would_otherwise_be_swallowed(
+def test_da_dir_alone_is_still_allowed(
     captured_spawn: list[dict[str, Any]], tmp_path: Path
 ) -> None:
-    """``data_dir`` alone is allowed; only the dangerous pairing is refused.
+    """``data_dir`` alone remains valid — it is the throwaway's isolation.
 
-    The function's long-standing "never raises" contract is about
-    *spawn* failures — a timeout, a missing binary — and stays that way.
-    Argument misuse is a different thing and is the caller's bug.
+    The function's long-standing "never raises" contract is about *spawn*
+    failures — a timeout, a missing binary — and stays that way, now that
+    the argument-level ``ValueError`` is gone.
     """
     qmd_daemon._spawn_qmd_daemon(data_dir=tmp_path)
 
@@ -116,10 +126,44 @@ def test_the_refusal_survives_a_spawn_that_would_otherwise_be_swallowed(
     assert captured_spawn[0]["env_overrides"] == {"XDG_CACHE_HOME": str(tmp_path)}
 
 
+def test_a_successful_spawn_returns_the_result(
+    captured_spawn: list[dict[str, Any]],
+) -> None:
+    """The CompletedProcess comes back so callers can read qmd's stdout.
+
+    ``ensure_qmd_daemon`` reads ``Already running (PID N)`` off it, so a
+    ``None``-returning spawn would silently lose qmd's idempotence
+    reporting and report a healthy daemon as a fresh start.
+    """
+    returned = qmd_daemon._spawn_qmd_daemon()
+
+    assert returned is not None
+    assert returned.returncode == 0
+
+
+def test_raise_on_error_gives_the_caller_the_reason(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``raise_on_error`` is how ``ensure_qmd_daemon`` names the failure.
+
+    Without it both QmdStates collapse into "starting qmd failed" and the
+    operator loses whether it was a timeout or a missing binary.
+    """
+
+    def boom(args: list[str], **kw: Any) -> subprocess.CompletedProcess[bytes]:
+        raise subprocess.TimeoutExpired(cmd=args, timeout=15.0)
+
+    monkeypatch.setattr(qmd_daemon, "_run_qmd", boom)
+
+    assert qmd_daemon._spawn_qmd_daemon() is None  # default swallows
+    with pytest.raises(subprocess.TimeoutExpired):
+        qmd_daemon._spawn_qmd_daemon(raise_on_error=True)
+
+
 def test_a_failing_spawn_is_still_swallowed(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """Timeout and OSError keep their blanket ``pass``.
+    """Timeout and OSError keep their blanket swallow.
 
     Pins that adding arguments did not widen the exception handling.
     """

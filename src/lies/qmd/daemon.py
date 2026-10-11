@@ -56,36 +56,81 @@ SIDECAR_PATH = _Path(
 )
 
 
-def read_sidecar_data_dir() -> _Path | None:
-    """Read the ``data-dir`` the running qmd daemon was started with.
+def read_sidecar_scope() -> _Path | None:
+    """Read the LIES *scope* recorded for the current qmd daemon session.
 
     Returns ``None`` when the sidecar is absent (first-run case).
+
+    The name says scope, not data-dir, because that is what it holds.
+    See :func:`_canonical_scope` for why the value has no meaning to qmd.
     """
     if not SIDECAR_PATH.exists():
         return None
     return _Path(SIDECAR_PATH.read_text().strip())
 
 
-def write_sidecar_data_dir(data_dir: _Path) -> None:
-    """Record the ``data-dir`` for the current qmd daemon session.
+def write_sidecar_scope(scope: _Path) -> None:
+    """Record the LIES scope for the current qmd daemon session.
 
     Called from :func:`ensure_qmd_daemon` after a successful start.
     """
     SIDECAR_PATH.parent.mkdir(parents=True, exist_ok=True)
-    SIDECAR_PATH.write_text(str(data_dir))
+    SIDECAR_PATH.write_text(str(scope))
 
 
-def check_data_dir_match(expected: _Path) -> bool:
-    """Return True if the sidecar's data-dir matches ``expected`` (or is absent).
+def check_scope_match(expected: _Path) -> bool:
+    """Return True if the sidecar's scope matches ``expected`` (or is absent).
 
     Paths are normalized via :meth:`Path.resolve` before comparison so
     callers that pass ``Path("wiki")`` vs ``Path("./wiki")`` do not get
     a spurious mismatch from a leading-dot or relative-segment drift.
     """
-    actual = read_sidecar_data_dir()
+    actual = read_sidecar_scope()
     if actual is None:
         return True
     return actual.resolve() == expected.resolve()
+
+
+def _canonical_scope() -> _Path:
+    """The one scope value every caller passes.
+
+    ``library_git_root()``. It used to be three different values from
+    three call sites — ``wiki.wiki_dir`` (``operator.py``'s ``up``),
+    ``wiki.data_root`` (``operator.py``'s ``recycle``), and
+    sidecar-or-``library_git_root()`` (``access._recycle_scope``) — and
+    the system coped only because the value never reached the spawn, so
+    :func:`check_scope_match` was comparing three unrelated directories
+    and could never match across call sites. ``wiki.wiki_dir`` is
+    ``data_root / "wiki"``, so the first two differ *by construction*
+    and no amount of agreement makes them so.
+
+    One canonical value is what makes the comparison mean something.
+    """
+    from lies.library.registry import library_git_root
+
+    return library_git_root()
+
+
+def daemon_port_from_url(url: str) -> int | None:
+    """The explicit port in ``url``, or ``None`` when it carries none.
+
+    ``http://127.0.0.1:8181/mcp`` -> ``8181``. A bare origin, or a
+    scheme-less string with no ``:``, -> ``None``, which callers read as
+    "let qmd choose its own default" rather than as port 0.
+
+    A daemon restarted onto the wrong port is the failure this exists
+    to prevent: the reap kills the daemon on the configured port, a
+    spawn that omits ``--port`` brings up a *stray* on 8181 and takes
+    its pidfile, and the readiness probe then polls the configured port
+    for the whole budget while the operator's daemon is already gone.
+    """
+    from urllib.parse import urlsplit
+
+    parts = urlsplit(url if "//" in url else f"//{url}")
+    try:
+        return parts.port
+    except ValueError:  # a non-numeric port is not a port
+        return None
 
 
 def _daemon_start_time() -> float | None:
@@ -249,54 +294,71 @@ def _reap_qmd_daemon(*, grace: float = 2.0, poll: float = 0.05) -> None:
         time.sleep(poll)
 
 
-def _spawn_qmd_daemon(*, port: int | None = None, data_dir: "_Path | None" = None) -> None:
-    """Invoke ``qmd mcp --http --daemon``. Never raises on spawn failure.
+def _spawn_qmd_daemon(
+    *,
+    port: int | None = None,
+    data_dir: "_Path | None" = None,
+    timeout: float | None = None,
+    raise_on_error: bool = False,
+) -> "subprocess.CompletedProcess[bytes] | None":
+    """Invoke ``qmd mcp --http --daemon``. The ONLY place qmd is spawned.
 
     Args:
         port: optional ``--port``. qmd honours it (verified in qmd
             2.5.3, ``dist/cli/qmd.js:4005``:
-            ``const port = Number(cli.values.port) || 8181``).
+            ``const port = Number(cli.values.port) || 8181``). ``None``
+            omits the flag and lets qmd apply its own default.
         data_dir: optional qmd cache root, delivered as
             ``XDG_CACHE_HOME``. **There is no ``--data-dir`` flag** —
             the ``case "mcp":`` block reads only ``cli.args[0]``,
             ``values.http``, ``values.port``, ``values.daemon`` and
             ``values.index``. qmd resolves its whole cache dir from
             ``XDG_CACHE_HOME`` (``dist/cli/qmd.js:3981-3983`` and
-            ``dist/store.js:428-434``), covering ``index.sqlite``,
-            ``mcp.pid`` and ``mcp.log``. Note the off-by-one: qmd
-            appends its own ``qmd/``, so a daemon started with
-            ``data_dir=X`` uses ``X/qmd/``, not ``X``.
+            ``dist/store.js:428.js:428-434``), covering
+            ``index.sqlite``, ``mcp.pid`` and ``mcp.log``. Note the
+            off-by-one: qmd appends its own ``qmd/``, so a daemon
+            started with ``data_dir=X`` uses ``X/qmd/``, not ``X``.
 
-    Both default to ``None``, which leaves the argv byte-identical to
-    ``[qmd, mcp, --http, --daemon]`` and the child environment
-    untouched. The production call sites pass neither: ``data_dir``
-    means two different things to the two of them — ``ensure_qmd_daemon``
-    is handed a ``wiki.wiki_dir`` while ``_recycle_data_dir()`` hands
-    back the *sidecar's* recorded value, falling back to the library git
-    root — so threading it into the spawn would point a restarted
-    daemon at a different index than the one it is replacing. Resolving
-    that disagreement is a separate decision; this function only gains
-    the ability to be told.
+            This is the ONLY argument here that selects an index, and
+            it is deliberately **not** wired to the ``scope`` the
+            sidecar records — see :func:`_canonical_scope` for why
+            those are different questions. Production passes neither.
+        timeout: seconds before SIGKILL. Defaults to
+            ``STATUS_TIMEOUT_S``.
+        raise_on_error: propagate a spawn failure instead of swallowing
+            it. Only :func:`ensure_qmd_daemon`'s normal path sets it,
+            because that path reports the concrete reason
+            ("timed out after Ns" / "failed: ...") to the operator; every
+            other caller wants the swallow.
 
-    Raises:
-        ValueError: ``port`` without ``data_dir``. qmd's ``mcp.pid`` is
-            keyed to ``XDG_CACHE_HOME`` and **not** to the port, so a
-            throwaway sharing the real daemon's cache dir would
-            overwrite the real daemon's pidfile — and both
-            ``qmd_daemon_state`` and ``_reap_qmd_daemon`` read exactly
-            that pidfile. The reap would then SIGTERM the throwaway and
-            ``qmd status`` would report the throwaway as *the* daemon.
-            Refused rather than allowed, because the damage is to a
-            machine-global process this function does not own. A
-            non-default port is only meaningful with its own cache dir.
+    Returns:
+        The ``CompletedProcess`` on success — :func:`ensure_qmd_daemon`
+        reads qmd's ``Already running (PID N)`` line off stdout, so a
+        ``None`` return would lose that. ``None`` when the spawn failed
+        and ``raise_on_error`` is false.
+
+    **Why ``port`` is not refused without ``data_dir``.** An earlier
+    version raised here, on the reasoning that a second daemon sharing a
+    cache root would take over ``mcp.pid``. The hazard is real but the
+    guard was wrong: the legitimate production use is *restart THE
+    daemon on the configured port*, which necessarily shares the real
+    cache root, and refusing it broke exactly that. Concretely, against
+    ``LIES_QMD_URL=http://127.0.0.1:9000/mcp`` the reap kills the 9000
+    daemon and a port-less spawn brings up a **stray on 8181** which
+    overwrites ``mcp.pid``; the probe then polls 9000 for the whole
+    budget and the operator gets ``QmdRecycleFailed`` having lost their
+    daemon and gained a squatting one.
+
+    The hazard is real but it is not this function's to refuse — it is
+    the caller's precondition. Both production callers satisfy it:
+    :func:`recycle_qmd_daemon` and :func:`ensure_qmd_daemon` both
+    :func:`_reap_qmd_daemon` first, so no live daemon holds the pidfile
+    when the spawn runs, which is the precondition qmd itself checks
+    (``dist/cli/qmd.js:4008-4013`` refuses to start while a live pidfile
+    exists). Passing a port with a *different* cache root than the one
+    the reap cleared breaks that, and is what the throwaway-spawn tests
+    use ``data_dir`` for.
     """
-    if port is not None and data_dir is None:
-        raise ValueError(
-            "port without data_dir: qmd keys mcp.pid to XDG_CACHE_HOME and "
-            "not to the port, so a throwaway on a spare port would take over "
-            "the real daemon's pidfile and _reap_qmd_daemon would kill the "
-            "throwaway instead. Pass both, or neither."
-        )
     argv = [_QMD_BIN, "mcp", "--http", "--daemon"]
     env_overrides: dict[str, str] = {}
     if port is not None:
@@ -304,29 +366,50 @@ def _spawn_qmd_daemon(*, port: int | None = None, data_dir: "_Path | None" = Non
     if data_dir is not None:
         env_overrides["XDG_CACHE_HOME"] = str(data_dir)
     try:
-        _run_qmd(
+        return _run_qmd(
             argv,
             cwd=_Path.cwd(),
-            timeout=STATUS_TIMEOUT_S,
+            timeout=STATUS_TIMEOUT_S if timeout is None else timeout,
             env_overrides=env_overrides,
         )
     except subprocess.TimeoutExpired, OSError:
-        pass
+        if raise_on_error:
+            raise
+        return None
 
 
-def ensure_qmd_daemon(*, data_dir: _Path, timeout: float = 15.0) -> QmdState:
+def ensure_qmd_daemon(
+    *,
+    scope: _Path,
+    port: int | None = None,
+) -> QmdState:
     """Start qmd's http daemon if not already up; reap and respawn if the
-    sidecar records a different ``data-dir`` OR the daemon is serving a
+    sidecar records a different scope OR the daemon is serving a
     stale index (F14: marker mtime > daemon pidfile mtime).
+
+    Args:
+        scope: the LIES scope to record in the sidecar. **This does not
+            select the daemon's index** and never reaches the spawn — see
+            :func:`_canonical_scope`. Pass ``_canonical_scope()``.
+        port: passed through to :func:`_spawn_qmd_daemon` so the daemon
+            comes up where ``LIES_QMD_URL`` says it is. ``None`` omits
+            ``--port`` and lets qmd default.
+
+    All three paths below go through :func:`_spawn_qmd_daemon`. That used
+    to be two of them: the "normal path" inlined its own
+    ``[_QMD_BIN, "mcp", "--http", "--daemon"]`` with its own ``timeout``,
+    so a pin that counted ``_spawn_qmd_daemon()`` call sites could not see
+    it — and a ``--port`` added to that copy would have changed where the
+    daemon binds without turning any test red.
     """
     if not qmd_installed():
         return _not_installed()
 
-    if not check_data_dir_match(data_dir):
+    if not check_scope_match(scope):
         # Foreign daemon serving the wrong index; reap and respawn.
         _reap_qmd_daemon()
-        _spawn_qmd_daemon()
-        write_sidecar_data_dir(data_dir)
+        _spawn_qmd_daemon(port=port)
+        write_sidecar_scope(scope)
         return qmd_daemon_state()
 
     if _is_daemon_stale():
@@ -336,22 +419,21 @@ def ensure_qmd_daemon(*, data_dir: _Path, timeout: float = 15.0) -> QmdState:
         # it async would ripple into every caller).
         _log.info("ensure_qmd_daemon: daemon stale by marker; reaping via F14")
         _reap_qmd_daemon()
-        _spawn_qmd_daemon()
-        write_sidecar_data_dir(data_dir)
+        _spawn_qmd_daemon(port=port)
+        write_sidecar_scope(scope)
         return qmd_daemon_state()
 
-    # Normal path: idempotent start.
+    # Normal path: idempotent start. ``raise_on_error`` because the two
+    # QmdStates below name the concrete reason to the operator, and a
+    # swallowed spawn would collapse both into "starting qmd failed".
     try:
-        proc = _run_qmd(
-            [_QMD_BIN, "mcp", "--http", "--daemon"],
-            cwd=_Path.cwd(),
-            timeout=timeout,
-        )
+        proc = _spawn_qmd_daemon(port=port, raise_on_error=True)
     except subprocess.TimeoutExpired:
-        return QmdState(True, False, None, f"starting qmd timed out after {timeout:g}s")
+        return QmdState(True, False, None, f"starting qmd timed out after {STATUS_TIMEOUT_S:g}s")
     except OSError as exc:
         return QmdState(True, False, None, f"starting qmd failed: {exc}")
-    write_sidecar_data_dir(data_dir)
+    assert proc is not None  # raise_on_error=True means a return implies success
+    write_sidecar_scope(scope)
     stdout = proc.stdout.decode("utf-8", errors="replace")
     stderr = proc.stderr.decode("utf-8", errors="replace")
     output = f"{stdout or ''}{stderr or ''}"
@@ -415,12 +497,27 @@ class QmdRecycleFailed(RuntimeError):
 #: never spent ``ready_timeout``, and never reached its own
 #: ``QmdRecycleFailed`` contract. See
 #: ``tests/unit/qmd/test_daemon_recycle.py``.
+#:
+#: **Why ``RuntimeError`` is safe here, given how broad it is.** fastmcp
+#: constructs a bare ``builtins.RuntimeError`` (``client.py:248``) with no
+#: subclass to catch, so no narrower guard exists; matching
+#: ``str(exc).startswith("Client failed to connect:")`` would bind LIES to a
+#: third-party message string, and ``import httpx2`` is exactly the
+#: vendored-module import the taxonomy bullet warns against. Two facts make
+#: the breadth safe, and both are load-bearing: ``QmdRecycleFailed`` **is**
+#: a ``RuntimeError`` (it subclasses it), and it is raised at the bottom of
+#: the function, **outside** the ``try`` that this arm guards. If that
+#: ``raise`` ever moved inside the ``try``, this arm would swallow LIES'
+#: own failure contract and the loop would spin to the budget instead of
+#: reporting. ``tests/unit/qmd/test_daemon_recycle.py`` pins both facts —
+#: the subclass relation behaviourally and the ordering by source index,
+#: because a line-move is invisible to a runtime assertion.
 _RECYCLE_PROBE_ERRORS = (httpx.HTTPError, mcp.MCPError, OSError, RuntimeError)
 
 
 async def recycle_qmd_daemon(
     *,
-    data_dir: "_Path",
+    scope: "_Path",
     daemon_url: str,
     ready_timeout: float = 30.0,
     poll_interval: float = 0.5,
@@ -432,26 +529,62 @@ async def recycle_qmd_daemon(
     ``daemon_url`` — proves the JSON-RPC session is alive (not whether
     qexpander is warm; warm-up latency is borne by the first real call).
 
-    **Worst case: ``ready_timeout`` plus one probe, plus the reap and
-    the spawn that run before the loop.** With the defaults that is
-    ~30 s of polling plus ``_reap_qmd_daemon``'s worst case (4 s of
-    ``time.sleep``, two grace windows) plus the spawn's
-    ``STATUS_TIMEOUT_S`` — call it **45 s**, and it is reached only when
-    the replacement never serves at all. Measured 2026-10-10: against a
-    stopped daemon the loop previously escaped on probe one in ~0.3 s,
-    so this ceiling had never been observed being hit. It is the
-    ceiling, not the typical case — a daemon that boots probes green on
-    the first or second attempt and returns in well under a second.
+    Args:
+        scope: the LIES scope to record in the sidecar. It does **not**
+            select the daemon's index and never reaches the spawn — see
+            :func:`_canonical_scope`. The daemon's index comes from the
+            operator's environment, which the reap-then-spawn inherits.
+        daemon_url: the URL to probe, and the source of the ``--port``
+            the spawn must use (:func:`daemon_port_from_url`). Restarting
+            onto a *different* port than the one probed is the failure
+            that shape prevents.
+
+    **Worst case is two figures, not one**, because ``qmd_daemon_state()``
+    runs a ``qmd status`` subprocess bounded at ``STATUS_TIMEOUT_S``
+    (15 s) and this path calls it repeatedly. Measured 2026-10-10 by
+    instrumenting ``_run_qmd``: 20 calls on a 1 s / 0.05 s run, all of
+    them ``qmd status``.
+
+    - **~31 s when the replacement never serves and ``qmd status``
+      answers promptly.** The ``ready_timeout`` budget (30 s) plus a
+      little reap/spawn/probe overhead. Add up to 4 s more if SIGTERM
+      does not take within ``_reap_qmd_daemon``'s grace (two grace
+      windows of ``time.sleep``).
+    - **~80 s if ``qmd status`` also hangs** at its own 15 s bound: one
+      inside ``_reap_qmd_daemon`` (its first line), one before the loop,
+      and **one per failed poll** (~2 more inside a 30 s budget once
+      each costs 15 s).
+
+    The single figure this docstring used to quote — a ~45-second bound
+    — summed ``STATUS_TIMEOUT_S`` as if the spawn ran long *and* the
+    budget ran long, which are different scenarios, and it omitted the
+    per-poll ``qmd status`` entirely.
+
+    The per-poll ``qmd status`` is itself worth hoisting out of the loop
+    (it is a subprocess spawn per iteration, ~60 over a 30 s budget) and
+    would make the arithmetic above a single figure. That is a pre-
+    existing cost, deliberately not changed here.
+
+    Measured 2026-10-10: against a stopped daemon the loop previously
+    escaped on probe one in ~0.3 s, so neither ceiling had ever been
+    observed being hit. They are ceilings, not typicals — a daemon that
+    boots probes green on the first or second attempt and returns in
+    well under a second.
 
     Raises:
         QmdRecycleFailed: reap+spawn+probe never served within ready_timeout.
+            This is the **only** exception this function raises; the
+            probe's own failures are absorbed into the retry loop.
     """
     _log.debug("recycle_qmd_daemon: reaping")
     _reap_qmd_daemon()
     _log.debug("recycle_qmd_daemon: spawning")
-    _spawn_qmd_daemon()
-    _log.debug("recycle_qmd_daemon: writing sidecar for %s", data_dir)
-    write_sidecar_data_dir(data_dir)
+    # The port comes from the URL being probed. Without it the spawn
+    # binds qmd's default and the probe waits out the whole budget for a
+    # daemon that is listening somewhere else.
+    _spawn_qmd_daemon(port=daemon_port_from_url(daemon_url))
+    _log.debug("recycle_qmd_daemon: writing sidecar for %s", scope)
+    write_sidecar_scope(scope)
 
     deadline = asyncio.get_event_loop().time() + ready_timeout
     last_state = qmd_daemon_state()
@@ -467,6 +600,12 @@ async def recycle_qmd_daemon(
             return qmd_daemon_state()
         except _RECYCLE_PROBE_ERRORS as exc:
             _log.debug("recycle_qmd_daemon: probe failed (%s); retrying", exc)
+            # A `qmd status` subprocess **per failed poll** — ~60 over a
+            # 30 s budget. Pre-existing, and deliberately not changed
+            # here, but it is the reason the docstring's ceiling is two
+            # figures rather than one, and it is the obvious thing to
+            # hoist if that arithmetic is ever revisited: the state is
+            # only read for the final ``QmdRecycleFailed``.
             last_state = qmd_daemon_state()
             await asyncio.sleep(poll_interval)
     raise QmdRecycleFailed(ready_timeout, last_state)

@@ -175,9 +175,9 @@ def _isolated_xdg(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     # cannot leave a pytest temp path in the operator's real sidecar.
     #
     # It is not cosmetic. A stray sidecar makes
-    # ``check_data_dir_match(library_git_root())`` report False, and the
+    # ``check_scope_match(library_git_root())`` report False, and the
     # next ``ensure_qmd_daemon`` then concludes a foreign daemon is
-    # serving and reaps a healthy one; ``_recycle_data_dir`` would then
+    # serving and reaps a healthy one; ``_recycle_scope`` would then
     # respawn against the same wrong path. Observed twice on this host,
     # from a unit test and from an integration test, before this landed.
     from lies.qmd import daemon as _qmd_daemon

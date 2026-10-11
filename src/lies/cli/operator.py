@@ -148,7 +148,17 @@ def up(
 
     if no_qmd:
         return
-    qmd_state = qmd_daemon.ensure_qmd_daemon(data_dir=wiki.wiki_dir)
+    # Canonical scope, not ``wiki.wiki_dir``: the recorded value has to
+    # compare equal against what ``flock qmd recycle`` records, and
+    # ``wiki_dir`` is ``data_root / "wiki"`` so it never could. The port
+    # comes from ``LIES_QMD_URL`` so an operator pointing at :9000 does
+    # not get a daemon spawned on 8181. See ``qmd.daemon`` module notes.
+    from lies.config import get_qmd_url
+
+    qmd_state = qmd_daemon.ensure_qmd_daemon(
+        scope=qmd_daemon._canonical_scope(),
+        port=qmd_daemon.daemon_port_from_url(get_qmd_url()),
+    )
     if qmd_state.running:
         typer.echo(qmd_state.detail)
     else:
@@ -564,27 +574,39 @@ def _qmd_flock_recycle(
 ) -> None:
     """Manually trigger a qmd daemon recycle (operator escape hatch).
 
-    Reaps the running qmd daemon and spawns a fresh one against the
-    wiki's ``data_root``, then probes ``daemon_url`` until the daemon
-    serves a JSON-RPC session or ``ready_timeout`` expires. Prints the
-    final :class:`QmdState` as indented JSON on stdout.
+    Reaps the running qmd daemon and spawns a fresh one on ``daemon_url``'s
+    port, then probes that URL until the daemon serves a JSON-RPC session
+    or ``ready_timeout`` expires. Prints the final :class:`QmdState` as
+    indented JSON on stdout.
 
     Exits 2 when ``QmdRecycleFailed`` is raised (reap+spawn+probe never
     served within ``ready_timeout``) so shell callers can branch on it
     without parsing text.
+
+    ``name`` is still required, and still validated, but no longer
+    supplies the recorded scope: the scope is canonical
+    (``daemon._canonical_scope``), because it records which LIES
+    *session* the daemon belongs to and never selected an index. The
+    check stays so an operator typo is still caught before the command
+    reaps a machine-global daemon.
     """
     import asyncio
     import dataclasses
 
     from lies.config import get_qmd_url
-    from lies.qmd.daemon import QmdRecycleFailed, QmdState, recycle_qmd_daemon
+    from lies.qmd.daemon import (
+        QmdRecycleFailed,
+        QmdState,
+        _canonical_scope,
+        recycle_qmd_daemon,
+    )
     from lies.wiki.wiki import Wiki
 
-    wiki = Wiki.require(name)
+    Wiki.require(name)  # validate the operator's spelling; value unused
     try:
         state: QmdState = asyncio.run(
             recycle_qmd_daemon(
-                data_dir=wiki.data_root,
+                scope=_canonical_scope(),
                 daemon_url=get_qmd_url(),
                 ready_timeout=ready_timeout,
             )
