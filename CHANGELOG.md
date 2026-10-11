@@ -189,6 +189,95 @@ rule rather than the accident.
 
 ### Fixed
 
+- **The ceiling figures are measured through the real reader loop, and the
+  poll-scaling claim is now true.** `_subprocess._POLL_INTERVAL_S` is
+  read only inside `_run_qmd`'s `sel.select()`, and the committed
+  harness replaced `_run_qmd` outright — so it never read the constant
+  and its rescaling was inert. Measured both ways, five runs each:
+  with `_run_qmd` stubbed, patched and unpatched give identical
+  distributions; with the reader loop real, the ceiling reads **61 s
+  scaled and 86-88 s unscaled**.
+
+  The harness now patches `subprocess.Popen` instead, driving the real
+  `_run_qmd` over real pipes with a child that emits exactly the bytes
+  each scenario calls for. Every one of the reader loop's production
+  paths — `sel.select`, `read1`, EOF handling, both bounds — runs
+  unchanged. A unit pin asserts the harness does not stub `_run_qmd`,
+  because that single edit is what made the claim false.
+
+  **The "unstable row" claim was wrong, and in an instructive way.** The
+  docstring said the hanging-status row varied because it had been
+  measured at 17.7 s and 19.7 s, one-or-two complete calls landing
+  either way. Counting `qmd status` calls across 20 runs of the old
+  harness: **3 in 20 of 20**. The spread was `time.sleep` jitter inside
+  a stub, not a knife-edge. The knife-edge is real and is now derived
+  rather than remembered — sweeping the status bound at 1/100 scale puts
+  the boundary at 0.1475 against the harness's 0.150, i.e. **0.25 s of
+  headroom at real scale**, with a whole `STATUS_TIMEOUT_S` swing on the
+  far side. That is why the row is a band, and the docstring now says so.
+
+  The table's rows also stop printing a decimal: the measurements are
+  30.4 / 34.5 / 45.5 / 45.9 / 60.9 s over 15 runs, reproducible to
+  ±0.5 s, and the figures now include an explanation of why the
+  spawn-hang and status-hang rows land within 1 s of each other without
+  being the same measurement.
+
+- **The "never a single figure" pin asserts structure, not prose.** It
+  was ten substring checks on the flattened docstring, and both of the
+  reviewer's probes passed it: collapsing the whole table to one
+  `**~47 s**` figure, and deleting the table entirely —
+  `assert "configuration" in doc` was satisfied by an unrelated
+  sentence. It now parses the docstring's RST table and checks it
+  against a structured constant: five rows, each naming a
+  configuration, each carrying a figure, floor and ceiling marked, the
+  forbidden bounds absent from the rows that make a bound claim, and
+  the floor/ceiling actually being the minimum and maximum of the
+  column. The headline sentence is parsed separately, because
+  "floor" and "ceiling" also appear in row markers — which is how
+  reverting it to the retracted "~80 s" ceiling once passed.
+
+- **The unit-test network audit is now a gate, and it is wired in.**
+  `tools/qmd_unit_network_audit.py` failed nothing. `pytest_sessionfinish`
+  only *printed*, and nothing referenced it outside its own docstring,
+  so a unit test dialing the operator's live daemon produced a green
+  build with a warning in the log — the exact shape by which a false
+  zero reaches a report.
+
+  Two changes. `-p qmd_unit_network_audit` is added to `make unit-test`,
+  which the pre-commit hook runs, so this is the commit gate. And
+  `sessionfinish` now sets `session.exitstatus = 1` on any connection to
+  8181/9000 that is not named in its `ACCEPTED` list — **inverted**,
+  so failure is the default and a grant is the exception. The four
+  grants are node ids, not file paths, each naming the ports it may
+  reach; a file-level grant would let any future test in that file dial
+  without notice, which is how the 9000 regression reached a unit test.
+
+  **Verified by introducing a deliberate dial and running `make
+  unit-test`: exit 2, with the offending node id and the reason. Remove
+  it and the same command exits 0.** A guard nobody has watched fail is
+  a report.
+
+  Two defects in the audit itself, both found by writing the tests rather
+  than by review:
+
+  - **The guard was silently disabled for most of the session.**
+    `tests/unit/qmd/test_daemon_recycle.py` restores `socket.socket`
+    with an explicit `del` — correctly, since `connect` is inherited
+    from `_socket.socket` and a monkeypatch undo leaves a shadowing
+    class attribute. That `del` also removed the audit's, so every test
+    ordered after that file ran unguarded. Measured: with a dialing test
+    after it, the audit passed; before it, the audit failed. An
+    order-dependent guard is not a guard, so it re-installs on the way
+    out of every test's protocol.
+  - **`connect_ex` was never intercepted** — a separate C method, not
+    an alias. The per-file autouse guard names this as one of its own two
+    gaps and cites the audit as covering it, which was false.
+
+  The audit's own tests dial nothing: they call the guard directly
+  against a stub with `_real_connect` neutralised. An earlier version
+  connected for real, and the audit failed its own test file — the fix
+  for which would have been to exempt itself.
+
 - **The recycle's readiness probe no longer escapes on a stopped qmd
   daemon, so `recycle_qmd_daemon` retries and reaches its own
   `QmdRecycleFailed`.** The probe caught
@@ -212,8 +301,8 @@ rule rather than the accident.
   The tuple now covers `RuntimeError`, and the worst case is now a
   **measured floor and ceiling**. Every constant is scaled by 1/100, a
   real exhaustion is driven through the genuine `_reap_qmd_daemon`,
-  `_spawn_qmd_daemon`, probe loop and deadline, and the result is scaled
-  back. The harness is committed -
+  `_spawn_qmd_daemon`, `_run_qmd` reader loop, probe loop and deadline,
+  and the result is scaled back. The harness is committed -
   `tests/integration/test_qmd_recycle_ceiling.py` - and re-derives these
   on demand, asserting their *structure* rather than their decimals.
   *Measured 2026-10-10; transcribed, not re-measured at commit time.*
@@ -221,11 +310,10 @@ rule rather than the accident.
   **Scaled:** `STATUS_TIMEOUT_S`, `ready_timeout`, `poll_interval`, the
   reap's `grace`/`poll`, **and** `_subprocess._POLL_INTERVAL_S`. That
   last is neither a timeout nor a sleep - it is the reader loop's
-  `sel.select()` granularity - so it does not scale by itself, and
-  leaving it alone lands as up to ~6 s of real time per simulated
-  hanging `qmd status` call. An earlier version of this measurement
-  omitted it and inflated every hanging-status row by more than the
-  bound it was quoting.
+  `sel.select()` granularity - so it does not scale by itself, and an
+  unscaled 0.1 s survives the rescaling. With the reader loop real, the
+  ceiling reads **61 s scaled and 86-88 s unscaled**, so this is not a
+  detail: leaving it out put the reported figure 40% low.
 
   The axis that decides the figures is **what `qmd status` reports**, not
   how fast it answers - that one fact sets whether the reap spends its

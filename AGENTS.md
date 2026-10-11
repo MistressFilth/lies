@@ -257,7 +257,7 @@ call.**
   and the spawn shells `qmd mcp --http --daemon` directly, so the
   recycle never waits on the lock it is holding.
 
-  **The number is now reachable: a ~31 s floor and a ~66 s ceiling,
+  **The number is now reachable: a ~30 s floor and a ~61 s ceiling,
   both measured.** Measured
   2026-10-10 against the live daemon: the recycle's probe caught
   `(httpx.HTTPError, mcp.MCPError, OSError)`, but a stopped daemon
@@ -274,25 +274,37 @@ call.**
   coming up. The tuple now covers `RuntimeError`.
 
   Measured by scaling every constant by 1/100 and driving real
-  exhaustion through the genuine reap, spawn, probe loop and deadline:
+  exhaustion through the genuine reap, spawn, `_run_qmd` reader loop,
+  probe loop and deadline
+  (`tests/integration/test_qmd_recycle_ceiling.py`):
 
   | scenario | measured (real scale) |
   |---|---|
-  | prompt status, prompt spawn | **31.0 s** (floor) |
-  | prompt status, **spawn hangs** | **47.5 s** |
-  | **`qmd status` hangs**, prompt spawn | **48.6 s** |
-  | both hang | **65.8 s** (ceiling) |
+  | prompt status, prompt spawn | **30 s** (floor) |
+  | status "running", SIGTERM missed | **34 s** |
+  | prompt status, **spawn hangs** | **45 s** |
+  | **`qmd status` hangs**, prompt spawn | **46 s** |
+  | both hang | **61 s** (ceiling) |
 
-  Two traps in that table. **The spawn has its own 15 s bound**, so
+  Three traps in that table. **The spawn has its own 15 s bound**, so
   "prompt status" does not mean prompt everything, and the spawn-hang
-  case dominates the middle. And a **hanging `qmd status` makes the
+  case dominates the middle. A **hanging `qmd status` makes the
   ceiling lower, not higher**: `qmd_daemon_state()` then reports
   `running=False`, so `_reap_qmd_daemon` returns without killing
   anything and spends neither grace window — which is why the "~80 s"
   this bullet previously quoted was not merely loose but *unreachable*.
-  Add up to 4 s more where the reap does spend both grace windows
-  (measured 34.5 / 50.6 / 53.9 / 69.0 s). *Transcribed, not
-  re-measured at commit time.*
+  And the **46 s row is the spawn-hang row to within 1 s, by
+  coincidence rather than equivalence**: in one the extra 15 s is the
+  spawn's, in the other it is the reap's status call, with the same 30 s
+  of budget behind it — so a reader who treats them as one measurement
+  twice will discount the spawn.
+
+  **The reader loop must be real for any of this to mean anything.**
+  `_subprocess._POLL_INTERVAL_S` is read only inside `_run_qmd`'s
+  `sel.select()`, so a harness that replaces `_run_qmd` never reads it
+  and its rescaling is inert — measured: stubbed, patched and unpatched
+  give identical distributions; with the real loop, 61 s scaled against
+  86-88 s unscaled. *Transcribed, not re-measured at commit time.*
 - **The streamable-HTTP transport does not time out idle streams.** A
   GET stream held open for 30 minutes survived intact, carrying one
   ping and then 29+ minutes of silence. There is no server-side idle
@@ -395,7 +407,7 @@ call.**
   (`daemon.daemon_port_from_url`). That is **six call sites across four
   reap-then-respawn locations**: `capability.as_capability`
   (`capability.py:105`), `access.daemon_tool` (`access.py:441`),
-  `recycle_qmd_daemon` (`daemon.py:618`), and `ensure_qmd_daemon`'s
+  `recycle_qmd_daemon` (`daemon.py:658`), and `ensure_qmd_daemon`'s
   three paths (`daemon.py:426/437/445`). `access.daemon_tool`'s was
   missed by the first fix and is the hottest of the four, not the
   coldest: `_is_daemon_stale()` is true on essentially every call after

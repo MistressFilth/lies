@@ -558,22 +558,24 @@ async def recycle_qmd_daemon(
             onto a *different* port than the one probed is the failure
             that shape prevents.
 
-    **Worst case: a ~30 s floor and a ~63 s ceiling**, measured, not
-    derived (measured 2026-10-10). Every constant is scaled by 1/100, a
-    real exhaustion is driven through the genuine ``_reap_qmd_daemon``,
-    ``_spawn_qmd_daemon``, probe loop and deadline, and the result is
-    scaled back. The harness is committed — see
-    ``tests/integration/test_qmd_recycle_ceiling.py``, which re-derives
-    these and asserts their *structure* rather than their decimals.
+    **Worst case: a ~30 s floor and a ~61 s ceiling**, measured, not
+    derived (measured 2026-10-10; re-measured through the real reader
+    loop 2026-10-10, round 4). Every constant is scaled by 1/100, a real
+    exhaustion is driven through the genuine ``_reap_qmd_daemon``,
+    ``_spawn_qmd_daemon``, ``_run_qmd`` reader loop, probe loop and
+    deadline, and the result is scaled back. The harness is committed —
+    see ``tests/integration/test_qmd_recycle_ceiling.py``, which
+    re-derives these and asserts their *structure* rather than their
+    decimals.
 
     **Scaled:** ``STATUS_TIMEOUT_S``, ``ready_timeout``,
     ``poll_interval``, the reap's ``grace``/``poll``, **and**
     ``_subprocess._POLL_INTERVAL_S``. That last one is neither a timeout
     nor a sleep — it is the reader loop's ``sel.select()`` granularity —
-    so it does not scale by itself, and leaving it alone lands as up to
-    ~6 s of real time per simulated hanging ``qmd status`` call. An
-    earlier version of this measurement omitted it and inflated every
-    hanging-status row by more than the bound being quoted.
+    so it does not scale by itself, and an unscaled 0.1 s survives the
+    rescaling. Measured both ways with the reader loop real: the ceiling
+    reads 61 s scaled and 86-88 s unscaled, so leaving it out would put
+    the reported figure 40% low.
 
     The axis that decides these figures is **what ``qmd status``
     reports**, not how fast it answers. That one fact sets whether the
@@ -583,29 +585,46 @@ async def recycle_qmd_daemon(
     ===================================  ======================
     configuration                         measured (real scale)
     ===================================  ======================
-    daemon down, everything prompt          **30.4 s**  (floor)
-    status reports "running", SIGTERM missed **34.5 s**
-    daemon down, **spawn hangs**            **46.9 s**
-    **qmd status hangs**                    **49.5 s**
-    status and spawn both hang              **63.4 s**  (ceiling)
+    daemon down, everything prompt          **30 s**  (floor)
+    status reports "running", SIGTERM missed **34 s**
+    daemon down, **spawn hangs**            **45 s**
+    **qmd status hangs**                    **46 s**  (unstable, see below)
+    status and spawn both hang              **61 s**  (ceiling)
     ===================================  ======================
 
-    Three things a reader should not get wrong:
+    Four things a reader should not get wrong:
 
     - **The spawn has its own 15 s bound.** "Prompt status" does not mean
-      prompt everything, and the spawn hanging is the biggest single
-      contributor at +16 s — named by no single-figure summary.
+      prompt everything, and a hanging spawn costs a full
+      ``STATUS_TIMEOUT_S`` — named by no single-figure summary.
     - **The grace windows are reachable in exactly one row.** They cost
       ~4 s, and only where ``qmd status`` reports *running* with a live
       pid that then ignores SIGTERM. A hanging status reports
       ``running=False``, so ``_reap_qmd_daemon`` returns at its first
       line and spends neither. That is why the earlier "~80 s if status
       hangs" was **unreachable** rather than merely loose.
-    - **The hanging-status row is genuinely unstable** — measured 17.7 s
-      and 19.7 s over the floor on consecutive runs — because it turns on
-      whether one more poll fits inside the 30 s budget when a status
-      call is 15 s wide. Its calls *displace* polling rather than adding
-      to it, so the net is one or two bounds, not three.
+    - **The 30 s budget holds exactly two 15 s status calls.** Each one
+      *displaces* polling rather than adding to it, so a hanging-status
+      exhaustion pays three bounds in all (one before the loop, two
+      inside) and not four. That is the whole difference between the
+      46 s row and the 61 s ceiling row: one more bound, the spawn's.
+    - **The spawn-hangs and status-hangs rows land within 1 s of each
+      other by coincidence, not by equivalence.** In the first the extra
+      15 s is the spawn's; in the second it is the reap's status call,
+      with the same 30 s of budget behind it either way. Reading them as
+      the same measurement twice will lead a reader to discount the
+      spawn, which is the opposite of what the numbers say.
+
+    The 46 s row is nonetheless the one to treat as a *band*, and the
+    reason is arithmetic rather than noise: the 30 s budget admits a
+    second in-loop ``qmd status`` call only while
+    ``2 x bound + poll_interval < budget``. Measured by sweeping the
+    bound at 1/100 scale, that boundary is 0.1475 against the harness's
+    0.150 — **0.25 s of headroom at real scale**. An earlier version of
+    this docstring attributed a 2 s spread to "one or two complete
+    calls" landing either way; the call count was in fact 3 in 20 runs
+    out of 20 and the spread was ``time.sleep`` jitter in a stubbed
+    ``_run_qmd``. The knife-edge is real and the jitter was not.
 
     Two earlier answers were wrong in ways worth recording: a single
     "~45 s" summed mutually exclusive component bounds, and the "~80 s"

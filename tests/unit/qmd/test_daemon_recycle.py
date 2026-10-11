@@ -9,6 +9,7 @@ daemon is not this file's job; see
 
 from __future__ import annotations
 
+import re
 import socket
 from collections.abc import Iterator
 from pathlib import Path
@@ -469,12 +470,29 @@ def test_the_docstring_states_a_measured_floor_and_ceiling() -> None:
     exclusive bounds), "~80 s" (unreachable), and "+up to 4 s" attached
     to a row that cannot satisfy it - so the trap each one fell into is
     pinned as prose.
+
+    **The headline sentence is parsed, not searched.** Asserting that
+    "floor" and "ceiling" appear *somewhere* is what let M38 through:
+    reverting the headline to "a ~80 s ceiling" left both words present
+    in the table's row markers, so the test passed on a docstring whose
+    one-line summary was the answer that had already been retracted.
     """
     doc = " ".join((qmd_daemon.recycle_qmd_daemon.__doc__ or "").split())
+    headline = _headline_bound(doc)
 
-    assert "floor" in doc and "ceiling" in doc, (
-        "the docstring must frame the bound as a range with named ends"
+    assert headline is not None, (
+        "the docstring's one-line bound summary is gone; every wrong answer "
+        "this file records began by replacing it"
     )
+    assert re.search(r"\bfloor\b", headline) and re.search(r"\bceiling\b", headline), (
+        f"the headline must frame the bound as a range with named ends: {headline!r}"
+    )
+    for bad in FORBIDDEN_BOUNDS:
+        assert bad not in headline, (
+            f"the headline quotes {bad!r} as the bound: {headline!r}. 45 s "
+            f"summed mutually exclusive component bounds and 80 s was not "
+            f"an upper bound at all."
+        )
     assert "measured, not" in doc, (
         "these are measurements; calling them derived invites re-deriving them wrongly"
     )
@@ -503,24 +521,289 @@ def test_the_docstring_states_a_measured_floor_and_ceiling() -> None:
     )
 
 
-def test_the_ceiling_is_never_a_single_figure() -> None:
-    """A lone number on this line is the failure mode, three times over.
+#: The rows ``recycle_qmd_daemon``'s docstring must carry, as
+#: ``(configuration, marker)``. ``marker`` is the annotation the row must
+#: bear — ``""`` for a row that carries only its figure.
+#:
+#: This is the structured constant the prose is checked *against*, so the
+#: table can be deleted and the test still fails. The predecessor's
+#: version was ten substring checks on the flattened docstring, and
+#: collapsing every row to one ``**~47 s**`` figure passed it — so did
+#: deleting the table outright, because ``assert "configuration" in doc``
+#: was satisfied by the word appearing in an unrelated sentence.
+EXPECTED_ROWS: tuple[tuple[str, str], ...] = (
+    ("daemon down", "floor"),
+    ("SIGTERM", ""),
+    ("spawn hangs", ""),
+    ("qmd status hangs", "unstable"),
+    ("status and spawn both hang", "ceiling"),
+)
 
-    "45 s" and "~80 s" were both single numbers presented as bounds. If
-    the table ever collapses to one, the traps have nowhere to live.
+#: Figures that must never be quoted as the **bound**. Both were
+#: published answers a reader could copy, and both were wrong: 45 s
+#: summed mutually exclusive component bounds, 80 s was not an upper
+#: bound at all.
+#:
+#: Deliberately *not* checked against every row. 45 s is also a
+#: legitimately measured row — the spawn-hang scenario reads 45 s — so a
+#: blanket ban would forbid a true figure to police a false bound. The
+#: check below applies these to the rows that make a bound claim, which
+#: is the only place they were ever wrong.
+FORBIDDEN_BOUNDS = ("45 s", "80 s", "~45", "~80")
+
+
+def _doc_table_rows(doc: str) -> list[tuple[str, str]]:
+    """Parse the docstring's RST simple table into ``(left, right)`` rows.
+
+    Returns ``[]`` when there is no table, which every caller below must
+    treat as a failure — that is the point. Parsed rather than matched,
+    because the defect being pinned is a table that collapses or
+    disappears, and no substring check can tell those apart from prose
+    that happens to share a word.
+
+    Cells are split at the **rule line's column boundary**, not at the
+    first run of whitespace. Splitting on whitespace is what a first
+    attempt did, and it silently mis-parsed the widest configuration —
+    whose label butts against its own figure with a single space — into
+    one cell and reported it as a row with no figure in it.
+    """
+    lines = doc.splitlines()
+    rules = [i for i, ln in enumerate(lines) if _is_rule(ln)]
+    if len(rules) < 3:
+        return []
+    boundary = len(lines[rules[1]].strip().split("  ")[0])
+    rows = []
+    for ln in lines[rules[1] + 1 : rules[2]]:
+        if not ln.strip():
+            continue
+        stripped = ln.rstrip()
+        left = stripped[:boundary].strip()
+        right = stripped[boundary:].strip()
+        if not left:
+            # The label overflowed its column: take the break between the
+            # two cells so a too-long configuration is still read as a
+            # label plus a figure rather than as a figure-less row.
+            head, _, tail = stripped.partition("**")
+            left, right = head.strip(), "**" + tail.strip()
+        rows.append((left, right))
+    return rows
+
+
+def _is_rule(line: str) -> bool:
+    """True for an RST simple-table rule (``====  ====``)."""
+    stripped = line.strip()
+    if not stripped or "=" not in stripped:
+        return False
+    return all(part and set(part) == {"="} for part in stripped.split("  ") if part)
+
+
+def _headline_bound(doc: str) -> str | None:
+    """The docstring's one-line bound summary, flattened, or ``None``.
+
+    Located by its opening phrase rather than by a regex over the whole
+    docstring, because "floor" and "ceiling" also appear in the table's
+    row markers and in the prose that records their history. Only the
+    sentence a reader reads first makes a bound *claim*, and only that
+    one is what every retracted answer here replaced.
+    """
+    flat = " ".join(doc.split())
+    marker = "Worst case:"
+    if marker not in flat:
+        return None
+    tail = flat.split(marker, 1)[1]
+    end = tail.find(". ")
+    return (marker + (tail[:end] if end != -1 else tail)).strip()
+
+
+def test_the_ceiling_is_never_a_single_figure() -> None:
+    """The figures are a table of configurations, and the table is load-bearing.
+
+    Three wrong answers have lived on this line — "45 s" (mutually
+    exclusive bounds), "~80 s" (unreachable), "+up to 4 s" on a row that
+    cannot satisfy it — and each was a *single* number. The structural
+    claim is the one that survives all of them: one number cannot be
+    right for five configurations, so the docstring must still carry a
+    row per configuration.
+
+    Asserted against :data:`EXPECTED_ROWS` rather than by searching the
+    flattened prose. The previous version of this test was ten substring
+    checks, and both of the reviewer's probes passed it: collapsing the
+    whole table to one figure, and deleting the table entirely.
+    """
+    doc = qmd_daemon.recycle_qmd_daemon.__doc__ or ""
+    rows = _doc_table_rows(doc)
+
+    assert rows, (
+        "the ceiling table is gone. Its rows are what carry each "
+        "configuration's figure; without it the docstring is back to a "
+        "single number, which is the failure this test exists to prevent."
+    )
+    assert len(rows) == len(EXPECTED_ROWS), (
+        f"expected {len(EXPECTED_ROWS)} configuration rows, found {len(rows)}: "
+        f"{[r[0] for r in rows]}. A table that collapses to fewer rows is "
+        f"the exact shape both wrong single-figure answers had."
+    )
+    figures: list[float] = []
+
+    for (want_cfg, want_marker), (got_cfg, got_right) in zip(EXPECTED_ROWS, rows):
+        flat_cfg = " ".join(got_cfg.split())
+        assert want_cfg in flat_cfg, (
+            f"row {want_cfg!r} is missing or renamed: the table now reads "
+            f"{flat_cfg!r}. Each configuration needs its own row because no "
+            f"single figure is right for all of them."
+        )
+        assert want_cfg not in got_right, (
+            f"row {want_cfg!r} lost its figure; the configuration column "
+            f"swapped with the measurement column"
+        )
+        if want_marker:
+            assert want_marker in flat_cfg + " " + got_right, (
+                f"row {want_cfg!r} must carry the {want_marker!r} marker: it "
+                f"reads {flat_cfg!r} | {got_right!r}"
+            )
+        # Every row carries a figure in seconds. Checked per row, so a row
+        # stripped of its figure cannot hide behind a neighbour's.
+        assert got_right, f"row {flat_cfg!r} has no measured figure in it"
+        match = re.search(r"\*{0,2}(\d+(?:\.\d+)?) ?s", got_right)
+        assert match, f"row {flat_cfg!r} does not carry a figure in seconds: {got_right!r}"
+        figures.append(float(match.group(1)))
+
+        # The two rows that *make a bound claim* — floor and ceiling —
+        # must not quote one of the published-wrong answers. A middle row
+        # may legitimately read 45 s; the ceiling may not be 45 s.
+        if want_marker in ("floor", "ceiling"):
+            for bad in FORBIDDEN_BOUNDS:
+                assert bad not in got_right, (
+                    f"the {want_marker} is quoted as {bad!r}: {got_right!r}. "
+                    f"Both 45 s and 80 s were published answers that were "
+                    f"wrong — one summed mutually exclusive bounds, the "
+                    f"other was not an upper bound at all."
+                )
+
+    assert min(figures) == figures[0], (
+        f"the row marked (floor) reads {figures[0]:g} s but another row "
+        f"reads less ({figures}); a floor that is not the floor is worse "
+        f"than no floor"
+    )
+    assert max(figures) == figures[-1], (
+        f"the row marked (ceiling) reads {figures[-1]:g} s but another row "
+        f"reads more ({figures}); a ceiling under the measured maximum "
+        f"understates the worst case"
+    )
+
+
+def test_the_unstable_row_says_why_and_names_its_cause() -> None:
+    """The band row is justified by arithmetic, not by a remembered spread.
+
+    An earlier version claimed the row was unstable because it had been
+    observed at 17.7 s and 19.7 s. Counting the ``qmd status`` calls
+    across 20 runs of the old harness: 3 in 20 of 20. The spread was
+    ``time.sleep`` jitter inside a stubbed ``_run_qmd``; the knife-edge
+    was real but was not what had been observed.
     """
     doc = " ".join((qmd_daemon.recycle_qmd_daemon.__doc__ or "").split())
 
-    assert "configuration" in doc, (
-        "the figures must be presented per configuration; a single number "
-        "cannot be right for all of them"
+    assert "0.1475" in doc, (
+        "the docstring must quote the measured sweep boundary (0.1475) at "
+        "which a second in-loop qmd status call stops fitting. The band is "
+        "only defensible with the arithmetic that makes it a band."
     )
-    # "45 s" may appear only in the sentence recording that it was wrong.
-    for sentence in doc.split(". "):
-        if "45 s" in sentence:
-            assert any(w in sentence for w in ("wrong", "summed", "mutually")), (
-                f"'45 s' reads as a live bound here: {sentence!r}"
-            )
+    assert "0.25 s of headroom" in doc, (
+        "state how far the harness's own status bound clears that boundary; "
+        "it is the difference between a band and a knife-edge that happens "
+        "not to fire"
+    )
+    assert "3 in 20 runs" in doc, (
+        "the correction to the earlier instability claim must stay recorded: "
+        "the call count never varied, so the old spread was stub jitter"
+    )
+
+
+def test_the_ceiling_harness_still_pins_the_poll() -> None:
+    """The poll pin exists, and the harness it pins is the real reader loop.
+
+    Round 3 deleted a test by rewriting two others by line-slicing; the
+    suite stayed green at 2036 instead of 2037, and the port pin went
+    with it. Nothing in a test suite notices its own missing tests, so
+    this one does, from the *other* file.
+
+    Two claims, both structural:
+
+    1. ``test_the_poll_granularity_is_reached_and_scaled`` is defined in
+       the harness. M34 and M34b weaken or delete it; a suite-wide green
+       is then reporting on a suite with one fewer guard, which is how
+       the round-3 false zero survived three rounds of review.
+
+    2. ``_measure`` never patches ``daemon._run_qmd``. That is the edit
+       that made round 3's ``_POLL_INTERVAL_S`` patch inert: the constant
+       lives inside ``_run_qmd``'s reader loop, so a harness that
+       replaces ``_run_qmd`` never reads it. The harness must patch
+       ``subprocess.Popen`` instead, leaving the reader loop real.
+
+    Neither claim reads the harness's *assertions* — reading a test's own
+    source to check its logic is the tautology this file's predecessor
+    shipped. These check that the guard is present and aimed correctly;
+    whether it has teeth is M32/M33's job, and both are caught.
+    """
+    import importlib.util
+
+    harness = Path(__file__).resolve().parents[2] / "integration" / "test_qmd_recycle_ceiling.py"
+    assert harness.is_file(), f"the ceiling harness has moved: {harness}"
+
+    spec = importlib.util.spec_from_file_location("_lies_ceiling_harness", harness)
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    assert hasattr(mod, "test_the_poll_granularity_is_reached_and_scaled"), (
+        "the harness's poll pin is gone. Nothing in a test suite notices "
+        "its own missing tests — measured: deleting it left every test "
+        "green, which is how round 3 shipped a pin that could not fail."
+    )
+
+    import ast
+
+    def dotted_name(node: ast.AST) -> str:
+        if isinstance(node, ast.Name):
+            return node.id
+        if isinstance(node, ast.Attribute):
+            return f"{dotted_name(node.value)}.{node.attr}"
+        return ast.unparse(node)
+
+    measure = next(
+        n
+        for n in ast.walk(ast.parse(harness.read_text(encoding="utf-8")))
+        if isinstance(n, ast.AsyncFunctionDef) and n.name == "_measure"
+    )
+    patched = {
+        (dotted_name(node.args[0]), node.args[1].value)
+        for node in ast.walk(measure)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "object"
+        and len(node.args) >= 2
+        and isinstance(node.args[0], ast.Name)
+        and isinstance(node.args[1], ast.Constant)
+        and isinstance(node.args[1].value, str)
+    }
+    targets = sorted(f"{obj}.{attr}" for obj, attr in patched)
+    assert "_run_qmd" not in targets, (
+        f"_measure patches {targets}. Patching _run_qmd deletes the reader "
+        f"loop, and _POLL_INTERVAL_S lives inside it — so the harness's "
+        f"poll rescaling becomes inert and every figure it reports is "
+        f"quietly wrong."
+    )
+    assert "_subprocess.subprocess" in targets, (
+        f"_measure must patch _subprocess.subprocess (i.e. Popen) instead; "
+        f"it patches {targets}. Patching Popen keeps _run_qmd's reader "
+        f"loop, its bounds and its select() granularity on the production "
+        f"implementation."
+    )
+    assert hasattr(mod, "_POLL_INTERVAL_S"), (
+        "the harness must re-export the constant it scales, so a reader can "
+        "check the scaling without reading the patch line"
+    )
+    assert mod._POLL_INTERVAL_S == pytest.approx(0.1)
 
 
 async def test_the_recycle_spawns_on_the_port_it_probes(
