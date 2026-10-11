@@ -30,7 +30,7 @@ from fastmcp.exceptions import ToolError
 from fastmcp.tools import Tool
 
 from lies.mcp.grounding import ground
-from lies.query.citation import Citation
+from lies.query.citation import Citation, citations_from_paths
 
 log = logging.getLogger(__name__)
 
@@ -622,6 +622,16 @@ def _ask_impl(
         )
 
     if not lib_out.excerpts:
+        # The reason is rendered, not restated, exactly as on the
+        # transient branch above. This branch used to hardcode
+        # "librarian returned no excerpts" and discard whatever the
+        # bundle carried — so an unknown tag, or a collection that is
+        # registered but has no documents in qmd, both reported as one
+        # generic sentence naming neither. ``_search_impl`` writes the
+        # specific cause into the envelope and ``with_search_diagnostics``
+        # carries it onto the bundle, so it is already here; reading it
+        # is the whole point. The fixed sentence survives as the ``or``
+        # fallback for a bundle that genuinely carries none.
         return SynthesizeEnvelope(
             question=question,
             tag_expr=tag_expr,
@@ -630,17 +640,33 @@ def _ask_impl(
             pages_read=[],
             fallback_used=True,
             synthesis_used=False,
-            fallback_reason="librarian returned no excerpts",
+            fallback_reason=lib_out.fallback_reason or "librarian returned no excerpts",
             searched_scope=list(lib_out.searched_scope or []),
         )
 
     synth_out = synthesizer_agent_run(lib_out, question)
 
+    # Citations come from the SYNTHESIZER, which emits them as path
+    # strings per the F19 prompt. This line used to read
+    # ``getattr(lib_out, "citations", [])`` — and ``LibrarianOutput``
+    # has no ``citations`` field, so it was ``[]`` on every success
+    # path: ``lib_ask`` returned prose with zero citations forever, and
+    # the ``getattr`` default made it look like a deliberate "no
+    # citations" rather than a missing wiring. The orchestrator's
+    # ``_call_synthesizer`` already converts this same field with the
+    # source discriminator from the excerpts; both now call
+    # :func:`lies.query.citation.citations_from_paths` so the two
+    # surfaces cannot drift apart again.
+    citations = citations_from_paths(
+        list(getattr(synth_out, "citations", []) or []),
+        lib_out.excerpts,
+    )
+
     return SynthesizeEnvelope(
         question=question,
         tag_expr=tag_expr,
         answer=getattr(synth_out, "answer", ""),
-        citations=getattr(lib_out, "citations", []) or [],
+        citations=citations,
         pages_read=getattr(synth_out, "pages_read", []) or [],
         fallback_used=bool(getattr(synth_out, "fallback_used", False)),
         synthesis_used=bool(getattr(synth_out, "synthesis_used", True)),

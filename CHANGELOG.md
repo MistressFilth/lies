@@ -718,13 +718,47 @@ rule rather than the accident.
   asserts it no longer claims to be the delivery mechanism — so neither
   can be deleted on the strength of the other.
 
+  **This is a trade, not "the model cannot suppress it".** Trusting
+  excerpts (the bound below) has a hole: a model that *asserts*
+  excerpts it never read gets its bundle returned untouched and the
+  recorded failure is never consulted, so the operator sees prose and
+  no reason. That is the same suppression route as before, taken by
+  the other door. The overlay closes the easy suppressions —
+  paraphrasing the reason, dropping the field, or flipping
+  `no_coverage` on a dispatch that never finished — and does not close
+  fabrication, because a hallucinated bundle is indistinguishable from
+  a real one at this boundary.
+
   **Two bounds, both pinned.** A bundle carrying **excerpts** is
   returned untouched: it was assembled from real page bodies after a
   *successful* retry, and forcing `transient` onto it would make
   `_ask_impl` discard retrievable evidence because an earlier attempt
   queued. And a recorded failure is **sticky** across a later clean
   search, because the 120 s budget was already spent waiting and a
-  successful retry does not un-spend it.
+  successful retry does not un-spend it. A **non-transient** recorded
+  reason replaces the reason but leaves both flags alone: those
+  dispatches *ran*, so flipping `no_coverage` would manufacture the
+  very false claim the overlay exists to prevent.
+
+  **The dispatch-failure branch is where this actually earns its
+  keep.** When `run_sync` raises there is no model bundle at all, so
+  the caller gets a fixed wrapper string and loses everything the
+  search already learned. Without the overlay on that branch the
+  operator reads "librarian dispatch failed: RuntimeError: …" and not
+  one fact about the contention — the work had already happened; the
+  failure came after it. That branch was claimed in prose and pinned by
+  nothing: removing the wrapper passed the whole unit suite, because
+  the sibling tests stub `register_librarian_tools` to a no-op and so
+  never fill the record. It is now driven by a model that really
+  searches, really records, and then really dies.
+
+  **The no-excerpts branch now names the cause.** It hardcoded
+  `"librarian returned no excerpts"` and discarded the bundle's reason,
+  so an unknown tag, a tag expression resolving to nothing, and a
+  registered-but-empty collection all reported identically. The
+  specific reason is already on the bundle; the branch reads it, with
+  the generic sentence kept as the `or` fallback for a genuinely clean
+  miss.
 
   An earlier draft of this section also said `ground()` and
   `librarian_agent_run` "catch `QmdLockBusy` in code", in the same
@@ -784,6 +818,31 @@ rule rather than the accident.
   reaches `grounding.py:468` and `:545` — but an in-process caller
   reaches them too, and removing either is a contract break rather
   than a cleanup.
+
+- **`lib_ask` returned zero citations on every success path.**
+  `_ask_impl` read `getattr(lib_out, "citations", [])`, and
+  `LibrarianOutput` has no `citations` field — so the `getattr`
+  default fired every time and a successful answer came back as prose
+  citing nothing, with no error anywhere to say so. The synthesizer
+  *does* emit citations (as path strings, per the F19 prompt), and
+  `Orchestrator._call_synthesizer` already converted them into
+  `Citation` envelopes with the source discriminator taken from the
+  librarian's excerpts; that conversion was simply never mirrored on
+  the MCP side.
+
+  The two sites now share one function,
+  `lies.query.citation.citations_from_paths`, because the first
+  divergence of this shape is precisely what produced the bug — two
+  copies of a conversion is how one of them got left reading a field
+  that does not exist. A `getattr` default against an impossible
+  attribute is not defensive handling; it is a claim of "no
+  citations" where the truth was "no wiring".
+
+  **This compounded the lock diagnostics.** A model that asserted
+  `excerpts` returned a bundle the overlay deliberately left alone,
+  and `lib_ask` rendered it as prose with `citations=[]` and no
+  reason — the suppression route the overlay was built to close,
+  reachable through a different door.
 
 - **A cancelled tool call now names itself in the daemon log.** A call
   cancelled before it produced a result — server shutdown, a request

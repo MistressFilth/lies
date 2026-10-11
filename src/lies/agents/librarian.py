@@ -609,11 +609,35 @@ def register_librarian_tools(
     what the search did. Supply one record per *dispatch* (not per
     agent) when the caller assembles the bundle itself and needs the
     search envelope's verdict to survive the model — see
-    :class:`SearchDiagnostics`. A long-lived agent shared across
-    concurrent asks must not share a record: the MCP server serves
-    overlapping ``lib_ask`` calls, and one shared mutable record would
-    let a lock-busy on one request reach a different request's
-    envelope.
+    :class:`SearchDiagnostics`.
+
+    **An argument, not a module global, and not a ``ContextVar`` —
+    do not "fix" this into one.** Only ``synth.librarian_agent_run``
+    reads the record, and it constructs one per call; the MCP server
+    serves overlapping ``lib_ask`` requests, so a shared mutable
+    module global would let one request's lock contention land on a
+    different request's envelope. That is the argument.
+
+    The other two registration sites pass ``None`` and are **not** at
+    risk from any of this, which is worth writing down so nobody
+    threads a record through them on the strength of a cross-talk
+    story that does not apply to them:
+
+    - ``mcp/grounding.py`` builds its digest from
+      ``out.excerpts`` and ``out.no_coverage`` alone. It never reads
+      ``transient`` or ``fallback_reason`` off a librarian bundle; its
+      own lock diagnostics come from the two ``except QmdLockBusy``
+      arms around its direct ``access.daemon_tool`` calls.
+    - ``orchestrator.py`` registers the tools at ``__init__`` time on
+      a long-lived agent, and ``run_query`` recomputes
+      ``answer.no_coverage`` from the resolved tag scope rather than
+      reading the bundle's.
+
+    A ``ContextVar`` would change nothing for either: it would scope
+    the record per task, which solves nothing they have, and it would
+    make the one site that *does* need per-dispatch isolation look
+    like it was getting a concurrency guarantee it does not need —
+    the record is already constructed fresh on every call.
 
     Args:
         agent: The librarian agent whose toolset to populate.

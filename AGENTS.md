@@ -166,6 +166,20 @@ call.**
   **sticky** across a later clean search (the 120 s budget was
   already spent queueing; a successful retry does not un-spend it).
 
+  **The "model cannot suppress it" claim is a TRADE, not a
+  guarantee.** Trusting excerpts is the deliberate choice above, and
+  it has a hole: a model that *asserts* excerpts it does not have
+  gets its bundle returned untouched, and `_ask_impl` renders prose
+  citing pages that were never read. In that case the operator gets
+  no reason — the recorded failure is not consulted — which is the
+  same suppression route as before, reached by the other door. The
+  overlay removes the *easy* suppression (paraphrase, drop the field,
+  or flip `no_coverage` on a dispatch that never finished); it does
+  not remove fabrication. Do not write "the model cannot suppress
+  this" anywhere: it can, and the honest statement is that a
+  hallucinated bundle is indistinguishable from a real one at this
+  boundary.
+
   **There is no log line on the wait path, and do not add one
   expecting it to be read.** Measured 2026-10-10 against the live
   daemon: a `search` blocked for 2 s added 12 lines to `qmd/mcp.log`,

@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
 
 @dataclass(frozen=True)
@@ -49,3 +50,39 @@ class ClaimCitation:
     claim: str
     citation_index: int
     quote: str = ""
+
+
+def citations_from_paths(paths: Iterable[str], excerpts: Iterable[Any]) -> list[Citation]:
+    """Turn the synthesizer's ``citations: list[str]`` into ``Citation`` objects.
+
+    The synthesizer agent emits paths (F19 prompt shape); every
+    consumer downstream — ``_validate_claim_citations`` (which indexes
+    ``citation_index`` into it), ``_thread_heading_paths``, and the
+    ``## Evidence`` renderer — wants the typed envelope with its
+    ``source`` discriminator. The ``source`` comes from the librarian's
+    excerpts, keyed by slug, because the path alone cannot say which
+    physical root the page lives under.
+
+    Lives here rather than in ``orchestrator._call_synthesizer`` so
+    ``synth._ask_impl`` can use it too. That call site previously read
+    ``getattr(lib_out, "citations", [])`` — ``LibrarianOutput`` has no
+    ``citations`` field, so it was ``[]`` on every success path and
+    ``lib_ask`` reported prose with zero citations forever. A second
+    implementation here would reintroduce the same drift; one function
+    with two callers cannot.
+
+    Unknown paths default to ``"wiki"``. That is the conservative
+    choice and matches the orchestrator's pre-existing mapping: a path
+    the librarian never handed over is not in the library corpus, and
+    the dual-source contract resolves ambiguity library-first rather
+    than inventing a library row.
+    """
+    by_slug = {excerpt.slug: excerpt for excerpt in excerpts}
+    out: list[Citation] = []
+    for path in paths:
+        excerpt = by_slug.get(path)
+        source: Literal["library", "wiki"] = (
+            "library" if excerpt is not None and excerpt.collection != "wiki" else "wiki"
+        )
+        out.append(Citation(path=path, source=source))
+    return out

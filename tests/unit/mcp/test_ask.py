@@ -24,6 +24,11 @@ def _fake_librarian_output(
     # Set explicitly: an unset attribute on a MagicMock is a truthy
     # Mock, which would take the transient branch of every test here.
     out.transient = transient
+    # Same trap, second field: the no-excerpts branch renders
+    # ``lib_out.fallback_reason`` and falls back to its fixed sentence
+    # only when it is falsy. An unset MagicMock would satisfy that
+    # ``or`` and every test here would assert on ``<MagicMock ...>``.
+    out.fallback_reason = None
     return out
 
 

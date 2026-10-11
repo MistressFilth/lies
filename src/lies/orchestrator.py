@@ -53,7 +53,11 @@ from lies.qmd import QmdCapability
 from lies.query import (
     SynthesizedAnswer,
 )
-from lies.query.citation import Citation, ClaimCitation
+from lies.query.citation import (
+    Citation,
+    ClaimCitation,
+    citations_from_paths,
+)
 from lies.query.synthesizer import retrieve_pages as _retrieve_pages
 from lies.query.tag_expr import TagExpr
 from lies.schema import load_schema
@@ -2067,19 +2071,14 @@ class Orchestrator:
         # The synthesizer emits ``citations: list[str]`` (paths). Build
         # ``Citation`` envelopes with the source discriminator from the
         # librarian's excerpts so downstream validators / renderers see
-        # the typed surface.
-        from lies.agents.librarian import PageExcerpt as _PageExcerpt
-
-        excerpt_by_slug: dict[str, _PageExcerpt] = {e.slug: e for e in librarian_output.excerpts}
-
-        def _citation_for(path: str) -> Citation:
-            excerpt = excerpt_by_slug.get(path)
-            source: Literal["library", "wiki"] = (
-                "library" if excerpt is not None and excerpt.collection != "wiki" else "wiki"
-            )
-            return Citation(path=path, source=source)
-
-        citation_objects: list[Citation] = [_citation_for(p) for p in answer.citations]
+        # the typed surface. The conversion itself is
+        # :func:`lies.query.citation.citations_from_paths`, shared with
+        # ``synth._ask_impl`` so the two call sites cannot drift — the
+        # first divergence of this shape is what left ``lib_ask``
+        # reporting ``citations=[]`` on every success path.
+        citation_objects: list[Citation] = citations_from_paths(
+            answer.citations, librarian_output.excerpts
+        )
         validated_ccs = _validate_claim_citations(
             answer.answer, citation_objects, answer.claim_citations, librarian_output
         )

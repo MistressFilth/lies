@@ -58,6 +58,8 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from pydantic_ai.messages import ModelResponse, ToolCallPart
+from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.models.test import TestModel
 
 # Imported at module scope, deliberately. ``lies.mcp.synth`` and
@@ -81,6 +83,20 @@ from lies.qmd import lock as lock_mod  # noqa: E402
 #: inode before declaring the harness broken. Generous: the child only
 #: has to open a file and write a byte.
 _HANDSHAKE_TIMEOUT_S = 10.0
+
+#: These tests fork a real holder process. There is no Windows runner
+#: today (Linux/WSL2 only) and no skip marker is strictly needed, but a
+#: bare ``os.fork`` on Windows is an ``AttributeError`` in the test
+#: body rather than a clean skip — and a red test on a platform nobody
+#: runs is a worse signal than a skip. The precedent is weaker than it
+#: looks: ``tests/unit/qmd/test_subprocess.py``'s fork lives inside a
+#: generated child script's SOURCE STRING behind ``@pytest.mark.slow``,
+#: so it neither runs by default nor fails at collection there.
+#: Applied at module level because the fork is in a shared helper.
+requires_fork = pytest.mark.skipif(
+    not hasattr(os, "fork"),
+    reason="os.fork is POSIX-only; the lock contention is a real child process",
+)
 
 #: Poll interval installed for the test. Raised from the production
 #: 0.1 s so the *stubbed* 120 s clock needs ~20 poll attempts instead
@@ -252,6 +268,7 @@ def _noncompliant_librarian() -> TestModel:
     )
 
 
+@requires_fork
 def test_the_ask_path_names_the_qmd_lock_holder_under_real_contention(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -285,14 +302,19 @@ def test_the_ask_path_names_the_qmd_lock_holder_under_real_contention(
         )
 
         # Capture the bundle ``librarian_agent_run`` hands back.
-        # ``_ask_impl`` reads ``transient`` and never reads
-        # ``no_coverage``, so the envelope alone cannot witness the
-        # flag — and the flag is the one that would become a false
-        # corpus claim for any consumer that *does* read it (the
-        # orchestrator's ``run_query`` passes the bundle to the
-        # synthesizer, which reads ``no_coverage`` there). Spying at
-        # this boundary is the only place the value is observable on
-        # the registered path.
+        # ``_ask_impl`` reads ``transient`` first and never reads
+        # ``no_coverage`` at all, so the envelope alone cannot witness
+        # the flag. Nor can any other in-tree consumer: the
+        # orchestrator's ``run_query`` recomputes ``answer.no_coverage``
+        # from the resolved tag scope (``orchestrator.py``'s
+        # ``no_coverage = not answer.searched_scope and ...``), never
+        # from the bundle, and the synthesizer's ``QueryDeps`` renders
+        # only ``librarian_output.excerpts`` via ``page_texts`` /
+        # ``page_sources``. So the return value of
+        # ``librarian_agent_run`` is the only place on the registered
+        # path where the overlay's ``no_coverage`` decision is
+        # observable, and that is why the spy is here rather than at
+        # the envelope.
         bundles: list[LibrarianOutput] = []
         real_librarian_agent_run = synth_mod.librarian_agent_run
 
@@ -314,9 +336,11 @@ def test_the_ask_path_names_the_qmd_lock_holder_under_real_contention(
     # are wrong, because nothing was dispatched.
     assert bundle.no_coverage is False, (
         "the search never dispatched, so the bundle cannot claim the corpus "
-        "has nothing; a consumer that reads no_coverage directly (the "
-        "orchestrator's run_query feeds this bundle to the synthesizer) "
-        "would render it as an empty corpus"
+        "has nothing. no in-tree consumer reads this field today (the "
+        "envelope's transient branch is taken first, the orchestrator "
+        "recomputes its own, the synthesizer reads only excerpts), so this "
+        "is the bundle keeping its own contract honest rather than the "
+        "pin protecting a live reader."
     )
     assert bundle.transient is True
     assert (bundle.fallback_reason or "") == reason, (
@@ -347,6 +371,7 @@ def test_the_ask_path_names_the_qmd_lock_holder_under_real_contention(
     assert out.searched_scope == ["alpha"], out.searched_scope
 
 
+@requires_fork
 def test_the_rendered_reason_names_the_holder_pid_and_the_real_budget(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -394,27 +419,138 @@ def test_the_rendered_reason_names_the_holder_pid_and_the_real_budget(
     assert "queued behind another qmd operation" in reason, reason
     assert "wait and retry" in reason, reason
     assert str(lock_path) in reason, reason
-    assert "max 120.0s" in reason, (
+    # Positive, not "60s not in reason". The reason embeds a
+    # machine-generated tmp_path, so a base-temp containing "60s" would
+    # fail a negative assertion for a reason that has nothing to do with
+    # the bug under test. This form is strictly stronger anyway: it names
+    # the budget, the unit and the wording together.
+    assert "gave up after 120.0s" in reason, (
         f"the budget the gate actually waited on must be the one rendered; got {reason!r}"
-    )
-    assert "120.1" in reason or "120.0" in reason, reason
-    assert "60s" not in reason, (
-        f"60s is the daemon read deadline, not the lock budget; got {reason!r}"
     )
     assert str(holder_pid) in reason, (
         f"the holder pid {holder_pid} must reach the reader; got {reason!r}"
     )
 
 
+def _dies_after_searching() -> FunctionModel:
+    """A librarian model that searches, then dies before answering.
+
+    Turn 1 returns a ``search`` tool call; the closure really runs and
+    really records. Turn 2 raises, standing in for the two production
+    ways ``run_sync`` raises after tools have already executed —
+    ``UsageLimitExceeded`` when the output cannot be validated within
+    the retry budget, and a transport failure mid-run. Both leave the
+    recorded search envelope intact, which is the whole point: the work
+    that already happened is not un-happened by the failure after it.
+    """
+    turns = {"n": 0}
+
+    def _model(messages: list, info: AgentInfo) -> ModelResponse:
+        turns["n"] += 1
+        if turns["n"] == 1:
+            return ModelResponse(parts=[ToolCallPart("search", {"question": "what is pydantic?"})])
+        raise RuntimeError("Exceeded maximum output retries (1)")
+
+    model = FunctionModel(_model)
+    model.lies_turns = turns  # type: ignore[attr-defined]
+    return model
+
+
+@requires_fork
+def test_a_model_that_dies_after_a_queued_search_still_names_the_holder(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The dispatch-failure branch is where the overlay earns its keep.
+
+    ``run_sync`` raising is the *only* situation the overlay changes
+    the outcome for. On the success path the bundle comes from the
+    model, which at least has the tool's envelope in its context; when
+    ``run_sync`` raises there is no bundle at all and the caller gets a
+    fixed wrapper string. Without the overlay on this branch the
+    operator reads
+
+        librarian dispatch failed: RuntimeError: Exceeded maximum
+        output retries (1)
+
+    and loses the holder pid, the elapsed wait, the budget and the
+    contended inode — the one fact that says "wait and retry" instead
+    of "your model is broken". The search already ran; the failure came
+    after it.
+
+    **This pin was missing and the claim was not.** An earlier draft
+    asserted in prose that the overlay covers both branches, and
+    deleting the wrapper from this one passed the whole unit suite at
+    rc=0 — because the sibling tests stub ``register_librarian_tools``
+    to a no-op, so ``diagnostics`` is empty and the overlay is a
+    no-op with or without it. This test drives a real agent with real
+    tools against real lock contention, so the record is non-empty and
+    the branch is the only thing that can supply the reason.
+
+    Same real contention as the tests above, for the same reason: a
+    hand-built ``QmdLockBusy`` would make this a restatement of them.
+    """
+    with _real_lock_holder(monkeypatch, tmp_path) as lock_path:
+        monkeypatch.setattr(lock_mod, "_POLL_INTERVAL_S", _POLL_INTERVAL_S)
+        _fake_poll_clock(monkeypatch)
+        _seed_one_collection(monkeypatch)
+
+        dying_model = _dies_after_searching()
+        monkeypatch.setattr(
+            synth_mod,
+            "librarian_agent",
+            # ``model=None`` shadows nothing: the closure body names
+            # ``dying_model``, so the resolved string never reaches
+            # ``librarian_agent``. A lambda that passed its own
+            # ``model`` through would build an agent from "test-model".
+            lambda model=None: librarian_agent(model=dying_model),
+        )
+        monkeypatch.setattr(synth_mod, "_resolve_librarian_model", lambda: "test-model")
+        synthesizer_calls: list[str] = []
+        monkeypatch.setattr(
+            synth_mod,
+            "synthesizer_agent_run",
+            lambda lib_out, q: synthesizer_calls.append(q) or None,
+        )
+
+        out = synth_mod.lib_ask.fn(question="what is pydantic?", tag_expr=None)
+        holder_pid = int(Path(f"{lock_path}.pid").read_text(encoding="utf-8").strip())
+
+    # The search really ran before the model died. Without this the
+    # test could pass against an empty record for the wrong reason.
+    turns = dying_model.lies_turns["n"]  # type: ignore[attr-defined]
+    assert turns == 2, f"the model should have searched then died; it took {turns} turn(s)"
+    assert holder_pid != os.getpid()
+
+    reason = out.fallback_reason or ""
+    # The facts, not the wrapper.
+    assert "Exceeded maximum output retries" not in reason, (
+        f"the wrapper string is what the overlay exists to replace on this branch; got {reason!r}"
+    )
+    assert str(holder_pid) in reason, f"the holder pid must survive; got {reason!r}"
+    assert str(lock_path) in reason, f"the contended inode must survive; got {reason!r}"
+    assert "gave up after 120.0s" in reason, reason
+
+    # Still a run claim, never a corpus claim, and the synthesizer is
+    # not reached.
+    assert "inconclusive" in out.answer, out.answer
+    assert "No relevant content found in library." not in out.answer, out.answer
+    assert out.synthesis_used is False
+    assert synthesizer_calls == []
+
+
 # ---------------------------------------------------------------------------
 # The overlay's own boundaries, on the dataclass directly
 # ---------------------------------------------------------------------------
 #
-# The end-to-end test above proves the happy path of the overlay. These
-# two pin its *edges*, which are where an over-eager overlay becomes
-# its own kind of lie: a bundle assembled from real page bodies is
-# evidence, and discarding it because an earlier attempt queued would
-# be a different false claim.
+# The end-to-end tests above prove the happy path of the overlay. These
+# pin its *edges*, which is where an over-eager overlay becomes its own
+# kind of lie: a bundle assembled from real page bodies is evidence, and
+# discarding it because an earlier attempt queued would be a different
+# false claim. The other edge is the mirror — a reason recorded against
+# a dispatch that DID run must not flip a corpus statement into a run
+# statement, because then the overlay would be manufacturing the very
+# false claim this branch exists to remove.
 
 
 def test_an_evidence_bundle_is_never_overwritten() -> None:
@@ -501,3 +637,91 @@ def test_a_recorded_failure_survives_a_later_clean_search() -> None:
     # The scope, by contrast, is the latest truth: it describes what
     # the search most recently asked and what the daemon served.
     assert diag.searched_scope == ["alpha", "beta"]
+
+
+def test_a_non_transient_reason_does_not_flip_a_corpus_statement() -> None:
+    """A dispatch that RAN keeps its ``no_coverage``.
+
+    ``_search_impl`` writes a reason for outcomes that are not process
+    failures: an unknown tag, a tag expression resolving to nothing, no
+    collections registered, a collection registered but empty in qmd.
+    Those are genuine statements about the request and the index, and
+    the librarian's ``no_coverage`` is the model's reading of them. The
+    overlay replaces the *reason* — verbatim, which is strictly more
+    informative than the model's paraphrase — but must leave both flags
+    alone.
+
+    Without the ``if diag.transient`` guard, ``no_coverage`` would be
+    forced ``False`` on every one of those paths, and the bundle would
+    report "we learned nothing" for a search that ran and found
+    nothing. That is the same false-claim shape this branch exists to
+    remove, manufactured by the fix for it.
+    """
+    from lies.agents.librarian import (
+        LibrarianOutput,
+        SearchDiagnostics,
+        with_search_diagnostics,
+    )
+
+    for reason in (
+        "unknown tag: 'c:nope'",
+        "tag expression resolved to no collections: 'c:nope'",
+        "collection 'alpha' is registered but has no documents in qmd",
+    ):
+        bundle = LibrarianOutput(
+            tag_expr=None,
+            exclude_expr=None,
+            excerpts=[],
+            distinct_pages=0,
+            no_coverage=True,
+            searched_scope=["alpha"],
+        )
+        diag = SearchDiagnostics(transient=False, fallback_reason=reason)
+
+        out = with_search_diagnostics(bundle, diag)
+
+        assert out.no_coverage is True, (
+            f"a reason against a dispatch that RAN must not clear no_coverage: {reason!r}"
+        )
+        assert out.transient is False, reason
+        # The reason itself IS replaced — that half still applies.
+        assert out.fallback_reason == reason
+
+
+def test_a_bundle_transient_flag_survives_a_non_transient_recorded_reason() -> None:
+    """The two flags merge with ``or``; the record never clears the model.
+
+    A bundle can be transient for a reason the search tool knows nothing
+    about — every read failing, the model refusing to continue. That
+    verdict is the model's own and there is no recorded failure to
+    contradict it, so a ``diag.transient`` that is ``False`` must not
+    demote it. Asserted because the alternative (``transient =
+    diag.transient``) is a one-character edit that silently converts
+    "inconclusive" into "No relevant content found in library." for any
+    bundle assembled without a recorded dispatch failure.
+    """
+    from lies.agents.librarian import (
+        LibrarianOutput,
+        SearchDiagnostics,
+        with_search_diagnostics,
+    )
+
+    bundle = LibrarianOutput(
+        tag_expr=None,
+        exclude_expr=None,
+        excerpts=[],
+        distinct_pages=0,
+        no_coverage=False,
+        searched_scope=["alpha"],
+        transient=True,
+        fallback_reason="every read failed",
+    )
+    diag = SearchDiagnostics(transient=False, fallback_reason="unknown tag: 'c:nope'")
+
+    out = with_search_diagnostics(bundle, diag)
+
+    assert out.transient is True, (
+        "the record has nothing to say about a bundle the model marked "
+        "transient for its own reason; it must not demote the verdict"
+    )
+    assert out.fallback_reason == "unknown tag: 'c:nope'"
