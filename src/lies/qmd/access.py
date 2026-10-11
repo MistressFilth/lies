@@ -339,9 +339,9 @@ async def daemon_tool(
 
     ``query`` alone is single-flighted on the site-wide qmd lock. The
     daemon runs queries strictly one at a time — three concurrent ones
-    measured a 0.99x speedup, the second waiting for the first and the
-    third for both — so an ungated caller is not parallelising, it is
-    joining an unbounded queue inside another process, where nothing
+    measured a 0.99x concurrency ratio, the second waiting for the first
+    and the third for both — so an ungated caller is not parallelising, it
+    is joining an unbounded queue inside another process, where nothing
     bounds it, nothing logs it and nothing can be waited on. Inside qmd
     that queue is invisible; from out here it arrives as a call that took
     too long. The gate moves the wait to a place with a budget

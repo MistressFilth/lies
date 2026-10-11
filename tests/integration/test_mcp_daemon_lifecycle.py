@@ -3,6 +3,17 @@
 Every other daemon test mocks the process boundary. This one spawns a
 real child, so it is the only place a broken re-exec path, a wrong
 transport name, or a wrong mount path can be caught.
+
+**It must not start qmd's daemon.** ``lies mcp up`` calls
+``ensure_qmd_daemon`` unless ``--no-qmd`` is passed
+(``operator.py:149``), and with ``LIES_QMD_URL`` unset — which is what
+the isolation fixture guarantees — that is the default port **8181**,
+not the operator's. The LIES daemon came up fine, so nothing in this
+test failed, and the qmd daemon it spawned outlived the whole pytest
+run as a live listener. Measured on the pre-fix tree: one stray per
+full integration run. Every assertion here is about the *LIES* daemon,
+so ``--no-qmd`` costs the test nothing and is the only thing standing
+between it and the next stray.
 """
 
 from __future__ import annotations
@@ -135,7 +146,17 @@ def _decode_jsonrpc(body: str) -> dict:
 def test_full_lifecycle(wiki: Wiki, port: int) -> None:
     up_result = runner.invoke(
         app,
-        ["mcp", "up", "--name", wiki.name, "--port", str(port), "--timeout", "30"],
+        [
+            "mcp",
+            "up",
+            "--no-qmd",
+            "--name",
+            wiki.name,
+            "--port",
+            str(port),
+            "--timeout",
+            "30",
+        ],
     )
     assert up_result.exit_code == 0, up_result.output
     assert str(port) in up_result.stdout
@@ -161,7 +182,10 @@ def test_full_lifecycle(wiki: Wiki, port: int) -> None:
     assert "running" in status_result.stdout
     assert str(record.pid) in status_result.stdout
 
-    second_up = runner.invoke(app, ["mcp", "up", "--name", wiki.name, "--port", str(port)])
+    second_up = runner.invoke(
+        app,
+        ["mcp", "up", "--no-qmd", "--name", wiki.name, "--port", str(port)],
+    )
     assert second_up.exit_code == 0
     assert "already running" in second_up.stdout
     assert daemon.read_record(wiki) is not None

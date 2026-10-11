@@ -490,7 +490,7 @@ class QmdRecycleFailed(RuntimeError):
 #:   exists for) arrives as a **bare** ``RuntimeError("Client failed to
 #:   connect: All connection attempts failed")``, with the real error on
 #:   ``__cause__`` as ``httpx2.ConnectError``. That is fastmcp's own
-#:   doing: ``fastmcp/client/client.py:1048`` calls
+#:   doing: ``fastmcp/client/client.py:1045-1048`` calls
 #:   ``_connection_failure``, whose docstring says it presents a dead
 #:   session identically "wherever it is noticed" and wraps everything
 #:   that is not ``httpx2.HTTPStatusError | MCPError`` into a

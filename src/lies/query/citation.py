@@ -71,11 +71,26 @@ def citations_from_paths(paths: Iterable[str], excerpts: Iterable[Any]) -> list[
     implementation here would reintroduce the same drift; one function
     with two callers cannot.
 
-    Unknown paths default to ``"wiki"``. That is the conservative
-    choice and matches the orchestrator's pre-existing mapping: a path
-    the librarian never handed over is not in the library corpus, and
-    the dual-source contract resolves ambiguity library-first rather
-    than inventing a library row.
+    Unknown paths default to ``"wiki"``. That is not a verdict on the
+    page: it is this function's verbatim copy of the orchestrator's
+    pre-existing mapping, diffed line for line, and a wrong guess here
+    is no better and no worse than the orchestrator's identical guess
+    one call site over. The reasoning that once justified it — "the
+    conservative choice", "the dual-source contract resolves ambiguity
+    library-first" — was wrong twice over. ``"wiki"`` is not the
+    conservative choice (dropping the citation would be), and the
+    library-first rule argues *for* ``"library"``, so invoking it here
+    inverted it. The behaviour is kept because it is the orchestrator's
+    behaviour; the justification is not kept because it was never
+    sound.
+
+    The consequence is worth stating rather than hiding. On the
+    orchestrator path a bogus path dies in
+    ``_validate_claim_citations``. ``synth._ask_impl`` applies no
+    citation validation, so a path the librarian never handed over
+    survives there as ``Citation(path=..., source="wiki")`` —
+    ``lib_ask`` emits model-asserted, unverified citations. ``read``
+    still resolves them, which is how a caller checks.
     """
     by_slug = {excerpt.slug: excerpt for excerpt in excerpts}
     out: list[Citation] = []

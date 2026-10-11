@@ -112,8 +112,9 @@ call.**
 - **One MCP call at a time. A search is ~10–30s, and fanning out
   multiplies that instead of hiding it.** The qmd daemon executes
   queries strictly one at a time: three concurrent queries measured a
-  **0.99x speedup** (29.48s vs 29.18s serial — the second waited for
-  the first, the third for both). So `Promise.all` over `search` calls
+  **0.99x concurrency ratio** (29.48s vs 29.18s serial — the second
+  waited for the first, the third for both; a ratio below 1.0 is a
+  slowdown, not a speedup). So `Promise.all` over `search` calls
   does not parallelise anything; it just parks the last caller on a
   ~30s queue where it can exceed a client-side call budget.
 
@@ -300,7 +301,7 @@ call.**
   raises a **bare** `RuntimeError` — fastmcp wraps every connect
   failure as `RuntimeError("Client failed to connect: ...")` with the
   vendored `httpx2.ConnectError` on `__cause__`
-  (`fastmcp/client/client.py:1048`, `_connection_failure`). Neither arm
+  (`fastmcp/client/client.py:1045-1048`, `_connection_failure`). Neither arm
   matched, so the loop escaped on **probe one** in ~0.3 s: it never
   retried, never spent `ready_timeout`, and never reached its own
   `QmdRecycleFailed`. The "tens of seconds" above described a path
@@ -395,7 +396,7 @@ call.**
   by probe before changing the matcher.
 
   **Confirmed by probe, 2026-10-10** — this was recorded as a hypothesis
-  and is now a measurement. `fastmcp/client/client.py:1048` calls
+  and is now a measurement. `fastmcp/client/client.py:1045-1048` calls
   `_connection_failure`, whose own docstring says it presents a dead
   session identically "wherever it is noticed" and wraps anything that is
   not `httpx2.HTTPStatusError | MCPError` into a bare `RuntimeError`. The
@@ -460,7 +461,7 @@ call.**
   (`daemon.daemon_port_from_url`). That is **six call sites across four
   reap-then-respawn locations**: `capability.as_capability`
   (`capability.py:105`), `access.daemon_tool` (`access.py:441`),
-  `recycle_qmd_daemon` (`daemon.py:658`), and `ensure_qmd_daemon`'s
+  `recycle_qmd_daemon` (`daemon.py:686`), and `ensure_qmd_daemon`'s
   three paths (`daemon.py:426/437/445`). `access.daemon_tool`'s was
   missed by the first fix and is the hottest of the four, not the
   coldest: `_is_daemon_stale()` is true on essentially every call after
@@ -588,6 +589,19 @@ propose it as dead code.
   *succeeds* and returns zero hits. `transient` marks *dispatch*
   failures, so a caller can distinguish "the daemon failed" from "the
   corpus has nothing".
+- **`Citation.source` on `lib_ask` is model-asserted, not verified.**
+  `synth._ask_impl` applies no citation validation: the orchestrator's
+  `_validate_claim_citations` and `_thread_heading_paths`
+  (`orchestrator.py:2082`/`2085`) run only on the orchestrator path. So
+  `lib_ask` emits whatever citations the synthesizer asserted. A path
+  the librarian never handed over still becomes a `Citation`, defaulted
+  to `source="wiki"` — see `query/citation.py` for why that default is
+  the orchestrator's own mapping and not a verdict on the page. The
+  consequence: a hallucinated path renders as a citation rather than
+  being dropped, so `lib_ask` emits unverified citations where it once
+  emitted none at all. `heading_path=None` is contract-correct under the
+  rule above. A caller that needs the citation to be real must resolve
+  it through `read`.
 
 All forward-only; additive fields default to safe sentinels.
 

@@ -9,6 +9,8 @@ doesn't break readers.
 from __future__ import annotations
 
 import json
+import os
+import threading
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Literal
@@ -53,8 +55,44 @@ class AcquireResult:
 
 
 def write_owner_pid(path: Path, pid: int) -> None:
-    """Write ``pid`` as one int per line (readable without JSON)."""
-    path.write_text(str(int(pid)), encoding="utf-8")
+    """Write ``pid`` as one int per line (readable without JSON).
+
+    Atomic by rename. ``Path.write_text`` truncates first, so a
+    contender that reads between the truncate and the write sees an
+    empty file, fails to parse it, and logs ``could not parse pid
+    file`` (``exclusive._reap_if_stale``). That failure is benign and in
+    the safe direction — the reader returns ``False``, so nobody reaps
+    — but the query single-flight gate makes nine-way contention
+    routine, so the warning now prints in normal operation and reads as
+    a fault that is not there. Rename closes the window: a reader gets
+    either the old bytes or the new ones.
+
+    Two details that are not incidental. The temp file is created in
+    the destination directory, because ``os.replace`` is atomic only
+    within one filesystem and the parent is the only directory that
+    guarantees it. And it is created with ``open`` rather than
+    ``tempfile.mkstemp``, so it carries the same mode the direct write
+    would have produced — ``mkstemp`` forces 0600 and would silently
+    change who can read the holder PID.
+
+    No ``fsync``: the property being bought here is atomicity against a
+    concurrent reader, and that comes from ``rename(2)``, not from
+    durability. The direct write this replaces had no ``fsync`` either,
+    so this is not a regression, and a pid file that survived a crash
+    half-upgraded is read in the safe direction — unparseable means
+    "do not reap". The lock itself is the ``flock``, not this file.
+    """
+    payload = str(int(pid))
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    try:
+        with open(tmp, "w", encoding="utf-8") as handle:
+            handle.write(payload)
+        os.replace(tmp, path)
+    except BaseException:
+        # A failed write must not leave debris next to the pid file; the
+        # next reader would treat it as a second, unparseable pid file.
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def read_owner_pid(path: Path) -> int | None:

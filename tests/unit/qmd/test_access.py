@@ -1511,9 +1511,9 @@ def test_the_canonical_scope_is_the_library_root() -> None:
 # --- the query single-flight gate ----------------------------------------
 #
 # qmd's daemon executes queries strictly one at a time. Three concurrent
-# queries measured a 0.99x speedup (29.48s wall against 29.18s running
-# them one after another): the second waited for the first, the third for
-# both. So the queue is real, and inside qmd it is unbounded and
+# queries measured a 0.99x concurrency ratio (29.48s wall against 29.18s
+# running them one after another): the second waited for the first, the
+# third for both. So the queue is real, and inside qmd it is unbounded and
 # invisible — a caller parked above it can be stranded there by its own
 # client-side budget, which is the "interrupted/aborted" result the seam
 # sees. Nothing about that state says *busy*; it says *took too long*.

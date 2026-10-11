@@ -89,8 +89,8 @@ class AbandonedCallMiddleware(Middleware):
     The aborts were a client-side budget expiring on queued work, and
     the reason the queue is long is that the qmd daemon executes
     queries strictly one at a time -- three concurrent queries measured
-    a 0.99x speedup, so fanning out multiplies latency instead of
-    reducing it.
+    a 0.99x concurrency ratio, so fanning out multiplies latency
+    instead of reducing it.
 
     Only abandonment is logged. A tool raising a normal exception
     becomes an error *result* on the wire and is already reported to

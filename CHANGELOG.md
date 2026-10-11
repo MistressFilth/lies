@@ -343,7 +343,7 @@ rule rather than the accident.
   against the live daemon, a stopped daemon raises a **bare**
   `RuntimeError` — fastmcp wraps every connect failure as
   `RuntimeError("Client failed to connect: ...")` with the real error on
-  `__cause__` (`fastmcp/client/client.py:1048`, `_connection_failure`),
+  `__cause__` (`fastmcp/client/client.py:1045-1048`, `_connection_failure`),
   as `httpx2.ConnectError`, fastmcp's *vendored* httpx and a different
   module from the `httpx` LIES imports. Neither `httpx.HTTPError` nor
   `OSError` matches, so the loop escaped on **probe one** in ~0.3 s:
@@ -654,7 +654,7 @@ rule rather than the accident.
   no daemon state to recycle and no `mcp.log` line to read: recycle is
   the wrong response, and waiting and retrying is the right one. Nor is
   there a latency win here — the daemon still executes queries strictly
-  one at a time, and the measured **0.99x** concurrency speedup (29.48s
+  one at a time, and the measured **0.99x** concurrency ratio (29.48s
   concurrent vs 29.18s serial) is unaffected. The gate does not make
   the work faster; it moves a wait that was already happening from an
   unbounded queue in another process to a bounded one with an owner and
@@ -838,11 +838,23 @@ rule rather than the accident.
   attribute is not defensive handling; it is a claim of "no
   citations" where the truth was "no wiring".
 
-  **This compounded the lock diagnostics.** A model that asserted
+**This compounded the lock diagnostics.** A model that asserted
   `excerpts` returned a bundle the overlay deliberately left alone,
   and `lib_ask` rendered it as prose with `citations=[]` and no
   reason — the suppression route the overlay was built to close,
   reachable through a different door.
+
+  **The citations `lib_ask` now emits are model-asserted and
+  unverified.** `_ask_impl` applies no citation validation:
+  `_validate_claim_citations` and `_thread_heading_paths` run only on
+  the orchestrator path (`orchestrator.py:2082`/`2085`). A path the
+  librarian never handed over is still turned into a `Citation`,
+  defaulted to `source="wiki"` — that default is the orchestrator's own
+  pre-existing mapping, not a verdict on the page. So a hallucinated
+  path now renders as a citation where it previously rendered as
+  nothing, and `heading_path` is `None` on every one. `read` still
+  resolves them, so a caller that needs the citation to be real can
+  check. This is the clause the change owed the shipped docs.
 
 - **A cancelled tool call now names itself in the daemon log.** A call
   cancelled before it produced a result — server shutdown, a request
@@ -899,12 +911,12 @@ rule rather than the accident.
     the daemon lifecycle, not idleness.
 
   The real cause is queueing. The qmd daemon executes queries strictly
-  one at a time: **three concurrent queries measured a 0.99x speedup**
-  (29.48s concurrent vs 29.18s serial), so fanning out MCP calls
-  multiplies latency rather than reducing it, and the last caller parks
-  on a ~30s queue until a client-side budget expires. An
-  "interrupted"/"aborted" result on a LIES call is that budget
-  expiring, and is not evidence about the server.
+  one at a time: **three concurrent queries measured a 0.99x
+  concurrency ratio** (29.48s concurrent vs 29.18s serial), so fanning
+  out MCP calls multiplies latency rather than reducing it, and the
+  last caller parks on a ~30s queue until a client-side budget
+  expires. An "interrupted"/"aborted" result on a LIES call is that
+  budget expiring, and is not evidence about the server.
 
   `PingMiddleware` is therefore **not** registered — it was added for a
   failure mode that does not exist. `AbandonedCallMiddleware` remains,
@@ -1074,6 +1086,126 @@ rule rather than the accident.
   are all allowed; reads are unguarded, because the daemon is
   machine-global and serving the live index to every client is the only
   configuration that is safe.
+
+- **The holder-PID file is written by rename, not by truncation.**
+  `write_owner_pid` used `Path.write_text`, which truncates before it
+  writes, so a contender reading in that window got an empty file,
+  failed to parse it and logged `could not parse pid file`
+  (`exclusive._reap_if_stale`). The failure is benign and in the safe
+  direction — the reader returns `False`, so nobody reaps — but the
+  query single-flight gate makes nine-way contention normal, so the
+  warning now prints in normal operation and reads as a fault that is
+  not there. The write now goes to a sibling temp file and lands with
+  `os.replace`, which is atomic within a filesystem, so a reader gets
+  the old bytes or the new ones and never nothing.
+
+  Pre-existing, and not this branch's defect — but this branch turned a
+  rare race into a routine event, which is the ordinary way a latent bug
+  becomes a reported one.
+
+  Three details that are not incidental, and two traps in the fix. The
+  temp file is a **sibling** of the target, because `os.replace` is
+  atomic only within one filesystem and the parent is the only directory
+  that guarantees it. It is created with `open`, not
+  `tempfile.mkstemp`, because `mkstemp` forces `0600` and would have
+  silently narrowed who can read the holder PID. And there is no
+  `fsync`: the property being bought is atomicity against a concurrent
+  reader, and that comes from `rename(2)`, not from durability — the
+  write this replaces had no `fsync` either.
+
+  The pin is structural (the function must go through `os.replace` and
+  must not call `write_text`), because a concurrent-reader test alone
+  is a race and would pass against the old code most of the time — the
+  failure mode this branch already shipped twice. It is corroborated by
+  a threaded test, which caught 53 empty reads against the old
+  implementation rather than merely failing to notice it.
+
+- **`AGENTS.md` cited `daemon.py:658` for the recycle's spawn site; it
+  is `daemon.py:686`.** `bc3f3da` grew the file by 28 lines and left
+  its own citation behind, so the pointer landed mid-sentence in
+  `recycle_qmd_daemon`'s docstring. This is the *second* stale
+  in-repo reference this branch produced, and both times the commit
+  that grew the file is the one that forgot.
+
+Fixed, and every other `file:line` in the shipped docs swept against
+  HEAD: `access.py:441`, `capability.py:105`, `daemon.py:426/437/445`,
+  `grounding.py:468`/`:545`, `client.py:1080-1084`, `client.py:228`,
+  `:587`, `anyio/_core/_synchronization.py:164-168`, `qmd.js:4005`,
+  `qmd.js:4008-4013`, `qmd.js:3981-3983`, `store.js:887`,
+  `store.js:428-434`, `ggml-cuda.cu:492`. All correct.
+
+  A second went stale *during this round*, caught by the new pin:
+  rewording the `0.99x` docstring in `daemon_tool` added a line above
+  `access.py`'s spawn site and moved `access.py:441` to `442`. The
+  repair was to make that edit line-neutral rather than to move the
+  citation, so `if name == "query":` is byte-identical to the base
+  *and* at the same line number.
+
+  The references are now pinned by
+  `tests/unit/test_agents_line_refs.py` — by what each cited line must
+  *contain*, not by the number alone, which is the only form that
+  survives a commit that grows the file. The fastmcp and anyio citations
+  are deliberately not pinned: they are outside the repo, version-
+  specific, and AGENTS.md already says so at the reference site.
+- **`fastmcp/client/client.py:1048` was cited as the call to
+  `_connection_failure`; line 1048 is the `raise`, and the call is at
+  1045.** Cited as `1045-1048` now, which is the span the reader
+  actually wants. Corrected in AGENTS.md, CHANGELOG, `qmd/daemon.py`
+  and a test comment. The evidence was sound and the advice it supports
+  ("code against the wrapper, not the vendored module name") is right;
+  the entry teaching the reader where to look pointed one line off, in
+  a section that is explicitly a list of verified line numbers.
+
+- **`query/citation.py`'s docstring argued against itself.** It
+  justified the `"wiki"` default for an unrecognised path by calling it
+  "the conservative choice" — dropping the citation would be — and by
+  invoking the dual-source contract's library-first rule, which argues
+  *for* `"library"`.
+
+  The behaviour is unchanged and the reasoning is now honest: the
+  default is this function's verbatim copy of the orchestrator's
+  pre-existing mapping, diffed line for line, and a wrong guess here is
+  no better and no worse than the orchestrator's identical guess one
+  call site over. This is the same defect class the branch retracted
+  three times — a rationale outrunning its evidence — and it survived
+  because the code it justified was correct, which is exactly what makes
+  a bad justification expensive to notice.
+
+- **PRE-EXISTING: the integration suite leaked a qmd daemon.**
+  `test_mcp_daemon_lifecycle.test_full_lifecycle` invokes the real
+  `lies mcp up`, which calls `ensure_qmd_daemon` unless `--no-qmd` is
+  passed. The isolation fixture in `tests/conftest.py` *deletes*
+  `LIES_QMD_URL`, so that call resolved to the default **8181** — not
+  the operator's. The LIES daemon came up fine, nothing failed, and the
+  qmd daemon it spawned outlived the whole pytest run.
+
+  Measured: **1 stray listener per full integration run before, 0
+  after.** `mcp.pid` was never clobbered — qmd's own guard held — so
+  the documented hazard did not fire; the stray was real all the same.
+
+  The consequence for this branch's own bookkeeping: every "Strays:
+  none" in the task reports was measured without a full
+  `INTEGRATION=1 pytest tests/integration/` run, so those measurements
+  were correct and incomplete. The fix is `--no-qmd` on the two `up`
+  invocations in that test — every assertion there is about the LIES
+  daemon, so it costs the test nothing. Pinned by an AST check in
+  `tests/unit/test_integration_spawns_no_stray.py`, which also anchors
+  the other end (`operator.up`'s `no_qmd` guard really is an early
+  return) so the pin cannot pass on a flag that stopped working.
+
+  The test's own *failure* is pre-existing and unrelated: it fails
+  identically on base `469f476`, at the `lies mcp down` assertion. The
+  leak was what this entry fixes.
+
+- **`0.99x speedup` is a slowdown.** The figure is right — 29.48s
+  concurrent against 29.18s serial — and calling a ratio below 1.0 a
+  speedup is a slowdown described as a win. Now "concurrency ratio" in
+  all six places it appeared: AGENTS.md, two CHANGELOG entries, the
+  `search` tool description in `mcp/server.py`, `daemon_tool`'s
+  docstring in `qmd/access.py`, and a test comment. The ledger had
+  considered and dropped this rewording twice on the grounds that the
+  surrounding context is unambiguous; that is true and is also the
+  reason a skimming reader keeps taking it at face value.
 
 ## [0.48.2] - 2026-10-04
 

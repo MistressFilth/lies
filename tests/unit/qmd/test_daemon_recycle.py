@@ -28,7 +28,7 @@ from lies.qmd import daemon as qmd_daemon
 #       --via cause--> httpx2.ConnectError: All connection attempts failed
 #         --via context--> ExceptionGroup  -->  CancelledError  -->  WouldBlock
 #
-# fastmcp wraps it: `client.py:1048` calls `_connection_failure`, whose
+# fastmcp wraps it: `client.py:1045-1048` calls `_connection_failure`, whose
 # docstring says it presents a dead session identically "wherever it is
 # noticed" and wraps anything that is not `httpx2.HTTPStatusError |
 # MCPError` into a bare RuntimeError. `httpx2` is fastmcp's *vendored*
