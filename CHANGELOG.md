@@ -189,6 +189,64 @@ rule rather than the accident.
 
 ### Fixed
 
+- **`LibraryWriter.commit` no longer drops the qmd lock path when it
+  re-raises `QmdLockBusy`.** It re-wraps the exception it caught, and
+  was the only production raise site of the four that omitted
+  `lock_path` — while being the one site where the value is already in
+  hand, because it caught the exception carrying it. The message named
+  the holder PID, the wait and the budget, and not the inode.
+
+  The path is not decoration. `LIES_QMD_LOCK_PATH` can override which
+  inode qmd contends, so once the wait has been abandoned the message is
+  the only record of *which* one was contended; "waited 120s, max 120s"
+  on its own does not say. It is now forwarded, and named in the message
+  alongside the rest of the triad.
+
+  Two pins, because the structural one cannot see the message. A test
+  asserts the re-raised message names the inode, the holder, the wait
+  and the budget — the whole set, so a fix that threads `lock_path=`
+  while rebuilding the message from defaults is caught too. And a new
+  unit scan walks every `raise QmdLockBusy` under `src/` and requires
+  `max_s=` **and** `lock_path=` explicitly at each, so a fifth raiser
+  inherits neither gap. The scan asserts its own subject count, because
+  a guard that cannot see its own sites reports success forever.
+
+- **The ceiling's 46 s row is a 45-59 s cliff, and is printed as one.**
+  The 30 s budget admits a second in-loop `qmd status` call only while
+  `2 x bound + poll_interval < budget` — bound < 0.1475 at 1/100 scale,
+  against a shipped `STATUS_TIMEOUT_S / N` of 0.1500. That is 0.0025
+  scaled, **0.25 s of headroom at real scale**, and one bound further
+  back costs a whole `STATUS_TIMEOUT_S`. Measured by sweeping the bound:
+  0.1450 -> two in-loop calls -> **59.4 s**; 0.1470 -> one -> **44.9 s**.
+
+  A reader copying 46 s was wrong by up to 14 s in either direction, in
+  a table that gave the 0.25 s boundary and never the 59 s other end.
+  `AGENTS.md` printed 46 s flat with no band note at all. Both now carry
+  the range, the boundary arithmetic, and the sweep that produces it.
+
+  The row is also relabelled from "unstable" to "cliff", because it is
+  not noise: counting `qmd status` calls across 20 runs of round 3's
+  harness gave 3 in 20 out of 20 — the call count never moved, and the
+  2 s spread that motivated the word was `time.sleep` jitter inside a
+  stubbed `_run_qmd`.
+
+- **The harness pin that could not fire now does.** Round 4 guarded the
+  ceiling harness with `assert "_run_qmd" not in targets`, where every
+  member of `targets` is built as `f"{obj}.{attr}"` and therefore
+  always contains a dot. It looked like it worked because the sibling
+  assertion fired whenever `_run_qmd` *replaced* the subprocess patch —
+  but a harness patching both sailed through, which is exactly what the
+  review found.
+
+  Replaced with an **allowlist**, so it fails closed: a new patch target
+  cannot be added without naming it, and the one edit that matters is
+  caught by construction rather than by a remembered blacklist entry.
+  Verified against the harness patching both targets, which a blacklist
+  would not have seen. The same fix applies to the harness's own
+  runtime guard, which now counts `sel.select()` wakes (515 scaled
+  against 8 unscaled) so a stubbed `_run_qmd` fails a named assertion
+  instead of raising `AttributeError` from inside `qmd_daemon_state`.
+
 - **The ceiling figures are measured through the real reader loop, and the
   poll-scaling claim is now true.** `_subprocess._POLL_INTERVAL_S` is
   read only inside `_run_qmd`'s `sel.select()`, and the committed

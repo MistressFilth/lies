@@ -91,10 +91,16 @@ class QmdLockBusy(WikiFlockError):
             the value it caught. The ``30.0`` in ``__init__`` is a default
             for hand-built instances and matches no production raise site.
         lock_path: The inode the wait was spent on, when the raise site
-            knows it — which is every site inside :mod:`lies.qmd.lock`,
-            because the triad is resolved once per acquisition and is
-            therefore already in hand. ``None`` only for a hand-built
-            instance (tests, a caller re-wrapping one).
+            knows it. **Every production raise site passes it
+            explicitly**: both raisers in :mod:`lies.qmd.lock` have the
+            path in hand because the triad is resolved once per
+            acquisition, and :meth:`~lies.library.writer.LibraryWriter.commit`
+            forwards the value it caught. ``None`` only for a hand-built
+            instance in a test, or a re-wrapping caller that has nothing
+            to forward — which is why the docstring here cannot promise
+            the path is always present. What it can promise is that no
+            *production* site drops it, and
+            ``tests/unit/qmd/test_qmd_lockbusy_sites.py`` asserts that.
     """
 
     def __init__(

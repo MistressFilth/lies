@@ -283,21 +283,38 @@ call.**
   | prompt status, prompt spawn | **30 s** (floor) |
   | status "running", SIGTERM missed | **34 s** |
   | prompt status, **spawn hangs** | **45 s** |
-  | **`qmd status` hangs**, prompt spawn | **46 s** |
+  | **`qmd status` hangs**, prompt spawn | **45-59 s** |
   | both hang | **61 s** (ceiling) |
 
-  Three traps in that table. **The spawn has its own 15 s bound**, so
+  **The `qmd status` row is a range and must be copied as one.** It is a
+  cliff, not noise. The 30 s budget admits a second in-loop `qmd status`
+  call only while `2 x bound + poll_interval < budget`, i.e. bound <
+  0.1475 at 1/100 scale; `STATUS_TIMEOUT_S / N` is 0.1500, so the shipped
+  figure clears the boundary by 0.0025 scaled — **0.25 s of headroom at
+  real scale** — and one bound further back costs a whole
+  `STATUS_TIMEOUT_S`. Measured by sweeping: 0.1450 → two in-loop calls →
+  **59.4 s**; 0.1470 → one → **44.9 s**. A reader who copies 46 s is
+  wrong by up to 14 s in either direction.
+
+  Three more traps in that table. **The spawn has its own 15 s bound**, so
   "prompt status" does not mean prompt everything, and the spawn-hang
   case dominates the middle. A **hanging `qmd status` makes the
   ceiling lower, not higher**: `qmd_daemon_state()` then reports
   `running=False`, so `_reap_qmd_daemon` returns without killing
   anything and spends neither grace window — which is why the "~80 s"
   this bullet previously quoted was not merely loose but *unreachable*.
-  And the **46 s row is the spawn-hang row to within 1 s, by
-  coincidence rather than equivalence**: in one the extra 15 s is the
-  spawn's, in the other it is the reap's status call, with the same 30 s
-  of budget behind it — so a reader who treats them as one measurement
-  twice will discount the spawn.
+  And the **45-59 s row is the spawn-hang row to within 1 s at its near
+  end, by coincidence rather than equivalence**: in one the extra 15 s is
+  the spawn's, in the other it is the reap's status call, with the same
+  30 s of budget behind it — so a reader who treats them as one
+  measurement twice will discount the spawn.
+
+  An earlier version of this bullet called that row "unstable" on the
+  strength of a 2 s spread. Counting `qmd status` calls across 20 runs of
+  the harness that produced it gave **3 in 20 runs out of 20** — the call
+  count never moved, and the spread was `time.sleep` jitter inside a
+  stubbed `_run_qmd`. The cliff is real; the earlier observation was not
+  of it.
 
   **The reader loop must be real for any of this to mean anything.**
   `_subprocess._POLL_INTERVAL_S` is read only inside `_run_qmd`'s

@@ -588,9 +588,14 @@ async def recycle_qmd_daemon(
     daemon down, everything prompt          **30 s**  (floor)
     status reports "running", SIGTERM missed **34 s**
     daemon down, **spawn hangs**            **45 s**
-    **qmd status hangs**                    **46 s**  (unstable, see below)
+    **qmd status hangs**                    **45-59 s**  (cliff, see below)
     status and spawn both hang              **61 s**  (ceiling)
     ===================================  ======================
+
+    **The one range is a range, not a sloppy figure.** A reader who
+    copies 46 s out of this table is wrong by up to 14 s in either
+    direction; the two ends are both reachable by the same
+    configuration.
 
     Four things a reader should not get wrong:
 
@@ -607,7 +612,7 @@ async def recycle_qmd_daemon(
       *displaces* polling rather than adding to it, so a hanging-status
       exhaustion pays three bounds in all (one before the loop, two
       inside) and not four. That is the whole difference between the
-      46 s row and the 61 s ceiling row: one more bound, the spawn's.
+      45-59 s row and the 61 s ceiling row: one more bound, the spawn's.
     - **The spawn-hangs and status-hangs rows land within 1 s of each
       other by coincidence, not by equivalence.** In the first the extra
       15 s is the spawn's; in the second it is the reap's status call,
@@ -615,16 +620,39 @@ async def recycle_qmd_daemon(
       the same measurement twice will lead a reader to discount the
       spawn, which is the opposite of what the numbers say.
 
-    The 46 s row is nonetheless the one to treat as a *band*, and the
-    reason is arithmetic rather than noise: the 30 s budget admits a
-    second in-loop ``qmd status`` call only while
-    ``2 x bound + poll_interval < budget``. Measured by sweeping the
-    bound at 1/100 scale, that boundary is 0.1475 against the harness's
-    0.150 — **0.25 s of headroom at real scale**. An earlier version of
-    this docstring attributed a 2 s spread to "one or two complete
-    calls" landing either way; the call count was in fact 3 in 20 runs
-    out of 20 and the spread was ``time.sleep`` jitter in a stubbed
-    ``_run_qmd``. The knife-edge is real and the jitter was not.
+    **The 45-59 s row is a cliff, and it is the one number here that
+    cannot be given as a single figure.** The reason is arithmetic
+    rather than noise: the 30 s budget admits a second in-loop
+    ``qmd status`` call only while
+    ``2 x bound + poll_interval < budget``, i.e. bound < 0.1475 at 1/100
+    scale. ``STATUS_TIMEOUT_S / N`` is 0.1500, so the shipped figure
+    clears the boundary by 0.0025 scaled — **0.25 s of headroom at real
+    scale** — and one bound on the far side of it costs a whole
+    ``STATUS_TIMEOUT_S``.
+
+    Measured by sweeping the bound, counting in-loop calls:
+
+    ==================  ==========  =====================
+    status bound (/N)   calls        total (real seconds)
+    ==================  ==========  =====================
+    0.1450              2            59.4 s
+    0.1470              1            44.9 s
+    0.1475              1            45.0 s
+    0.1500 (shipped)    1            45.9 s
+    0.1550              1            47.4 s
+    ==================  ==========  =====================
+
+    So the row's honest range is **44.9 to 59.4 s**, and **45-59 s** is
+    what the table above prints. That 14.5 s swing comes from 0.25 s of
+    real-scale headroom: the harness happened to sit on the near side.
+
+    Two earlier accounts of the same row were wrong in ways worth
+    recording. One attributed a 2 s spread to "one or two complete
+    calls" landing either way; counting ``qmd status`` calls across 20
+    runs of that harness gave **3 in 20 runs out of 20** — the call count
+    never moved, and the spread was ``time.sleep`` jitter in a stubbed
+    ``_run_qmd``. The knife-edge is real and the jitter was not; the
+    earlier version had found neither.
 
     Two earlier answers were wrong in ways worth recording: a single
     "~45 s" summed mutually exclusive component bounds, and the "~80 s"

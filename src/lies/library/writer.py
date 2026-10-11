@@ -396,8 +396,17 @@ class LibraryWriter:
                 waited_str = f"{exc.waited_s:.1f}" if exc.waited_s is not None else "unknown"
                 max_str = f"{exc.max_s:.0f}" if exc.max_s is not None else "unknown"
                 holder_str = str(exc.holder_pid) if exc.holder_pid is not None else "unknown"
+                # ``lock_path`` is forwarded because the flock is
+                # *resolvable*: naming the inode is the one operator step
+                # that tells a contended host from a broken one, and
+                # ``LIES_QMD_LOCK_PATH`` can override it, so the path in
+                # the message is the only record of *which* inode was
+                # contended. This re-raise dropped it while both raisers
+                # in ``qmd/lock.py`` carry it — the only production
+                # ``QmdLockBusy`` that did.
+                where = f" at {exc.lock_path}" if exc.lock_path else ""
                 message = (
-                    f"qmd embed lock contention: another process holds the qmd flock "
+                    f"qmd embed lock contention: another process holds the qmd flock{where} "
                     f"(holder PID {holder_str}, waited {waited_str}s, max {max_str}s). "
                     f"Run `lies flock qmd status` to inspect the live holder, "
                     f"or wait and retry the operation."
@@ -406,6 +415,7 @@ class LibraryWriter:
                     holder_pid=exc.holder_pid,
                     waited_s=exc.waited_s,
                     max_s=exc.max_s,
+                    lock_path=exc.lock_path,
                     message=message,
                 ) from exc
             except Exception as exc:  # noqa: BLE001 - qmd is derived; failures must not roll back the commit

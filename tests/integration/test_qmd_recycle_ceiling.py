@@ -67,6 +67,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import selectors
 import subprocess
 import time
 from contextlib import nullcontext
@@ -111,6 +112,51 @@ _STATUS_DOWN = b"no MCP line here\n"
 #: leak four descriptors per simulated subprocess call (~60 calls per
 #: exhausted budget).
 _open_pipes: list[object] = []
+
+#: ``sel.select()`` call count for the current measurement. The reader
+#: loop is the only thing that calls it, so a non-zero count is proof the
+#: measurement went through the production ``_run_qmd`` rather than a
+#: stub — which is the claim every figure below rests on, and the one
+#: round 3 got wrong silently.
+_SELECT_WAKES: list[int] = []
+
+
+class _CountingSelector(selectors.BaseSelector):
+    """``selectors.DefaultSelector`` with a call counter.
+
+    Subclasses the registered ABC rather than the concrete epoll class,
+    so it does not depend on which selector the host's platform picks.
+    Every method the reader loop uses is delegated; the rest raise, so a
+    future use is loud rather than silently mis-copied.
+    """
+
+    def __init__(self) -> None:
+        self._inner = _REAL_SELECTOR()
+
+    def select(self, timeout=None):  # noqa: ANN001, ANN202
+        _SELECT_WAKES.append(1)
+        return self._inner.select(timeout)
+
+    def register(self, fileobj, events, data=None):  # noqa: ANN001, ANN202
+        return self._inner.register(fileobj, events, data)
+
+    def unregister(self, fileobj):  # noqa: ANN001, ANN202
+        return self._inner.unregister(fileobj)
+
+    def get_map(self):  # noqa: ANN202
+        return self._inner.get_map()
+
+    def close(self) -> None:
+        self._inner.close()
+
+    def get_key(self, fileobj):  # noqa: ANN001, ANN202
+        return self._inner.get_key(fileobj)
+
+    def modify(self, fileobj, events, data=None):  # noqa: ANN001, ANN202
+        return self._inner.modify(fileobj, events, data)
+
+
+_REAL_SELECTOR = selectors.DefaultSelector
 
 
 class _FakeChild:
@@ -228,6 +274,16 @@ async def _measure(status_mode: str, spawn_hangs: bool, *, scale_poll: bool = Tr
 
     ``scale_poll=False`` is only for the test that proves the rescaling is
     load-bearing; every other reading is taken the way the code runs it.
+
+    **Asserts the reader loop actually ran**, by counting ``sel.select``
+    wakes. Without this, reverting the harness to round 3's shape — stub
+    ``d._run_qmd`` wholesale — surfaced as
+    ``AttributeError: 'bytes' object has no attribute 'stdout'`` from
+    inside ``qmd_daemon_state``. A pin that fires for the wrong reason
+    teaches the next reader to ignore it, and the reviewer who has to
+    read the traceback learns nothing about which mutation it was. The
+    count turns the same revert into a named assertion about the thing
+    that actually changed.
     """
     _open_pipes.clear()
     poll_patch = (
@@ -239,6 +295,7 @@ async def _measure(status_mode: str, spawn_hangs: bool, *, scale_poll: bool = Tr
         # The real `_run_qmd` — only its `Popen` is replaced, so the
         # reader loop, its bounds and `_POLL_INTERVAL_S` are production.
         patch.object(_subprocess, "subprocess", _popen_shim(status_mode, spawn_hangs)),
+        patch.object(_subprocess.selectors, "DefaultSelector", _CountingSelector),
         patch.object(d, "STATUS_TIMEOUT_S", SPAWN_BOUND_S / N),
         patch.object(d, "_reap_qmd_daemon", _scaled_reap),
         # The reap's kill is neutered so the fake pid being absent does
@@ -253,6 +310,7 @@ async def _measure(status_mode: str, spawn_hangs: bool, *, scale_poll: bool = Tr
         poll_patch,
     ):
         t0 = time.monotonic()
+        _SELECT_WAKES.clear()
         with pytest.raises(d.QmdRecycleFailed):
             await d.recycle_qmd_daemon(
                 scope=Path("/tmp/never-opened"),
@@ -260,7 +318,15 @@ async def _measure(status_mode: str, spawn_hangs: bool, *, scale_poll: bool = Tr
                 ready_timeout=30.0 / N,
                 poll_interval=0.5 / N,
             )
-        return (time.monotonic() - t0) * N
+        elapsed = (time.monotonic() - t0) * N
+        assert _SELECT_WAKES, (
+            "the reader loop never ran: no sel.select() call was made, so "
+            "this measurement did not go through _run_qmd. Either "
+            "_subprocess.subprocess was patched at the wrong name, or "
+            "d._run_qmd was stubbed wholesale — which is what made round "
+            "3's _POLL_INTERVAL_S patch inert."
+        )
+        return elapsed
 
 
 #: (label, what qmd status reports, does the spawn hang)

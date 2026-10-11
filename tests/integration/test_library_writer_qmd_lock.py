@@ -153,3 +153,74 @@ def test_writer_swallows_other_qmd_failures_unchanged(
     # None on a no-op; either is acceptable here because the contract is
     # "no exception" and "derived-index outage does not roll back".
     assert result is None or isinstance(result, str)
+
+
+def test_the_reraise_carries_the_lock_path(
+    lib_with_git: Library,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The re-raised ``QmdLockBusy`` names the inode, not just the holder.
+
+    ``writer.commit`` re-wraps the exception it caught, and it was the
+    one production raiser of the four that dropped ``lock_path`` — while
+    being the one site where the value is *already in hand*, because it
+    caught the exception carrying it. The message therefore named the
+    holder PID, the wait and the budget, and not the inode.
+
+    The path is not decoration. ``LIES_QMD_LOCK_PATH`` can override
+    which inode qmd contends, so once the wait has been abandoned the
+    message is the only record of *which* one was contended, and
+    "waited 120s, max 120s" on its own does not say.
+
+    Asserted on both the attribute and the rendered string, because a
+    fix that forwards ``lock_path=`` but leaves the message text alone
+    would satisfy the first and still tell the operator nothing.
+
+    No flock is opened: ``qmd_embed`` is stubbed and the sentinel is
+    hand-built, so this never contends for anything. ``LIES_QMD_LOCK_PATH``
+    is still pointed at ``tmp_path`` so that a future edit which stops
+    stubbing the helper cannot reach the machine's real lock.
+    """
+    monkeypatch.setenv("LIES_QMD_LOCK_PATH", str(tmp_path / "qmd.lock"))
+    inode = str(tmp_path / "qmd.lock")
+    sentinel = QmdLockBusy(
+        holder_pid=4242,
+        waited_s=120.0,
+        max_s=120.0,
+        lock_path=inode,
+    )
+    assert sentinel.lock_path == inode, "precondition: the class stores the path"
+
+    coll_dir = lib_with_git.collections_root / "claude_platform"
+    coll_dir.mkdir(parents=True, exist_ok=True)
+    mirror = coll_dir / "x.md"
+    mirror.write_text("body\n")
+
+    writer = LibraryWriter(lib_with_git)
+    monkeypatch.setattr("lies.library.writer.qmd_embed", MagicMock(side_effect=sentinel))
+
+    with pytest.raises(QmdLockBusy) as excinfo:
+        writer.commit(
+            [mirror.relative_to(lib_with_git.git_root)],
+            message="t",
+            qmd_collection="claude_platform",
+        )
+
+    raised = excinfo.value
+    assert raised.lock_path == inode, (
+        f"the re-raise dropped lock_path: got {raised.lock_path!r}, want "
+        f"{inode!r}. writer.commit is the one production raiser that "
+        f"re-wraps an exception it caught, so the value is already in hand."
+    )
+    # The rest of the triad must survive too — a fix that threads the
+    # path through but rebuilds the message from defaults would be worse
+    # than the original.
+    assert raised.holder_pid == 4242
+    assert raised.waited_s == 120.0
+    assert raised.max_s == 120.0
+    text = str(raised)
+    assert inode in text, f"the message must name the contended inode: {text!r}"
+    assert "4242" in text and "120" in text, (
+        f"the message must still name the holder, the wait and the budget: {text!r}"
+    )

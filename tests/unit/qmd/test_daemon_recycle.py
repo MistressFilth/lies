@@ -496,6 +496,40 @@ def test_the_docstring_states_a_measured_floor_and_ceiling() -> None:
     assert "measured, not" in doc, (
         "these are measurements; calling them derived invites re-deriving them wrongly"
     )
+
+    # The headline is a *summary of this table*, so its two numerals are
+    # checked against the table's floor and ceiling. Parsing the headline
+    # without tethering it let mutation D3 through: the headline read
+    # "a ~30 s floor and a ~47 s ceiling" while the table said 61, and
+    # the whole file stayed green. A summary that can contradict its own
+    # evidence is worse than no summary.
+    headline_figures = [float(n) for n in re.findall(r"(\d+(?:\.\d+)?) ?s", headline)]
+    assert len(headline_figures) == 2, (
+        f"the headline must quote exactly two figures, a floor and a "
+        f"ceiling: {headline!r} quotes {headline_figures}"
+    )
+    table = _doc_table_rows(qmd_daemon.recycle_qmd_daemon.__doc__ or "")
+    assert len(table) == len(EXPECTED_ROWS), (
+        "the table this headline summarises is not the expected shape; fix "
+        "that first or this comparison means nothing"
+    )
+    floor_row, ceiling_row = table[0][1], table[-1][1]
+    floor_match = re.search(r"(\d+(?:\.\d+)?)", floor_row)
+    ceiling_match = re.search(r"(\d+(?:\.\d+)?)", ceiling_row)
+    assert floor_match and ceiling_match, (
+        f"could not read a figure from the floor/ceiling rows: {floor_row!r} / {ceiling_row!r}"
+    )
+    assert headline_figures[0] == float(floor_match.group(1)), (
+        f"the headline says {headline_figures[0]:g}s floor but the table's "
+        f"floor row reads {floor_row!r}. They are the same measurement and "
+        f"must not disagree."
+    )
+    assert headline_figures[1] == float(ceiling_match.group(1)), (
+        f"the headline says {headline_figures[1]:g}s ceiling but the table's "
+        f"ceiling row reads {ceiling_row!r}. A headline that contradicts "
+        f"its own table is how '47 s' reached a report while the table "
+        f"said 61."
+    )
     assert "spawn has its own" in doc, (
         "the spawn's own 15s bound must be named; it is the biggest "
         "single contributor and no single-figure summary ever had it"
@@ -508,9 +542,10 @@ def test_the_docstring_states_a_measured_floor_and_ceiling() -> None:
         "the docstring must record that the earlier ~80s ceiling was "
         "unreachable, not merely loose - that is why the shape changed"
     )
-    assert "unstable" in doc, (
-        "the hanging-status row is genuinely unstable; presenting it as a "
-        "fixed figure is what produced the +5.3s anomaly"
+    assert "cliff" in doc, (
+        "the hanging-status row must be named a cliff, not merely "
+        "'unstable': it swings 14.5s on 0.25s of headroom, and calling "
+        "that noise is what let a flat 46s be printed"
     )
     assert "_POLL_INTERVAL_S" in doc, (
         "the docstring must name the one constant that is neither a "
@@ -519,6 +554,41 @@ def test_the_docstring_states_a_measured_floor_and_ceiling() -> None:
     assert "Scaled:" in doc and "does not scale by itself" in doc, (
         "what was scaled must be stated precisely, not implied by a blanket 'every constant'"
     )
+
+
+#: Every name ``_measure`` is allowed to patch. An **allowlist, not a
+#: blacklist**: round 5's review found that round 4 guarded this with
+#: ``assert "_run_qmd" not in targets``, which could not fire, and the
+#: obvious repair -- a blacklist entry for ``_run_qmd`` -- is still one
+#: assertion away from being deleted, which is exactly how M51c (check
+#: removed, harness patching both targets) went green.
+#:
+#: An allowlist fails closed. A *new* patch target cannot be added
+#: without naming it here, so the one edit that matters -- patching
+#: ``d._run_qmd`` -- is caught by construction rather than by a
+#: remembered list entry.
+EXPECTED_PATCH_TARGETS: frozenset[str] = frozenset(
+    {
+        # Popen only: keeps ``_run_qmd``'s reader loop, bounds and
+        # ``sel.select`` granularity on the production implementation.
+        "_subprocess.subprocess",
+        # The granularity this harness scales.
+        "_subprocess._POLL_INTERVAL_S",
+        # The wake counter, so a stubbed ``_run_qmd`` is caught at
+        # runtime by the harness itself as well as by this file.
+        "_subprocess.selectors.DefaultSelector",
+        # The time constants, at 1/N.
+        "d.STATUS_TIMEOUT_S",
+        # The reap, neutered the way the original does it.
+        "d._reap_qmd_daemon",
+        "d.os.kill",
+        "d._pid_alive",
+        # Never touch the operator's sidecar.
+        "d.write_sidecar_scope",
+        # The probe, which must never serve.
+        "d.fastmcp.Client",
+    }
+)
 
 
 #: The rows ``recycle_qmd_daemon``'s docstring must carry, as
@@ -535,7 +605,7 @@ EXPECTED_ROWS: tuple[tuple[str, str], ...] = (
     ("daemon down", "floor"),
     ("SIGTERM", ""),
     ("spawn hangs", ""),
-    ("qmd status hangs", "unstable"),
+    ("qmd status hangs", "cliff"),
     ("status and spawn both hang", "ceiling"),
 )
 
@@ -550,6 +620,20 @@ EXPECTED_ROWS: tuple[tuple[str, str], ...] = (
 #: check below applies these to the rows that make a bound claim, which
 #: is the only place they were ever wrong.
 FORBIDDEN_BOUNDS = ("45 s", "80 s", "~45", "~80")
+
+#: The row that must carry a RANGE rather than a point figure, and the
+#: measured ends it must reach. Measured 44.9 ... 59.4 s by sweeping the
+#: bound at 1/100 scale; the printed range must cover that, to within
+#: half a second of rounding at either end.
+#:
+#: The direction of the test matters. The printed range must not claim a
+#: floor *above* the measured minimum -- a figure the configuration never
+#: produced -- and must not stop short of the measured maximum, which is
+#: the defect: "45-46 s" understates by 13 s. A range *wider* than
+#: measured passes, because it is conservative rather than wrong.
+CLIFF_ROW = "qmd status hangs"
+CLIFF_MEASURED_S = (44.9, 59.4)
+CLIFF_ROUNDING_S = 0.5
 
 
 def _doc_table_rows(doc: str) -> list[tuple[str, str]]:
@@ -644,6 +728,7 @@ def test_the_ceiling_is_never_a_single_figure() -> None:
         f"the exact shape both wrong single-figure answers had."
     )
     figures: list[float] = []
+    ranges: dict[str, tuple[float, float]] = {}
 
     for (want_cfg, want_marker), (got_cfg, got_right) in zip(EXPECTED_ROWS, rows):
         flat_cfg = " ".join(got_cfg.split())
@@ -664,9 +749,49 @@ def test_the_ceiling_is_never_a_single_figure() -> None:
         # Every row carries a figure in seconds. Checked per row, so a row
         # stripped of its figure cannot hide behind a neighbour's.
         assert got_right, f"row {flat_cfg!r} has no measured figure in it"
-        match = re.search(r"\*{0,2}(\d+(?:\.\d+)?) ?s", got_right)
-        assert match, f"row {flat_cfg!r} does not carry a figure in seconds: {got_right!r}"
-        figures.append(float(match.group(1)))
+
+        # A row may carry a point figure ("61 s") or a range ("45-59 s").
+        # The range form is required for :data:`CLIFF_ROW`; accepted
+        # elsewhere so a future row that is genuinely a band does not
+        # have to be special-cased twice.
+        span = re.search(r"\*{0,2}(\d+(?:\.\d+)?)\s*[-\u2013]\s*(\d+(?:\.\d+)?) ?s", got_right)
+        point = re.search(r"\*{0,2}(\d+(?:\.\d+)?) ?s", got_right)
+        assert span or point, f"row {flat_cfg!r} does not carry a figure in seconds: {got_right!r}"
+        if span:
+            lo, hi = float(span.group(1)), float(span.group(2))
+            assert lo < hi, f"row {flat_cfg!r} reads a backwards range: {got_right!r}"
+            ranges[want_cfg] = (lo, hi)
+            figures.extend((lo, hi))
+        else:
+            figures.append(float(point.group(1)))  # type: ignore[union-attr]
+
+        # The cliff row must carry a range, and it must span the measured
+        # band. A point figure here is the exact defect this round
+        # corrects: 46 s is right on the harness's side of the boundary
+        # and wrong by 14 s on the other.
+        if want_cfg == CLIFF_ROW:
+            assert span, (
+                f"row {flat_cfg!r} must print a range, not a point: "
+                f"{got_right!r}. The configuration swings "
+                f"{CLIFF_MEASURED_S[0]:g}...{CLIFF_MEASURED_S[1]:g}s because "
+                f"the budget admits a second in-loop status call only while "
+                f"2 x bound + poll < budget. A single figure is right by "
+                f"coincidence and wrong by up to 14 s."
+            )
+            lo, hi = ranges[want_cfg]
+            tol = CLIFF_ROUNDING_S
+            assert lo <= CLIFF_MEASURED_S[0] + tol, (
+                f"row {flat_cfg!r} starts at {lo:g}s, above the measured "
+                f"minimum of {CLIFF_MEASURED_S[0]:g}s (+{tol:g} rounding). "
+                f"That figure was never produced by this configuration."
+            )
+            assert hi >= CLIFF_MEASURED_S[1] - tol, (
+                f"row {flat_cfg!r} stops at {hi:g}s, short of the measured "
+                f"maximum of {CLIFF_MEASURED_S[1]:g}s (-{tol:g} rounding). "
+                f"A reader copying that figure is understated by "
+                f"{CLIFF_MEASURED_S[1] - hi:.0f} s on the far side of the "
+                f"boundary."
+            )
 
         # The two rows that *make a bound claim* — floor and ceiling —
         # must not quote one of the published-wrong answers. A middle row
@@ -716,6 +841,37 @@ def test_the_unstable_row_says_why_and_names_its_cause() -> None:
     assert "3 in 20 runs" in doc, (
         "the correction to the earlier instability claim must stay recorded: "
         "the call count never varied, so the old spread was stub jitter"
+    )
+    # The far end, and the sweep that produced it. Both ends of a band
+    # have to be stated, or a reader has a range with no evidence behind
+    # its upper half — which is the shape round 4 shipped: 46 s with
+    # prose giving the 0.25 s boundary and never the 59 s other end.
+    assert "44.9 to 59.4" in doc, (
+        "the docstring must state BOTH ends of the cliff in the prose. "
+        "Round 4 gave the boundary and the near side and omitted the far "
+        "one entirely, so the printed 46 s looked like the whole range. "
+        "Checked as the phrase rather than as a bare '59.4', because the "
+        "sweep table below carries it too -- and a docstring-wide check "
+        "passed a mutation that gutted the sentence while leaving the "
+        "table intact."
+    )
+    assert "0.1450" in doc and "0.1470" in doc, (
+        "the sweep that derives the boundary must stay. It is the only "
+        "evidence for the 59.4 s end, and it brackets the step: 0.1450 "
+        "takes two in-loop calls, 0.1470 takes one."
+    )
+    # "cliff", not "unstable". Asserted on the *sentence*, not the whole
+    # docstring, because the table's row marker also carries the word —
+    # a docstring-wide check passed a mutation that rewrote the prose to
+    # call the same 14.5 s swing "merely unstable".
+    assert re.search(r"row is a cliff", doc), (
+        "the prose must call the band a cliff. It is not noise: 0.25 s of "
+        "headroom buys a whole STATUS_TIMEOUT_S, and 'unstable' invites a "
+        "reader to average it away."
+    )
+    assert not re.search(r"row is merely unstable", doc), (
+        "describing a 14.5 s swing as unstable is the mislabelling this "
+        "replaced; it reads as noise rather than as a boundary"
     )
 
 
@@ -782,28 +938,61 @@ def test_the_ceiling_harness_still_pins_the_poll() -> None:
         and isinstance(node.func, ast.Attribute)
         and node.func.attr == "object"
         and len(node.args) >= 2
-        and isinstance(node.args[0], ast.Name)
+        and isinstance(node.args[0], (ast.Name, ast.Attribute))
         and isinstance(node.args[1], ast.Constant)
         and isinstance(node.args[1].value, str)
     }
     targets = sorted(f"{obj}.{attr}" for obj, attr in patched)
-    assert "_run_qmd" not in targets, (
-        f"_measure patches {targets}. Patching _run_qmd deletes the reader "
-        f"loop, and _POLL_INTERVAL_S lives inside it — so the harness's "
+
+    # An ALLOWLIST, so this fails closed. Round 4 wrote
+    # `assert "_run_qmd" not in targets`, which could never fire because
+    # every member of `targets` is built as f"{obj}.{attr}" and therefore
+    # always contains a dot. Round 5's review found it; the obvious
+    # repair -- a blacklist entry for `_run_qmd` -- is what this replaced
+    # after M51c showed the blacklist is one deleted assertion from being
+    # no guard at all.
+    unexpected = sorted(set(targets) - EXPECTED_PATCH_TARGETS)
+    assert not unexpected, (
+        f"_measure patches {unexpected}, which is not in "
+        f"EXPECTED_PATCH_TARGETS. Patching `d._run_qmd` deletes the reader "
+        f"loop, and _POLL_INTERVAL_S lives inside it -- so the harness's "
         f"poll rescaling becomes inert and every figure it reports is "
-        f"quietly wrong."
+        f"quietly wrong. Patch `_subprocess.subprocess` (i.e. Popen) "
+        f"instead and the reader loop, its bounds and its select() "
+        f"granularity stay on the production implementation."
     )
-    assert "_subprocess.subprocess" in targets, (
-        f"_measure must patch _subprocess.subprocess (i.e. Popen) instead; "
-        f"it patches {targets}. Patching Popen keeps _run_qmd's reader "
-        f"loop, its bounds and its select() granularity on the production "
-        f"implementation."
+    missing = sorted(EXPECTED_PATCH_TARGETS - set(targets))
+    assert not missing, (
+        f"_measure no longer patches {missing}. If one of these was "
+        f"removed deliberately, remove it from EXPECTED_PATCH_TARGETS too "
+        f"-- leaving it here makes this test a wall rather than a record."
     )
     assert hasattr(mod, "_POLL_INTERVAL_S"), (
         "the harness must re-export the constant it scales, so a reader can "
         "check the scaling without reading the patch line"
     )
     assert mod._POLL_INTERVAL_S == pytest.approx(0.1)
+
+    # The harness's own runtime guard must still exist. `_measure`
+    # asserts on the `sel.select` wake count, which is what turns a
+    # stubbed `_run_qmd` into a named assertion instead of the
+    # `AttributeError: 'bytes' object has no attribute 'stdout'` that
+    # round 4's revert produced from inside `qmd_daemon_state`.
+    #
+    # Checking the assertion is *present* is guard-removal territory and
+    # cannot be defended from inside the guard itself. It is here so that
+    # deleting it is a red run rather than a silent one -- the same
+    # contract as the check that the poll test still exists.
+    asserted_names: set[str] = set()
+    for node in ast.walk(measure):
+        if isinstance(node, ast.Assert):
+            asserted_names |= {n.id for n in ast.walk(node.test) if isinstance(n, ast.Name)}
+    assert "_SELECT_WAKES" in asserted_names, (
+        "_measure no longer asserts on the sel.select wake count. Without "
+        "it a stubbed _run_qmd surfaces as an AttributeError from inside "
+        "qmd_daemon_state rather than as a named assertion about the "
+        "thing that actually changed."
+    )
 
 
 async def test_the_recycle_spawns_on_the_port_it_probes(
