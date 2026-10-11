@@ -47,6 +47,7 @@ from lies.lock_errors import (
 )
 from lies.utils.exclusive import (
     acquire_create_lock,
+    ensure_lock_parent,
     release_create_lock,
 )
 from lies.utils.lock_heartbeat import (
@@ -131,8 +132,8 @@ def _attempt_acquire(paths: tuple[Path, Path, Path], max_age_s: float) -> _Attem
     ``paths`` is the triad resolved by the caller, not resolved here. A
     contended acquire runs one attempt per poll interval for the length of
     its budget, so resolving per attempt would redo a ``Path.resolve()``
-    realpath walk — and, on the fallback branch, a ``mkdir`` — at the poll
-    rate for the whole wait.
+    realpath walk at the poll rate for the whole wait. The lock
+    directory is hoisted out for the same reason — see :func:`_prepare`.
 
     Returns ``outcome="won"`` on success -- the holder pid and heartbeat are
     already registered by then -- ``"busy"`` when a live contender holds it,
@@ -156,6 +157,9 @@ def _attempt_acquire(paths: tuple[Path, Path, Path], max_age_s: float) -> _Attem
         # section — which is the CUDA reservation race this lock exists
         # to prevent.
         self_acquire_is_stale=False,
+        # The caller prepared the parent once for the whole acquisition.
+        # See ``_prepare`` below.
+        parent_prepared=True,
     )
     if result is None:
         # Defensive: only reached if ``exclusive.py`` returns the
@@ -171,6 +175,27 @@ def _attempt_acquire(paths: tuple[Path, Path, Path], max_age_s: float) -> _Attem
         )
     # status == "busy"
     return _Attempt(outcome="busy", holder_pid=result.holder_pid)
+
+
+def _prepare(lock_paths: tuple[Path, Path, Path]) -> None:
+    """Per-acquisition setup shared by both poll loops.
+
+    Resolving the triad is the caller's job (see :func:`_lock_paths`) and
+    is done once, before the loop, as it always was. This adds the lock
+    *directory* to that: ``acquire_create_lock`` created its parent on
+    every attempt, and an attempt runs once per poll interval for the
+    length of the budget. At 10 Hz for 120 s that is ~1200 ``mkdir``
+    calls re-asserting a directory that already existed (measured
+    2026-10-10: 1 ``mkdir`` + 1 ``stat``, 4.3 us each — ~2400 syscalls
+    and ~5.2 ms across a fully contended wait).
+
+    ``_attempt_acquire`` passes ``parent_prepared=True``, so this is the
+    only ``mkdir`` an acquisition performs. It is not a lock on the
+    directory's lifetime: the create still heals a parent that vanishes
+    mid-wait, so a contended poll cannot fail on a directory someone
+    removed underneath it.
+    """
+    ensure_lock_parent(lock_paths[0])
 
 
 def _acquire_with_poll(
@@ -190,6 +215,7 @@ def _acquire_with_poll(
     takes.
     """
     lock_paths = _lock_paths()
+    _prepare(lock_paths)
     deadline = time.monotonic() + retry_budget_s
     started_at = time.monotonic()
     while True:
@@ -224,6 +250,7 @@ async def _acquire_with_poll_async(
     behaviour to preserve, but it has the same poll rate.
     """
     lock_paths = _lock_paths()
+    _prepare(lock_paths)
     deadline = time.monotonic() + retry_budget_s
     started_at = time.monotonic()
     while True:

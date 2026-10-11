@@ -1290,45 +1290,74 @@ def test_an_httpx_client_factory_nobody_can_call_is_not_a_seam() -> None:
 # --- what `data_dir` actually controls ----------------------------------
 #
 # `ensure_qmd_daemon(data_dir=...)` reads like it selects the index the
-# daemon serves, and `recycle_qmd_daemon(data_dir=...)` likewise. Neither
-# is true, and the reason matters for anyone tempted to "fix" the two
-# call sites to agree: `_spawn_qmd_daemon` runs `qmd mcp --http --daemon`
-# with `cwd=Path.cwd()` and never reads the argument, so `data_dir` only
-# ever reaches `write_sidecar_data_dir`. The daemon that comes up is the
-# same whichever value you pass.
+# daemon serves, and `recycle_qmd_daemon(data_dir=...)` likewise. In
+# production neither is true: both call sites spawn with no arguments,
+# so `data_dir` only ever reaches `write_sidecar_data_dir`. The daemon
+# that comes up is the same whichever value you pass.
+#
+# This used to be pinned by asserting `data_dir` appeared nowhere in
+# `_spawn_qmd_daemon`'s body. That pin is gone — the function now takes
+# an optional `data_dir`/`port` (verified against qmd 2.5.3: `--port` is
+# real, a `--data-dir` flag is not, and `XDG_CACHE_HOME` is the lever
+# that relocates the whole cache dir), which is what lets a throwaway
+# daemon be spawned on a spare port for tests. The pin that replaced it
+# is on the *call sites*, because the live hazard was never the
+# function's signature — it is that the two call sites disagree about
+# what `data_dir` means, and a production spawn that honoured either
+# would point a restarted daemon at a different index than the one it
+# replaces.
 
 
-def test_the_spawned_daemon_never_receives_the_data_dir(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """``_spawn_qmd_daemon`` ignores any data dir; the spawn is cwd-only.
+def test_production_spawn_call_sites_still_pass_no_arguments() -> None:
+    """Neither production call site may spawn with a port or a data dir.
 
-    A source-level pin rather than a behavioural one, because the claim
-    is about what is *not* passed. If someone later threads ``data_dir``
-    into the spawn, this fails — which is the point at which the
-    ``_recycle_data_dir`` vs ``ensure_qmd_daemon`` question becomes a
-    real one rather than a bookkeeping detail.
+    A source-level pin, because the claim is about what is *not* passed.
+
+    `_recycle_data_dir()` returns the *sidecar's* recorded value, falling
+    back to the library git root; `ensure_qmd_daemon` is handed
+    `wiki.wiki_dir` from the CLI. Those are different directories. If
+    either started reaching the spawn, a recycle would bring up a daemon
+    on an index other than the one it replaced — silently, because the
+    probe only checks that *a* daemon serves. So this stays red until
+    the disagreement is actually resolved, rather than being inherited by
+    a signature that finally made it possible.
     """
     from lies.qmd import daemon as qmd_daemon
 
     source = Path(qmd_daemon.__file__).read_text(encoding="utf-8")
-    start = source.index("def _spawn_qmd_daemon(")
-    end = source.index("def ", start + 10)
+    start = source.index("def ensure_qmd_daemon(")
+    end = source.index("\n# --- ", start)
     body = source[start:end]
 
-    assert "_spawn_qmd_daemon(" in body
-    assert "data_dir" not in body, (
-        "_spawn_qmd_daemon now reads a data_dir; the daemon it starts may "
-        "differ from the one a recycle starts, and the two call sites' "
-        "disagreement is no longer bookkeeping"
+    # Two call sites, both bare.
+    assert body.count("_spawn_qmd_daemon()") == 2, (
+        "a production call site now spawns with arguments; the two "
+        "data_dirs disagree, so the daemon that comes back may not be "
+        "serving the index the recycle replaced"
     )
-    assert "cwd=" in body, "the spawn is cwd-based; that is what makes data_dir inert"
+    assert "_spawn_qmd_daemon(" in body and "_spawn_qmd_daemon()" in body
 
 
-# Removed under M-7: a tautology that monkeypatched
-# ``write_sidecar_data_dir`` (a function ``_recycle_data_dir`` never
-# calls) and asserted the result was a Path. The source-level pin
-# above is the load-bearing test for the data-dir flow.
+def test_recycle_qmd_daemon_data_dir_reaches_only_the_sidecar() -> None:
+    """``recycle_qmd_daemon`` records its ``data_dir`` and spawns bare.
+
+    The companion pin to the one above, on the recycle side, stated
+    behaviourally so it does not depend on how the spawn is spelled.
+    """
+    from lies.qmd import daemon as qmd_daemon
+
+    source = Path(qmd_daemon.__file__).read_text(encoding="utf-8")
+    start = source.index("async def recycle_qmd_daemon(")
+    body = source[start:]
+
+    assert "_spawn_qmd_daemon()" in body, "the recycle's spawn must stay bare"
+    assert "write_sidecar_data_dir(data_dir)" in body, (
+        "data_dir is recorded in the sidecar; that is its only use today"
+    )
+    assert qmd_daemon._spawn_qmd_daemon.__kwdefaults__ == {"port": None, "data_dir": None}, (
+        "the new spawn arguments must default to None; anything else "
+        "changes what a bare production call site does"
+    )
 
 
 # --- the query single-flight gate ----------------------------------------

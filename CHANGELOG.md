@@ -189,6 +189,82 @@ rule rather than the accident.
 
 ### Fixed
 
+- **The recycle's readiness probe no longer escapes on a stopped qmd
+  daemon, so `recycle_qmd_daemon` retries and reaches its own
+  `QmdRecycleFailed`.** The probe caught
+  `(httpx.HTTPError, mcp.MCPError, OSError)`. Measured 2026-10-10
+  against the live daemon, a stopped daemon raises a **bare**
+  `RuntimeError` — fastmcp wraps every connect failure as
+  `RuntimeError("Client failed to connect: ...")` with the real error on
+  `__cause__` (`fastmcp/client/client.py:1048`, `_connection_failure`),
+  as `httpx2.ConnectError`, fastmcp's *vendored* httpx and a different
+  module from the `httpx` LIES imports. Neither `httpx.HTTPError` nor
+  `OSError` matches, so the loop escaped on **probe one** in ~0.3 s:
+  it never retried, never spent `ready_timeout`, and never reached the
+  failure it documents.
+
+  The user-visible damage was a false claim, not just a lost retry:
+  `_recycle_or_report` swallows the escape, so the wedge path told the
+  caller *"the restart also failed"* while the daemon it had just
+  started was still coming up. The documented "tens of seconds" hold on
+  the qmd inode described a path no one had walked.
+
+  The tuple now covers `RuntimeError`, and the docstring states the real
+  ceiling: `ready_timeout` + one probe + reap + spawn ≈ **45 s**, reached
+  only when the replacement never serves. *Measured 2026-10-10 against
+  the live daemon; transcribed, not re-measured at commit time.*
+  Pinned in `tests/unit/qmd/test_daemon_recycle.py`, whose tests go red
+  if the tuple is narrowed back.
+
+  AGENTS.md recorded this as *"a dead session arrives as a bare
+  `RuntimeError` with the real error on `__cause__`"*. That is now a
+  measurement rather than a hypothesis, and the note says so.
+
+- **`_spawn_qmd_daemon` can start a throwaway daemon on its own port and
+  its own index.** It was hardcoded to `qmd mcp --http --daemon`, so a
+  recycle could only ever restart the *real* daemon on the *real* port —
+  anything needing a disposable daemon had to be driven through a stub.
+  Read from qmd 2.5.3's `dist/cli/qmd.js`: `--port` is honoured,
+  `--index` exists, and **there is no `--data-dir` flag** — the `mcp`
+  block reads only `args[0]`, `values.http`, `values.port`,
+  `values.daemon` and `values.index`. `XDG_CACHE_HOME` is the available
+  lever; it relocates `index.sqlite`, `mcp.pid` and `mcp.log` together,
+  appending its own `qmd/` segment.
+
+  `port=` without `data_dir=` is **refused**, because `mcp.pid` is keyed
+  to the cache root and not to the port: a throwaway sharing the real
+  cache root would overwrite the machine daemon's pidfile, which is the
+  one file both `qmd_daemon_state` and `_reap_qmd_daemon` read — the
+  reap would kill the throwaway and `qmd status` would report the
+  throwaway as the daemon.
+
+  **Both production call sites still spawn bare.** `_recycle_data_dir()`
+  returns the sidecar's recorded value (falling back to the library git
+  root) while `ensure_qmd_daemon` is handed `wiki.wiki_dir`; honouring
+  either would bring a restarted daemon up on a different index than the
+  one it replaced. The tripwire test that used to assert `data_dir`
+  appeared nowhere in the spawn body now pins the *call sites* instead.
+  Verified against the real binary in
+  `tests/integration/test_qmd_spawn_throwaway.py`.
+
+- **`exclusive.acquire_create_lock` creates the lock directory once per
+  acquisition, not once per attempt.** It ran
+  `path.parent.mkdir(parents=True, exist_ok=True)` at the top of every
+  attempt, and the async gate re-runs the whole acquire once per poll —
+  at 10 Hz for up to 120 s. Measured 2026-10-10: one such `mkdir`
+  against an existing directory is 1 `mkdir` syscall plus 1 `stat` from
+  `is_dir()`, 4.3 µs, so a fully contended 120 s wait spent ~1200 of
+  them (~2400 syscalls, ~5.2 ms). Small next to the wait and free to
+  remove — and it is the same redundant-resolution defect Task 1
+  removed one layer up in the sync loop.
+
+  The mkdir is now hoisted behind `ensure_lock_parent`, which both poll
+  loops call once; `acquire_create_lock` takes `parent_prepared=True`
+  and still heals a parent that vanishes mid-wait, so hoisting it cannot
+  turn a contended poll into a `FileNotFoundError`. Callers that acquire
+  once are unaffected — that is the first-ever-acquire case, where the
+  parent may genuinely not exist.
+
 - **The qmd seam builds a fresh client per call, so concurrent calls stop
   hanging.** `_daemon_client` returned a **process-wide cached**
   `fastmcp.Client`, and `_call` enters it with `async with` per call — so

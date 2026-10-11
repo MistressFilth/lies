@@ -249,13 +249,66 @@ def _reap_qmd_daemon(*, grace: float = 2.0, poll: float = 0.05) -> None:
         time.sleep(poll)
 
 
-def _spawn_qmd_daemon() -> None:
-    """Invoke ``qmd mcp --http --daemon``. Never raises."""
+def _spawn_qmd_daemon(*, port: int | None = None, data_dir: "_Path | None" = None) -> None:
+    """Invoke ``qmd mcp --http --daemon``. Never raises on spawn failure.
+
+    Args:
+        port: optional ``--port``. qmd honours it (verified in qmd
+            2.5.3, ``dist/cli/qmd.js:4005``:
+            ``const port = Number(cli.values.port) || 8181``).
+        data_dir: optional qmd cache root, delivered as
+            ``XDG_CACHE_HOME``. **There is no ``--data-dir`` flag** —
+            the ``case "mcp":`` block reads only ``cli.args[0]``,
+            ``values.http``, ``values.port``, ``values.daemon`` and
+            ``values.index``. qmd resolves its whole cache dir from
+            ``XDG_CACHE_HOME`` (``dist/cli/qmd.js:3981-3983`` and
+            ``dist/store.js:428-434``), covering ``index.sqlite``,
+            ``mcp.pid`` and ``mcp.log``. Note the off-by-one: qmd
+            appends its own ``qmd/``, so a daemon started with
+            ``data_dir=X`` uses ``X/qmd/``, not ``X``.
+
+    Both default to ``None``, which leaves the argv byte-identical to
+    ``[qmd, mcp, --http, --daemon]`` and the child environment
+    untouched. The production call sites pass neither: ``data_dir``
+    means two different things to the two of them — ``ensure_qmd_daemon``
+    is handed a ``wiki.wiki_dir`` while ``_recycle_data_dir()`` hands
+    back the *sidecar's* recorded value, falling back to the library git
+    root — so threading it into the spawn would point a restarted
+    daemon at a different index than the one it is replacing. Resolving
+    that disagreement is a separate decision; this function only gains
+    the ability to be told.
+
+    Raises:
+        ValueError: ``port`` without ``data_dir``. qmd's ``mcp.pid`` is
+            keyed to ``XDG_CACHE_HOME`` and **not** to the port, so a
+            throwaway sharing the real daemon's cache dir would
+            overwrite the real daemon's pidfile — and both
+            ``qmd_daemon_state`` and ``_reap_qmd_daemon`` read exactly
+            that pidfile. The reap would then SIGTERM the throwaway and
+            ``qmd status`` would report the throwaway as *the* daemon.
+            Refused rather than allowed, because the damage is to a
+            machine-global process this function does not own. A
+            non-default port is only meaningful with its own cache dir.
+    """
+    if port is not None and data_dir is None:
+        raise ValueError(
+            "port without data_dir: qmd keys mcp.pid to XDG_CACHE_HOME and "
+            "not to the port, so a throwaway on a spare port would take over "
+            "the real daemon's pidfile and _reap_qmd_daemon would kill the "
+            "throwaway instead. Pass both, or neither."
+        )
+    argv = [_QMD_BIN, "mcp", "--http", "--daemon"]
+    env_overrides: dict[str, str] = {}
+    if port is not None:
+        argv += ["--port", str(port)]
+    if data_dir is not None:
+        env_overrides["XDG_CACHE_HOME"] = str(data_dir)
     try:
         _run_qmd(
-            [_QMD_BIN, "mcp", "--http", "--daemon"],
+            argv,
             cwd=_Path.cwd(),
             timeout=STATUS_TIMEOUT_S,
+            env_overrides=env_overrides,
         )
     except subprocess.TimeoutExpired, OSError:
         pass
@@ -332,6 +385,39 @@ class QmdRecycleFailed(RuntimeError):
         self.last_state = last_state
 
 
+#: Exceptions the readiness probe treats as "not serving yet", so the
+#: poll loop keeps going. Measured against a stopped qmd daemon on
+#: 2026-10-10 (fastmcp 4.0.10), not guessed:
+#:
+#: - **Connection refused** (a daemon that is down — the case this loop
+#:   exists for) arrives as a **bare** ``RuntimeError("Client failed to
+#:   connect: All connection attempts failed")``, with the real error on
+#:   ``__cause__`` as ``httpx2.ConnectError``. That is fastmcp's own
+#:   doing: ``fastmcp/client/client.py:1048`` calls
+#:   ``_connection_failure``, whose docstring says it presents a dead
+#:   session identically "wherever it is noticed" and wraps everything
+#:   that is not ``httpx2.HTTPStatusError | MCPError`` into a
+#:   ``RuntimeError``. ``RuntimeError`` matches none of the three arms
+#:   below.
+#: - **HTTP-level not-ready** (a booting daemon answering 404/503)
+#:   arrives as ``mcp.shared.exceptions.MCPError`` — measured for both,
+#:   raised from ``mcp/shared/jsonrpc_dispatcher.py:461``.
+#:
+#: The ``httpx.HTTPError`` arm is kept for LIES' own transport calls.
+#: It does **not** cover the probe's failure: fastmcp vendors its own
+#: httpx as ``httpx2`` (2.13.1, a distinct module from LIES' 0.28.1),
+#: so ``httpx2.ConnectError`` is not an ``httpx.HTTPError``. It is not
+#: an ``OSError`` either. Only the wrapping ``RuntimeError`` is
+#: catchable without importing a vendored module name.
+#:
+#: Before this tuple was widened the loop raised out of the function on
+#: the **first** probe against a stopped daemon: it never retried,
+#: never spent ``ready_timeout``, and never reached its own
+#: ``QmdRecycleFailed`` contract. See
+#: ``tests/unit/qmd/test_daemon_recycle.py``.
+_RECYCLE_PROBE_ERRORS = (httpx.HTTPError, mcp.MCPError, OSError, RuntimeError)
+
+
 async def recycle_qmd_daemon(
     *,
     data_dir: "_Path",
@@ -345,6 +431,17 @@ async def recycle_qmd_daemon(
     probe is a ``fastmcp.Client.list_tools()`` call against
     ``daemon_url`` — proves the JSON-RPC session is alive (not whether
     qexpander is warm; warm-up latency is borne by the first real call).
+
+    **Worst case: ``ready_timeout`` plus one probe, plus the reap and
+    the spawn that run before the loop.** With the defaults that is
+    ~30 s of polling plus ``_reap_qmd_daemon``'s worst case (4 s of
+    ``time.sleep``, two grace windows) plus the spawn's
+    ``STATUS_TIMEOUT_S`` — call it **45 s**, and it is reached only when
+    the replacement never serves at all. Measured 2026-10-10: against a
+    stopped daemon the loop previously escaped on probe one in ~0.3 s,
+    so this ceiling had never been observed being hit. It is the
+    ceiling, not the typical case — a daemon that boots probes green on
+    the first or second attempt and returns in well under a second.
 
     Raises:
         QmdRecycleFailed: reap+spawn+probe never served within ready_timeout.
@@ -368,7 +465,7 @@ async def recycle_qmd_daemon(
                 ready_timeout - (deadline - asyncio.get_event_loop().time()),
             )
             return qmd_daemon_state()
-        except (httpx.HTTPError, mcp.MCPError, OSError) as exc:
+        except _RECYCLE_PROBE_ERRORS as exc:
             _log.debug("recycle_qmd_daemon: probe failed (%s); retrying", exc)
             last_state = qmd_daemon_state()
             await asyncio.sleep(poll_interval)

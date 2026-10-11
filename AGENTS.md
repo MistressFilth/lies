@@ -245,7 +245,8 @@ call.**
   is `lies qmd up`.
 
   **The gate wraps the recycle, so a wedge holds the inode for tens of
-  seconds past its own deadline.** The path under the lock is
+  seconds past its own deadline — and that ceiling was unreachable
+  until 2026-10-10.** The path under the lock is
   `_call_daemon_tool` → `_call_with_recovery` → `_recycle_or_report` →
   `recycle_qmd_daemon(ready_timeout=30.0)`, plus `_reap_qmd_daemon`'s
   up to 4 s of `time.sleep` and `_spawn_qmd_daemon`. A wedged query
@@ -255,6 +256,24 @@ call.**
   — and **it is not a deadlock**: `qmd/daemon.py` takes no qmd lock,
   and the spawn shells `qmd mcp --http --daemon` directly, so the
   recycle never waits on the lock it is holding.
+
+  **The number is now reachable, and it is ~45 s.** Measured
+  2026-10-10 against the live daemon: the recycle's probe caught
+  `(httpx.HTTPError, mcp.MCPError, OSError)`, but a stopped daemon
+  raises a **bare** `RuntimeError` — fastmcp wraps every connect
+  failure as `RuntimeError("Client failed to connect: ...")` with the
+  vendored `httpx2.ConnectError` on `__cause__`
+  (`fastmcp/client/client.py:1048`, `_connection_failure`). Neither arm
+  matched, so the loop escaped on **probe one** in ~0.3 s: it never
+  retried, never spent `ready_timeout`, and never reached its own
+  `QmdRecycleFailed`. The "tens of seconds" above described a path
+  nobody had walked — and the practical damage was a *false* report,
+  since `_recycle_or_report` swallowed the escape and told the caller
+  the restart had failed while the daemon it had just started was
+  coming up. The tuple now covers `RuntimeError`; the worst case is
+  `ready_timeout` + one probe + reap + spawn ≈ **45 s**, and it is
+  reached only when the replacement never serves. *Transcribed, not
+  re-measured at commit time.*
 - **The streamable-HTTP transport does not time out idle streams.** A
   GET stream held open for 30 minutes survived intact, carrying one
   ping and then 29+ minutes of silence. There is no server-side idle
@@ -290,6 +309,21 @@ call.**
   bare `RuntimeError` with the real error on `__cause__`. A taxonomy
   written against the httpx LIES declares matches none of them. Re-derive
   by probe before changing the matcher.
+
+  **Confirmed by probe, 2026-10-10** — this was recorded as a hypothesis
+  and is now a measurement. `fastmcp/client/client.py:1048` calls
+  `_connection_failure`, whose own docstring says it presents a dead
+  session identically "wherever it is noticed" and wraps anything that is
+  not `httpx2.HTTPStatusError | MCPError` into a bare `RuntimeError`. The
+  full chain for a closed port is `RuntimeError` → `httpx2.ConnectError`
+  → `ExceptionGroup` → `CancelledError` → `anyio.WouldBlock`.
+  `httpx2` is a *separate installed distribution* (2.13.1) from the
+  `httpx` LIES imports (0.28.1), so `httpx2.ConnectError` is neither an
+  `httpx.HTTPError` nor an `OSError`. HTTP-level not-ready (a booting
+  daemon answering 404/503) is different and *was* already caught: it
+  arrives as `mcp.shared.exceptions.MCPError`. **Code against the
+  wrapper, not the vendored module name** — importing `httpx2` would make
+  a fastmcp re-vendor a hard LIES import error.
 - **`_build_qmd_httpx_client` takes `**kwargs`** — fastmcp calls it with
   `follow_redirects=`; a fixed signature fails at connect. It builds a
   fresh `AsyncClient` per call and caches nothing. (An earlier version
@@ -311,6 +345,30 @@ call.**
   alone sandboxes the mirror files and nothing else. The qmd write
   helpers refuse that combination and name both variables; reads are
   unguarded, because the daemon is machine-global.
+- **`qmd mcp --http --daemon` has `--port` and has no `--data-dir`.**
+  Read from qmd 2.5.3's `dist/cli/qmd.js`, `case "mcp":`: the only
+  inputs are `cli.args[0]` (`stop`/`status`), `values.http`,
+  `values.port`, `values.daemon` and `values.index`. `--port` is
+  honoured (`const port = Number(cli.values.port) || 8181`) and
+  `qmd mcp --help` does **not** list it — that prints the *global* help,
+  which is why the flag's existence is a source-read fact and not a
+  `--help` one. There is no data-dir flag anywhere in the daemon path;
+  `XDG_CACHE_HOME` is the lever, and it relocates `index.sqlite`,
+  `mcp.pid` **and** `mcp.log` together, appending its own `qmd/`
+  segment (`X` → `X/qmd/`).
+
+  **`mcp.pid` is keyed to the cache root and NOT to the port.** So a
+  throwaway daemon on a spare port *sharing* the real cache root would
+  overwrite the machine daemon's pidfile — and both `qmd_daemon_state`
+  (via `qmd status`) and `_reap_qmd_daemon` read exactly that file, so
+  the reap would SIGTERM the throwaway and `qmd status` would report the
+  throwaway as *the* daemon. `_spawn_qmd_daemon(port=...)` without
+  `data_dir=` is refused rather than allowed, for that reason. Both
+  production call sites still spawn with no arguments: `_recycle_data_dir()`
+  returns the *sidecar's* recorded value (falling back to the library
+  git root) while `ensure_qmd_daemon` is handed `wiki.wiki_dir`, and
+  honouring either would bring up a daemon on a different index than the
+  one it replaced.
 - **Every qmd subprocess runs with `NO_COLOR=1`**, forced rather than
   inherited, so an operator's shell cannot change what LIES parses.
 - **The `⠋ Gathering information` spinner is `ipull`, not qmd**, and
