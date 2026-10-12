@@ -563,6 +563,65 @@ def test_an_evidence_bundle_is_never_overwritten() -> None:
     for an answer it already has. The record deliberately keeps the
     first failure (see :meth:`SearchDiagnostics.record`); this is where
     that decision is bounded.
+
+    **The fixture records the read, and it has to.** Attestation arrived
+    with the overlay's fourth rule: an excerpt survives only if a tool
+    returned its path. This test's ``diag`` was built by hand with a
+    verdict and no envelope, so under the shipped rule its excerpt had
+    no recorded source at all and was correctly dropped — "evidence"
+    means "attested", and a hand-built verdict is not a record of any
+    page. ``record_read`` here is not decoration: it is the production
+    shape, because the evidence this test is about came back through the
+    ``read`` closure.
+    """
+    from lies.agents.librarian import (
+        LibrarianOutput,
+        PageExcerpt,
+        SearchDiagnostics,
+        with_search_diagnostics,
+    )
+    from lies.markdown_spans import Span
+
+    excerpt = PageExcerpt(
+        collection="alpha",
+        slug="alpha/page.md",
+        title="Page",
+        spans=[Span(heading_path=["H"], body="verbatim", code_fence=False, start_line=1)],
+    )
+    bundle = LibrarianOutput(
+        tag_expr=None,
+        exclude_expr=None,
+        excerpts=[excerpt],
+        distinct_pages=1,
+        no_coverage=False,
+        searched_scope=["alpha"],
+    )
+    diag = SearchDiagnostics(transient=True, fallback_reason="queued behind PID 4242")
+    diag.record_read({"alpha/page.md": "# Page\n\nverbatim"})
+
+    out = with_search_diagnostics(bundle, diag)
+
+    assert out is bundle, "an evidence-bearing bundle must come back untouched"
+    assert out.transient is False
+    assert out.no_coverage is False
+    assert out.fallback_reason is None, (
+        "attaching a reason to a bundle that has evidence would render it "
+        "as a failure the caller is told to act on"
+    )
+
+
+def test_an_evidence_bundle_with_no_recorded_source_is_not_evidence() -> None:
+    """The other side of the rule, and the one the fixture above could hide.
+
+    Same bundle, same ``transient`` verdict, but nothing was ever
+    recorded as having returned ``alpha/page.md``. The excerpt is
+    dropped, because the only claim behind it is the model's.
+
+    This is the whole point of the attestation arm and it is the case
+    the branch used to document rather than enforce: a fabricated
+    bundle came back untouched and ``_ask_impl`` rendered prose citing a
+    page nobody read. Asserted here on the dataclass so it cannot be
+    lost behind a passing "evidence wins" test.
     """
     from lies.agents.librarian import (
         LibrarianOutput,
@@ -590,12 +649,18 @@ def test_an_evidence_bundle_is_never_overwritten() -> None:
 
     out = with_search_diagnostics(bundle, diag)
 
-    assert out is bundle, "an evidence-bearing bundle must come back untouched"
-    assert out.transient is False
+    assert out.excerpts == [], (
+        "an excerpt for a path no tool returned must not survive; the "
+        f"bundle still carries it: {[e.slug for e in out.excerpts]}"
+    )
+    # A run claim, never a corpus claim — the whole bundle was invented,
+    # so nothing about the library was learned.
     assert out.no_coverage is False
-    assert out.fallback_reason is None, (
-        "attaching a reason to a bundle that has evidence would render it "
-        "as a failure the caller is told to act on"
+    assert out.transient is True
+    reason = out.fallback_reason or ""
+    assert "alpha/page.md" in reason, reason
+    assert "4242" in reason, (
+        f"the recorded lock fact must survive alongside the drop; got {reason!r}"
     )
 
 

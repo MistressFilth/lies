@@ -103,12 +103,12 @@ _HOLDER_SCRIPT = textwrap.dedent(
     ready_marker = Path(sys.argv[1])
     hold_s = float(sys.argv[2])
 
-    fd = _acquire_with_poll(retry_budget_s=60.0, max_age_s=1800.0)
+    attempt = _acquire_with_poll(retry_budget_s=60.0, max_age_s=1800.0)
     try:
         ready_marker.write_text("ready", encoding="utf-8")
         time.sleep(hold_s)
     finally:
-        _release(fd)
+        _release(attempt.fd, attempt.paths)
     """
 )
 
@@ -279,11 +279,11 @@ def test_stale_holder_recovery_via_dead_pid(monkeypatch, tmp_path):
     pid_path.write_text("999999", encoding="utf-8")  # likely-dead pid
 
     # Acquire should reap and succeed.
-    fd = mod._acquire_with_poll(retry_budget_s=1.0, max_age_s=60.0)
+    attempt = mod._acquire_with_poll(retry_budget_s=1.0, max_age_s=60.0)
     try:
-        assert fd >= 0
+        assert attempt.fd >= 0
     finally:
-        mod._release(fd)
+        mod._release(attempt.fd, attempt.paths)
 
 
 def _stage_a_live_holder(lock_mod, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:

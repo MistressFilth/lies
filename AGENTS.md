@@ -160,26 +160,55 @@ call.**
   argument rather than a module global because the MCP server serves
   overlapping `lib_ask` calls.
 
-  Two bounds on the overlay, both pinned: a bundle carrying
-  **excerpts** is returned untouched (it came from real page bodies
+  Two bounds on the overlay, both pinned: a bundle whose excerpts are
+  all **attested** is returned untouched (it came from real page bodies
   after a successful retry, and forcing `transient` onto it would
   discard retrievable evidence), and a recorded failure is
   **sticky** across a later clean search (the 120 s budget was
   already spent queueing; a successful retry does not un-spend it).
 
-  **The "model cannot suppress it" claim is a TRADE, not a
-  guarantee.** Trusting excerpts is the deliberate choice above, and
-  it has a hole: a model that *asserts* excerpts it does not have
-  gets its bundle returned untouched, and `_ask_impl` renders prose
-  citing pages that were never read. In that case the operator gets
-  no reason — the recorded failure is not consulted — which is the
-  same suppression route as before, reached by the other door. The
-  overlay removes the *easy* suppression (paraphrase, drop the field,
-  or flip `no_coverage` on a dispatch that never finished); it does
-  not remove fabrication. Do not write "the model cannot suppress
-  this" anywhere: it can, and the honest statement is that a
-  hallucinated bundle is indistinguishable from a real one at this
-  boundary.
+  **Fabrication is closed at the path level; the text level is a
+  stated limit.** An earlier version of this section called the hole
+  unclosable: a model that *asserted* excerpts it did not have got
+  its bundle back untouched and `_ask_impl` rendered prose citing
+  pages nobody read. It was not unclosable — the recorded truth was
+  already in hand. Both tool closures feed the same per-dispatch
+  record (`_search` records the envelope's `hit`/`hits[*].path`,
+  `_read` records the keys of its `{path: body}` result), so
+  `SearchDiagnostics.attested_paths` is the set of paths a tool
+  actually returned, and `with_search_diagnostics` **drops any
+  excerpt whose `slug` is not in it**, naming the drop in
+  `fallback_reason`. A total drop yields `transient=True` and
+  `no_coverage=False`, so `_ask_impl` takes its inconclusive branch
+  and the reader learns the librarian invented the bundle rather
+  than that the library has nothing.
+
+  **The oracle is hits ∪ reads, not the envelope's hits.** Step 3
+  says the model picks from hits, but `read` accepts any path the
+  library or a wiki resolves, so a model that followed a link out of
+  a body and read that page produced evidence the envelope never
+  named. Keying on hits alone would drop it — discarding
+  retrievable evidence to enforce a rule the tool surface never
+  imposed, which is the trade being closed. `read` keys beginning
+  with `_` are skipped: `_missing` is a synthetic slot, not a page.
+
+  **What still gets through: invented *text* for a real path.**
+  Attestation is path-level, so a model that reads a page and then
+  attributes a passage that is not in it passes. Closing that needs
+  the bodies, not the paths — the record would have to retain
+  `path -> body` (and the hit snippets, for the snippet-only arm)
+  and check each `Span.body` as a substring of the recorded text.
+  That is a real trade rather than a small addition: a model that
+  reflows a paragraph or joins two spans produces a body that is not
+  a substring of the page, and every such excerpt would be dropped
+  as fabricated. The false-positive rate is not measurable from
+  here, and discarding true evidence is the worse of the two
+  failures — so the check is written down, not shipped. Two tests
+  (`test_a_span_body_is_still_not_checked` and the oracle pair in
+  `tests/unit/mcp/test_excerpt_attestation.py`) hold both halves:
+  the limit is asserted so it cannot be forgotten, and so a future
+  text-level check has to change the test and this paragraph
+  together.
 
   **There is no log line on the wait path, and do not add one
   expecting it to be read.** Measured 2026-10-10 against the live
@@ -250,9 +279,10 @@ call.**
   cross-loop *reuse* is fine and the failure needs cross-loop
   *concurrency*. The structural hazard is real and cited above — an
   `anyio.Lock` binds its backend at construction, so a client built on
-  loop A carries an A-bound lock — but that alone does not explain a
-  sequential cross-loop call succeeding, so treat it as a hazard to
-  design around rather than a proven cause of the hang.
+  loop A carries an A-bound lock (`fastmcp/client/client.py:228` via
+  `:587`, `anyio/_core/_synchronization.py:164-168`) — but that alone
+  does not explain a sequential cross-loop call succeeding, so treat it
+  as a hazard to design around rather than a proven cause of the hang.
 
   Headline, measured 2026-10-10 against the live daemon and
   **transcribed, not re-measured at commit time**: 3 concurrent `search`
@@ -391,7 +421,8 @@ call.**
   recycle-retry path. All three are pinned in `tests/unit/qmd/test_access.py`.
 - **The taxonomy matches exception class *names*, not httpx types.**
   fastmcp vendors its own httpx as `httpx2`; a dead session arrives as a
-  bare `RuntimeError` with the real error on `__cause__`. A taxonomy
+  bare `RuntimeError` with the real error on `__cause__`
+  (`fastmcp/client/client.py:248` via `:1045-1048`). A taxonomy
   written against the httpx LIES declares matches none of them. Re-derive
   by probe before changing the matcher.
 
@@ -484,6 +515,22 @@ call.**
 - **The `⠋ Gathering information` spinner is `ipull`, not qmd**, and
   only during a model download. It is not gated by `NO_COLOR`; the lever
   is a warm model cache.
+- **A release removes the triad it acquired, not the one the
+  environment names now.** Both poll loops return the winning
+  `_Attempt`, which carries the triad it ran against, and both release
+  paths hand that to `_release`. `_register_holder` takes it too. Each
+  side used to call `_lock_paths()` for itself, so a
+  `LIES_QMD_LOCK_PATH` that moved between acquire and release split one
+  acquisition across two sets of files: the release unlinked a lock
+  nobody held and left the create-lock, the `.pid` sidecar and the
+  `.state.json` heartbeat behind with no fd pointing at them. The leak
+  is silent, and the leftover heartbeat is worse than the leftover
+  lock — it is what the *next* acquire reads to decide whether the lock
+  in front of it is stale. Both halves are unit-tested in
+  `tests/unit/qmd/test_lock_release.py`. A test session that acquires
+  and then dies without unwinding is not covered by any in-process
+  hook; `tests/conftest.py`'s session-scoped teardown bounds it, and
+  `SIGKILL` is the one exit nothing bounds.
 - **Idle bounds.** Queries use the default 30s; `embed` and `update` are
   silent for their whole duration, so they pass
   `idle_timeout = total * 0.5`. It is not 1.0 because the reader checks

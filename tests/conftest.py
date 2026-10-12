@@ -6,6 +6,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -15,6 +16,28 @@ from lies.constants import LIES_DATA_SUBDIR
 from lies.wiki.wiki import Wiki
 
 FIXTURE_WIKI = Path(__file__).parent / "fixtures" / "sample-wiki"
+
+
+def qmd_test_lock_path() -> Path:
+    """The one qmd flock inode every test in this session contends on.
+
+    Per-user *and* per-session. ``gettempdir()`` is shared on a
+    multi-account CI host, so the uid keeps two accounts off one path.
+    The pid keeps two *sessions* off one path too: a per-uid-only key
+    made every pytest process owned by this user contend, so running
+    the unit suite while any other `lies` work was live produced six
+    30-second hangs and six `QmdLockBusy` failures that read as product
+    bugs. Intra-session sharing — the property that actually prevents
+    two tests embedding concurrently — is untouched: one process, one
+    path, every test in it.
+
+    A module function rather than an inline f-string because two places
+    now need this exact value: ``_isolated_xdg``, which pins the env var,
+    and the session teardown below, which has to unlink the same three
+    files. They were spelled independently once and the cleanup silently
+    pointed somewhere else.
+    """
+    return Path(tempfile.gettempdir()) / f"lies-test-qmd-{os.getuid()}-{os.getpid()}.lock"
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
@@ -155,19 +178,8 @@ def _isolated_xdg(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     # Pin it to one path shared by every test in the session, which is
     # what production gets. It is deliberately NOT `xdg_root / "state"`:
     # that would reproduce the bug in a different guise.
-    # Per-user *and* per-session. `gettempdir()` is shared on a
-    # multi-account CI host, so the uid keeps two accounts off one path.
-    # The pid keeps two *sessions* off one path too: a per-uid-only key
-    # made every pytest process owned by this user contend, so running
-    # the unit suite while any other `lies` work was live produced six
-    # 30-second hangs and six `QmdLockBusy` failures that read as product
-    # bugs. Intra-session sharing — the property that actually prevents
-    # two tests embedding concurrently — is untouched: one process, one
-    # path, every test in it.
-    monkeypatch.setenv(
-        "LIES_QMD_LOCK_PATH",
-        str(Path(tempfile.gettempdir()) / f"lies-test-qmd-{os.getuid()}-{os.getpid()}.lock"),
-    )
+    # Per-user *and* per-session; see ``qmd_test_lock_path``.
+    monkeypatch.setenv("LIES_QMD_LOCK_PATH", str(qmd_test_lock_path()))
     # The qmd sidecar is host-global: it records which ``data-dir`` the
     # *machine's* daemon was started with, at
     # ``~/.local/share/qmd/mcp.data-dir``. Redirect it to the per-test
@@ -237,6 +249,57 @@ def _isolated_xdg(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     # actual HTTP call — every test that exercises ``ground()`` swaps
     # out ``librarian_agent`` before ``run_sync`` fires.
     monkeypatch.setenv("MINIMAX_API_KEY", "test-key-not-real")
+
+
+def release_qmd_test_lock() -> None:
+    """Unlink this session's qmd lock triad: lock, heartbeat, pid sidecar.
+
+    **Why this is needed when the release path already unlinks.** A clean
+    ``with_qmd_lock`` / ``qmd_lock_async`` release removes all three, and
+    both poll loops now thread the *acquired* triad to the release rather
+    than re-resolving it, so a moved ``LIES_QMD_LOCK_PATH`` cannot strand
+    the files either. Both are unit-tested in
+    ``tests/unit/qmd/test_lock_release.py``.
+
+    Neither survives a test that acquires and then dies without
+    unwinding — a ``KeyboardInterrupt`` mid-embed, a crash in a fixture
+    finalizer, a test that stages a holder and returns. The files are
+    inert (the path carries the session pid, so no later session looks at
+    them and ``_reap_files`` can never reach them) but they accumulate in
+    ``/tmp`` forever: 16 orphaned ``.pid``/``.state.json`` pairs from
+    Oct 6-8 sat there, every one carrying a dead pytest pid.
+
+    A module-level function rather than a body inlined in the fixture,
+    so the test that pins it calls the *same* code. An inline body could
+    only be exercised by ending a pytest session, and a fixture that
+    quietly stopped running is indistinguishable from the leak it
+    replaced.
+
+    Best-effort by construction: teardown must not fail a suite because
+    a ``/tmp`` file was already gone.
+    """
+    lock_path = qmd_test_lock_path()
+    for path in (lock_path, Path(f"{lock_path}.state.json"), Path(f"{lock_path}.pid")):
+        try:
+            path.unlink()
+        except OSError:
+            pass
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _clean_the_session_qmd_lock() -> Iterator[None]:
+    """Session teardown for this session's qmd flock triad.
+
+    Session-scoped and autouse, so it runs after every last test and
+    before pytest writes its summary; ``monkeypatch`` is function-scoped
+    and cannot be used here, which is why the pin and the teardown share
+    :func:`qmd_test_lock_path` rather than each building a path.
+
+    ``SIGKILL`` is out of reach from inside the process — it is the one
+    exit shape no in-process hook covers, and this bounds the rest.
+    """
+    yield
+    release_qmd_test_lock()
 
 
 @pytest.fixture

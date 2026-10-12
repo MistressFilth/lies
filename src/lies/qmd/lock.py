@@ -94,9 +94,18 @@ def _lock_paths() -> tuple[Path, Path, Path]:
     return lock_path, pid_path, state_path
 
 
-def _register_holder(fd: int) -> None:
-    """Write the holder pid + heartbeat. Best-effort: ``OSError`` is logged."""
-    _, pid_path, state_path = _lock_paths()
+def _register_holder(fd: int, paths: tuple[Path, Path, Path] | None = None) -> None:
+    """Write the holder pid + heartbeat. Best-effort: ``OSError`` is logged.
+
+    ``paths`` is the triad the *acquire* resolved, not a fresh
+    ``_lock_paths()`` call. Resolving again here would put the two sides
+    of one acquisition on different files if ``LIES_QMD_LOCK_PATH`` moved
+    in between — the envelope lands beside a lock nobody holds, and the
+    next acquire reads a pid that is not the lock's holder. ``None``
+    falls back to resolving live, which is the pre-existing behaviour and
+    is what a direct caller with no triad in hand gets.
+    """
+    _, pid_path, state_path = paths if paths is not None else _lock_paths()
     try:
         pid = os.getpid()
         write_owner_pid(pid_path, pid)
@@ -119,11 +128,21 @@ class _Attempt:
 
     ``fd`` is ``-1`` on every losing outcome, matching
     :class:`~lies.utils.lock_heartbeat.AcquireResult`'s convention.
+
+    ``paths`` is the triad the attempt ran against, carried out of the
+    poll loop so the release unlinks *these* files. Both poll loops
+    return the winning ``_Attempt`` for exactly that reason: resolving
+    the triad again at release time puts the two halves of one
+    acquisition on different files the moment
+    ``LIES_QMD_LOCK_PATH`` moves in between, and the leak is silent --
+    the create-lock, the pid sidecar and the heartbeat all survive with
+    no fd pointing at any of them.
     """
 
     outcome: Literal["won", "busy", "absent"]
     fd: int = -1
     holder_pid: int | None = None
+    paths: tuple[Path, Path, Path] | None = None
 
 
 def _attempt_acquire(paths: tuple[Path, Path, Path], max_age_s: float) -> _Attempt:
@@ -166,8 +185,8 @@ def _attempt_acquire(paths: tuple[Path, Path, Path], max_age_s: float) -> _Attem
         # non-envelope ``None``-on-busy.
         return _Attempt(outcome="absent")
     if result.status in ("acquired", "dead_reaped"):
-        _register_holder(result.fd)
-        return _Attempt(outcome="won", fd=result.fd)
+        _register_holder(result.fd, paths)
+        return _Attempt(outcome="won", fd=result.fd, paths=paths)
     if result.status == "indeterminate":
         raise WikiFlockIndeterminate(
             f"qmd lock holder pid {result.holder_pid} indeterminate; "
@@ -201,10 +220,13 @@ def _prepare(lock_paths: tuple[Path, Path, Path]) -> None:
 def _acquire_with_poll(
     retry_budget_s: float,
     max_age_s: float,
-) -> int:
+) -> _Attempt:
     """Poll-retry until the qmd flock is acquired. Raises:
     - :class:`QmdLockBusy` past ``retry_budget_s``.
     - :class:`WikiFlockIndeterminate` if the envelope is indeterminate.
+
+    Returns the winning :class:`_Attempt`, whose ``fd`` *and* ``paths``
+    the caller hands straight back to :func:`_release`.
 
     Blocking: every wait is a :func:`time.sleep`, so this is for sync call
     sites only. An async caller that lands here stops the event loop for the
@@ -221,7 +243,7 @@ def _acquire_with_poll(
     while True:
         attempt = _attempt_acquire(lock_paths, max_age_s)
         if attempt.outcome == "won":
-            return attempt.fd
+            return attempt
         if time.monotonic() >= deadline:
             raise QmdLockBusy(
                 holder_pid=attempt.holder_pid,
@@ -235,7 +257,7 @@ def _acquire_with_poll(
 async def _acquire_with_poll_async(
     retry_budget_s: float,
     max_age_s: float,
-) -> int:
+) -> _Attempt:
     """:func:`_acquire_with_poll` with an ``await`` between attempts.
 
     Same acquire, reaping and raise semantics; the only difference is that
@@ -256,7 +278,7 @@ async def _acquire_with_poll_async(
     while True:
         attempt = _attempt_acquire(lock_paths, max_age_s)
         if attempt.outcome == "won":
-            return attempt.fd
+            return attempt
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise QmdLockBusy(
@@ -268,9 +290,27 @@ async def _acquire_with_poll_async(
         await anyio.sleep(min(_POLL_INTERVAL_S, remaining))
 
 
-def _release(fd: int) -> None:
-    """Best-effort release of the create-lock triad."""
-    lock_path, pid_path, state_path = _lock_paths()
+def _release(fd: int, paths: tuple[Path, Path, Path] | None = None) -> None:
+    """Best-effort release of the create-lock triad.
+
+    ``paths`` is the triad the acquire resolved, for the same reason
+    :func:`_register_holder` takes one: the release must unlink the files
+    *this* acquisition created. Re-resolving meant a
+    ``LIES_QMD_LOCK_PATH`` that moved between acquire and release left the
+    acquired lock, pid sidecar and heartbeat on disk with no fd pointing
+    at them — an unbounded leak, and a lying one, because a leftover
+    ``.state.json`` is what the next acquire reads to decide whether the
+    lock it is looking at is stale.
+
+    Both sides are *per-acquisition* on purpose. The triad is resolved
+    once at the top of each acquisition and threaded to both halves, so
+    the property is "release removes what acquire wrote" rather than
+    "release removes whatever the environment says right now".
+
+    ``None`` falls back to resolving live — the pre-existing behaviour,
+    kept for the direct callers in the tests.
+    """
+    lock_path, pid_path, state_path = paths if paths is not None else _lock_paths()
     try:
         release_create_lock(lock_path, fd, pid_path=pid_path, state_json_path=state_path)
     except OSError as exc:
@@ -322,7 +362,7 @@ def with_qmd_lock(
                 finally:
                     _held_depth.reset(token)
 
-            fd = _acquire_with_poll(retry_budget_s=timeout_s, max_age_s=max_age_s)
+            attempt = _acquire_with_poll(retry_budget_s=timeout_s, max_age_s=max_age_s)
             token = _held_depth.set(1)
             try:
                 return fn(*args, **kwargs)
@@ -330,7 +370,7 @@ def with_qmd_lock(
                 # reset(), not ``set(0)``: it restores the exact prior
                 # value and cannot clobber a depth an inner frame raised.
                 _held_depth.reset(token)
-                _release(fd)
+                _release(attempt.fd, attempt.paths)
 
         return wrapper
 
@@ -415,7 +455,7 @@ async def qmd_lock_async(
             _held_depth.reset(token)
         return
 
-    fd = await _acquire_with_poll_async(retry_budget_s=timeout_s, max_age_s=max_age_s)
+    attempt = await _acquire_with_poll_async(retry_budget_s=timeout_s, max_age_s=max_age_s)
     token = _held_depth.set(1)
     try:
         yield None
@@ -423,7 +463,7 @@ async def qmd_lock_async(
         # reset(), not ``set(0)``: it restores the exact prior value and
         # cannot clobber a depth an inner frame raised.
         _held_depth.reset(token)
-        _release(fd)
+        _release(attempt.fd, attempt.paths)
 
 
 #: Wait budget for the daemon query path, in seconds. 120 s is the number

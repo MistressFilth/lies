@@ -18,7 +18,95 @@ at 0.48.6 while those fields were still being added; 0.48.6 was never
 released, so nothing has shipped under it, but bookkeeping follows the
 rule rather than the accident.
 
+### Fixed
+
+- **`lies mcp down` in `test_full_lifecycle` passed no `--force`.** The
+  test starts its own daemon on a spare port, handshakes it and tears it
+  down, so it means it — and the `DaemonInUse` refusal that a serving
+  daemon earns (stopping the machine-global LIES daemon disconnects every
+  MCP client on the host at once) returns exit 1. The guard is correct
+  and unchanged; the invocation was not. The same omission in
+  `test_down_leaves_the_qmd_daemon_running` is fixed the same way.
+  Neither had CLI-level coverage: `DaemonInUse` was only ever asserted
+  as raised from `stop_daemon`, never mapped to an exit code, which is
+  the gap that let the red invocation sit in the suite. Two tests in
+  `tests/unit/test_cli.py` now pin the mapping and the `--force`
+  pass-through.
+
+- **The vendored `fastmcp` / `anyio` line citations are pinned.** Six
+  references in `AGENTS.md` and `CHANGELOG.md` — `client.py:228`, `:248`,
+  `:587`, `:1045-1048`, `:1080-1084` and
+  `anyio/_core/_synchronization.py:164-168` — pointed into installed
+  distributions and were deliberately left unpinned, on the grounds that
+  they are version-specific and that the doc said so at the reference
+  site. That is a deferral with no due date: a fastmcp bump falsified
+  all six silently. They are now pinned by the same contract as the
+  in-repo references, resolved from the installed distribution, so a bump
+  that moves the code turns the pin red instead. `AGENTS.md` also gained
+  the two citations it described in prose but never numbered.
+  `qmd.js:4008-4013` is still unpinned and says so in the test module's
+  docstring: it lives in a node package's bundled `dist/` and may be
+  absent on a host that has not run qmd.
+
 ### Changed
+
+- **A librarian bundle's excerpts are validated against the paths the
+  tools actually returned.** `SearchDiagnostics` now records
+  `attested_paths` — every `hit`/`hits[*].path` from a `search`
+  envelope, plus every key of a `read` result — and
+  `with_search_diagnostics` drops any excerpt whose `slug` is not in
+  that set, naming the drop in `fallback_reason`. A bundle whose
+  excerpts are *all* dropped becomes `transient=True,
+  no_coverage=False`, so `_ask_impl` takes its inconclusive branch and
+  the reader is told the librarian invented the bundle rather than that
+  the library has nothing. A partly-dropped bundle keeps the attested
+  excerpts and carries the drop in its reason.
+
+  This closes the fabrication trade `AGENTS.md` previously stated as a
+  standing limit: a model that asserted excerpts it did not have used
+  to get its bundle back untouched, and the envelope rendered prose
+  citing pages nobody read. The recorded truth was already in hand — both
+  tool closures feed the same per-dispatch record before the model sees
+  anything — so the hole was reachable, not out of reach.
+
+  **The oracle is hits ∪ reads, not the envelope's hits.** The contract
+  says the model picks from hits, but `read` accepts any path the
+  library or a wiki resolves, so a model that followed a link out of a
+  body and read that page has produced evidence the envelope never
+  named. Attesting against hits alone would silently discard it —
+  discarding retrievable evidence to enforce a rule the tool surface
+  never imposed. Keys beginning with `_` are skipped: `_missing` is a
+  synthetic slot, not a page.
+
+  **The limit that remains, stated plainly:** attestation is path-level,
+  so a model that reads a real page and then attributes invented *text*
+  to it still passes. Closing that needs the bodies rather than the
+  paths — the record would retain `path -> body` plus the hit snippets
+  and check each `Span.body` as a substring — and that has a real
+  false-positive surface (a model that reflows a paragraph produces a
+  body that is not a substring of the page, and every such excerpt would
+  be dropped as fabricated). Discarding true evidence is the worse of
+  the two failures, so the check is documented in
+  `with_search_diagnostics` and pinned by
+  `test_a_span_body_is_still_not_checked` rather than shipped. No tool
+  or prompt signature changed; the MCP surface is identical.
+
+- **A qmd flock release unlinks the triad it acquired.** Both poll loops
+  now return the winning `_Attempt`, which carries the paths it ran
+  against, and `with_qmd_lock` / `qmd_lock_async` hand those to
+  `_release`; `_register_holder` takes them too. Each side previously
+  re-resolved `LIES_QMD_LOCK_PATH` for itself, so a path that moved
+  between acquire and release split one acquisition across two sets of
+  files — the release unlinked a lock nobody held and left the
+  create-lock, the `.pid` sidecar and the `.state.json` heartbeat behind
+  with no fd pointing at them. The leftover heartbeat is the harmful
+  one: it is what the next acquire reads to decide whether the lock in
+  front of it is stale. Pinned in `tests/unit/qmd/test_lock_release.py`,
+  and `tests/conftest.py` gained a session-scoped teardown for the case
+  no in-process hook covers — a test that acquires and then dies without
+  unwinding. 16 orphaned sidecar pairs in `/tmp` from earlier sessions
+  were removed; they were inert (the path carries the session pid, so no
+  later session could ever reap them) and are outside the repository.
 
 - **`fastmcp` is capped at `<5`.** The dependency was `fastmcp>=4.0`
   after the 4.x floor landed, leaving the next major unpinned. 4.x is
@@ -576,7 +664,7 @@ rule rather than the accident.
   structural hazard is real — `ClientSessionState.lock` is an
   `anyio.Lock` built in `Client.__init__`
   (`fastmcp/client/client.py:228` via `:587`) and `anyio.Lock` binds its
-  backend at construction (`anyio/_core/_synchronization.py:164-168`), so
+  backend at construction, so
   a cached client carries a loop-A lock into loop B — but that alone does
   not explain a sequential cross-loop call succeeding. It is a hazard to
   design around, not a proven cause. Those line numbers are for the

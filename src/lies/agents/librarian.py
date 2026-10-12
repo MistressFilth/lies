@@ -205,11 +205,19 @@ class SearchDiagnostics:
             collection) and those name the same kind of fact.
         searched_scope: The resolved collection list from the last
             envelope that carried one.
+        attested_paths: Every page path a tool actually handed to the
+            model — each ``hit``/``hits[*].path`` from a ``search``
+            envelope, and every key of a ``read`` result. This is the
+            oracle :func:`with_search_diagnostics` validates a bundle's
+            excerpts against. It is *not* the search envelope alone; see
+            that function for why the envelope on its own is the wrong
+            reference.
     """
 
     transient: bool = False
     fallback_reason: str | None = None
     searched_scope: list[str] = field(default_factory=list)
+    attested_paths: set[str] = field(default_factory=set)
 
     def record(self, envelope: dict[str, Any]) -> None:
         """Fold one ``search`` envelope into the record.
@@ -222,6 +230,11 @@ class SearchDiagnostics:
         took a real ``QmdLockBusy`` to produce is the one the operator
         needs. ``with_search_diagnostics`` is where that decision is
         bounded (an evidence-bearing bundle is never overwritten).
+
+        The envelope's hit paths fold into :attr:`attested_paths` on the
+        way through. Recording the *paths* as well as the verdict is what
+        makes an excerpt checkable: a bundle names a ``slug``, and this is
+        the recorded answer to "did any tool ever return that path".
         """
         if not isinstance(envelope, dict):
             return
@@ -233,10 +246,81 @@ class SearchDiagnostics:
         scope = envelope.get("searched_scope")
         if scope:
             self.searched_scope = [str(name) for name in scope]
+        for path in _envelope_hit_paths(envelope):
+            self.attested_paths.add(path)
+
+    def record_read(self, result: Any) -> None:
+        """Fold one ``read`` result into :attr:`attested_paths`.
+
+        ``read`` returns ``{path: body}`` plus a synthetic ``"_missing"``
+        key holding the paths the daemon could not resolve
+        (``mcp/read.py``). Keys beginning with ``_`` are dropped:
+        ``"_missing"`` is not a page, and attesting it would let a bundle
+        claim a document for the one path that was explicitly reported as
+        unresolvable.
+
+        Recorded *beside* the search hits rather than instead of them,
+        because an excerpt's path is not by construction a search hit.
+        The contract says the model picks hits to read, and it may read a
+        path a body's link sent it to — ``read`` accepts any path the
+        library or the wiki resolves. A bundle built from such a read is
+        evidence, and dropping it would discard retrievable evidence to
+        enforce a rule the tools never imposed.
+        """
+        if not isinstance(result, dict):
+            return
+        for key in result:
+            if isinstance(key, str) and key and not key.startswith("_"):
+                self.attested_paths.add(key)
+
+
+def _envelope_hit_paths(envelope: dict[str, Any]) -> list[str]:
+    """Paths a ``search`` envelope actually returned, in wire order.
+
+    Reads both ``hit`` (the top-1 row) and ``hits``. They are normally
+    the same document, but the top-1 field is set independently by
+    ``_search_impl`` and a bundle built from the top-1 snippet alone is
+    legitimate — the contract's "fall back to the snippets already
+    attached to the search hits" arm reads either.
+
+    A hit may be a bare path string or a ``{path, ...}`` row depending on
+    which layer produced it; both are accepted, and anything else is
+    skipped rather than coerced, because coercing ``None`` to ``"None"``
+    would attest a page that does not exist.
+    """
+    paths: list[str] = []
+    candidates: list[Any] = []
+    top = envelope.get("hit")
+    if top is not None:
+        candidates.append(top)
+    hits = envelope.get("hits")
+    if isinstance(hits, list):
+        candidates.extend(hits)
+    for row in candidates:
+        if isinstance(row, str):
+            if row:
+                paths.append(row)
+        elif isinstance(row, dict):
+            path = row.get("path")
+            if isinstance(path, str) and path:
+                paths.append(path)
+    return paths
+
+
+def _attestation_reason(dropped: list[PageExcerpt]) -> str:
+    """Name the pages a bundle cited that no tool ever returned."""
+    names = sorted({excerpt.slug for excerpt in dropped})
+    listed = ", ".join(names[:3])
+    if len(names) > 3:
+        listed += f", +{len(names) - 3} more"
+    return (
+        f"{len(dropped)} of the librarian's excerpt(s) cited pages no tool returned "
+        f"({listed}); they were dropped unverified"
+    )
 
 
 def with_search_diagnostics(out: LibrarianOutput, diag: SearchDiagnostics) -> LibrarianOutput:
-    """Overlay the recorded ``search`` verdict onto a librarian bundle.
+    """Validate and overlay the recorded search verdict onto a bundle.
 
     This is the deterministic last hop. Before it existed the only route
     from the ``search`` envelope's ``fallback_reason`` to the reader was
@@ -244,11 +328,19 @@ def with_search_diagnostics(out: LibrarianOutput, diag: SearchDiagnostics) -> Li
     non-compliant model degraded a lock-busy report to a generic reason
     with no corpus claim.
 
-    Three rules, each of which the model cannot talk its way past:
+    Four rules, each of which the model cannot talk its way past:
 
-    - **Evidence wins.** A bundle carrying excerpts is returned
-      unchanged. It was assembled from real ``read`` bodies after a
-      later, successful search; forcing ``transient`` onto it would make
+    - **Every excerpt must be attested.** An excerpt whose ``slug`` is in
+      neither the recorded search hits nor the recorded ``read`` results
+      is dropped, and the drop is named in ``fallback_reason``. This is
+      the rule the branch was previously *documenting rather than
+      enforcing*: a model asserting excerpts it does not have used to get
+      its bundle back untouched, and ``_ask_impl`` then rendered prose
+      citing pages nobody read. See "Why hits alone are not the oracle"
+      below for what the reference set is and why.
+    - **Evidence wins.** A bundle whose excerpts are *all* attested is
+      returned unchanged. It was assembled from real ``read`` bodies after
+      a later, successful search; forcing ``transient`` onto it would make
       the caller throw away retrievable evidence because an earlier
       attempt queued.
     - **A recorded failure overwrites the bundle's own verdict.** When
@@ -268,10 +360,86 @@ def with_search_diagnostics(out: LibrarianOutput, diag: SearchDiagnostics) -> Li
     overwriting them would convert a corpus statement into a run
     statement.
 
+    **What an all-dropped bundle becomes.** Every excerpt gone means the
+    bundle carries no evidence at all, so it is a fact about the run and
+    not about the corpus: ``transient`` is forced ``True`` (not merged —
+    a successful search beside an invented bundle is still a failed
+    lookup), ``no_coverage`` is forced ``False``, and ``_ask_impl`` takes
+    its inconclusive branch. A partly-dropped bundle keeps the excerpts
+    that were attested — evidence still wins — and carries the drop in
+    its reason, because an operator whose librarian invented two of five
+    citations is entitled to be told.
+
+    **Why hits alone are not the oracle.** The ruling this implements
+    proposed dropping any excerpt missing from the envelope's ``hits``.
+    That is the wrong reference set, and the library is why: step 3 says
+    the model *picks* from hits, but ``read`` accepts any path the
+    library or a wiki resolves, and a model that followed a link found in
+    a body and read that page has produced evidence the envelope never
+    named. Attesting against hits alone would drop it — silently
+    discarding retrievable evidence to enforce a rule the tool surface
+    never imposed, which is the exact trade the overlay was built to stop
+    making. Recording the ``read`` results alongside the hits makes the
+    oracle "a tool returned this path", which is the claim the excerpt is
+    actually making, and it is checkable with no false positives on any
+    path the tools did return.
+
+    **What it still does not check, and what closing it would need.** A
+    model that reads a real page and then attributes *invented text* to
+    it passes: only the path is verified. Closing that needs the bodies,
+    not the paths — ``SearchDiagnostics`` would have to retain
+    ``path -> body`` from ``record_read`` (and the hit snippets, for the
+    snippet-only arm, which is the one a model reaches by choosing not
+    to read rather than by surviving a ``ToolError``) and each
+    ``Span.body`` would be checked as a substring of the recorded text.
+    That is a real trade rather than a small addition: a model that
+    normalises whitespace, reflows a paragraph or joins two spans
+    produces a body that is not a substring of the page, and every such
+    excerpt would be dropped as fabricated. The false-positive rate is
+    not measurable from here, and discarding true evidence is the worse
+    failure of the two. So the text-level check is not shipped, and
+    saying so is more honest than shipping a substring test that quietly
+    deletes good citations.
+
     Returns ``out`` itself when there is nothing to overlay, so a clean
     run allocates nothing.
     """
-    if not out.excerpts and diag.fallback_reason:
+    if out.excerpts:
+        kept = [excerpt for excerpt in out.excerpts if excerpt.slug in diag.attested_paths]
+        dropped = [excerpt for excerpt in out.excerpts if excerpt.slug not in diag.attested_paths]
+        if not dropped:
+            # Evidence wins, unchanged: same object, same fields.
+            return out
+        reason = _attestation_reason(dropped)
+        if diag.fallback_reason:
+            # The operator-actionable one is appended, never replaced.
+            reason = f"{reason}; {diag.fallback_reason}"
+        if not kept:
+            # ``transient`` is forced, not merged: a bundle whose every
+            # excerpt was fabricated is a failure of the *run* whatever
+            # the model or the search envelope claimed about it. Merging
+            # (``out.transient or diag.transient``) left a successful
+            # search plus an invented bundle reading as
+            # ``transient=False``, and ``_ask_impl``'s next branch —
+            # ``if not lib_out.excerpts`` — then rendered "No relevant
+            # content found in library." That is the canonical false
+            # corpus claim, manufactured by the fix for it.
+            return replace(
+                out,
+                excerpts=[],
+                distinct_pages=0,
+                transient=True,
+                no_coverage=False,
+                searched_scope=diag.searched_scope or out.searched_scope,
+                fallback_reason=reason,
+            )
+        return replace(
+            out,
+            excerpts=kept,
+            distinct_pages=len({excerpt.slug for excerpt in kept}),
+            fallback_reason=reason,
+        )
+    if diag.fallback_reason:
         transient = out.transient or diag.transient
         return replace(
             out,
@@ -415,6 +583,14 @@ Emit a `LibrarianOutput` with:
 - `excerpts` — list of `PageExcerpt` rows. Each row carries the
   curated verbatim passage (a few hundred words), broken into
   `Span` objects with `heading_path` for per-claim threading.
+
+  Every `slug` must be a path a tool returned to you — a `hits[*].path`
+  from Step 2 or a key of a `read` result from Step 3. The caller
+  records every one of those independently and **drops** an excerpt whose
+  path is in neither set, naming the drop in the reason. That is a
+  determinism check, not a style rule: an excerpt for a page nothing
+  returned is indistinguishable, to every downstream reader, from a real
+  citation.
 
   ```python
   PageExcerpt(
@@ -723,10 +899,20 @@ def register_librarian_tools(
         ``qmd_get`` against the library's git root; wiki-page-id
         dispatch reads via the active wiki's
         :class:`WikiMemoryService`.
+
+        The returned keys are folded into the same
+        :class:`SearchDiagnostics` the ``search`` closure feeds, so a
+        bundle is checked against the paths a tool actually returned
+        rather than against what the model says it read. Recorded after
+        the call returns, not before: ``read`` raises ``ToolError`` when
+        every path fails, and a dispatch that raised returned nothing.
         """
         from lies.mcp import read as _read_mod
 
-        return _call_tool(_read_mod.read, paths=paths)
+        result = _call_tool(_read_mod.read, paths=paths)
+        if search_diagnostics is not None:
+            search_diagnostics.record_read(result)
+        return result
 
     agent.tool(
         name="collections_read",
