@@ -1,26 +1,4 @@
-"""The integration suite must not leave a qmd daemon listening.
-
-`test_mcp_daemon_lifecycle.test_full_lifecycle` invokes the real
-``lies mcp up``, which calls ``ensure_qmd_daemon`` unless ``--no-qmd``
-is passed (``operator.py:149``). The isolation fixture in
-``tests/conftest.py`` *deletes* ``LIES_QMD_URL``, so that call
-resolves to the default port **8181** — not the operator's. The LIES
-daemon came up fine, so nothing failed, and the qmd daemon it spawned
-outlived the whole pytest run. Measured on the pre-fix tree: one
-stray listener per full integration run, and every "Strays: none"
-claim in this branch's task reports had been measured without one.
-
-This pin is an AST check rather than a port probe. A probe would have
-to bind or connect to a real port inside the unit suite, which is
-exactly what the network audit exists to forbid, and it would be a
-race against the integration run anyway. What is asserted is the
-property that makes the stray impossible: the lifecycle test's own
-argv carries ``--no-qmd``.
-
-``test_down_leaves_the_qmd_daemon_running`` is excluded on purpose —
-it exists to exercise ``ensure_qmd_daemon`` reusing a shared daemon,
-and ``--no-qmd`` would delete the thing it is testing.
-"""
+"""The integration suite must not leave a qmd daemon listening."""
 
 from __future__ import annotations
 
@@ -80,12 +58,7 @@ def test_lifecycle_up_invocation_carries_no_qmd() -> None:
 
 
 def test_the_only_test_allowed_to_touch_qmd_names_why() -> None:
-    """The excluded test must exist and must document its own privilege.
-
-    Without this, deleting ``test_down_leaves_the_qmd_daemon_running``
-    would silently widen the pin's blast radius from "one excluded test"
-    to "no excluded tests", and the exclusion would look arbitrary.
-    """
+    """The excluded test must exist and must document its own privilege."""
     tree = ast.parse(LIFECYCLE.read_text(encoding="utf-8"))
     fn = next(
         (
@@ -107,11 +80,7 @@ def test_the_only_test_allowed_to_touch_qmd_names_why() -> None:
 
 
 def test_up_really_does_spawn_unless_no_qmd_is_passed() -> None:
-    """Anchor the other end: ``--no-qmd`` is a real early return.
-
-    Without this the pin above would still pass if ``operator.up``
-    stopped honouring the flag — it checks the argv, not the behaviour.
-    """
+    """Anchor the other end: ``--no-qmd`` is a real early return."""
     from lies.cli import operator
 
     source = Path(operator.__file__).read_text(encoding="utf-8")

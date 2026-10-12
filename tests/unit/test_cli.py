@@ -477,22 +477,7 @@ def test_down_reports_the_signal(monkeypatch, tmp_path: Path) -> None:
 def test_down_refuses_a_serving_daemon_and_says_how_to_override(
     monkeypatch, tmp_path: Path
 ) -> None:
-    """The CLI layer of the shared-daemon guard, which had no coverage.
-
-    ``tests/unit/test_mcp_daemon.py`` pins ``stop_daemon`` *raising*
-    :class:`DaemonInUse`, and pins ``--force`` suppressing it. Neither
-    reads the command: the mapping from the exception to exit code 1 and
-    the message is ``operator.py``'s ``except DaemonBusy, DaemonStopFailed,
-    DaemonInUse`` arm, and nothing reached it. That gap is what let
-    ``tests/integration/test_mcp_daemon_lifecycle.py`` ship a
-    ``down`` invocation without ``--force`` — a red test sitting in the
-    suite against a guard that landed before the branch point.
-
-    The message has to name both halves of the remedy: what is shared
-    (so the reader knows a stop disconnects other clients) and the flag
-    (so the reader knows how to proceed). Asserted positively, because a
-    negative on "not stopped" passes on an unrelated early exit.
-    """
+    """The CLI layer of the shared-daemon guard, which had no coverage."""
     from lies.mcp import daemon
 
     name = "cli-down-in-use"
@@ -521,13 +506,7 @@ def test_down_refuses_a_serving_daemon_and_says_how_to_override(
 
 
 def test_down_threads_force_through_to_stop_daemon(monkeypatch, tmp_path: Path) -> None:
-    """``--force`` has to reach ``stop_daemon``, or the guard has no exit.
-
-    The refusal above is only actionable if the override does something.
-    Asserted by capturing the kwarg rather than by stubbing the raise
-    away, so a ``force=force`` deleted from the call site turns this red
-    even though the refusal test still passes.
-    """
+    """``--force`` has to reach ``stop_daemon``, or the guard has no exit."""
     from lies.mcp import daemon
 
     name = "cli-down-force-threading"

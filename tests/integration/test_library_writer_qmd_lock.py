@@ -1,35 +1,4 @@
-"""LibraryWriter surfaces QmdLockBusy distinctly from generic qmd-spawn failures.
-
-The post-commit qmd hook in ``LibraryWriter.commit`` runs ``qmd_embed``
-inside a broad ``except Exception`` so transient derived-index outages
-(CUDA OOM, qmd daemon down) never roll back the library commit. That
-shape is right for transient failures but wrong for site-wide qmd flock
-contention: a ``QmdLockBusy`` carries operator-actionable context
-(holder PID, wait/max seconds) and should reach the CLI / MCP caller as
-a distinct typed error, not as a swallowed ``warning: qmd embed
-failed`` line on stderr.
-
-Two tests pin the split:
-
-1. ``test_writer_re_raises_QmdLockBusy_with_holder_pid`` — when the
-   qmd embed helper raises ``QmdLockBusy``, ``LibraryWriter.commit``
-   must re-raise the same exception class with the holder PID preserved
-   so the operator sees an actionable message instead of a swallowed
-   warning. TODAY this fails: the broad ``except Exception`` catches
-   ``QmdLockBusy`` and prints the generic warning.
-2. ``test_writer_swallows_other_qmd_failures_unchanged`` — non-lock
-   failures (CUDA OOM, qmd crash) keep the swallow-and-warn shape so
-   derived-index outages never roll back the library commit. TODAY this
-   passes; the test pins the invariant against an over-eager refactor
-   that promotes *all* qmd errors to re-raise.
-
-The pattern mirrors ``tests/unit/library/test_qmd_hook.py``: a real
-``lib_with_git`` fixture (so ``atomic_commit`` lands), the file written
-to disk (so ``git add`` succeeds), and ``monkeypatch.setattr(
-"lies.library.writer.qmd_embed", ...)`` which both triggers the
-:PEP:`562` ``__getattr__`` (writes the real function into module
-globals) and replaces it with the stub.
-"""
+"""LibraryWriter surfaces QmdLockBusy distinctly from generic qmd-spawn failures."""
 
 from __future__ import annotations
 
@@ -160,28 +129,7 @@ def test_the_reraise_carries_the_lock_path(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """The re-raised ``QmdLockBusy`` names the inode, not just the holder.
-
-    ``writer.commit`` re-wraps the exception it caught, and it was the
-    one production raiser of the four that dropped ``lock_path`` — while
-    being the one site where the value is *already in hand*, because it
-    caught the exception carrying it. The message therefore named the
-    holder PID, the wait and the budget, and not the inode.
-
-    The path is not decoration. ``LIES_QMD_LOCK_PATH`` can override
-    which inode qmd contends, so once the wait has been abandoned the
-    message is the only record of *which* one was contended, and
-    "waited 120s, max 120s" on its own does not say.
-
-    Asserted on both the attribute and the rendered string, because a
-    fix that forwards ``lock_path=`` but leaves the message text alone
-    would satisfy the first and still tell the operator nothing.
-
-    No flock is opened: ``qmd_embed`` is stubbed and the sentinel is
-    hand-built, so this never contends for anything. ``LIES_QMD_LOCK_PATH``
-    is still pointed at ``tmp_path`` so that a future edit which stops
-    stubbing the helper cannot reach the machine's real lock.
-    """
+    """The re-raised ``QmdLockBusy`` names the inode, not just the holder."""
     monkeypatch.setenv("LIES_QMD_LOCK_PATH", str(tmp_path / "qmd.lock"))
     inode = str(tmp_path / "qmd.lock")
     sentinel = QmdLockBusy(

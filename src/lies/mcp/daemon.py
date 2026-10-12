@@ -263,23 +263,13 @@ def port_free(host: str, port: int) -> bool:
 def _daemon_is_serving(rec: PidRecord, timeout: float = 1.0) -> bool:
     """Return True when the tracked daemon accepts a streamable-HTTP request.
 
-    Deliberately a TCP/ASGI reachability probe rather than a session
-    count. The live session registry lives inside the daemon process
-    (``session_manager._server_instances``), so a count is not
-    available to the CLI without a new MCP tool; and a session count
-    would make the gate flaky, since a client that has finished its
-    work still legitimately holds an open stream.
-
-    What matters for the hazard is that the socket answers at all: a
-    daemon that is up and serving is one that other sessions may be
-    mid-call against, and that is the case worth refusing to kill.
-    A dead or wedged daemon fails this probe and stops cleanly, so a
-    crashed daemon can still be cleared.
+    A TCP reachability probe, not a session count: the registry lives
+    inside the daemon process, and a session count would be flaky since
+    a finished client still holds an open stream. A dead or wedged
+    daemon fails this probe and stops cleanly.
     """
     try:
-        # `create_connection` resolves the address family itself, so
-        # there is no family to compute here -- an IPv6 literal in the
-        # record works without this branch.
+        # `create_connection` resolves the address family itself.
         with socket.create_connection((rec.host, rec.port), timeout=timeout):
             return True
     except OSError:
@@ -508,19 +498,13 @@ def stop_daemon(wiki: Wiki, *, grace: float = 10.0, force: bool = False) -> Stop
     an MCP host spawned as its own children.
 
     The daemon is machine-global and every MCP client on the host holds
-    a long-lived SSE stream to it, so stopping it disconnects all of
-    them at once. That is the same class of failure the keepalive work
-    chased: the client reports a tool-level interrupt with nothing in
-    the LIES or qmd logs, and it reads as a hung query rather than as
-    someone else's ``lies mcp down``. With ``force=False`` (the
-    default) this refuses while the daemon is serving and names
-    ``--force``; ``down --force`` stops it anyway.
+    a long-lived stream to it, so stopping it disconnects all of them at
+    once. ``force=False`` (the default) refuses while it is serving.
 
-    Raises :class:`DaemonBusy` on create-lock contention,
-    :class:`DaemonStopFailed` if the process survives SIGKILL, and
-    :class:`DaemonInUse` when a live daemon is serving and ``force``
-    is False. A missing or stale record is a successful no-op, not an
-    error.
+    Raises:
+        DaemonBusy: Create-lock contention.
+        DaemonStopFailed: The process survives SIGKILL.
+        DaemonInUse: A live daemon is serving and ``force`` is false.
     """
     lock = create_lock_path(wiki)
     lock_result = acquire_create_lock(lock, max_age_s=CREATE_LOCK_MAX_AGE_S)

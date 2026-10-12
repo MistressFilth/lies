@@ -143,6 +143,25 @@ call.**
   slowest query in the process — the queue they would join is one long
   query, not each other.
 
+  **The async gate is reentrant on one context, and that reentrancy has
+  a latent hazard — do not build the shape that reaches it.**
+  `qmd_lock_async` snapshots `_held_depth`, a `contextvars.ContextVar`,
+  at entry, and contextvars propagate *into* `anyio.to_thread.run_sync`
+  workers. A future path that acquires the qmd lock and then dispatches
+  a `query` through `_run_blocking` would carry a non-zero depth into
+  the worker thread, take the reentrant branch, and run the query with
+  **no inode held** — silently, with no error and no log line. Not
+  reachable today: the only `qmd_lock_async` holder is `daemon_tool`,
+  and no `with_qmd_lock`-wrapped helper calls `daemon_tool`. Re-verify
+  that before assuming it still holds.
+
+  **Awaiting in the async gate buys thread tokens, not loop
+  protection.** The `search` tool body is a sync `FunctionTool`
+  dispatched through `anyio.to_thread`, so the wait already runs on its
+  own loop on a worker thread and the daemon's serving loop is never
+  blocked either way. A blocking poll would park one of anyio's 40
+  default thread tokens for the length of the wait; awaiting parks none.
+
   **The last hop to the reader is deterministic; do not make it
   model-mediated again.** `register_librarian_tools`' `_search`
   closure records every envelope into a caller-supplied
@@ -324,8 +343,8 @@ call.**
   and the spawn shells `qmd mcp --http --daemon` directly, so the
   recycle never waits on the lock it is holding.
 
-  **The number is now reachable: a ~30 s floor and a ~61 s ceiling,
-  both measured.** Measured
+  **Worst case: a ~30 s floor and a ~61 s ceiling, both measured.**
+  Measured
   2026-10-10 against the live daemon: the recycle's probe caught
   `(httpx.HTTPError, mcp.MCPError, OSError)`, but a stopped daemon
   raises a **bare** `RuntimeError` — fastmcp wraps every connect
@@ -346,26 +365,39 @@ call.**
   (`tests/integration/test_qmd_recycle_ceiling.py`):
 
   | scenario | measured (real scale) |
-  |---|---|
+  | :--- | :--- |
   | prompt status, prompt spawn | **30 s** (floor) |
   | status "running", SIGTERM missed | **34 s** |
   | prompt status, **spawn hangs** | **45 s** |
-  | **`qmd status` hangs**, prompt spawn | **45-59 s** |
+  | **`qmd status` hangs**, prompt spawn | **45-59 s**, a **cliff** |
   | both hang | **61 s** (ceiling) |
 
-  **The `qmd status` row is a range and must be copied as one.** It is a
-  cliff, not noise. The 30 s budget admits a second in-loop `qmd status`
+  **The `qmd status` row is a range and must be copied as one: the row is
+  a cliff, not noise.** The 30 s budget admits a second in-loop `qmd status`
   call only while `2 x bound + poll_interval < budget`, i.e. bound <
   0.1475 at 1/100 scale; `STATUS_TIMEOUT_S / N` is 0.1500, so the shipped
   figure clears the boundary by 0.0025 scaled — **0.25 s of headroom at
   real scale** — and one bound further back costs a whole
-  `STATUS_TIMEOUT_S`. Measured by sweeping: 0.1450 → two in-loop calls →
-  **59.4 s**; 0.1470 → one → **44.9 s**. A reader who copies 46 s is
-  wrong by up to 14 s in either direction.
+  `STATUS_TIMEOUT_S`.
+
+  **Scaled:** `STATUS_TIMEOUT_S`, `ready_timeout`, `poll_interval`, the
+  reap's `grace`/`poll`, **and** `_subprocess._POLL_INTERVAL_S`. That
+  last one is neither a timeout nor a sleep — it is the reader loop's
+  `sel.select()` granularity — so it does not scale by itself, and an
+  unscaled 0.1 s survives the rescaling. With the reader loop real the
+  ceiling reads 61 s scaled and 86-88 s unscaled, so leaving it out would
+  put the reported figure 40% low. Measured by sweeping: 0.1450 → two in-loop calls →
+  **59.4 s**; 0.1470 → one → **44.9 s**, so the row's honest range is
+  **44.9 to 59.4 s** — the 14.5 s swing is 0.25 s of real-scale
+  headroom, and the harness happened to sit on the near side. A reader
+  who copies 46 s is wrong by up to 14 s in either direction.
 
   Three more traps in that table. **The spawn has its own 15 s bound**, so
   "prompt status" does not mean prompt everything, and the spawn-hang
-  case dominates the middle. A **hanging `qmd status` makes the
+  case dominates the middle. **The grace windows are reachable in
+  exactly one row** — a hanging `qmd status` reports
+  `running=False`, so the reap returns at its first line and spends
+  neither. A **hanging `qmd status` makes the
   ceiling lower, not higher**: `qmd_daemon_state()` then reports
   `running=False`, so `_reap_qmd_daemon` returns without killing
   anything and spends neither grace window — which is why the "~80 s"
@@ -491,9 +523,9 @@ call.**
   threads the port from the URL it will probe
   (`daemon.daemon_port_from_url`). That is **six call sites across four
   reap-then-respawn locations**: `capability.as_capability`
-  (`capability.py:105`), `access.daemon_tool` (`access.py:441`),
-  `recycle_qmd_daemon` (`daemon.py:686`), and `ensure_qmd_daemon`'s
-  three paths (`daemon.py:426/437/445`). `access.daemon_tool`'s was
+  (`capability.py:105`), `access.daemon_tool` (`access.py:322`),
+  `recycle_qmd_daemon` (`daemon.py:429`), and `ensure_qmd_daemon`'s
+  three paths (`daemon.py:329/340/348`). `access.daemon_tool`'s was
   missed by the first fix and is the hottest of the four, not the
   coldest: `_is_daemon_stale()` is true on essentially every call after
   any write. Pinned by `test_access.py`'s AST check for `access.py` and,
@@ -585,7 +617,7 @@ MCP tool path routes through the librarian instead. `lib_ask` goes
 seam section above). `ground()` reaches `access.daemon_tool` directly
 on its unscoped and tagged fast-paths, so the exception arrives as a
 real exception and its own `except QmdLockBusy` arms catch it —
-`grounding.py:468` and `:545`. Two mechanisms, two different
+`grounding.py:463` and `:533`. Two mechanisms, two different
 shapes, both live.
 
 So: the arms are reachable, the digest field has a reader

@@ -1,10 +1,4 @@
-"""The qmd lock's per-acquisition setup: resolve once, ``mkdir`` once.
-
-These count ``mkdir`` calls rather than timing them. A contended wait on
-the async gate runs one attempt per poll for up to 120 s, and the cost
-under test is that the attempt used to re-create a directory that
-already existed, on every single attempt.
-"""
+"""The qmd lock's per-acquisition setup: resolve once, ``mkdir`` once."""
 
 from __future__ import annotations
 
@@ -41,13 +35,7 @@ def count_mkdir(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
 
 
 def _force_contention(monkeypatch: pytest.MonkeyPatch, attempts: list[int]) -> None:
-    """Make every acquire attempt lose, without bypassing the code under test.
-
-    Wraps the *real* ``acquire_create_lock`` so the ``parent_prepared``
-    plumbing and the mkdir path both execute for real; only the outcome
-    is forced. Wrapping rather than replacing matters — a stub would
-    make this test pass without the hoist doing anything.
-    """
+    """Make every acquire attempt lose, without bypassing the code under test."""
     real = qmd_lock.acquire_create_lock
 
     def busy(path: Path, **kw: Any) -> AcquireResult:
@@ -63,12 +51,7 @@ def _force_contention(monkeypatch: pytest.MonkeyPatch, attempts: list[int]) -> N
 def test_a_contended_acquisition_mkdirs_exactly_once(
     count_mkdir: list[Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """One acquisition, many attempts, one ``mkdir``.
-
-    Re-introducing the per-attempt ``mkdir`` at the top of
-    ``acquire_create_lock`` makes this count equal the number of
-    attempts. That is the mutation this test exists to catch.
-    """
+    """One acquisition, many attempts, one ``mkdir``."""
     # Point the lock at tmp_path. Without this the poll resolves the
     # *machine's* real `~/.local/state/lies/qmd.lock`, and the forced
     # contention below leaves a real lock file behind for every other
@@ -100,12 +83,7 @@ def test_a_contended_acquisition_mkdirs_exactly_once(
 async def test_the_async_gate_hoists_the_mkdir_too(
     count_mkdir: list[Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The async path hoists it exactly like the sync one.
-
-    The defect was found on this path: it polls at 10 Hz for up to
-    120 s, where the sync decorator polls for 30 s, so it does four
-    times the redundant ``mkdir`` calls.
-    """
+    """The async path hoists it exactly like the sync one."""
     lock_path = tmp_path / "state" / "lies" / "qmd.lock"
     monkeypatch.setenv("LIES_QMD_LOCK_PATH", str(lock_path))
     lock_path.parent.mkdir(parents=True, exist_ok=True)
@@ -125,12 +103,7 @@ async def test_the_async_gate_hoists_the_mkdir_too(
 
 
 def test_the_first_acquire_still_creates_a_missing_parent(tmp_path: Path) -> None:
-    """A caller that does not pre-prepare gets the mkdir it always got.
-
-    The optimisation is opt-in. Without this, hoisting the mkdir would
-    silently break the one caller that needs it: a first-ever acquire
-    into a directory that does not exist yet.
-    """
+    """A caller that does not pre-prepare gets the mkdir it always got."""
     lock_path = tmp_path / "brand" / "new" / "dir" / "qmd.lock"
     assert not lock_path.parent.exists()
 
@@ -144,13 +117,7 @@ def test_the_first_acquire_still_creates_a_missing_parent(tmp_path: Path) -> Non
 
 
 def test_parent_prepared_still_heals_a_vanished_parent(tmp_path: Path) -> None:
-    """Hoisting the mkdir must not turn a vanished parent into a failure.
-
-    Today the per-attempt mkdir heals a directory removed underneath a
-    wait, silently. With the mkdir hoisted, a caller that prepared once
-    would otherwise get ``FileNotFoundError`` out of the create. So the
-    create heals it — on the exceptional path only.
-    """
+    """Hoisting the mkdir must not turn a vanished parent into a failure."""
     lock_path = tmp_path / "state" / "qmd.lock"
     qmd_lock._prepare((lock_path, Path(f"{lock_path}.pid"), Path(f"{lock_path}.state.json")))
     assert lock_path.parent.is_dir()
@@ -173,18 +140,7 @@ def test_parent_prepared_still_heals_a_vanished_parent(tmp_path: Path) -> None:
 def test_the_heal_covers_the_reap_and_retry_creates_too(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The vanished-parent heal must reach *every* create, not just the first.
-
-    This is the path an earlier version of the mkdir hoist broke. The
-    heal sat around the first ``_create_exclusive`` call only, while
-    three retry creates sat inside the ``FileExistsError`` handler with
-    no such arm — so with the parent removed as the code entered the
-    reap-and-retry branch, ``FileNotFoundError`` escaped. The first
-    create healed correctly, which is exactly what made it look fine.
-
-    Driven through the real force-repair branch, with the parent removed
-    by the ``_reap_files`` the branch itself performs.
-    """
+    """The vanished-parent heal must reach *every* create, not just the first."""
     lock_path = tmp_path / "state" / "qmd.lock"
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     pid_path = Path(f"{lock_path}.pid")
@@ -231,11 +187,7 @@ def test_the_heal_covers_the_reap_and_retry_creates_too(
 def test_ensure_lock_parent_is_a_noop_on_an_existing_directory(
     tmp_path: Path, count_mkdir: list[Path]
 ) -> None:
-    """The helper is the mkdir, and it is idempotent.
-
-    Pins the two things a caller relies on: it does not raise when the
-    directory is already there, and it issues exactly one ``mkdir``.
-    """
+    """The helper is the mkdir, and it is idempotent."""
     target = tmp_path / "a" / "b" / "c" / "qmd.lock"
     target.parent.mkdir(parents=True, exist_ok=True)
     count_mkdir.clear()

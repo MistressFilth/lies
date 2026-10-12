@@ -8,49 +8,12 @@ subprocess, so the listener only ever sees its own frames.
     PYTHONPATH=tools .venv/bin/python -m pytest tests/unit -q \
         -p qmd_unit_network_audit
 
-Wired into ``make unit-test``, so it runs on every commit and every
-``make check``. **It fails the session.** The first version only printed,
-which is how a warning reached a report as a green build.
+Wired into ``make unit-test``. It fails the session.
 
-**It records ATTEMPTS, not successes.** A connect that is refused still
-counts, which is the point: what is audited is a test *reaching* for a
-real address, and whether the answer is yes or no is the host's
-business, not the test's.
-
-**The rule is inverted: every hit fails unless it is named in
-:data:`ACCEPTED`.** An earlier version named the known offenders as prose
-in a module docstring and then reported clean anyway, so adding a new
-dialing test was free. The name, and the ports it may reach, are the
-whole grant; a port the name does not list is still a failure. An entry
-that made no connection this run is reported, not enforced — making a
-probe hermetic is progress, not a regression, and dropping the entry is
-a one-line edit.
-
-Four accepted probes exist. All four pre-date this tool, all four reach
-loopback through ``lifecycle._port_listening``, and none of them asserts
-on what is listening. They are here because the honest alternative —
-changing them — would alter what they test.
-
-**The guard re-installs itself after every test, and it has to.**
-``tests/unit/qmd/test_daemon_recycle.py`` restores ``socket.socket``
-with an explicit ``del`` (correctly — the attribute is inherited from
-``_socket.socket``, so a ``monkeypatch`` undo would leave a shadowing
-class attribute behind). That ``del`` removes *this* module's guard too,
-and without the reinstall everything after that file runs unguarded.
-Measured, not guessed: with the dial probe after that file the audit
-stayed silent, and with it before, the audit failed the session. An
-order-dependent guard is not a guard.
-
-**What it still does not cover**, so nobody reads a green run as a
-firewall:
-
-- a connect performed on a thread that outlives the fixture may be
-  attributed to the *next* test;
-- a hit with no test in scope — session setup, collection, teardown — is
-  attributed to ``<no test>`` and fails, because nothing has claimed it.
-
-Adding a name to :data:`ACCEPTED` is the only way to acknowledge a dial,
-which is what makes the list worth reading.
+It records **attempts**, not successes: a refused connect still counts.
+Every hit fails unless the test is named in :data:`ACCEPTED` together
+with the ports it may reach. The guard re-installs itself after every
+test, because a test that deletes ``socket.socket`` removes it too.
 """
 
 import socket
@@ -59,9 +22,8 @@ from typing import NamedTuple
 
 import pytest
 
-#: Loopback ports a qmd daemon is plausibly on. The default daemon port
-#: is 8181; 9000 is here because this host runs its daemon there, which
-#: is how a test that hardcoded it was caught.
+#: Loopback ports a qmd daemon is plausibly on: the default 8181, and
+#: 9000 because this host runs its daemon there.
 WATCHED_PORTS = frozenset({9000, 8181})
 
 #: The only grants: ``{test node id: {ports that test may reach}}``.
@@ -69,9 +31,8 @@ WATCHED_PORTS = frozenset({9000, 8181})
 ACCEPTED: dict[str, frozenset[int]] = {
     # `test_status_honors_custom_port` is the one that reaches 9000, so
     # on this host it reaches the operator's LIVE daemon. Its assertions
-    # are on `s.port` / `s.url`, which do not depend on the answer — but
-    # a *new* test on 9000 would not have that excuse by default, which
-    # is the point of naming it.
+    # do not depend on the answer — but a *new* test on 9000 would not
+    # have that excuse by default, which is the point of naming it.
     "tests/unit/qmd/test_lifecycle.py::test_status_honors_custom_port": frozenset({9000}),
     # The other two lifecycle probes, on qmd's default port.
     "tests/unit/qmd/test_lifecycle.py::test_status_returns_not_running_when_pidfile_absent_and_no_listener": frozenset(

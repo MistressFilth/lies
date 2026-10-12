@@ -21,14 +21,7 @@ def test_qmd_lock_busy_carries_diagnostic_fields():
 
 
 def test_qmd_lock_busy_names_the_lock_path_it_waited_on():
-    """The path is the only record of *which* inode was contended.
-
-    ``LIES_QMD_LOCK_PATH`` overrides the default, so two hosts — and two
-    configurations on one host — contend on different inodes while
-    raising the same class. A message carrying only the pid, the wait and
-    the budget tells a reader they queued but not where to look. Spec
-    §Testing item 2 requires the path.
-    """
+    """The path is the only record of *which* inode was contended."""
     path = Path("/var/lib/lies/qmd.lock")
     exc = QmdLockBusy(holder_pid=12345, waited_s=120.0, max_s=120.0, lock_path=path)
     assert exc.lock_path == str(path)
@@ -40,33 +33,14 @@ def test_qmd_lock_busy_names_the_lock_path_it_waited_on():
 
 
 def test_qmd_lock_busy_omits_the_path_clause_when_no_path_is_known():
-    """A hand-built instance has no inode; the clause is omitted, not blanked.
-
-    ``QmdLockBusy`` is constructed directly in tests and by any caller
-    re-wrapping one, so ``lock_path`` has to be optional and the message
-    has to stay readable without it.
-    """
+    """A hand-built instance has no inode; the clause is omitted, not blanked."""
     exc = QmdLockBusy(holder_pid=1, waited_s=1.0, max_s=2.0)
     assert exc.lock_path is None
     assert str(exc) == "qmd flock contention: holder PID 1, waited 1.0s, max 2.0s"
 
 
 def test_qmd_lock_busy_optional_fields_default_to_none():
-    """The ``max_s`` default is a fallback, not a description of any site.
-
-    An earlier version of the trailing comment here said "default matches
-    the spec's 30 s wait budget", which contradicted
-    ``lock_errors.QmdLockBusy``'s own docstring: the budget belongs to
-    the *raiser*, and the two raisers disagree (``with_qmd_lock`` polls
-    30 s, ``qmd_lock_async`` 120 s). The ``30.0`` default matches no
-    production raise site — it only exists so a hand-built instance has
-    something to carry.
-
-    So what is true is narrower: the default is inert, and every real
-    raise overwrites it. Asserting the inertness rather than the number
-    keeps the test from re-asserting a figure that is an implementation
-    detail of neither raiser.
-    """
+    """The ``max_s`` default is a fallback, not a description of any site."""
     exc = QmdLockBusy()
     assert exc.holder_pid is None
     assert exc.waited_s is None

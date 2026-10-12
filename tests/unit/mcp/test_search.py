@@ -813,32 +813,7 @@ def test_daemon_wedged_surfaces_as_transient_with_daemon_log(
 
 
 def test_a_lock_busy_reads_as_queued_then_timed_out(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The RENDERED string, which is the whole user-visible payoff.
-
-    ``_search_impl`` catches ``Exception``, so without a dedicated arm
-    this arrives as ``"qmd query failed: QmdLockBusy: ..."`` — which
-    reads as a broken query and sends the operator to restart the
-    daemon, when the daemon is answering fine and the caller merely
-    queued behind another qmd operation. That framing is precisely what
-    this branch exists to delete, and nothing asserted on it until now.
-
-    Asserted on the produced text, not on an exception type: the arm is
-    only worth anything if the *sentence* changes. Every fact from the
-    raised exception has to survive — holder pid, elapsed wait, budget,
-    lock path — because ``AGENTS.md`` and the CHANGELOG record that a
-    non-compliant model degrades to a generic reason, so this string is
-    the last place those facts can be lost.
-
-    **"gave up", not "timed out".** The wait ended because the gate's
-    budget expired, not because a deadline fired on a call in flight;
-    an earlier version of the arm rendered ``_current_timeout()`` — the
-    60 s daemon read deadline — into "timed out after 60s" beside
-    "waited 120.0s, max 120.0s" in the same sentence. The budget
-    belongs to the raiser, so the arm reads it off ``exc.max_s`` and
-    the wording says what happened. The end-to-end test in
-    ``test_ask_lock_contention.py`` pins the number against a real
-    lock hold; this one pins the shape against a hand-built instance.
-    """
+    """The RENDERED string, which is the whole user-visible payoff."""
     from lies.lock_errors import QmdLockBusy
     from lies.mcp.search import _search_impl
 

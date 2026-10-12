@@ -60,47 +60,22 @@ class WikiFlockIndeterminate(WikiFlockError):
 class QmdLockBusy(WikiFlockError):
     """Another process holds the site-wide qmd flock past the wait budget.
 
-    **The budget belongs to the raiser, not to this class.** Two paths
-    share the flock and they wait for different lengths: the
-    :func:`~lies.qmd.lock.with_qmd_lock` CLI decorator polls for 30 s,
-    and the daemon query path
-    (:func:`~lies.qmd.lock.qmd_lock_async`) polls for 120 s,
-    overridable per call with ``LIES_QMD_QUERY_LOCK_WAIT``. So there is
-    no single number to read off this docstring — read ``max_s`` off the
-    instance, which every production raise site populates.
+    The budget belongs to the raiser, not to this class: the CLI
+    decorator polls for 30 s and the daemon query path for 120 s,
+    overridable per call with ``LIES_QMD_QUERY_LOCK_WAIT``. Read
+    ``max_s`` off the instance.
 
-    Distinct from WikiLockBusy because (a) the qmd flock is site-wide, not
-    per-wiki; (b) the operator recovery is to wait and retry the operation
-    (concurrent CLI subprocesses are expected transient contention), not
-    to run ``lies flock qmd force-repair``.
-
-    (b) applies to the query path too, for a sharper reason: the daemon
-    answered nothing because nothing was dispatched to it, so there is no
-    daemon state to recycle and no ``mcp.log`` line to read. Retry is the
-    remedy there; recycling is the wrong one and costs a model reload.
+    Distinct from WikiLockBusy because the qmd flock is site-wide, not
+    per-wiki, and the operator recovery is to wait and retry rather than
+    ``lies flock qmd force-repair``. Nothing was dispatched, so there is
+    no daemon state to recycle.
 
     Attributes:
-        holder_pid: PID of the live holder, when known. ``None`` if unknown
-            (e.g., the contention pre-dates the heartbeat envelope).
+        holder_pid: PID of the live holder, when known. ``None`` if unknown.
         waited_s: Wall-clock seconds spent polling before raising.
-        max_s: The budget *that raiser* waited for, in seconds — read it
-            off the instance rather than assuming a number. Every
-            production raise site passes it explicitly: both raisers in
-            :mod:`lies.qmd.lock` pass their own ``retry_budget_s``, and
-            :meth:`~lies.library.writer.LibraryWriter.commit` forwards
-            the value it caught. The ``30.0`` in ``__init__`` is a default
-            for hand-built instances and matches no production raise site.
+        max_s: The budget *that raiser* waited for, in seconds.
         lock_path: The inode the wait was spent on, when the raise site
-            knows it. **Every production raise site passes it
-            explicitly**: both raisers in :mod:`lies.qmd.lock` have the
-            path in hand because the triad is resolved once per
-            acquisition, and :meth:`~lies.library.writer.LibraryWriter.commit`
-            forwards the value it caught. ``None`` only for a hand-built
-            instance in a test, or a re-wrapping caller that has nothing
-            to forward — which is why the docstring here cannot promise
-            the path is always present. What it can promise is that no
-            *production* site drops it, and
-            ``tests/unit/qmd/test_qmd_lockbusy_sites.py`` asserts that.
+            knows it. ``None`` only for a hand-built test instance.
     """
 
     def __init__(
@@ -117,13 +92,8 @@ class QmdLockBusy(WikiFlockError):
         self.max_s = max_s
         self.lock_path = str(lock_path) if lock_path is not None else None
         if message is None:
-            # The path is named because the flock is *resolvable*: it is
-            # the one operator step that tells a contended host from a
-            # broken one. A caller that queued and gave up needs to be
-            # able to go and look at the inode, and "waited 120s, max
-            # 120s" on its own does not say which one. `LIES_QMD_LOCK_PATH`
-            # overrides it, so the path in the message is the only record
-            # of *which* inode was contended.
+            # Naming the inode is the one operator step that tells a
+            # contended host from a broken one.
             where = f" on {self.lock_path}" if self.lock_path else ""
             message = (
                 f"qmd flock contention{where}: holder PID {holder_pid}, "

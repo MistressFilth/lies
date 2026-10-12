@@ -1,50 +1,4 @@
-"""The qmd lock's facts reach the ``lib_ask`` envelope under REAL contention.
-
-**What is real here, and why the earlier attempt at this test was
-deleted.** A test named
-``test_a_busy_qmd_lock_reaches_the_lib_ask_envelope`` used to call
-``synth.synthesize`` — which no registered tool reaches — and
-hand-build the ``QmdLockBusy``. It proved nothing about the shipped
-ask path, so it was deleted. This file replaces it with a test that
-runs the path a caller actually runs:
-
-    lib_ask.fn  →  _ask_impl  →  librarian_agent_run
-                →  librarian_agent (real Agent, real register_librarian_tools)
-                →  _search closure  →  search.fn (_search_impl, real)
-                →  access.daemon_tool("query")  →  qmd_lock_async
-                →  _acquire_with_poll_async  →  QmdLockBusy
-                ←  _search_impl's QmdLockBusy arm  →  SearchDiagnostics
-                ←  with_search_diagnostics  →  LibrarianOutput  →  envelope
-
-The contention is a **forked process holding the real lock inode**,
-not a stubbed exception: the child runs the production
-``with_qmd_lock`` decorator, writes the real pid sidecar and
-heartbeat, and the parent's poll loop loses against it the way a
-second ``lies qmd embed`` would.
-
-**What is stubbed, and why it is not the subject.** Three things,
-each of which is upstream of the lock gate or is the model:
-
-1. ``search._validate_scope_blocking`` — a ``status`` call against the
-   daemon's collection list. It is *not* gated by the lock, so leaving
-   it real would dial a real address; the network audit is wired into
-   ``make unit-test`` and would fail the session. Same stub, same
-   reason, as ``tests/unit/mcp/test_search.py``.
-2. The library registry — the isolated XDG has no collections, so
-   ``_search_impl`` would answer "no collections registered" and never
-   reach the query.
-3. The librarian model — ``TestModel``, which is how you get a
-   deterministic LLM. **The canned bundle is deliberately
-   non-compliant**: ``no_coverage=True``, ``transient=False``,
-   ``fallback_reason=None`` — i.e. the model claims the corpus has
-   nothing *and* drops the reason. That is the failure the C1
-   overlay exists to make impossible, so the test is only meaningful
-   if the model is hostile.
-
-The wait is on a stubbed clock (``_fake_poll_clock``) so a 120 s
-budget costs no wall time. The budget's *arrival in the string* is
-what is under test; its passage is not.
-"""
+"""The qmd lock's facts reach the ``lib_ask`` envelope under REAL contention."""
 
 from __future__ import annotations
 
@@ -62,15 +16,10 @@ from pydantic_ai.messages import ModelResponse, ToolCallPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.models.test import TestModel
 
-# Imported at module scope, deliberately. ``lies.mcp.synth`` and
-# ``lies.agents.librarian`` are a few hundred milliseconds of import on
-# a cold interpreter, and the per-test budget gate measures the *call*
-# phase. Leaving them inside the test bodies charged that fixed cost to
-# whichever test happened to run first — exactly the trap
-# ``tests/unit/conftest.py`` documents when it removed the
-# ``lies.qmd.capability`` pre-import. None of these modules read the
-# library registry at import time, so importing them outside the
-# per-test XDG isolation fixture is safe.
+# Imported at module scope, deliberately: the per-test budget gate
+# measures the *call* phase, so an import inside a test body would be
+# charged to whichever test ran first. None of these read the library
+# registry at import time.
 from lies.agents.librarian import LibrarianOutput  # noqa: E402
 from lies.agents.librarian import librarian_agent  # noqa: E402
 from lies.library import registry as reg_mod  # noqa: E402
@@ -79,20 +28,10 @@ from lies.mcp import synth as synth_mod  # noqa: E402
 from lies.mcp.search import _search_impl  # noqa: E402
 from lies.qmd import lock as lock_mod  # noqa: E402
 
-#: How long the parent waits for the forked holder to say it owns the
-#: inode before declaring the harness broken. Generous: the child only
-#: has to open a file and write a byte.
+#: How long the parent waits for the forked holder to claim the inode.
 _HANDSHAKE_TIMEOUT_S = 10.0
 
-#: These tests fork a real holder process. There is no Windows runner
-#: today (Linux/WSL2 only) and no skip marker is strictly needed, but a
-#: bare ``os.fork`` on Windows is an ``AttributeError`` in the test
-#: body rather than a clean skip — and a red test on a platform nobody
-#: runs is a worse signal than a skip. The precedent is weaker than it
-#: looks: ``tests/unit/qmd/test_subprocess.py``'s fork lives inside a
-#: generated child script's SOURCE STRING behind ``@pytest.mark.slow``,
-#: so it neither runs by default nor fails at collection there.
-#: Applied at module level because the fork is in a shared helper.
+#: Module level because the fork is in a shared helper.
 requires_fork = pytest.mark.skipif(
     not hasattr(os, "fork"),
     reason="os.fork is POSIX-only; the lock contention is a real child process",
@@ -102,26 +41,12 @@ requires_fork = pytest.mark.skipif(
 #: 0.1 s so the *stubbed* 120 s clock needs ~20 poll attempts instead
 #: of ~1200. Neither number is asserted on — the budget's arrival in
 #: the rendered reason is — and each attempt is a real ``O_EXCL``
-#: create against the real inode. ``test_the_async_sleep_is_clamped_
-#: to_the_remaining_budget`` uses the same lever for the same reason.
+#: create against the real inode.
 _POLL_INTERVAL_S = 6.0
 
 
 def _fake_poll_clock(monkeypatch: pytest.MonkeyPatch) -> dict[str, int]:
-    """Give ``qmd_lock_async``'s poll loop a clock it drives.
-
-    ``_acquire_with_poll_async`` exits on ``time.monotonic()`` and
-    delays on ``anyio.sleep``. Stub either one alone and the other
-    still runs on real time — a real 120 s sleep, or a no-op sleep
-    against a real deadline that spins for two minutes. Both come from
-    shims installed on the ``lies.qmd.lock`` module, which resolves
-    those names as module globals, so the swap is visible to the poll
-    loop and to nothing else in the process.
-
-    The clock advances one poll interval per sleep, so the iteration
-    count is a function of ``query_lock_wait_s()`` and
-    ``_POLL_INTERVAL_S`` rather than of how loaded the machine is.
-    """
+    """Give ``qmd_lock_async``'s poll loop a clock it drives."""
     state = {"now": 0.0, "sleeps": 0}
     poll_interval = lock_mod._POLL_INTERVAL_S
 
@@ -160,21 +85,7 @@ def _fake_poll_clock(monkeypatch: pytest.MonkeyPatch) -> dict[str, int]:
 
 @contextlib.contextmanager
 def _real_lock_holder(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[Path]:
-    """Hold the qmd lock inode from a real forked process.
-
-    The child runs the production ``with_qmd_lock`` decorator, so what
-    the parent's poll loop loses against is the same create-lock +
-    pid sidecar + heartbeat triple production contends with — not a
-    hand-made file. That matters for the assertion: the holder PID in
-    the rendered reason is a *different process's* PID, so "the pid
-    crossed the boundary" is a real claim rather than a tautology
-    about ``os.getpid()``.
-
-    ``LIES_QMD_LOCK_PATH`` is pinned into ``tmp_path`` for the whole
-    block. An earlier implementer on this branch polled the machine's
-    real ``~/.local/state/lies/qmd.lock`` and left it held, which broke
-    22 unrelated tests. Nothing outside this block can see this inode.
-    """
+    """Hold the qmd lock inode from a real forked process."""
     lock_path = tmp_path / "qmd.lock"
     monkeypatch.setenv("LIES_QMD_LOCK_PATH", str(lock_path))
 
@@ -227,17 +138,7 @@ def _real_lock_holder(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterat
 
 
 def _seed_one_collection(monkeypatch: pytest.MonkeyPatch) -> None:
-    """One registered collection, and no daemon scope pre-check.
-
-    Both are the two hops *before* the lock gate, and both have to be
-    stubbed for the same reason. The isolated XDG has no collections, so
-    ``_search_impl`` answers "no collections registered" and never
-    reaches the query at all; and the pre-check is a ``status`` call
-    against the daemon, which the lock does not gate, so leaving it
-    real would dial a real address — and the network audit is wired
-    into ``make unit-test``. Same stub, same reason, as
-    ``tests/unit/mcp/test_search.py``'s ``_bypass_daemon_precheck``.
-    """
+    """One registered collection, and no daemon scope pre-check."""
     metas = [LibraryCollectionMeta(name="alpha", tags=("plugins",))]
     monkeypatch.setattr(reg_mod, "library_collection_names", lambda: frozenset({"alpha"}))
     monkeypatch.setattr(reg_mod, "library_collection_metas", lambda: iter(metas))
@@ -245,14 +146,7 @@ def _seed_one_collection(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _noncompliant_librarian() -> TestModel:
-    """A ``TestModel`` whose bundle contradicts what the search found.
-
-    ``no_coverage=True`` is the bundle's claim that the corpus has
-    nothing for the question, and ``fallback_reason=None`` drops the
-    reason the tool handed over. Both are what a model under output
-    pressure emits, and both are wrong here: nothing was dispatched,
-    so nothing is known about the corpus.
-    """
+    """A ``TestModel`` whose bundle contradicts what the search found."""
     return TestModel(
         call_tools=["search"],
         custom_output_args=dataclasses.asdict(
@@ -273,15 +167,7 @@ def test_the_ask_path_names_the_qmd_lock_holder_under_real_contention(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Every fact the operator needs survives a genuine lock wait-out.
-
-    The assertion that matters is the *model's*: the canned bundle says
-    the corpus has nothing and carries no reason, and the envelope still
-    says "inconclusive" and names the holder. Before the
-    ``SearchDiagnostics`` overlay the bundle's own fields were the
-    whole account, so this test fails on the ``fallback_reason`` and
-    ``answer`` assertions and not on the lock machinery at all.
-    """
+    """Every fact the operator needs survives a genuine lock wait-out."""
     with _real_lock_holder(monkeypatch, tmp_path) as lock_path:
         monkeypatch.setattr(lock_mod, "_POLL_INTERVAL_S", _POLL_INTERVAL_S)
         clock = _fake_poll_clock(monkeypatch)
@@ -301,20 +187,9 @@ def test_the_ask_path_names_the_qmd_lock_holder_under_real_contention(
             lambda lib_out, q: synthesizer_calls.append(q) or None,
         )
 
-        # Capture the bundle ``librarian_agent_run`` hands back.
-        # ``_ask_impl`` reads ``transient`` first and never reads
-        # ``no_coverage`` at all, so the envelope alone cannot witness
-        # the flag. Nor can any other in-tree consumer: the
-        # orchestrator's ``run_query`` recomputes ``answer.no_coverage``
-        # from the resolved tag scope (``orchestrator.py``'s
-        # ``no_coverage = not answer.searched_scope and ...``), never
-        # from the bundle, and the synthesizer's ``QueryDeps`` renders
-        # only ``librarian_output.excerpts`` via ``page_texts`` /
-        # ``page_sources``. So the return value of
-        # ``librarian_agent_run`` is the only place on the registered
-        # path where the overlay's ``no_coverage`` decision is
-        # observable, and that is why the spy is here rather than at
-        # the envelope.
+        # Spy at ``librarian_agent_run``, not at the envelope: ``_ask_impl``
+        # reads ``transient`` and never reads ``no_coverage``, so the
+        # overlay's ``no_coverage`` decision is only observable here.
         bundles: list[LibrarianOutput] = []
         real_librarian_agent_run = synth_mod.librarian_agent_run
 
@@ -376,21 +251,7 @@ def test_the_rendered_reason_names_the_holder_pid_and_the_real_budget(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The pid, the wait and *the lock budget* — not the query timeout.
-
-    Two budgets exist and they are not equal: ``query_lock_wait_s()``
-    (120 s by default) is what the gate waited on, and
-    ``get_qmd_query_timeout()`` (60 s by default) is the daemon read
-    deadline, which never expired here. An earlier version of
-    ``_search_impl``'s ``QmdLockBusy`` arm rendered the second inside
-    "timed out after Ns", printing "60s" beside "waited 120.0s, max
-    120.0s" in one sentence. The reader was handed two budgets and the
-    leading one described a deadline that had not fired.
-
-    Asserted against the number the gate actually used, with
-    ``LIES_QMD_QUERY_LOCK_WAIT`` left at its default, so this pins the
-    shipped 120 s rather than a fixture's.
-    """
+    """The pid, the wait and *the lock budget* — not the query timeout."""
     monkeypatch.delenv("LIES_QMD_QUERY_LOCK_WAIT", raising=False)
 
     with _real_lock_holder(monkeypatch, tmp_path) as lock_path:
@@ -433,16 +294,7 @@ def test_the_rendered_reason_names_the_holder_pid_and_the_real_budget(
 
 
 def _dies_after_searching() -> FunctionModel:
-    """A librarian model that searches, then dies before answering.
-
-    Turn 1 returns a ``search`` tool call; the closure really runs and
-    really records. Turn 2 raises, standing in for the two production
-    ways ``run_sync`` raises after tools have already executed —
-    ``UsageLimitExceeded`` when the output cannot be validated within
-    the retry budget, and a transport failure mid-run. Both leave the
-    recorded search envelope intact, which is the whole point: the work
-    that already happened is not un-happened by the failure after it.
-    """
+    """A librarian model that searches, then dies before answering."""
     turns = {"n": 0}
 
     def _model(messages: list, info: AgentInfo) -> ModelResponse:
@@ -461,35 +313,7 @@ def test_a_model_that_dies_after_a_queued_search_still_names_the_holder(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The dispatch-failure branch is where the overlay earns its keep.
-
-    ``run_sync`` raising is the *only* situation the overlay changes
-    the outcome for. On the success path the bundle comes from the
-    model, which at least has the tool's envelope in its context; when
-    ``run_sync`` raises there is no bundle at all and the caller gets a
-    fixed wrapper string. Without the overlay on this branch the
-    operator reads
-
-        librarian dispatch failed: RuntimeError: Exceeded maximum
-        output retries (1)
-
-    and loses the holder pid, the elapsed wait, the budget and the
-    contended inode — the one fact that says "wait and retry" instead
-    of "your model is broken". The search already ran; the failure came
-    after it.
-
-    **This pin was missing and the claim was not.** An earlier draft
-    asserted in prose that the overlay covers both branches, and
-    deleting the wrapper from this one passed the whole unit suite at
-    rc=0 — because the sibling tests stub ``register_librarian_tools``
-    to a no-op, so ``diagnostics`` is empty and the overlay is a
-    no-op with or without it. This test drives a real agent with real
-    tools against real lock contention, so the record is non-empty and
-    the branch is the only thing that can supply the reason.
-
-    Same real contention as the tests above, for the same reason: a
-    hand-built ``QmdLockBusy`` would make this a restatement of them.
-    """
+    """The dispatch-failure branch is where the overlay earns its keep."""
     with _real_lock_holder(monkeypatch, tmp_path) as lock_path:
         monkeypatch.setattr(lock_mod, "_POLL_INTERVAL_S", _POLL_INTERVAL_S)
         _fake_poll_clock(monkeypatch)
@@ -543,37 +367,13 @@ def test_a_model_that_dies_after_a_queued_search_still_names_the_holder(
 # The overlay's own boundaries, on the dataclass directly
 # ---------------------------------------------------------------------------
 #
-# The end-to-end tests above prove the happy path of the overlay. These
-# pin its *edges*, which is where an over-eager overlay becomes its own
-# kind of lie: a bundle assembled from real page bodies is evidence, and
-# discarding it because an earlier attempt queued would be a different
-# false claim. The other edge is the mirror — a reason recorded against
-# a dispatch that DID run must not flip a corpus statement into a run
-# statement, because then the overlay would be manufacturing the very
-# false claim this branch exists to remove.
+# Pins the overlay's *edges*: an evidence-bearing bundle must survive a
+# recorded failure, and a reason recorded against a dispatch that DID run
+# must not flip a corpus statement into a run statement.
 
 
 def test_an_evidence_bundle_is_never_overwritten() -> None:
-    """Excerpts win over a recorded failure.
-
-    The librarian contract tells the model to retry a transient search
-    once. When that retry succeeds, the bundle is assembled from real
-    ``read`` bodies — and forcing ``transient`` onto it would make
-    ``_ask_impl`` throw the whole thing away and report "inconclusive"
-    for an answer it already has. The record deliberately keeps the
-    first failure (see :meth:`SearchDiagnostics.record`); this is where
-    that decision is bounded.
-
-    **The fixture records the read, and it has to.** Attestation arrived
-    with the overlay's fourth rule: an excerpt survives only if a tool
-    returned its path. This test's ``diag`` was built by hand with a
-    verdict and no envelope, so under the shipped rule its excerpt had
-    no recorded source at all and was correctly dropped — "evidence"
-    means "attested", and a hand-built verdict is not a record of any
-    page. ``record_read`` here is not decoration: it is the production
-    shape, because the evidence this test is about came back through the
-    ``read`` closure.
-    """
+    """Excerpts win over a recorded failure."""
     from lies.agents.librarian import (
         LibrarianOutput,
         PageExcerpt,
@@ -611,18 +411,7 @@ def test_an_evidence_bundle_is_never_overwritten() -> None:
 
 
 def test_an_evidence_bundle_with_no_recorded_source_is_not_evidence() -> None:
-    """The other side of the rule, and the one the fixture above could hide.
-
-    Same bundle, same ``transient`` verdict, but nothing was ever
-    recorded as having returned ``alpha/page.md``. The excerpt is
-    dropped, because the only claim behind it is the model's.
-
-    This is the whole point of the attestation arm and it is the case
-    the branch used to document rather than enforce: a fabricated
-    bundle came back untouched and ``_ask_impl`` rendered prose citing a
-    page nobody read. Asserted here on the dataclass so it cannot be
-    lost behind a passing "evidence wins" test.
-    """
+    """The other side of the rule, and the one the fixture above could hide."""
     from lies.agents.librarian import (
         LibrarianOutput,
         PageExcerpt,
@@ -665,15 +454,7 @@ def test_an_evidence_bundle_with_no_recorded_source_is_not_evidence() -> None:
 
 
 def test_a_recorded_failure_survives_a_later_clean_search() -> None:
-    """A retry that succeeds does not erase the wait that already happened.
-
-    The librarian is told to retry a transient search once. Recording
-    only the *last* envelope would let a successful retry silently
-    retire a lock-busy that consumed the whole 120 s budget — and the
-    caller would render it as an ordinary answer rather than as a run
-    that spent its budget queueing. The record is sticky for exactly
-    that reason, and this is the assertion that keeps it sticky.
-    """
+    """A retry that succeeds does not erase the wait that already happened."""
     from lies.agents.librarian import SearchDiagnostics
 
     diag = SearchDiagnostics()
@@ -705,23 +486,7 @@ def test_a_recorded_failure_survives_a_later_clean_search() -> None:
 
 
 def test_a_non_transient_reason_does_not_flip_a_corpus_statement() -> None:
-    """A dispatch that RAN keeps its ``no_coverage``.
-
-    ``_search_impl`` writes a reason for outcomes that are not process
-    failures: an unknown tag, a tag expression resolving to nothing, no
-    collections registered, a collection registered but empty in qmd.
-    Those are genuine statements about the request and the index, and
-    the librarian's ``no_coverage`` is the model's reading of them. The
-    overlay replaces the *reason* — verbatim, which is strictly more
-    informative than the model's paraphrase — but must leave both flags
-    alone.
-
-    Without the ``if diag.transient`` guard, ``no_coverage`` would be
-    forced ``False`` on every one of those paths, and the bundle would
-    report "we learned nothing" for a search that ran and found
-    nothing. That is the same false-claim shape this branch exists to
-    remove, manufactured by the fix for it.
-    """
+    """A dispatch that RAN keeps its ``no_coverage``."""
     from lies.agents.librarian import (
         LibrarianOutput,
         SearchDiagnostics,
@@ -754,17 +519,7 @@ def test_a_non_transient_reason_does_not_flip_a_corpus_statement() -> None:
 
 
 def test_a_bundle_transient_flag_survives_a_non_transient_recorded_reason() -> None:
-    """The two flags merge with ``or``; the record never clears the model.
-
-    A bundle can be transient for a reason the search tool knows nothing
-    about — every read failing, the model refusing to continue. That
-    verdict is the model's own and there is no recorded failure to
-    contradict it, so a ``diag.transient`` that is ``False`` must not
-    demote it. Asserted because the alternative (``transient =
-    diag.transient``) is a one-character edit that silently converts
-    "inconclusive" into "No relevant content found in library." for any
-    bundle assembled without a recorded dispatch failure.
-    """
+    """The two flags merge with ``or``; the record never clears the model."""
     from lies.agents.librarian import (
         LibrarianOutput,
         SearchDiagnostics,

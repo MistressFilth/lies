@@ -148,16 +148,7 @@ def _busy_lock_exception() -> QmdLockBusy:
 def test_ground_a_busy_qmd_lock_is_transient_and_carries_its_reason(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A contended lock is a process claim, and it says which process claim.
-
-    The ``except Exception`` arm below already turns this into
-    ``transient=True``, so no crash and no corpus claim — the point is
-    the *reason*. ``synth`` can only report what the digest carries, and
-    a contended lock is the one dispatch failure where the daemon is
-    healthy and the caller merely queued. Told only "dispatch failed", a
-    reader restarts a working daemon; told the holder pid and the budget,
-    they know they queued behind something and that it did not finish.
-    """
+    """A contended lock is a process claim, and it says which process claim."""
     from lies.library import registry as reg_mod
     from lies.library.registry import LibraryCollectionMeta
     from lies.mcp import grounding
@@ -219,12 +210,7 @@ def test_ground_a_busy_qmd_lock_on_the_tagged_path_carries_its_reason(
 def test_ground_an_ordinary_dispatch_failure_still_has_no_reason(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """``fallback_reason`` is for named causes; the untyped arm keeps ``None``.
-
-    It is not a free-text excuse slot. A generic ``RuntimeError`` gets
-    the fixed wording at the envelope, exactly as before this change —
-    only a failure with a class worth naming rides along.
-    """
+    """``fallback_reason`` is for named causes; the untyped arm keeps ``None``."""
     from lies.library import registry as reg_mod
     from lies.library.registry import LibraryCollectionMeta
     from lies.mcp import grounding

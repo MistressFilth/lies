@@ -1,67 +1,4 @@
-"""Measure the recycle's worst case, and assert only its STRUCTURE.
-
-Every time constant in the path is scaled by ``1/N`` so a real exhaustion
-finishes in seconds, then the measured wall time is scaled back. N = 100
-puts the floor at ~0.31 s and the ceiling at ~0.61 s.
-
-**What is scaled.** ``STATUS_TIMEOUT_S``, ``ready_timeout``,
-``poll_interval``, the reap's ``grace``/``poll``, **and**
-``_subprocess._POLL_INTERVAL_S``. The last one is neither a timeout nor a
-sleep — it is the granularity of the reader loop's ``sel.select()`` — so
-it does not scale by itself, and an unscaled 0.1 s survives the rescaling
-and lands as up to ~10 s per simulated hanging ``qmd status`` call in
-real-scale terms.
-
-**The reader loop is real. That is the whole reason the poll matters.**
-An earlier version of this harness replaced ``daemon._run_qmd`` outright,
-which meant ``_POLL_INTERVAL_S`` was never read and patching it was
-inert — six patched runs and three unpatched runs produced overlapping
-distributions. It also produced a *tautological pin*: the test that
-claimed to check the harness scaled the constant searched its own source
-for a string that sat in the assertion's own left operand, so deleting
-the patch left every test green.
-
-So ``_run_qmd`` is no longer stubbed. It runs, over real pipes, with
-``subprocess.Popen`` swapped for a child that emits exactly the bytes the
-scenario calls for and then either closes (prompt) or stays silent
-(``hangs``). The ``sel.select()`` loop, its bounds, its ``read1`` and its
-EOF handling are all the production ones. Measured both ways, five runs
-each:
-
-=========================  ==========  ==========  ===========
-scenario                   stub+patch  stub-patch  real, no patch
-=========================  ==========  ==========  ===========
-daemon down                30-31 s     30-31 s     30 s
-status "running", no kill  34-35 s     34-35 s     34-35 s
-daemon down, spawn hangs   31 s        30-31 s     50-52 s
-``qmd status`` hangs       47-50 s     46-49 s     64-66 s
-status and spawn hang      48-49 s     48-49 s     **86-88 s**
-=========================  ==========  ==========  ===========
-
-The first two columns are identical, which is the inert patch made
-visible: with ``_run_qmd`` stubbed, patching the constant changes
-nothing. The last column is 25 s above the band, so removing the patch
-from *this* harness is a mutation the ceiling test catches.
-
-**The axis that matters is what ``qmd status`` reports, not "is it
-prompt".** That single fact decides three things at once:
-
-- whether ``_reap_qmd_daemon`` spends its two 2 s grace windows (only
-  when the status says *running* with a live pid);
-- whether the reap kills anything;
-- how long each of its four ``qmd status`` calls costs.
-
-So the scenarios below vary what status *reports*, not merely how fast
-it answers. Every row is a configuration the code can actually be in,
-and every delta matches its own stated cap.
-
-**Why a band and not exact figures.** Independent harnesses measure this
-path and disagree at the 1-4 s level, because they differ in what they
-treat as scaled. The decimals belong to a harness, not to the code. What
-belongs to the code is the shape: a floor, a ceiling, the spawn's own
-bound dominating the middle, and grace windows spent only where they can
-be. Those are asserted; the figures are reported.
-"""
+"""Measures the recycle's worst case and asserts only its STRUCTURE."""
 
 from __future__ import annotations
 
@@ -94,9 +31,7 @@ N = 100.0
 FLOOR_BAND_S = (27.0, 33.0)
 
 #: The ceiling. Over-estimating is the safe direction for a bound, so the
-#: upper end is generous; a reading *below* the band is a surprise worth
-#: seeing and is failed deliberately. The upper end has to stay under the
-#: unscaled reading (~86-88 s) for the band to have any teeth at all.
+#: upper end is generous; a reading *below* the band fails deliberately.
 CEILING_BAND_S = (52.0, 75.0)
 
 #: The spawn's own ``STATUS_TIMEOUT_S``, the single biggest contributor.
@@ -109,26 +44,16 @@ _STATUS_RUNNING = b"MCP:   running (PID 1234)\n"
 _STATUS_DOWN = b"no MCP line here\n"
 
 #: Every pipe this harness opens, so the silent-child scenarios cannot
-#: leak four descriptors per simulated subprocess call (~60 calls per
-#: exhausted budget).
+#: leak four descriptors per simulated subprocess call.
 _open_pipes: list[object] = []
 
-#: ``sel.select()`` call count for the current measurement. The reader
-#: loop is the only thing that calls it, so a non-zero count is proof the
-#: measurement went through the production ``_run_qmd`` rather than a
-#: stub — which is the claim every figure below rests on, and the one
-#: round 3 got wrong silently.
+#: ``sel.select()`` call count for the current measurement. Non-zero
+#: proves the measurement went through the production ``_run_qmd``.
 _SELECT_WAKES: list[int] = []
 
 
 class _CountingSelector(selectors.BaseSelector):
-    """``selectors.DefaultSelector`` with a call counter.
-
-    Subclasses the registered ABC rather than the concrete epoll class,
-    so it does not depend on which selector the host's platform picks.
-    Every method the reader loop uses is delegated; the rest raise, so a
-    future use is loud rather than silently mis-copied.
-    """
+    """``selectors.DefaultSelector`` with a call counter."""
 
     def __init__(self) -> None:
         self._inner = _REAL_SELECTOR()
@@ -160,15 +85,7 @@ _REAL_SELECTOR = selectors.DefaultSelector
 
 
 class _FakeChild:
-    """A process stand-in with real pipes.
-
-    ``_run_qmd`` reads from ``proc.stdout``/``proc.stderr`` with
-    ``read1`` and polls them through a ``selectors`` loop. Handing it
-    ``os.pipe()`` ends keeps every one of those code paths — including
-    the ``sel.select(_POLL_INTERVAL_S)`` timeout, which is the constant
-    under test — on the production implementation, while costing nothing
-    to construct and guaranteeing no real process is spawned.
-    """
+    """A process stand-in with real pipes."""
 
     def __init__(self, mode: str) -> None:
         read_out, write_out = os.pipe()
@@ -206,12 +123,7 @@ class _FakeChild:
 
 
 def _popen_shim(status_mode: str, spawn_hangs: bool) -> type:  # noqa: ANN202
-    """A ``subprocess`` stand-in for ``_run_qmd``, by scenario.
-
-    Returned as a class and patched over ``_subprocess.subprocess``, so
-    nothing outside this harness's context manager can see it — patching
-    the real module's ``Popen`` in place would be process-global.
-    """
+    """A ``subprocess`` stand-in for ``_run_qmd``, by scenario."""
 
     class _Shim:
         PIPE = subprocess.PIPE
@@ -247,13 +159,7 @@ class _NeverServes:
 
 
 def _scaled_reap(*, grace: float = 2.0, poll: float = 0.05) -> None:
-    """``_reap_qmd_daemon`` with its two grace windows scaled like everything else.
-
-    The control flow is the original's; only the window lengths differ.
-    Whether the windows are *reached* is decided upstream, by what the
-    faked ``qmd status`` reports — which is exactly the coupling this
-    harness exists to measure.
-    """
+    """``_reap_qmd_daemon`` with its two grace windows scaled like everything else."""
     state = d.qmd_daemon_state()
     if not state.running or state.pid is None:
         return
@@ -270,21 +176,7 @@ def _scaled_reap(*, grace: float = 2.0, poll: float = 0.05) -> None:
 
 
 async def _measure(status_mode: str, spawn_hangs: bool, *, scale_poll: bool = True) -> float:
-    """One exhaustion, through the genuine spawn, reap, probe loop and deadline.
-
-    ``scale_poll=False`` is only for the test that proves the rescaling is
-    load-bearing; every other reading is taken the way the code runs it.
-
-    **Asserts the reader loop actually ran**, by counting ``sel.select``
-    wakes. Without this, reverting the harness to round 3's shape — stub
-    ``d._run_qmd`` wholesale — surfaced as
-    ``AttributeError: 'bytes' object has no attribute 'stdout'`` from
-    inside ``qmd_daemon_state``. A pin that fires for the wrong reason
-    teaches the next reader to ignore it, and the reviewer who has to
-    read the traceback learns nothing about which mutation it was. The
-    count turns the same revert into a named assertion about the thing
-    that actually changed.
-    """
+    """One exhaustion, through the genuine spawn, reap, probe loop and deadline."""
     _open_pipes.clear()
     poll_patch = (
         patch.object(_subprocess, "_POLL_INTERVAL_S", _subprocess._POLL_INTERVAL_S / N)
@@ -357,26 +249,7 @@ def readings() -> dict[str, float]:
 
 
 def test_the_poll_granularity_is_reached_and_scaled(readings: dict[str, float]) -> None:
-    """The reader loop is real, so ``_POLL_INTERVAL_S`` is read — and matters.
-
-    Three facts, and the test asserts all three rather than reading its
-    own source, which is what the previous version did:
-
-    1. **Reached.** ``_run_qmd`` is the production function here, so the
-       loop's ``sel.select(_POLL_INTERVAL_S)`` runs on every simulated
-       call. Removing the ``_run_qmd`` patch and replacing it with a bare
-       stub makes the two readings below identical, and this fails.
-
-    2. **Scaled.** An unscaled 0.1 s survives the 1/100 rescaling and
-       costs up to ~10 s of real-scale time per simulated hanging
-       ``qmd status`` call.
-
-    3. **Load-bearing at this size.** The ceiling band tops out at 75 s
-       and the unscaled ceiling reads ~86-88 s, so a harness that
-       stopped scaling the poll cannot sit inside it. Asserting a band
-       that the unscaled reading also satisfies would be a pin that
-       cannot fail — the exact defect this replaces.
-    """
+    """The reader loop is real, so ``_POLL_INTERVAL_S`` is read — and matters."""
     assert _subprocess._POLL_INTERVAL_S == pytest.approx(0.1)
 
     # Measure the same ceiling twice: once as the harness runs, once with
@@ -401,11 +274,7 @@ def test_the_poll_granularity_is_reached_and_scaled(readings: dict[str, float]) 
 
 
 def test_the_floor_is_the_daemon_already_down_case(readings: dict[str, float]) -> None:
-    """A stopped daemon is the commonest recycle, and it is the cheapest.
-
-    ``qmd status`` reports not-running, so the reap returns immediately
-    without killing anything or spending a grace window.
-    """
+    """A stopped daemon is the commonest recycle, and it is the cheapest."""
     floor = readings["daemon down"]
     assert FLOOR_BAND_S[0] <= floor <= FLOOR_BAND_S[1], (
         f"floor measured {floor:.1f}s, expected roughly {FLOOR_BAND_S}"
@@ -415,12 +284,7 @@ def test_the_floor_is_the_daemon_already_down_case(readings: dict[str, float]) -
 def test_only_a_running_status_spends_the_grace_windows(
     readings: dict[str, float],
 ) -> None:
-    """Grace is reachable in exactly one configuration, and costs ~4 s there.
-
-    This is the assertion an earlier docstring failed: it said "+up to 4 s"
-    and then listed a row whose delta was +5.3 s, belonging to the
-    configuration that forgoes the windows entirely.
-    """
+    """Grace is reachable in exactly one configuration, and costs ~4 s there."""
     down = readings["daemon down"]
     up = readings["daemon up, ignores SIGTERM"]
     delta = up - down
@@ -452,11 +316,7 @@ def test_only_a_running_status_spends_the_grace_windows(
 def test_the_spawn_bound_is_the_biggest_single_contributor(
     readings: dict[str, float],
 ) -> None:
-    """The spawn has its own ``STATUS_TIMEOUT_S``, and no summary ever named it.
-
-    Its cost is the same whether or not the status hangs — the spawn's
-    bound is paid either way — which is why it dominates the middle.
-    """
+    """The spawn has its own ``STATUS_TIMEOUT_S``, and no summary ever named it."""
     down = readings["daemon down"]
     spawn_hang = readings["daemon down, spawn hangs"]
     delta = spawn_hang - down
@@ -469,8 +329,7 @@ def test_the_spawn_bound_is_the_biggest_single_contributor(
 def test_the_ceiling_is_the_worst_row_and_is_bounded(
     readings: dict[str, float],
 ) -> None:
-    """The reported ceiling is the maximum over the scenarios, not a number
-    chosen for effect."""
+    """The reported ceiling is the maximum over the scenarios."""
     ceiling_key = "status and spawn hang"
     ceiling = readings[ceiling_key]
     assert ceiling == max(readings.values()), (

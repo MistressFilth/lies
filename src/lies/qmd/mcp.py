@@ -58,12 +58,11 @@ def _build_qmd_httpx_client(
     The qmd daemon's first HyDE query after fresh start can wedge
     ~60 s; bounding the read keeps the wedge to a single recycle.
 
-    ``**kwargs`` and ``Any`` are not laziness — fastmcp calls this
-    with ``follow_redirects=True``, and a fixed signature made
-    every HTTP daemon call fail at connect before the recycle
-    taxonomy could run. Built from the httpx module fastmcp
-    installed (its vendored ``httpx2`` in 4.0); falls back to
-    ``httpx`` if that goes away.
+    ``**kwargs`` and ``Any`` are load-bearing, not laziness: fastmcp calls
+    this with ``follow_redirects=True``, and a fixed signature made every
+    HTTP daemon call fail at connect before the recycle taxonomy could
+    run. Built from the httpx module fastmcp installed (its vendored
+    ``httpx2`` in 4.0); falls back to ``httpx`` if that goes away.
     """
     http_lib = _httpx_fastmcp_installed()
     client = http_lib.AsyncClient(

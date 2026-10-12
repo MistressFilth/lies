@@ -1,51 +1,4 @@
-"""A bundle's excerpts are checked against what the tools actually returned.
-
-**The hole this closes.** ``AGENTS.md`` stated the trade honestly: the
-``SearchDiagnostics`` overlay removes the *easy* model suppressions —
-paraphrase the reason, drop the field, flip ``no_coverage`` on a
-dispatch that never finished — but a model that *asserts* ``excerpts``
-it does not have got its bundle back untouched, and ``_ask_impl`` then
-rendered prose citing pages that were never read. The branch called
-that out of reach because the fix was not obvious.
-
-It was in reach. The ``_search`` closure already hands every envelope to
-the per-dispatch record before the model sees one, and the ``_read``
-closure now does the same with its result. So the recorded truth — which
-paths a tool really returned — is in hand at exactly the moment the
-bundle is overlaid, and an excerpt whose ``slug`` is in neither set is
-fabricated by definition.
-
-**Why the oracle is hits ∪ reads, not the envelope's hits.** The
-proposal this implements was "drop any excerpt whose path is not in the
-recorded result set", and the first instinct was to make that set the
-search envelope. That is the wrong reference, and
-``test_an_excerpt_read_but_never_hit_survives`` is the executable form
-of the argument: step 3 of the contract says the model *picks* from
-hits, but ``read`` accepts any path the library or a wiki resolves, so a
-model that followed a link out of a body and read that page has produced
-real evidence the envelope never named. Hits alone would drop it —
-discarding retrievable evidence to enforce a rule the tool surface never
-imposed.
-
-**What is still open.** A model that reads a real page and then
-attributes invented *text* to it passes; only the path is checked.
-Closing that needs the bodies rather than the paths, and the false
-positive rate is not measurable from here — a model that reflows a
-paragraph produces a span body that is not a substring of the page. See
-:func:`lies.agents.librarian.with_search_diagnostics`; the trade is
-written down there rather than shipped.
-
-**Harness.** The librarian is a real ``Agent`` with the real
-``register_librarian_tools`` wiring and the real ``search`` / ``read``
-closures, driven by a :class:`FunctionModel` that emits the tool calls
-and then the bundle. Only the two MCP tool bodies are stubbed, because
-they are the qmd boundary and leaving them real would dial a real
-address — the network audit is wired into ``make unit-test``.
-
-A ``TestModel`` is not usable here: ``TestModel.call_tools`` takes tool
-*names*, so it cannot supply the ``paths`` argument a ``read`` call
-needs, and every test here needs exact paths.
-"""
+"""A bundle's excerpts are checked against what the tools actually returned."""
 
 from __future__ import annotations
 
@@ -107,12 +60,7 @@ def _bundle(*paths: str) -> LibrarianOutput:
 
 
 def _model(tool_calls: list[ToolCallPart], bundle: LibrarianOutput) -> FunctionModel:
-    """Emit ``tool_calls``, then the bundle as the agent's final output.
-
-    ``final_result`` is pydantic-ai's default output-tool name for a
-    dataclass ``output_type`` (``pydantic_ai/_output.py``), which is what
-    ``LibrarianOutput`` is here.
-    """
+    """Emit ``tool_calls``, then the bundle as the agent's final output."""
     turns = {"n": 0}
 
     def _respond(messages: list, info: AgentInfo) -> ModelResponse:
@@ -185,14 +133,7 @@ def _run() -> LibrarianOutput:
 def test_a_fabricated_excerpt_is_dropped_and_the_reason_names_it(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """One real path, one invented one. The invented one does not survive.
-
-    The result has to be partial rather than all-or-nothing: the
-    attested excerpt came from a real body, and evidence still wins. What
-    changes is that the operator is told, because a librarian that
-    invented one of two citations is not one whose output can be taken at
-    face value.
-    """
+    """One real path, one invented one. The invented one does not survive."""
     _install(
         monkeypatch,
         bundle=_bundle(HIT_PATH, INVENTED_PATH),
@@ -215,14 +156,7 @@ def test_a_fabricated_excerpt_is_dropped_and_the_reason_names_it(
 
 
 def test_an_excerpt_read_but_never_hit_survives(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The oracle is hits ∪ reads, and this is why.
-
-    The model read a path the search envelope never returned — it
-    followed a link out of a body. That is real evidence, and the library
-    returned a real body for it. An oracle keyed on the envelope's hits
-    alone would drop it and discard a citation the operator could have
-    followed.
-    """
+    """The oracle is hits ∪ reads, and this is why."""
     _install(
         monkeypatch,
         bundle=_bundle(HIT_PATH, READ_ONLY_PATH),
@@ -242,20 +176,7 @@ def test_an_excerpt_read_but_never_hit_survives(monkeypatch: pytest.MonkeyPatch)
 def test_excerpts_built_from_the_search_snippets_alone_survive(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The contract's snippet-only arm: search, no read, answer anyway.
-
-    Step 3 says that if the reads cannot be used, fall back to the
-    snippets already attached to the search hits. Those pages are
-    attested — by the envelope — so the excerpts survive. An oracle built
-    from the ``read`` results alone would have emptied this bundle and
-    thrown away a usable answer.
-
-    The librarian never calls ``read`` here, which is how that arm
-    actually runs: a raised ``ToolError`` from ``read`` propagates out of
-    ``run_sync`` and lands on ``librarian_agent_run``'s fail-soft branch
-    instead, so "every read failed" reaches the model as a model that
-    chose not to read rather than as an exception it survived.
-    """
+    """The contract's snippet-only arm: search, no read, answer anyway."""
     _install(monkeypatch, bundle=_bundle(HIT_PATH), read_paths=None)
 
     out = _run()
@@ -267,11 +188,7 @@ def test_excerpts_built_from_the_search_snippets_alone_survive(
 def test_a_bundle_with_no_recorded_tool_result_at_all_is_emptied(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The purest fabrication: the model never called a tool.
-
-    No envelope, no read, and a bundle naming three pages. Every excerpt
-    is unattested, so the bundle becomes a fact about the run.
-    """
+    """The purest fabrication: the model never called a tool."""
     bundle = _bundle(HIT_PATH, READ_ONLY_PATH, INVENTED_PATH)
     monkeypatch.setattr("lies.mcp.search.search", lambda **kw: {"hits": []})
     monkeypatch.setattr("lies.mcp.read.read", lambda paths: {})
@@ -293,16 +210,7 @@ def test_a_bundle_with_no_recorded_tool_result_at_all_is_emptied(
 
 
 def test_the_unresolvable_paths_key_is_not_attested(monkeypatch: pytest.MonkeyPatch) -> None:
-    """``read`` reports unresolved paths under ``"_missing"``.
-
-    Two things must not become citable: the paths in that list, whose
-    bodies were never returned, and the key itself, which is a
-    synthetic slot rather than a page. The filter is on the underscore
-    prefix rather than on the value, so both fall out of one rule — and
-    the test cites the key as a slug to keep that honest. Without the
-    prefix filter a bundle could claim a document literally called
-    ``_missing``.
-    """
+    """``read`` reports unresolved paths under ``"_missing"``."""
     _install(
         monkeypatch,
         bundle=_bundle(HIT_PATH, READ_ONLY_PATH, "_missing"),
@@ -325,13 +233,7 @@ def test_the_unresolvable_paths_key_is_not_attested(monkeypatch: pytest.MonkeyPa
 def test_the_envelope_renders_inconclusive_for_an_entirely_fabricated_bundle(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """End to end through ``lib_ask``, which is where the claim lands.
-
-    An empty bundle with no reason reads as "No relevant content found in
-    library" — a corpus claim. With the attestation reason on it the
-    reader is told what actually happened: the librarian cited pages no
-    tool returned. The synthesizer must not run.
-    """
+    """End to end through ``lib_ask``, which is where the claim lands."""
     _install(monkeypatch, bundle=_bundle(INVENTED_PATH), read_paths=[HIT_PATH])
     synthesizer_calls: list[str] = []
     monkeypatch.setattr(
@@ -364,13 +266,7 @@ class _SynthAnswer:
 def test_the_attested_bundle_still_reaches_the_synthesizer(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The other end: the rule must not cost a real answer.
-
-    A bundle whose excerpts are all attested has to behave exactly as it
-    did before attestation existed — synthesized, cited, no reason
-    attached. Otherwise the check is a tax on every good run and the
-    trade is simply moved.
-    """
+    """The other end: the rule must not cost a real answer."""
     _install(monkeypatch, bundle=_bundle(HIT_PATH), read_paths=[HIT_PATH])
     seen: list[list[str]] = []
     monkeypatch.setattr(
@@ -390,14 +286,7 @@ def test_the_attested_bundle_still_reaches_the_synthesizer(
 
 
 def test_a_span_body_is_still_not_checked(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The residual, asserted so it cannot be forgotten.
-
-    Invented *text* attributed to a page that really was read passes:
-    attestation is path-level. This records the limitation rather than
-    pretending it is closed — if it ever fails, the text-level check
-    landed and the trade paragraph in ``with_search_diagnostics`` has to
-    change with it.
-    """
+    """Invented text attributed to a page that really was read still passes."""
     bundle = LibrarianOutput(
         tag_expr="c:alpha",
         exclude_expr=None,
@@ -428,26 +317,15 @@ def test_a_span_body_is_still_not_checked(monkeypatch: pytest.MonkeyPatch) -> No
 
     assert [e.slug for e in out.excerpts] == [HIT_PATH], (
         "this test documents that text is NOT verified. If it fails, the "
-        "text-level check landed -- update the docstring in "
-        "with_search_diagnostics and the trade paragraph with it."
+        "text-level check landed -- update the AGENTS.md trade paragraph "
+        "with it."
     )
 
 
 def test_a_run_that_never_searched_keeps_its_transient_verdict(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """An empty bundle must not be affected by the attestation arm.
-
-    The arm only fires on excerpts. A bundle that carries none keeps
-    every field it came in with — including the dispatch-failure string
-    ``librarian_agent_run`` attaches when ``run_sync`` raises, which is
-    what ``_ask_impl`` renders on its inconclusive branch.
-
-    Field-level rather than ``is``: the bundle has been through
-    pydantic-ai's structured output, so it is a reconstruction by the
-    time the overlay sees it. The identity claim lives on the dataclass
-    directly, in ``test_ask_lock_contention.py``.
-    """
+    """An empty bundle must not be affected by the attestation arm."""
     bundle = LibrarianOutput(
         tag_expr="c:alpha",
         exclude_expr=None,
@@ -472,14 +350,7 @@ def test_a_run_that_never_searched_keeps_its_transient_verdict(
 
 
 def test_the_record_is_per_dispatch_and_does_not_leak_across_calls() -> None:
-    """``attested_paths`` lives on the record, not on a module global.
-
-    The MCP server serves overlapping ``lib_ask`` calls. A module-level
-    attested set would let one request's search attest a path for another
-    request's bundle, which would let a fabrication through whenever two
-    calls overlapped — the check would be worth nothing under exactly the
-    concurrency it exists to survive.
-    """
+    """``attested_paths`` lives on the record, not on a module global."""
     from lies.agents.librarian import SearchDiagnostics
 
     first = SearchDiagnostics()
@@ -494,12 +365,7 @@ def test_the_record_is_per_dispatch_and_does_not_leak_across_calls() -> None:
 
 
 def test_the_hits_are_recorded_from_both_hit_and_hits() -> None:
-    """The top-1 row and the ranked rows are both attested.
-
-    The contract's "all reads failed, fall back to the snippets already
-    attached" arm reads either, and ``_search_impl`` sets ``hit``
-    independently of ``hits[0]``.
-    """
+    """The top-1 row and the ranked rows are both attested."""
     from lies.agents.librarian import SearchDiagnostics
 
     diag = SearchDiagnostics()
@@ -514,12 +380,7 @@ def test_the_hits_are_recorded_from_both_hit_and_hits() -> None:
 
 
 def test_a_malformed_envelope_attests_nothing_rather_than_coercing() -> None:
-    """``None`` must not become the page ``"None"``.
-
-    A hit row with no ``path`` is skipped. Coercing it would attest a
-    document that cannot exist, and an excerpt citing ``"None"`` would
-    then pass.
-    """
+    """``None`` must not become the page ``"None"``."""
     from lies.agents.librarian import SearchDiagnostics
 
     diag = SearchDiagnostics()
@@ -529,12 +390,7 @@ def test_a_malformed_envelope_attests_nothing_rather_than_coercing() -> None:
 
 
 def test_a_non_dict_read_result_is_ignored() -> None:
-    """The recorder must not raise on a tool that returned something else.
-
-    ``read`` is typed ``dict[str, str | list[str]]``, but the closure
-    accepts whatever a patched tool hands back, and a recorder that raised
-    would turn a stub into a production failure at the worst moment.
-    """
+    """The recorder must not raise on a tool that returned something else."""
     from lies.agents.librarian import SearchDiagnostics
 
     diag = SearchDiagnostics()

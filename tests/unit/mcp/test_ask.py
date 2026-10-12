@@ -183,14 +183,7 @@ def test_ask_returns_an_inconclusive_envelope_when_librarian_dispatch_fails(
 def test_librarian_agent_run_names_an_untyped_dispatch_failure_on_the_bundle(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The generic arm carries the exception too, so ``or`` has something to fall back from.
-
-    ``_ask_impl`` keeps the fixed sentence for a bundle with no reason,
-    which is right for a *clean* bundle and wrong for one this function
-    just failed to fill. Carrying the exception here is the difference
-    between "dispatch failed" and "dispatch failed: UsageLimitExceeded:
-    Exceeded maximum output retries (1)".
-    """
+    """The generic arm carries the exception too, so ``or`` has something to fall back from."""
     from lies.mcp import synth
 
     class _BoomAgent:
@@ -301,12 +294,7 @@ async def test_synthesize_reports_a_transient_digest_as_inconclusive(
 def test_lib_ask_renders_the_librarian_bundles_reason_not_a_fixed_sentence(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A transient bundle's own ``fallback_reason`` reaches the envelope.
-
-    Pins the interpolation directly, with the numbers a real lock
-    failure produces. The fixed sentence is retained as the ``or``
-    fallback, covered by the sibling test.
-    """
+    """A transient bundle's own ``fallback_reason`` reaches the envelope."""
     from lies.mcp.synth import lib_ask
 
     lib_out = _fake_librarian_output(transient=True)
@@ -333,13 +321,7 @@ def test_lib_ask_renders_the_librarian_bundles_reason_not_a_fixed_sentence(
 def test_lib_ask_keeps_the_fixed_sentence_when_the_bundle_carries_no_reason(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A reason-less bundle must not render ``None`` and must not go blank.
-
-    A ``MagicMock`` attribute is truthy by default, which is exactly the
-    trap here — an unset ``fallback_reason`` would satisfy any ``or``
-    assertion. Set explicitly, as ``_fake_librarian_output`` does for
-    ``transient``.
-    """
+    """A reason-less bundle must not render ``None`` and must not go blank."""
     from lies.mcp.synth import lib_ask
 
     lib_out = _fake_librarian_output(transient=True)

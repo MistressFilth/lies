@@ -1,21 +1,15 @@
 """LibraryWriter: atomic-commit envelope for library mutations.
 
-Resolves consolidate-wikis Open Q #3: library uses the same atomic-commit
-envelope as ``WikiMemoryService``. Both rely on ``atomic_commit`` from
-``lies.wiki.git``.
-
-Differences from wiki-side write path:
+Differences from the wiki-side write path:
 
 - Git root: ``library.git_root``, NOT a wiki's ``data_root``.
 - Cross-process flock: ``library.git_root.parent / .lies / library.lock``
-  (singleton, since library is a singleton). Phases later can promote
-  to a per-project lock once consolidation lands.
+  (singleton, since library is a singleton).
 - Catalog upsert: ``library.catalog_path`` (not wiki's).
-- Post-commit qmd hook (Task 12): when ``commit(..., qmd_collection=...)``
-  is set, registers the per-collection library subdir with qmd,
-  refreshes the derived index, and embeds the collection vectors —
-  mirroring ``etl/stages/write.py``. Failures are non-fatal (the
-  library commit already landed).
+- Post-commit qmd hook: when ``commit(..., qmd_collection=...)`` is set,
+  registers the per-collection library subdir with qmd, refreshes the
+  derived index, and embeds the collection vectors. Failures are
+  non-fatal (the library commit already landed).
 """
 
 from __future__ import annotations
@@ -53,25 +47,18 @@ if TYPE_CHECKING:
 def __getattr__(name: str):
     """Lazy import of qmd CLI helpers — keeps ``import lies.cli`` cheap.
 
-    Importing :mod:`lies.qmd.cli` runs :mod:`lies.qmd`'s ``__init__``,
-    which pulls in :mod:`lies.qmd.capability` and (via that module)
-    :mod:`pydantic_ai` + :mod:`fastmcp`. ``LibraryWriter`` is loaded at
-    CLI startup (via ``lies.library.__init__`` from ``lies.cli``), so
-    importing qmd here would defeat the
+    Importing :mod:`lies.qmd.cli` pulls in :mod:`pydantic_ai` +
+    :mod:`fastmcp` transitively. ``LibraryWriter`` is loaded at CLI
+    startup, so importing qmd here would defeat the
     ``tests/unit/cli/test_cli_lazy_imports.py`` no-pydantic_ai /
     no-fastmcp contract. The qmd symbols are only needed when
-    ``commit(..., qmd_collection=...)`` actually fires the post-commit
-    hook, which is the rare ingest path — defer the heavy load until
-    then.
+    ``commit(..., qmd_collection=...)`` fires the post-commit hook, which
+    is the rare ingest path — defer the heavy load until then.
 
-    Mirrors the PEP 562 pattern already used by
-    :mod:`lies.cli.page` / :mod:`lies.cli.ingestion` /
-    :mod:`lies.mcp`. Tests using ``mock.patch(
-    "lies.library.writer.qmd_collection_add_or_update", ...)`` still
-    work because :func:`mock.patch` triggers this ``__getattr__`` on
-    its initial ``getattr`` (caching the real function in module
-    globals), then ``setattr``s the patched version on top — subsequent
-    ``commit()`` calls read the patched name from globals.
+    Mirrors the PEP 562 pattern used by :mod:`lies.cli.page`. Tests using
+    ``mock.patch("lies.library.writer.qmd_collection_add_or_update", ...)``
+    still work because :func:`mock.patch` triggers this ``__getattr__`` on
+    its initial ``getattr``, then ``setattr``s the patched version.
     """
     if name in {
         "qmd_collection_add_or_update",
@@ -96,16 +83,9 @@ class LibraryWriter:
         self._library = library
         # Idempotent git repo bootstrap. A fresh library directory
         # (no ``.git``) gets a bootstrapped repo on first writer
-        # creation so the atomic-commit envelope can land. Mirrors the
-        # wiki-side ``git_init_initial`` precedent at
-        # ``src/lies/wiki/layout.py:56``. Repos that are already
-        # initialised are left alone — the ``.git`` subdir is the
-        # short-circuit.
-        #
-        # Without this, the first ``lies ingest`` against a fresh
-        # library wrote mirror files on disk but raised
-        # ``LibraryAtomicCommitFailed`` at the ``git add`` step, and
-        # the CLI exited 0 with the failure swallowed.
+        # creation so the atomic-commit envelope can land; without it the
+        # first ``lies ingest`` writes mirror files to disk and then
+        # raises ``LibraryAtomicCommitFailed`` at the ``git add`` step.
         if not (library.git_root / ".git").exists():
             self._bootstrap_git_repo()
 
@@ -176,13 +156,12 @@ class LibraryWriter:
         catalog_updates: Iterable[LibraryCatalogPage] = (),
         qmd_collection: str | None = None,
     ) -> str | None:
-        # I12: accept both absolute and relative paths. Absolute paths
+        # Accept both absolute and relative paths. Absolute paths
         # are coerced via ``relative_to(git_root)``; callers that
         # already pass repo-relative strings (or paths) round-trip
         # unchanged. A path that escapes ``git_root`` raises a typed
-        # ``LibraryAtomicCommitFailed`` (we deliberately do not
-        # silently stringify — the previous behaviour misclassified
-        # caller mistakes as commit failures with no diagnostic).
+        # ``LibraryAtomicCommitFailed`` rather than being stringified,
+        # which would misclassify a caller mistake as a commit failure.
         rel_paths: list[str] = []
         for p in paths:
             if isinstance(p, str):
@@ -203,19 +182,15 @@ class LibraryWriter:
             rel_paths.append(str(rel))
         updates = list(catalog_updates)
 
-        # Minor 27: symmetric short-circuit. ``atomic_commit`` rejects
+        # Symmetric short-circuit. ``atomic_commit`` rejects
         # ``files=[]`` as a programming error, so we cannot fall through
         # when one side of the envelope is empty. Two cases:
         #
         #   rel_paths=[] and updates=[] → true no-op (return None).
-        #   rel_paths=[] and updates!=[] → catalog-only write. The
-        #     catalog.db is committed via ``upsert_pages`` (see Minor 26);
-        #     no git commit is needed. Still apply the catalog upsert so
-        #     the catalog-side state stays consistent, then return None.
+        #   rel_paths=[] and updates!=[] → catalog-only write, applied
+        #     so the catalog-side state stays consistent, then None.
         #
-        # This mirrors the wiki-side ``WikiMemoryService.apply_plan`` envelope
-        # which short-circuits a no-op commit but still applies the
-        # catalog-side state.
+        # This mirrors the wiki-side ``WikiMemoryService.apply_plan`` envelope.
         if not rel_paths and not updates:
             return None
         if not rel_paths:
@@ -241,14 +216,12 @@ class LibraryWriter:
             self._upsert_catalog(updates)
 
         # Reconcile deletions: ``atomic_commit`` runs ``git add -- <files>``
-        # for the explicit paths only, so a tracked file that was
-        # previously committed and then deleted from disk (e.g. by a
-        # re-ingest that drops now-stale collection files) is never
-        # staged. Without this, every re-ingest accumulates ghost
-        # entries in HEAD. ``git add -u`` (NOT ``-A``) stages only
-        # modifications and deletions of already-tracked files,
-        # leaving new untracked files alone. ``-A`` would also pick up
-        # untracked files, which the writer does not claim.
+        # for the explicit paths only, so a tracked file that was previously
+        # committed and then deleted from disk is never staged, and every
+        # re-ingest accumulates ghost entries in HEAD. ``git add -u`` (NOT
+        # ``-A``) stages only modifications and deletions of already-tracked
+        # files, leaving new untracked files alone — ``-A`` would also pick
+        # up files the writer does not claim.
         if sha is not None:
             try:
                 subprocess.run(
@@ -312,14 +285,13 @@ class LibraryWriter:
                             stacklevel=2,
                         )
 
-        # F14 sentinel: mark that any library has been written since the qmd
-        # daemon started. Touched at the machine-global path so the daemon's
-        # staleness check reflects the union of every library + wiki write
-        # envelope, not just the current git_root. Best-effort; the touch is
-        # idempotent. The parent directory may not exist on a fresh install
-        # (qmd has not yet run), so we mkdir -p it before the touch.
-        # Goes BEFORE the qmd post-commit hook so the daemon's mtime-vs-marker
-        # comparison sees this commit's mtime, not the hook's.
+        # Mark that a library has been written since the qmd daemon started.
+        # Touched at the machine-global path so the daemon's staleness check
+        # reflects the union of every library + wiki write envelope, not just
+        # the current git_root. Best-effort and idempotent; the parent may not
+        # exist on a fresh install, so mkdir -p it first. Goes BEFORE the qmd
+        # post-commit hook so the daemon's mtime-vs-marker comparison sees
+        # this commit's mtime, not the hook's.
         if sha is not None:
             try:
                 _cache = Path(os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache")))
@@ -329,30 +301,26 @@ class LibraryWriter:
             except OSError:
                 pass  # F14 is best-effort; do not fail the commit
 
-        # Post-commit qmd hook: mirrors the wiki-side write.py contract.
-        # Failures are non-fatal — the library commit already landed and
-        # is authoritative. Skip on a no-op commit (sha is None) since
-        # there is nothing new to register.
+        # Post-commit qmd hook. Failures are non-fatal — the library
+        # commit already landed and is authoritative. Skip on a no-op commit
+        # (sha is None) since there is nothing new to register.
         #
         # Bare-name resolution matters here. The qmd helpers are exposed
         # via :PEP:`562` module-level ``__getattr__`` (so ``import lies``
         # does not pull pydantic_ai / fastmcp into ``sys.modules``).
         # Python ``LOAD_GLOBAL`` bytecode does NOT consult
         # ``__getattr__`` — bare-name lookup inside a function body
-        # raises ``NameError`` against ``module.__dict__`` and skips the
-        # fallback. Mirror the workaround :mod:`lies.cli.page` uses for
-        # its lazy ``Orchestrator`` import
-        # (``globals().get(name) or __getattr__(name)``): explicit dict
-        # access with manual ``__getattr__`` re-invocation on miss.
+        # raises ``NameError`` against ``module.__dict__``. Mirror the
+        # workaround :mod:`lies.cli.page` uses: explicit dict access with
+        # manual ``__getattr__`` re-invocation on miss.
         if sha is not None and qmd_collection is not None:
             coll_dir = self._library.collections_root / qmd_collection
             # Positional ``path`` is the library ``collections_root``
             # (NOT ``coll_dir``) — the qmd hook resolves the registered
             # path via ``library_target`` (the collection dir); ``path``
-            # is just a fallback used when ``library_target`` is not
-            # set. Passing a deliberately distinct value here lets the
-            # wire test distinguish the positional from the kwarg and
-            # catch a regression that silently drops ``library_target``.
+            # is just a fallback used when ``library_target`` is not set.
+            # Passing a deliberately distinct value lets the wire test
+            # distinguish the positional from the kwarg.
             _qaou = globals().get("qmd_collection_add_or_update") or __getattr__(
                 "qmd_collection_add_or_update"
             )
@@ -383,16 +351,12 @@ class LibraryWriter:
                 _qemb(self._library.git_root, qmd_collection)
             except QmdLockBusy as exc:
                 # Re-raise with the spec-mandated message that names the
-                # holder PID and tells the operator to wait-and-retry.
-                # Comes through the MCP error path so the agent sees an
-                # actionable message instead of
+                # holder PID and tells the operator to wait-and-retry, so the
+                # agent sees an actionable message instead of
                 # ``qmd embed failed; continuing (library commit stands)``.
-                # Guard the format against ``waited_s/max_s/holder_pid``
-                # being ``None`` (the type signature accepts None for
-                # translation paths like ``WikiFlockIndeterminate``);
-                # today's ``_acquire_with_poll`` always populates a float,
-                # but a future translation from a non-timeout source could
-                # crash the re-raise with ``TypeError: NoneType ...``.
+                # The format is guarded against ``waited_s``/``max_s``/
+                # ``holder_pid`` being ``None`` (the type signature accepts
+                # None for translation paths like ``WikiFlockIndeterminate``).
                 waited_str = f"{exc.waited_s:.1f}" if exc.waited_s is not None else "unknown"
                 max_str = f"{exc.max_s:.0f}" if exc.max_s is not None else "unknown"
                 holder_str = str(exc.holder_pid) if exc.holder_pid is not None else "unknown"
@@ -401,9 +365,7 @@ class LibraryWriter:
                 # that tells a contended host from a broken one, and
                 # ``LIES_QMD_LOCK_PATH`` can override it, so the path in
                 # the message is the only record of *which* inode was
-                # contended. This re-raise dropped it while both raisers
-                # in ``qmd/lock.py`` carry it — the only production
-                # ``QmdLockBusy`` that did.
+                # contended.
                 where = f" at {exc.lock_path}" if exc.lock_path else ""
                 message = (
                     f"qmd embed lock contention: another process holds the qmd flock{where} "
@@ -437,10 +399,10 @@ class LibraryWriter:
                 ) from exc
             raise
         try:
-            # Minor 26: ``upsert_pages`` commits internally (matches the
-            # wiki-side ``lies.memory.catalog.upsert_pages`` contract). No
-            # second commit needed — one fsync per call, regardless of how
-            # many pages land.
+            # ``upsert_pages`` commits internally (matching the wiki-side
+            # ``lies.memory.catalog.upsert_pages`` contract), so no second
+            # commit is needed — one fsync per call, regardless of how many
+            # pages land.
             upsert_pages(conn, updates)
         except sqlite3.OperationalError as exc:
             if "database is locked" in str(exc):

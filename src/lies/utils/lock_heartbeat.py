@@ -55,32 +55,17 @@ class AcquireResult:
 
 
 def write_owner_pid(path: Path, pid: int) -> None:
-    """Write ``pid`` as one int per line (readable without JSON).
+    """Writes ``pid`` as one int per line, atomically by rename.
 
-    Atomic by rename. ``Path.write_text`` truncates first, so a
-    contender that reads between the truncate and the write sees an
-    empty file, fails to parse it, and logs ``could not parse pid
-    file`` (``exclusive._reap_if_stale``). That failure is benign and in
-    the safe direction — the reader returns ``False``, so nobody reaps
-    — but the query single-flight gate makes nine-way contention
-    routine, so the warning now prints in normal operation and reads as
-    a fault that is not there. Rename closes the window: a reader gets
-    either the old bytes or the new ones.
+    A reader gets either the old bytes or the new ones; ``write_text``
+    truncates first, so a contender reading between truncate and write
+    sees an empty file.
 
-    Two details that are not incidental. The temp file is created in
-    the destination directory, because ``os.replace`` is atomic only
-    within one filesystem and the parent is the only directory that
-    guarantees it. And it is created with ``open`` rather than
-    ``tempfile.mkstemp``, so it carries the same mode the direct write
-    would have produced — ``mkstemp`` forces 0600 and would silently
-    change who can read the holder PID.
-
-    No ``fsync``: the property being bought here is atomicity against a
-    concurrent reader, and that comes from ``rename(2)``, not from
-    durability. The direct write this replaces had no ``fsync`` either,
-    so this is not a regression, and a pid file that survived a crash
-    half-upgraded is read in the safe direction — unparseable means
-    "do not reap". The lock itself is the ``flock``, not this file.
+    The temp file is a sibling of the target (``os.replace`` is atomic
+    only within one filesystem) and is created with ``open`` rather than
+    ``mkstemp``, so it keeps the mode a direct write would have
+    produced. No ``fsync``: the property bought is atomicity against a
+    concurrent reader, not durability.
     """
     payload = str(int(pid))
     tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")

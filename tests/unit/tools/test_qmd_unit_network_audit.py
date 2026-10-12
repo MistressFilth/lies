@@ -1,23 +1,4 @@
-"""The network audit's own logic, tested without dialing anything.
-
-The audit is now wired into ``make unit-test`` and exits non-zero on an
-unaccepted hit, which makes it a gate rather than a report. A gate with
-no test of its own is the pattern this branch has produced three times,
-so its decision function is pinned directly here.
-
-**Nothing in this file opens a socket.** Every case constructs a
-:class:`~qmd_unit_network_audit.Hit` by hand. The end-to-end proof that
-the wired-in plugin fails a real dial is a separate, manual step —
-introduce a test that dials, run ``make unit-test``, watch it exit
-non-zero — because committing a dialing test would be the very defect
-the audit exists to catch.
-
-The audit's other gap is asserted as a gap rather than left implicit:
-it re-installs itself after every test because a sibling fixture's
-``del socket.socket.connect`` would otherwise remove the guard for the
-rest of the session. That is the ``test_the_guard_reinstalls_itself``
-case below.
-"""
+"""The network audit's own logic, tested without dialing anything."""
 
 from __future__ import annotations
 
@@ -59,12 +40,7 @@ def test_a_test_with_no_grant_is_unaccepted() -> None:
 
 
 def test_a_named_test_may_reach_only_the_ports_it_was_granted() -> None:
-    """The grant is the ports, not the file.
-
-    Half of the accepted entries are on 8181 and one is on 9000. A grant
-    of 8181 must not authorise 9000, or adding a test that reaches the
-    operator's live daemon would be a one-word edit to an existing line.
-    """
+    """The grant is the ports, not the file."""
     on_default = next(k for k, v in audit.ACCEPTED.items() if v == frozenset({8181}))
     assert audit._unaccepted([_hit(on_default, 8181)]) == []
 
@@ -76,21 +52,7 @@ def test_a_named_test_may_reach_only_the_ports_it_was_granted() -> None:
 
 
 def test_every_accepted_name_names_a_real_test() -> None:
-    """A grant must name one test, and the test must exist.
-
-    Two failure modes, both real:
-
-    - a **file-level** grant. ``tests/unit/qmd/test_lifecycle.py`` covers
-      every test in that file, so the next one somebody adds there dials
-      for free. That is the round-2 shape — the reason the audit's grants
-      are node ids and not paths.
-    - a **typo**. An accepted name matching nothing is indistinguishable
-      from an unused grant, which the session only reports as a NOTE.
-
-    Note that making a probe hermetic does NOT fail here: an entry whose
-    test no longer dials is still a real test, and the session reports it
-    as an unused grant to be dropped in a one-line edit.
-    """
+    """A grant must name one test, and the test must exist."""
     for nodeid, ports in audit.ACCEPTED.items():
         rel, sep, name = nodeid.partition("::")
         assert sep and name, (
@@ -110,12 +72,7 @@ def test_every_accepted_name_names_a_real_test() -> None:
 
 
 def test_the_guard_covers_both_connect_primitives() -> None:
-    """``connect_ex`` is a separate C method, not an alias of ``connect``.
-
-    Patching one does not cover the other, and the per-file autouse guard
-    in ``test_daemon_recycle.py`` names this as its own gap — so citing
-    the audit as covering it was wrong until this was true.
-    """
+    """``connect_ex`` is a separate C method, not an alias of ``connect``."""
     import inspect
 
     src = inspect.getsource(audit)
@@ -126,19 +83,7 @@ def test_the_guard_covers_both_connect_primitives() -> None:
 
 
 def test_the_guard_reinstalls_itself() -> None:
-    """A sibling fixture's ``del`` must not silently end the audit.
-
-    ``tests/unit/qmd/test_daemon_recycle.py`` restores ``socket.socket``
-    with an explicit ``del`` — correctly, because ``connect`` is
-    inherited from ``_socket.socket`` and a monkeypatch undo would leave
-    a shadowing class attribute. That ``del`` also removes the audit's
-    class attribute, so without a reinstall everything after that file
-    runs unguarded.
-
-    Measured before the fix: with a dialing test ordered *after* that
-    file, the audit reported one hit and passed the session; ordered
-    *before* it, it failed. An order-dependent guard is not a guard.
-    """
+    """A sibling fixture's ``del`` must not silently end the audit."""
     had_connect = "connect" in vars(socket.socket)
     saved_connect = vars(socket.socket).get("connect")
     had_ex = "connect_ex" in vars(socket.socket)
@@ -163,18 +108,7 @@ def test_the_guard_reinstalls_itself() -> None:
 
 
 def test_the_protocol_hook_reinstalls_rather_than_being_told_to() -> None:
-    """The reinstall must live on the hook, not only be reachable by hand.
-
-    ``test_the_guard_reinstalls_itself`` calls ``audit._install()``
-    directly, so it proves the *function* works and says nothing about
-    whether anything *calls* it. Deleting the call from the hook's
-    ``finally`` leaves that test green — measured, as M40 in the round-4
-    mutation set — and the audit silently stops guarding the second half
-    of the session.
-
-    So the hook is driven here, with a guard deliberately removed first,
-    exactly as the recycle fixture leaves things.
-    """
+    """The reinstall must live on the hook, not only be reachable by hand."""
     had = "connect" in vars(socket.socket)
     saved = vars(socket.socket).get("connect")
     had_ex = "connect_ex" in vars(socket.socket)
@@ -247,14 +181,7 @@ class _Sock:
 
 
 def _no_socket_probe(address: tuple[str, int] = ("127.0.0.1", 9000)) -> None:
-    """Drive the installed guard without opening a socket.
-
-    ``_real_connect`` is swapped for a recorder so the guard's fall-through
-    is observed rather than performed. What is under test is the audit's
-    *decision* -- record, attribute, and still call through -- not the
-    kernel. A refused connect still counts as an attempt, so nothing is
-    lost by not making one.
-    """
+    """Drive the installed guard without opening a socket."""
     saved = audit._real_connect
     audit._real_connect = lambda self, addr: addr  # type: ignore[assignment]
     try:
@@ -268,15 +195,7 @@ def _no_socket_probe(address: tuple[str, int] = ("127.0.0.1", 9000)) -> None:
     [("_guarded_connect", 9000), ("_guarded_connect_ex", 8181)],
 )
 def test_a_watched_port_is_recorded_against_the_running_test(primitive: str, port: int) -> None:
-    """Each primitive records, attributes, and still falls through.
-
-    **Nothing here opens a socket.** An earlier version called
-    ``socket.socket().connect()`` for real, and the audit -- wired into
-    ``make unit-test`` in this same round -- failed the session on its own
-    test file. The tempting fix was to add these three tests to
-    ``ACCEPTED``, which would have put the audit inside the audit's own
-    exemption list.
-    """
+    """Each primitive records, attributes, and still falls through."""
     seen: list[object] = []
     saved_c = audit._real_connect
     saved_e = audit._real_connect_ex
@@ -308,12 +227,7 @@ def test_a_watched_port_is_recorded_against_the_running_test(primitive: str, por
 
 
 def test_an_unwatched_port_is_not_recorded() -> None:
-    """A port no daemon plausibly listens on is not this audit's business.
-
-    Otherwise the plugin fails a test that legitimately talks to a
-    fixture on an ephemeral port, and the fix for that is to widen
-    ``WATCHED_PORTS`` -- which is how a guard stops guarding.
-    """
+    """A port no daemon plausibly listens on is not this audit's business."""
     seen: list[object] = []
     saved = audit._real_connect
     audit._real_connect = lambda self, addr: seen.append(addr) or 0  # type: ignore[assignment]

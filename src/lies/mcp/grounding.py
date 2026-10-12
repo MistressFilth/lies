@@ -94,14 +94,9 @@ class ArchivistDigest:
             corpus.
         no_library: True when the library is uninitialized.
         fallback_reason: Why a transient dispatch failed, in the words
-            of the failure. ``None`` on every non-transient digest, and
-            on a transient one whose cause was not a named class. It
-            exists because ``transient`` is a flag: it says *that*
-            retrieval failed, not *how*, and a reader told only
-            "dispatch failed" cannot tell a wedged daemon from a
-            contended lock. The two want different operator actions —
-            restart the daemon, or wait — so the reason has to survive
-            to the envelope.
+            of the failure. It exists because ``transient`` says *that*
+            retrieval failed, not *how*: a wedged daemon and a contended
+            lock want different operator actions.
     """
 
     question: str
@@ -466,17 +461,10 @@ async def ground(
                 last_output=exc.last_output,
             ) from exc
         except QmdLockBusy as exc:
-            # Same transient digest as any other dispatch failure — the
-            # corpus claim is equally unfounded — but the *reason* rides
-            # along. A contended lock is the one failure here where the
-            # daemon is answering normally and the caller merely queued,
-            # and that is the distinction this change exists to deliver:
-            # the holder pid, the wait and the budget say "you queued
-            # behind something and it did not finish in time", which
-            # reads nothing like "the daemon is unhealthy". Without the
-            # reason, ``synth`` can only emit its fixed "dispatch
-            # failed" string and every one of these collapses into the
-            # same uninformative sentence.
+            # The corpus claim is equally unfounded, so this is the
+            # standard transient digest — with the reason, which is what
+            # tells the reader they queued rather than that the daemon
+            # is unhealthy.
             _log.warning(
                 "ground: fan-out waited out the qmd lock: %s: %s",
                 type(exc).__name__,

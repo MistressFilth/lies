@@ -1,11 +1,4 @@
-"""The recycle readiness probe: what it retries on, and what it costs.
-
-Every test here is stub-only and sleeps zero real seconds — the
-``asyncio.sleep`` between attempts is replaced by a counter-driven no-op
-and ``ready_timeout`` is set in the milliseconds. Spawning a real qmd
-daemon is not this file's job; see
-``tests/integration/test_qmd_spawn_throwaway.py``.
-"""
+"""The recycle readiness probe: what it retries on, and what it costs."""
 
 from __future__ import annotations
 
@@ -19,26 +12,16 @@ import pytest
 
 from lies.qmd import daemon as qmd_daemon
 
+REPO_ROOT = Path(__file__).resolve().parents[3]
+AGENTS = REPO_ROOT / "AGENTS.md"
+
 # --- the shape a stopped daemon actually produces -----------------------
 #
-# Measured 2026-10-10 against a stopped qmd daemon (fastmcp 4.0.10), not
-# read off a docs page:
-#
-#     builtins.RuntimeError: Client failed to connect: All connection attempts failed
-#       --via cause--> httpx2.ConnectError: All connection attempts failed
-#         --via context--> ExceptionGroup  -->  CancelledError  -->  WouldBlock
-#
-# fastmcp wraps it: `client.py:1045-1048` calls `_connection_failure`, whose
-# docstring says it presents a dead session identically "wherever it is
-# noticed" and wraps anything that is not `httpx2.HTTPStatusError |
-# MCPError` into a bare RuntimeError. `httpx2` is fastmcp's *vendored*
-# httpx (2.13.1) — a different module from the httpx LIES imports
-# (0.28.1) — so neither `httpx.HTTPError` nor `OSError` matches the
-# cause. Only the wrapping RuntimeError is catchable without importing a
-# vendored module name.
-#
-# The pre-existing tests raised `httpx.ConnectError` — LIES' own httpx —
-# which IS in the old tuple. They passed, and the defect lived on.
+# A stopped qmd daemon raises a bare ``RuntimeError`` whose cause is
+# fastmcp's *vendored* ``httpx2``, a different module from the httpx LIES
+# imports — so neither ``httpx.HTTPError`` nor ``OSError`` matches. Only
+# the wrapper is catchable without naming a vendored module. See
+# AGENTS.md for the full chain.
 
 
 _HTTPX2_MISSING = (
@@ -50,14 +33,7 @@ _HTTPX2_MISSING = (
 
 
 def _measured_dead_session_error() -> RuntimeError:
-    """The exact exception ``fastmcp.Client(url).list_tools()`` raises.
-
-    Skips rather than failing if ``httpx2`` is unimportable. A bare
-    ``import httpx2`` would instead raise ``ModuleNotFoundError`` and take
-    the assertion that names ``httpx2`` down with it — so the one test
-    whose job is to say "re-derive this" is the first to die, and dies
-    saying the wrong thing.
-    """
+    """The exact exception ``fastmcp.Client(url).list_tools()`` raises."""
     httpx2 = pytest.importorskip("httpx2", reason=_HTTPX2_MISSING)
 
     try:
@@ -69,17 +45,7 @@ def _measured_dead_session_error() -> RuntimeError:
 
 
 class _DeadSessionClient:
-    """A ``fastmcp.Client`` stand-in for a daemon that is not serving.
-
-    Every construction raises the measured shape — that is what a closed
-    port does — and records its own attempt so the test can prove the
-    loop retried instead of escaping.
-
-    The log is class-level because ``monkeypatch.setattr`` hands the
-    *class* to every construction, so instances cannot be enumerated from
-    outside. It is reset explicitly by each test rather than assumed
-    empty, which is what keeps it correct under ``pytest-randomly``.
-    """
+    """A ``fastmcp.Client`` stand-in for a daemon that is not serving."""
 
     attempts: list[str] = []
 
@@ -99,38 +65,7 @@ class _DeadSessionClient:
 
 @pytest.fixture(autouse=True)
 def _no_socket_to_loopback() -> Iterator[None]:
-    """Fail this file's tests if any of them opens a loopback socket.
-
-    Every test here must stub ``fastmcp.Client``. One did not, and it
-    dialed whatever was listening on the hardcoded port — which on this
-    host is the operator's **live qmd daemon**, so the test's result
-    depended on their machine: it passed only while nothing happened to
-    be listening, and failed with ``DID NOT RAISE`` the moment a daemon
-    was up. That is the worst failure mode a unit test has — silent when
-    green, and a false verdict when red.
-
-    Intercepting ``socket.socket.connect`` is what catches it:
-    ``httpx2`` (fastmcp's vendored httpx) resolves a loopback URL
-    through the ordinary socket path, so no fastmcp-specific knowledge is
-    needed. The guard is module-wide rather than per-test because the
-    mistake is one any test in this file could repeat — a stub is easy
-    to forget on the next test someone adds.
-
-    **It observes, it does not block.** A connection that gets through is
-    still made; the test is failed afterwards. That is deliberate: a
-    guard that raised mid-connection would leave the test's own state
-    inconsistent, and the thing being guarded is a test-suite accident,
-    not production traffic. Two known gaps, so nobody reads this as a
-    firewall: ``connect_ex`` is not intercepted, and a connect performed
-    in a thread that outlives the fixture would escape it. Neither
-    occurs in this file, and both would be caught by
-    ``tools/qmd_unit_network_audit.py``.
-
-    Restored with an explicit ``delattr`` rather than ``monkeypatch``:
-    ``socket.socket.connect`` is *inherited* from ``_socket.socket``, so
-    a monkeypatch undo would leave a shadowing class attribute behind
-    rather than restoring the absence.
-    """
+    """Fail this file's tests if any of them opens a loopback socket."""
     attempts: list[object] = []
     real_connect = socket.socket.connect
 
@@ -169,21 +104,7 @@ def _stub_spawn_and_reap(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _fake_clock(monkeypatch: pytest.MonkeyPatch, *, tick_s: float) -> dict[str, int]:
-    """Give ``recycle_qmd_daemon`` a clock it drives, at zero wall cost.
-
-    The loop's exit condition is ``get_event_loop().time() < deadline``
-    and its only delay is ``asyncio.sleep(poll_interval)``. Stub either
-    alone and the other still runs on real time — a no-op sleep against
-    a real deadline spins, and a real sleep against a fake deadline never
-    moves.
-
-    So both come from a stand-in installed on ``qmd_daemon.asyncio``:
-    the daemon module resolves that name as a module global, so the
-    swap is visible to the recycle and to nothing else in the process.
-    The clock advances one tick per poll, which makes the iteration count
-    a function of ``ready_timeout`` and ``poll_interval`` rather than of
-    how loaded the machine is.
-    """
+    """Give ``recycle_qmd_daemon`` a clock it drives, at zero wall cost."""
     import asyncio as real_asyncio
 
     state = {"sleeps": 0, "now": 0.0}
@@ -213,20 +134,7 @@ def _fake_clock(monkeypatch: pytest.MonkeyPatch, *, tick_s: float) -> dict[str, 
 async def test_a_stopped_daemon_does_not_escape_the_recycle(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """The measured dead-session shape is retried, not raised at the caller.
-
-    Before the tuple was widened this propagated out of
-    ``recycle_qmd_daemon`` on the very first probe: a bare ``RuntimeError``
-    that never reached the function's own ``QmdRecycleFailed`` contract,
-    spent none of ``ready_timeout``, and told the caller nothing about
-    which daemon failed to come back.
-
-    The teeth are in the assertions together: the loop must *retry*
-    (many attempts, and one sleep between each), and it must converge on
-    its own declared failure (``QmdRecycleFailed``). Narrowing the tuple
-    back to its old three arms fails the first; swallowing everything
-    without raising fails the second.
-    """
+    """The measured dead-session shape is retried, not raised at the caller."""
     _stub_spawn_and_reap(monkeypatch)
     clock = _fake_clock(monkeypatch, tick_s=0.5)
     _DeadSessionClient.attempts = []
@@ -240,30 +148,19 @@ async def test_a_stopped_daemon_does_not_escape_the_recycle(
             poll_interval=0.5,
         )
 
-    # A 30s budget at 0.5s per poll is 60 attempts. Asserted as a floor
-    # rather than an equality: the fake clock accumulates floats, and
-    # 0.1-style sums wobble by one iteration at the boundary. The teeth
-    # are "many, and one sleep between each" — the pre-fix code managed
-    # exactly one attempt and no sleep at all.
+    # A 30s budget at 0.5s per poll is 60 attempts. A floor rather than
+    # an equality: the fake clock accumulates floats and wobbles by one
+    # iteration at the boundary.
     assert len(_DeadSessionClient.attempts) >= 50
-    # The loop is `while in-budget: probe; sleep`, so a run of failed
-    # probes sleeps once per probe — the trailing sleep is what advances
-    # the clock past the deadline. Pre-fix: one probe, one uncaught
-    # exception, no sleep, no retry.
+    # One sleep per probe — the trailing sleep is what advances the clock
+    # past the deadline.
     assert clock["sleeps"] == len(_DeadSessionClient.attempts)
     assert excinfo.value.ready_timeout_s == 30.0
     assert "no listener" in excinfo.value.last_state.detail
 
 
 def test_the_measured_exception_is_not_in_any_legacy_arm() -> None:
-    """Why the old three arms could not have caught it.
-
-    Not a tautology about the constant: it asserts a property of the
-    *measured* exception that would have to be re-derived if fastmcp
-    changed. If a future fastmcp stops wrapping, or starts raising
-    something the old tuple already covers, this goes red and the
-    comment above gets re-measured.
-    """
+    """Why the legacy three arms could not have caught it."""
     exc = _measured_dead_session_error()
     import httpx
     import mcp
@@ -285,41 +182,7 @@ def test_the_measured_exception_is_not_in_any_legacy_arm() -> None:
 
 
 def test_the_widened_arm_cannot_swallow_our_own_failure_contract() -> None:
-    """``RuntimeError`` is broad, and LIES' own failure is a ``RuntimeError``.
-
-        Two facts make that safe, and both are load-bearing:
-
-        1. ``QmdRecycleFailed`` subclasses ``RuntimeError``, so the widened
-           arm *would* match it.
-        2. Nothing inside the guarded ``try`` raises it. The ``raise`` is
-           after the loop, outside the block.
-
-        If a future edit moved that ``raise`` inside the ``try``, the loop
-        would catch its own failure, log it as "probe failed", and spin to
-        the budget instead of reporting — turning a clear failure into a
-        silent wait.
-
-    Asserted **structurally, over the AST**, not by comparing source
-        line indices. An index comparison was tried first and is too weak:
-        it stays green when a ``raise QmdRecycleFailed`` is added *inside*
-        the try without moving the existing statement, which is the more
-        likely edit - a "final check" inside the loop body.
-
-        **What this does and does not enforce**, because a pin that reads
-        stronger than it is worse than none. It matches the *bare* form
-        only - ``raise QmdRecycleFailed(...)``, a ``Call`` whose func is a
-        plain ``Name`` with that id. It does **not** see:
-
-        - ``raise daemon.QmdRecycleFailed(...)`` (an ``Attribute`` func);
-        - ``boom = QmdRecycleFailed(...); raise boom`` (a pre-built
-          instance, where ``exc`` is a ``Name``);
-        - a raise of some *other* ``RuntimeError`` subclass;
-        - a raise reached by calling a helper from inside the try.
-
-        Catching all of those means resolving names, which is the kind of
-        inference that silently rots. The comment in ``daemon.py`` says the
-        same thing, so neither the pin nor the prose overclaims.
-    """
+    """``RuntimeError`` is broad, and LIES' own failure is a ``RuntimeError``."""
     import ast
 
     assert issubclass(qmd_daemon.QmdRecycleFailed, RuntimeError), (
@@ -346,7 +209,7 @@ def test_the_widened_arm_cannot_swallow_our_own_failure_contract() -> None:
     assert guarded, "the probe's guarded try/except is gone; re-derive this"
 
     def raises_bare_recycle_failed(node: ast.AST) -> bool:
-        """The bare form only - see the docstring's 'does not enforce' list."""
+        """The bare form only — see the 'does not enforce' list above."""
         for child in ast.walk(node):
             if (
                 isinstance(child, ast.Raise)
@@ -368,11 +231,7 @@ def test_the_widened_arm_cannot_swallow_our_own_failure_contract() -> None:
 async def test_a_serving_daemon_still_returns_on_the_first_probe(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """The happy path is untouched: one probe, no sleep, state returned.
-
-    Guards against a fix that "works" by making the loop retry forever —
-    the budget and the return value both have to survive.
-    """
+    """The happy path is untouched: one probe, no sleep, state returned."""
     _stub_spawn_and_reap(monkeypatch)
     clock = _fake_clock(monkeypatch, tick_s=0.5)
     monkeypatch.setattr(
@@ -412,13 +271,7 @@ async def test_a_serving_daemon_still_returns_on_the_first_probe(
 async def test_an_http_not_ready_response_is_still_retried(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """A booting daemon answering 404/503 arrives as ``MCPError``.
-
-    Measured alongside the closed-port case. It was already caught by the
-    old tuple and must stay caught: this is the arm that would break
-    silently if a future edit narrowed the tuple to the transport shape
-    alone.
-    """
+    """A booting daemon answering 404/503 arrives as ``MCPError``."""
     import mcp
 
     _stub_spawn_and_reap(monkeypatch)
@@ -454,35 +307,13 @@ async def test_an_http_not_ready_response_is_still_retried(
 
 
 def test_the_docstring_states_a_measured_floor_and_ceiling() -> None:
-    """The worst case is a measured floor and ceiling, with its traps intact.
-
-    **Structure, not decimals.** Independent harnesses measure this path
-    and disagree at the 1-4 s level, because they differ in what they
-    treat as scaled. Asserting a literal like ``"31.0 s"`` pins one
-    harness's arithmetic as though it were a property of the code, and
-    makes a *more* accurate measurement look like a regression. So the
-    decimals live in the committed harness
-    (``tests/integration/test_qmd_recycle_ceiling.py``), which re-derives
-    them and asserts the shape. This test asserts the shape is still
-    *described*.
-
-    Three wrong answers have lived on this line - "45 s" (mutually
-    exclusive bounds), "~80 s" (unreachable), and "+up to 4 s" attached
-    to a row that cannot satisfy it - so the trap each one fell into is
-    pinned as prose.
-
-    **The headline sentence is parsed, not searched.** Asserting that
-    "floor" and "ceiling" appear *somewhere* is what let M38 through:
-    reverting the headline to "a ~80 s ceiling" left both words present
-    in the table's row markers, so the test passed on a docstring whose
-    one-line summary was the answer that had already been retracted.
-    """
-    doc = " ".join((qmd_daemon.recycle_qmd_daemon.__doc__ or "").split())
+    """The worst case is a measured floor and ceiling, with its traps intact."""
+    doc = " ".join(_ceiling_doc().split())
     headline = _headline_bound(doc)
 
     assert headline is not None, (
-        "the docstring's one-line bound summary is gone; every wrong answer "
-        "this file records began by replacing it"
+        "the one-line bound summary is gone; every wrong answer this file "
+        "records began by replacing it"
     )
     assert re.search(r"\bfloor\b", headline) and re.search(r"\bceiling\b", headline), (
         f"the headline must frame the bound as a range with named ends: {headline!r}"
@@ -493,22 +324,18 @@ def test_the_docstring_states_a_measured_floor_and_ceiling() -> None:
             f"summed mutually exclusive component bounds and 80 s was not "
             f"an upper bound at all."
         )
-    assert "measured, not" in doc, (
+    assert "measured" in doc, (
         "these are measurements; calling them derived invites re-deriving them wrongly"
     )
 
     # The headline is a *summary of this table*, so its two numerals are
-    # checked against the table's floor and ceiling. Parsing the headline
-    # without tethering it let mutation D3 through: the headline read
-    # "a ~30 s floor and a ~47 s ceiling" while the table said 61, and
-    # the whole file stayed green. A summary that can contradict its own
-    # evidence is worse than no summary.
+    # checked against the table's floor and ceiling.
     headline_figures = [float(n) for n in re.findall(r"(\d+(?:\.\d+)?) ?s", headline)]
     assert len(headline_figures) == 2, (
         f"the headline must quote exactly two figures, a floor and a "
         f"ceiling: {headline!r} quotes {headline_figures}"
     )
-    table = _doc_table_rows(qmd_daemon.recycle_qmd_daemon.__doc__ or "")
+    table = _doc_table_rows(_ceiling_doc())
     assert len(table) == len(EXPECTED_ROWS), (
         "the table this headline summarises is not the expected shape; fix "
         "that first or this comparison means nothing"
@@ -539,7 +366,7 @@ def test_the_docstring_states_a_measured_floor_and_ceiling() -> None:
         "hanging qmd status reports running=False and forgoes them"
     )
     assert "unreachable" in doc, (
-        "the docstring must record that the earlier ~80s ceiling was "
+        "the claim must record that the earlier ~80s ceiling was "
         "unreachable, not merely loose - that is why the shape changed"
     )
     assert "cliff" in doc, (
@@ -548,7 +375,7 @@ def test_the_docstring_states_a_measured_floor_and_ceiling() -> None:
         "that noise is what let a flat 46s be printed"
     )
     assert "_POLL_INTERVAL_S" in doc, (
-        "the docstring must name the one constant that is neither a "
+        "the claim must name the one constant that is neither a "
         "timeout nor a sleep and therefore does not scale by itself"
     )
     assert "Scaled:" in doc and "does not scale by itself" in doc, (
@@ -556,17 +383,8 @@ def test_the_docstring_states_a_measured_floor_and_ceiling() -> None:
     )
 
 
-#: Every name ``_measure`` is allowed to patch. An **allowlist, not a
-#: blacklist**: round 5's review found that round 4 guarded this with
-#: ``assert "_run_qmd" not in targets``, which could not fire, and the
-#: obvious repair -- a blacklist entry for ``_run_qmd`` -- is still one
-#: assertion away from being deleted, which is exactly how M51c (check
-#: removed, harness patching both targets) went green.
-#:
-#: An allowlist fails closed. A *new* patch target cannot be added
-#: without naming it here, so the one edit that matters -- patching
-#: ``d._run_qmd`` -- is caught by construction rather than by a
-#: remembered list entry.
+#: Every name ``_measure`` is allowed to patch. An allowlist, so a new
+#: patch target cannot be added without naming it here.
 EXPECTED_PATCH_TARGETS: frozenset[str] = frozenset(
     {
         # Popen only: keeps ``_run_qmd``'s reader loop, bounds and
@@ -574,8 +392,8 @@ EXPECTED_PATCH_TARGETS: frozenset[str] = frozenset(
         "_subprocess.subprocess",
         # The granularity this harness scales.
         "_subprocess._POLL_INTERVAL_S",
-        # The wake counter, so a stubbed ``_run_qmd`` is caught at
-        # runtime by the harness itself as well as by this file.
+        # The wake counter, so a stubbed ``_run_qmd`` is caught at runtime
+        # by the harness itself as well as by this file.
         "_subprocess.selectors.DefaultSelector",
         # The time constants, at 1/N.
         "d.STATUS_TIMEOUT_S",
@@ -591,22 +409,18 @@ EXPECTED_PATCH_TARGETS: frozenset[str] = frozenset(
 )
 
 
-#: The rows ``recycle_qmd_daemon``'s docstring must carry, as
-#: ``(configuration, marker)``. ``marker`` is the annotation the row must
-#: bear — ``""`` for a row that carries only its figure.
+#: The rows the ceiling claim must carry, as ``(configuration, marker)``.
+#: ``marker`` is the annotation the row must bear — ``""`` for a row that
+#: carries only its figure.
 #:
 #: This is the structured constant the prose is checked *against*, so the
-#: table can be deleted and the test still fails. The predecessor's
-#: version was ten substring checks on the flattened docstring, and
-#: collapsing every row to one ``**~47 s**`` figure passed it — so did
-#: deleting the table outright, because ``assert "configuration" in doc``
-#: was satisfied by the word appearing in an unrelated sentence.
+#: table can be deleted and the test still fails.
 EXPECTED_ROWS: tuple[tuple[str, str], ...] = (
-    ("daemon down", "floor"),
+    ("prompt status, prompt spawn", "floor"),
     ("SIGTERM", ""),
     ("spawn hangs", ""),
-    ("qmd status hangs", "cliff"),
-    ("status and spawn both hang", "ceiling"),
+    ("qmd status` hangs", "cliff"),
+    ("both hang", "ceiling"),
 )
 
 #: Figures that must never be quoted as the **bound**. Both were
@@ -616,9 +430,7 @@ EXPECTED_ROWS: tuple[tuple[str, str], ...] = (
 #:
 #: Deliberately *not* checked against every row. 45 s is also a
 #: legitimately measured row — the spawn-hang scenario reads 45 s — so a
-#: blanket ban would forbid a true figure to police a false bound. The
-#: check below applies these to the rows that make a bound claim, which
-#: is the only place they were ever wrong.
+#: blanket ban would forbid a true figure to police a false bound.
 FORBIDDEN_BOUNDS = ("45 s", "80 s", "~45", "~80")
 
 #: The row that must carry a RANGE rather than a point figure, and the
@@ -628,68 +440,44 @@ FORBIDDEN_BOUNDS = ("45 s", "80 s", "~45", "~80")
 #:
 #: The direction of the test matters. The printed range must not claim a
 #: floor *above* the measured minimum -- a figure the configuration never
-#: produced -- and must not stop short of the measured maximum, which is
-#: the defect: "45-46 s" understates by 13 s. A range *wider* than
-#: measured passes, because it is conservative rather than wrong.
+#: produced -- and must not stop short of the measured maximum.
 CLIFF_ROW = "qmd status hangs"
 CLIFF_MEASURED_S = (44.9, 59.4)
 CLIFF_ROUNDING_S = 0.5
 
 
+def _ceiling_doc() -> str:
+    """AGENTS.md, where the recycle-ceiling claim lives."""
+    assert AGENTS.is_file(), f"AGENTS.md has moved: {AGENTS}"
+    return AGENTS.read_text(encoding="utf-8")
+
+
 def _doc_table_rows(doc: str) -> list[tuple[str, str]]:
-    """Parse the docstring's RST simple table into ``(left, right)`` rows.
-
-    Returns ``[]`` when there is no table, which every caller below must
-    treat as a failure — that is the point. Parsed rather than matched,
-    because the defect being pinned is a table that collapses or
-    disappears, and no substring check can tell those apart from prose
-    that happens to share a word.
-
-    Cells are split at the **rule line's column boundary**, not at the
-    first run of whitespace. Splitting on whitespace is what a first
-    attempt did, and it silently mis-parsed the widest configuration —
-    whose label butts against its own figure with a single space — into
-    one cell and reported it as a row with no figure in it.
-    """
-    lines = doc.splitlines()
-    rules = [i for i, ln in enumerate(lines) if _is_rule(ln)]
-    if len(rules) < 3:
-        return []
-    boundary = len(lines[rules[1]].strip().split("  ")[0])
-    rows = []
-    for ln in lines[rules[1] + 1 : rules[2]]:
-        if not ln.strip():
+    """Parse the markdown pipe table into ``(left, right)`` rows."""
+    rows: list[tuple[str, str]] = []
+    seen_rule = False
+    for line in doc.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("|"):
+            if rows:
+                break
             continue
-        stripped = ln.rstrip()
-        left = stripped[:boundary].strip()
-        right = stripped[boundary:].strip()
-        if not left:
-            # The label overflowed its column: take the break between the
-            # two cells so a too-long configuration is still read as a
-            # label plus a figure rather than as a figure-less row.
-            head, _, tail = stripped.partition("**")
-            left, right = head.strip(), "**" + tail.strip()
-        rows.append((left, right))
+        cells = [cell.strip() for cell in stripped.strip("|").split("|")]
+        if len(cells) < 2 or not cells[0]:
+            continue
+        if set(cells[0]) <= {"-", ":", " "}:
+            # The ``|---|---|`` alignment rule; data rows follow it.
+            seen_rule = True
+            continue
+        if not seen_rule:
+            # The header row, above the rule.
+            continue
+        rows.append((cells[0], cells[1]))
     return rows
 
 
-def _is_rule(line: str) -> bool:
-    """True for an RST simple-table rule (``====  ====``)."""
-    stripped = line.strip()
-    if not stripped or "=" not in stripped:
-        return False
-    return all(part and set(part) == {"="} for part in stripped.split("  ") if part)
-
-
 def _headline_bound(doc: str) -> str | None:
-    """The docstring's one-line bound summary, flattened, or ``None``.
-
-    Located by its opening phrase rather than by a regex over the whole
-    docstring, because "floor" and "ceiling" also appear in the table's
-    row markers and in the prose that records their history. Only the
-    sentence a reader reads first makes a bound *claim*, and only that
-    one is what every retracted answer here replaced.
-    """
+    """The one-line bound summary, flattened, or ``None``."""
     flat = " ".join(doc.split())
     marker = "Worst case:"
     if marker not in flat:
@@ -700,26 +488,12 @@ def _headline_bound(doc: str) -> str | None:
 
 
 def test_the_ceiling_is_never_a_single_figure() -> None:
-    """The figures are a table of configurations, and the table is load-bearing.
-
-    Three wrong answers have lived on this line — "45 s" (mutually
-    exclusive bounds), "~80 s" (unreachable), "+up to 4 s" on a row that
-    cannot satisfy it — and each was a *single* number. The structural
-    claim is the one that survives all of them: one number cannot be
-    right for five configurations, so the docstring must still carry a
-    row per configuration.
-
-    Asserted against :data:`EXPECTED_ROWS` rather than by searching the
-    flattened prose. The previous version of this test was ten substring
-    checks, and both of the reviewer's probes passed it: collapsing the
-    whole table to one figure, and deleting the table entirely.
-    """
-    doc = qmd_daemon.recycle_qmd_daemon.__doc__ or ""
-    rows = _doc_table_rows(doc)
+    """The figures are a table of configurations, and the table is load-bearing."""
+    rows = _doc_table_rows(_ceiling_doc())
 
     assert rows, (
         "the ceiling table is gone. Its rows are what carry each "
-        "configuration's figure; without it the docstring is back to a "
+        "configuration's figure; without it the claim is back to a "
         "single number, which is the failure this test exists to prevent."
     )
     assert len(rows) == len(EXPECTED_ROWS), (
@@ -818,18 +592,11 @@ def test_the_ceiling_is_never_a_single_figure() -> None:
 
 
 def test_the_unstable_row_says_why_and_names_its_cause() -> None:
-    """The band row is justified by arithmetic, not by a remembered spread.
-
-    An earlier version claimed the row was unstable because it had been
-    observed at 17.7 s and 19.7 s. Counting the ``qmd status`` calls
-    across 20 runs of the old harness: 3 in 20 of 20. The spread was
-    ``time.sleep`` jitter inside a stubbed ``_run_qmd``; the knife-edge
-    was real but was not what had been observed.
-    """
-    doc = " ".join((qmd_daemon.recycle_qmd_daemon.__doc__ or "").split())
+    """The band row is justified by arithmetic, not by a remembered spread."""
+    doc = " ".join(_ceiling_doc().split())
 
     assert "0.1475" in doc, (
-        "the docstring must quote the measured sweep boundary (0.1475) at "
+        "the claim must quote the measured sweep boundary (0.1475) at "
         "which a second in-loop qmd status call stops fitting. The band is "
         "only defensible with the arithmetic that makes it a band."
     )
@@ -844,16 +611,13 @@ def test_the_unstable_row_says_why_and_names_its_cause() -> None:
     )
     # The far end, and the sweep that produced it. Both ends of a band
     # have to be stated, or a reader has a range with no evidence behind
-    # its upper half — which is the shape round 4 shipped: 46 s with
-    # prose giving the 0.25 s boundary and never the 59 s other end.
+    # its upper half.
     assert "44.9 to 59.4" in doc, (
-        "the docstring must state BOTH ends of the cliff in the prose. "
-        "Round 4 gave the boundary and the near side and omitted the far "
-        "one entirely, so the printed 46 s looked like the whole range. "
-        "Checked as the phrase rather than as a bare '59.4', because the "
-        "sweep table below carries it too -- and a docstring-wide check "
-        "passed a mutation that gutted the sentence while leaving the "
-        "table intact."
+        "the claim must state BOTH ends of the cliff in the prose. A "
+        "version that gave the boundary and the near side and omitted the "
+        "far one made the printed 46 s look like the whole range. Checked "
+        "as the phrase rather than as a bare '59.4', because the sweep "
+        "table carries it too."
     )
     assert "0.1450" in doc and "0.1470" in doc, (
         "the sweep that derives the boundary must stay. It is the only "
@@ -861,9 +625,7 @@ def test_the_unstable_row_says_why_and_names_its_cause() -> None:
         "takes two in-loop calls, 0.1470 takes one."
     )
     # "cliff", not "unstable". Asserted on the *sentence*, not the whole
-    # docstring, because the table's row marker also carries the word —
-    # a docstring-wide check passed a mutation that rewrote the prose to
-    # call the same 14.5 s swing "merely unstable".
+    # text, because the table's row marker also carries the word.
     assert re.search(r"row is a cliff", doc), (
         "the prose must call the band a cliff. It is not noise: 0.25 s of "
         "headroom buys a whole STATUS_TIMEOUT_S, and 'unstable' invites a "
@@ -876,31 +638,7 @@ def test_the_unstable_row_says_why_and_names_its_cause() -> None:
 
 
 def test_the_ceiling_harness_still_pins_the_poll() -> None:
-    """The poll pin exists, and the harness it pins is the real reader loop.
-
-    Round 3 deleted a test by rewriting two others by line-slicing; the
-    suite stayed green at 2036 instead of 2037, and the port pin went
-    with it. Nothing in a test suite notices its own missing tests, so
-    this one does, from the *other* file.
-
-    Two claims, both structural:
-
-    1. ``test_the_poll_granularity_is_reached_and_scaled`` is defined in
-       the harness. M34 and M34b weaken or delete it; a suite-wide green
-       is then reporting on a suite with one fewer guard, which is how
-       the round-3 false zero survived three rounds of review.
-
-    2. ``_measure`` never patches ``daemon._run_qmd``. That is the edit
-       that made round 3's ``_POLL_INTERVAL_S`` patch inert: the constant
-       lives inside ``_run_qmd``'s reader loop, so a harness that
-       replaces ``_run_qmd`` never reads it. The harness must patch
-       ``subprocess.Popen`` instead, leaving the reader loop real.
-
-    Neither claim reads the harness's *assertions* — reading a test's own
-    source to check its logic is the tautology this file's predecessor
-    shipped. These check that the guard is present and aimed correctly;
-    whether it has teeth is M32/M33's job, and both are caught.
-    """
+    """The poll pin exists, and the harness it pins is the real reader loop."""
     import importlib.util
 
     harness = Path(__file__).resolve().parents[2] / "integration" / "test_qmd_recycle_ceiling.py"
@@ -944,13 +682,9 @@ def test_the_ceiling_harness_still_pins_the_poll() -> None:
     }
     targets = sorted(f"{obj}.{attr}" for obj, attr in patched)
 
-    # An ALLOWLIST, so this fails closed. Round 4 wrote
-    # `assert "_run_qmd" not in targets`, which could never fire because
-    # every member of `targets` is built as f"{obj}.{attr}" and therefore
-    # always contains a dot. Round 5's review found it; the obvious
-    # repair -- a blacklist entry for `_run_qmd` -- is what this replaced
-    # after M51c showed the blacklist is one deleted assertion from being
-    # no guard at all.
+    # An ALLOWLIST, so this fails closed: every member of `targets` is
+    # built as f"{obj}.{attr}" and therefore always contains a dot, so a
+    # substring blacklist could never fire.
     unexpected = sorted(set(targets) - EXPECTED_PATCH_TARGETS)
     assert not unexpected, (
         f"_measure patches {unexpected}, which is not in "
@@ -975,9 +709,8 @@ def test_the_ceiling_harness_still_pins_the_poll() -> None:
 
     # The harness's own runtime guard must still exist. `_measure`
     # asserts on the `sel.select` wake count, which is what turns a
-    # stubbed `_run_qmd` into a named assertion instead of the
-    # `AttributeError: 'bytes' object has no attribute 'stdout'` that
-    # round 4's revert produced from inside `qmd_daemon_state`.
+    # stubbed `_run_qmd` into a named assertion instead of an
+    # `AttributeError` from inside `qmd_daemon_state`.
     #
     # Checking the assertion is *present* is guard-removal territory and
     # cannot be defended from inside the guard itself. It is here so that
@@ -998,23 +731,7 @@ def test_the_ceiling_harness_still_pins_the_poll() -> None:
 async def test_the_recycle_spawns_on_the_port_it_probes(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """The restart lands on the port the readiness probe is watching.
-
-    The bug this pins is a live one, not a hypothetical. Against
-    ``LIES_QMD_URL=http://127.0.0.1:9000/mcp``: the reap correctly
-    kills the 9000 daemon, a spawn without ``--port`` brings up a
-    **stray on 8181** that also overwrites ``mcp.pid``, and the probe
-    then polls 9000 for its whole budget. The operator gets
-    ``QmdRecycleFailed`` having lost their daemon and gained a squatting
-    one — and ``qmd.js:4008-4013`` then refuses to start a real daemon,
-    because the stray's pidfile is live.
-
-    So the port is parsed out of ``daemon_url``, not defaulted.
-
-    The probe is stubbed (via the module's ``_no_socket_to_loopback``
-    guard, this test previously opened a real socket to the port it
-    names — see that fixture).
-    """
+    """The restart lands on the port the readiness probe is watching."""
     _stub_spawn_and_reap(monkeypatch)
     _fake_clock(monkeypatch, tick_s=0.5)
     _DeadSessionClient.attempts = []

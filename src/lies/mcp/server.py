@@ -64,39 +64,17 @@ mcp = FastMCP(
 
 
 class AbandonedCallMiddleware(Middleware):
-    """Log a tool call that was cancelled before it produced a result.
+    """Logs a tool call that was cancelled before it produced a result.
 
-    A cancelled call -- server shutdown, a request timeout, an
-    explicitly aborted request -- leaves no trace by default: no
-    LIES-side error, no qmd log line. This names the event: tool,
-    elapsed time, and the exception that ended the call. Cancellation is
-    a ``BaseException`` subclass and needs naming explicitly, because a
-    bare ``except Exception`` is what let these stay invisible.
+    Names the tool, elapsed time and ending exception; cancellation is a
+    ``BaseException`` subclass, so a bare ``except Exception`` misses it.
 
-    **What this does not catch, and why it is not the fix for the
-    aborts it was written for.** A client that merely stops waiting --
-    the ``Tool execution interrupted`` case -- does not cancel
-    anything here. Measured against the live daemon: a ``tools/call``
-    abandoned by the client after 2s logs the entry and then neither
-    returns nor raises, because the server was never told; the request
-    is left queued and the result is discarded at the write, downstream
-    of this hook. So this names cancellations that genuinely happen,
-    and the queue-timeout case stays silent.
+    Only abandonment is logged. A tool raising a normal exception becomes
+    an error *result* on the wire and is already reported to the caller.
 
-    That case is not a transport problem at all. The server holds an
-    idle GET stream open indefinitely (measured: 30 minutes, one ping,
-    no drop), and opencode's transport logged zero errors throughout.
-    The aborts were a client-side budget expiring on queued work, and
-    the reason the queue is long is that the qmd daemon executes
-    queries strictly one at a time -- three concurrent queries measured
-    a 0.99x concurrency ratio, so fanning out multiplies latency
-    instead of reducing it.
-
-    Only abandonment is logged. A tool raising a normal exception
-    becomes an error *result* on the wire and is already reported to
-    the caller; conflating "the caller disliked the answer" with "the
-    caller never got an answer" would train operators to ignore this
-    line.
+    Does not catch a client that merely stops waiting: the server is
+    never told, so the request is discarded downstream of this hook.
+    See CHANGELOG.md.
     """
 
     async def on_call_tool(
@@ -107,12 +85,8 @@ class AbandonedCallMiddleware(Middleware):
         try:
             return await call_next(context)
         except _ABANDONMENT_ERRORS as exc:
-            # Say what was observed, not a cause. The runtime handed us
-            # a cancellation; whether a client hang-up produced it is
-            # not knowable from here, and on this stack a plain client
-            # disconnect does not raise at all -- it discards the result
-            # at the write. Naming a cause we cannot observe sends the
-            # next reader after the wrong component.
+            # Report what was observed, not a cause: whether a client
+            # hang-up produced the cancellation is not knowable here.
             logger.warning(
                 "tool call abandoned: %s cancelled after %.1fs (%s)",
                 tool,

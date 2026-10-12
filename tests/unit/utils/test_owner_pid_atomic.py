@@ -1,25 +1,4 @@
-"""The holder-PID file must never be observable half-written.
-
-Pre-existing, made routine by this branch: ``write_owner_pid`` used
-``Path.write_text``, which truncates before it writes, so a contender
-reading in that window got an empty file, failed to parse it and logged
-``could not parse pid file`` (``exclusive._reap_if_stale``). The
-failure is benign and in the safe direction — the reader returns
-``False``, so nobody reaps — but the query single-flight gate makes
-nine-way contention normal, so the warning now prints in normal
-operation and reads as a fault that is not there.
-
-Both pins here are deterministic, and that is a deliberate choice over
-a threaded test. A concurrent-reader test is a race: it passed against
-the truncate-then-write implementation on most runs and only caught it
-after the writer loop was widened, which is the failure mode this
-branch has already shipped twice — a green test that cannot fail.
-Worse, its runtime swung between 0.07 s and 0.42 s on this host, so it
-could not be pinned against the 0.15 s hard limit without being marked
-slow, and marking it slow would have removed it from the default run.
-The spy below opens exactly the window the old code exposed, every
-time, in microseconds.
-"""
+"""The holder-PID file must never be observable half-written."""
 
 from __future__ import annotations
 
@@ -59,16 +38,7 @@ def test_write_owner_pid_replaces_rather_than_truncates() -> None:
 
 
 def test_the_target_is_untouched_until_the_rename(tmp_path: Path, monkeypatch) -> None:
-    """Open the exact window the old code exposed, and look.
-
-    A spy on ``os.replace`` runs *after* the temp file is fully written
-    and *before* the rename — which is precisely where a contender's
-    read lands under the old truncate-then-write. The target must
-    still carry the previous pid there, and it must carry the new one
-    after. Under ``write_text`` the spy never fires at all, so
-    ``observed`` stays empty and this fails rather than passing by
-    accident.
-    """
+    """Open the exact window the old code exposed, and look."""
     path = tmp_path / "qmd.lock.pid"
     lock_heartbeat.write_owner_pid(path, 111)
 
@@ -90,12 +60,7 @@ def test_the_target_is_untouched_until_the_rename(tmp_path: Path, monkeypatch) -
 
 
 def test_temp_file_is_a_sibling_of_the_target(tmp_path: Path) -> None:
-    """``os.replace`` is atomic only within one filesystem.
-
-    A temp file in ``/tmp`` and a target in the cache dir are on
-    different filesystems on any ordinary host, and ``os.replace`` there
-    degrades to copy-then-unlink — which has the window again.
-    """
+    """``os.replace`` is atomic only within one filesystem."""
     path = tmp_path / "nested" / "qmd.lock.pid"
     path.parent.mkdir()
     lock_heartbeat.write_owner_pid(path, 4242)
@@ -108,12 +73,7 @@ def test_temp_file_is_a_sibling_of_the_target(tmp_path: Path) -> None:
 
 
 def test_a_failed_write_leaves_no_temp_debris(tmp_path: Path, monkeypatch) -> None:
-    """The ``except`` arm is load-bearing.
-
-    Without it a failed write deposits a second, unparseable ``*.tmp``
-    file next to the pid file, and the next contender reads whichever
-    it finds.
-    """
+    """The ``except`` arm is load-bearing."""
     path = tmp_path / "qmd.lock.pid"
 
     def boom(*_args, **_kwargs) -> None:
@@ -132,12 +92,7 @@ def test_a_failed_write_leaves_no_temp_debris(tmp_path: Path, monkeypatch) -> No
 
 
 def test_temp_names_do_not_collide_between_threads(tmp_path: Path) -> None:
-    """Two threads must not pick the same temp name and clobber each other.
-
-    The name carries ``get_ident()`` for this reason; ``getpid()`` alone
-    is constant within a process, so ``qmd.lock.pid.<pid>.tmp`` would
-    be one shared file for every writer in the session.
-    """
+    """Two threads must not pick the same temp name and clobber each other."""
     import concurrent.futures
 
     path = tmp_path / "qmd.lock.pid"
@@ -150,13 +105,7 @@ def test_temp_names_do_not_collide_between_threads(tmp_path: Path) -> None:
 
 
 def test_writers_from_several_threads_all_land_whole(tmp_path: Path) -> None:
-    """Cheap corroboration that the rename holds under real contention.
-
-    Bounded hard (8 writers, 40 writes) so it cannot drift past the
-    0.15 s budget. It is deliberately *not* the primary evidence: with
-    this little work a truncate-then-write would usually survive it,
-    which is exactly why the spy test above exists.
-    """
+    """Cheap corroboration that the rename holds under real contention."""
     path = tmp_path / "qmd.lock.pid"
     path.write_text("1", encoding="utf-8")
     bad: list[bytes] = []

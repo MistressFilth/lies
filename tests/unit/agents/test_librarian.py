@@ -386,16 +386,7 @@ def test_librarian_output_searched_scope_default_empty() -> None:
 
 
 def test_librarian_output_fallback_reason_defaults_none() -> None:
-    """The bundle has a slot for the search envelope's reason.
-
-    Without it the reason had nowhere to cross. ``search`` fills its
-    envelope's ``fallback_reason`` with the qmd lock holder, the wait
-    and the budget; the bundle could not receive it, so ``lib_ask``
-    rendered one fixed sentence for every transient failure and a caller
-    who had merely queued could not be distinguished from one whose
-    daemon had wedged. Additive with a ``None`` default, so every
-    existing construction site keeps compiling unchanged.
-    """
+    """The bundle has a slot for the search envelope's reason."""
     from lies.agents.librarian import LibrarianOutput
 
     out = LibrarianOutput(tag_expr=None, exclude_expr=None, excerpts=[], distinct_pages=0)
@@ -414,28 +405,7 @@ def test_librarian_output_fallback_reason_defaults_none() -> None:
 
 
 def test_the_prompt_tells_the_librarian_to_mirror_the_search_fallback_reason() -> None:
-    """The model is the carrier on the production path, so the contract must say so.
-
-    ``LibrarianOutput`` is the agent's ``output_type`` — the model emits
-    it. When the ``search`` tool returns a transient envelope, ``search``
-    has *already* converted the qmd lock exception into a
-    ``fallback_reason`` string, so nothing raises and ``run_sync``
-    returns normally.
-
-    **This instruction is no longer the delivery mechanism.** It used to
-    be: the only route from that string to the user was the model
-    copying it onto the bundle, and a paraphrase — which is exactly what
-    a model told to "carry the reason" will do to a string naming a
-    holder PID and a budget — silently dropped the facts. The
-    ``_search`` closure now records every envelope into a
-    :class:`SearchDiagnostics` and :func:`with_search_diagnostics`
-    overwrites the model's copy verbatim, so the instruction is hygiene
-    for the bundle the synthesizer reads rather than the guarantee.
-
-    It is still pinned. A prompt that stops mentioning the field would
-    invite the model to omit it under output-retry pressure, and the
-    field is what the synthesizer sees before the overlay corrects it.
-    """
+    """The contract tells the model to copy the reason verbatim, in prose and schema."""
     from lies.agents.librarian import LIBRARIAN_SYSTEM_PROMPT
 
     prompt = LIBRARIAN_SYSTEM_PROMPT
@@ -449,15 +419,7 @@ def test_the_prompt_tells_the_librarian_to_mirror_the_search_fallback_reason() -
 
 
 def test_the_prompt_does_not_claim_to_be_the_only_channel() -> None:
-    """The contract must not tell the model its copy is load-bearing.
-
-    A prompt that says "this string reaches the user only through you"
-    is a false statement about the system, and it is the statement that
-    made the old design's weakness invisible. Now that the caller
-    overlays the tool's own reason, the prompt says so — which is what
-    keeps a future reader from "simplifying" the overlay away on the
-    strength of an instruction that claims to be doing the work.
-    """
+    """The contract states the model's copy is hygiene, not the delivery path."""
     from lies.agents.librarian import LIBRARIAN_SYSTEM_PROMPT
 
     prompt = LIBRARIAN_SYSTEM_PROMPT

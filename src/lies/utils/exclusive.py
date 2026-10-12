@@ -72,48 +72,18 @@ class _IndeterminateMarker(Exception):
 
 
 def ensure_lock_parent(path: Path) -> None:
-    """Create ``path.parent`` if it does not exist. Never raises usefully.
+    """Creates ``path.parent`` if it does not exist.
 
-    Split out of :func:`acquire_create_lock` because a caller that
-    polls this lock — :func:`lies.qmd.lock._acquire_with_poll` and its
-    async twin — re-runs the whole acquire once per poll interval, and
-    the ``mkdir`` does not belong in that loop. Measured 2026-10-10: one
-    ``mkdir(parents=True, exist_ok=True)`` against an existing directory
-    is 1 ``mkdir`` syscall plus 1 ``stat`` from ``is_dir()``, 4.3 us.
-    The async gate polls at 10 Hz for up to 120 s, so a contended wait
-    spent ~1200 of them (~2400 syscalls, ~5.2 ms) re-asserting a
-    directory that already existed. Small next to the wait; free to
-    remove, and it was the same redundant-resolution defect Task 1
-    removed one layer up in the sync loop.
-
-    Callers that poll should call this once before the loop and pass
-    ``parent_prepared=True`` to :func:`acquire_create_lock`. Callers
-    that acquire once should not pass the flag at all — that is the
-    first-ever-acquire case, where the parent may genuinely not exist.
-    Note the up-front call is redundant even for those callers:
-    :func:`_create_exclusive` does the same thing on ``FileNotFoundError``,
-    so the flag buys the *avoidance of a repeated* ``mkdir``, never the
-    creation itself.
+    Split out for polling callers, which re-run the whole acquire once
+    per poll interval and must not pay the ``mkdir`` each time.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
 
 
 def _create_exclusive(path: Path) -> int:
-    """``O_CREAT | O_EXCL`` create, opened for writing.
+    """``O_CREAT | O_EXCL`` create, healing a missing parent first.
 
-    Heals a parent that is missing, then creates — and the heal lives
-    **here** rather than at the call site because every create in
-    :func:`acquire_create_lock` goes through here. An earlier version
-    put the heal around the *first* create only, which read as a
-    guarantee it did not make: with the parent removed as the code
-    entered the reap-and-retry branch, ``FileNotFoundError`` escaped
-    from the retry creates (three of them) while the first create healed
-    correctly.
-
-    The hoist traded one correct path for a broken one; this closes it.
-    ``FileNotFoundError`` is not propagated by this function, so a
-    caller can never observe one. ``FileExistsError`` *is* propagated,
-    from both the first attempt and the heal's retry — that is the
+    ``FileNotFoundError`` never escapes; ``FileExistsError`` is the
     contention signal every caller already handles.
     """
     try:
@@ -142,13 +112,9 @@ def acquire_create_lock(  # type: ignore[no-untyped-def]
     once. See the module docstring for the exception policy.
 
     ``parent_prepared=True`` says the caller has already run
-    :func:`ensure_lock_parent` for this path — a polling caller does so
-    once instead of once per attempt. The flag is only an optimisation:
-    :func:`_create_exclusive` heals a parent that vanished underneath a
-    wait on **every** create it performs, so skipping the up-front
-    ``mkdir`` cannot turn a contended poll into a ``FileNotFoundError``.
-    That guarantee covers the reap-and-retry creates too, which is where
-    an earlier version of this refactor let the error escape.
+    :func:`ensure_lock_parent` for this path. The flag is only an
+    optimisation: :func:`_create_exclusive` heals a parent that vanished
+    underneath a wait on every create it performs.
 
     The returned ``AcquireResult.status`` is one of four outcomes:
 

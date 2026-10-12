@@ -148,11 +148,8 @@ def up(
 
     if no_qmd:
         return
-    # Canonical scope, not ``wiki.wiki_dir``: the recorded value has to
-    # compare equal against what ``flock qmd recycle`` records, and
-    # ``wiki_dir`` is ``data_root / "wiki"`` so it never could. The port
-    # comes from ``LIES_QMD_URL`` so an operator pointing at :9000 does
-    # not get a daemon spawned on 8181. See ``qmd.daemon`` module notes.
+    # Canonical scope, not ``wiki.wiki_dir``: the recorded value must
+    # compare equal against what ``flock qmd recycle`` records.
     from lies.config import get_qmd_url
 
     qmd_state = qmd_daemon.ensure_qmd_daemon(
@@ -575,23 +572,17 @@ def _qmd_flock_recycle(
         help="Seconds to wait for the recycled daemon to serve list_tools().",
     ),
 ) -> None:
-    """Manually trigger a qmd daemon recycle (operator escape hatch).
+    """Manually triggers a qmd daemon recycle (operator escape hatch).
 
-    Reaps the running qmd daemon and spawns a fresh one on ``daemon_url``'s
-    port, then probes that URL until the daemon serves a JSON-RPC session
-    or ``ready_timeout`` expires. Prints the final :class:`QmdState` as
-    indented JSON on stdout.
+    Reaps the running daemon, spawns a fresh one on ``daemon_url``'s
+    port, then probes until it serves a JSON-RPC session or
+    ``ready_timeout`` expires. Prints the final :class:`QmdState` as
+    indented JSON.
 
-    Exits 2 when ``QmdRecycleFailed`` is raised (reap+spawn+probe never
-    served within ``ready_timeout``) so shell callers can branch on it
-    without parsing text.
-
-    ``name`` is still required, and still validated, but no longer
-    supplies the recorded scope: the scope is canonical
-    (``daemon._canonical_scope``), because it records which LIES
-    *session* the daemon belongs to and never selected an index. The
-    check stays so an operator typo is still caught before the command
-    reaps a machine-global daemon.
+    Exits 2 on :class:`QmdRecycleFailed`. ``name`` is still validated
+    but no longer supplies the recorded scope, which is canonical — the
+    check stays so an operator typo is caught before the command reaps a
+    machine-global daemon.
     """
     import asyncio
     import dataclasses

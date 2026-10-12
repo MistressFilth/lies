@@ -1,20 +1,4 @@
-"""Real up → handshake → status → down cycle against a live daemon.
-
-Every other daemon test mocks the process boundary. This one spawns a
-real child, so it is the only place a broken re-exec path, a wrong
-transport name, or a wrong mount path can be caught.
-
-**It must not start qmd's daemon.** ``lies mcp up`` calls
-``ensure_qmd_daemon`` unless ``--no-qmd`` is passed
-(``operator.py:149``), and with ``LIES_QMD_URL`` unset — which is what
-the isolation fixture guarantees — that is the default port **8181**,
-not the operator's. The LIES daemon came up fine, so nothing in this
-test failed, and the qmd daemon it spawned outlived the whole pytest
-run as a live listener. Measured on the pre-fix tree: one stray per
-full integration run. Every assertion here is about the *LIES* daemon,
-so ``--no-qmd`` costs the test nothing and is the only thing standing
-between it and the next stray.
-"""
+"""Real up → handshake → status → down cycle against a live daemon."""
 
 from __future__ import annotations
 

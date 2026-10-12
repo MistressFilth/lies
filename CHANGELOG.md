@@ -20,6 +20,40 @@ rule rather than the accident.
 
 ### Fixed
 
+- **Docstrings and comments in the qmd-query-singleflight series grew to
+  3,444 lines describing how the work unfolded rather than what the code
+  does.** Measurement results, provenance ("measured 2026-10-10,
+  transcribed not re-measured at commit time"), retractions of theories
+  the code never asserted, review history and vendored `file:line`
+  citations had accumulated in source docstrings. This series moves
+  them to `AGENTS.md` and to this file, where they belong, and leaves
+  behind docstrings that state what a function does, its arguments, its
+  return and its raises. Test docstrings are down to one line each.
+
+  Three,444 → 396 added docstring lines; 879 → 584 added comment lines.
+  **No behaviour change**: stripping every docstring and `#` comment from
+  every `.py` file at both revisions leaves the tree identical except for
+  two assertion *messages* and four AGENTS.md citation line numbers whose
+  subjects moved.
+
+  Two pins needed retargeting rather than re-satisfying.
+  `test_agents_line_refs` tracks AGENTS.md's `file:line` spellings by
+  what the cited line contains, so cutting the docstrings above six spawn
+  sites moved those lines; the numbers were re-derived and AGENTS.md
+  updated alongside them, which is the loop that pin exists to run.
+  `test_a_span_body_is_still_not_checked` keeps asserting that invented
+  text attributed to a really-read page survives — only its failure
+  message's pointer moved from `with_search_diagnostics`'s docstring to
+  the `AGENTS.md` trade paragraph that now owns it.
+
+  Two facts were not already written down anywhere and were moved into
+  `AGENTS.md` rather than deleted: `qmd_lock_async`'s latent reentrancy
+  hazard (`_held_depth` is a `ContextVar`, so a future path acquiring the
+  lock and then dispatching a `query` through a worker thread would run it
+  with no inode held, silently), and the fact that awaiting in that gate
+  buys anyio thread tokens rather than event-loop protection. The network
+  audit's two coverage gaps joined this file, above.
+
 - **`lies mcp down` in `test_full_lifecycle` passed no `--force`.** The
   test starts its own daemon on a spare port, handshakes it and tears it
   down, so it means it — and the `DaemonInUse` refusal that a serving
@@ -423,6 +457,12 @@ rule rather than the accident.
   against a stub with `_real_connect` neutralised. An earlier version
   connected for real, and the audit failed its own test file — the fix
   for which would have been to exempt itself.
+
+  **What the audit still does not cover**, so a green run is not read
+  as a firewall: a connect performed on a thread that outlives the
+  fixture may be attributed to the *next* test, and a hit with no test
+  in scope — session setup, collection, teardown — is attributed to
+  `<no test>` and fails.
 
 - **The recycle's readiness probe no longer escapes on a stopped qmd
   daemon, so `recycle_qmd_daemon` retries and reaches its own

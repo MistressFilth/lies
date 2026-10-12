@@ -1,40 +1,4 @@
-"""Spawn a real throwaway qmd daemon on a spare port and its own index.
-
-This is the test that A3 exists for. Before this item,
-``_spawn_qmd_daemon`` was hardcoded to ``qmd mcp --http --daemon``: one
-port, the machine's real index, no way to point it anywhere else. A
-recycle can therefore only ever restart *the* daemon, so anything that
-needed a disposable daemon — including this branch's measurement of the
-worst-case recycle hold — had to be driven through a stub instead of a
-real process.
-
-Everything here is isolated three ways, and all three matter:
-
-- **Its own port**, so it cannot collide with the operator's daemon.
-- **Its own ``XDG_CACHE_HOME``**, which relocates ``index.sqlite``,
-  ``mcp.pid`` and ``mcp.log``. This is not incidental: qmd keys
-  ``mcp.pid`` to ``XDG_CACHE_HOME`` and **not** to the port, so a spare
-  port *without* a spare cache dir would overwrite the real daemon's
-  pidfile — and ``qmd_daemon_state`` and ``_reap_qmd_daemon`` both read
-  that file. That is why a *throwaway* takes both arguments.
-
-  Production does the opposite, and legitimately: it passes ``port=``
-  **without** ``data_dir=``, sharing the real cache root, because
-  restarting *the* daemon on *its* configured port is the whole point.
-  The safety condition there is the caller's precondition — reap first,
-  so no live pidfile is held when the spawn runs — not the arguments.
-  ``_spawn_qmd_daemon`` no longer refuses that pairing; it did once,
-  which broke exactly that use.
-- **Teardown by the throwaway's own pidfile**, never ``qmd mcp stop``,
-  which reads the pidfile under the *current* environment.
-
-The machine daemon is asserted untouched, before and after — by
-``test_a_throwaway_daemon_serves_on_its_own_port_and_index``, which is
-the one test that reads the real ``mcp.pid``. The other two here assert
-isolation by their own means: this file redirects ``XDG_CACHE_HOME``, so
-a pidfile written by any of them is a throwaway's by construction, and
-each tears down only the pids it recorded.
-"""
+"""Spawns a real throwaway qmd daemon on a spare port and its own index."""
 
 from __future__ import annotations
 
@@ -76,12 +40,7 @@ def _real_pidfile() -> Path:
 
 
 def test_a_throwaway_daemon_serves_on_its_own_port_and_index(tmp_path: Path) -> None:
-    """``_spawn_qmd_daemon(port=..., data_dir=...)`` really does isolate.
-
-    Skips rather than fails when qmd is absent: an operator without qmd
-    cannot be told their machine is broken by this file. When qmd *is*
-    present, a spawn that does not come up is a real failure.
-    """
+    """``_spawn_qmd_daemon(port=..., data_dir=...)`` really does isolate."""
     if not qmd_daemon.qmd_installed():  # pragma: no cover - environment-dependent
         pytest.skip("qmd is not installed")
 
@@ -95,8 +54,8 @@ def test_a_throwaway_daemon_serves_on_its_own_port_and_index(tmp_path: Path) -> 
     try:
         qmd_daemon._spawn_qmd_daemon(port=port, data_dir=data_dir)
 
-        # qmd appends its own "qmd/" to XDG_CACHE_HOME — see the module
-        # docstring. The pidfile lands there, and *only* there.
+        # qmd appends its own "qmd/" to XDG_CACHE_HOME, so the pidfile
+        # lands there and *only* there.
         throwaway_pidfile = data_dir / "qmd" / "mcp.pid"
         assert throwaway_pidfile.exists(), (
             f"expected qmd's pidfile at {throwaway_pidfile}; "
@@ -144,27 +103,7 @@ def test_a_throwaway_daemon_serves_on_its_own_port_and_index(tmp_path: Path) -> 
 def test_a_recycle_against_a_non_default_port_restarts_on_that_port(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """End-to-end: reap, respawn on the probed port, probe green.
-
-    This is the bug the ``port=`` refusal used to cause, run against a
-    real qmd binary rather than a stub. With ``LIES_QMD_URL`` pointing at
-    a non-8181 daemon:
-
-    - the reap correctly kills the daemon on **that** port;
-    - a spawn without ``--port`` brings up a **stray on 8181**, which
-      also overwrites ``mcp.pid``;
-    - the probe then polls the configured port for its whole budget and
-      raises ``QmdRecycleFailed``.
-
-    The operator ends up having lost their daemon and gained a squatting
-    one, and ``qmd.js:4008-4013`` then refuses to start a real daemon
-    because the stray's pidfile is live.
-
-    Isolation: a throwaway ``XDG_CACHE_HOME`` so the pidfile this writes
-    is not the machine's, and the sidecar redirected so the recycle does
-    not rewrite the operator's real one. Everything else — ``_reap_qmd_daemon``,
-    ``_spawn_qmd_daemon``, the real probe — is the production path.
-    """
+    """End-to-end: reap, respawn on the probed port, probe green."""
     if not qmd_daemon.qmd_installed():  # pragma: no cover - environment-dependent
         pytest.skip("qmd is not installed")
 
@@ -221,14 +160,7 @@ def _port_listening(port: int, host: str = "127.0.0.1") -> bool:
 
 
 def _port_owned_by(pid: int, port: int, host: str = "127.0.0.1") -> bool:
-    """Is ``pid`` the process listening on ``port``?
-
-    A bare "is the port listening" check cannot tell a correct restart
-    from a stray: this host may already run its own daemon on qmd's
-    default port, so 8181 answering says nothing about which process
-    answered. Reading the pid out of the socket's inode and comparing it
-    to the pidfile's is what ties the two together.
-    """
+    """Is ``pid`` the process listening on ``port``?"""
     wanted = f"socket:[{_socket_inode(host, port)}]"
     try:
         for fd in os.listdir(f"/proc/{pid}/fd"):
@@ -243,12 +175,7 @@ def _port_owned_by(pid: int, port: int, host: str = "127.0.0.1") -> bool:
 
 
 def _socket_inode(host: str, port: int) -> str | None:
-    """The inode of the LISTEN socket on ``(host, port)``, from /proc/net/tcp.
-
-    Returns ``None`` when nothing is listening. ``/proc/net/tcp`` stores
-    the local address as a little-endian hex ``IP:PORT``, which is why
-    this is not done with :mod:`socket`.
-    """
+    """The inode of the LISTEN socket on ``(host, port)``, from /proc/net/tcp."""
     want_port = f"{port:04X}"
     for name in ("/proc/net/tcp", "/proc/net/tcp6"):
         try:
@@ -269,36 +196,7 @@ def _socket_inode(host: str, port: int) -> str | None:
 def test_daemon_tool_stale_path_respawns_on_the_configured_port(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The third spawn site, end to end, against a real qmd binary.
-
-    ``access.daemon_tool`` respawns when the daemon is stale, and that
-    site was the one the unit pins could not protect on their own: with
-    both of them weakened to tautologies, dropping ``port=`` there
-    passed the entire unit suite. It is also the *hottest* of the three
-    — ``_is_daemon_stale()`` is true on essentially every call after any
-    write.
-
-    So this drives the real thing rather than asserting on a stub:
-    ``_is_daemon_stale`` is made genuinely true by touching the global
-    write marker (not by patching the predicate), ``LIES_QMD_URL`` points
-    at a throwaway on a spare port, and the reap and spawn are the
-    production functions.
-
-    ``_call_with_recovery`` is stubbed, and that is load-bearing rather
-    than convenient. Left real it **masks the defect**: the stale
-    respawn puts a stray on the wrong port, the next call fails to
-    connect, and the recovery path reaps that stray and respawns *with*
-    the port — so a full ``daemon_tool`` call succeeds under the bug and
-    this test passed while the port was demonstrably wrong. With the
-    recovery removed, what is left is exactly the subject: did the
-    stale-path respawn land on the configured port.
-
-    The real consequence, for the record: the bug creates and destroys a
-    daemon process on the hottest path in the seam (a stale respawn runs
-    on essentially every call after any write) and holds the host-global
-    ``mcp.pid`` throughout, so a concurrent reap elsewhere on the host
-    can kill the wrong process.
-    """
+    """The third spawn site, end to end, against a real qmd binary."""
     if not qmd_daemon.qmd_installed():  # pragma: no cover - environment-dependent
         pytest.skip("qmd is not installed")
 
@@ -356,15 +254,7 @@ def test_daemon_tool_stale_path_respawns_on_the_configured_port(
 
 
 def _stop_daemons(pids: list[int], data_dir: Path) -> None:
-    """SIGTERM every pid we started, and whatever the pidfile now names.
-
-    Reading the pidfile matters: under a mutation that drops the spawn's
-    ``--port``, the replacement binds qmd's default and *takes the
-    pidfile*, and the test raises ``QmdRecycleFailed`` before recording
-    that pid. A teardown that only kills the pids it remembered leaves
-    that stray running for the rest of the session — observed once, and
-    the reason this helper exists rather than three inline loops.
-    """
+    """SIGTERM every pid we started, and whatever the pidfile now names."""
     known = list(pids)
     pidfile = data_dir / "qmd" / "mcp.pid"
     if pidfile.exists():
@@ -387,16 +277,7 @@ def _stop_daemons(pids: list[int], data_dir: Path) -> None:
 
 
 def test_a_recycle_probe_against_a_dead_port_is_the_measured_shape() -> None:
-    """The exception the recycle must retry, straight from fastmcp.
-
-    The unit tests in ``tests/unit/qmd/test_daemon_recycle.py`` construct
-    this shape by hand. This one asks fastmcp for it, so the unit tests'
-    hand-built exception cannot drift from reality unnoticed — a
-    fastmcp upgrade that changed the wrapping would show up here as a
-    changed class name, and
-    ``test_the_measured_exception_is_not_in_any_legacy_arm`` would then
-    deserve re-deriving.
-    """
+    """The exception the recycle must retry, straight from fastmcp."""
     import fastmcp
     import httpx
     import mcp

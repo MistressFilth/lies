@@ -78,19 +78,7 @@ async def _raise_busy_lock(*a: object, **kw: object) -> object:
 
 
 async def test_a_busy_qmd_lock_reaches_the_synthesize_envelope(monkeypatch):
-    """The ``ground()`` / ``synthesize()`` path carries the diagnostics.
-
-    Named for what it exercises. ``synthesize`` is **not** a registered
-    tool — its only production caller is ``ground()``'s counterpart and
-    nothing but tests reach it — so this is the digest→envelope hop,
-    not the user-facing ask path. The registered ``lib_ask`` path is a
-    different code path entirely (``_ask_impl`` → the librarian
-    boundary) and is covered by the ``lib_ask`` tests below.
-
-    Round 1 named this test ``..._reaches_the_lib_ask_envelope``, which
-    asserted a property it never exercised. The name was the only thing
-    wrong with it; the coverage it provides is real, just not that.
-    """
+    """The ``ground()`` / ``synthesize()`` path carries the diagnostics."""
     from lies.mcp import grounding, synth
 
     # A registered collection, or ``ground()`` takes the ``no_library``
@@ -123,21 +111,7 @@ async def test_a_busy_qmd_lock_reaches_the_synthesize_envelope(monkeypatch):
 
 
 def test_lib_ask_returns_the_synthesizers_citations(monkeypatch: pytest.MonkeyPatch) -> None:
-    """``citations`` is not dead on the success path.
-
-    ``_ask_impl`` read ``getattr(lib_out, "citations", [])`` —
-    ``LibrarianOutput`` has no such field, so the ``getattr`` default
-    made every successful ``lib_ask`` return ``citations=[]``. The
-    synthesizer DOES emit citations (as path strings, per the F19
-    prompt); the wiring that turns them into ``Citation`` envelopes
-    existed only in ``Orchestrator._call_synthesizer`` and was never
-    mirrored here.
-
-    Both sites now call ``citations_from_paths``, so this asserts the
-    shared conversion rather than a second copy of it: a path the
-    librarian actually handed over resolves to ``"library"``, and an
-    unknown one falls back to ``"wiki"``.
-    """
+    """``citations`` is not dead on the success path."""
     from unittest.mock import MagicMock
 
     from lies.agents.librarian import LibrarianOutput, PageExcerpt
@@ -180,19 +154,7 @@ def test_lib_ask_returns_the_synthesizers_citations(monkeypatch: pytest.MonkeyPa
 
 
 def test_a_reasonless_empty_bundle_renders_a_reason(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The no-excerpts branch reports WHY, not just that it happened.
-
-    This branch hardcoded ``"librarian returned no excerpts"`` and
-    discarded whatever the bundle carried, so an unknown tag, a tag
-    expression resolving to nothing, and a registered-but-empty
-    collection all reported identically — naming none of them. The
-    specific cause is already on the bundle (``_search_impl`` writes
-    it; the overlay carries it verbatim), so the fix is to read it.
-
-    Not a transient: these are dispatches that RAN and found nothing,
-    which is why the corpus claim is correct here. The reason
-    qualifies it; it does not replace it.
-    """
+    """The no-excerpts branch reports WHY, not just that it happened."""
     from unittest.mock import MagicMock
 
     from lies.agents.librarian import LibrarianOutput
@@ -230,11 +192,7 @@ def test_a_reasonless_empty_bundle_renders_a_reason(monkeypatch: pytest.MonkeyPa
 
 
 def _replace(out, reason):
-    """A ``LibrarianOutput`` with ``fallback_reason`` set.
-
-    Frozen dataclasses need ``dataclasses.replace``; spelled out here
-    so the loop above stays readable.
-    """
+    """A ``LibrarianOutput`` with ``fallback_reason`` set."""
     import dataclasses
 
     return dataclasses.replace(out, fallback_reason=reason)
@@ -243,12 +201,7 @@ def _replace(out, reason):
 def test_an_empty_bundle_with_no_reason_keeps_the_fixed_sentence(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The generic sentence survives as the ``or`` fallback.
-
-    A genuinely clean miss carries no reason at all, and that case must
-    still produce a sentence rather than ``None``. Pinned so the fix
-    above cannot be "read ``lib_out.fallback_reason`` unconditionally".
-    """
+    """The generic sentence survives as the ``or`` fallback."""
     from unittest.mock import MagicMock
 
     from lies.agents.librarian import LibrarianOutput
@@ -272,21 +225,7 @@ def test_an_empty_bundle_with_no_reason_keeps_the_fixed_sentence(
 
 
 def test_citations_from_paths_is_the_one_conversion() -> None:
-    """The orchestrator and ``lib_ask`` must not grow a second copy.
-
-    They failed to agree once already: the orchestrator converted the
-    synthesizer's ``list[str]`` into ``Citation`` objects with the
-    source discriminator, and ``_ask_impl`` reached for a field that
-    does not exist. Two copies of this is how that happened, so the
-    shared function is asserted to exist, to be the object the
-    orchestrator's module actually imported, and to be called from that
-    module's source.
-
-    The source check is what catches a *private* copy. An identity
-    check alone passes when the module keeps its import and stops
-    calling it — the import is still bound, the duplication is still
-    there — which is precisely the shape a well-meaning refactor takes.
-    """
+    """The orchestrator and ``lib_ask`` must not grow a second copy."""
     import ast
     import inspect
 
@@ -314,11 +253,7 @@ def test_citations_from_paths_is_the_one_conversion() -> None:
 
 
 async def test_a_transient_failure_with_no_reason_keeps_the_fixed_string(monkeypatch):
-    """The untyped arm still gets the generic sentence — the fix is additive.
-
-    A digest with no reason must not render "None", and a reader who hit
-    an unnamed failure should get the same sentence they got before.
-    """
+    """The untyped arm still gets the generic sentence — the fix is additive."""
     from lies.mcp import synth
     from lies.mcp.grounding import ArchivistDigest
 
