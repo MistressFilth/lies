@@ -310,25 +310,7 @@ class QueryDeps:
 
 
 def _build_query_prompt(ctx: RunContext[QueryDeps]) -> str:
-    """Render the question and page corpus into the system prompt.
-
-    Pydantic-ai deps are ``RunContext`` data and are NOT auto-serialized
-    into model messages, so a static ``system_prompt`` alone would leave
-    the agent unable to read any page. Mirrors
-    ``lies.agents.linter._build_linter_prompt``.
-
-    Each page is rendered with its source tag inline (``[library]`` /
-    ``[wiki]``) before the path so the LLM can apply the
-    library-wins-on-conflict rule from the prompt body itself, not
-    from a separate header. ``page_sources`` keys mirror
-    ``page_texts`` keys by construction (the orchestrator populates
-    them in lockstep); the renderer falls back to ``"wiki"`` if a
-    missing key is ever encountered so a stale ``page_texts`` entry
-    doesn't crash the prompt.
-
-    Defensive against ``ctx.deps is None`` for callers that drive the
-    agent without deps.
-    """
+    """Render the question and page corpus into the system prompt."""
     parts: list[str] = [
         _system_prompt_for_format(
             getattr(ctx.deps, "format_hint", None) if ctx.deps is not None else None

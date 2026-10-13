@@ -81,8 +81,7 @@ def test_ensure_gitignored_removed() -> None:
 def test_acquire_create_lock_reaps_dead_pid_and_reacquires(
     tmp_path: Path,
 ) -> None:
-    """A pre-existing flock whose stored PID is dead must be reaped on
-    the next acquire, and the second acquire must succeed."""
+    """A pre-existing flock whose stored PID is dead must be reaped on the next acquire, and the second acquire must succeed."""
     lock_create = tmp_path / "memory.lock.create"
     pid_path = tmp_path / "memory.pid"
     state_json = tmp_path / "memory.state.json"

@@ -1,19 +1,4 @@
-"""Pidfile lifecycle for the detached LIES MCP daemon.
-
-``server.py`` stays a pure FastMCP surface and ``cli.py`` stays thin
-dispatch; this module owns everything about the daemon's on-disk
-record and process lifecycle.
-
-The daemon is per-wiki: its pidfile lives under that wiki's XDG
-runtime directory (``$XDG_RUNTIME_DIR/lies/<wiki>/mcp.pid``), so two
-wikis can each run one (the second passes ``--port``).
-
-Ownership rule: only the parent that ran ``up`` writes the pidfile, and
-only ``down`` clears it. The child never touches it. A crashed daemon
-must leave the record behind so :func:`is_stale` can report honestly —
-a self-unlinking child would make a crash indistinguishable from a
-clean stop.
-"""
+"""Pidfile lifecycle for the detached LIES MCP daemon."""
 
 from __future__ import annotations
 
@@ -263,17 +248,15 @@ def port_free(host: str, port: int) -> bool:
 def _daemon_is_serving(rec: PidRecord, timeout: float = 1.0) -> bool:
     """Return True when a streamable-HTTP connect to the daemon succeeds.
 
-    Measures TCP accept only, which is *not* serving: the kernel
-    completes the handshake into the backlog whether or not the
-    process answers MCP, so a daemon wedged after ``listen()`` probes
-    True. A dead daemon, or one not bound to this address, probes
-    False. ``_down`` therefore refuses with :class:`DaemonInUse`
-    against a wedged daemon — that is the operator's call, and the
-    message names ``--force``.
+    This measures TCP accept only, which is *not* serving: the kernel
+    completes the handshake into the backlog whether or not the process
+    answers MCP, so a daemon wedged after ``listen()`` probes True and
+    ``_down`` refuses with :class:`DaemonInUse` - the operator's call, and
+    the message names ``--force``.
 
-    A TCP reachability probe, not a session count: the registry lives
-    inside the daemon process, and a session count would be flaky
-    since a finished client still holds an open stream.
+    A TCP probe rather than a session count: the registry lives inside the
+    daemon process, and a count would be flaky since a finished client
+    still holds an open stream.
     """
     try:
         # `create_connection` resolves the address family itself.
@@ -501,17 +484,15 @@ def _pid_alive(pid: int) -> bool:
 def stop_daemon(wiki: Wiki, *, grace: float = 10.0, force: bool = False) -> StopResult:
     """Stop the tracked daemon, escalating SIGTERM to SIGKILL.
 
-    Only pidfile-tracked daemons are touched — never the stdio servers
-    an MCP host spawned as its own children.
+    Only pidfile-tracked daemons are touched — never the stdio servers an
+    MCP host spawned as its own children. The daemon is machine-global and
+    every MCP client on the host holds a long-lived stream to it, so
+    stopping it disconnects all of them at once; ``force=False`` (the
+    default) refuses while it is serving.
 
-    The daemon is machine-global and every MCP client on the host holds
-    a long-lived stream to it, so stopping it disconnects all of them at
-    once. ``force=False`` (the default) refuses while it is serving.
-
-    Raises:
-        DaemonBusy: Create-lock contention.
-        DaemonStopFailed: The process survives SIGKILL.
-        DaemonInUse: A live daemon is serving and ``force`` is false.
+    Raises ``DaemonBusy`` on create-lock contention, ``DaemonStopFailed``
+    if the process survives SIGKILL, and ``DaemonInUse`` when a live daemon
+    is serving and ``force`` is false.
     """
     lock = create_lock_path(wiki)
     lock_result = acquire_create_lock(lock, max_age_s=CREATE_LOCK_MAX_AGE_S)

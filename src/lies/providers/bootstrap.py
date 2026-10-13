@@ -275,11 +275,9 @@ def run_wizard(
 
     write_atomic(Path(target), partial)
 
-    # Re-load to surface any drift between editor's output and the loader.
-    # Per spec ("TOML parse error after write" → exit 2), reload errors
-    # are fatal: the wizard produced a file that ``load_providers_config``
-    # cannot stand behind, so we refuse to proceed to env capture or
-    # final-print and let the CLI render a typed abort.
+    # Re-load to surface drift between the editor's output and the loader. Reload errors are
+    # fatal: the wizard produced a file ``load_providers_config`` cannot stand behind, so the
+    # CLI refuses to proceed to env capture or the final print.
     from lies.providers.config import load_providers_config
 
     try:

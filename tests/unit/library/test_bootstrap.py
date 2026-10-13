@@ -68,12 +68,7 @@ def test_bootstrap_raises_mismatch_when_source_differs(library: Library) -> None
 
 
 def test_bootstrap_all_creates_only_missing_configs(library: Library) -> None:
-    """Sweep writes configs for no-config dirs and skips ones that have one.
-
-    Three collection directories on disk (one pre-bootstrapped, two
-    scraped without a config). The sweep must write the two missing
-    configs, leave the existing one alone, and report counts that match.
-    """
+    """Sweep writes configs for no-config dirs and skips ones that have one."""
     # Pre-existing config: must NOT be overwritten by the sweep.
     bootstrap_library_collection("has-config", "https://real.example.com/has-config")
     # Two scraped-only dirs (no config.yaml).
@@ -97,12 +92,7 @@ def test_bootstrap_all_creates_only_missing_configs(library: Library) -> None:
 
 
 def test_bootstrap_all_is_idempotent(library: Library) -> None:
-    """A second run on the same state creates nothing new.
-
-    Re-running the sweep is a no-op: every collection now has a config
-    (either pre-existing or written by the first sweep), so nothing
-    needs bootstrapping. The skipped counts grow to cover them all.
-    """
+    """A second run on the same state creates nothing new."""
     (library.collections_root / "alpha").mkdir()
     (library.collections_root / "beta").mkdir()
 

@@ -95,35 +95,16 @@ def apply_migration(
     dry_run: bool = True,
     commit_message: str | None = None,
 ) -> str | None:
-    """Apply a migration plan in three stages.
-
-    1. Move wiki pages to ``library/collections/<coll>/<slug>.md``.
-    2. Backup byte-identical duplicates at
-       ``<wiki>/.lies/migration-backup/<date>/<coll>/<slug>.md`` AND
-       remove the duplicate wiki file (``src.unlink()``) so the wiki
-       atomic-commit picks up the deletion in the same commit. The
-       first-seen wins (per consolidate-wikis resolved Q #6).
-    3. Upsert library catalog rows with section="library" + a
-       deterministic ``updated`` derived from the source hash (per
-       spec §Migration §catalog state).
-
-    Returns the library-side git commit SHA (``None`` on no-op), routed
-    through ``LibraryWriter.commit`` so the wiki side and library side
-    each get their own atomic-commit envelope (per spec §Migration
-    §Atomicity: "Per-collection library write = one atomic git commit
-    at the library").
-    """
+    """Apply a migration plan in three stages."""
     if dry_run:
         return None
     moved_paths: list[Path] = []
     for src, dst in plan.moves:
         dst.parent.mkdir(parents=True, exist_ok=True)
         rewritten = _rewrite_frontmatter(src)
-        # Minor 41: skip the rewrite + write if the destination already
-        # exists with the same content. A re-run of an unchanged
-        # migration would otherwise re-write every mirror file and
-        # bump the library git tree unnecessarily; the content is
-        # identical so the existing destination is preserved.
+        # Skip the rewrite when the destination already holds the same content. A re-run of an
+        # unchanged migration would otherwise rewrite every mirror file and bump the library git
+        # tree for a byte-identical result.
         if dst.exists():
             existing = dst.read_text(encoding="utf-8")
             if existing == rewritten:

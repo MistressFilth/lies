@@ -99,27 +99,7 @@ def test_librarian_agent_calls_collections_read_first(monkeypatch: pytest.Monkey
 
 
 def test_librarian_agent_runs_4_step_pipeline(monkeypatch: pytest.MonkeyPatch) -> None:
-    """TestModel drives the librarian through Classify → Search → Read → Return.
-
-    Verifies the full 4-step pipeline runs end-to-end with canned tool
-    responses:
-
-      - The agent runs to completion without exception.
-      - All three tools are invoked (``collections_read`` for the
-        registry, ``search`` for the hybrid query, ``read`` for the
-        curator's picks).
-      - The output ``LibrarianOutput`` carries ``tag_expr`` matching
-        what the LLM built from the registry tokens, ``searched_scope``
-        populated from the search tool's response, ``distinct_pages``
-        ≥ 1, and a non-empty excerpts list drawn from the canned
-        ``read`` data.
-
-    Uses pydantic-ai's :class:`TestModel` with ``custom_output_args``
-    pinned to a deterministic ``LibrarianOutput`` so the assertions
-    don't flake on TestModel's synthetic output generation. The tool
-    invocations still go through the real closure → MCP-tool shim
-    path; only the final structured output is pinned.
-    """
+    """TestModel drives the librarian through Classify → Search → Read → Return."""
     bodies = {
         "alpha/cli-plugin.md": (
             "# Setup\n\nPlugin.define({ id, setup }) — entry point for the alpha CLI plugin."

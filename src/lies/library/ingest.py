@@ -1,23 +1,4 @@
-"""Five-step deterministic ingest pipeline orchestrator.
-
-The pipeline runs five phases per fetched document:
-
-1. **fetch**     — ``Fetcher.fetch_sources(source)`` yields ``FetchItem``s
-2. **ETL**       — concrete fetcher responsibility (Task 9's ``ScraperFetcher``)
-3. **filter**    — filename gate (``should_skip_filename``) + content gate
-                   (``should_skip_content``)
-4. **mirror**    — ``write_mirror`` writes the deterministic frontmatter + body
-5. **catalog**   — ``LibraryWriter.commit`` upserts the catalog page and commits
-                   atomically
-
-Per-doc quarantine: failed docs are copied to
-``library.git_root/poison/<collection>/<slug>.md`` for inspection, recorded in
-``BatchIngestResult.quarantine_records``.
-
-Atomic-commit: the whole batch commits once at ``_finalize`` time (per the
-``LibraryWriter`` envelope from Task 7), unless ``dry_run=True`` skips the
-commit and the per-doc ``write_mirror`` entirely.
-"""
+"""Five-step deterministic ingest pipeline orchestrator."""
 
 from __future__ import annotations
 
@@ -88,11 +69,9 @@ class BatchIngestResult:
     errors: int = 0
     skip_reasons: dict[str, int] = field(default_factory=dict)
     mirror_paths: list[Path] = field(default_factory=list)
-    # Per-mirror source hashes, parallel to ``mirror_paths`` (same index).
-    # ``_finalize`` threads each into the catalog row's ``hash`` column so
-    # the catalog stays useful for dedup + qmd change-detection — a bare
-    # ``hash=""`` discards the upstream content hash and makes the catalog
-    # row indistinguishable from a never-hashed mirror (Minor 29).
+    # Per-mirror source hashes, index-parallel to ``mirror_paths``. ``_finalize`` threads
+    # each into the catalog row's ``hash`` column for dedup and qmd change-detection; a
+    # bare ``hash=""`` makes the row indistinguishable from a never-hashed mirror.
     mirror_source_hashes: list[str] = field(default_factory=list)
     quarantine_records: list[tuple[str, str]] = field(default_factory=list)
 
@@ -133,24 +112,7 @@ def _iter_fetch_items(
     source: Path | str,
     result: BatchIngestResult,
 ) -> Iterator[FetchItem]:
-    """Yield ``FetchItem``s, catching per-doc dispatch failures.
-
-    ``ScraperFetcher.fetch_sources`` is a generator that calls
-    ``_normalize_body`` (which dispatches through ``format_dispatch``) for
-    each doc; an unknown format or a normalizer outage raises mid-yield
-    and propagates out of the generator, aborting the whole batch.
-
-    The spec mandates per-doc quarantine (see this module's docstring),
-    so we wrap the generator and catch the per-doc exception, record a
-    ``fetch-unreachable:<source>:<ExceptionName>`` quarantine entry, and
-    end the iteration. Items successfully yielded before the failure are
-    preserved; subsequent docs in the same source are not yielded (the
-    scraper generator is closed by the exception).
-
-    ``LibraryFetchUnreachable`` is re-raised: it is a run-boundary error
-    (the scraper produced zero items, with no per-doc dispatch in play)
-    and the caller surfaces it to the operator.
-    """
+    """Yield ``FetchItem``s, catching per-doc dispatch failures."""
     src_str = str(source)
     try:
         yield from fetcher.fetch_sources(source)
@@ -225,11 +187,9 @@ def _process_item(
         return
 
     source_url = item.url if item.url is not None else ""
-    # ``source_path`` is required by ``write_mirror`` (Minor 38). For
-    # URL-only items we have no local file path, so we record an empty
-    # string (frontmatter writes ``source_path: ""`` instead of
-    # ``source_path: null``) — the operator can still grep for the
-    # URL to trace the mirror back to its source.
+    # ``source_path`` is required by ``write_mirror``. URL-only items have no local file
+    # path, so an empty string is recorded (``source_path: ""``, not ``null``) and the
+    # operator can still grep for the URL to trace the mirror back to its source.
     source_path = str(path) if path is not None else ""
     target = coll.dir / f"{slug}.md"
     existed = target.exists()
@@ -244,11 +204,9 @@ def _process_item(
                 if parsed_hash:
                     existing_hash = parsed_hash
             except Exception as exc:
-                # I16: surface the frontmatter parse failure as an explicit
-                # quarantine reason rather than silently treating the
-                # mirror as if it had no source_hash (which would
-                # short-circuit the idempotency check and quarantine with
-                # the misleading "hashes differ" reason).
+                # Surface a frontmatter parse failure as an explicit quarantine reason rather than
+                # treating the mirror as if it had no ``source_hash`` — which would short-circuit the
+                # idempotency check and quarantine with the misleading "hashes differ" reason.
                 result.errors += 1
                 result.quarantine_records.append(
                     _quarantine_to_poison(
@@ -272,23 +230,10 @@ def _process_item(
                 )
             )
             return
-        # Idempotency contract: when the incoming source_hash matches the
-        # existing mirror's hash, the source is unchanged — record a skip
-        # (not an error) and do NOT bump errors / quarantine. This restores
-        # the exit-0 behavior for re-runs of unchanged sources (Task 11
-        # fix #2). Mismatched hashes still fall through to the
-        # error+quarantine branch below so genuine conflicts stay fail-loud.
-        #
-        # Three states, not two. The previous guard was
-        # ``if existing_hash and existing_hash == item.source_hash``,
-        # which asks one yes/no question over a three-valued domain, so
-        # a mirror carrying *no* ``source_hash`` fell through to the
-        # branch that means "the mirror disagrees with the source" and
-        # reported ``existing-!=new-<hash>`` — an empty left-hand side
-        # printed as a disagreement. A page the pipeline never wrote is
-        # an absence of evidence, and it is quarantined under a reason
-        # that says so. The outcome is unchanged (fail loud, preserve
-        # the page); only the claim is corrected.
+        # Idempotency contract: a matching ``source_hash`` means the source is unchanged —
+        # record a skip, do NOT bump errors or quarantine. Mismatches still fall through to
+        # error+quarantine so genuine conflicts stay fail-loud. Three states, not two: a mirror
+        # with *no* ``source_hash`` is an absence of evidence, not a conflict.
         if existing_hash:
             if existing_hash == item.source_hash:
                 _record_skip(result, "mirror-collision:up_to_date")
@@ -361,12 +306,9 @@ def _finalize(
             source_pkg=collection_name,
             section="library",
             updated=updated_iso,
-            # Minor 29: thread the upstream source_hash into the catalog
-            # row so qmd change-detection / catalog-level dedup can use
-            # the row without re-reading the mirror frontmatter. The
-            # parallel list ``mirror_source_hashes`` is index-aligned with
-            # ``mirror_paths``; an off-by-one here would silently tag the
-            # wrong mirror — assert it instead in the test suite.
+            # Thread the upstream ``source_hash`` into the catalog row so qmd change detection and
+            # catalog dedup need no mirror re-read. The parallel list ``mirror_source_hashes`` is
+            # index-aligned with ``mirror_paths``; an off-by-one would silently tag the wrong mirror.
             hash=result.mirror_source_hashes[i],
             derived_from="",
         )
@@ -387,22 +329,7 @@ def _finalize(
 
 
 def _assert_not_self_ingest(library: Library, collection_name: str, source: Path | str) -> None:
-    """Refuse a run whose source and mirror destination are one path.
-
-    ``_process_item`` derives ``target = coll.dir / f"{slug}.md"`` from
-    the source's *relative* path, and ``derive_nested_slug`` mirrors
-    that path segment for segment. So any source that already lives
-    inside the collection directory resolves its own mirror target onto
-    itself, and the run can only ever "skip everything" or "rewrite
-    everything".
-
-    Checked by containment rather than equality: ``--batch <coll>/guides``
-    is the same defect as ``--batch <coll>``, because
-    ``guides/page.md`` still lands on ``<coll>/guides/page.md``.
-
-    A URL is a string here and has no local mirror to collide with, so
-    it passes through untouched.
-    """
+    """Refuse a run whose source and mirror destination are one path."""
     if not isinstance(source, Path):
         return
     try:
@@ -480,37 +407,13 @@ def run_batch_ingest(
     force: bool = False,
     dry_run: bool = False,
 ) -> BatchIngestResult:
-    """Ingest every eligible file under ``source_dir``.
-
-    Directory walk is the fetcher's responsibility — ``run_batch_ingest``
-    just delegates to ``Fetcher.fetch_sources(source_dir)`` and processes
-    the yielded items through the same pipeline as ``run_source_ingest``.
-
-    ``source_dir`` accepts ``Path | str`` to match the
-    :class:`Fetcher` protocol: callers that have a URL (``https://...``)
-    on hand pass it as a string, since ``Path("https://...")`` mangles
-    the scheme on POSIX (becomes ``https:/...``) and breaks the URL
-    prefix check in :func:`lies.scrapers.base.pick_scraper`.
-
-    Same quarantine semantics as ``run_source_ingest``: a per-doc dispatch
-    failure quarantines the bad doc and the run continues with whatever
-    items survived. ``LibraryFetchUnreachable`` is only raised when both
-    the fetch yielded zero items AND no per-doc quarantine records exist.
-
-    Raises ``SelfIngestRefused`` when ``source_dir`` is inside the target
-    collection, which is the shape reported against this command: it
-    enumerates the mirrors and asks each one whether its own source has
-    changed.
-    """
+    """Ingest every eligible file under ``source_dir``."""
     _assert_not_self_ingest(library, collection_name, source_dir)
     result = BatchIngestResult()
     items = list(_iter_fetch_items(fetcher, source_dir, result))
-    # Empty batch is a no-op (spec: "lies ingest --batch <empty-dir> →
-    # no-op run, exit 0"). Return the empty BatchIngestResult so the
-    # caller sees ``errors==0`` and skips the commit. A *directory*
-    # dispatch failure (``ScraperUnavailable`` etc.) still raises through
-    # ``_iter_fetch_items`` because of the ``LibraryFetchUnreachable``
-    # pass-through in ``_iter_fetch_items``'s outer catch.
+    # An empty batch is a no-op: return the empty ``BatchIngestResult`` so the caller sees
+    # ``errors==0`` and skips the commit. A *dispatch* failure still raises through the
+    # ``LibraryFetchUnreachable`` pass-through in ``_iter_fetch_items``.
     if not items and not result.quarantine_records:
         return _finalize(
             library,

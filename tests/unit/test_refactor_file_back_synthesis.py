@@ -1,20 +1,4 @@
-"""Regression pins for F3 file_back_synthesis behavior after refactor.
-
-The wrapper public API (``Orchestrator.file_back_synthesis``) must produce
-an identical MemoryReceipt shape once its body delegates to
-``build_author_plan(type="synthesis", ...)`` + ``file_back_author``
-(Task 7 of the f39-f12 bundle). The pre-refactor
-``tests/unit/test_file_back_synthesis.py`` is deleted in this task;
-the F3 plan-builder test suite likewise. Together these three tests
-cover what was preserved:
-
-1. Successful route through ``apply_plan`` exactly once.
-2. The synthesized plan carries ``tag="synthesis"`` and lands under
-   ``<collection>/synthesis/<slug>.md``.
-3. ``WikiPlanInvalid`` from the plan builder short-circuits to a
-   receipt whose ``errors`` field carries a ``"plan_invalid"`` prefix;
-   ``apply_plan`` is never called.
-"""
+"""``file_back_synthesis`` behaviour pins."""
 
 from __future__ import annotations
 
@@ -83,13 +67,7 @@ def test_file_back_synthesis_routes_to_apply_plan(orch):
 
 
 def test_file_back_synthesis_tag_is_synthesis(orch):
-    """The synthesized plan's tag must remain 'synthesis' (F3 invariant).
-
-    The plan's tag is rendered into the git commit message and the
-    ``wiki/log.md`` entry; downstream tooling relies on a stable
-    ``"synthesis"`` tag for synthesis pages even after the refactor.
-    The path must land under ``<collection>/synthesis/<slug>.md``.
-    """
+    """The synthesized plan's tag must remain 'synthesis' (F3 invariant)."""
     captured: dict = {}
 
     def capture(plan):
@@ -111,13 +89,7 @@ def test_file_back_synthesis_tag_is_synthesis(orch):
 
 
 def test_file_back_synthesis_plan_invalid_returns_error_receipt(orch):
-    """Empty ``pages_read`` -> ``WikiPlanInvalid`` -> ``plan_invalid`` receipt.
-
-    F3 invariant: an answer with no evidence cannot synthesize a page,
-    and the wrapper must never invoke ``apply_plan`` for it. The receipt
-    carries the builder's exception text under the ``"plan_invalid"``
-    error-prefix so the operator sees what failed without crashing.
-    """
+    """Empty ``pages_read`` -> ``WikiPlanInvalid`` -> ``plan_invalid`` receipt."""
     bad = SynthesizedAnswer(
         answer="x",
         citations=[],
@@ -131,12 +103,7 @@ def test_file_back_synthesis_plan_invalid_returns_error_receipt(orch):
 
 
 def test_file_back_synthesis_includes_render_format(orch):
-    """``file_back_synthesis`` writes the answer's format into the frontmatter.
-
-    Task 7: ``answer.format`` is threaded as ``render_format`` through
-    ``build_author_plan`` so the synthesized page's frontmatter records
-    the body shape (md / table / marp).
-    """
+    """``file_back_synthesis`` writes the answer's format into the frontmatter."""
     answer = SynthesizedAnswer(
         answer="| col1 | col2 |\n| --- | --- |\n| a | b |\n",
         format="table",
@@ -156,19 +123,7 @@ def test_file_back_synthesis_includes_render_format(orch):
 
 
 def test_file_back_synthesis_includes_render_format_chart(orch):
-    """Chart-format sister: ``render_format: "chart"`` lands in the frontmatter.
-
-    F1 chart addendum (Critical #2 follow-up): ``run_query_with_format``
-    threads the caller's forced ``format_hint`` into ``_call_synthesizer``
-    so the filed synthesis's ``render_format`` frontmatter matches the
-    rendered body shape. The ``test_run_query_with_format_threads_format_
-    hint_into_call_synthesizer`` test pins the orchestrator plumbing;
-    this test pins the end-to-end frontmatter rendering for the chart
-    path specifically. Without this assertion the threading can regress
-    silently (e.g. a future ``getattr(answer, "format", "md")`` that
-    forgets to consult the caller's forced hint would re-introduce the
-    auto-route md filing bug without any test catching it).
-    """
+    """Chart-format sister: ``render_format: "chart"`` lands in the frontmatter."""
     answer = SynthesizedAnswer(
         answer="```mermaid\ngraph LR\n  A --> B\n```\n",
         format="chart",
@@ -190,12 +145,7 @@ def test_file_back_synthesis_includes_render_format_chart(orch):
 def test_run_query_with_format_threads_format_hint_into_call_synthesizer(
     tmp_path: Path,
 ) -> None:
-    """F1 chart addendum (Critical #2): ``run_query_with_format`` must
-    thread the caller's forced ``format_hint`` into the inner
-    ``_call_synthesizer`` call so a ``--format=chart`` override files
-    the synthesis with ``render_format: chart`` rather than the
-    auto-route's ``render_format: md``.
-    """
+    """``run_query_with_format`` threads the caller's forced ``format_hint`` into the inner synth call."""
     from lies.agents.query_synthesizer import QueryAnswer
 
     orch = _orch(tmp_path)

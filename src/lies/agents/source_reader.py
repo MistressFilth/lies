@@ -105,13 +105,10 @@ def source_reader_agent(
             "source_reader_agent requires an explicit model. Pass `model=` "
             "or set LIES_AGENT_SOURCE_READER_MODEL / configure providers.toml."
         )
-    # PromptedOutput wraps the schema in instructions and parses the
-    # model's free-form JSON text rather than relying on tool calling
-    # or response_format=json_schema. MiniMax-M3 ignores tool_choice and
-    # response_format on both endpoints; PromptedOutput is the only
-    # shape that works reliably with that model. See the project-notes
-    # issue that captured the systematic-debugging trace:
-    # superpowers/issues/2026-09-07-ingest-design-mismatch.md
+    # PromptedOutput wraps the schema in instructions and parses the model's free-form JSON
+    # text rather than relying on tool calling or ``response_format=json_schema``.
+    # MiniMax-M3 ignores ``tool_choice`` and ``response_format`` on both endpoints, so this is
+    # the only output shape that works reliably with that model.
     return make_sub_agent(
         model=model,
         output_type=PromptedOutput(SourceExtraction),

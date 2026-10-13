@@ -23,8 +23,7 @@ def test_synthesize_envelope_shape():
 
 
 async def test_synthesize_empty_digest_returns_honest_prose(monkeypatch):
-    """When ground() returns no citations, synthesize returns prose
-    explaining the gap, not an empty answer."""
+    """When ground() returns no citations, synthesize returns prose explaining the gap, not an empty answer."""
     from lies.mcp import synth
 
     from lies.mcp.grounding import ArchivistDigest

@@ -44,12 +44,7 @@ def _write(wiki, rel: str, body: str) -> None:
 
 
 def test_missing_xref_two_pages_mention_each_other(wiki) -> None:
-    """Two pages mentioning each other's titles without a markdown link -> 1 finding, safe_to_fix=True.
-
-    A's link [Beta](b.md) resolves to wiki/concepts/b.md (B's path) under
-    source-directory resolution, so A→B direction is not flagged. B has
-    no links at all, so B→A emits a finding.
-    """
+    """Two pages mentioning each other's titles without a markdown link -> 1 finding, safe_to_fix=True."""
     _write(
         wiki,
         "wiki/concepts/a.md",
@@ -72,11 +67,7 @@ def test_missing_xref_two_pages_mention_each_other(wiki) -> None:
 
 
 def test_missing_xref_ignores_already_linked(wiki) -> None:
-    """Both directions cross-link; A→B resolves to wiki/concepts/b.md and B→A to wiki/concepts/a.md.
-
-    The heuristic is target-specific: each pair checks whether the
-    source's resolved targets include the other's wiki-relative path.
-    """
+    """Both directions cross-link; A→B resolves to wiki/concepts/b.md and B→A to wiki/concepts/a.md."""
     _write(
         wiki,
         "wiki/concepts/a.md",
@@ -112,14 +103,7 @@ def test_missing_xref_skips_title_collisions(wiki) -> None:
 
 
 def test_missing_xref_links_to_third_page_still_flags(wiki) -> None:
-    """A mentions B's title but its only link resolves to C (not B).
-
-    Distinguishes "specific link" from "any link" semantics. With
-    target-specific resolution, A's link [Gamma](c.md) resolves to
-    wiki/concepts/c.md, so A still gets flagged for mentioning B
-    without linking to B. B has no links at all and mentions A, so B
-    is flagged too. Expect 2 findings.
-    """
+    """A mentions B's title but its only link resolves to C (not B)."""
     _write(
         wiki,
         "wiki/concepts/a.md",
@@ -283,18 +267,7 @@ def test_empty_corpus_flags_every_wikilink(wiki) -> None:
 
 
 def test_lint_flags_missing_required_section_for_synthesis(wiki) -> None:
-    """A synthesis page lacking the required ``## Thesis`` / ``## Evidence`` /
-    ``## Open Questions`` headings triggers the generalized
-    ``missing_required_section`` finding.
-
-    Replaces the previous synthesis-only ``synthesis_missing_evidence``
-    check (which only watched for ``## Evidence``). The full
-    per-type coverage of the generalized check lives in
-    ``tests/unit/lint/test_missing_required_section.py``; this test
-    stays here as the regression pin against the lint shell's
-    synthesis branch — the original Task 6 retirement of
-    ``synthesis_missing_evidence`` must never be re-emitted.
-    """
+    """A synthesis page lacking the required ``## Thesis`` / ``## Evidence`` / ``## Open Questions`` headings triggers the generalized."""
     _write(
         wiki,
         "wiki/claude-code/synthesis/what-is-a-hook.md",

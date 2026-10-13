@@ -106,12 +106,7 @@ def test_acquire_create_lock_release_idempotent(wiki: Wiki) -> None:
 def test_acquire_create_lock_recovers_from_orphaned_lock(
     wiki: Wiki, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A stale ``sync.lock.create`` (no fd, old mtime) is recovered.
-
-    Simulates a crashed previous acquirer that left the create-lock file
-    behind. The next call must detect the orphan via mtime, unlink it, and
-    succeed in claiming the lock. A fresh lock (recent mtime) is left alone.
-    """
+    """A stale ``sync.lock.create`` (no fd, old mtime) is recovered."""
     lock_path = wiki.sync_create_lock_path
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     lock_path.touch()

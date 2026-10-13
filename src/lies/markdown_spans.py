@@ -13,21 +13,8 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class Span:
-    """A contiguous range of a markdown body with heading context.
-
-    Attributes:
-        heading_path: Nested ATX heading text from H1 down to the
-            span's parent. Empty when the span sits above any
-            heading.
-        body: Verbatim text of the span. For code-fence spans,
-            contains the inner fenced content only (delimiters
-            stripped — synthesizers and other downstream consumers
-            inspect the fence contents, not the fence delimiters).
-        code_fence: True when the span lives inside ``` or ~~~
-            fences. Consumers (e.g. the synthesizer's ``page_texts``
-            derivation) exclude these from prose excerpts.
-        start_line: 1-indexed line number of the span's first line
-            in the source body.
+    """A contiguous range of a markdown body with heading context. See "Data
+    shapes" in AGENTS.md for the field contract.
     """
 
     heading_path: list[str]

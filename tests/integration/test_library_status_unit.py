@@ -1,10 +1,4 @@
-"""Unit tests for ``lies status`` library-state surfacing (Task 15).
-
-``lies status`` gains a ``library:`` line that reports the catalog
-row count by section (``library`` + ``library-migrated``). The line
-must surface even when no wiki is registered yet (the library is
-independent of any specific wiki).
-"""
+"""Unit tests for ``lies status`` library-state surfacing (Task 15)."""
 
 from __future__ import annotations
 
@@ -74,13 +68,7 @@ def _stub_wiki(tmp_path: Path, monkeypatch) -> None:
 
 
 def test_status_reports_library_catalog_count(tmp_path: Path, monkeypatch) -> None:
-    """``lies status`` surfaces a ``library:`` line with catalog counts.
-
-    Populates the catalog with BOTH ``section="library"`` and
-    ``section="library-migrated"`` rows so the migrated tally is non-zero
-    — a regression that drops the migrated count or conflates the two
-    would surface as a substring mismatch on ``, 1 migrated`` below.
-    """
+    """``lies status`` surfaces a ``library:`` line with catalog counts."""
     from lies.library.catalog import (
         LibraryCatalogPage,
         open_catalog,
@@ -140,12 +128,7 @@ def test_status_reports_library_catalog_count(tmp_path: Path, monkeypatch) -> No
 def test_status_reports_zero_migrated_when_only_library_section(
     tmp_path: Path, monkeypatch
 ) -> None:
-    """``lies status`` prints ``0 migrated`` when only ``library`` rows exist.
-
-    Pins the unpopulated-quarantine case so a regression that always
-    reports ``0`` (or always reports ``N``) for the migrated tally is
-    caught regardless of how the populated case changes.
-    """
+    """``lies status`` prints ``0 migrated`` when only ``library`` rows exist."""
     from lies.library.catalog import (
         LibraryCatalogPage,
         open_catalog,

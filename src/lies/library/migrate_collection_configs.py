@@ -1,20 +1,4 @@
-"""One-shot migration: per-wiki YAML configs → library ``config.yaml``s.
-
-Discovers every wiki under ``$XDG_CONFIG_HOME/lies/`` and for each
-``<wiki>/collections/<slug>.yaml``, parses, validates uniqueness
-across wikis and against the existing library, then writes
-``<library>/collections/<slug>/config.yaml`` and deletes the source.
-
-Atomic per-slug (``save_config`` is atomic via tmp+rename), but not
-atomic across the whole plan: a non-collision failure in Phase 2
-leaves partial state — some library configs written, all source YAMLs
-still on disk. A re-run sees the wiki YAMLs as still-mine and the
-library configs as already-there; pre-flight the collision check so the
-operator gets a clean error instead of a mid-write ``CollectionAlreadyExists``.
-
-Re-running after a successful migration is a no-op (no source YAMLs
-remain).
-"""
+"""One-shot migration: per-wiki YAML configs → library ``config.yaml``s."""
 
 from __future__ import annotations
 

@@ -1,8 +1,4 @@
-"""Tests for Orchestrator.file_back_author (sibling of file_back_synthesis).
-
-Mirrors tests/unit/test_file_back_synthesis.py cases. F3 wrapper stays
-in Task 7; this task only covers the new never-raises wrapper.
-"""
+"""Tests for Orchestrator.file_back_author (sibling of file_back_synthesis)."""
 
 from __future__ import annotations
 
@@ -134,12 +130,7 @@ def test_transient_then_success(orch: Orchestrator) -> None:
 
 
 def test_write_conflict_no_retry(orch: Orchestrator) -> None:
-    """WikiWriteConflict is treated like the other transient errors here.
-
-    ``file_back_synthesis`` includes ``WikiWriteConflict`` in the retry
-    tuple (sha256 mismatch — same flock+commit envelope as a lock busy).
-    Three attempts exhaust and the receipt surfaces the error.
-    """
+    """WikiWriteConflict is treated like the other transient errors here."""
     orch._memory_service.apply_plan = MagicMock(side_effect=WikiWriteConflict("sha mismatch"))
     receipt = orch.file_back_author(_plan())
     assert orch._memory_service.apply_plan.call_count == 3

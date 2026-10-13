@@ -48,36 +48,12 @@ def test_get_qmd_transport_default() -> None:
 
 
 def test_get_qmd_url_default() -> None:
-    """The default URL is the path qmd actually serves.
-
-    qmd's HTTP MCP server listens on exactly one route — ``/mcp``
-    (``dist/mcp/server.js``: ``if (pathname === "/mcp" && …)``), and
-    ``qmd.lifecycle`` has always built ``http://host:port/mcp``. A URL
-    without that path reaches the daemon and comes back 404, which the
-    access seam classifies as a transport failure and reports as a down
-    daemon: a live daemon reported as absent, with the fix ("start it")
-    being the one action that would change nothing.
-    """
+    """The default URL is the path qmd actually serves."""
     assert config.get_qmd_url() == "http://localhost:8181/mcp"
 
 
 def test_every_qmd_url_default_is_sourced_from_the_one_config_constant() -> None:
-    """No module may spell its own bare-origin qmd URL.
-
-    This URL was written out in three places — ``config.DEFAULT_QMD_URL``,
-    ``QmdCapability.__init__``'s ``url`` default, and
-    ``QmdMcpClient.url`` — and only the first was corrected. The two
-    class defaults were unreachable at the time (the sole production
-    construction site, ``orchestrator.py``, passes ``get_qmd_url()``
-    explicitly, and ``QmdMcpClient`` has no production construction site
-    at all), so nothing failed; a future caller that omits ``url=`` would
-    have reproduced the exact 404-as-down-daemon misdiagnosis.
-
-    The fix that closes the class rather than the three instances: both
-    defaults now *source* ``DEFAULT_QMD_URL``. This test asserts the
-    sourcing, so a module that re-spells the literal fails here instead of
-    at runtime against a live daemon.
-    """
+    """No module may spell its own bare-origin qmd URL."""
     import inspect
 
     from lies.qmd.capability import QmdCapability

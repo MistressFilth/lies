@@ -49,8 +49,7 @@ def test_read_heartbeat_corrupt_returns_none(tmp_path: Path) -> None:
 
 
 def test_acquire_result_defaults() -> None:
-    """Default-constructed AcquireResult carries the spec's fields with
-    ``acquired`` as the default status + ``None`` holder info."""
+    """Default-constructed AcquireResult carries the spec's fields with ``acquired`` as the default status + ``None`` holder info."""
     ar = AcquireResult(fd=7)
     assert ar.fd == 7
     assert ar.holder_pid is None

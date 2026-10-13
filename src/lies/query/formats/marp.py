@@ -32,21 +32,7 @@ def _timestamp() -> str:
 
 
 def render_marp(body: str, *, output_dir: Path | None = None) -> Path:
-    """Render a Marp body. Returns a path the operator should open.
-
-    If ``marp`` is on ``$PATH``: shell out to render HTML at
-    ``<output_dir>/query-<timestamp>.html``; the body is also written
-    to ``<output_dir>/query-<timestamp>.md``. Returns the HTML path.
-
-    If ``marp`` is missing OR the subprocess fails: write the body to
-    ``<output_dir>/query-<timestamp>.md`` and return that path. On
-    subprocess failure the marp stderr is captured at
-    ``<body_path>.stderr`` for inspection.
-
-    The marp CLI's arg order (``marp --html --output OUT IN``) is the
-    documented form. If a future marp release changes this, update the
-    ``subprocess.run`` call accordingly.
-    """
+    """Render a Marp body. Returns a path the operator should open."""
     target_dir = output_dir if output_dir is not None else _default_output_dir()
     target_dir.mkdir(parents=True, exist_ok=True)
     # Wall-clock seconds + a process-local counter keeps two calls in the

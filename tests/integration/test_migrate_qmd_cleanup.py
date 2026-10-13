@@ -1,12 +1,4 @@
-"""Pins that ``lies ingest-to-library --apply`` runs the qmd cleanup
-hook (wiki collection remove + library collection add + update + embed)
-on every migrated collection.
-
-Subcommand path matches Task 13's cli_migrate.py registration at the
-root app under name ``ingest-to-library`` (top-level command, not nested
-under a migrate group; a migrate group is a follow-up once we have a
-second migration script).
-"""
+"""Pins that ``lies ingest-to-library --apply`` runs the qmd cleanup hook on every migrated collection."""
 
 from __future__ import annotations
 

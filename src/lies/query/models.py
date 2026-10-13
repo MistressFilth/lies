@@ -11,62 +11,8 @@ from lies.query.citation import Citation, ClaimCitation
 
 @dataclass(frozen=True)
 class SynthesizedAnswer:
-    """The result of synthesizing an answer from wiki pages.
-
-    Attributes:
-        answer: The answer body. The shape matches ``format``:
-            ``format="md"`` is plain markdown; ``format="table"`` is a
-            GFM table; ``format="marp"`` is Marp-flavored markdown with
-            the ``marp: true`` frontmatter; ``format="chart"`` is a
-            single ```mermaid``` fence (flowchart / sequenceDiagram /
-            classDiagram) — the renderer extracts the longest block when
-            the body carries multiple fences.
-        citations: ``Citation`` objects for pages cited in the answer.
-            Each carries the ``source`` discriminator (``"library"`` /
-            ``"wiki"``) so downstream consumers can apply the
-            library-wins-on-conflict rule without re-deriving the
-            source from the path.
-        pages_read: ``Citation`` objects for pages actually read for
-            the synthesis (the retrieved set, not just the cited
-            subset). The same ``source`` discriminator rides here.
-        fallback_used: True if qmd was unavailable, returned no results,
-            or failed for some other reason and we fell back to index.md.
-        fallback_reason: One of ``""``, ``"qmd_unavailable"``,
-            ``"qmd_no_results"``, ``"qmd_failed"``, ``"wiki_only"`` —
-            why the fallback was triggered (empty when qmd served
-            the query).
-        page_links: Full markdown link markup for each cited page
-            (``[Title](path)``), suitable for direct inclusion in
-            markdown output.
-        synthesis_used: True when ``query_synthesizer_agent`` produced
-            the answer body; False when the extractive fallback did.
-            Independent of ``fallback_used``, which reports retrieval.
-        synthesis_reason: A note about the synthesis, not solely a
-            failure field. Empty when the agent answered cleanly;
-            ``"dropped N unretrieved citation(s): <paths>"`` when the
-            agent answered but citations were filtered; and
-            ``"<ExcType>: <msg>"`` when the agent failed and the body
-            is the extractive fallback.
-        should_file: Carried from the agent's ``QueryAnswer``. True
-            when the agent judged the answer worth keeping as a wiki
-            page. Nothing acts on it yet; F3 (the file-back loop)
-            consumes it.
-        searched_scope: Sorted, unique list of collection names that
-            were searched for this answer. With a tag filter, the
-            resolved collection set (the output of
-            :func:`lies.query.synthesizer._collections_matching`).
-            Without a tag filter, every collection registered in the
-            wiki. See the Bundle C spec §"Retriever consumption" —
-            the field reports the resolved scope so downstream
-            surfaces (F12 elicitation, F16 catalog
-            ``pages_read_by_collection``, F1 output-format routing)
-            can react to the effective scope.
-        format: The validated format of ``answer``. The synthesizer's
-            auto-routed ``format_hint`` is verified against the body
-            via :func:`lies.query.format_validator.validate_format`;
-            on parse failure the validator silently demotes to "md".
-            MCP consumers and the CLI render path dispatch on this
-            field.
+    """The result of synthesizing an answer from wiki pages. See "Data shapes" in
+    AGENTS.md for the field contract.
     """
 
     answer: str

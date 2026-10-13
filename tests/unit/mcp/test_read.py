@@ -1,18 +1,4 @@
-"""read() dispatches wiki page IDs to memory_service.read, library paths to the qmd daemon.
-
-The library branch is where the F19 citation contract lives. A citation is
-``[[slug]]: "verbatim quote from the cited span"``, so the body this tool
-returns has to be the document and nothing else — no ``N: `` line-number
-prefix, no ``qmd://path  #docid`` header. The CLI's ``qmd get`` cannot supply
-that (``--no-line-numbers`` still leaves the header), which is why the branch
-goes through the daemon's ``get`` with ``lineNumbers: false``.
-
-The daemon answers with an EmbeddedResource *content block*, not a string:
-``result.data`` is ``None`` and the text lives in
-``result.content[].resource.text``. ``_Result`` below reproduces that exactly,
-because reading ``.data`` is how a caller silently stores an empty body — the
-failure this test suite exists to prevent.
-"""
+"""Read() dispatches wiki page IDs to memory_service.read, library paths to the qmd daemon."""
 
 from __future__ import annotations
 
@@ -155,12 +141,7 @@ def test_library_read_returns_the_body_with_no_header_or_line_numbers(
 def test_library_read_takes_the_text_from_the_content_block_not_data(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """``.data`` is None on this result; only the resource block has the body.
-
-    Pinned because the two readings differ by exactly the whole document:
-    a ``.data`` read stores ``""``, which reaches the synthesizer as an
-    empty page and cites nothing.
-    """
+    """``.data`` is None on this result; only the resource block has the body."""
     from lies.mcp.read import read
 
     _fake_access(monkeypatch, {"typer/options.md": "typer option reference"})
@@ -214,14 +195,7 @@ def test_library_read_dispatches_one_get_per_path(monkeypatch: pytest.MonkeyPatc
 def test_a_daemon_that_is_down_raises_instead_of_skipping(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """QmdDaemonUnavailable propagates; it is never logged and skipped.
-
-    The skip-and-log path is right for a document qmd cannot find. It is
-    wrong for a daemon that is not serving: the batch would come back empty
-    and surface as ``ToolError("all reads failed")`` — a statement about
-    the corpus that is really a statement about the process, and one the
-    operator is the only person who can act on.
-    """
+    """QmdDaemonUnavailable propagates; it is never logged and skipped."""
     from lies.qmd.access import QmdDaemonUnavailable
 
     from lies.mcp.read import read
@@ -260,12 +234,7 @@ def test_a_wedged_daemon_raises_with_its_log_tail(monkeypatch: pytest.MonkeyPatc
 def test_a_down_daemon_fails_a_mixed_batch_instead_of_returning_the_wiki_half(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A wiki body beside a library body is not a partial success.
-
-    Returning the wiki half would be the silent failure this branch exists
-    to prevent: the caller asked for two pages and received one, with
-    nothing in the response saying the other never arrived.
-    """
+    """A wiki body beside a library body is not a partial success."""
     from lies.qmd.access import QmdDaemonUnavailable
 
     from lies.mcp.read import read
@@ -294,14 +263,7 @@ def test_a_down_daemon_fails_a_mixed_batch_instead_of_returning_the_wiki_half(
 def test_read_bridges_the_daemon_call_from_inside_a_running_event_loop(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """``read.fn`` works when the caller already has a loop running.
-
-    ``daemon_tool`` is async and ``_read_impl`` is sync. FastMCP runs sync
-    handlers in a threadpool and pydantic-ai runs sync tools in an executor,
-    so both real call sites have no loop — but ``lib_ask`` is async, and
-    the ``asyncio.run``-inside-a-running-loop RuntimeError that shipped with
-    ``ground()`` (#106) is exactly the bug this pins shut.
-    """
+    """``read.fn`` works when the caller already has a loop running."""
     from lies.mcp.read import read
 
     _fake_access(monkeypatch, {"alpha/a.md": "<body alpha>"})
@@ -314,16 +276,7 @@ def test_read_bridges_the_daemon_call_from_inside_a_running_event_loop(
 def test_a_down_daemon_is_not_swallowed_by_the_running_loop_bridge(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The bridge must carry the daemon's failure back, not absorb it.
-
-    Both daemon exceptions subclass ``RuntimeError``, and ``_run_blocking``
-    contains an ``except RuntimeError`` — for ``asyncio.get_running_loop()``,
-    not for the coroutine. That is a one-line change away from silently
-    turning "the daemon is down" into a skipped page, so it is pinned
-    here on the thread-and-loop path, which is the one that could plausibly
-    lose it: the exception has to cross a thread boundary and come back
-    out of ``Future.result()`` as the same type.
-    """
+    """The bridge must carry the daemon's failure back, not absorb it."""
     from lies.qmd.access import QmdDaemonUnavailable
 
     from lies.mcp.read import read
@@ -343,12 +296,7 @@ def test_a_down_daemon_is_not_swallowed_by_the_running_loop_bridge(
 def test_a_wedged_daemon_survives_the_running_loop_bridge(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Same crossing, for the wedge type and its ``last_output`` tail.
-
-    ``last_output`` is the only evidence of where the wedge happened, so
-    a bridge that reconstructed the exception would destroy the one thing
-    the operator needs.
-    """
+    """Same crossing, for the wedge type and its ``last_output`` tail."""
     from lies.qmd.access import QmdDaemonWedged
 
     from lies.mcp.read import read
@@ -371,13 +319,7 @@ def test_a_wedged_daemon_survives_the_running_loop_bridge(
 
 
 def test_multi_get_resource_blocks_and_notice_blocks_are_distinguished() -> None:
-    """A ``multi_get`` result carries notices alongside bodies; only the latter is a body.
-
-    ``multi_get`` reports per-file problems as TextContent blocks — a
-    ``[SKIPPED: …]`` line for a file over the 10KB cap, an ``Errors:`` block
-    for an unresolvable entry. A caller that concatenates every block's text
-    stores the notice as if it were the page.
-    """
+    """A ``multi_get`` result carries notices alongside bodies; only the latter is a body."""
     from lies.mcp.read import _notices, _resource_texts
 
     result = _Result(
@@ -404,15 +346,7 @@ def test_multi_get_resource_blocks_and_notice_blocks_are_distinguished() -> None
 def test_read_takes_the_body_from_a_mixed_result_and_drops_the_notice(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The same discrimination, exercised through ``read`` rather than the helpers.
-
-    ``test_multi_get_resource_blocks_and_notice_blocks_are_distinguished``
-    calls the two private helpers directly, so nothing stopped a future
-    ``read`` from bypassing them and concatenating every block's text —
-    which is the exact defect the helpers exist to prevent. This goes
-    through the public entry point with the mixed shape qmd actually
-    returns, and asserts the notice text never reaches the body.
-    """
+    """The same discrimination, exercised through ``read`` rather than the helpers."""
     from lies.mcp.read import read
 
     notice = (
@@ -450,15 +384,7 @@ def test_read_takes_the_body_from_a_mixed_result_and_drops_the_notice(
 def test_a_result_with_no_resource_block_is_skipped_not_stored_empty(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Notice-only results are skipped, and never stored as ``""``.
-
-    The 10KB-cap skip is the case this exists for: a caller that reads
-    text blocks instead of resource blocks sees nothing for a 315KB
-    document and concludes the document is empty.
-
-    Skipped, *not* raised — see
-    ``test_a_notice_only_result_does_not_cancel_siblings_that_succeeded``.
-    """
+    """Notice-only results are skipped, and never stored as ``""``."""
     from lies.mcp.read import read
 
     async def daemon_tool(name: str, arguments: dict[str, Any]) -> _Result:
@@ -490,20 +416,7 @@ def test_a_result_with_no_resource_block_is_skipped_not_stored_empty(
 def test_a_notice_only_result_does_not_cancel_siblings_that_succeeded(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """One empty result must not discard the bodies already collected.
-
-    The defect this pins: extraction sat *outside* the per-path ``try``,
-    so a notice-only result raised after earlier paths had been written
-    into ``out`` — and because the exception propagated, ``out`` was
-    discarded entirely. One anomalous document silently cost the caller
-    every good body in the batch.
-
-    qmd signals "no body for this path" two ways (it raises for a
-    missing document, and returns notices for a skipped one), and which
-    one it uses is an implementation detail of its error signalling. The
-    contract is one contract: per-path failures are skipped, whatever
-    channel they arrive on.
-    """
+    """One empty result must not discard the bodies already collected."""
     from lies.mcp.read import read
 
     async def daemon_tool(name: str, arguments: dict[str, Any]) -> _Result:
@@ -537,17 +450,7 @@ def test_a_notice_only_result_does_not_cancel_siblings_that_succeeded(
 
 
 def test_a_page_over_the_multi_get_cap_comes_back_whole(monkeypatch: pytest.MonkeyPatch) -> None:
-    """``read`` never batches through ``multi_get``.
-
-    ``multi_get`` *skips* — does not truncate — any file over its 10KB
-    default, and 1854 of this corpus's 5987 documents are over it, so a
-    batched read would drop nearly a third of what a reader can ask for.
-
-    This unit test only pins the tool choice; the size claim is measured
-    against the live corpus by
-    ``tests/integration/mcp/test_read_daemon.py::test_a_large_document_comes_back_whole``,
-    which reads a 320KB document through the real daemon.
-    """
+    """``read`` never batches through ``multi_get``."""
     from lies.mcp.read import read
 
     big = "x" * 33_372
@@ -609,15 +512,7 @@ def test_read_skips_failed_paths_and_logs_a_warning(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """A document qmd cannot resolve is logged + dropped; siblings survive.
-
-    The ``caplog`` assertion is the point of the test's name. Silently
-    dropping a path is indistinguishable to the caller from the corpus
-    not having it, which is how a retrieval gap becomes an unfalsifiable
-    claim; the log line is what makes the drop visible to an operator.
-    The path moves to ``out["_missing"]`` so the caller can react
-    machine-readably, not just via log scraping.
-    """
+    """A document qmd cannot resolve is logged + dropped; siblings survive."""
     from lies.mcp.read import read
 
     async def daemon_tool(name: str, arguments: dict[str, Any]) -> _Result:
@@ -648,14 +543,7 @@ def test_read_skips_failed_paths_and_logs_a_warning(
 def test_read_partial_batch_surfaces_unresolved_paths(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A 20-path read with 3 unresolved returns 17 bodies + ``_missing=[3]``.
-
-    The previous shape returned a 17-key dict and three
-    ``log.warning`` lines that did not reach the agent. The
-    missing list closes the silent-drop class — the caller
-    asked for 20 documents and can now see exactly which 3
-    were unresolvable, ordered, in input order.
-    """
+    """A 20-path read with 3 unresolved returns 17 bodies + ``_missing=[3]``."""
     from lies.mcp.read import read
 
     bodies = {f"alpha/p{i:02d}.md": f"<body {i}>" for i in range(20)}
@@ -687,13 +575,7 @@ def test_read_partial_batch_surfaces_unresolved_paths(
 def test_read_full_failure_still_raises_tool_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A batch that yields *no* bodies still raises — the loud failure.
-
-    ``ToolError("all reads failed")`` is the I-8 review's load-bearing
-    requirement: the partial case is a soft signal; the all-fail case
-    stays loud. A regression here would mean a partial failure was
-    quietly turned into a successful empty read.
-    """
+    """A batch that yields *no* bodies still raises — the loud failure."""
     from fastmcp.exceptions import ToolError
 
     from lies.mcp.read import read

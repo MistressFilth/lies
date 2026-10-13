@@ -1,27 +1,4 @@
-"""FastMCP server exposing the LIES v0.40 tool surface.
-
-The v0.40 rewrite retires the legacy wiki-shaped read tools
-(``wiki_search`` / ``wiki_read`` / ``wiki_catalog`` /
-``file_knowledge`` / ``query`` / ``answer``), the wiki-shaped
-read tools the F19 grounding archivist shipped (``mcp_ground``
-/ ``mcp_synthesize``), and the seven starter-template MCP
-prompts (``answer`` / ``orient`` / ``ingest`` / ``lint`` /
-``sync`` / ``file-back`` / ``cite``).
-
-The replacement read surface is four stateless MCP tools that
-map onto the v0.40 design contract:
-
-- ``collections_read`` — live library registry reader.
-- ``search`` — single-batch hybrid vec+lex qmd query.
-- ``read`` — verbatim page bodies via source-aware dispatch.
-- ``lib_ask`` — librarian + synthesizer orchestrator.
-
-``lint`` and ``reindex`` stay on the surface as operational /
-diagnostic primitives.
-
-Spec:
-``~/code/project-notes/lies/superpowers/specs/2026-09-26-librarian-v040-port-design.md``.
-"""
+"""FastMCP server exposing the LIES v0.40 tool surface."""
 
 from __future__ import annotations
 
@@ -141,51 +118,20 @@ mcp.add_middleware(AbandonedCallMiddleware())
 # ``lies.mcp.prompts.register_prompts``.
 register_prompts(mcp)
 
-# Generate the ``list_prompts`` / ``get_prompt`` tool pair from the
-# registered prompt surface. Hosts that bind slashes to MCP prompts
-# pre-tokenize the slash tail on whitespace and bind tokens
-# positionally, so a multi-word question cannot reach a
-# single-parameter prompt body. Tool-call arguments are not subject to
-# that pre-tokenization, so the same prompts render from a tool call
-# with the full string intact. Added after ``register_prompts`` so all
-# prompts exist when the transform enumerates them; the generated
-# tools route through the server's middleware chain at runtime.
+# Generate the ``list_prompts`` / ``get_prompt`` tool pair from the registered prompt
+# surface. Tool-call arguments are not pre-tokenized, so the same prompts render from a
+# tool call with a multi-word question intact where the slash form cannot.
 mcp.add_transform(PromptsAsTools(mcp))
 
 
-# ---------------------------------------------------------------------------
-# Tag-filter helpers (shared with CLI + grounding archivist)
-# ---------------------------------------------------------------------------
-#
-# ``format_unknown_tag_error`` is imported by ``lies.cli.query`` for
-# the CLI's same-shape error message; ``_collect_available_tags_mcp``
-# is imported by ``lies.mcp.grounding`` for the F15 validator. Both
-# stay here as library-side helpers — neither is an MCP tool — until
-# the CLI/grounding callers import them from a more neutral location.
+# Tag-filter helpers, shared with the CLI and the grounding archivist.
+# ``format_unknown_tag_error`` is imported by ``lies.cli.query`` and
+# ``_collect_available_tags_mcp`` by ``lies.mcp.grounding``. Neither is an MCP tool;
+# they live here until those callers import from somewhere more neutral.
 
 
 def _collect_available_tags_mcp(wiki: object) -> set[str]:
-    """Return every addressable tag in the library (MCP surface).
-
-    Thin shim over :func:`lies.library.registry.library_collection_names`
-    — kept so the MCP-side validator has the same helper name as its
-    CLI counterpart. ``wiki`` is accepted for signature uniformity
-    with the legacy per-wiki resolution but is intentionally ignored:
-    collections live in the library, not in any wiki.
-
-    Each collection name is added both bare and with the ``c:``
-    qualifier prefix so the F15 tag-expression validator recognizes
-    ``c:<name>`` atoms as addressable on the MCP ``query`` / ``answer``
-    path. Each ``LibraryCollectionConfig.tags`` entry is added both
-    bare and with the ``t:`` qualifier prefix so ``t:<tag>`` filters
-    against a library-collection tag do not raise ``TagExprUnknown`` —
-    and so bare ``+tag`` expressions validate too, since F15 treats a
-    bare atom as the implicit-t alias for ``+t:tag``. Both lookups
-    are wrapped in ``try/except`` so an uninitialized library — or
-    any other registry failure — does not break the validator; the
-    function still returns a set, just one that does not include
-    library tags of the failed surface.
-    """
+    """Return every addressable tag in the library (MCP surface)."""
     from lies.library.registry import library_collection_names, library_collection_tags
 
     try:
@@ -203,22 +149,7 @@ def _collect_available_tags_mcp(wiki: object) -> set[str]:
 
 
 def format_unknown_tag_error(exc: TagExprUnknown) -> str:
-    """Build a self-explanatory ``unknown tag`` ToolError message.
-
-    Library-first surface. Up to three lines:
-
-      - offending tag spelling (``'opencode'``)
-      - the library's collections sorted (``the library's collections: ...``),
-        when the library is initialized with at least one collection
-      - when the library is empty / absent, a distinct line that
-        tells the operator whether to initialize the library or to
-        ingest something into it (two separate failure modes).
-
-    The library is NOT a wiki and is never referred to as one. The
-    original ``unknown tag: <tag>`` prefix is preserved so log
-    scrapers and existing tests that grep on the literal string keep
-    working.
-    """
+    """Build a self-explanatory ``unknown tag`` ToolError message."""
     from lies.library.registry import (
         library_has_no_collections,
         library_initialized,
@@ -241,19 +172,10 @@ def format_unknown_tag_error(exc: TagExprUnknown) -> str:
     return "\n".join(parts)
 
 
-# ---------------------------------------------------------------------------
-# v0.40 read-side tool registrations
-# ---------------------------------------------------------------------------
-#
-# The four new tools are imported from their dedicated modules and
-# registered under their canonical v0.40 names. ``Tool.from_function``
-# already wraps each function in a FastMCP ``FunctionTool``; we pass
-# ``search.fn`` / ``read.fn`` / ``lib_ask.fn`` to ``mcp.tool(name=...)``
-# (which expects a bare callable) so the FastMCP wire re-wraps the
-# underlying function rather than trying to wrap a Tool object. The
-# explicit ``name=`` kwarg matches the canonical MCP tool name;
-# ``Tool.from_function`` already encoded it but the redeclaration
-# is the documentation surface for readers scanning the wire shape.
+# v0.40 read-side tool registrations. ``mcp.tool`` expects a bare callable, so
+# ``search.fn`` / ``read.fn`` / ``lib_ask.fn`` are passed rather than the already-wrapped
+# ``Tool`` objects and the wire re-wraps the function. The explicit ``name=`` matches
+# the canonical MCP tool name.
 
 mcp.tool(name="collections_read")(_collections_read)
 mcp.tool(name="search")(_search_tool.fn)
@@ -349,11 +271,10 @@ async def reindex(
             sync_collection(wiki, coll_name, force=False)
         result.reconciled = True
 
-    # Gate destructive flags. When ``ctx`` is None (programmatic caller)
-    # ``_confirm_destructive`` raises on ``ctx.elicit`` and the helper
-    # returns ``elicitation unavailable``; we treat that as decline so
-    # no work runs (safety preserved through the helper's exception
-    # path, symmetric with the CLI's refuse-on-non-TTY-without-yes).
+    # Gate destructive flags. With ``ctx`` None (a programmatic caller)
+    # ``_confirm_destructive`` raises on ``ctx.elicit`` and the helper returns ``elicitation
+    # unavailable``; that is treated as a decline so no work runs — symmetric with the CLI
+    # refusing on a non-TTY without ``--yes``.
     if cleanup or all_:
         if all_:
             prompt = "Reindex --all will run cleanup + reindex + embed (full rebuild). Confirm?"
@@ -361,19 +282,10 @@ async def reindex(
             prompt = "Cleanup will vacuum the FTS5 db and drop orphan rows. Confirm?"
         decision = await _confirm_destructive(ctx, prompt)
         if decision is not None:
-            # Detect elicitation-unavailable specifically so the LLM
-            # caller gets a bypass path rather than a generic
-            # protocol-version error string. Bug E (session f39c9ef8):
-            # the host's MCP connection was older than
-            # ``2026-07-28`` and rejected server-initiated elicitation;
-            # ``_confirm_destructive`` returned
-            # ``"elicitation unavailable: <inner-exc>"`` and the LLM
-            # had no actionable signal to route on. Surface the
-            # concrete workaround here so the caller can either
-            # restart the MCP daemon (which negotiates a newer
-            # protocol version) or invoke ``lies reindex --cleanup``
-            # directly from the shell, where destructive flags run
-            # without the MCP gate.
+            # Detect elicitation-unavailable specifically, so the LLM caller gets a bypass path
+            # rather than a generic protocol-version error. Name the workaround: restart the MCP
+            # daemon (newer protocol) or run ``lies reindex --cleanup`` from the shell, where
+            # destructive flags bypass the gate.
             if decision.startswith("elicitation unavailable"):
                 bypass_msg = (
                     "cleanup requires confirmation; MCP server-initiated "
@@ -409,24 +321,7 @@ def lint(
     fix: bool = False,
     force_repair: bool = False,
 ) -> str:
-    """Run lint; with ``fix=True`` also apply the repair plan.
-
-    ``check`` narrows the report to one finding category (``orphan``,
-    ``missing_xref``, ``missing_page``, ``missing_required_section``,
-    ``dangling_derived_from``, ``contradiction``, ``stale``,
-    ``data_gap``), matched case-insensitively and with an optional
-    plural. Combined with ``fix=True`` it scopes the repair too. A
-    ``check`` that matches nothing renders the report with the
-    available categories listed.
-
-    When ``fix=True`` and ``force_repair=True``, the cross-process
-    memory flock is unconditionally reaped + retried once before
-    surfacing ``WikiFlockUnrepairable`` if a live contender still
-    holds it; without the flag, a live contender raises
-    ``WikiLockBusy``. Flock errors are caught and returned as an
-    ``error:``-prefixed string so the MCP server stays up; other
-    exceptions propagate to the MCP error path.
-    """
+    """Run lint; with ``fix=True`` also apply the repair plan."""
     wiki = resolve_wiki(name)
     orch = Orchestrator(wiki=wiki)
     try:
@@ -435,35 +330,16 @@ def lint(
         return f"error: {sys.exc_info()[1]}"
 
 
-# ---------------------------------------------------------------------------
-# Resources — wiki operational diagnostics + library catalog
-# ---------------------------------------------------------------------------
-#
-# Each resource is defined as an ``_impl`` function (takes ``name``,
-# does the real work) plus a thin zero-argument forwarder that FastMCP
-# registers as the static-resource handler. The forwarder pattern is a
-# FastMCP 3.4.5 constraint: static-resource handlers must be
-# zero-argument. Keeping the impl beside the forwarder lets tests and
-# direct callers exercise the real logic with an explicit ``name``.
+# Resources — wiki operational diagnostics + library catalog. Each is an ``_impl(name)``
+# doing the work plus a zero-argument forwarder FastMCP registers as the static handler
+# (3.4.5 requires zero-arg handlers); keeping the impl beside it lets tests exercise
+# the real logic with an explicit ``name``.
 
 
 def _register_static_resource(
     uri: str, fn: Callable[..., str], description: str | None = None
 ) -> Callable[..., str]:
-    """Register ``fn`` as a *static* MCP resource even when it has params.
-
-    FastMCP's ``@mcp.resource(...)`` decorator auto-routes any callable
-    with parameters to :class:`ResourceTemplate`, which then rejects
-    URIs without ``{...}`` placeholders. The wiki resource surface
-    accepts a wiki ``name`` kwarg (resolving through
-    :func:`lies.mcp.resolution.resolve_wiki`); the resource surface
-    needs the same parity for direct Python callers and tests, so we
-    bypass the decorator's auto-routing by registering a
-    :class:`FunctionResource` directly. FastMCP's read path still
-    invokes the registered ``fn`` with no positional arguments; any
-    ``name``-style kwargs are passed only by Python callers (tests,
-    REPL, direct imports), not by the MCP wire.
-    """
+    """Register ``fn`` as a *static* MCP resource even when it has params."""
     from fastmcp.resources.function_resource import FunctionResource
 
     resource = FunctionResource.from_function(
@@ -661,25 +537,7 @@ def _library_collection_payload(slug: str) -> dict | None:
 
 @mcp.resource("library://catalog")
 def library_catalog() -> str:
-    """All library collection metadata as a per-collection grouping.
-
-    Returns JSON of shape::
-
-        {
-          "<collection-name>": {
-            "name": "<collection-name>",
-            "tags": ["..."],
-            "source": "<source-url>",
-            "page_count": <int>,
-            "updated_at": "<iso-8601>"
-          },
-          ...
-        }
-
-    Collections without a ``config.yaml`` (not yet bootstrapped) are
-    silently skipped — the resource only surfaces collections the
-    library knows about through its registry. Empty library → ``{}``.
-    """
+    """All library collection metadata as a per-collection grouping."""
     import json
 
     from lies.library.registry import library_collection_names

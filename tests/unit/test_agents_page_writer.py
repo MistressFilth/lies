@@ -17,10 +17,7 @@ def test_page_writer_agent_exists() -> None:
 
 
 def test_page_writer_returns_diffs() -> None:
-    """Agent builds. End-to-end run is gated on a real model — TestModel
-    does not produce free-form text that pydantic-ai's PromptedOutput
-    can parse, so the live run is exercised in the integration suite
-    instead."""
+    """Agent builds. End-to-end run is gated on a real model."""
     agent = page_writer_agent(model=TestModel())
     assert agent is not None
 

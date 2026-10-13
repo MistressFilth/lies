@@ -1,57 +1,4 @@
-"""Library-collection registry — the single source of truth for tag resolution.
-
-Library collections live as directories under
-``Library.collections_root/<name>/``; they are canonical source docs,
-not wikis, and carry no per-collection yaml config. The directory
-name is the only metadata the addressable-tag surface needs.
-
-This module is the home for the four primitives every tag-resolution
-call site (CLI ``query`` / MCP ``query`` and ``answer`` / retriever's
-``_collections_matching`` / orchestrator's ``_searched_scope``) needs:
-
-  - :class:`LibraryCollectionMeta` — slim record carrying only ``name``
-    and ``tags`` (always empty under the library layout, but the
-    ``tags`` field is retained for forward compat with a future
-    per-collection metadata sidecar). The dataclass is structurally
-    compatible with the legacy wiki-yaml Collection shape for the two
-    fields the resolver reads (``name``, ``tags``), so the retriever's
-    matching code passes it through without a shim.
-
-  - :func:`library_collection_names` — sorted tuple of every
-    addressable collection directory name. The resolver validates
-    each ``Include`` atom against this set. Memoized via
-    :func:`functools.lru_cache` so the per-call ``iterdir`` only runs
-    once per process; tools whose hot path calls this surface
-    (notably the F19 ``ground`` tool) avoid redundant disk reads.
-    Cache invalidates on process restart; the registry is small
-    enough that this is acceptable for long-running daemons.
-
-  - :func:`library_collection_tags` — sorted frozenset of every
-    ``tags`` entry across all registered collections'
-    ``config.yaml``. The MCP ``query`` / ``answer`` validator
-    unions this with ``c:<name>`` so a ``t:<tag>`` filter against
-    a library-collection tag does not raise ``TagExprUnknown``.
-    Memoized to match :func:`library_collection_names`.
-
-  - :func:`library_git_root` — the library's git root. Library
-    collections are registered into qmd at this path, so the
-    dual-source librarian fan-out queries ``qmd_query`` against this
-    cwd for the library side (and against ``wiki.wiki_dir`` for the
-    wiki side).
-
-  - :func:`library_initialized` — whether the library's
-    ``collections_root`` exists on disk. The error surface names the
-    gap when False.
-
-  - :func:`library_has_no_collections` — whether the library is
-    initialized but has zero collections (the empty-but-present case).
-    Lets the error surface tell the operator to ingest something
-    rather than guess at tag spellings.
-
-All four primitives read the live filesystem at least once;
-:func:`library_collection_names` memoizes its result so the
-per-call disk walk runs only on the first invocation.
-"""
+"""Library-collection registry — the single source of truth for tag resolution."""
 
 from __future__ import annotations
 
@@ -68,45 +15,7 @@ from lies.library.record import LibraryCollectionConfig
 
 @dataclass(frozen=True)
 class LibraryCollectionMeta:
-    """Slim per-collection record for library-first tag resolution.
-
-    Library collections carry no yaml config (no ``scraper_cmd``,
-    ``mapper_model``, ``language``, ``version``, etc.) — they are
-    canonical source docs, not wikis. The resolver reads ``name``
-    and ``tags``; downstream surfaces (e.g. ``collections_read``)
-    consume ``source_url`` and ``scope_keywords`` so a caller can
-    scope a query without re-walking the registry.
-
-    The structural shape (``name: str``, ``tags: Iterable[str]``)
-    matches what :func:`lies.query.tag_expr.atom_matches` and
-    :func:`lies.query.tag_expr.exclude_matches` read off a
-    collection, so the legacy wiki-yaml Collection and
-    :class:`LibraryCollectionMeta` are interchangeable at the
-    resolver boundary. This keeps the library-first migration
-    additive — no rewrites to the matching code — while preventing
-    the library model from re-introducing wiki-yaml metadata.
-
-    ``tags`` is always ``frozenset()`` under the current library
-    layout. The field exists so a future per-collection metadata
-    sidecar (e.g. ``<coll>/.lies/manifest.json`` with declared
-    tags) can populate it without a resolver signature change.
-    ``frozenset`` rather than ``tuple`` because the resolver
-    constructs a fresh set per call (``set(coll.tags) | {coll.name}``)
-    and we don't want callers comparing ``tags`` as ordered
-    sequences; set semantics are the only contract the resolver
-    depends on.
-
-    ``scope_keywords`` carries the per-collection vocabulary used
-    by ``collections_read`` to scope a query against the library's
-    content (distinct from ``tags``, which are routing labels).
-    Stored as ``frozenset`` for the same reason: callers do
-    membership / intersection tests, not ordered iteration.
-
-    ``source_url`` is the upstream URL the collection was sourced
-    from. Default empty string when the on-disk ``config.yaml`` is
-    missing or predates the field; downstream callers should treat
-    empty as "unknown source."
-    """
+    """Slim per-collection record for library-first tag resolution."""
 
     name: str
     source_url: str = ""
@@ -181,23 +90,7 @@ def _library_collection_names_cached(_root_mtime_ns: int) -> frozenset[str]:
 
 
 def library_collection_names() -> frozenset[str]:
-    """Sorted frozenset of every addressable library-collection directory name.
-
-    The addressable-tag set for the resolver. Empty when the library
-    is uninitialized or empty. Sorted for deterministic error messages.
-
-    Memoized via :func:`functools.lru_cache` keyed on the parent
-    directory's mtime: the first call (and any call after a directory
-    change) walks the library's ``collections_root`` once and returns
-    a frozen snapshot; subsequent calls with an unchanged mtime
-    return the cached snapshot without re-traversing the disk. The
-    mtime key self-invalidates the cache when a collection is added
-    or removed, so the long-running MCP daemon picks up new
-    collections like ``switchyard`` without a restart. The test
-    surface can clear the cache via
-    ``library_collection_names.cache_clear()`` (clears the inner
-    wrapper).
-    """
+    """Sorted frozenset of every addressable library-collection directory name."""
     root = _collections_root()
     if not root.exists():
         return frozenset()
@@ -212,21 +105,7 @@ def library_collection_names() -> frozenset[str]:
 
 
 def library_collection_metas() -> Iterator[LibraryCollectionMeta]:
-    """Yield a :class:`LibraryCollectionMeta` per directory in the library.
-
-    Used by the retriever's :func:`_collections_matching`. The
-    resolver's matching code is structurally compatible with both the
-    legacy wiki-yaml Collection shape and :class:`LibraryCollectionMeta`
-    (library-first shape); the library model is the canonical source
-    going forward.
-
-    Reads the per-collection ``config.yaml`` sidecar so the resolver
-    sees declared ``tags`` (the ``t:`` / ``c:`` qualifier dispatch
-    in :mod:`lies.query.tag_expr` keys off tags ∪ {name}). When the
-    config is missing or malformed, falls back to empty frozensets
-    so the resolver still surfaces the collection's name (the
-    implicit self-tag rule).
-    """
+    """Yield a :class:`LibraryCollectionMeta` per directory in the library."""
     root = _collections_root()
     if not root.exists():
         return
@@ -311,25 +190,8 @@ def _library_collection_tags_cached(_aggregate_mtime_ns: int) -> frozenset[str]:
 
 
 def library_collection_tags() -> frozenset[str]:
-    """Sorted frozenset of every ``tags`` entry across all registered library
-    collections' ``config.yaml``.
-
-    Union of :attr:`LibraryCollectionConfig.tags` across all registered
-    collections, surfaced via :func:`library_collection_records`. Empty
-    when the library is uninitialized or has no collection tags. Sorted
-    for deterministic error messages.
-
-    Memoized via :func:`functools.lru_cache` keyed on the aggregate
-    mtime of the collections root and every contained ``config.yaml``.
-    Adding a collection, removing one, or editing a config's tags
-    list bumps the aggregate mtime and self-invalidates the cache;
-    the long-running MCP daemon picks up the change without a
-    restart (same fix as :func:`library_collection_names`).
-    ``stat()`` on ~14 files per call is negligible compared to the
-    registry's downstream cost (every validator / atom-matcher
-    call), so the speedup is preserved. The test surface can clear
-    the cache via ``_library_collection_tags_cached.cache_clear()``
-    (the inner lru_cache the wrapper delegates to).
+    """Sorted frozenset of every ``tags`` entry across all registered library collections'
+    ``config.yaml``.
     """
     root = _collections_root()
     if not root.exists():

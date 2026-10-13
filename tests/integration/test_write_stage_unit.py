@@ -1,20 +1,4 @@
-"""Tests for the etl WRITE stage's bulk catalog update.
-
-This module hosts:
-
-- ``test_bulk_update_catalog_*`` — wiki-side WRITE stage. These pin the
-  pre-Phase-2 wiki catalog behavior at ``<wiki.wiki_dir>`` + wiki-side
-  ``catalog.db`` (kept for the legacy wiki write path; the wiki's
-  etl/stages/write.py still references ``_bulk_update_catalog``).
-
-- ``test_library_write_stage_upserts_catalog_rows`` — library-side
-  inversion. Phase-2 retargeted ingests to the library singleton at
-  ``xdg.data_home() / LIES_DATA_SUBDIR / library``; the catalog now
-  lives at ``library.catalog_path`` with ``section='library'`` (vs the
-  wiki's ``section='wiki'`` / ``'ingested'``). This test pins that
-  after a batch write, the library catalog rows are upserted with the
-  new section, mirroring the wiki-side pin above.
-"""
+"""Tests for the etl WRITE stage's bulk catalog update."""
 
 from __future__ import annotations
 
@@ -72,26 +56,7 @@ def test_bulk_update_catalog_empty_paths(tmp_path: Path) -> None:
 
 
 def test_library_write_stage_upserts_catalog_rows(tmp_path: Path, monkeypatch) -> None:
-    """Phase-2 inversion pin: library WRITE stage upserts catalog rows.
-
-    Library counterpart to ``test_bulk_update_catalog_upserts_written_paths``.
-    The wiki path under ``wiki.wiki_dir`` is no longer the WRITE target
-    — ``lies.etl.sync_helper.sync_collection`` lands the mirror under
-    ``library.collections_root`` and routes the catalog upsert through
-    :class:`LibraryWriter`. The catalog row at ``library.catalog_path``
-    must carry ``section='library'`` so the wiki catalog and the
-    library catalog don't merge (the wiki catalog uses ``section IN
-    ('wiki', 'ingested')``; the library catalog uses ``section IN
-    ('library', 'library-migrated')`` — see
-    ``lies/library/catalog.py:_DDL``).
-
-    Drives ``run_batch_ingest`` end-to-end (with a static fetcher so
-    the test does not shell out) and asserts the catalog row lands at
-    ``library.catalog_path`` with the right section + slug shape. A
-    regression that reverts the ingest target back to the wiki, or
-    that swaps ``section='library'`` for ``'wiki'`` / ``'ingested'``,
-    trips the assertion.
-    """
+    """Phase-2 inversion pin: library WRITE stage upserts catalog rows."""
     from lies.library.catalog import (
         list_pages as list_library_pages,
         open_catalog as open_library_catalog,

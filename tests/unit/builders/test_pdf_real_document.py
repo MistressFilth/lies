@@ -1,26 +1,4 @@
-"""The PDF builder against real PDF bytes, not a stub.
-
-``PDFBuilder`` shipped in 0.48.1 and had never been run against an actual
-PDF. Every test that touched it fed it a hand-written ``ParsedDoc``, so
-the whole chain — ``PDFScraper.fetch`` reading bytes off disk,
-``PDFBuilder`` opening them with pdfplumber, page iteration, text
-extraction, the pymupdf fallback — was unexercised. A builder that
-raises on every real document and passes every mocked one is exactly
-what that gap hides.
-
-The fixture is generated with ``pymupdf``, which is already a declared
-dependency, so the document is real rather than assembled by hand: a
-``%PDF-1.7`` header, a compressed content stream, an xref table, and an
-embedded font subset that pdfplumber has to decompress and map. No
-network fetch, no binary committed to the repository, and no
-third-party document whose licence the repository would inherit.
-
-**What this does and does not cover.** It covers the ordinary
-text-layer document, which is what the pipeline is pointed at. It does
-not cover a scanned image-only PDF, an exotic font encoding, or
-encrypted files — those need documents this repository has no right to
-redistribute, and they remain untested rather than pretended at.
-"""
+"""The PDF builder against real PDF bytes, not a stub."""
 
 from __future__ import annotations
 
@@ -87,13 +65,7 @@ def _build(workspace: Path, pdf: Path) -> list[Any]:
 
 
 def test_a_real_pdf_yields_one_document_per_page(tmp_path: Path, workspace: Path) -> None:
-    """Three pages in, three documents out.
-
-    The page count is what makes this a test rather than a smoke check: a
-    builder that emitted one document for the whole file would still pass
-    a single-page assertion, and the page boundary is the entire reason
-    ``PDFBuilder`` exists.
-    """
+    """Three pages in, three documents out."""
     pdf = _real_pdf(tmp_path / "real.pdf", pages=3)
 
     docs = _build(workspace, pdf)
@@ -107,12 +79,7 @@ def test_a_real_pdf_yields_one_document_per_page(tmp_path: Path, workspace: Path
 
 
 def test_the_extracted_text_is_the_documents_own(tmp_path: Path, workspace: Path) -> None:
-    """Real text comes out, per page, and it is that page's text.
-
-    A builder returning the first page's text on every page would pass a
-    length or count assertion, so each page is asserted for content
-    unique to it.
-    """
+    """Real text comes out, per page, and it is that page's text."""
     pdf = _real_pdf(tmp_path / "real.pdf", pages=3)
 
     docs = _build(workspace, pdf)
@@ -126,13 +93,7 @@ def test_the_extracted_text_is_the_documents_own(tmp_path: Path, workspace: Path
 
 
 def test_each_page_is_hashed_from_its_own_content(tmp_path: Path, workspace: Path) -> None:
-    """Per-page hashes, distinct across pages.
-
-    ``source_sha256`` is what the idempotency check compares on a
-    re-ingest. If every page hashed the same bytes, a re-run would read
-    as "unchanged" for all of them and a genuine edit to page 2 would
-    never be noticed.
-    """
+    """Per-page hashes, distinct across pages."""
     import hashlib
 
     pdf = _real_pdf(tmp_path / "real.pdf", pages=3)
@@ -149,12 +110,7 @@ def test_each_page_is_hashed_from_its_own_content(tmp_path: Path, workspace: Pat
 
 
 def test_the_output_is_markdown_for_the_downstream_filter(tmp_path: Path, workspace: Path) -> None:
-    """``source_format`` is what routes the page to the markdown filter.
-
-    ``source_format="markdown"`` on a PDF-derived page is deliberate —
-    the bytes are already markdown by then — and getting it wrong sends
-    every page down the PDF branch of the dispatcher a second time.
-    """
+    """``source_format`` is what routes the page to the markdown filter."""
     pdf = _real_pdf(tmp_path / "real.pdf", pages=1)
 
     docs = _build(workspace, pdf)
@@ -168,16 +124,7 @@ def test_the_output_is_markdown_for_the_downstream_filter(tmp_path: Path, worksp
 
 
 def test_a_pdf_with_no_text_layer_does_not_raise(tmp_path: Path, workspace: Path) -> None:
-    """The pymupdf fallback is reached and the page still yields a document.
-
-    ``_pdfplumber_page`` returns ``""`` for a page with no text
-    operators, and the builder then calls ``_pymupdf_page``. With no
-    text in the file both extractors return nothing — so this asserts the
-    *fallback is reached and does not crash*, not that it recovers text.
-    That is the honest claim: a genuinely scanned document is out of
-    scope for this repository to fixture, and claiming otherwise here
-    would be a test that asserts the absence of a defect.
-    """
+    """The pymupdf fallback is reached and the page still yields a document."""
     pdf = _real_pdf(tmp_path / "blank.pdf", pages=2, text=False)
 
     docs = _build(workspace, pdf)
@@ -191,12 +138,7 @@ def test_a_pdf_with_no_text_layer_does_not_raise(tmp_path: Path, workspace: Path
 
 
 def test_a_missing_source_pdf_is_a_builder_error(workspace: Path) -> None:
-    """The precondition still fails loudly.
-
-    Without ``source.pdf`` the builder must raise ``BuilderParseError``,
-    not return an empty list — an empty list is indistinguishable from a
-    successful parse of a document that had nothing on it.
-    """
+    """The precondition still fails loudly."""
     with pytest.raises(BuilderParseError):
         PDFBuilder().build(workspace, collection=_Collection())  # type: ignore[arg-type]
 
@@ -207,14 +149,7 @@ def test_a_missing_source_pdf_is_a_builder_error(workspace: Path) -> None:
 
 
 def test_the_scraper_preserves_the_bytes_verbatim(tmp_path: Path) -> None:
-    """``PDFScraper.parse`` hands the builder exactly what it fetched.
-
-    ``source_sha256`` is taken over the raw bytes here and over the
-    rendered page in the builder, so the two hashes are answering
-    different questions on purpose. Hashing the *rendered* text in the
-    scraper would make every re-fetch of an unchanged document look
-    changed whenever the extractor version moved.
-    """
+    """``PDFScraper.parse`` hands the builder exactly what it fetched."""
     import hashlib
 
     from lies.scrapers.pdf import PDFScraper
@@ -240,15 +175,7 @@ def test_a_missing_pdf_is_a_scraper_error(tmp_path: Path) -> None:
 
 
 def test_the_two_halves_agree_on_a_real_document(tmp_path: Path, workspace: Path) -> None:
-    """Scraper → builder, the actual pipeline, on real bytes.
-
-    The halves are tested separately above because a failure in either
-    is easier to read that way. This one runs them together, because the
-    contract between them — the builder looks for exactly
-    ``source.pdf`` in a workspace the caller materialises from the
-    scraper's ``path`` — is a naming agreement between two modules that
-    no single-file test can see.
-    """
+    """Scraper → builder, the actual pipeline, on real bytes."""
 
     from lies.scrapers.pdf import PDFScraper
 

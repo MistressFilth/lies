@@ -1,17 +1,4 @@
-"""Pydantic schema for ``<library>/collections/<slug>/config.yaml``.
-
-The schema drops two legacy fields at parse time:
-
-- ``path``: pointed at a per-wiki raw dir that never existed on disk.
-  Library collections hold content directly under
-  ``<library>/collections/<slug>/``; the record no longer names an
-  alternate location.
-- ``config``: empty (``{}``) or absent values are normalized to ``{}``
-  by :func:`lies.library.config_io.load_config` before model validation
-  (the field's ``default_factory=dict`` expects a dict). On dump,
-  ``config`` is always serialized — as ``{}`` when empty. Non-empty
-  values are preserved verbatim.
-"""
+"""Pydantic schema for ``<library>/collections/<slug>/config.yaml``."""
 
 from __future__ import annotations
 

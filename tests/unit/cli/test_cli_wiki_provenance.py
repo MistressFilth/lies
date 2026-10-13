@@ -149,12 +149,7 @@ def test_page_with_slash_passes_validation(runner: CliRunner, wiki: Path) -> Non
 
 
 def test_page_existing_source_page_emits_empty_provenance(runner: CliRunner, wiki: Path) -> None:
-    """Regression: an existing source page (no derived_from) must NOT
-    be reported as 'not found'. ``list_provenance_pages`` only returns
-    rows with non-empty derived_from, so a source page yields an
-    empty array — the CLI distinguishes "exists but not synthesised"
-    from "doesn't exist" by checking catalog membership first.
-    """
+    """An existing source page (no derived_from) must NOT be reported as 'not found'."""
     from lies.memory.catalog import open_catalog, upsert_page
     from lies.memory.catalog_models import CatalogPage
 

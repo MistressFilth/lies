@@ -1,25 +1,4 @@
-"""Cross-process sync heartbeat for busy detection.
-
-A single sync run writes ``$XDG_RUNTIME_DIR/lies/<wiki>/sync.lock``
-with its PID, start time, and collection. A subsequent run reads the
-file and treats it as busy unless the PID is dead or the heartbeat is
-older than ``MAX_SYNC_AGE_S`` (stale-recovery for crashes).
-
-Concurrency safety
-------------------
-
-``sync.lock`` is the observable state, but writing it is a
-read-then-write of the same path — two processes can both observe
-"no lock" and both win. To prevent that, :func:`acquire_create_lock`
-takes an atomic ``O_CREAT | O_EXCL`` create on a sibling
-``sync.lock.create``. Only the process that wins the create is allowed
-to write the heartbeat; everyone else sees the busy state and bails
-out (or waits, depending on policy). The lock file is unlinked in
-:func:`release_create_lock`.
-
-This mirrors the cross-process ``fcntl.flock`` pattern already used
-by ``WikiMemoryService`` (which guards ``memory.lock``).
-"""
+"""Cross-process sync heartbeat for busy detection."""
 
 from __future__ import annotations
 

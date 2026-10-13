@@ -35,9 +35,7 @@ def test_raises_when_env_unset(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_returns_fresh_instance_per_call(monkeypatch: pytest.MonkeyPatch) -> None:
-    """N5: no @cache — each call constructs a fresh client so live env-var
-    rotation is picked up. This replaces the previous
-    ``test_cache_returns_same_instance`` invariant."""
+    """N5: no @cache — each call constructs a fresh client so live env-var rotation is picked up."""
     monkeypatch.setenv("MINIMAX_API_KEY", "test-key")
     spec = ProviderSpec(
         name="minimax",
@@ -51,8 +49,7 @@ def test_returns_fresh_instance_per_call(monkeypatch: pytest.MonkeyPatch) -> Non
 
 
 def test_live_re_read_picks_new_value(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A fresh _client_for call after env var rotation must construct a client
-    holding the new value. The @cache decorator must not freeze the old one."""
+    """A fresh _client_for call after env var rotation must construct a client holding the new value."""
     monkeypatch.setenv("MINIMAX_API_KEY", "key-v1")
     spec = ProviderSpec(
         name="minimax",

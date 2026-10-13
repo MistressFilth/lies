@@ -78,15 +78,6 @@ LOG_GENERATIONS_KEPT = 5
 def _preserve_daemon_log() -> Path | None:
     """Copy the daemon's log aside before it is truncated.
 
-    ``mcp.log`` is the only record of what a qmd daemon did, and qmd
-    truncates it on every start. LIES restarts the daemon routinely,
-    so without this the artefact that would explain an unexpected
-    death is destroyed by the recovery attempt.
-
-    Best-effort throughout: a log that cannot be read or written is
-    not a reason to fail the stop, which is the operation that
-    actually has a purpose.
-
     Returns:
         The preserved path, or ``None`` when there was nothing to
         preserve or the copy failed.
@@ -148,11 +139,9 @@ def _port_listening(port: int) -> bool:
         return False
 
 
-# Liveness deadlines, deliberately separate from the retrieval
-# budget in ``lies.config.get_qmd_query_timeout``. A slow answer
-# to "is this alive?" is itself the failure: these let ``lies
-# qmd up`` and ``lies qmd status`` report a wedged daemon instead
-# of blocking on it.
+# Liveness deadlines, deliberately separate from the retrieval budget in
+# ``lies.config.get_qmd_query_timeout``. A slow answer to "is this alive?" is itself the
+# failure: these let ``lies qmd up`` / ``status`` report a wedged daemon, not block.
 DAEMON_START_TIMEOUT_S = 15.0
 PROBE_TIMEOUT_S = 5.0
 
@@ -217,20 +206,7 @@ def _up(port: int = _DEFAULT_PORT) -> DaemonStatus:
 
 
 def _down(port: int = _DEFAULT_PORT) -> None:
-    """Stop the daemon via ``qmd mcp stop``. Best-effort; bounded.
-
-    Short-circuits when nothing is to stop (no listener, no
-    pidfile). A wedged daemon that ignores ``qmd mcp stop`` past
-    ``_STOP_TIMEOUT_S`` is swallowed: ``recycle()``'s subsequent
-    ``_up()`` will bind a fresh listener on the same port,
-    superseding the stuck process. Surface-level errors propagate
-    (the daemon is not wedged if it raises).
-
-    The daemon's log is preserved first. qmd truncates ``mcp.log`` on
-    every start, so the stop is what makes the previous run's output
-    unrecoverable -- and an unexpected death is exactly when that
-    output is the only evidence there is.
-    """
+    """Stop the daemon via ``qmd mcp stop``. Best-effort; bounded."""
     from lies.qmd._subprocess import _run_qmd
 
     if not _port_listening(port) and _read_pid() is None:
@@ -305,21 +281,7 @@ def _close_probe_session(
     session_id: str | None,
     headers: dict[str, str],
 ) -> None:
-    """Complete and tear down the MCP session ``initialize`` allocated.
-
-    An ``initialize`` POST is not a request, it is the start of a
-    session: the server allocates one and returns its id in
-    ``Mcp-Session-Id``. A client that stops there leaves the session
-    live on the daemon. ``recycle`` polls this probe every 0.5 s for
-    up to ``ready_timeout``, so one recycle stranded on the order of
-    sixty of them, each held against a machine-global daemon other
-    clients share.
-
-    Sends the ``notifications/initialized`` the handshake requires and
-    then the ``DELETE`` that ends the session. Both are best-effort:
-    a daemon that answers neither is still a serving daemon, which
-    is the only question this probe asks.
-    """
+    """Complete and tear down the MCP session ``initialize`` allocated."""
     import httpx
 
     if not session_id:

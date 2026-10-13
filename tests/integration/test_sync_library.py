@@ -1,9 +1,4 @@
-"""Pins that ``sync_collection`` writes to library, not wiki.
-
-Mocks the scraper layer so the test does not shell out; asserts the
-mirror file lands under ``library.collections_root`` and the wiki's
-``wiki_dir`` is untouched.
-"""
+"""S that ``sync_collection`` writes to library, not wiki."""
 
 from pathlib import Path
 import subprocess
@@ -74,23 +69,7 @@ def _seed_collection(
 
 
 def test_sync_collection_writes_to_library(fixture_lib: Library, monkeypatch) -> None:
-    """``sync_collection`` lands the mirror under library, not wiki.
-
-    Regression pin for the Phase-2 ingest → library swap. Mocks the
-    fetcher layer (so the test does not shell out / hit the network)
-    but lets ``run_batch_ingest`` run end-to-end on the real on-disk
-    library fixture. Asserts the three contract pins:
-
-      1. Mirror file lands at ``<library.collections_root>/<c>/<slug>.md``.
-      2. Library catalog row exists at ``<library.catalog_path>`` with
-         ``section="library"``.
-      3. Wiki's ``wiki_dir`` did NOT receive a write (negative control).
-
-    Without #1, the helper would silently drop the body. Without #2, the
-    visible-memory layer would diverge from disk. Without #3, this test
-    could not distinguish a library-write from a leftover wiki-write
-    that the operator might still query against.
-    """
+    """``sync_collection`` lands the mirror under library, not wiki."""
     from lies.library.catalog import list_pages, open_catalog
     from lies.library.ingest import FetchItem
 
@@ -166,15 +145,7 @@ def test_sync_collection_writes_to_library(fixture_lib: Library, monkeypatch) ->
 def test_sync_collection_threads_scraper_cmd_into_fetcher(
     fixture_lib: Library, monkeypatch
 ) -> None:
-    """``Collection.scraper_cmd`` is passed through to ``ScraperFetcher``.
-
-    Finding 1 pin: the bespoke loader must be honored end-to-end. We
-    capture the ``ScraperFetcher`` instance the helper hands to
-    ``run_batch_ingest`` and assert it carries the right
-    ``scraper_cmd`` / ``collection`` (REGISTRY routing needs the
-    collection for ``Collection.config`` lookups in sphinx / liquid /
-    bespoke builders).
-    """
+    """``Collection.scraper_cmd`` is passed through to ``ScraperFetcher``."""
     wiki = _stub_wiki(fixture_lib)
     _seed_collection(fixture_lib, scraper_cmd="lies.scrapers.web:WebScraper")
 
@@ -227,11 +198,7 @@ def test_sync_collection_no_scraper_cmd_uses_pick_scraper(
 
 
 def test_sync_collection_propagates_errors(fixture_lib: Library, monkeypatch) -> None:
-    """A wholly-failed batch surfaces ``errors`` on the returned result.
-
-    Finding 3 pin: the returned ``BatchIngestResult.errors`` is the
-    signal the CLI uses to exit non-zero.
-    """
+    """A wholly-failed batch surfaces ``errors`` on the returned result."""
     wiki = _stub_wiki(fixture_lib)
     _seed_collection(fixture_lib)
 

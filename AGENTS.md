@@ -700,7 +700,7 @@ MCP tool path routes through the librarian instead. `lib_ask` goes
 seam section above). `ground()` reaches `access.daemon_tool` directly
 on its unscoped and tagged fast-paths, so the exception arrives as a
 real exception and its own `except QmdLockBusy` arms catch it —
-`grounding.py:465` and `:535`. Two mechanisms, two different
+`grounding.py:384` and `:453`. Two mechanisms, two different
 shapes, both live.
 
 So: the arms are reachable, the digest field has a reader
@@ -735,16 +735,50 @@ propose it as dead code.
   it** — it refuses on a missing flag value or a repurposed one, because
   both make the rendered command wrong.
 - **`+tag` / `-tag` atoms are read from the leading run only** —
-  otherwise a question *about* option flags has its words eaten.
+  otherwise a question *about* option flags has its words eaten. A token
+  is a filter only when what follows the sigil looks like a tag: a `:`
+  qualifier (`c:opencode`) or two or more characters, so `-1`, `--` and
+  `-e` stay question text.
 - **`ground` parses flags from the leading run only; `ask` parses none
   at all.** Both tails are mostly a question.
+- **Question text is returned verbatim, newlines and all.** Only the
+  filter run is tokenized; the rest is sliced out of the original string
+  by offset. Rebuilding it by joining tokens collapsed every internal
+  whitespace run, so a pasted code block reached the search run-on.
+- **`_split_tail`'s fields are not interchangeable.** `values` is
+  last-wins, so a body rendering a *repeatable* flag (`--tag a --tag b`)
+  reads `repeats_of()`; `ignored_values` carries a boolean written
+  `--all=true` (the flag is on, the value means nothing) so it is
+  reported rather than dropped; `repurposed` carries an undeclared value
+  flag whose following token fell through to `positionals`, which is how
+  `show --tag cli` otherwise turned the flag's value into a collection.
+- **Per-verb flag vocabulary, not one union set.** Too narrow and a real
+  flag is reported as a typo with its value falling into a positional;
+  too wide and a flag the verb lacks is parsed as a boolean and never
+  rendered. Both errors are silent, and only an exact transcription of
+  the Typer signature avoids either.
+- **The slash form binds one token and drops the rest.** That is why the
+  server also registers the seven prompts as *tools*: tool-call
+  arguments are not pre-tokenized, so a multi-word question reaches a
+  prompt whole there.
 
 ## Data shapes
 
+Per-field contracts live here rather than in the class docstrings, which
+the prose budget keeps short. Each entry lists only what a caller cannot
+infer from the field name or its type.
+
 - **`Span`** (`markdown_spans.py`): `(heading_path, body, code_fence,
-  start_line)`. `code_fence` marks spans inside fenced blocks.
+  start_line)`. `heading_path` is the nested ATX text from H1 down to the
+  span's parent, empty above any heading. `body` is verbatim, and for a
+  code-fence span it is the *inner* content with delimiters stripped.
+  `code_fence` marks spans inside ``` or ~~~ fences; consumers exclude
+  those from prose excerpts.
 - **`PageRead.spans: list[Span]`** — populated at read time.
 - **`Citation.heading_path: list[str] | None`** (default `None`).
+- **`CitationSlug` shape**: `slug` is always `<collection>/<page>`, never
+  a bare page segment, so an agent can tell `setup.md` in two collections
+  apart.
 - **`ClaimCitation.quote: str`** — validated as a substring of the cited
   span's body.
 - **`ArchivistDigest`** — `no_coverage` is true only when the dispatch
@@ -754,7 +788,7 @@ propose it as dead code.
 - **`Citation.source` on `lib_ask` is model-asserted, not verified.**
   `synth._ask_impl` applies no citation validation: the orchestrator's
   `_validate_claim_citations` and `_thread_heading_paths`
-  (`orchestrator.py:2082`/`2085`) run only on the orchestrator path. So
+  (`orchestrator.py:839`/`874`) run only on the orchestrator path. So
   `lib_ask` emits whatever citations the synthesizer asserted. A path
   the librarian never handed over still becomes a `Citation`, defaulted
   to `source="wiki"` — see `query/citation.py` for why that default is
@@ -765,13 +799,147 @@ propose it as dead code.
   rule above. A caller that needs the citation to be real must resolve
   it through `read`.
 
+- **`AcquireResult.status`** (`utils/exclusive.py`) is one of four
+  outcomes, and `fd` is meaningful in each: `"acquired"` and
+  `"dead_reaped"` both carry a valid fd (the second means a stale holder -
+  dead PID or expired heartbeat - was reaped and the retry won);
+  `"busy"` and `"indeterminate"` carry `fd=-1` plus `holder_pid` and
+  `holder_started_at`, which exist so raise sites can name the holder.
+  The last two differ in *liveness being undecidable*: `"busy"` means a
+  fresh heartbeat said alive, `"indeterminate"` means `pid_alive_fn` said
+  indeterminate **and** the heartbeat expired, and the primitive
+  deliberately did not reap. Callers that omit the `pid_path` +
+  `state_json_path` envelope get `None` for the busy path (legacy
+  semantics) and can never reach `"indeterminate"`.
 All forward-only; additive fields default to safe sentinels.
+
+### The write path
+
+`WikiMemoryService.apply_plan` is the sole owner of wiki mutation, and
+three rules there are load-bearing:
+
+- **Strip `wiki/` twice.** Page-writer emits `wiki/`-prefixed paths and
+  every resolver joins onto `wiki.wiki_dir`, so one strip of a
+  doubled `wiki/wiki/log.md` leaves the candidate at
+  `<root>/wiki/wiki/log.md` and the system-file guard misses. The apply
+  and validate paths must strip identically or they disagree on the same
+  plan.
+- **`wiki/index.md` and `wiki/log.md` are not writable through an op.**
+  `index.md` is a render derivative; `log.md` belongs to
+  `append_log_entry`. The only carve-out is `PageUpdate` on `index_path`,
+  which is the repair agent's `UpdateIndex` pathway — a receipt surface,
+  not a permanent write, with the per-op catalog upsert keeping
+  `catalog.db` in lockstep.
+- **A no-op commit returns an empty receipt**, never changed pages that
+  were not applied at the git level.
+
+`library/writer.py` mirrors that envelope, and four of its steps are
+load-bearing:
+
+- **A fresh library directory is bootstrapped to a git repo** on the first
+  writer creation. Without it, `lies ingest` writes mirror files to disk
+  and then raises `LibraryAtomicCommitFailed` at the `git add`.
+- **Deletions need an explicit `git add -u`,** because `atomic_commit`
+  stages the given paths only — a tracked file deleted from disk is never
+  staged, and every re-ingest accumulates ghost entries in HEAD. It is
+  `-u`, not `-A`: `-A` would also stage files the writer does not claim.
+- **The last-write marker is touched at the machine-global cache path**
+  before the qmd hook, so the daemon's mtime comparison sees this commit's
+  mtime rather than the hook's.
+- **A `QmdLockBusy` from the embed hook is re-raised, not swallowed.** The
+  message must name the holder PID and the contended inode, because that
+  is the one operator step distinguishing a contended host from a broken
+  one. `waited_s`/`max_s`/`holder_pid` are all guarded against `None`,
+  which the signature accepts on translation paths like
+  `WikiFlockIndeterminate`.
+
+### Provenance
+
+`derived_from` is comma-joined in storage and `list_provenance_pages`
+splits on `,` with no escaping, so a slug containing a comma is
+ambiguous by construction. `raw/` is immutable: `apply_plan` rejects a
+read or a write under it.
 
 ## Dual-source routing
 
 Library collections are primary; wikis are secondary. On slug
 collision the library hit replaces the wiki hit entirely — no merged
 third value. Wiki-only hits render with a `[secondary] ` marker.
+
+Retrieval (`query/synthesizer.py`) runs **two** `qmd_query` passes: a
+primary pass scoped to the resolved library collection set, and a
+secondary pass scoped to the wiki-rooted collection. Only the primary
+pass carries the caller's `collection_filter`; local wiki content is
+supplementary and is never gated by the caller's tag filter. Pages are
+deduped on `(rel_path, source)` — without that, the body says "based on
+2 wiki pages" while the dict the synthesizer reads holds one.
+
+**A collection name is always an addressable tag**, whatever its
+`tags` field says, and the rule lives at the retriever boundary
+(`_collections_matching`), not in `tag_expr.resolve` — the resolver only
+validates that every atom exists in the available tag set.
+
+**The CLI-path `qmd query` pays a full model load on every call**, which
+the daemon does not: it keeps models warm for
+`DEFAULT_INACTIVITY_TIMEOUT_MS`. Measured with a warm model cache, 3.9–10.9s
+typical with a 31.2s and a 67.7s tail, which is why the idle bound on
+that path is sized to the model-load tail rather than left at 30s.
+
+## Lazy imports are a contract
+
+`import lies.cli` must not load `fastmcp`, `pydantic_ai`, or the
+orchestrator (`tests/unit/cli/test_cli_lazy_imports`). Two consequences
+bite repeatedly:
+
+- **`LOAD_GLOBAL` does not consult a module's `__getattr__`.** PEP 562
+  fires for `module.name` attribute access only, so a bare name for a
+  lazily-exported helper inside a function body raises `NameError` in a
+  fresh process. Resolve explicitly — `globals().get(name)` then
+  `__getattr__(name)`. See `cli/page.py`, `cli/qmd.py`, `wiki/layout.py`
+  and `library/writer.py`.
+- **Heavy names are reachable as attributes for the tests' benefit.**
+  Several tests do `monkeypatch.setattr("lies.cli.Orchestrator", ...)`,
+  so the package `__getattr__` must resolve them; it loads each on first
+  access, which is what keeps the startup contract intact.
+
+## Agent output shape
+
+The agents use `PromptedOutput`, not the default tool output:
+MiniMax-M3 ignores `tool_choice` and `response_format=json_schema` on
+both endpoints, so the schema goes in the instructions and the model's
+JSON text is parsed. `TestModel` cannot drive `PromptedOutput`, so those
+paths are covered by the integration suite, not by a unit test. Stub the
+agent's `run_sync` **at the per-instance boundary** rather than letting
+`TestModel` iterate its registered tools: `TestModel` invents random
+`page_ids`, so a `wiki_read` call raises `WikiPageNotFound` before the
+code under test ever runs.
+
+## The cross-process lock
+
+`qmd/lock.py` holds a site-wide flock at
+`${XDG_STATE_HOME:-~/.local/state}/lies/qmd.lock`, resolved **per
+acquisition** so `LIES_QMD_LOCK_PATH` retunes without a restart. It is
+reentrant on one context: a nested acquire in the same task does not
+re-acquire. Without that, two composed helpers (`qmd_collection_add_or_update`
+calls show, then add) made the inner call poll for a lock its own outer
+call held. Re-entry is tracked by a depth counter, **not** by pid
+equality — a second thread of the same process stores the same pid, so
+pid-based self-recovery would reap a live lock and let both threads into
+the critical section, which is the CUDA reservation race the lock exists
+to prevent.
+
+The wiki memory flock envelope lives under `$XDG_RUNTIME_DIR/lies/<wiki>/`,
+not the wiki's data root, so no gitignore coordination is needed.
+Releases hand back the exact path set they acquired; a release that
+re-derived the paths could unlink a lock nobody holds and strand the
+`.pid` sidecar and `.state.json` heartbeat the next acquire reads.
+
+**The lock to race is `acquire_create_lock`, not `WikiMemoryService._lock`.**
+The service exposes `_lock` as an in-process `threading.Lock`, which no
+other process can see. Synthesis file-back is guarded by the
+`acquire_create_lock` envelope, so a busy-path test must hold *that*
+across a subprocess boundary — an in-process lock held in the test
+process would make the very contention it is asserting on impossible.
 
 ## Ingest invariants
 
@@ -788,6 +956,18 @@ the degenerate case of that third state and is refused outright
 (`SelfIngestRefused`, exit 2). The slug comes from the source's relative
 path and the target is `coll.dir / f"{slug}.md"`, so every page resolves
 its own target onto itself. Checked by containment, not equality.
+
+Two more that are not obvious from the call site:
+
+- **`source_hash` is the SHA256 of the raw bytes at fetch time**, hashed
+  once up front. It is *not* per-document, and `ingested_at` derives
+  from it, so a per-doc slice would break re-ingest idempotency.
+- **The batch walk admits text documents plus anything the builder
+  REGISTRY can render** (routing the latter through the same
+  `_normalize_body` path `--source` takes). `should_skip_filename` is a
+  *denylist* and cannot express "is a document": a `config.yaml` in a
+  collection directory became a `config.md` page, 36 times over.
+  A quarantined doc writes both a body and a `.reason` sidecar.
 
 ## Page-type conventions
 

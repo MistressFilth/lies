@@ -266,11 +266,7 @@ def test_main_tags_without_rewrite_when_surfaces_pre_staged(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Operator pre-staged 0.4.0 in pyproject, __init__, and CHANGELOG.
-
-    `main()` should detect this and only commit/tag/push v0.4.0 — not
-    rewrite any version surface or split the CHANGELOG a second time.
-    """
+    """Operator pre-staged 0.4.0 in pyproject, __init__, and CHANGELOG."""
     import release as _release
 
     # Lay out a fake repo root in tmp_path with surfaces already at 0.4.0
@@ -350,13 +346,7 @@ def test_main_omits_allow_empty_on_auto_bump_path(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Auto-bump (non-idempotent) path: --allow-empty must NOT be present.
-
-    Without the pre-staged CHANGELOG heading, the script rewrites
-    surfaces and splits the CHANGELOG. The resulting commit must have
-    a real diff; --allow-empty would mask a future bug that silently
-    produces no diff.
-    """
+    """Auto-bump (non-idempotent) path: --allow-empty must NOT be present."""
     import release as _release
 
     # Surfaces still at 0.3.0; CHANGELOG has only [Unreleased] and a
@@ -426,9 +416,7 @@ def test_main_returns_8_when_tag_already_exists(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Pre-check: an existing v0.4.0 tag causes main() to return 8 with a
-    structured message and no raw CalledProcessError.
-    """
+    """Pre-check: an existing v0.4.0 tag causes main() to return 8 with a structured message and no raw CalledProcessError."""
     import release as _release
 
     # Pre-staged surfaces so the script reaches the commit/tag block.

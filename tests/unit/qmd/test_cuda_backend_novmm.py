@@ -1,34 +1,4 @@
-"""The CUDA backend this host loads must have the VMM pool compiled out.
-
-`qmd embed` hard-aborts on WSL2 when node-llama-cpp's CUDA backend
-reserves `CUDA_POOL_VMM_MAX_SIZE` (32 GB of virtual address space) and
-the reservation fails. The fix is a rebuild with `GGML_CUDA_NO_VMM=ON`,
-applied by `tools/nlc_novmm.sh`.
-
-**That fix does not survive `bun install`.** The rebuilt library lives
-inside a bun global install, so a package refresh restores the original
-VMM-enabled backend and the abort comes back with nothing in the repo
-to notice. This test is that notice.
-
-Skip semantics, deliberately asymmetric:
-
-  * no CUDA backend on this host  -> skip (CI, CPU-only machines, macOS)
-  * a CUDA backend exists but carries the VMM pool -> FAIL
-
-so that adding it to the default run costs a few milliseconds on a
-machine without CUDA and catches a silent revert on one with it.
-
-Both copies are checked because `localBuilds/` holds `bin/` and
-`Release/`: the rebuild writes `bin/`, the process loads `Release/`.
-Checking only the rebuilt one is how the abort survived a patch that
-looked correct.
-
-`tools/nlc_novmm.sh verify` additionally probes `qmd doctor` for GPU
-acceleration. That takes ~10s, which is over the per-test budget, so it
-is a Makefile target (`make qmd-backend-check`) rather than a test --
-and it matters because zero aborts is also what "the GPU is switched
-off entirely" looks like.
-"""
+"""The CUDA backend this host loads must have the VMM pool compiled out."""
 
 from __future__ import annotations
 
@@ -103,13 +73,7 @@ def _existing_backends() -> list[tuple[str, Path]]:
 
 
 def test_no_cuda_backend_still_carries_the_vmm_pool() -> None:
-    """No backend that could serve a query may reserve 32 GB of address space.
-
-    Covers the local build *and* the prebuilt fallback. Checking only the
-    local build left the real failure mode open: `bun install` removes
-    `llama/localBuilds/`, the prebuilt takes over with VMM intact, and a
-    test that skips on a missing local build reports green throughout.
-    """
+    """No backend that could serve a query may reserve 32 GB of address space."""
     backends = _existing_backends()
     if not backends:
         pytest.skip(
@@ -126,12 +90,7 @@ def test_no_cuda_backend_still_carries_the_vmm_pool() -> None:
 
 
 def test_both_backend_copies_are_present_together() -> None:
-    """A rebuild updates `bin/`; the process loads `Release/`.
-
-    A half-applied patch leaves `bin/` VMM-free and `Release/` not, and
-    every check that inspects the rebuilt file passes. Naming both here
-    is the cheap guard against repeating that.
-    """
+    """A rebuild updates `bin/`; the process loads `Release/`."""
     local = {label for label, _ in _existing_backends() if label.startswith("localBuilds/")}
     if not local:
         pytest.skip(f"no local node-llama-cpp CUDA build at {LOCAL_BUILDS}")

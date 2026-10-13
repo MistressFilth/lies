@@ -36,24 +36,7 @@ def list_provenance_pages(
     page: str | None = None,
     orphan: bool = False,
 ) -> list[ProvenanceRecord]:
-    """Return every page with non-empty ``derived_from``.
-
-    ``page`` restricts to a single slug (0–1 records).
-    ``orphan=True`` filters to rows where at least one cited slug does
-    not resolve to any row in the catalog (i.e. catalog membership only
-    — NOT disk existence). The ``dangling_derived_from`` lint in
-    ``src/lies/orchestrator.py`` instead checks disk existence; the
-    two definitions can diverge when the catalog is stale, when a
-    cited slug points at a system file (``index.md`` / ``log.md`` /
-    ``schema.md`` / ``overview.md`` / ``lint-report.md`` are excluded
-    from the catalog walk), or after a ``reconcile`` that removed a
-    stale row. Run ``lies catalog reconcile`` first if you need
-    lint-style disk parity.
-
-    Catalog storage represents ``derived_from`` as a comma-joined
-    string; this function splits + filters empty fragments so the
-    returned tuple mirrors the on-disk YAML frontmatter shape.
-    """
+    """Return every page with non-empty ``derived_from``."""
     rows = conn.execute(
         "SELECT slug, title, type, source_pkg, updated, derived_from "
         "FROM pages WHERE derived_from != ''"
@@ -80,20 +63,7 @@ def list_provenance_pages(
 
 
 def render_provenance_tsv(records: Iterable[ProvenanceRecord]) -> str:
-    """Render records as header-less TSV, one row per page.
-
-    Columns: ``slug\ttitle\ttype\tsource_pkg\tupdated\tcsv(sources)``.
-    The trailing comma-joined ``derived_from`` mirrors the catalog's
-    storage shape and is awk/grep-friendly.
-
-    The CLI rejects slugs containing ``\\t`` / ``\\n`` / ``\\r`` /
-    ``\\x0b`` / ``\\x0c`` at validation time, so the renderer can
-    safely ``\\t``-join raw fields without escaping. Round-tripping
-    caller-supplied ``ProvenanceRecord`` objects directly (e.g. from
-    tests or future MCP surfaces) does NOT enforce the same
-    constraint — callers that bypass ``_validate_page_slug`` are
-    responsible for sanitising their inputs.
-    """
+    """Render records as header-less TSV, one row per page."""
     lines: list[str] = []
     for rec in records:
         sources_csv = ",".join(rec.derived_from)

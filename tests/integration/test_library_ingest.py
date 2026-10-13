@@ -154,16 +154,7 @@ def test_run_source_ingest_force_overwrite_counts_as_updated(lib_with_git: Libra
 def test_run_source_ingest_frontmatter_unparseable_quarantines(
     lib_with_git: Library,
 ) -> None:
-    """I16: a malformed frontmatter on the existing mirror surfaces a typed reason.
-
-    Previously the ``try: frontmatter.loads(...) except Exception: pass``
-    swallowed the parse error and silently downgraded the existing
-    mirror to ``hash=""``. That made the idempotency check always
-    miss and the run always quarantined with ``mirror-collision`` —
-    the operator never learned the mirror is malformed. The new
-    contract: surface ``frontmatter-unparseable:<slug>:<ExceptionName>``
-    in ``quarantine_records`` so the operator can see the real failure.
-    """
+    """A malformed frontmatter on the existing mirror surfaces a typed reason."""
     body = "body\n" * 10
     coll = lib_with_git.collection("claude")
     target = coll.dir / "x.md"
@@ -223,18 +214,7 @@ def test_run_source_ingest_mirror_collision_reports_existing_and_new_hashes(
 def test_run_source_ingest_same_hash_mirror_collision_is_idempotent_skip(
     lib_with_git: Library,
 ) -> None:
-    """Re-ingesting an unchanged source is a skip, not an error.
-
-    Regression for Task 11 fix #2: the collision branch in
-    ``_process_item`` was always bumping ``result.errors`` whenever a
-    target mirror existed, even when the incoming ``source_hash``
-    matched the existing mirror's frontmatter ``source_hash``. With
-    ``errors > 0 → exit 1`` wired through the CLI (Fix #1), idempotent
-    re-runs of unchanged sources started exiting 1 — a silent regression
-    from the previous exit-0 behavior. The fix reads the existing
-    mirror's frontmatter and treats a matching hash as
-    ``mirror-collision:up_to_date``: skip, no error, no quarantine.
-    """
+    """Re-ingesting an unchanged source is a skip, not an error."""
     body = "body\n" * 10
     item = FetchItem(
         path=Path("/src/x.md"),
@@ -282,13 +262,7 @@ def test_run_source_ingest_filter_skip(lib_with_git: Library) -> None:
 
 
 def test_run_source_ingest_quarantine_writes_reason_sidecar(lib_with_git: Library) -> None:
-    """C5 anti-tautology: quarantine writes BOTH body AND ``.reason`` sidecar.
-
-    Spec §Error handling row 3b mandates
-    ``<poison>/<collection>/<slug>.md + <slug>.md.reason``. The
-    sidecar carries the typed reason verbatim so the operator can
-    read it from the filesystem without parsing the result API.
-    """
+    """Quarantine writes BOTH body AND ``.reason`` sidecar."""
     fetcher = _StaticFetcher(
         [
             FetchItem(
@@ -372,25 +346,7 @@ def test_run_batch_ingest_walks_dir(lib_with_git: Library, tmp_path: Path) -> No
 def test_run_batch_ingest_production_fetcher_walks_directory(
     lib_with_git: Library, tmp_path: Path
 ) -> None:
-    """``ScraperFetcher`` (the production fetcher wired into the CLI) must
-    walk a directory and yield one ``FetchItem`` per file.
-
-    Regression pin for the ``--batch`` dispatch defect: the prior
-    ``ScraperFetcher.fetch_sources`` called
-    ``pick_scraper(source)`` unconditionally, and ``pick_scraper`` had no
-    directory branch — so any directory input raised
-    ``ScraperUnavailable`` at the dispatch step before ``_process_item``
-    ever saw an item.  The existing ``test_run_batch_ingest_walks_dir``
-    above masked the defect by using ``_StaticFetcher`` (a test double
-    that hand-rolls ``FetchItem``s); this test drives the production
-    fetcher end-to-end.
-
-    The fetcher is responsible for: reading each entry, hashing the
-    bytes, and yielding a ``FetchItem`` per file with ``url=None`` and
-    ``fetched_via="local"``.  Per-doc slug derivation, skip/quarantine
-    filters, mirror write, and atomic commit remain ``_process_item``
-    and ``_finalize``'s job.
-    """
+    """``ScraperFetcher`` (the production fetcher wired into the CLI) must walk a directory and yield one ``FetchItem`` per file."""
     from lies.library.fetcher import ScraperFetcher
 
     # The lib fixture places Library's git_root under tmp_path; the
@@ -424,19 +380,7 @@ def test_run_batch_ingest_production_fetcher_walks_directory(
 
 
 def test_run_batch_ingest_empty_directory_is_noop(lib_with_git: Library, tmp_path: Path) -> None:
-    """Empty ``--batch`` directory is a no-op (spec L400: exit 0, no commit).
-
-    Regression pin for the directory-walk dispatch: before the fix, an
-    empty directory raised ``LibraryFetchUnreachable`` because
-    ``pick_scraper(source)`` rejected directory inputs entirely; the
-    CLI would exit non-zero on ``lies ingest --batch <empty-dir>``.
-
-    Uses a dedicated empty subdir under tmp_path rather than tmp_path
-    itself, since the ``lib`` fixture places the Library's git_root
-    under tmp_path (``xdg.data_home = tmp_path``); a recursive walker
-    would otherwise discover the Library's ``.gitkeep`` and other
-    fixture files.
-    """
+    """Empty ``--batch`` directory is a no-op (spec L400: exit 0, no commit)."""
     from lies.library.fetcher import ScraperFetcher
 
     empty_batch = tmp_path / "empty-batch-dir"
@@ -458,21 +402,7 @@ def test_run_batch_ingest_empty_directory_is_noop(lib_with_git: Library, tmp_pat
 def test_run_source_ingest_dispatch_failure_quarantines_and_continues(
     lib_with_git: Library,
 ) -> None:
-    """A mid-batch ``UnknownFormatError`` quarantines the bad doc, keeps the good one.
-
-    Regression for the fetcher-fix follow-up: ``ScraperFetcher`` raises
-    ``UnknownFormatError`` mid-yield when ``format_dispatch.dispatch`` rejects
-    a ``source_format``. Without per-doc quarantine at the ingest boundary,
-    that exception aborts the whole batch and the good items that yielded
-    before the failure are lost.
-
-    The pipeline must:
-    - return normally (not raise);
-    - record the bad doc in ``quarantine_records`` with a
-      ``fetch-unreachable``-prefixed reason;
-    - increment ``errors`` for the quarantined doc;
-    - still process the items that yielded before the failure.
-    """
+    """A mid-batch ``UnknownFormatError`` quarantines the bad doc, keeps the good one."""
     from lies.etl.normalize.format_dispatch import UnknownFormatError
 
     valid = FetchItem(
@@ -506,15 +436,7 @@ def test_run_source_ingest_dispatch_failure_quarantines_and_continues(
 def test_run_source_ingest_dispatch_failure_when_zero_items_yielded(
     lib_with_git: Library,
 ) -> None:
-    """When every doc fails dispatch, the run continues with a quarantine record.
-
-    Previously the whole batch would abort and surface the dispatch
-    exception to the operator. With per-doc quarantine, an empty items
-    list paired with a non-empty ``quarantine_records`` is a soft failure:
-    the run returns normally, ``errors`` reflects the bad doc, and
-    ``LibraryFetchUnreachable`` is NOT raised (the run was not a no-op —
-    the fetcher reported the failure explicitly).
-    """
+    """When every doc fails dispatch, the run continues with a quarantine record."""
     from lies.etl.normalize.format_dispatch import UnknownFormatError
 
     fetcher = _RaisingFetcher(
@@ -534,12 +456,7 @@ def test_run_source_ingest_dispatch_failure_when_zero_items_yielded(
 def test_run_source_ingest_zero_items_no_quarantine_still_raises(
     lib_with_git: Library,
 ) -> None:
-    """A truly-empty fetcher (no dispatch in play) still raises.
-
-    Preserves the existing ``LibraryFetchUnreachable`` semantic: when the
-    fetcher yields zero items AND no per-doc quarantine records exist, the
-    run is a no-op and aborts so the operator notices.
-    """
+    """A truly-empty fetcher (no dispatch in play) still raises."""
     fetcher = _StaticFetcher([])
     with pytest.raises(LibraryFetchUnreachable):
         run_source_ingest(lib_with_git, "claude", source="x", fetcher=fetcher)
@@ -548,11 +465,7 @@ def test_run_source_ingest_zero_items_no_quarantine_still_raises(
 def test_run_batch_ingest_dispatch_failure_quarantines_and_continues(
     lib_with_git: Library,
 ) -> None:
-    """``run_batch_ingest`` applies the same per-doc quarantine contract.
-
-    ``_iter_fetch_items`` is shared by both call sites; this guards the
-    second call site explicitly.
-    """
+    """``run_batch_ingest`` applies the same per-doc quarantine contract."""
     from lies.etl.normalize.format_dispatch import UnknownFormatError
 
     valid_a = FetchItem(
@@ -585,13 +498,7 @@ def test_run_batch_ingest_dispatch_failure_quarantines_and_continues(
 def test_run_source_ingest_generic_dispatch_exception_is_quarantined(
     lib_with_git: Library,
 ) -> None:
-    """Any per-doc dispatch exception is quarantined, not just ``UnknownFormatError``.
-
-    The spec says "any per-doc exception from ``format_dispatch.dispatch``"
-    — the catch-all in ``_iter_fetch_items`` must cover more than the
-    one known class so a future format-dispatch error doesn't silently
-    abort the batch.
-    """
+    """Any per-doc dispatch exception is quarantined, not just ``UnknownFormatError``."""
     valid = FetchItem(
         path=Path("/src/valid.md"),
         url=None,
@@ -612,17 +519,7 @@ def test_run_source_ingest_generic_dispatch_exception_is_quarantined(
 def test_run_source_ingest_wires_qmd_collection_through_finalize(
     lib_with_git: Library,
 ) -> None:
-    """End-to-end: ``run_source_ingest`` passes ``qmd_collection`` to ``LibraryWriter.commit``.
-
-    Regression for the dormant-hook fix (Task 12 follow-up):
-    ``LibraryWriter.commit`` accepts ``qmd_collection: str | None`` to
-    fire the post-commit qmd hook against the library path. ``_finalize``
-    MUST thread ``collection_name`` through, otherwise the qmd hook is
-    dormant in production. This test wires the full ingest pipeline
-    (no ``run_*_ingest`` mocking) and asserts the qmd hook actually
-    fires with the library target — a regression that drops the kwarg
-    in ``_finalize`` leaves the hook off and the assertion catches it.
-    """
+    """End-to-end: ``run_source_ingest`` passes ``qmd_collection`` to ``LibraryWriter.commit``."""
     from unittest.mock import patch
 
     fetcher = _StaticFetcher(
@@ -667,14 +564,7 @@ def test_run_source_ingest_wires_qmd_collection_through_finalize(
 def test_run_source_ingest_catalog_row_carries_source_hash(
     lib_with_git: Library,
 ) -> None:
-    """Minor 29 anti-tautology: catalog row's ``hash`` column carries source_hash.
-
-    The previous implementation built catalog rows with ``hash=""``,
-    discarding the upstream SHA256 of the raw fetch bytes. That made
-    catalog-level dedup / qmd change-detection impossible without re-parsing
-    the mirror frontmatter. The fix threads ``item.source_hash`` through
-    ``BatchIngestResult.mirror_source_hashes`` into the catalog row.
-    """
+    """Catalog row's ``hash`` column carries source_hash."""
     from lies.library.catalog import open_catalog, list_pages
 
     fetcher = _StaticFetcher(
@@ -704,13 +594,7 @@ def test_run_source_ingest_catalog_row_carries_source_hash(
 def test_run_batch_ingest_catalog_rows_carry_source_hashes(
     lib_with_git: Library,
 ) -> None:
-    """Minor 29 anti-tautology: per-doc source_hash lands in the matching catalog row.
-
-    Pins the parallel-list invariant (``mirror_paths`` and
-    ``mirror_source_hashes`` are index-aligned). Off-by-one or alignment
-    drift between the two lists would tag a catalog row with the wrong
-    upstream hash — a silent data-integrity bug.
-    """
+    """Per-doc source_hash lands in the matching catalog row."""
     from lies.library.catalog import open_catalog, list_pages
 
     a = FetchItem(

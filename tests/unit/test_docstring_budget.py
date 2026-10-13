@@ -129,7 +129,7 @@ def test_the_baseline_covers_a_subject_that_actually_exists() -> None:
         for section, counts in BASELINE.items()
         if section.startswith(("src_", "test_"))
     }
-    assert totals == {"src_comments": 191, "test_docstrings": 865}, (
+    assert totals == {"src_comments": 0, "test_docstrings": 0}, (
         "the recorded debt changed without the baseline being regenerated; the "
         f"counts are now {totals}"
     )
@@ -197,12 +197,14 @@ if __name__ == "__main__":  # pragma: no cover - the regeneration entry point
                     "_note": (
                         "Standing budget: test module and test function docstrings are "
                         "one line; a src/ body comment block is at most 4 consecutive "
-                        "lines (AAA). The tree does not meet it yet, so this file "
-                        "records the measured shortfall as a per-file count. The gate "
-                        "is an equality check: a file that appears, or whose count "
-                        "grows, fails; a file that shrinks or clears also fails until "
-                        "this file is regenerated, so the debt can only shrink. "
-                        "Regenerate with: python tests/unit/test_docstring_budget.py --write"
+                        "lines (AAA). The tree met it, so both maps below are "
+                        "empty: this file records the measured shortfall as a "
+                        "per-file count, and the gate is an equality check, so a "
+                        "file that appears, or whose count grows, fails — and so "
+                        "does one that shrinks or clears, until this file is "
+                        "regenerated. The debt can only shrink, and it is now "
+                        "zero. Regenerate with: "
+                        "python tests/unit/test_docstring_budget.py --write"
                     ),
                     "budgets": {
                         "test_docstring": TEST_DOCSTRING_BUDGET,

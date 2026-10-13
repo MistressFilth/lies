@@ -1,17 +1,4 @@
-"""Stable per-wiki Harness Memory namespace derivation.
-
-A wiki gets a deterministic namespace string so the Harness ``Memory``
-capability is scoped per wiki instead of sharing state across all
-LIES wikis. The namespace must satisfy the harness validator:
-
-  - relative (no leading slash)
-  - no path separators inside the namespace body
-  - bounded length
-
-We derive the namespace from a short hash of the resolved wiki root
-path. Two wikis at the same path always produce the same namespace;
-two different paths produce different namespaces.
-"""
+"""Stable per-wiki Harness Memory namespace derivation."""
 
 from __future__ import annotations
 

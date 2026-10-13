@@ -1,9 +1,4 @@
-"""Test-only render command for LiquidBuilder tests.
-
-Used by `tests.fixtures.liquid_stub:render` lookups. The real
-shopify-cli integration lives outside the repo; this stub lets unit
-tests assert the resolver wiring without depending on Node + Ruby.
-"""
+"""Test-only render command for LiquidBuilder tests."""
 
 from __future__ import annotations
 

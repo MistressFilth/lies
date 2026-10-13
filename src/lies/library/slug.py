@@ -23,70 +23,32 @@ class SlugError(ValueError):
 
 
 def derive_slug(source: Path, *, override: str | None = None) -> str:
-    """Derive a valid slug from ``source``.
-
-    When ``override`` is set, the operator's choice is validated and
-    returned (no derivation).
-
-    Otherwise the bare ``source.stem`` is normalized: underscores and
-    dots collapse to dashes and trailing dashes are stripped. The
-    derived result is then re-validated through :func:`validate_slug`.
-    A pathological input like ``Path(".dotfile")`` (stem is empty
-    after the ``.dotfile`` → ``-dotfile`` → ``dotfile`` chain — but a
-    source named ``..`` has an empty stem) returns an empty string
-    BEFORE validation would accept it. The post-validation guard
-    catches that case (Minor 39) and raises :class:`SlugError` so the
-    caller can quarantine the doc with a typed reason.
-    """
+    """Derive a valid slug from ``source``."""
     if override is not None:
         return validate_slug(override)
     derived = source.stem.lower().replace("_", "-").replace(".", "-").rstrip("-")
-    # Minor 39: the derived stem can be empty (e.g. ``Path("..")``,
-    # ``Path(".dotfile")`` whose stem is the empty string). Without
-    # the post-validation, the empty string would pass through and
-    # the ingest pipeline would write ``<collection>/.md`` — a path
-    # that breaks the collection's directory layout. Re-validate and
-    # raise a typed SlugError.
+    # The derived stem can be empty (``Path("..")``, or ``Path(".dotfile")`` whose stem is
+    # ""). Without post-validation it would pass through and the pipeline would write
+    # ``<collection>/.md``, breaking the directory layout. Re-validate and raise ``SlugError``.
     if not derived or not _SEGMENT_RE.fullmatch(derived):
         raise SlugError(f"derive_slug produced an invalid slug from {source!r}: {derived!r}")
     return derived
 
 
 def derive_nested_slug(source: Path | str) -> str:
-    """Derive a slug that preserves the source's nested path structure.
-
-    Used for source-relative paths coming from a ``WebScraper`` URL
-    hierarchy (e.g. ``agents-and-tools/agent-skills/best-practices.md``)
-    where the caller wants the slug to mirror the upstream structure
-    under the collection root. Local absolute paths from bootstrap
-    (``/tmp/claude_platform/docs/foo.md``) are NOT appropriate — those
-    callers should keep using :func:`derive_slug`, which flattens to a
-    single segment.
-
-    Each path segment is normalized: underscores and dots collapse to
-    dashes, trailing dashes stripped. The result is validated by
-    :func:`validate_slug` and may contain ``/`` separators between
-    segments.
-    """
+    """Derive a slug that preserves the source's nested path structure."""
     raw = Path(source).as_posix()
     *parents, tail = raw.rsplit("/", 1)
     stem = tail.rsplit(".", 1)[0] if "." in tail else tail
-    # ``rsplit("/", 1)`` yields at most two values, so ``parents`` is a
-    # single string holding every remaining separator, not a list of
-    # segments. Split it before normalizing, or a dotted or underscored
-    # *interior* directory (``.claude`` -> ``-claude``) keeps the leading
-    # dash its own normalization produced and the whole slug fails
-    # validation. One directory level was unaffected: there ``parents``
-    # happens to hold a single genuine segment.
+    # ``rsplit("/", 1)`` yields at most two values, so ``parents`` is a single string holding
+    # every remaining separator, not a list of segments. Split it before normalizing, or a
+    # dotted or underscored *interior* directory keeps the leading dash its own
+    # normalization produced and the whole slug fails validation.
     segments = [seg for parent in parents for seg in parent.split("/")]
     normalized_parts = [
-        # ``.txt`` / version-like tokens (``3.14``) inside source paths
-        # must collapse to dashes -- the nested slug regex
-        # (``_NESTED_RE``) accepts only ``[a-z0-9_-]``. ``derive_slug``
-        # already does this for the flat path; mirror it here. Leading
-        # dashes are stripped so segments like ``__future__`` (which
-        # become ``--future`` after underscore-to-dash) still match
-        # the per-segment ``[a-z0-9]`` prefix requirement.
+        # ``.txt`` / version-like tokens (``3.14``) inside source paths must collapse to dashes —
+        # the nested regex accepts only ``[a-z0-9_-]``, and ``derive_slug`` already does this for
+        # the flat path. Leading dashes are stripped so ``__future__`` still matches.
         seg.lower().replace("_", "-").replace(".", "-").strip("-")
         for seg in segments + [stem]
         if seg

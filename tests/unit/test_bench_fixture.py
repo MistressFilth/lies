@@ -1,18 +1,4 @@
-"""Shape tests for the known-answer bench fixture.
-
-The fixture is the regression gate for the qmd daemon-routing
-work: every routing change is scored against the ``baseline``
-recorded inside it. ``qmd bench`` checks only that ``queries``
-is an array; the assertions below stand in for the validation
-it does not do.
-
-Two views of the same answer are carried: ``qmd bench`` reads
-``expected_files`` / ``expected_in_top_k``; the LIES-side gate
-reads ``collections`` / ``expected``. Docids are forbidden as
-keys — ``docid`` is ``documents.hash[0:6]`` resolved by
-``LIKE '<prefix>%' LIMIT 1`` with no ``ORDER BY``, and three live
-collisions exist among the 5987 active documents.
-"""
+"""Shape tests for the known-answer bench fixture."""
 
 from __future__ import annotations
 
@@ -103,22 +89,13 @@ def test_fixture_has_ten_or_more_queries() -> None:
 
 
 def test_fixture_meets_the_step_four_minimum() -> None:
-    """The brief's Step 4 asks for 12; the count above is a looser floor.
-
-    Two separate numbers: "the suite has a known-answer set worth
-    scoring" (>=10) and "the brief's coverage requirement is met"
-    (>=12).
-    """
+    """The query count meets the agreed floor."""
     data = _load()
     assert len(data["queries"]) >= 12, [q["id"] for q in data["queries"]]
 
 
 def test_generator_refuses_to_wipe_a_recorded_baseline(tmp_path: pathlib.Path, monkeypatch) -> None:
-    """The bare generator invocation must not erase the recorded numbers.
-
-    An omitted `--baseline` previously wrote `"baseline": {}` over
-    the committed scores. It now refuses unless `--force` is passed.
-    """
+    """The bare generator invocation must not erase the recorded numbers."""
     out = tmp_path / "fixture.json"
     out.write_text(
         json.dumps(
@@ -145,14 +122,7 @@ def test_generator_refuses_to_wipe_a_recorded_baseline(tmp_path: pathlib.Path, m
 
 
 def test_committed_fixture_matches_the_generator() -> None:
-    """The committed JSON is generated, not hand-maintained.
-
-    Pinning the committed file to `build()` means a hand-edit
-    correcting a wrong `expected` reverts on the next regeneration;
-    the correction has to live in the generator. The baseline and
-    decisions halves are excluded (they record measurements, not
-    generator inputs).
-    """
+    """The committed JSON is generated, not hand-maintained."""
     committed = _load()
     rebuilt = generator().build(
         committed["baseline"].get("qmd_bench") or None,
@@ -192,12 +162,7 @@ def test_expected_and_expected_files_agree() -> None:
 
 
 def test_fixture_declares_no_docid_keys() -> None:
-    """Docids are unusable as keys: `hash[0:6]` has live prefix collisions.
-
-    Walks the parsed structure rather than grepping the text so
-    the rule is "no string value is a `#docid`" rather than a
-    character the JSON happens not to need.
-    """
+    """Docids are unusable as keys: `hash[0:6]` has live prefix collisions."""
     offenders: list[Any] = []
 
     def _walk(node: Any) -> None:
@@ -222,12 +187,7 @@ def test_queries_span_at_least_four_collections() -> None:
 
 
 def test_at_least_two_queries_are_multi_collection() -> None:
-    """Starvation regression detection.
-
-    The CLI's single `-c` cannot answer a multi-collection
-    question; the daemon's `collections` filter can. A
-    single-collection fixture cannot tell the two apart.
-    """
+    """Starvation regression detection."""
     data = _load()
     multi = [q for q in data["queries"] if len(q["collections"]) > 1]
     assert len(multi) >= 2, [q["id"] for q in data["queries"]]
@@ -238,13 +198,7 @@ def _content_words(text: str) -> set[str]:
 
 
 def test_at_least_one_query_is_a_paraphrase() -> None:
-    """A query whose wording shares no vocabulary with its expected document.
-
-    Checks the *expected document's path* (the document body is not
-    in this repo). The path is a proxy that the generator
-    controls; it catches a paraphrase quietly rewritten into a
-    keyword query, which the `paraphrase` flag alone would not.
-    """
+    """A query whose wording shares no vocabulary with its expected document."""
     data = _load()
     paraphrase = [q for q in data["queries"] if q.get("paraphrase")]
     assert len(paraphrase) >= 1, [q["id"] for q in data["queries"]]
@@ -268,11 +222,7 @@ def test_baseline_is_recorded() -> None:
 
 
 def test_baseline_is_bound_to_a_corpus_and_index() -> None:
-    """A baseline is only comparable against the same corpus and index.
-
-    It used to record the fixture's own absolute path, which is
-    worktree-specific, wrong in every other checkout.
-    """
+    """A baseline is only comparable against the same corpus and index."""
     bench = _load()["baseline"]["qmd_bench"]
     assert isinstance(bench["corpus_documents"], int) and bench["corpus_documents"] > 0
     assert bench["index_path"].endswith(".sqlite"), bench["index_path"]
@@ -280,12 +230,7 @@ def test_baseline_is_bound_to_a_corpus_and_index() -> None:
 
 
 def test_latency_is_outside_the_gate_block() -> None:
-    """`avg_latency_ms` swings ~10x on model-cache warmth, so it is not a metric.
-
-    Lifted out of `summary` rather than annotated in place: a task
-    reading `summary[backend]["avg_latency_ms"]` mechanically would
-    never see a note explaining why the number is noise.
-    """
+    """`avg_latency_ms` swings ~10x on model-cache warmth, so it is not a metric."""
     bench = _load()["baseline"]["qmd_bench"]
     for backend, scores in bench["summary"].items():
         assert "avg_latency_ms" not in scores, backend
@@ -319,13 +264,7 @@ def test_lies_gate_slot_is_reserved() -> None:
 
 
 def test_lies_gate_shape_check_works_today() -> None:
-    """Exercise the shape check against a populated sample.
-
-    The committed value is `null`, so leaving the check inline
-    would mean the first exercise of it is the first real value
-    Task 4 records — a broken check discovered exactly when
-    it matters.
-    """
+    """Exercise the shape check against a populated sample."""
     sample = {key: None for key in generator().LIES_GATE_KEYS}
     sample.update(
         {
@@ -348,24 +287,14 @@ DECISION_KEYS = ("hyde", "paraphrase_count", "recall_regression")
 
 
 def test_decisions_block_exists_with_three_keys() -> None:
-    """The plan's three open questions, all recorded.
-
-    A missing key means one of the three was answered in prose
-    and forgotten here.
-    """
+    """The plan's three open questions, all recorded."""
     decisions = _load().get("decisions")
     assert decisions is not None, "Task 6 must record a decisions block"
     assert set(decisions) == set(DECISION_KEYS), decisions
 
 
 def test_hyde_decision_records_top1_and_rank_deltas() -> None:
-    """The hyde decision carries the two numbers the brief asked for.
-
-    Per-query top-1 file URIs (so a future rerun can diff them) and
-    the per-query expected-rank within top-5 (so the rank-level
-    effect the vendor doc claims is recorded even though the LIES
-    gate's top-1 metric does not depend on it).
-    """
+    """The hyde decision carries top-1 and rank deltas."""
     hyde = _load()["decisions"]["hyde"]
     assert hyde["queries_measured"] == 15
     for q in hyde["per_query"]:
@@ -379,11 +308,7 @@ def test_hyde_decision_records_top1_and_rank_deltas() -> None:
 
 
 def test_paraphrase_count_decision_records_the_curve() -> None:
-    """The paraphrase-count curve carries per-query and aggregate data.
-
-    `passing_by_vec_count` is the LIES-relevant gate metric at each
-    N; `avg_latency_ms_by_vec_count` is the cost.
-    """
+    """The paraphrase-count curve carries per-query and aggregate data."""
     para = _load()["decisions"]["paraphrase_count"]
     assert para["queries_measured"] == 15
     for n in (1, 2, 3, 4):
@@ -398,13 +323,7 @@ def test_paraphrase_count_decision_records_the_curve() -> None:
 
 
 def test_recall_regression_decision_records_diff_with_task4() -> None:
-    """The recall-regression decision pins the comparison the plan asked for.
-
-    A drop in any query's top-1 score vs Task 4's recorded
-    `lies_gate` is captured in `regressions`. The plan's rule: any
-    drop is a defect to fix, not a result to record; a passing
-    `regressions == []` is the gate.
-    """
+    """The recall-regression decision records the diff against the baseline."""
     rec = _load()["decisions"]["recall_regression"]
     assert rec["queries_total"] == 15
     assert rec["queries_passing"] == 13

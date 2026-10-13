@@ -1,19 +1,4 @@
-"""Server-shape tests for the library-mode MCP resource surface.
-
-Asserts the wire-shape contract after the read-side rewrite:
-the retired ``wiki://*`` resources (wiki://page/{path},
-wiki://memory-changes, wiki://catalog{,/{slug}}) are gone, replaced
-by ``library://catalog{,/{slug}}``. The static ``wiki://status``,
-``wiki://index``, ``wiki://log``, and ``wiki://lint-report``
-resources are kept (the brief lists only the four
-data-bearing resources for replacement).
-
-Uses FastMCP's internal ``_list_resources`` and
-``_list_resource_templates`` rather than the wire ``Client`` path
-— the Client path costs ~0.19s on this machine (well over the
-0.15s pre-commit hard limit), and the wire shape returns the
-same records ``_list_*`` exposes.
-"""
+"""Server-shape tests for the library-mode MCP resource surface."""
 
 from __future__ import annotations
 

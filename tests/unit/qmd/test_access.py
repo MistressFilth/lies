@@ -333,16 +333,7 @@ async def test_the_wedge_carries_the_log_as_it_was_before_the_recycle(
     tmp_path: Path,
     seam: _Recycle,
 ) -> None:
-    """The tail must be read before the recycle, not after.
-
-    `recycle_qmd_daemon` is reap+spawn, and qmd truncates `mcp.log` on
-    every start — so a tail read after the recycle describes the
-    *replacement* daemon. This test's stub does exactly what qmd does:
-    it truncates the log when the recycle runs. Asserting against a
-    constant stub (as the test above does) pins the wiring but not the
-    ordering, and passes on either order; replacing the file is the only
-    shape that fails when the read moves after the recycle.
-    """
+    """The tail must be read before the recycle, not after."""
     log = tmp_path / "mcp.log"
     log.write_text("expanding query 3/7\n")
 
@@ -424,14 +415,7 @@ async def test_a_failed_recycle_tells_the_operator_the_daemon_is_down(
     monkeypatch: pytest.MonkeyPatch,
     seam: _Recycle,
 ) -> None:
-    """A recycle that never served leaves a machine-global daemon stopped.
-
-    The wedge message said "recycled" unconditionally, so a restart
-    that exhausted its budget told the operator the opposite of what
-    happened -- and named no command. The diagnosis stays a wedge; the
-    operator-actionable fact rides with it, because that is the fact
-    the next action depends on and it is the one that was being lost.
-    """
+    """A recycle that never served leaves a machine-global daemon stopped."""
 
     async def _failed_recycle(**_kwargs: Any) -> QmdState:
         raise QmdRecycleFailed(30.0, QmdState(False, False, None, "stuck"))
@@ -456,12 +440,7 @@ async def test_a_failed_recycle_still_logs_the_exhausted_budget(
     seam: _Recycle,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """The failure is loud in the log as well as in the raised error.
-
-    A caller that catches ``QmdDaemonWedged`` and retries -- which is
-    a reasonable thing to do -- gets no console trace of the daemon
-    being down. The log is the only place that fact survives.
-    """
+    """The failure is loud in the log as well as in the raised error."""
 
     async def _failed_recycle(**_kwargs: Any) -> QmdState:
         raise QmdRecycleFailed(30.0, QmdState(False, False, None, "stuck"))
@@ -499,16 +478,7 @@ async def test_the_retryable_path_never_reads_the_daemon_log(
     monkeypatch: pytest.MonkeyPatch,
     seam: _Recycle,
 ) -> None:
-    """A transport error carries no tail, so it must not read one.
-
-    The wedge is the only failure that reports a log tail. Reading it
-    on the retryable path would spend an open+seek+read of qmd's log on
-    a value that is thrown away — on the *common* path, since a daemon
-    that is restarting is ordinary rather than exceptional. It also put
-    a real filesystem read behind a test module that documents itself as
-    I/O-free, which is how a test ends up reading someone's home
-    directory the day the XDG isolation changes.
-    """
+    """A transport error carries no tail, so it must not read one."""
     reads: list[bool] = []
     monkeypatch.setattr(access, "_daemon_log_tail", lambda: reads.append(True) or "never used")
     client = _FakeClient([httpx.ConnectError("refused"), {"hits": ["after-retry"]}])
@@ -831,14 +801,7 @@ def test_remote_protocol_error_stays_a_recycle_retry() -> None:
 
 
 def test_local_protocol_error_is_a_passthrough_not_a_recycle_retry() -> None:
-    """A client-side malformed request cannot be fixed by restarting the daemon.
-
-    ``httpx`` raises ``LocalProtocolError`` for illegal header
-    values, unsupported URL schemes, and similar client-side
-    problems. The daemon is not at fault; recycling it kills
-    in-flight work for other clients of a machine-global daemon,
-    and a retry sends the same bytes back to fail the same way.
-    """
+    """A client-side malformed request cannot be fixed by restarting the daemon."""
     assert access.classify_call_error(httpx.LocalProtocolError("x")) == ("passthrough", False)
 
 
@@ -956,13 +919,7 @@ def test_read_library_bodies_returns_empty_list_for_empty_input() -> None:
 def test_read_library_bodies_per_path_failure_yields_none(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A per-path exception becomes ``None`` in the result list.
-
-    The previous per-path behaviour caught ``Exception`` and
-    logged + skipped; the hoisted bridge preserves that for
-    individual paths while still hoisting the session. A
-    document qmd cannot resolve must not kill the batch.
-    """
+    """A per-path exception becomes ``None`` in the result list."""
     calls: list[str] = []
 
     async def _call_tool(name: str, arguments: dict[str, Any], **kw: Any) -> Any:
@@ -995,21 +952,7 @@ def test_read_library_bodies_per_path_failure_yields_none(
 def test_read_library_bodies_a_transport_error_raises_not_none(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A read timeout on path 2 raises; it is never a ``None`` entry.
-
-    The defect this pins: ``read_library_bodies`` used to call
-    ``client.call_tool`` directly, with the taxonomy living only in
-    ``daemon_tool``. Every transport failure therefore became a
-    per-path ``None``, and ``read.py`` turned that into a
-    ``_missing`` entry — "the daemon could not resolve this path",
-    a claim about the corpus that was really a claim about the
-    process. A ``ReadTimeout`` was indistinguishable from a document
-    that is genuinely absent.
-
-    The stub raises the class fastmcp 4 actually raises for a slow
-    daemon. ``httpx2.ReadTimeout`` is outside every ``httpx``-typed
-    check, which is why the classifier matches on names.
-    """
+    """A read timeout on path 2 raises; it is never a ``None`` entry."""
     httpx2 = pytest.importorskip("httpx2")
 
     class _StubClient:
@@ -1043,13 +986,7 @@ def test_read_library_bodies_a_transport_error_raises_not_none(
 def test_read_library_bodies_a_passthrough_failure_stays_per_path(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Only the taxonomy's passthrough class becomes a ``None``.
-
-    The complement to the test above: after the taxonomy owns the
-    transport classes, what is left reaching the per-path handler is
-    a request the daemon rejected. That is genuinely per-path, so
-    siblings survive it.
-    """
+    """Only the taxonomy's passthrough class becomes a ``None``."""
 
     class _StubClient:
         async def __aenter__(self) -> "_StubClient":

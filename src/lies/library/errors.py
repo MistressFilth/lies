@@ -22,21 +22,7 @@ class LibraryAtomicCommitFailed(LibraryError):
 
 
 class SelfIngestRefused(LibraryError):
-    """The source and the mirror destination are the same path.
-
-    Raised when ``ingest`` is pointed at a collection directory (or at
-    a page inside one). A run of that shape enumerates the mirrors and
-    asks each one whether its own source has changed, which is a
-    question with no non-circular answer: the only reachable outcomes
-    are "skip everything" and "rewrite everything". Before this was
-    refused it was neither — every page quarantined, nothing was
-    written, and the reason named a hash conflict that had not
-    happened.
-
-    Refused at the run boundary rather than per page, because the fault
-    is the caller's and one refusal names it once, instead of a poison
-    copy and a ``.reason`` sidecar per page.
-    """
+    """The source and the mirror destination are the same path."""
 
     def __init__(self, source: Path, collection: str) -> None:
         self.source = source

@@ -1,15 +1,4 @@
-"""Tests for the SynthesizedAnswer citations/pages_read shape (Task 6).
-
-The Bundle C refactor hard-cuts the shape from ``list[str]`` to
-``list[Citation]`` so the source discriminator rides with each
-citation. These tests pin the new shape.
-
-The runtime tests pass against the pre-change implementation too
-(Python does not enforce dataclass field types at runtime), so we
-additionally assert the field annotation explicitly via
-:func:`typing.get_type_hints` to make the cutover observable without
-the type checker in the loop.
-"""
+"""Tests for the SynthesizedAnswer citations/pages_read shape (Task 6)."""
 
 from __future__ import annotations
 
@@ -36,14 +25,7 @@ def test_synthesized_answer_empty_lists_default() -> None:
 
 
 def test_synthesized_answer_annotations_are_list_of_citation() -> None:
-    """The annotations must be ``list[Citation]``, not ``list[str]``.
-
-    Runtime field assignment accepts any object regardless of the
-    annotation, so a runtime-only test would pass against both the
-    pre- and post-change implementations. Inspecting the annotation
-    surfaces the cutover: ``list[Citation]`` requires ``Citation``,
-    ``list[str]`` does not.
-    """
+    """The annotations must be ``list[Citation]``, not ``list[str]``."""
     hints = typing.get_type_hints(SynthesizedAnswer)
     assert hints["citations"] == list[Citation]
     assert hints["pages_read"] == list[Citation]
@@ -70,13 +52,7 @@ def test_synthesized_answer_claim_citations_annotation() -> None:
 
 
 def test_pages_read_carries_line_and_section() -> None:
-    """``pages_read`` entries thread ``line`` and ``section`` per spec.
-
-    Both ``run_query`` and ``run_query_with_format`` must populate
-    ``line`` and ``section`` from the underlying ``PageRead`` so
-    downstream consumers (footnote renderer, MCP response envelope)
-    can render per-passage anchors without re-querying.
-    """
+    """``pages_read`` entries thread ``line`` and ``section`` per spec."""
     cc = Citation(
         path="a.md",
         source="library",

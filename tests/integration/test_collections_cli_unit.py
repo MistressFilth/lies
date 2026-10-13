@@ -54,12 +54,7 @@ def test_list_emits_names(library: Library) -> None:
 
 
 def test_modify_dotted_key_writes_into_config_dict(library: Library) -> None:
-    """`--set config.<subkey>=value` (Liquid/Sphinx builder knobs) round-trips.
-
-    Regression: c828a18 documented dotted keys in README but the new CLI
-    rejected them. Restore the legacy dotted-key path so
-    `config.render_cmd`, `config.sphinx_excludes`, etc. are editable again.
-    """
+    """`--set config.<subkey>=value` (Liquid/Sphinx builder knobs) round-trips."""
     save_config(_cfg("liquid"))
     runner = CliRunner()
     app.add_typer(library_collections_app, name="library")

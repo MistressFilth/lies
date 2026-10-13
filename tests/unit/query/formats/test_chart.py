@@ -51,11 +51,7 @@ def test_render_chart_ignores_fenced_block_without_mermaid_lang() -> None:
 
 
 def test_render_chart_accepts_trailing_space_after_lang_tag() -> None:
-    """Markdown spec permits `` ```mermaid `` (trailing space after lang).
-
-    The renderer must accept this form, not just the strict
-    `` ```mermaid\\n `` newline form.
-    """
+    """Markdown spec permits `` ```mermaid `` (trailing space after lang)."""
     body = "```mermaid \ngraph LR\n  A --> B\n```\n"
     assert render_chart(body) == "graph LR\n  A --> B"
 

@@ -140,23 +140,7 @@ def _map_non_append_op(
 
 
 def from_repair_plan(plan: RepairPlan, wiki: Wiki | None = None) -> MemoryPlan:
-    """Map a RepairPlan to a MemoryPlan.
-
-    ``wiki`` is required for operations that derive replacement content
-    from an existing page (AppendLink and UpdateIndex).
-
-    Multiple ``AppendLink`` operations that target the same page are
-    merged into a single ``PageUpdate`` so the underlying service can
-    apply them atomically with one content rewrite per path. The
-    ``MemoryPlan`` validator rejects two operations on the same path,
-    so this grouping is required even when the original ``RepairPlan``
-    interleaves AppendLinks with other ops (e.g. ``[AppendLink(a),
-    CreateStub(x), AppendLink(a)]``).
-
-    Non-AppendLink operations keep their original relative order and
-    are emitted first. AppendLink groups are emitted afterward, one
-    ``PageUpdate`` per unique ``append_to`` path.
-    """
+    """Map a RepairPlan to a MemoryPlan."""
     operations: list[PageCreate | PageUpdate | EvidenceAppend | PageDelete] = []
     append_groups: dict[str, list[AppendLink]] = {}
     non_append_ops: list[CreateStub | UpdateIndex | AppendEvidence] = []

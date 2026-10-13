@@ -63,11 +63,7 @@ def test_call_linter_returns_report_on_success(orch: Orchestrator) -> None:
 
 
 def test_call_linter_passes_marker_deps(orch: Orchestrator) -> None:
-    """N2: ``_call_linter`` constructs a marker ``LintDeps()`` and dispatches
-    with it. The pre-N2 surface (``page_texts`` / ``wiki_root`` on deps)
-    was retired; pages are pulled via tool calls instead. Tool wiring is
-    exercised by ``tests/unit/agents/test_linter_tools.py``.
-    """
+    """``_call_linter`` constructs a marker ``LintDeps()`` and dispatches with it."""
     captured: dict[str, object] = {}
 
     def fake_run_sync(prompt: str, deps: LintDeps | None = None, **_kwargs: object):  # type: ignore[no-untyped-def]

@@ -46,12 +46,7 @@ def test_sync_exits_busy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Non
 def test_reindex_reconcile_runs_sync_collection(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """`lies reindex --reconcile` invokes sync_collection per collection.
-
-    F38: ``lies reindex`` also shells out to ``qmd_reindex`` after the
-    reconcile pass. Mock both seams so the test exercises only the
-    reconcile path.
-    """
+    """`lies reindex --reconcile` invokes sync_collection per collection."""
     from lies.qmd._models import ReindexResult
 
     _use_default_wiki(monkeypatch)

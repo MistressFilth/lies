@@ -40,21 +40,8 @@ def _current_timeout() -> int:
 
 @dataclass(frozen=True)
 class CitationSnippet:
-    """One grounding snippet — ≤200 chars from the first prose span of a page.
-
-    Attributes:
-        collection: ``"wiki"`` or library-collection-name.
-        slug: ``<collection>/<page>`` form (e.g. ``claude_code/hooks.md``),
-            not the bare ``page`` segment. The full path is what the
-            citation contract renders as ``[[slug]]: "snippet"`` and
-            is what an agent needs to disambiguate hits across
-            collections with the same page name (``setup.md`` in two
-            collections is two distinct documents).
-        title: Human-readable page title.
-        snippet: First ≤200 chars of the first prose span.
-        source_kind: ``"library"`` (primary) or ``"wiki"`` (wiki-only,
-            not grounded in a primary source). Library-wins-on-conflict
-            drops the wiki copy on slug match.
+    """One grounding snippet: at most 200 chars from the first prose span of a page.
+    See "Data shapes" in AGENTS.md for the field contract.
     """
 
     collection: str
@@ -66,37 +53,18 @@ class CitationSnippet:
 
 @dataclass(frozen=True)
 class ArchivistDigest:
-    """The grounding archivist's return value.
+    """The grounding archivist's return value. See AGENTS.md, "Data shapes".
 
-    Attributes:
-        question: Echoed back for caller verification.
-        tag_expr: Chosen union (``None`` when untagged).
-        exclude_expr: Compiled NOT AST (``None`` when no ``-`` chain).
-        citations: Snippets, one per retrieved excerpt.
-        no_coverage: True on a scope miss (librarian's
-            ``LibrarianOutput.no_coverage``) or a clean zero-hits
-            result. A *process* failure sets ``transient`` instead.
-        transient: True on a dispatch failure (process-side,
-            not corpus-side). The two flags are independent:
-            ``no_coverage=False, transient=True`` is a slow / failed
-            retrieval, not "the corpus has nothing".
-        distinct_pages: ``len({c.slug for c in citations})``.
-        searched_scope: Sorted, unique collection names actually
-            dispatched. The daemon serves an unknown collection with
-            an empty result and no error, so a scope that names
-            something the daemon does not have is reported here as
-            what was sent, not as what was asked for.
-        unserved_scope: Requested collection names the daemon does
-            not serve, in input order. Disjoint from
-            ``searched_scope``. A digest with a non-empty
-            ``unserved_scope`` and an empty ``searched_scope``
-            searched nothing, which is not a statement about the
-            corpus.
-        no_library: True when the library is uninitialized.
-        fallback_reason: Why a transient dispatch failed, in the words
-            of the failure. It exists because ``transient`` says *that*
-            retrieval failed, not *how*: a wedged daemon and a contended
-            lock want different operator actions.
+    ``no_coverage`` and ``transient`` are independent and the distinction
+    is load-bearing: ``no_coverage=False, transient=True`` is a failed or
+    slow retrieval, not "the corpus has nothing". ``fallback_reason``
+    exists because ``transient`` says *that* it failed, not *how* — a
+    wedged daemon and a contended lock want different operator actions.
+
+    ``searched_scope`` is what was *dispatched*, not what was asked for: the
+    daemon serves an unknown collection with an empty result and no error.
+    A non-empty ``unserved_scope`` with an empty ``searched_scope`` searched
+    nothing, which is likewise not a claim about the corpus.
     """
 
     question: str
@@ -183,32 +151,6 @@ async def _fanout_collections(
     collection_names: list[str],
 ) -> _FanoutResult:
     """One daemon ``query`` against the resolved collection set, no LLM round-trip.
-
-    The daemon's ``collections`` parameter is a true push-down: the
-    candidate set is narrowed inside qmd, so a single hybrid call
-    against the resolved list returns in-scope rows from every named
-    collection.
-
-    ``exclude_expr`` is not enforced here because by this point it
-    has already been applied. ``ground`` resolves the include and
-    exclude AST into ``searched_scope_list`` -- the include against
-    ``_collections_matching``, the exclude subtracted -- and that
-    list is the ``collection_names`` argument. qmd's own filters are
-    include-only, which is why there is nothing left to pass down.
-    The parameter stays for signature parity across the three
-    fan-out entry points. Pinned by
-    ``test_an_exclude_only_ground_drops_the_collection_from_the_dispatch``.
-
-    Pre-validates ``collection_names`` against the daemon's binding
-    collection set via :func:`access.validate_scope` so one
-    unresolvable name inside the batched array cannot silently
-    surface as a clean miss. The shared helper is the same one
-    ``search`` uses, so the two cannot drift.
-
-    When *every* requested name is unserved the result is a fan-out
-    that searched nothing, and says so: ``searched`` is empty and
-    ``unserved`` names the collections. The caller must not read that
-    as a clean miss.
 
     Raises:
         QmdDaemonUnavailable: the daemon is not serving (operator action).
@@ -332,39 +274,16 @@ async def ground(
 ) -> ArchivistDigest:
     """Return a grounding digest for ``question``.
 
-    Async because the unscoped and tagged fast-paths bridge to async
-    fan-out helpers via ``await``; the legacy F18 librarian path is the
-    only sync branch.
-
-    Translates ``tag_expr`` / ``exclude_expr`` via the F15 tag-filter
-    dispatch, then dispatches one of three retrieval paths:
-
-    1. **Unscoped fast-path** (no tag/exclude) — direct qmd fan-out
-       across every registered library collection.
-    2. **Tagged fast-path** — when the resolved AST matches ≥1 library
-       collection, direct qmd fan-out across ONLY the matched ones.
-    3. **Legacy F18 librarian** — when the tagged AST matches zero
-       library collections.
-
     Args:
         question: Natural-language question to ground.
-        tag_expr: Body of a single include expression (no leading
-            sigil), e.g. ``"airflow&postgres"``. ``None`` for untagged.
-        exclude_expr: Compiled NOT AST. ``None`` when no ``-`` chain.
-        top_k: Maximum excerpts (clamped to ``[1, 10]``).
-        wiki_name: Optional wiki name; defaults to env-default.
-        librarian_model: Pre-resolved ``Model`` or model-string for
-            the F18 librarian. Consumed only on the legacy path.
+        tag_expr: Body of a single include expression, e.g. ``"airflow&postgres"``;
+            ``exclude_expr`` is the compiled NOT AST, ``top_k`` clamps to [1, 10].
 
     Returns:
-        :class:`ArchivistDigest` carrying the librarian's excerpts
-        trimmed to ≤200 chars each.
+        :class:`ArchivistDigest` carrying the excerpts trimmed to ≤200 chars.
 
     Raises:
-        ArchivistCoverageError: positive tag matches zero collections
-            or include expression fails to parse.
-        lies.errors.ModelNotConfigured: legacy librarian path entered
-            without a resolved model.
+        ArchivistCoverageError: a positive tag matches zero collections.
     """
     if top_k < 1:
         top_k = 1
@@ -485,11 +404,10 @@ async def ground(
                 fallback_reason=f"qmd lock busy: {exc}",
             )
         except Exception as exc:
-            # A dispatch failure is a process claim, not a corpus
-            # claim. ``transient=True`` distinguishes "the daemon
-            # failed" from "the corpus has nothing", and the logger
-            # line keeps a persistently failing daemon visible
-            # (``warnings.warn`` filters once per location by default).
+            # A dispatch failure is a process claim, not a corpus claim. ``transient=True``
+            # distinguishes "the daemon failed" from "the corpus has nothing", and the logger line
+            # keeps a persistently failing daemon visible (``warnings.warn`` filters once per
+            # location by default).
             _log.error(
                 "ground: fan-out dispatch failed: %s: %s",
                 type(exc).__name__,
@@ -653,10 +571,9 @@ async def ground(
             )
         )
 
-    # A dispatch that searched nothing because the daemon serves none
-    # of the requested collections is not a clean miss. It reports an
-    # empty scope and names what it could not get; the caller decides
-    # what to tell the user, and nothing here claims the corpus is
+    # A dispatch that searched nothing because the daemon serves none of the requested
+    # collections is not a clean miss. It reports an empty scope and names what it could not
+    # get; the caller decides what to tell the user, and nothing here claims the corpus is
     # empty.
     if fanout is not None and not fanout.searched:
         return ArchivistDigest(

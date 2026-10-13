@@ -1,22 +1,4 @@
-"""Tests for ``lies sync`` exit-code propagation from ``BatchIngestResult.errors``.
-
-Finding 3 pin: a wholly-failed sync (errors > 0) must exit non-zero
-so operators (and CI) notice the silent data loss. The previous
-behavior swallowed ``BatchIngestResult`` and exited 0 regardless.
-
-Sync auto-reindex chain (sync-auto-reindex-embed):
-    ``lies sync`` (no ``--skip-reindex``) chains ``qmd_reindex`` against
-    ``library_git_root()`` after the collection loop so operators no
-    longer need a separate ``/reindex`` invocation. CI matrices that
-    reindex separately pass ``--skip-reindex``. The 3 historical
-    exit-code tests below pass ``--skip-reindex`` so they stay focused
-    on the exit-code contract; the new chain-contract tests pin the
-    auto-chain shape end-to-end.
-
-Marked slow: each test invokes the real Typer CLI (~300ms per
-``runner.invoke``) so the unit budget does not absorb the inherent
-CLI-machinery cost. Run with ``--runslow`` to exercise.
-"""
+"""Tests for ``lies sync`` exit-code propagation from ``BatchIngestResult.errors``."""
 
 from __future__ import annotations
 
@@ -97,11 +79,7 @@ def test_sync_exits_zero_on_clean_batch(
 def test_sync_exits_one_on_failed_batch(
     wiki_with_collection: Wiki, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A non-zero ``errors`` count exits 1; summary still printed.
-
-    Pin for Finding 3: ``lies sync`` must NOT silently exit 0 on a
-    wholly-failed batch.
-    """
+    """A non-zero ``errors`` count exits 1; summary still printed."""
     from lies.etl import sync_helper
 
     monkeypatch.setattr(
@@ -155,14 +133,7 @@ def test_sync_aggregates_errors_across_collections(
 def test_sync_chains_qmd_reindex_by_default(
     wiki_with_collection: Wiki, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Default ``lies sync`` chains ``qmd_reindex`` after the collection loop.
-
-    Pin the auto-chain contract: ``lies sync alpha`` without
-    ``--skip-reindex`` MUST invoke ``qmd_reindex`` exactly once
-    against ``library_git_root()`` with ``embed=True``. The qmd
-    failure mode does NOT abort the sync exit code — qmd lag is
-    operator-visible, not data-loss (the brief is explicit on this).
-    """
+    """Default ``lies sync`` chains ``qmd_reindex`` after the collection loop."""
     from lies.etl import sync_helper
     from lies.qmd import _models, cli as qmd_cli
 
@@ -191,10 +162,7 @@ def test_sync_chains_qmd_reindex_by_default(
 def test_sync_skip_reindex_skips_qmd_chain(
     wiki_with_collection: Wiki, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """``--skip-reindex`` opts out of the qmd chain entirely.
-
-    Pin the opt-out contract for CI matrices that reindex separately.
-    """
+    """``--skip-reindex`` opts out of the qmd chain entirely."""
     from lies.etl import sync_helper
     from lies.qmd import _models, cli as qmd_cli
 
@@ -216,14 +184,7 @@ def test_sync_skip_reindex_skips_qmd_chain(
 def test_sync_qmd_reindex_failure_warns_but_exits_zero(
     wiki_with_collection: Wiki, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """qmd_reindex failure logs a warning; sync exit code stays clean.
-
-    Pin the ``try/except Exception`` envelope: a qmd reindex wedge
-    is operator-visible (log + warning) but does NOT abort the sync
-    exit code, because sync data integrity is separate from qmd
-    lag. The collection sync already exited 0; qmd lag is a
-    follow-up concern.
-    """
+    """Qmd_reindex failure logs a warning; sync exit code stays clean."""
     from lies.etl import sync_helper
     from lies.qmd import cli as qmd_cli
 

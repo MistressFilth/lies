@@ -1,22 +1,4 @@
-"""`AGENTS.md` makes checkable claims about the seam. Check them.
-
-`AGENTS.md` is the repository's declared source of truth for agents
-working here, so a false sentence in it is not a style problem — it
-is a wrong answer delivered to whoever reads it next. Several of its
-paragraphs about the qmd seam assert specific facts about the code:
-which tools the daemon serves, that a wedge carries its log tail on
-*both* paths, that the batched read classifies transport errors.
-
-Those facts were false at least once. The seam section claimed
-``ground`` "filters silently and logs" on a code path that logged
-nothing, and the read section's claim that the batched read raises on
-a wedged daemon described a function whose `except _DAEMON_FAILURES`
-was unreachable. Both sentences survived review because nothing
-compared them to the code.
-
-A doc that asserts a fact about code gets a test, the same way the
-taxonomy's probe results got one.
-"""
+"""`AGENTS.md` makes checkable claims about the seam."""
 
 from __future__ import annotations
 
@@ -64,13 +46,7 @@ def test_the_documented_capability_map_matches_the_module() -> None:
 
 
 def test_the_documented_taxonomy_gap_is_still_a_gap() -> None:
-    """`AGENTS.md` records that three httpx classes skip the recycle.
-
-    A recorded *decision* rots quietly: the reason a class is
-    excluded is not re-derived on the next edit, so the exclusion
-    outlives its justification. This pins the shape of the gap
-    rather than the prose.
-    """
+    """`AGENTS.md` records that three httpx classes skip the recycle."""
     assert access._is_local_protocol_error(type("LocalProtocolError", (Exception,), {})()), (
         "the local-protocol class is no longer recognised by name"
     )
@@ -82,14 +58,7 @@ def test_the_documented_taxonomy_gap_is_still_a_gap() -> None:
 
 
 def test_both_wedge_paths_carry_the_log_tail() -> None:
-    """Every ``QmdWedgeError`` raise site attaches ``stderr``.
-
-    The two-site attribution is load-bearing: a wedge reported with
-    no tail tells the reader only what they already knew, and
-    `AGENTS.md` says the tail is the evidence. Both the idle-bound and
-    the total-bound raise must carry it, or the recorded rationale no
-    longer matches the code.
-    """
+    """Every ``QmdWedgeError`` raise site attaches ``stderr``."""
     source = inspect.getsource(_subprocess)
     tree = ast.parse(source)
     raises = [
@@ -110,14 +79,7 @@ def test_both_wedge_paths_carry_the_log_tail() -> None:
 
 
 def test_the_read_section_claims_what_the_code_does() -> None:
-    """`AGENTS.md` does not promise a taxonomy the batched read skips.
-
-    The claim was false once: the section said a wedged daemon
-    re-raised, while `read_library_bodies` swallowed every transport
-    failure into a per-path `None`. Rather than assert the prose
-    matches, this asserts the code matches what the prose *should*
-    say — the batched read routes through the classifier.
-    """
+    """`AGENTS.md` does not promise a taxonomy the batched read skips."""
     from lies.mcp import read as read_mod
 
     calls = _called_names(inspect.getsource(read_mod))
@@ -140,13 +102,7 @@ def test_the_read_section_claims_what_the_code_does() -> None:
 
 
 def test_the_ground_section_agrees_with_the_grounding_module() -> None:
-    """The `ground` scope claim matches what the module does.
-
-    `AGENTS.md` said `ground` "filters silently and logs" on a path
-    that bound the unknown set to `_unknown` and logged nothing. Both
-    halves were false; the fix is a log call and a digest field, and
-    this pins that neither can be removed silently.
-    """
+    """The `ground` scope claim matches what the module does."""
     from lies.mcp import grounding
 
     assert hasattr(grounding.ArchivistDigest, "__dataclass_fields__")
@@ -163,13 +119,7 @@ def test_the_ground_section_agrees_with_the_grounding_module() -> None:
 
 
 def test_the_known_flakes_section_names_the_measured_failures() -> None:
-    """`## Known flakes` is a contract, not a scratchpad.
-
-    The CUDA reservation flake lived only in a revert commit message,
-    so the next agent tried the same retry. Its home is a section
-    with a heading, and this fails if the heading is renamed or the
-    measurement table is deleted along with the commit.
-    """
+    """`## Known flakes` is a contract, not a scratchpad."""
     text = _agents_text()
     assert "## Known flakes" in text, "AGENTS.md lost its Known flakes section"
     assert "cuMemAddressReserve" in text, (

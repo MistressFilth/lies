@@ -71,68 +71,24 @@ from lies.wiki.wiki import Wiki
 
 _QMD_STALE_PREFIX = "qmd_stale"
 
-# Library-shaped paths look like ``<collection>/<page>.md``: exactly
-# one path segment, a slash, another single segment, and a ``.md``
-# extension. The wiki's page paths use deeper subdirs (``<type_plural>/
-# <page>.md``); synthesis pages add a third segment. The bare
-# two-segment pattern matches library collection paths specifically,
-# not wiki synthesis slugs (which have a deeper shape).
+# Library-shaped paths look like ``<collection>/<page>.md``: exactly one
+# segment, a slash, one more segment, and ``.md``. Wiki pages use deeper
+# subdirs and synthesis pages a third segment, so the bare two-segment
+# pattern matches library collection paths specifically.
 _LIBRARY_SHAPED_PATH = re.compile(r"^[^/]+/[^/]+\.md$")
 
 
 def _is_library_shaped_path(path: str) -> bool:
-    """Return True when ``path`` matches a library path pattern.
-
-    The wiki's qmd daemon can index library content under a
-    wiki-shaped page_id when an ingested collection's files overlap
-    the wiki's data_root. The bug surfaces as a hit like
-    ``{path: "opencode/config.md", collection_id: "default"}`` whose
-    page_id resolves to a sha1 of the library path — but the wiki
-    catalog has no row for that path, so a subsequent ``wiki_read``
-    raises :class:`WikiPageNotFound`. Drop these dead-end hits at
-    the service boundary so callers never see them.
-
-    Two gates:
-
-    1. The path matches :data:`_LIBRARY_SHAPED_PATH` (top-level
-       collection + single file).
-    2. The first path segment is a registered library-collection
-       name — sourced from :func:`lies.library.registry.
-       library_collection_names`. This avoids misclassifying wiki
-       synthesis slugs whose first segment happens to look like a
-       collection (``claude_platform/synthesis/c-...md`` is a wiki
-       synthesis namespace, not a library collection).
-
-    Empty-registry rule: when ``library_collection_names()`` returns
-    the empty set (library uninitialized OR every collection removed),
-    the filter is a no-op — return False. There are no library
-    collections to conflict with, so every wiki-shaped hit is a real
-    wiki hit. The earlier "conservative fallback" (treat every
-    top-level-collection pattern as library-shaped when the registry
-    is empty) leaked legitimate wiki hits and broke
-    :func:`wiki_search_tool` for any wiki page whose path happened
-    to match the library pattern. The conservative variant assumed
-    the registry would always be populated; an empty registry is a
-    real state and the filter must respect it.
-
-    Defensive: any registry failure (missing library dir, IO error,
-    etc.) is treated as an empty registry, not as "library present"
-    — the error does not propagate because filtering is not a hard
-    correctness gate, but it also does not silently start dropping
-    hits on a transient failure.
-    """
+    """Return True when ``path`` matches a library path pattern."""
     if not path or not _LIBRARY_SHAPED_PATH.match(path):
         return False
     first_segment = path.split("/", 1)[0]
     try:
         library_names = library_collection_names()
     except Exception:
-        # Defensive: any registry failure (missing library dir, IO
-        # error, etc.) is treated as an empty registry. We do NOT
-        # fall back to "treat as library-shaped" because that
-        # silently drops wiki hits when the library briefly
-        # disappears mid-daemon; the safer default is to keep
-        # everything.
+        # Defensive: any registry failure is treated as an empty registry. The
+        # alternative — "treat as library-shaped" — silently drops wiki hits when
+        # the library briefly disappears mid-daemon; keeping everything is safer.
         library_names = frozenset()
     if not library_names:
         return False
@@ -145,25 +101,7 @@ def _hash_text(text: str) -> str:
 
 @contextlib.contextmanager
 def _acquire_wiki_flock(wiki: Wiki, *, force_repair: bool = False) -> Iterator[None]:
-    """Acquire a non-blocking exclusive flock on the wiki's memory flock.
-
-    Yields once on success. Raises :class:`WikiLockBusy` on a live
-    contender (whose pid + start time surface in the error message so
-    operators can identify the holder), :class:`WikiFlockIndeterminate`
-    when the contender's liveness cannot be determined (EPERM on
-    ``os.kill``) and the heartbeat is older than the recovery window,
-    or :class:`WikiFlockUnrepairable` if a ``force_repair=True`` retry
-    still loses (in which case the pid file is already gone — the
-    message directs the operator to run ``lies flock <wiki> status``
-    to inspect the current contender).
-
-    The lock envelope lives under ``$XDG_RUNTIME_DIR/lies/<wiki>/``
-    (not the wiki's data root), so no gitignore coordination is
-    needed. Each wiki has its own directory containing:
-    ``memory.lock`` (the lock itself), ``memory.lock.create`` (atomic
-    sentinel), ``memory.pid`` (owner-PID text), ``memory.state.json``
-    (heartbeat).
-    """
+    """Acquire a non-blocking exclusive flock on the wiki's memory flock."""
     create_lock = wiki.memory_create_lock_path
     pid_path = wiki.memory_pid_path
     state_path = wiki.memory_heartbeat_path
@@ -246,24 +184,7 @@ def _read_page(wiki: Wiki, path: str) -> str | None:
 
 
 def _normalize_collection_prefix(rel: str, collection: str) -> str:
-    """Force ``rel`` to live under ``wiki/<collection>/``.
-
-    The page-writer agent emits paths in one of three shapes:
-
-    - Correctly rooted: ``wiki/<collection>/<rest>`` (idempotent).
-    - Wrong collection prefix: ``wiki/<other>/<rest>`` where ``<other>``
-      is something like the source filename (``llms`` for an ``llms.txt``
-      ingest). The helper replaces the wrong prefix with the target
-      collection.
-    - Missing collection prefix entirely: ``wiki/<rest>`` where the
-      first segment is a page-type directory (``concepts``,
-      ``entities``, …) or the file itself. The helper prepends
-      ``<collection>/``.
-
-    System-file paths (``wiki/index.md``, ``wiki/log.md``) are preserved
-    untouched so the system-file guard in
-    :meth:`WikiMemoryService._apply_operations` continues to fire.
-    """
+    """Force ``rel`` to live under ``wiki/<collection>/``."""
     # System files must remain at wiki/index.md / wiki/log.md so the
     # guard in _apply_operations catches them.
     system_files = {"wiki/index.md", "wiki/log.md"}
@@ -364,26 +285,7 @@ def translate_page_diffs_to_plan(
 
 
 def _page_type_from_dir(directory_name: str) -> str:
-    """Convert a plural wiki subdirectory name to its singular page type.
-
-    ``validate_page_type`` accepts singular forms (``concept``, ``entity``)
-    while wiki pages live under plural subdirectories (``concepts``,
-    ``entities``). The on-disk convention is plural; the type vocabulary is
-    singular. This helper bridges them so the service can call
-    ``validate_page_type`` without bypassing it.
-
-    The mapping is hard-coded because naively stripping ``s`` mangles
-    ``entities`` → ``entitie`` (the original bug; fixed in F2 close-out)
-    and doesn't generalize to collection-name directories like
-    ``claude_code`` (the page-writer agent's M3-driven flattening bug).
-
-    Unknown directories (e.g. ``claude_code`` when the page-writer agent
-    emits a path directly under the collection subdir without a type
-    subdirectory) default to ``concept`` so the ingest path doesn't trip
-    validation. The default is deliberately permissive — anything that
-    falls outside the schema allow-list still gets caught by
-    ``validate_page_type`` after the default.
-    """
+    """Convert a plural wiki subdirectory name to its singular page type."""
     plural_to_singular = {
         "concepts": "concept",
         "entities": "entity",
@@ -432,31 +334,7 @@ def _upsert_or_remove_catalog_row(
     op: PageCreate | PageUpdate | EvidenceAppend | PageDelete,
     kind: OperationKind,
 ) -> None:
-    """Apply one op to ``catalog.db``. Best-effort; non-fatal.
-
-    Mirrors the on-disk write/delete the apply envelope just performed:
-    ``PageDelete`` removes the catalog row by slug; everything else
-    (PageCreate / PageUpdate / EvidenceAppend) upserts a row built from
-    the freshly-written file via :meth:`CatalogPage.from_path`. The slug
-    is derived defensively — strip a leading ``wiki/`` twice so the
-    helper matches the same path resolution ``_apply_operations`` uses,
-    and drop the trailing ``.md`` so the slug lands in the same form
-    the rest of the catalog surface (``list_pages``, ``reconcile``)
-    already speaks.
-
-    System files (``index.md``, ``log.md``, …) are skipped on the
-    upsert path: ``index.md`` is a render derivative emitted by
-    ``lies catalog render`` (not a source page); ``log.md`` is owned
-    by ``append_log_entry``. Writing a row for either would create a
-    phantom row that ``reconcile`` (which excludes ``_SYSTEM_FILES``
-    from the disk walk) cannot clean. ``PageDelete`` is unaffected —
-    there is never a catalog row for a system file in a healthy wiki,
-    so the remove path stays a no-op.
-
-    Caller is responsible for the ``try/except`` envelope: per-op
-    catalog failures are non-fatal. The file write landed, so a
-    follow-up ``reconcile`` cleans up an orphan or stale row.
-    """
+    """Apply one op to ``catalog.db``. Best-effort; non-fatal."""
     from lies.memory.catalog_models import CatalogPage
 
     rel = op.path.removeprefix("wiki/").removeprefix("wiki/")
@@ -467,13 +345,10 @@ def _upsert_or_remove_catalog_row(
             slug = rel.removesuffix(".md") if rel.endswith(".md") else rel
             _remove_catalog_page(conn, slug)
         else:
-            # Skip system files: log.md, index.md (and the other files
-            # ``catalog._SYSTEM_FILES`` excludes from the disk walk).
-            # These are managed by the service (log) or are a render
-            # derivative (index) / deterministic host-side artifacts
-            # (lint-report, overview, schema) — NOT source pages. A row
-            # for any of them would be a phantom that ``reconcile``
-            # cannot clean because the disk walk skips them too.
+            # Skip system files (``catalog._SYSTEM_FILES``): service-managed, a render
+            # derivative, or a host-side artifact — not source pages. A row for one
+            # would be a phantom ``reconcile`` cannot clean, because the disk walk
+            # skips them too.
             if rel in _SYSTEM_FILES:
                 return
             _upsert_catalog_page(conn, CatalogPage.from_path(wiki, op.path))
@@ -494,11 +369,9 @@ class WikiMemoryService:
         self._qmd_update = qmd_update
         self._lock = threading.Lock()
         self._known_evidence: set[str] = set()
-        # Local import: ``lies.wiki.registry`` re-exports through
-        # ``lies.wiki.__init__`` which imports this module's
-        # ``WikiMemoryService`` via ``lies.memory.__init__`` — keeping the
-        # import at module scope creates a cycle when test files load the
-        # registry module in isolation.
+        # Local import: ``lies.wiki.registry`` re-exports through ``lies.wiki.__init__``
+        # which imports this module via ``lies.memory.__init__`` — module scope
+        # would be a cycle when a test loads the registry module in isolation.
         from lies.wiki.registry import Registry
 
         on_disk = Registry.load(wiki)
@@ -559,21 +432,7 @@ class WikiMemoryService:
         limit: int = 5,
         qmd_collection_filter: set[str] | None = None,
     ) -> WikiSearchResult:
-        """Search this wiki and authenticate the returned evidence references.
-
-        ``qmd_collection_filter`` is the F18 Task 6 / Bundle C
-        tag-expression set the caller (typically the librarian's
-        ``_wiki_search`` closure) resolved from ``LibrarianDeps.
-        tag_expr``. Threads down to ``_from_qmd`` so qmd applies the
-        post-filter at qmd-time — library collections the operator
-        excluded never surface as phantom wiki-side hits.
-        ``collection_ids`` is the per-wiki filter (wiki membership);
-        ``qmd_collection_filter`` is the qmd-side collection set.
-        Two distinct scopes: a wiki that excludes itself from
-        ``collection_ids`` returns ``no_coverage=True``; a wiki whose
-        ``qmd_collection_filter`` excludes library collections still
-        searches its own pages.
-        """
+        """Search this wiki and authenticate the returned evidence references."""
 
         # Drop ghost catalog rows before any dispatch so a stale row
         # cannot surface a ``page_id`` the subsequent ``wiki_read``
@@ -583,12 +442,10 @@ class WikiMemoryService:
 
         collection_id = self._wiki.name
         if collection_ids is not None and collection_id not in collection_ids:
-            # Filter-excluded: empty hits against this wiki. Apply the
-            # ``no_coverage`` contract from ``retrieval._no_coverage_flag``
-            # so the closure capture sees the same shape as a normal
-            # search — populated wiki that excluded itself from the
-            # caller's filter scope is the same "zero hits, non-empty
-            # corpus" condition.
+            # Filter-excluded: empty hits against this wiki. Apply the ``no_coverage``
+            # contract from ``retrieval._no_coverage_flag`` so the closure sees the same
+            # shape as a normal search — a populated wiki that excluded itself is the
+            # same "zero hits, non-empty corpus" condition.
             return WikiSearchResult(
                 query=question,
                 pages=[],
@@ -600,11 +457,9 @@ class WikiMemoryService:
         result = search_wiki(
             self._wiki, question, limit=limit, collection_filter=qmd_collection_filter
         )
-        # Filter library-shaped hits BEFORE registering evidence so
-        # the page_ids and paths the validator sees cannot reference
-        # dead-end library paths. Without this gate the wiki catalog
-        # has no row for the hit and a follow-up ``wiki_read`` raises
-        # ``WikiPageNotFound``. See ``_is_library_shaped_path``.
+        # Filter library-shaped hits BEFORE registering evidence, so the validator
+        # cannot see paths that reference dead-end library files and a follow-up
+        # ``wiki_read`` raises ``WikiPageNotFound``. See ``_is_library_shaped_path``.
         if result.pages and any(_is_library_shaped_path(p.path) for p in result.pages):
             kept = [page for page in result.pages if not _is_library_shaped_path(page.path)]
             result = result.model_copy(update={"pages": kept})
@@ -657,20 +512,10 @@ class WikiMemoryService:
         """Validate a plan without applying it. Raises typed errors."""
         for op in plan.operations:
             validate_operation_evidence(op, known_references=self._known_evidence)
-            # Normalize the path the same way ``_apply_operations``
-            # does: defensively strip ``wiki/`` twice so a
-            # doubled-prefix input (``op.path = "wiki/wiki/log.md"``)
-            # is recognized as a system file rather than a page under
-            # a ``wiki/`` subdirectory. Without this normalization the
-            # validate-side system-file checks (the
-            # ``op.path == "wiki/log.md"`` and ``resolved == log_path``
-            # tests below) miss the doubled-prefix shape and the op
-            # either slips through to ``validate_page_type("wiki")`` or
-            # falls through to the apply-side guard with the wrong
-            # resolved path. The apply path strips twice too; keeping
-            # the two in lockstep ensures a typo-bypass attempt is
-            # caught at validate time with the same error the apply
-            # path would raise.
+            # Normalize as ``_apply_operations`` does: strip ``wiki/`` twice so a
+            # doubled-prefix input (``wiki/wiki/log.md``) is recognized as a system file.
+            # A single strip leaves it at ``<root>/wiki/wiki/log.md`` and both the
+            # bare-name and resolved-equality checks miss it.
             normalized = op.path.removeprefix("wiki/").removeprefix("wiki/")
             try:
                 resolved = validate_page_path(self._wiki, normalized)
@@ -705,16 +550,10 @@ class WikiMemoryService:
                 elif is_log:
                     current = log_path.read_text(encoding="utf-8") if log_path.exists() else None
                 else:
-                    # Use the normalized path so the read targets the
-                    # same on-disk file the apply path will write to.
-                    # Page-writer emits paths with the ``wiki/`` prefix
-                    # per the schema convention; ``_read_page`` joins
-                    # onto ``wiki.wiki_dir`` so a bare ``op.path``
-                    # would resolve to ``<data_root>/wiki/wiki/<rest>``
-                    # and silently miss the file. The hash comparison
-                    # then sees ``""`` (= missing) regardless of the
-                    # real on-disk content, so ``validate_plan`` and
-                    # ``apply_plan`` must agree on the resolved path.
+                    # Use the normalized path so the read targets the file the apply path writes.
+                    # Page-writer emits ``wiki/``-prefixed paths and ``_read_page`` joins onto
+                    # ``wiki.wiki_dir``, so a bare path resolves to ``wiki/wiki/<rest>``, hashes
+                    # as missing, and validate and apply disagree.
                     current = _read_page(self._wiki, normalized)
                 actual = "" if current is None else _hash_text(current)
                 if actual != op.expected_sha256:
@@ -768,14 +607,10 @@ class WikiMemoryService:
                     f"Ops: {ops_str}\n"
                     f"Evidence: {evidence_count}\n"
                 )
-                # Self-heal: ensure ``wiki_<name>`` is registered with qmd
-                # before the commit. Wikis created before 0.22.0 skip
-                # this registration in ``WikiLayout.init`` because
-                # ``WikiAlreadyExists`` blocks re-init; without this hook
-                # the wiki pass returns zero hits forever. The helper is
-                # idempotent (sentinel short-circuits after the first
-                # successful call) and never raises; a qmd outage prints
-                # a warning and returns False so the commit still lands.
+                # Self-heal: ensure ``wiki_<name>`` is registered with qmd before the commit.
+                # Wikis created before 0.22.0 skip this in ``WikiLayout.init`` and would
+                # return zero hits forever. Idempotent, never raises: a qmd outage warns
+                # and returns False so the commit still lands.
                 from lies.wiki.layout import ensure_wiki_qmd_registered
 
                 ensure_wiki_qmd_registered(self._wiki)
@@ -785,11 +620,9 @@ class WikiMemoryService:
                     files=files,
                 )
                 if commit_sha is None:
-                    # atomic_commit detected the staged diff was empty
-                    # (e.g. an idempotent plan wrote byte-identical content).
-                    # No commit landed. Return an empty receipt rather
-                    # than claiming changed_pages that were not really
-                    # applied at the git level.
+                    # The staged diff was empty (an idempotent plan wrote byte-identical
+                    # content), so no commit landed. Return an empty receipt rather than
+                    # claiming changes that were not applied at the git level.
                     self._restore_working_tree(repo, snapshot_ref)
                     return self._empty_receipt()
             except BaseException:
@@ -803,12 +636,9 @@ class WikiMemoryService:
                 append_receipt(self._wiki, plan, commit_sha, evidence_count=evidence_count)
             except Exception as exc:  # noqa: BLE001 - non-fatal: receipt surface
                 sidecar_errors.append(f"sidecar_append_failed: {exc}")
-            # F14 sentinel: touch the machine-global qmd last-write-marker
-            # so the qmd daemon's staleness check sees this wiki write
-            # too (the library-side envelope touches it in writer.py).
-            # Best-effort; the commit already landed and the receipt is
-            # authoritative. The parent dir may not exist on a fresh
-            # install (qmd has not yet run), so mkdir -p before touch.
+            # Touch the machine-global qmd last-write-marker so the daemon's staleness
+            # check sees this wiki write too. Best-effort: the commit already landed and
+            # the receipt is authoritative. mkdir -p first — the parent may not exist.
             if commit_sha is not None:
                 try:
                     _cache = Path(os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache")))
@@ -852,57 +682,19 @@ class WikiMemoryService:
         index_path = self._wiki.wiki_dir / "index.md"
         log_path = self._wiki.wiki_dir / "log.md"
         for op in plan.operations:
-            # Page-writer emits paths with the ``wiki/`` prefix per the
-            # schema convention; ``validate_page_path`` joins onto
-            # ``wiki.wiki_dir`` (= ``<data_root>/wiki``), so the bare
-            # ``op.path`` would otherwise resolve to
-            # ``<data_root>/wiki/wiki/<rest>`` — outside the per-collection
-            # subdir convention. Strip the leading ``wiki/`` before
-            # resolving so the file lands at the correct on-disk path.
-            # Strip the leading ``wiki/`` defensively twice so a
-            # doubled-prefix input (``op.path = "wiki/wiki/log.md"``)
-            # can't bypass the system-file guard below. After the
-            # double-strip the resolved-on-disk path matches
-            # ``log_path`` / ``index_path`` and the guard fires; a
-            # single-strip would leave the resolved path at
-            # ``<data_root>/wiki/wiki/<file>`` and the guard's
-            # bare-name + resolved-equality checks would both miss.
+            # Page-writer emits ``wiki/``-prefixed paths and ``validate_page_path`` joins
+            # onto ``wiki.wiki_dir``, so a bare path resolves outside the per-collection
+            # convention. Strip twice, defensively, so a doubled prefix cannot bypass
+            # the system-file guard.
             rel = op.path.removeprefix("wiki/").removeprefix("wiki/")
             resolved = validate_page_path(self._wiki, rel)
             if resolved == index_path:
                 resolved = index_path
             resolved.parent.mkdir(parents=True, exist_ok=True)
-            # System-file guard: ``wiki/index.md`` and ``wiki/log.md``
-            # are NOT rewritten by this service. ``index.md`` is a
-            # read-only derivative emitted by ``lies catalog render``;
-            # ``log.md`` is appended via ``append_log_entry`` after the
-            # per-op loop below. The per-op catalog upsert keeps
-            # ``catalog.db`` in lockstep with every non-system write so
-            # the catalog is the wiki's source of truth. The guard
-            # blocks agent-driven writes to these files so the agent
-            # can never bypass the catalog as source of truth by routing
-            # a write through a different op shape.
-            #
-            # Carve-out: ``PageUpdate`` on ``index_path`` is the
-            # established pathway for the repair agent's ``UpdateIndex``
-            # operation (see :func:`from_repair_plan`). The page is the
-            # receipt surface for the operation, not a permanent write
-            # — the per-op catalog upsert below keeps ``catalog.db``
-            # in lockstep. ``log_path`` has no analogous pathway because
-            # ``append_log_entry`` already owns log mutation.
-            #
-            # Both the bare-name form (``op.path == "log.md"``) and the
-            # qualified form (``op.path == "wiki/log.md"``) reach the
-            # dispatcher's guard: after the double ``wiki/`` strip above,
-            # ``"wiki/log.md"`` resolves to ``wiki.wiki_dir/log.md``
-            # (= ``log_path``) and is matched by the resolved equality,
-            # while a bare ``log.md`` also resolves to ``log_path``. A
-            # pathological ``"wiki/wiki/log.md"`` input also resolves to
-            # ``log_path`` after the double strip, so the guard fires
-            # (a single strip would have left it at
-            # ``<data_root>/wiki/wiki/log.md`` and bypassed the guard).
-            # In every case the guard raises and the op-shape-specific
-            # branches below never see those paths.
+            # System-file guard: ``wiki/index.md`` and ``wiki/log.md`` are not rewritten
+            # here — ``index.md`` is a read-only render derivative and ``log.md`` is
+            # appended by ``append_log_entry``. Carve-out: ``PageUpdate`` on ``index_path``
+            # is the repair agent's ``UpdateIndex`` pathway; ``log_path`` has none.
             is_system_log = resolved == log_path
             is_system_index = resolved == index_path
             if is_system_log:
@@ -913,11 +705,9 @@ class WikiMemoryService:
                 resolved.write_text(op.content, encoding="utf-8")
                 kind = OperationKind.CREATE
             elif isinstance(op, PageUpdate):
-                # ``log_path`` is blocked by the guard above; only the
-                # ``index_path`` carve-out reaches this branch. All other
-                # targets fall through to ``_read_page`` — pass the
-                # stripped ``rel`` so the read targets the same path as
-                # the write above.
+                # ``log_path`` is blocked above; only the ``index_path`` carve-out reaches
+                # this branch. Pass the stripped ``rel`` so the read targets the same path
+                # as the write.
                 if resolved == index_path:
                     existing = index_path.read_text(encoding="utf-8")
                 else:
@@ -928,11 +718,9 @@ class WikiMemoryService:
                 resolved.write_text(op.content, encoding="utf-8")
                 kind = OperationKind.UPDATE
             elif isinstance(op, EvidenceAppend):
-                # Both ``log_path`` and ``index_path`` are blocked by the
-                # guard above. Every surviving op targets a non-system
-                # page, so the unconditional ``_read_page`` is correct.
-                # Pass the stripped ``rel`` so the read targets the same
-                # path as the write above.
+                # Both ``log_path`` and ``index_path`` are blocked above, so every surviving
+                # op targets a non-system page and the unconditional ``_read_page`` is
+                # correct. Pass the stripped ``rel``.
                 existing = _read_page(self._wiki, rel)
                 actual = "" if existing is None else _hash_text(existing)
                 if actual != op.expected_sha256:
@@ -942,21 +730,17 @@ class WikiMemoryService:
                 kind = OperationKind.APPEND
             elif isinstance(op, PageDelete):
                 if not resolved.exists():
-                    # No-op: file already absent. Skip the PageReference
-                    # so the receipt reflects that no change occurred at
-                    # this op's target. ``append_log_entry`` (below) still
-                    # runs for the rest of the plan. Orphan catalog rows
-                    # are reconcile-cleanable.
+                    # No-op: the file is already absent. Skip the PageReference so the receipt
+                    # reflects that nothing changed here. ``append_log_entry`` still runs for the
+                    # rest of the plan, and orphan rows are reconcile-cleanable.
                     continue
                 resolved.unlink()
                 kind = OperationKind.DELETE
             else:
                 raise WikiPlanInvalid(f"unsupported operation: {op!r}")
-            # Per-op catalog write (mirrors the file write/delete just
-            # performed; rollback semantics handled by the existing
-            # snapshot+restore envelope). Best-effort: a catalog failure
-            # is logged but does not roll back the wiki write. An orphan
-            # or stale row is reconcile-cleanable.
+            # Per-op catalog write, mirroring the file write/delete just performed.
+            # Best-effort: a catalog failure is logged but does not roll back the wiki
+            # write. An orphan or stale row is reconcile-cleanable.
             try:
                 _upsert_or_remove_catalog_row(self._wiki, op, kind)
             except Exception as exc:  # noqa: BLE001 - per-op catalog failures are non-fatal
@@ -983,50 +767,23 @@ class WikiMemoryService:
         return changed
 
     def _collect_commit_files(self, plan: MemoryPlan, changed: list[PageReference]) -> list[str]:
-        """Compute the repo-relative paths to commit for ``plan``.
-
-        Driven by ``changed`` (the ``PageReference`` list returned by
-        ``_apply_operations``) rather than the raw ``plan.operations``
-        so a successful ``PageDelete`` is staged even though ``unlink``
-        already removed it from disk. ``git add`` records the removal
-        when the path is passed; if the path is omitted the working
-        tree keeps the file uncommitted and the next ``apply_plan``'s
-        snapshot/restore resurrects it.
-
-        A no-op ``PageDelete`` (file never existed) leaves no
-        ``PageReference`` in ``changed`` and therefore no entry in
-        ``candidates`` — ``git add`` is never asked to stage a
-        never-existed path (it returns ``fatal: pathspec ... did not
-        match any files``).
-
-        System files (``wiki/index.md``, ``wiki/log.md``) are added
-        unconditionally; the trailing ``.exists()`` filter drops
-        ``wiki/log.md`` only on a fresh repo where ``append_log_entry``
-        has not yet created it. Returns a sorted, de-duplicated list of
-        repo-relative POSIX paths.
-        """
+        """Compute the repo-relative paths to commit for ``plan``."""
         root = self._wiki.data_root
         index_path = self._wiki.wiki_dir / "index.md"
         candidates: set[str] = set()
         for ref in changed:
             try:
-                # Strip the leading ``wiki/`` before resolving so
-                # ``validate_page_path`` produces the same on-disk path
-                # the write landed at in ``_apply_operations``. The
-                # ``git add`` pathspec must match the actual file
-                # location; otherwise the commit fails with
-                # ``pathspec ... did not match any files``.
+                # Strip ``wiki/`` before resolving so ``validate_page_path`` produces the
+                # same on-disk path the write landed at; otherwise the ``git add`` pathspec
+                # fails with ``did not match any files``.
                 ref_rel = ref.path.removeprefix("wiki/")
                 resolved = validate_page_path(self._wiki, ref_rel)
             except WikiPlanInvalid:
                 continue  # validate_plan should have rejected this already
-            # ``validate_page_path`` joins the (already-stripped) path
-            # onto ``wiki.wiki_dir``. A literal ``"wiki/index.md"`` input
-            # (e.g. the repair agent's ``UpdateIndex`` →
-            # ``PageUpdate(path="wiki/index.md")``) would otherwise
-            # resolve to ``wiki.wiki_dir/wiki/index.md`` instead of the
-            # real catalog at ``wiki.wiki_dir/index.md``. Remap to the
-            # on-disk path before computing the repo-relative form.
+            # ``validate_page_path`` joins the already-stripped path onto
+            # ``wiki.wiki_dir``, so a literal ``"wiki/index.md"`` would resolve to
+            # ``wiki.wiki_dir/wiki/index.md``. Remap to the on-disk path before
+            # computing the repo-relative form.
             if ref.path == "wiki/index.md" or resolved == index_path:
                 resolved = index_path
             try:
@@ -1061,14 +818,10 @@ class WikiMemoryService:
             errors=[],
         )
 
-    # -- host-side snapshot / rollback ----------------------------------------
-    #
-    # Mirrors ``Orchestrator.run_ingest``: stash the working tree (including
-    # untracked files) before mutating the wiki, drop the stash on success,
-    # restore the tree from the stash on any failure. ``atomic_commit``
-    # already rolls back the staging area on ``CommitError``; the stash
-    # pattern here covers the working-tree writes that ``atomic_commit``
-    # leaves untouched.
+    # Host-side snapshot / rollback. Mirrors ``Orchestrator.run_ingest``: stash
+    # the working tree before mutating the wiki, drop the stash on success,
+    # restore on any failure — ``atomic_commit`` rolls back the staging area
+    # but leaves the working-tree writes untouched.
 
     @staticmethod
     def _snapshot_working_tree(repo: Path) -> str:

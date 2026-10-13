@@ -1,43 +1,4 @@
-"""Concrete ``Fetcher`` that drives an existing scraper + format dispatch.
-
-Bridges the abstract ``Fetcher`` protocol (Task 8's
-``lies.library.ingest.Fetcher``) to the existing ``lies.scrapers`` and
-``lies.etl.normalize.format_dispatch`` modules. The library is a sibling
-of any wiki's data root, so this fetcher deliberately avoids the obsidian
-frontmatter pass that requires a wiki ``Collection`` -- it produces a
-clean markdown body that the ingest pipeline can hand to the mirror
-writer, which applies the deterministic frontmatter with the upstream
-``source_hash`` flowing into the ``ingested_at`` derivation.
-
-Bespoke scrapers (those configured via ``Collection.scraper_cmd``) are
-loaded through the same ``module:attr`` / ``path.py:attr`` resolver the
-wiki-side ``_load_bespoke_scraper`` uses. If the resolver fails, the
-exception is re-raised as :class:`LibraryFetchUnreachable` (a
-``LibraryError``) so operators grepping for ``LibraryError`` see bespoke
-loader failures alongside every other library-side error — see Minor 44.
-
-Per-doc flow:
-
-1. ``pick_scraper(source)`` (or bespoke loader) selects a ``BaseScraper``
-   subclass instance.
-2. ``scraper.fetch(source)`` returns raw bytes.
-3. ``scraper.parse(raw, source=source)`` returns a list of ``ParsedDoc``.
-4. For each ``ParsedDoc``:
-   - If ``source_format`` is in ``REGISTRY.formats()`` (and not
-     ``markdown``), the bytes are materialized into a per-doc temp
-     workspace and routed through the matching ``Builder`` -- mirroring
-     ``etl/stages/normalize.py:83-90`` (canonical location of
-     ``_materialize`` / ``_materialize_bespoke`` — see Minor 45).
-   - Otherwise ``format_dispatch.dispatch`` produces a markdown body
-     (markdown / html / rst / pdf formats handled; unknown formats raise
-     ``UnknownFormatError`` to the caller for quarantine).
-5. The upstream ``source_sha256`` (or ``sha256(content)`` when blank) is
-   preserved on ``FetchItem.source_hash`` so the mirror writer can stamp
-   it into the deterministic frontmatter.
-6. Zero-emission scrapers raise ``LibraryFetchUnreachable`` at run
-   boundary (Task 7's typed error), so the operator notices the empty
-   batch instead of silently committing nothing.
-"""
+"""Concrete ``Fetcher`` that drives an existing scraper + format dispatch."""
 
 from __future__ import annotations
 
@@ -66,14 +27,10 @@ def _hash_bytes(raw: bytes) -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
-# Minor 31: short-ID mapping for ``fetched_via``. The previous
-# implementation used ``type(scraper).__name__`` (e.g. ``WebScraper``,
-# ``GitHubScraper``), which leaks the class hierarchy into the mirror
-# frontmatter and conflicts with the spec's short-id contract
-# (``web`` / ``github`` / ``pdf``). The dict maps the concrete class to
-# its short id; any unmapped class falls back to its bare class name so
-# a new scraper added later is still recorded (just with a less-prettied
-# name) instead of crashing the ingest.
+# Short-ID mapping for ``fetched_via``. A bare ``type(scraper).__name__`` leaks the
+# class hierarchy into mirror frontmatter and breaks the spec's short-id contract
+# (``web`` / ``github`` / ``pdf``). An unmapped class falls back to its bare name, so
+# a scraper added later is recorded rather than crashing the ingest.
 _FETCHED_VIA_ID: dict[type[BaseScraper], str] = {}
 
 
@@ -163,21 +120,7 @@ def _load_bespoke_scraper(scraper_cmd: str) -> BaseScraper:
 
 
 def _materialize(workspace: Path, fmt: str, raw: bytes) -> None:
-    """Place ``raw`` at the path the builder expects for ``fmt``.
-
-    Mirrors ``etl/stages/normalize.py:_materialize`` so REGISTRY routing
-    can reuse the same on-disk shape (PDF reads ``source.pdf``; HTML
-    reads ``source.html``; Sphinx walks ``src/``).
-
-    Minor 45: kept as a verbatim mirror on purpose. The canonical
-    implementation lives in ``etl/stages/normalize.py`` and is wired
-    into the wiki-side ETL pipeline. Refactoring to a shared helper
-    would couple the library import graph to the wiki-side ETL module
-    chain — pulling pydantic_ai / fastmcp into ``import lies.cli`` via
-    a transitive wiki dependency. The duplication is the cheaper path
-    until consolidation lands; if the wiki-side logic changes, this
-    copy must change in lockstep.
-    """
+    """Place ``raw`` at the path the builder expects for ``fmt``."""
     if fmt == "pdf":
         (workspace / "source.pdf").write_bytes(raw)
     elif fmt == "html":
@@ -223,24 +166,7 @@ def _normalize_body(
     *,
     collection: Collection | None = None,
 ) -> str:
-    """Markdown body without wiki/collection context.
-
-    Routing order (mirrors ``etl/stages/normalize.py:83-90``):
-
-    1. If ``doc.source_format`` is in :data:`REGISTRY.formats()` (and
-       not ``markdown``), the bytes are materialized into a per-doc
-       temp workspace and the matching :class:`Builder` produces the
-       markdown body. The fetcher has no wiki/obsidian context, so the
-       builder's output is taken verbatim -- frontmatter is the library
-       mirror writer's concern.
-    2. Otherwise ``format_dispatch.dispatch`` produces the body
-       (markdown / html / rst / pdf formats handled; unknown formats
-       raise ``UnknownFormatError`` to the caller for quarantine).
-    3. Errors propagate so a PDF or pandoc outage cannot silently land
-       raw binary / raw HTML in a mirror file as if it were clean
-       markdown; the ingest pipeline can then quarantine or surface
-       the failure explicitly.
-    """
+    """Markdown body without wiki/collection context."""
     # Lazy imports keep ``import lies.cli`` from pulling the
     # builder package (and its transitive pydantic_ai / fastmcp
     # stack) into ``sys.modules``; only docs that actually route
@@ -255,16 +181,10 @@ def _normalize_body(
                 _materialize_bespoke(workspace, doc)
             else:
                 _materialize(workspace, doc.source_format, doc.content)
-            # Minor 30: a builder that reads ``collection.config`` (e.g.
-            # ``liquid``, ``sphinx``, ``bespoke``) without a real
-            # ``Collection`` raises ``AttributeError`` on the bare-``None``.
-            # Without this catch, the exception masks as a per-doc
-            # quarantine entry, not the typed ``BuilderError`` that
-            # ``_iter_fetch_items`` knows how to handle. Catch the
-            # AttributeError here and re-raise as ``BuilderError`` so the
-            # operator sees the real cause ("collection required") rather
-            # than a confusing "AttributeError: 'NoneType' object has no
-            # attribute 'config'".
+            # A builder reading ``collection.config`` without a real ``Collection`` raises
+            # ``AttributeError`` on the bare ``None``, which would mask as a per-doc quarantine
+            # entry. Re-raise as ``BuilderError`` so the operator sees "collection required"
+            # rather than a confusing ``'NoneType' object has no attribute 'config'``.
             try:
                 built = REGISTRY.resolve(doc.source_format).build(
                     workspace,
@@ -286,25 +206,10 @@ def _normalize_body(
     return dispatch(doc.content, doc.source_format)
 
 
-# What the directory walk admits, in two classes.
-#
-# A non-document reaching the pipeline is not cosmetic: ``config.yaml`` in a
-# collection directory became a ``config.md`` page (36 of them, in the live
-# library), and a ``providers.toml`` anywhere under the batch directory did
-# the same. The pipeline's only other filter is ``should_skip_filename``, a
-# *denylist* of known stems plus the ``changelog`` prefix, and a denylist
-# cannot express "is a document". The type test belongs here -- the one
-# layer that still knows what a file *is*.
-#
-# Text documents are decoded directly: ``.md``/``.markdown`` are the primary
-# format, and ``.rst``/``.txt`` are the whole-doc-archive case this walker's
-# docstring names (a plain-text Python docs tarball).
-#
-# Everything the builder REGISTRY can turn into markdown is admitted too and
-# routed through :func:`_normalize_body`, the same path ``--source`` takes:
-# a PDF goes to ``PDFBuilder`` (pdfplumber, with the pymupdf fallback) and
-# an HTML file to ``HTMLBuilder``. Decoding those as UTF-8 would have written
-# a page of replacement characters, so they are never decoded here.
+# What the directory walk admits: text documents, plus anything the builder REGISTRY
+# can render (routed through :func:`_normalize_body`, the ``--source`` path).
+# ``should_skip_filename`` is a *denylist* and cannot express "is a document" — a
+# ``config.yaml`` in a collection directory became a ``config.md`` page, 36 times over.
 _TEXT_SUFFIXES: frozenset[str] = frozenset({".md", ".markdown", ".rst", ".txt"})
 
 # Extension -> ``source_format`` for the formats a Builder can render. Kept
@@ -315,23 +220,7 @@ _REGISTRY_SUFFIX_FORMATS: dict[str, str] = {".pdf": "pdf", ".html": "html", ".ht
 
 
 class ScraperFetcher:
-    """Concrete ``Fetcher`` driving an existing scraper + format dispatch.
-
-    Module-attribute lookup (``_scraper_base.pick_scraper``) instead of a
-    ``from ... import`` binding keeps ``monkeypatch.setattr`` on
-    ``lies.scrapers.base.pick_scraper`` effective in tests.
-
-    ``scraper_cmd`` honors ``Collection.scraper_cmd``: when set, the
-    bespoke scraper is loaded via :func:`_load_bespoke_scraper` instead
-    of falling back to :func:`lies.scrapers.base.pick_scraper`. Any
-    failure in the loader propagates -- the fetcher never silently
-    fall-throughs to the URL/path heuristic.
-
-    ``collection`` is threaded into REGISTRY builders that read
-    ``Collection.config`` (sphinx includes/excludes/renames, liquid
-    ``render_cmd``, etc.). Without it, builder-routed docs would crash;
-    the fetcher passes it through verbatim.
-    """
+    """Concrete ``Fetcher`` driving an existing scraper + format dispatch."""
 
     def __init__(
         self,
@@ -345,29 +234,19 @@ class ScraperFetcher:
         self._collection = collection
 
     def fetch_sources(self, source: Path | str) -> Iterator[FetchItem]:
-        # ``--batch <DIR>`` walks a directory at depth 1, yielding one
-        # ``FetchItem`` per regular file. ``pick_scraper(source)`` only
-        # matches URLs / existing files / PDFs and raises
-        # ``ScraperUnavailable`` for a directory; handle the directory
-        # case here so the dispatcher below stays URL/file-shaped.
-        # Subdirectories are skipped: the spec's batch contract is a
-        # flat walk, and nested files would collide on the slug. Files
-        # that fail to read (permission, vanished) are dropped silently —
-        # mirroring the llms.txt "Pages whose fetch fails are dropped
-        # silently" stance in ``WebScraper._parse_index``.
+        # ``--batch <DIR>`` walks at depth 1, one ``FetchItem`` per regular file, so the
+        # dispatcher stays URL/file-shaped. Subdirectories are skipped (the contract is a flat
+        # walk, and nested files collide on the slug); unreadable files drop silently,
+        # mirroring ``WebScraper._parse_index``.
         if isinstance(source, Path) and source.is_dir():
             yield from self._iter_directory(source)
             return
 
         if self._scraper_cmd is not None:
-            # Minor 44: wrap bespoke-loader ``ScraperUnavailable`` into
-            # ``LibraryFetchUnreachable`` at the call site (not inside
-            # ``_load_bespoke_scraper``). The wrapping has to happen
-            # HERE so it also fires when tests monkeypatch
-            # ``_load_bespoke_scraper`` with a stub that raises
-            # ``ScraperUnavailable`` directly — the production function
-            # itself is the one place that does NOT see the wrap when
-            # bypassed.
+            # Wrap a bespoke loader's ``ScraperUnavailable`` into ``LibraryFetchUnreachable`` at
+            # the call site, not inside ``_load_bespoke_scraper`` — so it also fires when a test
+            # monkeypatches the loader with a stub that raises directly, the one case the
+            # production function cannot see.
             try:
                 scraper = _load_bespoke_scraper(self._scraper_cmd)
             except ScraperUnavailable as exc:
@@ -377,14 +256,9 @@ class ScraperFetcher:
         else:
             scraper = _scraper_base.pick_scraper(source)
         raw = scraper.fetch(source)
-        # C4: hash the raw bytes ONCE up front so the same source URL
-        # returns the same ``source_hash`` regardless of which scraper's
-        # per-doc parser / normalizer the request lands on. The previous
-        # ``doc.source_sha256 or _hash_bytes(doc.content)`` mixed
-        # scraper-specific per-doc slices into the hash, breaking the
-        # idempotency contract (``ingested_at`` derives from
-        # ``source_hash``). Per spec §Frontmatter: ``source_hash`` is the
-        # SHA256 of raw bytes at fetch time.
+        # Hash the raw bytes ONCE up front, so the same source URL yields the same
+        # ``source_hash`` whichever scraper's per-doc parser handles it. ``ingested_at``
+        # derives from ``source_hash``, so per-doc slices would break idempotency.
         fetcher_raw_hash = _hash_bytes(raw)
         docs = scraper.parse(raw, source=source)
         emitted = 0
@@ -394,12 +268,8 @@ class ScraperFetcher:
                 url=str(source) if not isinstance(source, Path) else None,
                 body=_normalize_body(doc, collection=self._collection),
                 source_hash=fetcher_raw_hash,
-                # Minor 31: short-id mapping. Spec mandates short ids
-                # (``web`` / ``github`` / ``pdf``); the bare
-                # ``type(scraper).__name__`` leaks the class hierarchy
-                # (``WebScraper`` / ``GitHubScraper``). The mapping
-                # ``_FETCHED_VIA_ID`` is populated lazily by
-                # ``_register_known_scrapers`` on first use.
+                # Short-ID mapping; the bare ``type(scraper).__name__`` leaks the class hierarchy.
+                # ``_FETCHED_VIA_ID`` is populated lazily by ``_register_known_scrapers`` on first use.
                 fetched_via=_short_id_for(scraper),
             )
             emitted += 1
@@ -407,23 +277,7 @@ class ScraperFetcher:
             raise LibraryFetchUnreachable(f"scraper produced 0 items for {source}")
 
     def _iter_directory(self, directory: Path) -> Iterator[FetchItem]:
-        """Recursive walk of ``directory``; yield one ``FetchItem`` per file.
-
-        Each yielded ``FetchItem.path`` is the file's full path relative
-        to ``directory`` (e.g. ``c-api/foo.md``), so the ingest pipeline
-        can derive nested slugs that mirror the source tree. Depth-1
-        walks lose subdir structure; recursive walks preserve it.
-        Subdirectories are descended in sorted order. Files that fail
-        to read are dropped silently, mirroring the llms.txt stance in
-        ``WebScraper._parse_index``.
-
-        Repro for the depth-1 bug: ``lies ingest --batch <dir>`` only
-        picked up files at the batch root and silently skipped every
-        subdirectory. Whole-tree doc archives (e.g. Python 3.16 docs
-        plain-text tarball, with hundreds of files under ``library/``,
-        ``tutorial/``, etc.) yielded mirror files at flat top-level
-        only, losing the source's section structure.
-        """
+        """Recursive walk of ``directory``; yield one ``FetchItem`` per file."""
         base = directory.resolve()
 
         def _walk(rel: Path) -> Iterator[FetchItem]:

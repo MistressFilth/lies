@@ -80,19 +80,6 @@ def migrate_wiki(
 ) -> MigrationResult:
     """Migrate ``<legacy_path>/.lies/`` into role-routed XDG dirs under ``name``.
 
-    After migration, ``Wiki.require(name)`` succeeds and the wiki's
-    ``data_root`` contains ``raw/``, ``wiki/``, and ``.git/`` populated from
-    the legacy path. Git history is preserved when ``<legacy_path>/.git/``
-    exists; a fresh repo is initialised otherwise.
-
-    Conflict semantics: a *conflict* is a destination file that already
-    exists and whose bytes do not match the source. By default, a single
-    conflict aborts the migration so the caller can resolve it. With
-    ``force=True``, the legacy source is *quarantined* — copied to
-    ``<legacy_path>/.xdg-migration-conflicts/<rel>`` so the original
-    bytes are recoverable after the legacy ``.lies/`` directory is
-    removed. The destination file is left untouched.
-
     Raises:
         NotADirectoryError: ``legacy_path`` exists but is not a directory.
         WikiAlreadyExists: A wiki with this name already lives at the

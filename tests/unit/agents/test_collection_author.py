@@ -1,10 +1,4 @@
-"""Unit tests for the CollectionAuthorAgent structured output.
-
-The agent drives a one-question-at-a-time conversation and returns either
-an ``AuthorQuestion`` (requesting the next answer) or an ``AuthorProposal``
-(serialized ``Collection`` record + rationale). The agent never touches
-the filesystem directly.
-"""
+"""Unit tests for the CollectionAuthorAgent structured output."""
 
 from __future__ import annotations
 

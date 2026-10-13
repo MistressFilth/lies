@@ -57,16 +57,6 @@ def qmd_index_path() -> Path:
 def open_readonly(db: Path) -> sqlite3.Connection:
     """Open the qmd index read-only. The only connection constructor.
 
-    ``file:{db}?mode=ro`` + ``uri=True``, with the path
-    percent-escaped: a ``?`` or ``#`` in a path would otherwise end
-    the path and start the query string, and the connection would
-    open a different file than the caller named.
-
-    A WAL database needing recovery is the case a caller meets
-    before any of this is documented to them: a read-only
-    connection cannot create the ``-shm`` file, so it gets
-    ``SQLITE_CANTOPEN`` rather than a summary.
-
     Raises:
         sqlite3.OperationalError: ``db`` does not exist or is not a
             SQLite database.
@@ -108,21 +98,7 @@ def is_embedded(db: Path, content_hash: str) -> bool:
 
 
 def collection_drift(db: Path) -> dict[str, list[str]]:
-    """Per-collection drift an operator should look at.
-
-    Reports registered paths that no longer exist on disk.
-    Empty-but-present collections (``wiki_default``) are not drift.
-    Returns ``{name: [messages]}``; empty means no drift.
-
-    Note: a *collection name that has documents but no
-    ``store_collections`` entry* is invisible to this function. The
-    case is real (the live qmd index on this host had a
-    ``wiki_tag-filter-lib`` residue with 5 documents and no
-    registry entry that this function returned ``{}`` for). The
-    companion :func:`document_drift` reports that case; the two
-    are unioned in :func:`integrity_summary` so a drift never
-    silently passes.
-    """
+    """Per-collection drift an operator should look at."""
     drift: dict[str, list[str]] = {}
     with closing(open_readonly(db)) as conn:
         rows = conn.execute("SELECT name, path FROM store_collections").fetchall()
@@ -133,23 +109,7 @@ def collection_drift(db: Path) -> dict[str, list[str]]:
 
 
 def document_drift(db: Path) -> dict[str, list[str]]:
-    """Documents whose ``collection`` field has no ``store_collections`` row.
-
-    Reports ``{collection_name: [messages]}`` for every distinct
-    ``documents.collection`` value that is absent from
-    ``store_collections``. Empty means every document's collection
-    is registered.
-
-    The complement of :func:`collection_drift`, which iterates
-    ``store_collections`` only. A collection that has documents but
-    no registry entry is invisible to ``collection_drift`` while
-    being a real drift — the documents were indexed against a
-    collection the daemon no longer knows about, so any
-    collection-filtered query will silently drop them. Measured
-    on this host (2026-10-03): the residue was 5 documents under
-    ``wiki_tag-filter-lib``; ``collection_drift`` returned ``{}``;
-    this function returns the missed name with a single message.
-    """
+    """Documents whose ``collection`` field has no ``store_collections`` row."""
     drift: dict[str, list[str]] = {}
     with closing(open_readonly(db)) as conn:
         rows = conn.execute(
@@ -222,39 +182,7 @@ def snapshots_differ(
 
 
 def registry_divergence(db: Path) -> dict[str, Any] | None:
-    """The registry is *empty* while documents still reference collections.
-
-    Returns one finding describing the event, its counts, and its
-    remedy; ``None`` when the registry is not empty.
-
-    **Why this is not ordinary drift.** :func:`document_drift` reports
-    each unregistered collection separately, so an emptied registry
-    arrives as N near-identical entries that each name a collection the
-    operator never lost. Measured on this host (2026-10-05): 117
-    entries, every one reading "1 document(s) reference a collection
-    absent from store_collections", for a corpus that was intact.
-
-    **The cause, read from qmd 2.5.3's source.** ``syncConfigToDb``
-    (``dist/store.js:887``) upserts the external config's collections
-    and then deletes every ``store_collections`` row the config does
-    not name. It early-returns when ``store_config.config_hash``
-    already matches. A config that momentarily declares zero
-    collections therefore empties the table, and the hash written for
-    *that* config then matches — making the wipe self-perpetuating
-    until the config changes again. The config is
-    ``~/.config/qmd/index.yml``.
-
-    **Why retrieval kept working.** The daemon serves reads without
-    passing through that sync, and ``validate_scope`` reads the
-    daemon's own ``status`` tool rather than ``store_collections``. So
-    every query path saw a healthy index while ``lies qmd status``
-    reported 117 broken collections.
-
-    Deliberately narrow: it fires only on a *fully* empty registry.
-    A partial overlap is ordinary per-collection drift with a
-    different remedy, and escalating it here would bury the precise
-    ``document_drift`` finding under a diagnosis that does not fit.
-    """
+    """The registry is *empty* while documents still reference collections."""
     with closing(open_readonly(db)) as conn:
         registered = conn.execute("SELECT COUNT(*) FROM store_collections").fetchone()[0]
         referenced = conn.execute("SELECT COUNT(DISTINCT collection) FROM documents").fetchone()[0]
@@ -286,23 +214,7 @@ def registry_divergence(db: Path) -> dict[str, Any] | None:
 
 
 def integrity_summary(db: Path) -> dict[str, Any]:
-    """Full integrity snapshot for ``lies qmd status``.
-
-    Combines :func:`index_orphans`, :func:`collection_drift`, and
-    :func:`document_drift` with three coverage queries. The two
-    drift functions are complementary: ``collection_drift`` walks
-    ``store_collections`` and finds registered paths missing on
-    disk; ``document_drift`` walks ``documents`` and finds
-    unregistered collections. A drift that exists on one side
-    only is invisible to the other; the union closes the class.
-
-    ``registry_divergence`` *supplements* that union rather than
-    replacing any of it. It names the one case where the per-collection
-    entries are symptoms of a single event, and carries the cause and the
-    remedy; the raw ``document_drift`` breakdown stays so nothing is lost
-    and a consumer parsing the summary cannot mistake a divergence for a
-    healthy index.
-    """
+    """Full integrity snapshot for ``lies qmd status``."""
     orphans = index_orphans(db)
     collection_d = collection_drift(db)
     document_d = document_drift(db)

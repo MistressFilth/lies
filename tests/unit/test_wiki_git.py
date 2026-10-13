@@ -71,16 +71,7 @@ def test_atomic_commit_empty_tree(git_wiki: Path) -> None:
 
 
 def test_atomic_commit_staged_but_no_diff_returns_none(git_wiki: Path) -> None:
-    """Files listed but content byte-identical to HEAD -> no-op, returns None.
-
-    Repro: run_write writes a file with the same content it already has
-    on disk (e.g. a re-ingest of an unchanged collection). atomic_commit
-    is called with that file in its files argument; git diff --cached
-    is empty because nothing actually changed. Before this fix, the call
-    raised CommitError(\"nothing to commit\"), aborting run_write BEFORE
-    the qmd post-commit hooks could run. After the fix, atomic_commit
-    returns None; run_write skips the post-commit hooks and exits cleanly.
-    """
+    """Files listed but content byte-identical to HEAD -> no-op, returns None."""
     (git_wiki / "unchanged.txt").write_text("same content")
     # Commit it once.
     atomic_commit(git_wiki, "initial", files=["unchanged.txt"])
@@ -89,13 +80,7 @@ def test_atomic_commit_staged_but_no_diff_returns_none(git_wiki: Path) -> None:
 
 
 def test_atomic_commit_working_tree_unchanged_returns_none(git_wiki: Path) -> None:
-    """files=None + nothing dirty in the working tree -> returns None.
-
-    atomic_commit defaults to staging all working-tree changes; if there
-    are none (no git add -u would stage anything, and the caller passed
-    no explicit files list), the probe finds an empty diff and the
-    function returns None instead of raising.
-    """
+    """Files=None + nothing dirty in the working tree -> returns None."""
     assert atomic_commit(git_wiki, "no-op-default") is None
 
 
@@ -183,15 +168,7 @@ def _completed_proc(
 def test_atomic_commit_rolls_back_when_probe_raises_calledprocesserror(
     git_wiki: Path,
 ) -> None:
-    """A failure in the staging probe must NOT leak CalledProcessError and
-    must leave the index clean.
-
-    The probe (``git diff --cached --name-only``) used to be called with
-    ``check=True``, so a git error there would escape as
-    ``subprocess.CalledProcessError`` and skip the rollback. With the
-    corrected implementation, the probe failure is caught, a
-    ``CommitError`` is raised, and the index is reset.
-    """
+    """A failure in the staging probe must NOT leak CalledProcessError and must leave the index clean."""
     (git_wiki / "new.txt").write_text("hello")
 
     real_run = subprocess.run
@@ -218,13 +195,7 @@ def test_atomic_commit_rolls_back_when_probe_raises_calledprocesserror(
 
 
 def test_atomic_commit_rolls_back_when_sha_lookup_fails(git_wiki: Path) -> None:
-    """A failure looking up the new HEAD SHA must roll back staging.
-
-    The ``git rev-parse HEAD`` call after a successful commit used to be
-    ``check=True``, so a failure there would escape as
-    ``CalledProcessError`` and leave any in-flight staging dirty. The
-    contract is: a single commit happens, OR the index is clean.
-    """
+    """A failure looking up the new HEAD SHA must roll back staging."""
     (git_wiki / "new.txt").write_text("hello")
 
     real_run = subprocess.run
@@ -249,12 +220,7 @@ def test_atomic_commit_rolls_back_when_sha_lookup_fails(git_wiki: Path) -> None:
 
 
 def test_atomic_commit_rolls_back_on_keyboard_interrupt(git_wiki: Path) -> None:
-    """A ``KeyboardInterrupt`` during the commit path must also roll back.
-
-    The rollback runs in an ``except BaseException`` so even an interrupt
-    cannot leave the index dirty. This pins that the function is safe to
-    use from a REPL where Ctrl-C is a realistic event.
-    """
+    """A ``KeyboardInterrupt`` during the commit path must also roll back."""
     (git_wiki / "new.txt").write_text("hello")
 
     real_run = subprocess.run
@@ -276,12 +242,7 @@ def test_atomic_commit_rolls_back_on_keyboard_interrupt(git_wiki: Path) -> None:
 def test_atomic_commit_rolls_back_partial_staging_from_failing_add(
     git_wiki: Path,
 ) -> None:
-    """If ``git add`` partially stages and then fails, the partial staging
-    is rolled back so the index is clean.
-
-    With the corrected reset (``git reset HEAD --`` with no pathspec), any
-    partial staging is cleared regardless of which file was the offender.
-    """
+    """If ``git add`` partially stages and then fails, the partial staging is rolled back so the index is clean."""
     (git_wiki / "real.txt").write_text("present")
 
     real_run = subprocess.run

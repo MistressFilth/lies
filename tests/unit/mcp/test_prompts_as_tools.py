@@ -1,14 +1,4 @@
-"""Pin the PromptsAsTools transform registration + name-collision guard.
-
-The transform generates two unprefixed tool names (``list_prompts`` and
-``get_prompt``). Nothing else on the LIES server registers those names
-today; this test is the cheap insurance against a future collision.
-
-Tool names are read through ``mcp.list_tools()`` — the public
-aggregation path. Transforms run at aggregation time, so the raw
-``_local_provider._components`` registry does not carry the
-transform-generated names and would report a false negative.
-"""
+"""The PromptsAsTools transform registration + name-collision guard."""
 
 from __future__ import annotations
 
@@ -59,16 +49,7 @@ def test_transform_preserves_prompt_surface() -> None:
 
 @pytest.mark.asyncio
 async def test_get_prompt_tool_is_callable() -> None:
-    """End-to-end through the generated tool, not just the Prompt object.
-
-    This is the load-bearing proof for the whole design: a multi-word
-    question carrying a ``+tag`` filter reaches the prompt body parser
-    intact, with the filter separated from the query text.
-
-    Not ``@pytest.mark.slow``. It measures well under the per-test
-    budget, and a slow mark here means the default run carries no
-    proof that the generated tool renders anything at all.
-    """
+    """End-to-end through the generated tool, not just the Prompt object."""
     from fastmcp import Client
 
     from lies.mcp.server import mcp

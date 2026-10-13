@@ -114,12 +114,10 @@ def page_writer_agent(
     model: Model | str | None = None,
 ) -> Agent[PageWriterDeps, list[PageDiff]]:
     """Construct the page-writer sub-agent."""
-    # PromptedOutput — same rationale as source_reader_agent. M3
-    # ignores tool_choice and response_format=json_schema on both
-    # endpoints, so the default ToolOutput mode fails. Schema goes in
-    # instructions; model emits JSON text. The unit test that
-    # exercised the live run was relaxed (TestModel can't drive
-    # PromptedOutput) and the integration test exercises the real path.
+    # PromptedOutput, for the same reason as ``source_reader_agent``: M3 ignores
+    # ``tool_choice`` and ``response_format=json_schema`` on both endpoints, so the default
+    # ToolOutput mode fails. The schema goes in the instructions and the model emits JSON
+    # text. ``TestModel`` cannot drive PromptedOutput, so the integration test covers it.
     if model is None:
         from lies.errors import ModelNotConfigured
 

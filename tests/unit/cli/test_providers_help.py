@@ -1,10 +1,4 @@
-"""Tests that ``lies providers list`` enumerates configured providers.
-
-Adds coverage for the new subcommand introduced in the CLI help-revamp:
-the parent ``lies providers --help`` previously surfaced only the wizard
-+ companion operators; this file pins the new ``list`` subcommand's
-shape (help text + table output + --json shape).
-"""
+"""Tests that ``lies providers list`` enumerates configured providers."""
 
 from __future__ import annotations
 

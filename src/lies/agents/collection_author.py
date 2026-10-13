@@ -98,13 +98,9 @@ def collection_author_agent(
             "/ configure providers.toml."
         )
     resolved: Any = model
-    # The union goes to `output_type` uncast. It used to be
-    # `cast(Any, AuthorOutput)`, on the claim that the Agent
-    # constructor's overloads do not accept `type[X | Y]`; as of
-    # pydantic-ai 2.54 they do. The cast was not buying silence so much
-    # as erasing the type: the checker then inferred the constructor's
-    # default `output_type` of `str`, so the declared return type was a
-    # claim nothing in the body supported.
+    # The union goes to ``output_type`` uncast. A ``cast(Any, ...)`` here buys no silence —
+    # it erases the type, so the checker infers the constructor's default ``str`` and the
+    # declared return type becomes a claim nothing in the body supports.
     return Agent(
         resolved,
         deps_type=CollectionAuthorDeps,

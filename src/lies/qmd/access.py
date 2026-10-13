@@ -90,21 +90,19 @@ def _daemon_client(url: str) -> fastmcp.Client:
 # Matched by exception class *name*, not by httpx type: fastmcp vendors
 # its own httpx, so an LIES-side type check matches none of them.
 
-#: Names that mean "the daemon accepted the request and stopped answering".
-#: ``PoolTimeout`` is excluded on purpose: it means LIES' own concurrency
-#: exhausted the httpx pool (client-side), and ``recycle-raise`` on a
-#: machine-global daemon would kill other clients' in-flight work. It
-#: keeps the ``recycle-retry`` path via ``_TRANSPORT_NAMES``.
+#: The daemon accepted the request and stopped answering. ``PoolTimeout``
+#: is excluded on purpose: it means LIES' own concurrency exhausted the
+#: httpx pool, and recycling a machine-global daemon kills other
+#: clients' work. It keeps ``recycle-retry`` via ``_TRANSPORT_NAMES``.
 _WEDGE_NAMES = frozenset({"ReadTimeout", "WriteTimeout"})
 
 #: Names that mean "the daemon was not there".
 _TRANSPORT_NAMES = frozenset({"TransportError", "TimeoutException", "ConnectError"})
 
-#: Names that mean the *client* sent something the server rejected.
-#: ``LocalProtocolError`` is httpx's name for a malformed request; a retry
-#: is provably futile (the same bytes fail the same way). Treat as
-#: ``passthrough``. ``RemoteProtocolError`` is server-side and keeps the
-#: ``recycle-retry`` path.
+#: The *client* sent something the server rejected. ``LocalProtocolError``
+#: is httpx's name for a malformed request, and a retry is provably
+#: futile — the same bytes fail the same way. ``RemoteProtocolError`` is
+#: server-side and keeps the ``recycle-retry`` path.
 _LOCAL_PROTOCOL_NAMES = frozenset({"LocalProtocolError"})
 
 #: JSON-RPC code for session death under an in-flight call. Literal
@@ -212,21 +210,12 @@ async def qmd_collection_names() -> frozenset[str]:
 async def validate_scope(scope: list[str]) -> tuple[list[str], list[str]]:
     """Validates ``scope`` against the daemon's binding collection set.
 
-    The daemon answers an unknown collection with an empty result and
-    no error, so a batched query carrying one unresolvable name silently
-    returns zero rows.
-
-    Args:
-        scope: Collection names drawn from the LIES registry (or any
-            caller-side resolver).
-
-    Returns:
-        ``(validated, unknown)`` — the served subset and the absent
-        names, both in input order and mutually disjoint.
-
-    Raises:
-        QmdDaemonUnavailable: The daemon is not serving.
-        QmdDaemonWedged: The daemon accepted the call and stopped answering.
+    The daemon answers an unknown collection with an empty result and no
+    error, so a batched query carrying one unresolvable name silently
+    returns zero rows. Returns ``(validated, unknown)`` — the served subset
+    and the absent names, both in input order and mutually disjoint. Raises
+    ``QmdDaemonUnavailable`` when it is not serving and ``QmdDaemonWedged``
+    when it accepted the call and stopped answering.
     """
     if not scope:
         return [], []
@@ -249,31 +238,15 @@ async def daemon_tool(
 ) -> Any:
     """Calls one qmd daemon tool, recovering per the taxonomy.
 
-    ``query`` alone is single-flighted on the site-wide qmd lock. qmd
-    executes queries strictly one at a time, so an ungated caller joins
-    an unbounded queue inside another process where nothing bounds it.
-    The gate moves that wait to a place with a budget
-    (:func:`query_lock_wait_s`) and an owner. ``get``, ``multi_get`` and
-    ``status`` stay unlocked: they answer in milliseconds, and gating
-    them would park a whole batch behind the slowest query in the
-    process.
+    ``query`` alone is single-flighted on the site-wide qmd lock: qmd runs queries strictly one at a time, so an
+    ungated caller joins an unbounded queue inside another process where nothing bounds it. The gate moves that
+    wait somewhere with a budget (:func:`query_lock_wait_s`) and an owner. ``get``/``multi_get``/``status`` stay
+    unlocked — they answer in milliseconds, and gating them would park a batch behind the slowest query.
 
-    Args:
-        name: A member of :data:`DAEMON_TOOLS`. Anything else raises.
-        arguments: The tool's arguments, forwarded verbatim.
-        timeout: Per-call read deadline in seconds, or ``None``.
-
-    Returns:
-        The raw ``CallToolResult``; ``.content`` for ``get``/``multi_get``.
-
-    Raises:
-        ValueError: Not a daemon tool.
-        QmdDaemonUnavailable: Not serving.
-        QmdDaemonWedged: Stopped answering.
-        RuntimeError: Tool error.
-        QmdLockBusy: A ``query`` found the lock held past its wait budget.
-            Deliberately not a daemon failure — the remedy is to wait and
-            retry, not to restart anything.
+    ``name`` must be in :data:`DAEMON_TOOLS`; ``arguments`` is forwarded verbatim and ``timeout`` is the read
+    deadline. Returns the raw ``CallToolResult``. Raises ``ValueError``, ``QmdDaemonUnavailable``,
+    ``QmdDaemonWedged``, ``RuntimeError`` and ``QmdLockBusy`` — the last deliberately *not* a daemon failure: a
+    held ``query`` wants a wait and retry, not a restart.
     """
     if name == "query":
         async with qmd_lock_async(timeout_s=query_lock_wait_s()):
@@ -289,16 +262,12 @@ async def _call_daemon_tool(
 ) -> Any:
     """One daemon tool call: validate, probe, reap if stale, call, recover.
 
-    Split out of :func:`daemon_tool` so the query gate wraps a named
-    thing. The reachability probe sits *inside* the gate: in front of it
-    a down daemon would surface as ``QmdLockBusy`` and send the
-    operator to wait when the remedy is ``lies qmd up``.
-
-    Raises:
-        ValueError: Not a daemon tool.
-        QmdDaemonUnavailable: Not serving.
-        QmdDaemonWedged: Stopped answering.
-        RuntimeError: Tool error.
+    Split out of :func:`daemon_tool` so the query gate wraps a named thing.
+    The reachability probe sits *inside* the gate: in front of it a down
+    daemon would surface as ``QmdLockBusy`` and send the operator to wait
+    when the remedy is ``lies qmd up``. Raises ``ValueError`` (not a daemon
+    tool), ``QmdDaemonUnavailable`` (not serving), ``QmdDaemonWedged``
+    (stopped answering) or ``RuntimeError`` (tool error).
     """
     if name not in DAEMON_TOOLS:
         raise ValueError(
@@ -335,25 +304,15 @@ async def _call_with_recovery(
     """Runs ``make_call`` with the taxonomy applied to any failure.
 
     The single place a daemon failure is classified; a site that calls
-    ``client.call_tool`` directly bypasses it.
+    ``client.call_tool`` directly bypasses it. ``make_call`` is invoked
+    once, and a second time only after a recycle on a retryable failure.
+    Returns whatever it returns.
 
-    Args:
-        url: Daemon URL, for the recycle and the raise text.
-        name: Tool name, for the raise text.
-        make_call: Zero-argument callable returning the awaitable.
-            Invoked once, and a second time only after a recycle on a
-            retryable failure.
-
-    Returns:
-        Whatever ``make_call`` returns.
-
-    Raises:
-        QmdDaemonWedged: The daemon accepted the call and stopped
-            answering, before or after a recycle.
-        QmdDaemonUnavailable: Not serving, or still not serving after one
-            recycle-and-retry.
-        Exception: Re-raised unchanged for a ``"passthrough"`` class, and
-            for a second failure the taxonomy does not own.
+    Raises ``QmdDaemonWedged`` (accepted the call, then stopped answering,
+    before or after a recycle), ``QmdDaemonUnavailable`` (not serving, or
+    still not after one recycle-and-retry), or re-raises the original
+    unchanged for a ``"passthrough"`` class and for a second failure the
+    taxonomy does not own.
     """
     try:
         return await make_call()
@@ -461,20 +420,14 @@ async def read_library_bodies(
 ) -> list[Any]:
     """Issues one ``get`` per path over a single MCP session.
 
-    Hoists the handshake out of the per-path loop. One ``get`` per path
-    is deliberate: ``multi_get`` silently skips 10KB+ documents.
+    Hoists the handshake out of the per-path loop. One ``get`` per path is
+    deliberate: ``multi_get`` silently skips 10KB+ documents. ``paths`` are
+    ``<collection>/<page>``; ``timeout`` is the read deadline.
 
-    Args:
-        paths: Library paths (``<collection>/<page>``) to fetch.
-        timeout: Per-call read deadline in seconds.
-
-    Returns:
-        One entry per path, in input order: the ``CallToolResult``, or
-        ``None`` for a per-path failure so its siblings survive.
-
-    Raises:
-        QmdDaemonUnavailable: The daemon is not serving.
-        QmdDaemonWedged: The session wedged; the parent tool decides.
+    Returns one entry per path, in input order: the ``CallToolResult``, or
+    ``None`` for a per-path failure so its siblings survive. Raises
+    ``QmdDaemonUnavailable`` (not serving) and ``QmdDaemonWedged`` (the
+    session wedged; the parent tool decides).
     """
     if not paths:
         return []

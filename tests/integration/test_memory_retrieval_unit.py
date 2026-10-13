@@ -131,15 +131,7 @@ def test_read_pages_missing_id_returns_empty(indexed_wiki) -> None:
 def test_search_no_coverage_true_when_corpus_non_empty_and_no_hits(
     indexed_wiki, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Wiki has a page but the search returns nothing → no_coverage=True.
-
-    Pins the F18 Task 2 contract: a populated wiki that misses the
-    query surfaces ``no_coverage=True`` so the librarian's closure
-    capture copies it onto ``LibrarianOutput``. Without the surface,
-    ``result.get("no_coverage", False)`` defaults to ``False`` and the
-    corpus state is invisible to downstream callers (the bug F18
-    Tasks 2/3 fix).
-    """
+    """Wiki has a page but the search returns nothing → no_coverage=True."""
     from lies import qmd
 
     def missing(_cwd: Path, _q: str, _limit: int, **_kw) -> list[dict[str, object]]:
@@ -156,13 +148,7 @@ def test_search_no_coverage_true_when_corpus_non_empty_and_no_hits(
 def test_search_no_coverage_false_when_corpus_empty_and_no_hits(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Empty wiki + zero hits → no_coverage=False.
-
-    No corpus to miss against. The catalog probe returns 0 rows and
-    the flag stays False — the failure-open branch in
-    ``retrieval._no_coverage_flag`` keeps the contract distinct from
-    a populated-but-missed wiki.
-    """
+    """Empty wiki + zero hits → no_coverage=False."""
     root = tmp_path / "wiki"
     for sub in ("wiki", "raw"):
         (root / sub).mkdir(parents=True)
@@ -184,11 +170,7 @@ def test_search_no_coverage_false_when_corpus_empty_and_no_hits(
 def test_search_no_coverage_false_when_corpus_non_empty_and_has_hits(
     indexed_wiki, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Wiki has a page AND the search lands a hit → no_coverage=False.
-
-    A successful search is never a no-coverage signal regardless of
-    the underlying corpus size. Pins the second half of the contract.
-    """
+    """Wiki has a page AND the search lands a hit → no_coverage=False."""
     from lies import qmd
 
     def fake_query(_cwd: Path, _q: str, _limit: int, **_kw) -> list[dict[str, object]]:
@@ -206,12 +188,7 @@ def test_search_no_coverage_false_when_corpus_non_empty_and_has_hits(
 
 
 def test_from_qmd_resolves_under_wiki_dir(indexed_wiki, monkeypatch: pytest.MonkeyPatch) -> None:
-    """After PR #39, qmd is registered at wiki.wiki_dir/<collection>/.
-
-    _from_qmd must join raw_path under wiki.wiki_dir, not wiki.data_root,
-    so the relative_to(wiki.wiki_dir) check succeeds and the hit is
-    kept (not silently dropped).
-    """
+    """Wiki collection is registered at ``wiki.wiki_dir/<collection>/``."""
     from lies import qmd
 
     def fake_query(_cwd: Path, _q: str, _limit: int, **_kw) -> list[dict[str, object]]:

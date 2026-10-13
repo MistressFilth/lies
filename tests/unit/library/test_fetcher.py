@@ -41,14 +41,7 @@ class _FakeScraper:
 
 
 def test_fetcher_source_hash_is_raw_bytes(monkeypatch, tmp_path: Path) -> None:
-    """C4 anti-tautology: source_hash is SHA256 of raw fetch bytes, not per-doc slices.
-
-    Two scrapers returning different per-doc ``source_sha256`` /
-    ``content`` parses for the same source URL must produce the SAME
-    ``source_hash`` on the emitted ``FetchItem`` (spec §Frontmatter).
-    The hash is computed once from the raw scraper.fetch() bytes,
-    not from doc.source_sha256 or doc.content.
-    """
+    """Source_hash is SHA256 of raw fetch bytes, not per-doc slices."""
     import hashlib
 
     raw_bytes = b"shared raw response body across both scrapers"
@@ -103,11 +96,7 @@ def test_fetcher_source_hash_is_raw_bytes(monkeypatch, tmp_path: Path) -> None:
 
 
 def test_fetcher_invokes_local_file(monkeypatch, tmp_path: Path) -> None:
-    """ScraperFetcher drives a fake scraper end-to-end and yields FetchItems.
-
-    Covers the brief's primary happy-path: pick_scraper + fetch + parse +
-    emit FetchItem with source_hash + fetched_via populated.
-    """
+    """ScraperFetcher drives a fake scraper end-to-end and yields FetchItems."""
     src = tmp_path / "page.md"
     src.write_text("# hello\nbody\n")
     fake = _FakeScraper(
@@ -151,12 +140,7 @@ def test_fetcher_invokes_local_file(monkeypatch, tmp_path: Path) -> None:
 
 @pytest.mark.slow
 def test_fetcher_url_source_sets_url_field(monkeypatch) -> None:
-    """When source is a str (URL), ``FetchItem.url`` carries it.
-
-    ``path`` is still derived from the parsed doc's relative path. Mirrors
-    the existing wiki-side ingest semantics where URL fetches leave path
-    empty and route via URL instead.
-    """
+    """When source is a str (URL), ``FetchItem.url`` carries it."""
     fake = _FakeScraper(
         [
             ParsedDoc(
@@ -181,10 +165,7 @@ def test_fetcher_url_source_sets_url_field(monkeypatch) -> None:
 
 
 def test_fetcher_emits_multiple_docs(monkeypatch) -> None:
-    """Scrapers yielding multiple docs → multiple FetchItems.
-
-    E.g. an llms.txt index page produces one item per linked page.
-    """
+    """Scrapers yielding multiple docs → multiple FetchItems."""
     fake = _FakeScraper(
         [
             ParsedDoc(
@@ -227,14 +208,7 @@ def test_fetcher_derives_hash_from_raw_bytes(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    """C4: source_hash is SHA256 of the raw scraper.fetch() bytes, not per-doc.
-
-    The previous contract used ``doc.source_sha256 or _hash_bytes(doc.content)``
-    (per-doc slices) which mixed scraper-specific parser output into the
-    hash. Spec §Frontmatter requires SHA256 of raw bytes at fetch time,
-    so the fetcher now hashes the upstream ``scraper.fetch(source)``
-    output and threads that single value through every emitted item.
-    """
+    """Source_hash is SHA256 of the raw scraper.fetch() bytes, not per-doc."""
     src = tmp_path / "page.md"
     src.write_text("# hello\nbody\n")
     raw_bytes = b"raw scraper.fetch() bytes"
@@ -286,11 +260,7 @@ def test_fetcher_zero_items_raises_library_fetch_unreachable(
 
 
 def test_fetcher_yields_iterator_not_list(monkeypatch, tmp_path: Path) -> None:
-    """Brief contract: ``fetch_sources`` returns an ``Iterator[FetchItem]``.
-
-    Generator semantics matter so the ingest pipeline can stream large
-    batches without materializing them.
-    """
+    """``fetch_sources`` returns an ``Iterator[FetchItem]``."""
     src = tmp_path / "page.md"
     src.write_text("# hello\nbody\n")
     fake = _FakeScraper(
@@ -317,17 +287,7 @@ def test_fetcher_yields_iterator_not_list(monkeypatch, tmp_path: Path) -> None:
 
 
 def test_fetcher_unknown_format_propagates(monkeypatch, tmp_path: Path) -> None:
-    """A REGISTRY-registered format without ``Collection`` propagates a typed BuilderError.
-
-    ``liquid`` IS registered with REGISTRY (via the ``LiquidBuilder``
-    module side-effect import), but the builder reads
-    ``collection.config`` — without a Collection the builder raises
-    ``AttributeError`` on the bare-``None``. Minor 30 wraps that
-    ``AttributeError`` in a typed ``BuilderError`` so the operator sees
-    "builder for 'liquid' requires a Collection" instead of a confusing
-    ``AttributeError: 'NoneType' object has no attribute 'config'``.
-    The ingest pipeline handles quarantine.
-    """
+    """A REGISTRY-registered format without ``Collection`` propagates a typed BuilderError."""
     from lies.builders.errors import BuilderError
 
     src = tmp_path / "page.md"
@@ -353,12 +313,7 @@ def test_fetcher_unknown_format_propagates(monkeypatch, tmp_path: Path) -> None:
 
 
 def test_fetcher_unrecognized_format_propagates(monkeypatch, tmp_path: Path) -> None:
-    """An arbitrary unknown source_format propagates ``UnknownFormatError``.
-
-    Guards the catch-all branch of ``format_dispatch.dispatch`` (anything
-    not in the markdown/html/rst/pdf/liquid whitelist raises). Without
-    this propagation, raw content could silently land as a mirror file.
-    """
+    """An arbitrary unknown source_format propagates ``UnknownFormatError``."""
     src = tmp_path / "page.md"
     src.write_text("# hello\nbody\n")
     fake = _FakeScraper(
@@ -412,13 +367,7 @@ class _FakeBespokeScraper:
 
 
 def test_fetcher_uses_bespoke_loader_when_scraper_cmd_set(monkeypatch, tmp_path: Path) -> None:
-    """``scraper_cmd`` routes through ``_load_bespoke_scraper`` instead of ``pick_scraper``.
-
-    Pin for Finding 1: the bespoke scraper (loaded from
-    ``module:attr``) must drive the fetch/parse, NOT the URL/path
-    prefix heuristic. We monkeypatch the bespoke loader to return a
-    fake scraper and assert ``pick_scraper`` was never called.
-    """
+    """``scraper_cmd`` routes through ``_load_bespoke_scraper`` instead of ``pick_scraper``."""
     fake = _FakeBespokeScraper()
     pick_called = {"n": 0}
 
@@ -448,18 +397,7 @@ def test_fetcher_uses_bespoke_loader_when_scraper_cmd_set(monkeypatch, tmp_path:
 
 @pytest.mark.slow
 def test_fetcher_propagates_bespoke_loader_failure(monkeypatch, tmp_path: Path) -> None:
-    """A broken bespoke loader propagates; the fetcher never falls through.
-
-    Pin for Finding 1's fail-loud contract: a misconfigured
-    ``scraper_cmd`` (``bad:attr`` or a non-importable module) raises
-    ``ScraperUnavailable`` from ``_load_bespoke_scraper`` and the
-    fetcher does NOT silently route through ``pick_scraper``.
-
-    Minor 44: the bespoke-loader failure is wrapped in
-    ``LibraryFetchUnreachable`` (a ``LibraryError`` subclass) so it
-    appears under the same taxonomy as every other library error.
-    The test asserts both the typed lineage and the cause.
-    """
+    """A broken bespoke loader propagates; the fetcher never falls through."""
     pick_called = {"n": 0}
 
     def _fake_pick(source):
@@ -492,13 +430,7 @@ def test_fetcher_propagates_bespoke_loader_failure(monkeypatch, tmp_path: Path) 
 
 
 def test_load_bespoke_scraper_rejects_missing_colon() -> None:
-    """``module:attr`` shape is enforced — no colon means fail loud.
-
-    Minor 44: the bare ``_load_bespoke_scraper`` raises
-        ``ScraperUnavailable``; the wrapping into
-        ``LibraryFetchUnreachable`` happens at the call site
-        (``fetch_sources``), not inside the function.
-    """
+    """``module:attr`` shape is enforced — no colon means fail loud."""
     from lies.scrapers.errors import ScraperUnavailable
 
     with pytest.raises(ScraperUnavailable, match="module:attr"):
@@ -506,13 +438,7 @@ def test_load_bespoke_scraper_rejects_missing_colon() -> None:
 
 
 def test_fetcher_fetched_via_uses_short_id(monkeypatch, tmp_path: Path) -> None:
-    """Minor 31: ``fetched_via`` uses short id (``web``/``github``/``pdf``).
-
-    The previous implementation used ``type(scraper).__name__`` (e.g.
-    ``WebScraper``), leaking the class hierarchy into the mirror
-    frontmatter. The short-id contract pins the cross-task value to
-    ``web`` / ``github`` / ``pdf`` regardless of the concrete class.
-    """
+    """``fetched_via`` uses short id (``web``/``github``/``pdf``)."""
     from lies.scrapers.github import GitHubScraper
     from lies.scrapers.pdf import PDFScraper
     from lies.scrapers.web import WebScraper
@@ -548,12 +474,7 @@ def test_fetcher_fetched_via_uses_short_id(monkeypatch, tmp_path: Path) -> None:
 def test_fetcher_fetched_via_unknown_scraper_falls_back_to_classname(
     monkeypatch, tmp_path: Path
 ) -> None:
-    """Minor 31: an unmapped scraper class falls back to ``type(scraper).__name__``.
-
-    Keeps the field populated even when a new bespoke scraper class is
-    added without registering a short id — the operator still gets a
-    non-empty marker they can grep for rather than a missing field.
-    """
+    """An unmapped scraper class falls back to ``type(scraper).__name__``."""
     from lies.scrapers.base import ParsedDoc
 
     class _UserScraper(BaseScraper):
@@ -583,15 +504,7 @@ def test_fetcher_fetched_via_unknown_scraper_falls_back_to_classname(
 def test_normalize_body_missing_collection_wraps_attribute_error(
     monkeypatch, tmp_path: Path
 ) -> None:
-    """Minor 30: a builder reading ``collection.config`` without a Collection
-    surfaces a typed ``BuilderError`` rather than a confusing
-    ``AttributeError``.
-
-    Previously the bare ``AttributeError`` was caught by
-    ``_iter_fetch_items``'s quarantine branch, and the operator saw a
-    ``fetch-unreachable:NoneType has no attribute 'config'`` reason
-    instead of a clean "collection required" diagnostic.
-    """
+    """A builder reading ``collection.config`` without a Collection surfaces a typed ``BuilderError`` rather than a confusing ``AttributeError``."""
     from lies.builders.base import REGISTRY
     from lies.builders.errors import BuilderError
     from lies.scrapers.base import ParsedDoc
@@ -634,14 +547,7 @@ def test_normalize_body_missing_collection_wraps_attribute_error(
 
 
 def test_fetcher_routes_registered_format_via_registry(monkeypatch, tmp_path: Path) -> None:
-    """A ``source_format`` in ``REGISTRY.formats()`` routes through the builder.
-
-    Pin for Finding 2: the fetcher must check ``REGISTRY`` BEFORE
-    falling back to ``format_dispatch.dispatch``. We register a fake
-    builder under the ``x-fake`` format, monkeypatch the REGISTRY's
-    ``formats()`` / ``resolve()`` to surface it, and assert the
-    builder's output becomes the body.
-    """
+    """A ``source_format`` in ``REGISTRY.formats()`` routes through the builder."""
     from lies.builders.base import REGISTRY
 
     seen = {"called": False}
@@ -690,13 +596,7 @@ def test_fetcher_routes_registered_format_via_registry(monkeypatch, tmp_path: Pa
 
 
 def test_fetcher_markdown_skips_registry(monkeypatch, tmp_path: Path) -> None:
-    """``source_format=markdown`` short-circuits REGISTRY (PassThrough is a no-op).
-
-    Mirrors ``normalize.py:83``'s ``and doc.source_format != "markdown"``
-    guard. The base ``PassThroughBuilder`` would re-decode bytes from
-    a non-existent ``source.md`` file in a temp workspace; the
-    dispatch pass-through keeps the bytes intact.
-    """
+    """``source_format=markdown`` short-circuits REGISTRY (PassThrough is a no-op)."""
     fake = _FakeScraper(
         [
             ParsedDoc(
@@ -719,13 +619,7 @@ def test_fetcher_markdown_skips_registry(monkeypatch, tmp_path: Path) -> None:
 
 
 def test_fetcher_passes_collection_to_registry_builder(monkeypatch, tmp_path: Path) -> None:
-    """The ``Collection`` is threaded through to the REGISTRY builder.
-
-    Builders like ``sphinx`` / ``liquid`` / ``bespoke`` read
-    ``collection.config`` for their include/exclude/rename config.
-    Without the Collection, those builders raise
-    ``AttributeError`` on the dataclass.
-    """
+    """The ``Collection`` is threaded through to the REGISTRY builder."""
     from lies.builders.base import REGISTRY
 
     seen_collection = {"value": None}
@@ -790,18 +684,7 @@ def test_fetcher_passes_collection_to_registry_builder(monkeypatch, tmp_path: Pa
 
 
 def test_batch_walk_admits_only_document_extensions(tmp_path: Path) -> None:
-    """``--batch`` on a directory yields documents, not every regular file.
-
-    Repro from the live library: 36 collections each carried a
-    ``config.md`` — the collection's own ``config.yaml``, read by the
-    walker, decoded as UTF-8 and written out as a page. The only filter
-    downstream is ``should_skip_filename``, a *denylist* of known stems
-    (``license``, ``contributing``, ``credits``, ...) plus the ``changelog``
-    prefix. A denylist cannot express "is a document", so ``config`` was
-    never going to be caught. The type test has to happen here, at the one
-    layer that still knows what a file *is*: downstream sees decoded bytes
-    and a slug, and cannot recover the type.
-    """
+    """``--batch`` on a directory yields documents, not every regular file."""
     (tmp_path / "doc.md").write_text("# Doc\n\n" + "prose line\n" * 8)
     (tmp_path / "config.yaml").write_text("name: demo\ntags: []\n")
     (tmp_path / "notes.txt").write_text("plain text doc\n" * 8)
@@ -821,12 +704,7 @@ def test_batch_walk_admits_only_document_extensions(tmp_path: Path) -> None:
 
 
 def test_batch_walk_skips_binary_and_config_files(tmp_path: Path) -> None:
-    """The concrete residue: a collection directory holds a ``config.yaml``.
-
-    Ingesting a collection into itself is the obvious way to re-sync it,
-    and that directory always contains the collection's own
-    ``config.yaml`` next to its pages.
-    """
+    """The concrete residue: a collection directory holds a ``config.yaml``."""
     coll = tmp_path / "coll"
     coll.mkdir()
     (coll / "config.yaml").write_text("name: coll\nversion: '1'\n")
@@ -852,13 +730,7 @@ _MINIMAL_PDF = (
 
 
 def test_batch_walk_extracts_pdf_text_through_the_builder(tmp_path: Path) -> None:
-    """A PDF in a batch directory becomes its text, not replacement characters.
-
-    The walk decodes text documents directly but must not decode a PDF --
-    ``errors="replace"`` would turn it into a page of mojibake. PDFs go
-    through ``_normalize_body``, the same route ``--source`` takes, so the
-    Builder renders them to markdown.
-    """
+    """A PDF in a batch directory becomes its text, not replacement characters."""
     import hashlib
 
     (tmp_path / "guide.pdf").write_bytes(_MINIMAL_PDF)
@@ -893,12 +765,7 @@ def test_batch_walk_renders_html_through_the_builder(tmp_path: Path) -> None:
 
 
 def test_batch_walk_drops_a_pdf_it_cannot_render(tmp_path: Path) -> None:
-    """An unparseable PDF is dropped, not raised.
-
-    The walker drops files it cannot read; a Builder that throws must not
-    abort the batch either, or one bad file costs every other document in
-    the directory.
-    """
+    """An unparseable PDF is dropped, not raised."""
     (tmp_path / "broken.pdf").write_bytes(b"%PDF-1.4 not really a pdf")
     (tmp_path / "good.md").write_text("# Good\n\n" + "prose line\n" * 8)
 

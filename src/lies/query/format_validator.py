@@ -18,11 +18,9 @@ _FENCE_RE = re.compile(
 # line with at least one character between the pipes.
 _TABLE_ROW_RE = re.compile(r"^\s*\|.+\|\s*$")
 
-# Separator row: one or more pipe-separated cells, each cell being a
-# `:?-+:?` alignment spec with optional surrounding whitespace. GFM
-# permits up to 3 leading spaces; ``\s*`` at the head is permissive but
-# never lets a separator accidentally match a data row (data rows have
-# non-pipe content between their pipe-delimited cells).
+# Separator row: pipe-separated cells, each a ``: ? - + : ?`` alignment spec with
+# optional surrounding whitespace. GFM permits up to 3 leading spaces; the permissive
+# head still cannot let a separator match a data row, whose cells have non-pipe content.
 _TABLE_SEPARATOR_RE = re.compile(r"^\s*\|(?:\s*:?-+:?\s*\|)+\s*$")
 
 

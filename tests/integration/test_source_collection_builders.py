@@ -161,24 +161,7 @@ def test_sync_liquid_collection_quarantines_everything(wiki: Wiki) -> None:
 
 
 def test_sync_htmx_sphinx_with_excludes(wiki: Wiki) -> None:
-    """htmx-style Sphinx collection: three rst docs; ``sphinx_excludes``
-    filters two of them; only the kept file is written to ``wiki/``.
-    The ``WikiCollectionRef`` is registered; exactly one atomic commit
-    lands on top of the fixture init.
-
-    This pins the C1 fix (bespoke routing through
-    ``BespokeBuilder.build(workspace, collection)``), the I4/I5 fix
-    (collision-resistant subdir + cleanup), and the I8 fix
-    (registration does not over-count docs).
-
-    The pipeline runs end-to-end: SCRAPE → NORMALIZE → WRITE →
-    REGISTER. The WRITE stage's post-commit hook invokes
-    ``qmd collection add`` (idempotent), ``qmd update``, and rebuilds
-    ``wiki/index.md``. ``BespokeBuilder.build`` is mocked to a
-    side-effect that walks the synth manifest and applies the
-    configured ``sphinx_excludes`` — the same dispatch contract a
-    real SphinxBuilder would implement.
-    """
+    """Htmx-style Sphinx collection: three rst docs; ``sphinx_excludes`` filters two of them; only the kept file is written to ``wiki/``."""
     import hashlib
     import json
     import re

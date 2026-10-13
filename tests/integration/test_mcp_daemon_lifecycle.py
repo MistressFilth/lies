@@ -201,11 +201,7 @@ def test_full_lifecycle(wiki: Wiki, port: int) -> None:
 
 
 def test_down_leaves_the_qmd_daemon_running(wiki: Wiki, port: int) -> None:
-    """qmd is machine-global and shared — `down` must never take it with it.
-
-    This is the one behavior that can damage state outside the wiki, so it
-    is asserted against the real qmd rather than a mock.
-    """
+    """Qmd is machine-global and shared — `down` must never take it with it."""
     from lies.qmd.daemon import qmd_daemon_state
 
     before = qmd_daemon_state()

@@ -1,21 +1,4 @@
-"""End-to-end integration test using a fixture wiki.
-
-Finding 11 — `lint` (CLI smoke) and `run_query` are not covered by an
-integration test that drives the public `Orchestrator` API end-to-end.
-This test exercises the full LIES flow on a real fixture wiki:
-
-    1. Query fallback — ``Orchestrator.run_query`` and
-       ``synthesize_answer`` return an empty answer with
-       ``fallback_reason="qmd_unavailable"`` when qmd is unavailable.
-       The two-pass refactor retired the ``wiki/index.md`` fallback, so
-       no index scan happens on qmd failure.
-    2. Lint — ``Orchestrator.run_lint`` writes ``wiki/lint-report.md`` and
-       appends a parseable entry to ``wiki/log.md``.
-
-The agent's LLM is mocked so the round-trip is deterministic. The
-underlying ``_agent.run_sync`` is patched to drop a wiki page (mimicking
-the page-writer sub-agent writing artifacts).
-"""
+"""End-to-end integration test using a fixture wiki."""
 
 from __future__ import annotations
 
@@ -136,14 +119,7 @@ def test_orchestrator_constructs(wiki_copy: Path) -> None:
 def test_run_query_returns_empty_when_qmd_unavailable(
     wiki_copy: Path,
 ) -> None:
-    """``Orchestrator.run_query`` returns an empty answer when qmd is unavailable.
-
-    The two-pass refactor retired the ``wiki/index.md`` fallback: when
-    qmd registration fails or qmd is missing, the orchestrator now
-    returns an extractive answer with ``fallback_reason="qmd_unavailable"``
-    and no citations. The ``wiki/index.md`` is never consulted on the
-    qmd-unavailable path.
-    """
+    """``Orchestrator.run_query`` returns an empty answer when qmd is unavailable."""
     from lies.agents.query_synthesizer import QueryAnswer
 
     wiki = make_wiki(name="sample", data_root=wiki_copy)
@@ -201,10 +177,7 @@ def test_run_query_returns_empty_when_qmd_unavailable(
 
 
 def test_synthesizer_returns_empty_when_qmd_unavailable(wiki_copy: Path) -> None:
-    """Direct call to ``synthesize_answer`` returns an empty answer when qmd
-    is unavailable — the ``wiki/index.md`` is no longer consulted as a
-    fallback.
-    """
+    """``synthesize_answer`` returns an empty answer when qmd is unavailable."""
     wiki = make_wiki(name="sample", data_root=wiki_copy)
 
     def boom(*_args, **_kwargs):  # type: ignore[no-untyped-def]
@@ -267,8 +240,7 @@ def test_run_lint_writes_lint_report_and_appends_log(wiki_copy: Path) -> None:
 
 
 def test_run_lint_detects_orphan_pages(wiki_copy: Path) -> None:
-    """An orphan page (not referenced from index.md or anywhere else) is
-    surfaced as a lint finding."""
+    """An orphan page (not referenced from index.md or anywhere else) is surfaced as a lint finding."""
     # Drop a fresh orphan page; nothing else links to it.
     orphan = wiki_copy / "wiki" / "entities" / "orphan-page.md"
     orphan.write_text("# Orphan\n\nNo inbound links.\n", encoding="utf-8")

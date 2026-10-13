@@ -81,13 +81,7 @@ def test_build_answer_from_pages_emits_inline_citation_form() -> None:
 
 
 def test_build_answer_from_pages_skips_code_fence_spans() -> None:
-    """Code-fence spans are excluded from the per-page excerpt.
-
-    A page whose first non-empty span is a code fence falls through to
-    the next prose span; if only code-fence spans exist the bullet
-    shows the ``(no extractable content)`` marker so the line still
-    carries the citation.
-    """
+    """Code-fence spans are excluded from the per-page excerpt."""
     pages = [
         PageRead(
             rel_path="wiki/x.md",
@@ -123,9 +117,7 @@ def test_build_answer_from_pages_falls_back_to_top_of_page_when_no_heading() -> 
 
 
 def test_build_answer_from_pages_no_prose_span_uses_marker() -> None:
-    """When every span is a code fence, the bullet falls back to the
-    ``(no extractable content)`` marker so the citation still surfaces.
-    """
+    """When every span is a code fence, the bullet falls back to the ``(no extractable content)`` marker so the citation still surfaces."""
     pages = [
         PageRead(
             rel_path="wiki/code-only.md",
@@ -143,12 +135,7 @@ def test_build_answer_from_pages_no_prose_span_uses_marker() -> None:
 
 
 def test_build_answer_from_pages_caps_excerpt_at_first_paragraph() -> None:
-    """The per-page excerpt is trimmed to the first paragraph.
-
-    A span whose body contains a blank line (paragraph break) yields
-    only the first paragraph in the bullet; the rest stays in the page
-    on disk and is not duplicated in the answer body.
-    """
+    """The per-page excerpt is trimmed to the first paragraph."""
     pages = [
         PageRead(
             rel_path="wiki/multi.md",
@@ -191,13 +178,7 @@ def test_build_answer_from_pages_strips_trailing_whitespace() -> None:
 
 
 def test_build_answer_from_pages_emits_bare_slug() -> None:
-    """The ``[[slug]]`` form uses the path minus its collection prefix
-    and ``.md`` suffix.
-
-    ``wiki/concepts/pydantic.md`` → ``concepts/pydantic``. The bare
-    slug is the wiki's addressable identifier; the collection prefix
-    (``wiki/``) is stripped and the file extension is dropped.
-    """
+    """The ``[[slug]]`` form uses the path minus its collection prefix and ``.md`` suffix."""
     pages = [
         PageRead(
             rel_path="wiki/concepts/pydantic.md",

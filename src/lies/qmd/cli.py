@@ -117,20 +117,7 @@ class QmdNoResultsError(QmdError):
 
 
 class QmdIndexIsolationError(QmdError):
-    """A qmd write would land in the live index from a sandboxed library.
-
-    qmd resolves its index from ``$XDG_CACHE_HOME``, and that index is
-    one file shared by every process on the machine. Redirecting the
-    library root alone therefore sandboxes the mirror files and
-    nothing else. Measured::
-
-        $ XDG_DATA_HOME=/tmp/sandbox qmd --help | grep ^Index:
-        Index: /home/<user>/.cache/qmd/index.sqlite
-
-    A refusal rather than better advice, because the combination has
-    no legitimate caller: a throwaway library writing rows into an
-    index every other collection shares.
-    """
+    """A qmd write would land in the live index from a sandboxed library."""
 
 
 class QmdCommandError(QmdError):
@@ -160,17 +147,6 @@ def _run(
     idle_timeout: float | None = None,
 ) -> subprocess.CompletedProcess[Any]:
     """Run a qmd command via the deadlock-free :func:`_run_qmd` helper.
-
-    ``idle_timeout`` overrides the wedge detector's silence bound
-    (default 30s). Some qmd commands are silent for their whole
-    duration (``qmd embed`` writes a single spinner escape;
-    ``qmd update`` writes nothing, gated on ``isTTY``). The silence
-    is the operation, not a symptom — widening the bound keeps
-    healthy progress from being killed.
-
-    Callers that pass it derive it from their own ``timeout``; see
-    :data:`SILENT_COMMAND_IDLE_TIMEOUT_FRACTION` for why it must
-    stay strictly below the total.
 
     Raises:
         QmdNotInstalledError: ``qmd`` is not on PATH at exec time.
@@ -322,22 +298,7 @@ def qmd_collection_add_or_update(
 @_guards_qmd_index
 @with_qmd_lock()
 def qmd_embed(cwd: Path, collection_name: str, *, timeout: int = 1800) -> None:
-    """Run ``qmd embed -c <collection_name>`` in ``cwd``.
-
-    Default 30 minutes (embedding a large wiki on first ingest can be
-    slow). The idle bound is raised to
-    ``timeout * SILENT_COMMAND_IDLE_TIMEOUT_FRACTION`` — half the
-    total, because the reader loop checks the total bound first and
-    an idle bound equal to the total can never fire.
-
-    Embedding is silent for its whole duration (under a pipe ``qmd
-    embed`` writes a single spinner escape and then nothing while
-    the model runs). Measured 9.4s of unbroken silence on a cold
-    cache.
-
-    Cost: a wedged embed holds ``with_qmd_lock()`` for up to half its
-    total bound instead of 30s.
-    """
+    """Run ``qmd embed -c <collection_name>`` in ``cwd``."""
     result = _run(
         ["embed", "-c", collection_name],
         cwd=cwd,
@@ -453,13 +414,10 @@ def _parse_json_list(stdout_text: str) -> list[Any] | None:
     return None
 
 
-#: A CLI-path query pays a full model load on every call -- the daemon
-#: keeps models warm for ``DEFAULT_INACTIVITY_TIMEOUT_MS``, the CLI never
-#: does. Measured here over 10 identical queries with a warm model cache:
-#: 3.9-10.9s typical, tail 31.2s and 67.7s. The idle default of 30s
-#: fires inside that tail and reports a healthy query as ``QmdWedgeError``
-#: (then ``QmdTimeoutError`` at the total), intermittently and on a
-#: different call each time.
+# A CLI-path query pays a full model load on every call — the daemon keeps models warm
+# for ``DEFAULT_INACTIVITY_TIMEOUT_MS``, the CLI never does. Measured over 10 identical
+# queries with a warm model cache: 3.9-10.9s typical, tail 31.2s and 67.7s, so the 30s
+# idle default fires inside that tail and reports a healthy query as ``QmdWedgeError``.
 QMD_QUERY_TIMEOUT_S = 120
 QMD_QUERY_IDLE_TIMEOUT_S = 45.0
 
@@ -474,24 +432,6 @@ def qmd_query(
     collection_filter: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Run `qmd query` and return parsed JSON results.
-
-    Each result has at least a ``path`` key.
-
-    ``collection_filter`` is applied post-qmd even though the CLI
-    accepts ``-c, --collection <name>`` (verified against
-    ``qmd query --help``; an earlier version of this docstring
-    claimed the flag did not exist). The post-filter is kept for a
-    reason that has nothing to do with availability: qmd applies its
-    own row cap before LIES sees anything, so a filter applied inside
-    qmd can still be starved when the rows it drops consumed the
-    budget. Filtering after the fact cannot recover a row qmd never
-    returned, which is why retrieval goes to the daemon's
-    ``collections`` push-down instead -- and why a scoped CLI query
-    remains bounded by qmd's own cap.
-
-    ``limit`` is inert in qmd's CLI (``dist/cli/qmd.js:2550`` reads
-    only ``values.n``); the slice is applied *after* the filter so a
-    scoped caller gets rows the filter kept.
 
     Raises:
         QmdNotInstalledError: If `qmd` is not on PATH.
@@ -583,15 +523,7 @@ def _normalize_qmd_result(item: Any) -> dict[str, Any]:
     return result
 
 
-# ``qmd_get`` was deleted here. It shelled out to ``qmd get`` for the
-# librarian's source-aware read, which the seam moved to the daemon's
-# ``get`` with ``lineNumbers: false``: the CLI line-numbers every line
-# unconditionally and ``--no-line-numbers`` still leaves a
-# ``qmd://path  #docid`` header, so the F19 citation contract
-# ``[[slug]]: "verbatim quote"`` could not be met through it. The
-# function had no remaining caller, and its docstring still named the
-# dispatch that no longer existed. It also raised ``QmdCommandError``
-# on a timeout where its sibling in this module raised
-# ``QmdTimeoutError`` carrying qmd's stderr -- an asymmetry inside one
-# file, which is the kind of thing the next caller copies. Use
-# ``access.daemon_tool("get", {"file": path, "lineNumbers": False})``.
+# ``qmd_get`` was deleted here. The seam moved the librarian's source-aware read to the
+# daemon's ``get`` with ``lineNumbers: false``; the CLI line-numbers unconditionally and
+# still leaves a ``qmd://path #docid`` header, so the F19 citation contract could not be
+# met through it. Use ``access.daemon_tool("get", {"file": path, "lineNumbers": False})``.

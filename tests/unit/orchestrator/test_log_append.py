@@ -1,10 +1,4 @@
-"""Tests for ``lies.orchestrator._lint_log_title``.
-
-The helper synthesizes the title written to ``wiki/log.md`` for a lint
-pass. It dedupes + sorts the finding categories so the entry reads as
-``lint | N findings (<cat1>, <cat2>, ...)`` (or ``lint | N findings``
-when the report is empty).
-"""
+"""Tests for ``lies.orchestrator._lint_log_title``."""
 
 from __future__ import annotations
 

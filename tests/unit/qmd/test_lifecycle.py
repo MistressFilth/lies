@@ -1,12 +1,4 @@
-"""Unit tests for :mod:`lies.qmd.lifecycle`.
-
-Only the helper functions + ``status()`` are covered here. The
-spawn-a-real-daemon paths (``_up``, ``_down``) live in
-``tests/integration/test_qmd_lifecycle.py`` under the
-``INTEGRATION=1`` gate; spawning qmd in the unit-test loop would
-race the host's actual daemon and burn 5–30 s per test, well past
-the 0.15 s unit-test budget.
-"""
+"""Unit tests for :mod:`lies.qmd.lifecycle`."""
 
 from __future__ import annotations
 
@@ -132,15 +124,7 @@ def test_find_qmd_raises_when_binary_missing(
 def test_find_qmd_returns_path_when_present(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """``_find_qmd`` returns the resolved path string from ``shutil.which``.
-
-    Marked ``slow`` because the test framework measures wall-clock
-    including setup + teardown; importing ``lies.qmd.lifecycle``
-    transitively pulls fastmcp / pydantic_ai (~1.2 s cold) and the
-    fixture teardown can push this micro-test past the 0.15 s hard
-    budget under full-suite load. The test logic itself is
-    microseconds — runs cleanly under ``--runslow``.
-    """
+    """``_find_qmd`` returns the resolved path string from ``shutil.which``."""
     monkeypatch.setattr(lifecycle.shutil, "which", lambda _name: "/usr/local/bin/qmd")
     assert _find_qmd() == "/usr/local/bin/qmd"
 
@@ -152,13 +136,7 @@ def test_status_returns_not_running_when_pidfile_absent_and_no_listener(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """Empty cache dir + no listener => ``running=False``, ``pid=None``.
-
-    Mirror of the brief's first test, but with isolation against
-    the real daemon: ``LIES_XDG_CACHE_HOME`` redirects the
-    pidfile path; the brief's ``XDG_STATE_HOME`` override has no
-    effect on the real qmd pidfile location.
-    """
+    """Empty cache dir + no listener => ``running=False``, ``pid=None``."""
     monkeypatch.setenv("LIES_XDG_CACHE_HOME", str(tmp_path))
     s = status()
     assert s.running is False
@@ -170,11 +148,7 @@ def test_status_reports_pid_when_port_listening(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """Pidfile + listener => ``running=True``, ``pid=<int>``.
-
-    Mocks ``_port_listening`` so we don't need a real daemon. The
-    pidfile path is isolated via ``LIES_XDG_CACHE_HOME``.
-    """
+    """Pidfile + listener => ``running=True``, ``pid=<int>``."""
     monkeypatch.setenv("LIES_XDG_CACHE_HOME", str(tmp_path))
     pf = tmp_path / "qmd" / "mcp.pid"
     pf.parent.mkdir(parents=True, exist_ok=True)
@@ -189,15 +163,7 @@ def test_status_reports_no_pid_when_pidfile_stale(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """Stale pidfile (no listener) => ``running=False``, ``pid=None``.
-
-    Guards the contract that ``status().pid`` does not surface a
-    dead PID; callers must not ``kill()`` it. Uses an ephemeral
-    high port (1 is privileged and bind() refuses non-root; ``0``
-    is the kernel "any" port that nothing listens on) instead of
-    the default 8181 — the developer's machine typically has a
-    foreground qmd bound there, which would race the test.
-    """
+    """Stale pidfile (no listener) => ``running=False``, ``pid=None``."""
     monkeypatch.setenv("LIES_XDG_CACHE_HOME", str(tmp_path))
     pf = tmp_path / "qmd" / "mcp.pid"
     pf.parent.mkdir(parents=True, exist_ok=True)
@@ -211,11 +177,7 @@ def test_status_reports_running_false_when_listener_but_no_pidfile(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """A listener without a pidfile is not "our" daemon.
-
-    Another tool may be bound to 8181; we can't manage it. Status
-    reports running=False so we don't try to ``_up`` over it.
-    """
+    """A listener without a pidfile is not "our" daemon."""
     monkeypatch.setenv("LIES_XDG_CACHE_HOME", str(tmp_path))
     # No pidfile (tmp_path/qmd/mcp.pid absent).
     monkeypatch.setattr(lifecycle, "_port_listening", lambda _port: True)
@@ -244,20 +206,7 @@ def test_status_honors_custom_port() -> None:
 def test_serves_query_returns_false_when_httpx_raises(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """``serves_query`` returns False when ``httpx.Client.post`` raises.
-
-    A bound port is not enough: ``serves_query`` is the liveness
-    probe that catches a wedged daemon (TCP accepts but the query
-    hangs). The exception arm here covers both ``httpx.HTTPError``
-    and ``ValueError`` (malformed JSON) — we exercise the
-    ``HTTPError`` arm via a mocked ``ConnectError`` without
-    standing up a real daemon, keeping the unit-test budget
-    well under 0.15 s.
-
-    The function imports ``httpx`` lazily, so monkeypatching the
-    module-level ``httpx.Client`` (the same object in
-    ``sys.modules``) intercepts the lookup.
-    """
+    """``serves_query`` returns False when ``httpx.Client.post`` raises."""
 
     class _RaisingClient:
         def __init__(self, *args: object, **kwargs: object) -> None:
@@ -279,15 +228,7 @@ def test_serves_query_returns_false_when_httpx_raises(
 def test_the_probe_terminates_the_mcp_session_it_opens(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """``initialize`` starts a session; the probe ends it.
-
-    An ``initialize`` POST is not a request -- the server allocates
-    a session and returns its id in ``Mcp-Session-Id``. A probe that
-    stops after the response leaves that session live on a
-    machine-global daemon. ``recycle`` polls this probe every 0.5 s
-    for up to ``ready_timeout``, so one recycle stranded around
-    sixty of them.
-    """
+    """``initialize`` starts a session; the probe ends it."""
     seen: list[tuple[str, str, dict]] = []
 
     class _Response:
@@ -341,12 +282,7 @@ def test_the_probe_terminates_the_mcp_session_it_opens(
 def test_a_daemon_that_issues_no_session_id_is_still_serving(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """No session id means nothing to tear down, and the probe still passes.
-
-    The teardown is best-effort by design: the only question this
-    probe asks is whether the daemon answers, and a daemon that
-    answers without allocating a session is a serving daemon.
-    """
+    """No session id means nothing to tear down, and the probe still passes."""
 
     class _Response:
         headers: dict[str, str] = {}
@@ -382,12 +318,7 @@ def test_a_daemon_that_issues_no_session_id_is_still_serving(
 
 
 def test_recycle_calls_down_then_up_and_polls(monkeypatch: pytest.MonkeyPatch) -> None:
-    """recycle() = ``_down`` -> ``_up`` -> serves_query-poll, in that order.
-
-    All three primitives are stubbed; the call sequence is captured
-    without spawning a real daemon, keeping the test well inside the
-    unit-test budget.
-    """
+    """Recycle() = ``_down`` -> ``_up`` -> serves_query-poll, in that order."""
     calls: list[str] = []
     expected = DaemonStatus(running=True, pid=42, port=8181, url="http://127.0.0.1:8181/mcp")
 
@@ -414,12 +345,7 @@ def test_recycle_calls_down_then_up_and_polls(monkeypatch: pytest.MonkeyPatch) -
 def test_recycle_polls_until_serves_query_succeeds(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """recycle() keeps polling while serves_query returns False.
-
-    Two false polls -> two ``time.sleep`` calls; the third poll
-    returns True and the loop exits. ``time.sleep`` is stubbed so
-    the test does not actually wait.
-    """
+    """Recycle() keeps polling while serves_query returns False."""
     polls = iter([False, False, True])
     sleeps: list[float] = []
 
@@ -439,13 +365,7 @@ def test_recycle_polls_until_serves_query_succeeds(
 def test_recycle_raises_when_daemon_never_serves(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """recycle() raises RuntimeError when serves_query stays False past the budget.
-
-    ``time.time`` is stubbed so the deadline expires on the second
-    loop check; ``time.sleep`` is stubbed so the test does not block.
-    The error message references the post-restart liveness budget —
-    that is the diagnostic the operator needs.
-    """
+    """Recycle() raises RuntimeError when serves_query stays False past the budget."""
     monkeypatch.setattr(lifecycle, "_down", lambda port: None)
     monkeypatch.setattr(
         lifecycle,
@@ -467,12 +387,7 @@ def test_recycle_raises_when_daemon_never_serves(
 def test_recycle_returns_up_status_verbatim(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """recycle() returns the status produced by the fresh ``_up`` call.
-
-    The post-restart liveness is the only thing recycle adds; the
-    status object is passed through unchanged so callers see the
-    fresh daemon's pid/port/url.
-    """
+    """Recycle() returns the status produced by the fresh ``_up`` call."""
     expected = DaemonStatus(running=True, pid=9999, port=8181, url="http://127.0.0.1:8181/mcp")
     monkeypatch.setattr(lifecycle, "_down", lambda port: None)
     monkeypatch.setattr(lifecycle, "_up", lambda port: expected)

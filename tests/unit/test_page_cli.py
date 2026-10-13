@@ -1,27 +1,4 @@
-"""CLI tests for ``lies page write`` (F39 + F12).
-
-Mirrors ``tests/unit/test_query_cli.py`` patterns: uses Typer's
-CliRunner, mocks ``Orchestrator`` and ``resolve_wiki`` so no on-disk
-wiki or real memory service is touched.
-
-Coverage:
-
-- success path prints ``(author: durably filed - create: <path>)``.
-- collision without ``--force`` exits 2; the receipt branch is skipped.
-- ``--force`` overwrites an existing page (one ``file_back_author`` call).
-- ``--dry-run`` validates the plan but never calls ``file_back_author``.
-- ``--collection`` missing exits 2 (typer enforces required options).
-- F17 (Task 5): ``_SectionRefusal`` from ``build_author_plan`` exits 2
-  with the missing-heading message on stderr; ``file_back_author`` is
-  never invoked.
-- F17 (Task 5): ``wiki.section_contract`` is threaded into the
-  ``build_author_plan`` call (production callers see enforcement;
-  the default ``None`` is a no-op per Task 3).
-
-The ``lies.cli.page`` module imports ``Orchestrator`` lazily via a
-module-level ``__getattr__``; tests mock the symbol at the
-``lies.cli.page`` alias — the seam the lazy-import contract keeps open.
-"""
+"""CLI tests for ``lies page write``."""
 
 from __future__ import annotations
 
@@ -282,17 +259,7 @@ def test_write_missing_collection_exits_2(runner: CliRunner, tmp_path: Path) -> 
 def test_write_refuses_missing_sections(
     runner: CliRunner, mock_orchestrator: MagicMock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """F17 Task 5: ``_SectionRefusal`` from ``build_author_plan`` exits 2.
-
-    Mirrors ``test_file_knowledge_refuses_missing_sections`` (Task 4).
-    When the wiki's section contract requires headings the body
-    omits, ``build_author_plan`` returns a ``_SectionRefusal``. The
-    CLI must short-circuit with exit 2 and the missing-heading
-    message preserved on stderr — *before* touching
-    ``Orchestrator.file_back_author``. Without this the refusal would
-    flow through the orchestrator's defensive seam and produce a
-    misleading success-shaped receipt (page_path set, op="create").
-    """
+    """A ``_SectionRefusal`` from ``build_author_plan`` exits 2."""
     from lies.page.author import _SectionRefusal
 
     refusal = _SectionRefusal(
@@ -343,15 +310,7 @@ def test_write_refuses_missing_sections(
 def test_write_threads_section_contract_to_plan_builder(
     runner: CliRunner, mock_orchestrator: MagicMock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """F17 Task 5: ``wiki.section_contract`` must reach ``build_author_plan``.
-
-    The wiki's resolved contract (Task 2) is the per-wiki source of
-    truth for required headings. The CLI must thread it into
-    ``build_author_plan`` so production wikis see enforcement; the
-    default-``None`` path (Task 3) is a no-op. We pin the contract
-    on identity (``is``) because ``SectionContract`` is a frozen
-    Pydantic model with structural equality.
-    """
+    """``wiki.section_contract`` must reach ``build_author_plan``."""
     from lies.memory.models import (
         EvidenceAppend,
         MemoryPlan,

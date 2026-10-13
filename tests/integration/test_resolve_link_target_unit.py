@@ -25,12 +25,7 @@ def _seed_wiki(root: Path) -> Path:
 
 
 def test_repository_style_link_resolves_to_existing_target(tmp_path: Path) -> None:
-    """The repository's normal ``concepts/<name>.md`` style must resolve
-    correctly. Regression for the false-positive bug where the
-    source-relative candidate ``concepts/concepts/beta.md`` (syntactically
-    valid but non-existent) shadowed the correct wiki-root fallback
-    ``concepts/beta.md``.
-    """
+    """The repository's normal ``concepts/<name>.md`` style must resolve correctly."""
     root = _seed_wiki(tmp_path)
     (root / "wiki" / "concepts" / "alpha.md").write_text(
         "---\ntitle: Alpha\ntype: concept\n---\n# Alpha\n\nSee [Beta](concepts/beta.md).\n",
@@ -59,12 +54,7 @@ def test_source_relative_link_resolves_when_target_in_same_dir(tmp_path: Path) -
 
 
 def test_returns_none_when_target_does_not_exist_anywhere(tmp_path: Path) -> None:
-    """A link with no on-disk target must NOT silently resolve to a
-    source-relative typo path. Without the existence check, a link
-    like ``[X](concepts/x.md)`` from ``wiki/concepts/alpha.md`` would
-    resolve to ``wiki/concepts/concepts/x.md`` even when neither that
-    file nor any wiki-root fallback exists.
-    """
+    """A link with no on-disk target must NOT silently resolve to a source-relative typo path."""
     root = _seed_wiki(tmp_path)
     (root / "wiki" / "concepts" / "alpha.md").write_text(
         "---\ntitle: Alpha\ntype: concept\n---\n# Alpha\n",
@@ -86,16 +76,7 @@ def test_returns_none_for_non_md_target(tmp_path: Path) -> None:
 
 
 def test_extract_local_md_links_skips_target_outside_wiki(tmp_path: Path) -> None:
-    """A link that resolves to a sibling of ``wiki/`` (e.g. ``../docs/x.md``
-    from inside ``wiki/concepts/a.md``) must NOT show up in the helper's
-    output. Without the containment check, the resolved path
-    ``docs/x.md`` would strip the ``wiki/`` prefix and collide with the
-    real wiki page key ``wiki/concepts/x.md``, producing false
-    orphan/missing_xref suppressions.
-
-    Regression for the outside-wiki containment bug: links that escape
-    the wiki directory via ``..`` traversal are not local wiki links.
-    """
+    """A link that resolves to a sibling of ``wiki/`` (e.g. ``../docs/x.md`` from inside ``wiki/concepts/a.md``) must NOT show up in the helper's output."""
     from lies.orchestrator import _extract_local_md_links
 
     root = _seed_wiki(tmp_path)

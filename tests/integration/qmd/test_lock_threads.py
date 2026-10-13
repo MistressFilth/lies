@@ -1,12 +1,4 @@
-"""The qmd lock is reentrant on one thread and still exclusive across threads.
-
-Split out of ``tests/unit/qmd/test_lock.py`` because proving a second
-thread is *refused* means waiting out its retry budget, and thread
-scheduling does not fit reliably inside the 0.15s unit budget. The
-same-thread half lives in the unit file and runs on every unit run;
-this file is only the cross-thread half. No ``skipif`` — the
-integration gate is the same one every other integration test honours.
-"""
+"""The qmd lock is reentrant on one thread and still exclusive across threads."""
 
 from __future__ import annotations
 
@@ -18,12 +10,7 @@ import pytest
 
 
 def test_a_second_thread_still_contends(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """A second thread must still serialize behind the first.
-
-    If reentrancy were tracked in a plain module global, a
-    concurrent thread would see a non-zero depth and skip the
-    acquire entirely — turning the lock off.
-    """
+    """A second thread must still serialize behind the first."""
     from lies.qmd.lock import with_qmd_lock
 
     monkeypatch.setenv("LIES_QMD_LOCK_PATH", str(tmp_path / "threads.lock"))
@@ -61,21 +48,7 @@ def test_a_second_thread_still_contends(tmp_path: Path, monkeypatch: pytest.Monk
 def test_a_second_thread_is_refused_once_the_pid_file_is_written(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The refusal must not depend on winning a race with the pid file.
-
-    ``test_a_second_thread_still_contends`` starts its contender
-    immediately, so it usually arrives before ``_register_holder`` has
-    written the pid file — and a missing envelope reads as "busy", the
-    right answer for the wrong reason. Once the pid file exists, the
-    same contender hit the ``stored_pid == os.getpid()`` self-recovery
-    branch in :func:`_reap_if_stale`, reaped the *live* lock, and
-    entered the critical section alongside the holder.
-
-    That is the CUDA VMM reservation race this lock exists to prevent,
-    reachable from any two concurrent qmd helpers in one process. The
-    earlier test could not see it: it passed by timing, not by
-    behaviour.
-    """
+    """The refusal must not depend on winning a race with the pid file."""
     from lies.qmd.lock import with_qmd_lock
 
     monkeypatch.setenv("LIES_QMD_LOCK_PATH", str(tmp_path / "envelope.lock"))

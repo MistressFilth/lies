@@ -178,18 +178,7 @@ def test_list_returns_empty_when_catalog_empty(tmp_path: Path) -> None:
 
 
 def test_list_orphan_uses_catalog_membership_not_disk_existence(tmp_path: Path) -> None:
-    """Pin: ``orphan=True`` reflects catalog membership only.
-
-    Cited slugs that resolve to a system file on disk (``index.md``,
-    ``log.md``, ``schema.md``, ``overview.md``, ``lint-report.md``)
-    are NOT in the catalog walk — they are filtered out by
-    ``_iter_disk_slugs`` / ``rebuild_from_disk``. So a synthesis page
-    citing one of those names will be flagged as orphan by this
-    helper even when the file exists on disk. The
-    ``dangling_derived_from`` lint may or may not flag the same page
-    depending on its disk-existence semantics; if you need lint-style
-    parity, run ``lies catalog reconcile`` first.
-    """
+    """``orphan=True`` reflects catalog membership only."""
     from lies.wiki.wiki import Wiki
 
     data_root = tmp_path / "orphan-pinning-wiki"
@@ -223,14 +212,7 @@ def test_list_orphan_uses_catalog_membership_not_disk_existence(tmp_path: Path) 
 
 
 def test_list_comma_in_cited_slug_splits_ambiguously(catalog_conn) -> None:
-    """Pin current behavior: ``derived_from`` is comma-joined in storage;
-    ``list_provenance_pages`` splits on ``,`` with no escaping. A cited
-    slug containing a comma will be split into multiple synthetic
-    fragments. This is a pre-existing storage format hazard; the
-    helper exposes it without mitigation. Track a follow-up to
-    migrate ``derived_from`` to a JSON-array column or forbid ``,``
-    in slug validation.
-    """
+    """``derived_from`` is comma-joined in storage; ``list_provenance_pages`` splits on ``,`` with no escaping."""
     upsert_page(
         catalog_conn,
         CatalogPage(

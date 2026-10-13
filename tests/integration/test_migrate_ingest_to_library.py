@@ -1,10 +1,4 @@
-"""Integration tests for ``apply_migration`` round-trip + CLI wiring.
-
-Exercises the apply path against a git-initialized wiki + library,
-asserts the wiki-side catalog section update is left for Task 14, and
-the library catalog receives the migrated rows. CLI invocation is
-smoke-tested via ``CliRunner`` (no actual mutations under ``--dry-run``).
-"""
+"""Integration tests for ``apply_migration`` round-trip + CLI wiring."""
 
 from __future__ import annotations
 
@@ -245,15 +239,7 @@ def test_apply_migration_atomic_commits_library_side(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """C2 anti-tautology: ``apply_migration`` lands a NEW library git commit.
-
-    Before the fix, mirror files were written and the catalog was
-    SQLite-committed, but no library git commit fired — leaving
-    ``library.git_root`` with uncommitted mirror content. The new
-    contract routes through ``LibraryWriter.commit`` so the spec
-    §Migration §Atomicity requirement ("Per-collection library write =
-    one atomic git commit at the library") is satisfied.
-    """
+    """``apply_migration`` lands a NEW library git commit."""
     monkeypatch.setattr(xdg, "data_home", lambda: tmp_path)
     Library.open.cache_clear()
     lib = Library.open()
@@ -312,14 +298,7 @@ def test_apply_migration_removes_duplicate_from_wiki(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """C3 anti-tautology: byte-identical duplicates are REMOVED from wiki.
-
-    Two byte-identical files in different collections: only the
-    first-seen survives in the library; the second moves to
-    ``<wiki>/.lies/migration-backup/<date>/<coll>/<slug>.md`` AND is
-    unlinked from ``<wiki>/wiki/<coll>/<slug>.md`` so the wiki-side
-    atomic-commit picks up the removal.
-    """
+    """Byte-identical duplicates are REMOVED from wiki."""
     monkeypatch.setattr(xdg, "data_home", lambda: tmp_path)
     Library.open.cache_clear()
     lib = Library.open()
@@ -363,13 +342,7 @@ def test_migrated_mirror_source_path_is_host_independent(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """I9: migrated mirror ``source_path:`` is a stable placeholder, not a host path.
-
-    Previously the field carried ``str(src.resolve())`` — the host-
-    local wiki path. That made migrated mirror files host-dependent:
-    moving the wiki directory changes the byte-identical determinism
-    contract. New value: ``"migrated-from-wiki"`` (stable).
-    """
+    """Migrated mirror ``source_path:`` is a stable placeholder, not a host path."""
     monkeypatch.setattr(xdg, "data_home", lambda: tmp_path)
     Library.open.cache_clear()
     lib = Library.open()
@@ -403,12 +376,7 @@ def test_cli_collection_filter_narrows_all_plan_fields(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """I10: ``--collection=claude`` filters moves, duplicates, AND catalog updates.
-
-    The previous filter only narrowed ``plan.moves`` — duplicates
-    and catalog updates for other collections still shipped through.
-    New contract: every plan field narrows on the same predicate.
-    """
+    """``--collection=claude`` filters moves, duplicates, AND catalog updates."""
     monkeypatch.setattr(xdg, "data_home", lambda: tmp_path)
     Library.open.cache_clear()
     lib = Library.open()

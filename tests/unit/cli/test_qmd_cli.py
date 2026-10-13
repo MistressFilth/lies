@@ -1,13 +1,4 @@
-"""Tests for the ``lies qmd`` operator sub-app.
-
-Mirrors ask's ``scripts/qmd-daemon.py``: ``status``, ``up``,
-``down``, ``recycle``. All tests mock the lifecycle primitives
-at the ``lies.cli.qmd`` module boundary — the CLI binds them at
-import time, so patching ``lies.qmd.lifecycle.status`` would not
-intercept the CLI's call. The CLI does no subprocess work itself
-and mocks keep tests deterministic across hosts (the developer
-machine runs a real daemon on 8181).
-"""
+"""Tests for the ``lies qmd`` operator sub-app."""
 
 from __future__ import annotations
 
@@ -21,11 +12,7 @@ from lies.qmd.lifecycle import DaemonStatus
 
 
 def test_qmd_status_prints_json(monkeypatch) -> None:
-    """``lies qmd status`` prints a JSON object containing the daemon snapshot.
-
-    Lifecycle ``status()`` is mocked so the test is independent of
-    the host's real daemon on 8181.
-    """
+    """``lies qmd status`` prints a JSON object containing the daemon snapshot."""
     fake = DaemonStatus(running=True, pid=4242, port=8181, url="http://127.0.0.1:8181/mcp")
     monkeypatch.setattr(qmd_cli, "status", lambda port=8181: fake)
 
@@ -36,14 +23,7 @@ def test_qmd_status_prints_json(monkeypatch) -> None:
 
 
 def test_qmd_status_serializes_all_daemon_status_fields(monkeypatch) -> None:
-    """The JSON payload includes every field ``DaemonStatus`` exposes.
-
-    Pins ``running``, ``pid``, ``port``, and ``url`` so downstream
-    shell callers parsing the JSON can rely on the schema. The
-    ``index`` block is null under the autouse XDG isolation
-    (``qmd_index_path()`` resolves to ``tmp_path/xdg/cache/qmd/index.sqlite``
-    which is never created here).
-    """
+    """The JSON payload includes every field ``DaemonStatus`` exposes."""
     fake = DaemonStatus(running=False, pid=None, port=8181, url="http://127.0.0.1:8181/mcp")
     monkeypatch.setattr(qmd_cli, "status", lambda port=8181: fake)
 
@@ -106,11 +86,7 @@ def test_qmd_up_forwards_port_flag(monkeypatch) -> None:
 
 
 def test_qmd_down_invokes_down(monkeypatch) -> None:
-    """``lies qmd down`` calls ``_down`` and prints a stop confirmation.
-
-    The lifecycle ``_down`` is best-effort and returns ``None``;
-    the CLI prints the operator-facing confirmation.
-    """
+    """``lies qmd down`` calls ``_down`` and prints a stop confirmation."""
     captured: dict[str, int] = {}
 
     def fake_down(port: int = 8181) -> None:

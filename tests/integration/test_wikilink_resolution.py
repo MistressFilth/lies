@@ -1,9 +1,4 @@
-"""Integration tests for WikiLink resolution against a real scraped wiki.
-
-Gated on ``INTEGRATION=1``. Network access required.
-
-Run: ``INTEGRATION=1 uv run pytest tests/integration/test_wikilink_resolution.py -v``
-"""
+"""Integration tests for WikiLink resolution against a real scraped wiki."""
 
 from __future__ import annotations
 
@@ -24,8 +19,7 @@ pytestmark = [
 
 
 def test_real_repo_wikilink_corpus(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Scrape a small real repo (g-Research/ahocorasick_rs) and verify the
-    corpus build matches the on-disk markdown count."""
+    """Scrape a small real repo (g-Research/ahocorasick_rs) and verify the corpus build matches the on-disk markdown count."""
     from lies.scrapers.github import GitHubScraper  # type: ignore[import-not-found]
 
     # ``_isolated_xdg`` in ``tests/conftest.py`` redirects

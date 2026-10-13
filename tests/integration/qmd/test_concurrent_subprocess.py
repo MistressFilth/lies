@@ -1,16 +1,4 @@
-"""Integration test: concurrent subprocess race resolution.
-
-Spawns 3 concurrent Python subprocesses that each call into
-``src.lies.qmd.lock``'s decorator. Verifies:
-
-1. All subprocesses return successfully (no OOM, no deadlock).
-2. Total wall-clock is at least 3 times a single-subprocess hold
-   (the lock serializes; they do not run truly in parallel).
-
-Mirrors the production path: every ``qmd_*`` CLI helper is wrapped
-in :func:`lies.qmd.lock.with_qmd_lock`, and the decorator's
-``_acquire_with_poll`` does the cross-process flock serialization.
-"""
+"""Integration test: concurrent subprocess race resolution."""
 
 from __future__ import annotations
 
@@ -29,10 +17,7 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 def test_three_concurrent_subprocesses_serialize_through_qmd_lock(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Three concurrent Python subprocesses that each acquire the qmd lock
-    must serialize — total wall-clock at least 3 times the single-process
-    hold time.
-    """
+    """Three concurrent Python subprocesses that each acquire the qmd lock must serialize — total wall-clock at least 3 times the single-process hold time."""
     monkeypatch.setenv("LIES_QMD_LOCK_PATH", str(tmp_path / "qmd.lock"))
 
     inline_script = textwrap.dedent(f"""\

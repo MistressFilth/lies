@@ -39,12 +39,9 @@ def _ingested_at_from_hash(source_hash: str) -> str:
     to fail and fall back to ``_BASE_DATE``, silently discarding the
     ingest-date signal).
     """
-    # Minor 35: spec mandates "first 4 bytes" (= 8 hex chars). The
-    # strict-less-than-8 check ensures we never attempt a partial
-    # ``int()`` parse on a hash that does not actually have the full
-    # 8-hex-char prefix; otherwise the parse would silently fall back
-    # to ``_BASE_DATE`` and a fresh re-ingest would lose its
-    # deterministic ``ingested_at`` date.
+    # Spec mandates "first 4 bytes" (= 8 hex chars). The strict check avoids a partial ``int()``
+    # parse on a hash without the full prefix, which would silently fall back to
+    # ``_BASE_DATE`` and lose the deterministic ``ingested_at`` date on a fresh re-ingest.
     if not source_hash or len(source_hash) < 8:
         return _BASE_DATE.isoformat()
     try:
@@ -75,12 +72,10 @@ def strip_frontmatter(text: str) -> str:
     if not text.startswith("---"):
         return text
     lines = text.split("\n")
-    # Every consecutive leading block goes, not just the first: a page the
-    # writer already stacked N times carries N blocks, and removing one per
-    # run would converge on two rather than one. Blank lines between blocks
-    # are what the writer itself emits (`fm + "\n" + body`), so they are
-    # stepped over — but only after a block has actually been removed, so a
-    # leading blank line in an ordinary document is never consumed.
+    # Every consecutive leading block goes, not just the first: a page the writer stacked N
+    # times carries N blocks, and removing one per run converges on two. Blank lines between
+    # blocks are stepped over — but only after a block was removed, so a leading blank line in
+    # an ordinary document is never consumed.
     index = 0
     removed = False
     while index < len(lines):

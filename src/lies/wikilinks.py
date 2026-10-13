@@ -1,17 +1,4 @@
-"""WikiLink extraction and resolution.
-
-Distinct from QMD (semantic search). Resolves ``[[WikiLink]]`` targets
-against an in-memory dict of wiki-page identifiers (filename stem,
-frontmatter title, frontmatter aliases) and detects broken links.
-
-When the optional ``ahocorasick_rs`` runtime dep is present (default on
-Python 3.14+), ``WikiLinkResolver.build()`` also constructs a
-trie-based substring automaton and stores it on ``_aho``. ``resolve()``
-then routes through ``find_matches_as_strings(..., overlapping=True)``
-so prefix-overlapping keys (``foo`` + ``foobar``) still surface the
-longest match. When the dep is missing, ``_aho`` stays ``None`` and
-the dict branch alone runs — bit-identical output for every key.
-"""
+"""WikiLink extraction and resolution."""
 
 from __future__ import annotations
 
@@ -203,13 +190,10 @@ class WikiLinkResolver:
             return None
         aho = self._aho
         if aho is not None:
-            # ahocorasick_rs reports every occurrence of a pattern as a
-            # substring of the haystack; we only accept exact matches.
-            # ``overlapping=True`` is required so that, when both ``foo`` and
-            # ``foobar`` are keys, resolving ``foobar`` reports the longer
-            # ``foobar`` match in addition to the leftmost ``foo`` match. The
-            # default non-overlapping scan suppresses the longer match, which
-            # would violate the spec's longest-wins guarantee.
+            # ahocorasick reports every occurrence of a pattern as a substring of the haystack; only
+            # exact matches are accepted. ``overlapping=True`` is required so that with both ``foo`` and
+            # ``foobar`` as keys, resolving ``foobar`` reports the longer match alongside the
+            # leftmost ``foo`` one — the default non-overlapping scan would break longest-wins.
             for match in aho.find_matches_as_strings(key, overlapping=True):
                 if match == key:
                     return self._keys.get(key)

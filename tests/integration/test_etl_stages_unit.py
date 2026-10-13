@@ -192,13 +192,7 @@ def test_run_write_respects_force(tmp_path: Path) -> None:
 
 
 def test_run_write_registers_collection_with_qmd_post_commit(tmp_path: Path) -> None:
-    """After WRITE commits, qmd_collection_add_or_update must be invoked
-    for the wiki's collection so the qmd derived index can find it.
-
-    The registered path is the per-collection wiki subdir (the place
-    pages actually live), not the raw directory — registering the raw
-    dir indexes nothing because raw files live elsewhere.
-    """
+    """After WRITE commits, qmd_collection_add_or_update must be invoked for the wiki's collection so the qmd derived index can find it."""
     wiki = _wiki(tmp_path)
     (wiki.raw_dir / "cpython").mkdir(parents=True, exist_ok=True)
     manifest = mock.Mock()
@@ -227,8 +221,7 @@ def test_run_write_registers_collection_with_qmd_post_commit(tmp_path: Path) -> 
 
 
 def test_run_write_refreshes_qmd_index_post_commit(tmp_path: Path) -> None:
-    """After WRITE commits, qmd_update must be invoked against the wiki root
-    so the derived index picks up the freshly-written files."""
+    """After WRITE commits, qmd_update must be invoked against the wiki root so the derived index picks up the freshly-written files."""
     wiki = _wiki(tmp_path)
     (wiki.raw_dir / "cpython").mkdir(parents=True, exist_ok=True)
     manifest = mock.Mock()
@@ -251,15 +244,7 @@ def test_run_write_refreshes_qmd_index_post_commit(tmp_path: Path) -> None:
 
 
 def test_run_write_bulk_updates_catalog_post_commit(tmp_path: Path) -> None:
-    """After WRITE commits, the catalog must be bulk-upserted with the
-    freshly-written pages so catalog.db stays in lockstep with the wiki.
-
-    Replaces the previous rebuild_index contract: the WRITE stage no
-    longer walks the disk to regenerate ``index.md`` (per-op catalog
-    upserts in ``WikiMemoryService`` keep ``catalog.db`` current); it
-    instead upserts exactly the rows it just wrote, in a single
-    transaction.
-    """
+    """After WRITE commits, the catalog must be bulk-upserted with the freshly-written pages so catalog.db stays in lockstep with the wiki."""
     wiki = _wiki(tmp_path)
     (wiki.raw_dir / "cpython").mkdir(parents=True, exist_ok=True)
     manifest = mock.Mock()
@@ -288,8 +273,7 @@ def test_run_write_bulk_updates_catalog_post_commit(tmp_path: Path) -> None:
 
 
 def test_run_write_skips_qmd_hooks_when_nothing_committed(tmp_path: Path) -> None:
-    """When the WRITE stage has no files to commit (skipped only), the
-    qmd hooks must not run — the wiki state did not change."""
+    """When the WRITE stage has no files to commit (skipped only), the qmd hooks must not run — the wiki state did not change."""
     manifest = mock.Mock()
     manifest.compare.return_value = True  # pretend everything unchanged
     fake_normalized = [("x.md", "# body")]
@@ -315,17 +299,7 @@ def test_run_write_skips_qmd_hooks_when_nothing_committed(tmp_path: Path) -> Non
 def test_run_write_skips_qmd_hooks_when_atomic_commit_is_noop(
     tmp_path: Path,
 ) -> None:
-    """When atomic_commit returns None (working-tree diff was empty even
-    though run_write wrote N files), the qmd hooks must not run.
-
-    Repro for the no-op atomic_commit bug: re-ingesting an unchanged
-    collection writes 192 byte-identical files. The manifest compare
-    returns False (the in-memory manifest is empty after a prior
-    delete), so every file is a "write" — but the on-disk content is
-    identical to what's already committed. ``git diff --cached`` is
-    empty; ``atomic_commit`` returns None; the post-commit hooks
-    should be skipped because nothing changed downstream either.
-    """
+    """When atomic_commit returns None (working-tree diff was empty even though run_write wrote N files), the qmd hooks must not run."""
     manifest = mock.Mock()
     manifest.compare.return_value = False  # every doc is a "write"
     fake_normalized = [("a.md", "# a"), ("b.md", "# b")]
@@ -415,10 +389,7 @@ def test_scrape_scraper_cmd_import_failure_raises_scraper_unavailable(tmp_path: 
 def test_run_write_invokes_qmd_refresh_update_and_embed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """After a successful run_write, the post-commit hook fires three qmd subprocess
-    calls in order: collection_add_or_update, qmd_update, qmd_embed. Each is
-    wrapped in try/except so an individual failure does not abort the run.
-    """
+    """After a successful run_write, the post-commit hook fires three qmd subprocess calls in order: collection_add_or_update, qmd_update, qmd_embed."""
     from lies.library.record import LibraryCollectionConfig as Collection
     from lies.etl.stages.write import run_write
     from lies.wiki.wiki import Wiki

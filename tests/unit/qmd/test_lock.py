@@ -457,13 +457,7 @@ def test_acquire_after_import_honours_a_later_env_change(
 
 
 def test_the_shared_qmd_lock_is_outside_the_per_test_xdg_root(tmp_path: Path) -> None:
-    """The pinned lock must not live under the per-test XDG root.
-
-    The subtle failure: putting the lock at ``xdg_root / "state"`` reads
-    as tidy isolation while reproducing the original bug -- one inode per
-    test is exactly what there must not be. This pins the shape of the fix,
-    not merely its presence.
-    """
+    """The pinned lock must not live under the per-test XDG root."""
     from lies.qmd.lock import _lock_paths
 
     lock = _lock_paths()[0]
@@ -478,18 +472,7 @@ def test_the_shared_qmd_lock_is_outside_the_per_test_xdg_root(tmp_path: Path) ->
 def test_the_pinned_test_lock_is_per_user_and_per_session(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The shared test lock must be keyed by uid *and* by session.
-
-    ``gettempdir()`` is shared on a multi-account CI host, so the uid
-    keeps two accounts off one file. The pid keeps two *pytest
-    processes* off one file as well: a uid-only key made every pytest
-    process owned by this user contend, so running the unit suite while
-    any other ``lies`` work was live produced six 30-second hangs and
-    six ``QmdLockBusy`` failures that read as product bugs.
-
-    Intra-session sharing is the property that actually matters — one
-    process, one path, every test in it — and the pid preserves it.
-    """
+    """The shared test lock must be keyed by uid *and* by session."""
     from lies.qmd.lock import _lock_paths
 
     # Read the expression out of the fixture rather than restating it, so
@@ -519,12 +502,7 @@ def test_the_pinned_test_lock_is_per_user_and_per_session(
 
 
 def test_embed_is_lock_wrapped() -> None:
-    """The exclusion this depends on has to actually cover ``qmd_embed``.
-
-    The fixture is only safe because every qmd helper goes through
-    ``with_qmd_lock``. A future helper that shells out without it joins
-    the CUDA reservation race, and nothing else in the suite would notice.
-    """
+    """The exclusion this depends on has to actually cover ``qmd_embed``."""
     from lies.qmd import cli
 
     # One condition, stated once. The previous version was a disjunction
@@ -563,25 +541,7 @@ def test_the_lock_is_reentrant_on_one_thread(
 def test_a_raising_nested_frame_restores_the_depth(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A raise through the nested frame must not strand the depth counter.
-
-    Reentrancy is bookkeeping: the outer frame bumps the depth, the inner
-    frame runs without acquiring, and both restore on the way out. If a
-    raise skipped the restore on either frame, the depth would be left
-    above zero for the rest of the process -- and because the very next
-    acquire consults that depth, **every** subsequent call in that process
-    would skip the flock. That is a silent, permanent loss of the mutual
-    exclusion the lock exists to provide, and it would not raise anywhere:
-    it would just stop protecting.
-
-    Asserts on the counter rather than on observed contention. A
-    contention-shaped version needs a thread to hold the lock while this
-    one blocks on it, which costs more than the 0.15s unit budget
-    (`test_a_second_thread_still_contends` measures 0.214s and lives in
-    tests/integration for that reason). The stranded-depth failure *is*
-    "the counter is not 0", so read it directly rather than inferring it
-    through a timing window.
-    """
+    """A raise through the nested frame must not strand the depth counter."""
     from lies.qmd.lock import _held_depth, with_qmd_lock
 
     monkeypatch.setenv("LIES_QMD_LOCK_PATH", str(tmp_path / "raise-depth.lock"))

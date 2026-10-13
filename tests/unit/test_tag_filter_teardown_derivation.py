@@ -1,17 +1,4 @@
-"""Pin the tag-filter fixture's teardown set to the union it must remove.
-
-The fixture at ``tests/integration/test_tag_filter_end_to_end.py``
-registers four collections, and the product's
-:func:`lies.wiki.layout.ensure_wiki_qmd_registered` registers
-``wiki_<wiki.name>`` whenever the test's orchestrator is asked a
-question. The teardown must remove every collection the fixture
-(or any reachable product path) added — a hardcoded
-``FIXTURE_COLLECTIONS`` iteration left the ``wiki_<name>``
-collection behind in the live index on 2026-10-03.
-
-Runs without ``INTEGRATION=1``; lives under ``tests/unit/`` because
-the integration conftest applies a session-wide skip unless opted in.
-"""
+"""The tag-filter fixture's teardown set to the union it must remove."""
 
 from __future__ import annotations
 
@@ -76,13 +63,7 @@ def test_unseed_qmd_iterates_the_fixture_owned_set(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The teardown removes every collection :func:`_registered_by_this_fixture` returns.
-
-    Stubs ``qmd_collection_remove`` and ``_registered_collections``
-    so the iteration is recorded without a real subprocess. A
-    regression that reverts to iterating ``FIXTURE_COLLECTIONS``
-    alone leaves the wiki-named collection out of the removals.
-    """
+    """The teardown removes every collection :func:`_registered_by_this_fixture` returns."""
     wiki = _wiki_named("tag-filter-lib", tmp_path)
     expected = set(_registered_by_this_fixture(wiki))
 

@@ -1,17 +1,4 @@
-"""MCP server registers the v0.40 tool surface (and no others).
-
-The v0.40 rewrite retires seven prompts and eight tools, replacing
-them with the new ``collections_read`` + ``search`` + ``read`` +
-``ask`` surface. Drift on this contract (a forgotten registration
-or a leaked legacy tool) makes every downstream caller version-
-incompatible, so we pin the wire-shape contract here.
-
-Each test introspects the live ``mcp`` object via FastMCP's
-internal ``_local_provider._components`` registry — same data
-the MCP wire sees, no extra Client boot. ``toolsets`` exists on
-FastMCP main but not on FastMCP 4.x (the version pinned in this
-repo), so the helper falls back to the ``_components`` dict.
-"""
+"""MCP server registers the v0.40 tool surface (and no others)."""
 
 from __future__ import annotations
 
@@ -65,14 +52,7 @@ def test_server_drops_old_tools() -> None:
 
 
 def test_server_registers_seven_prompts() -> None:
-    """Slash-command prompt surface — exactly 7 expected names.
-
-    Pins the wire-shape contract across all prompt registrations.
-    Drift on this contract (any missing/extra prompt name in the live
-    server `mcp` list) makes hosts render the wrong slash slot, so
-    the test xfails until task 9 (the final prompt registration)
-    flips it green.
-    """
+    """Slash-command prompt surface — exactly 7 expected names."""
     registered = _registered_prompt_names(mcp)
     expected = {"ask", "collections", "ingest", "lint", "reindex", "sync", "ground"}
     missing = expected - registered

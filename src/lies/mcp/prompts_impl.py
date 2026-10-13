@@ -1,11 +1,9 @@
-"""Prompt implementations — module-level functions decorators wrap.
+"""Prompt implementations, one module-level function per prompt.
 
-Each ``<name>_prompt`` function in this module returns a list of
-``Message`` for the prompt it implements. ``register_all`` decorates
-each one with ``@mcp.prompt(name=...)`` and binds it to the live
-``mcp``. Tests drive the impl functions directly via
-``prompts_impl.<name>_prompt(...)`` without spinning up an MCP
-instance.
+Each ``<name>_prompt`` function returns a list of ``Message`` for the prompt it
+implements. ``register_all`` decorates each with ``@mcp.prompt(name=...)`` and binds it to
+the live ``mcp``. Tests drive the impl functions directly via
+``prompts_impl.<name>_prompt(...)`` without spinning up an MCP instance.
 """
 
 from __future__ import annotations
@@ -23,11 +21,9 @@ if TYPE_CHECKING:
 
 
 # A filter token is ``+`` / ``-`` followed by a letter-led tag atom.
-# Requiring a letter as the first post-sigil character keeps ordinary
-# question text out of the filter path: ``-1`` (a negative number),
-# ``--`` (an em-dash artifact or a bare flag) and ``-`` never match,
-# while ``+c:opencode``, ``-t:draft`` and the OR-joined
-# ``+c:claude_code|c:opencode`` do.
+# Requiring a letter first keeps ordinary question text out of the filter
+# path: ``-1``, ``--`` and a bare ``-`` never match, while ``+c:opencode``,
+# ``-t:draft`` and ``+c:claude_code|c:opencode`` do.
 _FILTER_TOKEN_RE = re.compile(r"^[+-][A-Za-z][A-Za-z0-9_.:,|&+-]*$")
 # Positions of the non-whitespace runs, so the question text can be
 # sliced out of the original string with its internal newlines intact.
@@ -55,39 +51,16 @@ def _parse_question_filters(
 ) -> tuple[str, str | None, list[str] | None]:
     """Strip leading ``+tag`` / ``-tag`` filter tokens out of question text.
 
-    The slash-UX convention (mirroring the ask plugin and the spec's
-    ``"[+tag-expr] [-tag ...] <question>"`` argument hint) is a
-    *leading* filter run followed by the question. Two guards keep
-    ordinary English out of the filter path:
+    The convention is a *leading* filter run followed by the question, and two guards keep
+    ordinary English out of the filter path: **position** (a token is a filter only until the
+    first prose word, so ``the -e flag of grep`` keeps every token) and **shape**
+    (``_is_tag_atom`` rejects single-letter atoms, so ``-1`` and ``--`` stay text). Without
+    the first, a question *about* option flags has its own words deleted and re-injected as
+    filters with no note.
 
-    1. **Position.** A token is a filter only until the first word of
-       the question. ``the -e flag of grep`` keeps every token; the
-       filter scan stopped at ``the``.
-    2. **Shape.** ``_is_tag_atom`` rejects single-letter atoms and
-       anything without the sigil-letter shape, so ``-1``, ``--``,
-       and ``-v`` stay text.
-
-    Without (1) a question *about* option flags gets its own words
-    deleted and re-injected as search filters, with no note.
-
-    Splitting is on whitespace alone. Question text is prose, not
-    shell, so an apostrophe (``what are Claude Code's differences?``)
-    or an unbalanced quote is ordinary text and passes through
-    untouched -- shell-quoting semantics would raise on exactly the
-    English a user is most likely to type.
-
-    **The question text itself is returned verbatim, newlines and
-    all.** It used to be rebuilt as ``" ".join(text_tokens)``, which
-    collapsed every internal run of whitespace: a pasted code block
-    or a stack trace arrived at the search as one run-on line, and
-    the agent reading the body saw a mangled question. Only the
-    leading filter run is tokenized; the rest is sliced out of the
-    original string by offset. (qmd is whitespace-insensitive, so
-    retrieval was never affected -- but the agent reads prose, and
-    the value it was told to pass verbatim was not what the user
-    typed.)
-
-    Returns ``(query_text, tag_expr, exclude_tags)``.
+    Splitting is on whitespace alone, because an apostrophe is ordinary prose. The question
+    text is returned **verbatim**, newlines and all: only the filter run is tokenized and the
+    rest sliced out by offset, so a pasted code block does not arrive run-on.
     """
     plus_atoms: list[str] = []
     minus_tags: list[str] = []
@@ -109,23 +82,15 @@ def _parse_question_filters(
 def _verbatim(label: str, value: str) -> str:
     """Render ``label`` as a fenced block for the calling agent to pass through.
 
-    The tail's author is the same principal as the agent reading the
-    body, so this is an un-escaping aid rather than a trust boundary.
-    It still removes a real class of defect: a question containing a
-    quote rendered through ``repr()`` arrives at the tool call
-    carrying ``\\"`` the agent has to know to strip, and a tail
-    containing a closing bracket can end the rendered call and append
-    instructions of its own. A fenced block with an explicit
-    instruction is unambiguous in both cases.
+    The tail's author is the same principal as the agent reading the body, so this is an
+    un-escaping aid rather than a trust boundary. It removes a real class of defect: a
+    question containing a quote rendered through ``repr()`` arrives carrying ``\"`` the
+    agent must know to strip, and a tail containing a closing bracket can end the rendered
+    call and append instructions of its own.
 
-    The fence is **wider than the longest backtick run in the value**,
-    per CommonMark's rule for a code span. A fixed three-backtick
-    fence is breakable: a value containing ``` ``` ``` on its own line
-    closes the block and appends its own lines as prose to the body.
-    The question text now keeps its newlines (see
-    :func:`_parse_question_filters`), so a value *can* contain a
-    line-initial fence — which is exactly why the widening is here
-    rather than relying on the value never carrying one.
+    The fence is **wider than the longest backtick run in the value**, per CommonMark's
+    rule for a code span. A fixed three-backtick fence is breakable: a value carrying
+    ``` ``` ``` on its own line closes the block and appends its own lines as prose.
     """
     longest = max((len(run) for run in _BACKTICK_RUN_RE.findall(value)), default=0)
     fence = "`" * max(3, longest + 1)
@@ -136,38 +101,16 @@ def _verbatim(label: str, value: str) -> str:
 class TailParse:
     """The structured result of parsing one prompt tail.
 
-    Splitting the flags out into explicit collections (``values`` /
-    ``booleans`` / ``missing_values`` / ``ignored_values``) is what
-    keeps a bare ``--fix`` from being confused with
-    ``--fix=<something>``, and what lets a consumer report a value flag
-    that never got a value rather than silently dropping it.
+    Splitting flags into explicit collections keeps a bare ``--fix`` from being confused with
+    ``--fix=<something>``, and lets a consumer report a value flag that never got a value
+    rather than silently dropping it. ``ignored_values`` holds ``(flag, discarded)`` pairs: a
+    boolean written ``--all=true`` is *on* and its value means nothing, so it is reported
+    rather than dropped; routing the ``=`` form into ``values`` instead meant no body, all of
+    which read ``booleans``, saw the flag.
 
-    ``ignored_values`` holds ``(flag, discarded)`` pairs: a boolean
-    flag written ``--all=true``. The flag is *on* -- the user asked
-    for it -- and the value means nothing, so it is reported rather
-    than dropped without word. Routing the ``=`` form on a boolean
-    into ``values`` instead (the pre-0.42.0 behavior) meant no prompt
-    body, all of which read ``booleans``, ever saw the flag: the
-    silent loss of a flag the user typed.
-
-    ``repeats`` holds *every* occurrence of a value flag, in order.
-    ``values`` keeps the last one, which is the right answer for a
-    scalar and a silent loss for a repeatable one -- ``modify --tag a
-    --tag b`` is a real shape (``--tag`` is declared "Tag to add
-    (repeatable)" by ``lies library modify``), and a dict of last
-    wins dropped the first tag with no word. Bodies that render a
-    repeatable flag read ``repeats_of``; bodies that render a scalar
-    read ``values``.
-
-    ``repurposed`` holds ``(flag, value)`` pairs for a flag the caller
-    did not declare as a value flag whose *following* token then fell
-    through to ``positionals``. ``collections show --tag cli`` is the
-    shape: the second parse knows ``show`` has no ``--tag``, records
-    the flag as unknown, and the value ``cli`` becomes a positional
-    that a body would hand to ``collections_read(name=…)``. Without
-    this field the note said "ignored", the agent read that as "I
-    dropped your flag", and the flag's own value became the collection
-    name. A body that consumes positionals checks this and asks.
+    ``repeats`` holds every occurrence of a value flag in order and ``values`` keeps the last.
+    ``repurposed`` holds an undeclared value flag whose following token fell through to
+    ``positionals``, which is how ``show --tag cli`` turned the flag's value into a collection.
     """
 
     positionals: tuple[str, ...] = ()
@@ -203,21 +146,15 @@ class TailParse:
     def note(self) -> str:
         """Render the parse problems as a sentence for the body.
 
-        Returns ``""`` or a leading-space-prefixed sentence, so a body
-        that appends it to a rendered command cannot weld the last word
-        of that command to the first word of the note.
+        Returns ``""`` or a leading-space-prefixed sentence, so a body that appends it to a
+        rendered command cannot weld the last word of that command to the first word of the note.
 
-        Every sentence here is compatible with a rendered command
-        following it: each describes a flag that was dropped or
-        mistyped, and dropping a flag leaves the command valid. The
-        two conditions that make a command *invalid* -- a value flag
-        that got no value, and a flag whose value would be re-read as
-        a positional -- are refusals, not notes, and
-        :func:`_refuse_unless_clean` returns them in place of a body.
-        Nothing appended here ever says "no command was run": four
-        bodies append this note to a live ``Bash(...)`` and the
-        sentence told the agent the opposite of what the rest of the
-        same paragraph said.
+        Every sentence here is compatible with a rendered command following it: each describes a
+        flag that was dropped or mistyped, and dropping a flag leaves the command valid. The two
+        conditions that make a command *invalid* (a value flag that got no value, and a flag whose
+        value would be re-read as a positional) are refusals, not notes, and
+        :func:`_refuse_unless_clean` returns them in place of a body. Nothing appended here ever
+        says "no command was run".
         """
         parts: list[str] = []
         if self.missing_values:
@@ -242,50 +179,14 @@ def _split_tail(
 ) -> TailParse:
     """Split a prompt tail into positionals, flag values, and bare flags.
 
-    Every prompt takes a single ``str``, because hosts that bind
-    slashes to MCP prompts pre-tokenize the tail on whitespace and
-    bind tokens positionally to declared parameters -- a typed
-    ``bool`` / ``int`` / ``list[str]`` in position two or later
-    receives a bare word and fails JSON decode. One ``str`` slot has
-    no such problem.
+    ``value_flags`` names the flags consuming the following token; the rest are booleans. A
+    value may also attach as ``--flag=value``; on a boolean that sets the flag and records the
+    discarded value. ``multi_word_flags`` names the free-text subset; scalar value flags stay
+    single-token, so ``--jobs 8 pydantic`` means ``jobs=8`` plus a positional.
 
-    That makes the slash path *safe*, not *complete*: the host binds
-    exactly one token and drops the rest, so a multi-token tail
-    arrives whole only through ``get_prompt``, whose arguments are not
-    pre-tokenized. This grammar is the ``get_prompt`` grammar; the
-    slash form exercises its single-token subset.
-
-    ``value_flags`` names the flags that consume the following token.
-    Flags outside that set are booleans. A value may also be attached
-    with ``--flag=value`` on a *value* flag, which keeps
-    ``--scraper-timeout=600`` unambiguous next to a bare ``--force``.
-    The same ``=`` form on a *boolean* sets the flag and records the
-    discarded value in ``ignored_values`` -- it does not smuggle the
-    value into ``values`` where no body would read it.
-
-    ``multi_word_flags`` names the subset whose value is free text
-    (``--title Pydantic basics``): those consume every token up to the
-    next ``--flag`` and join them with single spaces. The scalar value
-    flags stay single-token on purpose -- ``--jobs 8 pydantic`` means
-    ``jobs=8`` and a positional ``pydantic``, and a rule that swallowed
-    until the next flag would eat the collection name.
-
-    A value flag whose value is missing -- because it ended the tail,
-    or because the next token is itself a flag -- is recorded in
-    ``missing_values`` rather than swallowing the neighbouring flag as
-    its value. That distinction is the whole reason
-    ``--jobs --force`` reports a problem instead of quietly setting
-    ``--jobs=--force``.
-
-    ``known_flags`` is the prompt's full flag vocabulary; anything
-    outside it lands in ``unknown`` so the body can name the typo. An
-    outside flag followed by a bare word also records the pair in
-    ``repurposed``: the word is a positional the user did not type as
-    one, and a body that consumes positionals must ask before passing
-    it along.
-    Every occurrence of a value flag is recorded in ``repeats``;
-    ``values`` holds the last, which is right for a scalar and a
-    silent loss for a repeatable one.
+    A missing value lands in ``missing_values`` rather than swallowing the neighbouring flag.
+    Anything outside ``known_flags`` lands in ``unknown``, and one followed by a bare word also
+    records ``repurposed``.
     """
     tokens = tail.split()
     positionals: list[str] = []
@@ -300,16 +201,10 @@ def _split_tail(
     while i < len(tokens):
         tok = tokens[i]
         if tok == "--":
-            # POSIX end-of-flags. A user who types it means "stop
-            # reading flags", and rendering the token itself hands
-            # Click a collection literally named ``--``; Click strips
-            # a bare ``--`` before the command function sees it, so
-            # ``lies sync -- pydantic`` ran with ``collection=None``
-            # -- a scrape and reindex of *every* registered
-            # collection. Consume the marker and push every
-            # following token to ``positionals`` unparsed, which is
-            # what :func:`_split_leading_flags` already did inside
-            # this same module.
+            # POSIX end-of-flags. Click strips a bare ``--`` before the command
+            # function sees it, so ``lies sync -- pydantic`` ran with
+            # ``collection=None`` — a scrape and reindex of *every* collection.
+            # Consume the marker and push following tokens to ``positionals``.
             positionals.extend(tokens[i + 1 :])
             break
         if tok.startswith("--") and len(tok) > 2:
@@ -347,28 +242,17 @@ def _split_tail(
                 booleans.add(key)
                 nxt = tokens[i + 1] if i + 1 < len(tokens) else None
                 if nxt is not None and not nxt.startswith("--") and key not in (known_flags or ()):
-                    # An unrecognized flag followed by a bare word. The
-                    # word is not the flag's value -- it is a positional
-                    # the user never named as one, and a body that
-                    # consumes positionals would pass it to the command.
-                    # Recording the pair lets the body refuse instead of
-                    # reading `cli` as a collection name because the user
-                    # wrote `--tag cli` on a verb with no `--tag`.
-                    #
-                    # Restricted to flags outside ``known_flags``: a
-                    # *declared* boolean followed by a bare word is a
-                    # genuine surplus positional, and
-                    # ``_leftover_note`` already reports it by name.
+                    # An unrecognized flag followed by a bare word: the word is not the
+                    # flag's value but a positional the user never named, so the body must
+                    # refuse. Restricted to flags outside ``known_flags`` — a *declared* boolean
+                    # followed by a bare word is a genuine surplus positional.
                     repurposed.append((key, nxt))
             if known_flags is not None and key not in known_flags:
                 unknown.add(key)
         elif tok.startswith("-") and len(tok) > 1:
-            # ``-e``, ``-pydantic``. Click refuses a single-dash token
-            # outright (``No such option: -p``), so letting one fall
-            # through to ``positionals`` renders a command that exits
-            # 2 -- ``sync -pydantic`` was exactly that. Record the bare
-            # name as an unknown flag instead, so the body names the
-            # typo and the token never reaches a positional slot.
+            # ``-e``, ``-pydantic``. Click refuses a single-dash token outright
+            # (``No such option: -p``), so a bare single-dash name is recorded as an
+            # unknown flag instead of reaching a positional slot.
             key = tok[1:]
             booleans.add(key)
             if known_flags is not None and key not in known_flags:
@@ -396,24 +280,13 @@ def _split_leading_flags(
 ) -> tuple[TailParse, str]:
     """Consume only the *leading* run of ``--flags``; the rest is question text.
 
-    A tail that is mostly a question must not have its words parsed as
-    flags. This library indexes command-line tooling, so "what is the
-    ``--only`` flag" is an ordinary question and its ``--only`` is
-    ordinary text; running the full ``_split_tail`` grammar over the
-    whole string deleted the words and searched for the remainder
-    (``"what is the flag"``). Three guards close that:
-
-    1. **Leading run only.** Scanning stops at the first token that is
-       a non-flag *prose* word, so a flag-shaped word inside a
-       sentence is never reached.
-    2. **Filter tokens fall through, not stop.** ``+tag`` / ``-tag``
-       atoms are part of the question (the filter parser consumes
-       them from question text), so a leading filter does not block a
-       ``--top_k`` that follows it. ``+c:opencode --top_k 5 what``
-       parses ``--top_k=5`` and leaves ``+c:opencode`` in question
-       text; the filter parser picks it up there.
-    3. **``--`` terminator.** Everything after a bare ``--`` is text,
-       so a user whose question *starts* with a flag can say so.
+    This library indexes command-line tooling, so "what is the ``--only`` flag" is an
+    ordinary question and its ``--only`` is ordinary text; running the full ``_split_tail``
+    grammar over the whole string deleted the words and searched for the remainder. Three
+    guards close that: the leading run only, so a flag-shaped word inside a sentence is never
+    reached; filter tokens fall through rather than stop, so a leading ``+tag`` does not block a
+    ``--top_k`` after it; and a ``--`` terminator, so a question that starts with a flag can
+    say so.
 
     Returns ``(parse_of_the_leading_flags, question_text)``.
     """
@@ -467,19 +340,15 @@ def _leftover_note(raw_args: tuple[str, ...], used: int, verb: str) -> str:
 def _tool_arg_clause(label: str, value: str | None) -> str:
     """A ``with <param>`` clause carrying a string argument verbatim.
 
-    Interpolating a value into an MCP call's parentheses is what
-    :func:`_verbatim` exists to avoid for questions, and the same
-    hazard reaches the tool sinks. ``check="x) then run Bash(rm -rf
-    /)"`` renders a call whose first closing paren belongs to the
-    *value*: an agent reading the line sees the call end early and
-    reads the tail as prose. Nothing escapes into a second command --
-    the value is quoted -- but an ambiguous instruction to an agent is
-    a defect.
+    Interpolating a value into an MCP call's parentheses is what :func:`_verbatim` exists to
+    avoid, and the same hazard reaches the tool sinks. ``check="x) then run Bash(rm -rf /)"``
+    renders a call whose first closing paren belongs to the *value*, so an agent reading the
+    line sees the call end early and reads the tail as prose. Nothing escapes into a second
+    command (the value is quoted), but an ambiguous instruction is a defect.
 
-    A present value therefore becomes a fenced block with the same
-    "pass this string verbatim" instruction the question path uses, and
-    an absent one returns ``""`` so the call keeps every parameter
-    visible in one line.
+    A present value therefore becomes a fenced block with the same verbatim instruction the
+    question path uses; an absent one returns ``""`` so the call keeps every parameter on one
+    line.
     """
     # An empty string is as unusable as an absent one, and the body
     # already carries a note saying so. A fenced block containing
@@ -498,36 +367,16 @@ def _refuse_unless_clean(
 ) -> str:
     """Refuse to render when the parse itself is too broken to render from.
 
-    Every prompt body calls this before it renders, and returns the
-    string in place of a body. Two conditions qualify, and both make
-    the *rendered command* wrong rather than merely incomplete:
+    Every body calls this and returns the string in place of a body. Two conditions qualify,
+    and both make the *rendered command* wrong rather than merely incomplete.
+    ``missing_values``: a value flag ended the tail, or the next token was itself a flag, so
+    ``modify mylib --tag`` rendered a command the CLI rejects. ``repurposed``: an unknown
+    flag's following word landed in a positional slot, so ``show --tag cli`` means "collection
+    ``cli``" to a verb with no ``--tag``, and on ``delete`` it becomes a slug.
 
-    ``missing_values``
-        A value flag ended the tail, or the next token was itself a
-        flag. ``modify mylib --tag`` rendered
-        ``Bash(lies library modify mylib --tag)``, which the CLI
-        rejects with ``Option '--tag' requires an argument`` -- and
-        the body said so in the same paragraph.
-
-    ``repurposed``
-        An unknown flag's following word landed in a positional slot.
-        ``show --tag cli`` means "collection ``cli``" to a verb with
-        no ``--tag``. Rendering that is how a flag the user typed
-        became an argument they never named -- and on ``delete`` it
-        became a slug.
-
-    The check is deliberately against *every* positional, not only the
-    ones a branch consumed. A surplus ``cli`` on
-    ``delete mylib --tag cli`` is reported by ``_leftover_note`` *and*
-    refused here; the old consumed-only test let the destructive verb
-    through, which is the one place the guard mattered most.
-
-    Sharing one guard across all seven bodies is the point. Five
-    bodies each carried their own copy, and they drifted: four
-    honoured ``missing_values``, one honoured ``repurposed``, and the
-    body with the most flags -- ``collections`` -- was the one that
-    shipped three exit-2 renders. A defect class closed once per body
-    is not closed.
+    The check is against *every* positional, not only consumed ones, because that is where it
+    mattered most. One shared guard across all seven bodies is the point; five per-body copies
+    drifted, and the body with the most flags shipped three exit-2 renders.
     """
     if parsed.missing_values:
         names = ", ".join(f"--{k}" for k in parsed.missing_values)
@@ -564,18 +413,13 @@ def _refuse_unless_clean(
 def _quoted_value_note(parsed: TailParse, args: tuple[str, ...], verb: str) -> str:
     """Name the values that carry literal quote characters.
 
-    The tail is split on whitespace only -- a shell lexer would raise
-    on ordinary English -- so ``--tag 'cli'`` and ``--title "Pydantic
-    basics"`` keep their quotes, and ``shlex.quote`` faithfully passes
-    the quote characters *into* the value. ``modify mylib --tag 'cli'``
-    tags the collection ``'cli'``; ``ingest --title "Pydantic basics"``
-    titles the page ``"Pydantic basics"``. Both are silent corruption
-    of the value rather than a refusal.
+    The tail is split on whitespace only, so ``--tag 'cli'`` and ``--title "Pydantic
+    basics"`` keep their quotes, and ``shlex.quote`` faithfully passes the quote characters
+    *into* the value. Both are silent corruption rather than a refusal.
 
-    This inspects every positional *and* every value flag, because
-    quoting a flag's value is the more common typo. ``--tag="a b"``
-    additionally splits at the first ``=`` and leaks ``b"`` into a
-    positional, which ``_leftover_note`` reports on its own.
+    This inspects every positional *and* every value flag, because quoting a flag's value is
+    the more common typo. ``--tag="a b"`` additionally splits at the first ``=`` and leaks
+    ``b"`` into a positional, which ``_leftover_note`` reports on its own.
     """
     quoted = [a for a in args if "'" in a or '"' in a]
     quoted += [f"--{k}={v!r}" for k, v in sorted(parsed.values.items()) if "'" in v or '"' in v]
@@ -613,25 +457,16 @@ def _render_flags(parsed: TailParse, include: tuple[str, ...]) -> str:
 def ask_prompt(tail: str) -> list[Message]:
     """Synthesized cited answer to a question.
 
-    The tail arrives as a single string; ``+tag`` / ``-tag`` filter
-    markers are parsed out of its leading run inside the body. The
-    routed ``mcp__lies__search`` / ``mcp__lies__lib_ask`` calls carry
-    the extracted filters.
+    The tail arrives as a single string; ``+tag`` / ``-tag`` filter markers are parsed out of
+    its leading run inside the body, and the routed ``search`` / ``lib_ask`` calls carry the
+    extracted filters.
 
-    The parameter is named ``tail``, like all six siblings, and that
-    name is load-bearing. The pre-0.42.0 signature was
-    ``(question, tag_expr, exclude_tags)``; keeping ``question`` made
-    this the one prompt where an old call did not fail. The other six
-    raise ``Missing required arguments: {'tail'}`` on the old shape.
-    Here, with ``question`` still declared, the old
-    ``{"question": ..., "tag_expr": ...}`` rendered a body that
-    searched with ``tag_expr=None`` and **silently dropped the
-    filter** -- a query scoped by a tag quietly answering from the
-    whole library, with nothing in the response to say so. Naming the
-    parameter ``tail`` makes the retired call fail loudly, in the same
-    shape as the other six. The filters move into the tail as
-    ``+tag`` / ``-tag`` tokens, which is where a host's slash
-    tokenizer can carry them anyway.
+    The parameter is named ``tail``, like all six siblings, and that name is load-bearing. The
+    pre-0.42.0 signature was ``(question, tag_expr, exclude_tags)``; keeping ``question`` made
+    this the one prompt where an old call did not fail loudly, rendering a body that searched
+    with ``tag_expr=None`` and **silently dropped the filter**, so a query scoped by a tag
+    quietly answered from the whole library. Naming it ``tail`` makes the retired call fail in
+    the same shape as the other six.
     """
     query_text, tag_expr, exclude_tags = _parse_question_filters(tail)
     if not query_text:
@@ -659,23 +494,15 @@ def ask_prompt(tail: str) -> list[Message]:
 def ground_prompt(tail: str) -> list[Message]:
     """Cite-snippet digest (no synthesis).
 
-    Same filter-parsing contract as ``ask_prompt``, and the same
-    reason it is parsed differently: the tail is a *question*, and a
-    question about command-line tooling is full of option flags. Only
-    the leading run of ``--flags`` is parsed
-    (:func:`_split_leading_flags`), so ``what is the --only flag``
-    grounds the words ``--only`` and ``flag`` rather than deleting
-    them. A leading ``+tag`` / ``-tag`` filter atom falls through the
-    scan rather than stopping it, so ``+c:opencode --top_k 5 ...``
-    parses ``--top_k=5`` and leaves the filter in question text; the
-    filter parser picks it up there. ``--top_k`` is clamped to [1, 10];
-    both ``--top_k=5`` and ``--top_k 5`` bind, so the value never leaks
-    into the query text.
+    Same filter-parsing contract as ``ask_prompt``, and the same reason it is parsed
+    differently: the tail is a *question*, and a question about command-line tooling is full
+    of option flags. Only the leading run of ``--flags`` is parsed, so ``what is the --only
+    flag`` grounds those words rather than deleting them. A leading filter atom falls through
+    the scan rather than stopping it. ``--top_k`` is clamped to [1, 10] and both spellings
+    bind, so the value never leaks into the query text.
 
-    The emptiness check runs *after* the filter pass, not before it.
-    A filter token is itself a positional, so a guard on
-    ``positionals`` let ``+c:opencode`` -- and a bare ``--top_k 5`` --
-    through and rendered ``search('')``.
+    The emptiness check runs *after* the filter pass: a filter token is itself a positional,
+    so a guard on ``positionals`` let ``+c:opencode`` through and rendered ``search('')``.
     """
     parsed, question = _split_leading_flags(
         tail,
@@ -710,14 +537,10 @@ def ground_prompt(tail: str) -> list[Message]:
             )
         ]
     note = parsed.note() + bad_top_k
-    # A flag-shaped word inside the question is text, and it stays
-    # there. Say so, because the other reading -- "the prompt ignored
-    # my --top_k" -- is the one a user forms when the words they typed
-    # come back inside a search string. The leading-flag scan reads
-    # ``--top_k`` past a leading ``+tag`` filter (filter atoms are
-    # question text, not prose), so ``+c:opencode --top_k 5 ...``
-    # parses ``--top_k=5``; a ``--top_k`` after a *prose* word is the
-    # case this note names.
+    # A flag-shaped word inside the question stays there. Say so: the other
+    # reading — "the prompt ignored my --top_k" — is the one a user forms
+    # when their words come back inside a search string. The leading scan
+    # already reads ``--top_k`` past a leading ``+tag`` filter.
     if any(tok.startswith("--") for tok in question.split()):
         note += (
             " Flags are read from the leading run only, so a --flag after"
@@ -754,16 +577,9 @@ _LIBRARY_SUBS = (
     "where, enrich-tags, tag, bootstrap-all (register-shipped)"
 )
 # Per-verb flag vocabulary, transcribed from the Typer signatures in
-# ``src/lies/library/collections_cli.py``: (value flags, boolean
-# flags). Per-verb rather than one union set, because the two errors
-# are symmetric and both are silent. Too narrow and a real flag
-# (``new --tag cli``) is reported as a typo with its value falling
-# into a positional; too wide and a flag the verb does not have is
-# parsed as a boolean, reported as "on", and never rendered. Matching
-# the signature exactly is the only setting where neither happens --
-# ``tests/unit/mcp/test_rendered_commands_are_runnable.py`` checks
-# every rendered command against the live Typer app, so the table
-# cannot drift again without a test going red.
+# ``src/lies/library/collections_cli.py``. Per-verb because both errors are
+# silent: too narrow and a real flag is reported as a typo, too wide and an
+# absent flag is parsed as a boolean and never rendered.
 _LIBRARY_VERB_FLAGS: dict[str, tuple[frozenset[str], frozenset[str]]] = {
     "list": (frozenset(), frozenset({"json"})),
     "show": (frozenset(), frozenset()),
@@ -802,27 +618,16 @@ def _needs_name_note(raw_sub: str, what: str) -> str:
 def collections_prompt(tail: str) -> list[Message]:
     """Library collection registry CRUD.
 
-    The tail is whitespace-separated, so ``<args…>`` binds one token per
-    argument. An argument that needs to contain a space cannot be
-    expressed through this prompt; the body says so and points at a
-    direct ``Bash`` call, where the agent controls its own quoting.
+    The tail is whitespace-separated, so ``<args…>`` binds one token per argument. An argument
+    that must contain a space cannot be expressed here; the body points at a direct ``Bash``
+    call, where the agent controls its own quoting.
 
-    A positional the verb has no slot for is reported, never appended
-    to the rendered command. The alternative -- splicing surplus
-    positionals into the command line -- is how a flag the parser did
-    not recognise (``--tags foo,bar``) turned into a bare argument the
-    user never asked to pass, on a verb that then ran with it.
+    A positional the verb has no slot for is reported, never appended to the command, and a
+    verb requiring a collection name refuses to render rather than emitting a placeholder that
+    exits 2.
 
-    A verb that requires a collection name refuses to render at all
-    when the name is missing, rather than rendering the literal
-    ``'<slug>'`` placeholder into a command that exits 2.
-
-    Parsed twice: once against the union of every verb's flags to find
-    the subcommand, then again against that verb's own flags to render
-    it. The second parse is authoritative -- its ``unknown`` and
-    ``repurposed`` sets are what name a flag the verb has no slot for,
-    and refuse when that flag's value would otherwise be read as a
-    positional the user did not type.
+    Parsed twice: once to find the subcommand, then against that verb's own flags to render it.
+    The second parse is authoritative.
     """
     first = _split_tail(
         tail,
@@ -847,11 +652,8 @@ def collections_prompt(tail: str) -> list[Message]:
     note = parsed.note()
     args = parsed.positionals[1:]
 
-    # Shared with every other body. `args` excludes the subcommand, so a
-    # repurposed value that landed in the subcommand slot is not
-    # double-counted; `collections_prompt` reaches this before any
-    # branch, which is why the verb with the most flags no longer
-    # needs its own copy of the rule.
+    # Shared with every other body. ``args`` excludes the subcommand, so a
+    # value that landed there is not double-counted.
     refusal = _refuse_unless_clean(parsed, f"library {raw_sub}", args=args)
     if refusal:
         return [Message(refusal)]
@@ -902,12 +704,10 @@ def collections_prompt(tail: str) -> list[Message]:
         if not source_flag and len(args) > 1:
             source_flag = f" --source {shlex.quote(args[1])}"
             used = 2
-        # `new_cmd` raises `BadParameter("library new requires
-        # --source")` in its body -- a runtime check, not a Typer
-        # parse, so no signature-derived guard can see it. `--prompt`
-        # does not satisfy it: the check runs before `prompt` is read.
-        # Rendering without a source produced `Bash(lies library new
-        # mylib)`, which exits 2 on the *default* invocation of the verb.
+        # ``new_cmd`` raises ``BadParameter("library new requires --source")``
+        # in its body — a runtime check no signature-derived guard can see, and
+        # ``--prompt`` does not satisfy it. Rendering without a source produced a
+        # command that exits 2 on the verb's default invocation.
         if "source" not in parsed.values and len(args) <= 1:
             return [
                 Message(
@@ -920,11 +720,9 @@ def collections_prompt(tail: str) -> list[Message]:
                     f"No command was run."
                 )
             ]
-        # A second positional IS a source the verb accepts, so the
-        # generic leftover note ("the verb does not take it") names the
-        # wrong cause. What happened is that a --source/--prompt flag
-        # took precedence, and the user should be told their source was
-        # dropped rather than merely unconsumed.
+        # A second positional IS a source the verb accepts, so the generic
+        # leftover note names the wrong cause: a ``--source``/``--prompt`` flag
+        # took precedence and the user's source was dropped.
         dropped_source = ""
         if len(args) > 1 and used == 1:
             dropped_source = (
@@ -951,11 +749,9 @@ def collections_prompt(tail: str) -> list[Message]:
             + note
         )
     elif sub == "tag":
-        # ``tag <slug> <t1> <t2>`` is the shape users reach for;
-        # ``lies library`` spells it ``modify --tag``. Both spellings
-        # render, so the flag form carries ``--tag`` here too -- reading
-        # tags only from the positionals dropped ``tag mylib --tag docs``
-        # on the floor, and the rendered command ran with none.
+        # ``tag <slug> <t1> <t2>`` is the shape users reach for; ``lies library``
+        # spells it ``modify --tag``. Both render, so the flag form carries
+        # ``--tag`` here too.
         if not args:
             return [Message(_needs_name_note(raw_sub, "slug"))]
         tags = args[1:]
@@ -1010,11 +806,9 @@ def collections_prompt(tail: str) -> list[Message]:
     return [Message(body)]
 
 
-# ``lies ingest`` -- transcribed from the Typer signature in
-# ``src/lies/library/cli.py``. There is no positional argument and no
-# ``--type``: the ingest path is deterministic and never asks a model
-# what kind of page a file is. A bare path in the tail is treated as
-# ``--source``, which is the shape users reach for.
+# ``lies ingest`` — transcribed from the Typer signature in
+# ``src/lies/library/cli.py``. There is no positional and no ``--type``
+# on the ingest path; a bare path in the tail is treated as ``--source``.
 _INGEST_VALUE_FLAGS = frozenset(
     {
         "source",
@@ -1043,11 +837,10 @@ _INGEST_DELETE_REMEDY = (
     "page file is a filesystem delete, so ask the user which they mean "
     "before running anything."
 )
-# ``--title`` is the one free-text flag, so it eats every word up to the
-# next ``--flag``. A source typed after it is consumed as part of the
-# title, and the user is then told they gave no source -- the diagnosis
-# points away from the cause. The note rides along on every render path
-# so the ordering rule is stated where the mistake is made.
+# ``--title`` eats every word up to the next ``--flag``, so a source typed
+# after it is consumed as part of the title and the user is told they gave
+# no source — a diagnosis pointing away from the cause. The note rides on
+# every render path so the rule is stated where the mistake is made.
 _INGEST_TITLE_NOTE = (
     " Note: `--title` takes every following word up to the next flag as "
     "its value, so put the source first or attach it with `--source "
@@ -1093,12 +886,9 @@ def ingest_prompt(tail: str) -> list[Message]:
     refusal = _refuse_unless_clean(parsed, "ingest")
     if refusal:
         return finish(refusal)
-    # ``--force/--no-force`` and ``--dry-run/--no-dry-run`` are single
-    # Click options carrying both spellings, and the negated form is
-    # the CLI's own default -- so reading only the positive form made
-    # ``--no-force`` a silent no-op: the flag parsed, the body never
-    # mentioned it, and the command ran with ``force=True``'s
-    # opposite while the user believed they had said something.
+    # ``--force/--no-force`` and ``--dry-run/--no-dry-run`` are single Click
+    # options carrying both spellings, and the negated form is the CLI's own
+    # default, so both must be read.
     dry = " --dry-run" if parsed.flag_on("dry-run") else ""
     force = " --force" if parsed.flag_on("force") else ""
     if "no-dry-run" in parsed.booleans:
@@ -1136,13 +926,10 @@ def ingest_prompt(tail: str) -> list[Message]:
             + _quoted_value_note(parsed, parsed.positionals, "ingest")
         )
     elif source is not None:
-        # `ingest` derives a collection name from `--collection`,
-        # `--slug-prefix`, or a *batch* parent directory -- never from
-        # a single source. So `lies ingest --source /tmp/a.md` exits 2
-        # with "no collection name could be derived from the source",
-        # and that bare-path form is the one `instructions.md`
-        # documents. A runtime `typer.Exit`, invisible to any
-        # signature-derived guard, so the body refuses here.
+        # ``ingest`` derives a collection name from ``--collection``,
+        # ``--slug-prefix`` or a *batch* parent directory — never from a single
+        # source. A runtime ``typer.Exit``, invisible to a signature-derived
+        # guard, so the body refuses here.
         if not (parsed.values.get("collection") or parsed.values.get("slug-prefix")):
             return finish(
                 f"Cannot run ingest: --source {source!r} was given with no "
@@ -1174,19 +961,15 @@ def ingest_prompt(tail: str) -> list[Message]:
 def lint_prompt(tail: str) -> list[Message]:
     """Health-check the corpus.
 
-    The vocabulary is the tool's own signature: ``lint`` takes
-    ``name``, ``check``, ``fix``, and ``force_repair``. ``name`` and
-    ``force_repair`` were unreachable before -- the body hard-coded
-    ``name=None`` and never read the fourth parameter, so a user
-    scoping a lint to one wiki or asking for the flock reaped got
-    neither, and the second reading was silent.
+    The vocabulary is the tool's own signature: ``name``, ``check``, ``fix`` and
+    ``force_repair``. ``name`` and ``force_repair`` were unreachable before (the body
+    hard-coded ``name=None`` and never read the fourth parameter), so scoping a lint to one
+    wiki, or asking for the flock reaped, got neither and the second reading was silent.
 
-    A bare positional binds ``check``, which is what the pre-0.42.0
-    signature declared first (``def _lint_prompt(check=None, ...)``).
-    ``lint orphan`` is the natural migration off that shape and it used
-    to vanish with no word; the sibling ``reindex`` and ``sync``
-    bodies already honour their own bare-``all`` legacy spelling, so
-    ``lint`` was the odd one out.
+    A bare positional binds ``check``, which is what the pre-0.42.0 signature declared first.
+    ``lint orphan`` is the natural migration off that shape and it used to vanish with no
+    word; the sibling ``reindex`` and ``sync`` bodies already honour their own bare-``all``
+    legacy spelling, so ``lint`` was the odd one out.
     """
     parsed = _split_tail(
         tail,
@@ -1198,25 +981,10 @@ def lint_prompt(tail: str) -> list[Message]:
     if refusal:
         return [Message(refusal)]
     if "check" in parsed.values and not parsed.values["check"].strip():
-        # `--check=` binds the empty string, and
-        # ``orchestrator.run_lint`` reads a blank check as *no
-        # filter* -- so the user got the whole report for a filter
-        # they asked for. A note on a rendered call was the weaker
-        # repair: the call still ran, and a body that renders a
-        # command is a body promising an answer, so the user had to
-        # read the trailing sentence to learn the scope had been
-        # discarded. Refusing is the stronger one -- nothing runs,
-        # and the refusal names both what was typed and what to type
-        # instead. ``ground`` names a malformed ``--top_k`` the same
-        # way; this is the same defect one parameter over.
-        #
-        # The refusal does not enumerate the categories. The tool
-        # derives them from the merged report at run time
-        # (``_canonical_check`` over the findings' own categories),
-        # so a static list here would be a second table to drift
-        # from a run it cannot see -- the defect class this whole
-        # branch exists to close. A ``--check`` that matches nothing
-        # already renders the available categories.
+        # ``--check=`` binds the empty string and ``run_lint`` reads a blank check
+        # as *no filter*, so the user got the whole report for a filter they asked
+        # for. Refusing beats a note: nothing runs. The refusal does not enumerate
+        # categories — the tool derives them at run time, so a static list drifts.
         return [
             Message(
                 "Cannot run lint: --check= is empty. The tool reads a blank "
@@ -1277,23 +1045,17 @@ def reindex_prompt(tail: str) -> list[Message]:
     embed = parsed.flag_on("embed")
     force = parsed.flag_on("force")
     cleanup = parsed.flag_on("cleanup")
-    # ``all`` is the destructive full-reindex marker. It arrives as
-    # ``--all`` from a flag-style tail and as a bare ``all`` or ``all_``
-    # from the pre-single-tail positional convention this prompt used
-    # to declare; all three mean the same thing, and treating the
-    # positional as a no-op would silently downgrade a destructive
-    # rebuild the user asked for.
+    # ``all`` is the destructive full-reindex marker. It arrives as ``--all``
+    # and as a bare ``all`` / ``all_``; treating the positional as a no-op
+    # would silently downgrade a destructive rebuild the user asked for.
     all_ = parsed.flag_on("all") or any(p.rstrip("_").lower() == "all" for p in parsed.positionals)
     name = parsed.values.get("name")
     refusal = _refuse_unless_clean(parsed, "reindex")
     if refusal:
         return [Message(refusal)]
-    # `all` / `all_` are the legacy bare-word spelling and are
-    # consumed; everything else is a positional the tool has no slot
-    # for. This was the only body of seven with no surplus report, and
-    # it cost the most: `--name` is the only way to scope a reindex to
-    # a wiki, so `reindex pydantic` reindexed the *default* wiki and
-    # said nothing about the word it dropped.
+    # ``all`` / ``all_`` are consumed; everything else is a positional the tool
+    # has no slot for, and is reported rather than dropped — ``--name`` is the
+    # only way to scope a reindex, so a dropped word reindexed the wrong wiki.
     legacy = sum(1 for p in parsed.positionals if p.rstrip("_").lower() == "all")
     destructive = cleanup or all_
     body = (
@@ -1313,11 +1075,10 @@ def reindex_prompt(tail: str) -> list[Message]:
     return [Message(body)]
 
 
-# ``lies sync`` -- transcribed from the Typer signature in
-# ``src/lies/cli/ingestion.py``. It takes ONE positional collection and
-# has no ``--only``, ``--jobs``, ``--scraper-timeout``, ``--no-ingest``,
-# ``--dry-run``, or ``--data-dir``; the old prompt invented all of them
-# and rendered a command that exited 2 on every invocation.
+# ``lies sync`` — transcribed from the Typer signature in
+# ``src/lies/cli/ingestion.py``. It takes ONE positional collection and has
+# no ``--only``, ``--jobs``, ``--scraper-timeout``, ``--no-ingest``,
+# ``--dry-run`` or ``--data-dir``.
 _SYNC_VALUE_FLAGS = frozenset({"source", "name"})
 _SYNC_BOOL_FLAGS = frozenset(
     {
@@ -1343,26 +1104,15 @@ _SYNC_TAIL = (
 def sync_prompt(tail: str) -> list[Message]:
     """Pull + ingest remote sources for collections named in the request.
 
-    No positionals. The agent identifies collection names from the
-    user's natural-language request and dispatches one
-    ``Bash(lies sync <name>)`` per name. ``lies sync`` takes one
-    positional per invocation, so N names = N Bash calls; a request
-    that names no collection (or names them generally, like "sync the
-    library") leaves the positional off so the CLI syncs every
-    registered collection with a scraper.
+    No positionals. The agent identifies collection names from the user's request and
+    dispatches one ``Bash(lies sync <name>)`` per name, since ``lies sync`` takes one
+    positional per invocation; a request naming no collection leaves the positional off so the
+    CLI syncs everything registered.
 
-    The natural-language handoff matches the shape of ``ask_prompt``
-    and ``ground_prompt``: a verbatim block carries the user's full
-    request to the agent, which interprets it semantically. A pasted
-    English sentence ("please resync my library collections") no
-    longer fans out across the library, because the agent reads the
-    request and asks before dispatching when names are ambiguous.
-
-    Flags (``--force`` / ``--skip-reindex`` / ``--source`` / ``--name``
-    and their negated forms) are still parsed by the prompt and
-    threaded through identically; only collection *identification*
-    moves to the agent. Flag parsing stays deterministic because the
-    model is not asked to spot a ``--skip-reindex`` token.
+    The handoff matches ``ask_prompt``: a verbatim block carries the request to the agent,
+    which interprets it semantically and asks when names are ambiguous, so pasted English no
+    longer fans out across the library. Flags are still parsed by the prompt and threaded
+    through identically; only collection *identification* moves to the agent.
     """
     parsed = _split_tail(
         tail,
@@ -1370,12 +1120,10 @@ def sync_prompt(tail: str) -> list[Message]:
         known_flags=_SYNC_KNOWN_FLAGS,
     )
     note = parsed.note()
-    # `refuse_unknown`: ``lies sync`` with no positional syncs *every*
-    # registered collection, so a typo that the body would otherwise
-    # swallow silently could turn a one-collection request into a
-    # whole-library scrape and reindex. Every other body is safe on
-    # an unknown flag — dropping a flag leaves a valid command —
-    # which is why this is a parameter rather than the default.
+    # ``refuse_unknown``: ``lies sync`` with no positional syncs *every*
+    # registered collection, so a swallowed typo could turn a one-collection
+    # request into a whole-library scrape. Every other body is safe on an
+    # unknown flag, which is why this is a parameter rather than the default.
     refusal = _refuse_unless_clean(parsed, "sync", refuse_unknown=True)
     if refusal:
         return [Message(refusal)]
@@ -1426,20 +1174,16 @@ def sync_prompt(tail: str) -> list[Message]:
 def register_all(mcp: FastMCP) -> None:
     """Wire each impl function as ``@mcp.prompt`` on ``mcp``.
 
-    Every prompt takes exactly one ``str``. Hosts that bind slashes to
-    MCP prompts pre-tokenize the tail on whitespace and bind tokens
-    positionally to declared parameters, so a typed parameter in
-    position two or later receives a bare word and fails JSON decode.
-    One string slot has no such problem, and the flags are parsed
-    inside each body.
+    Every prompt takes exactly one ``str``. Hosts that bind slashes to MCP prompts
+    pre-tokenize the tail on whitespace and bind positionally, so a typed parameter past
+    position one receives a bare word and fails JSON decode. One string slot has no such
+    problem, and the flags are parsed inside each body.
 
-    One string slot makes the slash path *safe*, not *complete*: the
-    host binds exactly one token and drops the rest. A multi-token
-    tail reaches a prompt whole only through ``get_prompt``, whose
-    arguments are not pre-tokenized -- that is the path
-    ``instructions.md`` routes user questions down, and the reason
-    ``_split_tail`` carries a grammar the slash form never exercises
-    in full.
+    One string slot makes the slash path *safe*, not *complete*: the host binds exactly one
+    token and drops the rest. A multi-token tail reaches a prompt whole only through
+    ``get_prompt``, whose arguments are not pre-tokenized; that is the path
+    ``instructions.md`` routes user questions down, and the reason ``_split_tail`` carries a
+    grammar the slash form never exercises in full.
     """
 
     @mcp.prompt(

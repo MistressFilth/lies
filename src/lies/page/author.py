@@ -54,22 +54,15 @@ _ALLOWED_TYPES: frozenset[str] = frozenset(
 
 
 class _SectionRefusal(BaseModel):
-    """Sentinel returned by :func:`build_author_plan` when the body omits
-    a heading required by the wiki's section contract.
+    """Sentinel returned by :func:`build_author_plan` when the body omits a heading required by the
+    wiki's section contract.
 
-    Underscore-prefixed: the refusal is an internal seam between
-    :func:`build_author_plan` and the orchestrator/MCP/CLI call sites.
-    Callers translate it into their own error envelope (an
-    errors-as-value ``MemoryReceipt`` from
-    :meth:`Orchestrator.file_back_author`, or an MCP
-    ``WriteKnowledgeResult``/CLI exit 2 — Tasks 4 and 5).
-
-    Attributes:
-        error: Human-readable refusal message; names the missing headings.
-        page_type: Page type the operator attempted to write.
-        slug: Slug the operator supplied (echoed back so callers can
-            include it in their error envelope without re-deriving it).
-        title: Title the operator supplied (same echo rationale).
+        Attributes:
+            error: Human-readable refusal message; names the missing headings.
+            page_type: Page type the operator attempted to write.
+            slug: Slug the operator supplied (echoed back so callers can
+                include it in their error envelope without re-deriving it).
+            title: Title the operator supplied (same echo rationale).
     """
 
     model_config = ConfigDict(frozen=True)
@@ -109,20 +102,6 @@ def build_author_plan(
     section_contract: SectionContract | None = None,
 ) -> MemoryPlan | _SectionRefusal:
     """Build a single-op MemoryPlan that writes one page to the wiki.
-
-    Returns ``PageCreate`` if the slug does not exist; ``PageUpdate``
-    (with ``expected_sha256``) if it does.
-
-    The synthesis branch is added in Task 5; overview lands in Task 3.
-
-    When ``section_contract`` is provided, the body is checked against
-    the per-type required-heading contract (F17). Missing sections
-    short-circuit with a :class:`_SectionRefusal` instead of
-    producing a plan — the orchestrator-level refusal seam in
-    :meth:`Orchestrator.file_back_author` translates that into an
-    errors-as-value ``MemoryReceipt``. ``section_contract=None`` (the
-    default) skips the check entirely; production call sites in
-    Tasks 4 and 5 thread the wiki's resolved contract through.
 
     Raises:
         WikiPlanInvalid: ``type`` not in ALLOWED_PAGE_TYPES.
@@ -255,20 +234,7 @@ def _format_author_body(
     sources: list[str],
     render_format: str | None = None,
 ) -> str:
-    """Frontmatter + body assembly for an authored page.
-
-    YAML safety: ``title`` and ``collection`` are double-quoted. Empty
-    lists render as ``[]``. The body is the operator's content verbatim
-    (synthesis branch overrides this in Task 5 with the ``## Evidence``
-    codepath).
-
-    ``render_format`` (Task 7) records the body shape on synthesis
-    frontmatter (``"md"`` / ``"table"`` / ``"marp"``) so a future
-    curator knows the answer's intended output format without parsing
-    the body. Omitted from frontmatter when ``None`` to preserve
-    backwards-compat with non-synthesis callers (which have no format
-    notion).
-    """
+    """Frontmatter + body assembly for an authored page."""
     title_q = '"' + title.replace("\\", "\\\\").replace('"', '\\"') + '"'
     collection_q = '"' + collection.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
@@ -280,11 +246,9 @@ def _format_author_body(
     parts.append(_yaml_list("sources", sources))
     parts.append(_yaml_list("derived_from", derived_from))
     if render_format is not None:
-        # YAML safety: render_format is operator-supplied free-form text
-        # (the type is ``str | None``), so quote it to neutralise any
-        # ``:``, ``[``, ``#`` or other YAML-significant characters a
-        # future caller might pass. Mirrors the title_q / collection_q
-        # quote-and-escape pattern above.
+        # YAML safety: ``render_format`` is operator-supplied free-form text, so quote it to
+        # neutralise any ``:``, ``[``, ``#`` or other YAML-significant character a future caller
+        # might pass. Mirrors the ``title_q`` / ``collection_q`` pattern above.
         render_format_q = '"' + render_format.replace("\\", "\\\\").replace('"', '\\"') + '"'
         parts.append(f"render_format: {render_format_q}")
     parts.append("---")

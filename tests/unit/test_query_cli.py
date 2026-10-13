@@ -1,23 +1,4 @@
-"""CLI tests for ``lies query --collection/--no-file/--force-file`` (F3).
-
-The four new flags surface Task 4's file-back plumbing on the CLI:
-
-- ``--collection NAME`` flows through to the orchestrator's
-  ``tag_expr="c:<name>"`` (the F15 strict-name prefix — matches what
-  the MCP ``query`` tool does for the same kwarg).
-- ``--no-file`` overrides the agent's ``should_file`` verdict by passing
-  ``file_back=False``; no write happens and no receipt is printed.
-- ``--force-file`` flips ``file_back`` on even when the agent judged
-  the answer unworthy of a page.
-- The receipt is rendered as ``(synthesis: durably filed - <op>: <path>)``
-  on success, ``(synthesis: error — <first error>)`` on failure, and
-  silently omitted when both ``changed_pages`` and ``errors`` are empty.
-
-``--force-file`` (or an agent that marked ``should_file=True``) without
-``--collection`` is a hard error: the CLI exits 2 with the spec'd
-``error: --collection NAME required to file synthesis (or pass --no-file to skip)``
-message, mirroring the spec's typed-error contract.
-"""
+"""CLI tests for the ``lies query`` collection and file-back flags."""
 
 from __future__ import annotations
 
@@ -52,33 +33,19 @@ def _run_query_call(*args: str) -> mock.Mock:
 
 
 def test_query_no_file_skips_file_back() -> None:
-    """``--no-file`` overrides ``should_file``; CLI passes ``file_back=False`` to orchestrator.
-
-    F18/F19 renamed ``file=`` to ``file_back=``; the CLI translates
-    ``--no-file`` → ``file_back=False``.
-    """
+    """``--no-file`` overrides ``should_file``; CLI passes ``file_back=False`` to orchestrator."""
     call = _run_query_call("--no-file")
     assert call.kwargs["file_back"] is False
 
 
 def test_query_force_file_writes_even_when_should_file_false() -> None:
-    """``--force-file`` flips ``file_back`` on independent of ``should_file``.
-
-    No flag → ``file_back=True`` (the orchestrator's default).
-    ``--force-file`` → ``file_back=True`` (matches no-flag default,
-    but the CLI's translation makes the operator's intent explicit).
-    """
+    """``--force-file`` flips ``file_back`` on independent of ``should_file``."""
     call = _run_query_call("--force-file")
     assert call.kwargs["file_back"] is True
 
 
 def test_query_collection_passes_through() -> None:
-    """``--collection NAME`` translates to ``tag_expr="c:NAME"``.
-
-    F18/F19 retired the ``collection=`` kwarg on ``Orchestrator.run_query``;
-    the F15 ``c:`` strict-name prefix on the ``tag_expr`` kwarg is the
-    canonical surface (matches what the MCP ``query`` tool does).
-    """
+    """``--collection NAME`` translates to ``tag_expr="c:NAME"``."""
     call = _run_query_call("--collection", "claude-code")
     assert call.kwargs["tag_expr"] == "c:claude-code"
 
@@ -92,14 +59,7 @@ def test_query_default_collection_file_and_force_file() -> None:
 
 
 def test_query_missing_collection_with_force_file_exits_2() -> None:
-    """Missing collection with ``--force-file`` raises ``WikiPlanInvalid`` → exit 2.
-
-    The orchestrator raises :class:`WikiPlanInvalid` when the caller
-    asks for a filing (``file_back=True`` and ``should_file=True`` /
-    ``--force-file``) but does not supply ``--collection``. The CLI
-    catches the typed error, prints the spec'd message on stderr, and
-    exits 2 so operators can script the failure.
-    """
+    """Missing collection with ``--force-file`` raises ``WikiPlanInvalid`` → exit 2."""
     from lies.memory.models import WikiPlanInvalid
 
     with (

@@ -1,22 +1,4 @@
-"""``lies wiki`` — read views over the wiki (F29).
-
-Subcommands
------------
-``provenance``  List every page's ``derived_from`` list with ``--orphan`` and ``--page`` filters.
-
-The sub-app is registered onto the root ``app`` from
-:mod:`lies.cli.__init__` (like the other ``*_app`` sub-apps). Heavy
-imports (catalog, helper) stay inside the command body so ``import
-lies.cli`` does not pull sqlite / orchestrator / pydantic_ai.
-
-Note on structure: typer 0.27 flattens any ``Typer`` instance with
-exactly one ``@command`` into a single command rather than a group.
-The ``wiki_app`` registered onto the root ``app`` IS the
-``provenance`` command's surface; ``CliRunner`` invokes it directly
-without a ``provenance`` prefix. This will be revisited if a second
-``wiki`` subcommand is added (multi-command group restores normal
-dispatch).
-"""
+"""``lies wiki`` — read views over the wiki (F29)."""
 
 from __future__ import annotations
 

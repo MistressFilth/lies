@@ -1,24 +1,4 @@
-"""Integration tests for N2 linter tool dispatch.
-
-Exercises the full ``Orchestrator.run_lint`` path with the linter
-sub-agent registered against ``TestModel`` (no live LLM key
-required). Verifies:
-
-1. Small-wiki regression: a wiki with ≤10 pages runs through the
-   orchestrator's lint pass without prompt-overflow errors and
-   produces a merged report (shell + LLM).
-2. Big-wiki tool-path: a wiki at the pre-N2 break-point (>150
-   pages) completes the same dispatch via the tool surface without
-   prompt-stuffing overflow AND without ``WikiPageNotFound``
-   errors that would otherwise be silently swallowed by the
-   orchestrator's fallback path.
-
-Both gated behind ``INTEGRATION=1`` (Makefile:36-45) so the
-pre-commit ``make-unit-test`` hook skips them; CI with the gate
-enabled runs both. Pattern matches existing
-``tests/integration/test_lint_report_end_to_end.py`` for the
-pre-N2 surface.
-"""
+"""Integration tests for N2 linter tool dispatch."""
 
 from __future__ import annotations
 
@@ -155,16 +135,7 @@ def test_small_wiki_lint_completes(tmp_path: Path) -> None:
 
 
 def test_big_wiki_lint_takes_tool_path(tmp_path: Path) -> None:
-    """A wiki above the pre-N2 break-point exercises the tool path.
-
-    Pre-N2 the linter received the entire corpus in the system
-    prompt; at ``_PRE_N2_BREAK_POINT`` (150+) pages that overflowed
-    the 128K local cap and the linter went silent on contradiction
-    / stale / data_gap findings. Post-N2 the linter pulls pages via
-    tools, the dispatch completes, and at least one ``wiki_read``
-    round-tripped page_ids through ``WikiMemoryService.read``
-    without raising.
-    """
+    """A wiki above the pre-N2 break-point exercises the tool path."""
     from lies.orchestrator import Orchestrator
     from tests.conftest import make_wiki, models_for_tests
 

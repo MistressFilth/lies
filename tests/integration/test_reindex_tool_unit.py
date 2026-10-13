@@ -113,18 +113,7 @@ async def test_reindex_elicitation_unavailable_no_qmd(mock_resolve_wiki) -> None
 async def test_reindex_elicitation_unavailable_surfaces_bypass_path(
     mock_resolve_wiki,
 ) -> None:
-    """cleanup=True + elicitation unavailable: return the bypass-path
-    envelope so the LLM caller can route around the MCP gate.
-
-    Bug E (session f39c9ef8): the host's MCP connection was older
-    than ``2026-07-28`` and rejected server-initiated elicitation.
-    The generic ``"elicitation unavailable: <inner-exc>"`` string
-    left the LLM with no actionable signal. The fix surfaces the
-    concrete workaround — restart the daemon (which negotiates a
-    newer protocol version) or invoke ``lies reindex --cleanup``
-    directly from the shell, where destructive flags run without
-    the MCP gate.
-    """
+    """Cleanup=True + elicitation unavailable: return the bypass-path envelope so the LLM caller can route around the MCP gate."""
     ctx = MagicMock(
         elicit=AsyncMock(
             side_effect=RuntimeError(
@@ -149,12 +138,7 @@ async def test_reindex_elicitation_unavailable_surfaces_bypass_path(
 async def test_reindex_all_elicitation_unavailable_surfaces_bypass_path(
     mock_resolve_wiki,
 ) -> None:
-    """all_=True + elicitation unavailable: same bypass-path message.
-
-    Pins the bypass-path translation for the destructive ``--all``
-    flag too — both ``cleanup`` and ``all_`` are destructive and
-    therefore gated by the elicitation check.
-    """
+    """All_=True + elicitation unavailable: same bypass-path message."""
     ctx = MagicMock(
         elicit=AsyncMock(side_effect=RuntimeError("no support")),
     )
@@ -179,8 +163,7 @@ async def test_reindex_all_elicit_with_all_text(
 
 @pytest.mark.asyncio
 async def test_reindex_cleanup_no_ctx_no_work(mock_resolve_wiki, mock_qmd_reindex) -> None:
-    """ctx=None + cleanup=True: gate runs; helper raises on ctx.elicit;
-    qmd_reindex NOT called; result carries 'elicitation unavailable'."""
+    """Ctx=None + cleanup=True: gate runs; helper raises on ctx.elicit; qmd_reindex NOT called; result carries 'elicitation unavailable'."""
     result = await reindex_tool(cleanup=True, ctx=None, name="t")
     mock_qmd_reindex.assert_not_called()
     assert result["indexed"] is False
@@ -190,9 +173,7 @@ async def test_reindex_cleanup_no_ctx_no_work(mock_resolve_wiki, mock_qmd_reinde
 
 @pytest.mark.asyncio
 async def test_reindex_destructive_hint_annotation() -> None:
-    """The registered reindex tool advertises destructiveHint=True so
-    host UIs can flag the surface even before the user passes the
-    destructive flags."""
+    """The registered reindex tool advertises destructiveHint=True so host UIs can flag the surface even before the user passes the destructive flags."""
     tool = await mcp.get_tool("reindex")
     assert tool.annotations is not None
     # Access via the snake_case source name — the same name we passed
@@ -205,11 +186,7 @@ async def test_reindex_destructive_hint_annotation() -> None:
 async def test_reindex_reconcile_sets_reconciled_true(
     ctx_accept, mock_qmd_reindex, mock_resolve_wiki
 ) -> None:
-    """``reconcile=True`` runs ``sync_collection`` per collection and
-    populates ``result.reconciled = True`` in the returned envelope.
-    Pins the F38 fix that wired the reconcile block into the
-    ``ReindexResult.reconciled`` field.
-    """
+    """``reconcile=True`` runs ``sync_collection`` per collection and populates ``result.reconciled = True`` in the returned envelope."""
     from lies.etl import sync_helper
 
     with (

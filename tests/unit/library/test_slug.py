@@ -21,15 +21,7 @@ def test_derive_slug_from_stem(tmp_path: Path, filename: str, expected: str) -> 
 
 
 def test_derive_slug_rejects_invalid_derived_stems(tmp_path: Path) -> None:
-    """Minor 39: post-validation catches derived stems that don't match ``_VALID_RE``.
-
-    The previous implementation passed the derived string straight through
-    without re-validating, so a source named ``-leading.md`` (stem
-    ``-leading``, starts with dash) or ``.dotfile`` (stem is the empty
-    string after the leading dot) silently produced an invalid slug
-    that would later crash ``write_mirror``. Re-validate after the
-    derivation.
-    """
+    """Post-validation catches derived stems that don't match ``_VALID_RE``."""
     from lies.library.slug import SlugError
 
     bad_path = tmp_path / "-leading.md"
@@ -61,12 +53,7 @@ def test_validate_slug_accepts_normal() -> None:
 
 
 def test_validate_slug_accepts_nested_paths() -> None:
-    """Nested paths (``<coll>/<file>``) are valid slugs.
-
-    Used by the WebScraper when preserving source hierarchy under the
-    collection root. Each segment must independently match the single
-    segment regex; total length ≤1024 chars.
-    """
+    """Nested paths (``<coll>/<file>``) are valid slugs."""
     assert (
         validate_slug("agents-and-tools/agent-skills/best-practices")
         == "agents-and-tools/agent-skills/best-practices"
@@ -74,8 +61,7 @@ def test_validate_slug_accepts_nested_paths() -> None:
 
 
 def test_derive_nested_slug_strips_extension_and_normalizes() -> None:
-    """Nested slug derivation: ``agents-and-tools/agent-skills/best-practices.md``
-    becomes ``agents-and-tools/agent-skills/best-practices``."""
+    """Nested slug derivation: ``agents-and-tools/agent-skills/best-practices.md`` becomes ``agents-and-tools/agent-skills/best-practices``."""
     assert (
         derive_nested_slug("agents-and-tools/agent-skills/best-practices.md")
         == "agents-and-tools/agent-skills/best-practices"
@@ -117,14 +103,7 @@ def test_derive_nested_slug_strips_extension_and_normalizes() -> None:
     ],
 )
 def test_derive_nested_slug_collapse_dots_and_leading_dashes(source: str, expected: str) -> None:
-    """``derive_nested_slug`` collapses ``.`` and strips leading/trailing dashes
-    per segment, matching what ``derive_slug`` does for the flat path.
-
-    Without this, doc archives whose filenames include version numbers
-    (Python docs, ``*.3.14.txt``) or dunder prefixes (Python docs,
-    ``__future__.txt``) produce invalid slugs that the ingest pipeline
-    quarantines one-by-one, aborting the run.
-    """
+    """``derive_nested_slug`` collapses ``.`` and strips leading/trailing dashes per segment, matching what ``derive_slug`` does for the flat path."""
     assert derive_nested_slug(source) == expected
 
 
@@ -153,21 +132,5 @@ def test_derive_nested_slug_collapse_dots_and_leading_dashes(source: str, expect
     ],
 )
 def test_derive_nested_slug_normalizes_every_segment(source: str, expected: str) -> None:
-    """Normalization is per segment, at every depth.
-
-    The unpacking ``*parents, tail = raw.rsplit("/", 1)`` yields at most
-    two values, so ``parents`` is a single string carrying the remaining
-    slashes rather than a list of segments. Normalizing that string as one
-    unit strips only its outer edges, and an interior ``.claude`` becomes
-    ``-claude`` with its leading dash intact — which ``_NESTED_RE`` then
-    rejects because every segment must start ``[a-z0-9]``.
-
-    Every existing case above has one directory level, where ``parents``
-    happens to be a single genuine segment and the defect is invisible.
-    A source tree two or more levels deep with a dotted or underscored
-    interior directory is where it surfaces, and there the raised
-    ``ValueError`` escapes ``_process_item``'s quarantine handler and
-    aborts the whole collection sync — observed as
-    ``lies reindex --reconcile`` dying on the switchyard collection.
-    """
+    """Normalization is per segment, at every depth."""
     assert derive_nested_slug(source) == expected

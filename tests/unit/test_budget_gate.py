@@ -1,18 +1,4 @@
-"""The budget gate must name *why* it failed, not just that it did.
-
-The gate's whole report is a timing verdict: a table of durations, a
-"confirmed in isolation" heading, and a remediation rubric about making
-tests faster. When the isolation re-measure could not be performed at
-all — a test that errors in a fresh process, a broken import, a flake,
-a timeout — that report was wrong in a way that cost real time. The
-re-run's actual traceback appeared on one line above a rubric telling
-the reader the test was too slow, so the first thing anyone did was go
-make a passing test faster.
-
-These cases pin the distinction. A measurement that never happened is
-reported as a measurement that never happened; only a measurement that
-happened and said "slow" produces the timing report.
-"""
+"""The budget gate must name *why* it failed, not just that it did."""
 
 from __future__ import annotations
 
@@ -55,14 +41,7 @@ def _stub_run(returncode: int, stdout: str = "", stderr: str = ""):
 def test_a_failing_rerun_quotes_stderr_not_just_stdout(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A collection error lands on stderr, and stderr is the whole story.
-
-    The old code reported ``proc.stdout.splitlines()[-1:]`` and nothing
-    else. A module that fails to import prints the traceback to stderr
-    and prints nothing useful to stdout, so the detail the gate showed
-    was empty or misleading — the one line a reader needed was the one
-    line it dropped.
-    """
+    """A collection error lands on stderr, and stderr is the whole story."""
     monkeypatch.setattr(
         subprocess,
         "run",
@@ -111,16 +90,7 @@ def test_a_timeout_is_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_the_rerun_bound_scales_with_the_batch() -> None:
-    """A fixed bound was wrong at both ends.
-
-    Large enough for any realistic batch, it is also large enough that
-    one wedged test stalls the gate for two minutes. Small enough for a
-    typical batch, it fires on a loaded machine and converts a noise
-    verdict into a hard failure -- the exact failure the re-measure
-    exists to prevent. So the bound is a floor plus a per-test
-    allowance, and the timeout handed to ``subprocess.run`` is derived
-    from the batch actually being re-run.
-    """
+    """The re-run bound scales with the batch size."""
     one = gate._isolation_timeout_s(1)
     many = gate._isolation_timeout_s(50)
     assert one == gate._ISOLATION_BASE_S + gate._ISOLATION_PER_TEST_S
@@ -131,18 +101,7 @@ def test_the_rerun_bound_scales_with_the_batch() -> None:
 
 
 def test_the_bound_reaches_subprocess_run(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The derived bound is the one actually handed to the subprocess.
-
-    A helper that computes the right number and a call site that still
-    passes a constant is a very ordinary way to ship the old behaviour
-    wearing the fix, so this reads the ``timeout`` off the call.
-
-    Sized by *passes* as well as tests: the gate now makes up to
-    ``_ISOLATION_REPEATS`` isolated runs, each a separate process paying
-    the interpreter-start floor, so a bound computed for one pass
-    under-bounds the rest and a killed pass is reported as "the
-    re-measure was unavailable" — a broken harness that is not broken.
-    """
+    """The derived bound is the one actually handed to the subprocess."""
     seen: dict[str, object] = {}
 
     def capture(*_args: object, **kwargs: object):
@@ -214,14 +173,7 @@ def _breaches() -> dict[str, tuple[float, bool]]:
 def test_an_unavailable_remeasure_does_not_print_the_timing_rubric(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The regression: a test that *errored* was reported as too slow.
-
-    Falling through to the timing report on a bail produced "HARD LIMIT
-    VIOLATIONS ... confirmed in isolation" and a rubric about making the
-    test cheaper, for a test whose actual problem was that it crashed
-    in a fresh process. The gate still fails — an unverified breach is
-    not a pass — but it must not assert a measurement it does not have.
-    """
+    """A test that errored is not reported as too slow."""
     monkeypatch.setattr(gate, "_call_durations", _breaches())
     monkeypatch.setattr(gate, "_GATE_DISABLED", False)
     monkeypatch.setattr(
@@ -291,13 +243,7 @@ def test_noise_clearing_the_limit_passes_without_the_rubric(
 
 @pytest.mark.slow
 def test_the_gate_still_uses_the_real_subprocess_for_a_real_measurement() -> None:
-    """Guard the seam the stubs above replace.
-
-    Without this, a typo in the argv or a ``-p _lies_budget_probe`` that
-    stopped loading would make every case above pass on a stub that
-    never runs pytest, and the gate would ship unable to measure
-    anything.
-    """
+    """Guard the seam the stubs above replace."""
     probe = "print('LIES_BUDGET_JSON=' + '{}')"
     proc = subprocess.run(
         [sys.executable, "-c", probe],

@@ -60,18 +60,7 @@ def test_writer_re_raises_QmdLockBusy_with_holder_pid(
     lib_with_git: Library,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """LibraryWriter.commit re-raises QmdLockBusy so the operator sees the holder PID.
-
-    The qmd embed helper raises a ``QmdLockBusy`` carrying
-    ``holder_pid=4242``. ``LibraryWriter.commit`` must re-raise the same
-    exception class so the MCP / CLI caller surfaces an
-    operator-actionable message ("qmd flock contention, holder PID 4242,
-    waited 30.0s, max 30.0s — wait and retry") instead of the generic
-    "warning: qmd embed failed" swallowed stderr line.
-
-    TODAY the broad ``except Exception`` catches ``QmdLockBusy`` and the
-    test fails with ``Failed: DID NOT RAISE``.
-    """
+    """LibraryWriter.commit re-raises QmdLockBusy so the operator sees the holder PID."""
     sentinel = QmdLockBusy(holder_pid=4242, waited_s=30.0, max_s=30.0)
     coll_dir = lib_with_git.collections_root / "claude_platform"
     coll_dir.mkdir(parents=True, exist_ok=True)
@@ -95,14 +84,7 @@ def test_writer_swallows_other_qmd_failures_unchanged(
     lib_with_git: Library,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Non-QmdLockBusy failures keep the swallow-and-warn shape.
-
-    CUDA OOM and qmd daemon down are transient derived-index outages;
-    the library commit is authoritative and must land even when qmd
-    fails. The split must not promote *every* qmd error to a re-raise;
-    only ``QmdLockBusy`` gets that treatment. Pins the existing
-    swallow-and-warn invariant against an over-eager refactor.
-    """
+    """Non-QmdLockBusy failures keep the swallow-and-warn shape."""
     cuda_oom = RuntimeError("cuMemAddressReserve: out of memory")
     coll_dir = lib_with_git.collections_root / "claude_platform"
     coll_dir.mkdir(parents=True, exist_ok=True)

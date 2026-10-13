@@ -1,9 +1,4 @@
-"""Shared fixtures + integration gate for tests/integration/.
-
-Every test in this directory skips unless ``INTEGRATION=1`` is set in the
-environment. This is the single gate; individual files no longer need to
-sprinkle their own ``pytestmark = pytest.mark.skipif(...)`` decorators.
-"""
+"""Shared fixtures + integration gate for tests/integration/."""
 
 from __future__ import annotations
 

@@ -82,12 +82,7 @@ def test_record_counters_rejects_unknown_counter(wiki: Wiki) -> None:
 
 
 def test_record_counter_accumulates_in_place(wiki: Wiki) -> None:
-    """``record_counter`` is additive across stages.
-
-    The pipeline runs through SCRAPE → NORMALIZE → WRITE; each stage may
-    see ``bytes_in`` independently. The receipt must reflect the total
-    seen across stages, not the value of the last call.
-    """
+    """``record_counter`` is additive across stages."""
     t = SyncTelemetry(wiki, "cpython")
     t.record_counter("bytes_in", 100)
     t.record_counter("bytes_in", 250)

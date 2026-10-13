@@ -51,11 +51,9 @@ def ingest_to_library(
     """One-shot migration script. See spec section 5."""
     from lies.cli import resolve_wiki as _resolve_wiki
 
-    # Deferred import: ``lies.qmd.cli`` runs ``lies.qmd.__init__``, which
-    # pulls in fastmcp + pydantic_ai (via ``lies.qmd.capability``).
-    # Importing here keeps ``import lies.cli`` cheap; the
-    # ``test_cli_lazy_imports`` no-fastmcp / no-pydantic_ai contract is
-    # preserved. Same rationale as ``library/writer.py``.
+    # Deferred import: ``lies.qmd.cli`` runs ``lies.qmd.__init__``, which pulls in fastmcp +
+    # pydantic_ai. Importing here keeps ``import lies.cli`` cheap and preserves the
+    # ``test_cli_lazy_imports`` no-fastmcp / no-pydantic_ai contract.
     from lies.qmd import cli as _qmd_cli
 
     wiki = _resolve_wiki(name)
@@ -91,12 +89,9 @@ def ingest_to_library(
     )
     if sha:
         typer.echo(f"wiki commit {sha[:8]}")
-    # Post-apply qmd cleanup hook (Task 14): for each collection that
-    # just moved to the library, unregister the per-wiki
-    # ``<wiki>_<collection>`` qmd index and register the library-side
-    # collection. The wiki-side atomic_commit above has already landed;
-    # qmd is a derived index, so every failure here is non-fatal and the
-    # migration commit stands.
+    # Post-apply qmd cleanup: for each collection that just moved, unregister the per-wiki
+    # ``<wiki>_<collection>`` index and register the library-side collection. The wiki-side
+    # commit has already landed and qmd is a derived index, so failures here are non-fatal.
     collections_moved = sorted({src.relative_to(wiki.wiki_dir).parts[0] for src, _ in plan.moves})
     for coll in collections_moved:
         try:

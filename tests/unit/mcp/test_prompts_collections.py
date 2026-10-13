@@ -28,9 +28,7 @@ def test_collections_unknown_subcommand_lists_options() -> None:
 
 
 def test_collections_reports_that_args_are_whitespace_separated() -> None:
-    """The tail is whitespace-separated, so a quoted phrase arrives as two
-    tokens with the quote characters kept verbatim. The body says so
-    instead of silently re-splitting the user's intended single argument."""
+    """The tail is whitespace-separated, so a quoted phrase arrives as two tokens with the quote characters kept verbatim."""
     [msg] = collections_prompt('modify claude_code "a b"')
     body = rendered_body(msg)
     assert "whitespace-separated" in body
@@ -40,12 +38,7 @@ def test_collections_reports_that_args_are_whitespace_separated() -> None:
 
 
 def test_a_quoted_flag_value_is_named_not_silently_stored() -> None:
-    """``--tag 'cli'`` stores the tag ``'cli'``, quotes included.
-
-    The note used to inspect positionals only, so the most common way
-    to quote -- a flag's value -- was unreported, and ``shlex.quote``
-    faithfully passed the quote characters *into* the value.
-    """
+    """``--tag 'cli'`` stores the tag ``'cli'``, quotes included."""
     [msg] = collections_prompt("modify claude_code --tag 'cli'")
     body = rendered_body(msg)
     assert "quotes are literal here" in body
@@ -53,20 +46,14 @@ def test_a_quoted_flag_value_is_named_not_silently_stored() -> None:
 
 
 def test_a_quote_in_a_collection_name_is_json_not_shell_quoting() -> None:
-    """An MCP tool argument is not a shell word.
-
-    ``shlex.quote("a'b")`` renders the six-character string
-    ``'"'"'b'``, so an agent copying the body looked up a collection
-    literally named that.
-    """
+    """An MCP tool argument is not a shell word."""
     [msg] = collections_prompt("show a'b")
     body = rendered_body(msg)
     assert 'name="a\'b"' in body, body
 
 
 def test_collections_shell_metacharacters_stay_one_argument() -> None:
-    """``shlex.join`` re-quotes a token containing shell syntax, so a
-    backtick or semicolon the user typed cannot widen the command."""
+    """``shlex.join`` re-quotes a token containing shell syntax, so a backtick or semicolon the user typed cannot widen the command."""
     [msg] = collections_prompt("modify claude_code `curl` evil")
     body = rendered_body(msg)
     assert "'`curl`' evil" in body
@@ -82,14 +69,7 @@ def test_collections_tolerates_an_apostrophe_in_a_name() -> None:
 
 
 def test_collections_refuses_a_flag_whose_value_would_become_the_name() -> None:
-    """``show --tag cli``: ``show`` declares no ``--tag``, so the flag is
-    unknown and ``cli`` falls through to the positional the body would
-    have handed to ``collections_read(name=…)``.
-
-    The note has to say the value was re-read as the name. "Ignored"
-    alone reads to the agent as "I dropped your flag", and it then
-    queries a collection the user never named.
-    """
+    """``show --tag cli``: ``show`` declares no ``--tag``."""
     [msg] = collections_prompt("show --tag cli")
     body = rendered_body(msg)
     assert "Cannot run" in body
@@ -99,12 +79,7 @@ def test_collections_refuses_a_flag_whose_value_would_become_the_name() -> None:
 
 
 def test_collections_refuses_a_verb_with_no_collection_name() -> None:
-    """The placeholder used to reach the command line.
-
-    ``Bash(lies library where '<slug>')`` exits 2 on the angle brackets
-    and reads to the agent as a real argument. Every verb that needs a
-    slug asks instead.
-    """
+    """A verb with no collection name must not render the command with a placeholder."""
     for tail, verb in (
         ("where", "where"),
         ("show", "show"),
@@ -122,9 +97,7 @@ def test_collections_refuses_a_verb_with_no_collection_name() -> None:
 
 
 def test_collections_still_reports_a_surplus_positional() -> None:
-    """A *declared* boolean followed by a bare word is a genuine surplus
-    positional, not a re-purposed flag value — it is reported, and the
-    command still renders."""
+    """A *declared* boolean followed by a bare word is a genuine surplus positional, not a re-purposed flag value — it is reported, and the command still renders."""
     [msg] = collections_prompt("delete mylib --force extra")
     body = rendered_body(msg)
     assert "Run Bash(lies library delete mylib --force)" in body
@@ -132,9 +105,7 @@ def test_collections_still_reports_a_surplus_positional() -> None:
 
 
 def test_collections_tag_renders_the_flag_spelling() -> None:
-    """``tag mylib --tag docs`` rendered ``lies library modify mylib``
-    and dropped the tag: the branch read tags from the positionals
-    only. Both spellings now reach the command."""
+    """``tag mylib --tag docs`` rendered ``lies library modify mylib`` and dropped the tag: the branch read tags from the positionals only."""
     [msg] = collections_prompt("tag mylib --tag docs")
     assert "Run Bash(lies library modify mylib --tag docs)" in rendered_body(msg)
 
@@ -143,15 +114,7 @@ def test_collections_tag_renders_the_flag_spelling() -> None:
 
 
 def test_new_says_when_a_source_positional_was_dropped_in_favour_of_a_flag() -> None:
-    """The generic leftover note names the wrong cause.
-
-    ``new mylib /tmp/src --prompt w.md`` renders the command *without*
-    ``/tmp/src``, and the leftover note says "1 positional(s) the verb
-    does not take" — but ``new`` does take a second positional; it is
-    the source, and a ``--source``/``--prompt`` flag won. A user told
-    the verb does not accept their source would conclude the flag
-    invented a rule.
-    """
+    """A source dropped in favour of a flag must be named as such, not as a generic leftover."""
     [msg] = collections_prompt("new mylib /tmp/src --prompt w.md")
     body = rendered_body(msg)
     assert "was the source you gave and the flag form won" in body, body

@@ -28,18 +28,7 @@ def wiki() -> None:
 def test_lint_tool_with_force_repair_propagates_unrepairable_as_string(
     wiki: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Real-path test for the MCP tool's ``force_repair=True`` propagation.
-
-    Drives the production-raised ``WikiFlockUnrepairable`` message
-    constructed by ``_acquire_wiki_flock`` (Task 2) through the MCP
-    tool surface. The tool catches the flock error and returns it as
-    an ``error:``-prefixed string.
-
-    Per the M1 spec's "Risks + mitigations" section, the
-    ``WikiFlockUnrepairable`` from ``_acquire_wiki_flock`` deliberately
-    omits pid (the file is unlinked before the retry); the
-    spec-mandated substring is ``lies flock mywiki force-repair``.
-    """
+    """Real-path test for the MCP tool's ``force_repair=True`` propagation."""
     # Derive the expected message from the production raise site rather
     # than hand-copying it: a reword in ``service.py:100-106`` would
     # otherwise leave this test green while asserting stale text. The

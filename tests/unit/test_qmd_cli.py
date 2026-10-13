@@ -168,9 +168,7 @@ def _qmd_json_payload() -> str:
 
 
 def test_qmd_query_normalizes_file_to_path(tmp_path: Path) -> None:
-    """Each result gains a ``path`` key with the qmd:// prefix stripped but
-    the ``<collection>/`` segment preserved (per-collection wiki subdir layout,
-    see PR #39)."""
+    """Each result gains a ``path`` key with the qmd:// prefix stripped but the ``<collection>/`` segment preserved."""
     with (
         patch("lies.qmd.cli.shutil.which", return_value="/usr/bin/qmd"),
         patch("lies.qmd.cli._run_qmd") as mock_run_qmd,
@@ -193,10 +191,7 @@ def test_qmd_query_normalizes_file_to_path(tmp_path: Path) -> None:
 
 
 def test_qmd_query_preserves_collection_in_path(tmp_path: Path) -> None:
-    """Regression for the live smoke bug: ``qmd://claude_code/hooks.md`` must
-    normalize to ``path="claude_code/hooks.md"`` (NOT ``"hooks.md"``), so the
-    synthesizer and retrieval layer can join it onto ``wiki.wiki_dir`` and find
-    the on-disk file at ``<wiki_dir>/<collection>/<path>``."""
+    """For the live smoke bug: ``qmd://claude_code/hooks.md`` must normalize to ``path="claude_code/hooks.md"`` (NOT ``"hooks.md"``)."""
     payload = json.dumps(
         [
             {
@@ -219,8 +214,7 @@ def test_qmd_query_preserves_collection_in_path(tmp_path: Path) -> None:
 
 
 def test_qmd_query_preserves_collection_in_path_nested(tmp_path: Path) -> None:
-    """The collection prefix is preserved for nested file paths too
-    (``qmd://llms/hooks-guide.md`` → ``path="llms/hooks-guide.md"``)."""
+    """The collection prefix is preserved for nested file paths too (``qmd://llms/hooks-guide.md`` → ``path="llms/hooks-guide.md"``)."""
     payload = json.dumps(
         [
             {
@@ -283,9 +277,7 @@ def test_qmd_query_handles_missing_file_field(tmp_path: Path) -> None:
 
 
 def test_qmd_query_warns_on_dropped_file_field(tmp_path: Path) -> None:
-    """Rows without a ``file`` field (or whose ``file`` lacks the qmd://
-    prefix) silently degrade to ``path=""``. Surface the degradation with a
-    warning so unexpected qmd shape changes do not go unnoticed."""
+    """Rows without a ``file`` field (or whose ``file`` lacks the qmd:// prefix) silently degrade to ``path=""``."""
     payload = json.dumps([{"docid": "#orphan", "score": 0.1, "title": "Orphan (no file key)"}])
     with (
         patch("lies.qmd.cli.shutil.which", return_value="/usr/bin/qmd"),
@@ -369,12 +361,7 @@ def test_qmd_query_collection_filter_none_returns_all_hits(tmp_path: Path) -> No
 
 
 def test_qmd_query_collection_filter_drops_empty_path_rows(tmp_path: Path) -> None:
-    """A hit whose ``path`` is empty after normalization is dropped silently.
-
-    The pre-existing warning emission (missing ``qmd://`` URI) already
-    surfaces the degradation; the collection filter adds no new
-    diagnostics — it just excludes the row.
-    """
+    """A hit whose ``path`` is empty after normalization is dropped silently."""
     payload = json.dumps(
         [
             {"docid": "#a", "score": 0.9, "file": "qmd://airflow/dag.md"},
@@ -399,13 +386,7 @@ def test_qmd_query_collection_filter_drops_empty_path_rows(tmp_path: Path) -> No
 
 
 def test_qmd_query_collection_filter_empty_set_drops_everything(tmp_path: Path) -> None:
-    """An explicit empty filter set drops every hit.
-
-    The retriever only constructs an empty filter when ``_collections_matching``
-    resolves to the empty set (no collection matched the filter). In that
-    case qmd should still be called (the CLI invocation is unconditional)
-    and every row should be dropped before reaching the synthesizer.
-    """
+    """An explicit empty filter set drops every hit."""
     payload = json.dumps(
         [
             {"docid": "#a", "score": 0.9, "file": "qmd://airflow/dag.md"},

@@ -41,13 +41,7 @@ def test_render_mirror_with_explicit_title() -> None:
 
 
 def test_render_mirror_missing_required_kwargs_raises() -> None:
-    """Minor 38: ``source_url`` and ``source_path`` are required keyword-only.
-
-    Regression test: the previous implementation had ``source_url: str | None = None``
-    and ``source_path: str | None = None``. A caller passing neither would
-    land a mirror with ``source_url: null`` and ``source_path: null``,
-    losing the upstream provenance. Now both are required.
-    """
+    """``source_url`` and ``source_path`` are required keyword-only."""
     with pytest.raises(TypeError, match="source_url"):
         render_mirror(  # type: ignore[call-arg]
             slug="x",
@@ -157,14 +151,7 @@ def test_write_mirror_invalid_slug_raises(lib: Library) -> None:
 
 
 def test_render_mirror_is_idempotent() -> None:
-    """Re-mirroring a mirror yields one frontmatter block, not two.
-
-    The ingest path mirrors from a directory that can already hold
-    previously-mirrored pages, so the body handed to the writer may
-    itself begin with a frontmatter block. Prepending unconditionally
-    grew a second one on every run; observed as 102 pages carrying two
-    stacked blocks, and three on the one page ingested three times.
-    """
+    """Re-mirroring a mirror yields one frontmatter block, not two."""
     kwargs: dict[str, object] = {
         "slug": "doc",
         "source_url": "https://example.test/doc",

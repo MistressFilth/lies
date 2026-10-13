@@ -7,8 +7,7 @@ from lies.wiki.layout import WikiLayout
 
 
 def test_wiki_layout_init_registers_wiki_collection(tmp_path: Path) -> None:
-    """WikiLayout.init registers ``wiki_<name>`` with qmd pointing at
-    ``wiki.wiki_dir``. Idempotent on subsequent calls."""
+    """WikiLayout.init registers ``wiki_<name>`` with qmd pointing at ``wiki.wiki_dir``."""
     captured: list[dict] = []
 
     def fake_add_or_update(cwd, path, name, **kwargs):

@@ -1,16 +1,4 @@
-"""Pin ``rendered_body`` itself.
-
-The helper fell through to ``str(message)`` because a FastMCP
-``Message`` carries its text on ``content.text``, not on a top-level
-``.text``. Every ``str(Message)`` returns pydantic's repr, so twelve
-assertions across the prompt tests were matching ``\\"`` and ``\\n``
-escape sequences rather than the body the agent receives. The tests
-passed, which is why the defect survived.
-
-A test on the helper is what makes the next occurrence loud: every
-prompt assertion is downstream of this function, so a silent fallthrough
-here invalidates the whole file.
-"""
+"""``rendered_body`` itself."""
 
 from __future__ import annotations
 
@@ -40,14 +28,7 @@ def test_keeps_a_body_that_looks_like_a_pydantic_repr() -> None:
 
 
 def test_carries_verbatim_rejects_a_repr_escaped_block() -> None:
-    """``carries_verbatim`` is the assertion that must fail on a repr.
-
-    A question carrying a newline renders into a fenced block; the old
-    helper handed the assertion a repr, and the repr's ``\\n`` matched
-    nothing — the assertion went vacuous rather than red. Pin the
-    rejection explicitly so a future helper cannot pass it by
-    accident.
-    """
+    """``carries_verbatim`` is the assertion that must fail on a repr."""
     assert carries_verbatim("body\n```\nwhat is x\n```", "what is x")
     assert not carries_verbatim("body\n```\nwhat is x\\nmore\n```", "what is x\nmore")
     assert not carries_verbatim("body with no fence", "what is x")

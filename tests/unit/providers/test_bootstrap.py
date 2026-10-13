@@ -215,19 +215,7 @@ def test_run_wizard_happy_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
 def test_run_wizard_aborts_leave_file_untouched(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A mid-wizard abort must leave the target file unwritten.
-
-    NOTE: this test is GREEN under both the OLD and NEW prompt orders — today's
-    wizard aborts at the very first prompt because the iter's leading
-    ``minimax`` is not a valid ``provider:model`` string and ``anthropic`` is
-    the only seeded provider, so ``step_default_model`` rejects it before the
-    catalog loop runs. Post-fix (Task 2 drops the seed + reorders), the
-    catalog iter drains first and the same iter aborts at ``bogus:provider``
-    when ``bogus`` is not in the declared catalog. Either way the contract
-    holds: ``BootstrapAborted`` is raised and ``target`` does not exist. The
-    iter is intentionally not tightened further — the abort-vs-write contract
-    is what we're locking here, not the prompt order.
-    """
+    """A mid-wizard abort must leave the target file unwritten."""
     target = tmp_path / "providers.toml"
     answers = iter(
         [
@@ -256,10 +244,7 @@ def test_run_wizard_aborts_leave_file_untouched(
 
 @pytest.mark.slow
 def test_run_wizard_writes_env_file_0600(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Full happy path with `--write-env-file` set; the operator must
-    declare the minimax provider through the wizard so its key is a
-    legitimate capture target — the env file iterates declared
-    providers, not unrelated shell values."""
+    """Full happy path with `--write-env-file` set."""
     monkeypatch.setenv("MINIMAX_API_KEY", "sk-test-123")
     env_path = tmp_path / "lies.env"
     target = tmp_path / "providers.toml"
@@ -297,13 +282,7 @@ def test_run_wizard_writes_env_file_0600(tmp_path: Path, monkeypatch: pytest.Mon
 def test_run_wizard_reload_error_aborts_no_env_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Reload failure must abort before env capture: when the wizard
-    writes a providers.toml that ``load_providers_config`` rejects (an
-    incomplete roster, here from skipping the agents step), the
-    operator should see the typed abort, the file should be left on
-    disk, and the env capture file must NOT exist — because reload
-    abort short-circuits env capture.
-    """
+    """A providers.toml that fails to reload aborts before any env file is written."""
     env_path = tmp_path / "lies.env"
     target = tmp_path / "providers.toml"
 
@@ -417,18 +396,7 @@ def test_run_wizard_can_declare_one_provider_and_proceed(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Minimal: declare one provider, type default, write.
-
-    The iter shape enumerates the documented per-iteration prompts for
-    ``step_providers`` (name, type, api_key_env, [base_url]): an
-    ``anthropic``-typed provider has 3 prompts per iteration (no
-    base_url). After the catalog loop exits on blank name, the next
-    three prompts are ``step_default_model`` (consumes
-    ``"anthropic:claude-opus-4-7"``), ``step_agents`` (consumes
-    ``"yes"`` so the post-write reload succeeds — the loader's
-    ``[agents]`` strictness requires a complete roster), and the
-    final write-confirm (consumes ``"yes"``).
-    """
+    """Minimal: declare one provider, type default, write."""
     target = tmp_path / "providers.toml"
     answers = iter(
         [
@@ -457,17 +425,7 @@ def test_run_wizard_can_declare_one_provider_and_proceed(
 def test_run_wizard_providers_step_runs_unconditionally(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The 'Edit providers catalog?' gate is gone; providers step runs
-    unconditionally and precedes the default-model step.
-
-    Pins the post-Task-2 prompt-order contract: the catalog loop's prompts
-    appear before the default-model prompt, and the resulting file holds
-    the operator-declared provider. A return of the gate would require an
-    extra 'yes' between catalog and default-model, breaking the prompt
-    ordering assertion; a return of the implicit ``anthropic`` seed would
-    break the file-content assertion (the iter never declares ``anthropic``
-    through any other path).
-    """
+    """The 'Edit providers catalog?' gate is gone; providers step runs unconditionally and precedes the default-model step."""
     target = tmp_path / "providers.toml"
     prompts: list[str] = []
     answers = iter(

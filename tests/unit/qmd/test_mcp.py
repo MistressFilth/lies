@@ -1,16 +1,4 @@
-"""Unit tests for ``lies.qmd.mcp.QmdRecycleToolset``.
-
-Wraps an inner MCPToolset and recycles the qmd daemon on transport-class
-failures. The *classification* of a failure is not tested here — it lives
-in ``lies.qmd.access.classify_call_error`` and is tested in
-``test_access.py``. What is tested here is the agent-path wrapping of it:
-a model has to be told a tool failed (``ModelRetry``) or that it failed
-terminally (``ToolFailed``), and anything the taxonomy does not own
-propagates unchanged.
-
-A recycle itself failing (``QmdRecycleFailed``) surfaces as
-``ToolFailed("qmd daemon recycled but never served")``.
-"""
+"""Unit tests for ``lies.qmd.mcp.QmdRecycleToolset``."""
 
 from __future__ import annotations
 
@@ -145,16 +133,7 @@ async def test_qmd_recycle_toolset_transport_error_retry_also_fails_raises_tool_
 
 @pytest.mark.asyncio
 async def test_qmd_recycle_toolset_retry_failing_for_an_unowned_reason_propagates() -> None:
-    """A retry that fails for a reason the taxonomy does not own re-raises.
-
-    The retry's failure is classified, not assumed. A decode error or a
-    malformed result says nothing about the daemon being unreachable,
-    and `ToolFailed("qmd daemon still unreachable after recycle: ...")`
-    would hand the model a reason that is not true. Before the
-    classification was lifted, this exception could not reach the
-    wrapper's except clause at all and propagated for the same reason —
-    so this pins the agent path's behaviour as unchanged.
-    """
+    """A retry that fails for a reason the taxonomy does not own re-raises."""
     err = json.JSONDecodeError("Expecting value", "<html>", 0)
     attempt = {"n": 0}
 

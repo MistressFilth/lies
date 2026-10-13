@@ -48,19 +48,7 @@ def test_orchestrator_constructs(wiki_root: Path) -> None:
 def test_orchestrator_runs_with_test_model(
     wiki_root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The orchestrator's underlying agent is mocked via TestModel.
-
-    TestModel is configured with `call_tools=[]` so it returns a plain text
-    response instead of trying to invoke the orchestrator's many tools
-    (delegate_task, run_workflow, run_code, etc.) -- which would loop on
-    invalid workflow scripts.
-
-    The default `transport="http"` registers qmd's tools as native MCP
-    tools, which TestModel rejects (``UserError: TestModel does not
-    support built-in tools``). Opt out via ``LIES_QMD_TRANSPORT=stdio``
-    so the capability builds a local toolset instead -- the test only
-    exercises agent plumbing, not the qmd transport.
-    """
+    """The orchestrator's underlying agent is mocked via TestModel."""
     monkeypatch.setenv("LIES_QMD_TRANSPORT", "stdio")
     orch = Orchestrator(wiki=wiki_root, models=models_for_tests("test"))
     with orch._agent.override(model=TestModel(call_tools=[], custom_output_text="lint ok")):
@@ -81,19 +69,14 @@ def test_orchestrator_runs_with_test_model(
 
 
 def test_wiki_is_top_level_attribute(wiki_root: Path) -> None:
-    """`orch.wiki` must be set from the constructor argument as the Wiki
-    dataclass, exposing the post-XDG role-routed paths."""
+    """`orch.wiki` must be set from the constructor argument as the Wiki dataclass, exposing the post-XDG role-routed paths."""
     orch = Orchestrator(wiki=wiki_root, models=models_for_tests("test"))
     assert orch.wiki is wiki_root
     assert orch.wiki.data_root == wiki_root.data_root
 
 
 def test_wiki_data_root_propagates_to_system_prompt(wiki_root: Path) -> None:
-    """The agent's system prompt must include the resolved wiki data root path.
-
-    Sub-agents and tool calls rely on this for path scoping and
-    path-aware reasoning.
-    """
+    """The agent's system prompt must include the resolved wiki data root path."""
     orch = Orchestrator(wiki=wiki_root, models=models_for_tests("test"))
     prompt = orch._agent._system_prompts[0]  # type: ignore[attr-defined]
     assert str(orch.wiki.data_root) in prompt
@@ -101,11 +84,7 @@ def test_wiki_data_root_propagates_to_system_prompt(wiki_root: Path) -> None:
 
 
 def test_wiki_data_root_propagates_to_file_system_capability(wiki_root: Path) -> None:
-    """The file_system capability must be scoped to the wiki data root.
-
-    This is the security boundary that prevents the agent from
-    reading or writing outside the wiki.
-    """
+    """The file_system capability must be scoped to the wiki data root."""
     orch = Orchestrator(wiki=wiki_root, models=models_for_tests("test"))
 
     # pydantic-ai-harness stores the per-agent capabilities under
@@ -128,12 +107,7 @@ def test_wiki_data_root_propagates_to_file_system_capability(wiki_root: Path) ->
 
 
 def test_wiki_data_root_resolution_handles_relative_paths(tmp_path: Path) -> None:
-    """A relative data root must be resolved to an absolute path.
-
-    The CLI passes `--name` through Typer and resolves the data root
-    via the XDG helpers; the orchestrator must canonicalize the path
-    once at construction so downstream components see a stable root.
-    """
+    """A relative data root must be resolved to an absolute path."""
     import os
 
     cwd = tmp_path

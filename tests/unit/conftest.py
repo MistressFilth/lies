@@ -1,17 +1,4 @@
-"""Unit-test-only fixtures and options.
-
-Adds ``--runslow``: when absent, every test marked ``@pytest.mark.slow``
-is skipped. The default ``make unit-test`` run skips them; CI's
-``--runslow`` mode (or a developer chasing a regression) re-enables
-them. The marker is registered in ``pyproject.toml``.
-
-Enforces the 0.15s hard limit: any non-slow-marked test whose
-``call`` phase exceeds ``HARD_LIMIT_S`` fails the run with the
-remediation rubric printed. Slow-marked tests are exempt (they run
-only with ``--runslow`` and are explicitly opt-in to higher cost).
-The pre-commit gate is satisfied because ``make unit-test`` (run by
-the pre-commit ``test`` hook) inherits the failure.
-"""
+"""Unit-test-only fixtures and options."""
 
 from __future__ import annotations
 

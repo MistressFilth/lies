@@ -32,7 +32,7 @@ def test_unknown_type_returns_empty():
 
 
 def test_literal_substring_no_setext():
-    """## Evidence\n=====\n is NOT a match — literal substring only."""
+    """A setext ``=====`` underline is not a match: the check is a literal substring."""
     contract = SectionContract(synthesis=["## Evidence"])
     body = "Evidence\n=====\n\nbody\n"
     assert _missing_required_sections("synthesis", contract, body) == ["## Evidence"]

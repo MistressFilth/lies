@@ -1,21 +1,4 @@
-"""WRITING stage — hash compare + atomic_commit per batch.
-
-Target paths are computed under ``wiki.wiki_dir / <collection.name>`` so
-each collection lives in its own subdirectory of the wiki. The same
-subdirectory is registered with qmd so the derived index sees the
-pages (registering a qmd collection against the empty
-``wiki.raw_dir / <collection.name>`` directory — the previous layout —
-indexes nothing because raw files live elsewhere). Per-doc OSError on
-write moves the source to the wiki's poison_root and continues the
-batch.
-
-Post-commit hook: when files are written, the stage also (a) registers
-the per-collection wiki subdir with qmd (idempotent), (b) refreshes
-the qmd derived index, (c) bulk-upserts the freshly-written pages into
-``catalog.db`` so the catalog stays in lockstep with the wiki, and
-(d) embeds the collection vectors. The qmd hooks are non-fatal — a
-failure must not roll back the wiki git commit that already landed.
-"""
+"""WRITING stage — hash compare + atomic_commit per batch."""
 
 from __future__ import annotations
 
@@ -103,12 +86,9 @@ def run_write(
             files=files,
         )
         if commit_sha is None:
-            # Quiet no-op: atomic_commit staged the files but the diff was
-            # empty (e.g. a re-ingest of an unchanged collection wrote
-            # byte-identical content). Nothing actually changed in the wiki,
-            # so the post-commit hooks (qmd registration, index refresh,
-            # embedding) have nothing new to act on either. Skip them rather
-            # than fire on a no-op state.
+            # Quiet no-op: ``atomic_commit`` staged the files but the diff was empty (a re-ingest of
+            # an unchanged collection wrote byte-identical content). Nothing changed in the wiki, so
+            # the post-commit hooks have nothing new to act on. Skip rather than fire on a no-op.
             pass
         else:
             # Post-commit: make the new wiki state visible to qmd and the

@@ -25,28 +25,7 @@ class Heartbeat:
 
 @dataclass(frozen=True)
 class AcquireResult:
-    """Result of an ``acquire_create_lock`` attempt.
-
-    Carries both the file descriptor on success and the contender's
-    pid + start time on contention so raise sites can construct
-    operator-actionable messages. The new envelope is opt-in: callers
-    that pass ``pid_path=None, state_json_path=None`` get the legacy
-    ``int | None`` return.
-
-    Status values:
-      - ``"acquired"`` — fresh success; ``fd`` is valid.
-      - ``"busy"`` — contended with a live contender; ``holder_pid`` and
-        ``holder_started_at`` are populated from the existing files.
-      - ``"dead_reaped"`` — the contendee was dead (or the heartbeat stale)
-        and the reap-and-retry succeeded; ``fd`` is valid; holder info
-        is ``None`` because the contendee is gone.
-      - ``"indeterminate"`` — ``pid_alive_fn`` returned ``"indeterminate"``
-        (EPERM on ``os.kill(pid, 0)``) and the heartbeat is older than
-        the wall-clock window. The primitive did NOT reap; ``fd`` is
-        the sentinel ``-1``; ``holder_pid`` + ``holder_started_at`` are
-        populated so the raise site can emit ``WikiFlockIndeterminate``
-        with operator-actionable details.
-    """
+    """Result of an ``acquire_create_lock`` attempt."""
 
     fd: int
     holder_pid: int | None = None

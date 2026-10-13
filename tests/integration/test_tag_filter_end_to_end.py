@@ -1,21 +1,4 @@
-"""Integration tests for the tag-filter end-to-end path (Bundle C).
-
-Drives the real ``qmd`` CLI against a fixture wiki of three collections
-so the post-qmd per-collection drop
-(:func:`lies.qmd.cli.qmd_query`) and the ``searched_scope`` envelope
-are exercised as they actually run, not as a mock would.
-
-The qmd path is not mocked — retrieval runs against a *throwaway
-per-test* index at ``$XDG_CACHE_HOME/qmd/index.sqlite`` (redirected by
-``_isolated_xdg`` to ``tmp_path/xdg/cache/qmd/``). The session-scoped
-``_live_qmd_index_unchanged`` guard verifies the live index is
-unchanged before/after, so a regression that points the fixture at
-the live index trips it. The LLM is stubbed — ``TestModel`` calls
-tools once with generated arguments, leaving ``captured`` empty and
-making every ``for rel_path in captured`` loop vacuously true.
-
-Gated on ``INTEGRATION=1``.
-"""
+"""Integration tests for the tag-filter end-to-end path (Bundle C)."""
 
 from __future__ import annotations
 
@@ -594,13 +577,7 @@ def _orchestrator(wiki: Wiki) -> Orchestrator:
 def test_plus_tag_filters_to_one_collection(
     qmd_fixture_library: Wiki,
 ) -> None:
-    """``+airflow`` confines real qmd hits to airflow-tagged subdirs.
-
-    With the four-collection fixture (airflow + prefect both carry
-    the ``airflow`` tag via the implicit-self-tag rule), ``+airflow``
-    resolves to both names. The post-qmd per-collection drop keeps
-    hits whose first path segment is in the resolved set.
-    """
+    """``+airflow`` confines real qmd hits to airflow-tagged subdirs."""
     orch = _orchestrator(qmd_fixture_library)
     captured: list[str] = []
     tf = ResolvedTagFilter(include=Include("airflow"))
@@ -655,12 +632,7 @@ def test_plus_tag_filters_to_one_collection(
 def test_plus_tag_with_exclude(
     qmd_fixture_library: Wiki,
 ) -> None:
-    """``+airflow -amazon`` keeps the include while applying the exclude.
-
-    The include resolves to airflow + prefect; the exclude drops
-    collections carrying the ``amazon`` tag — no resolved collection
-    does, so the include set is preserved.
-    """
+    """``+airflow -amazon`` keeps the include while applying the exclude."""
     orch = _orchestrator(qmd_fixture_library)
     captured: list[str] = []
     tf = ResolvedTagFilter(include=Include("airflow"), exclude=Include("amazon"))
@@ -677,10 +649,7 @@ def test_plus_tag_with_exclude(
 def test_plus_tag_and_precise(
     qmd_fixture_library: Wiki,
 ) -> None:
-    """``+airflow&provider`` requires both atoms; only airflow has both.
-
-    Prefect carries ``airflow`` but NOT ``provider``.
-    """
+    """``+airflow&provider`` requires both atoms; only airflow has both."""
     orch = _orchestrator(qmd_fixture_library)
     captured: list[str] = []
     tf = ResolvedTagFilter(
@@ -699,11 +668,7 @@ def test_plus_tag_and_precise(
 def test_plus_tag_or_broad(
     qmd_fixture_library: Wiki,
 ) -> None:
-    """``+airflow|provider`` matches either atom.
-
-    The airflow collection has both; prefect has ``airflow`` in tags.
-    Resolved set is airflow + prefect.
-    """
+    """``+airflow|provider`` matches either atom."""
     orch = _orchestrator(qmd_fixture_library)
     captured: list[str] = []
     tf = ResolvedTagFilter(
@@ -722,14 +687,7 @@ def test_plus_tag_or_broad(
 def test_plus_unknown_tag_no_coverage(
     qmd_fixture_library: Wiki,
 ) -> None:
-    """``+nope`` resolves to an empty set; ``searched_scope`` is ``[]``.
-
-    No collection has ``nope`` in its effective tags. The librarian's
-    filtered pass is skipped (an empty ``collection_filter`` would
-    drop every hit), and the orchestrator takes its index fallback.
-
-    The mechanism is the *stub's*, not ``qmd_query``'s.
-    """
+    """``+nope`` resolves to an empty set; ``searched_scope`` is ``[]``."""
     orch = _orchestrator(qmd_fixture_library)
     captured: list[str] = []
     tf = ResolvedTagFilter(include=Include("nope"))
@@ -755,11 +713,7 @@ def test_plus_unknown_tag_no_coverage(
 def test_plus_c_qualifier_returns_only_named_collection(
     qmd_fixture_library: Wiki,
 ) -> None:
-    """``+c:airflow`` resolves to the airflow collection only.
-
-    Strict collection-name dispatch (``coll.name == include.tag``):
-    prefect is excluded even though it carries ``airflow`` in its tags.
-    """
+    """``+c:airflow`` resolves to the airflow collection only."""
     orch = _orchestrator(qmd_fixture_library)
     captured: list[str] = []
     tf = ResolvedTagFilter(include=Include("airflow", qualifier="c"))
@@ -776,12 +730,7 @@ def test_plus_c_qualifier_returns_only_named_collection(
 def test_plus_t_qualifier_returns_all_carriers(
     qmd_fixture_library: Wiki,
 ) -> None:
-    """``+t:airflow`` matches both airflow-named AND airflow-tagged collections.
-
-    The tag-or-name alias (``include.tag ∈ coll.tags ∪ {coll.name}``)
-    admits any collection whose name OR tags contain ``airflow``:
-    the ``airflow`` collection (name) and ``prefect`` (tag).
-    """
+    """``+t:airflow`` matches both airflow-named AND airflow-tagged collections."""
     orch = _orchestrator(qmd_fixture_library)
     captured: list[str] = []
     tf = ResolvedTagFilter(include=Include("airflow", qualifier="t"))
@@ -802,13 +751,7 @@ def test_plus_t_qualifier_returns_all_carriers(
 def test_plus_t_then_c_exclude_drops_named_only(
     qmd_fixture_library: Wiki,
 ) -> None:
-    """``+t:airflow -c:airflow`` resolves to prefect; airflow collection is dropped.
-
-    The include atom matches both airflow (by name) and prefect (by
-    tag); the exclude atom with a ``c:`` qualifier drops any
-    collection whose name is ``airflow``. The prefect collection has
-    airflow in its tags but is not *named* airflow, so it survives.
-    """
+    """``+t:airflow -c:airflow`` resolves to prefect; airflow collection is dropped."""
     orch = _orchestrator(qmd_fixture_library)
     captured: list[str] = []
     # Task 3 / f15-exclude-compound: ``ResolvedTagFilter.exclude`` is

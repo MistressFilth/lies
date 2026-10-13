@@ -1,8 +1,4 @@
-"""Tests for the one-shot library migration (Task 13).
-
-Covers ``plan_migration`` + ``apply_migration`` dry-run semantics. The
-apply round-trip is covered by ``tests/integration/test_migrate_ingest_to_library.py``.
-"""
+"""Tests for the one-shot library migration (Task 13)."""
 
 from __future__ import annotations
 
@@ -96,15 +92,7 @@ def test_apply_migration_dry_run_writes_nothing(
 def test_apply_migration_idempotent_skips_unchanged(
     wiki_with_pages: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Minor 41 anti-tautology: re-running an unchanged migration
-    does NOT rewrite mirror files.
-
-    Previously every apply_migration re-wrote every mirror file
-    unconditionally; a no-content-change run still produced N writes
-    and bumped the library git tree. The fix compares existing
-    destination content against the rewritten text and skips the
-    write when they match.
-    """
+    """Re-running an unchanged migration does NOT rewrite mirror files."""
     import subprocess
 
     from lies import xdg

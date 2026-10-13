@@ -1,14 +1,4 @@
-"""search() runs a single hybrid qmd query across the resolved collection set.
-
-Task 4 moved the read-side search through the qmd access seam
-(``lies.qmd.access.daemon_tool``). The CLI path that lived here before
-ranked globally and dropped rows whose first ``/`` segment was outside
-the resolved scope: a multi-collection ``c:claude_code|c:opencode``
-query returned hits from whichever collection ranked highest, and a
-collection could be starved to zero rows even when it had matches. The
-daemon's ``collections`` parameter is a true push-down and returns
-in-scope rows. These tests pin that.
-"""
+"""Search() runs a single hybrid qmd query across the resolved collection set."""
 
 from __future__ import annotations
 
@@ -71,18 +61,7 @@ def _bypass_daemon_precheck(monkeypatch: pytest.MonkeyPatch, names: list[str]) -
 
 
 def test_search_passes_question_as_plain_string(monkeypatch: pytest.MonkeyPatch) -> None:
-    """search() forwards the question (or the hypothetical) as a plain string.
-
-    Prior to the v0.40.b search bug fix, ``search()`` built a structured
-    ``vec: ...\\nlex: ...`` doc to push both legs of qmd's hybrid
-    search explicitly. That shape was found to silently lose coverage
-    on queries like ``"LSP setup configure language server"`` (the
-    single-string form returned 90%-scored hits; the structured form
-    returned 0). qmd's hybrid search handles vec+lex internally when
-    the question is plain, so ``search()`` now forwards the question
-    as a plain string. When ``hypothetical`` is set, it overrides the
-    question (HyDE-style substitution).
-    """
+    """Search() forwards the question (or the hypothetical) as a plain string."""
     from lies.mcp.search import search
 
     _patch_registry(monkeypatch, ["alpha"])
@@ -145,18 +124,7 @@ def test_search_unknown_tag_marks_unknown_tags(monkeypatch: pytest.MonkeyPatch) 
 def test_search_tag_only_filter_resolves_the_tagged_scope(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A ``t:``-qualifier-only filter resolves to the collections carrying the tag.
-
-    ``_resolve_tag_collections`` used to drop ``t:`` atoms by design, so a
-    ``tag_expr`` made only of those resolved to an empty scope and the
-    whole expression came back as an unknown tag. The behaviour before
-    that one silently widened to ``library_collection_names()`` with
-    ``unknown_tags == []`` — a query the caller scoped by tag, answered
-    from the whole library, with nothing in the response to say so.
-    Resolving the atom against the registry's tag index keeps the scope
-    the caller asked for *and* keeps it from widening: the filter reaches
-    the daemon as exactly the collection set the tag names.
-    """
+    """A ``t:``-qualifier-only filter resolves to the collections carrying the tag."""
     from lies.mcp.search import search
 
     _patch_registry(monkeypatch, ["alpha", "beta"])
@@ -176,14 +144,7 @@ def test_search_tag_only_filter_resolves_the_tagged_scope(
 def test_search_unqualified_atom_is_an_implicit_t_qualifier(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """``plugins`` and ``t:plugins`` resolve identically.
-
-    The tag side is the default: an atom carrying no qualifier names a
-    tag, and ``t:`` says so out loud. ``c:`` is the only qualifier that
-    addresses a collection by name. This is the same convention
-    ``collections_read("tag_list")`` already uses — it strips the
-    qualifier and surfaces bare atoms as tags.
-    """
+    """``plugins`` and ``t:plugins`` resolve identically."""
     from lies.mcp.search import _resolve_tag_collections
 
     _patch_registry(monkeypatch, ["alpha", "beta", "gamma"])
@@ -194,13 +155,7 @@ def test_search_unqualified_atom_is_an_implicit_t_qualifier(
 def test_search_c_qualifier_still_addresses_a_collection(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """``c:`` keeps its collection meaning, and a tag name is not a collection.
-
-    ``c:`` is the only qualifier that reads the body as a collection
-    name, so qualifying a tag with it must not resolve that tag's
-    collections — otherwise ``c:plugins`` would quietly mean
-    ``t:plugins`` and the qualifier would carry no information.
-    """
+    """``c:`` keeps its collection meaning, and a tag name is not a collection."""
     from lies.mcp.search import _resolve_tag_collections
 
     _patch_registry(monkeypatch, ["alpha", "beta", "gamma"])
@@ -211,14 +166,7 @@ def test_search_c_qualifier_still_addresses_a_collection(
 
 
 def test_search_tag_expr_set_algebra(monkeypatch: pytest.MonkeyPatch) -> None:
-    """``|`` unions and ``&`` intersects, over the collection sets atoms name.
-
-    Atoms resolve to collections, so the operators are evaluated on those
-    sets: a union of disjoint tags is every collection either names, and
-    an intersection no collection satisfies is empty. An empty scope is
-    reported rather than searched, because widening it to the whole
-    library is the failure this function exists to prevent.
-    """
+    """``|`` unions and ``&`` intersects, over the collection sets atoms name."""
     from lies.mcp.search import _resolve_tag_collections
 
     _patch_registry(
@@ -239,14 +187,7 @@ def test_search_tag_expr_set_algebra(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_search_bare_collection_name_is_its_own_implicit_tag(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A collection name resolves through the bare/t: side as itself.
-
-    Spec: "Collection name as implicit self-tag" — a ``t:``/bare atom
-    matches a collection whose name is the atom even when the config
-    carries no such tag. Without it, ``search`` would need ``c:`` for
-    every collection name while ``ground`` accepted the bare spelling,
-    and the same filter would mean two things across the two tools.
-    """
+    """A collection name resolves through the bare/t: side as itself."""
     from lies.mcp.search import _resolve_tag_collections
 
     _patch_registry(
@@ -262,12 +203,7 @@ def test_search_bare_collection_name_is_its_own_implicit_tag(
 def test_search_unknown_qualified_tag_marks_unknown_tags(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A tag no collection carries is unknown, and still refuses the call.
-
-    Resolving tags does not relax the no-widen invariant: an atom naming
-    neither a tag nor a collection reports the expression and the daemon
-    is never called.
-    """
+    """A tag no collection carries is unknown, and still refuses the call."""
     from lies.mcp.search import search
 
     _patch_registry(monkeypatch, ["alpha", "beta"])
@@ -320,16 +256,7 @@ def test_search_no_coverage_when_qmd_returns_empty(monkeypatch: pytest.MonkeyPat
 def test_search_unexpected_post_query_failure_returns_transient(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """An unexpected error from the seam is folded into the envelope.
-
-    The seam raises two typed errors (``QmdDaemonUnavailable``,
-    ``QmdDaemonWedged``) and a process failure is something else.
-    A genuine exception that is neither is a defensive
-    ``transient=True, no_coverage=False`` — the caller still gets
-    an envelope, with the class name visible in the reason, so an
-    internal bug surfaces to the operator without becoming a silent
-    "the corpus has nothing" claim.
-    """
+    """An unexpected error from the seam is folded into the envelope."""
     from lies.mcp.search import search
 
     _patch_registry(monkeypatch, ["alpha"])
@@ -368,15 +295,7 @@ def test_search_hit_is_top_ranked(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_post_query_delegates_to_daemon_with_library_root(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """_post_query delegates to ``access.daemon_tool`` with the library root.
-
-    Patches ``daemon_tool`` (NOT ``_post_query``) so a regression that
-    re-routes the read path through the CLI is caught here. The CLI
-    post-filter is gone — see ``test_scoped_search_pushes_the_filter_into_qmd``
-    for why the daemon's ``collections`` parameter is the only safe
-    push-down — and the daemon's cwd is the library git root, since
-    library collections are registered into qmd at that path.
-    """
+    """_post_query delegates to ``access.daemon_tool`` with the library root."""
     from lies.mcp.search import _post_query
 
     seen: dict[str, Any] = {}
@@ -411,14 +330,7 @@ def test_post_query_delegates_to_daemon_with_library_root(
 def test_post_query_maps_empty_daemon_result_to_empty_list(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """An empty ``structuredContent.results`` is mapped to ``[]``.
-
-    The daemon returns an empty result for an unknown collection
-    (Review Focus #2 — no error, no rows). The short-circuit is in
-    the search layer (the registry pre-check), so by the time
-    ``_post_query`` runs the daemon has already agreed to scope; the
-    empty list here is "the corpus had no in-scope hits".
-    """
+    """An empty ``structuredContent.results`` is mapped to ``[]``."""
     from lies.mcp.search import _post_query
 
     async def _empty(name: str, arguments: dict[str, Any], **kw: Any) -> Any:
@@ -438,14 +350,7 @@ def test_post_query_maps_empty_daemon_result_to_empty_list(
 
 
 def test_post_query_strips_trailing_whitespace(monkeypatch: pytest.MonkeyPatch) -> None:
-    """_post_query strips trailing whitespace for stable wire shape.
-
-    qmd's hybrid search accepts trailing whitespace without
-    rejection today, but ``_post_query`` still ``rstrip()``s the
-    question so callers that source the question from shapes with
-    trailing whitespace (``$()`` substitution, manual concatenation)
-    land on the same payload the tests pin.
-    """
+    """_post_query strips trailing whitespace for stable wire shape."""
     from lies.mcp.search import _post_query
 
     captured: dict[str, Any] = {}
@@ -545,18 +450,7 @@ def _fake_access(
 
 
 def test_scoped_search_pushes_the_filter_into_qmd(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The resolved collection set reaches the daemon as ``collections``.
-
-    The previous CLI path ranked globally and dropped rows in Python,
-    which silently starved a multi-collection query to whichever
-    collection ranked highest. The daemon's ``collections`` parameter
-    is a true push-down and returns in-scope rows. This test asserts
-    the argument reaches the daemon in the order the resolver returned
-    it (sorted, deterministic), so a regression that filters
-    post-hoc cannot pass.
-
-    Review Focus #2/#3 (unknown collection) is checked separately.
-    """
+    """The resolved collection set reaches the daemon as ``collections``."""
     from lies.mcp.search import _search_impl
 
     _patch_registry(monkeypatch, ["claude_code", "opencode"])
@@ -590,15 +484,7 @@ def test_scoped_search_pushes_the_filter_into_qmd(monkeypatch: pytest.MonkeyPatc
 def test_daemon_query_passes_limit_to_qmd_and_enforces_it_lies_side(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The envelope's ``limit`` reaches the daemon *and* the LIES-side slice.
-
-    The CLI path's ``--limit`` is inert (qmd parses only ``values.n``
-    and overrides with ``results.length``), so the LIES envelope must
-    enforce the cap on the daemon path too: a backend that returned
-    more rows than asked for would silently ship a wider top-N than
-    the caller requested. Belt-and-braces — the daemon honours
-    ``limit`` today, the slice is the load-bearing half.
-    """
+    """The envelope's ``limit`` reaches the daemon *and* the LIES-side slice."""
     from lies.mcp.search import _search_impl
 
     _patch_registry(monkeypatch, ["claude_code"])
@@ -627,32 +513,7 @@ def test_daemon_query_passes_limit_to_qmd_and_enforces_it_lies_side(
 def test_a_collection_that_cannot_serve_is_reported_not_scoped_away(
     monkeypatch: pytest.MonkeyPatch, registered_empty: bool
 ) -> None:
-    """An unresolvable collection name is reported, not silently widened.
-
-    The daemon returns an empty result and **no error** for an
-    unknown collection (the CLI exits 1 on the same class). Without
-    pre-validation, ``search()`` would have read the empty result as
-    "the corpus has nothing for this question" — a false claim
-    about the corpus, made for a question that named something
-    absent.
-
-    The LIES registry may be stale (a name recorded locally that
-    qmd never indexed, or has since dropped). The check is against
-    qmd's *own* collection list, surfaced via the daemon's
-    ``status`` tool. A resolved name absent from that list is
-    flagged; a name present (even with zero documents) is left
-    alone. The two states get distinct answers — "you named a
-    collection that does not exist" vs "your filter matched
-    nothing" — which is the load-bearing part of Review Focus
-    #2/#3.
-
-    The ``registered_empty`` parameter forces the LIES registry to
-    also hold a registered-but-empty collection (a la
-    ``wiki_default``). The point of the parameter is to assert the
-    unknown-collection path is independent of any other entry in
-    the registry: the report on ``c:no_such_collection`` is the
-    same whether or not some other collection is empty.
-    """
+    """An unresolvable collection name is reported, not silently widened."""
     from lies.mcp.search import _search_impl
     from lies.qmd.access import QmdDaemonUnavailable, QmdDaemonWedged
 
@@ -709,17 +570,7 @@ def test_a_collection_that_cannot_serve_is_reported_not_scoped_away(
 def test_daemon_down_is_re_raised_not_swallowed_into_no_coverage(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A down daemon is an operator action; it must not be folded into the envelope.
-
-    The previous CLI path mapped an unreachable qmd to
-    ``no_coverage=True, fallback_reason='qmd unreachable: …'`` —
-    a claim about the corpus that was really a claim about the
-    process. Task 2's spec says down fails loudly. The envelope
-    re-raises ``QmdDaemonUnavailable`` so the MCP layer (or the
-    caller) sees the typed error and the operator message names
-    ``lies qmd up`` (not ``lies mcp up``, which is LIES' own
-    server).
-    """
+    """A down daemon is an operator action; it must not be folded into the envelope."""
     from lies.mcp.search import _search_impl
     from lies.qmd.access import QmdDaemonUnavailable, QmdDaemonWedged
 
@@ -761,15 +612,7 @@ def test_daemon_down_is_re_raised_not_swallowed_into_no_coverage(
 def test_daemon_wedged_surfaces_as_transient_with_daemon_log(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A wedged daemon is a slow daemon, not an unreachable one.
-
-    ``no_coverage`` means "this search found nothing", a claim about
-    the corpus. A search that timed out learned nothing and has no
-    standing to make that claim. The envelope reports
-    ``transient=True`` with the daemon's log tail in
-    ``fallback_reason`` — the honest "ask again" description, with
-    the evidence attached.
-    """
+    """A wedged daemon is a slow daemon, not an unreachable one."""
     from lies.mcp.search import _search_impl
     from lies.qmd.access import QmdDaemonUnavailable, QmdDaemonWedged
 
@@ -876,21 +719,7 @@ def test_a_lock_busy_reads_as_queued_then_timed_out(monkeypatch: pytest.MonkeyPa
 
 
 def test_hits_carry_a_path_never_a_docid(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Every hit's path is a ``<collection>/<page>`` path, never a docid.
-
-    ``docid`` is ``documents.hash[0:6]`` resolved by
-    ``LIKE '<prefix>%' LIMIT 1`` with no ``ORDER BY``; three live
-    collisions exist among 5987 active documents. A hit keyed by
-    docid silently returns the wrong file on collision. The daemon
-    never sends a docid as a path (``file`` is always
-    ``displayPath``), so a regression here is one mutation away
-    from making hits lookup-unsafe.
-
-    Two assertions:
-    - the first segment of every hit's path is in the registry
-      (the daemon honoured the ``collections`` push-down)
-    - the path is never ``#<docid>`` (the daemon's ``file`` never is)
-    """
+    """Every hit's path is a ``<collection>/<page>`` path, never a docid."""
     from lies.mcp.search import _search_impl
 
     _patch_registry(monkeypatch, ["claude_code", "opencode"])
@@ -914,14 +743,7 @@ def test_hits_carry_a_path_never_a_docid(monkeypatch: pytest.MonkeyPatch) -> Non
 
 
 def test_searches_emits_lex_and_vec_only(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A bare question is forwarded as ``lex`` + ``vec``; ``hyde`` is deferred.
-
-    The plan defers the ``hyde`` decision to Task 6, so the current
-    search payload contains exactly two entries with the user's
-    question, and the first gets 2x weight (qmd's documented
-    behaviour). A regression that adds ``hyde`` here preempts Task
-    6's measurement; one that drops ``lex`` starves the BM25 leg.
-    """
+    """A bare question is forwarded as ``lex`` + ``vec``; ``hyde`` is deferred."""
     from lies.mcp.search import _search_impl
 
     _patch_registry(monkeypatch, ["claude_code"])
@@ -944,23 +766,7 @@ def test_searches_emits_lex_and_vec_only(monkeypatch: pytest.MonkeyPatch) -> Non
 def test_pre_check_calls_daemon_status_on_every_search(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The pre-check has no cache, so every search pays one daemon ``status`` call.
-
-    Round-2 review found that the previous ``lru_cache(maxsize=1)``
-    on ``_qmd_collection_names`` had no production-side clear path,
-    so a long-running MCP server that the operator ingested into
-    would silently keep its pre-ingest view until restart. Measured
-    cost of one daemon ``status`` call against the live daemon
-    (2026-10-03, 10 warm samples): p50 41.9 ms. A search runs in
-    5.6-6.0 s warm, so the per-search ``status`` call is ~0.7 % of
-    the operation and the staleness class is closed in exchange.
-
-    This test pins the property through the public seam:
-    ``validate_scope`` (which calls the daemon's ``status`` tool)
-    must be invoked once per search, with no cache that survives
-    between calls. The implementation in production is the shared
-    ``access.validate_scope``; the stub here records each call.
-    """
+    """The pre-check has no cache, so every search pays one daemon ``status`` call."""
     from lies.mcp.search import _search_impl
     from lies.qmd.access import QmdDaemonUnavailable, QmdDaemonWedged
 

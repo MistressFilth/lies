@@ -32,6 +32,9 @@ rule rather than the accident.
   the 14-line narrative block the review flagged — a guard that cannot
   fail is not a guard.
 
+  (**Those counts are now zero** — see "The prose ratchet is at zero"
+  under Changed, which retires the baseline this paragraph describes.)
+
   So the gate is a **ratchet**: `tests/unit/docstring_budget_baseline.json`
   records the shortfall as a per-file count, and the test asserts the
   recomputed counts equal it *exactly*. A file that appears in the
@@ -48,6 +51,31 @@ rule rather than the accident.
   budget the user set is for code and tests.
 
 ### Changed
+
+- **The prose ratchet is at zero.** The gate added above recorded the
+  shortfall it could not enforce against; this pays it. 192 `src/` body
+  comment blocks, 191 `src/` code docstrings over 12 lines, and 865
+  `tests/` docstrings over one line are now **0 of each**, and
+  `tests/unit/docstring_budget_baseline.json` is regenerated to match.
+  302 files, +2780/−12624.
+
+  The ratchet could only ever stop the debt growing. It is now an
+  equality check against zero, so a new over-budget item fails the next
+  commit rather than being absorbed into a baseline.
+
+  Content went one of four places rather than being deleted: a durable
+  fact about the system moved to `AGENTS.md`, development history to
+  this file, anything the name already said was cut, and anything a test
+  needs at runtime was kept in one line. `AGENTS.md` grew **+22 lines**
+  against roughly 1,700 removed in-code, so it consolidated rather than
+  accumulated — and the durable facts it holds are the ones that had
+  been stranded in docstrings where a grep for the system would not find
+  them.
+
+  **No behaviour change**, proven rather than asserted: stripping every
+  docstring and `#` comment from both revisions and comparing the ASTs
+  with positions cleared leaves **180 of 180 `src/` files identical**.
+  The only tree-wide delta is the gate's own baseline.
 
 - **The vendor SDKs are no longer imported to read a roster.**
   `lies.providers.registry` and `lies.providers.resolver` each held a

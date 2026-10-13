@@ -32,7 +32,6 @@ if TYPE_CHECKING:
 @dataclass(frozen=True)
 class LibrarianDeps:
     """Dependencies the librarian subagent needs to retrieve excerpts.
-
     Attributes:
         question: The user's natural-language question.
         tag_expr: Compiled include AST (a TagExpr tree), or ``None`` for
@@ -72,20 +71,15 @@ class PageExcerpt:
 class LibrarianOutput:
     """The librarian's evidence bundle — verbatim passages for the synthesizer.
 
-    The librarian does not write the answer; the synthesizer holds the
-    cited synthesis.
+    The librarian does not write the answer; the synthesizer holds the cited
+    synthesis. ``transient`` means the *dispatch* failed, so the bundle says
+    nothing about the corpus, and it is set together with
+    ``no_coverage=False``.
 
-    Attributes:
-        no_coverage: ``True`` when the corpus has zero hits for the
-            question. Defaults to ``False``.
-        searched_scope: The resolved collection list from the ``search``
-            tool, threaded onto :class:`SynthesizeEnvelope.searched_scope`.
-        transient: The *dispatch* failed, so the bundle says nothing about
-            the corpus. Set together with ``no_coverage=False``.
-        fallback_reason: The search envelope's ``fallback_reason``,
-            mirrored verbatim. :class:`SearchDiagnostics` records the same
-            string independently and :func:`with_search_diagnostics`
-            replaces whatever the model emits with it.
+    ``fallback_reason`` is the search envelope's own string, mirrored. It is
+    not taken on the model's word: :class:`SearchDiagnostics` records the
+    same string independently and :func:`with_search_diagnostics` replaces
+    whatever the model emits with it.
     """
 
     tag_expr: Any  # TagExpr | None AST, same reason as LibrarianDeps.tag_expr.
@@ -103,19 +97,14 @@ class SearchDiagnostics:
     """The ``search`` tool's dispatch verdict, captured outside the model.
 
     One record per librarian dispatch, handed to
-    :func:`register_librarian_tools` and read back by the caller after
-    ``run_sync`` returns. It is an argument rather than a module global
-    so that overlapping ``lib_ask`` calls cannot share one record.
+    :func:`register_librarian_tools` and read back after ``run_sync``
+    returns. It is an argument rather than a module global so overlapping
+    ``lib_ask`` calls cannot share one record.
 
-    Attributes:
-        transient: The last ``search`` envelope reported ``transient=True``.
-            Monotonic: once set, a later clean envelope does not clear it.
-        fallback_reason: The most recent non-empty ``fallback_reason`` the
-            tool produced, verbatim, transient or not.
-        searched_scope: The resolved collection list from the last envelope
-            that carried one.
-        attested_paths: Every page path a tool actually returned — each
-            ``hit``/``hits[*].path`` and each ``read`` result key.
+    ``attested_paths`` is every page path a tool actually returned — each
+    ``hit``/``hits[*].path`` and each ``read`` result key — and it is what
+    :func:`with_search_diagnostics` checks an excerpt against. ``transient``
+    is monotonic: a later clean envelope does not clear it.
     """
 
     transient: bool = False
@@ -224,26 +213,15 @@ def _attestation_reason(dropped: list[PageExcerpt]) -> str:
 def with_search_diagnostics(out: LibrarianOutput, diag: SearchDiagnostics) -> LibrarianOutput:
     """Validates and overlays the recorded search verdict onto a bundle.
 
-    Drops excerpts whose ``slug`` is in neither the recorded search hits
-    nor the recorded ``read`` results, naming each drop in
-    ``fallback_reason``. A bundle whose excerpts are all attested is
-    returned unchanged. A total drop forces ``transient=True`` and
-    ``no_coverage=False``, so a failed run reads as a failed run rather
-    than as a claim about the corpus. A recorded ``fallback_reason``
-    replaces the model's copy verbatim; a non-transient one leaves
-    ``transient`` and ``no_coverage`` alone.
+    Drops excerpts whose ``slug`` is in neither the recorded search hits nor
+    the recorded ``read`` results, naming each drop in ``fallback_reason``.
+    An all-attested bundle is returned untouched; a *total* drop forces
+    ``transient=True`` and ``no_coverage=False``, so an invented bundle
+    reads as a failed run rather than a claim about the corpus. A recorded
+    ``fallback_reason`` replaces the model's copy verbatim.
 
-    Covers every librarian dispatch: ``librarian_agent_run``
-    (``lib_ask``) and ``ground``'s legacy F18 path pass the record
-    explicitly, and the orchestrator binds one with
-    :func:`search_diagnostics_scope` because it registers its tools
-    once for the agent's lifetime. Downstream of that, the orchestrator
-    still runs ``_validate_claim_citations``, which is narrower than it
-    looks: the quote is checked against the bundle's **own** excerpt
-    bodies, so invented *text* on a real page is dropped while a wholly
-    fabricated page passes.
-
-    Attestation is path-level, not text-level — see AGENTS.md.
+    Every dispatch site is covered — see AGENTS.md, "The qmd access seam" for
+    the three mechanisms. Attestation there is **path-level, not text-level**.
     """
     if out.excerpts:
         kept = [excerpt for excerpt in out.excerpts if excerpt.slug in diag.attested_paths]
@@ -588,25 +566,16 @@ def register_librarian_tools(
 ) -> None:
     """Registers ``collections_read`` / ``search`` / ``read`` on the librarian agent.
 
-    Each closure is a thin adapter to the corresponding MCP tool. Call
-    once per agent instance after construction; the pydantic-ai
-    decorator raises on double-register with the same name.
+    Each closure is a thin adapter to the corresponding MCP tool. Call once
+    per agent instance after construction; the pydantic-ai decorator raises
+    on double-register with the same name. ``wiki``, ``memory_service``,
+    ``qmd_query`` and ``qmd_get`` are accepted-but-ignored, kept for the
+    orchestrator's and :func:`lies.mcp.grounding.ground`'s call sites.
 
-    ``wiki``, ``memory_service``, ``qmd_query`` and ``qmd_get`` are
-    accepted-but-ignored, kept for the orchestrator's and
-    :func:`lies.mcp.grounding.ground`'s call sites.
-
-    Args:
-        agent: The librarian agent whose toolset to populate.
-        wiki: Accepted for back-compat; unused.
-        memory_service: Accepted for back-compat; unused.
-        qmd_query: Accepted for back-compat; unused.
-        qmd_get: Accepted for back-compat; unused.
-        search_diagnostics: Optional per-dispatch record of the
-            ``search`` tool's envelope; ``None`` falls back to the
-            record bound by :func:`search_diagnostics_scope`, and to
-            no recording when neither is set. One record per
-            *dispatch*, not per agent.
+    ``search_diagnostics`` is the optional per-dispatch record of the
+    ``search`` envelope. When ``None`` the closures fall back to the record
+    bound by :func:`search_diagnostics_scope`, and to no recording when
+    neither is set — it is per *dispatch*, not per agent.
     """
     del wiki, memory_service, qmd_query, qmd_get  # back-compat: v0.39 callers
 

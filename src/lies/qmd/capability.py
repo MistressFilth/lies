@@ -1,17 +1,4 @@
-"""Daemon-aware capability for the agent's qmd tool surface.
-
-By default the agent advertises the native qmd MCP server (the
-shared qmd daemon at ``LIES_QMD_URL``). When the daemon is
-unreachable at construction time, the capability advertises an
-in-process :class:`QmdFallbackMcp` server and prints a single
-stderr warning naming the URL and the fix.
-
-The probe runs every :meth:`as_capability` call, so the
-capability transparently flips back to native if the daemon comes
-online. Implemented as a thin wrapper around
-:class:`pydantic_ai.capabilities.MCP` — ``MCP`` is already the
-public "native-or-local" primitive; we only vary the arguments.
-"""
+"""Daemon-aware capability for the agent's qmd tool surface."""
 
 from __future__ import annotations
 
@@ -114,11 +101,6 @@ class QmdCapability:
 
 def _build_native_mcp(url: str, data_dir: Path) -> MCP:
     """MCP wrapping a ``QmdRecycleToolset`` around an inner ``MCPToolset``.
-
-    Construction is non-destructive: a fastmcp liveness probe (a
-    one-shot ``Client.list_tools()`` round-trip) confirms the daemon
-    is actually serving. If the probe fails we raise and the caller
-    falls back to the in-process toolset.
 
     Args:
         url: The qmd daemon's HTTP base URL.

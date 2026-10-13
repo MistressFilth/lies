@@ -1,9 +1,4 @@
-"""Writer refusal tests for F17 section contract.
-
-``build_author_plan`` short-circuits with ``_SectionRefusal`` when the body
-lacks required headings; ``file_back_author`` / ``file_back_synthesis``
-surface the refusal as an errors-as-value ``MemoryReceipt``.
-"""
+"""Writer refusal tests for F17 section contract."""
 
 from __future__ import annotations
 

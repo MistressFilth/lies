@@ -137,12 +137,7 @@ def test_upsert_pages_bulk(lib: Library) -> None:
 
 
 def test_upsert_pages_empty_noop(lib: Library) -> None:
-    """Minor 26 anti-tautology: empty input is a no-op (no commit, no fsync).
-
-    Pins the early-return contract: passing ``[]`` returns without touching
-    the catalog AND without committing (a redundant ``commit()`` on an
-    unchanged connection is a wasted fsync).
-    """
+    """Empty input is a no-op (no commit, no fsync)."""
     conn = open_catalog(lib)
     try:
         upsert_pages(conn, [])
@@ -152,13 +147,7 @@ def test_upsert_pages_empty_noop(lib: Library) -> None:
 
 
 def test_upsert_pages_commits_on_success(lib: Library) -> None:
-    """Minor 26 anti-tautology: ``upsert_pages`` commits before returning.
-
-    Closes the connection between the upsert call and the read so a regression
-    that drops the internal commit would surface as an empty list. The wiki
-    side (``memory.catalog.upsert_pages``) commits the same way; the library
-    side matches the contract.
-    """
+    """``upsert_pages`` commits before returning."""
     conn = open_catalog(lib)
     try:
         upsert_pages(

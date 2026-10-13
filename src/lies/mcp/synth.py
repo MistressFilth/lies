@@ -95,22 +95,16 @@ async def synthesize(
 ) -> SynthesizeEnvelope:
     """Synthesize a prose answer from library collections.
 
-    Calls :func:`ground` for retrieval, then runs the query synthesizer
-    agent over the result. Returns a :class:`SynthesizeEnvelope`.
-
     Args:
         question: Natural-language question.
-        tag_expr: Body of a single include expression (no leading
-            sigil). None for library-wide.
-        exclude_expr: Compiled NOT AST. None when no ``-`` chain.
-        file_back: Reserved for write-tool spec. Raises
-            ``ToolError`` until the write-tool lands.
+        tag_expr: Body of a single include expression; ``exclude_expr`` is the
+            compiled NOT AST. ``file_back`` is reserved for the write-tool spec.
 
     Returns:
-        SynthesizeEnvelope carrying the prose body and citations.
+        :class:`SynthesizeEnvelope` with the prose body and citations.
 
     Raises:
-        ToolError: When file_back=True.
+        ToolError: When ``file_back=True``.
     """
     if file_back:
         raise ToolError(_FILE_BACK_DEFERRED_MSG)
@@ -127,11 +121,10 @@ async def synthesize(
         top_k=10,  # more context for the synthesizer
     )
 
-    # 2. The retrieval did not finish → inconclusive, not empty. A
-    # dispatch failure and a clean miss both arrive with zero citations,
-    # and collapsing them tells the user their library has nothing when
-    # the process is at fault. ``fallback_reason`` carries the digest's
-    # own reason; only ``ground()`` knows which failure this was.
+    # 2. Retrieval did not finish → inconclusive, not empty. A dispatch
+    # failure and a clean miss both arrive with zero citations, and
+    # collapsing them tells the user their library has nothing when the
+    # process is at fault.
     if digest.transient:
         return SynthesizeEnvelope(
             question=question,
@@ -285,18 +278,13 @@ def _resolve_librarian_model():
 def librarian_agent_run(deps: Any) -> Any:
     """Runs the librarian subagent's ``run_sync`` and returns the LibrarianOutput.
 
-    Builds a fresh librarian agent, wires the MCP-backed tools and
-    invokes ``run_sync`` with the supplied deps. The bundle passes
-    through :func:`~lies.agents.librarian.with_search_diagnostics`, so
-    its ``transient`` / ``fallback_reason`` are reconciled against the
-    recorded search verdict rather than the model's copy alone.
-
-    Args:
-        deps: :class:`LibrarianDeps` carrying question / tag_expr /
-            exclude_expr / top_k.
-
-    Returns:
-        :class:`LibrarianOutput`.
+    Builds a fresh librarian agent, wires the MCP-backed tools and invokes
+    ``run_sync`` with ``deps`` (a :class:`LibrarianDeps` carrying question /
+    tag_expr / exclude_expr / top_k). The bundle passes through
+    :func:`~lies.agents.librarian.with_search_diagnostics`, so its
+    ``transient`` / ``fallback_reason`` are reconciled against the recorded
+    search verdict rather than the model's copy alone. Returns a
+    :class:`LibrarianOutput`.
     """
     from lies.agents.librarian import (
         LibrarianOutput,
@@ -314,28 +302,14 @@ def librarian_agent_run(deps: Any) -> Any:
     register_librarian_tools(agent, search_diagnostics=diagnostics)
     # No ``except QmdLockBusy`` arm here, and there must not be one:
     # ``_search_impl`` catches ``Exception`` and returns an envelope, so
-    # the exception cannot cross the agent boundary. Its rendering is
-    # ``_search_impl``'s own ``fallback_reason``, which ``diagnostics``
-    # carries the rest of the way.
+    # the exception cannot cross the agent boundary.
     try:
         result = agent.run_sync(deps.question, deps=deps)
     except Exception as exc:
-        # Fail-soft: pydantic-ai raises (e.g.
-        # ``UsageLimitExceeded``) when the librarian LLM cannot produce a
-        # valid ``LibrarianOutput`` after its retry budget, and the MCP
-        # ``lib_ask`` tool must surface an honest envelope rather than
-        # crashing the user's request.
-        #
-        # ``transient=True, no_coverage=False`` rather than
-        # ``no_coverage=True``: the librarian LLM never ran, so this
-        # bundle is a fact about the run and carries no information
-        # about the corpus — ``no_coverage=True`` here renders as "No
-        # relevant content found in library", naming a corpus problem for
-        # a model outage.
-        #
-        # The bundle still goes through ``with_search_diagnostics``:
-        # ``run_sync`` raising does not un-happen a search the model
-        # already ran, and a recorded reason names the remedy.
+        # Fail-soft: an honest envelope, not a crashed request. ``transient``
+        # not ``no_coverage`` — the LLM never ran (AGENTS.md, "Data
+        # shapes"). ``with_search_diagnostics`` still applies: raising
+        # does not un-happen a search the model already ran.
         log.warning(
             "librarian_agent_run: dispatch failed (%s: %s); returning transient fallback",
             type(exc).__name__,
@@ -378,19 +352,10 @@ def librarian_agent_run(deps: Any) -> Any:
 def synthesizer_agent_run(librarian_output: Any, question: str) -> Any:
     """Run the synthesizer subagent's ``run_sync`` and return its answer.
 
-    Builds a fresh synthesizer agent, wires the librarian's excerpt
-    bundle as :class:`QueryDeps`, and returns the typed
-    :class:`QueryAnswer`.
-
-    Args:
-        librarian_output: :class:`LibrarianOutput` from
-            :func:`librarian_agent_run`.
-        question: The original user question (echoed into
-            :class:`QueryDeps`).
-
-    Returns:
-        :class:`QueryAnswer` — the synthesizer's prose answer with
-        citations and ``format_hint``.
+    Builds a fresh synthesizer agent, wires ``librarian_output`` (from
+    :func:`librarian_agent_run`) and the original ``question`` as
+    :class:`QueryDeps`, and returns the typed :class:`QueryAnswer` — the
+    synthesizer's prose answer with citations and ``format_hint``.
     """
     from lies.agents.query_synthesizer import QueryDeps, query_synthesizer_agent
 
@@ -418,13 +383,6 @@ def _build_query_deps(
     exclude_tags: list[str] | None,
 ) -> Any:
     """Build the deps object for :func:`librarian_agent_run`.
-
-    Translates the MCP ``lib_ask`` tool's flat ``exclude_tags`` surface
-    (a list of bare-tag strings like ``["c:opencode"]``) into the
-    compiled ``TagExpr`` AST the librarian consumes in
-    :attr:`LibrarianDeps.exclude_expr`. ``None`` when no ``-`` chain
-    was supplied; ``list[str]`` chain paths land here as a single
-    ``Or(...)`` AST so the F15 grammar walks the full chain site-side.
 
     Args:
         question: The user's natural-language question.
@@ -487,27 +445,9 @@ def _ask_impl(
     exclude_tags: list[str] | None = None,
     file_back: bool = False,
 ) -> SynthesizeEnvelope:
-    """Orchestrate librarian → synthesizer → envelope.
-
-    Replaces the old ``synthesize`` tool. The librarian LLM runs the
-    Classify → Search → Read → Return 4-step pipeline; the synthesizer
-    LLM produces the prose answer from the librarian's excerpt bundle.
-
-    Args:
-        question: Natural-language question.
-        tag_expr: Body of a single include expression (no leading
-            sigil). ``None`` for library-wide.
-        exclude_tags: NOT tags without leading sigil. ``None`` when no
-            ``-`` chain.
-        file_back: Reserved for the write-tool spec. Raises
-            ``ToolError`` until the write-tool lands in v0.41.
-
-    Returns:
-        :class:`SynthesizeEnvelope` carrying the prose body and
-        citations.
-
-    Raises:
-        ToolError: When ``file_back=True``.
+    """Orchestrate librarian → synthesizer → envelope. Args and the ``ToolError``
+    on ``file_back=True`` are as for :func:`synthesize`; ``exclude_tags`` here
+    is the NOT-tag list form the tool surface passes.
     """
     if file_back:
         raise ToolError(_FILE_BACK_DEFERRED_MSG)
@@ -516,11 +456,9 @@ def _ask_impl(
     lib_out = librarian_agent_run(deps)
 
     if lib_out.transient:
-        # The librarian never dispatched, so the fixed sentence must not
-        # name a corpus problem for a model outage. Render the bundle's
-        # own reason, which ``search`` fills with the holder pid, the
-        # elapsed wait, the budget and the contended inode; the fixed
-        # wording is only the fallback for a bundle carrying none.
+        # The librarian never dispatched, so the fixed sentence must not name
+        # a corpus problem for a model outage. Render the bundle's own
+        # reason; the fixed wording is the fallback for one carrying none.
         return SynthesizeEnvelope(
             question=question,
             tag_expr=tag_expr,
@@ -539,12 +477,10 @@ def _ask_impl(
         )
 
     if not lib_out.excerpts:
-        # Read the bundle's own reason here too. ``_search_impl`` writes
-        # the specific cause into the envelope and
-        # ``with_search_diagnostics`` carries it onto the bundle, so an
-        # unknown tag and a registered-but-empty collection are already
-        # named; the fixed sentence is only the fallback for a bundle
-        # that genuinely carries none.
+        # Read the bundle's own reason here too — ``_search_impl`` names the
+        # specific cause (unknown tag, empty collection) and
+        # ``with_search_diagnostics`` carries it onto the bundle. The
+        # fixed sentence is the fallback for a bundle carrying none.
         return SynthesizeEnvelope(
             question=question,
             tag_expr=tag_expr,

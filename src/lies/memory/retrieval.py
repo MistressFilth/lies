@@ -175,20 +175,7 @@ def _from_index(wiki: Wiki, question: str, limit: int) -> list[WikiEvidence]:
 
 
 def _corpus_page_count(wiki: Wiki) -> int:
-    """Return the wiki-section page count for ``wiki``.
-
-    Probes ``<wiki_dir>/.lies/catalog.db`` for ``section='wiki'``
-    rows. The wiki section is the right corpus for the search
-    no-coverage flag — library mirrors live under ``section='ingested'``
-    and are not the wiki corpus. Best-effort: any exception (wiki
-    unresolvable, catalog unreadable, missing ``wiki_dir``) propagates
-    and the caller falls back to ``no_coverage=False``.
-
-    Module-scope so tests can monkeypatch it without touching the
-    catalog. Mirrors :func:`lies.mcp.grounding._corpus_page_count`,
-    which serves the F19 ground-shape digest — keeping both paths off
-    one helper preserves the contract across surfaces.
-    """
+    """Return the wiki-section page count for ``wiki``."""
     from lies.memory.catalog import list_pages, open_catalog
     from lies.memory.catalog_models import PageSection
 
