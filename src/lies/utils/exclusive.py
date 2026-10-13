@@ -65,20 +65,15 @@ def acquire_create_lock(  # type: ignore[no-untyped-def]
 ) -> AcquireResult | None:
     """Atomically create ``path``. Return ``AcquireResult`` on win, ``None`` on contention.
 
-    With ``pid_path`` + ``state_json_path``, an existing create-lock whose
-    stored PID is dead (or whose heartbeat is older than ``max_age_s``) is
-    treated as a stale holder, reaped once, and the create retried.
-    ``force_repair=True`` escalates that second chance to a seemingly live
-    contender; without it a live holder always wins. See the module
-    docstring for the exception policy and AGENTS.md, "Data shapes", for
-    the four ``AcquireResult.status`` outcomes.
+    With ``pid_path`` + ``state_json_path``, an existing create-lock whose stored PID is dead (or whose heartbeat
+    is older than ``max_age_s``) is treated as a stale holder, reaped once, and the create retried.
+    ``force_repair=True`` escalates that second chance to a seemingly live contender; without it a live holder
+    always wins. See the module docstring for the exception policy, and AGENTS.md "Data shapes" for the four
+    ``AcquireResult.status`` outcomes.
 
-    ``self_acquire_is_stale=False`` disables same-pid self-recovery, which a
-    caller tracking re-entry itself must set: the default assumes a same-pid
-    lock is this process's own, which a second *thread* falsifies.
-    ``parent_prepared=True`` is only an optimisation — ``_create_exclusive``
-    heals a vanished parent anyway. The fd stays open so the OS holds the
-    inode; the caller must pass it to ``release_create_lock``.
+    ``self_acquire_is_stale=False`` disables same-pid self-recovery, which a caller tracking re-entry itself must
+    set: the default assumes a same-pid lock is this process's own, which a second *thread* falsifies.
+    ``parent_prepared=True`` is only an optimisation. The fd stays open so the OS holds the inode.
     """
     if pid_alive_fn is None:
 

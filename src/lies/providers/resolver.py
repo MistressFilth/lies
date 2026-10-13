@@ -1,20 +1,14 @@
 """Resolve an agent name to a ready-to-use pydantic-ai ``Model`` (or string).
 
 Built-in ``anthropic:`` prefixes pass through as strings — pydantic-ai's
-``infer_model`` resolves them via its hardcoded provider list. Custom
-``anthropic_compatible`` providers return a constructed ``AnthropicModel``
-backed by an ``AsyncAnthropic`` client; ``openai_compatible`` providers
-return an ``OpenAIChatModel`` backed by an ``AsyncOpenAI`` client.
-The branch on ``spec.type`` narrows the client type for the matching
-provider constructor — the type checker can't narrow a union across
-function calls, so we dispatch inside this resolver rather than via a
-generic ``_client_for`` helper.
-
-The vendor SDK imports are deferred into the branches that build a
-client, not raised to module scope: ``anthropic`` costs ~0.4s and
-``openai`` ~0.3s to import, and ``lies.providers.__init__`` imports
-this module for ``AGENT_ROSTER`` alone. ``ops.check_connectivity``
-already worked this way.
+``infer_model`` resolves them from its hardcoded provider list. Custom
+``anthropic_compatible`` providers return a constructed ``AnthropicModel``;
+``openai_compatible`` return an ``OpenAIChatModel``. The branch on
+``spec.type`` narrows the client union for the matching constructor — a type
+checker cannot narrow a union across calls, hence dispatching here rather
+than through a generic ``_client_for``. Vendor SDK imports are deferred into
+the branches that build a client: ``lies.providers.__init__`` imports this
+for ``AGENT_ROSTER`` alone.
 """
 
 from __future__ import annotations

@@ -1,16 +1,15 @@
 """Cross-process flock envelope for the qmd CLI helpers and the daemon query path.
 
-Every :mod:`lies.qmd.cli` helper that shells out to ``qmd`` is
-wrapped in :func:`with_qmd_lock`. Concurrent subprocess callers race
-the CUDA VMM pool reservation; the flock makes that race unreachable
-by serializing through one site-wide inode.
+Every :mod:`lies.qmd.cli` helper that shells out to ``qmd`` is wrapped in
+:func:`with_qmd_lock`. Concurrent subprocess callers race the CUDA VMM pool
+reservation; the flock makes that race unreachable by serializing through
+one site-wide inode.
 
 Lock path: ``${LIES_QMD_LOCK_PATH:-${XDG_STATE_HOME:-~/.local/state}/lies}/qmd.lock``.
 Each acquirer owns its own wait budget and carries it onto the raised
-instance's ``max_s``: the decorator polls for 30 s,
-:func:`qmd_lock_async` for 120 s (overridable per call via
-``LIES_QMD_QUERY_LOCK_WAIT``, read by :func:`query_lock_wait_s`).
-Heartbeat ``max_age_s`` is 1800 s on both.
+instance's ``max_s`` — 30 s for the decorator, 120 s for
+:func:`qmd_lock_async` (per-call via ``LIES_QMD_QUERY_LOCK_WAIT``, read by
+:func:`query_lock_wait_s`). Heartbeat ``max_age_s`` is 1800 s on both.
 """
 
 from __future__ import annotations
@@ -166,16 +165,13 @@ def _acquire_with_poll(
     """Poll-retry until the qmd flock is acquired.
 
     Blocking: every wait is a :func:`time.sleep`, so this is for sync call
-    sites only. An async caller should use :func:`qmd_lock_async`.
+    sites only — an async caller should use :func:`qmd_lock_async`.
 
-    Returns:
-        The winning :class:`_Attempt`, whose ``fd`` *and* ``paths`` the
-        caller hands straight back to :func:`_release`.
-
-    Raises:
-        QmdLockBusy: The budget elapsed with a live contender holding the
-            lock.
-        WikiFlockIndeterminate: The contender's liveness is undeterminable.
+    Returns the winning :class:`_Attempt`, whose ``fd`` *and* ``paths`` the
+    caller hands straight back to :func:`_release`. Raises
+    ``QmdLockBusy`` when the budget elapses with a live contender, and
+    ``WikiFlockIndeterminate`` when that contender's liveness is
+    undeterminable.
     """
     lock_paths = _lock_paths()
     _prepare(lock_paths)
@@ -300,20 +296,15 @@ async def qmd_lock_async(
     """Async twin of :func:`with_qmd_lock`, for the daemon query path.
 
     Same flock, heartbeat, reaping and :class:`QmdLockBusy`; the wait
-    *awaits* instead of calling :func:`time.sleep`, so it parks no
-    anyio thread token. Reentrant on the same context; two *tasks*
-    contend. See AGENTS.md for the reentrancy hazard that shape
-    carries.
+    *awaits* rather than calling :func:`time.sleep`, so it parks no anyio
+    thread token. ``timeout_s`` is the poll-retry budget before
+    ``QmdLockBusy`` (default 120 s) and ``max_age_s`` the staleness budget
+    for a dead contender (default 1800 s, matching the sync twin).
 
-    Args:
-        timeout_s: Wall-clock seconds to poll-retry when contended;
-            ``QmdLockBusy`` past this. Default 120 s.
-        max_age_s: Staleness budget for a dead contender's heartbeat.
-            Default 1800 s, matching :func:`with_qmd_lock`.
-
-    Yields:
-        None. The fd is released in a ``finally``, so an exception and a
-        cancellation both unwind through it.
+    Reentrant on the same context; two *tasks* contend. See AGENTS.md for
+    the reentrancy hazard that shape carries. Yields ``None`` — the fd is
+    released in a ``finally``, so an exception and a cancellation both
+    unwind through it.
     """
     state = _held_depth.get()
     if state:

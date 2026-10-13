@@ -238,21 +238,15 @@ async def daemon_tool(
 ) -> Any:
     """Calls one qmd daemon tool, recovering per the taxonomy.
 
-    ``query`` alone is single-flighted on the site-wide qmd lock: qmd runs
-    queries strictly one at a time, so an ungated caller joins an unbounded
-    queue inside another process where nothing bounds it. The gate moves
-    that wait somewhere with a budget (:func:`query_lock_wait_s`) and an
-    owner. ``get``/``multi_get``/``status`` stay unlocked — they answer in
-    milliseconds, and gating them would park a batch behind the slowest
-    query in the process.
+    ``query`` alone is single-flighted on the site-wide qmd lock: qmd runs queries strictly one at a time, so an
+    ungated caller joins an unbounded queue inside another process where nothing bounds it. The gate moves that
+    wait somewhere with a budget (:func:`query_lock_wait_s`) and an owner. ``get``/``multi_get``/``status`` stay
+    unlocked — they answer in milliseconds, and gating them would park a batch behind the slowest query.
 
-    ``name`` must be in :data:`DAEMON_TOOLS`; ``arguments`` is forwarded
-    verbatim and ``timeout`` is the read deadline. Returns the raw
-    ``CallToolResult`` (``.content`` for ``get``/``multi_get``). Raises
-    ``ValueError`` (not a daemon tool), ``QmdDaemonUnavailable`` (not
-    serving), ``QmdDaemonWedged`` (stopped answering), ``RuntimeError``
-    (tool error), and ``QmdLockBusy`` — which is deliberately *not* a
-    daemon failure: a held ``query`` wants a wait and retry, not a restart.
+    ``name`` must be in :data:`DAEMON_TOOLS`; ``arguments`` is forwarded verbatim and ``timeout`` is the read
+    deadline. Returns the raw ``CallToolResult``. Raises ``ValueError``, ``QmdDaemonUnavailable``,
+    ``QmdDaemonWedged``, ``RuntimeError`` and ``QmdLockBusy`` — the last deliberately *not* a daemon failure: a
+    held ``query`` wants a wait and retry, not a restart.
     """
     if name == "query":
         async with qmd_lock_async(timeout_s=query_lock_wait_s()):

@@ -61,11 +61,10 @@ class ArchivistDigest:
     exists because ``transient`` says *that* it failed, not *how* — a
     wedged daemon and a contended lock want different operator actions.
 
-    ``searched_scope`` is what was *dispatched*, not what was asked for:
-    the daemon serves an unknown collection with an empty result and no
-    error. A non-empty ``unserved_scope`` with an empty
-    ``searched_scope`` searched nothing, which is likewise not a claim
-    about the corpus.
+    ``searched_scope`` is what was *dispatched*, not what was asked for: the
+    daemon serves an unknown collection with an empty result and no error.
+    A non-empty ``unserved_scope`` with an empty ``searched_scope`` searched
+    nothing, which is likewise not a claim about the corpus.
     """
 
     question: str

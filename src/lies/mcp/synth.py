@@ -278,18 +278,13 @@ def _resolve_librarian_model():
 def librarian_agent_run(deps: Any) -> Any:
     """Runs the librarian subagent's ``run_sync`` and returns the LibrarianOutput.
 
-    Builds a fresh librarian agent, wires the MCP-backed tools and
-    invokes ``run_sync`` with the supplied deps. The bundle passes
-    through :func:`~lies.agents.librarian.with_search_diagnostics`, so
-    its ``transient`` / ``fallback_reason`` are reconciled against the
-    recorded search verdict rather than the model's copy alone.
-
-    Args:
-        deps: :class:`LibrarianDeps` carrying question / tag_expr /
-            exclude_expr / top_k.
-
-    Returns:
-        :class:`LibrarianOutput`.
+    Builds a fresh librarian agent, wires the MCP-backed tools and invokes
+    ``run_sync`` with ``deps`` (a :class:`LibrarianDeps` carrying question /
+    tag_expr / exclude_expr / top_k). The bundle passes through
+    :func:`~lies.agents.librarian.with_search_diagnostics`, so its
+    ``transient`` / ``fallback_reason`` are reconciled against the recorded
+    search verdict rather than the model's copy alone. Returns a
+    :class:`LibrarianOutput`.
     """
     from lies.agents.librarian import (
         LibrarianOutput,
@@ -357,19 +352,10 @@ def librarian_agent_run(deps: Any) -> Any:
 def synthesizer_agent_run(librarian_output: Any, question: str) -> Any:
     """Run the synthesizer subagent's ``run_sync`` and return its answer.
 
-    Builds a fresh synthesizer agent, wires the librarian's excerpt
-    bundle as :class:`QueryDeps`, and returns the typed
-    :class:`QueryAnswer`.
-
-    Args:
-        librarian_output: :class:`LibrarianOutput` from
-            :func:`librarian_agent_run`.
-        question: The original user question (echoed into
-            :class:`QueryDeps`).
-
-    Returns:
-        :class:`QueryAnswer` — the synthesizer's prose answer with
-        citations and ``format_hint``.
+    Builds a fresh synthesizer agent, wires ``librarian_output`` (from
+    :func:`librarian_agent_run`) and the original ``question`` as
+    :class:`QueryDeps`, and returns the typed :class:`QueryAnswer` — the
+    synthesizer's prose answer with citations and ``format_hint``.
     """
     from lies.agents.query_synthesizer import QueryDeps, query_synthesizer_agent
 

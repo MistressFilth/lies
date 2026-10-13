@@ -47,18 +47,16 @@ if TYPE_CHECKING:
 def __getattr__(name: str):
     """Lazy import of qmd CLI helpers — keeps ``import lies.cli`` cheap.
 
-    Importing :mod:`lies.qmd.cli` pulls in :mod:`pydantic_ai` +
-    :mod:`fastmcp` transitively. ``LibraryWriter`` is loaded at CLI
-    startup, so importing qmd here would defeat the
-    ``tests/unit/cli/test_cli_lazy_imports.py`` no-pydantic_ai /
-    no-fastmcp contract. The qmd symbols are only needed when
-    ``commit(..., qmd_collection=...)`` fires the post-commit hook, which
-    is the rare ingest path — defer the heavy load until then.
+    :mod:`lies.qmd.cli` pulls in :mod:`pydantic_ai` + :mod:`fastmcp`, and
+    ``LibraryWriter`` loads at CLI startup, so importing it here would defeat
+    the no-``pydantic_ai``/no-``fastmcp`` contract in
+    ``test_cli_lazy_imports.py``. The symbols are needed only when
+    ``commit(..., qmd_collection=...)`` fires the post-commit hook — the rare
+    ingest path.
 
-    Mirrors the PEP 562 pattern used by :mod:`lies.cli.page`. Tests using
-    ``mock.patch("lies.library.writer.qmd_collection_add_or_update", ...)``
-    still work because :func:`mock.patch` triggers this ``__getattr__`` on
-    its initial ``getattr``, then ``setattr``s the patched version.
+    Mirrors the :pep:`562` pattern in :mod:`lies.cli.page`. ``mock.patch``
+    still works because it triggers this ``__getattr__`` on its initial
+    ``getattr``, then ``setattr``s the patched value.
     """
     if name in {
         "qmd_collection_add_or_update",

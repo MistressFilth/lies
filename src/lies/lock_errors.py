@@ -45,22 +45,16 @@ class WikiFlockIndeterminate(WikiFlockError):
 class QmdLockBusy(WikiFlockError):
     """Another process holds the site-wide qmd flock past the wait budget.
 
-    The budget belongs to the raiser, not to this class: the CLI
-    decorator polls for 30 s and the daemon query path for 120 s,
-    overridable per call with ``LIES_QMD_QUERY_LOCK_WAIT``. Read
-    ``max_s`` off the instance.
+    The budget belongs to the raiser, not to this class — 30 s on the CLI
+    decorator, 120 s on the daemon query path, retunable per call with
+    ``LIES_QMD_QUERY_LOCK_WAIT`` — so read ``max_s`` off the instance.
+    ``holder_pid``, ``waited_s`` and ``lock_path`` are what let a raise site
+    name the contention; each is ``None`` when unknown.
 
-    Distinct from WikiLockBusy because the qmd flock is site-wide, not
-    per-wiki, and the operator recovery is to wait and retry rather than
-    ``lies flock qmd force-repair``. Nothing was dispatched, so there is
-    no daemon state to recycle.
-
-    Attributes:
-        holder_pid: PID of the live holder, when known. ``None`` if unknown.
-        waited_s: Wall-clock seconds spent polling before raising.
-        max_s: The budget *that raiser* waited for, in seconds.
-        lock_path: The inode the wait was spent on, when the raise site
-            knows it. ``None`` only for a hand-built test instance.
+    Distinct from ``WikiLockBusy`` because the qmd flock is site-wide, not
+    per-wiki, and the recovery is to wait and retry rather than
+    ``lies flock qmd force-repair``. Nothing was dispatched, so there is no
+    daemon state to recycle.
     """
 
     def __init__(

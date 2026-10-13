@@ -1,16 +1,12 @@
 """search MCP tool — single-batch hybrid qmd query against the daemon.
 
-The read path goes through ``lies.qmd.access.daemon_tool`` so the
-collection filter is a true push-down rather than a post-filter.
-
-Two envelopes the result must keep separate:
-
-- ``no_coverage`` — *this search found nothing*. A claim about the corpus.
-- ``transient`` — *this search did not finish*. A claim about the run.
-
-A *down* daemon (``QmdDaemonUnavailable``) is re-raised so the operator
-must act; folding it into ``no_coverage=True`` is the silent-failure
-mode this module exists to remove.
+The read path goes through ``lies.qmd.access.daemon_tool`` so the collection
+filter is a true push-down rather than a post-filter. Two envelopes the
+result must keep separate: ``no_coverage`` (*this search found nothing* — a
+claim about the corpus) and ``transient`` (*this search did not finish* — a
+claim about the run). A *down* daemon (``QmdDaemonUnavailable``) is re-raised
+so the operator must act; folding it into ``no_coverage=True`` is the
+silent-failure mode this module exists to remove.
 """
 
 from __future__ import annotations
@@ -51,21 +47,15 @@ def _decode(stderr: bytes | str) -> str:
 def _resolve_tag_collections(tag_expr: str | None) -> tuple[list[str], list[str]]:
     """Resolve ``tag_expr`` body to ``(resolved_collections, unknown_tags)``.
 
-    An atom with no qualifier names a tag; ``t:`` says so explicitly and
-    resolves identically; ``c:`` is a strict collection-name match. Per
-    the F15 dispatch in :func:`lies.query.synthesizer._collections_matching`,
-    a ``t:``/bare atom matches a collection when the atom is one of its
-    tags *or* the collection's own name — the implicit self-tag.
+    An unqualified atom names a tag; ``t:`` says so explicitly and resolves identically; ``c:`` is a strict
+    collection-name match. A ``t:``/bare atom matches a collection when it is one of its tags *or* the
+    collection's own name — the implicit self-tag.
 
-    The resolution itself is that shared function rather than a second
-    implementation, so a filter ``ground``/``lib_ask`` accepts is a
-    filter this tool accepts.
-
-    On a parse error, an atom in neither vocabulary, or a tree that
-    selects no collection, the whole ``tag_expr`` is surfaced as one
-    unknown-tag entry and the resolved list is empty — the caller learns
-    its scope was refused rather than being handed a search over the
-    whole library it did not ask for. Returns ``sorted`` for determinism.
+    Resolution is :func:`lies.query.synthesizer._collections_matching` rather than a second implementation, so a
+    filter ``ground``/``lib_ask`` accepts is one this tool accepts. On a parse error, an atom in neither
+    vocabulary, or a tree selecting no collection, the whole ``tag_expr`` surfaces as one unknown-tag entry and
+    the resolved list is empty — the caller learns its scope was refused rather than being handed a search over
+    the library it did not ask for. Returns ``sorted`` for determinism.
     """
     if tag_expr is None:
         return [], []

@@ -71,22 +71,15 @@ class SidecarOverrideNotAFile(ValueError):
 def _validated_sidecar_path() -> _Path:
     """Return :data:`SIDECAR_PATH`, refusing a directory.
 
-    Validated at first use rather than at import, even though the path is
-    bound at import. An import-time raise makes this module unimportable,
-    and ``tests/conftest.py`` rebinds ``SIDECAR_PATH`` *after* importing
-    it — so a host carrying a bad value could not run the suite at all,
-    not even to assert the error. First use still lands early: the first
-    caller is :func:`check_scope_match` via :func:`ensure_qmd_daemon`, on
-    the first command that touches qmd.
+    Validated at first use, not at import, though the path is bound at import:
+    an import-time raise makes this module unimportable, and
+    ``tests/conftest.py`` rebinds ``SIDECAR_PATH`` *after* importing it, so a
+    host carrying a bad value could not run the suite to assert the error.
+    First use still lands early — the first caller is :func:`check_scope_match`
+    on the first command touching qmd. The module global is read rather than
+    the environment, so a test's rebinding is validated as it bound it.
 
-    Reads the module global rather than the environment, so a test that
-    rebinds ``SIDECAR_PATH`` is validated against the value it bound.
-
-    Returns:
-        The bound sidecar path.
-
-    Raises:
-        SidecarOverrideNotAFile: the path exists as a directory.
+    Raises ``SidecarOverrideNotAFile`` if the path exists as a directory.
     """
     if SIDECAR_PATH.is_dir():
         raise SidecarOverrideNotAFile(SIDECAR_PATH)
@@ -330,20 +323,15 @@ def _spawn_qmd_daemon(
 ) -> "subprocess.CompletedProcess[bytes] | None":
     """Invokes ``qmd mcp --http --daemon``. The only place qmd is spawned.
 
-    Args:
-        port: optional ``--port``; ``None`` lets qmd apply its default.
-        data_dir: optional qmd cache root, delivered as
-            ``XDG_CACHE_HOME``. qmd has no ``--data-dir`` flag, and it
-            appends its own ``qmd/`` segment, so ``X`` becomes ``X/qmd/``.
-            The only argument here that selects an index; production
-            passes neither this nor ``port``.
-        timeout: seconds before SIGKILL. Defaults to
-            ``STATUS_TIMEOUT_S``.
-        raise_on_error: propagate a spawn failure instead of swallowing it.
+    ``port`` is an optional ``--port``; ``None`` lets qmd apply its default.
+    ``data_dir`` is the qmd cache root, delivered as ``XDG_CACHE_HOME`` —
+    qmd has no ``--data-dir`` flag and appends its own ``qmd/`` segment, so
+    ``X`` becomes ``X/qmd/``. It is the only argument here that selects an
+    index, and production passes neither it nor ``port``.
 
-    Returns:
-        The ``CompletedProcess`` on success, or ``None`` when the spawn
-        failed and ``raise_on_error`` is false.
+    ``timeout`` is seconds before SIGKILL (default ``STATUS_TIMEOUT_S``);
+    ``raise_on_error`` propagates a spawn failure instead of swallowing it.
+    Returns the ``CompletedProcess``, or ``None`` on a swallowed failure.
     """
     argv = [_QMD_BIN, "mcp", "--http", "--daemon"]
     env_overrides: dict[str, str] = {}
@@ -463,18 +451,12 @@ async def recycle_qmd_daemon(
     ``fastmcp.Client.list_tools()`` call against ``daemon_url``, proving the
     JSON-RPC session is alive rather than that the daemon is warm. The
     worst-case bound is a per-configuration table, not one figure — see
-    AGENTS.md and ``tests/integration/test_qmd_recycle_ceiling.py``.
+    AGENTS.md and ``test_qmd_recycle_ceiling.py``.
 
-    Args:
-        scope: the LIES scope to record in the sidecar. It does not
-            select the daemon's index — see :func:`_canonical_scope`.
-        daemon_url: the URL to probe, and the source of the ``--port`` the
-            spawn must use (:func:`daemon_port_from_url`).
-
-    Raises:
-        QmdRecycleFailed: reap, spawn and probe never served within
-            ``ready_timeout``. The only exception this function raises;
-            the probe's own failures are absorbed into the retry loop.
+    ``scope`` is recorded in the sidecar and does *not* select the index (see
+    :func:`_canonical_scope`); ``daemon_url`` is both probed and the source of
+    the ``--port`` the spawn must use. Raises ``QmdRecycleFailed`` when reap,
+    spawn and probe never served within ``ready_timeout``.
     """
     _log.debug("recycle_qmd_daemon: reaping")
     _reap_qmd_daemon()

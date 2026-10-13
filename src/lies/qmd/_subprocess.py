@@ -96,22 +96,15 @@ def _run_qmd(
 ) -> subprocess.CompletedProcess[bytes]:
     """Run a qmd subprocess with DEVNULL stdin and bounded stderr capture.
 
-    Args:
-        args: argv list. First entry is the qmd binary path.
-        cwd: working directory.
-        timeout: seconds before SIGKILL.
-        env_overrides: extra variables layered **on top of**
-            :func:`_child_env`. Merged, not substituted, so the forced
-            ``NO_COLOR`` survives an override and the child keeps the
-            operator's environment by default. Empty by default, which
-            is today's behaviour exactly.
+    ``args`` is the argv list, whose first entry is the qmd binary;
+    ``timeout`` is seconds before SIGKILL. ``env_overrides`` is layered
+    **on top of** :func:`_child_env`, merged rather than substituted, so the
+    forced ``NO_COLOR`` survives an override and the child keeps the
+    operator's environment by default.
 
-    Returns:
-        A ``CompletedProcess`` with stdout bytes and stderr truncated to
-        ``_MAX_STDERR_BYTES``.
-
-    Raises:
-        subprocess.TimeoutExpired: the process group is SIGKILL'd.
+    Returns a ``CompletedProcess`` with stdout bytes and stderr truncated to
+    ``_MAX_STDERR_BYTES``; raises ``subprocess.TimeoutExpired`` after
+    SIGKILLing the process group.
     """
     child_env = _child_env()
     if env_overrides:
