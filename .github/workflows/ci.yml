@@ -35,8 +35,11 @@ jobs:
       # CI test suite: runs the FULL test surface. The unit gate is
       # disabled via ``CI=true`` (see tests/unit/conftest.py); slow and
       # integration tests run together via ``--runslow INTEGRATION=1``.
+      # No extra ``-q``: ``addopts`` already carries it, and a second one
+      # suppresses the final count line — the one thing this step exists to
+      # report.
       - name: Run full test suite (unit + integration, all slow tests included)
-        run: uv run pytest tests/ --runslow --tb=short -q -p no:cacheprovider
+        run: uv run pytest tests/ --runslow --tb=short -p no:cacheprovider
         env:
           INTEGRATION: "1"
           CI: "true"

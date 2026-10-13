@@ -49,6 +49,73 @@ rule rather than the accident.
 
 ### Changed
 
+- **The vendor SDKs are no longer imported to read a roster.**
+  `lies.providers.registry` and `lies.providers.resolver` each held a
+  module-scope `from anthropic import AsyncAnthropic` /
+  `from openai import AsyncOpenAI`, and `lies/providers/__init__.py`
+  imports both for `AGENT_ROSTER`. Every process that wanted the
+  roster paid for two SDKs: measured at **436 ms** for `anthropic` and
+  **329 ms** for `openai` on this host, together 83% of a cold
+  `Orchestrator(...)`.
+
+  That cost landed inside a test's `call` phase, not in an import:
+  `tests/conftest.py::models_for_tests` imports `lies.providers`
+  lazily, from the test body, so whichever test constructed an
+  `Orchestrator` first absorbed it. `test_orchestrator_constructs` —
+  whose entire body is `Orchestrator(...); assert orch is not None` —
+  measured **0.96 s** and **1.12 s** against a 0.15 s per-test gate,
+  confirmed in isolation over three passes. Its six siblings in the
+  same file do the identical construction in 0.04 s, which is the
+  measurement that identified the cause: the construction is not slow,
+  the first one pays a bill the interpreter already owed.
+
+  Both imports now sit inside the functions that construct a client,
+  the shape `providers/ops.py` already used and
+  `resolver.resolve_model`'s own docstring already claimed ("that
+  branch is the only piece that requires pydantic_ai; tests that don't
+  reach a branch … stay below the 0.15s unit-test budget"). Return
+  annotations moved under `TYPE_CHECKING`. No behaviour changed:
+  `tests/unit/providers/` passes untouched, including the test that
+  patches `anthropic.AsyncAnthropic` for `check_connectivity`, which
+  still resolves at call time.
+
+  **0.96 s → 0.13 s.** The residual was `pydantic_ai_harness`'s own
+  subpackage imports — ~73 ms, one-time — landing in the same call
+  phase, which left the test passing on 0.02 s of headroom.
+  `tests/unit/test_orchestrator.py` now declares the six harness
+  capability modules its subject needs at module scope, the way
+  `test_excerpt_attestation.py` already declares `lies.mcp.synth` and
+  the note in `tests/unit/conftest.py` explains: the gate measures the
+  call phase, and a one-time import belongs at collection, amortised
+  across the session. Unlike the pre-import `conftest.py` records
+  reverting — which was `lies.qmd.capability` and broke TestModel
+  queue accounting — these touch no TestModel state.
+
+  **0.96 s → 0.05 s**, five isolated draws at 0.05 s, and
+  `test_orchestrator_constructs` now costs what every other
+  `Orchestrator` construction in its file costs (0.04–0.06 s), which is
+  the measurement that says the cost was never the test's. Not marked
+  `@pytest.mark.slow`, and nothing skipped — the gate was invisible in
+  CI because `CI=true` disables it, not because the test was slow
+  there.
+
+- **`README.md` cannot document the removed keepalive middleware.**
+  `PingMiddleware` was registered, then removed once a 30-minute held
+  GET stream falsified the failure mode it was added for; `AGENTS.md`
+  and this file say so, and the README's paragraph says it in prose.
+  Markdown is outside the prose ratchet, so nothing stopped the class
+  name coming back. `test_the_removed_ping_middleware_is_not_documented_in_the_readme`
+  asserts the string is absent from `README.md` and that
+  `qmd/daemon.py` still does not reference it — a text check on one
+  file, not a markdown parser.
+
+- **The CI suite command lost its second `-q`.** `addopts = "-ra -q"`
+  already carries quiet, so `-q` on the command line made it `-qq` and
+  suppressed the final `N passed` line — the one thing that step
+  exists to report. Corrected in `.github/workflows/ci.yml` and in the
+  two plan reports that recorded it. The `Makefile` targets and
+  `AGENTS.md` never carried the extra flag.
+
   tools actually returned.** `SearchDiagnostics` now records
   `attested_paths` — every `hit`/`hits[*].path` from a `search`
   envelope, plus every key of a `read` result — and
@@ -89,28 +156,60 @@ rule rather than the accident.
   `test_a_span_body_is_still_not_checked` rather than shipped. No tool
   or prompt signature changed; the MCP surface is identical.
 
-  **Which dispatches carry a record — two of three.** `librarian_agent_run`
-  (`lib_ask`) threads one, and so does `ground`'s legacy F18 path, which
-  `ground()` reaches when a tag or exclude resolves to zero collections
-  and there is no fast-path fan-out to take. That path was the gap: it is
-  an LLM dispatch like any other, nothing downstream checks it, and a
+  **Which dispatches carry a record — all three, by two mechanisms.**
+  `librarian_agent_run` (`lib_ask`) threads one as a keyword-only
+  argument, and so does `ground`'s legacy F18 path, which `ground()`
+  reaches when a tag or exclude resolves to zero collections and there
+  is no fast-path fan-out to take. That path was the gap: it is an LLM
+  dispatch like any other, nothing downstream checks it, and a
   fabricated excerpt rode straight into `ArchivistDigest` citations. It
   now threads a record and forwards the bundle's `transient` /
   `fallback_reason` onto the digest, so a drop there reads as a failed
   run rather than a clean miss.
 
-  `Orchestrator._register_librarian_tools` carries **no** record and is
-  not closed by this change. It registers its tools once for the
-  agent's lifetime, and pydantic-ai raises on a double-register, so a
-  per-dispatch record would have to be either a rebuilt agent per query
-  or one record shared across dispatches — and the shared shape is
-  precisely the cross-dispatch leakage `SearchDiagnostics` is an
-  argument-instead-of-a-global to prevent. What narrows that site
-  instead is `_validate_claim_citations`, and it is narrower than it
-  looks: a claim's quote is checked against the bundle's **own** excerpt
-  bodies, so invented text on a real page is dropped, while a wholly
-  fabricated page — excerpt and text both invented — passes. That is a
-  standing limit, named here rather than implied.
+  `Orchestrator._register_librarian_tools` is the third, and it could
+  not take an argument: it registers its tools once for the agent's
+  lifetime and pydantic-ai raises on a double-register, so a record
+  captured at registration would be shared across dispatches — the
+  cross-dispatch leakage `SearchDiagnostics` is an
+  argument-instead-of-a-global to prevent. It binds the record to the
+  *dispatch* instead. `Orchestrator._dispatch_librarian` wraps
+  `run_sync` in `search_diagnostics_scope`, which sets a `ContextVar`;
+  the tool closures read that variable at call time rather than
+  capturing it, so no second registration is ever attempted.
+
+  **Probed before it was built, because this branch has already been
+  bitten by a ContextVar landing somewhere unexpected**
+  (`qmd/lock.py`'s `_held_depth` propagating into `anyio.to_thread`
+  workers). Four properties, each measured by driving a real
+  `librarian_agent` with a `FunctionModel` and inspecting the record
+  from inside the tool closure:
+
+  - pydantic-ai's `run_sync` wraps the run in an `asyncio.Task`, and a
+    `Task` copies the current context at creation, so the closure sees
+    the caller's binding.
+  - a *sync* tool function is dispatched through
+    `anyio.to_thread.run_sync`, which copies the context again — the
+    same propagation, working in the opposite direction to the hazard
+    above. The closure's `threading.current_thread().name` was
+    `AnyIO worker thread` while the record was still visible.
+  - two dispatches on two threads, synchronised by a
+    `threading.Barrier` so they genuinely interleave, each recorded
+    only its own hits; two `asyncio` tasks on one loop likewise, with
+    the binding restored on exit.
+  - a dispatch with nothing bound behaves exactly as before, and an
+    explicitly passed record still wins over the ambient one.
+
+  `tests/unit/test_librarian_dispatch_record.py` holds all five
+  properties, plus the end-to-end statement that the orchestrator now
+  drops a fabricated excerpt and keeps a real one.
+
+  **What remains on that path is `_validate_claim_citations`, and it
+  is narrower than it looks:** a claim's quote is checked against the
+  bundle's **own** excerpt bodies, so invented text on a real page is
+  dropped, while a wholly fabricated page — excerpt and text both
+  invented — passes. That is a standing limit, named here rather than
+  implied.
 
 - **A qmd flock release unlinks the triad it acquired.** Both poll loops
   now return the winning `_Attempt`, which carries the paths it ran

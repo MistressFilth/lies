@@ -91,6 +91,37 @@ def models_for_tests(value: Model | str) -> dict[str, Model | str]:
     return {name: value for name in AGENT_ROSTER}
 
 
+def attest_librarian_pages(
+    monkeypatch: pytest.MonkeyPatch,
+    agent: object,
+    question: str,
+    slugs: list[str] | tuple[str, ...],
+) -> None:
+    """Record ``slugs`` on the current dispatch the way the ``search`` tool does.
+
+    A test that replaces the librarian's ``run_sync`` outright has
+    replaced the *only* caller of its registered tools, so the
+    dispatch's :class:`SearchDiagnostics` stays empty and
+    ``with_search_diagnostics`` drops every excerpt in the canned
+    bundle as unattested — correct, and not what these tests are
+    about. Driving the real ``search`` closure keeps the canned bundle
+    honest: the paths are recorded by the tool, not asserted by the
+    test.
+    """
+    monkeypatch.setattr(
+        "lies.mcp.search.search",
+        lambda **kwargs: {
+            "hits": [{"path": slug} for slug in slugs],
+            "searched_scope": [],
+            "no_coverage": False,
+            "transient": False,
+            "fallback_reason": None,
+        },
+    )
+    toolset = agent._function_toolset  # ty: ignore[unresolved-attribute]
+    toolset.tools["search"].function(ctx=None, question=question)
+
+
 @pytest.fixture(autouse=True)
 def _isolated_xdg(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Reset LIES / XDG env and redirect all XDG roots to tmp_path.

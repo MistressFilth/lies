@@ -9,17 +9,19 @@ The branch on ``spec.type`` narrows the client type for the matching
 provider constructor — the type checker can't narrow a union across
 function calls, so we dispatch inside this resolver rather than via a
 generic ``_client_for`` helper.
+
+The vendor SDK imports are deferred into the branches that build a
+client, not raised to module scope: ``anthropic`` costs ~0.4s and
+``openai`` ~0.3s to import, and ``lies.providers.__init__`` imports
+this module for ``AGENT_ROSTER`` alone. ``ops.check_connectivity``
+already worked this way.
 """
 
 from __future__ import annotations
 
-from anthropic import AsyncAnthropic
-from openai import AsyncOpenAI
+from typing import TYPE_CHECKING
+
 from pydantic_ai.models import Model
-from pydantic_ai.models.anthropic import AnthropicModel
-from pydantic_ai.models.openai import OpenAIChatModel
-from pydantic_ai.providers.anthropic import AnthropicProvider
-from pydantic_ai.providers.openai import OpenAIProvider
 
 from lies.providers.config import (
     ProviderSpec,
@@ -29,9 +31,15 @@ from lies.providers.config import (
 )
 from lies.providers.errors import ProviderConfigError
 
+if TYPE_CHECKING:
+    from anthropic import AsyncAnthropic
+    from openai import AsyncOpenAI
 
-def _anthropic_client(spec: ProviderSpec) -> AsyncAnthropic:
+
+def _anthropic_client(spec: ProviderSpec) -> "AsyncAnthropic":
     """Build an ``AsyncAnthropic`` client for ``spec``."""
+    from anthropic import AsyncAnthropic
+
     if spec.base_url is None:
         raise ProviderConfigError(
             f"provider {spec.name!r}: base_url is required for anthropic-compatible providers"
@@ -39,8 +47,10 @@ def _anthropic_client(spec: ProviderSpec) -> AsyncAnthropic:
     return AsyncAnthropic(base_url=spec.base_url, api_key=read_api_key(spec))
 
 
-def _openai_client(spec: ProviderSpec) -> AsyncOpenAI:
+def _openai_client(spec: ProviderSpec) -> "AsyncOpenAI":
     """Build an ``AsyncOpenAI`` client for ``spec``."""
+    from openai import AsyncOpenAI
+
     if spec.base_url is None:
         raise ProviderConfigError(
             f"provider {spec.name!r}: base_url is required for openai-compatible providers"
@@ -63,11 +73,17 @@ def resolve_model(agent_name: str, config: ProvidersConfig) -> Model | str:
     if spec.type == "anthropic":
         return f"anthropic:{model_name}"
     if spec.type == "openai_compatible":
+        from pydantic_ai.models.openai import OpenAIChatModel
+        from pydantic_ai.providers.openai import OpenAIProvider
+
         client = _openai_client(spec)
         return OpenAIChatModel(
             model_name,
             provider=OpenAIProvider(openai_client=client),
         )
     # anthropic + anthropic_compatible both use AsyncAnthropic.
+    from pydantic_ai.models.anthropic import AnthropicModel
+    from pydantic_ai.providers.anthropic import AnthropicProvider
+
     client = _anthropic_client(spec)
     return AnthropicModel(model_name, provider=AnthropicProvider(anthropic_client=client))

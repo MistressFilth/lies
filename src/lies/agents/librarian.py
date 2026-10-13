@@ -12,6 +12,9 @@ via ``librarian_agent.run_sync(deps)``.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -151,6 +154,37 @@ class SearchDiagnostics:
                 self.attested_paths.add(key)
 
 
+_DISPATCH_RECORD: ContextVar[SearchDiagnostics | None] = ContextVar(
+    "lies_librarian_search_diagnostics", default=None
+)
+
+
+def current_search_diagnostics() -> SearchDiagnostics | None:
+    """The record bound to *this* dispatch, or ``None`` when none is.
+
+    Long-lived tool closures read this instead of capturing a record, so
+    an agent whose tools are registered once can still be attested
+    per dispatch. Isolated by ``contextvars``: each thread and each
+    asyncio task gets its own copy, so overlapping dispatches never see
+    each other's record.
+    """
+    return _DISPATCH_RECORD.get()
+
+
+@contextmanager
+def search_diagnostics_scope(diag: SearchDiagnostics | None) -> Iterator[None]:
+    """Bind ``diag`` as the current dispatch's record; restore on exit.
+
+    ``None`` clears the binding, which is the "behave as today" arm for
+    a caller that has nothing to attest.
+    """
+    token = _DISPATCH_RECORD.set(diag)
+    try:
+        yield
+    finally:
+        _DISPATCH_RECORD.reset(token)
+
+
 def _envelope_hit_paths(envelope: dict[str, Any]) -> list[str]:
     """Paths a ``search`` envelope returned, in wire order.
 
@@ -199,15 +233,15 @@ def with_search_diagnostics(out: LibrarianOutput, diag: SearchDiagnostics) -> Li
     replaces the model's copy verbatim; a non-transient one leaves
     ``transient`` and ``no_coverage`` alone.
 
-    Covers every librarian dispatch that passes a record:
-    ``librarian_agent_run`` (``lib_ask``) and ``ground``'s legacy F18
-    path. It does **not** cover
-    ``Orchestrator._register_librarian_tools``, which registers once
-    for the agent's lifetime, so a record there would have to be
-    shared across dispatches — the leakage this class exists to
-    prevent. That site is instead narrowed downstream by
-    ``_validate_claim_citations``, which drops invented *text* on a
-    real page but not a wholly fabricated one.
+    Covers every librarian dispatch: ``librarian_agent_run``
+    (``lib_ask``) and ``ground``'s legacy F18 path pass the record
+    explicitly, and the orchestrator binds one with
+    :func:`search_diagnostics_scope` because it registers its tools
+    once for the agent's lifetime. Downstream of that, the orchestrator
+    still runs ``_validate_claim_citations``, which is narrower than it
+    looks: the quote is checked against the bundle's **own** excerpt
+    bodies, so invented *text* on a real page is dropped while a wholly
+    fabricated page passes.
 
     Attestation is path-level, not text-level — see AGENTS.md.
     """
@@ -569,10 +603,18 @@ def register_librarian_tools(
         qmd_query: Accepted for back-compat; unused.
         qmd_get: Accepted for back-compat; unused.
         search_diagnostics: Optional per-dispatch record of the
-            ``search`` tool's envelope; ``None`` disables recording.
-            One record per *dispatch*, not per agent.
+            ``search`` tool's envelope; ``None`` falls back to the
+            record bound by :func:`search_diagnostics_scope`, and to
+            no recording when neither is set. One record per
+            *dispatch*, not per agent.
     """
     del wiki, memory_service, qmd_query, qmd_get  # back-compat: v0.39 callers
+
+    def _record() -> SearchDiagnostics | None:
+        """The record this tool call folds into: explicit, else ambient."""
+        return (
+            search_diagnostics if search_diagnostics is not None else current_search_diagnostics()
+        )
 
     def _collections_read(
         ctx: RunContext[LibrarianDeps],
@@ -600,8 +642,7 @@ def register_librarian_tools(
 
         Returns a :class:`SearchResult` envelope whose ``hits`` rows
         carry a ``~200``-char snippet for the model's Step 3 review.
-        The envelope is recorded onto ``search_diagnostics`` before the
-        model sees it.
+        The envelope is recorded before the model sees it.
         """
         from lies.mcp import search as _search_mod
 
@@ -612,8 +653,9 @@ def register_librarian_tools(
             exclude_tags=exclude_tags,
             hypothetical=hypothetical,
         )
-        if search_diagnostics is not None:
-            search_diagnostics.record(envelope)
+        record = _record()
+        if record is not None:
+            record.record(envelope)
         return envelope
 
     def _read(
@@ -630,8 +672,9 @@ def register_librarian_tools(
         from lies.mcp import read as _read_mod
 
         result = _call_tool(_read_mod.read, paths=paths)
-        if search_diagnostics is not None:
-            search_diagnostics.record_read(result)
+        record = _record()
+        if record is not None:
+            record.record_read(result)
         return result
 
     agent.tool(

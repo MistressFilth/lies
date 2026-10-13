@@ -202,19 +202,47 @@ call.**
   and the reader learns the librarian invented the bundle rather
   than that the library has nothing.
 
-  **Two dispatch sites carry a record, one does not.**
+  **All three dispatch sites carry a record, by two mechanisms.**
   `librarian_agent_run` (`lib_ask`) and `ground`'s legacy F18 path
   (`grounding.py`, reached when a tag/exclude resolves to zero
-  collections) both thread a `SearchDiagnostics`, and `ground`
-  forwards the bundle's `transient` / `fallback_reason` onto
-  `ArchivistDigest`. `Orchestrator._register_librarian_tools` does
-  not: it registers once for the agent's lifetime and
-  `agent.tool(name=…)` raises on a double-register, so a record
-  there would have to be shared across dispatches — the exact
-  cross-dispatch leakage the record exists to prevent. What
-  narrows that site instead is `_validate_claim_citations`, and it
-  is narrower than it looks: the quote is checked against the
-  bundle's **own** excerpt bodies, so invented text on a real page
+  collections) thread a `SearchDiagnostics` as a keyword-only argument,
+  and `ground` forwards the bundle's `transient` / `fallback_reason`
+  onto `ArchivistDigest`. The orchestrator **cannot**: it registers its
+  tools once, for the agent's lifetime, and `agent.tool(name=…)`
+  raises on a double-register, so a record there would have to be
+  captured at registration and shared across dispatches — the exact
+  cross-dispatch leakage the record exists to prevent.
+
+  So the orchestrator binds the record to the *dispatch* instead.
+  `Orchestrator._dispatch_librarian` wraps `run_sync` in
+  `search_diagnostics_scope`, which sets a `ContextVar`; the tool
+  closures **read** that variable rather than capturing it, and a
+  double-register is never attempted. Measured rather than assumed,
+  because this branch has already been bitten by a ContextVar going
+  somewhere unexpected (`qmd/lock.py`'s `_held_depth` propagating
+  into `anyio.to_thread` workers):
+
+  - pydantic-ai's `run_sync` wraps the run in an `asyncio.Task`, and
+    a `Task` copies the current context at creation — so the closures
+    see the caller's binding. Verified by driving a real
+    `librarian_agent` with a `FunctionModel`, not by reading the docs.
+  - a **sync** tool function is dispatched through
+    `anyio.to_thread.run_sync`, which copies the context a second time.
+    Same propagation, same mechanism, working in our favour.
+  - two overlapping dispatches on two threads, barrier-synchronised
+    so they really interleave, each keep their own `attested_paths`;
+    two overlapping `asyncio` tasks on one loop likewise, and the
+    binding is restored on exit.
+  - a dispatch with nothing bound behaves exactly as it did before,
+    and an explicitly passed record still wins over the ambient one —
+    the ContextVar is a dispatch channel, not a replacement for the
+    argument.
+
+  `tests/unit/test_librarian_dispatch_record.py` holds all five.
+
+  **What is left on that path is `_validate_claim_citations`, and it
+  is narrower than it looks.** The quote is checked against the
+  bundle's **own** excerpt bodies, so invented *text* on a real page
   is dropped while a wholly fabricated page passes. Say that rather
   than "the orchestrator validates citations".
 

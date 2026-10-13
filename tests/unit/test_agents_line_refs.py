@@ -18,6 +18,7 @@ from lies.qmd import daemon as qmd_daemon
 REPO_ROOT = Path(__file__).resolve().parents[2]
 AGENTS = REPO_ROOT / "AGENTS.md"
 CHANGELOG = REPO_ROOT / "CHANGELOG.md"
+README = REPO_ROOT / "README.md"
 DOCS = (AGENTS, CHANGELOG)
 
 SPAWN = "_spawn_qmd_daemon(port="
@@ -191,6 +192,24 @@ def test_ensure_qmd_daemon_has_the_three_spawn_paths_the_docs_name() -> None:
         f"{DAEMON.name} now has {len(spawned)}"
     )
     assert all(any(kw.arg == "port" for kw in call.keywords) for call in spawned)
+
+
+def test_the_removed_ping_middleware_is_not_documented_in_the_readme() -> None:
+    """README names the removal without naming the class; hold it there."""
+    removed = "PingMiddleware"
+    assert removed not in README.read_text(encoding="utf-8"), (
+        f"README documents `{removed}`. It was added for a failure mode a "
+        "30-minute held stream disproved, then removed; AGENTS.md and "
+        "CHANGELOG.md are where that is written down."
+    )
+    tree = ast.parse(DAEMON.read_text(encoding="utf-8"))
+    registered = [
+        node for node in ast.walk(tree) if isinstance(node, ast.Attribute) and node.attr == removed
+    ]
+    assert not registered, (
+        f"{DAEMON.name} references `{removed}` again; AGENTS.md says it is "
+        "deliberately not registered"
+    )
 
 
 def test_grounding_lock_busy_pair_is_current() -> None:
