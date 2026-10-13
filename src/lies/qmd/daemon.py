@@ -43,6 +43,56 @@ SIDECAR_PATH = _Path(
 )
 
 
+class SidecarOverrideNotAFile(ValueError):
+    """``LIES_QMD_SIDECAR_OVERRIDE`` names a directory rather than a file.
+
+    The variable names the one *sidecar file* qmd's daemon records its
+    data-dir in. Pointing it at the directory holding that file — the
+    obvious slip, since the default's parent is ``~/.local/share/qmd`` —
+    makes both sidecar accessors raise ``IsADirectoryError`` from inside
+    ``Path.read_text``/``write_text``, which names file I/O rather than
+    the variable the operator set.
+
+    Args:
+        path: the bound sidecar path, which exists as a directory.
+    """
+
+    def __init__(self, path: _Path) -> None:
+        super().__init__(
+            f"LIES_QMD_SIDECAR_OVERRIDE={str(path)!r} is a directory, but it must be "
+            f"a file path: it names the sidecar file the qmd daemon records its "
+            f"data-dir in, not the directory holding it. Point it at a file, e.g. "
+            f"{str(path / 'mcp.data-dir')!r}, or unset it to use the default "
+            f"~/.local/share/qmd/mcp.data-dir."
+        )
+        self.path = path
+
+
+def _validated_sidecar_path() -> _Path:
+    """Return :data:`SIDECAR_PATH`, refusing a directory.
+
+    Validated at first use rather than at import, even though the path is
+    bound at import. An import-time raise makes this module unimportable,
+    and ``tests/conftest.py`` rebinds ``SIDECAR_PATH`` *after* importing
+    it — so a host carrying a bad value could not run the suite at all,
+    not even to assert the error. First use still lands early: the first
+    caller is :func:`check_scope_match` via :func:`ensure_qmd_daemon`, on
+    the first command that touches qmd.
+
+    Reads the module global rather than the environment, so a test that
+    rebinds ``SIDECAR_PATH`` is validated against the value it bound.
+
+    Returns:
+        The bound sidecar path.
+
+    Raises:
+        SidecarOverrideNotAFile: the path exists as a directory.
+    """
+    if SIDECAR_PATH.is_dir():
+        raise SidecarOverrideNotAFile(SIDECAR_PATH)
+    return SIDECAR_PATH
+
+
 def read_sidecar_scope() -> _Path | None:
     """Read the LIES *scope* recorded for the current qmd daemon session.
 
@@ -50,19 +100,27 @@ def read_sidecar_scope() -> _Path | None:
 
     The name says scope, not data-dir, because that is what it holds.
     See :func:`_canonical_scope` for why the value has no meaning to qmd.
+
+    Raises:
+        SidecarOverrideNotAFile: :data:`SIDECAR_PATH` is a directory.
     """
-    if not SIDECAR_PATH.exists():
+    path = _validated_sidecar_path()
+    if not path.exists():
         return None
-    return _Path(SIDECAR_PATH.read_text().strip())
+    return _Path(path.read_text().strip())
 
 
 def write_sidecar_scope(scope: _Path) -> None:
     """Record the LIES scope for the current qmd daemon session.
 
     Called from :func:`ensure_qmd_daemon` after a successful start.
+
+    Raises:
+        SidecarOverrideNotAFile: :data:`SIDECAR_PATH` is a directory.
     """
-    SIDECAR_PATH.parent.mkdir(parents=True, exist_ok=True)
-    SIDECAR_PATH.write_text(str(scope))
+    path = _validated_sidecar_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(str(scope))
 
 
 def check_scope_match(expected: _Path) -> bool:

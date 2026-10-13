@@ -1634,6 +1634,63 @@ Fixed, and every other `file:line` in the shipped docs swept against
   surrounding context is unambiguous; that is true and is also the
   reason a skimming reader keeps taking it at face value.
 
+- **`LIES_QMD_SIDECAR_OVERRIDE` accepted a directory and failed
+  opaquely.** The path binds at import with no validation, so a value
+  naming the *directory* holding the sidecar — the obvious slip, since
+  the default's parent is `~/.local/share/qmd` — made both accessors raise
+  `IsADirectoryError` from inside `Path.read_text`/`write_text`. The
+  traceback pointed at file I/O, not at the variable the operator set,
+  and AGENTS.md records five people who have set it.
+
+  `daemon.py` now raises `SidecarOverrideNotAFile`, naming the variable,
+  the offending path, and what a file path would look like. Validated at
+  **first use, not at import**: an import-time raise makes the module
+  unimportable, and `tests/conftest.py` rebinds `SIDECAR_PATH` *after*
+  importing it — so a host carrying a bad value could not run the suite
+  at all, not even to assert the error. First use still lands early; the
+  first caller is `check_scope_match` via `ensure_qmd_daemon`, on the
+  first command that touches qmd. The binding stays at import, which is
+  load-bearing. Six tests, including two in a separate interpreter that
+  set the variable *before* the import binds it.
+
+- **A stray qmd daemon on 8181 decided whether integration tests passed.**
+  Pre-existing, and the mechanism was not where it was reported. "LLM
+  operations are disabled in CI" is **qmd's** message
+  (`dist/llm.js:1058`), not LIES': qmd reads `process.env.CI` at import
+  (`:384`, `_ciMode = !!process.env.CI`) and refuses every LLM entry point,
+  and LIES hands qmd the operator's environment unchanged
+  (`_subprocess._child_env` copies `os.environ`), so `CI=true` reached the
+  child. A stray daemon cannot flip a `skipif` — the gates never asked the
+  question the tests depended on.
+
+  Measured, stray bound to 8181: **8 failures under
+  `tests/integration/mcp/`** (`ToolError: all reads failed`, and
+  `assert frozenset()` from a daemon reporting no collections) and **7
+  under `test_tag_filter_end_to_end.py`** (qmd's CI refusal). Both are
+  the same defect: a gate testing *daemon reachable* where the tests need
+  something else. Neither condition implies the other, and neither is
+  decided by whatever else is bound to 8181.
+
+  `tests/integration/mcp/conftest.py` now asks whether the daemon serves a
+  **corpus**, through `access.qmd_collection_names()` —
+  `validate_scope`'s own seam, so the guard and production agree on what
+  "served" means. The tag-filter fixture asks
+  `qmd_llm_operations_disabled()`, the condition that actually blocks it.
+  Its per-test `CI` skipif, which guarded 1 of 8 tests and so let the
+  other 7 through, is now redundant and removed. **16 skipped with the
+  stray present, 16 without — identical**, against the 8+7 failures
+  before. No test deleted, renamed, moved, or marked slow.
+
+- **AGENTS.md named three errors that do not exist.** The tag-filter flake
+  entry said `QmdTimeoutError`; this host reports `QmdCommandError:
+  qmd query failed (exit 1): … need embeddings`. The entry's diagnosis —
+  a different subset each run, therefore not a logic bug — still holds and
+  is kept. The daemon-failure bullets named `QmdWedged` and
+  `QmdUnavailable`; the classes are `QmdDaemonWedged` and
+  `QmdDaemonUnavailable` (`qmd/access.py:48,54`). An entry naming the wrong
+  exception defeats the section's purpose: it exists so the next agent does
+  not re-derive a flake that is measured and real.
+
 ## [0.48.2] - 2026-10-04
 
 ### Fixed

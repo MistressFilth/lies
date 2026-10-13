@@ -52,6 +52,7 @@ from lies.qmd.integrity import (
     snapshots_differ,
 )
 from lies.wiki.wiki import Wiki
+from tests.integration.conftest import qmd_llm_operations_disabled
 
 
 def _save_collection(_wiki: Wiki, c: Collection) -> None:
@@ -408,13 +409,26 @@ def qmd_fixture_library(tmp_path: Path) -> Iterator[Wiki]:
     """
     if shutil.which("qmd") is None:
         pytest.skip("qmd not installed on PATH")
-    # Real qmd daemon must be reachable: the fixture embeds into the
-    # daemon's index and the tests assert that ``wiki_search`` surfaces
-    # indexed hits. CI doesn't run a qmd daemon by default.
-    from lies.qmd.health import qmd_daemon_reachable
-
-    if not qmd_daemon_reachable("http://127.0.0.1:8181", timeout=0.5):
-        pytest.skip("qmd daemon not reachable at http://127.0.0.1:8181")
+    # The tests below assert that a real qmd query surfaces indexed hits,
+    # and `qmd query` runs a *query expansion* through a local LLM. qmd
+    # refuses every LLM operation when it inherits `CI` in its
+    # environment (`dist/llm.js:384` sets `_ciMode = !!process.env.CI`;
+    # `expandQuery` throws at `:1058`), and LIES hands the child the
+    # operator's environment unchanged (`_subprocess._child_env`). So under
+    # CI these tests cannot pass at all, whatever else is true.
+    #
+    # This replaces a `qmd_daemon_reachable` gate. Reachability is a
+    # different condition — it asks whether something answers on 8181, not
+    # whether qmd may expand a query — and gating on it made a stray local
+    # daemon decide the outcome: with nothing on 8181 the fixture skipped,
+    # with a stray bound there it ran and every test failed on qmd's
+    # CI refusal. See AGENTS.md, "Known flakes".
+    if qmd_llm_operations_disabled():
+        pytest.skip(
+            "qmd disables LLM operations when its environment carries CI "
+            "(dist/llm.js:384), so `qmd query` cannot expand this fixture's "
+            "queries under CI=true; the tag-filter assertions are unrunnable"
+        )
     wiki = _build_tag_filter_library(tmp_path, name="tag-filter-lib")
     with _seeded_qmd_context(wiki):
         yield wiki
@@ -577,10 +591,6 @@ def _orchestrator(wiki: Wiki) -> Orchestrator:
     return Orchestrator(wiki=wiki, models=models_for_tests("test"))
 
 
-@pytest.mark.skipif(
-    os.environ.get("CI") == "true",
-    reason="requires live qmd daemon with indexed content; CI skips",
-)
 def test_plus_tag_filters_to_one_collection(
     qmd_fixture_library: Wiki,
 ) -> None:

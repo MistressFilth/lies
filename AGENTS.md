@@ -486,19 +486,20 @@ call.**
   `down` refuses while the daemon is serving; pass `--force` when you
   mean it.
 - **Three daemon failure modes, three answers.** A *wedge* recycles and
-  raises `QmdWedged` carrying a `mcp.log` tail; no transparent retry,
-  because a fresh daemon re-wedges on the same payload. *Unreachable*
-  recycles and retries once. A *protocol-level rejection* is not a
-  transport failure and re-raises unchanged. `classify_call_error` is
-  the only place that decides.
+  raises `QmdDaemonWedged` carrying a `mcp.log` tail; no transparent
+  retry, because a fresh daemon re-wedges on the same payload.
+  *Unreachable* recycles and retries once. A *protocol-level rejection*
+  is not a transport failure and re-raises unchanged. `classify_call_error`
+  is the only place that decides.
 - **`last_output` must come from the daemon that actually wedged.** The
   two call sites read on opposite sides of their recycle and both are
   correct. A tail attributed to the wrong daemon is worse than none.
 - **A retry's failure is classified, not assumed.** After a recycle,
   take one of three routes: an unowned reason propagates, a re-wedge
-  raises `QmdWedged`, only still-unreachable raises
-  `QmdUnavailable`. Collapsing them tells the operator to start a
-  daemon that is already running.
+  raises `QmdDaemonWedged`, only still-unreachable raises
+  `QmdDaemonUnavailable`. Collapsing them tells the operator to start a
+  daemon that is already running. (Both names were written here without
+  their `Daemon` infix, which matches nothing in `qmd/access.py`.)
 - **Deliberate taxonomy gap.** `HTTPStatusError` (5xx) and
   `LocalProtocolError` (client-side malformed) classify as
   `passthrough` — no recycle. `RemoteProtocolError` keeps the
@@ -846,8 +847,36 @@ aborts in one means nothing.
 reports it skipped and exits 0. That green is not evidence. CI has no
 qmd daemon and skips the daemon-dependent tests, so **run it locally**.
 What survives: `test_tag_filter_end_to_end.py` intermittently fails with
-`QmdTimeoutError`, **a different subset each run**. The varying subset
-is the diagnosis — a logic bug fails the same tests every time.
+`QmdCommandError: qmd query failed (exit 1): … need embeddings`,
+**a different subset each run**. The varying subset is the diagnosis — a
+logic bug fails the same tests every time. (An earlier version of this
+entry named `QmdTimeoutError`; that is not what this host reports. Both
+are subclasses of `QmdError`, and `QmdTimeoutError` subclasses
+`QmdCommandError`, so a reader grepping for the family still lands here.)
+
+**The suite's skips depend on the environment, not only on the
+corpus.** Two gates that once read `qmd_daemon_reachable` mean two
+different things, and only one of them is about a daemon:
+
+- *Is a daemon answering on the port?* `health.qmd_daemon_reachable`
+  opens a TCP socket. True for any process on the host.
+- *May qmd run its LLM?* qmd reads `process.env.CI` at import
+  (`dist/llm.js:384`, `_ciMode = !!process.env.CI`) and every LLM entry
+  point throws behind it — `expandQuery` at `:1058`, on the way to the
+  hybrid ranking `qmd query` performs. LIES spawns qmd with the
+  operator's environment unchanged (`_subprocess._child_env` copies
+  `os.environ`), so `CI=true` reaches the child.
+
+Gating a real *query* on the first condition let a stray daemon decide
+the run: nothing on 8181 meant a skip, a stray there meant the query ran
+and every test failed on qmd's CI refusal. A stray that answers TCP but
+serves an empty index does the same to a corpus gate. So
+`tests/integration/mcp/conftest.py` asks whether the daemon serves a
+**corpus** (`access.qmd_collection_names()`, `validate_scope`'s own
+seam), and the tag-filter fixture asks
+`tests.integration.conftest.qmd_llm_operations_disabled()`. Neither
+condition is implied by the other, and neither is decided by whatever
+else is bound to 8181.
 
 ### `store_collections` can be emptied by qmd itself
 
