@@ -93,7 +93,7 @@ def _canonical_scope() -> _Path:
 def daemon_port_from_url(url: str) -> int | None:
     """The explicit port in ``url``, or ``None`` when it carries none.
 
-    ``http://127.0.0.1:8181/mcp`` -> ``8181``. A bare origin, or a
+    ``http://localhost:8181/mcp`` -> ``8181``. A bare origin, or a
     scheme-less string with no ``:``, -> ``None``, which callers read as
     "let qmd choose its own default" rather than as port 0.
 

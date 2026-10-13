@@ -789,7 +789,10 @@ Environment variables:
   `pydantic-ai` is instrumented
 - `LIES_QMD_TRANSPORT` — how the agent reaches qmd: `http` (default, uses
   the qmd daemon) or `stdio` (spawns a `qmd` process per agent)
-- `LIES_QMD_URL` — qmd daemon URL (default: `http://127.0.0.1:8181`)
+- `LIES_QMD_URL` — qmd daemon URL (default: `http://localhost:8181/mcp`).
+  The host is the name `localhost` because that is what qmd binds
+  (`listen(port, "localhost")`), so LIES follows the family the host
+  resolves it to instead of assuming IPv4.
 - `LIES_QMD_LOCK_PATH` — overrides the default
   `${XDG_STATE_HOME:-~/.local/state}/lies/qmd.lock` lock path; useful for
   sandboxing or per-wiki isolation

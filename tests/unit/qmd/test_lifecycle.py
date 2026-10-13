@@ -235,7 +235,7 @@ def test_status_honors_custom_port() -> None:
     """``status(port=...)`` reflects the requested port in ``url``/``port``."""
     s = status(port=9000)
     assert s.port == 9000
-    assert s.url == "http://127.0.0.1:9000/mcp"
+    assert s.url == f"http://{_HOST}:9000/mcp"
 
 
 # --- serves_query -----------------------------------------------------------

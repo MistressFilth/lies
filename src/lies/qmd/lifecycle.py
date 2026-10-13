@@ -23,7 +23,11 @@ from typing import Any
 
 _log = logging.getLogger(__name__)
 
-_HOST = "127.0.0.1"
+#: The name qmd binds, not a literal address. ``dist/mcp/server.js``
+#: calls ``listen(port, "localhost")``, and Node resolves the name to
+#: the *first* family the host lists — ``[::1]`` on a runner whose
+#: ``/etc/hosts`` puts ``::1 localhost`` ahead of ``127.0.0.1``.
+_HOST = "localhost"
 _DEFAULT_PORT = 8181
 _READY_TIMEOUT_S = 30.0
 _STOP_TIMEOUT_S = 10.0
@@ -131,13 +135,17 @@ def _read_pid() -> int | None:
 
 
 def _port_listening(port: int) -> bool:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.settimeout(0.5)
-        try:
-            s.connect((_HOST, port))
+    """True iff something accepts a TCP connection at ``_HOST:port``.
+
+    ``create_connection`` walks every address the name resolves to; a
+    socket pinned to one family would filter resolution to that family
+    and refuse a daemon qmd bound on the other.
+    """
+    try:
+        with socket.create_connection((_HOST, port), timeout=0.5):
             return True
-        except ConnectionRefusedError, OSError:
-            return False
+    except OSError:
+        return False
 
 
 # Liveness deadlines, deliberately separate from the retrieval

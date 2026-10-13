@@ -29,21 +29,37 @@ rule rather than the accident.
   throwaway-spawn tests, whose "nothing is listening" was qmd's *name*
   bind (see below) and not a daemon that failed to start.
 
+- **Production LIES could not reach its own qmd daemon on any
+  IPv6-first host.** qmd binds the literal name `localhost`
+  (`dist/mcp/server.js:671`: `listen(port, "localhost")`; there is no
+  `options.host` chain and `QMD_HOST` appears nowhere in `dist/`), and
+  Node takes the *first* family the host resolves it to — `[::1]` where
+  `/etc/hosts` lists `::1 localhost` first. LIES named a literal address
+  at every site that addresses the daemon, so `DEFAULT_QMD_URL`,
+  `lifecycle._HOST` and the `AF_INET` socket behind the port probe all
+  resolved to `127.0.0.1` and were refused. All three now name the
+  host. The probe also moved to `socket.create_connection`, because a
+  socket pinned to `AF_INET` filters name resolution to v4 and
+  reproduces the very refusal the name fixes. Measured against a
+  `[::1]`-only listener with `localhost` resolving v6-first: the old
+  probe returns `False`, the new one `True`. The throwaway-spawn tests
+  already probed the name; this is the same defect on the path the
+  agent actually uses.
+
 - **qmd's HTTP daemon binds `localhost`, so probing it by IPv4 literal
-  is wrong on any host that resolves `localhost` IPv6-first.** qmd
-  reads `options.host ?? process.env.QMD_HOST ?? "localhost"` and
-  calls `listen(port, host)`; `--port` selects the port and nothing
-  else. On the CI runner that resolved to `[::1]`, so qmd logged
+  is wrong on any host that resolves `localhost` IPv6-first.** On the
+  CI runner that resolved to `[::1]`, so qmd logged
   `listening on http://localhost:57703/mcp` on the port the test
   requested while `connect(("127.0.0.1", 57703))` was refused —
   reproducing a "daemon did not start" report for a daemon that was up
-  and serving. The throwaway-spawn tests now probe the name qmd binds.
+  and serving. `--port` selects the port and nothing else. The
+  throwaway-spawn tests now probe the name qmd binds.
   The failure message also carries qmd's version, the throwaway cache
   root, the pidfile, the recorded pid's `/proc` cmdline and qmd's own
   `mcp.log`, because that log states the URL the daemon actually
-  reached — which is the one fact that separates *did not start* from
-  *started somewhere else*, and the previous message distinguished
-  neither.
+  reached (`server.js:696`) — which is the one fact that separates *did
+  not start* from *started somewhere else*, and the previous message
+  distinguished neither.
 
 - **The recycle-ceiling harness's grace-window bound asserted the
   runner's timer, not the reap's behaviour.** `GRACE_COST_S` capped the

@@ -521,23 +521,32 @@ call.**
   to start while a live pidfile exists, so the hazard runs both ways: a
   stray blocks the operator's next real start.
 
-  **The HTTP daemon binds a NAME, not an address — `localhost`, and
-  `--port` does not change it.** `dist/mcp/server.js` reads
-  `options.host ?? process.env.QMD_HOST ?? "localhost"` and calls
-  `httpServer.listen(port, host)`, so the daemon lands on whichever
-  family the host resolves `localhost` to *first*. On a runner whose
-  `/etc/hosts` lists `::1 localhost` ahead of `127.0.0.1`, that is
-  `[::1]`, and `connect(("127.0.0.1", port))` is refused while
-  `connect(("localhost", port))` succeeds — measured on the CI runner,
-  where qmd logged `listening on http://localhost:57703/mcp` on the
-  requested port while the IPv4 dial got `ECONNREFUSED`, and reproduced
-  locally by bind-mounting an IPv6-first hosts file. **`--port` selects
-  the port only**; nothing in it selects the family. So any code or test
-  that probes a daemon it did not spawn must probe the *name* qmd bound,
-  and the diagnostic that settles this class of failure is qmd's own
-  `mcp.log`: it states the URL it actually reached, so a "nothing is
-  listening" report that never reads it has not distinguished *did not
-  start* from *started somewhere else*.
+  **The HTTP daemon binds a NAME, not an address — the literal
+  `localhost`, and `--port` does not change it.** qmd 2.5.3's
+  `dist/mcp/server.js:671` calls
+  `httpServer.listen(port, "localhost", () => resolve())`; there is no
+  `options.host` chain and `QMD_HOST` appears nowhere in `dist/`
+  (`grep -rn QMD_HOST dist/` is empty), so nothing selects the family.
+  Node resolves the name to whichever entry `/etc/hosts` lists
+  **first** and binds only that. On a runner listing `::1 localhost`
+  ahead of `127.0.0.1` that is `[::1]`, and `connect(("127.0.0.1",
+  port))` is refused while `connect(("localhost", port))` succeeds —
+  measured on the CI runner, where qmd logged `listening on
+  http://localhost:57703/mcp` on the requested port while the IPv4
+  dial got `ECONNREFUSED`, and reproduced locally by bind-mounting an
+  IPv6-first hosts file. **`--port` selects the port only**; nothing
+  in it selects the family. So any code or test that probes a daemon
+  it did not spawn must probe the *name* qmd bound — **and must not
+  pin the probe's family**, since an `AF_INET` socket filters name
+  resolution to v4 and reproduces the exact refusal the name fixes
+  (`socket.create_connection`, not `socket.socket(AF_INET, …)`).
+  LIES addresses the daemon by the name in both places that name it
+  (`config.DEFAULT_QMD_URL`, `lifecycle._HOST`), pinned by
+  `tests/unit/qmd/test_daemon_host.py`. The diagnostic that settles
+  this class of failure is qmd's own `mcp.log`: `server.js:696` logs
+  `QMD MCP server listening on http://localhost:${actualPort}/mcp`,
+  so a "nothing is listening" report that never reads it has not
+  distinguished *did not start* from *started somewhere else*.
 
   **That hazard is a caller precondition, not a spawn-argument guard.**
   `_spawn_qmd_daemon(port=...)` without `data_dir=` is *allowed*, and

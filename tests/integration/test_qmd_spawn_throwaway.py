@@ -17,9 +17,10 @@ from lies.qmd.daemon import _QMD_BIN
 
 pytestmark = pytest.mark.slow
 
-#: qmd binds ``localhost`` (``dist/mcp/server.js``: ``options.host ??
-#: process.env.QMD_HOST ?? "localhost"``), so it follows the host's
-#: resolution order for the name. On a runner whose ``/etc/hosts`` lists
+#: qmd binds the literal name ``localhost`` (``dist/mcp/server.js:671``:
+#: ``listen(port, "localhost")`` — no ``options.host`` chain, and
+#: ``QMD_HOST`` is nowhere in ``dist/``), so it follows the host's
+#: resolution order for that name. On a runner whose ``/etc/hosts`` lists
 #: ``::1 localhost`` first that is ``[::1]``, and dialling the IPv4
 #: literal is refused — measured on the CI runner, where qmd logged
 #: ``listening on http://localhost:57703/mcp`` on the requested port
