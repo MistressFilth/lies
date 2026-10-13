@@ -110,6 +110,7 @@ def _run_qmd(
     *,
     idle_timeout: float = DEFAULT_IDLE_TIMEOUT_S,
     on_output: Callable[[str], None] | None = None,
+    env_overrides: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[bytes]:
     """Run a qmd subprocess with DEVNULL stdin + bounded stderr capture.
 
@@ -121,6 +122,11 @@ def _run_qmd(
         args: argv list. First entry is the qmd binary path.
         cwd: working directory.
         timeout: seconds before SIGKILL.
+        env_overrides: extra variables layered **on top of**
+            :func:`_child_env`. Merged, not substituted, so the forced
+            ``NO_COLOR`` survives an override and the child keeps the
+            operator's environment by default. Empty by default, which
+            is today's behaviour exactly.
 
     Returns:
         ``subprocess.CompletedProcess`` with stdout bytes and stderr
@@ -130,6 +136,9 @@ def _run_qmd(
         subprocess.TimeoutExpired: whole process group SIGKILL'd.
         FileNotFoundError: when ``args[0]`` does not exist.
     """
+    child_env = _child_env()
+    if env_overrides:
+        child_env.update(env_overrides)
     stdin_fd = os.open(os.devnull, os.O_RDONLY)
     try:
         proc = subprocess.Popen(
@@ -138,7 +147,7 @@ def _run_qmd(
             stdin=stdin_fd,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            env=_child_env(),
+            env=child_env,
             text=False,  # bytes mode — caller decodes explicitly
             start_new_session=True,
         )

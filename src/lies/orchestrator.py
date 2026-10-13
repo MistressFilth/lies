@@ -18,7 +18,10 @@ from pydantic_ai.models import Model
 from lies.agents.librarian import (
     LibrarianDeps,
     LibrarianOutput,
+    SearchDiagnostics,
     librarian_agent,
+    search_diagnostics_scope,
+    with_search_diagnostics,
 )
 from lies.agents.linter import LintFinding, LintReport, linter_agent
 from lies.markdown_spans import Span
@@ -53,7 +56,11 @@ from lies.qmd import QmdCapability
 from lies.query import (
     SynthesizedAnswer,
 )
-from lies.query.citation import Citation, ClaimCitation
+from lies.query.citation import (
+    Citation,
+    ClaimCitation,
+    citations_from_paths,
+)
 from lies.query.synthesizer import retrieve_pages as _retrieve_pages
 from lies.query.tag_expr import TagExpr
 from lies.schema import load_schema
@@ -1865,24 +1872,21 @@ class Orchestrator:
             _qmd_unavailable = type(_qmd_exc).__name__ == "QmdNotInstalledError"
         else:
             _qmd_unavailable = False
-        librarian_result = self._librarian_agent.run_sync(question, deps=deps)
-        librarian_out = librarian_result.output
+        librarian_out = self._dispatch_librarian(question, deps)
         # v0.40 — the LLM populates ``LibrarianOutput.no_coverage``
         # directly from the ``search`` MCP tool's ``no_coverage`` field
         # in the SearchResult envelope. The value flows through as the
         # agent emitted it; downstream consumers (the file-back gate,
         # ``ground()`` dispatch, callers reading the bundle) read it
-        # as-is. No ContextVar hop, no orchestrator-side override.
-        # F1 test-friendly: integration tests patch
-        # ``Agent.run_sync`` at the class level (both the librarian
-        # and the synthesizer share the same ``Agent`` base class),
-        # so the librarian's ``.output`` is already the canned
-        # ``QueryAnswer`` rather than a real ``LibrarianOutput``.
-        # Detect that shape and ride it through verbatim so the
-        # canned answer reaches the caller without a re-invocation
-        # that would either fail ``QueryDeps`` construction (the
-        # canned ``QueryAnswer`` is not a ``LibrarianOutput``) or
-        # exhaust the patched run_sync's answer queue.
+        # as-is.
+        # F1 test-friendly: integration tests patch ``Agent.run_sync``
+        # at the class level (both the librarian and the synthesizer
+        # share the same ``Agent`` base class), so the librarian's
+        # ``.output`` is already the canned ``QueryAnswer`` rather than
+        # a real ``LibrarianOutput``. Detect that shape and ride it
+        # through verbatim so the canned answer reaches the caller
+        # without a re-invocation that would either fail ``QueryDeps``
+        # construction or exhaust the patched run_sync's answer queue.
         if isinstance(librarian_out, QueryAnswer):
             answer = librarian_out
             if _qmd_unavailable:
@@ -2067,19 +2071,14 @@ class Orchestrator:
         # The synthesizer emits ``citations: list[str]`` (paths). Build
         # ``Citation`` envelopes with the source discriminator from the
         # librarian's excerpts so downstream validators / renderers see
-        # the typed surface.
-        from lies.agents.librarian import PageExcerpt as _PageExcerpt
-
-        excerpt_by_slug: dict[str, _PageExcerpt] = {e.slug: e for e in librarian_output.excerpts}
-
-        def _citation_for(path: str) -> Citation:
-            excerpt = excerpt_by_slug.get(path)
-            source: Literal["library", "wiki"] = (
-                "library" if excerpt is not None and excerpt.collection != "wiki" else "wiki"
-            )
-            return Citation(path=path, source=source)
-
-        citation_objects: list[Citation] = [_citation_for(p) for p in answer.citations]
+        # the typed surface. The conversion itself is
+        # :func:`lies.query.citation.citations_from_paths`, shared with
+        # ``synth._ask_impl`` so the two call sites cannot drift — the
+        # first divergence of this shape is what left ``lib_ask``
+        # reporting ``citations=[]`` on every success path.
+        citation_objects: list[Citation] = citations_from_paths(
+            answer.citations, librarian_output.excerpts
+        )
         validated_ccs = _validate_claim_citations(
             answer.answer, citation_objects, answer.claim_citations, librarian_output
         )
@@ -2334,6 +2333,25 @@ class Orchestrator:
             wiki=self.wiki,
             memory_service=self._memory_service,
         )
+
+    def _dispatch_librarian(
+        self, question: str, deps: LibrarianDeps
+    ) -> LibrarianOutput | QueryAnswer:
+        """Run the librarian once, with this dispatch's record bound.
+
+        The tools are registered for the agent's whole lifetime, so the
+        per-dispatch :class:`SearchDiagnostics` cannot be captured at
+        registration; it is bound around the dispatch and the closures
+        read it through ``contextvars``. A canned ``QueryAnswer`` (the
+        shape integration tests patch in) rides through un-attested.
+        """
+        record = SearchDiagnostics()
+        with search_diagnostics_scope(record):
+            result = self._librarian_agent.run_sync(question, deps=deps)
+        out = result.output
+        if isinstance(out, LibrarianOutput):
+            return with_search_diagnostics(out, record)
+        return out
 
     def run_lint(
         self,

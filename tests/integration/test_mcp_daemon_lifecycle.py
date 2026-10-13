@@ -1,9 +1,4 @@
-"""Real up → handshake → status → down cycle against a live daemon.
-
-Every other daemon test mocks the process boundary. This one spawns a
-real child, so it is the only place a broken re-exec path, a wrong
-transport name, or a wrong mount path can be caught.
-"""
+"""Real up → handshake → status → down cycle against a live daemon."""
 
 from __future__ import annotations
 
@@ -135,7 +130,17 @@ def _decode_jsonrpc(body: str) -> dict:
 def test_full_lifecycle(wiki: Wiki, port: int) -> None:
     up_result = runner.invoke(
         app,
-        ["mcp", "up", "--name", wiki.name, "--port", str(port), "--timeout", "30"],
+        [
+            "mcp",
+            "up",
+            "--no-qmd",
+            "--name",
+            wiki.name,
+            "--port",
+            str(port),
+            "--timeout",
+            "30",
+        ],
     )
     assert up_result.exit_code == 0, up_result.output
     assert str(port) in up_result.stdout
@@ -161,13 +166,27 @@ def test_full_lifecycle(wiki: Wiki, port: int) -> None:
     assert "running" in status_result.stdout
     assert str(record.pid) in status_result.stdout
 
-    second_up = runner.invoke(app, ["mcp", "up", "--name", wiki.name, "--port", str(port)])
+    second_up = runner.invoke(
+        app,
+        ["mcp", "up", "--no-qmd", "--name", wiki.name, "--port", str(port)],
+    )
     assert second_up.exit_code == 0
     assert "already running" in second_up.stdout
     assert daemon.read_record(wiki) is not None
     assert daemon.read_record(wiki).pid == record.pid  # type: ignore[union-attr]
 
-    down_result = runner.invoke(app, ["mcp", "down", "--name", wiki.name])
+    # ``--force`` because the test owns this daemon: it started it on a
+    # spare port four asserts ago and nothing else can reach it.
+    # Without the flag ``down`` refuses, because the LIES MCP daemon is
+    # machine-global and stopping a *serving* one disconnects every MCP
+    # client on the host at once. That guard is correct and is not what
+    # this test is measuring — ``DaemonInUse`` has its own unit coverage
+    # in ``tests/unit/test_mcp_daemon.py`` (``stop_daemon`` raising) and
+    # at the CLI layer in ``tests/unit/test_cli.py`` (exit 1, and
+    # ``--force`` threading through). An earlier version of this line
+    # omitted the flag and asserted exit 0, so it failed against the
+    # guard from ``6b8f2e`` — a pre-existing red, not a regression.
+    down_result = runner.invoke(app, ["mcp", "down", "--force", "--name", wiki.name])
     assert down_result.exit_code == 0
     assert str(record.pid) in down_result.stdout
     assert daemon.read_record(wiki) is None
@@ -210,7 +229,10 @@ def test_down_leaves_the_qmd_daemon_running(wiki: Wiki, port: int) -> None:
         f"up recycled the shared qmd daemon instead of reusing it: {before.pid} -> {started.pid}"
     )
 
-    down_result = runner.invoke(app, ["mcp", "down", "--name", wiki.name])
+    # Same reasoning as ``test_full_lifecycle``: the daemon serving here
+    # is the one this test started, on its own spare port. ``--force``
+    # says "I mean it", which is what a test teardown means.
+    down_result = runner.invoke(app, ["mcp", "down", "--force", "--name", wiki.name])
     assert down_result.exit_code == 0
 
     after = qmd_daemon_state()

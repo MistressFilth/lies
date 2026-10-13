@@ -45,7 +45,7 @@ from lies.memory.service import WikiMemoryService
 from lies.orchestrator import Orchestrator
 from lies.query.citation import Citation, ClaimCitation
 from lies.wiki.wiki import Wiki
-from tests.conftest import make_wiki, models_for_tests
+from tests.conftest import attest_librarian_pages, make_wiki, models_for_tests
 
 FIXTURE_WIKI = Path(__file__).parent.parent / "fixtures" / "sample_wiki"
 
@@ -288,6 +288,9 @@ def test_synthesize_emits_inline_citation_form(
     from unittest.mock import Mock
 
     def _librarian_run_sync(*args: object, **kwargs: object) -> object:
+        attest_librarian_pages(
+            monkeypatch, orch._librarian_agent, "q", [e.slug for e in canned_lo_2.excerpts]
+        )
         return Mock(output=canned_lo_2)
 
     def _synthesizer_run_sync(*args: object, **kwargs: object) -> object:
@@ -391,6 +394,9 @@ def test_file_back_writes_synthesis_page(tmp_path: Path, monkeypatch: pytest.Mon
     from unittest.mock import Mock
 
     def _librarian_run_sync(*args: object, **kwargs: object) -> object:
+        attest_librarian_pages(
+            monkeypatch, orch._librarian_agent, "q", [e.slug for e in canned_lo.excerpts]
+        )
         return Mock(output=canned_lo)
 
     def _synthesizer_run_sync(*args: object, **kwargs: object) -> object:
@@ -538,6 +544,9 @@ def test_old_footnote_pages_remain_unchanged(
     from unittest.mock import Mock
 
     def _librarian_run_sync(*args: object, **kwargs: object) -> object:
+        attest_librarian_pages(
+            monkeypatch, orch._librarian_agent, "q", [e.slug for e in canned_lo.excerpts]
+        )
         return Mock(output=canned_lo)
 
     def _synthesizer_run_sync(*args: object, **kwargs: object) -> object:

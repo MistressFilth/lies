@@ -1,26 +1,9 @@
-"""Unit tests for ``lies.qmd.access`` — the qmd access seam.
-
-The seam owns every call LIES makes to qmd and encodes which transport
-serves which operation. These tests are all I/O-free: the daemon probe,
-the staleness check, the client, the recycle, and the daemon log are
-stubbed, because the behaviour under test is the *decision* (which
-transport, which recovery, which exception) and not qmd's answers.
-
-Error taxonomy under test:
-
-- probe fails            → ``QmdDaemonUnavailable`` naming ``LIES_QMD_URL``
-                           and ``lies qmd up``. Never a fallback.
-- daemon stale           → reap + respawn, then proceed. Not an error.
-- ``httpx.ReadTimeout``  → recycle, raise ``QmdDaemonWedged`` carrying the
-                           daemon log's tail. No transparent retry: a fresh
-                           daemon re-wedges on the same payload.
-- transport error        → recycle, retry once; a second failure raises.
-- ``isError: true``      → ``RuntimeError`` carrying the daemon's text.
-"""
+"""Unit tests for ``lies.qmd.access`` — the qmd access seam."""
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 from pathlib import Path
@@ -33,25 +16,13 @@ import pytest
 from fastmcp.client.client import CallToolResult
 from mcp.types import TextContent
 
+from lies.lock_errors import QmdLockBusy
 from lies.qmd import access
 from lies.qmd.daemon import QmdRecycleFailed, QmdState
 
 
 class _FakeClient:
-    """Stands in for the cached ``fastmcp.Client``.
-
-    A real Client needs a connected MCP session; the seam only needs
-    something it can ``async with`` and call ``call_tool`` on. Each
-    entry in ``outcomes`` is either an exception to raise or a value to
-    return; the last one repeats once the list is exhausted.
-
-    Records every ``call_tool`` invocation in ``calls`` with the
-    full kwargs so a test can pin the per-call ``timeout=`` argument
-    is threaded through. ``_FakeClient.call_tool`` is the only place
-    the seam's deadline lands on the wire, so an assertion on the
-    captured kwargs is the assertion on the property the
-    ``LIES_QMD_FANOUT_TIMEOUT`` knob depends on.
-    """
+    """Stands in for a ``fastmcp.Client``."""
 
     def __init__(self, outcomes: list[Any]) -> None:
         self._outcomes = list(outcomes)
@@ -93,18 +64,6 @@ class _Recycle:
         return QmdState(installed=True, running=True, pid=4242, detail="fresh")
 
 
-@pytest.fixture(autouse=True)
-def _reset_cached_client() -> Any:
-    """Keep the module-level client cache from leaking between tests.
-
-    The cache exists so the daemon's model stays warm across calls; a
-    test that left a client behind would hand the next one a stub.
-    """
-    access._reset_client()
-    yield
-    access._reset_client()
-
-
 @pytest.fixture
 def seam(monkeypatch: pytest.MonkeyPatch) -> _Recycle:
     """A reachable, non-stale daemon whose recycle is recorded.
@@ -116,14 +75,108 @@ def seam(monkeypatch: pytest.MonkeyPatch) -> _Recycle:
     monkeypatch.setattr(access, "qmd_daemon_reachable", lambda url, timeout=0.5: True)
     monkeypatch.setattr(access, "_is_daemon_stale", lambda: False)
     # The sidecar is a real file under $HOME; a test must not read it.
-    monkeypatch.setattr(access, "_recycle_data_dir", lambda: Path("/nonexistent"))
+    monkeypatch.setattr(access, "_recycle_scope", lambda: Path("/nonexistent"))
     recycle = _Recycle()
     monkeypatch.setattr(access, "recycle_qmd_daemon", recycle)
     return recycle
 
 
-def _use_client(monkeypatch: pytest.MonkeyPatch, client: _FakeClient) -> None:
+def _use_client(monkeypatch: pytest.MonkeyPatch, client: Any) -> None:
     monkeypatch.setattr(access, "_daemon_client", lambda url: client)
+
+
+class _SlowClient:
+    """A client whose ``call_tool`` yields the loop before answering."""
+
+    def __init__(self, events: list[str], result: Any = None) -> None:
+        self._events = events
+        self._result = {"hits": []} if result is None else result
+
+    async def __aenter__(self) -> _SlowClient:
+        return self
+
+    async def __aexit__(self, *_exc: object) -> None:
+        return None
+
+    async def call_tool(self, name: str, arguments: dict[str, Any], **kw: Any) -> Any:
+        self._events.append(f"call-enter {name}")
+        await asyncio.sleep(0.02)
+        self._events.append(f"call-exit {name}")
+        return self._result
+
+
+#: A representative query payload; the arguments are forwarded verbatim
+#: and nothing on this path inspects them.
+_QUERY_ARGS: dict[str, Any] = {"searches": [{"type": "lex", "query": "x"}]}
+
+
+class _OverlapProbe:
+    """How many client call bodies were in flight at once, across all clients."""
+
+    def __init__(self) -> None:
+        self.inflight = 0
+        self.peak = 0
+
+
+class _OverlapClient:
+    """A client that suspends in ``call_tool`` and tracks its own session."""
+
+    def __init__(self, label: int, probe: _OverlapProbe) -> None:
+        self.label = label
+        self.open_now = 0
+        self._probe = probe
+
+    async def __aenter__(self) -> _OverlapClient:
+        self.open_now += 1
+        self._probe.inflight += 1
+        self._probe.peak = max(self._probe.peak, self._probe.inflight)
+        return self
+
+    async def __aexit__(self, *_exc: object) -> None:
+        self.open_now -= 1
+        self._probe.inflight -= 1
+
+    async def call_tool(self, name: str, arguments: dict[str, Any], **kw: Any) -> Any:
+        await asyncio.sleep(0)
+        return {"ok": self.label}
+
+
+def _lock_stub(
+    events: list[str],
+    *,
+    gate: asyncio.Lock | None = None,
+    timeouts: list[float | None] | None = None,
+) -> Any:
+    """Build a stand-in for ``access.qmd_lock_async``."""
+
+    @contextlib.asynccontextmanager
+    async def _stub(**kwargs: Any) -> Any:
+        if timeouts is not None:
+            timeouts.append(kwargs.get("timeout_s"))
+        if gate is not None:
+            await gate.acquire()
+        events.append("lock-enter")
+        try:
+            yield None
+        finally:
+            events.append("lock-exit")
+            if gate is not None:
+                gate.release()
+
+    return _stub
+
+
+def _peak_overlap(events: list[str]) -> int:
+    """Most query bodies in flight at once, per the recorded events."""
+    depth = 0
+    peak = 0
+    for event in events:
+        if event.startswith("call-enter"):
+            depth += 1
+            peak = max(peak, depth)
+        elif event.startswith("call-exit"):
+            depth -= 1
+    return peak
 
 
 # --- the capability map ------------------------------------------------
@@ -185,11 +238,19 @@ async def test_a_stale_daemon_is_reaped_and_the_call_still_proceeds(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     reaped: list[bool] = []
-    spawned: list[bool] = []
+    # Recorded as a dict, not swallowed with ``**kw``. A stub that
+    # accepts arbitrary keywords is what made the wrong-port mutation
+    # invisible here: the call still "succeeded", the kwargs vanished,
+    # and nothing could tell the two behaviours apart.
+    spawned: list[dict[str, object]] = []
     monkeypatch.setattr(access, "qmd_daemon_reachable", lambda url, timeout=0.5: True)
     monkeypatch.setattr(access, "_is_daemon_stale", lambda: True)
     monkeypatch.setattr(access, "_reap_qmd_daemon", lambda: reaped.append(True))
-    monkeypatch.setattr(access, "_spawn_qmd_daemon", lambda: spawned.append(True))
+    monkeypatch.setattr(
+        access,
+        "_spawn_qmd_daemon",
+        lambda **kw: spawned.append(kw),  # type: ignore[arg-type]
+    )
     client = _FakeClient([{"hits": ["served-after-respawn"]}])
     _use_client(monkeypatch, client)
 
@@ -197,7 +258,52 @@ async def test_a_stale_daemon_is_reaped_and_the_call_still_proceeds(
 
     assert result == {"hits": ["served-after-respawn"]}
     assert reaped == [True]
-    assert spawned == [True]
+    assert len(spawned) == 1
+    # ``.get``, not ``[]``: a missing key must read as this test's
+    # message, not as a bare ``KeyError: 'port'`` that points at the
+    # assertion instead of at the bug.
+    assert spawned[0].get("port") == 8181, (
+        "the stale-daemon respawn must carry the port from the URL this "
+        f"call is about to use; got {spawned[0]!r}. Dropping it is "
+        "IMPORTANT 5's failure mode at this third site: the reap kills the "
+        "configured daemon and the replacement binds qmd's default "
+        "instead, while the call proceeds against a daemon that is gone."
+    )
+
+
+async def test_every_respawn_site_threads_the_url_port(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every reap-then-spawn in ``access.py`` passes the configured port."""
+    import ast
+    import re
+
+    source = Path(access.__file__).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+
+    spawns = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_spawn_qmd_daemon"
+    ]
+    assert spawns, "access.py no longer spawns a daemon — re-derive this pin"
+
+    for node in spawns:
+        kwargs = {kw.arg for kw in node.keywords if kw.arg}
+        assert "port" in kwargs, (
+            f"_spawn_qmd_daemon called without port= (line {node.lineno}); "
+            "it will bind qmd's default rather than the configured port"
+        )
+
+    # And the pin is load-bearing: the stale path really is reachable
+    # with a port, not merely present somewhere in the file.
+    stale = re.search(r"if _is_daemon_stale\(\).*?_spawn_qmd_daemon\(port=", source, re.DOTALL)
+    assert stale, (
+        "the stale-daemon path no longer threads the port; this is the "
+        "site that regressed once already"
+    )
 
 
 # --- the wedged path ---------------------------------------------------
@@ -245,8 +351,8 @@ async def test_the_wedge_carries_the_log_as_it_was_before_the_recycle(
         return QmdState(installed=True, running=True, pid=4242, detail="fresh")
 
     # The `seam` fixture supplies the probe, the staleness check, and
-    # the `_recycle_data_dir` stub — the last of which keeps
-    # `read_sidecar_data_dir()` from reaching a real $HOME. Only the
+    # the `_recycle_scope` stub — the last of which keeps
+    # `read_sidecar_scope()` from reaching a real $HOME. Only the
     # recycle itself is replaced, because the truncation is the point.
     monkeypatch.setattr(access, "recycle_qmd_daemon", _recycle_that_truncates)
     monkeypatch.setattr(access, "_daemon_log_tail", lambda: log.read_text().strip())
@@ -470,33 +576,7 @@ async def test_each_wedge_carries_the_log_of_the_daemon_that_actually_wedged(
     tmp_path: Path,
     seam: _Recycle,
 ) -> None:
-    """Both tail reads are correct, and they are correct for opposite reasons.
-
-    Two branches report a wedge, and each reads the log on the other
-    side of its recycle:
-
-    - the first call wedges — D1 wedged, and the recycle below spawns
-      its replacement D2, which truncates mcp.log. The read precedes
-      the recycle, so the tail is D1's.
-    - a retry wedges — the recycle already spawned D2 and the retry ran
-      against it, so the read follows that recycle and the tail is D2's.
-
-    One daemon log stands in for both; each recycle rewrites it with the
-    identity of the daemon it started. A read on the wrong side
-    therefore does not produce a missing tail but a *misattributed*
-    one, which is the direction this field exists to prevent — so the
-    test asserts which daemon's words arrived, not merely that some
-    text did.
-
-    The `seam` parameter is load-bearing even though its recorder goes
-    unused: the test replaces the recycle because it has to control
-    *when* the log is truncated, not *what* the recycle does, and the
-    fixture is what stubs the daemon probe, the staleness check, and
-    `_recycle_data_dir`. Drop it as vestigial and `read_sidecar_data_dir`
-    runs unstubbed, reaching `library_git_root()` → `Library.open()`
-    against the real filesystem — contained today only by the autouse
-    XDG isolation in `tests/conftest.py`.
-    """
+    """Both tail reads are correct, and they are correct for opposite reasons."""
     log = tmp_path / "mcp.log"
     log.write_text("D1: expanding query 3/7")
     generation = {"n": 1}
@@ -521,7 +601,6 @@ async def test_each_wedge_carries_the_log_of_the_daemon_that_actually_wedged(
     # A transport error, then a retry that wedges. D2 is the daemon that
     # wedged, and it has been logging since the recycle started it — the
     # tail must be D2's, not D1's pre-recycle log.
-    access._reset_client()
     _use_client(
         monkeypatch,
         _FakeClient([httpx.ConnectError("refused"), httpx.ReadTimeout("wedged again")]),
@@ -586,65 +665,40 @@ async def test_a_protocol_rejection_passes_through_unchanged(
     assert seam.calls == []
 
 
-# --- the cached client -------------------------------------------------
+# --- the client is per call, never shared ------------------------------
 
 
-async def test_the_client_is_built_once_and_reused_across_calls(
+async def test_each_call_builds_its_own_client(
     monkeypatch: pytest.MonkeyPatch,
     seam: _Recycle,
 ) -> None:
-    built: list[str] = []
-    fake = _FakeClient([{"ok": 1}, {"ok": 2}])
+    """N calls, N distinct client objects. Never one reused."""
+    built: list[_FakeClient] = []
+    pending: list[Any] = [{"ok": 1}, {"ok": 2}, {"ok": 3}]
 
-    def _factory(url: str) -> _FakeClient:
-        built.append(url)
-        return fake
+    def _factory(transport: Any) -> _FakeClient:
+        client = _FakeClient([pending.pop(0)])
+        built.append(client)
+        return client
 
     monkeypatch.setattr(access, "fastmcp", SimpleNamespace(Client=_factory))
     monkeypatch.setattr(access, "get_qmd_url", lambda: "http://127.0.0.1:8181")
 
     first = await access.daemon_tool("query", {"searches": [{"type": "lex", "query": "x"}]})
-    second = await access.daemon_tool("get", {"file": "a.md"})
+    second = await access.daemon_tool("get", {"file": "a.md"}, timeout=7.5)
+    third = await access.daemon_tool("get", {"file": "b.md"}, timeout=12.0)
 
-    assert (first, second) == ({"ok": 1}, {"ok": 2})
-    assert len(built) == 1, "the daemon's model is warm; the client must be too"
-
-
-async def test_a_changed_daemon_url_rebuilds_the_client(
-    monkeypatch: pytest.MonkeyPatch,
-    seam: _Recycle,
-) -> None:
-    built: list[str] = []
-    monkeypatch.setattr(
-        access,
-        "fastmcp",
-        SimpleNamespace(Client=lambda url: built.append(url) or _FakeClient([{"ok": 1}])),
-    )
-    monkeypatch.setattr(access, "get_qmd_url", lambda: "http://127.0.0.1:8181")
-    await access.daemon_tool("get", {"file": "a.md"})
-
-    monkeypatch.setattr(access, "get_qmd_url", lambda: "http://127.0.0.1:9999")
-    await access.daemon_tool("get", {"file": "a.md"})
-
-    assert len(built) == 2, "a cached client would keep calling the old daemon"
+    assert (first, second, third) == ({"ok": 1}, {"ok": 2}, {"ok": 3})
+    assert len(built) == 3, f"expected one client per call, got {len(built)}"
+    assert built[0] is not built[1], "two calls were handed the same client object"
+    assert built[1] is not built[2], "two calls were handed the same client object"
 
 
 async def test_a_per_call_timeout_is_forwarded_to_call_tool(
     monkeypatch: pytest.MonkeyPatch,
     seam: _Recycle,
 ) -> None:
-    """``daemon_tool(..., timeout=N)`` reaches the wire as ``call_tool(timeout=N)``.
-
-    The pre-final-review seam took a ``timeout`` argument at the search
-    call site and never read it, so a deadline the CLI path would have
-    applied was silently dropped on the daemon path. The cache invalidates
-    on ``LIES_QMD_URL`` change but not on a deadline change, so
-    ``LIES_QMD_FANOUT_TIMEOUT`` had no effect on the daemon transport
-    until something else rebuilt the client. This test pins the property
-    the knob depends on: the per-call timeout reaches ``call_tool`` as
-    a keyword argument, so ``fastmcp.Client``'s per-request
-    ``read_timeout_seconds`` honours it on the next call.
-    """
+    """``daemon_tool(..., timeout=N)`` reaches the wire as ``call_tool(timeout=N)``."""
     fake = _FakeClient([{"ok": 1}, {"ok": 2}])
     monkeypatch.setattr(access, "_daemon_client", lambda url: fake)
     monkeypatch.setattr(access, "get_qmd_url", lambda: "http://127.0.0.1:8181")
@@ -664,20 +718,11 @@ async def test_a_per_call_timeout_is_forwarded_to_call_tool(
     assert fake.calls[1][2]["timeout"] == 12.0
 
 
-async def test_no_per_call_timeout_falls_back_to_the_cached_client_deadline(
+async def test_no_per_call_timeout_falls_back_to_the_client_deadline(
     monkeypatch: pytest.MonkeyPatch,
     seam: _Recycle,
 ) -> None:
-    """A ``timeout=None`` call leaves the client-level deadline in place.
-
-    The cached httpx client is built at factory construction with
-    ``read=_default_read_timeout_s()``. ``daemon_tool(timeout=None)``
-    must NOT pass ``timeout=None`` to ``call_tool`` — the FastMCP
-    signature accepts it (no-op) but it would be confusing in the
-    wire capture and would lie to a reader about whether the seam
-    intends to override. The seam forwards ``None`` as "don't
-    override"; the assertion pins the seam's choice.
-    """
+    """A ``timeout=None`` call leaves the client-level deadline in place."""
     fake = _FakeClient([{"ok": 1}])
     monkeypatch.setattr(access, "_daemon_client", lambda url: fake)
     monkeypatch.setattr(access, "get_qmd_url", lambda: "http://127.0.0.1:8181")
@@ -685,47 +730,55 @@ async def test_no_per_call_timeout_falls_back_to_the_cached_client_deadline(
     await access.daemon_tool("get", {"file": "a.md"})
 
     assert len(fake.calls) == 1
-    # The keyword is absent; the cached client's read deadline is the
-    # one that applies. ``"timeout" not in kwargs`` is what
+    # The keyword is absent; the client's own read deadline is the one
+    # that applies. ``"timeout" not in kwargs`` is what
     # ``Client.call_tool`` reads as "use my default".
     assert "timeout" not in fake.calls[0][2], (
         f"a None timeout should not be forwarded as a kwarg; got {fake.calls[0][2]!r}"
     )
 
 
-async def test_a_deadline_change_does_not_rebuild_the_cached_client(
-    monkeypatch: pytest.MonkeyPatch,
-    seam: _Recycle,
+async def test_concurrent_calls_never_share_a_client(
+    monkeypatch: pytest.MonkeyPatch, seam: _Recycle
 ) -> None:
-    """Cache key is the URL. Deadline moves on the next call, not via rebuild.
+    """The regression. No two concurrent calls share one client object."""
+    probe = _OverlapProbe()
+    made: list[_OverlapClient] = []
 
-    A deadline change (``LIES_QMD_FANOUT_TIMEOUT``) is now read on the
-    next call via the per-call ``timeout=`` argument, so the cached
-    client can outlive a deadline change. This test pins that: a
-    call with a different timeout leaves the cached client alone.
-    A future change that adds the deadline to the cache key would
-    rebuild the client on every deadline change and re-pay the
-    model-load cost (3.11s warm vs 10.77s cold) for nothing.
-    """
-    built: list[str] = []
-    fake = _FakeClient([{"ok": 1}, {"ok": 2}])
-
-    def _factory(url: str) -> _FakeClient:
-        built.append(url)
-        return fake
+    def _factory(transport: Any) -> _OverlapClient:
+        client = _OverlapClient(len(made), probe)
+        made.append(client)
+        return client
 
     monkeypatch.setattr(access, "fastmcp", SimpleNamespace(Client=_factory))
+    monkeypatch.setattr(access, "qmd_lock_async", _lock_stub([], gate=asyncio.Lock()))
     monkeypatch.setattr(access, "get_qmd_url", lambda: "http://127.0.0.1:8181")
 
-    await access.daemon_tool("get", {"file": "a.md"}, timeout=7.5)
-    await access.daemon_tool("get", {"file": "b.md"}, timeout=12.0)
-
-    assert len(built) == 1, (
-        f"a deadline change should not rebuild the cached client; "
-        f"got {len(built)} builds. Rebuilding re-pays the 3.11s "
-        f"model-load cost for nothing — the per-call timeout "
-        f"overrides on the wire."
+    results = await asyncio.gather(
+        access.daemon_tool("get", {"file": "a.md"}),
+        access.daemon_tool("get", {"file": "b.md"}),
+        access.daemon_tool("query", dict(_QUERY_ARGS)),
+        access.daemon_tool("get", {"file": "c.md"}),
+        access.daemon_tool("query", dict(_QUERY_ARGS)),
     )
+
+    assert len(results) == 5, f"every call must complete, got {len(results)}/5"
+    assert len(made) == 5, f"expected one client per call, got {len(made)}"
+    assert len({id(client) for client in made}) == 5, (
+        "concurrent calls were handed the same client object: "
+        f"{len({id(c) for c in made})} distinct for {len(made)} calls"
+    )
+    # Guards the test itself. Without a suspension point in the fake,
+    # ``call_tool`` would finish before the next task starts and every
+    # assertion above would pass without any concurrency ever happening
+    # — the same vacuity this file's other concurrency tests call out.
+    # A per-object peak cannot guard that: five distinct single-use
+    # clients are each entered exactly once by construction, so it would
+    # be tautological.
+    assert probe.peak >= 2, (
+        f"the calls never actually overlapped (peak {probe.peak}); this test would be vacuous"
+    )
+    assert all(client.open_now == 0 for client in made), "a session was left open"
 
 
 # --- the classification ------------------------------------------------
@@ -1095,45 +1148,440 @@ def test_an_httpx_client_factory_nobody_can_call_is_not_a_seam() -> None:
     ), "fastmcp passes follow_redirects=; the factory must accept it"
 
 
-# --- what `data_dir` actually controls ----------------------------------
+# --- where qmd gets spawned, and what `scope` actually controls ----------
 #
-# `ensure_qmd_daemon(data_dir=...)` reads like it selects the index the
-# daemon serves, and `recycle_qmd_daemon(data_dir=...)` likewise. Neither
-# is true, and the reason matters for anyone tempted to "fix" the two
-# call sites to agree: `_spawn_qmd_daemon` runs `qmd mcp --http --daemon`
-# with `cwd=Path.cwd()` and never reads the argument, so `data_dir` only
-# ever reaches `write_sidecar_data_dir`. The daemon that comes up is the
-# same whichever value you pass.
+# `_spawn_qmd_daemon` is the only place LIES shells out to start qmd's
+# daemon. That is a claim about a *string appearing exactly once in the
+# module*, and it has to be tested that way: the previous pin counted
+# `_spawn_qmd_daemon()` call sites, which is blind to any site that
+# inlines the argv itself. There were three such sites — two via the
+# helper and one inside `ensure_qmd_daemon`'s "normal path", which had
+# its own copy of `[_QMD_BIN, "mcp", "--http", "--daemon"]` and its own
+# `timeout=`. Adding `--port 9999` to that copy left the pin green.
+#
+# `scope` (formerly `data_dir`) is separate, and is NOT wired to the
+# spawn: it is recorded in the sidecar and compared by
+# `check_scope_match`, and it does not select an index. Four call sites
+# used to pass four different values (`wiki.wiki_dir`,
+# `wiki.data_root`, sidecar-or-library-root, and `library_git_root()`);
+# two of them differed by construction. All four now pass
+# `_canonical_scope()`, and `_spawn_qmd_daemon`'s `data_dir=` — the one
+# argument that really does move the index — has no production caller.
 
 
-def test_the_spawned_daemon_never_receives_the_data_dir(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """``_spawn_qmd_daemon`` ignores any data dir; the spawn is cwd-only.
+def test_the_daemon_argv_appears_exactly_once_in_the_module() -> None:
+    """One argv literal in ``daemon.py``'s *code*: ``_spawn_qmd_daemon``'s."""
+    import ast
 
-    A source-level pin rather than a behavioural one, because the claim
-    is about what is *not* passed. If someone later threads ``data_dir``
-    into the spawn, this fails — which is the point at which the
-    ``_recycle_data_dir`` vs ``ensure_qmd_daemon`` question becomes a
-    real one rather than a bookkeeping detail.
-    """
+    from lies.qmd import daemon as qmd_daemon
+
+    tree = ast.parse(Path(qmd_daemon.__file__).read_text(encoding="utf-8"))
+
+    def literal(node: ast.expr) -> str | None:
+        # ``_QMD_BIN`` is a Name, not a Constant; resolve it by its
+        # module-level binding so the match is on the value the argv
+        # actually carries.
+        if isinstance(node, ast.Name):
+            return "qmd" if node.id == "_QMD_BIN" else None
+        return node.value if isinstance(node, ast.Constant) else None
+
+    spawn_argvs: list[ast.List] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.List):
+            continue
+        elements = [literal(e) for e in node.elts]
+        # ["qmd", "mcp", "--http", "--daemon", ...] — any argv carrying
+        # the three mcp flags, with or without a trailing --port.
+        if elements[:1] != ["qmd"] or elements[1:4] != ["mcp", "--http", "--daemon"]:
+            continue
+        spawn_argvs.append(node)
+
+    assert len(spawn_argvs) == 1, (
+        f"{len(spawn_argvs)} inline qmd daemon argvs in daemon.py; only "
+        "_spawn_qmd_daemon may build one. Any other is a spawn site no "
+        "call-site count can see."
+    )
+
+    # And the one that survives is inside the helper, not merely unique.
+    enclosing = [
+        parent
+        for parent in ast.walk(tree)
+        if isinstance(parent, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and any(child is spawn_argvs[0] for child in ast.walk(parent))
+    ]
+    assert [f.name for f in enclosing] == ["_spawn_qmd_daemon"], (
+        f"the surviving argv is inside {[f.name for f in enclosing]}, not _spawn_qmd_daemon"
+    )
+
+
+def test_every_production_spawn_threads_the_url_port_and_no_data_dir() -> None:
+    """Each spawn site passes the port from the URL, and never a data dir."""
     from lies.qmd import daemon as qmd_daemon
 
     source = Path(qmd_daemon.__file__).read_text(encoding="utf-8")
-    start = source.index("def _spawn_qmd_daemon(")
-    end = source.index("def ", start + 10)
-    body = source[start:end]
+    body = source[source.index("def ensure_qmd_daemon(") :]
 
-    assert "_spawn_qmd_daemon(" in body
-    assert "data_dir" not in body, (
-        "_spawn_qmd_daemon now reads a data_dir; the daemon it starts may "
-        "differ from the one a recycle starts, and the two call sites' "
-        "disagreement is no longer bookkeeping"
+    assert "_spawn_qmd_daemon(port=port)" in body, (
+        "ensure_qmd_daemon's reap+respawn paths must forward the port"
     )
-    assert "cwd=" in body, "the spawn is cwd-based; that is what makes data_dir inert"
+    assert "_spawn_qmd_daemon(port=port, raise_on_error=True)" in body, (
+        "ensure_qmd_daemon's normal path must forward the port too"
+    )
+    assert "data_dir=" not in body, (
+        "a production spawn now names a data_dir; it selects an index, and scope does not mean one"
+    )
+
+    recycle = source[source.index("async def recycle_qmd_daemon(") :]
+    assert "_spawn_qmd_daemon(port=daemon_port_from_url(daemon_url))" in recycle, (
+        "the recycle's spawn must take its port from the URL it probes"
+    )
 
 
-# Removed under M-7: a tautology that monkeypatched
-# ``write_sidecar_data_dir`` (a function ``_recycle_data_dir`` never
-# calls) and asserted the result was a Path. The source-level pin
-# above is the load-bearing test for the data-dir flow.
+def test_recycle_qmd_daemon_records_its_scope_and_nothing_else() -> None:
+    """``recycle_qmd_daemon`` writes the scope to the sidecar; that is all."""
+    from lies.qmd import daemon as qmd_daemon
+
+    source = Path(qmd_daemon.__file__).read_text(encoding="utf-8")
+    body = source[source.index("async def recycle_qmd_daemon(") :]
+
+    assert "write_sidecar_scope(scope)" in body, (
+        "scope is recorded in the sidecar; that is its only use"
+    )
+    assert qmd_daemon._spawn_qmd_daemon.__kwdefaults__ == {
+        "port": None,
+        "data_dir": None,
+        "timeout": None,
+        "raise_on_error": False,
+    }, "the spawn's new arguments must all default to today's behaviour"
+
+
+def test_the_canonical_scope_is_the_library_root() -> None:
+    """Every caller passes one value, so the sidecar comparison means something."""
+    from lies.library.registry import library_git_root
+    from lies.qmd.daemon import _canonical_scope
+
+    assert _canonical_scope() == library_git_root()
+
+
+# --- the query single-flight gate ----------------------------------------
+#
+# qmd's daemon executes queries strictly one at a time. Three concurrent
+# queries measured a 0.99x concurrency ratio (29.48s wall against 29.18s
+# running them one after another): the second waited for the first, the
+# third for both. So the queue is real, and inside qmd it is unbounded and
+# invisible — a caller parked above it can be stranded there by its own
+# client-side budget, which is the "interrupted/aborted" result the seam
+# sees. Nothing about that state says *busy*; it says *took too long*.
+#
+# The gate puts the wait inside LIES, where it is bounded, owned and
+# logged. ``get`` and ``status`` stay out of it: both answer in
+# milliseconds, and ``read_library_bodies`` issues one ``get`` per path,
+# so locking them would park a whole batch behind the slowest query in
+# the process and buy nothing.
+#
+# Every test here stubs ``access.qmd_lock_async`` except three further
+# down, which take the real flock. The stubs carry an ``asyncio.Lock``
+# so the assertions are about serialisation — "the second body did not
+# start until the first finished" — rather than about a context manager
+# having been entered.
+
+
+async def test_query_tool_acquires_the_lock(
+    monkeypatch: pytest.MonkeyPatch, seam: _Recycle
+) -> None:
+    events: list[str] = []
+    monkeypatch.setattr(access, "qmd_lock_async", _lock_stub(events))
+    _use_client(monkeypatch, _FakeClient([{"hits": ["served"]}]))
+
+    result = await access.daemon_tool("query", dict(_QUERY_ARGS))
+
+    assert result == {"hits": ["served"]}
+    assert events == ["lock-enter", "lock-exit"], events
+
+
+async def test_get_tool_does_not_acquire_the_lock(
+    monkeypatch: pytest.MonkeyPatch, seam: _Recycle
+) -> None:
+    events: list[str] = []
+    monkeypatch.setattr(access, "qmd_lock_async", _lock_stub(events))
+    _use_client(monkeypatch, _FakeClient([{"ok": 1}]))
+
+    result = await access.daemon_tool("get", {"file": "fastmcp/x.md"})
+
+    assert result == {"ok": 1}
+    assert events == [], "get must not queue behind the query lock"
+
+
+async def test_status_tool_does_not_acquire_the_lock(
+    monkeypatch: pytest.MonkeyPatch, seam: _Recycle
+) -> None:
+    events: list[str] = []
+    monkeypatch.setattr(access, "qmd_lock_async", _lock_stub(events))
+    _use_client(monkeypatch, _FakeClient([{"collections": []}]))
+
+    await access.daemon_tool("status", {})
+
+    assert events == [], (
+        "status is the reachability/validate_scope pre-check; gating it "
+        "would put the probe behind the queue it exists to describe"
+    )
+
+
+async def test_two_concurrent_queries_are_serialised(
+    monkeypatch: pytest.MonkeyPatch, seam: _Recycle
+) -> None:
+    """The behavioural guarantee: two queries never overlap."""
+    events: list[str] = []
+    monkeypatch.setattr(access, "qmd_lock_async", _lock_stub(events, gate=asyncio.Lock()))
+    _use_client(monkeypatch, _SlowClient(events))
+
+    await asyncio.gather(
+        access.daemon_tool("query", dict(_QUERY_ARGS)),
+        access.daemon_tool("query", dict(_QUERY_ARGS)),
+    )
+
+    assert _peak_overlap(events) == 1, f"two queries were in flight at once: {events}"
+    assert events == [
+        "lock-enter",
+        "call-enter query",
+        "call-exit query",
+        "lock-exit",
+        "lock-enter",
+        "call-enter query",
+        "call-exit query",
+        "lock-exit",
+    ], events
+
+
+async def test_two_concurrent_queries_against_a_real_holder_do_not_overlap(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, seam: _Recycle
+) -> None:
+    """Same guarantee, against the real flock rather than a stub."""
+    from lies.qmd import lock as lock_mod
+
+    monkeypatch.setenv("LIES_QMD_LOCK_PATH", str(tmp_path / "qmd.lock"))
+    monkeypatch.setattr(lock_mod, "_POLL_INTERVAL_S", 0.001)
+    # No autouse fixture stubs the lock in this module, so
+    # ``access.qmd_lock_async`` is already the real one by module-scope
+    # import. Nothing to restore here.
+    events: list[str] = []
+    _use_client(monkeypatch, _SlowClient(events))
+
+    await asyncio.gather(
+        access.daemon_tool("query", dict(_QUERY_ARGS)),
+        access.daemon_tool("query", dict(_QUERY_ARGS)),
+    )
+
+    assert _peak_overlap(events) == 1, f"two queries were in flight at once: {events}"
+
+
+async def test_query_wait_budget_comes_from_the_env(
+    monkeypatch: pytest.MonkeyPatch, seam: _Recycle
+) -> None:
+    """``LIES_QMD_QUERY_LOCK_WAIT`` reaches ``qmd_lock_async`` as ``timeout_s=``."""
+    seen: list[float | None] = []
+    monkeypatch.setenv("LIES_QMD_QUERY_LOCK_WAIT", "7")
+    monkeypatch.setattr(access, "qmd_lock_async", _lock_stub([], timeouts=seen))
+    _use_client(monkeypatch, _FakeClient([{"hits": []}]))
+
+    await access.daemon_tool("query", dict(_QUERY_ARGS))
+
+    assert seen == [7.0], f"the query wait budget must come from query_lock_wait_s(); got {seen!r}"
+
+
+async def test_the_query_wait_budget_defaults_to_the_documented_120_seconds(
+    monkeypatch: pytest.MonkeyPatch, seam: _Recycle
+) -> None:
+    """Unset environment, unset budget — read per call, not frozen at import."""
+    seen: list[float | None] = []
+    monkeypatch.delenv("LIES_QMD_QUERY_LOCK_WAIT", raising=False)
+    monkeypatch.setattr(access, "qmd_lock_async", _lock_stub([], timeouts=seen))
+    _use_client(monkeypatch, _FakeClient([{"hits": []}]))
+
+    await access.daemon_tool("query", dict(_QUERY_ARGS))
+
+    assert seen == [120.0], seen
+
+
+async def test_a_down_daemon_reports_unavailable_not_busy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The reachability probe runs *inside* the gate."""
+    events: list[str] = []
+    monkeypatch.setattr(access, "qmd_lock_async", _lock_stub(events))
+    monkeypatch.setattr(
+        access,
+        "qmd_daemon_reachable",
+        lambda url, timeout=0.5: events.append("probe") or False,
+    )
+
+    with pytest.raises(access.QmdDaemonUnavailable) as excinfo:
+        await access.daemon_tool("query", dict(_QUERY_ARGS))
+
+    assert "lies qmd up" in str(excinfo.value)
+    assert events == ["lock-enter", "probe", "lock-exit"], (
+        f"the probe must run inside the gate and still unwind it: {events}"
+    )
+
+
+async def test_the_lock_is_released_when_the_query_raises(
+    monkeypatch: pytest.MonkeyPatch, seam: _Recycle
+) -> None:
+    """A failed query must not strand the single-flight slot."""
+    events: list[str] = []
+    monkeypatch.setattr(access, "qmd_lock_async", _lock_stub(events))
+    _use_client(monkeypatch, _FakeClient([mcp.MCPError(code=-32602, message="Invalid params")]))
+
+    with pytest.raises(mcp.MCPError):
+        await access.daemon_tool("query", dict(_QUERY_ARGS))
+
+    assert events == ["lock-enter", "lock-exit"], events
+
+
+async def test_a_cancelled_query_releases_the_lock(
+    monkeypatch: pytest.MonkeyPatch, seam: _Recycle
+) -> None:
+    """``CancelledError`` is a ``BaseException``; a ``finally`` is what covers it."""
+    events: list[str] = []
+    in_flight = asyncio.Event()
+
+    class _Hangs:
+        async def __aenter__(self) -> _Hangs:
+            return self
+
+        async def __aexit__(self, *_exc: object) -> None:
+            return None
+
+        async def call_tool(self, name: str, arguments: dict[str, Any], **kw: Any) -> Any:
+            in_flight.set()
+            await asyncio.Event().wait()
+
+    monkeypatch.setattr(access, "qmd_lock_async", _lock_stub(events, gate=asyncio.Lock()))
+    _use_client(monkeypatch, _Hangs())
+
+    task = asyncio.create_task(access.daemon_tool("query", dict(_QUERY_ARGS)))
+    await in_flight.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert events == ["lock-enter", "lock-exit"], events
+
+
+async def test_a_busy_query_lock_surfaces_as_qmd_lock_busy(
+    monkeypatch: pytest.MonkeyPatch, seam: _Recycle
+) -> None:
+    """The gate's own failure reaches the caller, and never touches the daemon."""
+    reached: list[str] = []
+
+    class _Busy:
+        async def __aenter__(self) -> Any:
+            raise QmdLockBusy(holder_pid=4242, waited_s=120.0, max_s=120.0)
+
+        async def __aexit__(self, *_exc: object) -> None:
+            return None
+
+    monkeypatch.setattr(access, "qmd_lock_async", lambda **_kw: _Busy())
+    monkeypatch.setattr(
+        access,
+        "_daemon_client",
+        lambda url: reached.append("client") or _FakeClient([]),
+    )
+
+    with pytest.raises(QmdLockBusy) as excinfo:
+        await access.daemon_tool("query", dict(_QUERY_ARGS))
+
+    assert excinfo.value.holder_pid == 4242
+    assert excinfo.value.max_s == 120.0
+    assert reached == [], "a busy lock must not reach the daemon"
+
+
+def test_a_busy_query_lock_is_not_a_daemon_failure() -> None:
+    """The three failures are three different remedies, and must stay apart."""
+    assert not issubclass(QmdLockBusy, access.QmdDaemonUnavailable)
+    assert not issubclass(QmdLockBusy, access.QmdDaemonWedged)
+    assert not issubclass(QmdLockBusy, RuntimeError)
+
+
+def test_daemon_tool_keeps_its_public_signature() -> None:
+    """The gate is internal: it adds a lock, not an argument."""
+    import inspect
+
+    params = inspect.signature(access.daemon_tool).parameters
+    assert list(params) == ["name", "arguments", "timeout"], (
+        f"daemon_tool's signature changed: {list(params)}"
+    )
+    assert params["timeout"].kind is inspect.Parameter.KEYWORD_ONLY
+    assert params["timeout"].default is None
+
+
+async def test_the_real_site_wide_lock_is_taken_for_query_and_not_for_get(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, seam: _Recycle
+) -> None:
+    """End-to-end through the real ``qmd_lock_async``, not a stub."""
+    from lies.qmd import lock as lock_mod
+
+    monkeypatch.setenv("LIES_QMD_LOCK_PATH", str(tmp_path / "qmd.lock"))
+    lock_path, pid_path, state_path = lock_mod._lock_paths()
+    held: list[tuple[str, bool]] = []
+
+    class _Probe:
+        async def __aenter__(self) -> _Probe:
+            return self
+
+        async def __aexit__(self, *_exc: object) -> None:
+            return None
+
+        async def call_tool(self, name: str, arguments: dict[str, Any], **kw: Any) -> Any:
+            held.append((name, lock_path.exists()))
+            return {"hits": []}
+
+    _use_client(monkeypatch, _Probe())
+
+    await access.daemon_tool("query", dict(_QUERY_ARGS))
+    await access.daemon_tool("get", {"file": "a.md"})
+    await access.daemon_tool("status", {})
+
+    assert held == [("query", True), ("get", False), ("status", False)], held
+    for leftover in (lock_path, pid_path, state_path):
+        assert not leftover.exists(), f"{leftover.name} outlived the query"
+
+
+async def test_a_cancelled_query_releases_the_real_site_wide_lock(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, seam: _Recycle
+) -> None:
+    """The real flock's fd is released on the cancellation path."""
+    from lies.qmd import lock as lock_mod
+
+    monkeypatch.setenv("LIES_QMD_LOCK_PATH", str(tmp_path / "qmd.lock"))
+    lock_path, _, _ = lock_mod._lock_paths()
+    in_flight = asyncio.Event()
+
+    class _Hangs:
+        async def __aenter__(self) -> _Hangs:
+            return self
+
+        async def __aexit__(self, *_exc: object) -> None:
+            return None
+
+        async def call_tool(self, name: str, arguments: dict[str, Any], **kw: Any) -> Any:
+            in_flight.set()
+            await asyncio.Event().wait()
+
+    _use_client(monkeypatch, _Hangs())
+
+    task = asyncio.create_task(access.daemon_tool("query", dict(_QUERY_ARGS)))
+    await in_flight.wait()
+    assert lock_path.exists(), "the query never held the site-wide lock"
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert not lock_path.exists(), "a cancelled query stranded the site-wide lock"
+
+    # Free for the next caller, from a task created after the release.
+    async def _next_query() -> None:
+        await access.daemon_tool("query", dict(_QUERY_ARGS))
+
+    monkeypatch.setattr(access, "_daemon_client", lambda url: _FakeClient([{"hits": []}]))
+    await asyncio.wait_for(_next_query(), timeout=5.0)

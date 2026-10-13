@@ -1,33 +1,21 @@
-"""Librarian subagent — staged retrieval dispatch (v0.40 port).
+"""Librarian subagent — staged retrieval dispatch.
 
-Library-mode rewrite of the F18 librarian. The new contract has the
-LLM run a 4-step pipeline:
-
-  1. **Classify** — call ``collections_read("list")``, build a
-     ``tag_expr`` body from registry tokens (no hardcoded map).
-  2. **Search** — call ``search(question, tag_expr, exclude_tags)``
-     against the registered library corpus (single-batch hybrid
-     vec+lex qmd query). The result is a ``SearchResult`` envelope
-     with snippets attached.
-  3. **Read** (snippet-review decides) — the LLM reviews each hit's
-     snippet, picks the 3-5 paths whose snippets actually cover the
-     question, and calls ``read(picked_paths)`` for verbatim bodies.
-  4. **Return** — package the curator's excerpts into
-     :class:`LibrarianOutput`.
-
-Step 3 is the structural fix for the v0.39 bug class: the librarian
-LLM now sees snippets before committing to reads, so authoring pages
-rank above install / overview / localized pages.
+The LLM runs a 4-step pipeline: **Classify** (build a ``tag_expr`` from
+the live registry), **Search** (one hybrid vec+lex qmd query returning a
+``SearchResult`` envelope with snippets), **Read** (review the snippets,
+then read only the paths that cover the question), **Return** (package
+the excerpts into :class:`LibrarianOutput`).
 
 Unlike ask's harness-``Agent``-tool dispatch, lies runs in-process
-via ``librarian_agent.run_sync(deps)``. No background task, no
-host-loop await — the orchestrator's ``run_query`` blocks until the
-librarian returns.
+via ``librarian_agent.run_sync(deps)``.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic_ai import Agent, RunContext
@@ -47,34 +35,19 @@ class LibrarianDeps:
 
     Attributes:
         question: The user's natural-language question.
-        tag_expr: Compiled include AST (Task 3 / f15-exclude-compound),
-            a TagExpr tree. ``None`` for untagged queries. Carries
-            the AST rather than a flat string because the F15 grammar
-            accepts compound includes (``+c:foo&c:bar``,
-            ``+c:foo|c:bar``) whose per-collection dispatch walks
-            the tree. Historical flat-string contract retired in
-            Task 3 along with the ``ResolvedTagFilter.exclude``
-            counterpart.
-        exclude_expr: Compiled exclude AST (Task 3 /
-            f15-exclude-compound). ``None`` when no ``-`` chain was
-            supplied. The dep carries the AST rather than a flat
-            ``list[str]`` because the F15 grammar now accepts
-            compound excludes (``-c:foo&c:bar``, ``-c:foo|c:bar``)
-            whose per-collection dispatch walks the tree. The
-            historical ``list[str]`` contract was retired in Task 3
-            along with the flat-string ``ResolvedTagFilter.exclude``
-            field.
+        tag_expr: Compiled include AST (a TagExpr tree), or ``None`` for
+            untagged queries. An AST rather than a string because the
+            grammar accepts compound includes.
+        exclude_expr: Compiled exclude AST, or ``None`` when no ``-``
+            chain was supplied.
         top_k: Maximum number of excerpts to return (default 5).
     """
 
     question: str
     tag_expr: Any  # TagExpr | None AST; Any at runtime so pydantic-ai's
     # TypeAdapter doesn't try to build a schema for the AST (a stdlib
-    # base class whose concrete variants are frozen dataclasses, not
-    # pydantic models).
-    exclude_expr: Any  # TagExpr | None AST (Task 3); Any at runtime so
-    # pydantic-ai's TypeAdapter doesn't try to build a schema for
-    # TagExpr (a stdlib @dataclass, not pydantic).
+    # base class whose concrete variants are frozen dataclasses).
+    exclude_expr: Any  # TagExpr | None AST, same reason.
     top_k: int = 5
 
 
@@ -82,17 +55,10 @@ class LibrarianDeps:
 class PageExcerpt:
     """A page excerpt the librarian curated for the question.
 
-    ``spans`` (F19) carries the structured span view rather than a
-    raw text blob — the synthesizer picks per-claim span from this
-    list.
-
-    ``source_kind`` (dual-source-routing) flags which surface the
-    excerpt came from so downstream rendering can distinguish
-    primary-source hits (``"library"``) from wiki-only hits
-    (``"wiki"``). Library-wins-on-conflict drops the wiki copy on
-    slug match, so there is no merged-row third value. Defaults
-    to ``"library"`` for backward compat against pre-T2F librarian
-    outputs.
+    ``spans`` carries the structured span view rather than a raw text
+    blob. ``source_kind`` flags which surface the excerpt came from, so
+    rendering can distinguish primary-source hits from wiki-only hits;
+    library-wins-on-conflict means there is no merged third value.
     """
 
     collection: str
@@ -104,54 +70,221 @@ class PageExcerpt:
 
 @dataclass(frozen=True)
 class LibrarianOutput:
-    """The librarian's evidence bundle — verbatim passages the
-    synthesizer composes an answer from.
+    """The librarian's evidence bundle — verbatim passages for the synthesizer.
 
-    The librarian does NOT write the answer; the main agent holds
-    the cited synthesis.
+    The librarian does not write the answer; the synthesizer holds the
+    cited synthesis.
 
     Attributes:
-        no_coverage: v0.40 — populated by the LLM from the ``search``
-            MCP tool's ``no_coverage`` field in the SearchResult
-            envelope. ``True`` when the corpus has zero hits for the
-            question (a scope miss on a populated library). The
-            orchestrator's dispatch site passes the field through
-            unchanged; downstream consumers (the file-back gate,
-            ``ground()`` dispatch, callers reading the bundle) read
-            the value as the agent emitted it. Defaults to ``False``
-            so existing ``LibrarianOutput(...)`` construction sites
-            and frozen-dataclass consumers stay back-compat.
-        searched_scope: v0.40 additive — the resolved collection
-            list from Step 2's ``search()`` tool
-            (``searched_scope`` field). ``MCP synthesize`` threads
-            this onto :class:`SynthesizeEnvelope.searched_scope`
-            so the CLI / MCP layer can render the scope envelope
-            without re-resolving the AST. Defaults to ``[]`` so
-            pre-v0.40 construction sites stay back-compat.
-        transient: v0.47 additive — the *dispatch* failed, so the
-            bundle says nothing about the corpus. A model outage, a
-            ``UsageLimitExceeded``, a response pydantic-ai could not
-            validate after its retry budget: each is a fact about
-            the run, and this branch existed with only
-            ``no_coverage=True`` to report it with, which is the
-            canonical false corpus claim. Set together with
-            ``no_coverage=False``; the two are independent, exactly
-            as on :class:`~lies.mcp.grounding.ArchivistDigest` and
-            the ``search`` envelope. Defaults to ``False``.
+        no_coverage: ``True`` when the corpus has zero hits for the
+            question. Defaults to ``False``.
+        searched_scope: The resolved collection list from the ``search``
+            tool, threaded onto :class:`SynthesizeEnvelope.searched_scope`.
+        transient: The *dispatch* failed, so the bundle says nothing about
+            the corpus. Set together with ``no_coverage=False``.
+        fallback_reason: The search envelope's ``fallback_reason``,
+            mirrored verbatim. :class:`SearchDiagnostics` records the same
+            string independently and :func:`with_search_diagnostics`
+            replaces whatever the model emits with it.
     """
 
-    tag_expr: Any  # TagExpr | None AST; Any at runtime so pydantic-ai's
-    # TypeAdapter doesn't try to build a schema for the AST (a stdlib
-    # base class whose concrete variants are frozen dataclasses, not
-    # pydantic models).
-    exclude_expr: Any  # TagExpr | None AST (Task 3); Any at runtime so
-    # pydantic-ai's TypeAdapter doesn't try to build a schema for
-    # TagExpr (a stdlib @dataclass, not pydantic).
+    tag_expr: Any  # TagExpr | None AST, same reason as LibrarianDeps.tag_expr.
+    exclude_expr: Any  # TagExpr | None AST, same reason.
     excerpts: list[PageExcerpt]
     distinct_pages: int
     no_coverage: bool = False
     searched_scope: list[str] = field(default_factory=list)
     transient: bool = False
+    fallback_reason: str | None = None
+
+
+@dataclass
+class SearchDiagnostics:
+    """The ``search`` tool's dispatch verdict, captured outside the model.
+
+    One record per librarian dispatch, handed to
+    :func:`register_librarian_tools` and read back by the caller after
+    ``run_sync`` returns. It is an argument rather than a module global
+    so that overlapping ``lib_ask`` calls cannot share one record.
+
+    Attributes:
+        transient: The last ``search`` envelope reported ``transient=True``.
+            Monotonic: once set, a later clean envelope does not clear it.
+        fallback_reason: The most recent non-empty ``fallback_reason`` the
+            tool produced, verbatim, transient or not.
+        searched_scope: The resolved collection list from the last envelope
+            that carried one.
+        attested_paths: Every page path a tool actually returned — each
+            ``hit``/``hits[*].path`` and each ``read`` result key.
+    """
+
+    transient: bool = False
+    fallback_reason: str | None = None
+    searched_scope: list[str] = field(default_factory=list)
+    attested_paths: set[str] = field(default_factory=set)
+
+    def record(self, envelope: dict[str, Any]) -> None:
+        """Folds one ``search`` envelope into the record.
+
+        A failure sticks: the reason a ``QmdLockBusy`` took to produce is
+        the one the operator needs, even if a later envelope is clean.
+        """
+        if not isinstance(envelope, dict):
+            return
+        if envelope.get("transient"):
+            self.transient = True
+        reason = envelope.get("fallback_reason")
+        if reason:
+            self.fallback_reason = str(reason)
+        scope = envelope.get("searched_scope")
+        if scope:
+            self.searched_scope = [str(name) for name in scope]
+        for path in _envelope_hit_paths(envelope):
+            self.attested_paths.add(path)
+
+    def record_read(self, result: Any) -> None:
+        """Folds one ``read`` result into :attr:`attested_paths`.
+
+        Keys beginning with ``_`` are skipped: ``"_missing"`` is not a page.
+        """
+        if not isinstance(result, dict):
+            return
+        for key in result:
+            if isinstance(key, str) and key and not key.startswith("_"):
+                self.attested_paths.add(key)
+
+
+_DISPATCH_RECORD: ContextVar[SearchDiagnostics | None] = ContextVar(
+    "lies_librarian_search_diagnostics", default=None
+)
+
+
+def current_search_diagnostics() -> SearchDiagnostics | None:
+    """The record bound to *this* dispatch, or ``None`` when none is.
+
+    Long-lived tool closures read this instead of capturing a record, so
+    an agent whose tools are registered once can still be attested
+    per dispatch. Isolated by ``contextvars``: each thread and each
+    asyncio task gets its own copy, so overlapping dispatches never see
+    each other's record.
+    """
+    return _DISPATCH_RECORD.get()
+
+
+@contextmanager
+def search_diagnostics_scope(diag: SearchDiagnostics | None) -> Iterator[None]:
+    """Bind ``diag`` as the current dispatch's record; restore on exit.
+
+    ``None`` clears the binding, which is the "behave as today" arm for
+    a caller that has nothing to attest.
+    """
+    token = _DISPATCH_RECORD.set(diag)
+    try:
+        yield
+    finally:
+        _DISPATCH_RECORD.reset(token)
+
+
+def _envelope_hit_paths(envelope: dict[str, Any]) -> list[str]:
+    """Paths a ``search`` envelope returned, in wire order.
+
+    Reads both ``hit`` and ``hits``; a row may be a bare path or a dict.
+    """
+    paths: list[str] = []
+    candidates: list[Any] = []
+    top = envelope.get("hit")
+    if top is not None:
+        candidates.append(top)
+    hits = envelope.get("hits")
+    if isinstance(hits, list):
+        candidates.extend(hits)
+    for row in candidates:
+        if isinstance(row, str):
+            if row:
+                paths.append(row)
+        elif isinstance(row, dict):
+            path = row.get("path")
+            if isinstance(path, str) and path:
+                paths.append(path)
+    return paths
+
+
+def _attestation_reason(dropped: list[PageExcerpt]) -> str:
+    """Name the pages a bundle cited that no tool ever returned."""
+    names = sorted({excerpt.slug for excerpt in dropped})
+    listed = ", ".join(names[:3])
+    if len(names) > 3:
+        listed += f", +{len(names) - 3} more"
+    return (
+        f"{len(dropped)} of the librarian's excerpt(s) cited pages no tool returned "
+        f"({listed}); they were dropped unverified"
+    )
+
+
+def with_search_diagnostics(out: LibrarianOutput, diag: SearchDiagnostics) -> LibrarianOutput:
+    """Validates and overlays the recorded search verdict onto a bundle.
+
+    Drops excerpts whose ``slug`` is in neither the recorded search hits
+    nor the recorded ``read`` results, naming each drop in
+    ``fallback_reason``. A bundle whose excerpts are all attested is
+    returned unchanged. A total drop forces ``transient=True`` and
+    ``no_coverage=False``, so a failed run reads as a failed run rather
+    than as a claim about the corpus. A recorded ``fallback_reason``
+    replaces the model's copy verbatim; a non-transient one leaves
+    ``transient`` and ``no_coverage`` alone.
+
+    Covers every librarian dispatch: ``librarian_agent_run``
+    (``lib_ask``) and ``ground``'s legacy F18 path pass the record
+    explicitly, and the orchestrator binds one with
+    :func:`search_diagnostics_scope` because it registers its tools
+    once for the agent's lifetime. Downstream of that, the orchestrator
+    still runs ``_validate_claim_citations``, which is narrower than it
+    looks: the quote is checked against the bundle's **own** excerpt
+    bodies, so invented *text* on a real page is dropped while a wholly
+    fabricated page passes.
+
+    Attestation is path-level, not text-level — see AGENTS.md.
+    """
+    if out.excerpts:
+        kept = [excerpt for excerpt in out.excerpts if excerpt.slug in diag.attested_paths]
+        dropped = [excerpt for excerpt in out.excerpts if excerpt.slug not in diag.attested_paths]
+        if not dropped:
+            # Every excerpt is attested: the bundle is evidence, untouched.
+            return out
+        reason = _attestation_reason(dropped)
+        if diag.fallback_reason:
+            # The operator-actionable one is appended, never replaced.
+            reason = f"{reason}; {diag.fallback_reason}"
+        if not kept:
+            # Forced, not merged: a wholly invented bundle is a failed run.
+            return replace(
+                out,
+                excerpts=[],
+                distinct_pages=0,
+                transient=True,
+                no_coverage=False,
+                searched_scope=diag.searched_scope or out.searched_scope,
+                fallback_reason=reason,
+            )
+        return replace(
+            out,
+            excerpts=kept,
+            distinct_pages=len({excerpt.slug for excerpt in kept}),
+            fallback_reason=reason,
+        )
+    if diag.fallback_reason or diag.transient:
+        # Guarded on the verdict as well as its reason: a recorded
+        # ``transient`` carrying no reason is still the recorded truth,
+        # and dropping it would trade a fact for a string.
+        transient = out.transient or diag.transient
+        return replace(
+            out,
+            fallback_reason=diag.fallback_reason or out.fallback_reason,
+            transient=transient,
+            no_coverage=False if diag.transient else out.no_coverage,
+            searched_scope=diag.searched_scope or out.searched_scope,
+        )
+    return out
 
 
 LIBRARIAN_SYSTEM_PROMPT = """# librarian — Classify, Search, Read, Return
@@ -205,15 +338,24 @@ markdown.
 - `no_coverage=True` → return an empty bundle; the corpus has zero
   hits for this question.
 - `transient=True` → the search **did not finish** (qmd outlived its
-  deadline). This is a fact about the run, not about the corpus: the
-  search learned nothing, so it has no standing to say the library
-  lacks this topic. Retry the same search **once**. If it is still
-  transient, return an empty bundle with `no_coverage=False` and put
-  the reason in the envelope metadata, and say the lookup was
-  inconclusive — never that the content is missing.
-- `fallback_reason` non-None with `transient=False` → the daemon
-  genuinely failed; return an empty bundle and surface the reason in
-  the envelope metadata.
+  deadline, or the site-wide qmd lock was held past your budget). This
+  is a fact about the run, not about the corpus: the search learned
+  nothing, so it has no standing to say the library lacks this topic.
+  Retry the same search **once**. If it is still transient, return an
+  empty bundle with `no_coverage=False` and `transient=True`, copy
+  the envelope's `fallback_reason` onto the bundle **verbatim**, and
+  say the lookup was inconclusive — never that the content is missing.
+- `fallback_reason` non-None with `transient=False` → **not** a daemon
+  failure. This arm was previously described as "the daemon genuinely
+  failed", which is wrong: `search` sets `transient=False` alongside a
+  reason for an *empty question*, an unknown tag, a tag expression that
+  resolved to no collections, no collections registered, or a collection
+  that is registered but has no documents. Four of those are facts about
+  the request and one about the index; the daemon is answering fine in
+  every case. Return an empty bundle, copy the `fallback_reason` onto
+  the bundle verbatim, and say the lookup was inconclusive — the same
+  "ask again" posture as the transient arm above, because the reason
+  string tells the reader which of those it was.
 
 `no_coverage` and `transient` are deliberately separate flags. An
 earlier version set `no_coverage=True` on a timeout, and because this
@@ -278,6 +420,14 @@ Emit a `LibrarianOutput` with:
   curated verbatim passage (a few hundred words), broken into
   `Span` objects with `heading_path` for per-claim threading.
 
+  Every `slug` must be a path a tool returned to you — a `hits[*].path`
+  from Step 2 or a key of a `read` result from Step 3. The caller
+  records every one of those independently and **drops** an excerpt whose
+  path is in neither set, naming the drop in the reason. That is a
+  determinism check, not a style rule: an excerpt for a page nothing
+  returned is indistinguishable, to every downstream reader, from a real
+  citation.
+
   ```python
   PageExcerpt(
       collection="<first_seg_of_path>",
@@ -293,6 +443,20 @@ Emit a `LibrarianOutput` with:
   empty.
 - `searched_scope` — mirror the search tool's `searched_scope`
   field verbatim (the resolved collection list).
+- `fallback_reason` — mirror the search tool's `fallback_reason`
+  verbatim, or `null` when the search did not report a dispatch
+  failure. Copy the string; do not summarise it, do not shorten it,
+  and do not invent one. **This is good hygiene, not the delivery
+  mechanism**: the caller records the search envelope's verdict
+  independently and overwrites this field with the verbatim string
+  when the search reported a failure, so a paraphrase here cannot
+  reach the user either way. Still copy it — a search that queued
+  behind the site-wide qmd lock and gave up puts the holder PID, the
+  elapsed wait, the budget and the contended inode in exactly this
+  field, and the synthesizer reads your bundle before the caller
+  corrects it. An empty bundle that names nothing reads as "the
+  corpus has nothing", which is the false claim this whole arm
+  exists to prevent.
 
 ```python
 {
@@ -304,7 +468,8 @@ Emit a `LibrarianOutput` with:
   ],
   "distinct_pages": <int>,
   "no_coverage": <bool>,
-  "searched_scope": [...]
+  "searched_scope": [...],
+  "fallback_reason": null
 }
 ```
 
@@ -353,7 +518,8 @@ Concrete schema (the validator expects exactly this JSON shape):
   ],
   "distinct_pages": 1,
   "no_coverage": false,
-  "searched_scope": ["opencode"]
+  "searched_scope": ["opencode"],
+  "fallback_reason": null
 }
 ```
 
@@ -401,15 +567,10 @@ def librarian_agent(
 
 
 def _call_tool(tool: Any, **kwargs: Any) -> Any:
-    """Invoke a FastMCP tool, supporting test patches.
+    """Invokes a FastMCP tool, preferring its ``.fn`` over a direct call.
 
-    Production: ``tool`` is a :class:`fastmcp.tools.function_tool.FunctionTool`
-    whose underlying callable is ``tool.fn``. Tests patch the module
-    attribute (``lies.mcp.search.search``) with a plain lambda or
-    :class:`MagicMock` that has no ``.fn`` attribute. This helper
-    prefers the canonical ``.fn`` path and falls back to a direct
-    call so both shapes work without the closure having to know
-    which one it is.
+    Tests patch the module attribute with a lambda or ``MagicMock`` that
+    has no ``.fn``; both shapes reach the same closure.
     """
     if hasattr(tool, "fn") and callable(tool.fn):
         return tool.fn(**kwargs)
@@ -423,56 +584,48 @@ def register_librarian_tools(
     memory_service: "WikiMemoryService | None" = None,
     qmd_query: Any = None,
     qmd_get: Any = None,
+    search_diagnostics: SearchDiagnostics | None = None,
 ) -> None:
-    """Register ``collections_read`` / ``search`` / ``read`` on the librarian agent.
+    """Registers ``collections_read`` / ``search`` / ``read`` on the librarian agent.
 
-    Tools are defined per the librarian's 4-step contract
-    (classify → search → read → return). Each closure is a thin
-    adapter to the corresponding MCP tool at
-    ``lies.mcp.{collections,search,read}.{fn}`` — the librarian
-    does NOT carry its own qmd / memory-service coupling in v0.40
-    (the library corpus is the single source of truth for
-    retrieval).
+    Each closure is a thin adapter to the corresponding MCP tool. Call
+    once per agent instance after construction; the pydantic-ai
+    decorator raises on double-register with the same name.
 
-    The ``wiki`` / ``memory_service`` / ``qmd_query`` / ``qmd_get``
-    parameters are preserved for backward compatibility with the
-    orchestrator's :meth:`Orchestrator._register_librarian_tools`
-    call site and the :func:`lies.mcp.grounding.ground` wiring
-    path. They are accepted-but-ignored in v0.40 because the new
-    tool set is stateless (delegates to MCP tools). Task 9 rewires
-    the production call sites to drop these kwargs; this signature
-    keeps the v0.39 callers compiling until that work lands.
-
-    Call once per agent instance after construction. The underlying
-    pydantic-ai decorator raises on double-register with the same
-    name; callers that own an agent lifecycle (e.g. the orchestrator)
-    reuse the existing instance rather than re-wiring.
+    ``wiki``, ``memory_service``, ``qmd_query`` and ``qmd_get`` are
+    accepted-but-ignored, kept for the orchestrator's and
+    :func:`lies.mcp.grounding.ground`'s call sites.
 
     Args:
         agent: The librarian agent whose toolset to populate.
-        wiki: Accepted for back-compat with the F18 call site; unused.
+        wiki: Accepted for back-compat; unused.
         memory_service: Accepted for back-compat; unused.
         qmd_query: Accepted for back-compat; unused.
         qmd_get: Accepted for back-compat; unused.
+        search_diagnostics: Optional per-dispatch record of the
+            ``search`` tool's envelope; ``None`` falls back to the
+            record bound by :func:`search_diagnostics_scope`, and to
+            no recording when neither is set. One record per
+            *dispatch*, not per agent.
     """
     del wiki, memory_service, qmd_query, qmd_get  # back-compat: v0.39 callers
+
+    def _record() -> SearchDiagnostics | None:
+        """The record this tool call folds into: explicit, else ambient."""
+        return (
+            search_diagnostics if search_diagnostics is not None else current_search_diagnostics()
+        )
 
     def _collections_read(
         ctx: RunContext[LibrarianDeps],
         subcommand: Literal["list", "tag_list", "info"],
         name: str | None = None,
     ) -> list[dict[str, Any]] | dict[str, Any]:
-        """Read the live library registry.
+        """Reads the live library registry.
 
-        Subcommands:
-        - ``list`` returns one row per registered collection.
-        - ``tag_list`` returns a ``tag → collections`` map.
-        - ``info`` + ``name=…`` returns a single collection's full
-          metadata.
-
-        Step 1 of the 4-step pipeline. The librarian calls this to
-        discover which collections the question touches before
-        building ``tag_expr``.
+        ``list`` returns a row per collection, ``tag_list`` a
+        ``tag → collections`` map, ``info`` + ``name=…`` one
+        collection's full metadata.
         """
         from lies.mcp import collections as _collections_mod
 
@@ -485,43 +638,44 @@ def register_librarian_tools(
         exclude_tags: list[str] | None = None,
         hypothetical: str | None = None,
     ) -> dict[str, Any]:
-        """Run a single-batch hybrid vec+lex qmd query.
+        """Runs a single-batch hybrid vec+lex qmd query.
 
-        Step 2 of the 4-step pipeline. Returns a
-        :class:`SearchResult` envelope:
-        ``{hit, hits, unknown_tags, no_coverage, searched_scope,
-        fallback_reason}``. ``hits`` is a list of
-        ``{path, title, score, snippet}`` rows; the snippet is the
-        matched line's ~200-char window. The LLM uses the snippet
-        to decide which hits to read in Step 3.
+        Returns a :class:`SearchResult` envelope whose ``hits`` rows
+        carry a ``~200``-char snippet for the model's Step 3 review.
+        The envelope is recorded before the model sees it.
         """
         from lies.mcp import search as _search_mod
 
-        return _call_tool(
+        envelope = _call_tool(
             _search_mod.search,
             question=question,
             tag_expr=tag_expr,
             exclude_tags=exclude_tags,
             hypothetical=hypothetical,
         )
+        record = _record()
+        if record is not None:
+            record.record(envelope)
+        return envelope
 
     def _read(
         ctx: RunContext[LibrarianDeps],
         paths: list[str],
     ) -> dict[str, str]:
-        """Read verbatim bodies for the given paths.
+        """Reads verbatim bodies for the given paths.
 
-        Step 3 of the 4-step pipeline. ``paths`` is the curator's
-        picked subset (3-5 paths whose snippets were most relevant).
-        Returns ``{path: body}``; per-path failures are logged +
-        skipped inside the tool. Library dispatch reads via
-        ``qmd_get`` against the library's git root; wiki-page-id
-        dispatch reads via the active wiki's
-        :class:`WikiMemoryService`.
+        Returns ``{path: body}``, skipping per-path failures. The keys
+        fold into the same :class:`SearchDiagnostics` the ``search``
+        closure feeds, after the call returns — ``read`` raises
+        ``ToolError`` when every path fails.
         """
         from lies.mcp import read as _read_mod
 
-        return _call_tool(_read_mod.read, paths=paths)
+        result = _call_tool(_read_mod.read, paths=paths)
+        record = _record()
+        if record is not None:
+            record.record_read(result)
+        return result
 
     agent.tool(
         name="collections_read",

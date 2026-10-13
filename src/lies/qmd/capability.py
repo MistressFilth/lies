@@ -19,7 +19,7 @@ import asyncio
 import logging
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
 
 
 import fastmcp
@@ -34,10 +34,12 @@ from lies.qmd.mcp import QmdRecycleToolset, _build_qmd_http_toolset
 # Construction-time reap reads these names at import time so tests
 # can ``monkeypatch.setattr`` before :meth:`as_capability` runs.
 from lies.qmd.daemon import (
+    _canonical_scope,
     _is_daemon_stale,
     _reap_qmd_daemon,
     _spawn_qmd_daemon,
-    write_sidecar_data_dir,
+    daemon_port_from_url,
+    write_sidecar_scope,
 )
 
 _log = logging.getLogger(__name__)
@@ -80,9 +82,11 @@ class QmdCapability:
         self._transport = transport
         self._url = url
         self._wiki = wiki
-        # ``WikiLayout`` exposes ``root``; ``Wiki`` exposes ``data_root``.
-        _data_root = getattr(wiki, "data_root", None) or getattr(wiki, "root", None)
-        self._data_dir: Path = cast("Path", _data_root)
+        # The recorded scope, not a wiki directory. This used to be
+        # ``wiki.data_root`` / ``wiki.root``, which made a fourth
+        # disagreeing value for a parameter that does not select an
+        # index — see ``daemon._canonical_scope``.
+        self._scope: Path = _canonical_scope()
         self._timeout = timeout
 
     def as_capability(self) -> MCP:
@@ -98,11 +102,11 @@ class QmdCapability:
         if _is_daemon_stale():
             _log.info("qmd daemon stale at construction; reaping before advertising toolset")
             _reap_qmd_daemon()
-            _spawn_qmd_daemon()
-            write_sidecar_data_dir(self._data_dir)
+            _spawn_qmd_daemon(port=daemon_port_from_url(self._url))
+            write_sidecar_scope(self._scope)
 
         try:
-            return _build_native_mcp(self._url, self._data_dir)
+            return _build_native_mcp(self._url, self._scope)
         except (httpx.HTTPError, *_MCP_PROBE_ERRORS):
             _warn_degraded(self._url)
             return _build_fallback_mcp(self._wiki)
@@ -131,7 +135,7 @@ def _build_native_mcp(url: str, data_dir: Path) -> MCP:
     async def _recycle() -> Any:
         from lies.qmd.daemon import recycle_qmd_daemon
 
-        return await recycle_qmd_daemon(data_dir=data_dir, daemon_url=url)
+        return await recycle_qmd_daemon(scope=data_dir, daemon_url=url)
 
     # Synchronous liveness probe via ``asyncio.run``; async callers
     # MUST construct outside the loop.

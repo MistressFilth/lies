@@ -24,6 +24,11 @@ def _fake_librarian_output(
     # Set explicitly: an unset attribute on a MagicMock is a truthy
     # Mock, which would take the transient branch of every test here.
     out.transient = transient
+    # Same trap, second field: the no-excerpts branch renders
+    # ``lib_out.fallback_reason`` and falls back to its fixed sentence
+    # only when it is falsy. An unset MagicMock would satisfy that
+    # ``or`` and every test here would assert on ``<MagicMock ...>``.
+    out.fallback_reason = None
     return out
 
 
@@ -147,7 +152,7 @@ def test_ask_returns_an_inconclusive_envelope_when_librarian_dispatch_fails(
     # imported lazily inside ``librarian_agent_run`` so we patch at the
     # source module to catch the local rebinding.
     monkeypatch.setattr(synth, "_resolve_librarian_model", lambda: "test-model")
-    monkeypatch.setattr("lies.agents.librarian.register_librarian_tools", lambda agent: None)
+    monkeypatch.setattr("lies.agents.librarian.register_librarian_tools", lambda agent, **_kw: None)
     # The synthesizer must NOT be reached on the fallback path.
     synth_called: list[bool] = []
     monkeypatch.setattr(
@@ -173,6 +178,33 @@ def test_ask_returns_an_inconclusive_envelope_when_librarian_dispatch_fails(
         "librarian_agent_run" in record.getMessage() and "RuntimeError" in record.getMessage()
         for record in caplog.records
     ), f"expected fallback warning, got: {[r.getMessage() for r in caplog.records]}"
+
+
+def test_librarian_agent_run_names_an_untyped_dispatch_failure_on_the_bundle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The generic arm carries the exception too, so ``or`` has something to fall back from."""
+    from lies.mcp import synth
+
+    class _BoomAgent:
+        def run_sync(self, user_prompt, *, deps):
+            raise RuntimeError("Exceeded maximum output retries (1)")
+
+    monkeypatch.setattr(synth, "librarian_agent", lambda model=None: _BoomAgent())
+    monkeypatch.setattr(synth, "_resolve_librarian_model", lambda: "test-model")
+    # ``**kwargs`` on the stub: the production call passes
+    # ``search_diagnostics=``, so a one-parameter lambda would raise
+    # ``TypeError`` and mask what this test is about.
+    monkeypatch.setattr("lies.agents.librarian.register_librarian_tools", lambda agent, **_kw: None)
+
+    lib_out = synth.librarian_agent_run(
+        synth._build_query_deps(question="q", tag_expr=None, exclude_tags=None)
+    )
+
+    assert lib_out.transient is True
+    reason = lib_out.fallback_reason or ""
+    assert "RuntimeError" in reason, reason
+    assert "Exceeded maximum output retries" in reason, reason
 
 
 def test_a_transient_librarian_bundle_never_becomes_a_corpus_claim(
@@ -244,3 +276,59 @@ async def test_synthesize_reports_a_transient_digest_as_inconclusive(
     assert "No relevant content found in library." not in out.answer
     assert out.synthesis_used is False
     assert "dispatch failed" in (out.fallback_reason or "").lower()
+
+
+# --- the lock's diagnostics on the *registered* ask path -----------------
+#
+# ``lib_ask`` is ``_ask_impl``, not ``synthesize``. Round 1 threaded the
+# diagnostics through ``ground()`` → ``synthesize`` and proved it there —
+# a path whose only production caller is a function nothing else calls,
+# and which no registered tool exposes. On the real tool the reason dies
+# at the librarian boundary instead: ``search`` fills its envelope's
+# ``fallback_reason`` with the lock holder, the wait and the budget, the
+# bundle has no slot to receive it, and ``_ask_impl`` renders one fixed
+# sentence for every transient failure. The tests below drive
+# ``lib_ask.fn`` itself.
+
+
+def test_lib_ask_renders_the_librarian_bundles_reason_not_a_fixed_sentence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A transient bundle's own ``fallback_reason`` reaches the envelope."""
+    from lies.mcp.synth import lib_ask
+
+    lib_out = _fake_librarian_output(transient=True)
+    lib_out.no_coverage = False
+    lib_out.fallback_reason = (
+        "qmd lock busy: qmd flock contention on /var/lib/lies/qmd.lock: "
+        "holder PID 4242, waited 120.0s, max 120.0s"
+    )
+    monkeypatch.setattr("lies.mcp.synth.librarian_agent_run", lambda deps: lib_out)
+
+    out = lib_ask.fn(question="what is pydantic?", tag_expr="c:alpha")
+
+    reason = out.fallback_reason or ""
+    assert "qmd lock busy" in reason, reason
+    assert "4242" in reason, f"the holder pid must reach the caller; got {reason!r}"
+    assert "120" in reason, f"the budget must reach the caller; got {reason!r}"
+    assert "/var/lib/lies/qmd.lock" in reason, (
+        f"the lock path must reach the caller; got {reason!r}"
+    )
+    # Still not a corpus claim.
+    assert "inconclusive" in out.answer
+
+
+def test_lib_ask_keeps_the_fixed_sentence_when_the_bundle_carries_no_reason(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A reason-less bundle must not render ``None`` and must not go blank."""
+    from lies.mcp.synth import lib_ask
+
+    lib_out = _fake_librarian_output(transient=True)
+    lib_out.no_coverage = False
+    lib_out.fallback_reason = None
+    monkeypatch.setattr("lies.mcp.synth.librarian_agent_run", lambda deps: lib_out)
+
+    out = lib_ask.fn(question="what is pydantic?", tag_expr="c:alpha")
+
+    assert out.fallback_reason == "librarian dispatch failed; no corpus claim made"

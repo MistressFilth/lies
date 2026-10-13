@@ -109,6 +109,16 @@ agent's search routes through it. qmd is optional: if it is not
 installed or fails to start, the LIES daemon still comes up with a
 warning, and search runs degraded. Pass `--no-qmd` to skip the step.
 
+A `tools/call` is accepted with `202` and its response is owed on the
+long-lived GET stream, while a qmd search is 12-22s of embed-and-scan
+that sends nothing, and a held-open stream survives for 30 minutes
+without a keepalive. The observable symptom a keepalive was once
+registered against — a tool-level interrupt with nothing in the LIES or
+qmd logs — is real, but it has other causes: a timed-out budget, or
+another session's `lies mcp down`, which disconnects every client on
+the host at once. See `CHANGELOG.md` for why the middleware was
+removed.
+
 When the daemon is unreachable mid-session, `QmdCapability` falls back to
 an in-process FastMCP server that uses the same `wiki/index.md` path the
 host `query` tool already used, prints a single stderr warning naming the
@@ -749,10 +759,19 @@ lock between reap and retry, the command exits 1 with
 lies flock qmd force-repair
 ```
 
-If a `qmd_*` call times out past the 30 s wait budget,
-`LibraryWriter.commit` raises `QmdLockBusy` with the holder PID.
-Wait a few seconds and retry, or inspect with
-`lies flock qmd status` first.
+Two callers share that flock, and they raise the same error on
+different budgets:
+
+- A `qmd_*` CLI helper waits 30 s. `LibraryWriter.commit` re-raises
+  `QmdLockBusy` with the holder PID when that budget is exhausted.
+- A daemon `query` queues behind the same lock for 120 s (override with
+  `LIES_QMD_QUERY_LOCK_WAIT`). On exhaustion it raises `QmdLockBusy`
+  too, carrying the lock path, the holder PID, the elapsed wait and the
+  budget.
+
+In both cases wait and retry rather than recycling the daemon: nothing
+was dispatched, so there is no daemon state to recycle and no `mcp.log`
+line to read. Inspect a live holder with `lies flock qmd status` first.
 
 ## Configuration
 
@@ -766,10 +785,17 @@ Environment variables:
   `pydantic-ai` is instrumented
 - `LIES_QMD_TRANSPORT` — how the agent reaches qmd: `http` (default, uses
   the qmd daemon) or `stdio` (spawns a `qmd` process per agent)
-- `LIES_QMD_URL` — qmd daemon URL (default: `http://127.0.0.1:8181`)
+- `LIES_QMD_URL` — qmd daemon URL (default: `http://localhost:8181/mcp`).
+  The host is the name `localhost` because that is what qmd binds
+  (`listen(port, "localhost")`), so LIES follows the family the host
+  resolves it to instead of assuming IPv4.
 - `LIES_QMD_LOCK_PATH` — overrides the default
   `${XDG_STATE_HOME:-~/.local/state}/lies/qmd.lock` lock path; useful for
   sandboxing or per-wiki isolation
+- `LIES_QMD_QUERY_LOCK_WAIT` — wait budget in seconds for the daemon query
+  path's flock wait (default: `120`). Anything that is not a positive
+  finite number falls back to the default. The `qmd_*` CLI helpers keep
+  their own 30 s budget and are not affected.
 - `LIES_XDG_DATA_HOME` — overrides `$XDG_DATA_HOME` for LIES
 - `LIES_XDG_CONFIG_HOME` — overrides `$XDG_CONFIG_HOME` for LIES
 - `LIES_XDG_RUNTIME_DIR` — overrides `$XDG_RUNTIME_DIR` for LIES

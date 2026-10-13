@@ -54,7 +54,7 @@ from lies.agents.query_synthesizer import QueryAnswer
 from lies.markdown_spans import Span
 from lies.orchestrator import Orchestrator
 from lies.wiki.wiki import Wiki
-from tests.conftest import make_wiki, models_for_tests
+from tests.conftest import attest_librarian_pages, make_wiki, models_for_tests
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("INTEGRATION") != "1",
@@ -191,6 +191,7 @@ def _stub_dispatch(
     orch: Orchestrator,
     canned_lib: LibrarianOutput,
     canned_synth: QueryAnswer,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Stub the librarian + synthesizer ``run_sync`` methods.
 
@@ -198,9 +199,17 @@ def _stub_dispatch(
     other agents can be patched independently if a future test needs
     finer control. Both stubs return ``Mock(output=...)`` so the
     orchestrator's ``result.output`` attribute accesses resolve.
+
+    The librarian stub first drives the registered ``search`` closure:
+    replacing the dispatch also replaces the only caller of the
+    tools, so the dispatch's attestation record would stay empty and
+    every canned excerpt would be dropped as unattested.
     """
 
     def _librarian_run_sync(*args: object, **kwargs: object) -> Mock:
+        attest_librarian_pages(
+            monkeypatch, orch._librarian_agent, "q", [e.slug for e in canned_lib.excerpts]
+        )
         return Mock(output=canned_lib)
 
     def _synthesizer_run_sync(*args: object, **kwargs: object) -> Mock:
@@ -210,7 +219,9 @@ def _stub_dispatch(
     orch._query_synthesizer_agent.run_sync = _synthesizer_run_sync  # type: ignore[method-assign]
 
 
-def test_two_queries_with_same_question_collide_to_page_update(wiki_dir: Wiki) -> None:
+def test_two_queries_with_same_question_collide_to_page_update(
+    wiki_dir: Wiki, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """First query writes PageCreate; second writes PageUpdate at the same slug.
 
     The deterministic slug derived from the question (``<sha256[:8]>-<text>``)
@@ -226,7 +237,7 @@ def test_two_queries_with_same_question_collide_to_page_update(wiki_dir: Wiki) -
     orch = Orchestrator(wiki=wiki_dir, models=models_for_tests(TestModel()))
     canned_lib = _canned_librarian_output(wiki_dir, page_count=2)
     canned_synth = _canned_synth_answer(canned_lib.excerpts)
-    _stub_dispatch(orch, canned_lib, canned_synth)
+    _stub_dispatch(orch, canned_lib, canned_synth, monkeypatch)
 
     ans_a = orch.run_query(
         "what is a hook?",
@@ -303,7 +314,9 @@ def _wait_for_holder(ready_marker: Path, *, timeout: float = 10.0) -> None:
         time.sleep(0.05)
 
 
-def test_lock_busy_simulated_yields_three_attempts(wiki_dir: Wiki, tmp_path: Path) -> None:
+def test_lock_busy_simulated_yields_three_attempts(
+    wiki_dir: Wiki, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Held flock across the call → 3 inline attempts → ``file_back_failed_after_3_attempts``.
 
     The holder subprocess takes the cross-process flock via the public
@@ -340,7 +353,7 @@ def test_lock_busy_simulated_yields_three_attempts(wiki_dir: Wiki, tmp_path: Pat
         orch = Orchestrator(wiki=wiki_dir, models=models_for_tests(TestModel()))
         canned_lib = _canned_librarian_output(wiki_dir, page_count=2)
         canned_synth = _canned_synth_answer(canned_lib.excerpts)
-        _stub_dispatch(orch, canned_lib, canned_synth)
+        _stub_dispatch(orch, canned_lib, canned_synth, monkeypatch)
 
         ans = orch.run_query(
             "what is a hook?",

@@ -148,7 +148,14 @@ def up(
 
     if no_qmd:
         return
-    qmd_state = qmd_daemon.ensure_qmd_daemon(data_dir=wiki.wiki_dir)
+    # Canonical scope, not ``wiki.wiki_dir``: the recorded value must
+    # compare equal against what ``flock qmd recycle`` records.
+    from lies.config import get_qmd_url
+
+    qmd_state = qmd_daemon.ensure_qmd_daemon(
+        scope=qmd_daemon._canonical_scope(),
+        port=qmd_daemon.daemon_port_from_url(get_qmd_url()),
+    )
     if qmd_state.running:
         typer.echo(qmd_state.detail)
     else:
@@ -158,6 +165,11 @@ def up(
 @mcp_app.command()
 def down(
     grace: float = typer.Option(10.0, help="Seconds to wait after SIGTERM before SIGKILL."),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        help="Stop even while the daemon is serving other clients.",
+    ),
     name: str | None = typer.Option(
         None,
         "--name",
@@ -170,6 +182,10 @@ def down(
     Only pidfile-tracked daemons are stopped. Stdio servers spawned by an
     MCP host are never touched, and qmd's daemon is never touched at all:
     it is machine-global and shared with other wikis and tools.
+
+    The LIES daemon is also shared, so this refuses while it is serving
+    and every other MCP client on the host would be disconnected at
+    once. Pass ``--force`` to stop it anyway.
     """
     from lies.cli import resolve_wiki
     from lies.cli._helpers import configure_logging
@@ -178,8 +194,8 @@ def down(
     configure_logging()
     wiki = resolve_wiki(name)
     try:
-        result = daemon.stop_daemon(wiki, grace=grace)
-    except daemon.DaemonBusy, daemon.DaemonStopFailed:
+        result = daemon.stop_daemon(wiki, grace=grace, force=force)
+    except daemon.DaemonBusy, daemon.DaemonStopFailed, daemon.DaemonInUse:
         typer.echo(f"error: {sys.exc_info()[1]}", err=True)
         raise typer.Exit(code=1)
     if result.action == "none":
@@ -545,7 +561,10 @@ def _qmd_flock_force_repair() -> None:
 @_qmd_flock_app.command("recycle")
 def _qmd_flock_recycle(
     name: str = typer.Option(
-        ..., "--name", "-n", help="Wiki whose data_dir to recycle qmd against."
+        ...,
+        "--name",
+        "-n",
+        help="Wiki to validate before recycling; the recorded scope is canonical, not this wiki's.",
     ),
     ready_timeout: float = typer.Option(
         30.0,
@@ -553,29 +572,35 @@ def _qmd_flock_recycle(
         help="Seconds to wait for the recycled daemon to serve list_tools().",
     ),
 ) -> None:
-    """Manually trigger a qmd daemon recycle (operator escape hatch).
+    """Manually triggers a qmd daemon recycle (operator escape hatch).
 
-    Reaps the running qmd daemon and spawns a fresh one against the
-    wiki's ``data_root``, then probes ``daemon_url`` until the daemon
-    serves a JSON-RPC session or ``ready_timeout`` expires. Prints the
-    final :class:`QmdState` as indented JSON on stdout.
+    Reaps the running daemon, spawns a fresh one on ``daemon_url``'s
+    port, then probes until it serves a JSON-RPC session or
+    ``ready_timeout`` expires. Prints the final :class:`QmdState` as
+    indented JSON.
 
-    Exits 2 when ``QmdRecycleFailed`` is raised (reap+spawn+probe never
-    served within ``ready_timeout``) so shell callers can branch on it
-    without parsing text.
+    Exits 2 on :class:`QmdRecycleFailed`. ``name`` is still validated
+    but no longer supplies the recorded scope, which is canonical — the
+    check stays so an operator typo is caught before the command reaps a
+    machine-global daemon.
     """
     import asyncio
     import dataclasses
 
     from lies.config import get_qmd_url
-    from lies.qmd.daemon import QmdRecycleFailed, QmdState, recycle_qmd_daemon
+    from lies.qmd.daemon import (
+        QmdRecycleFailed,
+        QmdState,
+        _canonical_scope,
+        recycle_qmd_daemon,
+    )
     from lies.wiki.wiki import Wiki
 
-    wiki = Wiki.require(name)
+    Wiki.require(name)  # validate the operator's spelling; value unused
     try:
         state: QmdState = asyncio.run(
             recycle_qmd_daemon(
-                data_dir=wiki.data_root,
+                scope=_canonical_scope(),
                 daemon_url=get_qmd_url(),
                 ready_timeout=ready_timeout,
             )

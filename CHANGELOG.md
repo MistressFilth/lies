@@ -6,11 +6,249 @@ All notable changes to LIES are documented here. The format follows
 
 ## [Unreleased]
 
-Staged for **0.48.5**. Both version surfaces (`pyproject.toml`,
-`src/lies/__init__.py`) are already bumped; `make release` collapses
-this into a dated release heading.
+Staged for **0.49.0**. All three version surfaces (`pyproject.toml`,
+`src/lies/__init__.py`, `uv.lock`) are already bumped; `make release`
+collapses this into a dated release heading.
+
+The bump is minor, not patch, by this project's own rule: a tool
+*response field* is additive, and this series adds two of them
+(`ArchivistDigest.fallback_reason`, `LibrarianOutput.fallback_reason`)
+plus a new raise on `daemon_tool`'s documented contract. It was staged
+at 0.48.6 while those fields were still being added; 0.48.6 was never
+released, so nothing has shipped under it, but bookkeeping follows the
+rule rather than the accident.
+
+### Added
+
+- **`tests/unit/test_docstring_budget.py` makes the prose budgets a gate
+  rather than a habit.** The standing budget is a test module or test
+  function docstring at **one line** and a `src/` body comment block at
+  **4 consecutive lines** (AAA). The tree does not meet it: measured
+  before this pass, 192 `src/` comment blocks and 865 test docstrings
+  were over, the worst being a 31-line block in
+  `memory/service.py` and a 48-line module docstring. A gate that
+  failed on that today would have blocked every commit including the
+  one that fixes it, and one set to the tree's maxima would have passed
+  the 14-line narrative block the review flagged — a guard that cannot
+  fail is not a guard.
+
+  So the gate is a **ratchet**: `tests/unit/docstring_budget_baseline.json`
+  records the shortfall as a per-file count, and the test asserts the
+  recomputed counts equal it *exactly*. A file that appears in the
+  scan, or whose count grows, fails; a file that shrinks or clears
+  also fails until the baseline is regenerated with
+  `python tests/unit/test_docstring_budget.py --write`. Debt can only
+  shrink, and a fix has to be recorded rather than silently absorbed.
+  The gate file obeys its own budget, and four synthetic tests assert
+  the detectors have teeth in both directions.
+
+  The budgets are *stated* rather than silently relaxed: the standing
+  value is a module constant, and the baseline records the debt beside
+  it. Markdown prose (`README.md`, this file) is out of scope — the
+  budget the user set is for code and tests.
 
 ### Changed
+
+- **The vendor SDKs are no longer imported to read a roster.**
+  `lies.providers.registry` and `lies.providers.resolver` each held a
+  module-scope `from anthropic import AsyncAnthropic` /
+  `from openai import AsyncOpenAI`, and `lies/providers/__init__.py`
+  imports both for `AGENT_ROSTER`. Every process that wanted the
+  roster paid for two SDKs: measured at **436 ms** for `anthropic` and
+  **329 ms** for `openai` on this host, together 83% of a cold
+  `Orchestrator(...)`.
+
+  That cost landed inside a test's `call` phase, not in an import:
+  `tests/conftest.py::models_for_tests` imports `lies.providers`
+  lazily, from the test body, so whichever test constructed an
+  `Orchestrator` first absorbed it. `test_orchestrator_constructs` —
+  whose entire body is `Orchestrator(...); assert orch is not None` —
+  measured **0.96 s** and **1.12 s** against a 0.15 s per-test gate,
+  confirmed in isolation over three passes. Its six siblings in the
+  same file do the identical construction in 0.04 s, which is the
+  measurement that identified the cause: the construction is not slow,
+  the first one pays a bill the interpreter already owed.
+
+  Both imports now sit inside the functions that construct a client,
+  the shape `providers/ops.py` already used and
+  `resolver.resolve_model`'s own docstring already claimed ("that
+  branch is the only piece that requires pydantic_ai; tests that don't
+  reach a branch … stay below the 0.15s unit-test budget"). Return
+  annotations moved under `TYPE_CHECKING`. No behaviour changed:
+  `tests/unit/providers/` passes untouched, including the test that
+  patches `anthropic.AsyncAnthropic` for `check_connectivity`, which
+  still resolves at call time.
+
+  **0.96 s → 0.13 s.** The residual was `pydantic_ai_harness`'s own
+  subpackage imports — ~73 ms, one-time — landing in the same call
+  phase, which left the test passing on 0.02 s of headroom.
+  `tests/unit/test_orchestrator.py` now declares the six harness
+  capability modules its subject needs at module scope, the way
+  `test_excerpt_attestation.py` already declares `lies.mcp.synth` and
+  the note in `tests/unit/conftest.py` explains: the gate measures the
+  call phase, and a one-time import belongs at collection, amortised
+  across the session. Unlike the pre-import `conftest.py` records
+  reverting — which was `lies.qmd.capability` and broke TestModel
+  queue accounting — these touch no TestModel state.
+
+  **0.96 s → 0.05 s**, five isolated draws at 0.05 s, and
+  `test_orchestrator_constructs` now costs what every other
+  `Orchestrator` construction in its file costs (0.04–0.06 s), which is
+  the measurement that says the cost was never the test's. Not marked
+  `@pytest.mark.slow`, and nothing skipped — the gate was invisible in
+  CI because `CI=true` disables it, not because the test was slow
+  there.
+
+- **`README.md` cannot document the removed keepalive middleware.**
+  `PingMiddleware` was registered, then removed once a 30-minute held
+  GET stream falsified the failure mode it was added for; `AGENTS.md`
+  and this file say so, and the README's paragraph says it in prose.
+  Markdown is outside the prose ratchet, so nothing stopped the class
+  name coming back. `test_the_removed_ping_middleware_is_not_documented_in_the_readme`
+  asserts the string is absent from `README.md` and that
+  `qmd/daemon.py` still does not reference it — a text check on one
+  file, not a markdown parser.
+
+- **The CI suite command lost its second `-q`.** `addopts = "-ra -q"`
+  already carries quiet, so `-q` on the command line made it `-qq` and
+  suppressed the final `N passed` line — the one thing that step
+  exists to report. Corrected in `.github/workflows/ci.yml` and in the
+  two plan reports that recorded it. The `Makefile` targets and
+  `AGENTS.md` never carried the extra flag.
+
+  tools actually returned.** `SearchDiagnostics` now records
+  `attested_paths` — every `hit`/`hits[*].path` from a `search`
+  envelope, plus every key of a `read` result — and
+  `with_search_diagnostics` drops any excerpt whose `slug` is not in
+  that set, naming the drop in `fallback_reason`. A bundle whose
+  excerpts are *all* dropped becomes `transient=True,
+  no_coverage=False`, so `_ask_impl` takes its inconclusive branch and
+  the reader is told the librarian invented the bundle rather than that
+  the library has nothing. A partly-dropped bundle keeps the attested
+  excerpts and carries the drop in its reason.
+
+  This closes the fabrication trade `AGENTS.md` previously stated as a
+  standing limit: a model that asserted excerpts it did not have used
+  to get its bundle back untouched, and the envelope rendered prose
+  citing pages nobody read. The recorded truth was already in hand — both
+  tool closures feed the same per-dispatch record before the model sees
+  anything — so the hole was reachable, not out of reach.
+
+  **The oracle is hits ∪ reads, not the envelope's hits.** The contract
+  says the model picks from hits, but `read` accepts any path the
+  library or a wiki resolves, so a model that followed a link out of a
+  body and read that page has produced evidence the envelope never
+  named. Attesting against hits alone would silently discard it —
+  discarding retrievable evidence to enforce a rule the tool surface
+  never imposed. Keys beginning with `_` are skipped: `_missing` is a
+  synthetic slot, not a page.
+
+  **The limit that remains, stated plainly:** attestation is path-level,
+  so a model that reads a real page and then attributes invented *text*
+  to it still passes. Closing that needs the bodies rather than the
+  paths — the record would retain `path -> body` plus the hit snippets
+  and check each `Span.body` as a substring — and that has a real
+  false-positive surface (a model that reflows a paragraph produces a
+  body that is not a substring of the page, and every such excerpt would
+  be dropped as fabricated). Discarding true evidence is the worse of
+  the two failures, so the check is documented in
+  `with_search_diagnostics` and pinned by
+  `test_a_span_body_is_still_not_checked` rather than shipped. No tool
+  or prompt signature changed; the MCP surface is identical.
+
+  **Which dispatches carry a record — all three, by two mechanisms.**
+  `librarian_agent_run` (`lib_ask`) threads one as a keyword-only
+  argument, and so does `ground`'s legacy F18 path, which `ground()`
+  reaches when a tag or exclude resolves to zero collections and there
+  is no fast-path fan-out to take. That path was the gap: it is an LLM
+  dispatch like any other, nothing downstream checks it, and a
+  fabricated excerpt rode straight into `ArchivistDigest` citations. It
+  now threads a record and forwards the bundle's `transient` /
+  `fallback_reason` onto the digest, so a drop there reads as a failed
+  run rather than a clean miss.
+
+  `Orchestrator._register_librarian_tools` is the third, and it could
+  not take an argument: it registers its tools once for the agent's
+  lifetime and pydantic-ai raises on a double-register, so a record
+  captured at registration would be shared across dispatches — the
+  cross-dispatch leakage `SearchDiagnostics` is an
+  argument-instead-of-a-global to prevent. It binds the record to the
+  *dispatch* instead. `Orchestrator._dispatch_librarian` wraps
+  `run_sync` in `search_diagnostics_scope`, which sets a `ContextVar`;
+  the tool closures read that variable at call time rather than
+  capturing it, so no second registration is ever attempted.
+
+  **Probed before it was built, because this branch has already been
+  bitten by a ContextVar landing somewhere unexpected**
+  (`qmd/lock.py`'s `_held_depth` propagating into `anyio.to_thread`
+  workers). Four properties, each measured by driving a real
+  `librarian_agent` with a `FunctionModel` and inspecting the record
+  from inside the tool closure:
+
+  - pydantic-ai's `run_sync` wraps the run in an `asyncio.Task`, and a
+    `Task` copies the current context at creation, so the closure sees
+    the caller's binding.
+  - a *sync* tool function is dispatched through
+    `anyio.to_thread.run_sync`, which copies the context again — the
+    same propagation, working in the opposite direction to the hazard
+    above. The closure's `threading.current_thread().name` was
+    `AnyIO worker thread` while the record was still visible.
+  - two dispatches on two threads, synchronised by a
+    `threading.Barrier` so they genuinely interleave, each recorded
+    only its own hits; two `asyncio` tasks on one loop likewise, with
+    the binding restored on exit.
+  - a dispatch with nothing bound behaves exactly as before, and an
+    explicitly passed record still wins over the ambient one.
+
+  `tests/unit/test_librarian_dispatch_record.py` holds all five
+  properties, plus the end-to-end statement that the orchestrator now
+  drops a fabricated excerpt and keeps a real one.
+
+  **What remains on that path is `_validate_claim_citations`, and it
+  is narrower than it looks:** a claim's quote is checked against the
+  bundle's **own** excerpt bodies, so invented text on a real page is
+  dropped, while a wholly fabricated page — excerpt and text both
+  invented — passes. That is a standing limit, named here rather than
+  implied.
+
+- **A qmd flock release unlinks the triad it acquired.** Both poll loops
+  now return the winning `_Attempt`, which carries the paths it ran
+  against, and `with_qmd_lock` / `qmd_lock_async` hand those to
+  `_release`; `_register_holder` takes them too. Each side previously
+  re-resolved `LIES_QMD_LOCK_PATH` for itself, so a path that moved
+  between acquire and release split one acquisition across two sets of
+  files — the release unlinked a lock nobody held and left the
+  create-lock, the `.pid` sidecar and the `.state.json` heartbeat behind
+  with no fd pointing at them. The leftover heartbeat is the harmful
+  one: it is what the next acquire reads to decide whether the lock in
+  front of it is stale. Pinned in `tests/unit/qmd/test_lock_release.py`,
+  and `tests/conftest.py` gained a session-scoped teardown for the case
+  no in-process hook covers — a test that acquires and then dies without
+  unwinding. 16 orphaned sidecar pairs in `/tmp` from earlier sessions
+  were removed; they were inert (the path carries the session pid, so no
+  later session could ever reap them) and are outside the repository.
+
+- **`fastmcp` is capped at `<5`.** The dependency was `fastmcp>=4.0`
+  after the 4.x floor landed, leaving the next major unpinned. 4.x is
+  the line the code is written against, and a 5.x install now fails at
+  resolution rather than drifting past the API breaks the 4.x upgrade
+  guide lists — removed `PromptToolMiddleware`, `fastmcp.tools.tool`,
+  `mount(prefix=)`, `import_server`, and the rest.
+
+  The asymmetry is the point, and it is the same one that raised the
+  floor: a cap that is wrong in the permissive direction costs a loud
+  resolution error, while no cap costs a silent semantic drift at the
+  first call that touches a renamed surface. Lift it deliberately,
+  with the upgrade guide as the checklist.
+
+  Resolution is unchanged at `fastmcp 4.0.10`; `uv.lock` records the
+  narrowed specifier. The three audits the migration implied are clean
+  and produced no code change: `except httpx.` appears in
+  `qmd/lifecycle.py` only, wrapping LIES's *own* `httpx.Client` to the
+  qmd daemon rather than a FastMCP call; the single `ctx.elicit` call
+  site already passes a `response_type`; and `src/` contains zero
+  camelCase reads of the 11 fields the bridge covers. `Middleware` and
+  `uriTemplate` were already on the 4.x spelling.
 
 - **The `qmd embed` CUDA abort is diagnosed, and a rebuild to avoid it is
   reproducible from the repository.** `node-llama-cpp` intermittently
@@ -159,6 +397,999 @@ this into a dated release heading.
 
 ### Fixed
 
+- **A partly-dropped librarian bundle lost its drop reason on the one
+  arm that can happen.** `_ask_impl` read `lib_out.fallback_reason` on
+  both failure arms but took `fallback_reason` from the synthesizer
+  alone on the success path. A *partial* attestation drop keeps
+  `transient=False`, so the synthesizer runs and the reason naming the
+  fabricated pages was set on the bundle and then thrown away — the
+  reader got citations from attested excerpts and no word that the
+  librarian invented others. Exactly the failure this branch exists to
+  remove, on the one arm the change opened up. The envelope now joins
+  both reasons through `_join_reasons`, which de-duplicates, and the
+  join is pinned end to end: two envelope-level tests assert the drop
+  survives alone and alongside a synthesizer fallback, plus one that a
+  clean run still reports no reason at all.
+
+- **`ground`'s legacy F18 librarian path now attests its bundle.** See
+  "Which dispatches carry a record" above. `ground()` reaches this
+  branch when a tag or exclude resolves to zero collections, so neither
+  fast path fires. Nothing downstream checked it, so a fabricated
+  excerpt rode into `ArchivistDigest.citations`; it now threads a
+  `SearchDiagnostics`, runs the bundle through
+  `with_search_diagnostics`, and forwards `transient` /
+  `fallback_reason` onto the digest so a total drop reads as a failed
+  run rather than a clean miss.
+
+- **`with_search_diagnostics` no longer discards a verdict that carries
+  no reason.** The empty-bundle arm guarded on `if
+  diag.fallback_reason:`, so a recorded `transient=True` with no
+  reason fell through untouched. Every current `_search_impl` transient
+  arm sets a reason, so this was unreachable — it is one search arm
+  away from discarding the recorded truth. The guard is now
+  `diag.fallback_reason or diag.transient`, and the reason falls back to
+  the model's own copy rather than to `None`.
+
+- **`_daemon_is_serving`'s docstring stated the opposite of what the
+  probe measures.** It claimed "a dead **or wedged** daemon fails this
+  probe and stops cleanly". A daemon wedged after `listen()` still
+  completes the TCP handshake — the kernel accepts into the backlog
+  whether or not the process answers MCP — so the probe returns `True`
+  and `lies mcp down` refuses with `DaemonInUse` against precisely the
+  daemon an operator most wants to kill. `DaemonInUse` already names
+  `--force`, so this was discoverable rather than a trap, but the
+  docstring told the next maintainer the opposite. It now states that
+  the probe measures TCP accept, that that is not serving, and what the
+  refusal means.
+
+- **`test_agents_line_refs`'s spawn-site pin went content-only.** Three
+  `SINGLE_SITES` rows asserted an exact line number into files this
+  same branch edits: adding a comment above any of them turned the pin
+  red with no behavioural change, and it could not see a new spawn site
+  added *below* the cited one. `AGENTS.md` now cites the files rather
+  than lines, and two pins replace the three — one asserting each cited
+  file still calls `_spawn_qmd_daemon(port=`, and one asserting the
+  cited set is *exhaustive* against the files that actually spawn, so
+  a fifth site inherits the pin. `ensure_qmd_daemon`'s "three paths"
+  is now an AST count rather than a line triple. The grounding pair
+  keeps its line numbers and its exhaustiveness twin: that one has
+  caught real drift (it turned red on this pass's `grounding.py` edit).
+
+- **`Makefile`'s `--ignore` churn is gone and `PYTHONPATH` extends.**
+  The flag had been moved from `tests/mcp/test_tools.py` to
+  `tests/unit/mcp/test_tools.py`; neither file exists, so it was a
+  no-op on both sides and read like a fix. It is deleted. `PYTHONPATH`
+  was also replacing rather than extending an inherited value, putting
+  the repo's `tools/` ahead of whatever the caller had; it is now
+  `tools:$(PYTHONPATH)`.
+
+- **`citations_from_paths` reads `source_kind` instead of testing the
+  collection name against the literal `"wiki"`.** The helper is now the
+  shared implementation for both the orchestrator and `lib_ask`, so it
+  is the fix site: a *library* collection named `wiki` was mislabelled
+  as a wiki page. This is faithful to the code it was extracted from,
+  so not a regression — it is the coupling the extraction now owns.
+  The unknown-path default is unchanged.
+
+- **Three stale prose fixes.** `search.py`'s `QmdLockBusy` arm carried
+  a 14-line body comment whose durable content was one line — the budget
+  is `exc.max_s`, not `_current_timeout()`, because they are different
+  clocks — and twelve lines narrating a rendering bug the fix had
+  already corrected. `server.py` claimed the abandonment middleware is
+  registered "after the ping middleware so the ping is not logged as an
+  abandonment"; `PingMiddleware` was deleted in `469f476`, this
+  branch's first commit, and `mcp.add_middleware` has exactly one call
+  site, so the comment asserted an ordering with a middleware that no
+  longer exists. `README.md`'s daemon-operations section documented the
+  removed middleware at length — accurate, but changelog content, and
+  `CHANGELOG.md` already carried it properly.
+- **Four tests failed on CI only, because `make test` runs neither
+  `--runslow` nor `INTEGRATION=1` — the two gates CI actually uses.**
+  `test_lies_flock_qmd_recycle_invokes_recycle_helper` was a real defect
+  this branch introduced: `recycle_qmd_daemon`'s keyword-only `data_dir=`
+  was renamed to `scope=`, and the test's fake still declared the old
+  name, so the CLI's call raised `TypeError`. The other three were the
+  throwaway-spawn tests, whose "nothing is listening" was qmd's *name*
+  bind (see below) and not a daemon that failed to start.
+
+- **Production LIES could not reach its own qmd daemon on any
+  IPv6-first host.** qmd binds the literal name `localhost`
+  (`dist/mcp/server.js:671`: `listen(port, "localhost")`; there is no
+  `options.host` chain and `QMD_HOST` appears nowhere in `dist/`), and
+  Node takes the *first* family the host resolves it to — `[::1]` where
+  `/etc/hosts` lists `::1 localhost` first. LIES named a literal address
+  at every site that addresses the daemon, so `DEFAULT_QMD_URL`,
+  `lifecycle._HOST` and the `AF_INET` socket behind the port probe all
+  resolved to `127.0.0.1` and were refused. All three now name the
+  host. The probe also moved to `socket.create_connection`, because a
+  socket pinned to `AF_INET` filters name resolution to v4 and
+  reproduces the very refusal the name fixes. Measured against a
+  `[::1]`-only listener with `localhost` resolving v6-first: the old
+  probe returns `False`, the new one `True`. The throwaway-spawn tests
+  already probed the name; this is the same defect on the path the
+  agent actually uses.
+
+  One commit on this branch carries the wrong account and cannot be
+  edited: `862f608` claims qmd reads `options.host ?? QMD_HOST ??
+  "localhost"` at `server.js:725` and calls `listen(port, host)` at
+  `:849`. Re-read from the installed qmd 2.5.3: `dist/mcp/server.js`
+  is 702 lines, `httpServer.listen(port, "localhost", …)` is at `:671`,
+  there is no `options.host` chain, and `grep -rn QMD_HOST dist/`
+  returns nothing. This entry and `AGENTS.md` carry the correct account;
+  the commit message is the wrong one and `git log` is where a reader
+  will meet it.
+
+- **qmd's HTTP daemon binds `localhost`, so probing it by IPv4 literal
+  is wrong on any host that resolves `localhost` IPv6-first.** On the
+  CI runner that resolved to `[::1]`, so qmd logged
+  `listening on http://localhost:57703/mcp` on the port the test
+  requested while `connect(("127.0.0.1", 57703))` was refused —
+  reproducing a "daemon did not start" report for a daemon that was up
+  and serving. `--port` selects the port and nothing else. The
+  throwaway-spawn tests now probe the name qmd binds.
+  The failure message also carries qmd's version, the throwaway cache
+  root, the pidfile, the recorded pid's `/proc` cmdline and qmd's own
+  `mcp.log`, because that log states the URL the daemon actually
+  reached (`server.js:696`) — which is the one fact that separates *did
+  not start* from *started somewhere else*, and the previous message
+  distinguished neither.
+
+- **The recycle-ceiling harness's grace-window bound asserted the
+  runner's timer, not the reap's behaviour.** `GRACE_COST_S` capped the
+  grace row at 6 s, but the harness's window is 20 ms wide and polls
+  every 0.5 ms, so a host that cannot return from a 0.5 ms sleep in
+  under 20 ms measures each window as one sleep long — 27.7 s at real
+  scale on the CI runner, against ~4 s on an idle host. The reap itself
+  is correct and unchanged; the ceiling is now derived from the timer
+  the harness observed, and the structural claim (exactly one
+  configuration spends grace windows, and spends both) is asserted
+  exactly.
+
+- **Docstrings and comments in the qmd-query-singleflight series grew to
+  3,444 lines describing how the work unfolded rather than what the code
+  does.** Measurement results, provenance ("measured 2026-10-10,
+  transcribed not re-measured at commit time"), retractions of theories
+  the code never asserted, review history and vendored `file:line`
+  citations had accumulated in source docstrings. This series moves
+  them to `AGENTS.md` and to this file, where they belong, and leaves
+  behind docstrings that state what a function does, its arguments, its
+  return and its raises. Test docstrings are down to one line each.
+
+  Three,444 → 396 added docstring lines; 879 → 584 added comment lines.
+  **No behaviour change**: stripping every docstring and `#` comment from
+  every `.py` file at both revisions leaves the tree identical except for
+  two assertion *messages* and four AGENTS.md citation line numbers whose
+  subjects moved.
+
+  Two pins needed retargeting rather than re-satisfying.
+  `test_agents_line_refs` tracks AGENTS.md's `file:line` spellings by
+  what the cited line contains, so cutting the docstrings above six spawn
+  sites moved those lines; the numbers were re-derived and AGENTS.md
+  updated alongside them, which is the loop that pin exists to run.
+  `test_a_span_body_is_still_not_checked` keeps asserting that invented
+  text attributed to a really-read page survives — only its failure
+  message's pointer moved from `with_search_diagnostics`'s docstring to
+  the `AGENTS.md` trade paragraph that now owns it.
+
+  Two facts were not already written down anywhere and were moved into
+  `AGENTS.md` rather than deleted: `qmd_lock_async`'s latent reentrancy
+  hazard (`_held_depth` is a `ContextVar`, so a future path acquiring the
+  lock and then dispatching a `query` through a worker thread would run it
+  with no inode held, silently), and the fact that awaiting in that gate
+  buys anyio thread tokens rather than event-loop protection. The network
+  audit's two coverage gaps joined this file, above.
+
+- **`lies mcp down` in `test_full_lifecycle` passed no `--force`.** The
+  test starts its own daemon on a spare port, handshakes it and tears it
+  down, so it means it — and the `DaemonInUse` refusal that a serving
+  daemon earns (stopping the machine-global LIES daemon disconnects every
+  MCP client on the host at once) returns exit 1. The guard is correct
+  and unchanged; the invocation was not. The same omission in
+  `test_down_leaves_the_qmd_daemon_running` is fixed the same way.
+  Neither had CLI-level coverage: `DaemonInUse` was only ever asserted
+  as raised from `stop_daemon`, never mapped to an exit code, which is
+  the gap that let the red invocation sit in the suite. Two tests in
+  `tests/unit/test_cli.py` now pin the mapping and the `--force`
+  pass-through.
+
+- **The vendored `fastmcp` / `anyio` line citations are pinned.** Six
+  references in `AGENTS.md` and `CHANGELOG.md` — `client.py:228`, `:248`,
+  `:587`, `:1045-1048`, `:1080-1084` and
+  `anyio/_core/_synchronization.py:164-168` — pointed into installed
+  distributions and were deliberately left unpinned, on the grounds that
+  they are version-specific and that the doc said so at the reference
+  site. That is a deferral with no due date: a fastmcp bump falsified
+  all six silently. They are now pinned by the same contract as the
+  in-repo references, resolved from the installed distribution, so a bump
+  that moves the code turns the pin red instead. `AGENTS.md` also gained
+  the two citations it described in prose but never numbered.
+  `qmd.js:4008-4013` is still unpinned and says so in the test module's
+  docstring: it lives in a node package's bundled `dist/` and may be
+  absent on a host that has not run qmd.
+
+- **`LibraryWriter.commit` no longer drops the qmd lock path when it
+  re-raises `QmdLockBusy`.** It re-wraps the exception it caught, and
+  was the only production raise site of the four that omitted
+  `lock_path` — while being the one site where the value is already in
+  hand, because it caught the exception carrying it. The message named
+  the holder PID, the wait and the budget, and not the inode.
+
+  The path is not decoration. `LIES_QMD_LOCK_PATH` can override which
+  inode qmd contends, so once the wait has been abandoned the message is
+  the only record of *which* one was contended; "waited 120s, max 120s"
+  on its own does not say. It is now forwarded, and named in the message
+  alongside the rest of the triad.
+
+  Two pins, because the structural one cannot see the message. A test
+  asserts the re-raised message names the inode, the holder, the wait
+  and the budget — the whole set, so a fix that threads `lock_path=`
+  while rebuilding the message from defaults is caught too. And a new
+  unit scan walks every `raise QmdLockBusy` under `src/` and requires
+  `max_s=` **and** `lock_path=` explicitly at each, so a fifth raiser
+  inherits neither gap. The scan asserts its own subject count, because
+  a guard that cannot see its own sites reports success forever.
+
+- **The ceiling's 46 s row is a 45-59 s cliff, and is printed as one.**
+  The 30 s budget admits a second in-loop `qmd status` call only while
+  `2 x bound + poll_interval < budget` — bound < 0.1475 at 1/100 scale,
+  against a shipped `STATUS_TIMEOUT_S / N` of 0.1500. That is 0.0025
+  scaled, **0.25 s of headroom at real scale**, and one bound further
+  back costs a whole `STATUS_TIMEOUT_S`. Measured by sweeping the bound:
+  0.1450 -> two in-loop calls -> **59.4 s**; 0.1470 -> one -> **44.9 s**.
+
+  A reader copying 46 s was wrong by up to 14 s in either direction, in
+  a table that gave the 0.25 s boundary and never the 59 s other end.
+  `AGENTS.md` printed 46 s flat with no band note at all. Both now carry
+  the range, the boundary arithmetic, and the sweep that produces it.
+
+  The row is also relabelled from "unstable" to "cliff", because it is
+  not noise: counting `qmd status` calls across 20 runs of round 3's
+  harness gave 3 in 20 out of 20 — the call count never moved, and the
+  2 s spread that motivated the word was `time.sleep` jitter inside a
+  stubbed `_run_qmd`.
+
+- **The harness pin that could not fire now does.** Round 4 guarded the
+  ceiling harness with `assert "_run_qmd" not in targets`, where every
+  member of `targets` is built as `f"{obj}.{attr}"` and therefore
+  always contains a dot. It looked like it worked because the sibling
+  assertion fired whenever `_run_qmd` *replaced* the subprocess patch —
+  but a harness patching both sailed through, which is exactly what the
+  review found.
+
+  Replaced with an **allowlist**, so it fails closed: a new patch target
+  cannot be added without naming it, and the one edit that matters is
+  caught by construction rather than by a remembered blacklist entry.
+  Verified against the harness patching both targets, which a blacklist
+  would not have seen. The same fix applies to the harness's own
+  runtime guard, which now counts `sel.select()` wakes (515 scaled
+  against 8 unscaled) so a stubbed `_run_qmd` fails a named assertion
+  instead of raising `AttributeError` from inside `qmd_daemon_state`.
+
+- **The ceiling figures are measured through the real reader loop, and the
+  poll-scaling claim is now true.** `_subprocess._POLL_INTERVAL_S` is
+  read only inside `_run_qmd`'s `sel.select()`, and the committed
+  harness replaced `_run_qmd` outright — so it never read the constant
+  and its rescaling was inert. Measured both ways, five runs each:
+  with `_run_qmd` stubbed, patched and unpatched give identical
+  distributions; with the reader loop real, the ceiling reads **61 s
+  scaled and 86-88 s unscaled**.
+
+  The harness now patches `subprocess.Popen` instead, driving the real
+  `_run_qmd` over real pipes with a child that emits exactly the bytes
+  each scenario calls for. Every one of the reader loop's production
+  paths — `sel.select`, `read1`, EOF handling, both bounds — runs
+  unchanged. A unit pin asserts the harness does not stub `_run_qmd`,
+  because that single edit is what made the claim false.
+
+  **The "unstable row" claim was wrong, and in an instructive way.** The
+  docstring said the hanging-status row varied because it had been
+  measured at 17.7 s and 19.7 s, one-or-two complete calls landing
+  either way. Counting `qmd status` calls across 20 runs of the old
+  harness: **3 in 20 of 20**. The spread was `time.sleep` jitter inside
+  a stub, not a knife-edge. The knife-edge is real and is now derived
+  rather than remembered — sweeping the status bound at 1/100 scale puts
+  the boundary at 0.1475 against the harness's 0.150, i.e. **0.25 s of
+  headroom at real scale**, with a whole `STATUS_TIMEOUT_S` swing on the
+  far side. That is why the row is a band, and the docstring now says so.
+
+  The table's rows also stop printing a decimal: the measurements are
+  30.4 / 34.5 / 45.5 / 45.9 / 60.9 s over 15 runs, reproducible to
+  ±0.5 s, and the figures now include an explanation of why the
+  spawn-hang and status-hang rows land within 1 s of each other without
+  being the same measurement.
+
+- **The "never a single figure" pin asserts structure, not prose.** It
+  was ten substring checks on the flattened docstring, and both of the
+  reviewer's probes passed it: collapsing the whole table to one
+  `**~47 s**` figure, and deleting the table entirely —
+  `assert "configuration" in doc` was satisfied by an unrelated
+  sentence. It now parses the docstring's RST table and checks it
+  against a structured constant: five rows, each naming a
+  configuration, each carrying a figure, floor and ceiling marked, the
+  forbidden bounds absent from the rows that make a bound claim, and
+  the floor/ceiling actually being the minimum and maximum of the
+  column. The headline sentence is parsed separately, because
+  "floor" and "ceiling" also appear in row markers — which is how
+  reverting it to the retracted "~80 s" ceiling once passed.
+
+- **The unit-test network audit is now a gate, and it is wired in.**
+  `tools/qmd_unit_network_audit.py` failed nothing. `pytest_sessionfinish`
+  only *printed*, and nothing referenced it outside its own docstring,
+  so a unit test dialing the operator's live daemon produced a green
+  build with a warning in the log — the exact shape by which a false
+  zero reaches a report.
+
+  Two changes. `-p qmd_unit_network_audit` is added to `make unit-test`,
+  which the pre-commit hook runs, so this is the commit gate. And
+  `sessionfinish` now sets `session.exitstatus = 1` on any connection to
+  8181/9000 that is not named in its `ACCEPTED` list — **inverted**,
+  so failure is the default and a grant is the exception. The four
+  grants are node ids, not file paths, each naming the ports it may
+  reach; a file-level grant would let any future test in that file dial
+  without notice, which is how the 9000 regression reached a unit test.
+
+  **Verified by introducing a deliberate dial and running `make
+  unit-test`: exit 2, with the offending node id and the reason. Remove
+  it and the same command exits 0.** A guard nobody has watched fail is
+  a report.
+
+  Two defects in the audit itself, both found by writing the tests rather
+  than by review:
+
+  - **The guard was silently disabled for most of the session.**
+    `tests/unit/qmd/test_daemon_recycle.py` restores `socket.socket`
+    with an explicit `del` — correctly, since `connect` is inherited
+    from `_socket.socket` and a monkeypatch undo leaves a shadowing
+    class attribute. That `del` also removed the audit's, so every test
+    ordered after that file ran unguarded. Measured: with a dialing test
+    after it, the audit passed; before it, the audit failed. An
+    order-dependent guard is not a guard, so it re-installs on the way
+    out of every test's protocol.
+  - **`connect_ex` was never intercepted** — a separate C method, not
+    an alias. The per-file autouse guard names this as one of its own two
+    gaps and cites the audit as covering it, which was false.
+
+  The audit's own tests dial nothing: they call the guard directly
+  against a stub with `_real_connect` neutralised. An earlier version
+  connected for real, and the audit failed its own test file — the fix
+  for which would have been to exempt itself.
+
+  **What the audit still does not cover**, so a green run is not read
+  as a firewall: a connect performed on a thread that outlives the
+  fixture may be attributed to the *next* test, and a hit with no test
+  in scope — session setup, collection, teardown — is attributed to
+  `<no test>` and fails.
+
+- **The recycle's readiness probe no longer escapes on a stopped qmd
+  daemon, so `recycle_qmd_daemon` retries and reaches its own
+  `QmdRecycleFailed`.** The probe caught
+  `(httpx.HTTPError, mcp.MCPError, OSError)`. Measured 2026-10-10
+  against the live daemon, a stopped daemon raises a **bare**
+  `RuntimeError` — fastmcp wraps every connect failure as
+  `RuntimeError("Client failed to connect: ...")` with the real error on
+  `__cause__` (`fastmcp/client/client.py:1045-1048`, `_connection_failure`),
+  as `httpx2.ConnectError`, fastmcp's *vendored* httpx and a different
+  module from the `httpx` LIES imports. Neither `httpx.HTTPError` nor
+  `OSError` matches, so the loop escaped on **probe one** in ~0.3 s:
+  it never retried, never spent `ready_timeout`, and never reached the
+  failure it documents.
+
+  The user-visible damage was a false claim, not just a lost retry:
+  `_recycle_or_report` swallows the escape, so the wedge path told the
+  caller *"the restart also failed"* while the daemon it had just
+  started was still coming up. The documented "tens of seconds" hold on
+  the qmd inode described a path no one had walked.
+
+  The tuple now covers `RuntimeError`, and the worst case is now a
+  **measured floor and ceiling**. Every constant is scaled by 1/100, a
+  real exhaustion is driven through the genuine `_reap_qmd_daemon`,
+  `_spawn_qmd_daemon`, `_run_qmd` reader loop, probe loop and deadline,
+  and the result is scaled back. The harness is committed -
+  `tests/integration/test_qmd_recycle_ceiling.py` - and re-derives these
+  on demand, asserting their *structure* rather than their decimals.
+  *Measured 2026-10-10; transcribed, not re-measured at commit time.*
+
+  **Scaled:** `STATUS_TIMEOUT_S`, `ready_timeout`, `poll_interval`, the
+  reap's `grace`/`poll`, **and** `_subprocess._POLL_INTERVAL_S`. That
+  last is neither a timeout nor a sleep - it is the reader loop's
+  `sel.select()` granularity - so it does not scale by itself, and an
+  unscaled 0.1 s survives the rescaling. With the reader loop real, the
+  ceiling reads **61 s scaled and 86-88 s unscaled**, so this is not a
+  detail: leaving it out put the reported figure 40% low.
+
+  The axis that decides the figures is **what `qmd status` reports**, not
+  how fast it answers - that one fact sets whether the reap spends its
+  grace windows, whether it kills anything, and what each of its four
+  status calls costs:
+
+  | configuration | measured (real scale) |
+  |---|---|
+  | daemon down, everything prompt | **30.4 s** (floor) |
+  | status reports "running", SIGTERM missed | **34.5 s** |
+  | daemon down, **spawn hangs** | **46.9 s** |
+  | **`qmd status` hangs** | **49.5 s** |
+  | status and spawn both hang | **63.4 s** (ceiling) |
+
+  Three traps, each of which produced a wrong number here before:
+
+  - **The spawn has its own 15 s bound**, the biggest single contributor
+    at +16 s, and named by no single-figure summary.
+  - **The grace windows are reachable in exactly one row.** ~4 s, and
+    only where `qmd status` reports *running* with a live pid that then
+    ignores SIGTERM. A hanging status reports `running=False`, so the
+    reap returns at its first line and spends neither.
+  - **The hanging-status row is genuinely unstable** - 17.7 s and 19.7 s
+    over the floor on consecutive runs - because it turns on whether one
+    more poll fits inside the 30 s budget when a status call is 15 s
+    wide. Its calls *displace* polling rather than adding to it.
+
+  Independent harnesses put the ceiling between 61.5 s and 63.4 s
+  depending on what they scale; over-estimating is the safe direction
+  for an upper bound. Earlier answers here were wrong three times: a
+  single "45 s" summed mutually exclusive component bounds, a "~80 s"
+  was **unreachable** (it added 4 s of reap time the slow-status path
+  specifically forgoes), and a later "+up to 4 s" variant quoted a row
+  whose delta was +5.3 s and belonged to the configuration that forgoes
+  those windows.
+
+  Pinned in `tests/unit/qmd/test_daemon_recycle.py`, whose tests go red
+  if the tuple is narrowed back.
+
+  AGENTS.md recorded this as *"a dead session arrives as a bare
+  `RuntimeError` with the real error on `__cause__`"*. That is now a
+  measurement rather than a hypothesis, and the note says so.
+
+- **`_spawn_qmd_daemon` takes a port, and every production spawn threads
+  it from the URL being served.** It was hardcoded to
+  `qmd mcp --http --daemon`, so a recycle could only ever restart the
+  *real* daemon on the *real* port — anything needing a disposable
+  daemon had to be driven through a stub. Read from qmd 2.5.3's
+  `dist/cli/qmd.js`: `--port` is honoured, `--index` exists, and
+  **there is no `--data-dir` flag** — the `mcp` block reads only
+  `args[0]`, `values.http`, `values.port`, `values.daemon` and
+  `values.index`. `XDG_CACHE_HOME` is the available lever; it relocates
+  `index.sqlite`, `mcp.pid` and `mcp.log` together, appending its own
+  `qmd/` segment.
+
+  **This fixes a live bug, not just a capability gap.** `LIES_QMD_URL`
+  supports a non-8181 daemon and `lifecycle._up(port)` already passed
+  `--port`, but the recycle did not. Against
+  `LIES_QMD_URL=http://127.0.0.1:9000/mcp`: the reap correctly kills the
+  9000 daemon, the spawn brought up a **stray on 8181** which also took
+  its `mcp.pid`, and the probe polled 9000 for the whole budget —
+  `QmdRecycleFailed`, with the operator's daemon gone and a squatting one
+  left. `qmd.js:4008-4013` then refuses a real start, because the
+  stray's pidfile is live.
+
+  **There is no `port`-without-`data_dir` refusal.** An earlier version
+  raised on that pairing, on the reasoning that a second daemon sharing
+  a cache root would take over `mcp.pid`. The hazard is real but the
+  guard was wrong: the legitimate production use *is* restarting the
+  real daemon on the configured port, which necessarily shares the real
+  cache root. The precondition belongs to the caller, and both
+  production callers satisfy it — they reap first, so no live pidfile is
+  held when the spawn runs.
+
+  **All three spawn sites thread the port, not two.** `access.daemon_tool`
+  has a third (`_is_daemon_stale()` → reap + respawn) that the first fix
+  missed; a reviewer probing it found `_spawn_qmd_daemon called with {}`,
+  and against the real binary the replacement landed on 8181 while the
+  configured port kept serving — the identical failure mode one layer
+  out. It is the *hottest* of the three, not the coldest:
+  `_is_daemon_stale()` is true on essentially every `daemon_tool` call
+  after any write, since every `LibraryWriter.commit` and `apply_plan`
+  touches the one global marker.
+
+  That site also had **no pin**, and the obvious one was useless: the
+  test's stub was a zero-arg `lambda: spawned.append(True)`, so it broke
+  on the fix and could be "repaired" with `**kw` — which then made the
+  wrong-port mutation invisible to the whole suite. The stub now records
+  its kwargs and asserts on `port`, alongside an AST check that no
+  `_spawn_qmd_daemon(...)` call in `access.py` omits it.
+
+  Verified against the real binary in
+  `tests/integration/test_qmd_spawn_throwaway.py`, which now recycles a
+  live throwaway on a non-default port end to end.
+
+- **Every reap-then-respawn in the seam threads the configured port.**
+  `ensure_qmd_daemon`'s "normal path" used to inline its *own* copy of
+  `[_QMD_BIN, "mcp", "--http", "--daemon"]` with its own `timeout=`,
+  and `lifecycle._up` still inlines its own argv — so "exactly one place
+  LIES shells out to start qmd's daemon" is not true, and this entry no
+  longer claims it. What *is* true is the property that matters: all
+  **six** spawn call sites across four reap-then-respawn locations
+  (`access.daemon_tool`, `capability.as_capability`,
+  `recycle_qmd_daemon`, and `ensure_qmd_daemon`'s three paths) pass
+  `--port` taken from the URL they serve, so none of them can bring a
+  daemon up on a port other than the one being probed.
+
+  `ensure_qmd_daemon`'s normal path now calls `_spawn_qmd_daemon`,
+  which returns the `CompletedProcess` so `Already running (PID N)`
+  parsing survives. The pin is an **AST** count of the argv over
+  `daemon.py` — a text count matches this file's own prose about the
+  defect, and a slice cannot see a site elsewhere in the file.
+
+- **The sidecar records a "scope", not a data-dir, and all callers pass
+  one canonical value.** Four call sites passed four different values —
+  `wiki.wiki_dir`, `wiki.data_root`, sidecar-or-`library_git_root()`,
+  `library_git_root()` — and two differed *by construction*
+  (`wiki.wiki_dir` is `data_root / "wiki"`). The system coped only
+  because the value never reached the spawn, so `check_scope_match` was
+  comparing unrelated directories and could never match across call
+  sites: every comparison fell through to the reap-and-respawn branch on
+  a healthy daemon. All four now pass `daemon._canonical_scope()`.
+  `_spawn_qmd_daemon`'s `data_dir=` — the one argument that really does
+  select an index — has no production caller, and the parameter is
+  renamed to `scope` so it stops promising an index it does not choose.
+  `_recycle_scope()` no longer reads the sidecar back: that made the
+  record self-confirming and perpetuated stale paths after a wiki moved.
+
+- **`exclusive.acquire_create_lock` creates the lock directory once per
+  acquisition, not once per attempt.** It ran
+  `path.parent.mkdir(parents=True, exist_ok=True)` at the top of every
+  attempt, and the async gate re-runs the whole acquire once per poll —
+  at 10 Hz for up to 120 s. Measured 2026-10-10: one such `mkdir`
+  against an existing directory is 1 `mkdir` syscall plus 1 `stat` from
+  `is_dir()`, 4.3 µs, so a fully contended 120 s wait spent ~1200 of
+  them (~2400 syscalls, ~5.2 ms). Small next to the wait and free to
+  remove — and it is the same redundant-resolution defect Task 1
+  removed one layer up in the sync loop.
+
+  The mkdir is now hoisted behind `ensure_lock_parent`, which both poll
+  loops call once; `acquire_create_lock` takes `parent_prepared=True`
+  and still heals a parent that vanishes mid-wait, so hoisting it cannot
+  turn a contended poll into a `FileNotFoundError`. Callers that acquire
+  once are unaffected — that is the first-ever-acquire case, where the
+  parent may genuinely not exist.
+
+  The heal lives **inside** `_create_exclusive`, which every create goes
+  through. An intermediate version put it around the *first* create only,
+  while three retry creates sat inside the `FileExistsError` handler with
+  no such arm — so with the parent removed as the code entered the
+  reap-and-retry branch, `FileNotFoundError` escaped and the hoist had
+  traded one correct path for a broken one. The first create healing
+  correctly is what made it look fine. Pinned by
+  `test_the_heal_covers_the_reap_and_retry_creates_too`.
+
+- **The qmd seam builds a fresh client per call, so concurrent calls stop
+  hanging.** `_daemon_client` returned a **process-wide cached**
+  `fastmcp.Client`, and `_call` enters it with `async with` per call — so
+  two concurrent calls shared one object, and therefore one MCP session.
+  The daemon is machine-global, so that object was shared by every LIES
+  session on the host. The requirement is that **no two calls share a
+  client**, not that a client be exclusively owned while in use.
+
+  **Not a teardown race.** An earlier draft of this entry said "the first
+  exit tore down state the second still held". That is false for the
+  installed fastmcp 4.0.10: `Client._disconnect` decrements
+  `nesting_counter` and returns while it is still positive
+  (`fastmcp/client/client.py:1080-1084`), so an exiting context does not
+  stop a session a sibling is inside. Refcounted teardown is not the
+  mechanism, and that behaviour is fastmcp-version-specific.
+
+  What the probes do support, and nothing stronger: **concurrent calls
+  on one shared session can hang** — 2 concurrent `query` gave
+  `MCPError: Connection closed`, 3 gave a hang then
+  `BrokenResourceError`. **Fast calls did not reproduce it** — 3
+  concurrent `status` all OK at ~0.1 s, 3 concurrent `get` all OK, and 1
+  `query` + 3 `get` concurrently all OK, so concurrency alone is not
+  the trigger. Duration as the discriminator is an inference from those
+  cases, not a threshold a probe isolated.
+
+  And **across event loops, a shared client breaks under concurrency**.
+  Measured 2026-10-10 against the live daemon; the whole-branch review
+  reproduced this independently before it was written here, and the
+  numbers below are transcribed rather than re-measured at commit time.
+  3 concurrent `status` calls, each on its **own** `asyncio.run` loop:
+
+  | client | result |
+  |---|---|
+  | fresh per call | **3/3 in 0.21 s** |
+  | one shared client | **0/3** — unfinished at a 30 s box, with the 20 s per-call timeout already expired (the reviewer's run went past 300 s) |
+
+  Two consequences, both of which correct claims made above in this
+  entry. **Call duration is irrelevant here**: these are `status` calls
+  that finish in ~0.2 s, so "fast calls did not reproduce it" holds only
+  for a client shared *within* one loop and must not be carried across
+  the loop boundary. And **no per-call deadline bounds it** — `timeout=`
+  reaches `call_tool` and expires, and the call does not return.
+
+  Control, so the mechanism is not overstated: the same shared client
+  driven by three loops **one at a time** returns 3/3 ok. Mere cross-loop
+  *reuse* is fine; the failure needs cross-loop *concurrency*. The
+  structural hazard is real — `ClientSessionState.lock` is an
+  `anyio.Lock` built in `Client.__init__`
+  (`fastmcp/client/client.py:228` via `:587`) and `anyio.Lock` binds its
+  backend at construction, so
+  a cached client carries a loop-A lock into loop B — but that alone does
+  not explain a sequential cross-loop call succeeding. It is a hazard to
+  design around, not a proven cause. Those line numbers are for the
+  installed fastmcp and will drift with the version.
+
+  Headline, measured 2026-10-10 against the live daemon and
+  **transcribed, not re-measured at commit time** — flagged because this
+  unreleased section has already retracted two measurements:
+
+  | config | result |
+  |---|---|
+  | shared client, narrow gate | **0/3 complete, 60.1 s hang** |
+  | fresh per call, narrow gate | **3/3, 1.4 s** |
+
+  Load envelope on the fixed client, all clean (zero hangs, zero errors):
+  N=6 6/6 in 2.6 s; N=9 9/9 in 3.2 s; N=15 15/15 in 7.2 s; N=25 25/25 in
+  8.3 s; and 5 search + 5 read mixed 10/10 in 2.53 s, reads done at
+  0.33 s.
+
+  **This is a correctness fix, not a latency win.** Warm-run wall times
+  are equal — N=6 was 2.2–2.4 s shared against 2.6 s fresh, N=25 was
+  8.5 s against 8.3 s. The win is that concurrent calls finish at all.
+
+  The `_client` / `_client_url` globals and `_reset_client()` are gone,
+  and with them the comment that justified them. Two of that comment's
+  claims were false and are worth naming, because the cache reads as an
+  obvious optimisation to restore. "The daemon's model is not re-warmed
+  per call" is false: the model lives in the qmd *daemon*, whose RSS
+  stayed flat at 1957–1965 MiB across every run. And the handshake was
+  already per-call under the cache too, because `_call` already opened a
+  session each call — so rebuilding adds **+0.9 ms / +1 %** on 20 `status`
+  calls (median 69.1 ms shared, 70.0 ms fresh), 0 MiB of VRAM delta
+  across 5 runs, and LIES RSS unchanged at ~182 MiB. Nothing is given up.
+
+  **The narrow gate stays narrow.** `if name == "query":` is unchanged,
+  and widening it was measured and is a trap: with every daemon call
+  gated, mixed 5-search + 5-read load gave **0/10, every call timing out
+  at 90 s**, with the log naming the *daemon's own* PID as the lock
+  holder for the full 120 s budget before `QmdLockBusy`. That is a
+  self-deadlock — a gated call making a nested daemon call from a
+  different context sees `_held_depth == 0` and blocks on a lock its own
+  process holds, while qmd kept answering queries in 119 ms. The narrow
+  gate is structurally immune: the only gated op is `query`, which makes
+  no nested `daemon_tool` calls (the reachability probe is the separate
+  `qmd_daemon_reachable()`), and reads never take the lock at all.
+
+  *Provenance for the rest of this entry's figures* — the 0/10
+  self-deadlock, the 90 s timeouts, the 120 s budget, the 119 ms query,
+  the +0.9 ms / +1 % rebuild cost, the 69.1 ms / 70.0 ms medians, the
+  0 MiB VRAM delta and the ~182 MiB LIES RSS: all measured 2026-10-10
+  against the live daemon and **transcribed, not re-measured at commit
+  time**. None of them was re-derived when the mechanism above was
+  corrected; only the *explanation* changed, not the numbers.
+
+- **The qmd query path single-flights, and its failure mode is now
+  named instead of invisible.** Two concurrent `query` calls against one
+  daemon now serialize on the site-wide `qmd.lock` rather than joining
+  an unbounded queue inside another process. The second caller waits in
+  a bounded, heartbeat-tracked gate — **120 s**, overridable per call
+  with `LIES_QMD_QUERY_LOCK_WAIT` — and exhaustion raises `QmdLockBusy`
+  carrying the lock path, the holder PID, the elapsed wait and the
+  budget. A query dispatched while `lies qmd embed` holds the lock used
+  to return as an opaque client-side timeout that read as a hung daemon;
+  it now returns an error that says what it was queued behind and for
+  how long.
+
+  `get`, `multi_get` and `status` are deliberately **not** gated. All
+  three answer in milliseconds, and `read_library_bodies` issues one
+  `get` per path — gating them would park an entire batch behind the
+  slowest query in the process, and the queue they would join is one
+  long query, not each other.
+
+  **`QmdLockBusy` is not a transport failure, and this does not make
+  queries faster.** Nothing was dispatched when it raised, so there is
+  no daemon state to recycle and no `mcp.log` line to read: recycle is
+  the wrong response, and waiting and retrying is the right one. Nor is
+  there a latency win here — the daemon still executes queries strictly
+  one at a time, and the measured **0.99x** concurrency ratio (29.48s
+  concurrent vs 29.18s serial) is unaffected. The gate does not make
+  the work faster; it moves a wait that was already happening from an
+  unbounded queue in another process to a bounded one with an owner and
+  a deadline.
+
+  **There is no log line on the wait path.** An earlier draft of this
+  entry claimed one; measurement (2026-10-10, live daemon) says
+  otherwise. A `search` blocked for 2 s added 12 lines to `qmd/mcp.log`,
+  every one of them transport plumbing, and not one mentioning the lock.
+  The wait is invisible there because it never reaches the daemon — the
+  caller is waiting on a local inode. Visibility survives in two other
+  places: the ephemeral `.pid` sidecar beside the lock, and the
+  `fallback_reason` the exception's fields are copied into on the ask
+  path.
+
+  **The gate surrounds the recycle path, and that is a real cost.** For
+  `query` the held lock spans `_call_daemon_tool` →
+  `_call_with_recovery` → `_recycle_or_report` →
+  `recycle_qmd_daemon(ready_timeout=30.0)`, together with
+  `_reap_qmd_daemon`'s up to 4 s of `time.sleep` and
+  `_spawn_qmd_daemon`. A wedged query therefore holds the site-wide
+  inode for **tens of seconds past its own 60 s read deadline**,
+  blocking `lies qmd embed` and `lies qmd update` host-wide while it
+  happens. This is a deliberate trade rather than an oversight: the
+  same inode is what makes the CUDA VMM reservation race unreachable,
+  and leaving the recycle outside it would reintroduce a
+  concurrent-subprocess race against the daemon lifecycle. **It is not
+  a deadlock.** `qmd/daemon.py` takes no qmd lock, and the spawn shells
+  `qmd mcp --http --daemon` directly, so the recycle never waits on the
+  inode it is already holding.
+
+  **The last hop to the reader is now deterministic, and the named
+  limitation it replaced is closed.** The ask-path lock diagnostics
+  used to reach the user only when the librarian mirrored the
+  envelope's `fallback_reason` — a non-compliant model degraded a
+  contended lock to a generic reason. The route was prompt-mediated:
+  `search` converts the lock exception into its envelope and returns
+  normally, so `run_sync` never raises, and the only path from that
+  string to the user was the model copying it onto
+  `LibrarianOutput.fallback_reason`. An instruction is not a
+  guarantee, and it fails silently.
+
+  The `` `search` closure now records every envelope into a
+  caller-supplied `SearchDiagnostics`, and `librarian_agent_run`
+  passes the returned bundle through `with_search_diagnostics`
+  before returning it. The overlay **replaces** the model's copy
+  rather than merging it — a paraphrase that keeps the word "lock"
+  while dropping the pid, the wait, the budget or the lock path is
+  precisely the defect — and it forces `transient=True` and
+  `no_coverage=False` when the search reported a dispatch failure,
+  because nothing was dispatched and so nothing is known about the
+  corpus. The record is a keyword-only argument rather than a module
+  global because the MCP server serves overlapping `lib_ask` calls and
+  one shared mutable record would let a request's lock contention land
+  on another's envelope.
+
+  **The prompt instruction stays, and is no longer load-bearing.** It
+  remains the right contract for the bundle the *synthesizer* reads,
+  before the overlay corrects it. Both are pinned separately — one test
+  asserts the contract still says "verbatim, do not summarise", another
+  asserts it no longer claims to be the delivery mechanism — so neither
+  can be deleted on the strength of the other.
+
+  **This is a trade, not "the model cannot suppress it".** Trusting
+  excerpts (the bound below) has a hole: a model that *asserts*
+  excerpts it never read gets its bundle returned untouched and the
+  recorded failure is never consulted, so the operator sees prose and
+  no reason. That is the same suppression route as before, taken by
+  the other door. The overlay closes the easy suppressions —
+  paraphrasing the reason, dropping the field, or flipping
+  `no_coverage` on a dispatch that never finished — and does not close
+  fabrication, because a hallucinated bundle is indistinguishable from
+  a real one at this boundary.
+
+  **Two bounds, both pinned.** A bundle carrying **excerpts** is
+  returned untouched: it was assembled from real page bodies after a
+  *successful* retry, and forcing `transient` onto it would make
+  `_ask_impl` discard retrievable evidence because an earlier attempt
+  queued. And a recorded failure is **sticky** across a later clean
+  search, because the 120 s budget was already spent waiting and a
+  successful retry does not un-spend it. A **non-transient** recorded
+  reason replaces the reason but leaves both flags alone: those
+  dispatches *ran*, so flipping `no_coverage` would manufacture the
+  very false claim the overlay exists to prevent.
+
+  **The dispatch-failure branch is where this actually earns its
+  keep.** When `run_sync` raises there is no model bundle at all, so
+  the caller gets a fixed wrapper string and loses everything the
+  search already learned. Without the overlay on that branch the
+  operator reads "librarian dispatch failed: RuntimeError: …" and not
+  one fact about the contention — the work had already happened; the
+  failure came after it. That branch was claimed in prose and pinned by
+  nothing: removing the wrapper passed the whole unit suite, because
+  the sibling tests stub `register_librarian_tools` to a no-op and so
+  never fill the record. It is now driven by a model that really
+  searches, really records, and then really dies.
+
+  **The no-excerpts branch now names the cause.** It hardcoded
+  `"librarian returned no excerpts"` and discarded the bundle's reason,
+  so an unknown tag, a tag expression resolving to nothing, and a
+  registered-but-empty collection all reported identically. The
+  specific reason is already on the bundle; the branch reads it, with
+  the generic sentence kept as the `or` fallback for a genuinely clean
+  miss.
+
+  An earlier draft of this section also said `ground()` and
+  `librarian_agent_run` "catch `QmdLockBusy` in code", in the same
+  breath as the prompt-mediated sentence. That contradicted it: if
+  `run_sync` never raises the exception, nothing downstream can catch
+  it either. `librarian_agent_run` **had** such an arm — an
+  `except QmdLockBusy` ahead of its untyped one — and it was
+  unreachable in production, because `_search_impl` catches
+  `Exception` and returns an envelope before the exception can cross
+  the tool boundary. The arm and its two tests are gone; the facts now
+  travel as data instead.
+
+  **`ground()` catches `QmdLockBusy` for a different and real
+  reason**, and that path is **not** dead code — see the note below.
+
+  **What the user actually reads, and why it needed moving.**
+  `QmdLockBusy` is caught by `_search_impl`, which returns normally, so
+  its message reaches the user as
+  `fallback_reason`. With only the untyped arm there, that string opened
+  `qmd query failed: QmdLockBusy: ...` — the exact framing this gate
+  exists to delete, since it reads as a broken query and sends the
+  operator to restart a daemon that is answering fine. `_search_impl` now
+  carries a `QmdLockBusy` arm ahead of its untyped one and renders it as
+  queued-then-gave-up, keeping the holder pid, the elapsed wait, the
+  budget and the lock path.
+
+  **That arm rendered the wrong budget, and the test below is how it
+  was found.** It interpolated `_current_timeout()` — the daemon read
+  deadline, 60 s by default — into "timed out after Ns", while the gate
+  it was describing had waited on `query_lock_wait_s()`, 120 s. The
+  user was handed two budgets in one sentence and the leading one
+  named a deadline that never expired. The budget belongs to the
+  raiser, so the arm now reads it off `exc.max_s`.
+
+  **The whole path is now tested end to end under real contention.**
+  A test forks a child process that takes the qmd lock through the
+  production decorator, then drives `lib_ask.fn` against it with a
+  librarian model that is *deliberately non-compliant* — it emits
+  `no_coverage=True` and drops the reason — and asserts the envelope
+  says "inconclusive" and names the holder, the budget and the
+  contended inode. That replaces an earlier test which called
+  `synth.synthesize` (no registered tool reaches it) and hand-built
+  the exception; it proved nothing about the shipped path and was
+  deleted.
+
+  **`ground()` is public API, so its diagnostics are reachable —
+  do not delete them as dead code.** `lies.mcp` declares
+  `__all__ = ["ground", "mcp"]` and re-exports `ground` "for in-process
+  callers ... so callers have one import surface". A whole-branch
+  review flagged `ArchivistDigest.fallback_reason` and the two `except
+  QmdLockBusy` arms in `mcp/grounding.py` as possibly unreachable,
+  because `ground()`'s only in-tree caller is `synthesize()` and
+  `synthesize()` is called only by tests. That is true of the call
+  graph and false of the contract. The arms appear rarely because the
+  MCP tool path routes through the librarian instead — `ground()`
+  calls `access.daemon_tool` directly, so the exception genuinely
+  reaches `grounding.py:465` and `:535` — but an in-process caller
+  reaches them too, and removing either is a contract break rather
+  than a cleanup.
+
+- **`lib_ask` returned zero citations on every success path.**
+  `_ask_impl` read `getattr(lib_out, "citations", [])`, and
+  `LibrarianOutput` has no `citations` field — so the `getattr`
+  default fired every time and a successful answer came back as prose
+  citing nothing, with no error anywhere to say so. The synthesizer
+  *does* emit citations (as path strings, per the F19 prompt), and
+  `Orchestrator._call_synthesizer` already converted them into
+  `Citation` envelopes with the source discriminator taken from the
+  librarian's excerpts; that conversion was simply never mirrored on
+  the MCP side.
+
+  The two sites now share one function,
+  `lies.query.citation.citations_from_paths`, because the first
+  divergence of this shape is precisely what produced the bug — two
+  copies of a conversion is how one of them got left reading a field
+  that does not exist. A `getattr` default against an impossible
+  attribute is not defensive handling; it is a claim of "no
+  citations" where the truth was "no wiring".
+
+**This compounded the lock diagnostics.** A model that asserted
+  `excerpts` returned a bundle the overlay deliberately left alone,
+  and `lib_ask` rendered it as prose with `citations=[]` and no
+  reason — the suppression route the overlay was built to close,
+  reachable through a different door.
+
+  **The citations `lib_ask` now emits are model-asserted and
+  unverified.** `_ask_impl` applies no citation validation:
+  `_validate_claim_citations` and `_thread_heading_paths` run only on
+  the orchestrator path (`orchestrator.py:2082`/`2085`). A path the
+  librarian never handed over is still turned into a `Citation`,
+  defaulted to `source="wiki"` — that default is the orchestrator's own
+  pre-existing mapping, not a verdict on the page. So a hallucinated
+  path now renders as a citation where it previously rendered as
+  nothing, and `heading_path` is `None` on every one. `read` still
+  resolves them, so a caller that needs the citation to be real can
+  check. This is the clause the change owed the shipped docs.
+
+- **A cancelled tool call now names itself in the daemon log.** A call
+  cancelled before it produced a result — server shutdown, a request
+  timeout — left no trace at all: no LIES-side error, no qmd log line.
+  `AbandonedCallMiddleware` records the tool, the elapsed time, and the
+  exception that ended the call. Cancellation is a `BaseException`
+  subclass and needs naming explicitly; a bare `except Exception` is
+  what let these stay invisible.
+
+  **The log states the observation, not a cause.** An earlier version
+  read "client disconnected", which asserts something the runtime never
+  reports — and a log line naming an unobserved cause sends the next
+  reader after the wrong component.
+
+  **What it does not catch: a client that simply stops waiting.**
+  Measured against the live daemon, a `tools/call` abandoned by the
+  client after 2s logs the entry and then neither returns nor raises,
+  because the server was never told; the result is discarded at the
+  write, downstream of any tool-call hook. That case is not a transport
+  failure — see the entry above for what it actually is — and this
+  middleware names only cancellations that genuinely happen.
+
+- **`lies mcp down` refuses to stop a daemon that is serving.** The
+  LIES MCP daemon is machine-global and every MCP client on the host
+  holds a long-lived stream to it, so one session's `down` disconnects
+  all of them at once. Each disconnected client then sees a tool-level
+  interrupt with nothing in the LIES or qmd logs — which reads as a
+  hung query, and sends the next reader chasing the qmd daemon instead
+  of the lifecycle command that caused it. `down` now refuses while
+  the daemon is answering its socket, and the message names the
+  consequence and the `--force` escape hatch.
+
+  The predicate is reachability, not a session count. The live session
+  registry lives inside the daemon process
+  (`session_manager._server_instances`), so a count is not available to
+  the CLI without a new tool; and a count would make the gate flaky,
+  since a client that has finished its work still holds an open
+  stream. A daemon nobody can reach fails the check and stops
+  cleanly, so a crashed or wedged daemon stays clearable — the gate
+  protects live clients, and one nobody can reach has none.
+
+- **Investigated and rejected: the idle-SSE-stream theory.** A long
+  debugging effort concluded that a client disconnect mid-call was
+  losing the `202`-owed response on an idle stream. Two fixes were built
+  and shipped against that premise before any measurement tested it.
+  When tested, the premise was false on both sides:
+
+  - **The server does not drop idle streams.** A GET stream held open
+    for 30 minutes survived intact, carrying one ping and then 29+
+    minutes of silence.
+  - **The client reported no transport error at all** across the entire
+    window in which aborts occurred. Every `SSE stream disconnected` in
+    opencode's log sits within 1-3 seconds of a `lies mcp down`/`up` —
+    the daemon lifecycle, not idleness.
+
+  The real cause is queueing. The qmd daemon executes queries strictly
+  one at a time: **three concurrent queries measured a 0.99x
+  concurrency ratio** (29.48s concurrent vs 29.18s serial), so fanning
+  out MCP calls multiplies latency rather than reducing it, and the
+  last caller parks on a ~30s queue until a client-side budget
+  expires. An "interrupted"/"aborted" result on a LIES call is that
+  budget expiring, and is not evidence about the server.
+
+  `PingMiddleware` is therefore **not** registered — it was added for a
+  failure mode that does not exist. `AbandonedCallMiddleware` remains,
+  scoped in the entry below. The durable outcome is a usage rule in
+  `AGENTS.md`: one MCP call at a time, and read an abort as "too slow",
+  not "broken".
+
+- **`lies mcp down` refuses to stop a daemon that is serving.** The
+  LIES MCP daemon is machine-global and every MCP client on the host
+  holds a long-lived stream to it, so one session's `down` disconnects
+  all of them at once. Each disconnected client then sees a tool-level
+  interrupt with nothing in the LIES or qmd logs — which reads as a
+  hung query, and sends the next reader chasing the qmd daemon instead
+  of the lifecycle command that caused it. `down` now refuses while
+  the daemon is answering its socket, and the message names the
+  consequence and the `--force` escape hatch.
+
+  The predicate is reachability, not a session count. The live session
+  registry lives inside the daemon process
+  (`session_manager._server_instances`), so a count is not available to
+  the CLI without a new tool; and a count would make the gate flaky,
+  since a client that has finished its work still holds an open
+  stream. A daemon nobody can reach fails the check and stops
+  cleanly, so a crashed or wedged daemon stays clearable — the gate
+  protects live clients, and one nobody can reach has none.
+
+- **The idle-stream theory was tested and falsified; no keepalive ships.**
+  This entry previously described a `PingMiddleware` keepalive as a
+  "partial mitigation" and cited `tests/mcp/test_streamable_keepalive.py`
+  as pinning it. Both are gone, and the reason is a measurement that
+  overturned the premise: a GET stream held open for **30 minutes**
+  survived intact, carrying one ping and then 29+ minutes of silence.
+  There is no idle stream being torn down, so there is nothing for a
+  keepalive to prevent, and one registered for it would emit log lines
+  nobody can act on.
+
+  What was real underneath survives as a mechanism, not as a bug: a
+  `tools/call` on that transport is accepted with `202` and its response
+  is owed on the long-lived GET stream, while a qmd `search` is 12-22s
+  of embed-and-scan that puts zero bytes on the wire. The diagnosis that
+  did hold is the upstream detail — `PingMiddleware` creates its loop per
+  request (`ping.py:63`) and cancels it through that request's
+  `Connection` exit stack (`ping.py:84`), so it emits exactly **one**
+  ping per connection, measured at 1 frame in 62s and 1 in 25s where 12
+  and 5 were expected. The MCP SDK's streamable-HTTP transport ships no
+  keepalive of its own. That is why the middleware was added and then
+  removed, and it is recorded in `AGENTS.md` as a usage rule rather than
+  as a defect to chase.
+
 - **An emptied collection registry is reported as one event, not N
   drift entries.** On 2026-10-05 the live index reported `collections:
   0` plus 117 `document_drift` entries, every one of them "1
@@ -279,6 +1510,186 @@ this into a dated release heading.
   are all allowed; reads are unguarded, because the daemon is
   machine-global and serving the live index to every client is the only
   configuration that is safe.
+
+- **The holder-PID file is written by rename, not by truncation.**
+  `write_owner_pid` used `Path.write_text`, which truncates before it
+  writes, so a contender reading in that window got an empty file,
+  failed to parse it and logged `could not parse pid file`
+  (`exclusive._reap_if_stale`). The failure is benign and in the safe
+  direction — the reader returns `False`, so nobody reaps — but the
+  query single-flight gate makes nine-way contention normal, so the
+  warning now prints in normal operation and reads as a fault that is
+  not there. The write now goes to a sibling temp file and lands with
+  `os.replace`, which is atomic within a filesystem, so a reader gets
+  the old bytes or the new ones and never nothing.
+
+  Pre-existing, and not this branch's defect — but this branch turned a
+  rare race into a routine event, which is the ordinary way a latent bug
+  becomes a reported one.
+
+  Three details that are not incidental, and two traps in the fix. The
+  temp file is a **sibling** of the target, because `os.replace` is
+  atomic only within one filesystem and the parent is the only directory
+  that guarantees it. It is created with `open`, not
+  `tempfile.mkstemp`, because `mkstemp` forces `0600` and would have
+  silently narrowed who can read the holder PID. And there is no
+  `fsync`: the property being bought is atomicity against a concurrent
+  reader, and that comes from `rename(2)`, not from durability — the
+  write this replaces had no `fsync` either.
+
+  The pin is structural (the function must go through `os.replace` and
+  must not call `write_text`), because a concurrent-reader test alone
+  is a race and would pass against the old code most of the time — the
+  failure mode this branch already shipped twice. It is corroborated by
+  a threaded test, which caught 53 empty reads against the old
+  implementation rather than merely failing to notice it.
+
+- **`AGENTS.md` cited `daemon.py:658` for the recycle's spawn site; it
+  is `daemon.py:686`.** `bc3f3da` grew the file by 28 lines and left
+  its own citation behind, so the pointer landed mid-sentence in
+  `recycle_qmd_daemon`'s docstring. This is the *second* stale
+  in-repo reference this branch produced, and both times the commit
+  that grew the file is the one that forgot.
+
+Fixed, and every other `file:line` in the shipped docs swept against
+  HEAD: `access.py:441`, `capability.py:105`, `daemon.py:426/437/445`,
+  `grounding.py:465`/`:535`, `client.py:1080-1084`, `client.py:228`,
+  `:587`, `anyio/_core/_synchronization.py:164-168`, `qmd.js:4005`,
+  `qmd.js:4008-4013`, `qmd.js:3981-3983`, `store.js:887`,
+  `store.js:428-434`, `ggml-cuda.cu:492`. The two `grounding.py` pairs in
+  that list were wrong when written (they named 468/545, which no
+  revision of that sweep matched); they now name the live positions, and
+  the pinned pair lives in `AGENTS.md` rather than here.
+
+  A second went stale *during this round*, caught by the new pin:
+  rewording the `0.99x` docstring in `daemon_tool` added a line above
+  `access.py`'s spawn site and moved `access.py:441` to `442`. The
+  repair was to make that edit line-neutral rather than to move the
+  citation, so `if name == "query":` is byte-identical to the base
+  *and* at the same line number.
+
+  The references are now pinned by
+  `tests/unit/test_agents_line_refs.py` — by what each cited line must
+  *contain*, not by the number alone, which is the only form that
+  survives a commit that grows the file. The fastmcp and anyio citations
+  are deliberately not pinned: they are outside the repo, version-
+  specific, and AGENTS.md already says so at the reference site.
+- **`fastmcp/client/client.py:1048` was cited as the call to
+  `_connection_failure`; line 1048 is the `raise`, and the call is at
+  1045.** Cited as `1045-1048` now, which is the span the reader
+  actually wants. Corrected in AGENTS.md, CHANGELOG, `qmd/daemon.py`
+  and a test comment. The evidence was sound and the advice it supports
+  ("code against the wrapper, not the vendored module name") is right;
+  the entry teaching the reader where to look pointed one line off, in
+  a section that is explicitly a list of verified line numbers.
+
+- **`query/citation.py`'s docstring argued against itself.** It
+  justified the `"wiki"` default for an unrecognised path by calling it
+  "the conservative choice" — dropping the citation would be — and by
+  invoking the dual-source contract's library-first rule, which argues
+  *for* `"library"`.
+
+  The behaviour is unchanged and the reasoning is now honest: the
+  default is this function's verbatim copy of the orchestrator's
+  pre-existing mapping, diffed line for line, and a wrong guess here is
+  no better and no worse than the orchestrator's identical guess one
+  call site over. This is the same defect class the branch retracted
+  three times — a rationale outrunning its evidence — and it survived
+  because the code it justified was correct, which is exactly what makes
+  a bad justification expensive to notice.
+
+- **PRE-EXISTING: the integration suite leaked a qmd daemon.**
+  `test_mcp_daemon_lifecycle.test_full_lifecycle` invokes the real
+  `lies mcp up`, which calls `ensure_qmd_daemon` unless `--no-qmd` is
+  passed. The isolation fixture in `tests/conftest.py` *deletes*
+  `LIES_QMD_URL`, so that call resolved to the default **8181** — not
+  the operator's. The LIES daemon came up fine, nothing failed, and the
+  qmd daemon it spawned outlived the whole pytest run.
+
+  Measured: **1 stray listener per full integration run before, 0
+  after.** `mcp.pid` was never clobbered — qmd's own guard held — so
+  the documented hazard did not fire; the stray was real all the same.
+
+  The consequence for this branch's own bookkeeping: every "Strays:
+  none" in the task reports was measured without a full
+  `INTEGRATION=1 pytest tests/integration/` run, so those measurements
+  were correct and incomplete. The fix is `--no-qmd` on the two `up`
+  invocations in that test — every assertion there is about the LIES
+  daemon, so it costs the test nothing. Pinned by an AST check in
+  `tests/unit/test_integration_spawns_no_stray.py`, which also anchors
+  the other end (`operator.up`'s `no_qmd` guard really is an early
+  return) so the pin cannot pass on a flag that stopped working.
+
+  The test's own *failure* is pre-existing and unrelated: it fails
+  identically on base `469f476`, at the `lies mcp down` assertion. The
+  leak was what this entry fixes.
+
+- **`0.99x speedup` is a slowdown.** The figure is right — 29.48s
+  concurrent against 29.18s serial — and calling a ratio below 1.0 a
+  speedup is a slowdown described as a win. Now "concurrency ratio" in
+  all six places it appeared: AGENTS.md, two CHANGELOG entries, the
+  `search` tool description in `mcp/server.py`, `daemon_tool`'s
+  docstring in `qmd/access.py`, and a test comment. The ledger had
+  considered and dropped this rewording twice on the grounds that the
+  surrounding context is unambiguous; that is true and is also the
+  reason a skimming reader keeps taking it at face value.
+
+- **`LIES_QMD_SIDECAR_OVERRIDE` accepted a directory and failed
+  opaquely.** The path binds at import with no validation, so a value
+  naming the *directory* holding the sidecar — the obvious slip, since
+  the default's parent is `~/.local/share/qmd` — made both accessors raise
+  `IsADirectoryError` from inside `Path.read_text`/`write_text`. The
+  traceback pointed at file I/O, not at the variable the operator set,
+  and AGENTS.md records five people who have set it.
+
+  `daemon.py` now raises `SidecarOverrideNotAFile`, naming the variable,
+  the offending path, and what a file path would look like. Validated at
+  **first use, not at import**: an import-time raise makes the module
+  unimportable, and `tests/conftest.py` rebinds `SIDECAR_PATH` *after*
+  importing it — so a host carrying a bad value could not run the suite
+  at all, not even to assert the error. First use still lands early; the
+  first caller is `check_scope_match` via `ensure_qmd_daemon`, on the
+  first command that touches qmd. The binding stays at import, which is
+  load-bearing. Six tests, including two in a separate interpreter that
+  set the variable *before* the import binds it.
+
+- **A stray qmd daemon on 8181 decided whether integration tests passed.**
+  Pre-existing, and the mechanism was not where it was reported. "LLM
+  operations are disabled in CI" is **qmd's** message
+  (`dist/llm.js:1058`), not LIES': qmd reads `process.env.CI` at import
+  (`:384`, `_ciMode = !!process.env.CI`) and refuses every LLM entry point,
+  and LIES hands qmd the operator's environment unchanged
+  (`_subprocess._child_env` copies `os.environ`), so `CI=true` reached the
+  child. A stray daemon cannot flip a `skipif` — the gates never asked the
+  question the tests depended on.
+
+  Measured, stray bound to 8181: **8 failures under
+  `tests/integration/mcp/`** (`ToolError: all reads failed`, and
+  `assert frozenset()` from a daemon reporting no collections) and **7
+  under `test_tag_filter_end_to_end.py`** (qmd's CI refusal). Both are
+  the same defect: a gate testing *daemon reachable* where the tests need
+  something else. Neither condition implies the other, and neither is
+  decided by whatever else is bound to 8181.
+
+  `tests/integration/mcp/conftest.py` now asks whether the daemon serves a
+  **corpus**, through `access.qmd_collection_names()` —
+  `validate_scope`'s own seam, so the guard and production agree on what
+  "served" means. The tag-filter fixture asks
+  `qmd_llm_operations_disabled()`, the condition that actually blocks it.
+  Its per-test `CI` skipif, which guarded 1 of 8 tests and so let the
+  other 7 through, is now redundant and removed. **16 skipped with the
+  stray present, 16 without — identical**, against the 8+7 failures
+  before. No test deleted, renamed, moved, or marked slow.
+
+- **AGENTS.md named three errors that do not exist.** The tag-filter flake
+  entry said `QmdTimeoutError`; this host reports `QmdCommandError:
+  qmd query failed (exit 1): … need embeddings`. The entry's diagnosis —
+  a different subset each run, therefore not a logic bug — still holds and
+  is kept. The daemon-failure bullets named `QmdWedged` and
+  `QmdUnavailable`; the classes are `QmdDaemonWedged` and
+  `QmdDaemonUnavailable` (`qmd/access.py:48,54`). An entry naming the wrong
+  exception defeats the section's purpose: it exists so the next agent does
+  not re-derive a flake that is measured and real.
 
 ## [0.48.2] - 2026-10-04
 

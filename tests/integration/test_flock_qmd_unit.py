@@ -47,14 +47,14 @@ def test_flock_qmd_status_with_holder(qmd_lock_paths: dict[str, Path]) -> None:
     """`lies flock qmd status` with a live holder prints the holder pid."""
     import lies.qmd.lock as lock_mod  # type: ignore[import-not-found]
 
-    fd = lock_mod._acquire_with_poll(retry_budget_s=2.0, max_age_s=60.0)
+    attempt = lock_mod._acquire_with_poll(retry_budget_s=2.0, max_age_s=60.0)
     try:
         runner = CliRunner()
         result = runner.invoke(flock_app, ["qmd", "status"])
         assert result.exit_code == 0, (result.stdout or "") + (result.stderr or "")
         assert str(os.getpid()) in (result.stdout or "")
     finally:
-        lock_mod._release(fd)
+        lock_mod._release(attempt.fd, attempt.paths)
 
 
 def test_flock_qmd_force_repair_clears_stale_holders(qmd_lock_paths: dict[str, Path]) -> None:

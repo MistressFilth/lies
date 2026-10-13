@@ -1,35 +1,4 @@
-"""LibraryWriter surfaces QmdLockBusy distinctly from generic qmd-spawn failures.
-
-The post-commit qmd hook in ``LibraryWriter.commit`` runs ``qmd_embed``
-inside a broad ``except Exception`` so transient derived-index outages
-(CUDA OOM, qmd daemon down) never roll back the library commit. That
-shape is right for transient failures but wrong for site-wide qmd flock
-contention: a ``QmdLockBusy`` carries operator-actionable context
-(holder PID, wait/max seconds) and should reach the CLI / MCP caller as
-a distinct typed error, not as a swallowed ``warning: qmd embed
-failed`` line on stderr.
-
-Two tests pin the split:
-
-1. ``test_writer_re_raises_QmdLockBusy_with_holder_pid`` — when the
-   qmd embed helper raises ``QmdLockBusy``, ``LibraryWriter.commit``
-   must re-raise the same exception class with the holder PID preserved
-   so the operator sees an actionable message instead of a swallowed
-   warning. TODAY this fails: the broad ``except Exception`` catches
-   ``QmdLockBusy`` and prints the generic warning.
-2. ``test_writer_swallows_other_qmd_failures_unchanged`` — non-lock
-   failures (CUDA OOM, qmd crash) keep the swallow-and-warn shape so
-   derived-index outages never roll back the library commit. TODAY this
-   passes; the test pins the invariant against an over-eager refactor
-   that promotes *all* qmd errors to re-raise.
-
-The pattern mirrors ``tests/unit/library/test_qmd_hook.py``: a real
-``lib_with_git`` fixture (so ``atomic_commit`` lands), the file written
-to disk (so ``git add`` succeeds), and ``monkeypatch.setattr(
-"lies.library.writer.qmd_embed", ...)`` which both triggers the
-:PEP:`562` ``__getattr__`` (writes the real function into module
-globals) and replaces it with the stub.
-"""
+"""LibraryWriter surfaces QmdLockBusy distinctly from generic qmd-spawn failures."""
 
 from __future__ import annotations
 
@@ -153,3 +122,53 @@ def test_writer_swallows_other_qmd_failures_unchanged(
     # None on a no-op; either is acceptable here because the contract is
     # "no exception" and "derived-index outage does not roll back".
     assert result is None or isinstance(result, str)
+
+
+def test_the_reraise_carries_the_lock_path(
+    lib_with_git: Library,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The re-raised ``QmdLockBusy`` names the inode, not just the holder."""
+    monkeypatch.setenv("LIES_QMD_LOCK_PATH", str(tmp_path / "qmd.lock"))
+    inode = str(tmp_path / "qmd.lock")
+    sentinel = QmdLockBusy(
+        holder_pid=4242,
+        waited_s=120.0,
+        max_s=120.0,
+        lock_path=inode,
+    )
+    assert sentinel.lock_path == inode, "precondition: the class stores the path"
+
+    coll_dir = lib_with_git.collections_root / "claude_platform"
+    coll_dir.mkdir(parents=True, exist_ok=True)
+    mirror = coll_dir / "x.md"
+    mirror.write_text("body\n")
+
+    writer = LibraryWriter(lib_with_git)
+    monkeypatch.setattr("lies.library.writer.qmd_embed", MagicMock(side_effect=sentinel))
+
+    with pytest.raises(QmdLockBusy) as excinfo:
+        writer.commit(
+            [mirror.relative_to(lib_with_git.git_root)],
+            message="t",
+            qmd_collection="claude_platform",
+        )
+
+    raised = excinfo.value
+    assert raised.lock_path == inode, (
+        f"the re-raise dropped lock_path: got {raised.lock_path!r}, want "
+        f"{inode!r}. writer.commit is the one production raiser that "
+        f"re-wraps an exception it caught, so the value is already in hand."
+    )
+    # The rest of the triad must survive too — a fix that threads the
+    # path through but rebuilds the message from defaults would be worse
+    # than the original.
+    assert raised.holder_pid == 4242
+    assert raised.waited_s == 120.0
+    assert raised.max_s == 120.0
+    text = str(raised)
+    assert inode in text, f"the message must name the contended inode: {text!r}"
+    assert "4242" in text and "120" in text, (
+        f"the message must still name the holder, the wait and the budget: {text!r}"
+    )

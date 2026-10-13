@@ -58,7 +58,7 @@ def test_get_qmd_url_default() -> None:
     daemon: a live daemon reported as absent, with the fix ("start it")
     being the one action that would change nothing.
     """
-    assert config.get_qmd_url() == "http://127.0.0.1:8181/mcp"
+    assert config.get_qmd_url() == "http://localhost:8181/mcp"
 
 
 def test_every_qmd_url_default_is_sourced_from_the_one_config_constant() -> None:

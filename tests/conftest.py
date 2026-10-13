@@ -6,6 +6,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -15,6 +16,11 @@ from lies.constants import LIES_DATA_SUBDIR
 from lies.wiki.wiki import Wiki
 
 FIXTURE_WIKI = Path(__file__).parent / "fixtures" / "sample-wiki"
+
+
+def qmd_test_lock_path() -> Path:
+    """The one qmd flock inode every test in this session contends on."""
+    return Path(tempfile.gettempdir()) / f"lies-test-qmd-{os.getuid()}-{os.getpid()}.lock"
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
@@ -83,6 +89,37 @@ def models_for_tests(value: Model | str) -> dict[str, Model | str]:
     from lies.providers import AGENT_ROSTER
 
     return {name: value for name in AGENT_ROSTER}
+
+
+def attest_librarian_pages(
+    monkeypatch: pytest.MonkeyPatch,
+    agent: object,
+    question: str,
+    slugs: list[str] | tuple[str, ...],
+) -> None:
+    """Record ``slugs`` on the current dispatch the way the ``search`` tool does.
+
+    A test that replaces the librarian's ``run_sync`` outright has
+    replaced the *only* caller of its registered tools, so the
+    dispatch's :class:`SearchDiagnostics` stays empty and
+    ``with_search_diagnostics`` drops every excerpt in the canned
+    bundle as unattested — correct, and not what these tests are
+    about. Driving the real ``search`` closure keeps the canned bundle
+    honest: the paths are recorded by the tool, not asserted by the
+    test.
+    """
+    monkeypatch.setattr(
+        "lies.mcp.search.search",
+        lambda **kwargs: {
+            "hits": [{"path": slug} for slug in slugs],
+            "searched_scope": [],
+            "no_coverage": False,
+            "transient": False,
+            "fallback_reason": None,
+        },
+    )
+    toolset = agent._function_toolset  # ty: ignore[unresolved-attribute]
+    toolset.tools["search"].function(ctx=None, question=question)
 
 
 @pytest.fixture(autouse=True)
@@ -155,19 +192,8 @@ def _isolated_xdg(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     # Pin it to one path shared by every test in the session, which is
     # what production gets. It is deliberately NOT `xdg_root / "state"`:
     # that would reproduce the bug in a different guise.
-    # Per-user *and* per-session. `gettempdir()` is shared on a
-    # multi-account CI host, so the uid keeps two accounts off one path.
-    # The pid keeps two *sessions* off one path too: a per-uid-only key
-    # made every pytest process owned by this user contend, so running
-    # the unit suite while any other `lies` work was live produced six
-    # 30-second hangs and six `QmdLockBusy` failures that read as product
-    # bugs. Intra-session sharing — the property that actually prevents
-    # two tests embedding concurrently — is untouched: one process, one
-    # path, every test in it.
-    monkeypatch.setenv(
-        "LIES_QMD_LOCK_PATH",
-        str(Path(tempfile.gettempdir()) / f"lies-test-qmd-{os.getuid()}-{os.getpid()}.lock"),
-    )
+    # Per-user *and* per-session; see ``qmd_test_lock_path``.
+    monkeypatch.setenv("LIES_QMD_LOCK_PATH", str(qmd_test_lock_path()))
     # The qmd sidecar is host-global: it records which ``data-dir`` the
     # *machine's* daemon was started with, at
     # ``~/.local/share/qmd/mcp.data-dir``. Redirect it to the per-test
@@ -175,9 +201,9 @@ def _isolated_xdg(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     # cannot leave a pytest temp path in the operator's real sidecar.
     #
     # It is not cosmetic. A stray sidecar makes
-    # ``check_data_dir_match(library_git_root())`` report False, and the
+    # ``check_scope_match(library_git_root())`` report False, and the
     # next ``ensure_qmd_daemon`` then concludes a foreign daemon is
-    # serving and reaps a healthy one; ``_recycle_data_dir`` would then
+    # serving and reaps a healthy one; ``_recycle_scope`` would then
     # respawn against the same wrong path. Observed twice on this host,
     # from a unit test and from an integration test, before this landed.
     from lies.qmd import daemon as _qmd_daemon
@@ -237,6 +263,23 @@ def _isolated_xdg(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     # actual HTTP call — every test that exercises ``ground()`` swaps
     # out ``librarian_agent`` before ``run_sync`` fires.
     monkeypatch.setenv("MINIMAX_API_KEY", "test-key-not-real")
+
+
+def release_qmd_test_lock() -> None:
+    """Unlink this session's qmd lock triad: lock, heartbeat, pid sidecar."""
+    lock_path = qmd_test_lock_path()
+    for path in (lock_path, Path(f"{lock_path}.state.json"), Path(f"{lock_path}.pid")):
+        try:
+            path.unlink()
+        except OSError:
+            pass
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _clean_the_session_qmd_lock() -> Iterator[None]:
+    """Session teardown for this session's qmd flock triad."""
+    yield
+    release_qmd_test_lock()
 
 
 @pytest.fixture

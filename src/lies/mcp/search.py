@@ -1,19 +1,16 @@
 """search MCP tool — single-batch hybrid qmd query against the daemon.
 
 The read path goes through ``lies.qmd.access.daemon_tool`` so the
-collection filter is a true push-down. The previous CLI shape ranked
-globally and dropped rows whose first ``/`` segment was outside the
-resolved scope, starving a multi-collection query to whichever
-collection ranked highest.
+collection filter is a true push-down rather than a post-filter.
 
-Two envelopes the envelope must keep separate:
+Two envelopes the result must keep separate:
 
 - ``no_coverage`` — *this search found nothing*. A claim about the corpus.
 - ``transient`` — *this search did not finish*. A claim about the run.
 
 A *down* daemon (``QmdDaemonUnavailable``) is re-raised so the operator
 must act; folding it into ``no_coverage=True`` is the silent-failure
-mode this branch exists to remove.
+mode this module exists to remove.
 """
 
 from __future__ import annotations
@@ -24,6 +21,7 @@ from typing import Any
 
 from fastmcp.tools import Tool
 
+from lies.lock_errors import QmdLockBusy
 from lies.qmd import access
 from lies.query.tag_expr import (
     parse,
@@ -57,17 +55,11 @@ def _resolve_tag_collections(tag_expr: str | None) -> tuple[list[str], list[str]
     resolves identically; ``c:`` is a strict collection-name match. Per
     the F15 dispatch in :func:`lies.query.synthesizer._collections_matching`,
     a ``t:``/bare atom matches a collection when the atom is one of its
-    tags *or* the collection's own name — the implicit self-tag — so
-    ``plugins`` and ``t:plugins`` select the same collections and a bare
-    collection name still reaches that collection.
+    tags *or* the collection's own name — the implicit self-tag.
 
     The resolution itself is that shared function rather than a second
-    implementation. ``search`` and ``ground``/``lib_ask`` answer the same
-    filter, and the ``ground`` prompt body already routes ``+tag`` here,
-    so a filter the archivist accepts is a filter this tool accepts.
-    Previously ``t:`` atoms were dropped here, which made a tag-qualified
-    query an unknown tag with an empty scope, and before that silently
-    widened to every registered collection.
+    implementation, so a filter ``ground``/``lib_ask`` accepts is a
+    filter this tool accepts.
 
     On a parse error, an atom in neither vocabulary, or a tree that
     selects no collection, the whole ``tag_expr`` is surfaced as one
@@ -135,12 +127,11 @@ def _run_blocking(coro: Any) -> Any:
 def _normalize_daemon_hit(row: dict[str, Any]) -> dict[str, Any]:
     """Map a daemon ``query`` row onto the existing internal ``path`` contract.
 
-    The daemon returns ``file`` (``displayPath``). Downstream
-    consumers read ``path``; the path is ``<collection>/<page>`` form,
-    which is what ``displayPath`` already is. Docids are not the
-    path: ``docid`` is ``documents.hash[0:6]`` with three live
-    collisions among 5987 active documents, so a path keyed by
-    docid silently returns the wrong file on collision.
+    The daemon returns ``file`` (``displayPath``), which is already the
+    ``<collection>/<page>`` form downstream consumers read. Docids are
+    not the path: ``docid`` is ``documents.hash[0:6]`` and has live
+    collisions among 5987 active documents, so a path keyed by docid
+    silently returns the wrong file on collision.
     """
     file_value = row.get("file")
     if not isinstance(file_value, str) or not file_value:
@@ -241,13 +232,10 @@ def _search_impl(
 
     if not scope:
         # ``tag_expr is None`` widens to the whole library — the
-        # caller did not narrow, so every collection is in scope.
-        # ``tag_expr is not None`` and resolved to nothing is a real
-        # scope miss: the caller asked for a tag-only filter (e.g.
-        # ``t:foo``), and ``_resolve_tag_collections`` drops
-        # ``t:``-qualifier atoms by design. Widening silently here
-        # would answer from the whole library with no word to the
-        # user about the dropped tag.
+        # caller did not narrow, so every collection is in scope. A
+        # ``tag_expr`` that resolved to nothing is a real scope miss:
+        # widening silently would answer from the whole library with no
+        # word to the user about the dropped tag.
         if tag_expr is not None:
             return {
                 "hit": None,
@@ -274,11 +262,10 @@ def _search_impl(
         }
 
     # Pre-check against the daemon: the daemon answers an unknown
-    # collection with an empty result and **no error**. A name in
-    # the LIES registry can be absent from qmd (or have been dropped
-    # by ``qmd cleanup``); the daemon's ``status`` is the binding
-    # truth. ``validate_scope`` is the shared seam so ``search`` and
-    # ``ground`` cannot drift on this rule.
+    # collection with an empty result and **no error**. A name in the
+    # LIES registry can be absent from qmd; the daemon's ``status`` is
+    # the binding truth. ``validate_scope`` is the shared seam so
+    # ``search`` and ``ground`` cannot drift on this rule.
     try:
         scope, unknown = _validate_scope_blocking(scope)
     except access.QmdDaemonUnavailable:
@@ -327,12 +314,10 @@ def _search_impl(
         }
     except QmdTimeoutError as exc:
         # CLI-side timeout fallback — does not fire on this path today.
-        # The seam raises ``QmdDaemonWedged`` (recycle-and-raise) for a
-        # daemon-side timeout, which is caught above; ``QmdTimeoutError``
-        # is a CLI-only class and would only surface if a future
-        # re-routed this call to a subprocess. Kept as a defensive
-        # envelope; the honest answer is ``transient=True,
-        # no_coverage=False`` regardless.
+        # The seam raises ``QmdDaemonWedged`` for a daemon-side timeout,
+        # which is caught above; ``QmdTimeoutError`` is a CLI-only class.
+        # The honest answer is ``transient=True, no_coverage=False``
+        # regardless.
         detail = ""
         if exc.stderr:
             detail = f"; last qmd output: {_decode(exc.stderr)!r}"
@@ -344,6 +329,24 @@ def _search_impl(
             "transient": True,
             "searched_scope": scope,
             "fallback_reason": f"qmd timed out after {_current_timeout()}s{detail}",
+        }
+    except QmdLockBusy as exc:
+        # Ahead of the untyped arm, and the site where it is reachable:
+        # the daemon answered fine and this call queued, so the action
+        # is wait, not restart. The budget is ``exc.max_s``, not
+        # ``_current_timeout()`` — different clocks.
+        return {
+            "hit": None,
+            "hits": [],
+            "unknown_tags": [],
+            "no_coverage": False,
+            "transient": True,
+            "searched_scope": scope,
+            "fallback_reason": (
+                f"queued behind another qmd operation and gave up after "
+                f"{exc.max_s}s; wait and retry rather than restarting "
+                f"the daemon ({exc})"
+            ),
         }
     except Exception as exc:  # noqa: BLE001
         # Anything outside the typed taxonomy (``QmdDaemonUnavailable``
@@ -364,13 +367,11 @@ def _search_impl(
     no_coverage = not hits
     hit = hits[0] if hits else None
 
-    # A registered-but-empty collection (``wiki_default``, 0 files)
-    # is in the daemon's collection list with zero documents. The
-    # search against it returns zero hits, which a caller reading
-    # ``no_coverage=True`` would read as "the corpus has nothing".
-    # The honest answer keeps ``no_coverage=True`` and adds a
-    # ``fallback_reason`` that names the empty collection. Only
-    # fires when the scope is a single known-but-empty collection.
+    # A registered-but-empty collection is in the daemon's collection
+    # list with zero documents, so the search against it returns zero
+    # hits, which a caller reading ``no_coverage=True`` would read as
+    # "the corpus has nothing". The honest answer keeps
+    # ``no_coverage=True`` and names the empty collection.
     if no_coverage and len(scope) == 1:
         from lies.library.registry import library_collection_names
 

@@ -17,6 +17,8 @@ memory-related errors will stop catching ``WikiLockBusy``; use
 
 from __future__ import annotations
 
+from pathlib import Path
+
 
 class WikiFlockError(Exception):
     """Base for memory-flock-specific errors."""
@@ -56,18 +58,24 @@ class WikiFlockIndeterminate(WikiFlockError):
 
 
 class QmdLockBusy(WikiFlockError):
-    """Another process holds the site-wide qmd CLI flock; 30 s wait exhausted.
+    """Another process holds the site-wide qmd flock past the wait budget.
 
-    Distinct from WikiLockBusy because (a) the qmd flock is site-wide, not
-    per-wiki; (b) the operator recovery is to wait and retry the operation
-    (concurrent CLI subprocesses are expected transient contention), not
-    to run ``lies flock qmd force-repair``.
+    The budget belongs to the raiser, not to this class: the CLI
+    decorator polls for 30 s and the daemon query path for 120 s,
+    overridable per call with ``LIES_QMD_QUERY_LOCK_WAIT``. Read
+    ``max_s`` off the instance.
+
+    Distinct from WikiLockBusy because the qmd flock is site-wide, not
+    per-wiki, and the operator recovery is to wait and retry rather than
+    ``lies flock qmd force-repair``. Nothing was dispatched, so there is
+    no daemon state to recycle.
 
     Attributes:
-        holder_pid: PID of the live holder, when known. ``None`` if unknown
-            (e.g., the contention pre-dates the heartbeat envelope).
+        holder_pid: PID of the live holder, when known. ``None`` if unknown.
         waited_s: Wall-clock seconds spent polling before raising.
-        max_s: Configured timeout (default ``30.0`` per the spec).
+        max_s: The budget *that raiser* waited for, in seconds.
+        lock_path: The inode the wait was spent on, when the raise site
+            knows it. ``None`` only for a hand-built test instance.
     """
 
     def __init__(
@@ -76,13 +84,19 @@ class QmdLockBusy(WikiFlockError):
         *,
         waited_s: float | None = None,
         max_s: float = 30.0,
+        lock_path: str | Path | None = None,
         message: str | None = None,
     ) -> None:
         self.holder_pid = holder_pid
         self.waited_s = waited_s
         self.max_s = max_s
+        self.lock_path = str(lock_path) if lock_path is not None else None
         if message is None:
+            # Naming the inode is the one operator step that tells a
+            # contended host from a broken one.
+            where = f" on {self.lock_path}" if self.lock_path else ""
             message = (
-                f"qmd flock contention: holder PID {holder_pid}, waited {waited_s}s, max {max_s}s"
+                f"qmd flock contention{where}: holder PID {holder_pid}, "
+                f"waited {waited_s}s, max {max_s}s"
             )
         super().__init__(message)

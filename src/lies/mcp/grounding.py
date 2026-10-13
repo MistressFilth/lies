@@ -26,6 +26,7 @@ if TYPE_CHECKING:
 
 
 from lies.agents.librarian import librarian_agent  # noqa: E402,F401
+from lies.lock_errors import QmdLockBusy
 
 
 _log = logging.getLogger(__name__)
@@ -92,6 +93,10 @@ class ArchivistDigest:
             searched nothing, which is not a statement about the
             corpus.
         no_library: True when the library is uninitialized.
+        fallback_reason: Why a transient dispatch failed, in the words
+            of the failure. It exists because ``transient`` says *that*
+            retrieval failed, not *how*: a wedged daemon and a contended
+            lock want different operator actions.
     """
 
     question: str
@@ -104,6 +109,7 @@ class ArchivistDigest:
     unserved_scope: list[str] = field(default_factory=list)
     no_library: bool = False
     transient: bool = False
+    fallback_reason: str | None = None
 
 
 class ArchivistCoverageError(Exception):
@@ -435,7 +441,9 @@ async def ground(
     from lies.agents.librarian import (
         LibrarianDeps,
         LibrarianOutput,
+        SearchDiagnostics,
         register_librarian_tools,
+        with_search_diagnostics,
     )
     from lies.qmd import access
 
@@ -454,6 +462,28 @@ async def ground(
                 else "ground: qmd daemon wedged during fan-out",
                 last_output=exc.last_output,
             ) from exc
+        except QmdLockBusy as exc:
+            # The corpus claim is equally unfounded, so this is the
+            # standard transient digest — with the reason, which is what
+            # tells the reader they queued rather than that the daemon
+            # is unhealthy.
+            _log.warning(
+                "ground: fan-out waited out the qmd lock: %s: %s",
+                type(exc).__name__,
+                exc,
+            )
+            return ArchivistDigest(
+                question=question,
+                tag_expr=resolved_tag_expr,
+                exclude_expr=exclude_expr,
+                citations=[],
+                no_coverage=False,
+                distinct_pages=0,
+                searched_scope=searched_scope_list,
+                no_library=False,
+                transient=True,
+                fallback_reason=f"qmd lock busy: {exc}",
+            )
         except Exception as exc:
             # A dispatch failure is a process claim, not a corpus
             # claim. ``transient=True`` distinguishes "the daemon
@@ -502,6 +532,27 @@ async def ground(
                 else "ground: qmd daemon wedged during tagged fan-out",
                 last_output=exc.last_output,
             ) from exc
+        except QmdLockBusy as exc:
+            # Same reason-carrying transient digest as the unscoped arm
+            # above; pinned separately so the two fast-paths cannot drift
+            # apart on the failure envelope.
+            _log.warning(
+                "ground: tagged fan-out waited out the qmd lock: %s: %s",
+                type(exc).__name__,
+                exc,
+            )
+            return ArchivistDigest(
+                question=question,
+                tag_expr=resolved_tag_expr,
+                exclude_expr=exclude_expr,
+                citations=[],
+                no_coverage=False,
+                distinct_pages=0,
+                searched_scope=searched_scope_list,
+                no_library=False,
+                transient=True,
+                fallback_reason=f"qmd lock busy: {exc}",
+            )
         except Exception as exc:
             _log.error(
                 "ground: tagged fan-out dispatch failed: %s: %s",
@@ -532,6 +583,7 @@ async def ground(
         # exception branch returns ``no_coverage=True`` on any tool-side
         # failure.
         agent = None
+        diagnostics = SearchDiagnostics()
         try:
             from lies.mcp.resolution import resolve_wiki
             from lies.memory.service import WikiMemoryService
@@ -542,6 +594,7 @@ async def ground(
                 agent,
                 wiki=resolved_wiki,
                 memory_service=WikiMemoryService(resolved_wiki),
+                search_diagnostics=diagnostics,
             )
         except Exception as wiring_exc:
             warnings.warn(
@@ -561,7 +614,7 @@ async def ground(
 
         try:
             librarian_result = agent.run_sync(question, deps=deps)
-            out = librarian_result.output
+            out = with_search_diagnostics(librarian_result.output, diagnostics)
         except Exception as exc:
             _log.error(
                 "ground: librarian dispatch failed: %s: %s",
@@ -631,4 +684,8 @@ async def ground(
         searched_scope=searched,
         unserved_scope=unserved,
         no_library=False,
+        # The bundle's own verdict, so an attestation drop on the legacy
+        # path reads as "the run failed" rather than as a clean miss.
+        transient=bool(getattr(out, "transient", False)),
+        fallback_reason=getattr(out, "fallback_reason", None),
     )

@@ -71,6 +71,28 @@ class _IndeterminateMarker(Exception):
         self.holder_started_at = holder_started_at
 
 
+def ensure_lock_parent(path: Path) -> None:
+    """Creates ``path.parent`` if it does not exist.
+
+    Split out for polling callers, which re-run the whole acquire once
+    per poll interval and must not pay the ``mkdir`` each time.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+
+def _create_exclusive(path: Path) -> int:
+    """``O_CREAT | O_EXCL`` create, healing a missing parent first.
+
+    ``FileNotFoundError`` never escapes; ``FileExistsError`` is the
+    contention signal every caller already handles.
+    """
+    try:
+        return os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+    except FileNotFoundError:
+        ensure_lock_parent(path)
+        return os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+
+
 def acquire_create_lock(  # type: ignore[no-untyped-def]
     path: Path,
     *,
@@ -80,6 +102,7 @@ def acquire_create_lock(  # type: ignore[no-untyped-def]
     pid_alive_fn: Callable[[int], Literal["alive", "dead", "indeterminate"]] | None = None,
     force_repair: bool = False,
     self_acquire_is_stale: bool = True,
+    parent_prepared: bool = False,
 ) -> AcquireResult | None:
     """Atomically create ``path``. Return ``AcquireResult`` on win, ``None`` on contention.
 
@@ -87,6 +110,11 @@ def acquire_create_lock(  # type: ignore[no-untyped-def]
     existing create-lock as a stale holder when its stored PID is
     dead (or its heartbeat is older than ``max_age_s``) and reap + retry
     once. See the module docstring for the exception policy.
+
+    ``parent_prepared=True`` says the caller has already run
+    :func:`ensure_lock_parent` for this path. The flag is only an
+    optimisation: :func:`_create_exclusive` heals a parent that vanished
+    underneath a wait on every create it performs.
 
     The returned ``AcquireResult.status`` is one of four outcomes:
 
@@ -148,9 +176,10 @@ def acquire_create_lock(  # type: ignore[no-untyped-def]
     def _wrap(fd: int, status: Literal["acquired", "dead_reaped"] = "acquired") -> AcquireResult:
         return AcquireResult(fd=fd, status=status)
 
-    path.parent.mkdir(parents=True, exist_ok=True)
+    if not parent_prepared:
+        ensure_lock_parent(path)
     try:
-        return _wrap(os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644))
+        return _wrap(_create_exclusive(path))
     except FileExistsError:
         if pid_path is not None and state_json_path is not None:
             if force_repair:
@@ -158,10 +187,7 @@ def acquire_create_lock(  # type: ignore[no-untyped-def]
                 # raise WikiFlockUnrepairable if the retry still loses.
                 _reap_files(path, pid_path, state_json_path)
                 try:
-                    return _wrap(
-                        os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644),
-                        status="dead_reaped",
-                    )
+                    return _wrap(_create_exclusive(path), status="dead_reaped")
                 except FileExistsError:
                     return None
             try:
@@ -175,10 +201,7 @@ def acquire_create_lock(  # type: ignore[no-untyped-def]
                 ):
                     # Reap removed the create-lock; retry the create once.
                     try:
-                        return _wrap(
-                            os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644),
-                            status="dead_reaped",
-                        )
+                        return _wrap(_create_exclusive(path), status="dead_reaped")
                     except FileExistsError:
                         return None
             except _IndeterminateMarker as marker:
@@ -207,7 +230,7 @@ def acquire_create_lock(  # type: ignore[no-untyped-def]
         except FileNotFoundError:
             pass
         try:
-            return _wrap(os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644))
+            return _wrap(_create_exclusive(path))
         except FileExistsError:
             return None
 

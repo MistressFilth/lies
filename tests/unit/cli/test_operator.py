@@ -21,29 +21,26 @@ from lies.cli.operator import _qmd_flock_app  # noqa: E402
 def test_lies_flock_qmd_recycle_invokes_recycle_helper(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """`lies flock qmd recycle --name X` calls ``recycle_qmd_daemon`` and prints QmdState.
-
-    Also asserts the URL the recycle received matches the value the
-    CLI reads from ``get_qmd_url()`` — not just that *some* string
-    flowed through.
-    """
+    """`flock qmd recycle` reaches the real helper with the canonical scope and `get_qmd_url()`."""
     from lies.config import get_qmd_url
-    from lies.qmd.daemon import QmdState
+    from lies.qmd.daemon import QmdState, _canonical_scope
 
     captured: dict[str, object] = {}
 
-    async def _fake_recycle(*, data_dir, daemon_url, ready_timeout=30.0, **kwargs):
-        captured["data_dir"] = data_dir
+    # Keyword-only and spelled as the real signature: an earlier
+    # ``data_dir=`` fake kept passing after the rename only because
+    # nothing slow-tested this file, and then raised TypeError here.
+    async def _fake_recycle(*, scope, daemon_url, ready_timeout=30.0, **kwargs):
+        captured["scope"] = scope
         captured["daemon_url"] = daemon_url
         captured["ready_timeout"] = ready_timeout
         return QmdState(True, True, 42, "manual recycle complete")
 
     monkeypatch.setattr("lies.qmd.daemon.recycle_qmd_daemon", _fake_recycle)
 
-    fake_wiki = type("W", (), {"data_root": "/fake/data/root"})()
     monkeypatch.setattr(
         "lies.wiki.wiki.Wiki.require",
-        classmethod(lambda cls, name: fake_wiki),
+        classmethod(lambda cls, name: type("W", (), {"data_root": "/fake/data/root"})()),
     )
 
     # Compute the expected URL the same way the CLI will (via the
@@ -62,7 +59,9 @@ def test_lies_flock_qmd_recycle_invokes_recycle_helper(
     result = runner.invoke(_qmd_flock_app, ["recycle", "--name", "default"])
     assert result.exit_code == 0, (result.stdout or "") + (result.stderr or "")
     assert "manual recycle complete" in (result.stdout or "")
-    assert captured["data_dir"] == "/fake/data/root"
+    # The scope is canonical, not the wiki's ``data_root``: ``operator.up``
+    # records the same value, and a mismatch is what reaps a live daemon.
+    assert captured["scope"] == _canonical_scope()
     assert captured["daemon_url"] == expected_url, (
         f"recycle was called with daemon_url={captured['daemon_url']!r}, "
         f"expected get_qmd_url()={expected_url!r}"

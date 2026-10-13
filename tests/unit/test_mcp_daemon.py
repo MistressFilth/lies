@@ -5,6 +5,8 @@ import signal
 import socket
 import subprocess
 import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -320,13 +322,111 @@ def test_stop_terminates_a_cooperative_child(tmp_path: Path) -> None:
     )
     daemon.write_record(wiki, _record(pid=proc.pid))
     try:
-        result = daemon.stop_daemon(wiki, grace=5.0)
+        # force=True: this pins the stop mechanism (SIGTERM then a clear
+        # record), not the shared-daemon gate, which needs a real
+        # listener and has its own tests below. Without it the outcome
+        # depends on whether anything happens to hold :8737 on the host.
+        result = daemon.stop_daemon(wiki, grace=5.0, force=True)
         assert result.action == "stopped"
         assert result.signal == "SIGTERM"
         assert daemon.read_record(wiki) is None
     finally:
         proc.kill()
         proc.wait(timeout=5)
+
+
+@contextmanager
+def _serving_socket() -> Iterator[int]:
+    """Hold a listening socket in *this* process; yield its port."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        sock.listen(8)
+        yield sock.getsockname()[1]
+
+
+def _start_listener(port: int) -> subprocess.Popen[bytes]:
+    """Spawn a child that binds ``port``, listens, and sleeps."""
+    return subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "import socket,time\n"
+            "s=socket.socket()\n"
+            "s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR,1)\n"
+            f"s.bind(('127.0.0.1',{port}))\n"
+            "s.listen(8)\n"
+            "time.sleep(60)\n",
+        ]
+    )
+
+
+def test_stop_refuses_while_the_daemon_is_serving(tmp_path: Path) -> None:
+    """A serving daemon is not stopped without ``force``."""
+    wiki = _wiki(tmp_path)
+    with _serving_socket() as port:
+        daemon.write_record(wiki, _record(pid=999_999_999, port=port))
+        with pytest.MonkeyPatch.context() as mp:
+            # No real daemon owns this record, so pin staleness False:
+            # the predicate under test is the serving check, not identity.
+            mp.setattr(daemon, "is_stale", lambda _r: False)
+            with pytest.raises(daemon.DaemonInUse) as exc:
+                daemon.stop_daemon(wiki, grace=0.05)
+        message = str(exc.value)
+        assert "--force" in message
+        assert "shared" in message
+        # A refusal is not a stop: the record survives.
+        assert daemon.read_record(wiki) is not None
+
+
+def test_stop_with_force_stops_a_serving_daemon(tmp_path: Path) -> None:
+    """``force=True`` is the escape hatch, and it actually stops it."""
+    wiki = _wiki(tmp_path)
+    with _listening_port() as port:
+        proc = _start_listener(port)
+        try:
+            daemon.write_record(wiki, _record(pid=proc.pid, port=port))
+            with pytest.MonkeyPatch.context() as mp:
+                mp.setattr(daemon, "is_stale", lambda _r: False)
+                result = daemon.stop_daemon(wiki, grace=5.0, force=True)
+            assert result.action == "stopped"
+            assert daemon.read_record(wiki) is None
+        finally:
+            proc.kill()
+            proc.wait(timeout=5)
+
+
+def test_stop_does_not_refuse_when_the_daemon_is_not_serving(tmp_path: Path) -> None:
+    """A daemon that is not answering its socket is stopped normally."""
+    wiki = _wiki(tmp_path)
+    with _listening_port() as port:
+        # Nothing is bound to `port`, so the predicate reads False.
+        proc = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(60)", "lies.cli", "_serve"]
+        )
+        try:
+            daemon.write_record(wiki, _record(pid=proc.pid, port=port))
+            result = daemon.stop_daemon(wiki, grace=5.0)
+            assert result.action == "stopped"
+        finally:
+            proc.kill()
+            proc.wait(timeout=5)
+
+
+def test_daemon_is_serving_predicate_reads_the_record() -> None:
+    """The predicate follows the record's port, and flips with liveness."""
+    with _serving_socket() as port:
+        assert daemon._daemon_is_serving(_record(port=port)) is True
+    # Same record, same port, nothing listening now.
+    assert daemon._daemon_is_serving(_record(port=port)) is False
+
+
+@contextmanager
+def _listening_port() -> Iterator[int]:
+    """Bind an ephemeral port, close it, then yield its number."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        bound = sock.getsockname()[1]
+    yield bound
 
 
 def test_stop_escalates_to_sigkill(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -365,7 +465,7 @@ def test_stop_escalates_to_sigkill(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     monkeypatch.setattr(daemon, "read_record", lambda _w: _record(pid=pid))
     monkeypatch.setattr(daemon, "clear_record", lambda _w: None)
 
-    result = daemon.stop_daemon(wiki, grace=0.05)
+    result = daemon.stop_daemon(wiki, grace=0.05, force=True)
 
     assert result.action == "stopped"
     assert result.signal == "SIGKILL"

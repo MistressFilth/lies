@@ -38,9 +38,16 @@ sync: ## Update environment to match current config.
 
 .PHONY: unit-test
 unit-test: ## Run unit tests only.
-	$(PYTEST) $(TESTS)/unit/ \
-		--ignore=$(abspath $(TESTS)/unit/cli/test_query_cli.py) \
-		--ignore=$(abspath $(TESTS)/mcp/test_tools.py)
+# `-p qmd_unit_network_audit` is load-bearing, not a report: the plugin's
+# `pytest_sessionfinish` exits non-zero on any connection to 8181/9000
+# that is not named in its `ACCEPTED` list. A unit test that dials a real
+# address used to be caught only when a human remembered to pass `-p`,
+# and this branch produced three rounds of "looks like a guard, is not"
+# artifacts because a warning in a log reads like a pass. The pre-commit
+# hook runs this target, so this is the commit gate.
+	PYTHONPATH=tools:$(PYTHONPATH) $(PYTEST) $(TESTS)/unit/ \
+		-p qmd_unit_network_audit \
+		--ignore=$(abspath $(TESTS)/unit/cli/test_query_cli.py)
 
 .PHONY: features-test
 features-test: ## Run behavior/feature/integration tests (requires INTEGRATION=1).

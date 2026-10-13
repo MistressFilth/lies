@@ -474,6 +474,58 @@ def test_down_reports_the_signal(monkeypatch, tmp_path: Path) -> None:
     assert "SIGTERM" in result.stdout
 
 
+def test_down_refuses_a_serving_daemon_and_says_how_to_override(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """The CLI layer of the shared-daemon guard, which had no coverage."""
+    from lies.mcp import daemon
+
+    name = "cli-down-in-use"
+    _register_wiki(name)
+
+    def _refuse(*a: object, **k: object):
+        raise daemon.DaemonInUse(
+            "the LIES MCP daemon at http://127.0.0.1:8737 (pid 7) is serving. "
+            "It is shared: every MCP client on this host holds a long-lived "
+            "stream to it. Stop it anyway with `lies mcp down --force` if that "
+            "is what you mean."
+        )
+
+    monkeypatch.setattr(daemon, "stop_daemon", _refuse)
+    result = runner.invoke(app, ["mcp", "down", "--name", name])
+
+    assert result.exit_code == 1, (
+        "a refusal must exit 1 so a shell caller can branch on it; "
+        f"got {result.exit_code} with {result.output!r}"
+    )
+    # Click 8.2 split stderr out of `.output`; tolerate either arrangement.
+    combined = result.output + (result.stderr if result.stderr_bytes else "")
+    assert "--force" in combined, combined
+    assert "shared" in combined, combined
+    assert "stopped daemon" not in result.stdout, "a refusal is not a stop, and must not print one"
+
+
+def test_down_threads_force_through_to_stop_daemon(monkeypatch, tmp_path: Path) -> None:
+    """``--force`` has to reach ``stop_daemon``, or the guard has no exit."""
+    from lies.mcp import daemon
+
+    name = "cli-down-force-threading"
+    _register_wiki(name)
+    seen: list[bool] = []
+
+    def _capture(*a: object, **k: object):
+        seen.append(bool(k.get("force")))
+        return daemon.StopResult(action="stopped", pid=11, signal="SIGTERM")
+
+    monkeypatch.setattr(daemon, "stop_daemon", _capture)
+
+    assert runner.invoke(app, ["mcp", "down", "--name", name]).exit_code == 0
+    assert seen == [False], "the default must be an unforced stop"
+
+    assert runner.invoke(app, ["mcp", "down", "--force", "--name", name]).exit_code == 0
+    assert seen == [False, True], f"--force never reached stop_daemon; captured kwargs gave {seen}"
+
+
 def test_status_exits_1_when_stopped(monkeypatch, tmp_path: Path) -> None:
     from lies.mcp import daemon
 

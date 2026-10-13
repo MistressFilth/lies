@@ -29,6 +29,8 @@ from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import Any
 
+from lies.lock_errors import QmdLockBusy
+
 import pytest
 
 
@@ -131,6 +133,102 @@ def test_ground_fanout_dispatch_failure_surfaces_as_transient(
     assert digest.no_coverage is False
     assert digest.citations == []
     assert digest.no_library is False
+
+
+def _busy_lock_exception() -> QmdLockBusy:
+    """The real exception, carrying the three facts a reader needs."""
+    return QmdLockBusy(
+        holder_pid=4242,
+        waited_s=120.0,
+        max_s=120.0,
+        lock_path="/var/lib/lies/qmd.lock",
+    )
+
+
+def test_ground_a_busy_qmd_lock_is_transient_and_carries_its_reason(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A contended lock is a process claim, and it says which process claim."""
+    from lies.library import registry as reg_mod
+    from lies.library.registry import LibraryCollectionMeta
+    from lies.mcp import grounding
+    from lies.query import synthesizer as synth_mod
+
+    metas = [LibraryCollectionMeta(name="alpha", tags=())]
+    monkeypatch.setattr(reg_mod, "library_collection_metas", lambda: iter(metas))
+    monkeypatch.setattr(synth_mod, "_all_collection_names", lambda: ["alpha"])
+
+    async def _busy(*a: object, **kw: object) -> object:
+        raise _busy_lock_exception()
+
+    monkeypatch.setattr(grounding, "_fanout_unscoped", _busy)
+
+    digest = asyncio.run(grounding.ground("anything", tag_expr=None))
+
+    assert digest.transient is True
+    assert digest.no_coverage is False, "a busy lock is never a corpus claim"
+    assert digest.fallback_reason is not None
+    reason = digest.fallback_reason
+    assert reason.startswith("qmd lock busy: ")
+    assert "4242" in reason, f"the holder pid must survive to the reader; got {reason!r}"
+    assert "120" in reason, f"the budget must survive to the reader; got {reason!r}"
+    assert "/var/lib/lies/qmd.lock" in reason, f"the lock path must survive; got {reason!r}"
+
+
+def test_ground_a_busy_qmd_lock_on_the_tagged_path_carries_its_reason(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Same on the tagged fast-path, pinned separately so the two cannot drift."""
+    from lies.library import registry as reg_mod
+    from lies.library.registry import LibraryCollectionMeta
+    from lies.mcp import grounding
+    from lies.query import synthesizer as synth_mod
+    import lies.mcp.server as server_mod
+
+    metas = [LibraryCollectionMeta(name="alpha", tags=())]
+    monkeypatch.setattr(reg_mod, "library_collection_metas", lambda: iter(metas))
+    monkeypatch.setattr(synth_mod, "_all_collection_names", lambda: ["alpha"])
+    monkeypatch.setattr(
+        server_mod,
+        "_collect_available_tags_mcp",
+        lambda wiki=None: {"alpha", "c:alpha"},
+    )
+
+    async def _busy(*a: object, **kw: object) -> object:
+        raise _busy_lock_exception()
+
+    monkeypatch.setattr(grounding, "_query_tagged_collections", _busy)
+
+    digest = asyncio.run(grounding.ground("anything", tag_expr="c:alpha"))
+
+    assert digest.transient is True
+    assert digest.no_coverage is False
+    assert digest.fallback_reason is not None
+    assert "4242" in digest.fallback_reason
+
+
+def test_ground_an_ordinary_dispatch_failure_still_has_no_reason(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``fallback_reason`` is for named causes; the untyped arm keeps ``None``."""
+    from lies.library import registry as reg_mod
+    from lies.library.registry import LibraryCollectionMeta
+    from lies.mcp import grounding
+    from lies.query import synthesizer as synth_mod
+
+    metas = [LibraryCollectionMeta(name="alpha", tags=())]
+    monkeypatch.setattr(reg_mod, "library_collection_metas", lambda: iter(metas))
+    monkeypatch.setattr(synth_mod, "_all_collection_names", lambda: ["alpha"])
+
+    async def _boom(*a: object, **kw: object) -> object:
+        raise RuntimeError("bridge broke")
+
+    monkeypatch.setattr(grounding, "_fanout_unscoped", _boom)
+
+    digest = asyncio.run(grounding.ground("anything", tag_expr=None))
+
+    assert digest.transient is True
+    assert digest.fallback_reason is None
 
 
 def test_ground_tagged_fanout_dispatch_failure_surfaces_as_transient(
@@ -735,3 +833,80 @@ def test_an_exclude_only_ground_drops_the_collection_from_the_dispatch(
         "searched_scope must show the exclusion took effect, not the requested scope"
     )
     assert digest.exclude_expr is exclude, "the digest still reports the expression it was given"
+
+
+# --- the legacy F18 librarian path is attested too ---------------------
+#
+# `ground()` reaches this branch when a tag/exclude resolves to zero
+# collections, so neither fast path fires. It is an LLM dispatch like
+# any other and nothing downstream checks it, so a fabricated excerpt
+# used to ride straight into `ArchivistDigest.citations`.
+
+
+class _RecordingAgent:
+    """Fake librarian agent that records what the wiring handed it."""
+
+    def __init__(self, output: Any) -> None:
+        self._output = output
+        self.diagnostics: Any = None
+
+    def tool(self, **kwargs: Any) -> Any:
+        return lambda fn: fn
+
+    def run_sync(self, question: str, *, deps: Any) -> Any:
+        return SimpleNamespace(output=self._output)
+
+
+def _wiring_ok(monkeypatch: pytest.MonkeyPatch, agent: _RecordingAgent) -> None:
+    """Let the legacy path complete its tool wiring against a fake wiki."""
+    monkeypatch.setattr("lies.mcp.resolution.resolve_wiki", lambda name: SimpleNamespace(name="w"))
+    monkeypatch.setattr("lies.memory.service.WikiMemoryService", lambda wiki: SimpleNamespace())
+
+
+def _bundle_with(*slugs: str) -> Any:
+    from lies.agents.librarian import LibrarianOutput, PageExcerpt
+    from lies.markdown_spans import Span
+
+    excerpts = [
+        PageExcerpt(
+            collection=s.split("/", 1)[0],
+            slug=s,
+            title=s,
+            spans=[Span(heading_path=["H"], body="body", code_fence=False, start_line=1)],
+        )
+        for s in slugs
+    ]
+    return LibrarianOutput(
+        tag_expr="ghost",
+        exclude_expr=None,
+        excerpts=excerpts,
+        distinct_pages=len(excerpts),
+        no_coverage=False,
+    )
+
+
+def test_ground_legacy_path_drops_a_fabricated_excerpt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The F18 fallback attests its bundle like every other librarian dispatch."""
+    from lies.mcp import grounding
+
+    _registry_serving(monkeypatch, "switchyard")
+    monkeypatch.setattr(
+        "lies.mcp.server._collect_available_tags_mcp",
+        lambda wiki=None: {"ghost", "c:switchyard"},
+    )
+    agent = _RecordingAgent(_bundle_with("ghost/never-returned.md"))
+    monkeypatch.setattr(grounding, "librarian_agent", lambda model=None: agent)
+    _wiring_ok(monkeypatch, agent)
+
+    digest = asyncio.run(grounding.ground("anything", tag_expr="ghost", top_k=5))
+
+    assert digest.citations == [], (
+        f"no tool ever returned that page; citations were {digest.citations!r}"
+    )
+    assert digest.transient is True, (
+        "a wholly invented bundle is a fact about the run, never a clean miss"
+    )
+    assert digest.no_coverage is False
+    assert "ghost/never-returned.md" in (digest.fallback_reason or ""), digest.fallback_reason

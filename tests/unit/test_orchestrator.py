@@ -7,6 +7,20 @@ from pathlib import Path
 import pytest
 from pydantic_ai.models.test import TestModel
 
+# ``Orchestrator._build`` imports these lazily: building the capability
+# set costs ~70ms on a cold interpreter, and the per-test budget gate
+# measures the *call* phase, so whichever test constructs first absorbs
+# it. Declared here — a dependency of every test in this file, paid once
+# at collection. Same reasoning as ``test_excerpt_attestation.py``, and
+# unlike the pre-import ``tests/unit/conftest.py`` records reverting,
+# these touch no TestModel state.
+import pydantic_ai_harness.code_mode  # noqa: E402, F401
+import pydantic_ai_harness.dynamic_workflow  # noqa: E402, F401
+import pydantic_ai_harness.filesystem  # noqa: E402, F401
+import pydantic_ai_harness.memory  # noqa: E402, F401
+import pydantic_ai_harness.planning  # noqa: E402, F401
+import pydantic_ai_harness.subagents  # noqa: E402, F401
+
 from lies import config
 from lies.orchestrator import Orchestrator
 from tests.conftest import make_wiki, models_for_tests

@@ -383,3 +383,55 @@ def test_librarian_output_searched_scope_default_empty() -> None:
 
     out = LibrarianOutput(tag_expr=None, exclude_expr=None, excerpts=[], distinct_pages=0)
     assert out.searched_scope == []
+
+
+def test_librarian_output_fallback_reason_defaults_none() -> None:
+    """The bundle has a slot for the search envelope's reason."""
+    from lies.agents.librarian import LibrarianOutput
+
+    out = LibrarianOutput(tag_expr=None, exclude_expr=None, excerpts=[], distinct_pages=0)
+    assert out.fallback_reason is None
+
+    carried = LibrarianOutput(
+        tag_expr=None,
+        exclude_expr=None,
+        excerpts=[],
+        distinct_pages=0,
+        transient=True,
+        fallback_reason="qmd lock busy: holder PID 4242, waited 120.0s, max 120.0s",
+    )
+    assert carried.fallback_reason is not None
+    assert "4242" in carried.fallback_reason
+
+
+def test_the_prompt_tells_the_librarian_to_mirror_the_search_fallback_reason() -> None:
+    """The contract tells the model to copy the reason verbatim, in prose and schema."""
+    from lies.agents.librarian import LIBRARIAN_SYSTEM_PROMPT
+
+    prompt = LIBRARIAN_SYSTEM_PROMPT
+    assert "fallback_reason" in prompt
+    assert "verbatim" in prompt
+    assert "do not summarise" in prompt or "do not summarize" in prompt
+    # And it is in the JSON the validator is told to expect, not only in
+    # prose: a schema block without the field invites the model to omit
+    # it under output-retry pressure.
+    assert '"fallback_reason": null' in prompt
+
+
+def test_the_prompt_does_not_claim_to_be_the_only_channel() -> None:
+    """The contract states the model's copy is hygiene, not the delivery path."""
+    from lies.agents.librarian import LIBRARIAN_SYSTEM_PROMPT
+
+    prompt = LIBRARIAN_SYSTEM_PROMPT
+    assert "only channel" not in prompt, (
+        "the contract still claims the model is the sole carrier; the "
+        "caller now overlays the tool's reason deterministically"
+    )
+    # Wrapped across a line break in the prompt source, so matched on
+    # the words rather than the phrase: what is pinned is that the
+    # contract tells the model its copy is not the delivery path.
+    flat = " ".join(prompt.split())
+    assert "not the delivery mechanism" in flat, (
+        "the contract must state that copying the field is hygiene rather "
+        "than the delivery path, or a reader cannot tell which one holds"
+    )

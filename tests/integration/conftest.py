@@ -73,6 +73,12 @@ def child_env(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
 # curated_corpus — point LIES at the 5-collection fixture corpus
 # ---------------------------------------------------------------------------
 #
+# (`qmd_llm_operations_disabled` lives above, next to the other shared
+# integration predicates, because two gate sites use it: this directory's
+# corpus-serving gate and the tag-filter fixture. See its docstring for why
+# it is not the same condition as `qmd_daemon_reachable`.)
+#
+#
 # Why function-scoped (not session-scoped as the brief suggests):
 #   The brief asks for ``scope="session"`` autouse in ``tests/conftest.py``
 #   pointing ``LIES_XDG_DATA_HOME`` at the corpus. pytest's
@@ -117,6 +123,27 @@ def child_env(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
 #   goes through the daemon seam (``lies.qmd.access.daemon_tool``), whose
 #   result is a content block rather than a string. The stubs answer in
 #   that shape.
+
+
+def qmd_llm_operations_disabled() -> bool:
+    """True when qmd will refuse the LLM work a real query needs.
+
+    qmd reads ``process.env.CI`` at import (``dist/llm.js:384``,
+    ``_ciMode = !!process.env.CI``) and every LLM entry point throws
+    "LLM operations are disabled in CI" behind it — ``expandQuery`` at
+    ``:1058``, which ``qmd query`` calls on the way to a hybrid ranking.
+    LIES spawns qmd with the operator's environment unchanged
+    (``_subprocess._child_env`` copies ``os.environ``), so a test suite
+    run under ``CI=true`` hands ``CI`` to every qmd child.
+
+    This is a *different condition* from :func:`lies.qmd.health.
+    qmd_daemon_reachable`, and conflating them is what let a stray local
+    daemon decide a test's fate: reachability asked whether something
+    answered on 8181, while the actual blocker was qmd's own CI refusal.
+    Gates that need a live daemon should still check reachability; gates
+    that need a real *query* need this.
+    """
+    return bool(os.environ.get("CI"))
 
 
 @pytest.fixture

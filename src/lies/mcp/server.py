@@ -25,11 +25,16 @@ Spec:
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import sys
+import time
 from collections.abc import Callable
 from typing import Any, cast
 
+import anyio
 from fastmcp import FastMCP
+from fastmcp.server.middleware import CallNext, Middleware, MiddlewareContext
 from fastmcp.server.transforms import PromptsAsTools
 from mcp.types import ToolAnnotations
 from pydantic import BaseModel, ConfigDict
@@ -50,10 +55,85 @@ from lies.mcp.synth import lib_ask as _lib_ask_tool
 from lies.orchestrator import Orchestrator
 from lies.query.tag_expr import TagExprUnknown
 
+logger = logging.getLogger(__name__)
+
 mcp = FastMCP(
     "lies",
     instructions=load_instructions(),
 )
+
+
+class AbandonedCallMiddleware(Middleware):
+    """Logs a tool call that was cancelled before it produced a result.
+
+    Names the tool, elapsed time and ending exception; cancellation is a
+    ``BaseException`` subclass, so a bare ``except Exception`` misses it.
+
+    Only abandonment is logged. A tool raising a normal exception becomes
+    an error *result* on the wire and is already reported to the caller.
+
+    Does not catch a client that merely stops waiting: the server is
+    never told, so the request is discarded downstream of this hook.
+    See CHANGELOG.md.
+    """
+
+    async def on_call_tool(
+        self, context: MiddlewareContext[Any], call_next: CallNext[Any, Any]
+    ) -> Any:
+        tool = _tool_name(context)
+        started = time.monotonic()
+        try:
+            return await call_next(context)
+        except _ABANDONMENT_ERRORS as exc:
+            # Report what was observed, not a cause: whether a client
+            # hang-up produced the cancellation is not knowable here.
+            logger.warning(
+                "tool call abandoned: %s cancelled after %.1fs (%s)",
+                tool,
+                time.monotonic() - started,
+                type(exc).__name__,
+            )
+            raise
+
+
+# CancelledError is a BaseException and is named alongside the anyio
+# stream errors; every one of these means the caller is gone.
+_ABANDONMENT_ERRORS = (
+    asyncio.CancelledError,
+    anyio.ClosedResourceError,
+    anyio.BrokenResourceError,
+    anyio.EndOfStream,
+)
+
+
+def _tool_name(context: MiddlewareContext[Any]) -> str:
+    """Best-effort tool name for the log line.
+
+    Reads defensively at every step: a context shape that cannot yield a
+    name must still log, because an unnamed abandonment beats no log at
+    all. Every branch binds ``name`` before it is read -- the first
+    version left it unbound when ``context`` carried no ``tool_name``
+    at all, which is a real shape the PromptsAsTools path produces.
+    """
+    name: Any = None
+    getter = getattr(context, "tool_name", None)
+    if callable(getter):
+        try:
+            name = getter()
+        except Exception:  # noqa: BLE001 - naming is best-effort
+            name = None
+    if isinstance(name, str) and name:
+        return name
+    message = getattr(context, "message", None)
+    inner = getattr(message, "name", None)
+    if isinstance(inner, str) and inner:
+        return inner
+    return "<unknown tool>"
+
+
+# Name the abandonment when a client disconnects mid-call. Pinned by
+# ``tests/unit/mcp/test_abandoned_call_logging.py``.
+mcp.add_middleware(AbandonedCallMiddleware())
 
 
 # Bind slash-command prompts BEFORE tool registrations so prompts are
