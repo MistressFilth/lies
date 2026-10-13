@@ -1104,26 +1104,15 @@ _SYNC_TAIL = (
 def sync_prompt(tail: str) -> list[Message]:
     """Pull + ingest remote sources for collections named in the request.
 
-    No positionals. The agent identifies collection names from the
-    user's natural-language request and dispatches one
-    ``Bash(lies sync <name>)`` per name. ``lies sync`` takes one
-    positional per invocation, so N names = N Bash calls; a request
-    that names no collection (or names them generally, like "sync the
-    library") leaves the positional off so the CLI syncs every
-    registered collection with a scraper.
+    No positionals. The agent identifies collection names from the user's request and
+    dispatches one ``Bash(lies sync <name>)`` per name, since ``lies sync`` takes one
+    positional per invocation; a request naming no collection leaves the positional off so the
+    CLI syncs everything registered.
 
-    The natural-language handoff matches the shape of ``ask_prompt``
-    and ``ground_prompt``: a verbatim block carries the user's full
-    request to the agent, which interprets it semantically. A pasted
-    English sentence ("please resync my library collections") no
-    longer fans out across the library, because the agent reads the
-    request and asks before dispatching when names are ambiguous.
-
-    Flags (``--force`` / ``--skip-reindex`` / ``--source`` / ``--name``
-    and their negated forms) are still parsed by the prompt and
-    threaded through identically; only collection *identification*
-    moves to the agent. Flag parsing stays deterministic because the
-    model is not asked to spot a ``--skip-reindex`` token.
+    The handoff matches ``ask_prompt``: a verbatim block carries the request to the agent,
+    which interprets it semantically and asks when names are ambiguous, so pasted English no
+    longer fans out across the library. Flags are still parsed by the prompt and threaded
+    through identically; only collection *identification* moves to the agent.
     """
     parsed = _split_tail(
         tail,

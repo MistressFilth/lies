@@ -1,22 +1,13 @@
-"""Query synthesizer with qmd → wiki/index.md fallback.
+"""Query synthesizer with a qmd → wiki/index.md fallback.
 
-Implements the query workflow from the LIES default schema (and the
-Error handling table in the spec):
+Implements the query workflow from the LIES default schema: search via ``qmd query``
+(hybrid BM25 + vector + rerank), read the top-N pages (default 5), synthesize an answer
+with inline citations. On ``qmd`` not installed or no results it falls back to
+``wiki/index.md`` navigation.
 
-    1. Search via `qmd query` (hybrid BM25 + vector + rerank).
-    2. Read the top-N pages (default 5).
-    3. Synthesize an answer with inline citations.
-
-Fallback (per spec):
-
-    - `qmd` not installed → fall back to `wiki/index.md` navigation.
-    - `qmd query` returns no results → fall back to `wiki/index.md` scan.
-
-The synthesis here is deterministic / extractive so the fallback path
-is testable without a live LLM. The LLM-backed synthesis now lives in
-``Orchestrator._call_query_synthesizer`` and calls this function on
-failure; the public function signature and the fallback contract are
-the load-bearing parts.
+Synthesis here is deterministic and extractive so the fallback path is testable without a
+live LLM. The LLM-backed path lives in ``Orchestrator._call_query_synthesizer``, which
+calls this module on failure.
 """
 
 from __future__ import annotations
@@ -112,60 +103,16 @@ def retrieve_pages(
 ) -> tuple[list[PageRead], str]:
     """Retrieve the candidate pages for ``question``.
 
-    Runs two ``qmd_query`` passes when both roots are populated:
+    Runs two ``qmd_query`` passes when both roots are populated: a **primary** pass scoped to
+    the resolved library collection set (the source of truth) and a **secondary** pass scoped
+    to the wiki-rooted collection, which surfaces local edits as supplementary material. Both
+    resolve through ``_resolve_qmd_pages``, which prefers the library root per path; pages
+    carry ``source`` so the synthesizer can apply library-wins-on-conflict at answer time.
 
-    1. **Primary pass**: qmd scoped to the resolved library collection
-       set (``collection_filter`` derived from ``tag_filter``).
-       Library collections are the primary source of truth.
-    2. **Secondary pass**: qmd scoped to the wiki-rooted collection
-       (``wiki_<wikiname>``). Surfaces local edits and author-only
-       content as supplementary material.
-
-    Both result sets resolve through ``_resolve_qmd_pages``, which
-    prefers the library root and falls back to the wiki root for
-    each path. Pages are tagged with ``source`` so the synthesizer
-    can apply the library-wins-on-conflict rule at answer time.
-
-    This is the single retrieval path for the query layer. Both the
-    extractive ``synthesize_answer`` and the orchestrator's LLM
-    synthesis consume it, so the agent and its extractive fallback can
-    never disagree about which pages were read.
-
-    ``qmd_search`` defaults to the module-level indirection over
-    ``lies.qmd.cli.qmd_query`` (rebindable via :func:`set_qmd_search`),
-    not a captured default argument. Tests stub the indirection; the
-    indirection is looked up at call time so a stub rebind actually
-    takes effect for subsequent calls.
-
-    ``tag_filter`` (Task 6 / Bundle C) carries the resolved
-    include/exclude expression the caller (CLI or MCP) wants scoped to.
-    The retriever resolves the filter against the wiki's collection
-    registry (``wiki.collections_dir/*.yaml``) via
-    :func:`_collections_matching` and forwards the resulting set as
-    ``collection_filter`` to ``qmd_search`` for the **primary pass**.
-    The secondary pass always uses the wiki-rooted ``wiki_<name>``
-    collection, independent of ``tag_filter`` — local wiki content is
-    always supplementary, never gated by the caller's filter.
-
-    The implicit-self-tag rule (a collection's name is always an
-    addressable tag regardless of its ``tags`` field) lives at this
-    boundary, not in :func:`lies.query.tag_expr.resolve`. The resolver
-    only validates that every atom exists in the available set; the
-    per-collection semantics are the retriever's concern.
-
-    Fallback reasons:
-
-    - ``""`` — qmd served at least one pass and we have readable pages.
-    - ``FALLBACK_REASON_UNAVAILABLE`` — qmd binary missing.
-    - ``FALLBACK_REASON_FAILED`` — qmd errored on both passes.
-    - ``FALLBACK_REASON_NO_RESULTS`` — both passes returned 0 hits.
-    - ``FALLBACK_REASON_WIKI_ONLY`` — library returned 0, wiki
-      returned hits. Answer is not grounded in primary sources.
-
-    Returns:
-        ``(pages, fallback_reason)``. ``fallback_reason`` is ``""``
-        when qmd served the query, else one of the ``FALLBACK_REASON_*``
-        constants. ``pages`` may be empty when nothing was readable.
+    ``tag_filter`` is resolved against the library registry and forwarded as
+    ``collection_filter`` for the **primary pass** only: the secondary pass always uses the
+    wiki-rooted collection, because local wiki content is supplementary. Returns
+    ``(pages, fallback_reason)``, the reason being ``""`` when qmd served the query.
     """
     pages: list[PageRead] = []
     fallback_reason = ""
@@ -272,29 +219,18 @@ def synthesize_answer(
     top_n: int = DEFAULT_TOP_N,
     qmd_search: QmdSearchFn | None = None,
 ) -> SynthesizedAnswer:
-    """Answer `question` using the wiki at `wiki`.
+    """Answer ``question`` using the wiki at ``wiki``, returning a :class:`SynthesizedAnswer`
+    whose ``fallback_used`` / ``fallback_reason`` describe how it was built.
 
-    Tries ``qmd_search`` first. On ``QmdNotInstalledError``,
-    ``QmdNoResultsError``, or any other qmd failure, falls back to
-    reading the top-N pages referenced by ``wiki/index.md``.
-
-    Deterministic and extractive: no LLM round-trip. Retrieval is
-    delegated to :func:`retrieve_pages` so the orchestrator's LLM
-    synthesis path shares it.
+    Tries ``qmd_search`` first; on any qmd failure it falls back to the top-N pages
+    referenced by ``wiki/index.md``. Deterministic and extractive, with no LLM round-trip;
+    retrieval is delegated to :func:`retrieve_pages` so the orchestrator shares it.
 
     Args:
         question: The user's natural-language question.
         wiki: The wiki to search.
-        top_n: Maximum number of pages to read (default 5, per schema).
-        qmd_search: Injectable search callable. Defaults to the
-            module-level indirection over :func:`lies.qmd.cli.qmd_query`
-            (rebindable via :func:`set_qmd_search`). Tests pass a stub
-            either as a kwarg or by rebinding the indirection for the
-            test scope.
-
-    Returns:
-        A :class:`SynthesizedAnswer` whose ``fallback_used`` and
-        ``fallback_reason`` fields describe how the answer was built.
+        top_n: Maximum pages to read (default 5, per schema).
+        qmd_search: Search callable; defaults to the module-level indirection.
     """
     if not question or not question.strip():
         return SynthesizedAnswer(answer="(empty question)")
@@ -367,27 +303,15 @@ def _resolve_qmd_pages(
 ) -> list[PageRead]:
     """Resolve qmd hits to actual readable pages on disk.
 
-    Each qmd hit is matched against both physical roots:
+    Each hit is matched against both physical roots: the library ``collections_root`` (the
+    canonical source of truth) and ``wiki.wiki_dir`` (local override / author-only content).
+    The same path from both roots yields two distinct ``PageRead`` objects with distinct
+    ``source`` fields, and the LLM step applies library-wins-on-conflict at answer time.
 
-    - ``Library.collections_root/<first-segment>/<rest>`` — library is
-      the canonical source of truth.
-    - ``wiki.wiki_dir/<rest>`` — wiki is the local override / author-
-      only content.
-
-    The same path from both roots yields two distinct ``PageRead``
-    objects with distinct ``source`` fields; the LLM synthesis step
-    applies the library-wins-on-conflict rule at answer time. A
-    library hit is reported with its qmd URI form (``<coll>/<file>``)
-    as ``rel_path`` because library files live outside ``wiki.data_root``
-    — a data_root-relative path would lie about filesystem layout.
-
-    Each hit's ``line`` field (1-indexed qmd line of best match) is
-    threaded into the constructed ``PageRead``. ``section`` is then
-    derived by reading the page body and scanning for the last ATX
-    heading at or before that line via ``_extract_section_at``.
-
-    Defends against path traversal per root: any candidate that escapes
-    its root is dropped, the next root is tried.
+    A library hit reports its qmd URI form as ``rel_path``, because library files live outside
+    ``wiki.data_root``. Each hit's ``line`` is threaded into the ``PageRead`` and ``section``
+    is derived by scanning for the last ATX heading at or before it. A candidate that escapes
+    either root is dropped.
     """
     pages: list[PageRead] = []
     for hit in qmd_hits:
@@ -450,22 +374,13 @@ def _resolve_qmd_path_in_library(wiki: Wiki, raw: str) -> Path | None:
 def _resolve_qmd_path_in_wiki(wiki: Wiki, raw: str) -> Path | None:
     """Resolve ``raw`` strictly under ``wiki.wiki_dir``.
 
-    The wiki-rooted qmd collection (``wiki_<wikiname>`` per
-    :meth:`WikiLayout.init`) registers at ``wiki.wiki_dir``. Every
-    qmd hit from the wiki pass is normalized into the qmd URI form
-    minus the ``qmd://`` prefix, so the path's first segment is the
-    collection name (``wiki_<wikiname>/<rest>``). Joining that onto
-    ``wiki.wiki_dir`` blindly would land at
-    ``wiki.wiki_dir / wiki_<wikiname> / <rest>`` — which doesn't exist
-    (the real file is at ``wiki.wiki_dir / <rest>``).
+    The wiki-rooted qmd collection registers at ``wiki.wiki_dir``, and every wiki-pass hit is
+    normalized into the qmd URI form minus the ``qmd://`` prefix, so the path's first segment
+    is the collection name; joining that on blindly would land one level too deep, where
+    nothing exists.
 
-    Strip the ``wiki_<wikiname>/`` prefix when present; leave other
-    paths unchanged so the wiki pass still resolves paths that lack
-    the prefix (defensive against a qmd shape change or a stub
-    fixture).
-
-    Mirrors the path-traversal defense the pre-Task-3 helper
-    enforced: any candidate that escapes ``wiki.wiki_dir`` is
+    Strip the ``wiki_<wikiname>/`` prefix when present and leave other paths unchanged, so a
+    path lacking the prefix still resolves. A candidate that escapes ``wiki.wiki_dir`` is
     dropped (returns None).
     """
     wiki_prefix = f"wiki_{wiki.name}/"
@@ -590,44 +505,18 @@ def build_answer_from_pages(
     *,
     format_hint: Literal["md", "table", "marp", "chart"] = "md",
 ) -> SynthesizedAnswer:
-    """Assemble the final SynthesizedAnswer from already-retrieved ``pages``.
+    """Assemble the final SynthesizedAnswer from already-retrieved ``pages``, returning a
+    :class:`SynthesizedAnswer` whose ``format`` is the validator's verdict on ``format_hint``.
 
-    Public seam for the extractive answer builder: callers (notably
-    :meth:`lies.orchestrator.Orchestrator.run_query`) that have already
-    called :func:`retrieve_pages` once pass the resulting ``pages``
-    through here so the fallback path doesn't pay for a second qmd /
-    index scan. ``pages`` may be empty, in which case the returned
-    answer has empty citations / pages_read / page_links and a body
-    describing why.
-
-    Each ``PageRead`` carries a ``source`` discriminator
-    (``"library"`` / ``"wiki"``); we wrap it in a
-    :class:`lies.query.citation.Citation` so the answer carries the
-    source through to downstream consumers.
+    Public seam for the extractive answer builder: callers that already called
+    :func:`retrieve_pages` pass the resulting ``pages`` through here, so the fallback path does
+    not pay for a second qmd / index scan. ``pages`` may be empty, in which case the answer
+    has empty citations and a body describing why.
 
     Args:
         question: The user's natural-language question.
-        pages: The pages already retrieved for ``question``. Empty is
-            valid; the returned body explains what was missing.
-        fallback_reason: One of the ``FALLBACK_REASON_*`` constants;
-            empty when qmd served the query.
-        format_hint: The synthesizer's auto-routed format intent
-            (``"md"`` / ``"table"`` / ``"marp"``). Validated against
-            the answer body via
-            :func:`lies.query.format_validator.validate_format`; on
-            parse failure the validator silently demotes to ``"md"``.
-            Defaults to ``"md"`` so the orchestrator's no-pages and
-            LLM-failure fallback paths keep compiling without
-            forwarding a hint.
-
-    Returns:
-        A :class:`SynthesizedAnswer` whose ``fallback_used`` /
-        ``fallback_reason`` mirror the inputs and whose ``format``
-        field is the validator's verdict on ``format_hint``.
-        ``synthesis_used`` is always False here — the orchestrator
-        wraps this with the synthesis metadata (``synthesis_used``,
-        ``synthesis_reason``) since this function has no opinion on
-        whether the LLM was invoked.
+        pages: Already-retrieved pages; empty is valid and explained in the body.
+        format_hint: Auto-routed format intent, validated by :func:`validate_format`.
     """
     from lies.query.citation import Citation
     from lies.query.format_validator import validate_format
@@ -761,17 +650,12 @@ def _qmd_search_dispatch(
 ) -> list[PageRead]:
     """Call ``fn`` and translate its real exceptions into sentinels.
 
-    The public ``synthesize_answer`` only catches the sentinel
-    exceptions above; the real ``lies.qmd.cli`` exception types are
-    mapped to them here so the public surface stays narrow and stable.
+    The public ``synthesize_answer`` only catches the sentinel exceptions, so the real
+    ``lies.qmd.cli`` types are mapped here and the public surface stays narrow.
 
-    ``collection_filter`` (Task 6 / Bundle C) is the resolved set of
-    collection names the caller wants to scope to. It is passed through
-    to ``fn`` as a keyword argument so any qmd_search callable that
-    supports per-collection filtering (notably :func:`lies.qmd.cli.qmd_query`,
-    which applies the filter post-qmd as a per-hit path-prefix drop)
-    can act on it. Stubs using ``*args, **kwargs`` ignore it; the
-    production :func:`qmd_query` honors it.
+    ``collection_filter`` is the resolved set of collection names the caller wants to scope to,
+    passed through so a callable supporting per-collection filtering (notably
+    :func:`lies.qmd.cli.qmd_query`) can act on it. Stubs using ``*args, **kwargs`` ignore it.
     """
     # Local imports avoid a circular import at module load time.
     from lies.qmd.cli import (  # noqa: PLC0415
@@ -811,34 +695,16 @@ def _qmd_search_dispatch(
 def _collections_matching(tag_filter: ResolvedTagFilter) -> set[str]:
     """Return the set of library collection names that pass ``tag_filter``.
 
-    Library collections are the source of truth for tag expression
-    resolution — wikis do not own collections. A ``+c:opencode`` filter
-    matches every library collection named ``opencode``, regardless of
-    which wiki the operator's MCP daemon is bound to.
+    Library collections are the source of truth for tag expression resolution; wikis do not own
+    collections. A ``+c:opencode`` filter matches every library collection named ``opencode``,
+    regardless of which wiki the operator's MCP daemon is bound to.
 
-    Implicit self-tag (spec: §"Collection name as implicit self-tag"):
-    a collection matches if its ``name`` is in ``tags ∪ {name}``. The
-    rule lives here at the retriever boundary, not in the resolver —
-    the resolver only validates that every atom is in the available
-    tag set; the per-collection semantics are the retriever's concern.
+    Implicit self-tag: a collection matches if its ``name`` is in ``tags ∪ {name}``. The rule
+    lives here at the retriever boundary, not in the resolver — the resolver only validates
+    that every atom is in the available tag set.
 
-    F15 ``t:`` / ``c:`` qualifier dispatch:
-            - ``t`` (or no qualifier): the implicit-self-tag rule above.
-            - ``c``: strict name match (``coll.name == include.tag``).
-
-    Exclude drops a collection per the same dispatch
-    (:func:`lies.query.tag_expr.exclude_matches`); regardless of
-    include result, the exclude wins on collision (a collection
-    listed by an include and the exclude at the same time is
-    dropped). Task 3 / f15-exclude-compound replaced the
-    single-atom ``_exclude_atom_matches`` shim with a recursive
-    tree walk so compound excludes (``-c:foo&c:bar``,
-    ``-c:foo|c:bar``) drop on the same dispatcher.
-
-    Returns the set of *names* (qmd's per-collection filter key, which
-    is the path's first segment). Empty when the library is not
-    initialized — the operator-facing surfaces (MCP / CLI) detect that
-    separately and tell the operator to initialize the library.
+    F15 qualifier dispatch: ``t`` (or none) uses the implicit-self-tag rule, ``c`` is a strict
+    name match, and exclude wins on collision. Returns the set of *names*.
     """
     from lies.library.registry import library_collection_metas
     from lies.query.tag_expr import atom_matches, exclude_matches
@@ -884,20 +750,13 @@ def _all_collection_names() -> list[str]:
 def _searched_scope(wiki: Wiki, tag_filter: ResolvedTagFilter | None) -> list[str]:
     """The ``searched_scope`` list for an answer against ``wiki``.
 
-    With a filter: the resolved collection set from
-    :func:`_collections_matching` (sorted, unique). Without a filter:
-    every collection registered in the library per
-    :func:`_all_collection_names`. Empty in either case when no
-    collections are registered.
+    With a filter: the resolved collection set from :func:`_collections_matching` (sorted,
+    unique). Without: every collection registered in the library per
+    :func:`_all_collection_names`. Empty in either case when nothing is registered.
 
-    The result is the Bundle C answer-shape contract: the
-    orchestrator populates ``SynthesizedAnswer.searched_scope`` from
-    this helper so downstream surfaces (F12 elicitation, F16 catalog
-    pages_read_by_collection) can react to the effective scope. The
-    ``wiki`` parameter is retained for signature uniformity with the
-    Bundle C spec contract (``searched_scope(wiki, tag_filter)``); the
-    implementation reads the library, not the wiki, because the
-    library is the source of truth.
+    The orchestrator populates ``SynthesizedAnswer.searched_scope`` from this helper so
+    downstream surfaces can react to the effective scope. The ``wiki`` parameter is retained
+    for signature uniformity; the implementation reads the library, the source of truth.
     """
     if tag_filter is not None:
         return sorted(_collections_matching(tag_filter))
