@@ -799,6 +799,18 @@ infer from the field name or its type.
   rule above. A caller that needs the citation to be real must resolve
   it through `read`.
 
+- **`AcquireResult.status`** (`utils/exclusive.py`) is one of four
+  outcomes, and `fd` is meaningful in each: `"acquired"` and
+  `"dead_reaped"` both carry a valid fd (the second means a stale holder -
+  dead PID or expired heartbeat - was reaped and the retry won);
+  `"busy"` and `"indeterminate"` carry `fd=-1` plus `holder_pid` and
+  `holder_started_at`, which exist so raise sites can name the holder.
+  The last two differ in *liveness being undecidable*: `"busy"` means a
+  fresh heartbeat said alive, `"indeterminate"` means `pid_alive_fn` said
+  indeterminate **and** the heartbeat expired, and the primitive
+  deliberately did not reap. Callers that omit the `pid_path` +
+  `state_json_path` envelope get `None` for the busy path (legacy
+  semantics) and can never reach `"indeterminate"`.
 All forward-only; additive fields default to safe sentinels.
 
 ### The write path

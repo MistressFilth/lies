@@ -65,56 +65,20 @@ def acquire_create_lock(  # type: ignore[no-untyped-def]
 ) -> AcquireResult | None:
     """Atomically create ``path``. Return ``AcquireResult`` on win, ``None`` on contention.
 
-    Optional ``pid_path`` + ``state_json_path``: if provided, treat an
-    existing create-lock as a stale holder when its stored PID is
-    dead (or its heartbeat is older than ``max_age_s``) and reap + retry
-    once. See the module docstring for the exception policy.
+    With ``pid_path`` + ``state_json_path``, an existing create-lock whose
+    stored PID is dead (or whose heartbeat is older than ``max_age_s``) is
+    treated as a stale holder, reaped once, and the create retried.
+    ``force_repair=True`` escalates that second chance to a seemingly live
+    contender; without it a live holder always wins. See the module
+    docstring for the exception policy and AGENTS.md, "Data shapes", for
+    the four ``AcquireResult.status`` outcomes.
 
-    ``parent_prepared=True`` says the caller has already run
-    :func:`ensure_lock_parent` for this path. The flag is only an
-    optimisation: :func:`_create_exclusive` heals a parent that vanished
-    underneath a wait on every create it performs.
-
-    The returned ``AcquireResult.status`` is one of four outcomes:
-
-    - ``"acquired"`` — fresh create-lock win; ``fd`` is valid.
-    - ``"dead_reaped"`` — the contended holder was stale (dead PID or
-      wall-clock-expired heartbeat) and the reap-and-retry succeeded;
-      ``fd`` is valid.
-    - ``"busy"`` — live contender (the envelope was supplied and the
-      stored PID's liveness check returned ``"alive"`` or
-      ``"indeterminate"`` on a *fresh* heartbeat); ``fd=-1``,
-      ``holder_pid`` + ``holder_started_at`` populated so raise sites
-      can surface operator-actionable messages.
-    - ``"indeterminate"`` — ``pid_alive_fn`` returned ``"indeterminate"``
-      AND the heartbeat is older than ``max_age_s``. The primitive did
-      **not** reap; ``fd=-1``, ``holder_pid`` + ``holder_started_at``
-      populated. The caller translates this to a
-      :class:`~lies.lock_errors.WikiFlockIndeterminate` exception with
-      an operator-actionable message (the operator must run
-      ``lies flock <name> force-repair`` or kill the holder manually).
-
-    Callers that omit the envelope still receive ``None`` for the
-    busy path (legacy semantics); the ``"indeterminate"`` branch is
-    only reachable when ``pid_path`` + ``state_json_path`` are supplied.
-
-    ``force_repair=True`` escalates the second-chance reap: when the
-    envelope is held by what looks like a live contender, unconditionally
-    reap + retry once. The caller (``_acquire_wiki_flock``) surfaces
-    ``WikiFlockUnrepairable`` if the retry still loses; without
-    ``force_repair``, a live holder always wins (returns an
-    ``AcquireResult`` with ``status="busy"`` when the envelope was
-    supplied, otherwise ``None``).
-
-    ``self_acquire_is_stale=False`` disables the same-pid self-recovery
-    branch in :func:`_reap_if_stale`. A caller that tracks re-entry
-    itself must set it: the default assumes a same-pid create-lock is
-    this process's own abandoned lock, which is wrong the moment a
-    *second thread* of the same process contends and the depth
-    bookkeeping is not shared across threads.
-
-    The fd is left open so the OS holds the inode reference; the caller
-    must pass it to :func:`release_create_lock`.
+    ``self_acquire_is_stale=False`` disables same-pid self-recovery, which a
+    caller tracking re-entry itself must set: the default assumes a same-pid
+    lock is this process's own, which a second *thread* falsifies.
+    ``parent_prepared=True`` is only an optimisation — ``_create_exclusive``
+    heals a vanished parent anyway. The fd stays open so the OS holds the
+    inode; the caller must pass it to ``release_create_lock``.
     """
     if pid_alive_fn is None:
 

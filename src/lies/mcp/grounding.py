@@ -53,37 +53,19 @@ class CitationSnippet:
 
 @dataclass(frozen=True)
 class ArchivistDigest:
-    """The grounding archivist's return value.
+    """The grounding archivist's return value. See AGENTS.md, "Data shapes".
 
-    Attributes:
-        question: Echoed back for caller verification.
-        tag_expr: Chosen union (``None`` when untagged).
-        exclude_expr: Compiled NOT AST (``None`` when no ``-`` chain).
-        citations: Snippets, one per retrieved excerpt.
-        no_coverage: True on a scope miss (librarian's
-            ``LibrarianOutput.no_coverage``) or a clean zero-hits
-            result. A *process* failure sets ``transient`` instead.
-        transient: True on a dispatch failure (process-side,
-            not corpus-side). The two flags are independent:
-            ``no_coverage=False, transient=True`` is a slow / failed
-            retrieval, not "the corpus has nothing".
-        distinct_pages: ``len({c.slug for c in citations})``.
-        searched_scope: Sorted, unique collection names actually
-            dispatched. The daemon serves an unknown collection with
-            an empty result and no error, so a scope that names
-            something the daemon does not have is reported here as
-            what was sent, not as what was asked for.
-        unserved_scope: Requested collection names the daemon does
-            not serve, in input order. Disjoint from
-            ``searched_scope``. A digest with a non-empty
-            ``unserved_scope`` and an empty ``searched_scope``
-            searched nothing, which is not a statement about the
-            corpus.
-        no_library: True when the library is uninitialized.
-        fallback_reason: Why a transient dispatch failed, in the words
-            of the failure. It exists because ``transient`` says *that*
-            retrieval failed, not *how*: a wedged daemon and a contended
-            lock want different operator actions.
+    ``no_coverage`` and ``transient`` are independent and the distinction
+    is load-bearing: ``no_coverage=False, transient=True`` is a failed or
+    slow retrieval, not "the corpus has nothing". ``fallback_reason``
+    exists because ``transient`` says *that* it failed, not *how* — a
+    wedged daemon and a contended lock want different operator actions.
+
+    ``searched_scope`` is what was *dispatched*, not what was asked for:
+    the daemon serves an unknown collection with an empty result and no
+    error. A non-empty ``unserved_scope`` with an empty
+    ``searched_scope`` searched nothing, which is likewise not a claim
+    about the corpus.
     """
 
     question: str
