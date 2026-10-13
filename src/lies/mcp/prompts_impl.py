@@ -23,11 +23,9 @@ if TYPE_CHECKING:
 
 
 # A filter token is ``+`` / ``-`` followed by a letter-led tag atom.
-# Requiring a letter as the first post-sigil character keeps ordinary
-# question text out of the filter path: ``-1`` (a negative number),
-# ``--`` (an em-dash artifact or a bare flag) and ``-`` never match,
-# while ``+c:opencode``, ``-t:draft`` and the OR-joined
-# ``+c:claude_code|c:opencode`` do.
+# Requiring a letter first keeps ordinary question text out of the filter
+# path: ``-1``, ``--`` and a bare ``-`` never match, while ``+c:opencode``,
+# ``-t:draft`` and ``+c:claude_code|c:opencode`` do.
 _FILTER_TOKEN_RE = re.compile(r"^[+-][A-Za-z][A-Za-z0-9_.:,|&+-]*$")
 # Positions of the non-whitespace runs, so the question text can be
 # sliced out of the original string with its internal newlines intact.
@@ -300,16 +298,10 @@ def _split_tail(
     while i < len(tokens):
         tok = tokens[i]
         if tok == "--":
-            # POSIX end-of-flags. A user who types it means "stop
-            # reading flags", and rendering the token itself hands
-            # Click a collection literally named ``--``; Click strips
-            # a bare ``--`` before the command function sees it, so
-            # ``lies sync -- pydantic`` ran with ``collection=None``
-            # -- a scrape and reindex of *every* registered
-            # collection. Consume the marker and push every
-            # following token to ``positionals`` unparsed, which is
-            # what :func:`_split_leading_flags` already did inside
-            # this same module.
+            # POSIX end-of-flags. Click strips a bare ``--`` before the command
+            # function sees it, so ``lies sync -- pydantic`` ran with
+            # ``collection=None`` — a scrape and reindex of *every* collection.
+            # Consume the marker and push following tokens to ``positionals``.
             positionals.extend(tokens[i + 1 :])
             break
         if tok.startswith("--") and len(tok) > 2:
@@ -347,28 +339,17 @@ def _split_tail(
                 booleans.add(key)
                 nxt = tokens[i + 1] if i + 1 < len(tokens) else None
                 if nxt is not None and not nxt.startswith("--") and key not in (known_flags or ()):
-                    # An unrecognized flag followed by a bare word. The
-                    # word is not the flag's value -- it is a positional
-                    # the user never named as one, and a body that
-                    # consumes positionals would pass it to the command.
-                    # Recording the pair lets the body refuse instead of
-                    # reading `cli` as a collection name because the user
-                    # wrote `--tag cli` on a verb with no `--tag`.
-                    #
-                    # Restricted to flags outside ``known_flags``: a
-                    # *declared* boolean followed by a bare word is a
-                    # genuine surplus positional, and
-                    # ``_leftover_note`` already reports it by name.
+                    # An unrecognized flag followed by a bare word: the word is not the
+                    # flag's value but a positional the user never named, so the body must
+                    # refuse. Restricted to flags outside ``known_flags`` — a *declared* boolean
+                    # followed by a bare word is a genuine surplus positional.
                     repurposed.append((key, nxt))
             if known_flags is not None and key not in known_flags:
                 unknown.add(key)
         elif tok.startswith("-") and len(tok) > 1:
-            # ``-e``, ``-pydantic``. Click refuses a single-dash token
-            # outright (``No such option: -p``), so letting one fall
-            # through to ``positionals`` renders a command that exits
-            # 2 -- ``sync -pydantic`` was exactly that. Record the bare
-            # name as an unknown flag instead, so the body names the
-            # typo and the token never reaches a positional slot.
+            # ``-e``, ``-pydantic``. Click refuses a single-dash token outright
+            # (``No such option: -p``), so a bare single-dash name is recorded as an
+            # unknown flag instead of reaching a positional slot.
             key = tok[1:]
             booleans.add(key)
             if known_flags is not None and key not in known_flags:
@@ -710,14 +691,10 @@ def ground_prompt(tail: str) -> list[Message]:
             )
         ]
     note = parsed.note() + bad_top_k
-    # A flag-shaped word inside the question is text, and it stays
-    # there. Say so, because the other reading -- "the prompt ignored
-    # my --top_k" -- is the one a user forms when the words they typed
-    # come back inside a search string. The leading-flag scan reads
-    # ``--top_k`` past a leading ``+tag`` filter (filter atoms are
-    # question text, not prose), so ``+c:opencode --top_k 5 ...``
-    # parses ``--top_k=5``; a ``--top_k`` after a *prose* word is the
-    # case this note names.
+    # A flag-shaped word inside the question stays there. Say so: the other
+    # reading — "the prompt ignored my --top_k" — is the one a user forms
+    # when their words come back inside a search string. The leading scan
+    # already reads ``--top_k`` past a leading ``+tag`` filter.
     if any(tok.startswith("--") for tok in question.split()):
         note += (
             " Flags are read from the leading run only, so a --flag after"
@@ -754,16 +731,9 @@ _LIBRARY_SUBS = (
     "where, enrich-tags, tag, bootstrap-all (register-shipped)"
 )
 # Per-verb flag vocabulary, transcribed from the Typer signatures in
-# ``src/lies/library/collections_cli.py``: (value flags, boolean
-# flags). Per-verb rather than one union set, because the two errors
-# are symmetric and both are silent. Too narrow and a real flag
-# (``new --tag cli``) is reported as a typo with its value falling
-# into a positional; too wide and a flag the verb does not have is
-# parsed as a boolean, reported as "on", and never rendered. Matching
-# the signature exactly is the only setting where neither happens --
-# ``tests/unit/mcp/test_rendered_commands_are_runnable.py`` checks
-# every rendered command against the live Typer app, so the table
-# cannot drift again without a test going red.
+# ``src/lies/library/collections_cli.py``. Per-verb because both errors are
+# silent: too narrow and a real flag is reported as a typo, too wide and an
+# absent flag is parsed as a boolean and never rendered.
 _LIBRARY_VERB_FLAGS: dict[str, tuple[frozenset[str], frozenset[str]]] = {
     "list": (frozenset(), frozenset({"json"})),
     "show": (frozenset(), frozenset()),
@@ -847,11 +817,8 @@ def collections_prompt(tail: str) -> list[Message]:
     note = parsed.note()
     args = parsed.positionals[1:]
 
-    # Shared with every other body. `args` excludes the subcommand, so a
-    # repurposed value that landed in the subcommand slot is not
-    # double-counted; `collections_prompt` reaches this before any
-    # branch, which is why the verb with the most flags no longer
-    # needs its own copy of the rule.
+    # Shared with every other body. ``args`` excludes the subcommand, so a
+    # value that landed there is not double-counted.
     refusal = _refuse_unless_clean(parsed, f"library {raw_sub}", args=args)
     if refusal:
         return [Message(refusal)]
@@ -902,12 +869,10 @@ def collections_prompt(tail: str) -> list[Message]:
         if not source_flag and len(args) > 1:
             source_flag = f" --source {shlex.quote(args[1])}"
             used = 2
-        # `new_cmd` raises `BadParameter("library new requires
-        # --source")` in its body -- a runtime check, not a Typer
-        # parse, so no signature-derived guard can see it. `--prompt`
-        # does not satisfy it: the check runs before `prompt` is read.
-        # Rendering without a source produced `Bash(lies library new
-        # mylib)`, which exits 2 on the *default* invocation of the verb.
+        # ``new_cmd`` raises ``BadParameter("library new requires --source")``
+        # in its body — a runtime check no signature-derived guard can see, and
+        # ``--prompt`` does not satisfy it. Rendering without a source produced a
+        # command that exits 2 on the verb's default invocation.
         if "source" not in parsed.values and len(args) <= 1:
             return [
                 Message(
@@ -920,11 +885,9 @@ def collections_prompt(tail: str) -> list[Message]:
                     f"No command was run."
                 )
             ]
-        # A second positional IS a source the verb accepts, so the
-        # generic leftover note ("the verb does not take it") names the
-        # wrong cause. What happened is that a --source/--prompt flag
-        # took precedence, and the user should be told their source was
-        # dropped rather than merely unconsumed.
+        # A second positional IS a source the verb accepts, so the generic
+        # leftover note names the wrong cause: a ``--source``/``--prompt`` flag
+        # took precedence and the user's source was dropped.
         dropped_source = ""
         if len(args) > 1 and used == 1:
             dropped_source = (
@@ -951,11 +914,9 @@ def collections_prompt(tail: str) -> list[Message]:
             + note
         )
     elif sub == "tag":
-        # ``tag <slug> <t1> <t2>`` is the shape users reach for;
-        # ``lies library`` spells it ``modify --tag``. Both spellings
-        # render, so the flag form carries ``--tag`` here too -- reading
-        # tags only from the positionals dropped ``tag mylib --tag docs``
-        # on the floor, and the rendered command ran with none.
+        # ``tag <slug> <t1> <t2>`` is the shape users reach for; ``lies library``
+        # spells it ``modify --tag``. Both render, so the flag form carries
+        # ``--tag`` here too.
         if not args:
             return [Message(_needs_name_note(raw_sub, "slug"))]
         tags = args[1:]
@@ -1010,11 +971,9 @@ def collections_prompt(tail: str) -> list[Message]:
     return [Message(body)]
 
 
-# ``lies ingest`` -- transcribed from the Typer signature in
-# ``src/lies/library/cli.py``. There is no positional argument and no
-# ``--type``: the ingest path is deterministic and never asks a model
-# what kind of page a file is. A bare path in the tail is treated as
-# ``--source``, which is the shape users reach for.
+# ``lies ingest`` — transcribed from the Typer signature in
+# ``src/lies/library/cli.py``. There is no positional and no ``--type``
+# on the ingest path; a bare path in the tail is treated as ``--source``.
 _INGEST_VALUE_FLAGS = frozenset(
     {
         "source",
@@ -1043,11 +1002,10 @@ _INGEST_DELETE_REMEDY = (
     "page file is a filesystem delete, so ask the user which they mean "
     "before running anything."
 )
-# ``--title`` is the one free-text flag, so it eats every word up to the
-# next ``--flag``. A source typed after it is consumed as part of the
-# title, and the user is then told they gave no source -- the diagnosis
-# points away from the cause. The note rides along on every render path
-# so the ordering rule is stated where the mistake is made.
+# ``--title`` eats every word up to the next ``--flag``, so a source typed
+# after it is consumed as part of the title and the user is told they gave
+# no source — a diagnosis pointing away from the cause. The note rides on
+# every render path so the rule is stated where the mistake is made.
 _INGEST_TITLE_NOTE = (
     " Note: `--title` takes every following word up to the next flag as "
     "its value, so put the source first or attach it with `--source "
@@ -1093,12 +1051,9 @@ def ingest_prompt(tail: str) -> list[Message]:
     refusal = _refuse_unless_clean(parsed, "ingest")
     if refusal:
         return finish(refusal)
-    # ``--force/--no-force`` and ``--dry-run/--no-dry-run`` are single
-    # Click options carrying both spellings, and the negated form is
-    # the CLI's own default -- so reading only the positive form made
-    # ``--no-force`` a silent no-op: the flag parsed, the body never
-    # mentioned it, and the command ran with ``force=True``'s
-    # opposite while the user believed they had said something.
+    # ``--force/--no-force`` and ``--dry-run/--no-dry-run`` are single Click
+    # options carrying both spellings, and the negated form is the CLI's own
+    # default, so both must be read.
     dry = " --dry-run" if parsed.flag_on("dry-run") else ""
     force = " --force" if parsed.flag_on("force") else ""
     if "no-dry-run" in parsed.booleans:
@@ -1136,13 +1091,10 @@ def ingest_prompt(tail: str) -> list[Message]:
             + _quoted_value_note(parsed, parsed.positionals, "ingest")
         )
     elif source is not None:
-        # `ingest` derives a collection name from `--collection`,
-        # `--slug-prefix`, or a *batch* parent directory -- never from
-        # a single source. So `lies ingest --source /tmp/a.md` exits 2
-        # with "no collection name could be derived from the source",
-        # and that bare-path form is the one `instructions.md`
-        # documents. A runtime `typer.Exit`, invisible to any
-        # signature-derived guard, so the body refuses here.
+        # ``ingest`` derives a collection name from ``--collection``,
+        # ``--slug-prefix`` or a *batch* parent directory — never from a single
+        # source. A runtime ``typer.Exit``, invisible to a signature-derived
+        # guard, so the body refuses here.
         if not (parsed.values.get("collection") or parsed.values.get("slug-prefix")):
             return finish(
                 f"Cannot run ingest: --source {source!r} was given with no "
@@ -1198,25 +1150,10 @@ def lint_prompt(tail: str) -> list[Message]:
     if refusal:
         return [Message(refusal)]
     if "check" in parsed.values and not parsed.values["check"].strip():
-        # `--check=` binds the empty string, and
-        # ``orchestrator.run_lint`` reads a blank check as *no
-        # filter* -- so the user got the whole report for a filter
-        # they asked for. A note on a rendered call was the weaker
-        # repair: the call still ran, and a body that renders a
-        # command is a body promising an answer, so the user had to
-        # read the trailing sentence to learn the scope had been
-        # discarded. Refusing is the stronger one -- nothing runs,
-        # and the refusal names both what was typed and what to type
-        # instead. ``ground`` names a malformed ``--top_k`` the same
-        # way; this is the same defect one parameter over.
-        #
-        # The refusal does not enumerate the categories. The tool
-        # derives them from the merged report at run time
-        # (``_canonical_check`` over the findings' own categories),
-        # so a static list here would be a second table to drift
-        # from a run it cannot see -- the defect class this whole
-        # branch exists to close. A ``--check`` that matches nothing
-        # already renders the available categories.
+        # ``--check=`` binds the empty string and ``run_lint`` reads a blank check
+        # as *no filter*, so the user got the whole report for a filter they asked
+        # for. Refusing beats a note: nothing runs. The refusal does not enumerate
+        # categories — the tool derives them at run time, so a static list drifts.
         return [
             Message(
                 "Cannot run lint: --check= is empty. The tool reads a blank "
@@ -1277,23 +1214,17 @@ def reindex_prompt(tail: str) -> list[Message]:
     embed = parsed.flag_on("embed")
     force = parsed.flag_on("force")
     cleanup = parsed.flag_on("cleanup")
-    # ``all`` is the destructive full-reindex marker. It arrives as
-    # ``--all`` from a flag-style tail and as a bare ``all`` or ``all_``
-    # from the pre-single-tail positional convention this prompt used
-    # to declare; all three mean the same thing, and treating the
-    # positional as a no-op would silently downgrade a destructive
-    # rebuild the user asked for.
+    # ``all`` is the destructive full-reindex marker. It arrives as ``--all``
+    # and as a bare ``all`` / ``all_``; treating the positional as a no-op
+    # would silently downgrade a destructive rebuild the user asked for.
     all_ = parsed.flag_on("all") or any(p.rstrip("_").lower() == "all" for p in parsed.positionals)
     name = parsed.values.get("name")
     refusal = _refuse_unless_clean(parsed, "reindex")
     if refusal:
         return [Message(refusal)]
-    # `all` / `all_` are the legacy bare-word spelling and are
-    # consumed; everything else is a positional the tool has no slot
-    # for. This was the only body of seven with no surplus report, and
-    # it cost the most: `--name` is the only way to scope a reindex to
-    # a wiki, so `reindex pydantic` reindexed the *default* wiki and
-    # said nothing about the word it dropped.
+    # ``all`` / ``all_`` are consumed; everything else is a positional the tool
+    # has no slot for, and is reported rather than dropped — ``--name`` is the
+    # only way to scope a reindex, so a dropped word reindexed the wrong wiki.
     legacy = sum(1 for p in parsed.positionals if p.rstrip("_").lower() == "all")
     destructive = cleanup or all_
     body = (
@@ -1313,11 +1244,10 @@ def reindex_prompt(tail: str) -> list[Message]:
     return [Message(body)]
 
 
-# ``lies sync`` -- transcribed from the Typer signature in
-# ``src/lies/cli/ingestion.py``. It takes ONE positional collection and
-# has no ``--only``, ``--jobs``, ``--scraper-timeout``, ``--no-ingest``,
-# ``--dry-run``, or ``--data-dir``; the old prompt invented all of them
-# and rendered a command that exited 2 on every invocation.
+# ``lies sync`` — transcribed from the Typer signature in
+# ``src/lies/cli/ingestion.py``. It takes ONE positional collection and has
+# no ``--only``, ``--jobs``, ``--scraper-timeout``, ``--no-ingest``,
+# ``--dry-run`` or ``--data-dir``.
 _SYNC_VALUE_FLAGS = frozenset({"source", "name"})
 _SYNC_BOOL_FLAGS = frozenset(
     {
@@ -1370,12 +1300,10 @@ def sync_prompt(tail: str) -> list[Message]:
         known_flags=_SYNC_KNOWN_FLAGS,
     )
     note = parsed.note()
-    # `refuse_unknown`: ``lies sync`` with no positional syncs *every*
-    # registered collection, so a typo that the body would otherwise
-    # swallow silently could turn a one-collection request into a
-    # whole-library scrape and reindex. Every other body is safe on
-    # an unknown flag — dropping a flag leaves a valid command —
-    # which is why this is a parameter rather than the default.
+    # ``refuse_unknown``: ``lies sync`` with no positional syncs *every*
+    # registered collection, so a swallowed typo could turn a one-collection
+    # request into a whole-library scrape. Every other body is safe on an
+    # unknown flag, which is why this is a parameter rather than the default.
     refusal = _refuse_unless_clean(parsed, "sync", refuse_unknown=True)
     if refusal:
         return [Message(refusal)]

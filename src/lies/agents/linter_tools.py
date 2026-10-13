@@ -37,11 +37,10 @@ if TYPE_CHECKING:
     from lies.wiki.wiki import Wiki
 
 
-# Linter's per-batch budget. Sized to fit one model context under the
-# 128K local cap with prompt + system overhead — comfortably ≤10
-# small pages or ≤3 dense pages per batch. The linter drives this
-# budget via the prompt's stop-when-saturated rule (see
-# ``LINTER_SYSTEM_PROMPT``); the orchestrator does not enforce it.
+# The linter's per-batch budget. Sized to fit one model context under the 128K local cap
+# with prompt overhead — comfortably ≤10 small pages or ≤3 dense pages. The linter drives
+# it via the prompt's stop-when-saturated rule (see ``LINTER_SYSTEM_PROMPT``); the
+# orchestrator does not enforce it.
 _LINTER_BATCH_LIMIT = 10
 
 

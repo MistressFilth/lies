@@ -103,12 +103,9 @@ def run_write(
             files=files,
         )
         if commit_sha is None:
-            # Quiet no-op: atomic_commit staged the files but the diff was
-            # empty (e.g. a re-ingest of an unchanged collection wrote
-            # byte-identical content). Nothing actually changed in the wiki,
-            # so the post-commit hooks (qmd registration, index refresh,
-            # embedding) have nothing new to act on either. Skip them rather
-            # than fire on a no-op state.
+            # Quiet no-op: ``atomic_commit`` staged the files but the diff was empty (a re-ingest of
+            # an unchanged collection wrote byte-identical content). Nothing changed in the wiki, so
+            # the post-commit hooks have nothing new to act on. Skip rather than fire on a no-op.
             pass
         else:
             # Post-commit: make the new wiki state visible to qmd and the

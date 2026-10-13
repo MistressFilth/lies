@@ -10,21 +10,10 @@ from __future__ import annotations
 
 import re
 
-# Accept the standard fence shape with optional trailing whitespace
-# after the ``mermaid`` lang tag (Markdown spec permits
-# `` ```mermaid `` with a trailing space or tab). The closing fence
-# must sit on its own line; bodies with inline fences after prose are
-# not fences per spec and are not matched.
-#
-# Info-string strictness: the regex rejects fences that carry any
-# CommonMark info string after ``mermaid`` (e.g. ``\`\`\`mermaid
-# style=plain``). Synth output is expected to emit bare ``mermaid``
-# fences per the chart-variant prompt's "EXACTLY ONE ```mermaid```
-# fence" contract; non-empty info strings are a malformed-output
-# signal we deliberately surface as a non-match (the CLI then emits
-# the body unchanged with a stderr warning). Widening the regex to
-# accept arbitrary info strings would mask the malformed-output
-# signal — the current strict posture is intentional.
+# Standard fence shape, with optional trailing whitespace after the ``mermaid`` lang tag
+# (the Markdown spec permits it); the closing fence must sit on its own line. Any
+# CommonMark info string after ``mermaid`` is rejected: synth is expected to emit bare
+# fences, so a non-empty one is a malformed-output signal, not something to accommodate.
 _MERMAID_FENCE = re.compile(
     r"```mermaid[ \t]*\n(.*?)\n```",
     re.DOTALL,

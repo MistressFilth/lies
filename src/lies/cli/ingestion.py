@@ -22,13 +22,9 @@ from lies.library.errors import (
 __all__ = ("sync", "reindex")
 
 
-# ---------------------------------------------------------------------------
-# Lazy re-export so tests can ``mock.patch`` ``lies.cli.ingestion.Orchestrator``.
-#
-# Same PEP-562 pattern as the established ``lies.cli/__init__.py`` shape:
-# ``mock.patch`` of ``lies.cli.ingestion.Orchestrator`` lets tests intercept
-# the Orchestrator factory the sync/reindex bodies still pull through.
-# ---------------------------------------------------------------------------
+# Lazy re-export so tests can ``mock.patch`` ``lies.cli.ingestion.Orchestrator`` — the
+# same :PEP:`562` pattern as ``lies/cli/__init__.py``, so the patch intercepts the
+# Orchestrator factory the sync/reindex bodies pull through.
 
 
 def __getattr__(name: str):
@@ -218,14 +214,10 @@ def sync(
             total_updated += last_result.updated
             total_skipped += last_result.skipped
         if not skip_reindex:
-            # Chain qmd update + embed after the sync loop. The qmd
-            # lag is operator-visible, not data-loss — failures log + warn
-            # but do not abort the sync exit code (the collection sync
-            # already exited 0). ``qmd_reindex(embed=True)`` re-uses the
-            # library-wide reindex envelope (no per-collection name
-            # required) rather than ``qmd_embed`` directly (which is
-            # per-collection). CI matrices that reindex separately can
-            # opt out with ``--skip-reindex``.
+            # Chain qmd update + embed after the sync loop. The qmd lag is operator-visible, not
+            # data-loss: failures log + warn but do not abort the sync exit code, which already
+            # exited 0. ``qmd_reindex(embed=True)`` reuses the library-wide envelope (no per-collection
+            # name needed) rather than the per-collection ``qmd_embed``; ``--skip-reindex`` opts out.
             from lies.library.registry import library_git_root
             from lies.qmd.cli import qmd_reindex
 

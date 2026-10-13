@@ -174,10 +174,8 @@ def _read_impl(paths: list[str]) -> dict[str, str | list[str]]:
 
     missing: list[str] = []
     if library_paths:
-        # One MCP session for the whole batch. Measured against the
-        # live daemon: one-shot session p50 75.4 ms; persistent
-        # session p50 41.9 ms per call (see I-9 numbers in
-        # ``access.read_library_bodies``). A 20-path read drops
+        # One MCP session for the whole batch. Measured against the live daemon: one-shot session
+        # p50 75.4 ms versus a persistent session p50 41.9 ms per call, so a 20-path read drops
         # from ~1.5 s to ~900 ms.
         for p, body in zip(library_paths, _daemon_bodies_batched(library_paths), strict=True):
             if body is None:

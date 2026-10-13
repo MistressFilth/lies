@@ -211,13 +211,10 @@ def parse_tokens(tokens: list[str]) -> TagExpr:
             tok = tok[1:-1]
         pos += 1
         qualifier, tag = _split_qualifier(tok)
-        # Empty body after a known qualifier prefix (`c:` / `t:`). Mirror
-        # the exclude-side check in `check_qualifier`: surface as a parse
-        # error rather than letting an empty body slip through to
-        # Include(tag='c:', qualifier=None) and confuse the resolver with
-        # "unknown tag: 'c:'". `_split_qualifier`'s regex requires `.+`
-        # body chars, so it returns (None, "c:") for `c:` — detect that
-        # case here.
+        # Empty body after a known qualifier prefix. Mirror the exclude-side
+        # ``check_qualifier`` and raise rather than letting ``c:""" slip through to
+        # ``Include(tag='c:', qualifier=None)`` and surface as an unknown tag.
+        # ``_split_qualifier`` requires ``.+``, so it returns ``(None, "c:")`` here.
         if qualifier is None and tag in ("c:", "t:"):
             raise TagExprParseError(f"qualifier {tag[:-1]!r} without atom", position=pos - 1)
         if qualifier is None and ":" in tag and not (tag.startswith('"') and tag.endswith('"')):
@@ -259,16 +256,10 @@ def parse(expr: str) -> TagExpr:
     Raises `TagExprParseError` on bad grammar.
     """
     try:
-        # NOTE: shlex's `whitespace_split=True` flattens `&` / `|` into
-        # word characters and would parse `a&b` as a single token. The
-        # default posix shlex treats `&` / `|` as metacharacters and
-        # still honors quoted segments, which is what the grammar wants.
-        # Hyphen is added to wordchars so tag names like `claude-code`
-        # stay one token (shlex otherwise splits on `-`).
-        # Colon is added to wordchars so `t:` / `c:` qualifier prefixes
-        # stay attached to their atom (otherwise `t:airflow` would
-        # tokenize as `t`, `:`, `airflow`). Quoted segments are still
-        # treated as one token by shlex regardless of wordchars.
+        # posix shlex keeps ``&`` / ``|`` as metacharacters while still honoring
+        # quoted segments; ``whitespace_split=True`` would flatten them into words.
+        # ``-`` and ``:`` are added to ``wordchars`` so ``claude-code`` and
+        # ``t:airflow`` each stay one token.
         lexer = shlex.shlex(expr, posix=True)
         lexer.wordchars += "-:"
         lexer.commenters = ""
@@ -293,12 +284,9 @@ def _render_include(node: TagExpr) -> str:
     for general use.
     """
     if isinstance(node, Include):
-        # Quote only if the tag would otherwise round-trip wrong:
-        # leading `-` would be read as the start of an exclude atom,
-        # whitespace would split the token, and `&` / `|` are the
-        # grammar's binary operators. Internal `-` (e.g. `claude-code`)
-        # round-trips fine because shlex is configured with `-` in
-        # wordchars.
+        # Quote only when the tag would round-trip wrong: a leading ``-`` reads as an
+        # exclude atom, whitespace splits the token, and ``&`` / ``|`` are operators.
+        # Internal ``-`` round-trips fine (it is in ``wordchars``).
         tag = node.tag
         if tag.startswith("-"):
             rendered_tag = f'"{tag}"'
@@ -345,13 +333,9 @@ def _split_argv_token_for_ops(token: str) -> list[str]:
             break
     if not has_op:
         return [token]
-    # Operators detected — split with posix shlex. Quoted segments
-    # stay one token; `&` / `|` become their own tokens; `-` is in
-    # wordchars so tag names like `claude-code` stay whole. `:` is in
-    # wordchars so `c:opencode` / `t:airflow` qualifier prefixes stay
-    # attached to their atom (otherwise `c:opencode` would tokenize
-    # as `c`, `:`, `opencode`). Mirrors `parse()` which also adds
-    # both `-` and `:` to wordchars.
+    # Operators detected with posix shlex: quoted segments stay one token,
+    # ``&`` / ``|`` become their own tokens, and ``-`` / ``:`` in ``wordchars`` keep
+    # ``claude-code`` and ``c:opencode`` whole. Mirrors ``parse()``.
     try:
         lexer = shlex.shlex(token, posix=True)
         lexer.wordchars += "-:"
@@ -404,11 +388,9 @@ def parse_query_argv(
         body = argv[0][1:]  # strip leading `+`
         chain_tokens = [body] if body else []
         i = 1
-        # Surface a dangling operator on the very first chain
-        # token BEFORE the extension loop absorbs additional argv
-        # tokens into the chain. argv `["+a&", "what", ...]`
-        # raises "dangling operator at end of chain" instead of
-        # silently consuming "what" and parsing wrong.
+        # Surface a dangling operator on the first chain token BEFORE the extension
+        # loop absorbs more argv tokens, so ``["+a&", "what", ...]`` raises instead
+        # of silently consuming ``"what"`` and parsing wrong.
         if chain_tokens and chain_tokens[-1].endswith(("&", "|")):
             raise TagExprParseError(
                 f"dangling operator at end of chain: {chain_tokens[-1]!r}",
@@ -416,16 +398,10 @@ def parse_query_argv(
             )
         while i < len(argv):
             tok = argv[i]
-            # Extend the chain if EITHER (a) the previous chain
-            # token ended in an operator (atom-then-operator case)
-            # OR (b) the current token starts with `&` / `|` — the
-            # operator-then-atom case from realistic shell splitting
-            # (e.g. `+c:foo & c:bar` shlex-tokenizes to `["+c:foo",
-            # "&", "c:bar"]`). The bare-operator token is appended
-            # as-is; the per-token operator split
-            # (:func:`_split_argv_token_for_ops`) re-emits it as its
-            # own flat-list element so `parse_tokens` sees a clean
-            # operator/atom stream.
+            # Extend the chain when the previous token ended in an operator, or the
+            # current one starts with ``&`` / ``|`` — the operator-then-atom case from
+            # realistic shell splitting. The bare operator is appended as-is and
+            # re-emitted by ``_split_argv_token_for_ops`` as its own flat element.
             if chain_tokens and chain_tokens[-1].endswith(("&", "|")):
                 chain_tokens.append(tok)
                 i += 1
@@ -442,12 +418,9 @@ def parse_query_argv(
                 f"dangling operator at end of chain: {chain_tokens[-1]!r}",
                 position=len(argv) - 1,
             )
-        # Parse the include chain. Each argv chain token is one
-        # atom (which may carry internal whitespace from realistic
-        # bash, or operators embedded in a quoted token from
-        # explicit shell quoting). Per-token operator split keeps
-        # internal whitespace whole while separating `&` / `|`
-        # outside any quoted segment.
+        # Each argv chain token is one atom, possibly carrying internal whitespace
+        # from bash or embedded operators from explicit quoting. The per-token split
+        # keeps internal whitespace whole while separating outside ``&`` / ``|``.
         if not chain_tokens:
             raise TagExprParseError("'+' without atom", position=0)
         flat: list[str] = []
@@ -458,19 +431,10 @@ def parse_query_argv(
         include_ast = None
         i = 0
 
-    # Peel the optional `-` chain. The chain mirrors the include
-    # path's split + extend model: the first argv token's body
-    # (after stripping the leading ``-``) is one atom; the chain
-    # extends across subsequent argv tokens that START with ``&``
-    # / ``|`` (the operator-then-atom case from realistic shell
-    # splitting). Embedded operators inside the first argv token
-    # (e.g. ``-c:foo&c:bar`` as one shell word) flow through the
-    # same ``_split_argv_token_for_ops`` helper the include path
-    # uses, so the ``&`` / ``|`` split semantics are symmetric
-    # across both chains. Each atom may carry a ``t:`` / ``c:``
-    # qualifier prefix (F15); bad prefixes raise
-    # ``TagExprParseError`` via :func:`check_qualifier` here,
-    # mirroring the include chain's parse_atom error path.
+    # Peel the optional ``-`` chain with the include path's split + extend model:
+    # the first token's body is one atom, the chain extends across tokens starting
+    # with ``&`` / ``|``, and embedded operators go through the same helper, so
+    # the semantics are symmetric. Atoms may carry ``t:`` / ``c:``; a bad one raises.
     if i < len(argv) and argv[i].startswith("-"):
         body = argv[i][1:]
         if not body:
@@ -480,14 +444,10 @@ def parse_query_argv(
         i += 1
         while i < len(argv):
             tok = argv[i]
-            # Bare operator: append operator + immediately absorb the
-            # next token (whatever it is) as the following atom.
-            # Mirrors the include path's "extend chain" semantics for
-            # argv[i] starts with & / |: the operator must be followed
-            # by an atom or the chain is dangling. Realistic shell
-            # splits produce this shape when the operator has
-            # surrounding whitespace (e.g. shlex.split("-c:foo & c:bar")
-            # yields `["-c:foo", "&", "c:bar"]`).
+            # Bare operator: append it and immediately absorb the next token as the
+            # following atom. The operator must be followed by an atom or the chain is
+            # dangling — realistic shell splits produce this shape whenever the operator
+            # has surrounding whitespace.
             if tok in ("&", "|"):
                 exclude_tokens.append(tok)
                 i += 1
@@ -527,11 +487,9 @@ def parse_query_argv(
                 f"dangling operator at end of exclude chain: {exclude_tokens[-1]!r}",
                 position=len(argv) - 1,
             )
-        # Flatten via the same argv-split helper used by the
-        # include path: operators outside any quoted segment
-        # become their own tokens; the leading operator on a
-        # continuation argv token flows through to the flat list
-        # exactly once. parse_tokens then builds the AST.
+        # Flatten through the same argv-split helper as the include path: outside
+        # operators become their own tokens and a continuation token's leading
+        # operator flows through exactly once. ``parse_tokens`` then builds the AST.
         flat_exclude: list[str] = []
         for ct in exclude_tokens:
             flat_exclude.extend(_split_argv_token_for_ops(ct))

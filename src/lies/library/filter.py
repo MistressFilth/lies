@@ -60,12 +60,9 @@ def should_skip_filename(
     stem = path.stem.lower()
     if stem in FILENAME_SKIP_STEMS or filename in extra_stems or stem in extra_stems:
         return f"skip-stem:{stem}"
-    # Minor 32: inlined the previous ``_iterable_prefixes`` wrapper.
-    # The wrapper was a ``yield from prefixes`` over a Container, which
-    # is just an iteration; the wrapper layer added nothing. Keeping
-    # the iteration explicit here preserves the same union order
-    # (built-in prefixes first, then operator-supplied) without the
-    # extra function call.
+    # The union order matters: built-in prefixes first, then operator-supplied. Iterating
+    # inline keeps that order without the wrapper function call the old ``_iterable_prefixes``
+    # indirection added.
     for prefix in (*FILENAME_SKIP_PREFIXES, *extra_prefixes):
         if stem.startswith(prefix):
             return f"skip-stem-prefix:{prefix}"
@@ -93,11 +90,9 @@ def should_skip_content(body: str) -> str | None:
         if marker in stripped[:2000]:
             return f"skip-content:template-artifact:{marker}"
     non_blank = [ln for ln in body.splitlines() if ln.strip()]
-    # Minor 34: ``len(non_blank) < _MIN_CONTENT_LINES`` is the strict-
-    # less-than contract; a body with EXACTLY ``_MIN_CONTENT_LINES``
-    # non-blank lines passes the gate. The previous ``<=`` comparison
-    # quarantined at the boundary; this is the implementation that
-    # matches the spec ask and the comment in this module.
+    # ``len(non_blank) < _MIN_CONTENT_LINES`` is the strict-less-than contract: a body with
+    # EXACTLY ``_MIN_CONTENT_LINES`` non-blank lines passes. The earlier ``<=`` quarantined at
+    # the boundary.
     if len(non_blank) < _MIN_CONTENT_LINES:
         return f"skip-content:thin-content:{len(non_blank)}"
     return None

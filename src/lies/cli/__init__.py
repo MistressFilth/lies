@@ -137,13 +137,10 @@ def main(
     console.print("\nbye.")
 
 
-# Step 3: import the group modules that register @app.command(...) decorators
-# directly on the root ``app``. Each module's top-level code is cheap; only
-# its command bodies are expensive.
-# Importing these triggers decorator registration -- they need the root
-# ``app`` to already exist (which it does from step 1), and Python's import
-# machinery returns the partially-loaded ``lies.cli`` namespace rather than
-# re-executing this __init__.py.
+# Step 3: import the group modules that register ``@app.command(...)`` decorators
+# directly on the root ``app``. Only their command bodies are expensive. They need the
+# root ``app`` to already exist (step 1), and Python's import machinery returns the
+# partially-loaded ``lies.cli`` namespace rather than re-executing this ``__init__``.
 from lies import xdg  # noqa: E402
 from lies.cli import _core, ingestion, operator, query  # noqa: E402,F401
 
@@ -208,10 +205,9 @@ def migrate_collection_configs(
 
 
 # Re-exports for test compat. ``test_cli_flock.py`` monkeypatches
-# ``cli_module.acquire_create_lock``; ``test_cli_lint_force_repair.py``
-# reaches ``WikiFlockUnrepairable`` / ``WikiLockBusy`` through the same
-# ``import lies.cli as cli_module`` alias. These are cheap so they're
-# re-exported directly.
+# ``cli_module.acquire_create_lock`` and ``test_cli_lint_force_repair.py`` reaches the
+# flock errors through the same ``import lies.cli as cli_module`` alias. These are cheap,
+# so they are re-exported directly.
 from lies.cli._helpers import (  # noqa: E402
     WikiFlockUnrepairable,
     WikiLockBusy,
@@ -219,13 +215,10 @@ from lies.cli._helpers import (  # noqa: E402
 )
 from lies.config import get_wiki_name  # noqa: E402
 
-# Lazy re-exports for test compat. Several tests do
-# ``monkeypatch.setattr("lies.cli.Orchestrator", ...)`` /
-# ``with patch("lies.cli.pick_scraper"): ...`` etc.; Python's attribute
-# lookup walks the package, so the names must be reachable as attributes
-# of ``lies.cli``. Loading them eagerly here would defeat the
-# lazy-imports contract; module-level ``__getattr__`` loads each one on
-# first access only.
+# Lazy re-exports for test compat. Tests do ``monkeypatch.setattr("lies.cli.Orchestrator",
+# ...)``, and Python's attribute lookup walks the package, so the names must be reachable
+# as attributes of ``lies.cli``. Module-level ``__getattr__`` loads each on first access,
+# which is what keeps the lazy-imports contract.
 _LAZY_ATTRS: dict[str, tuple[str, str]] = {
     # attr name -> (module path, attribute name on that module)
     "Orchestrator": ("lies.orchestrator", "Orchestrator"),

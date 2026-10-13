@@ -453,13 +453,10 @@ def _parse_json_list(stdout_text: str) -> list[Any] | None:
     return None
 
 
-#: A CLI-path query pays a full model load on every call -- the daemon
-#: keeps models warm for ``DEFAULT_INACTIVITY_TIMEOUT_MS``, the CLI never
-#: does. Measured here over 10 identical queries with a warm model cache:
-#: 3.9-10.9s typical, tail 31.2s and 67.7s. The idle default of 30s
-#: fires inside that tail and reports a healthy query as ``QmdWedgeError``
-#: (then ``QmdTimeoutError`` at the total), intermittently and on a
-#: different call each time.
+# A CLI-path query pays a full model load on every call — the daemon keeps models warm
+# for ``DEFAULT_INACTIVITY_TIMEOUT_MS``, the CLI never does. Measured over 10 identical
+# queries with a warm model cache: 3.9-10.9s typical, tail 31.2s and 67.7s, so the 30s
+# idle default fires inside that tail and reports a healthy query as ``QmdWedgeError``.
 QMD_QUERY_TIMEOUT_S = 120
 QMD_QUERY_IDLE_TIMEOUT_S = 45.0
 
@@ -583,15 +580,7 @@ def _normalize_qmd_result(item: Any) -> dict[str, Any]:
     return result
 
 
-# ``qmd_get`` was deleted here. It shelled out to ``qmd get`` for the
-# librarian's source-aware read, which the seam moved to the daemon's
-# ``get`` with ``lineNumbers: false``: the CLI line-numbers every line
-# unconditionally and ``--no-line-numbers`` still leaves a
-# ``qmd://path  #docid`` header, so the F19 citation contract
-# ``[[slug]]: "verbatim quote"`` could not be met through it. The
-# function had no remaining caller, and its docstring still named the
-# dispatch that no longer existed. It also raised ``QmdCommandError``
-# on a timeout where its sibling in this module raised
-# ``QmdTimeoutError`` carrying qmd's stderr -- an asymmetry inside one
-# file, which is the kind of thing the next caller copies. Use
-# ``access.daemon_tool("get", {"file": path, "lineNumbers": False})``.
+# ``qmd_get`` was deleted here. The seam moved the librarian's source-aware read to the
+# daemon's ``get`` with ``lineNumbers: false``; the CLI line-numbers unconditionally and
+# still leaves a ``qmd://path #docid`` header, so the F19 citation contract could not be
+# met through it. Use ``access.daemon_tool("get", {"file": path, "lineNumbers": False})``.

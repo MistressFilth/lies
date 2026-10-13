@@ -72,28 +72,14 @@ class WikiLayout:
         self.root.mkdir(parents=True, exist_ok=True)
         self.raw_dir.mkdir(parents=True, exist_ok=True)
         self.wiki_dir.mkdir(parents=True, exist_ok=True)
-        # Register the wiki-rooted qmd collection so retrieval can
-        # query it. Mirrors ``LibraryWriter.qmd_post_commit`` pattern
-        # (PR #72). The ``qmd_collection_add_or_update`` helper is
-        # idempotent: re-running init on an already-registered wiki is
-        # a no-op when the path matches. The existing post-commit hook
-        # (``WikiMemoryService._refresh_qmd``) calls ``qmd update``
-        # which re-indexes this collection alongside the library
-        # collections — no new post-commit hook is needed for the wiki
-        # side.
-        #
-        # On success, the sentinel file is written atomically so the
-        # first-write / first-query self-heal hook
-        # (:func:`ensure_wiki_qmd_registered`) skips the subprocess on
-        # subsequent operations. The sentinel is gitignored (see
-        # ``_gitignore_lines``) so it never lands in a commit.
+        # Register the wiki-rooted qmd collection so retrieval can query it, mirroring
+        # ``LibraryWriter.qmd_post_commit``. The helper is idempotent, and the existing
+        # post-commit hook's ``qmd update`` re-indexes it alongside the library collections.
+        # The sentinel is written atomically so the self-heal hook skips the subprocess later.
         try:
-            # Resolve the lazy ``__getattr__`` binding explicitly: PEP 562
-            # module-level ``__getattr__`` does NOT fire for
-            # ``LOAD_GLOBAL`` inside a function/method body. The bare
-            # name below would otherwise raise ``NameError`` in a fresh
-            # process and emit a spurious warning. See
-            # :func:`ensure_wiki_qmd_registered` for the same pattern.
+            # Resolve the lazy ``__getattr__`` binding explicitly: PEP 562 does not fire for
+            # ``LOAD_GLOBAL`` inside a function body, so the bare name would raise ``NameError``
+            # in a fresh process and emit a spurious warning.
             _qaou = globals().get("qmd_collection_add_or_update") or __getattr__(
                 "qmd_collection_add_or_update"
             )
@@ -129,11 +115,9 @@ def _write_sentinel(data_root: Path) -> None:
     """
     sentinel = qmd_sentinel_path(data_root)
     sentinel.parent.mkdir(parents=True, exist_ok=True)
-    # ``os.replace`` is atomic on POSIX when source and destination are
-    # on the same filesystem; the sentinel and its tmp live under the
-    # same ``.lies/`` directory so that holds. ``fd, path`` pair avoids
-    # a TOCTOU where a concurrent writer could delete + replace between
-    # ``open`` and ``replace``.
+    # ``os.replace`` is atomic on POSIX within one filesystem, and the sentinel and its
+    # tmp share a ``.lies/`` directory. The ``fd, path`` pair avoids a TOCTOU where a
+    # concurrent writer could replace the file between open and replace.
     tmp = sentinel.with_name(sentinel.name + ".tmp")
     fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     try:
@@ -176,12 +160,9 @@ def ensure_wiki_qmd_registered(wiki: Wiki) -> bool:
     if sentinel.exists():
         return True
 
-    # Resolve the lazy ``__getattr__`` binding explicitly. ``LOAD_GLOBAL``
-    # inside a function does NOT fall through to the module's
-    # ``__getattr__`` (PEP 562); it only fires for ``module.name``
-    # attribute access. Without the explicit lookup here the call
-    # raises ``NameError`` in a fresh process. Same pattern as
-    # :mod:`lies.library.writer`.
+    # ``LOAD_GLOBAL`` inside a function does not fall through to the module's
+    # ``__getattr__`` (PEP 562) — it only fires for ``module.name`` attribute access.
+    # Without the explicit lookup the call raises ``NameError`` in a fresh process.
     _qaou = globals().get("qmd_collection_add_or_update") or __getattr__(
         "qmd_collection_add_or_update"
     )
@@ -203,12 +184,9 @@ def ensure_wiki_qmd_registered(wiki: Wiki) -> bool:
     try:
         _write_sentinel(wiki.data_root)
     except OSError as exc:
-        # Sentinel write failed but the registration may have
-        # succeeded; on the next call ``qmd_collection_add_or_update``
-        # is idempotent (no-op when path matches), so the cost of a
-        # re-attempt is bounded. Surface the warning so the operator
-        # knows the wiki will keep retrying the qmd subprocess on
-        # every write/query.
+        # The sentinel write failed but registration may have succeeded, and
+        # ``qmd_collection_add_or_update`` is idempotent, so a re-attempt is bounded. Warn so
+        # the operator knows the qmd subprocess will keep retrying on every write.
         print(
             f"warning: could not write qmd registration sentinel at {sentinel}: {exc}; "
             f"next write/query will retry the qmd subprocess.",
@@ -262,15 +240,10 @@ def git_init_initial(path: Path) -> None:
         capture_output=True,
         text=True,
     )
-    # Exclude runtime artifacts under ``<wiki>/.lies/`` (the sidecar at
-    # ``.lies/memory_plans.jsonl`` lives there). ``WikiMemoryService.apply_plan``
-    # snapshots the working tree via ``git stash push --include-untracked``;
-    # without this ignore the untracked sidecar is stashed and dropped on
-    # success, silently losing prior sidecar lines.
-    #
-    # Guard against clobbering: an operator who curated a custom
-    # ``.gitignore`` before re-running ``lies init`` must not lose their
-    # entries.
+    # Exclude runtime artifacts under ``<wiki>/.lies/``: ``apply_plan`` snapshots the tree
+    # via ``git stash push --include-untracked``, so an ignored sidecar would otherwise be
+    # stashed and silently dropped on success. Guard against clobbering a curated
+    # ``.gitignore``.
     gitignore_path = path / ".gitignore"
     if not gitignore_path.exists():
         gitignore_path.write_text(

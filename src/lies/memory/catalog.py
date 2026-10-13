@@ -247,14 +247,10 @@ def _row_to_page(row: sqlite3.Row) -> CatalogPage:
 # Disk sync (orphan + dangling)
 # ---------------------------------------------------------------------------
 
-# System files excluded from the catalog walk. ``_SYSTEM_FILES`` is keyed
-# by *root-anchored relative path* (``path.relative_to(wiki_dir).as_posix()``)
-# so a nested ``claude-code/concepts/index.md`` is NOT excluded; only the
-# top-level ``index.md`` / ``log.md`` / ``schema.md`` are. This matches
-# the pattern at ``src/lies/memory/index.py:41`` and
-# ``src/lies/orchestrator.py:170``. ``overview.md`` and ``lint-report.md``
-# are also excluded — these are the deterministic host-side artifacts the
-# linter / orchestrator emit and are NOT wiki pages.
+# System files excluded from the catalog walk. ``_SYSTEM_FILES`` is keyed by
+# *root-anchored* relative path, so a nested ``claude-code/concepts/index.md`` is NOT
+# excluded. ``overview.md`` and ``lint-report.md`` join the top-level system files as
+# deterministic host-side artifacts, not wiki pages.
 _SYSTEM_FILES = frozenset(
     {
         "index.md",

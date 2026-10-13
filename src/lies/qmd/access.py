@@ -85,6 +85,7 @@ def _daemon_client(url: str) -> fastmcp.Client:
     )
 
 
+<<<<<<< HEAD
 # --- the taxonomy ------------------------------------------------------
 #
 # Matched by exception class *name*, not by httpx type: fastmcp vendors
@@ -95,16 +96,33 @@ def _daemon_client(url: str) -> fastmcp.Client:
 #: exhausted the httpx pool (client-side), and ``recycle-raise`` on a
 #: machine-global daemon would kill other clients' in-flight work. It
 #: keeps the ``recycle-retry`` path via ``_TRANSPORT_NAMES``.
+=======
+# The taxonomy. Matched against exception class *names* (fastmcp vendors its own
+# httpx as ``httpx2``). A dead session arrives as a bare ``RuntimeError`` with the real
+# error on ``__cause__``; ``_transport_cause`` follows the chain.
+
+# Names that mean "the daemon accepted the request and stopped answering".
+# ``PoolTimeout`` is excluded: it means LIES' own concurrency exhausted the httpx pool
+# (client-side state), and ``recycle-raise`` would kill other clients' in-flight work. It
+# keeps ``recycle-retry`` through ``_TRANSPORT_NAMES``.
+>>>>>>> ff22413 (docs(src): bring every body comment block within the 4-line budget)
 _WEDGE_NAMES = frozenset({"ReadTimeout", "WriteTimeout"})
 
 #: Names that mean "the daemon was not there".
 _TRANSPORT_NAMES = frozenset({"TransportError", "TimeoutException", "ConnectError"})
 
+<<<<<<< HEAD
 #: Names that mean the *client* sent something the server rejected.
 #: ``LocalProtocolError`` is httpx's name for a malformed request; a retry
 #: is provably futile (the same bytes fail the same way). Treat as
 #: ``passthrough``. ``RemoteProtocolError`` is server-side and keeps the
 #: ``recycle-retry`` path.
+=======
+# Names that mean the *client* sent something the server rejected. A retry is provably
+# futile (the same bytes fail the same way) and a recycle kills other clients' work on a
+# machine-global daemon, so treat ``LocalProtocolError`` as ``passthrough`` like the
+# server-state ``HTTPStatusError``. ``RemoteProtocolError`` keeps ``recycle-retry``.
+>>>>>>> ff22413 (docs(src): bring every body comment block within the 4-line budget)
 _LOCAL_PROTOCOL_NAMES = frozenset({"LocalProtocolError"})
 
 #: JSON-RPC code for session death under an in-flight call. Literal
@@ -498,8 +516,15 @@ async def read_library_bodies(
             except _DAEMON_FAILURES:
                 raise
             except Exception as exc:
+<<<<<<< HEAD
                 # What reaches here is a ``"passthrough"`` class: the
                 # daemon is serving and this one request was bad.
+=======
+                # The taxonomy owns every transport failure, so what reaches here is a ``passthrough``
+                # class: the daemon is serving and this one request was bad — genuinely per-path, so
+                # siblings survive. A bug raised here is not; see the test pinning a transport error to a
+                # raise rather than a ``None``.
+>>>>>>> ff22413 (docs(src): bring every body comment block within the 4-line budget)
                 _log.warning("read: qmd get(%s) failed per-path: %s", path, exc)
                 out.append(None)
                 continue

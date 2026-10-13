@@ -485,11 +485,10 @@ async def ground(
                 fallback_reason=f"qmd lock busy: {exc}",
             )
         except Exception as exc:
-            # A dispatch failure is a process claim, not a corpus
-            # claim. ``transient=True`` distinguishes "the daemon
-            # failed" from "the corpus has nothing", and the logger
-            # line keeps a persistently failing daemon visible
-            # (``warnings.warn`` filters once per location by default).
+            # A dispatch failure is a process claim, not a corpus claim. ``transient=True``
+            # distinguishes "the daemon failed" from "the corpus has nothing", and the logger line
+            # keeps a persistently failing daemon visible (``warnings.warn`` filters once per
+            # location by default).
             _log.error(
                 "ground: fan-out dispatch failed: %s: %s",
                 type(exc).__name__,
@@ -653,10 +652,9 @@ async def ground(
             )
         )
 
-    # A dispatch that searched nothing because the daemon serves none
-    # of the requested collections is not a clean miss. It reports an
-    # empty scope and names what it could not get; the caller decides
-    # what to tell the user, and nothing here claims the corpus is
+    # A dispatch that searched nothing because the daemon serves none of the requested
+    # collections is not a clean miss. It reports an empty scope and names what it could not
+    # get; the caller decides what to tell the user, and nothing here claims the corpus is
     # empty.
     if fanout is not None and not fanout.searched:
         return ArchivistDigest(

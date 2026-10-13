@@ -272,13 +272,10 @@ class _FlockGroup(typer.main.TyperGroup):
         ctx: _ClickContext,
         args: list[str],
     ) -> list[str]:
-        # Narrow the bypass to the nested ``qmd`` sub-app only. Legacy
-        # wiki-flock subcommands (``status``, ``force-repair``) must keep
-        # the standard Click path so the parent's ``name`` callback arg
-        # is consumed as the wiki name — without this narrow, a bare
-        # ``lies flock status`` would crash with ``TypeError: 'NoneType'
-        # object is not subscriptable`` because the legacy
-        # ``flock_status`` runs with empty ``ctx.obj``.
+        # Narrow the bypass to the nested ``qmd`` sub-app only. The legacy wiki-flock
+        # subcommands must keep the standard Click path so the parent's ``name`` callback arg is
+        # consumed as the wiki name; without this narrow a bare ``lies flock status`` crashes on
+        # empty ``ctx.obj``.
         if args and args[0] == "qmd" and "qmd" in self.commands:
             setattr(ctx, "_is_subcommand_dispatch", True)
             ctx._protected_args = [args[0]]
@@ -344,12 +341,10 @@ def flock_status(
     age_s = (time.time() - hb.started_at) if hb else None
     age_str = f"{age_s:.0f}s" if age_s is not None else "?"
     fresh = (age_s is not None) and (age_s < MAX_FLOCK_AGE_S)
-    # Tri-state liveness classification: ``"held"`` for fresh with a
-    # reachable contender, ``"indeterminate"`` for fresh when ``pid_alive``
-    # could not determine state (EPERM / unknown OSError), ``"stale"`` for
-    # a heartbeat outside the recovery window. Indeterminate reports
-    # surface ``pid_alive: indeterminate`` in the text output so operators
-    # know the flock is held but the holder's state is uncertain.
+    # Tri-state liveness: ``"held"`` for fresh with a reachable contender, ``"indeterminate"``
+    # for fresh when ``pid_alive`` could not determine state (EPERM / unknown OSError),
+    # ``"stale"`` for a heartbeat outside the recovery window. Indeterminate surfaces
+    # ``pid_alive: indeterminate`` so operators know the flock is held but uncertain.
     liveness: str | None = None
     if pid is not None:
         liveness = _heartbeat.pid_alive(pid)
@@ -429,12 +424,9 @@ def flock_force_repair(ctx: typer.Context) -> None:
             p.unlink()
             typer.echo(f"reap     : unlinking {p.name}")
 
-    # Retry once.
-    # NOTE: access via ``lies.cli.acquire_create_lock`` (attribute lookup
-    # at call time) rather than an import-time binding, so tests that
-    # ``monkeypatch.setattr(lies.cli, "acquire_create_lock", ...)`` take
-    # effect. The other helpers used here are imported at module top
-    # because they aren't patched in any test.
+    # Retry once. Accessed via ``lies.cli.acquire_create_lock`` (attribute lookup at call
+    # time) rather than an import-time binding, so ``monkeypatch.setattr`` on the package
+    # takes effect. The other helpers are imported at module top; no test patches them.
     import lies.cli as _cli_pkg
 
     result = _cli_pkg.acquire_create_lock(create_lock, max_age_s=MAX_FLOCK_AGE_S)

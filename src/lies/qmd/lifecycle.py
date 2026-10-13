@@ -148,11 +148,9 @@ def _port_listening(port: int) -> bool:
         return False
 
 
-# Liveness deadlines, deliberately separate from the retrieval
-# budget in ``lies.config.get_qmd_query_timeout``. A slow answer
-# to "is this alive?" is itself the failure: these let ``lies
-# qmd up`` and ``lies qmd status`` report a wedged daemon instead
-# of blocking on it.
+# Liveness deadlines, deliberately separate from the retrieval budget in
+# ``lies.config.get_qmd_query_timeout``. A slow answer to "is this alive?" is itself the
+# failure: these let ``lies qmd up`` / ``status`` report a wedged daemon, not block.
 DAEMON_START_TIMEOUT_S = 15.0
 PROBE_TIMEOUT_S = 5.0
 

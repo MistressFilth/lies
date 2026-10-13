@@ -149,12 +149,10 @@ def register(app: typer.Typer) -> None:
         fetcher = ScraperFetcher(library=lib)
         coerced_source = _coerce_source(source)
         coerced_batch = _coerce_source(batch)
-        # Minor 42: surface a clearer error when the operator passes
-        # neither ``--collection`` nor ``--slug-prefix`` and there is
-        # no batch parent dir to derive one from. Previously this
-        # silently fell through to ``"default"`` — surprising for a
-        # bare URL where the operator had no reason to expect a
-        # collection called ``default``.
+        # Surface a clearer error when neither ``--collection`` nor ``--slug-prefix`` is given
+        # and there is no batch parent dir to derive one from. Falling through to ``"default"``
+        # was surprising for a bare URL, where the operator had no reason to expect a collection
+        # called ``default``.
         coll_name = (
             collection
             or slug_prefix
@@ -173,11 +171,9 @@ def register(app: typer.Typer) -> None:
         stems_list = list(exclude_stem)
         dirs_list = list(exclude_dir)
 
-        # A refusal is rendered like the other refusals in this command
-        # (``error: …`` on stderr, exit 2). Letting the typed error
-        # escape produces a Rich traceback, which is louder but says
-        # less: the operator is told which line of a library module they
-        # tripped, not what to pass instead.
+        # A refusal is rendered like the command's other refusals (``error: …`` on stderr, exit
+        # 2). Letting the typed error escape produces a Rich traceback, which is louder but says
+        # less: it names the library line tripped, not what to pass instead.
         try:
             if coerced_source is not None:
                 result = run_source_ingest(

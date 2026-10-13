@@ -20,12 +20,10 @@ DEFAULT_QMD_TRANSPORT = "http"
 # host resolves whichever family qmd got.
 DEFAULT_QMD_URL = "http://localhost:8181/mcp"
 DEFAULT_WIKI_NAME = "default"
-# Per-call deadline for a qmd *retrieval* subprocess, read at call
-# time. 60s is ``qmd_query``'s own signature default. Live
-# measurement against the 5987-doc corpus (2026-10-01): warm
-# 5.6-6.0s, three concurrent clients 5.9-6.6s, no timeouts in ~150
-# calls; intermittent stalls past 15s occur under host contention.
-# Liveness probes keep their own short deadlines.
+# Per-call deadline for a qmd *retrieval* subprocess, read at call time. 60s is
+# ``qmd_query``'s own signature default. Measured against the 5987-doc corpus on
+# 2026-10-01: warm 5.6-6.0s, three concurrent clients 5.9-6.6s, no timeouts in ~150
+# calls. Liveness probes keep their own short deadlines.
 DEFAULT_QMD_QUERY_TIMEOUT_S = 60
 
 

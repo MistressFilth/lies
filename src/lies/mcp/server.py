@@ -141,27 +141,16 @@ mcp.add_middleware(AbandonedCallMiddleware())
 # ``lies.mcp.prompts.register_prompts``.
 register_prompts(mcp)
 
-# Generate the ``list_prompts`` / ``get_prompt`` tool pair from the
-# registered prompt surface. Hosts that bind slashes to MCP prompts
-# pre-tokenize the slash tail on whitespace and bind tokens
-# positionally, so a multi-word question cannot reach a
-# single-parameter prompt body. Tool-call arguments are not subject to
-# that pre-tokenization, so the same prompts render from a tool call
-# with the full string intact. Added after ``register_prompts`` so all
-# prompts exist when the transform enumerates them; the generated
-# tools route through the server's middleware chain at runtime.
+# Generate the ``list_prompts`` / ``get_prompt`` tool pair from the registered prompt
+# surface. Tool-call arguments are not pre-tokenized, so the same prompts render from a
+# tool call with a multi-word question intact where the slash form cannot.
 mcp.add_transform(PromptsAsTools(mcp))
 
 
-# ---------------------------------------------------------------------------
-# Tag-filter helpers (shared with CLI + grounding archivist)
-# ---------------------------------------------------------------------------
-#
-# ``format_unknown_tag_error`` is imported by ``lies.cli.query`` for
-# the CLI's same-shape error message; ``_collect_available_tags_mcp``
-# is imported by ``lies.mcp.grounding`` for the F15 validator. Both
-# stay here as library-side helpers — neither is an MCP tool — until
-# the CLI/grounding callers import them from a more neutral location.
+# Tag-filter helpers, shared with the CLI and the grounding archivist.
+# ``format_unknown_tag_error`` is imported by ``lies.cli.query`` and
+# ``_collect_available_tags_mcp`` by ``lies.mcp.grounding``. Neither is an MCP tool;
+# they live here until those callers import from somewhere more neutral.
 
 
 def _collect_available_tags_mcp(wiki: object) -> set[str]:
@@ -241,19 +230,10 @@ def format_unknown_tag_error(exc: TagExprUnknown) -> str:
     return "\n".join(parts)
 
 
-# ---------------------------------------------------------------------------
-# v0.40 read-side tool registrations
-# ---------------------------------------------------------------------------
-#
-# The four new tools are imported from their dedicated modules and
-# registered under their canonical v0.40 names. ``Tool.from_function``
-# already wraps each function in a FastMCP ``FunctionTool``; we pass
-# ``search.fn`` / ``read.fn`` / ``lib_ask.fn`` to ``mcp.tool(name=...)``
-# (which expects a bare callable) so the FastMCP wire re-wraps the
-# underlying function rather than trying to wrap a Tool object. The
-# explicit ``name=`` kwarg matches the canonical MCP tool name;
-# ``Tool.from_function`` already encoded it but the redeclaration
-# is the documentation surface for readers scanning the wire shape.
+# v0.40 read-side tool registrations. ``mcp.tool`` expects a bare callable, so
+# ``search.fn`` / ``read.fn`` / ``lib_ask.fn`` are passed rather than the already-wrapped
+# ``Tool`` objects and the wire re-wraps the function. The explicit ``name=`` matches
+# the canonical MCP tool name.
 
 mcp.tool(name="collections_read")(_collections_read)
 mcp.tool(name="search")(_search_tool.fn)
@@ -349,11 +329,10 @@ async def reindex(
             sync_collection(wiki, coll_name, force=False)
         result.reconciled = True
 
-    # Gate destructive flags. When ``ctx`` is None (programmatic caller)
-    # ``_confirm_destructive`` raises on ``ctx.elicit`` and the helper
-    # returns ``elicitation unavailable``; we treat that as decline so
-    # no work runs (safety preserved through the helper's exception
-    # path, symmetric with the CLI's refuse-on-non-TTY-without-yes).
+    # Gate destructive flags. With ``ctx`` None (a programmatic caller)
+    # ``_confirm_destructive`` raises on ``ctx.elicit`` and the helper returns ``elicitation
+    # unavailable``; that is treated as a decline so no work runs — symmetric with the CLI
+    # refusing on a non-TTY without ``--yes``.
     if cleanup or all_:
         if all_:
             prompt = "Reindex --all will run cleanup + reindex + embed (full rebuild). Confirm?"
@@ -361,19 +340,10 @@ async def reindex(
             prompt = "Cleanup will vacuum the FTS5 db and drop orphan rows. Confirm?"
         decision = await _confirm_destructive(ctx, prompt)
         if decision is not None:
-            # Detect elicitation-unavailable specifically so the LLM
-            # caller gets a bypass path rather than a generic
-            # protocol-version error string. Bug E (session f39c9ef8):
-            # the host's MCP connection was older than
-            # ``2026-07-28`` and rejected server-initiated elicitation;
-            # ``_confirm_destructive`` returned
-            # ``"elicitation unavailable: <inner-exc>"`` and the LLM
-            # had no actionable signal to route on. Surface the
-            # concrete workaround here so the caller can either
-            # restart the MCP daemon (which negotiates a newer
-            # protocol version) or invoke ``lies reindex --cleanup``
-            # directly from the shell, where destructive flags run
-            # without the MCP gate.
+            # Detect elicitation-unavailable specifically, so the LLM caller gets a bypass path
+            # rather than a generic protocol-version error. Name the workaround: restart the MCP
+            # daemon (newer protocol) or run ``lies reindex --cleanup`` from the shell, where
+            # destructive flags bypass the gate.
             if decision.startswith("elicitation unavailable"):
                 bypass_msg = (
                     "cleanup requires confirmation; MCP server-initiated "
@@ -435,16 +405,10 @@ def lint(
         return f"error: {sys.exc_info()[1]}"
 
 
-# ---------------------------------------------------------------------------
-# Resources — wiki operational diagnostics + library catalog
-# ---------------------------------------------------------------------------
-#
-# Each resource is defined as an ``_impl`` function (takes ``name``,
-# does the real work) plus a thin zero-argument forwarder that FastMCP
-# registers as the static-resource handler. The forwarder pattern is a
-# FastMCP 3.4.5 constraint: static-resource handlers must be
-# zero-argument. Keeping the impl beside the forwarder lets tests and
-# direct callers exercise the real logic with an explicit ``name``.
+# Resources — wiki operational diagnostics + library catalog. Each is an ``_impl(name)``
+# doing the work plus a zero-argument forwarder FastMCP registers as the static handler
+# (3.4.5 requires zero-arg handlers); keeping the impl beside it lets tests exercise
+# the real logic with an explicit ``name``.
 
 
 def _register_static_resource(

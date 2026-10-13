@@ -17,19 +17,10 @@ if TYPE_CHECKING:
     from lies.schema.sections import SectionContract
 
 
-# Per-name migration fallback table. Maps wiki name -> a no-arg callable
-# returning a tuple of alternative data_root paths to probe in order if
-# the primary (``xdg.data_home() / LIES_DATA_SUBDIR / <name>``) does
-# not exist. Callables (not static tuples) so each call re-resolves
-# ``xdg.data_home()`` — tests monkeypatch ``xdg.data_home`` and expect
-# the fallback to track the patched value. First existing wins. The
-# returned Wiki keeps the requested ``name``; only ``data_root`` falls
-# back — other xdg-role paths (config_root, cache_root, state_root,
-# runtime_root) still resolve via ``name``.
-#
-# 2026-08-15: default wiki's data_root was renamed from
-# <xdg>/lies/default/ to <xdg>/lies/wiki/ during the bare-repo
-# migration. Only the default wiki has this history.
+# Per-name data_root fallback: maps a wiki name to a no-arg callable returning candidate
+# paths to probe when the primary (``xdg.data_home() / LIES_DATA_SUBDIR / <name>``) does
+# not exist. Callables rather than tuples, so each call re-resolves ``xdg.data_home()``
+# and a patched value is tracked. First existing wins; only ``data_root`` falls back.
 _MIGRATION_FALLBACKS: dict[str, Callable[[], tuple[Path, ...]]] = {
     "default": lambda: (xdg.data_home() / LIES_DATA_SUBDIR / "wiki",),
 }

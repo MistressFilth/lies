@@ -153,11 +153,9 @@ def sync_collection(
     ``collection.config`` keep working.
     """
     collection: LibraryCollectionConfig = load_config(collection_name)
-    # ``LibraryCollectionConfig.source`` is a string — either a URL
-    # (``http(s)://`` / ``git@``) or a local filesystem path. ``Path(...)``
-    # mangles ``https://`` to ``https:/`` on POSIX, which breaks the
-    # ``pick_scraper`` URL prefix check; keep the URL as a string and
-    # wrap local paths in ``Path`` for the ``source_dir`` parameter.
+    # ``LibraryCollectionConfig.source`` is a string — a URL (``http(s)://`` / ``git@``) or a
+    # local path. ``Path(...)`` mangles ``https://`` to ``https:/`` on POSIX, breaking the
+    # ``pick_scraper`` URL prefix check; keep URLs as strings and wrap local paths in ``Path``.
     source = collection.source
     if source.startswith(("http://", "https://", "git@")):
         source_dir: Path | str = source

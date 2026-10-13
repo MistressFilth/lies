@@ -54,15 +54,10 @@ FALLBACK_REASON_WIKI_ONLY = "wiki_only"
 # Qmd search callable signature: (cwd, question, limit) -> list[dict].
 QmdSearchFn = Callable[..., list[dict[str, object]]]
 
-# Indirection over the qmd search callable. The public
-# :func:`retrieve_pages` and :func:`synthesize_answer` look the callable
-# up through ``_qmd_search_default()`` at *call* time rather than via a
-# captured default argument, so tests can rebind it with
-# :func:`set_qmd_search` without having to rewrite ``__defaults__``.
-# The captured-default form would silently shadow module-level
-# ``monkeypatch.setattr`` patches — every test would shell out to the
-# real qmd binary instead of the stub, costing ~40s/test on systems
-# where qmd is installed.
+# Indirection over the qmd search callable: the public functions look it up through
+# ``_qmd_search_default()`` at *call* time rather than via a captured default argument.
+# A captured default would shadow module-level ``monkeypatch.setattr`` patches, so every
+# test would shell out to the real qmd binary — ~40s per test where qmd is installed.
 _QMD_SEARCH: QmdSearchFn = qmd_query
 
 
@@ -223,15 +218,9 @@ def retrieve_pages(
 
     pages = primary_pages + wiki_pages
 
-    # Dedupe on ``(rel_path, source)`` so the same wiki-only path
-    # returned by both qmd passes (the library resolver drops the path
-    # when no library mirror exists; the wiki resolver surfaces it from
-    # both passes because both routes resolve under wiki.wiki_dir) does
-    # not yield duplicate ``PageRead`` objects. The orchestrator's
-    # ``pages_read`` / ``page_links`` lists and the extractive body
-    # count must agree — without the dedup, the body says "Based on 2
-    # wiki page(s)" while ``page_texts`` (the dict the synthesizer
-    # agent reads) has only one entry, contradicting itself.
+    # Dedupe on ``(rel_path, source)``: the wiki resolver surfaces a wiki-only path from both
+    # passes. Without the dedupe the body says "Based on 2 wiki page(s)" while ``page_texts``
+    # has one entry, and the answer contradicts itself.
     deduped_pages: list[PageRead] = []
     seen: set[tuple[str, str]] = set()
     for page in pages:
@@ -648,12 +637,9 @@ def build_answer_from_pages(
     page_links: list[str] = []
     bullets: list[str] = []
     for page in pages:
-        # ``PageRead.source`` is typed ``str`` for ease of construction
-        # across callers; ``Citation.source`` narrows to
-        # ``Literal["library", "wiki"]`` at the data-shape boundary.
-        # The two values are produced from the same closed set
-        # (``_build_library_page_read`` → ``"library"``, ``_try_read``
-        # → ``"wiki"``), so the cast is safe.
+        # ``PageRead.source`` is typed ``str`` for ease of construction; ``Citation.source``
+        # narrows to ``Literal["library", "wiki"]`` at the data-shape boundary. Both values come
+        # from the same closed set, so the cast is safe.
         c = Citation(
             path=page.rel_path,
             source=cast(Literal["library", "wiki"], page.source),

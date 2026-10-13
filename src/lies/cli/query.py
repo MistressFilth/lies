@@ -20,11 +20,9 @@ from lies.cli._helpers import (
 )
 
 if TYPE_CHECKING:
-    # Imported only for the type annotations on the
-    # ``_build_compat_run_query_kwargs`` helper. Importing at module
-    # top-level transitively pulls in ``pydantic_ai`` and ``fastmcp``,
-    # which the CLI must keep off its lazy-import path (see
-    # ``tests/unit/cli/test_cli_lazy_imports``).
+    # Type annotations only. A module-level import would transitively pull in
+    # ``pydantic_ai`` and ``fastmcp``, which the CLI keeps off its lazy-import
+    # path (see ``tests/unit/cli/test_cli_lazy_imports``).
     from lies.query.tag_expr import ResolvedTagFilter, TagExpr
 
 __all__ = (
@@ -208,12 +206,9 @@ def query(
         resolve,
     )
 
-    # Resolve ``Orchestrator`` / ``resolve_wiki`` through
-    # ``lies.cli.__init__`` so the project's existing
-    # ``mock.patch("lies.cli.<name>")`` test discipline intercepts
-    # the call without per-module indirection. The ``sys.modules``
-    # lookup avoids a circular import (this module is itself imported
-    # by ``lies.cli.__init__``).
+    # Resolve through ``lies.cli.__init__`` so the project's existing
+    # ``mock.patch("lies.cli.<name>")`` discipline intercepts the call. The
+    # ``sys.modules`` lookup avoids a circular import.
     Orchestrator = sys.modules["lies.cli"].Orchestrator
     resolve_wiki = sys.modules["lies.cli"].resolve_wiki
 
@@ -231,19 +226,14 @@ def query(
             question = " ".join(tokens)
             include_ast = parse(tag_expr) if tag_expr is not None else None
             if exclude_tag is not None:
-                # Single-tag explicit form: build a one-atom Include from
-                # the optional ``t:`` / ``c:`` qualifier prefix. The
-                # prefix is validated by ``check_qualifier`` (raises on
-                # bad qualifiers) and the qualifier rides along on the
-                # Include atom.
+                # Single-tag form: a one-atom Include from the optional ``t:`` / ``c:``
+                # prefix. ``check_qualifier`` validates the prefix and the qualifier rides
+                # along on the Include atom.
                 _qualifier, _body = check_qualifier(exclude_tag, position=0)
                 exclude_ast = Include(_body, qualifier=_qualifier)
         else:
-            # Task 2 (f15-exclude-compound): parse_query_argv returns a
-            # TagExpr | None for the exclude half. Task 3 retires the
-            # legacy flat-string ``ResolvedTagFilter.exclude`` contract
-            # so the AST threads straight through to ``ResolvedTagFilter``
-            # and onward to the orchestrator's ``exclude_expr`` kwarg.
+            # The exclude half is a ``TagExpr | None`` AST, threaded straight through to
+            # ``ResolvedTagFilter`` and onward to the orchestrator's ``exclude_expr``.
             question, include_ast, exclude_ast, _ = parse_query_argv(tokens)
     except (TagExprParseError, TagExprEmpty) as exc:
         typer.echo(f"error: {exc}", err=True)
@@ -267,12 +257,9 @@ def query(
             resolved_include = resolved.include
             resolved_exclude = resolved.exclude
         except TagExprUnknown as exc:
-            # Surface the shared library-first message (see
-            # ``format_unknown_tag_error`` in the MCP server).
-            # Strip the leading "unknown tag: 'foo'" line for the
-            # CLI's two-line stderr contract; re-print it as
-            # ``error: unknown tag: foo`` to keep the existing CLI
-            # test regex (``error: unknown tag: <name>``) intact.
+            # Surface the shared library-first message from ``format_unknown_tag_error``
+            # in the MCP server, re-printed as ``error: unknown tag: foo`` to keep the
+            # CLI's two-line stderr contract and its test regex intact.
             from lies.mcp.server import format_unknown_tag_error
 
             full = format_unknown_tag_error(exc).splitlines()
@@ -285,18 +272,10 @@ def query(
             exclude=resolved_exclude,
         )
 
-    # F18/F19: translate the CLI's legacy kwargs to the new
-    # ``Orchestrator.run_query`` surface. ``collection`` (a single
-    # collection name) maps to ``tag_expr="c:<name>"`` (the F15
-    # ``c:`` strict-name prefix — matches what the MCP ``query``
-    # tool does for the same kwarg). ``--force-file`` forces
-    # ``file_back=True``; ``--no-file`` flips it off. ``tag_filter``
-    # is split into ``tag_expr`` (include body, rendered from the
-    # AST) + ``exclude_expr`` (the validated exclude tree, threaded
-    # through to the librarian unchanged — Task 3 retired the legacy
-    # flat-string ``exclude_tags`` contract). The pre-F18
-    # ``collection=`` / ``file=`` / ``force_file=`` / ``tag_filter=``
-    # kwargs were retired in Task 6.
+    # Translate the CLI's legacy kwargs: ``collection`` maps to ``tag_expr="c:<name>"``
+    # and ``tag_filter`` splits into ``tag_expr`` (include body) + ``exclude_expr``
+    # (the validated exclude tree). ``--force-file`` forces ``file_back=True``,
+    # ``--no-file`` flips it off.
     orch = Orchestrator(wiki)
     orch_kwargs = _build_compat_run_query_kwargs(
         tag_filter=tag_filter,
@@ -306,11 +285,9 @@ def query(
     try:
         answer = orch.run_query(question, **orch_kwargs)
     except WikiPlanInvalid as exc:
-        # ``run_query`` raises when the agent/force file marked the answer
-        # for filing but the caller did not supply ``--collection``.
-        # Without the typed-error envelope a missing collection would
-        # silently drop the filing intent; the spec mandates a clean
-        # exit-2 + operator-actionable message instead.
+        # ``run_query`` raises when filing was marked but no ``--collection`` was
+        # given. Without the typed envelope a missing collection would silently drop
+        # the filing intent instead of exiting 2 with an actionable message.
         typer.echo(
             "error: --collection NAME required to file synthesis (or pass --no-file to skip)",
             err=True,
@@ -318,11 +295,9 @@ def query(
         raise typer.Exit(code=2) from exc
 
     answer_format = getattr(answer, "format_hint", None) or getattr(answer, "format", "md")
-    # F1: handle --format override. If the operator's choice differs from
-    # the synthesizer's format_hint, re-synthesize with a constrained
-    # prompt. The orchestrator exposes a compat ``run_query_with_format``
-    # entry point for the override; if it raises, fall back to the
-    # first call's answer.
+    # ``--format`` override: when the operator's choice differs from the
+    # synthesizer's ``format_hint``, re-synthesize via ``run_query_with_format``;
+    # if that raises, fall back to the first call's answer.
     if cli_format != "auto" and answer_format != cli_format:
         try:
             answer = orch.run_query_with_format(
@@ -354,13 +329,9 @@ def query(
         render_format = cli_format
     render_answer(render_format, answer.answer)
 
-    # F19: ``QueryAnswer`` no longer carries the pre-F18
-    # ``synthesis_reason`` / ``synthesis_used`` envelope. The F19
-    # librarian+synthesizer pair always runs synthesis, so the
-    # fallback note only surfaces when the orchestrator's CLI form
-    # called back into the pre-F18 extractive path (which the F18
-    # orchestrator does not expose). Tolerate the field's absence
-    # so the new surface keeps the CLI's printing contract.
+    # ``QueryAnswer`` may not carry the pre-F18 ``synthesis_reason`` /
+    # ``synthesis_used`` envelope. Tolerate its absence so the F19 surface keeps
+    # the CLI's printing contract.
     synthesis_reason = getattr(answer, "synthesis_reason", None)
     if synthesis_reason:
         if getattr(answer, "synthesis_used", True):
@@ -369,12 +340,10 @@ def query(
             typer.echo(
                 f"_Note: LLM synthesis unavailable ({synthesis_reason}); answered extractively._"
             )
-    # F3 file-back receipt. Printed only when there is something to say
-    # (durable change or error); an empty receipt is silent so the no-op
-    # case stays clean. The F19 ``QueryAnswer`` does not surface a
-    # ``file_receipt`` (filing-back is best-effort and logs at
-    # WARNING on refusal; the CLI is intentionally silent on the
-    # success path). Tolerate the field's absence for the F19 surface.
+    # File-back receipt, printed only when there is something to say; an empty
+    # receipt is silent so the no-op case stays clean. ``file_receipt`` may be
+    # absent — filing-back logs at WARNING on refusal and the CLI is silent on
+    # success.
     file_receipt = getattr(answer, "file_receipt", None)
     if file_receipt:
         if file_receipt.changed_pages:

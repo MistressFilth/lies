@@ -68,11 +68,9 @@ def _render_chart(body: str, _output_dir: Path | None) -> None:
     )
 
 
-# Per-format render dispatcher. Mirrors the spec's RENDERERS table
-# (F1 chart addendum § CLI dispatch) — one entry per format, uniform
-# ``(body, output_dir) -> None`` signature. ``"marp"`` is the
-# side-effect outlier (writes a slide file); the wrapper
-# ``_render_marp`` carries that behavior. Adding a format = add a key.
+# Per-format render dispatcher: one entry per format, uniform ``(body, output_dir) ->
+# None`` signature. ``"marp"`` is the side-effect outlier (it writes a slide file) and
+# ``_render_marp`` carries that. Adding a format = add a key.
 _RENDERERS: dict[
     Literal["md", "table", "marp", "chart"],
     Callable[[str, Path | None], None],

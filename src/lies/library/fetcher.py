@@ -66,14 +66,10 @@ def _hash_bytes(raw: bytes) -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
-# Minor 31: short-ID mapping for ``fetched_via``. The previous
-# implementation used ``type(scraper).__name__`` (e.g. ``WebScraper``,
-# ``GitHubScraper``), which leaks the class hierarchy into the mirror
-# frontmatter and conflicts with the spec's short-id contract
-# (``web`` / ``github`` / ``pdf``). The dict maps the concrete class to
-# its short id; any unmapped class falls back to its bare class name so
-# a new scraper added later is still recorded (just with a less-prettied
-# name) instead of crashing the ingest.
+# Short-ID mapping for ``fetched_via``. A bare ``type(scraper).__name__`` leaks the
+# class hierarchy into mirror frontmatter and breaks the spec's short-id contract
+# (``web`` / ``github`` / ``pdf``). An unmapped class falls back to its bare name, so
+# a scraper added later is recorded rather than crashing the ingest.
 _FETCHED_VIA_ID: dict[type[BaseScraper], str] = {}
 
 
@@ -255,16 +251,10 @@ def _normalize_body(
                 _materialize_bespoke(workspace, doc)
             else:
                 _materialize(workspace, doc.source_format, doc.content)
-            # Minor 30: a builder that reads ``collection.config`` (e.g.
-            # ``liquid``, ``sphinx``, ``bespoke``) without a real
-            # ``Collection`` raises ``AttributeError`` on the bare-``None``.
-            # Without this catch, the exception masks as a per-doc
-            # quarantine entry, not the typed ``BuilderError`` that
-            # ``_iter_fetch_items`` knows how to handle. Catch the
-            # AttributeError here and re-raise as ``BuilderError`` so the
-            # operator sees the real cause ("collection required") rather
-            # than a confusing "AttributeError: 'NoneType' object has no
-            # attribute 'config'".
+            # A builder reading ``collection.config`` without a real ``Collection`` raises
+            # ``AttributeError`` on the bare ``None``, which would mask as a per-doc quarantine
+            # entry. Re-raise as ``BuilderError`` so the operator sees "collection required"
+            # rather than a confusing ``'NoneType' object has no attribute 'config'``.
             try:
                 built = REGISTRY.resolve(doc.source_format).build(
                     workspace,
@@ -286,25 +276,10 @@ def _normalize_body(
     return dispatch(doc.content, doc.source_format)
 
 
-# What the directory walk admits, in two classes.
-#
-# A non-document reaching the pipeline is not cosmetic: ``config.yaml`` in a
-# collection directory became a ``config.md`` page (36 of them, in the live
-# library), and a ``providers.toml`` anywhere under the batch directory did
-# the same. The pipeline's only other filter is ``should_skip_filename``, a
-# *denylist* of known stems plus the ``changelog`` prefix, and a denylist
-# cannot express "is a document". The type test belongs here -- the one
-# layer that still knows what a file *is*.
-#
-# Text documents are decoded directly: ``.md``/``.markdown`` are the primary
-# format, and ``.rst``/``.txt`` are the whole-doc-archive case this walker's
-# docstring names (a plain-text Python docs tarball).
-#
-# Everything the builder REGISTRY can turn into markdown is admitted too and
-# routed through :func:`_normalize_body`, the same path ``--source`` takes:
-# a PDF goes to ``PDFBuilder`` (pdfplumber, with the pymupdf fallback) and
-# an HTML file to ``HTMLBuilder``. Decoding those as UTF-8 would have written
-# a page of replacement characters, so they are never decoded here.
+# What the directory walk admits: text documents, plus anything the builder REGISTRY
+# can render (routed through :func:`_normalize_body`, the ``--source`` path).
+# ``should_skip_filename`` is a *denylist* and cannot express "is a document" — a
+# ``config.yaml`` in a collection directory became a ``config.md`` page, 36 times over.
 _TEXT_SUFFIXES: frozenset[str] = frozenset({".md", ".markdown", ".rst", ".txt"})
 
 # Extension -> ``source_format`` for the formats a Builder can render. Kept
@@ -345,29 +320,19 @@ class ScraperFetcher:
         self._collection = collection
 
     def fetch_sources(self, source: Path | str) -> Iterator[FetchItem]:
-        # ``--batch <DIR>`` walks a directory at depth 1, yielding one
-        # ``FetchItem`` per regular file. ``pick_scraper(source)`` only
-        # matches URLs / existing files / PDFs and raises
-        # ``ScraperUnavailable`` for a directory; handle the directory
-        # case here so the dispatcher below stays URL/file-shaped.
-        # Subdirectories are skipped: the spec's batch contract is a
-        # flat walk, and nested files would collide on the slug. Files
-        # that fail to read (permission, vanished) are dropped silently —
-        # mirroring the llms.txt "Pages whose fetch fails are dropped
-        # silently" stance in ``WebScraper._parse_index``.
+        # ``--batch <DIR>`` walks at depth 1, one ``FetchItem`` per regular file, so the
+        # dispatcher stays URL/file-shaped. Subdirectories are skipped (the contract is a flat
+        # walk, and nested files collide on the slug); unreadable files drop silently,
+        # mirroring ``WebScraper._parse_index``.
         if isinstance(source, Path) and source.is_dir():
             yield from self._iter_directory(source)
             return
 
         if self._scraper_cmd is not None:
-            # Minor 44: wrap bespoke-loader ``ScraperUnavailable`` into
-            # ``LibraryFetchUnreachable`` at the call site (not inside
-            # ``_load_bespoke_scraper``). The wrapping has to happen
-            # HERE so it also fires when tests monkeypatch
-            # ``_load_bespoke_scraper`` with a stub that raises
-            # ``ScraperUnavailable`` directly — the production function
-            # itself is the one place that does NOT see the wrap when
-            # bypassed.
+            # Wrap a bespoke loader's ``ScraperUnavailable`` into ``LibraryFetchUnreachable`` at
+            # the call site, not inside ``_load_bespoke_scraper`` — so it also fires when a test
+            # monkeypatches the loader with a stub that raises directly, the one case the
+            # production function cannot see.
             try:
                 scraper = _load_bespoke_scraper(self._scraper_cmd)
             except ScraperUnavailable as exc:
@@ -377,14 +342,9 @@ class ScraperFetcher:
         else:
             scraper = _scraper_base.pick_scraper(source)
         raw = scraper.fetch(source)
-        # C4: hash the raw bytes ONCE up front so the same source URL
-        # returns the same ``source_hash`` regardless of which scraper's
-        # per-doc parser / normalizer the request lands on. The previous
-        # ``doc.source_sha256 or _hash_bytes(doc.content)`` mixed
-        # scraper-specific per-doc slices into the hash, breaking the
-        # idempotency contract (``ingested_at`` derives from
-        # ``source_hash``). Per spec §Frontmatter: ``source_hash`` is the
-        # SHA256 of raw bytes at fetch time.
+        # Hash the raw bytes ONCE up front, so the same source URL yields the same
+        # ``source_hash`` whichever scraper's per-doc parser handles it. ``ingested_at``
+        # derives from ``source_hash``, so per-doc slices would break idempotency.
         fetcher_raw_hash = _hash_bytes(raw)
         docs = scraper.parse(raw, source=source)
         emitted = 0
@@ -394,12 +354,8 @@ class ScraperFetcher:
                 url=str(source) if not isinstance(source, Path) else None,
                 body=_normalize_body(doc, collection=self._collection),
                 source_hash=fetcher_raw_hash,
-                # Minor 31: short-id mapping. Spec mandates short ids
-                # (``web`` / ``github`` / ``pdf``); the bare
-                # ``type(scraper).__name__`` leaks the class hierarchy
-                # (``WebScraper`` / ``GitHubScraper``). The mapping
-                # ``_FETCHED_VIA_ID`` is populated lazily by
-                # ``_register_known_scrapers`` on first use.
+                # Short-ID mapping; the bare ``type(scraper).__name__`` leaks the class hierarchy.
+                # ``_FETCHED_VIA_ID`` is populated lazily by ``_register_known_scrapers`` on first use.
                 fetched_via=_short_id_for(scraper),
             )
             emitted += 1
