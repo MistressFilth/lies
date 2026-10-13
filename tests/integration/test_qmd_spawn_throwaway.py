@@ -6,12 +6,14 @@ import asyncio
 import os
 import shutil
 import socket
+import subprocess
 import time
 from pathlib import Path
 
 import pytest
 
 from lies.qmd import daemon as qmd_daemon
+from lies.qmd.daemon import _QMD_BIN
 
 pytestmark = pytest.mark.slow
 
@@ -39,6 +41,40 @@ def _real_pidfile() -> Path:
     return cache / "qmd" / "mcp.pid"
 
 
+def _why_not_listening(port: int, data_dir: Path) -> str:
+    """Everything observable about a daemon that never bound ``port``."""
+    lines: list[str] = [f"port {port}: nothing is listening"]
+    try:
+        version = subprocess.run(
+            [_QMD_BIN, "--version"], capture_output=True, timeout=20, check=False
+        )
+        lines.append(f"qmd --version: {version.stdout.decode().strip() or version.stderr!r}")
+    except (OSError, subprocess.SubprocessError) as exc:  # pragma: no cover - diagnostic
+        lines.append(f"qmd --version raised {type(exc).__name__}: {exc}")
+
+    cache = data_dir / "qmd"
+    lines.append(
+        f"{cache} holds: {sorted(p.name for p in cache.glob('*')) if cache.is_dir() else 'nothing'}"
+    )
+    pidfile = cache / "mcp.pid"
+    if not pidfile.exists():
+        lines.append(f"{pidfile} was never written, so qmd never reached the daemon branch")
+        return "\n".join(lines)
+    pid = pidfile.read_text().strip()
+    lines.append(f"{pidfile} names pid {pid}")
+    try:
+        cmdline = Path(f"/proc/{pid}/cmdline").read_bytes().decode("utf-8", "replace")
+        lines.append(f"/proc/{pid}/cmdline: {cmdline!r}")
+    except OSError:
+        lines.append(f"pid {pid} is not in this process table (it exited)")
+    log = cache / "mcp.log"
+    if log.exists():
+        lines.append(f"--- {log} ---\n{log.read_text(errors='replace')[-4000:]}")
+    else:
+        lines.append(f"{log} was never written")
+    return "\n".join(lines)
+
+
 def test_a_throwaway_daemon_serves_on_its_own_port_and_index(tmp_path: Path) -> None:
     """``_spawn_qmd_daemon(port=..., data_dir=...)`` really does isolate."""
     if not qmd_daemon.qmd_installed():  # pragma: no cover - environment-dependent
@@ -63,7 +99,7 @@ def test_a_throwaway_daemon_serves_on_its_own_port_and_index(tmp_path: Path) -> 
         )
         spawned_pid = int(throwaway_pidfile.read_text().strip())
 
-        assert _wait_listening(port), f"nothing listening on the spare port {port}"
+        assert _wait_listening(port), _why_not_listening(port, data_dir)
 
         async def list_tool_names() -> list[str]:
             import fastmcp
@@ -120,7 +156,7 @@ def test_a_recycle_against_a_non_default_port_restarts_on_that_port(
         # Seed a first daemon, exactly as the recycle's own reap would
         # find one, so there is something on `port` to restart.
         qmd_daemon._spawn_qmd_daemon(port=port)
-        assert _wait_listening(port), f"no throwaway on {port} to recycle"
+        assert _wait_listening(port), _why_not_listening(port, data_dir)
 
         pidfile = data_dir / "qmd" / "mcp.pid"
         assert pidfile.exists()
@@ -216,7 +252,7 @@ def test_daemon_tool_stale_path_respawns_on_the_configured_port(
     pids: list[int] = []
     try:
         qmd_daemon._spawn_qmd_daemon(port=port)
-        assert _wait_listening(port), f"no throwaway on {port}"
+        assert _wait_listening(port), _why_not_listening(port, data_dir)
         pidfile = data_dir / "qmd" / "mcp.pid"
         first = int(pidfile.read_text().strip())
         pids.append(first)

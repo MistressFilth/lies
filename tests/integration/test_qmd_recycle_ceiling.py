@@ -43,6 +43,10 @@ GRACE_COST_S = (2.0, 6.0)
 _STATUS_RUNNING = b"MCP:   running (PID 1234)\n"
 _STATUS_DOWN = b"no MCP line here\n"
 
+#: (windows spent, sleep calls, seconds spent, longest single sleep) for the
+#: reap stand-in, per measurement. Diagnostics only — see ``_sleep_quantum``.
+_REAP_SPENT: list[tuple[int, int, float, float]] = []
+
 #: Every pipe this harness opens, so the silent-child scenarios cannot
 #: leak four descriptors per simulated subprocess call.
 _open_pipes: list[object] = []
@@ -162,17 +166,39 @@ def _scaled_reap(*, grace: float = 2.0, poll: float = 0.05) -> None:
     """``_reap_qmd_daemon`` with its two grace windows scaled like everything else."""
     state = d.qmd_daemon_state()
     if not state.running or state.pid is None:
+        _REAP_SPENT.append((0, 0, 0.0, 0.0))
         return
-    deadline = time.monotonic() + grace / N
-    while time.monotonic() < deadline:
-        if not d._pid_alive(state.pid):
-            return
-        time.sleep(poll / N)
-    deadline = time.monotonic() + grace / N
-    while time.monotonic() < deadline:
-        if not d._pid_alive(state.pid):
-            return
-        time.sleep(poll / N)
+    started = time.monotonic()
+    windows = sleeps = 0
+    longest = 0.0
+    for _ in range(2):
+        windows += 1
+        deadline = time.monotonic() + grace / N
+        while time.monotonic() < deadline:
+            if not d._pid_alive(state.pid):
+                _REAP_SPENT.append((windows, sleeps, time.monotonic() - started, longest))
+                return
+            sleeps += 1
+            slept_from = time.monotonic()
+            time.sleep(poll / N)
+            longest = max(longest, time.monotonic() - slept_from)
+    _REAP_SPENT.append((windows, sleeps, time.monotonic() - started, longest))
+
+
+def _sleep_quantum(requested: float = 0.0005, repeats: int = 20) -> float:
+    """The runner's worst overshoot on ``time.sleep(requested)``, in seconds.
+
+    A scaled grace window is ``2.0 / N`` = 20 ms wide and sleeps every
+    ``0.05 / N`` = 0.5 ms inside it, so on a host whose scheduler cannot
+    return from a sub-millisecond sleep in under 20 ms the window
+    measures as *one sleep long* rather than as 20 ms.
+    """
+    worst = 0.0
+    for _ in range(repeats):
+        t0 = time.monotonic()
+        time.sleep(requested)
+        worst = max(worst, time.monotonic() - t0)
+    return worst
 
 
 async def _measure(status_mode: str, spawn_hangs: bool, *, scale_poll: bool = True) -> float:
@@ -236,6 +262,7 @@ def readings() -> dict[str, float]:
     """All five scenarios, once. A real exhaustion is slow even scaled."""
 
     async def _all() -> dict[str, float]:
+        _REAP_SPENT.clear()
         return {label: await _measure(mode, hangs) for label, mode, hangs in SCENARIOS}
 
     out = asyncio.run(_all())
@@ -288,9 +315,16 @@ def test_only_a_running_status_spends_the_grace_windows(
     down = readings["daemon down"]
     up = readings["daemon up, ignores SIGTERM"]
     delta = up - down
+    quantum = _sleep_quantum()
+    spent = dict(zip((label for label, _, _ in SCENARIOS), _REAP_SPENT, strict=False))
+    print(f"sleep quantum (worst of 20 x 0.5ms): {quantum * 1000:.1f} ms")
+    print(f"reap (windows, sleeps, seconds, longest sleep) by scenario: {spent}")
+    print(f"readings: {readings}")
     assert GRACE_COST_S[0] <= delta <= GRACE_COST_S[1], (
         f"the reap's two grace windows cost {delta:.1f}s; two 2s windows "
-        f"plus scheduling is the expected magnitude"
+        f"plus scheduling is the expected magnitude. "
+        f"idle-process sleep quantum {quantum * 1000:.1f} ms; "
+        f"reap spend {spent}"
     )
     # And the converse: a hanging status reports not-running, so the reap
     # spends no grace window. A figure that added the windows here would
