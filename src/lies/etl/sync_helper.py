@@ -34,24 +34,7 @@ from lies.wiki.wiki import Wiki
 
 
 def acquire_heartbeat(wiki: Wiki, *, wait: bool, fail_busy: bool) -> Heartbeat | None:
-    """Returns the heartbeat if one was successfully claimed; None if busy.
-
-    Concurrency: takes an atomic ``O_CREAT | O_EXCL`` create on
-    ``$XDG_RUNTIME_DIR/lies/<wiki>/sync.lock.create`` *before*
-    reading or writing the heartbeat file. Two processes racing on
-    ``acquire_heartbeat`` cannot both succeed; the loser observes
-    ``None`` (or waits, if ``wait=True``).
-
-    When the contender's liveness cannot be determined (``os.kill`` EPERM
-    or unknown OSError) AND the heartbeat is older than the recovery
-    window, the contender is reported as :class:`WikiFlockIndeterminate`
-    — operator must run ``lies flock <name> force-repair`` to inspect or
-    kill the holder manually. The primitive does not reap.
-
-    Caller is responsible for invoking :func:`release_heartbeat`
-    afterwards, which closes the create-lock fd and unlinks the lock
-    file as well as clearing the heartbeat.
-    """
+    """Returns the heartbeat if one was successfully claimed; None if busy."""
     result = acquire_create_lock(wiki.sync_create_lock_path, max_age_s=MAX_SYNC_AGE_S)
     if result is None:
         # Another process already holds the create lock.
@@ -133,25 +116,7 @@ def sync_collection(
     *,
     force: bool = False,
 ) -> BatchIngestResult:
-    """Sync a single collection into the library.
-
-    Wiki is kept as the first parameter for ``--wait`` / ``--fail-busy``
-    semantics and qmd-side resolution (the flock lives on the wiki's
-    ``data_root``). The collection's source is resolved from the library's
-    ``<library>/collections/<slug>/config.yaml`` and handed to
-    ``run_batch_ingest`` along with the library instance and a
-    ``ScraperFetcher``.
-
-    Returns the :class:`BatchIngestResult` from ``run_batch_ingest`` so
-    the CLI can surface non-zero ``result.errors`` to the operator
-    instead of silently exiting 0 on a wholly-failed batch.
-
-    ``LibraryCollectionConfig.scraper_cmd`` is honored: when set, the
-    ``ScraperFetcher`` loads the bespoke scraper instead of falling
-    through to ``pick_scraper``. The record itself is threaded through
-    so REGISTRY builders (sphinx, liquid, bespoke) that read
-    ``collection.config`` keep working.
-    """
+    """Sync a single collection into the library."""
     collection: LibraryCollectionConfig = load_config(collection_name)
     # ``LibraryCollectionConfig.source`` is a string — a URL (``http(s)://`` / ``git@``) or a
     # local path. ``Path(...)`` mangles ``https://`` to ``https:/`` on POSIX, breaking the

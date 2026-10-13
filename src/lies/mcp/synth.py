@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 """Synthesize tool: prose answer for human reading.
 
 Two entry points. :func:`synthesize` calls
@@ -9,6 +10,9 @@ runs the F18 librarian agent's Classify → Search → Read → Return
 pipeline before the synthesizer. Both return a
 :class:`SynthesizeEnvelope` carrying the prose body and citations.
 """
+=======
+"""Synthesize tool: prose answer for human reading."""
+>>>>>>> 7f2597a (docs(src): bring every code docstring within the 12-line budget)
 
 from __future__ import annotations
 
@@ -95,22 +99,16 @@ async def synthesize(
 ) -> SynthesizeEnvelope:
     """Synthesize a prose answer from library collections.
 
-    Calls :func:`ground` for retrieval, then runs the query synthesizer
-    agent over the result. Returns a :class:`SynthesizeEnvelope`.
-
     Args:
         question: Natural-language question.
-        tag_expr: Body of a single include expression (no leading
-            sigil). None for library-wide.
-        exclude_expr: Compiled NOT AST. None when no ``-`` chain.
-        file_back: Reserved for write-tool spec. Raises
-            ``ToolError`` until the write-tool lands.
+        tag_expr: Body of a single include expression; ``exclude_expr`` is the
+            compiled NOT AST. ``file_back`` is reserved for the write-tool spec.
 
     Returns:
-        SynthesizeEnvelope carrying the prose body and citations.
+        :class:`SynthesizeEnvelope` with the prose body and citations.
 
     Raises:
-        ToolError: When file_back=True.
+        ToolError: When ``file_back=True``.
     """
     if file_back:
         raise ToolError(_FILE_BACK_DEFERRED_MSG)
@@ -298,12 +296,15 @@ def _resolve_librarian_model():
 def librarian_agent_run(deps: Any) -> Any:
     """Runs the librarian subagent's ``run_sync`` and returns the LibrarianOutput.
 
+<<<<<<< HEAD
     Builds a fresh librarian agent, wires the MCP-backed tools and
     invokes ``run_sync`` with the supplied deps. The bundle passes
     through :func:`~lies.agents.librarian.with_search_diagnostics`, so
     its ``transient`` / ``fallback_reason`` are reconciled against the
     recorded search verdict rather than the model's copy alone.
 
+=======
+>>>>>>> 7f2597a (docs(src): bring every code docstring within the 12-line budget)
     Args:
         deps: :class:`LibrarianDeps` carrying question / tag_expr /
             exclude_expr / top_k.
@@ -404,10 +405,13 @@ def librarian_agent_run(deps: Any) -> Any:
 def synthesizer_agent_run(librarian_output: Any, question: str) -> Any:
     """Run the synthesizer subagent's ``run_sync`` and return its answer.
 
+<<<<<<< HEAD
     Builds a fresh synthesizer agent, wires the librarian's excerpt
     bundle as :class:`QueryDeps`, and returns the typed
     :class:`QueryAnswer`.
 
+=======
+>>>>>>> 7f2597a (docs(src): bring every code docstring within the 12-line budget)
     Args:
         librarian_output: :class:`LibrarianOutput` from
             :func:`librarian_agent_run`.
@@ -444,13 +448,6 @@ def _build_query_deps(
     exclude_tags: list[str] | None,
 ) -> Any:
     """Build the deps object for :func:`librarian_agent_run`.
-
-    Translates the MCP ``lib_ask`` tool's flat ``exclude_tags`` surface
-    (a list of bare-tag strings like ``["c:opencode"]``) into the
-    compiled ``TagExpr`` AST the librarian consumes in
-    :attr:`LibrarianDeps.exclude_expr`. ``None`` when no ``-`` chain
-    was supplied; ``list[str]`` chain paths land here as a single
-    ``Or(...)`` AST so the F15 grammar walks the full chain site-side.
 
     Args:
         question: The user's natural-language question.
@@ -513,27 +510,9 @@ def _ask_impl(
     exclude_tags: list[str] | None = None,
     file_back: bool = False,
 ) -> SynthesizeEnvelope:
-    """Orchestrate librarian → synthesizer → envelope.
-
-    Replaces the old ``synthesize`` tool. The librarian LLM runs the
-    Classify → Search → Read → Return 4-step pipeline; the synthesizer
-    LLM produces the prose answer from the librarian's excerpt bundle.
-
-    Args:
-        question: Natural-language question.
-        tag_expr: Body of a single include expression (no leading
-            sigil). ``None`` for library-wide.
-        exclude_tags: NOT tags without leading sigil. ``None`` when no
-            ``-`` chain.
-        file_back: Reserved for the write-tool spec. Raises
-            ``ToolError`` until the write-tool lands in v0.41.
-
-    Returns:
-        :class:`SynthesizeEnvelope` carrying the prose body and
-        citations.
-
-    Raises:
-        ToolError: When ``file_back=True``.
+    """Orchestrate librarian → synthesizer → envelope. Args and the ``ToolError``
+    on ``file_back=True`` are as for :func:`synthesize`; ``exclude_tags`` here
+    is the NOT-tag list form the tool surface passes.
     """
     if file_back:
         raise ToolError(_FILE_BACK_DEFERRED_MSG)

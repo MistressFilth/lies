@@ -9,24 +9,7 @@ from typing import Any, Literal
 
 @dataclass(frozen=True)
 class Citation:
-    """A page citation with explicit source.
-
-    ``source`` discriminates between the two physical roots the
-    dispatcher reads from:
-
-    - ``"library"``: lives under
-      ``Library.collections_root/<coll>/<file>``
-      (``src/lies/library/paths.py:45``).
-    - ``"wiki"``: lives under ``wiki.wiki_dir``.
-
-    Hard cutover — this field is required, no defaults. Same path from
-    both roots produces two distinct Citation objects.
-
-    ``heading_path`` (F19): the nested ATX heading path of the span
-    this citation references. Populated by the orchestrator's
-    ``_thread_heading_paths`` step from the claim's quote match.
-    ``None`` when the citation comes from a non-F19 path.
-    """
+    """A page citation with explicit source."""
 
     path: str
     source: Literal["library", "wiki"]

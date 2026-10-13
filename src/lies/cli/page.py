@@ -28,29 +28,7 @@ __all__ = ("page_app", "write")
 
 
 def __getattr__(name: str):
-    """Lazy re-export of CLI command body's heavy dependencies.
-
-    Tests that ``mock.patch("lies.cli.page.Orchestrator", ...)`` keep
-    working without ``import lies.orchestrator`` running at module top.
-    Routing the lookup through a module-level ``__getattr__`` also lets
-    the write command reference ``Orchestrator`` and ``build_author_plan``
-    as bare names (PEP 562 module attribute lookup). First access
-    triggers the import and caches the symbol on the module's globals so
-    subsequent reads are a normal attribute access.
-
-    Same contract that :mod:`lies.cli.ingestion` and :mod:`lies.cli.memory`
-    follow — ``import lies.cli`` does not pull pydantic_ai / fastmcp /
-    anthropic into ``sys.modules``.
-
-    ``_SectionRefusal`` (F17 Task 5) lives in ``lies.page.author``;
-    importing the author module top-level would pull the entire
-    ``lies.memory`` package (which imports :mod:`lies.memory.enricher`,
-    a pydantic_ai agent) into ``lies.cli`` at import time — breaking
-    the lazy-imports contract. Routing the lookup through
-    ``__getattr__`` keeps the refusal check lazy: only a body that
-    actually gets sent through ``build_author_plan`` triggers the
-    import.
-    """
+    """Lazy re-export of CLI command body's heavy dependencies."""
     if name == "Orchestrator":
         from lies.orchestrator import Orchestrator as _Orchestrator
 

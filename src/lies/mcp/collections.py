@@ -1,17 +1,4 @@
-"""collections_read MCP tool — live registry reader for the librarian LLM.
-
-Exposes ``name``, ``tags``, ``scope_keywords`` per row in a flat,
-three-subcommand shape so the librarian LLM can build ``tag_expr``
-from the live registry in Step 1 of the 4-step pipeline.
-
-Subcommands:
-
-- ``list``     → one row per registered collection
-- ``tag_list`` → tag → collections map (qualifier prefix stripped)
-- ``info`` + ``name=…`` → single collection's full metadata
-
-Specs: docs/superpowers/specs/2026-09-26-librarian-v040-port-design.md.
-"""
+"""collections_read MCP tool — live registry reader for the librarian LLM."""
 
 from __future__ import annotations
 
@@ -27,18 +14,15 @@ def collections_read(
     """Read the live library registry.
 
     Args:
-        subcommand: ``list`` returns row-per-collection; ``tag_list`` returns
-            tag → collections map (qualifier-prefixed atoms surfaced as
-            bare tag); ``info`` returns a single row's full metadata and
-            requires ``name``.
-        name: Required for ``subcommand="info"``. The collection to inspect.
+        subcommand: ``list`` returns row-per-collection; ``tag_list`` returns a
+            tag → collections map; ``info`` returns one row's metadata.
+        name: Required for ``subcommand="info"``.
 
     Returns:
-        ``list[dict]`` for ``list`` and ``tag_list`` returns ``dict``;
-        ``dict`` for ``info``. Empty registry returns empty list / empty dict.
+        ``list[dict]`` for ``list``, ``dict`` for ``tag_list`` and ``info``.
 
     Raises:
-        ToolError: ``info`` called without ``name``, or with an unknown name.
+        ToolError: ``info`` without ``name``, or with an unknown name.
     """
     # Lazy imports — keep this module off the library-registry import chain
     # at module load time (the FastMCP mount calls this lazily via tool

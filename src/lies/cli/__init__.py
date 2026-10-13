@@ -1,34 +1,4 @@
-"""Top-level CLI package. Defines the root typer app and wires sub-apps.
-
-Importing this module is cheap: heavy dependencies (orchestrator,
-pydantic-ai, anthropic) are NOT imported here. They are imported in
-the group modules' command bodies, and only when a command that
-needs them runs.
-
-A module-level ``__getattr__`` re-exports a small set of names that
-tests (and possibly downstream tooling) reach through attribute
-access on the package -- ``lies.cli.Orchestrator``,
-``lies.cli.pick_scraper``, etc. Each access is forwarded to a lazy
-import that loads the heavy module only when the attribute is
-actually read. This preserves the "no orchestrator / no anthropic on
-bare import" contract that ``tests/unit/cli/test_cli_lazy_imports.py``
-pins.
-
-The order of imports below is load-bearing:
-
-1. The root ``app = typer.Typer(...)`` is defined first.
-2. The sub-app objects (``mcp_app``, ``flock_app``, ``providers_app``,
-   ``library_collections_app``) are imported and ``app.add_typer(...)`` is
-   called for each. The sub-app modules run their decorator
-   registrations at this point (each sub-app's decorators target its
-   own sub-app instance, not the root ``app``).
-3. The group modules that decorate ``app.command(...)`` directly
-   (``_core``, ``ingestion``, ``query``) are imported last. They
-   ``from lies.cli import app`` at module top -- this works because
-   ``app`` was bound in step 1, and Python's import system returns
-   the partially-loaded ``lies.cli`` namespace rather than re-executing
-   ``__init__.py``.
-"""
+"""Top-level CLI package. Defines the root typer app and wires sub-apps."""
 
 from __future__ import annotations
 

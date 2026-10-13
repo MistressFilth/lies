@@ -1,22 +1,4 @@
-"""Deadlock-free subprocess helper for qmd CLI invocations.
-
-The previous implementation in ``lies.qmd.cli.qmd_query`` used
-``subprocess.run(capture_output=True, ...)``, which opens a pipe for
-stderr. When qmd emits a long Node.js stack trace (~30+ KB on VRAM
-OOM), the child blocks writing stderr because the OS pipe buffer
-(~64 KB) fills; the parent's timeout cannot fire.
-
-Replaces that pattern: ``stdin=DEVNULL``, piped stdout/stderr,
-SIGKILL on the whole process group on timeout, stderr truncated to
-``_MAX_STDERR_BYTES``.
-
-**Do NOT strip ``start_new_session=True``.** qmd is a bun-injected
-bash shim that forks a node.js grandchild; without the flag the
-grandchild survives ``proc.kill()`` (14 zombie grandchildren at 77-89%
-CPU reproduced live). ``start_new_session=True`` puts every
-descendant in one group rooted at the helper; ``os.killpg`` reaps
-them all.
-"""
+"""Deadlock-free subprocess helper for qmd CLI invocations."""
 
 from __future__ import annotations
 
@@ -112,13 +94,10 @@ def _run_qmd(
     on_output: Callable[[str], None] | None = None,
     env_overrides: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[bytes]:
-    """Run a qmd subprocess with DEVNULL stdin + bounded stderr capture.
-
-    The idle clock is reset by every byte qmd writes; only a process
-    that has gone quiet is killed. The absolute ceiling is the
-    backstop.
+    """Run a qmd subprocess with DEVNULL stdin and bounded stderr capture.
 
     Args:
+<<<<<<< HEAD
         args: argv list. First entry is the qmd binary path.
         cwd: working directory.
         timeout: seconds before SIGKILL.
@@ -127,14 +106,17 @@ def _run_qmd(
             ``NO_COLOR`` survives an override and the child keeps the
             operator's environment by default. Empty by default, which
             is today's behaviour exactly.
+=======
+        args: argv list; ``args[0]`` is the qmd binary path. ``cwd``: working
+            directory. ``timeout``: seconds before SIGKILL.
+>>>>>>> 7f2597a (docs(src): bring every code docstring within the 12-line budget)
 
     Returns:
-        ``subprocess.CompletedProcess`` with stdout bytes and stderr
-        bytes (truncated to ``_MAX_STDERR_BYTES``).
+        A ``CompletedProcess`` with stdout bytes and stderr truncated to
+        ``_MAX_STDERR_BYTES``.
 
     Raises:
-        subprocess.TimeoutExpired: whole process group SIGKILL'd.
-        FileNotFoundError: when ``args[0]`` does not exist.
+        subprocess.TimeoutExpired: the process group is SIGKILL'd.
     """
     child_env = _child_env()
     if env_overrides:

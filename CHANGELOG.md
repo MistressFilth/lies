@@ -49,6 +49,7 @@ rule rather than the accident.
 
 ### Changed
 
+<<<<<<< HEAD
 - **The vendor SDKs are no longer imported to read a roster.**
   `lies.providers.registry` and `lies.providers.resolver` each held a
   module-scope `from anthropic import AsyncAnthropic` /
@@ -249,6 +250,26 @@ rule rather than the accident.
   site already passes a `response_type`; and `src/` contains zero
   camelCase reads of the 11 fields the bridge covers. `Middleware` and
   `uriTemplate` were already on the 4.x spelling.
+=======
+- **The prose backlog is paid down to zero, and the ratchet is
+  regenerated.** 878 over-budget test module and test-function
+  docstrings are now one line each; 189 `src/` body comment blocks are
+  within the 4-line Arrange-Act-Assert budget; and 192 `src/` code
+  docstrings are within the 12-line what/args/returns/raises budget.
+  Each docstring's content went exactly one of four places: a durable
+  fact about the system was consolidated into `AGENTS.md`, development
+  history was cut, a restatement of the name was cut, and what the code
+  needs at runtime was kept as one line. Comments and docstrings only —
+  no executable line moved, and no test was renamed, moved, deleted, or
+  skipped. `tests/unit/docstring_budget_baseline.json` is regenerated
+  against a tree with a zero shortfall.
+- **A README that documents a deleted MCP component is now a test
+  failure.** The prose ratchet reads Python only, so markdown drifted:
+  the README described a `PingMiddleware` for several releases after the
+  class was deleted and nothing went red.
+  `tests/unit/mcp/test_readme_documents_only_real_components.py` fails
+  on any `*Middleware` the README names and `src/` does not define.
+>>>>>>> 7f2597a (docs(src): bring every code docstring within the 12-line budget)
 
 - **The `qmd embed` CUDA abort is diagnosed, and a rebuild to avoid it is
   reproducible from the repository.** `node-llama-cpp` intermittently

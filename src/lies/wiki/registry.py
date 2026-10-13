@@ -1,24 +1,4 @@
-"""Per-wiki collection registry persistence.
-
-Stores the set of :class:`WikiCollectionRef` values that
-``WikiMemoryService`` has successfully registered. Persists to the
-wiki's XDG state root so the registry survives process boundaries.
-
-File format (version 1)::
-
-    {
-      "version": 1,
-      "collections": {
-        "<collection_id>": WikiCollectionRef dict,
-        ...
-      }
-    }
-
-Writes are atomic via ``os.replace(<tmp>, <final>)``. Loads tolerate
-missing files (return empty registry) but propagate corruption and
-unsupported-version errors so silent loss of registry state is not
-possible.
-"""
+"""Per-wiki collection registry persistence."""
 
 from __future__ import annotations
 
@@ -138,20 +118,7 @@ class Registry:
 
     @staticmethod
     def filter_stale(registry: Registry, wiki) -> Registry:
-        """Drop entries whose backing collection config is missing.
-
-        Pre-0.28.0 collections lived at
-        ``wiki.collections_dir / f"{cid}.yaml"``; 0.28.0+ stores them
-        under the library at
-        ``<Library.collections_root> / cid / "config.yaml"``. The
-        dual check keeps a registry entry alive if either location
-        has a config, so post-migration wikis do not silently drop
-        their refs to library-side collections (which would force a
-        full re-registration on every ``WikiMemoryService``
-        instantiation). Drop only when both checks fail.
-
-        ``wiki`` intentionally untyped: see ``Registry.load``.
-        """
+        """Drop entries whose backing collection config is missing."""
 
         def _alive(cid: str) -> bool:
             if (wiki.collections_dir / f"{cid}.yaml").exists():

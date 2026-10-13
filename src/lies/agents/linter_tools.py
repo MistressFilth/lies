@@ -1,27 +1,4 @@
-"""Linter sub-agent tool registration (N2).
-
-Three tool closures that mirror ``register_librarian_tools`` (F18)
-but drive a wiki-wide enumeration + on-demand read pattern instead
-of a relevance-search-first pattern. The linter's job is to walk
-the full corpus and find cross-page issues (contradictions, stale
-claims, data gaps) — the librarian's search-first pattern does
-not fit because the linter doesn't know which pages are relevant
-until it has the inventory.
-
-Tools registered:
-
-- ``wiki_list_pages`` — full-corpus inventory + size estimate.
-- ``wiki_search`` — relevance-based dive (wraps
-  ``WikiMemoryService.search``; same contract as the librarian's
-  ``wiki_search``).
-- ``wiki_read`` — batched fetch (wraps
-  ``WikiMemoryService.read``; same contract as the librarian's
-  ``wiki_read``).
-
-Closures bind ``wiki`` + ``memory_service`` so the linter agent's
-typed deps surface stays narrow (``:class:`LintDeps` is a marker
-type after N2).
-"""
+"""Linter sub-agent tool registration (N2)."""
 
 from __future__ import annotations
 
@@ -50,56 +27,13 @@ def register_linter_tools(
     wiki: "Wiki",
     memory_service: "WikiMemoryService",
 ) -> None:
-    """Register ``wiki_list_pages`` / ``wiki_search`` / ``wiki_read`` on the linter.
-
-    Mirrors :func:`lies.agents.librarian.register_librarian_tools` —
-    closures bind ``wiki`` + ``memory_service``; ``LintDeps`` stays a
-    marker type. Call once per agent instance after construction.
-    Pydantic-ai's ``agent.tool(name=...)`` raises on double-register
-    with the same name; callers that own an agent lifecycle
-    (e.g. the orchestrator) reuse the existing instance.
-
-    Local imports deferred: the catalog reader sits behind the
-    wiki-side import chain (``pydantic_ai``, ``fastmcp``); deferring
-    keeps the linter module's cheap import cost. ``RunContext`` and
-    the cast helper are at module scope so pydantic-ai's
-    ``get_type_hints`` resolves tool function annotations.
-    """
+    """Register ``wiki_list_pages`` / ``wiki_search`` / ``wiki_read`` on the linter."""
     from lies.memory.catalog import list_pages as _list_pages
     from lies.memory.catalog import open_catalog as _open_catalog
     from lies.memory.retrieval import _page_id_for
 
     def _wiki_list_pages(ctx: RunContext["LintDeps"]) -> str:
-        """List every wiki page with page_id + path + size + cluster metadata.
-
-        Walks the wiki corpus via the catalog reader (mirrors
-        ``_wiki_catalog`` in the librarian) and emits one row per
-        page whose on-disk file still exists. The catalog may carry
-        stale rows after a ``lies catalog reconcile`` race; the
-        on-disk existence check filters them out so the linter never
-        reads a path that ``WikiMemoryService.read`` would reject.
-
-        Each row carries:
-
-        - ``page_id``: the SHA-1 hash id that
-          :meth:`WikiMemoryService.read` expects. Stable across
-          runs — the linter must pass this back to ``wiki_read``,
-          not the ``path``.
-        - ``path``: the wiki-dir-relative markdown path, for human
-          display and prompt-side reasoning.
-        - ``size_estimate_tokens``: file bytes divided by 4, so a
-          30K-token batch budget is reachable (the linter's
-          batched-read step relies on the estimate).
-        - ``section``, ``type``, ``source_pkg``: cluster signals from
-          the catalog row. ``section`` alone is uninformative (every
-          wiki-origin row is ``"wiki"``); ``type`` and
-          ``source_pkg`` give the linter a usable partition for its
-          cross-page comparison pass.
-
-        The linter calls this once per run before any
-        ``wiki_read`` batches, so it knows what to cluster and
-        cross-compare.
-        """
+        """List every wiki page with page_id + path + size + cluster metadata."""
         conn = _open_catalog(wiki)
         try:
             pages = _list_pages(conn)
@@ -151,27 +85,7 @@ def register_linter_tools(
         ctx: RunContext["LintDeps"],
         page_ids: list[str],
     ) -> dict[str, object]:
-        """Read full markdown bodies for the given wiki page IDs.
-
-        Thin wrapper around :meth:`WikiMemoryService.read` with a
-        resilience layer: unknown page IDs (a hallucinated id, an
-        id from a stale inventory row that slipped past the
-        ``wiki_list_pages`` disk-existence filter, an id whose file
-        was deleted between the inventory call and the read call)
-        are reported in ``unknown_page_ids`` rather than raised.
-        The linter can keep going on a partial batch instead of
-        failing the whole lint dispatch.
-
-        Page IDs must come from ``wiki_list_pages`` or
-        ``wiki_search`` in the same run. ``WikiMemoryService.read``
-        raises on any unknown id; the linter's contract is to be
-        tolerant — the agent gets a partial result and can correct
-        the next batch.
-
-        The linter calls this in batches of ≤10 pages (the
-        ``_LINTER_BATCH_LIMIT``); the prompt's stop-when-saturated
-        rule gates total batches.
-        """
+        """Read full markdown bodies for the given wiki page IDs."""
         from lies.memory.models import WikiPageNotFound
 
         try:

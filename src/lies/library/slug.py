@@ -23,21 +23,7 @@ class SlugError(ValueError):
 
 
 def derive_slug(source: Path, *, override: str | None = None) -> str:
-    """Derive a valid slug from ``source``.
-
-    When ``override`` is set, the operator's choice is validated and
-    returned (no derivation).
-
-    Otherwise the bare ``source.stem`` is normalized: underscores and
-    dots collapse to dashes and trailing dashes are stripped. The
-    derived result is then re-validated through :func:`validate_slug`.
-    A pathological input like ``Path(".dotfile")`` (stem is empty
-    after the ``.dotfile`` → ``-dotfile`` → ``dotfile`` chain — but a
-    source named ``..`` has an empty stem) returns an empty string
-    BEFORE validation would accept it. The post-validation guard
-    catches that case (Minor 39) and raises :class:`SlugError` so the
-    caller can quarantine the doc with a typed reason.
-    """
+    """Derive a valid slug from ``source``."""
     if override is not None:
         return validate_slug(override)
     derived = source.stem.lower().replace("_", "-").replace(".", "-").rstrip("-")
@@ -50,21 +36,7 @@ def derive_slug(source: Path, *, override: str | None = None) -> str:
 
 
 def derive_nested_slug(source: Path | str) -> str:
-    """Derive a slug that preserves the source's nested path structure.
-
-    Used for source-relative paths coming from a ``WebScraper`` URL
-    hierarchy (e.g. ``agents-and-tools/agent-skills/best-practices.md``)
-    where the caller wants the slug to mirror the upstream structure
-    under the collection root. Local absolute paths from bootstrap
-    (``/tmp/claude_platform/docs/foo.md``) are NOT appropriate — those
-    callers should keep using :func:`derive_slug`, which flattens to a
-    single segment.
-
-    Each path segment is normalized: underscores and dots collapse to
-    dashes, trailing dashes stripped. The result is validated by
-    :func:`validate_slug` and may contain ``/`` separators between
-    segments.
-    """
+    """Derive a slug that preserves the source's nested path structure."""
     raw = Path(source).as_posix()
     *parents, tail = raw.rsplit("/", 1)
     stem = tail.rsplit(".", 1)[0] if "." in tail else tail

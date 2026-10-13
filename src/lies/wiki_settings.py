@@ -1,25 +1,4 @@
-"""Per-wiki language resolution chain (``LIES_LANG`` > ``lies.toml`` > default).
-
-Distinct from per-agent ``providers.toml`` (which lives at
-``wiki.providers_path``). This module owns the per-wiki project
-settings file at ``<config_root>/lies.toml``.
-
-Resolution order (matches the spec chain):
-
-1. ``LIES_LANG`` env var — if non-empty after ``.strip()``, return early.
-2. ``$XDG_CONFIG_HOME/lies/<name>/lies.toml`` — parse ``[settings].lang``.
-3. ``DEFAULT_LANGUAGE`` fallback.
-
-``[settings].version`` is parsed alongside ``lang`` and exposed as
-:attr:`WikiSettings.settings_version`. When the stored value differs
-from :data:`CURRENT_SETTINGS_VERSION`, a ``UserWarning`` is emitted
-advising the user to check release notes for migration guidance.
-Missing, empty, or non-string ``version`` values each emit a warning
-and surface as ``settings_version=None``; the load never raises.
-
-Every failure mode is permissive: stderr warning + defaults. No typed
-errors are raised from ``WikiSettings.load`` or ``resolve_language``.
-"""
+"""Per-wiki language resolution chain (``LIES_LANG`` > ``lies.toml`` > default)."""
 
 from __future__ import annotations
 
@@ -46,9 +25,6 @@ CURRENT_SETTINGS_VERSION = "1"
 @dataclass(frozen=True)
 class WikiSettings:
     """Per-wiki settings resolved from ``LIES_LANG`` env + ``lies.toml``.
-
-    Fields are always populated; missing values fall back to module-level
-    defaults. Loaded lazily via :meth:`WikiSettings.load`.
 
     Attributes:
         language: Effective wiki language (resolved ``LIES_LANG`` >

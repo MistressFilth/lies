@@ -64,20 +64,7 @@ def _catalog_path(wiki: object) -> Path:
 
 
 def open_catalog(wiki: object) -> sqlite3.Connection:
-    """Open (or create) ``<wiki_dir>/.lies/catalog.db``.
-
-    Creates the schema, sets WAL journal mode and a 5-second busy
-    timeout, and stamps the current ``SCHEMA_VERSION``. On the first
-    open (i.e. when the catalog file did not previously exist), walks
-    ``wiki.wiki_dir`` and seeds the ``pages`` table with one row per
-    ``.md`` file so a fresh wiki's catalog reflects on-disk truth
-    without requiring a manual ``lies catalog rebuild`` step.
-
-    ``existed`` is captured *before* ``mkdir`` so the trigger is
-    "catalog file was absent" rather than "no rows" — the latter would
-    re-seed an intentionally cleared one. Idempotent across calls
-    after the first. Caller owns the connection.
-    """
+    """Open (or create) ``<wiki_dir>/.lies/catalog.db``."""
     catalog_path = _catalog_path(wiki)
     existed = catalog_path.exists()
     catalog_path.parent.mkdir(parents=True, exist_ok=True)
@@ -359,25 +346,7 @@ def reconcile(wiki: object, *, dry_run: bool = False) -> ReconcileResult:
 
 
 def reconcile_wiki_catalog(wiki: object) -> int:
-    """Drop stale catalog rows whose on-disk page no longer exists.
-
-    Lightweight, search-time reconciliation: walks the ``pages`` table
-    and removes rows whose slug doesn't resolve to an existing file
-    under ``wiki.wiki_dir``. Returns the number of rows dropped.
-    Idempotent — a second call after convergence drops zero.
-
-    Out of scope: adding missing rows. The full rebuild (orphan pass +
-    dangling pass) lives in :func:`reconcile` and the ``lies catalog
-    reconcile`` CLI; this helper only removes ghosts that the qmd
-    index / ``index.md`` fallback could surface as
-    ``unknown page_id`` failures on a subsequent ``wiki_read``.
-
-    Called at the top of :meth:`WikiMemoryService.search` so every
-    ``wiki_search`` dispatch sees a catalog that's a subset of the
-    on-disk wiki. Cost is one ``stat`` per row — cheap for the small
-    wikis LIES targets; can be promoted to a heartbeat-driven job if
-    larger wikis make per-search statting measurable.
-    """
+    """Drop stale catalog rows whose on-disk page no longer exists."""
     wiki_dir: Path = wiki.wiki_dir  # type: ignore[attr-defined]  # ty: ignore[unresolved-attribute]
     conn = open_catalog(wiki)
     try:

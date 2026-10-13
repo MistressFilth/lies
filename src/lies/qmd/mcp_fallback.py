@@ -1,20 +1,4 @@
-"""In-process FastMCP fallback for the qmd HTTP daemon.
-
-When the qmd daemon is unreachable, this server provides a degraded
-search surface for the agent's `wiki_search` and `wiki_read` tools.
-It re-uses the same :class:`WikiMemoryService` the host path uses,
-so a wiki that already degrades honestly through the host falls back
-to the same data here.
-
-The tool surface is intentionally narrow — only the two tools the
-agent actually uses for retrieval. None of the daemon's tools are
-re-implemented. This is the honest "I have less capability than the
-daemon" surface.
-
-Every result carries ``degraded: True`` plus the same
-``fallback_reason`` the host path uses, so a model that reads the
-result knows the daemon was not consulted.
-"""
+"""In-process FastMCP fallback for the qmd HTTP daemon."""
 
 from __future__ import annotations
 

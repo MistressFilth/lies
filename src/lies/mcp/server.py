@@ -1,27 +1,4 @@
-"""FastMCP server exposing the LIES v0.40 tool surface.
-
-The v0.40 rewrite retires the legacy wiki-shaped read tools
-(``wiki_search`` / ``wiki_read`` / ``wiki_catalog`` /
-``file_knowledge`` / ``query`` / ``answer``), the wiki-shaped
-read tools the F19 grounding archivist shipped (``mcp_ground``
-/ ``mcp_synthesize``), and the seven starter-template MCP
-prompts (``answer`` / ``orient`` / ``ingest`` / ``lint`` /
-``sync`` / ``file-back`` / ``cite``).
-
-The replacement read surface is four stateless MCP tools that
-map onto the v0.40 design contract:
-
-- ``collections_read`` — live library registry reader.
-- ``search`` — single-batch hybrid vec+lex qmd query.
-- ``read`` — verbatim page bodies via source-aware dispatch.
-- ``lib_ask`` — librarian + synthesizer orchestrator.
-
-``lint`` and ``reindex`` stay on the surface as operational /
-diagnostic primitives.
-
-Spec:
-``~/code/project-notes/lies/superpowers/specs/2026-09-26-librarian-v040-port-design.md``.
-"""
+"""FastMCP server exposing the LIES v0.40 tool surface."""
 
 from __future__ import annotations
 
@@ -154,27 +131,7 @@ mcp.add_transform(PromptsAsTools(mcp))
 
 
 def _collect_available_tags_mcp(wiki: object) -> set[str]:
-    """Return every addressable tag in the library (MCP surface).
-
-    Thin shim over :func:`lies.library.registry.library_collection_names`
-    — kept so the MCP-side validator has the same helper name as its
-    CLI counterpart. ``wiki`` is accepted for signature uniformity
-    with the legacy per-wiki resolution but is intentionally ignored:
-    collections live in the library, not in any wiki.
-
-    Each collection name is added both bare and with the ``c:``
-    qualifier prefix so the F15 tag-expression validator recognizes
-    ``c:<name>`` atoms as addressable on the MCP ``query`` / ``answer``
-    path. Each ``LibraryCollectionConfig.tags`` entry is added both
-    bare and with the ``t:`` qualifier prefix so ``t:<tag>`` filters
-    against a library-collection tag do not raise ``TagExprUnknown`` —
-    and so bare ``+tag`` expressions validate too, since F15 treats a
-    bare atom as the implicit-t alias for ``+t:tag``. Both lookups
-    are wrapped in ``try/except`` so an uninitialized library — or
-    any other registry failure — does not break the validator; the
-    function still returns a set, just one that does not include
-    library tags of the failed surface.
-    """
+    """Return every addressable tag in the library (MCP surface)."""
     from lies.library.registry import library_collection_names, library_collection_tags
 
     try:
@@ -192,22 +149,7 @@ def _collect_available_tags_mcp(wiki: object) -> set[str]:
 
 
 def format_unknown_tag_error(exc: TagExprUnknown) -> str:
-    """Build a self-explanatory ``unknown tag`` ToolError message.
-
-    Library-first surface. Up to three lines:
-
-      - offending tag spelling (``'opencode'``)
-      - the library's collections sorted (``the library's collections: ...``),
-        when the library is initialized with at least one collection
-      - when the library is empty / absent, a distinct line that
-        tells the operator whether to initialize the library or to
-        ingest something into it (two separate failure modes).
-
-    The library is NOT a wiki and is never referred to as one. The
-    original ``unknown tag: <tag>`` prefix is preserved so log
-    scrapers and existing tests that grep on the literal string keep
-    working.
-    """
+    """Build a self-explanatory ``unknown tag`` ToolError message."""
     from lies.library.registry import (
         library_has_no_collections,
         library_initialized,
@@ -379,24 +321,7 @@ def lint(
     fix: bool = False,
     force_repair: bool = False,
 ) -> str:
-    """Run lint; with ``fix=True`` also apply the repair plan.
-
-    ``check`` narrows the report to one finding category (``orphan``,
-    ``missing_xref``, ``missing_page``, ``missing_required_section``,
-    ``dangling_derived_from``, ``contradiction``, ``stale``,
-    ``data_gap``), matched case-insensitively and with an optional
-    plural. Combined with ``fix=True`` it scopes the repair too. A
-    ``check`` that matches nothing renders the report with the
-    available categories listed.
-
-    When ``fix=True`` and ``force_repair=True``, the cross-process
-    memory flock is unconditionally reaped + retried once before
-    surfacing ``WikiFlockUnrepairable`` if a live contender still
-    holds it; without the flag, a live contender raises
-    ``WikiLockBusy``. Flock errors are caught and returned as an
-    ``error:``-prefixed string so the MCP server stays up; other
-    exceptions propagate to the MCP error path.
-    """
+    """Run lint; with ``fix=True`` also apply the repair plan."""
     wiki = resolve_wiki(name)
     orch = Orchestrator(wiki=wiki)
     try:
@@ -414,20 +339,7 @@ def lint(
 def _register_static_resource(
     uri: str, fn: Callable[..., str], description: str | None = None
 ) -> Callable[..., str]:
-    """Register ``fn`` as a *static* MCP resource even when it has params.
-
-    FastMCP's ``@mcp.resource(...)`` decorator auto-routes any callable
-    with parameters to :class:`ResourceTemplate`, which then rejects
-    URIs without ``{...}`` placeholders. The wiki resource surface
-    accepts a wiki ``name`` kwarg (resolving through
-    :func:`lies.mcp.resolution.resolve_wiki`); the resource surface
-    needs the same parity for direct Python callers and tests, so we
-    bypass the decorator's auto-routing by registering a
-    :class:`FunctionResource` directly. FastMCP's read path still
-    invokes the registered ``fn`` with no positional arguments; any
-    ``name``-style kwargs are passed only by Python callers (tests,
-    REPL, direct imports), not by the MCP wire.
-    """
+    """Register ``fn`` as a *static* MCP resource even when it has params."""
     from fastmcp.resources.function_resource import FunctionResource
 
     resource = FunctionResource.from_function(
@@ -625,25 +537,7 @@ def _library_collection_payload(slug: str) -> dict | None:
 
 @mcp.resource("library://catalog")
 def library_catalog() -> str:
-    """All library collection metadata as a per-collection grouping.
-
-    Returns JSON of shape::
-
-        {
-          "<collection-name>": {
-            "name": "<collection-name>",
-            "tags": ["..."],
-            "source": "<source-url>",
-            "page_count": <int>,
-            "updated_at": "<iso-8601>"
-          },
-          ...
-        }
-
-    Collections without a ``config.yaml`` (not yet bootstrapped) are
-    silently skipped — the resource only surfaces collections the
-    library knows about through its registry. Empty library → ``{}``.
-    """
+    """All library collection metadata as a per-collection grouping."""
     import json
 
     from lies.library.registry import library_collection_names

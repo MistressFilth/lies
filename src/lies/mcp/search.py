@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 """search MCP tool — single-batch hybrid qmd query against the daemon.
 
 The read path goes through ``lies.qmd.access.daemon_tool`` so the
@@ -12,6 +13,9 @@ A *down* daemon (``QmdDaemonUnavailable``) is re-raised so the operator
 must act; folding it into ``no_coverage=True`` is the silent-failure
 mode this module exists to remove.
 """
+=======
+"""search MCP tool — single-batch hybrid qmd query against the daemon."""
+>>>>>>> 7f2597a (docs(src): bring every code docstring within the 12-line budget)
 
 from __future__ import annotations
 
@@ -49,6 +53,7 @@ def _decode(stderr: bytes | str) -> str:
 
 
 def _resolve_tag_collections(tag_expr: str | None) -> tuple[list[str], list[str]]:
+<<<<<<< HEAD
     """Resolve ``tag_expr`` body to ``(resolved_collections, unknown_tags)``.
 
     An atom with no qualifier names a tag; ``t:`` says so explicitly and
@@ -67,6 +72,9 @@ def _resolve_tag_collections(tag_expr: str | None) -> tuple[list[str], list[str]
     its scope was refused rather than being handed a search over the
     whole library it did not ask for. Returns ``sorted`` for determinism.
     """
+=======
+    """Resolve ``tag_expr`` body to ``(resolved_collections, unknown_tags)``."""
+>>>>>>> 7f2597a (docs(src): bring every code docstring within the 12-line budget)
     if tag_expr is None:
         return [], []
     # Imported here: ``mcp.server`` imports this module.

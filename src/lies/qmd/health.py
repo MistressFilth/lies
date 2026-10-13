@@ -1,17 +1,4 @@
-"""Cheap reachability probe for the qmd HTTP daemon.
-
-The agent's `QmdCapability` calls this at construction time to decide
-whether to advertise the native HTTP MCP tool or the local FastMCP
-fallback. The probe is deliberately a single TCP connect with a short
-timeout — we do not speak the MCP protocol here, only ask "would a
-connection succeed?".
-
-A successful probe does NOT guarantee the daemon is healthy enough
-to serve a real tool call; per-call MCP errors are still caught by
-the fallback's tool implementation. The probe exists to keep the
-*advertised* tool surface honest: if the daemon is clearly down at
-startup, the agent should not see native qmd tools at all.
-"""
+"""Cheap reachability probe for the qmd HTTP daemon."""
 
 from __future__ import annotations
 

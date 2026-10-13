@@ -1,23 +1,4 @@
-"""Five-step deterministic ingest pipeline orchestrator.
-
-The pipeline runs five phases per fetched document:
-
-1. **fetch**     — ``Fetcher.fetch_sources(source)`` yields ``FetchItem``s
-2. **ETL**       — concrete fetcher responsibility (Task 9's ``ScraperFetcher``)
-3. **filter**    — filename gate (``should_skip_filename``) + content gate
-                   (``should_skip_content``)
-4. **mirror**    — ``write_mirror`` writes the deterministic frontmatter + body
-5. **catalog**   — ``LibraryWriter.commit`` upserts the catalog page and commits
-                   atomically
-
-Per-doc quarantine: failed docs are copied to
-``library.git_root/poison/<collection>/<slug>.md`` for inspection, recorded in
-``BatchIngestResult.quarantine_records``.
-
-Atomic-commit: the whole batch commits once at ``_finalize`` time (per the
-``LibraryWriter`` envelope from Task 7), unless ``dry_run=True`` skips the
-commit and the per-doc ``write_mirror`` entirely.
-"""
+"""Five-step deterministic ingest pipeline orchestrator."""
 
 from __future__ import annotations
 
@@ -131,24 +112,7 @@ def _iter_fetch_items(
     source: Path | str,
     result: BatchIngestResult,
 ) -> Iterator[FetchItem]:
-    """Yield ``FetchItem``s, catching per-doc dispatch failures.
-
-    ``ScraperFetcher.fetch_sources`` is a generator that calls
-    ``_normalize_body`` (which dispatches through ``format_dispatch``) for
-    each doc; an unknown format or a normalizer outage raises mid-yield
-    and propagates out of the generator, aborting the whole batch.
-
-    The spec mandates per-doc quarantine (see this module's docstring),
-    so we wrap the generator and catch the per-doc exception, record a
-    ``fetch-unreachable:<source>:<ExceptionName>`` quarantine entry, and
-    end the iteration. Items successfully yielded before the failure are
-    preserved; subsequent docs in the same source are not yielded (the
-    scraper generator is closed by the exception).
-
-    ``LibraryFetchUnreachable`` is re-raised: it is a run-boundary error
-    (the scraper produced zero items, with no per-doc dispatch in play)
-    and the caller surfaces it to the operator.
-    """
+    """Yield ``FetchItem``s, catching per-doc dispatch failures."""
     src_str = str(source)
     try:
         yield from fetcher.fetch_sources(source)
@@ -365,22 +329,7 @@ def _finalize(
 
 
 def _assert_not_self_ingest(library: Library, collection_name: str, source: Path | str) -> None:
-    """Refuse a run whose source and mirror destination are one path.
-
-    ``_process_item`` derives ``target = coll.dir / f"{slug}.md"`` from
-    the source's *relative* path, and ``derive_nested_slug`` mirrors
-    that path segment for segment. So any source that already lives
-    inside the collection directory resolves its own mirror target onto
-    itself, and the run can only ever "skip everything" or "rewrite
-    everything".
-
-    Checked by containment rather than equality: ``--batch <coll>/guides``
-    is the same defect as ``--batch <coll>``, because
-    ``guides/page.md`` still lands on ``<coll>/guides/page.md``.
-
-    A URL is a string here and has no local mirror to collide with, so
-    it passes through untouched.
-    """
+    """Refuse a run whose source and mirror destination are one path."""
     if not isinstance(source, Path):
         return
     try:
@@ -458,28 +407,7 @@ def run_batch_ingest(
     force: bool = False,
     dry_run: bool = False,
 ) -> BatchIngestResult:
-    """Ingest every eligible file under ``source_dir``.
-
-    Directory walk is the fetcher's responsibility — ``run_batch_ingest``
-    just delegates to ``Fetcher.fetch_sources(source_dir)`` and processes
-    the yielded items through the same pipeline as ``run_source_ingest``.
-
-    ``source_dir`` accepts ``Path | str`` to match the
-    :class:`Fetcher` protocol: callers that have a URL (``https://...``)
-    on hand pass it as a string, since ``Path("https://...")`` mangles
-    the scheme on POSIX (becomes ``https:/...``) and breaks the URL
-    prefix check in :func:`lies.scrapers.base.pick_scraper`.
-
-    Same quarantine semantics as ``run_source_ingest``: a per-doc dispatch
-    failure quarantines the bad doc and the run continues with whatever
-    items survived. ``LibraryFetchUnreachable`` is only raised when both
-    the fetch yielded zero items AND no per-doc quarantine records exist.
-
-    Raises ``SelfIngestRefused`` when ``source_dir`` is inside the target
-    collection, which is the shape reported against this command: it
-    enumerates the mirrors and asks each one whether its own source has
-    changed.
-    """
+    """Ingest every eligible file under ``source_dir``."""
     _assert_not_self_ingest(library, collection_name, source_dir)
     result = BatchIngestResult()
     items = list(_iter_fetch_items(fetcher, source_dir, result))

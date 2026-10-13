@@ -21,23 +21,7 @@ QMD_REGISTRATION_SENTINEL = "wiki_qmd_registered"
 
 
 def __getattr__(name: str):
-    """Lazy import of the qmd registration helper.
-
-    :mod:`lies.qmd.cli` pulls in :mod:`lies.qmd`'s ``__init__``, which
-    transitively imports :mod:`pydantic_ai` + :mod:`fastmcp`. Keeping
-    the import lazy means ``WikiLayout`` stays import-cheap for code
-    paths that never reach the registration block (the existing
-    ``test_wiki_layout.py`` smoke tests, the CLI's pre-init layout
-    inspection, etc.).
-
-    Mirrors the PEP 562 pattern in :mod:`lies.library.writer` /
-    :mod:`lies.cli.page` / :mod:`lies.cli.ingestion` /
-    :mod:`lies.mcp`. Tests that ``mock.patch(
-    "lies.wiki.layout.qmd_collection_add_or_update", ...)`` rely on
-    this ``__getattr__`` to materialise the module attribute on first
-    access; the patch then ``setattr``s on top of the cached binding,
-    so subsequent ``init()`` calls observe the patched function.
-    """
+    """Lazy import of the qmd registration helper."""
     if name == "qmd_collection_add_or_update":
         from lies.qmd.cli import qmd_collection_add_or_update as _qmd_add_or_update
 
@@ -135,21 +119,6 @@ def _write_sentinel(data_root: Path) -> None:
 
 def ensure_wiki_qmd_registered(wiki: Wiki) -> bool:
     """Self-heal: register ``wiki_<name>`` with qmd if not yet registered.
-
-    Wikis created before 0.22.0 have no ``wiki_<name>`` qmd collection
-    because the ``WikiAlreadyExists`` guard in the init path blocked
-    re-registration. This function is the migration hook: it is called
-    from every wiki write (``WikiMemoryService.apply_plan``) and every
-    MCP query (``Orchestrator.run_query``). On a cold start the
-    sentinel is absent; we register via
-    :func:`lies.qmd.cli.qmd_collection_add_or_update` and write the
-    sentinel atomically. On every subsequent call the sentinel short
-    circuits the subprocess.
-
-    Failures are non-fatal: a qmd outage must not roll back the wiki
-    commit or fail the answer. The function prints a warning to
-    stderr and returns False; the absence of a written sentinel means
-    the next call retries automatically.
 
     Returns:
         True if the collection is registered (sentinel existed or the

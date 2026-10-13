@@ -40,21 +40,8 @@ def _current_timeout() -> int:
 
 @dataclass(frozen=True)
 class CitationSnippet:
-    """One grounding snippet — ≤200 chars from the first prose span of a page.
-
-    Attributes:
-        collection: ``"wiki"`` or library-collection-name.
-        slug: ``<collection>/<page>`` form (e.g. ``claude_code/hooks.md``),
-            not the bare ``page`` segment. The full path is what the
-            citation contract renders as ``[[slug]]: "snippet"`` and
-            is what an agent needs to disambiguate hits across
-            collections with the same page name (``setup.md`` in two
-            collections is two distinct documents).
-        title: Human-readable page title.
-        snippet: First ≤200 chars of the first prose span.
-        source_kind: ``"library"`` (primary) or ``"wiki"`` (wiki-only,
-            not grounded in a primary source). Library-wins-on-conflict
-            drops the wiki copy on slug match.
+    """One grounding snippet: at most 200 chars from the first prose span of a page.
+    See "Data shapes" in AGENTS.md for the field contract.
     """
 
     collection: str
@@ -66,6 +53,7 @@ class CitationSnippet:
 
 @dataclass(frozen=True)
 class ArchivistDigest:
+<<<<<<< HEAD
     """The grounding archivist's return value.
 
     Attributes:
@@ -97,6 +85,11 @@ class ArchivistDigest:
             of the failure. It exists because ``transient`` says *that*
             retrieval failed, not *how*: a wedged daemon and a contended
             lock want different operator actions.
+=======
+    """The grounding archivist's return value. See "Data shapes" in AGENTS.md for
+    the field contract, including why ``no_coverage`` and ``transient`` are
+    independent and why ``searched_scope`` is disjoint from ``unserved_scope``.
+>>>>>>> 7f2597a (docs(src): bring every code docstring within the 12-line budget)
     """
 
     question: str
@@ -183,32 +176,6 @@ async def _fanout_collections(
     collection_names: list[str],
 ) -> _FanoutResult:
     """One daemon ``query`` against the resolved collection set, no LLM round-trip.
-
-    The daemon's ``collections`` parameter is a true push-down: the
-    candidate set is narrowed inside qmd, so a single hybrid call
-    against the resolved list returns in-scope rows from every named
-    collection.
-
-    ``exclude_expr`` is not enforced here because by this point it
-    has already been applied. ``ground`` resolves the include and
-    exclude AST into ``searched_scope_list`` -- the include against
-    ``_collections_matching``, the exclude subtracted -- and that
-    list is the ``collection_names`` argument. qmd's own filters are
-    include-only, which is why there is nothing left to pass down.
-    The parameter stays for signature parity across the three
-    fan-out entry points. Pinned by
-    ``test_an_exclude_only_ground_drops_the_collection_from_the_dispatch``.
-
-    Pre-validates ``collection_names`` against the daemon's binding
-    collection set via :func:`access.validate_scope` so one
-    unresolvable name inside the batched array cannot silently
-    surface as a clean miss. The shared helper is the same one
-    ``search`` uses, so the two cannot drift.
-
-    When *every* requested name is unserved the result is a fan-out
-    that searched nothing, and says so: ``searched`` is empty and
-    ``unserved`` names the collections. The caller must not read that
-    as a clean miss.
 
     Raises:
         QmdDaemonUnavailable: the daemon is not serving (operator action).
@@ -332,39 +299,16 @@ async def ground(
 ) -> ArchivistDigest:
     """Return a grounding digest for ``question``.
 
-    Async because the unscoped and tagged fast-paths bridge to async
-    fan-out helpers via ``await``; the legacy F18 librarian path is the
-    only sync branch.
-
-    Translates ``tag_expr`` / ``exclude_expr`` via the F15 tag-filter
-    dispatch, then dispatches one of three retrieval paths:
-
-    1. **Unscoped fast-path** (no tag/exclude) — direct qmd fan-out
-       across every registered library collection.
-    2. **Tagged fast-path** — when the resolved AST matches ≥1 library
-       collection, direct qmd fan-out across ONLY the matched ones.
-    3. **Legacy F18 librarian** — when the tagged AST matches zero
-       library collections.
-
     Args:
         question: Natural-language question to ground.
-        tag_expr: Body of a single include expression (no leading
-            sigil), e.g. ``"airflow&postgres"``. ``None`` for untagged.
-        exclude_expr: Compiled NOT AST. ``None`` when no ``-`` chain.
-        top_k: Maximum excerpts (clamped to ``[1, 10]``).
-        wiki_name: Optional wiki name; defaults to env-default.
-        librarian_model: Pre-resolved ``Model`` or model-string for
-            the F18 librarian. Consumed only on the legacy path.
+        tag_expr: Body of a single include expression, e.g. ``"airflow&postgres"``;
+            ``exclude_expr`` is the compiled NOT AST, ``top_k`` clamps to [1, 10].
 
     Returns:
-        :class:`ArchivistDigest` carrying the librarian's excerpts
-        trimmed to ≤200 chars each.
+        :class:`ArchivistDigest` carrying the excerpts trimmed to ≤200 chars.
 
     Raises:
-        ArchivistCoverageError: positive tag matches zero collections
-            or include expression fails to parse.
-        lies.errors.ModelNotConfigured: legacy librarian path entered
-            without a resolved model.
+        ArchivistCoverageError: a positive tag matches zero collections.
     """
     if top_k < 1:
         top_k = 1

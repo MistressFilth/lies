@@ -1,19 +1,4 @@
-"""Pidfile lifecycle for the detached LIES MCP daemon.
-
-``server.py`` stays a pure FastMCP surface and ``cli.py`` stays thin
-dispatch; this module owns everything about the daemon's on-disk
-record and process lifecycle.
-
-The daemon is per-wiki: its pidfile lives under that wiki's XDG
-runtime directory (``$XDG_RUNTIME_DIR/lies/<wiki>/mcp.pid``), so two
-wikis can each run one (the second passes ``--port``).
-
-Ownership rule: only the parent that ran ``up`` writes the pidfile, and
-only ``down`` clears it. The child never touches it. A crashed daemon
-must leave the record behind so :func:`is_stale` can report honestly —
-a self-unlinking child would make a crash indistinguishable from a
-clean stop.
-"""
+"""Pidfile lifecycle for the detached LIES MCP daemon."""
 
 from __future__ import annotations
 

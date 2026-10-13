@@ -1,20 +1,4 @@
-"""`lies memory` — recent MemoryPlan applications from the sidecar.
-
-Three subcommands:
-
-- `lies memory` (default) — show last 10 applied plans.
-- `lies memory reconcile` — rebuild the sidecar from `git log --grep='^memory:'`.
-- `lies memory truncate --keep N [--force]` — cap the sidecar to N rows.
-
-Filters `--limit`, `--pages`, `--ops`, `--since`, `--json` apply to the
-default subcommand only.
-
-Heavy ``lies.memory`` imports stay deferred. ``sidecar`` is exposed via
-a module-level ``__getattr__`` so tests that patch
-``lies.cli.memory.sidecar.<fn>`` keep working, but ``import lies.cli``
-does not pay for the orchestrator / pydantic_ai / fastmcp stack — the
-same contract that ``tests/unit/cli/test_cli_lazy_imports.py`` pins.
-"""
+"""`lies memory` — recent MemoryPlan applications from the sidecar."""
 
 from __future__ import annotations
 

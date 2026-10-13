@@ -1,45 +1,4 @@
-"""Cross-process exclusive-create lock.
-
-``acquire_create_lock`` closes the read-then-write race on any state
-file: the caller reads state, decides, then writes — two processes can
-both observe "free" and both win. Holding an ``O_CREAT | O_EXCL`` create
-on a sibling path across that whole sequence makes the decision
-single-winner, because the OS guarantees exactly one create succeeds.
-
-Stale recovery: the caller may optionally pre-write a holder PID
-file (``write_owner_pid`` from :mod:`lies.utils.lock_heartbeat`) at the
-``pid_path`` argument and a heartbeat JSON at ``state_json_path``. When
-those files exist and a competing caller observes the create-lock as
-held, it reads the PID and asks ``pid_alive_fn`` (default:
-``os.kill(pid, 0)``) whether the holder is alive. A dead holder yields
-reap + one retry; a live holder yields ``"busy"``; a holder whose
-liveness cannot be determined (EPERM or unknown ``OSError``) AND whose
-heartbeat is older than ``max_age_s`` yields ``"indeterminate"``
-(see :class:`_IndeterminateMarker`). Same-PID recovery treats
-``stored == os.getpid()`` as recovery. Wall-clock recovery treats
-heartbeats older than ``max_age_s`` as stale. Exception policy:
-``ProcessLookupError`` (ESRCH) -> reap; ``PermissionError`` (EPERM) ->
-indeterminate when the heartbeat is stale, otherwise busy; unexpected
-``OSError`` -> indeterminate when the heartbeat is stale, otherwise
-busy + WARN log.
-
-Return shape: :func:`acquire_create_lock` returns an
-:class:`~lies.utils.lock_heartbeat.AcquireResult` whose ``status``
-Literal covers four outcomes — ``"acquired"`` (fresh win), ``"dead_reaped"``
-(reap-and-retry succeeded), ``"busy"`` (live contender; ``holder_pid``
-and ``holder_started_at`` populated), and ``"indeterminate"`` (EPERM
-or unknown OSError on a stale heartbeat; the primitive did **not**
-reap; ``holder_pid`` and ``holder_started_at`` populated). The
-``"indeterminate"`` branch is the caller's signal to surface a
-:class:`~lies.lock_errors.WikiFlockIndeterminate` exception with an
-operator-actionable message — the operator must run
-``lies flock <name> force-repair`` (or kill the holder manually) before
-the wiki can recover. Legacy callers that omit the envelope (no
-``pid_path`` / ``state_json_path``) get ``None`` for the busy path and
-never observe ``"indeterminate"``; raise sites that need the contender's
-pid read ``result.fd`` on success and ``result.holder_pid`` /
-``result.holder_started_at`` on any of ``"busy"`` or ``"indeterminate"``.
-"""
+"""Cross-process exclusive-create lock."""
 
 from __future__ import annotations
 
@@ -104,6 +63,7 @@ def acquire_create_lock(  # type: ignore[no-untyped-def]
     self_acquire_is_stale: bool = True,
     parent_prepared: bool = False,
 ) -> AcquireResult | None:
+<<<<<<< HEAD
     """Atomically create ``path``. Return ``AcquireResult`` on win, ``None`` on contention.
 
     Optional ``pid_path`` + ``state_json_path``: if provided, treat an
@@ -157,6 +117,9 @@ def acquire_create_lock(  # type: ignore[no-untyped-def]
     The fd is left open so the OS holds the inode reference; the caller
     must pass it to :func:`release_create_lock`.
     """
+=======
+    """Atomically create ``path``. Return ``AcquireResult`` on win, ``None`` on contention."""
+>>>>>>> 7f2597a (docs(src): bring every code docstring within the 12-line budget)
     if pid_alive_fn is None:
 
         def pid_alive_fn(
@@ -244,24 +207,7 @@ def _reap_if_stale(  # type: ignore[no-untyped-def]
     *,
     self_acquire_is_stale: bool = True,
 ) -> bool:
-    """Return True if reap happened (caller should retry), False otherwise.
-
-    Reap triggers:
-      - pid file missing: race; treat as non-stale (caller treats as busy).
-      - stored PID == os.getpid() **and** ``self_acquire_is_stale``:
-        self-recovery; reap + retry. A caller that tracks re-entry
-        itself passes ``False``, because a second thread of the same
-        process stores the same PID and would otherwise reap a live
-        lock.
-      - pid_alive_fn(stored) is "dead": reap + retry.
-      - heartbeat started_at is older than (now - max_age_s) AND
-        pid_alive_fn(stored) is "indeterminate": raise
-        :class:`_IndeterminateMarker` so the caller surfaces an
-        ``AcquireResult(status="indeterminate")`` to the raise site.
-
-    Reap links the create-lock, the pid file, and the state JSON. The
-    caller is responsible for the follow-up retry on True.
-    """
+    """Return True if reap happened (caller should retry), False otherwise."""
     if not pid_path.exists():
         return False
     try:

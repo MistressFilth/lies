@@ -27,29 +27,7 @@ def make_sub_agent[T: BaseModel, D](
     deps_type: type[D] | None = None,
     output_retries: int | None = None,
 ) -> Agent[Any, T]:
-    """Construct a pydantic-ai sub-agent with the LIES system prompt prefix.
-
-    ``deps_type`` lets a sub-agent carry dependencies (e.g. a typed
-    ``LintDeps`` that pre-supplies the wiki's page texts) so the LLM
-    can operate without tool calls. Defaults to ``None`` (no deps) to
-    preserve the original single-agent signature.
-
-    ``output_retries`` overrides pydantic-ai's default
-    ``output_retries=1`` (one retry on top of the initial attempt).
-    Pass an ``int`` to give the agent more chances to recover from
-    output-validation failures (e.g. when the model emits prose
-    instead of the typed output). pydantic-ai's :class:`Agent`
-    constructor accepts ``retries=int`` as a synonym for
-    ``retries={"output": int, "tools": int}``; sub-agents here only
-    need the ``output`` budget. Defaults to ``None`` (pydantic-ai
-    default = 1) so existing sub-agents stay bit-identical unless
-    the caller opts in.
-
-    The return type stays ``Agent[Any, T]`` (deps widened to ``Any``)
-    so call sites that pass ``deps_type=None`` still type-check
-    without narrowing. Callers that need the precise deps type should
-    annotate the local binding.
-    """
+    """Construct a pydantic-ai sub-agent with the LIES system prompt prefix."""
     kwargs: dict[str, Any] = {}
     if output_retries is not None:
         kwargs["retries"] = output_retries

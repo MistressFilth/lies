@@ -52,36 +52,7 @@ def _build_compat_run_query_kwargs(
     collection: str | None,
     file_back: bool,
 ) -> dict[str, object]:
-    """Build the F18/F19 ``Orchestrator.run_query`` kwargs from the CLI's legacy surface.
-
-    Translates the pre-F18 / Bundle-C kwargs to the new orchestrator
-    surface:
-
-    - ``tag_filter.include`` (a ``TagExpr`` AST) → ``tag_expr`` (the
-      body of a single include expression, rendered from the AST).
-    - ``tag_filter.exclude`` (a ``TagExpr`` AST, post-Task 3) →
-      ``exclude_expr`` (passed through verbatim — both halves of
-      the F15 grammar share the same AST shape, so the AST threads
-      through to the librarian unchanged).
-    - ``collection=<name>`` → ``tag_expr="c:<name>"`` (the F15
-      strict-name prefix; matches what the MCP ``query`` tool does
-      for the same kwarg). When the user passed a tag filter, the
-      CLI merges them by OR-ing the collection include into the
-      tag_expr string (rare but allowed by the F15 grammar).
-    - ``file_back`` flows straight through (the F19 setter for the
-      filing-back gate).
-
-    Returns the kwargs dict the caller unpacks into ``run_query``.
-
-    The ``tag_filter`` annotation is a forward reference
-    (``"ResolvedTagFilter | None"``) so the helper's type signature
-    documents the contract without importing ``lies.query.tag_expr``
-    at CLI startup — that module transitively pulls in
-    ``pydantic_ai`` and ``fastmcp``, which the CLI must keep off its
-    lazy-import path (see ``tests/unit/cli/test_cli_lazy_imports``).
-    The annotation is consumed by static type checkers; runtime
-    callers pass the real ``ResolvedTagFilter`` object.
-    """
+    """Build the F18/F19 ``Orchestrator.run_query`` kwargs from the CLI's legacy surface."""
     from lies.query.tag_expr import _render_include
 
     include_body: str | None = None
@@ -171,25 +142,7 @@ def query(
         ),
     ),
 ) -> None:
-    """Query the wiki with LLM synthesis over qmd hits, with an extractive fallback.
-
-    The positional tokens carry an optional tag filter ahead of the
-    question, e.g. `lies query +airflow&provider -amazon what connectors exist?`.
-    A collection's own name is always an addressable tag.
-
-    `--tag-expr` / `--exclude-tag` express the same filter without the
-    prefix syntax; when either is given the positional tokens are the
-    question verbatim. Both forms converge on one resolved filter.
-    Grammar errors and unknown tags exit 2. See the design doc
-    `2026-09-09-bundle-c-tag-filter-design.md` for the full grammar.
-
-    `--format` selects the output renderer. Default 'auto' uses the
-    synthesizer's ``format_hint``. Explicit values force re-synthesis
-    with a constrained prompt if the auto-route differs; if the
-    orchestrator's override entry point is unavailable (Task 7 not
-    yet landed) the command falls back to the first call's answer and
-    warns on stderr.
-    """
+    """Query the wiki with LLM synthesis over qmd hits, with an extractive fallback."""
     import sys
 
     from lies.cli.query_format import render_answer, validate_format_flag

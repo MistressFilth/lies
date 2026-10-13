@@ -81,20 +81,7 @@ def _bootstrap_wiki_collection(
     *,
     wizard: bool = False,
 ) -> None:
-    """Idempotently ensure a library-collection config exists for ``name``.
-
-    Thin wrapper over :func:`bootstrap_library_collection` that keeps the
-    :class:`WizardRequiresTTY` exception the CLI's ``sync`` command
-    translates into a non-zero exit. The wiki-yaml collection surface is
-    gone post-cutover (Task 8); the sync command bootstraps configs at
-    ``<library>/collections/<slug>/config.yaml`` instead.
-
-    - config exists + ``source`` matches → return.
-    - config exists + ``source`` differs → raise :class:`CollectionMismatch`.
-    - config missing + ``wizard=False`` → write a minimal record.
-    - config missing + ``wizard=True`` → drive the
-      ``collection_author_agent`` interactively.
-    """
+    """Idempotently ensure a library-collection config exists for ``name``."""
 
     from lies.library.bootstrap import bootstrap_library_collection
 

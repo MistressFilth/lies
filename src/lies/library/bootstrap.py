@@ -1,24 +1,4 @@
-"""Idempotent library-collection config bootstrap.
-
-Mirrors the contract of the legacy wiki-scoped bootstrap helper but
-without a ``Wiki`` argument: collections are library-global, so
-bootstrap is too.
-
-Behavior:
-
-- ``config.yaml`` exists + ``source`` matches → return existing record.
-- ``config.yaml`` exists + ``source`` differs → raise :class:`CollectionMismatch`.
-- ``config.yaml`` missing + ``wizard=False`` → write a minimal record and return it.
-- ``config.yaml`` missing + ``wizard=True`` → raise :class:`WizardRequiresTTY`
-  if stdin is not a TTY; otherwise drive the agent interactively.
-
-:func:`bootstrap_all_missing_configs` is the sweep variant: iterates
-every directory under ``Library.collections_root`` and bootstraps any
-collection whose ``config.yaml`` is missing. Collections with an
-existing config are left untouched (their real ``source`` wins over
-the sweep placeholder). The sweep never invokes the wizard — a batch
-operation should not depend on a TTY.
-"""
+"""Idempotent library-collection config bootstrap."""
 
 from __future__ import annotations
 
@@ -81,25 +61,7 @@ def bootstrap_all_missing_configs(
     *,
     default_source_template: str = "bootstrap-all://{slug}",
 ) -> BootstrapAllReport:
-    """Bootstrap a config for every library collection that lacks one.
-
-    Iterates :func:`lies.library.registry.library_collection_names` and,
-    for each directory without a ``config.yaml``, writes a minimal
-    record whose ``source`` is ``default_source_template.format(slug=...)``.
-    Collections that already have a config are left untouched: their
-    existing ``source`` is the trusted value, and overwriting it with
-    the sweep placeholder would be destructive.
-
-    The placeholder source is intentionally not a URL: an operator who
-    ran the sweep to repair a no-config directory should follow up with
-    ``lies library modify <slug> --set source=<real-url>`` to record
-    the actual upstream. The CLI surfaces the per-slug outcome so the
-    follow-up is mechanical, not exploratory.
-
-    Returns a :class:`BootstrapAllReport` describing what changed. The
-    function never invokes the wizard: a batch sweep must not depend
-    on a TTY, and the wizard does not know the real source anyway.
-    """
+    """Bootstrap a config for every library collection that lacks one."""
     from lies.library.registry import library_collection_names
 
     created: list[str] = []

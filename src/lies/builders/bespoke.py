@@ -1,18 +1,4 @@
-"""Bespoke scraper output dispatcher.
-
-A bespoke scraper (``Collection.scraper_cmd``) is responsible for
-fetching and possibly converting. Its output is a
-``<workspace>/manifest.json`` file plus the doc bodies. The manifest
-is routed to ``wiki.cache_root / "collections" / <name> / "manifest.json"``
-under the XDG cache root. This builder walks the manifest:
-
-- If ``source_format`` is ``markdown``, the doc is already converted;
-  pass through unchanged.
-- If ``source_format`` is registered, delegate to that builder in a
-  per-doc sub-workspace.
-- Otherwise (e.g. ``liquid``), pass the doc through unchanged; the
-  NORMALIZE stage quarantines it.
-"""
+"""Bespoke scraper output dispatcher."""
 
 from __future__ import annotations
 

@@ -22,20 +22,7 @@ def file_system(wiki_root: Path) -> Any:
 
 
 def local_workspace(wiki_root: Path) -> Any:
-    """Return the ``LocalWorkspace`` capability that supplies a run its workspace.
-
-    This is the other half of :func:`file_system`, and it belongs on the
-    agent's ``capabilities`` list rather than on any individual run: the
-    harness documents it as ``Agent(..., capabilities=[LocalWorkspace(path)])``,
-    and putting it there means every run is covered — including one added
-    later. ``Agent.__init__`` takes no workspace and ``run_sync`` rejects a
-    ``LocalWorkspace`` (it is a capability, not a backend), so the
-    capability list is the wiring the API actually offers.
-
-    Rooted at ``wiki_root`` so it matches the capability's guardrail: the
-    model can only address paths inside the boundary, and the workspace
-    those paths resolve against is that same boundary.
-    """
+    """Return the ``LocalWorkspace`` capability that supplies a run its workspace."""
     from pydantic_ai.capabilities import LocalWorkspace
 
     return LocalWorkspace(working_dir=str(wiki_root))

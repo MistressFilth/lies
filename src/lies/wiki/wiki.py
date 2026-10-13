@@ -79,29 +79,7 @@ class Wiki:
 
     @cached_property
     def section_contract(self) -> SectionContract:
-        """Resolved per-type required-section contract.
-
-        Resolution order:
-          1. per-wiki ``schema.md`` (operator override)
-          2. shipped ``default_schema.md``
-          3. empty contract (no enforcement)
-
-        Cached for the lifetime of the :class:`Wiki` instance; one
-        parser call per wiki open.
-
-        Override semantics (per F17 design): full-replacement, not
-        merge. An override file with a ``## Section contract`` block
-        replaces the default wholesale — types omitted from the
-        block lose their required sections. An override file
-        without the block falls back to the default.
-
-        Limitation: detection of "block present" uses the heuristic
-        ``any(for_type(t) for t in fields)``. An override declaring
-        every type as ``(none)`` will fall back to default. This is
-        not exercised by the override tests; if it matters, add
-        a sibling ``has_section_contract_block(markdown)`` helper
-        to ``lies.schema.loader`` and switch this check to it.
-        """
+        """Resolved per-type required-section contract."""
         # Local import to keep the monkeypatch target
         # (``lies.schema.loader.parse_section_contract``) effective
         # against the caching test, and to defer the import past

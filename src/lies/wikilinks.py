@@ -1,17 +1,4 @@
-"""WikiLink extraction and resolution.
-
-Distinct from QMD (semantic search). Resolves ``[[WikiLink]]`` targets
-against an in-memory dict of wiki-page identifiers (filename stem,
-frontmatter title, frontmatter aliases) and detects broken links.
-
-When the optional ``ahocorasick_rs`` runtime dep is present (default on
-Python 3.14+), ``WikiLinkResolver.build()`` also constructs a
-trie-based substring automaton and stores it on ``_aho``. ``resolve()``
-then routes through ``find_matches_as_strings(..., overlapping=True)``
-so prefix-overlapping keys (``foo`` + ``foobar``) still surface the
-longest match. When the dep is missing, ``_aho`` stays ``None`` and
-the dict branch alone runs — bit-identical output for every key.
-"""
+"""WikiLink extraction and resolution."""
 
 from __future__ import annotations
 

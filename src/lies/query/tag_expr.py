@@ -68,17 +68,6 @@ class Or(TagExpr):
 class ResolvedTagFilter:
     """Flattened form the retriever consumes.
 
-    Both halves of the F15 grammar share the same `TagExpr` shape:
-    `include` and `exclude` are validated independently by the same
-    recursive `resolve()` walk and evaluated by the same per-collection
-    matcher. The historical split — flat string on `exclude`, AST on
-    `include` — was retired in Task 3 / f15-exclude-compound because
-    the F15 grammar accepts compound excludes (``-c:foo&c:bar``,
-    ``-c:foo|c:bar``) that no longer fit a single atom.
-
-    Each ``Include`` atom carries its own ``qualifier`` (default
-    ``None`` — same ``t:`` / ``c:`` semantics as the include side).
-
     Attributes:
         include: Validated include AST (Include / And / Or), or None
             when the operator passed no ``+`` chain.
@@ -146,20 +135,7 @@ def _split_qualifier(tag: str) -> tuple[Literal["t", "c"] | None, str]:
 
 
 def check_qualifier(raw: str, *, position: int) -> tuple[Literal["t", "c"] | None, str]:
-    """Strip `t:` / `c:` prefix from a raw tag string; raise on bad qualifier.
-
-    Public qualifier validator used by every surface (CLI argv, CLI
-    explicit, MCP) to validate + split the qualifier from the tag body.
-    Unifies the 8-line duplicate across three sites and makes
-    empty-body qualifiers (`c:`, `t:`) raise `TagExprParseError`
-    consistently.
-
-    Returns `(qualifier, tag_without_prefix)`. Raises `TagExprParseError`
-    with `position` on:
-      - Known qualifier followed by empty body (`c:`)
-      - Unknown qualifier prefix (`x:foo`)
-    A bare tag (no `:`) returns `(None, raw)` unchanged.
-    """
+    """Strip `t:` / `c:` prefix from a raw tag string; raise on bad qualifier."""
     if not raw or ":" not in raw:
         return None, raw
     if raw.startswith('"') and raw.endswith('"'):
@@ -304,22 +280,7 @@ def _render_include(node: TagExpr) -> str:
 
 
 def _split_argv_token_for_ops(token: str) -> list[str]:
-    """Split a single argv chain token into atoms + operators.
-
-    Each argv token is one shell word: shell quoting may have
-    delivered a multi-word atom (e.g. realistic bash's
-    `+airflow provider` — internal whitespace preserved as one
-    token with no surrounding quotes) or an operator-bearing
-    token (e.g. `airflow&provider` or
-    `"airflow provider"&"machine learning"`).
-
-    If the token has no `&` / `|` operator OUTSIDE any quoted
-    segment, the whole token is one atom (internal whitespace
-    is preserved). If an outside-quote operator exists, posix
-    shlex splits operators out while keeping quoted segments
-    intact — so `"airflow provider"&"machine learning"`
-    tokenizes as `["airflow provider", "&", "machine learning"]`.
-    """
+    """Split a single argv chain token into atoms + operators."""
     # Scan for an operator outside quoted segments. Operators
     # inside quotes (e.g. `"a&b"`) are part of the atom; the
     # outer atom wrapping decides what happens to them.
@@ -348,38 +309,7 @@ def _split_argv_token_for_ops(token: str) -> list[str]:
 def parse_query_argv(
     argv: list[str],
 ) -> tuple[str, TagExpr | None, TagExpr | None, None]:
-    """Walk argv, peel off optional `+` chain and optional `-` chain.
-
-    The argv here is the post-Typer positional list. Typer has
-    already consumed `--flag` values; what remains is positional.
-
-    Rules:
-      - If the first token starts with `+`, the chain extends
-        across subsequent tokens while the previous token ended
-        in `&` or `|`.
-      - If the next token (immediately after the include chain)
-        starts with `-`, peel a compound ``-`` chain that mirrors
-        the include path's split + extend model: each ``-`` atom
-        may carry a ``t:`` / ``c:`` qualifier prefix (F15), and
-        the chain extends while the next argv token starts with
-        ``&`` / ``|`` (the operator-then-atom case) or the previous
-        chain token ended with ``&`` / ``|``. ``&`` binds tighter
-        than ``|`` (same precedence as the include path).
-      - The remaining tokens join with single spaces to form
-        the question.
-
-    Returns ``(question, include_ast, exclude_ast, None)``. The
-    fourth element is always ``None`` because the qualifier lives
-    on each ``Include`` atom in the tree; callers that need a
-    flat string can render the include AST via :func:`_render_include`
-    (qualified form, includes the prefix). The exclude AST is now
-    threaded through to consumers verbatim — no body-only renderer
-    is needed because both halves of the F15 grammar share the
-    same AST shape (Task 3 / f15-exclude-compound retired the
-    legacy flat-string ``ResolvedTagFilter.exclude`` contract).
-
-    Raises TagExprParseError on grammar errors.
-    """
+    """Walk argv, peel off optional `+` chain and optional `-` chain."""
     if not argv:
         raise TagExprParseError("query argv is empty")
 
@@ -519,25 +449,6 @@ def resolve(
 ) -> ResolvedTagFilter:
     """Validate the include (and optional exclude) AST against the available tag set.
 
-    Every ``Include(tag)`` — on either half — requires ``tag`` in
-    ``available``; the first unknown raises :class:`TagExprUnknown`
-    with the exact spelling. ``And`` / ``Or`` are recursive — both
-    children must validate.
-
-    ``expr`` may be ``None`` when the operator passed only an exclude
-    chain (no ``+`` prefix). The CLI's argv parser splits the two
-    halves independently and threads each one through here; the
-    orchestrator's include-only path leaves ``exclude`` at its
-    ``None`` default.
-
-    Task 3 / f15-exclude-compound: the exclude half shares the same
-    AST shape as the include half, so the validation walk is the
-    same recursive ``resolve`` over the exclude tree. Callers that
-    pre-split the two halves (CLI's explicit form, MCP's
-    ``ask_question``) thread the exclude tree through ``exclude=``
-    here; callers that only have the include AST leave it ``None``
-    (default).
-
     Returns:
         :class:`ResolvedTagFilter` carrying the validated include
         tree (and the validated exclude tree when one was supplied).
@@ -575,21 +486,7 @@ def _resolve_tree(expr: TagExpr, available: set[str]) -> TagExpr:
 
 
 def atom_matches(coll: "Collection | LibraryCollectionMeta", include: Include) -> bool:
-    """Evaluate one Include atom against one Collection.
-
-    Dispatches on ``include.qualifier``:
-        - ``"c"``: strict collection-name match (``coll.name == include.tag``).
-        - ``"t"`` or ``None``: tag-or-name alias (``include.tag ∈ coll.tags ∪ {coll.name}``).
-
-    Accepts the legacy wiki-yaml Collection shape and the library-first
-    :class:`lies.library.registry.LibraryCollectionMeta` interchangeably.
-    Both expose ``name`` and ``tags``, the only two attributes the
-    resolver reads; the library model is the canonical source going
-    forward and the wiki-yaml shape is legacy.
-
-    Used by the retriever's ``_collections_matching`` only. Validation
-    (``tag ∈ available``) lives in :func:`resolve`.
-    """
+    """Evaluate one Include atom against one Collection."""
     if include.qualifier == "c":
         return coll.name == include.tag
     return include.tag in (set(coll.tags) | {coll.name})
@@ -599,24 +496,7 @@ def exclude_matches(
     coll: "Collection | LibraryCollectionMeta",
     exclude: TagExpr,
 ) -> bool:
-    """Evaluate the exclude AST against one Collection.
-
-    Mirror of the include-side recursion in
-    :func:`lies.query.synthesizer._eval_include` — walks the
-    exclude tree (``Include`` / ``And`` / ``Or``) and dispatches
-    every leaf via :func:`atom_matches`. ``And`` short-circuits on
-    the first non-match; ``Or`` short-circuits on the first match.
-
-    Task 3 / f15-exclude-compound replaced the historical flat-string
-    ``_exclude_atom_matches`` helper because compound excludes
-    (``-c:foo&c:bar``, ``-c:foo|c:bar``) need a tree walk, not a
-    single-atom match. The retriever's :func:`_collections_matching`
-    calls this once per collection per query.
-
-    Accepts the legacy wiki-yaml :class:`Collection` and the
-    library-first :class:`LibraryCollectionMeta` interchangeably —
-    see :func:`atom_matches` for the structural contract.
-    """
+    """Evaluate the exclude AST against one Collection."""
     if isinstance(exclude, Include):
         return atom_matches(coll, exclude)
     if isinstance(exclude, And):

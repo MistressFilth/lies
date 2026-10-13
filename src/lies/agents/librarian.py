@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 """Librarian subagent — staged retrieval dispatch.
 
 The LLM runs a 4-step pipeline: **Classify** (build a ``tag_expr`` from
@@ -9,6 +10,9 @@ the excerpts into :class:`LibrarianOutput`).
 Unlike ask's harness-``Agent``-tool dispatch, lies runs in-process
 via ``librarian_agent.run_sync(deps)``.
 """
+=======
+"""Librarian subagent — staged retrieval dispatch (v0.40 port)."""
+>>>>>>> 7f2597a (docs(src): bring every code docstring within the 12-line budget)
 
 from __future__ import annotations
 
@@ -32,14 +36,20 @@ if TYPE_CHECKING:
 @dataclass(frozen=True)
 class LibrarianDeps:
     """Dependencies the librarian subagent needs to retrieve excerpts.
-
     Attributes:
         question: The user's natural-language question.
+<<<<<<< HEAD
         tag_expr: Compiled include AST (a TagExpr tree), or ``None`` for
             untagged queries. An AST rather than a string because the
             grammar accepts compound includes.
         exclude_expr: Compiled exclude AST, or ``None`` when no ``-``
             chain was supplied.
+=======
+        tag_expr: Compiled include AST, ``None`` for untagged queries. Carries the
+            AST rather than a flat string because the grammar accepts compound
+            includes (``+c:foo&c:bar``) whose dispatch walks the tree.
+        exclude_expr: Compiled exclude AST, ``None`` when no ``-`` chain.
+>>>>>>> 7f2597a (docs(src): bring every code docstring within the 12-line budget)
         top_k: Maximum number of excerpts to return (default 5).
     """
 
@@ -53,6 +63,7 @@ class LibrarianDeps:
 
 @dataclass(frozen=True)
 class PageExcerpt:
+<<<<<<< HEAD
     """A page excerpt the librarian curated for the question.
 
     ``spans`` carries the structured span view rather than a raw text
@@ -60,6 +71,9 @@ class PageExcerpt:
     rendering can distinguish primary-source hits from wiki-only hits;
     library-wins-on-conflict means there is no merged third value.
     """
+=======
+    """A page excerpt the librarian curated for the question."""
+>>>>>>> 7f2597a (docs(src): bring every code docstring within the 12-line budget)
 
     collection: str
     slug: str
@@ -70,6 +84,7 @@ class PageExcerpt:
 
 @dataclass(frozen=True)
 class LibrarianOutput:
+<<<<<<< HEAD
     """The librarian's evidence bundle — verbatim passages for the synthesizer.
 
     The librarian does not write the answer; the synthesizer holds the
@@ -86,6 +101,10 @@ class LibrarianOutput:
             mirrored verbatim. :class:`SearchDiagnostics` records the same
             string independently and :func:`with_search_diagnostics`
             replaces whatever the model emits with it.
+=======
+    """The librarian's evidence bundle: verbatim passages the synthesizer composes
+    an answer from. See "Data shapes" in AGENTS.md for the field contract.
+>>>>>>> 7f2597a (docs(src): bring every code docstring within the 12-line budget)
     """
 
     tag_expr: Any  # TagExpr | None AST, same reason as LibrarianDeps.tag_expr.
@@ -588,6 +607,7 @@ def register_librarian_tools(
 ) -> None:
     """Registers ``collections_read`` / ``search`` / ``read`` on the librarian agent.
 
+<<<<<<< HEAD
     Each closure is a thin adapter to the corresponding MCP tool. Call
     once per agent instance after construction; the pydantic-ai
     decorator raises on double-register with the same name.
@@ -596,6 +616,8 @@ def register_librarian_tools(
     accepted-but-ignored, kept for the orchestrator's and
     :func:`lies.mcp.grounding.ground`'s call sites.
 
+=======
+>>>>>>> 7f2597a (docs(src): bring every code docstring within the 12-line budget)
     Args:
         agent: The librarian agent whose toolset to populate.
         wiki: Accepted for back-compat; unused.

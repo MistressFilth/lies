@@ -289,6 +289,7 @@ def with_qmd_lock(
     timeout_s: float = 30.0,
     max_age_s: float = 1800.0,
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+<<<<<<< HEAD
     """Decorator factory; each invocation holds the qmd site-wide flock for
     the duration of the wrapped call.
 
@@ -301,6 +302,18 @@ def with_qmd_lock(
 
     Reentrant on the same context, because some helpers compose: an
     outer call would otherwise poll an inner one to a timeout.
+=======
+    """Decorator factory holding the qmd site-wide flock for the wrapped call.
+
+    Args:
+        timeout_s: Wall-clock seconds to poll-retry when contended; ``QmdLockBusy``
+            past this. Default 30 s.
+        max_age_s: Staleness budget — a contending holder whose heartbeat is older
+            and whose pid is dead is reaped and retried. Default 1800 s.
+
+    Reentrant on the same context, so a nested call does not re-acquire. The path is
+    resolved per acquisition, which is what makes the nesting visible.
+>>>>>>> 7f2597a (docs(src): bring every code docstring within the 12-line budget)
     """
 
     def decorator(fn: Callable[..., Any]) -> Callable[..., Any]:

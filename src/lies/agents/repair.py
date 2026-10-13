@@ -56,20 +56,7 @@ class RepairAgentDeps:
 
 
 def _build_repair_prompt(ctx: RunContext[RepairAgentDeps]) -> str:
-    """Render the LintReport + page corpus into the repair agent's prompt.
-
-    Pydantic-ai deps are ``RunContext`` data, not auto-serialized
-    into model messages. A static ``system_prompt`` alone leaves the
-    model without access to the lint findings or the page bodies it
-    needs to plan against. This callable extends
-    ``REPAIR_AGENT_SYSTEM_PROMPT`` with the structured lint report
-    and every safe-to-fix finding's page text so the model can emit
-    precise edits with the right ``expected_sha256`` and the right
-    cross-link targets.
-
-    Defensive against ``ctx.deps is None`` for callers that don't
-    pass deps: in that case, return the static prompt alone.
-    """
+    """Render the LintReport + page corpus into the repair agent's prompt."""
     if ctx.deps is None:
         return REPAIR_AGENT_SYSTEM_PROMPT
     parts: list[str] = [

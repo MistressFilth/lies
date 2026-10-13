@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 """LibraryWriter: atomic-commit envelope for library mutations.
 
 Differences from the wiki-side write path:
@@ -11,6 +12,9 @@ Differences from the wiki-side write path:
   derived index, and embeds the collection vectors. Failures are
   non-fatal (the library commit already landed).
 """
+=======
+"""LibraryWriter: atomic-commit envelope for library mutations."""
+>>>>>>> 7f2597a (docs(src): bring every code docstring within the 12-line budget)
 
 from __future__ import annotations
 
@@ -45,6 +49,7 @@ if TYPE_CHECKING:
 
 
 def __getattr__(name: str):
+<<<<<<< HEAD
     """Lazy import of qmd CLI helpers — keeps ``import lies.cli`` cheap.
 
     Importing :mod:`lies.qmd.cli` pulls in :mod:`pydantic_ai` +
@@ -60,6 +65,9 @@ def __getattr__(name: str):
     still work because :func:`mock.patch` triggers this ``__getattr__`` on
     its initial ``getattr``, then ``setattr``s the patched version.
     """
+=======
+    """Lazy import of qmd CLI helpers — keeps ``import lies.cli`` cheap."""
+>>>>>>> 7f2597a (docs(src): bring every code docstring within the 12-line budget)
     if name in {
         "qmd_collection_add_or_update",
         "qmd_update",

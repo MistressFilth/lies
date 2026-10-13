@@ -1,33 +1,4 @@
-"""``lies catalog`` CLI group.
-
-Five subcommands for inspecting + maintaining the wiki's sqlite
-catalog (``catalog.db``):
-
-- ``status`` — row count + schema version.
-- ``dump`` — list every row (or filtered subset).
-- ``reconcile`` — sync ``catalog.db`` with files on disk.
-- ``rebuild`` — force a full backfill from disk.
-- ``render`` — emit the title-only markdown derivative.
-
-Each command takes ``--name NAME`` (env: ``LIES_WIKI_NAME``) and
-resolves the wiki via ``lies.cli.resolve_wiki`` — the same shim
-``lies cli memory`` and ``lies cli status`` use. The catalog module
-only reads ``wiki.wiki_dir`` from the resolved wiki, so the same
-``Wiki(...)`` instance works for both CLI and library callers.
-
-First-open backfill (seeding ``catalog.db`` from on-disk ``.md``
-files when the catalog file did not previously exist) lives inside
-``lies.memory.catalog.open_catalog``. The read commands
-(``status`` / ``dump`` / ``render``) and ``reconcile`` rely on
-that behavior via a plain ``open_catalog(wiki)`` call; ``rebuild``
-remains the explicit seed command and bypasses the trigger because
-the file already exists when ``rebuild`` runs (and the upsert is
-idempotent either way).
-
-Heavy ``lies.memory.catalog`` imports stay inside the command
-bodies: the catalog itself is pure sqlite + filesystem walks, no
-orchestrator / pydantic_ai / anthropic dependency.
-"""
+"""``lies catalog`` CLI group."""
 
 from __future__ import annotations
 

@@ -85,45 +85,18 @@ def atomic_commit(
     message: str,
     files: list[str] | None = None,
 ) -> str | None:
-    """Stage and commit the given files atomically; return the new commit SHA.
-
-    Atomicity guarantee:
-
-    - **Staging**: the index is restored to its pre-call state on ANY failure
-      path -- including failures from ``git add`` (missing file, permission
-      error), the staging-area probe, the commit itself, and the SHA lookup.
-      A broad ``except BaseException`` is used so even ``KeyboardInterrupt``
-      cannot leave the index dirty.
-    - **Working tree**: the caller's on-disk edits are NEVER modified by this
-      function on failure. They remain on disk for the caller to inspect,
-      re-stage, or discard.
-    - **Commit history**: on success, exactly one new commit is created and
-      its 40-character SHA returned. On a no-op (working tree matches HEAD
-      after staging -- every file was either already-committed content or
-      the caller did not pass ``files=`` and the working tree had no dirty
-      tracked changes), returns ``None`` instead of raising. This lets
-      callers like ``run_write`` gate post-commit hooks on "did anything
-      actually change" without catching a CommitError that conflates
-      "no-op" with "real failure".
+    """Stage and commit the given files atomically, returning the new commit SHA.
 
     Args:
-        repo: Path to the git working tree.
-        message: Commit message.
-        files: List of file paths (relative to ``repo``) to commit. If
-            ``None``, all tracked-file modifications in the working tree
-            are committed (untracked files are not staged). An empty list
-            is rejected.
+        repo: Git working tree. ``message``: commit text. ``files``: paths relative to
+            ``repo``; ``None`` commits every tracked modification, an empty list rejected.
 
     Returns:
-        The 40-character commit SHA, or ``None`` if there was nothing
-        to commit (the working tree matched HEAD after staging).
+        The 40-character commit SHA, or ``None`` when the tree matched HEAD.
 
     Raises:
-        CommitError: If the caller explicitly passes ``files=[]`` (rejected
-            as a programming error before any git work runs), or if the
-            commit fails for any reason OTHER than a no-op. The index is
-            guaranteed to be clean (i.e., unchanged from before the call)
-            on every failure mode.
+        CommitError: on ``files=[]`` or any commit failure other than a no-op; the index
+            is clean on every failure mode.
     """
     if files is not None and len(files) == 0:
         raise CommitError("files must not be empty")

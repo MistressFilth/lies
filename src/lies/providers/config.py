@@ -46,21 +46,7 @@ def parse_model_string(raw: str) -> tuple[str, str]:
 def resolve_agent_to_provider(
     agent_name: str, config: ProvidersConfig
 ) -> tuple[str, str, ProviderSpec]:
-    """Look up an agent's configured model string and resolve it to a :class:`ProviderSpec`.
-
-    Pure lookup — no ``Model`` construction, no API-key read, no network.
-    Lives in :mod:`lies.providers.config` (stdlib only) so a unit test
-    can exercise the ``librarian`` → provider-spec path without paying
-    the pydantic_ai import cost. ``lies.providers.resolver.resolve_model``
-    calls this and then branches on ``spec.type`` to build the concrete
-    ``Model`` instance.
-
-    The env-var override (``LIES_<AGENT>_MODEL``) beats the TOML entry
-    when set to a non-empty string. Raises :class:`KeyError` when
-    ``agent_name`` is not in ``config.agents`` or when the parsed
-    provider name is not declared in ``config.providers``;
-    :class:`ProviderConfigError` when the model string is malformed.
-    """
+    """Look up an agent's configured model string and resolve it to a :class:`ProviderSpec`."""
     from lies.providers.env import env_override  # local: avoid import cycles
 
     raw = env_override(agent_name) or config.agents[agent_name]
